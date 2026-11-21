@@ -15,7 +15,7 @@ import { loadNotes } from "../memory/passage.ts";
 import { markRead, type ReadEvents } from "../messages/read.ts";
 import type { ToolCall, ToolSpec } from "../models/gateway.ts";
 import { resolveModel, type Resolved } from "../models/resolve.ts";
-import { ELSEWHERE_OPEN_MAX, toldHits, toldPassage, TOLD_TURN } from "./tools/elsewhere.ts";
+import { ELSEWHERE_OPEN_MAX, toldHits, toldPassage } from "./tools/elsewhere.ts";
 import { citesIn, RunRefs, withoutCitations } from "./tools/refs.ts";
 import type { RunScope } from "./tools/index.ts";
 import { KeyUnreadableError } from "../providers/crypto.ts";
@@ -737,8 +737,6 @@ export class DbAgentPort implements AgentPort {
       context = await buildContext(blobs, first.loaded, first.resolved, log, {
         signal: closing ? AbortSignal.any([closing, deadline]) : deadline,
         stop: () => this.shouldStop(run),
-        // A told reply whose group ends with the Agent's own message ends its call with what it is to do.
-        ...(first.told ? { closing: TOLD_TURN } : {}),
       });
     } catch (err) {
       if (closing?.aborted) throw closing.reason;

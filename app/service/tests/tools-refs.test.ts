@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CONTINUE_TURN, endWithPerson, FILE_MAX_CHARS } from "../src/agents/runtime/context.ts";
+import { FILE_MAX_CHARS } from "../src/agents/runtime/context.ts";
 import { groupSystemText, notesPassage } from "../src/agents/runtime/prompt.ts";
 import { excerpt } from "../src/agents/tools/search.ts";
 import { citesIn, RunRefs, withoutCitations } from "../src/agents/tools/refs.ts";
@@ -106,24 +106,6 @@ describe("the other strings someone else controls keep no citation either", () =
     );
     expect(passage).toContain("饭搭子");
     expect(passage).not.toContain("〔");
-  });
-});
-
-describe("a call never ends with the Agent's own turn", () => {
-  it("one ending with it gets a person's turn of fixed text (the given one, else CONTINUE_TURN), counted; one ending with a person's is left as it is", () => {
-    const text = (t: string) => ({ type: "text" as const, text: t });
-    const theirs = [
-      { role: "user" as const, parts: [text("查一下")] },
-      { role: "assistant" as const, parts: [text("我先查一下。")] },
-    ];
-    expect(endWithPerson(theirs)).toBeGreaterThan(0);
-    expect(theirs.at(-1)).toEqual({ role: "user", parts: [text(CONTINUE_TURN)] });
-    const told = [{ role: "assistant" as const, parts: [text("没找到。")] }];
-    endWithPerson(told, "（告诉大家。）");
-    expect(told.at(-1)).toEqual({ role: "user", parts: [text("（告诉大家。）")] });
-    const mine = [{ role: "user" as const, parts: [text("你好")] }];
-    expect(endWithPerson(mine)).toBe(0);
-    expect(mine).toHaveLength(1);
   });
 });
 

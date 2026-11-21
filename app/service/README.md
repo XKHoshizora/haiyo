@@ -2901,7 +2901,7 @@ does not block) keeps its mark (`held_back_by`, `held_back_on`) until it is admi
 waits for is still running, and until it is admitted — queued, or claimed again and not admitted yet — the owner's younger
 replies that would be paid from the same source are passed over too (first come, first served per payer and source, so a
 reply with a large hold is not passed for ever by smaller ones; which source a queued reply would be paid from is
-admission's own rule on what its owner has now; a free-tier reply held back with nothing left of either source after the
+admission's own rule on what its owner has now; a free-tier reply held back with today's allowance not left at all and nothing left of the balance after the
 holds waits on both, `held_back_on` `any`, and holds back the younger replies either would pay); a reply on the owner's own
 provider key, or one the other source would pay, never waits behind it, nor does the owner's own reply (lane `own`)
 behind a reply someone else called for, which the others' lanes may keep queued. What first come, first served promises,
@@ -3080,9 +3080,8 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
   even when it was stored after the notice. Consecutive messages of one side are one turn (their parts in order),
   because several providers refuse two turns of one side in a row. The call starts and ends with the owner: an Agent
   turn left first, or after the owner's newest message, is left out (so a retry is not shown the acknowledgement of the
-  attempt it retries, nor a told reply its own `没找到` after the question); were a call ever to end with an Agent turn,
-  one person's turn of fixed text would follow it (`runtime/context.ts` `endWithPerson`: `（请继续回答上面的问题。）`, for a
-  told reply `（主人让你把上面资料里查到的内容告诉大家。）`) — a trailing assistant turn is a prefill to the Anthropic protocol. System notices, the fixed greeting and the stored
+  attempt it retries, nor a told reply its own `没找到` after the question), so a call never ends with an Agent turn (a trailing assistant turn is a
+  prefill to the Anthropic protocol; `tests/tools-ack.test.ts` and `tests/whisper-elsewhere.test.ts` pin it on recorded calls). System notices, the fixed greeting and the stored
   reasoning are never shown. A message that quotes another starts with `> ` lines holding the first 200 characters of the quoted one (its
   text, or its attachment's name), also when the quoted one is from before the new topic: the owner chose to show it.
   In a group the same, with everyone but the Agent on the owner's side: every message the Agent may read there — from
@@ -3935,10 +3934,11 @@ carries more input (`holdTokens`; whatever the model's ratio: Token estimates), 
 PDF, plus the call's whole output limit (at a reasoning level, its thinking allowance included: Calling a
 model), at the model's prices. So text an upstream counts at up to a token a byte never costs more than was held. A hold larger than
 the call's cost takes nothing from the owner: the call is charged what it cost, and a larger hold only makes other
-replies wait at the edge of what is left (below). A free-tier model is charged to today's free allowance while what is
-left of it, less what your running calls hold against it, is above zero; otherwise to the balance, by the same rule; a
-paid-tier model only to the balance (so a reply goes on to the balance when your other calls hold all the allowance, as
-it always has). Only when nothing at all is left of a source the model may use — the allowance used up, the balance at
+replies wait at the edge of what is left (below). A free-tier model is charged to today's free allowance while any of it
+is left (holds aside), and to the balance only once the allowance is used up: a free-tier reply that finds the allowance
+not used up but all held by your other running calls waits for them (held back, as below) instead of going on to the
+balance, while a persona draft, which cannot wait, takes the allowance; a paid-tier model is charged only to the
+balance. Only when nothing at all is left of a source the model may use — the allowance used up, the balance at
 or below zero, holds aside — is the call refused: `no_quota` (402) with `reason` `free_and_balance` and `resetsAt`, or
 `reason` `balance` (a reply's run fails so; a draft answers so).
 

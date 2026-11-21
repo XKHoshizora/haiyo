@@ -4,7 +4,7 @@ import { afterTell, afterTellsEnded, createWhisper } from "../src/whispers/store
 import { changeSweep } from "../src/app.ts";
 import { NO_TOOLS, TOLD_NO_TOOLS, TOOL_MATERIAL } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
-import { createElsewhere, ELSEWHERE_HITS_MAX, ELSEWHERE_OPEN_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, TOLD_TURN, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
+import { createElsewhere, ELSEWHERE_HITS_MAX, ELSEWHERE_OPEN_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
 import { createToolbox, SEARCH_MESSAGES, type ToolDeps } from "../src/agents/tools/index.ts";
 import type { Db } from "../src/db.ts";
@@ -359,7 +359,6 @@ describe("告诉他们", () => {
     expect(call.messages.at(-1)!.role).toBe("user");
     expect(JSON.stringify(call.messages.at(-1))).toContain("上次说的那个计划在哪");
     expect(JSON.stringify(call.messages)).not.toContain("这个群的记录里没找到。");
-    expect(JSON.stringify(call.messages)).not.toContain(TOLD_TURN);
     await settled([nedSocket], w.mia, w.g);
     const frames = JSON.stringify(nedSocket.events);
     for (const never of ["CANARY-where", "CANARY-who"]) expect([never, frames.includes(never)]).toEqual([never, false]);

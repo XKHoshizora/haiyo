@@ -1027,20 +1027,17 @@ describe("fix round 2: the free allowance's room for the last call, renewed a ro
     expect(next.conversationId).toBe(z.conv);
   });
 
-  it("a free-tier reply held back with nothing left after the holds on either source waits on both: a younger reply the balance would pay waits behind it too", async () => {
+  it("a free-tier reply held back with the allowance used up and nothing left of the balance after the holds waits on both: a younger reply the balance would pay waits behind it too", async () => {
     const owner = await signUp(app, "bothsources");
-    const [a, b, c, d] = [await agentOf(owner, FREE, "Ann"), await agentOf(owner, PAID, "Bob"), await agentOf(owner, FREE, "Cy"), await agentOf(owner, PAID, "Dee")];
-    // Half a point left of the day's allowance, one point of balance: one running reply holds more than each.
-    await setFreeUsed(owner.id, (5n * POINT) / 2n);
+    const [a, c, d] = [await agentOf(owner, FREE, "Ann"), await agentOf(owner, FREE, "Cy"), await agentOf(owner, PAID, "Dee")];
+    // The day's allowance used up (so the balance pays), one point of balance: one running reply holds more than it.
+    await setFreeUsed(owner.id, 3n * POINT);
     await grant(db, owner.id, POINT);
     const { port } = workerWith(scriptedGateway());
     await say(owner, a.conv, "你好");
     const ann = (await port.claimNext())!;
     expect(isRunEnd(await port.begin(ann))).toBe(false);
-    await say(owner, b.conv, "你好");
-    const bob = (await port.claimNext())!;
-    expect(isRunEnd(await port.begin(bob))).toBe(false);
-    expect([(await runIn(a.conv)).charge_to, (await runIn(b.conv)).charge_to]).toEqual(["free", "balance"]);
+    expect((await runIn(a.conv)).charge_to).toBe("balance");
     await say(owner, c.conv, "你好");
     const cy = (await port.claimNext())!;
     await port.finish(cy, (await port.begin(cy)) as RunEnd, null, NOTHING);

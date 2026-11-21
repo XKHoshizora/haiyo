@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort, type DbAgentPort, type Toolbox } from "../src/agents/port-impl.ts";
 import type { RunScope } from "../src/agents/tools/index.ts";
-import { CONTINUE_TURN } from "../src/agents/runtime/context.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import type { ToolSpec } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
@@ -300,7 +299,6 @@ describe("an acknowledgement, then the answer", () => {
     const retried = gateway.calls.at(-1)!.messages;
     expect(retried.map(plain)).toEqual([["user", ["查一下"]]]);
     expect(retried.at(-1)!.role).toBe("user");
-    expect(JSON.stringify(retried)).not.toContain(CONTINUE_TURN);
   });
 
   it("an acknowledgement cites nothing: a number it writes is taken out of it", async () => {

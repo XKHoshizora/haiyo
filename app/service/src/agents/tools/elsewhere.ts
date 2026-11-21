@@ -36,8 +36,6 @@ export const FOUND_ELSEWHERE = "群里有人问到的事，这个群里没有，
 export const TELL_THEM = "主人让你把下面查到的内容告诉大家，用你自己的话简短地说。";
 /** And what not to say: where it was found, who said it (it is not given either: `toldPassage`). */
 export const TELL_HOW = "不要说是在哪里看到的，也不要说是谁说的。";
-/** The person's turn its call ends with when the group shown ends with the Agent's own message (`ContextPlan.build`). */
-export const TOLD_TURN = "（主人让你把上面资料里查到的内容告诉大家。）";
 /** At most this many second queries run at once in the whole service (one hook per service); more are skipped. */
 export const ELSEWHERE_AT_ONCE = 2;
 /** Where a hit said in the Agent's own conversation was said, as the hit names it. */
