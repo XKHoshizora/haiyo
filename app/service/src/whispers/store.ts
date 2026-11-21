@@ -21,7 +21,7 @@ import { weight } from "../metering/tokens.ts";
  * row, and an answered or expired one is deleted 30 days after it was made (`removeOldWhispers`, the same sweep). Nothing
  * here reads, logs or returns a whisper's text to anyone but its owner.
  *
- * A `found_elsewhere` whisper (Redesign D) stores `open`, `declined` or `expired` only — never `accepted` (migration 061):
+ * A `found_elsewhere` whisper (Redesign D) stores `open`, `declined` or `expired` only — never `accepted` (migration 058):
  * what its owner reads of it is derived from its told replies (`agent_runs.whisper_id`). It is told only because a posted
  * message of a told reply of it exists (the message whose `client_txn` is that run's id); telling while a told reply of it
  * is queued or running; otherwise open — with `lastTellFailed` once one ended without posting — unless none of the messages
@@ -41,7 +41,7 @@ import { weight } from "../metering/tokens.ts";
 
 export const WHISPER_KINDS = ["found_elsewhere", "tools_off", "memory", "allowance"] as const;
 export type WhisperKind = (typeof WHISPER_KINDS)[number];
-/** What a whisper's row stores (a `found_elsewhere` one never `accepted`: migration 061). */
+/** What a whisper's row stores (a `found_elsewhere` one never `accepted`: migration 058). */
 export const WHISPER_STATUSES = ["open", "accepted", "declined", "expired"] as const;
 export type WhisperStatus = (typeof WHISPER_STATUSES)[number];
 /** What its owner reads (whispers/wire.ts): the stored status, or for a `found_elsewhere` one its derived state. */

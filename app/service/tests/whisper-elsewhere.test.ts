@@ -946,7 +946,7 @@ describe("expiry: a found-elsewhere whisper a day after it was made", () => {
   });
 });
 
-describe("migration 061: what was stored before", () => {
+describe("migration 058: what was stored before", () => {
   it("a told whisper (answered, its told reply posted) keeps nothing more: it reads told; one answered whose tell posted nothing, or open, is expired (its hits were copies, with nothing to read)", async () => {
     const w = await world();
     const hook = createElsewhere(elsewhereDeps());
@@ -958,7 +958,7 @@ describe("migration 061: what was stored before", () => {
     expect((await api(app, w.owner, "POST", `/api/whispers/${unposted!.id}/accept`)).status).toBe(200);
     gateway.fail("provider_unavailable", { status: 502 });
     expect(await app.agentWorker.runOnce()).toBe(true);
-    const sql = readFileSync(new URL("../migrations/061_whisper_derived_state.sql", import.meta.url), "utf8");
+    const sql = readFileSync(new URL("../migrations/058_whisper_derived_state.sql", import.meta.url), "utf8");
     const [up, down] = sql.split("-- Down Migration") as [string, string];
     const after = await db
       .tx(async (t) => {

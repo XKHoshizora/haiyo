@@ -822,7 +822,7 @@ describe("expiry", () => {
     expect(rows.some((r) => /\(status, created_at\)/.test(r.indexdef))).toBe(true);
     // The open ones of an owner in a conversation (their count on every sync, the open half of sync): a partial index.
     expect(rows.some((r) => /\(owner_id, conversation_id\) WHERE \(status = 'open'::text\)/.test(r.indexdef))).toBe(true);
-    // A whisper's told replies (its state is read from them: telling, told): migration 061.
+    // A whisper's told replies (its state is read from them: telling, told): migration 058.
     const runs = await db.query<{ indexdef: string }>("select indexdef from pg_indexes where tablename = 'agent_runs'");
     expect(runs.rows.some((r) => /\(whisper_id\) WHERE \(whisper_id IS NOT NULL\)/.test(r.indexdef))).toBe(true);
   });
