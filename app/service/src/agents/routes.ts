@@ -231,7 +231,7 @@ const deletedError = () => new AppError(409, "agent_deleted");
  */
 export function registerAgentRoutes(
   app: FastifyInstance,
-  { draftRuns, readLimit }: { draftRuns: Set<string>; readLimit: PrincipalLimit },
+  { draftRuns, readLimit, greeting = true }: { draftRuns: Set<string>; readLimit: PrincipalLimit; greeting?: boolean },
 ): { endDrafts(): Promise<void> } {
   const { db, config, conversations } = app.deps;
   const api = app.withTypeProvider<ZodTypeProvider>();
@@ -293,8 +293,10 @@ export function registerAgentRoutes(
         reasoning: b.reasoning ?? "none",
         model: b.model ?? null,
       };
-      const { agent, change } = await db.tx((t) => createAgent(t, me.id, input, config));
+      const { agent, change, greeting: greets } = await db.tx((t) => createAgent(t, me.id, input, config, greeting));
       conversations.publish(change, req.log);
+      // Its first reply, queued (it greets its owner): to its owner, and to the worker.
+      if (greets) app.agentPort.announce(greets);
       // A new Agent has had no reply yet (nothing spent) and its owner has named nobody.
       return reply.code(201).send(toView(agent, NO_SPEND, [], (await modelsUsable(db, config, me.id, [agent.model]))[0]!));
     },

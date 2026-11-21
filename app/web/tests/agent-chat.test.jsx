@@ -327,6 +327,31 @@ describe("which model and level a reply of mine used (via)", () => {
   });
 });
 
+describe("an Agent conversation with nothing in it yet", () => {
+  const HINT = "和 小助手 说点什么吧。";
+
+  it("shows the system's hint (never a line as the Agent) while nothing is said and nothing is being replied", async () => {
+    await openAgentChat({ messages: [] });
+    const hint = within(timeline()).getByText(HINT);
+    expect(hint.closest("li").className).toBe("msg-system");
+    expect(timeline().querySelectorAll("li.msg")).toHaveLength(0);
+  });
+
+  it("also after its greeting could not be made (the service records that run cancelled: no failure, no 重试)", async () => {
+    await openAgentChat({ messages: [], run: runOf(R1, "cancelled") });
+    expect(within(timeline()).getByText(HINT)).toBeTruthy();
+    expect(statusLine()).toBeNull();
+  });
+
+  it("not while its first reply is being written, nor once anything is said", async () => {
+    await openAgentChat({ messages: [], run: runOf(R1, "queued") });
+    expect(within(timeline()).queryByText(HINT)).toBeNull();
+    cleanup();
+    await openAgentChat();
+    expect(within(timeline()).queryByText(HINT)).toBeNull();
+  });
+});
+
 describe("the streaming bubble", () => {
   it("shows 正在回复… until the first piece, then the text so far, and the stored message replaces it", async () => {
     const { transport } = await openAgentChat();

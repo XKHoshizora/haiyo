@@ -295,7 +295,7 @@ describe("which model and thinking level a reply used: its Agent's owner's only"
 });
 
 describe("in the Agent's own conversation", () => {
-  it("its replies carry via for its owner; the fixed greeting, which no run posted, does not", async () => {
+  it("its replies carry via for its owner; its owner's own message does not (and nothing is posted as the Agent at creation: no fixed greeting)", async () => {
     const owner = await signUp(app, "olga");
     const agent = await mustCreateAgent(app, owner, { handle: "solo_bot", name: "独奏", model: { source: "site", id: SOL.id }, reasoning: "low" });
     const conv = agent.conversationId as string;
@@ -305,15 +305,14 @@ describe("in the Agent's own conversation", () => {
     const want = { model: { source: "site", id: SOL.id, label: SOL.label }, reasoning: "low", points: "1.234" };
     const history = (await api(app, owner, "GET", `/api/conversations/${conv}/messages`)).json.messages;
     expect(history.map((m: any) => [m.seq, m.senderId === agent.id, "via" in m ? m.via : "absent"])).toEqual([
-      [1, true, "absent"], // the greeting
-      [2, false, "absent"], // the owner's own message
-      [3, true, want],
+      [1, false, "absent"], // the owner's own message
+      [2, true, want],
     ]);
-    expect((await api(app, owner, "GET", `/api/conversations/${conv}/messages/3`)).json.message.via).toEqual(want);
-    expect((await api(app, owner, "GET", "/api/sync")).json.messages.find((m: any) => m.conversationId === conv && m.seq === 3).via).toEqual(want);
+    expect((await api(app, owner, "GET", `/api/conversations/${conv}/messages/2`)).json.message.via).toEqual(want);
+    expect((await api(app, owner, "GET", "/api/sync")).json.messages.find((m: any) => m.conversationId === conv && m.seq === 2).via).toEqual(want);
     expect((await api(app, owner, "GET", "/api/search?q=SOLO-q9x")).json.messages.map((m: any) => m.via)).toEqual([want]);
-    await socket.waitFor((e) => e.type === "message" && e.message.conversationId === conv && e.message.seq === 3 && "via" in e.message);
-    const frames = socket.events.filter((e) => e.type === "message" && e.message.seq === 3);
+    await socket.waitFor((e) => e.type === "message" && e.message.conversationId === conv && e.message.seq === 2 && "via" in e.message);
+    const frames = socket.events.filter((e) => e.type === "message" && e.message.seq === 2);
     expect(frames.at(-1)!.message.via).toEqual(want);
   });
 });

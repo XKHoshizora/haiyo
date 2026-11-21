@@ -99,6 +99,17 @@ const ONBOARDING = [
 const NORMAL = "主人让你根据对话更新或修改人格设定时，整理一份完整的新设定，写成设定提议。主人没有这样要求时，不要写设定提议。";
 
 /**
+ * A new Agent's first reply (agents/conversation.ts `createAgent`, `agent_runs.greets`): its system text ends with this, so
+ * that it greets its owner in its own words — the service never says a fixed sentence as the Agent (principle P2).
+ */
+export const GREETING_LINE = "这是你和主人的第一次对话：用你自己的口吻，简短地向主人打个招呼。";
+/**
+ * And, when its owner has not written yet, the one turn it is shown (a call needs one): what is so, in the system's voice,
+ * never anything anyone wrote.
+ */
+export const GREETING_TURN = "（主人刚刚创建了你，还没有说话。）";
+
+/**
  * What an Agent with memory on is told in its own conversation (in onboarding too, where reviews run as well; not in a group), notes or
  * not: that it has memory, so that it never tells its owner it cannot keep anything.
  */

@@ -199,7 +199,8 @@ test("告诉他们 whose call fails: the whisper is open again for its owner —
   await expect(whisper).not.toContainText(TELL_FAILED);
 
   // The telling's model call fails: nothing is posted, and the whisper is open again — saying so —, hits and buttons as before.
-  await modelStub.script({ status: 500, message: "upstream down" }, { status: 500, message: "upstream down" });
+  // (A 400: a failure the system does not try again by itself — a 5xx it retries automatically while the whisper reads open.)
+  await modelStub.script({ status: 400, message: "upstream refused" }, { status: 400, message: "upstream refused" });
   await whisper.getByRole("button", { name: "告诉他们" }).click();
   await expect.poll(async () => (await modelStub.calls()).length, { message: "the telling's call was made" }).toBeGreaterThanOrEqual(3);
   await expect(whisper).toHaveCount(1);

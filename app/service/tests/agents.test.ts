@@ -11,9 +11,6 @@ const { app, db } = useApp({ blobs, env: SITE_ENV });
 
 afterEach(closeAllSockets);
 
-const GREETING = (name: string) =>
-  `你好，我是「${name}」，你刚刚创建的 Agent。我现在还没有设定。你希望我是谁、主要帮你做什么、用什么语气说话？直接告诉我就行，说完我会整理成一份设定给你确认。`;
-
 const sync = async (who: { cookie: string }) => (await api(app, who, "GET", "/api/sync")).json;
 const putAvatar = (who: { cookie: string }, id: string, payload: Buffer = PNG) =>
   app
@@ -21,7 +18,7 @@ const putAvatar = (who: { cookie: string }, id: string, payload: Buffer = PNG) =
     .then((r) => ({ status: r.statusCode, json: r.json() }));
 
 describe("creating an Agent", () => {
-  it("returns the Agent and gives the owner one agent conversation holding only the fixed greeting", async () => {
+  it("returns the Agent and gives the owner one agent conversation with nothing posted as the Agent (no fixed greeting: tests/agent-greeting.test.ts)", async () => {
     const owner = await signUp(app, "olivia");
     const res = await createAgent(app, owner, { handle: "helper_one", name: "小助手", intro: "hi", field: "writing" });
     expect(res.status).toBe(201);
@@ -51,17 +48,16 @@ describe("creating an Agent", () => {
       agent: { paused: false, deleted: false },
       canSend: { ok: true },
       myRole: "speaker",
-      lastSeq: 1,
-      unread: 1,
+      lastSeq: 0,
+      unread: 0,
     });
     expect(agentConvs[0].peerId).toBeUndefined();
     expect(agentConvs[0].members.map((m: any) => m.id).sort()).toEqual([owner.id, agent.id].sort());
-    expect(view.messages).toHaveLength(1);
-    expect(view.messages[0]).toMatchObject({ conversationId: agent.conversationId, seq: 1, senderId: agent.id, kind: "text", text: GREETING("小助手") });
+    expect(view.messages).toEqual([]);
     expect(view.principals.find((p: any) => p.id === agent.id)).toMatchObject({ kind: "agent", displayName: "小助手", handle: "olivia.helper_one" });
 
     const stored = await db.query("select client_txn, body from messages where conversation_id = $1", [agent.conversationId]);
-    expect(stored.rows).toEqual([{ client_txn: null, body: { text: GREETING("小助手"), fixed: true } }]);
+    expect(stored.rows).toEqual([]);
 
     const single = await api(app, owner, "GET", `/api/conversations/${agent.conversationId}`);
     expect(single.json).toEqual(agentConvs[0]);
@@ -360,7 +356,7 @@ describe("pause, resume, delete", () => {
     expect(await send("a1")).toMatchObject({ status: 200, json: { duplicate: true } });
 
     const history = await api(app, owner, "GET", `/api/conversations/${agent.conversationId}/messages`);
-    expect(history.json.messages.map((m: any) => m.text)).toEqual([GREETING(agent.name), "hi there"]);
+    expect(history.json.messages.map((m: any) => m.text)).toEqual(["hi there"]);
     const entry = (await sync(owner)).conversations.find((c: any) => c.id === agent.conversationId);
     expect(entry).toMatchObject({ canSend: { ok: false, reason: "agent_deleted" }, agent: { paused: false, deleted: true }, agentId: agent.id });
     expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json.deleted).toBe(true);

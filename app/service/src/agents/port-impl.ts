@@ -60,7 +60,7 @@ import {
   type ToolOutcome,
   type Usage,
 } from "./runtime/port.ts";
-import { fitNotes, groupSystemText, NO_NOTES, passageBudget, systemText, systemTokens, type SystemText } from "./runtime/prompt.ts";
+import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, passageBudget, systemText, systemTokens, type SystemText } from "./runtime/prompt.ts";
 import {
   actOnTriggered,
   budgetReachedWith,
@@ -72,6 +72,9 @@ import {
   pushBudgetReached,
   refusedAtAdmission,
   RUN_COLUMNS,
+  scheduleAutoRetry,
+  transientFailure,
+  type AutoRetry,
   withTellable,
   toWireRun,
   type Announced,
@@ -104,6 +107,11 @@ export interface AgentPortDeps {
   memory?: Pick<Reviewer, "noted" | "summarise"> | null;
   /** The tools a reply may be offered and how they run; none (the default): no reply is offered any. */
   toolbox?: Toolbox | null;
+  /**
+   * The clock automatic retries are scheduled and claimed by (`not_before`: runs.ts `scheduleAutoRetry`, `claimNext`);
+   * default the wall clock. Tests fake it.
+   */
+  now?: () => Date;
 }
 
 /**
@@ -232,8 +240,20 @@ interface RunState {
    * held to that rule there (runs.ts `followUp`).
    */
   told: boolean;
+  /** A new Agent's first reply (`agent_runs.greets`, conversation.ts `createAgent`): told to greet its owner. */
+  greets: boolean;
+  /** An automatic retry (runs.ts `scheduleAutoRetry`): the run of its original call; null for an original. */
+  retry_of: string | null;
 }
-const RUN_STATE = "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told";
+const RUN_STATE =
+  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, greets, retry_of";
+
+/** One line per automatic retry made, run, or given up (README "Metrics in the log"): counts only, never what was said. */
+function countRetry(log: Partial<Pick<FastifyBaseLogger, "info">>, retried: AutoRetry): void {
+  if (retried === null) return;
+  if ("retry" in retried) log.info?.({ metric: "auto_retry_scheduled", attempt: retried.attempt }, "agent run: failed for a passing reason; the system tries it again");
+  else log.info?.({ metric: "auto_retry_gave_up", why: retried.gaveUp }, "agent run: failed for a passing reason; not tried again");
+}
 
 /**
  * The one rule for a follow-up (README "Agents and runs", Coalescing): a run that has ended is followed by a reply to
@@ -252,6 +272,14 @@ function followUpSeq(state: RunState, agent: AgentRow, end: RunEnd): number | nu
   const pending = Number(state.pending_seq ?? 0);
   return pending > covers && !agent.paused && !agent.deleted && agent.model !== null ? pending : null;
 }
+
+/**
+ * How a run that ended `end` is recorded: as it ended — but a new Agent's greeting (`greets`) that failed is `cancelled`
+ * with no error, so no failure and no 重试 is shown in a conversation where nothing was said yet: there is simply no Agent
+ * message, and the client's hint invites its owner to write (principle P2: never a fixed line in its place). Settlement
+ * reads the end as it was.
+ */
+const quietGreeting = (end: RunEnd, state: Pick<RunState, "greets">): RunEnd => (state.greets && end.status === "failed" ? { status: "cancelled" } : end);
 
 /** A run that ends so is followed by nothing, and what was noted on it (`pending_seq`) is cleared as it ends. */
 const droppedOnEnd = (end: RunEnd): boolean => end.status === "cancelled" && end.error === "agent_removed";
@@ -335,6 +363,11 @@ export class DbAgentPort implements AgentPort {
   private wakeWorker: () => void = () => {};
 
   constructor(private readonly deps: AgentPortDeps) {}
+
+  /** The clock of automatic retries (`AgentPortDeps.now`). */
+  private now(): Date {
+    return this.deps.now?.() ?? new Date();
+  }
 
   private flagsOf(runId: string): RunFlags {
     let flags = this.flags.get(runId);
@@ -425,10 +458,11 @@ export class DbAgentPort implements AgentPort {
                      coalesce((select a.balance_micro from accounts a where a.principal_id = q.owner_id), 0) as balance,
                      coalesce((select sum(h.hold_micro) from agent_runs h where h.owner_id = q.owner_id and h.status = 'running' and h.charge_to = 'balance'), 0) as balance_held) m
        where qa.principal_id = q.agent_id)`;
-    const { rows } = await this.deps.db.query<RunRow & { agent_id: string; owner_id: string; conversation_id: string; lane: string; wait_ms: number; again: boolean }>(
+    const { rows } = await this.deps.db.query<RunRow & { agent_id: string; owner_id: string; conversation_id: string; lane: string; wait_ms: number; again: boolean; auto_attempt: number }>(
       `with next as (
          select q.id from agent_runs q
           where q.status = 'queued' and q.purpose = 'reply'
+            and (q.not_before is null or q.not_before <= $7::timestamptz)
             and (select count(*) from agent_runs x where x.owner_id = q.owner_id and x.status = 'running') < $1
             and (q.lane = 'own'
               or (select count(*) from agent_runs x where x.owner_id = q.owner_id and x.status = 'running' and x.lane <> 'own') < $2)
@@ -444,7 +478,7 @@ export class DbAgentPort implements AgentPort {
           for update of q skip locked
        )
        update agent_runs as r set status = 'running', started_at = now() from next where r.id = next.id
-       returning ${RUN_COLUMNS}, r.agent_id, r.owner_id, r.conversation_id, r.lane, r.held_back_by is not null as again,
+       returning ${RUN_COLUMNS}, r.agent_id, r.owner_id, r.conversation_id, r.lane, r.held_back_by is not null as again, r.auto_attempt,
                  (extract(epoch from (r.started_at - r.created_at)) * 1000)::int as wait_ms`,
       [
         config.agentMaxConcurrentRuns,
@@ -453,6 +487,7 @@ export class DbAgentPort implements AgentPort {
         config.siteModels.filter((m) => m.tier === "free").map((m) => m.id),
         config.freeDailyMicro.toString(),
         siteDay(new Date(), config.siteTimezone),
+        this.now(),
       ],
     );
     const row = rows[0];
@@ -460,6 +495,11 @@ export class DbAgentPort implements AgentPort {
     const run: RunTicket = { id: row.id, agentId: row.agent_id, ownerId: row.owner_id, conversationId: row.conversation_id };
     this.flags.set(run.id, freshFlags());
     if (row.again) {
+      this.deps.realtime.pushRunToOwner(run.conversationId, toWireRun(row));
+    } else if (row.auto_attempt > 0) {
+      // An automatic retry (runs.ts `scheduleAutoRetry`) is told to its owner alone: the other members of a group, told the
+      // Agent is replying, are told nothing more until its answer (the same frames as an answer at the first try).
+      this.deps.log.info({ metric: "auto_retry_ran", attempt: row.auto_attempt }, "agent run: an automatic retry was claimed");
       this.deps.realtime.pushRunToOwner(run.conversationId, toWireRun(row));
     } else {
       this.deps.log.info({ metric: "run_wait_ms", lane: row.lane, ms: row.wait_ms }, "agent run: claimed");
@@ -606,6 +646,9 @@ export class DbAgentPort implements AgentPort {
       // A reply nobody asked for that someone has called since its claim: no unasked remark now. What was noted on it
       // stays noted, so its follow-up answers the call in the caller's lane.
       if (state.lane === "proactive" && Number(state.pending_seq ?? 0) > Number(state.covers_seq ?? 0)) return { end: ENDED_QUIETLY };
+      // An automatic retry whose question was answered meanwhile — a reply of this Agent's there from another run, posted
+      // after the original call was made — has nothing left to answer: it ends quietly, with no call.
+      if (state.retry_of !== null && (await answeredSince(t, run, state.retry_of))) return { end: ENDED_QUIETLY };
 
       let resolved;
       try {
@@ -658,6 +701,8 @@ export class DbAgentPort implements AgentPort {
           const text = scene
             ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, state.lane === "proactive", notes, told === null ? tools : "told")
             : systemText(agent, { displayName }, now, agent.persona === "" ? "onboarding" : "normal", config.siteTimezone, notes, tools);
+          // A new Agent's first reply greets its owner in its own words (`greets`): the fixed instruction last.
+          if (state.greets && !group) return { text: `${text.text}\n\n${GREETING_LINE}`, rest: `${text.rest}\n\n${GREETING_LINE}`, passage: text.passage };
           // What a reply `告诉他们` queued is to tell, after the rest (measured with it: `rest`).
           if (told === null) return text;
           const passage = toldPassage(told);
@@ -721,6 +766,8 @@ export class DbAgentPort implements AgentPort {
         reserved = 0;
         ({ loaded, refs } = await planOf(false, 0));
       }
+      // A new Agent's greeting before its owner has written: the one turn it is shown is what is so (`GREETING_TURN`).
+      if (state.greets && !group && !hasOwnerTurn(loaded)) loaded.entries.push({ role: "user", text: GREETING_TURN, attachment: null });
       if (!hasOwnerTurn(loaded)) return { end: loaded.topicStart > 0 && covers <= loaded.topicStart ? STARTED_OVER : BUSY };
       if (!holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) return { end: TOO_SMALL };
       // A reply offered tools also carries the text a reply offered none is sent (the same mark and roster), for whenever
@@ -1112,7 +1159,7 @@ export class DbAgentPort implements AgentPort {
     const leftOut = this.flags.get(run.id)?.leftOut ?? null;
     let result: Recorded | null | undefined;
     try {
-      result = await this.record(run, end, usage, fallback, new Date());
+      result = await this.record(run, end, usage, fallback, this.now());
     } finally {
       // An interrupted run is silenced here too, whether or not the pause's (or removal's) own call (`interruptRuns`)
       // came first.
@@ -1122,7 +1169,11 @@ export class DbAgentPort implements AgentPort {
     }
     if (!result) return;
     if (result.reply !== null) this.deps.realtime.pushChargedReply(run.conversationId, run.ownerId, result.reply);
-    this.announce(result.ended);
+    countRetry(this.deps.log, result.retried);
+    // Tried again by the system: the failure is announced to nobody — its owner is told of the queued retry alone (its slot
+    // reads queued, never an error that then goes), and the other members of a group, told it is replying, nothing.
+    if (result.retried !== null && "retry" in result.retried) this.deps.realtime.pushRunToOwner(run.conversationId, result.retried.retry.run);
+    else this.announce(result.ended);
     // A reply stands: the conversation may have something to remember (the reviewer never throws and reads for itself), and
     // what its context left out may be folded into the pair's rolling summary. An acknowledgement alone is nothing to
     // remember (memory/review.ts `UNSPOKEN`).
@@ -1160,7 +1211,7 @@ export class DbAgentPort implements AgentPort {
         if (!current.rows[0]) return null;
         await withTellable(t, current.rows, config.whispers.elsewhereTtlHours);
         const ended: Announced = { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(current.rows[0]) };
-        return { ended, followed: followUpOf(null), interrupted: false, reply: null, reminder: null };
+        return { ended, followed: followUpOf(null), interrupted: false, reply: null, reminder: null, retried: null };
       }
       // Its reply (its acknowledgement, if it posted one, is not: `ack:<run id>`).
       const said = await t.query<{ seq: string }>("select seq::text from messages where conversation_id = $1 and sender_id = $2 and client_txn = $3", [
@@ -1180,19 +1231,25 @@ export class DbAgentPort implements AgentPort {
       // recorded (its whisper is made after commit, `finish`) — for the Agent's own conversation, or, its Agent deleted,
       // the conversation of the Agent its owner used last.
       const reminder = await remindInSettlement(t, config, run.ownerId, settled, now, agent.deleted ? null : agent.id);
-      const error = final.status === "failed" || final.status === "cancelled" ? (final.error ?? null) : null;
-      const resetsAt = final.status === "failed" && final.resetsAt !== undefined ? final.resetsAt : null;
+      // A new Agent's greeting that could not be made is no failure its owner is shown (`quietGreeting`).
+      const kept = quietGreeting(final, state.rows[0]);
+      const error = kept.status === "failed" || kept.status === "cancelled" ? (kept.error ?? null) : null;
+      const resetsAt = kept.status === "failed" && kept.resetsAt !== undefined ? kept.resetsAt : null;
       // A told reply keeps nothing noted once its end has decided its follow-up (`keepsNothingNoted`).
       const updated = await t.query<RunRow>(
         `update agent_runs as r set status = $2, error = $3, resets_at = $4, finished_at = now(),
                 pending_seq = case when $5::boolean or $6::boolean then null else r.pending_seq end,
                 call_seqs = case when $6::boolean then '{}' else r.call_seqs end
           where r.id = $1 returning ${RUN_COLUMNS}`,
-        [run.id, final.status, error, resetsAt, droppedOnEnd(final), state.rows[0].told],
+        [run.id, kept.status, error, resetsAt, droppedOnEnd(final), state.rows[0].told],
       );
       await withTellable(t, updated.rows, config.whispers.elsewhereTtlHours);
       const ended: Announced = { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(updated.rows[0]!) };
-      const next = followUpSeq(state.rows[0], agent, final);
+      // Failed for a passing reason: the system tries it again by itself (runs.ts `scheduleAutoRetry`); the retry answers
+      // what this run covered and what was noted on it, so nothing follows this run up.
+      // (Never one its owner asked to stop.)
+      const retried = transientFailure(final) && !state.rows[0].stop_asked ? await scheduleAutoRetry(t, run.id, agent, run.conversationId, state.rows[0], now, config) : null;
+      const next = retried !== null && "retry" in retried ? null : followUpSeq(state.rows[0], agent, final);
       const followed =
         next === null ? followUpOf(null) : await followUp(t, agent, run.conversationId, Number(state.rows[0].covers_seq ?? 0), next, state.rows[0].call_seqs, config);
       return {
@@ -1200,6 +1257,7 @@ export class DbAgentPort implements AgentPort {
         followed,
         interrupted: state.rows[0].interrupted !== null,
         reply: reply ? Number(reply.seq) : null,
+        retried,
         reminder,
       };
     });
@@ -1223,16 +1281,19 @@ export class DbAgentPort implements AgentPort {
     const { db, config, log } = this.deps;
     let recovered: Recovered | null;
     try {
-      recovered = await db.tx((t) => recoverRun(t, config, runId, log));
+      recovered = await db.tx((t) => recoverRun(t, config, runId, log, this.now()));
     } finally {
       this.flags.delete(runId);
     }
     if (recovered === null) return false;
     // A reply held back behind this run may be claimed now (`claimNext`).
     this.wakeWorker();
-    const { charged } = recovered;
+    const { charged, retried } = recovered;
     if (charged !== null) this.deps.realtime.pushChargedReply(charged.conversationId, charged.ownerId, charged.seq);
-    for (const a of recovered.runs) this.announce(a);
+    countRetry(log, retried);
+    // Tried again by the system: its owner alone is told of the queued retry (as `finish` tells it); nothing else.
+    if (retried !== null && "retry" in retried) this.deps.realtime.pushRunToOwner(retried.retry.conversationId, retried.retry.run);
+    else for (const a of recovered.runs) this.announce(a);
     this.tell(recovered.told);
     return true;
   }
@@ -1248,6 +1309,8 @@ interface Recorded {
   reply: number | null;
   /** The reminder about money its settlement recorded (metering/reminders.ts), its whisper to make once committed; null when none. */
   reminder: string | null;
+  /** What the system did about trying it again by itself (runs.ts `scheduleAutoRetry`); null: nothing to try again. */
+  retried: AutoRetry;
 }
 
 /**
@@ -1259,6 +1322,24 @@ interface Recovered {
   told: Told;
   /** The reply the run had posted, now charged (`Hub.pushChargedReply`); null when it posted none. */
   charged: { conversationId: string; ownerId: string; seq: number } | null;
+  /** What the system did about trying it again by itself: a run the service lost mid-call failed for a passing reason. */
+  retried: AutoRetry;
+}
+
+/**
+ * Whether Agent `run.agentId` has posted a reply in `run.conversationId` since original run `original` was made, from a run
+ * that is neither it nor one of its automatic retries (an acknowledgement is no reply).
+ */
+async function answeredSince(t: Tx, run: RunTicket, original: string): Promise<boolean> {
+  const { rowCount } = await t.query(
+    `select 1 from messages m join agent_runs o on o.id = $3
+      where m.conversation_id = $1 and m.sender_id = $2 and m.kind = 'text' and m.created_at > o.created_at
+        and m.client_txn is not null and m.client_txn not like 'ack:%'
+        and m.client_txn not in (select x.id::text from agent_runs x where x.id = $3 or x.retry_of = $3)
+      limit 1`,
+    [run.conversationId, run.agentId, original],
+  );
+  return rowCount !== 0;
 }
 
 /** A run's flags as an attempt starts. */
@@ -1287,13 +1368,21 @@ export function createAgentPort(deps: AgentPortDeps): DbAgentPort {
  * that cannot be recovered is logged and left for the stale-run sweep or the next start. Returns how many were
  * recovered. The same ending, while the service runs, is `DbAgentPort.releaseRun` (one transaction of `recoverRun`).
  */
-export async function recoverRuns(db: Db, config: Config, log: Pick<FastifyBaseLogger, "error" | "warn">): Promise<number> {
+export async function recoverRuns(
+  db: Db,
+  config: Config,
+  log: Pick<FastifyBaseLogger, "error" | "warn"> & Partial<Pick<FastifyBaseLogger, "info">>,
+  now: () => Date = () => new Date(),
+): Promise<number> {
   const { rows } = await db.query<{ id: string }>("select id from agent_runs where status = 'running' order by started_at, id");
   let recovered = 0;
   for (const run of rows) {
     try {
       // Nothing is announced: no socket can be open yet, and the worker starts after this.
-      if ((await db.tx((t) => recoverRun(t, config, run.id, log))) !== null) recovered++;
+      const done = await db.tx((t) => recoverRun(t, config, run.id, log, now()));
+      if (done === null) continue;
+      recovered++;
+      countRetry(log, done.retried);
     } catch (err) {
       log.error({ err, runId: run.id }, "agent run: could not be recovered at start-up; it stays running until the stale-run sweep or the next start releases it");
     }
@@ -1309,7 +1398,7 @@ export async function recoverRuns(db: Db, config: Config, log: Pick<FastifyBaseL
  * its row first (they never change), so that the locks are taken in their order: that conversation's row and the
  * `agents` row, then the run's, then (`settle`, the follow-up) the owner's `accounts` row.
  */
-async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<FastifyBaseLogger, "warn">): Promise<Recovered | null> {
+async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<FastifyBaseLogger, "warn">, now: Date): Promise<Recovered | null> {
   const of = (
     await t.query<{ agent_id: string | null; conversation_id: string | null }>("select agent_id, conversation_id from agent_runs where id = $1", [runId])
   ).rows[0];
@@ -1338,27 +1427,33 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
   // A run settled already had its hold released with its record.
   const settled = (await t.query("select 1 from usage_records where run_id = $1", [runId])).rowCount !== 0;
   if (!settled) await settle(t, config, runId, null, NOTHING, end.status, new Date(), { forgiveAll: true, log });
-  const error = end.status === "failed" || end.status === "cancelled" ? (end.error ?? null) : null;
+  const kept = quietGreeting(end, state);
+  const error = kept.status === "failed" || kept.status === "cancelled" ? (kept.error ?? null) : null;
   const updated = await t.query<RunRow>(
     `update agent_runs as r set status = $2, error = $3, finished_at = now(),
             pending_seq = case when $4::boolean or $5::boolean then null else r.pending_seq end,
             call_seqs = case when $5::boolean then '{}' else r.call_seqs end
       where r.id = $1 returning ${RUN_COLUMNS}`,
-    [runId, end.status, error, droppedOnEnd(end), state.told],
+    [runId, kept.status, error, droppedOnEnd(end), state.told],
   );
-  if (reply === null) return { runs: [], told: noneTold(), charged: null };
+  if (reply === null) return { runs: [], told: noneTold(), charged: null, retried: null };
   const { agent, conversationId } = reply;
   await withTellable(t, updated.rows, config.whispers.elsewhereTtlHours);
   const ended: Announced = { ownerId: agent.ownerId, conversationId, run: toWireRun(updated.rows[0]!) };
-  // A failed run is followed by nothing on its own (its retry answers everything) — but a told reply's noted calls, which
-  // were never part of what failed, are followed up at once (`keepsNothingNoted`).
-  const next = end.status !== "failed" || state.told ? followUpSeq(state, agent, end) : null;
+  // A run the service lost mid-call failed for a passing reason: the system tries it again by itself (runs.ts
+  // `scheduleAutoRetry`), the retry answering all it covered and noted (a told reply's noted calls stay noted on it).
+  // (Never one its owner asked to stop: a stop of a run nobody here works on releases it so.)
+  const retried = transientFailure(end) && !state.stop_asked ? await scheduleAutoRetry(t, runId, agent, conversationId, state, now, config) : null;
+  // Else a failed run is followed by nothing on its own (its owner's retry answers everything) — but a told reply's noted
+  // calls, which were never part of what failed, are followed up at once (`keepsNothingNoted`).
+  const next = retried !== null && "retry" in retried ? null : end.status !== "failed" || state.told ? followUpSeq(state, agent, end) : null;
   const { run: followed, ...told } =
     next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(state.covers_seq ?? 0), next, state.call_seqs, config);
   return {
     runs: followed ? [ended, followed] : [ended],
     told,
     charged: posted ? { conversationId, ownerId: agent.ownerId, seq: Number(posted.seq) } : null,
+    retried,
   };
 }
 

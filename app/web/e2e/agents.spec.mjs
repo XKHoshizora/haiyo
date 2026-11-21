@@ -30,7 +30,10 @@ test.beforeEach(async () => {
   await modelStub.reset();
 });
 
-/** The fixed greeting of an Agent made without a persona (app/service src/agents/conversation.ts). */
+/**
+ * The greeting of an Agent made without a persona: its model's own first reply (app/service src/agents/conversation.ts),
+ * which the stub answers with its `GREETING_REPLY` (support/model-stub.mjs) — never a fixed line of the service's.
+ */
 const GREETING = "你刚刚创建的 Agent";
 
 /**
@@ -243,7 +246,8 @@ test("a reply the model service fails is a status line with 重试, not a messag
   const name = `重试${uniq(4)}`;
   const tag = uniq(4);
   const chat = await createAgentUi(ann.page, { name, persona: "你是测试用的助手。" });
-  await modelStub.script({ status: 503 }, { text: `重试后的回答 ${tag}` });
+  // (A 400: a failure the system does not try again by itself — a 5xx it retries automatically — so the owner presses 重试.)
+  await modelStub.script({ status: 400 }, { text: `重试后的回答 ${tag}` });
   await sendText(ann.page, name, `问一句 ${tag}`);
   const line = runStatusLine(chat);
   // A site model's failure: the site's to fix, so the sentence does not send the owner to their settings.

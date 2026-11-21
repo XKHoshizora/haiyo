@@ -15,7 +15,7 @@ describe("no first-person fixed sentence", () => {
   });
 
   it("every fixed sentence a tool or the tool loop hands the model is a description, with no 我 in it", () => {
-    const sentences = Object.entries({ ...loop, ...file, ...search }).filter(
+    const sentences = (Object.entries({ ...loop, ...file, ...search }) as Array<[string, unknown]>).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string" && /[一-鿿]/.test(entry[1]),
     );
     expect(sentences.length).toBeGreaterThan(15);

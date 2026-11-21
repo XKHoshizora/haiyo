@@ -10,6 +10,7 @@ import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../mes
 import { postingRun } from "../messages/read.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
+import { passingFailure } from "../models/gateway.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
 import { agentModelOf, lockAgent, type AgentRow } from "./store.ts";
 import { mayTell, tellableRuns } from "../whispers/store.ts";
@@ -1510,6 +1511,117 @@ async function latestRunOf(
 }
 
 const isGroup = async (q: Queryable, conversationId: string): Promise<boolean> => (await peekConversation(q, conversationId))?.type === "group";
+
+/** The latest an automatic retry may start after its original call was made (README "Agents and runs", Automatic retry). */
+export const AUTO_RETRY_WINDOW_MS = 600_000;
+
+/**
+ * Whether a run that ended `end` failed for a reason that clears by itself (models/gateway.ts `passingFailure`, THE rule:
+ * the model service unavailable — its 5xx, 408, 429, no status: a network failure, a timeout, a stream cut short —, which
+ * is also how a run the service lost mid-call ends, port-impl.ts `recoverRun`): the system may try it again by itself.
+ */
+export const transientFailure = (end: { status: string; error?: string; upstreamStatus?: number }): boolean =>
+  end.status === "failed" && end.error !== undefined && passingFailure(end.error, end.upstreamStatus);
+
+/** What a run that just ended had covered and had noted, read before its own row was rewritten: what its retry answers. */
+export interface EndedRun {
+  covers_seq: string | null;
+  pending_seq: string | null;
+  call_seqs: string[] | null;
+  /** A told reply (`告诉他们`, `whisper_id`). */
+  told: boolean;
+}
+
+/**
+ * What `scheduleAutoRetry` did: queued the retry (to push to its owner alone); found it could not because the original call
+ * has had its attempts, the retry would start more than `AUTO_RETRY_WINDOW_MS` after it, or the owner's replies a minute
+ * in its lane are spent (`gaveUp`, counted); or (null) found the run is not one the system tries again.
+ */
+export type AutoRetry = { retry: Announced; attempt: number } | { gaveUp: "attempts" | "window" | "rate_limited" } | null;
+
+/**
+ * The automatic retry of reply run `runId` of `agent` in `conversationId`, which has just failed for a reason that clears
+ * by itself (`transientFailure`; the caller checks it), in the transaction that recorded that — `finish` or recovery
+ * (port-impl.ts), holding the run's conversation row, the Agent's and the run's, its owner's `accounts` row taken last
+ * (the lock order). Not for: a reply nobody asked for (lane `proactive`: the moment for an unasked remark has passed); an
+ * Agent paused, deleted or without a model; a told reply whose whisper no longer reads open (whispers/store.ts
+ * `mayTell`); none at all while `AGENTS.autoRetryDelaysMs` is empty. Each original call is tried again at most once per
+ * wait in that list (`auto_attempt`), the n-th retry `delays[n-1]` after this end (by the port's clock, `now`), and never
+ * one that would start more than `AUTO_RETRY_WINDOW_MS` after the original call was made; the owner's replies a minute in
+ * the run's lane are met as for any reply queued (`overLaneLimit`). The retry is an ordinary queued reply that is not
+ * claimed before its `not_before` (port-impl.ts `claimNext`) and is admitted as any (`begin`: pause, membership, blocks,
+ * budgets, money) — and it answers the same calls: what the failed run covered and what was noted on it (the greater of
+ * the two; a told reply keeps what it covered, and what was noted on it stays noted for its follow-up, as `retryInGroup`
+ * keeps it), its calls, askers, whose message called and in which lane by whom (a member's call stays the member's), its
+ * whisper and whether it greets. Being queued, it holds the Agent's one active run there: whatever calls it meanwhile is
+ * folded into it, and the owner's 重试 is `busy_run`.
+ */
+export async function scheduleAutoRetry(
+  t: Tx,
+  runId: string,
+  agent: AgentRow,
+  conversationId: string,
+  ended: EndedRun,
+  now: Date,
+  config: RunLimits & Pick<Config, "agents" | "whispers">,
+): Promise<AutoRetry> {
+  const delays = config.agents.autoRetryDelaysMs;
+  if (delays.length === 0 || agent.deleted || agent.paused || agent.model === null) return null;
+  const { rows } = await t.query<{
+    purpose: string;
+    lane: Lane;
+    caller_id: string | null;
+    triggered_by: TriggeredBy;
+    asker_ids: string[] | null;
+    whisper_id: string | null;
+    greets: boolean;
+    auto_attempt: number;
+    original: string;
+    original_at: Date;
+  }>(
+    `select r.purpose, r.lane, r.caller_id, r.triggered_by, r.asker_ids, r.whisper_id, r.greets, r.auto_attempt,
+            coalesce(r.retry_of, r.id) as original, coalesce(o.created_at, r.created_at) as original_at
+       from agent_runs r left join agent_runs o on o.id = r.retry_of
+      where r.id = $1 and r.agent_id = $2 and r.conversation_id = $3`,
+    [runId, agent.id, conversationId],
+  );
+  const run = rows[0];
+  if (!run || run.purpose !== "reply" || run.lane === "proactive") return null;
+  if (run.whisper_id !== null && !(await mayTell(t, { id: run.whisper_id, ownerId: agent.ownerId }, { ttlHours: config.whispers.elsewhereTtlHours })).may) return null;
+  const attempt = run.auto_attempt + 1;
+  if (attempt > delays.length) return { gaveUp: "attempts" };
+  const notBefore = new Date(now.getTime() + delays[attempt - 1]!);
+  if (notBefore.getTime() - run.original_at.getTime() > AUTO_RETRY_WINDOW_MS) return { gaveUp: "window" };
+  // Something else holds the Agent's one active run there already: it answers whatever comes; nothing is queued beside it.
+  const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [agent.id, conversationId]);
+  if (active.rowCount !== 0) return null;
+  if (await overLaneLimit(t, agent.ownerId, run.lane, config)) return { gaveUp: "rate_limited" };
+  const covers = Number(ended.covers_seq ?? 0);
+  const pending = Number(ended.pending_seq ?? 0);
+  const queued = await t.query<RunRow>(
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, caller_id, lane,
+                                  asker_ids, call_seqs, whisper_id, greets, retry_of, auto_attempt, not_before)
+     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10::bigint[], $11, $12, $13, $14, $15) returning ${RUN_COLUMNS}`,
+    [
+      conversationId,
+      agent.id,
+      agent.ownerId,
+      ended.told ? covers : Math.max(covers, pending),
+      ended.told && pending > covers ? pending : null,
+      run.triggered_by,
+      run.caller_id,
+      run.lane,
+      run.asker_ids,
+      ended.call_seqs === null ? null : ended.call_seqs.map(Number),
+      run.whisper_id,
+      run.greets,
+      run.original,
+      attempt,
+      notBefore,
+    ],
+  );
+  return { retry: { ownerId: agent.ownerId, conversationId, run: toWireRun(queued.rows[0]!) }, attempt };
+}
 
 /**
  * `告诉他们` on a `found_elsewhere` whisper (Task 8; whispers/routes.ts `ANSWER_HOOKS`), in the answer's transaction — the

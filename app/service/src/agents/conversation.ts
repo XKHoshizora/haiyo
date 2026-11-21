@@ -15,7 +15,19 @@ import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
 import { parseProposalBlock, storeProposal } from "./persona.ts";
 import { RunNotRunning } from "./runtime/port.ts";
 import { withoutMarkPlaced } from "./runtime/prompt.ts";
-import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
+import {
+  callerOf,
+  hearFrom,
+  noneTriggered,
+  overLaneLimit,
+  ownedAgentOf,
+  queueRun,
+  triggerFromAgent,
+  type Announced,
+  type Lane,
+  type RunLimits,
+  type Triggered,
+} from "./runs.ts";
 import { forgetSummaries } from "./summary/store.ts";
 import { askedOf } from "./tools/elsewhere.ts";
 import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
@@ -35,9 +47,6 @@ import type { ProactiveLevel, ReasoningLevel } from "../config.ts";
 
 /** The most of a reply's reasoning that is stored; the rest is cut (it is never shown to a model again). */
 export const REASONING_MAX = 32_000;
-
-export const greetingText = (name: string): string =>
-  `你好，我是「${name}」，你刚刚创建的 Agent。我现在还没有设定。你希望我是谁、主要帮你做什么、用什么语气说话？直接告诉我就行，说完我会整理成一份设定给你确认。`;
 
 export interface NewAgent {
   /** Its name part: its handle is `<owner's handle>.<name part>` (family names). */
@@ -65,7 +74,11 @@ export interface NewAgent {
 /**
  * Creates an Agent in one transaction: its principal (kind `agent`, owned by `ownerId`), the `agents` row, the
  * dedicated conversation (type `agent`, `agent_conversations`, owner and Agent as speakers from seq 0) and, when
- * there is no persona yet, the fixed greeting from the Agent. The owner's account lock (taken first: it also
+ * there is no persona yet and it has a model (`greet`: the service's default; the test harness turns it off), its first
+ * reply, queued: an ordinary reply of its owner's own lane (charged and admitted like any) that its run is told to make
+ * a greeting of (`agent_runs.greets`, port-impl.ts `begin`) — never a fixed sentence posted as the Agent (principle P2).
+ * Over the owner's own replies a minute it is not queued; nor is anything posted in its place: the empty conversation
+ * shows its owner a hint of the client's. The owner's account lock (taken first: it also
  * serialises the count) decides the limit: 403 `agent_limit` at the tier's number of Agents that are not deleted
  * (a tier `config` no longer names gets the `free` number). 409 `handle_taken` when one of the owner's Agents that is
  * not deleted has the name part — decided under that same lock, the only place an Agent is made, so two creations take
@@ -75,8 +88,9 @@ export async function createAgent(
   t: Tx,
   ownerId: string,
   input: NewAgent,
-  config: Pick<Config, "agentTiers" | "siteModels" | "providerDefaultMaxOutputTokens">,
-): Promise<{ agent: AgentRow; change: Change }> {
+  config: Pick<Config, "agentTiers" | "siteModels" | "providerDefaultMaxOutputTokens"> & RunLimits,
+  greet = true,
+): Promise<{ agent: AgentRow; change: Change; greeting: Announced | null }> {
   const account = await lockAccount(t, ownerId);
   if ((await countLiveAgents(t, ownerId)) >= agentLimit(config, account.tier)) throw new AppError(403, "agent_limit");
   await assertModelChoice(t, ownerId, input.model, input.reasoning, config);
@@ -130,11 +144,12 @@ export async function createAgent(
      values ($1, $2, 'speaker', 0), ($1, $3, 'speaker', 0)`,
     [conversationId, ownerId, id],
   );
-  // The one message an Agent gets without a reply run: it counts as unread for the owner like any other.
+  // Its first reply, which greets its owner (no persona yet: it then asks who it is to be), is its model's own: queued.
   const greeting =
-    input.persona === ""
-      ? [await insertMessage(t, conversationId, id, "text", { text: greetingText(input.name), fixed: true }, null)]
-      : [];
+    greet && input.persona === "" && input.model !== null && !(await overLaneLimit(t, ownerId, "own", config))
+      ? await queueRun(t, { id, ownerId }, conversationId, 0, "human", callerOf(ownerId, ownerId), [ownerId])
+      : null;
+  if (greeting) await t.query("update agent_runs set greets = true, call_seqs = '{}' where id = $1", [greeting.run.id]);
 
   const agent: AgentRow = {
     id,
@@ -166,7 +181,7 @@ export async function createAgent(
     conversationId,
     createdAt: created.rows[0]!.created_at,
   };
-  return { agent, change: { messages: greeting, conversations: [{ conversationId, principalIds: [ownerId, id] }] } };
+  return { agent, change: { messages: [], conversations: [{ conversationId, principalIds: [ownerId, id] }] }, greeting };
 }
 
 /** An Agent's reply as the worker hands it over, with what its tools looked up when they ran (messages/lookups.ts). */
@@ -184,7 +199,7 @@ export interface AgentReply extends LookupFields {
 }
 
 /**
- * The one way an Agent's reply becomes a message (besides the fixed greeting at creation): under `lockAgent` on the
+ * The one way an Agent's reply becomes a message: under `lockAgent` on the
  * run's conversation — its row, then the `agents` row, which pause and delete lock too — so once a pause or delete has
  * committed, nothing more is posted: 409 `agent_paused` / `agent_deleted`, also for a run that pause or delete marked
  * `interrupted` after the Agent was resumed (and so for the other marks: `agent_removed`, `halted`). Nor is a run posted

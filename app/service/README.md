@@ -139,6 +139,9 @@ waits, queued; a reply's later rounds are held against all that is left; 0.01–
 `warnAt` (the share of it used at which they are told, once a day; above 0 and below 1, default 0.8)),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
 whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
+`AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional; Agents
+and runs, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic retry of one original call, in ms; at
+most 2, each 0–600 000; default `[20000, 120000]`; `[]` turns automatic retries off)),
 `HOST` (the address to listen on: an IPv4/IPv6 address or `localhost`, default `0.0.0.0`, every interface; `127.0.0.1` for local-only),
 `WEB_DIST` (optional: directory of the built web client to serve, see Deployment; unset serves none),
 `S3_*` (optional, all-or-none), `REGISTRATION_MODE` (`invite` | `open`, default `invite`),
@@ -399,7 +402,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 
 Everything else is not rate limited.
 
-**Metrics in the log.** The service writes seven kinds of line at `info`, each a JSON log object with a `metric` field,
+**Metrics in the log.** The service writes eight kinds of line at `info`, each a JSON log object with a `metric` field,
 for an operator to tune the numbers above (and the site's models) from (nothing else about them is recorded or exposed):
 
 - `{ "metric": "run_wait_ms", "lane", "ms" }`, once for each reply the worker claims (its first claim; not again when it is
@@ -420,6 +423,9 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   "reminder_no_agent" }` once for each reminder that found its owner with no Agent at all to be told in.
 - `{ "metric": "run_held_back" }`, once each time a reply is held back at its admission (Metering, Money that does not
   block): how often replies wait for one another's holds — each time, its next claim reads its conversation again.
+- `{ "metric": "auto_retry_scheduled", "attempt" }`, `{ "metric": "auto_retry_ran", "attempt" }` (claimed) and
+  `{ "metric": "auto_retry_gave_up", "why": "attempts" | "window" | "rate_limited" }`, once each (Replies, Automatic retry):
+  how often a model service's passing failure is tried again by the system, and how often that is not enough.
 - `{ "metric": "elsewhere_skipped", "runId" }`, once for each "not here, but elsewhere" lookup skipped because as many as
   may run at once (2) already did (Whispers, `found_elsewhere`): how often an owner gets no whisper for that reason alone
   (nothing of what was asked is logged).
@@ -671,9 +677,16 @@ string, or `null` for no limit; default `"20"`), `proactive` (default `false`), 
   output limit its calls get (`PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS`, default 2 048: nothing would be left for the conversation), or a `reasoning` the model does not
   allow (a site model: `none` and its own levels; a provider model: `none` only unless it is flagged `reasoning`, then
   `none` and its `reasoningLevels`, every level when it lists none; with no model any level).
-- The conversation is created with the Agent: without a `persona` it holds one message from the Agent, the fixed
-  greeting, which is unread for you like any message from someone else. `personaVersion` is 1 when a persona was given.
-  Such an Agent interviews you about who it should be and proposes a persona (Persona proposals, below).
+- The conversation is created with the Agent, empty: nothing is ever posted as the Agent from a fixed string. Without a
+  `persona`, and with a model, its first reply is queued at once (`agent_runs.greets`, `src/agents/conversation.ts`
+  `createAgent`; `tests/agent-greeting.test.ts`): an ordinary reply of your own lane, charged and admitted like any (the
+  free allowance's rules hold), its model told by a fixed line of its system text to greet you briefly in its own words
+  (`GREETING_LINE`) and, before you have written, shown one turn that says what is so (`GREETING_TURN`); you are pushed
+  the run, and its message is unread for you like any. When it cannot be made (no model, over your replies a minute, no
+  money, the model service down) there is simply no Agent message: the run ends `cancelled` with no error (no failure,
+  no 重试), and the client shows its own hint in the empty conversation (和 {name} 说点什么吧。). `personaVersion` is 1
+  when a persona was given. Such an Agent interviews you about who it should be and proposes a persona (Persona
+  proposals, below).
 
 #### `POST /api/agents/draft-persona`
 
@@ -869,6 +882,25 @@ Agent's or a group, and for a run of another conversation, it answers the JSON 4
 id that does not exist. In a group (In a group, below) the Agent's owner sees and acts on its runs there, and every
 other current member learns only whether it is replying. Failures are never messages: they live on the run, which the
 owner learns from the `run` push and from `GET /api/conversations/:id/run` (in a group, `GET …/runs`).
+
+**Automatic retry** (`src/agents/runs.ts` `scheduleAutoRetry`, migration `063_greeting_and_auto_retry.sql`;
+`tests/auto-retry.test.ts`): a reply that failed for a reason that clears by itself — the model service unavailable
+(`provider_unavailable` with its 5xx, 408 or 429, or no status: a network failure, a timeout, a stream cut short; the
+rule `passingFailure`, `src/models/gateway.ts`, the rolling summary's too) or the service losing it mid-call (start-up
+recovery, the release at a stop, the stale-run sweep) — is tried again by the system, nobody pressing anything: at most
+once per wait of `AGENTS.autoRetryDelaysMs` (default `[20000, 120000]`: 20 s, then 2 min after the failure; `[]` turns it
+off), never starting later than 10 minutes after the original call. Not after anything else (no money, a model gone, a
+key or request refused, a context too small, a stop, a pause, a delete), not for a reply nobody asked for (lane
+`proactive`), not for a told reply whose whisper no longer reads open. The retry is an ordinary queued run
+(`agent_runs.retry_of`, `auto_attempt`, `not_before`): the worker claims it once due (`for update skip locked`: one
+instance only), so it survives a restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held
+back or refused, it is not forced), charged as any, held to the owner's replies a minute in its lane, and answers the
+same calls in the same lane by the same caller (a member's call stays the member's). Whatever calls the Agent while it
+waits is folded into it; it ends quietly (`cancelled`) when the Agent answered meanwhile. While it waits the run slot
+reads `queued`: its owner is pushed the queued retry and its claim alone, never the failure; the other members of a
+group, told `replying`, are told nothing more until the answer — the same frames as an answer at the first try. Only
+when the system has given up is the failure shown, with 重试 as ever; `POST …/runs/retry` while a retry waits is 409
+`busy_run` (no second run).
 
 **Run**: `{"id", "status": "queued" | "running" | "done" | "failed" | "stopped" | "cancelled", "error"?, "retryable",
 "retryableUntil"?, "resetsAt"?}`. `error`: for `failed` why (`provider_rejected`, `provider_unavailable`, `address_not_allowed`, `no_quota`,

@@ -136,7 +136,16 @@ export type RunEnd =
   | { readonly status: "done" }
   | { readonly status: "stopped" }
   | { readonly status: "cancelled"; readonly error?: "agent_paused" | "agent_deleted" | "agent_removed" | "halted" }
-  | { readonly status: "failed"; readonly error: RunErrorCode; readonly resetsAt?: string };
+  | {
+      readonly status: "failed";
+      readonly error: RunErrorCode;
+      readonly resetsAt?: string;
+      /**
+       * The upstream's HTTP status, when the call failed with one (the gateway's `ModelError.upstreamStatus`): what decides
+       * whether the system tries the reply again by itself (agents/runs.ts `transientFailure`). Never on the wire.
+       */
+      readonly upstreamStatus?: number;
+    };
 
 /**
  * The provider could not be reached or gave nothing usable (also how a run the previous process left running ends, and

@@ -29,6 +29,15 @@ function chunks(text, size) {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
+/**
+ * A new Agent's greeting before its owner has written (app/service src/agents/runtime/prompt.ts `GREETING_LINE` and
+ * `GREETING_TURN`): its model's own reply, which the stub answers with `GREETING_REPLY` without taking a scripted step — a
+ * greeting comes as an Agent is made, and must not eat what a spec scripted for the next reply. Not among `calls()`.
+ */
+const GREETING_MARK = "简短地向主人打个招呼";
+const GREETING_ALONE = "（主人刚刚创建了你，还没有说话。）";
+export const GREETING_REPLY = "你好，我是你刚刚创建的 Agent。想让我成为什么样的伙伴？";
+
 /** The words that tell a memory call from a reply: a distinctive phrase of the memory review's and the hearsay call's system text. */
 const MEMORY_MARKS = { review: "记忆整理员", hearsay: "听说整理员" };
 /** What a memory call answers when no rule matches it: nothing worth keeping. */
@@ -229,6 +238,12 @@ export function startModelStub() {
         res.end('{"error":{"message":"no such endpoint"}}');
         return;
       }
+      const greeting = textsOf(body);
+      if (greeting.system.includes(GREETING_MARK) && greeting.user === GREETING_ALONE) {
+        record.greeting = true;
+        stream(req, res, record, { text: GREETING_REPLY }, protocol).catch(() => res.destroy());
+        return;
+      }
       const memoryKind = req.method === "POST" ? memoryKindOf(body) : null;
       if (memoryKind) {
         record.memory = memoryKind;
@@ -328,9 +343,9 @@ export const modelStub = {
   release: (text = "") => call("release", { text }),
   /** `{requests, pending, holding}`. */
   state: () => call("state"),
-  /** The streaming calls received so far (model calls, not model lists, not the memory feature's), oldest first. */
+  /** The streaming calls received so far (model calls, not model lists, not the memory feature's nor a greeting), oldest first. */
   async calls() {
-    return (await call("state")).requests.filter((r) => r.method === "POST" && !r.memory);
+    return (await call("state")).requests.filter((r) => r.method === "POST" && !r.memory && !r.greeting);
   },
   /**
    * The calls of the memory feature so far, oldest first: `kind` "review" or "hearsay" (all when omitted). Each is a recorded

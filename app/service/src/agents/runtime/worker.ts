@@ -397,7 +397,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
   async function conclude(
     run: RunTicket,
     out: ReplyStream,
-    last: Pick<Round, "finished" | "failure" | "why">,
+    last: Pick<Round, "finished" | "failure" | "why" | "status">,
     usage: Usage | null,
     fallback: Estimated,
     failedFallback: Estimated,
@@ -412,7 +412,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
     out.end();
     const failed = (end: RunEnd) => finish(run, end, usage, failedFallback);
-    if (failure !== null) return failed({ status: "failed", error: failure });
+    // With the upstream's status, when it answered with one: whether the system tries again by itself reads it.
+    if (failure !== null) return failed({ status: "failed", error: failure, ...(last.status === undefined ? {} : { upstreamStatus: last.status }) });
     // The upstream ended the stream without its finish (cut off midway).
     if (finished === null && why === null) return failed(UNAVAILABLE);
 
@@ -569,7 +570,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         return "busy";
       }
     };
-    let ending: { last: Pick<Round, "finished" | "failure" | "why">; noAnswer?: RunEnd };
+    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status">; noAnswer?: RunEnd };
 
     for (;;) {
       const now = interrupted();

@@ -165,6 +165,20 @@ export interface ModelGateway {
  */
 export type ModelErrorCode = ProviderCallCode | "thinking_exhausted";
 
+/**
+ * THE rule of a model call that failed for a reason that clears by itself (a transient failure): the provider could not
+ * be reached or did not answer properly (`provider_unavailable`) with its 5xx, 408 (timeout) or 429 (too many requests) —
+ * the statuses the standard retry policies retry — or with no status at all (a network failure, a timeout, a stream cut
+ * short). Any other 4xx (a request it refuses, a model or address gone), a refused key, a refused address and a model
+ * that thought its whole limit away are not. Read by the rolling summary's backoff (agents/summary/job.ts `isTransient`)
+ * and by the automatic retry of a reply (agents/runs.ts `transientFailure`).
+ */
+export function passingFailure(code: string, upstreamStatus: number | undefined): boolean {
+  if (code !== "provider_unavailable") return false;
+  const s = upstreamStatus;
+  return s === undefined || s >= 500 || s === 408 || s === 429;
+}
+
 /** One fixed sentence per code: nothing the upstream said is ever kept. */
 const MESSAGES: Readonly<Record<ModelErrorCode, string>> = {
   provider_rejected: "The model provider refused the API key.",

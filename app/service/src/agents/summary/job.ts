@@ -1,6 +1,7 @@
 import type { Config } from "../../config.ts";
 import { AppError } from "../../errors.ts";
 import { weight } from "../../metering/tokens.ts";
+import { passingFailure } from "../../models/gateway.ts";
 import { allowanceRefuses, callsAtCap, memoryCall, type MemoryCallDeps, type MemoryCallReport } from "../../memory/call.ts";
 import { shown } from "../../memory/review.ts";
 import { count } from "../../memory/stats.ts";
@@ -96,10 +97,7 @@ export const transientBackoffMs = (ranMs: number): number => Math.min(TRANSIENT_
  * nothing usable in it, are the window's own.
  */
 export function isTransient(report: Pick<MemoryCallReport, "failure" | "upstreamStatus">): boolean {
-  if (report.failure === undefined) return true;
-  if (report.failure !== "provider_unavailable") return false;
-  const s = report.upstreamStatus;
-  return s === undefined || s >= 500 || s === 408 || s === 429;
+  return report.failure === undefined || passingFailure(report.failure, report.upstreamStatus);
 }
 
 /** The most messages the window after one of `tried` messages that could not be summarised whole takes: half, at least `SUMMARY_MIN_WINDOW`. */

@@ -177,6 +177,12 @@ export interface BuildOptions {
    */
   tools?: false;
   /**
+   * A new Agent's first reply, which greets its owner (src/agents/conversation.ts `createAgent`), queued at creation:
+   * default on. Tests: `false` queues none (tests/helpers/harness.ts queues none unless a test asks), so a test's first
+   * reply is the one it scripts.
+   */
+  greeting?: false;
+  /**
    * The realtime hub's heartbeat timer (src/sync/hub.ts `tick`: pings, and closes the sockets of expired sessions; default
    * every `HEARTBEAT_MS`). Tests: `false` turns the timer off (`app.realtime.tick()` beats by hand), as the harness does, so
    * that no timer starts a statement while it empties the database between two tests.
@@ -524,7 +530,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   // One budget for an owner's reads of their Agents, providers and replies (GET /api/agents, /api/agents/:id,
   // /api/providers, /api/conversations/:id/run, and a group's /api/conversations/:id/runs): 120 a minute together.
   const ownReads = perPrincipalLimit(app, 120);
-  const { endDrafts } = registerAgentRoutes(app, { draftRuns, readLimit: ownReads });
+  const { endDrafts } = registerAgentRoutes(app, { draftRuns, readLimit: ownReads, greeting: options.greeting !== false });
   registerMemoryRoutes(app, { readLimit: ownReads });
   registerWhisperRoutes(app);
   // The service's stop ends what this process was working on — the worker's replies and the persona drafts under way —
