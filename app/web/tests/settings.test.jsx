@@ -38,20 +38,13 @@ const source = (file) => readFileSync(path.join(import.meta.dirname, "..", file)
 const png = (size = 1000) => fakeFile("me.png", size, "image/png");
 
 describe("settings list", () => {
-  it("offers the profile, model providers, usage, the memory palace, blocked people and contacts; no Agent, device or demo entries", async () => {
+  it("offers the profile, model providers, usage, the memory palace, blocked people; no Agent, device or demo entries", async () => {
     await openApp({ sync: baseSync });
     await goSettings();
-    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑", "通讯录与申请"]);
+    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑"]);
     const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll("Agent Family", "");
     for (const word of ["Agent", "设备", "演示", "重置", "示例数据"]) expect(text).not.toContain(word);
     expect(document.querySelector(".list-col .settings-me").textContent).toContain("Mei");
-  });
-
-  it("通讯录与申请 goes to the contacts", async () => {
-    await openApp({ sync: baseSync });
-    await goSettings();
-    await click(settingsRow("通讯录与申请"));
-    expect(document.querySelector(".list-col h1").textContent).toBe("通讯录");
   });
 });
 

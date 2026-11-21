@@ -1065,7 +1065,7 @@ oldest first; `used` and `limit` in weight.
 
 #### `POST /api/memory/notes`
 
-Body (no other key): `text` (any string; 400 beyond 10 000 characters), `vault` (optional boolean). → 201 Note
+Body (no other key): `text` (any string; 400 beyond 10 000 characters), `vault` (optional boolean: given, it is the owner's own choice — `true` makes the note in the vault as the owner's lock, `vault_by` `owner`, the sorter not asked; the palace's 放进保险箱 box beside 添加, also in an Agent's own room). → 201 Note
 (`origin` `"owner"`); 422 `note_refused`; 409 `room_full`.
 
 #### `PATCH /api/memory/notes/:id`

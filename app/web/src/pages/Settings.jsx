@@ -60,11 +60,6 @@ export function SettingsList() {
             <span className="row-body"><span className="row-name">拉黑</span><span className="row-preview">你拉黑的人，可在这里解除</span></span>
           </button>
         </li>
-        <li>
-          <button type="button" className="row slim" onClick={() => dispatch({ type: "nav", patch: { section: "contacts", pane: "list" } })}>
-            <span className="row-body"><span className="row-name">通讯录与申请</span><span className="row-preview">好友、待处理的申请</span></span>
-          </button>
-        </li>
       </ul>
     </>
   );

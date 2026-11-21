@@ -139,7 +139,7 @@ describe("the settings entries", () => {
   it("Settings lists 模型供应商 and 用量与余额; each opens its own section", async () => {
     await openApp({ sync: () => syncOf([]), api: { listProviders: vi.fn(async () => ({ providers: [] })), getUsage: vi.fn(() => new Promise(() => {})) } });
     await goSettings();
-    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑", "通讯录与申请"]);
+    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑"]);
     await click(settingsRow("模型供应商"));
     expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("我的模型供应商");
     await click(settingsRow("用量与余额"));
