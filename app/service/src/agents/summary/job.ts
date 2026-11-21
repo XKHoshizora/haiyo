@@ -76,18 +76,24 @@ export const backoffMs = (failures: number): number => Math.min(5 * 60_000 * 2 *
 export const TRANSIENT_BACKOFF_MAX_MS = 60 * 60_000;
 /** How long one window may fail transiently in a row before its failures count as its own (`afterFailure`). */
 export const TRANSIENT_FOR_MS = 24 * 60 * 60_000;
+/**
+ * The most a gap between two transient failures of one run counts toward `TRANSIENT_FOR_MS`: twice the longest wait
+ * between them. Longer, the pair was quiet (no job asked), and that is no evidence the provider was failing.
+ */
+export const TRANSIENT_GAP_MS = 2 * TRANSIENT_BACKOFF_MAX_MS;
 
 /**
- * The wait after a transient failure, its run having begun at `since`: as long as it has lasted — five minutes at least, an
- * hour at most (5, 5, 10, 20, 40, 60, 60… minutes: doubling, as `backoffMs`, from the run's own length, so it needs no count).
+ * The wait after a transient failure, its run having been failing for `ranMs`: as long — five minutes at least, an hour at
+ * most (5, 5, 10, 20, 40, 60, 60… minutes on a busy pair: doubling, as `backoffMs`, from the run's own length).
  */
-export const transientBackoffMs = (since: number, now: number): number => Math.min(TRANSIENT_BACKOFF_MAX_MS, Math.max(5 * 60_000, now - since));
+export const transientBackoffMs = (ranMs: number): number => Math.min(TRANSIENT_BACKOFF_MAX_MS, Math.max(5 * 60_000, ranMs));
 
 /**
  * Whether a started call that failed failed for a reason that clears by itself (a transient failure): the provider's 5xx,
  * 408 (timeout) or 429 (too many requests) — the statuses the standard retry policies retry —, or no status at all (a
  * network failure, a timeout, a stream cut short), or a failure the call did not name. Any other 4xx (but 401/403: a key
- * refused, `no_model`), and an answer the model ended with nothing usable in it, are the window's own.
+ * refused, and 404/405: the model or the address gone — both `no_model`, `outcomeOf`), and an answer the model ended with
+ * nothing usable in it, are the window's own.
  */
 export function isTransient(report: Pick<MemoryCallReport, "failure" | "upstreamStatus">): boolean {
   if (report.failure === undefined) return true;
@@ -137,8 +143,14 @@ const carried = (state: AttemptState | null, start: number): AttemptState =>
         notBefore: state?.notBefore ?? null,
         windowMessages: null,
         skippedMessages: state?.skippedMessages ?? 0,
-        transientSince: null,
+        ...NO_TRANSIENT_RUN,
       };
+
+/** No run of transient failures. */
+const NO_TRANSIENT_RUN = { transientLast: null, transientMs: 0 } as const;
+
+/** Whether a run of transient failures has failed a day in a row: from then on its failures are the window's own. */
+const turnedOwn = (s: Pick<AttemptState, "transientMs">): boolean => s.transientMs >= TRANSIENT_FOR_MS;
 
 /**
  * Why a call wrote nothing, for the rule (`afterFailure`): the window's own — `failed` (the call failed for a reason that
@@ -147,7 +159,7 @@ const carried = (state: AttemptState | null, start: number): AttemptState =>
  * does not fit the model), `empty` (a long window answered with nothing, doubted once) —; `transient`, a failure that
  * clears by itself (`isTransient`: a 5xx, 408 or 429, a network failure, a timeout); or `no_model`, no fault of the window:
  * nothing to call it on (none configured, a choice not allowed, a saved key that cannot be opened, a key or an address the
- * provider or the guard refused).
+ * provider or the guard refused, a model or an address the provider does not have: 404, 405).
  */
 export type FailureKind = "failed" | "unusable" | "too_big" | "empty" | "transient" | "no_model";
 
@@ -159,22 +171,29 @@ export type FailureKind = "failed" | "unusable" | "too_big" | "empty" | "transie
  *   `SUMMARY_MIN_WINDOW`); an input too big, or an unusable answer for a full window, halves it at once; a failure made at
  *   the floor counts there too, and the `FAILURES_AT_FLOOR`-th of those sets the window aside;
  * - `transient`: it never halves, never sets aside and counts no failure; the pair waits as long as the run of them has
- *   lasted, at most `TRANSIENT_BACKOFF_MAX_MS` (`transientBackoffMs`) — so a provider back from an outage is asked within an
- *   hour, the window whole. Only once the same window has failed so for `TRANSIENT_FOR_MS` in a row (since
- *   `transientSince`) is the next one counted as the window's own (`failed`), so that one input a provider always answers
- *   with a 500 is cornered and set aside like any other;
+ *   been failing, at most `TRANSIENT_BACKOFF_MAX_MS` (`transientBackoffMs`) — so a provider back from an outage is asked
+ *   within an hour, the window whole. A run is failing time IN A ROW on the window (`transientMs`): each gap since the run's
+ *   last failure (`transientLast`) counts, at most `TRANSIENT_GAP_MS` — a quiet pair (no job asked) is no evidence the
+ *   provider was failing, so an old blip does not make a later outage a day long. Only once the run has failed
+ *   `TRANSIENT_FOR_MS` is the next one counted as the window's own (`failed`), and every one after it until a write passes
+ *   the window: one input a provider always answers with a 500 is cornered and set aside like any other — on a quiet pair
+ *   too, since every gap counts up to two hours;
  * - `no_model`: the backoff only — it never halves and never sets anything aside;
  * - the window that failed reaches as far as the furthest that did (`failedUpto`), and the streak lasts until a write
- *   passes it (`afterWrite`).
+ *   passes it (`afterWrite`). A failure of the window's own ends a run of transient ones.
  * Pure.
  */
 export function afterFailure(lease: AttemptState, failed: { kind: FailureKind; n: number; full: boolean; upto: number }, now: number): { next: AttemptState; setAside: boolean } {
   const failedUpto = Math.max(lease.failedUpto ?? failed.upto, failed.upto);
-  const since = failed.kind === "transient" ? (lease.transientSince ?? now) : null;
-  if (since !== null && now - since < TRANSIENT_FOR_MS) {
-    return { next: { ...lease, failedUpto, notBefore: now + transientBackoffMs(since, now), transientSince: since }, setAside: false };
+  let run: Pick<AttemptState, "transientLast" | "transientMs"> = NO_TRANSIENT_RUN;
+  if (failed.kind === "transient") {
+    const gap = lease.transientLast === null ? 0 : Math.min(Math.max(0, now - lease.transientLast), TRANSIENT_GAP_MS);
+    run = { transientLast: now, transientMs: Math.min(TRANSIENT_FOR_MS, (lease.transientLast === null ? 0 : lease.transientMs) + gap) };
+    if (!turnedOwn(lease) && !turnedOwn(run)) {
+      return { next: { ...lease, failedUpto, notBefore: now + transientBackoffMs(run.transientMs), ...run }, setAside: false };
+    }
   }
-  // A day of transient failures on this window: from now on as its own; the run's start is kept, so the next one is too.
+  // A day of transient failures in a row on this window: from now on as its own (the run is kept, so the next one is too).
   const kind: Exclude<FailureKind, "transient"> = failed.kind === "transient" ? "failed" : failed.kind;
   const failures = lease.failures + 1;
   const ours = kind !== "no_model";
@@ -190,7 +209,7 @@ export function afterFailure(lease: AttemptState, failed: { kind: FailureKind; n
       notBefore: now + backoffMs(failures),
       windowMessages: halve ? nextWindow(failed.n) : lease.windowMessages,
       skippedMessages: lease.skippedMessages,
-      transientSince: since,
+      ...run,
     },
     setAside: ours && floorFailures >= FAILURES_AT_FLOOR,
   };
@@ -205,11 +224,10 @@ export function afterFailure(lease: AttemptState, failed: { kind: FailureKind; n
  * past it, or after a set-aside, it starts over: the next window is whole. Pure.
  */
 export function afterWrite(lease: AttemptState, upto: number, now: number, intervalMs: number, skipped = 0): AttemptState {
-  const fresh = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, windowMessages: null, transientSince: null };
+  const fresh = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, windowMessages: null, ...NO_TRANSIENT_RUN };
   const inside = skipped === 0 && lease.failedUpto !== null && upto < lease.failedUpto;
-  const turned = lease.transientSince !== null && now - lease.transientSince >= TRANSIENT_FOR_MS ? lease.transientSince : null;
   return {
-    ...(inside ? { ...lease, floorFailures: 0, emptyAnswer: false, transientSince: turned } : fresh),
+    ...(inside ? { ...lease, floorFailures: 0, emptyAnswer: false, ...(turnedOwn(lease) ? {} : NO_TRANSIENT_RUN) } : fresh),
     notBefore: now + intervalMs,
     skippedMessages: lease.skippedMessages + skipped,
   };
@@ -237,13 +255,16 @@ function lineText(m: PlacedMessage, maxWeight: number): string {
 /**
  * Why a call wrote nothing: `unchanged` — it could not start for a reason that clears by itself (the memory allowance
  * spent, the owner's calls running at once): nothing changes, the next job looks again; else a `FailureKind` for the rule.
- * A started call that failed for its key or its address (`provider_rejected`, `address_not_allowed`) is `no_model`; one
- * the model answered with nothing usable is `unusable`; one that failed is `transient` or `failed` by `isTransient`.
+ * A started call that failed for its key or its address (`provider_rejected`, `address_not_allowed`), or that the provider
+ * answered 404 or 405 (the model gone upstream, an address that is wrong: no fault of the window, which no retry of it
+ * mends), is `no_model`; one the model answered with nothing usable is `unusable`; one that failed is `transient` or
+ * `failed` by `isTransient`.
  */
 function outcomeOf(report: MemoryCallReport, answer: string | null): "unchanged" | FailureKind {
   if (report.refused === true || report.capped === true) return "unchanged";
   if (report.unstartable !== undefined) return report.unstartable;
   if (report.failure === "provider_rejected" || report.failure === "address_not_allowed") return "no_model";
+  if (report.failure === "provider_unavailable" && (report.upstreamStatus === 404 || report.upstreamStatus === 405)) return "no_model";
   if (report.answered || answer !== null) return "unusable";
   return isTransient(report) ? "transient" : "failed";
 }
@@ -404,7 +425,7 @@ export async function runSummary(deps: SummaryDeps, job: SummaryJob, ctx: Summar
     if (outcome === "no_model") {
       count(db, "summary_no_model");
       // Once a backoff step at most: the next try is that far off.
-      log.warn({ agentId: agent.id, conversationId: job.conversationId }, "summary: no memory model to call (none, a choice not allowed, or its key or address refused); asked again after a backoff");
+      log.warn({ agentId: agent.id, conversationId: job.conversationId }, "summary: no memory model to call (none, a choice not allowed, its key or address refused, or the provider has no such model or address); asked again after a backoff");
     } else count(db, outcome === "too_big" ? "summary_too_big" : outcome === "empty" ? "summary_empty_retried" : "summary_failed");
     const after = afterFailure(lease, { kind: outcome, n, full, upto }, now());
     if (!after.setAside) {
