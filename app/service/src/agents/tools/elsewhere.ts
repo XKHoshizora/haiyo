@@ -32,8 +32,8 @@ import { excerptAt, matchAt } from "./search.ts";
  * logged by its kind only, never the words or anything found.
  */
 
-/** The whisper's text (the brief's words). */
-export const FOUND_ELSEWHERE = "群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？";
+/** The whisper's text: the system's words to the owner, never the Agent's first person (principle P2). */
+export const FOUND_ELSEWHERE = "在别处查到了相关内容，要告诉他们吗？";
 /** What the run `告诉他们` queues is told to do with the hits (port-impl.ts `begin`). */
 export const TELL_THEM = "主人让你把下面查到的内容告诉大家，用你自己的话简短地说。";
 /** And what not to say: where it was found, who said it (it is not given either: `toldPassage`). */

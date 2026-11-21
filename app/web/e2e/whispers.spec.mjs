@@ -21,7 +21,7 @@ const searchFor = (word) => [{ name: "search_messages", input: { query: word } }
 const whispers = (chat) => messageList(chat).locator("li.msg-whisper");
 const whisperDot = (page, title) => listRow(page, title).first().getByRole("img", { name: "有只给你的悄悄话" });
 
-const ELSEWHERE_TEXT = "群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？";
+const ELSEWHERE_TEXT = "在别处查到了相关内容，要告诉他们吗？";
 /** The one line a found_elsewhere whisper is folded to, which opens it. */
 const FOLDED = (n) => `在别处查到了 ${n} 条，要告诉他们吗？`;
 const TELL_FAILED = "刚才没发出去，可以再试一次。";

@@ -235,12 +235,12 @@ describe("reading a file", () => {
   it("images, PDFs and anything that is not text: the fixed error; a number it was never given, or a blob that is gone: an error of its own", async () => {
     const { owner, own } = await owned();
     await sendFile(owner, own, "photo.png", PNG, "image/png");
-    expect(await readOnce(owner, own, "看图", { file: "f1" })).toEqual({ error: "这种文件我读不了内容。" });
+    expect(await readOnce(owner, own, "看图", { file: "f1" })).toEqual({ error: "这种文件不是文本，读不了内容。" });
     const pdf = await sendFile(owner, own, "report.pdf", PDF, "application/pdf");
     // Each reply numbers them in the order its context shows them: the oldest is f1.
-    expect(await readOnce(owner, own, "看报告", { file: "f2" })).toEqual({ error: "这种文件我读不了内容。" });
+    expect(await readOnce(owner, own, "看报告", { file: "f2" })).toEqual({ error: "这种文件不是文本，读不了内容。" });
     await sendFile(owner, own, "blob.bin", Buffer.from([0, 1, 2, 3, 0, 0, 255, 254]));
-    expect(await readOnce(owner, own, "看这个", { file: "f3" })).toEqual({ error: "这种文件我读不了内容。" });
+    expect(await readOnce(owner, own, "看这个", { file: "f3" })).toEqual({ error: "这种文件不是文本，读不了内容。" });
     expect(await readOnce(owner, own, "看那个", { file: "f9" })).toEqual({ error: "没有这个文件编号。" });
     const gone = await sendFile(owner, own, "gone.txt", "会被删掉的内容");
     const key = (await db.query<{ blob_key: string }>("select blob_key from attachments where id = $1", [gone.id])).rows[0]!.blob_key;

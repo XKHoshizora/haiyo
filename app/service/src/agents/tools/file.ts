@@ -25,7 +25,7 @@ export const FILE_READ_MAX_CHARS = 1_000_000;
 // The fixed sentences the model is answered with.
 export const NO_SUCH_FILE = "没有这个文件编号。";
 export const FILE_NOT_SEEN = "这个文件现在看不到了。";
-export const CANNOT_READ = "这种文件我读不了内容。";
+export const CANNOT_READ = "这种文件不是文本，读不了内容。";
 export const FILE_MISSING = "这个文件的内容找不到了。";
 export const FROM_PAST_END = "from 超出了文件的长度。";
 export const BAD_FROM = "from 要写 0 或更大的整数。";

@@ -1476,7 +1476,7 @@ message after your joining; its own conversation with you included, `我们的�
 found something. The caps below are read before that query (none runs without room for a whisper), and at most 2 such
 queries run at once in the whole service (`ELSEWHERE_AT_ONCE`, apart from the search slots, which are the models'): one
 more is skipped, and counted (`elsewhere_skipped`, Metrics in the log).
-`群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？`, buttons `tell` and `dismiss`. **Its hits are references**: its row
+`在别处查到了相关内容，要告诉他们吗？` (the system's words to its owner, never the Agent's first person), buttons `tell` and `dismiss`. **Its hits are references**: its row
 keeps, for each of at most 5 hits (the newest first), the conversation and the message it points at and where the words
 are in it — never the text, a title or a name — and which message of the group asked (the call the search answered).
 Whenever it is shown to you (the push, sync, catch-up, the list route, an answer) and when its told reply begins, each is
@@ -3548,7 +3548,7 @@ what looks like one is what someone wrote.
   200 around what matched, `…` where it was cut; `file` for a file message (not for a call shown as its text only). Its
   text and its file's name are all that is read of a message: never its reasoning, never what an earlier reply looked
   up. In a group the run's mark is taken out of whatever someone else wrote. Nothing found: `{"results": [], "note":
-  "没找到。"}`, in a group `这个群的记录里没找到。`, followed by `可以在我们的专属会话里让我查所有地方。` only when everyone the
+  "没找到。"}`, in a group `这个群的记录里没找到。`, followed by `只有在你和主人的专属会话里才能查所有地方。` only when everyone the
   reply answers is the Agent's owner — never another place's name; in a group nothing found also starts the elsewhere
   hook (`ToolDeps.elsewhere`, "not here, but elsewhere": Whispers, `found_elsewhere`), on its own once the search has answered, never awaited:
   whatever it does, how long it takes or how it fails (logged by the failure's kind only) changes nothing the model is
@@ -3567,7 +3567,7 @@ what looks like one is what someone wrote.
   as reader) and, in a group, only one of that group sent after the reply's asker's line and within what it had heard
   (else `这个文件现在看不到了。`); in the Agent's own conversation also a file a search found in one of its groups. Text only,
   decided by its bytes as the context decides (`fileText`): an image, a PDF or anything else is
-  `这种文件我读不了内容。`; a number the run never gave, `没有这个文件编号。`; a blob that is gone, `这个文件的内容找不到了。`;
+  `这种文件不是文本，读不了内容。`; a number the run never gave, `没有这个文件编号。`; a blob that is gone, `这个文件的内容找不到了。`;
   `from` at or past the end, `from 超出了文件的长度。`; a negative `from`, `from 要写 0 或更大的整数。`.
 
 A tool's own refusal (an output `{"error": …}`) is sent to the model as it is and looks nothing up (What a reply looked

@@ -40,8 +40,11 @@ export const QUERY_TOO_LONG = "要查的词太长了，换几个关键的字再�
 export const BAD_DATE = "日期要写成 YYYY-MM-DD，比如 2026-11-20。";
 export const NOT_FOUND = "没找到。";
 export const NOT_FOUND_IN_GROUP = "这个群的记录里没找到。";
-/** What nothing found in a group adds when only the Agent's owner asked (rule 3): never another place's name. */
-export const ASK_ME_AT_HOME = "可以在我们的专属会话里让我查所有地方。";
+/**
+ * What nothing found in a group adds when only the Agent's owner asked (rule 3): never another place's name. A plain
+ * description of the situation, so the model words it itself (no sentence in its first person to repeat).
+ */
+export const ASK_ME_AT_HOME = "只有在你和主人的专属会话里才能查所有地方。";
 /** Who wrote a result that the Agent itself wrote. */
 export const BY_YOU = "你自己";
 

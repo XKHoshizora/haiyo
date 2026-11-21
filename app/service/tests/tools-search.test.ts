@@ -259,7 +259,7 @@ describe("what a search refuses", () => {
     await addAgent(owner, g, agent.id);
     expect(await searchOnce(owner, g, "@owen_bot 有吗", { query: "不存在的词" })).toEqual({
       results: [],
-      note: "这个群的记录里没找到。可以在我们的专属会话里让我查所有地方。",
+      note: "这个群的记录里没找到。只有在你和主人的专属会话里才能查所有地方。",
     });
     expect(await searchOnce(mia, g, "@owen_bot 有吗", { query: "不存在的词" })).toEqual({ results: [], note: "这个群的记录里没找到。" });
   });
