@@ -3197,16 +3197,43 @@ reader): in its own conversation the owner's and its own, in a group everyone's;
 fixed greeting, a quote, a file's content or what a reply looked up — each its text (a file as `[文件：name]`, an image as
 `[图片：name]`, and its caption),
 cleaned as a review's are (`cleanText`) and cut at `reviewMessageWeight`; at most 200 messages and at most a review's input
-(`reviewMessages` × `reviewMessageWeight`) a job, cut between places — the rest waits for the next job. *Whether a call is
-worth paying for is decided before it is made*: the window's messages that have something to fold in (any text left once
-cleaned) must weigh, each as a reply would show it — by the context's own rules: its text and its attachment's name, in a
-group one of someone else's with its marked label (`labelledEntry`, `minimalTokens`) —, at least `MEMORY.summaryMinFoldWeight`
-(half of `summaryMaxWeight` unless set: 500) — or the window must be full (cut at 200 messages or at a review's input), so
-that a long run of one-word lines cannot hold back what comes after it. Below that it makes no call and holds nothing
-back: what waits is weighed again after the next reply. A pair whose last call wrote nothing (an answer with no item, or
-none that fits; a call that failed) is not asked again for that window, nor until what lies past it weighs
-`summaryMinFoldWeight` (in this process); a call that was not made (no model, the memory allowance spent, too many calls
-running) holds nothing back. So no window is ever paid for twice, and nothing is paid for to be thrown away. It then makes ONE memory
+(`reviewMessages` × `reviewMessageWeight`) a job, cut between places — the rest waits for the next job. *When a call is
+made, and what after one that wrote nothing*, is the pair's attempt state, kept in the database
+(`conversation_summary_attempts`, migration 059; `store.ts` `AttemptState`) and nowhere else: when the pair may be asked
+again (`not_before`), its calls in a row that wrote nothing (`failures`), the end of its last attempt's window, and the most
+messages its next window takes. One function decides (`job.ts` `shouldCall`): the pair must be due (`not_before` reached;
+no state: due), and the window's messages that have something to fold in (any text left once cleaned) must weigh, each as a
+reply would show it — by the context's own rules: its text and its attachment's name, in a group one of someone else's with
+its marked label (`labelledEntry`, `minimalTokens`) —, at least `MEMORY.summaryMinFoldWeight` (half of `summaryMaxWeight`
+unless set: 500), or the window must be full (cut at 200 messages, at a review's input, or at the fewer its state allows),
+so that a long run of one-word lines cannot hold back what comes after it. Below that it makes no call and changes nothing:
+what waits is weighed again after the next reply. Before the window is read, two cheap looks: the state (one row — a pair
+that is not due is read no further, however many replies come meanwhile), then whether a call could start now (the memory
+allowance spent — counted `memory_refused_allowance` —, or the owner already running as many calls as they may: either way
+nothing changes, and the next reply's job looks again). A window worth a call is *claimed* before the call: under the conversation's row and then the Agent's (the
+order a reply takes them in) the state is read again and, still due and as the window was read under, set not to be due
+before the call's deadline (`AGENT_RUN_TIMEOUT_MS`) and a minute — so neither a second process nor this one after a restart
+pays for that window meanwhile, and a process that dies mid-call gives it back then. After the call:
+- *a summary written* starts the failures over, makes the next window whole again, and sets `not_before`
+  `MEMORY.summaryMinIntervalMs` on (10 minutes): however long or many the messages members post, a pair's summary is
+  written at most once per interval;
+- *a call that wrote nothing* — it failed; its answer was not in the asked shape (no JSON object of the four lists, no item
+  that can be kept, nothing) or was cut at its limit; there was no model to call (none configured, a choice not allowed, a
+  saved key that cannot be opened); its input did not fit the model — is one failure more, and the pair is asked again only
+  after a backoff of 5 minutes doubling with each failure in a row, at most a day (5, 10, 20, 40… minutes). When the window
+  was full and its answer was unusable or cut, or the input did not fit, the next window takes half its messages (down to
+  10): a failure that would come back for that window — an answer that always overruns, a window too big for the model —
+  resolves itself instead of holding the pair back. No message is ever skipped: what the summary covers moves only when it
+  is written, and a window that gets through makes the next one whole again. No model to call is logged as one warning a
+  backoff step (`summary: no memory model to call; asked again after a backoff`), an input that does not fit as the memory
+  call's own warning (also once a step);
+- *the four lists, all empty*, is no failure: nothing in the window was worth keeping. The summary keeps its items (a first
+  one has none, and no reply is shown it), what it covers moves past the window, and the state is as after a write.
+
+So at the defaults a pair is asked at most once in 5 minutes, and at most once in 10 after a summary was written: in any
+hour at most 6 summaries written and 8 paid calls (a write and a failure taking turns), whatever members post; a window is
+never paid for twice inside its claim or its `not_before`, by however many processes, across restarts. A new topic or the
+end of a stay deletes the state with the summary (and the Agent's delete, or the conversation's, with the row). It then makes ONE memory
 call (Memory calls, below: its own run of purpose `memory`, held for the most its input can cost and charged to the memory
 allowance the site pays; on a model of the owner's own provider nothing) whose user message is one JSON object
 `{"people": {"p1": {"role", "name", "account"}…}, "summary": <the old summary, or null>, "messages": [{"said_by", "text"}…]}`.
@@ -3230,27 +3257,29 @@ citation taken out — `〔m3〕`, `〔f2〕`, also one built around another —
 item nothing is left of dropped; an item without a `said_by`, or whose `said_by` is neither null nor one of the call's keys
 — a key it was not given, a label, a name, a number — dropped and counted (`summary_who_unknown`). Each key left is turned
 back into its account, and the whole is held to the cap *as a reply would be shown it* (`capped`): at most 40 items, and
-its passage's JSON value — its `people` table included, every name counted at its longest (`atLongest`: 40 characters of
-4 bytes, a shown name being cut there) and every account at its longest (a handle of 24, an Agent's full handle of 49) —
-at most `summaryMaxWeight`; past either, whole items go from the top section downwards, never part of one. That is what is
-stored: no rename can later take it past the cap. A reply is shown a
+its passage's JSON value — its `people` table included, with the names of now and every account at its longest
+(`atLongest`: a handle of 24, an Agent's full handle of 49) — at most `summaryMaxWeight`; past either, whole items go from
+the top section downwards, never part of one. That is what is stored: a rename since can cost names, never an item
+(below). A reply is shown a
 stored summary (`shownSummary`, `shownForm`) as `{"people": {…}, "sections": {…}}`: `people` holds each account that said a
 shown item once — and nobody else —, under a key the system gives it in the order it first comes (`a`, `b`, … `z`, `aa`…:
 short, and valid in that passage only), as who that account is at that moment — `{"role", "name", "account"}`, the role by
 account: `你的主人` for the owner's account only, `你` for the Agent itself (no name, no account), `群成员` and `Agent` with the
 name and account of now (someone who left the group as ever), `已删除的 Agent` with its name and no account, `已离开的成员` for
 an account that is gone —; each item's `said_by` is a key of that `people`, or null; every citation is taken out of its
-texts; and the whole is held to the cap again the same way, with the names of now — a safety net that, the summary being
-stored with every name at its longest, drops nothing (the row itself is not rewritten). A key is no more typed by anyone than a
+texts; and the whole is held to the cap again with the names and accounts of now (`fitted`): when a rename made it heavier,
+every name is first cut to the most characters at which it fits — down to nothing: the role and the account still say who
+it is — and only past that would whole items go, from the top section down, which the summary being stored with every
+account at its longest never needs (the row itself is not rewritten). A key is no more typed by anyone than a
 role is: a text holding `"said_by":"a"`, or a member named `a`, is a text, or a name. A reply reads it once, however many times its context is planned (`readPairSummary`, in `begin`'s first step
 under the conversation's row, which its job writes under: one read of the row and, when an item names someone, one
-indexed read of the accounts it names; nothing of the conversation's history). An answer with no item (or none that fits)
-is no summary, first or not, nor is one that is no JSON object: nothing is stored and the messages are not swallowed. A
-valid answer within the cap is stored, with the new `upto_seq` (`from_seq` stays where the first summary began), only when, under the
-conversation's row and then the Agent's (the order a reply takes them in), the pair is as the job read it: the Agent not
-deleted, still a member, no new topic or new joining at or after `from_seq`, and the summary not changed meanwhile. A call
-that could not be made (no model, the memory allowance spent, too many calls running), failed or answered nothing usable
-changes nothing, nor does an answer with no item that fits. *What a summary costs a reply* — the messages it folds in had
+indexed read of the accounts it names; nothing of the conversation's history). An answer not in the asked shape — no JSON
+object, not the four lists, or items none of which can be kept — is no summary, first or not: nothing is stored (it is a
+failure, above). A valid answer within the cap is stored — or, the four lists empty, the old items as they were (none for a
+first one) — with the new `upto_seq` (`from_seq` stays where the first summary began), and the state with it, only when,
+under the conversation's row and then the Agent's (the order a reply takes them in), the pair is as the job read it: the
+Agent not deleted, still a member, no new topic or new joining at or after `from_seq`, and the summary not changed
+meanwhile. A call that could not be made, failed or answered nothing usable changes no summary. *What a summary costs a reply* — the messages it folds in had
 already left the reply's window, so it is shown in place of nothing the reply carried: its passage costs at most
 `summaryMaxWeight` plus its heading and fixed line (196 weight), and it is written only for at least
 `summaryMinFoldWeight` of messages as a reply would show them, so it never costs more than the messages it stands for by
@@ -3265,8 +3294,9 @@ an owner's notes or vault is in its input, and nothing of it, or of what it was 
 (`summary_*`, Memory counters). Nothing waits for it: replies are made as before whether or not a job runs, fails or is
 refused. Summaries are conversation context, independent of the Agent's memory switch (a ruling of 2026-11-21).
 *Limits* — a message may for a while be neither shown nor in the summary: while what is left out past what it covers
-weighs less than `summaryMinFoldWeight` as a reply would show it (it waits for more); after a call that failed on a full
-window, until the service restarts (the window is the same one, and none is asked twice); for one reply, when the current turn's attachment contents take room the
+weighs less than `summaryMinFoldWeight` as a reply would show it (it waits for more); while the pair waits out its interval
+after a write, or its backoff after a call that wrote nothing (at most a day); for good, the messages of a window folded
+with nothing to add (nothing in them was worth keeping); for one reply, when the current turn's attachment contents take room the
 by-name plan counted on (the left-out part is worked out before attachments are read: the next reply works it out again);
 for one reply, when the passage is dropped for the newest message; in a group, for a reply whose asker's line hides the
 summary, which is shown the unsummarised messages after its line only (as before there was a summary); in the Agent's own
@@ -3693,8 +3723,9 @@ milliseconds.
 | `changesSweepMs` | 3 600 000 (0, or 60 000–86 400 000) | How often the record of memory changes is swept (Memory changes, below): its own timer, not `SWEEP_INTERVAL_MINUTES`; 0: no timer (`attachments:sweep` still runs it by hand). Whispers are expired and cleaned on the same timer (Whispers): 0 stops that too. The test harness sets 0 |
 | `passageShare` | 0.25 (above 0, up to 1) | The notes passage of a run takes at most this share of the input the model has room for (its context less its output limit; the passage measured in weight, one weight a token, and the context budget counts it the same way: `systemTokens`, the system text without the passage a token a code point plus the passage in weight): over it entries are left out until it fits — what an Agent heard first (oldest said first), then its own notes, then those about the owner (each weakest `strength` first, then the oldest `seen_at`) — and nothing tells the model so, so the notes never crowd out the conversation. `GET /api/agents/:id/memory` says (`fits`) whether the Agent's model carries the whole palace |
 | `roomNotes` | 150 (1–100 000) | A room of notes holds at most this many notes besides its size limit: an addition beyond it is dropped as a full room (a review's, the owner's own add, confirming hearsay), and an undo or a confirm that would pass it is 409 `room_full` |
-| `summaryMinFoldWeight` | half of `summaryMaxWeight` (500; 1–100 000) | A rolling-summary job makes its call only when the messages it would fold in weigh at least this as a reply would show them (labels included), or its window is full; decided before the call (Agents and runs, The rolling summary). `summaryMinMessages`, the message count it replaces, is gone: set, it stops the start, as any unknown key does |
-| `summaryMaxWeight` | 1000 (1–2000: the database guards a summary's items at 256 KiB) | The most a rolling summary weighs as a reply is shown it (its passage's JSON value, its people table included): an answer over it, every name and account counted at its longest, loses whole items from the top section downwards when it is stored, so a rename drops nothing later (a stored one is cut again when a reply is shown it, as a safety net); the call is asked for about half of it in text, and for at most 40 items |
+| `summaryMinFoldWeight` | half of `summaryMaxWeight` (500; 1–100 000) | A rolling-summary job makes its call only when the messages it would fold in weigh at least this as a reply would show them (labels included), or its window is full; decided before the call (Agents and runs, The rolling summary). `summaryMinMessages`, the message count it replaces, is gone (2026-11-21): a configuration still naming it is refused at start-up, as any unknown key is |
+| `summaryMinIntervalMs` | 600 000 (0–86 400 000; 0: none) | After a pair's rolling summary is written, how long the pair is not asked again, however much is posted meanwhile: at most one summary a pair per interval (6 an hour at the default). A call that wrote nothing waits its backoff instead (5 minutes, doubling, at most a day); both are kept in the database (The rolling summary) |
+| `summaryMaxWeight` | 1000 (1–2000: the database guards a summary's items at 256 KiB) | The most a rolling summary weighs as a reply is shown it (its passage's JSON value, its people table included): an answer over it, with the names of now and every account counted at its longest, loses whole items from the top section downwards when it is stored, so a rename drops nothing later (a reply's passage shortens names first, down to nothing, when one made it heavier); the call is asked for about half of it in text, and for at most 40 items |
 | `listenShare` | 0.5 (0–1) | A group judgement with no proactive Agent to pick, only Agents with memory listening for what is said about their owner, is skipped once the site's judgements of the day have reached this share of the judge's daily limit: listening never uses up what unasked replies need |
 
 **When a message is judged** (`scheduler.ts`, `Deps.proactive`). Once a person's message in a group is stored
@@ -4132,7 +4163,7 @@ container `node dist/cli.js memory:stats --days 7` (`npm run memory:stats`, `mem
 | `review_run` | a review reached its call (`pipeline.ts` `runReview`; group reviews of flags included) |
 | `review_skipped_no_owner_words` | a review found nothing the owner said to look at, no call made |
 | `review_failed` | a review's call returned nothing: no model to call on, too many calls running, or it failed (not one the memory allowance refused, which is `memory_refused_allowance`; not an answer that cannot be used; not the service stopping) |
-| `memory_refused_allowance` | a memory call (a review, a hearsay call, a dream or nap, a conversion) was not started because the owner's memory allowance was spent; also a hearsay wake-up that kept its flags for the next site day without asking the judgement model |
+| `memory_refused_allowance` | a memory call (a review, a hearsay call, a dream or nap, a conversion, a rolling summary) was not started because the owner's memory allowance was spent; also a hearsay wake-up that kept its flags for the next site day without asking the judgement model, and a summary job that found it spent before reading its window |
 | `note_added`, `note_replaced`, `note_removed`, `note_locked` | a review's op was applied (not a pending card's; a confirmed card counts `card_confirmed` only; a merge counts `merge_joined` only) |
 | `lock_auto` | a review's `lock` applied at once, nobody asked (one per lock; every lock a review applies now is one; a lock of a note the owner took out of the vault, or of one already in it, is dropped and counts nothing) |
 | `merge_joined` | a review's `merge` op, its notes joined in their own words, applied at once as a dream's merge (`MEMORY.mergeAuto` `"on"`; one put on a card by 先问我再记 counts `card_shown_ask_first` instead). Days before 2026-11-21 have `merge_auto` (a merge the judgement found faithful) and `merge_would_auto` / `merge_would_card` (observed) |
@@ -4162,7 +4193,7 @@ container `node dist/cli.js memory:stats --days 7` (`npm run memory:stats`, `mem
 | `owner_deleted_auto_note`, `owner_edited_auto_note` | the owner deleted, or changed the text of, a note a review made (`origin` `review`); edits are counted, not notes: nothing records who wrote a note's text last, so a second edit of the same note counts again |
 | `summary_run` | a rolling-summary job reached its call (Agents and runs, The rolling summary) |
 | `summary_who_unknown` | items of a rolling summary's answer dropped for a `said_by` that is absent or no key of the call's roster (one per item) |
-| `summary_written`, `summary_failed`, `summary_dropped` | what came of it: stored; nothing usable — no model to call on, the owner already had as many calls running as they may (then the pair may be asked again after its next reply), the input did not fit the model, the call failed, or the answer was empty, cut at its limit, no JSON object, or had no item that fits the cap (also once items with an absent or unknown `said_by` were dropped) (not a call the memory allowance refused, which is `memory_refused_allowance`; not the service stopping); or the pair moved on before it could be stored (a new topic, the Agent out of the group, added back or deleted, another write) |
+| `summary_written`, `summary_nothing_new`, `summary_failed`, `summary_no_model`, `summary_too_big`, `summary_dropped` | what came of it: stored; the four lists empty — nothing worth keeping, what the summary covers moved on; nothing usable — the call failed, or the answer was empty, cut at its limit, no JSON object of the four lists, or had no item that fits the cap (also once items with an absent or unknown `said_by` were dropped); no model to call on; the input did not fit the model (each of those three a failure: the pair backs off) (not a call that could not start for the memory allowance, `memory_refused_allowance`, or for the owner's calls running at once: those change nothing; not the service stopping); or the pair moved on before it could be stored (a new topic, the Agent out of the group, added back or deleted) |
 | `owner_unlocked`, `owner_locked` | the owner took a note out of, or put one into, the vault (`PATCH`, or confirming an unlock card) |
 | `hearsay_confirmed`, `hearsay_deleted` | the owner took an entry as true, or deleted it |
 
