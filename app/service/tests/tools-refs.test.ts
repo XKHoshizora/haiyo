@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { FILE_MAX_CHARS } from "../src/agents/runtime/context.ts";
+import { ContextPlan, FILE_MAX_CHARS } from "../src/agents/runtime/context.ts";
 import { groupSystemText, notesPassage } from "../src/agents/runtime/prompt.ts";
 import { excerpt } from "../src/agents/tools/search.ts";
 import { citesIn, RunRefs, withoutCitations } from "../src/agents/tools/refs.ts";
@@ -106,6 +106,32 @@ describe("the other strings someone else controls keep no citation either", () =
     );
     expect(passage).toContain("饭搭子");
     expect(passage).not.toContain("〔");
+  });
+});
+
+describe("a call never ends with the Agent's own turn", () => {
+  const entry = (role: "user" | "assistant", text: string) => ({ role, text, attachment: null });
+  /** The roles of the built call, older turns kept as `buildContext` keeps them. */
+  const roles = (entries: ReturnType<typeof entry>[], budget = 1000) => {
+    const plan = new ContextPlan(entries, budget);
+    plan.keepOlder();
+    return plan.build().messages.map((m) => m.role);
+  };
+
+  it("the plan shows the conversation from the newest person's message, so it ends with a person's turn whatever follows it", () => {
+    // A retry: the acknowledgement after the question is not shown.
+    expect(roles([entry("user", "查一下"), entry("assistant", "我先查一下。")])).toEqual(["user"]);
+    // A told reply: its own 没找到 after the question is not shown either, with older turns kept or not.
+    const told = roles([entry("user", "早"), entry("assistant", "早。"), entry("user", "那个计划在哪"), entry("assistant", "没找到。")]);
+    expect(told.at(-1)).toBe("user");
+    expect(told[0]).toBe("user");
+    // Several Agent turns after the question.
+    expect(roles([entry("user", "查一下"), entry("assistant", "好。"), entry("assistant", "稍等。")])).toEqual(["user"]);
+    // Only the Agent's own turns: nothing is shown (never a call that is just its own turn).
+    expect(roles([entry("assistant", "你好。")])).toEqual([]);
+    // A budget too small for everything: what is kept still ends with, and starts with, a person's turn.
+    const tight = roles([entry("user", "字".repeat(50)), entry("assistant", "好。"), entry("user", "再问"), entry("assistant", "嗯。")], 10);
+    expect([tight[0], tight.at(-1)]).toEqual(["user", "user"]);
   });
 });
 

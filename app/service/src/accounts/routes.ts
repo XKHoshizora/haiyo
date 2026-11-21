@@ -3,7 +3,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { agentLimit, countLiveAgents } from "../agents/store.ts";
 import { perPrincipalLimit } from "../limits.ts";
-import { chargeSource } from "../metering/admit.ts";
+import { pickSources } from "../metering/admit.ts";
 import { requirePrincipal } from "../session.ts";
 import { formatPoints, freeUsedToday, memoryUsedToday, nextSiteMidnight, siteDayStart } from "./store.ts";
 
@@ -98,7 +98,7 @@ export function registerAccountRoutes(app: FastifyInstance): void {
         },
         // Admission's own rule (src/metering/admit.ts): a reply is refused only when nothing is left of either source;
         // what running calls hold makes it wait, not fail. Read without the lock.
-        canStartFreeReply: chargeSource("free", { freeMicro: config.freeDailyMicro - used, balanceMicro }) !== null,
+        canStartFreeReply: (await pickSources(db, { freeTier: true, freeLeft: config.freeDailyMicro - used, balance: balanceMicro, balanceHeld: 0n })).anything !== null,
         recent: recent.rows.map((r) => ({
           agentId: r.agent_id,
           purpose: r.purpose,

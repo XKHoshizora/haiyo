@@ -3938,7 +3938,7 @@ replies wait at the edge of what is left (below). A free-tier model is charged t
 is left (holds aside), and to the balance only once the allowance is used up: a free-tier reply that finds the allowance
 not used up but all held by your other running calls waits for them (held back, as below) instead of going on to the
 balance, while a persona draft, which cannot wait, takes the allowance; a paid-tier model is charged only to the
-balance. Only when nothing at all is left of a source the model may use — the allowance used up, the balance at
+balance. One definition decides it, for admission and for the queue's prediction of where a queued reply would be paid from alike (`metering/admit.ts` `chosenSourceSql`). Only when nothing at all is left of a source the model may use — the allowance used up, the balance at
 or below zero, holds aside — is the call refused: `no_quota` (402) with `reason` `free_and_balance` and `resetsAt`, or
 `reason` `balance` (a reply's run fails so; a draft answers so).
 

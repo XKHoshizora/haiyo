@@ -184,12 +184,12 @@ function AddRow({ agentId, left, full, memory, inputRef }) {
     <form className="memory-add" onSubmit={submit}>
       <div className="memory-add-line">
         <input ref={inputRef} aria-label="新的笔记" value={text} onChange={(e) => setText(e.target.value)} placeholder="手动加一条" autoComplete="off" readOnly={pending} />
+        <label className="memory-add-vault">
+          <input type="checkbox" checked={vault} onChange={(e) => setVault(e.target.checked)} disabled={pending} />
+          <span>放进保险箱</span>
+        </label>
         <Btn type="submit" small variant="primary" disabled={pending || !typed || over}>添加</Btn>
       </div>
-      <label className="memory-add-vault">
-        <input type="checkbox" checked={vault} onChange={(e) => setVault(e.target.checked)} disabled={pending} />
-        <span>放进保险箱</span>
-      </label>
       {over && <p className="field-msg">{full ? ROOM_FULL : TOO_LONG}</p>}
       {error && <p className="field-msg" role="alert">{error}</p>}
     </form>

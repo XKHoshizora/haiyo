@@ -6,7 +6,7 @@ import type { ConversationEvents } from "../conversations/events.ts";
 import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
-import { admitRun, HeldBack, raiseHold, type ChargeTo } from "../metering/admit.ts";
+import { admitRun, anySourceSql, chosenSourceSql, HeldBack, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -411,21 +411,18 @@ export class DbAgentPort implements AgentPort {
     const waiting = (r: string) =>
       `(${r}.held_back_by is not null
         and (select count(*) from agent_runs b where b.id = any(${r}.held_back_by) and b.status = 'running') = cardinality(${r}.held_back_by))`;
-    // The source the queued reply q would be paid from now (admit.ts: the existing rule on what is left after the running
-    // calls' holds, else on what is left): null on a provider's model, on a model the site no longer offers, or with
-    // nothing left (it will be refused).
+    // The source the queued reply q would be paid from now: admission's own rule (metering/admit.ts `chosenSourceSql`, the
+    // one definition, else `anySourceSql` when the holds leave it nothing): null on a provider's model, on a model the
+    // site no longer offers, or with nothing left (it will be refused).
+    const cols = { freeTier: "qa.site_model_id = any($4::text[])", freeLeft: "$5::bigint - m.used", balance: "m.balance", balanceHeld: "m.balance_held" };
     const sourceOfQ = `(
       select case
                when qa.model_source is distinct from 'site' or not (qa.site_model_id = any($3::text[])) then null
-               when qa.site_model_id = any($4::text[]) and $5::bigint - m.used - m.free_held > 0 then 'free'
-               when m.balance - m.balance_held > 0 then 'balance'
-               when qa.site_model_id = any($4::text[]) and $5::bigint - m.used > 0 then 'free'
-               when m.balance > 0 then 'balance'
+               else coalesce(${chosenSourceSql(cols)}, ${anySourceSql(cols)})
              end
         from agents qa,
              (select coalesce((select u.used_micro from free_usage u where u.owner_id = q.owner_id and u.day = $6::date), 0) as used,
                      coalesce((select a.balance_micro from accounts a where a.principal_id = q.owner_id), 0) as balance,
-                     coalesce((select sum(h.hold_micro) from agent_runs h where h.owner_id = q.owner_id and h.status = 'running' and h.charge_to = 'free'), 0) as free_held,
                      coalesce((select sum(h.hold_micro) from agent_runs h where h.owner_id = q.owner_id and h.status = 'running' and h.charge_to = 'balance'), 0) as balance_held) m
        where qa.principal_id = q.agent_id)`;
     const { rows } = await this.deps.db.query<RunRow & { agent_id: string; owner_id: string; conversation_id: string; lane: string; wait_ms: number; again: boolean }>(

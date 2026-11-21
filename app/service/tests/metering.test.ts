@@ -593,6 +593,11 @@ describe("holds", () => {
     expect((stillWaiting as HeldBack).behind).toEqual(expect.arrayContaining([r1]));
     expect(await runRow(r2)).toEqual({ source: null, model: null, charge_to: null, hold: "0" });
 
+    // A persona draft cannot wait: with the allowance all held and a balance there, it still takes the allowance.
+    const d3 = await runningRun(db, owner.id);
+    expect(await admitAt(d3, owner, a.resolved, now)).toMatchObject({ chargeTo: "free" });
+    await settleAt(d3, { inputTokens: 0, outputTokens: 0 }, { now });
+
     // Settled: 0.5 + 2 of the allowance, the last draft its 0.5 left (the rest forgiven). The allowance is now truly used
     // up, so the reply goes on to the balance, as the rule always was then, and settles 2 there.
     await settleAt(r1, { inputTokens: 0, outputTokens: 500 }, { now });

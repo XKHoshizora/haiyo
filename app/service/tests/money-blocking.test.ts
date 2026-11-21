@@ -1027,6 +1027,30 @@ describe("fix round 2: the free allowance's room for the last call, renewed a ro
     expect(next.conversationId).toBe(z.conv);
   });
 
+  it("a free-tier reply whose allowance is all held by an older reply, the balance funded, is predicted on the allowance: it waits behind the older one, is not claimed or told, and runs when the allowance frees", async () => {
+    const owner = await signUp(app, "freewaits");
+    const [a, c, d] = [await agentOf(owner, FREE, "Ann"), await agentOf(owner, FREE, "Cy"), await agentOf(owner, FREE, "Dee")];
+    // Half a point of the day's allowance left, five points of balance: Ann's hold passes the allowance.
+    await setFreeUsed(owner.id, (5n * POINT) / 2n);
+    await grant(db, owner.id, 5n * POINT);
+    const { port } = workerWith(scriptedGateway());
+    await say(owner, a.conv, "你好");
+    const ann = (await port.claimNext())!;
+    expect(isRunEnd(await port.begin(ann))).toBe(false);
+    expect((await runIn(a.conv)).charge_to).toBe("free");
+    await say(owner, c.conv, "你好");
+    const cy = (await port.claimNext())!;
+    await port.finish(cy, (await port.begin(cy)) as RunEnd, null, NOTHING);
+    expect(await runIn(c.conv)).toMatchObject({ status: "queued", held_back_on: "free" });
+    // The younger reply is predicted on the allowance too, so it waits behind Cy: not claimed (so not told running).
+    await say(owner, d.conv, "你好");
+    expect(await port.claimNext()).toBeNull();
+    expect((await runIn(d.conv)).status).toBe("queued");
+    // The allowance frees: the older held-back reply runs first.
+    await port.finish(ann, { status: "failed", error: "busy" }, null, NOTHING);
+    expect((await port.claimNext())!.conversationId).toBe(c.conv);
+  });
+
   it("a free-tier reply held back with the allowance used up and nothing left of the balance after the holds waits on both: a younger reply the balance would pay waits behind it too", async () => {
     const owner = await signUp(app, "bothsources");
     const [a, c, d] = [await agentOf(owner, FREE, "Ann"), await agentOf(owner, FREE, "Cy"), await agentOf(owner, PAID, "Dee")];

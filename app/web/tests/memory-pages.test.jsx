@@ -238,6 +238,8 @@ describe("the 关于我 room on the Settings page", () => {
     const scope = inRoom("关于我");
     const tick = () => scope.getByRole("checkbox", { name: "放进保险箱" });
     expect(tick().checked).toBe(false);
+    // Beside 添加, in the same row.
+    expect(tick().closest(".memory-add-line")).toBe(scope.getByRole("button", { name: "添加" }).closest(".memory-add-line"));
     await click(tick());
     typeInto(scope.getByLabelText("新的笔记"), "我的收入");
     await click(scope.getByRole("button", { name: "添加" }));
