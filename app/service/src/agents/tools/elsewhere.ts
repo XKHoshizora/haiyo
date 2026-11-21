@@ -1,11 +1,9 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { Config } from "../../config.ts";
-import { visibleJoin } from "../../conversations/store.ts";
 import type { Db, Queryable, Tx } from "../../db.ts";
 import { inSearchBudget, searchRows, type SearchRow } from "../../messages/search.ts";
-import { handleOf } from "../../principals/store.ts";
 import type { Hub } from "../../sync/hub.ts";
-import { createWhisper, roomForFoundElsewhere, whisperOfRun, type Whisper } from "../../whispers/store.ts";
+import { createWhisper, mayTell, readableHits, roomForFoundElsewhere, whisperOfRun, type HitRow, type Whisper } from "../../whispers/store.ts";
 import { QUOTE_MAX_CHARS } from "../runtime/context.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/prompt.ts";
 import { lockAgent } from "../store.ts";
@@ -26,7 +24,7 @@ import { excerptAt, matchAt } from "./search.ts";
  * has `ELSEWHERE_OPEN_MAX` there whose state is open or telling. The whisper keeps REFERENCES, never what was said (Redesign
  * D): for each hit the conversation and the message it points at, and where in it the words are (`HitRef`), and which
  * message of the group asked (`askedSeq`: the told reply quotes it). Whenever it is shown to its owner, and when its told
- * reply begins, each is read again under her access then (`readHits`): a hit she can no longer read is left out; with none
+ * reply begins, each is read again under her access then (whispers/store.ts `readableHits`, `hitOf`): a hit she can no longer read is left out; with none
  * left it reads expired. Under the Agent's row (`lockAgent`, which takes the group's row first: the whisper lock order)
  * before `createWhisper`; a whisper `createWhisper` does not make (the Agent or its owner gone from the group, a body it
  * cannot keep) is none, and nothing is said of it. Pushed to the owner alone, once committed. Nothing found, or the switch
@@ -52,7 +50,7 @@ export const ELSEWHERE_HITS_MAX = 5;
 /** No new `found_elsewhere` whisper while its owner has this many there whose state is open or telling. */
 export const ELSEWHERE_OPEN_MAX = 3;
 
-/** One hit as its owner is shown it (read now: `readHits`), and as the run `告诉他们` queues is shown it (`toldPassage`). */
+/** One hit as its owner is shown it (read now: `hitOf`), and as the run `告诉他们` queues is shown it (`toldPassage`). */
 export interface ElsewhereHit {
   where: string;
   who: string;
@@ -72,7 +70,7 @@ export interface HitRef {
 
 export interface ElsewhereDeps {
   db: Db;
-  config: Pick<Config, "siteTimezone" | "searchStatementTimeoutMs">;
+  config: Pick<Config, "siteTimezone" | "searchStatementTimeoutMs" | "whispers">;
   realtime: Pick<Hub, "pushWhisper">;
   log: Pick<FastifyBaseLogger, "warn" | "error" | "info">;
 }
@@ -117,7 +115,8 @@ async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk):
   const on = await db.query<{ on: boolean }>("select whisper_elsewhere as on from agents where principal_id = $1", [scope.agentId]);
   if (on.rows[0]?.on !== true) return;
   const room = { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId, runId: scope.id };
-  if (!(await roomForFoundElsewhere(db, room, ELSEWHERE_OPEN_MAX))) return;
+  const ttlHours = config.whispers.elsewhereTtlHours;
+  if (!(await roomForFoundElsewhere(db, room, ELSEWHERE_OPEN_MAX, ttlHours))) return;
   const rows = await inSearchBudget(db, config.searchStatementTimeoutMs, async (t) => {
     const { rows: places } = await t.query<{ id: string }>(
       `select am.conversation_id as id from memberships am
@@ -140,13 +139,20 @@ async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk):
     });
   });
   if (rows.length === 0) return;
-  const made = await db.tx((t) => whisperHits(t, scope, rows.map((row) => refOf(row, ask.term)), deps.log));
+  const made = await db.tx((t) => whisperHits(t, scope, rows.map((row) => refOf(row, ask.term)), ttlHours, deps.log));
   if (made) deps.realtime.pushWhisper(made);
 }
 
+/**
+ * A hit's text as it is cut and shown: the one place both where the words are (`refOf`, when the whisper is made) and the
+ * cut around them (`hitOf`, whenever it is read) start from — so whatever is changed in it changes both alike and a kept
+ * `at` stays where the words are.
+ */
+const hitLine = (text: string | null): string => withoutCitations(text ?? "");
+
 /** What the whisper keeps of a row: where it points, and where in its text (as a hit shows it) the words are. */
 function refOf(row: SearchRow, term: string): HitRef {
-  return { conversationId: row.conversation_id, seq: Number(row.seq), at: Math.max(0, matchAt(withoutCitations(row.text ?? ""), term)) };
+  return { conversationId: row.conversation_id, seq: Number(row.seq), at: Math.max(0, matchAt(hitLine(row.text), term)) };
 }
 
 /**
@@ -156,9 +162,9 @@ function refOf(row: SearchRow, term: string): HitRef {
  * or when the owner has `ELSEWHERE_OPEN_MAX` open or telling there. It keeps the references and the message that asked:
  * the latest of the calls the run answers (those up to what it covers), else what it covers. Null: none made.
  */
-async function whisperHits(t: Tx, scope: RunScope, hits: HitRef[], log: Pick<FastifyBaseLogger, "warn">): Promise<Whisper | null> {
+async function whisperHits(t: Tx, scope: RunScope, hits: HitRef[], ttlHours: number, log: Pick<FastifyBaseLogger, "warn">): Promise<Whisper | null> {
   await lockAgent(t, scope.agentId, scope.conversationId);
-  const room = await roomForFoundElsewhere(t, { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId, runId: scope.id }, ELSEWHERE_OPEN_MAX);
+  const room = await roomForFoundElsewhere(t, { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId, runId: scope.id }, ELSEWHERE_OPEN_MAX, ttlHours);
   if (!room) return null;
   const asked = await t.query<{ seq: string | null }>(
     "select coalesce((select max(c.s) from unnest(r.call_seqs) as c (s) where c.s <= r.covers_seq), r.covers_seq)::text as seq from agent_runs r where r.id = $1",
@@ -178,20 +184,6 @@ async function whisperHits(t: Tx, scope: RunScope, hits: HitRef[], log: Pick<Fas
   );
 }
 
-const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Whether `h` is a reference as `refOf` keeps it (a reference of any other shape points at nothing). */
-const isRef = (h: unknown): h is HitRef => {
-  if (typeof h !== "object" || h === null) return false;
-  const { conversationId, seq, at } = h as Record<string, unknown>;
-  return typeof conversationId === "string" && UUID_SHAPE.test(conversationId) && Number.isSafeInteger(seq) && (seq as number) > 0 && Number.isSafeInteger(at) && (at as number) >= 0;
-};
-
-/** The references a `found_elsewhere` whisper's `detail` keeps (`{hits}`), in order; none when it keeps no list of them. */
-export function refsOf(detail: unknown): HitRef[] {
-  const hits = (detail as { hits?: unknown } | null | undefined)?.hits;
-  return Array.isArray(hits) ? hits.filter(isRef).map(({ conversationId, seq, at }) => ({ conversationId, seq, at })) : [];
-}
-
 /** The message that asked, as a whisper's `detail` keeps it (`askedSeq`); null when it keeps none. */
 export function askedOf(detail: unknown): number | null {
   const seq = (detail as { askedSeq?: unknown } | null | undefined)?.askedSeq;
@@ -199,48 +191,21 @@ export function askedOf(detail: unknown): number | null {
 }
 
 /**
- * Each wanted reference read as `readerId` may read it now — a current member of its conversation, the message after their
- * joining (`visibleJoin`, the rule every read of a message keeps), a text or file message — as a hit: where (a group's
- * title, `某个群` when it has none; `我们的专属会话` for the Agent's own), who (the sender's name as a label shows it), when
- * (in `timeZone`, the site's), and what — on one line, cut around the words as the search cut it (`excerptAt`), without any
- * citation, at most `QUOTE_MAX_CHARS` characters (a file message without text: its name). Null where it cannot be read.
- * One statement, whatever their number; in the order given.
+ * A hit as its owner is shown it, from what whispers/store.ts `readableHits` read of its message (under her access now,
+ * the one rule): where (a group's title, `某个群` when it has none; `我们的专属会话` for the Agent's own), who (the sender's name
+ * as a label shows it), when (in `timeZone`, the site's), and what — on one line, cut around the words as the search cut
+ * it (`excerptAt` at the kept `at`), without any citation, at most `QUOTE_MAX_CHARS` characters (a file message without
+ * text: its name).
  */
-export async function readHits(q: Queryable, wanted: ReadonlyArray<{ readerId: string; ref: HitRef }>, timeZone: string): Promise<Array<ElsewhereHit | null>> {
-  if (wanted.length === 0) return [];
-  const { rows } = await q.query<{
-    ord: string;
-    created_at: Date;
-    text: string | null;
-    attachment: { name: string } | null;
-    sender_name: string;
-    sender_handle: string;
-    title: string | null;
-    conversation_type: string;
-  }>(
-    `select r.ord, m.created_at, m.body ->> 'text' as text, case when m.kind = 'file' then m.body -> 'attachment' end as attachment,
-            sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, c.title, c.type as conversation_type
-       from unnest($1::uuid[], $2::uuid[], $3::bigint[]) with ordinality as r (reader_id, conversation_id, seq, ord)
-       join messages m on m.conversation_id = r.conversation_id and m.seq = r.seq
-       ${visibleJoin("r.reader_id")}
-       join principals sp on sp.id = m.sender_id
-       join conversations c on c.id = m.conversation_id
-      where m.kind in ('text', 'file')`,
-    [wanted.map((w) => w.readerId), wanted.map((w) => w.ref.conversationId), wanted.map((w) => w.ref.seq)],
-  );
-  const out: Array<ElsewhereHit | null> = wanted.map(() => null);
-  for (const row of rows) {
-    const i = Number(row.ord) - 1;
-    const { date, time } = siteDateTime(row.created_at, timeZone);
-    const said = Array.from(excerptAt(withoutCitations(row.text ?? ""), wanted[i]!.ref.at)).slice(0, QUOTE_MAX_CHARS).join("");
-    out[i] = {
-      where: row.conversation_type === "agent" ? OWN_PLACE : cleanText(withoutCitations(row.title ?? "")) || NO_GROUP_TITLE,
-      who: labelName(row.sender_name, row.sender_handle),
-      when: `${date} ${time}`,
-      text: said !== "" ? said : row.attachment ? cleanText(row.attachment.name) : "",
-    };
-  }
-  return out;
+export function hitOf(row: HitRow, timeZone: string): ElsewhereHit {
+  const { date, time } = siteDateTime(row.createdAt, timeZone);
+  const said = Array.from(excerptAt(hitLine(row.text), row.at)).slice(0, QUOTE_MAX_CHARS).join("");
+  return {
+    where: row.conversationType === "agent" ? OWN_PLACE : cleanText(withoutCitations(row.title ?? "")) || NO_GROUP_TITLE,
+    who: labelName(row.senderName, row.senderHandle),
+    when: `${date} ${time}`,
+    text: said !== "" ? said : row.attachmentName ? cleanText(row.attachmentName) : "",
+  };
 }
 
 /** `text` with no `@` that would call someone (agents/mentions.ts's rule): `@mia_bot` → `mia_bot`. */
@@ -258,13 +223,14 @@ export function toldPassage(hits: readonly ElsewhereHit[]): string {
 
 /**
  * The hits reply run `runId` is to tell, when `告诉他们` queued it (`agent_runs.whisper_id`): its whisper's references read
- * now, as its owner may read them now (`readHits`; times in `timeZone`) — those she can no longer read left out; [] when the
- * whisper is gone or none is left; null for any other reply.
+ * now, as its owner may read them now — those she can no longer read left out; [] when the whisper is gone, when it is one
+ * no told reply may tell (whispers/store.ts `mayTell`, the one rule: declined, expired, told — with this run its own
+ * telling, a day may have passed), or none is left; null for any other reply.
  */
-export async function toldHits(q: Queryable, runId: string, timeZone: string): Promise<ElsewhereHit[] | null> {
+export async function toldHits(q: Queryable, runId: string, { timeZone, elsewhereTtlHours }: { timeZone: string; elsewhereTtlHours: number }): Promise<ElsewhereHit[] | null> {
   const whisper = await whisperOfRun(q, runId);
   if (whisper === undefined) return null;
   if (whisper === null) return [];
-  const read = await readHits(q, refsOf(whisper.body.detail).map((ref) => ({ readerId: whisper.ownerId, ref })), timeZone);
-  return read.filter((h): h is ElsewhereHit => h !== null);
+  if (!(await mayTell(q, whisper, { ttlHours: elsewhereTtlHours, ownRunId: runId })).may) return [];
+  return (await readableHits(q, [whisper.id])).map((row) => hitOf(row, timeZone));
 }

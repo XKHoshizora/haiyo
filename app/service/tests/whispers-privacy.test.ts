@@ -56,14 +56,20 @@ async function world() {
   expect((await api(app, ned, "POST", `/api/conversations/${g}/members`, { principalId: nedsAgent.id })).status).toBe(201);
   await say(mia, g, "大家好");
   await say(owner, g, "你好");
-  return { owner, mia, ned, sam, agent: agent as { id: string; conversationId: string; handle: string }, g };
+  // What its found_elsewhere whispers point at: a message of the owner's own, in her Agent's conversation.
+  const note = await say(owner, agent.conversationId, "记一下：周五带伞");
+  await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [agent.id]);
+  return { owner, mia, ned, sam, agent: agent as { id: string; conversationId: string; handle: string }, g, note };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
-async function whisper(w: World, conversationId = w.g): Promise<Whisper> {
-  const made = await db.tx((t) =>
-    createWhisper(t, { conversationId, ownerId: w.owner.id, agentId: w.agent.id, kind: "memory", body: { text: CANARY, actions: ["tell", "dismiss"], detail: { seq: 1 } } }),
-  );
+/**
+ * A whisper of the owner's in `conversationId` (the group by default), pushed to her: a `found_elsewhere` one whose hit is a
+ * real reference (her own note), so it reads open; or (`kind` memory) one of the kinds whose 告诉他们 answers it `accepted`.
+ */
+async function whisper(w: World, conversationId = w.g, kind: "found_elsewhere" | "memory" = "found_elsewhere"): Promise<Whisper> {
+  const detail = kind === "found_elsewhere" ? { hits: [{ conversationId: w.agent.conversationId, seq: w.note, at: 0 }] } : { seq: 1 };
+  const made = await db.tx((t) => createWhisper(t, { conversationId, ownerId: w.owner.id, agentId: w.agent.id, kind, body: { text: CANARY, actions: ["tell", "dismiss"], detail } }));
   if (!made) throw new Error("whisper refused");
   app.realtime.pushWhisper(made);
   return made;
@@ -139,21 +145,29 @@ describe("a whisper's whole life, as everyone but its owner sees it", () => {
       expect([what, owner.lastSeq, owner.unread, owner.readSeq]).toEqual([what, ownerBefore.lastSeq, ownerBefore.unread, ownerBefore.readSeq]);
     };
 
-    // Created: the owner is pushed it.
+    // Created (a found_elsewhere one, its hit read for the owner): the owner is pushed it.
     const a = await whisper(w);
     ids.push(a.id);
-    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === a.id);
+    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === a.id && e.whisper.status === "open");
     expect((await api(app, w.owner, "GET", `/api/conversations/${w.g}`)).json.whispers).toBe(1);
     await phase("open", a.id);
-    // Answered.
-    expect((await api(app, w.owner, "POST", `/api/whispers/${a.id}/accept`)).status).toBe(200);
-    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === a.id && e.whisper.status === "accepted");
-    await phase("accepted", a.id);
+    // Answered 不用.
+    expect((await api(app, w.owner, "POST", `/api/whispers/${a.id}/decline`)).status).toBe(200);
+    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === a.id && e.whisper.status === "declined");
+    await phase("declined", a.id);
+    // With no hit left to read (its reference points at nothing): it reads expired, and is pushed so.
     const b = await whisper(w);
     ids.push(b.id);
-    expect((await api(app, w.owner, "POST", `/api/whispers/${b.id}/decline`)).status).toBe(200);
-    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === b.id && e.whisper.status === "declined");
-    await phase("declined", b.id);
+    await db.query("update whispers set body = jsonb_set(body, '{detail,hits}', $2::jsonb) where id = $1", [b.id, JSON.stringify([{ conversationId: w.agent.conversationId, seq: 999_999, at: 0 }])]);
+    app.realtime.pushWhisper(b);
+    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === b.id && e.whisper.status === "expired");
+    await phase("no hit left", b.id);
+    // One of the kinds 告诉他们 answers `accepted`.
+    const m = await whisper(w, w.g, "memory");
+    ids.push(m.id);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${m.id}/accept`)).status).toBe(200);
+    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === m.id && e.whisper.status === "accepted");
+    await phase("accepted", m.id);
     // Expired by the sweep, pushed to the owner as the app does.
     const c = await whisper(w);
     ids.push(c.id);
@@ -213,8 +227,8 @@ describe("a whisper's whole life, as everyone but its owner sees it", () => {
     const first = await reads(w, lee, a.id);
     const b = await whisper(w);
     await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === b.id);
-    expect((await api(app, w.owner, "POST", `/api/whispers/${b.id}/accept`)).status).toBe(200);
-    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === b.id && e.whisper.status === "accepted");
+    expect((await api(app, w.owner, "POST", `/api/whispers/${b.id}/decline`)).status).toBe(200);
+    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === b.id && e.whisper.status === "declined");
     // Byte for byte what they read before the second one (its id answered as the first's was: as an id that is none).
     expect(await reads(w, lee, b.id)).toEqual(first);
     // Settled on a message frame both sockets get after everything above (each socket's pushes keep their order).

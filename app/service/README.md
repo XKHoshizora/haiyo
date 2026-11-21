@@ -944,7 +944,9 @@ running; 409 `agent_paused` / `agent_deleted`; 409 `model_gone` while the Agent'
 (`modelUsable` false); 400 `invalid_request` when the latest run did not fail (or there is
 none) or the Agent has no model — in a group also when the Agent is not in the group now or its latest run there is
 from an earlier stay; so a reply cancelled by a halt (`halted`) or by the Agent's leaving (`agent_removed`) is not
-retried; 429 `rate_limited` over the replies one may start a minute (a retry is your own lane: 20). In a group, an `agentId` that is not one of
+retried; 409 `stale_whisper` for a told reply (`告诉他们`) whose whisper no longer reads open — declined, expired (a day
+old included), told, or with no hit left (Whispers: the one rule a told reply begins by); 429 `rate_limited` over the
+replies one may start a minute (a retry is your own lane: 20). In a group, an `agentId` that is not one of
 your Agents is 404 `not_found` as for an Agent that does not exist, and a group you are not a current member of as for
 a conversation that does not exist. Limit: 60 per minute with stop and dismiss.
 
@@ -1445,7 +1447,8 @@ expired. `text` is one line (at most 2 000 weight); `actions` the buttons it off
 these, and logs only its kind). A `found_elsewhere` whisper's `detail` is not what its row keeps but what was found, read
 now (below), and only while it is open or telling. An open whisper is answered once; it expires — `status: "expired"`,
 pushed to its owner — 7 days after it was made (a `found_elsewhere` one **a day** after: `WHISPERS.elsewhereTtlHours`,
-default 24, the product owner's decision; not one that is told, nor one telling until its told reply has ended), when its
+default 24, the product owner's decision; it reads expired from that moment, before the sweep stores it so; not one that
+is told, nor one telling until its told reply has ended), when its
 owner or its Agent leaves the conversation (or is removed), and when its Agent is deleted (everywhere at once). An answered
 or expired one is deleted 30 days after it was made, and so is any `found_elsewhere` one. Both run on the existing
 periodic sweep of memory changes, on its schedule (`MEMORY.changesSweepMs`; `0` stops them too; `attachments:sweep` runs
@@ -1478,8 +1481,13 @@ message whose transaction id is that run's), `telling` while its latest told rep
 or the stale-run sweep, stopped by you, cancelled by your pause: however) — unless it is `declined`, `expired`, or has no
 hit left (`expired`). So a tell that posts nothing leaves nothing to repair: the whisper simply reads open again, and
 `告诉他们` tells once more. Every change of its told reply is announced as any run's, and the announcement brings you the
-whisper as it is then (to you alone: no frame, count or key reaches anyone else). `told`, `declined` and `expired` are
-final. Made under the group's row and then the
+whisper as it is then (to you alone: no frame, count or key reaches anyone else). When you can no longer read a
+conversation one of your open whispers points into (you leave it or are removed), that whisper is pushed to you again
+once the leaving has committed, read as it is then: without those hits, or `expired` when none is left. `told`,
+`declined` and `expired` are final: **one rule decides whether a told reply may begin** — the whisper reads open (or that
+told reply is the one telling it) — and every way one starts keeps it: `告诉他们`, a retry of a failed told reply (409
+`stale_whisper` otherwise), and the told reply's own beginning (one that begins while its whisper is declined or expired
+tells nothing). Made under the group's row and then the
 Agent's (`lockAgent`, before the whisper); one that cannot be made (you or the Agent no longer there, the Agent deleted)
 is simply none. Nobody else learns anything of it; the reply's model is told the group's plain not-found, byte for byte.
 `告诉他们` (accept; only while it reads open: 409 `busy_run` while telling, 409 `stale_whisper` once final) stores nothing and
@@ -1510,8 +1518,8 @@ follow-up. (`让 Agent 停下`, a group member's halt, does
 not touch a told reply at all — it is your own, a person's call: it ends the runs Agents' messages called for and the
 replies nobody asked for, and a follow-up of noted calls that only Agents' messages made is such a run.) A retry of a told
 reply that failed keeps its whisper (it reads telling again), and tells again what it covered, with nothing noted; it is
-offered while the told reply is the Agent's latest run there (also after you answered 不用 or it expired: it is your own
-asking again — once it posts, the whisper reads told, which is what happened). `告诉他们` is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
+offered while the told reply is the Agent's latest run there and its whisper reads open (409 `stale_whisper` once you
+answered 不用 or it expired). `告诉他们` is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
 `busy_run` (a reply of it queued or running there), 429 `rate_limited` (your own replies a minute) — each leaves the
 whisper open, to answer again. `不用` (decline) does nothing more. Vault notes are not involved: hits are messages.
 `tools_off` — a reply found its provider model unable to use tools and the model was marked so

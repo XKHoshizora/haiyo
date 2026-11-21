@@ -5,14 +5,13 @@ import type { Activity } from "../agents/runtime/port.ts";
 import type { Config } from "../config.ts";
 import type { ConversationEvents } from "../conversations/events.ts";
 import { currentMemberIds, peekConversation } from "../conversations/store.ts";
-import type { Queryable } from "../db.ts";
+import type { Db } from "../db.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type StoredMessage, type WireMessage } from "../messages/model.ts";
 import { toWireForReaders, type ReadEvents, type ReadMarker } from "../messages/read.ts";
 import { handleOf } from "../principals/store.ts";
 import { liveSessions } from "../session.ts";
 import type { SocialEvents } from "../social/events.ts";
-import { readWhispers } from "../whispers/store.ts";
-import { wireWhispers, type WireWhisper } from "../whispers/wire.ts";
+import { wireWhispersOf, type WireWhisper } from "../whispers/wire.ts";
 import type { TicketOwner } from "./tickets.ts";
 
 /** The key of a principal's own queue of whisper pushes (`pushWhisper`), beside the conversations' (a uuid never starts so). */
@@ -90,9 +89,9 @@ interface Queue {
 }
 
 export interface HubDeps {
-  db: Queryable;
-  /** The site models' labels, read when a message is rendered (`via`); the site's time zone, a whisper's hits' times. */
-  config: Pick<Config, "siteModels" | "siteTimezone">;
+  db: Db;
+  /** The site models' labels, read when a message is rendered (`via`); the site's time zone and `WHISPERS`, a whisper's copy. */
+  config: Pick<Config, "siteModels" | "siteTimezone" | "whispers">;
   conversations: ConversationEvents;
   social: SocialEvents;
   reads: ReadEvents;
@@ -426,10 +425,9 @@ export class Hub {
   private async pushWhisperNow(principalId: string, whisperId: string): Promise<void> {
     const [owner] = this.connectedAmong([principalId]);
     if (!owner) return;
-    const found = await readWhispers(this.deps.db, owner, [whisperId]);
-    if (found.length === 0) return;
-    const [whisper] = await wireWhispers(this.deps.db, found, this.deps.config.siteTimezone);
-    this.push(owner, { type: "whisper", whisper: whisper! });
+    const { siteTimezone: timeZone, whispers } = this.deps.config;
+    const [whisper] = await wireWhispersOf(this.deps.db, owner, [whisperId], { timeZone, elsewhereTtlHours: whispers.elsewhereTtlHours });
+    if (whisper) this.push(owner, { type: "whisper", whisper });
   }
 
   /** `pushChargedReply`'s delivery: the reply as `principalId` may read it now, when that carries `via`. */

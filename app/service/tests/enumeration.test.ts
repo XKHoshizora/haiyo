@@ -609,7 +609,10 @@ describe("enumeration by timing (coarse)", () => {
     const g = await group(app, alice, "told", [eve, bob]);
     const agent = await mustCreateAgent(app, alice, { model: { source: "site", id: "fast" } });
     expect((await api(app, alice, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
-    const make = () => db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "memory", body: { text: "只给 alice", actions: ["tell", "dismiss"] } }));
+    // A found_elsewhere one that reads open: its hit is a real reference (alice's note to her Agent).
+    const note = await api(app, alice, "POST", `/api/conversations/${agent.conversationId}/messages`, { text: "记一下", clientTxn: "enum-note" });
+    const detail = { hits: [{ conversationId: agent.conversationId, seq: note.json.message.seq, at: 0 }] };
+    const make = () => db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "found_elsewhere", body: { text: "只给 alice", actions: ["tell", "dismiss"], detail } }));
     const open = (await make())!;
     const answered = (await make())!;
     expect((await api(app, alice, "POST", `/api/whispers/${answered.id}/decline`)).status).toBe(200);
@@ -628,7 +631,9 @@ describe("enumeration by timing (coarse)", () => {
     const g = await group(app, alice, "told", [eve, bob]);
     const agent = await mustCreateAgent(app, alice, { model: { source: "site", id: "fast" } });
     expect((await api(app, alice, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
-    const told = await db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "memory", body: { text: "只给 alice", actions: ["tell", "dismiss"] } }));
+    const note = await api(app, alice, "POST", `/api/conversations/${agent.conversationId}/messages`, { text: "记一下", clientTxn: "enum-note" });
+    const detail = { hits: [{ conversationId: agent.conversationId, seq: note.json.message.seq, at: 0 }] };
+    const told = await db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "found_elsewhere", body: { text: "只给 alice", actions: ["tell", "dismiss"], detail } }));
     const accept = (id: string) => async () => {
       const res = await api(app, eve, "POST", `/api/whispers/${id}/accept`);
       expect(res).toEqual({ status: 404, json: { error: "not_found" } });

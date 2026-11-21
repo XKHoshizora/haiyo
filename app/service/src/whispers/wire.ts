@@ -1,7 +1,20 @@
 import { z } from "zod";
-import { readHits, refsOf, type ElsewhereHit } from "../agents/tools/elsewhere.ts";
-import type { Queryable } from "../db.ts";
-import { NO_TELL, tellStates, WHISPER_ACTIONS, WHISPER_KINDS, WIRE_STATUSES, type TellState, type Whisper, type WhisperAction, type WhisperKind, type WireStatus } from "./store.ts";
+import { hitOf, type ElsewhereHit } from "../agents/tools/elsewhere.ts";
+import { onSnapshot, type Db, type Queryable } from "../db.ts";
+import {
+  NO_TELL,
+  readableHits,
+  readWhispers,
+  tellStates,
+  WHISPER_ACTIONS,
+  WHISPER_KINDS,
+  WIRE_STATUSES,
+  type TellState,
+  type Whisper,
+  type WhisperAction,
+  type WhisperKind,
+  type WireStatus,
+} from "./store.ts";
 
 /**
  * A whisper as its owner receives it — and nobody else ever does (README "Whispers"): in the `whisper` push, `GET /api/sync`'s
@@ -56,14 +69,15 @@ export interface FoundView {
 }
 
 /**
- * The state of `found_elsewhere` whisper `w`, from its told replies (`tell`) and how many of its hits its owner can read now
- * (`readable`): told once a told reply of it posted (final); else what is stored when that is no longer open (declined,
- * expired); else telling while a told reply of it is queued or running; else expired when no hit is left to read; else
- * open — `lastTellFailed` when it has had a told reply (none posted, none under way: its latest ended without posting).
- * Its revision rises with every step of that (`revisionOf`).
+ * The state of `found_elsewhere` whisper `w`, from its told replies and its age (`tell`) and how many of its hits its owner
+ * can read now (`readable`): told once a told reply of it posted (final); else what is stored when that is no longer open
+ * (declined, expired: final); else telling while a told reply of it is queued or running; else expired when it is a day old
+ * (`WHISPERS.elsewhereTtlHours`, before the sweep stores it so) or no hit is left to read; else open — `lastTellFailed`
+ * when it has had a told reply (none posted, none under way: its latest ended without posting). Open is exactly what
+ * whispers/store.ts `mayTell` lets a told reply begin from. Its revision rises with every step of that (`revisionOf`).
  */
 export function foundView(w: Pick<Whisper, "status">, tell: TellState, readable: number): Omit<FoundView, "hits"> {
-  const status: WireStatus = tell.told ? "told" : w.status !== "open" ? w.status : tell.telling ? "telling" : readable === 0 ? "expired" : "open";
+  const status: WireStatus = tell.told ? "told" : w.status !== "open" ? w.status : tell.telling ? "telling" : tell.aged || readable === 0 ? "expired" : "open";
   return { status, lastTellFailed: status === "open" && tell.runs > 0, revision: revisionOf(w, tell, status) };
 }
 
@@ -109,28 +123,35 @@ export function toWireWhisper(w: Whisper, found?: FoundView): WireWhisper {
   };
 }
 
+/** How a whisper is read for its owner: the site's time zone (its hits' times) and `WHISPERS.elsewhereTtlHours`. */
+export interface WireOptions {
+  timeZone: string;
+  elsewhereTtlHours: number;
+}
+
 /**
  * Each of `whispers` as its owner receives it now (the order kept): a `found_elsewhere` one's state derived from its told
- * replies (`tellStates`, one statement for all) and its hits read under its owner's access now (agents/tools/elsewhere.ts
- * `readHits`, one statement for all) — only for one stored open and not told: nothing else shows them or depends on them.
- * Hit times are written in `timeZone` (the site's).
+ * replies and its age (`tellStates`, one statement for all) and its hits read under its owner's access now (`readableHits`,
+ * one statement for all) — only for one stored open and not told: nothing else shows them or depends on them. `q` must be
+ * one snapshot with the read of `whispers` themselves (`wireWhispersOf`; sync and catch-up read on one already), so that a
+ * copy never mixes two moments.
  */
-export async function wireWhispers(q: Queryable, whispers: readonly Whisper[], timeZone: string): Promise<WireWhisper[]> {
+export async function wireWhispers(q: Queryable, whispers: readonly Whisper[], { timeZone, elsewhereTtlHours }: WireOptions): Promise<WireWhisper[]> {
   const found = whispers.filter((w) => w.kind === "found_elsewhere");
   if (found.length === 0) return whispers.map((w) => toWireWhisper(w));
-  const tells = await tellStates(q, found);
+  const tells = await tellStates(q, found.map((w) => w.id), elsewhereTtlHours);
   const reading = found.filter((w) => w.status === "open" && !(tells.get(w.id) ?? NO_TELL).told);
-  const wanted = reading.flatMap((w) => refsOf(w.body.detail).map((ref) => ({ readerId: w.ownerId, ref, of: w.id })));
-  const read = await readHits(q, wanted, timeZone);
   const hitsOf = new Map<string, ElsewhereHit[]>();
-  wanted.forEach((x, i) => {
-    const hit = read[i];
-    if (hit) hitsOf.set(x.of, [...(hitsOf.get(x.of) ?? []), hit]);
-  });
+  for (const row of await readableHits(q, reading.map((w) => w.id))) hitsOf.set(row.whisperId, [...(hitsOf.get(row.whisperId) ?? []), hitOf(row, timeZone)]);
   return whispers.map((w) => {
     if (w.kind !== "found_elsewhere") return toWireWhisper(w);
     const hits = hitsOf.get(w.id) ?? [];
     const view = foundView(w, tells.get(w.id) ?? NO_TELL, hits.length);
     return toWireWhisper(w, { ...view, hits: view.status === "open" || view.status === "telling" ? hits : null });
   });
+}
+
+/** `ownerId`'s whispers among `ids` as she receives them now: the rows and all they are derived from, read on one snapshot. */
+export function wireWhispersOf(db: Db, ownerId: string, ids: readonly string[], options: WireOptions): Promise<WireWhisper[]> {
+  return onSnapshot(db, async (t) => wireWhispers(t, await readWhispers(t, ownerId, ids), options));
 }

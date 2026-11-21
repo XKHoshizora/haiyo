@@ -59,8 +59,13 @@ async function world() {
   const g = await group(app, owner, "team", [mia, ned]);
   expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
   await say(mia, g, "大家好");
-  return { owner, mia, ned, agent: agent as { id: string; conversationId: string }, g };
+  // What a found_elsewhere whisper of hers points at (`found`): her own note to her Agent.
+  const note = await say(owner, agent.conversationId, "记一下：周五有空");
+  await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [agent.id]);
+  return { owner, mia, ned, agent: agent as { id: string; conversationId: string }, g, note };
 }
+/** A found_elsewhere whisper's body whose one hit is a real reference (her note): it reads open. */
+const found = (w: { agent: { conversationId: string }; note: number }): WhisperBody => ({ ...BODY, detail: { hits: [{ conversationId: w.agent.conversationId, seq: w.note, at: 0 }] } });
 type World = Awaited<ReturnType<typeof world>>;
 
 /** A whisper of olive's about her Agent in `conv` (the group by default), pushed to her as a later task will. */
@@ -248,14 +253,24 @@ describe("the owner learns of it", () => {
   it("what is read for its push delays nothing the other members are sent: it goes on its owner's own queue, not the conversation's", async () => {
     const w = await world();
     const [ownerSocket, nedSocket] = [await connect(app, w.owner), await connect(app, w.ned)];
-    // The push's read of the whisper (at delivery) held until released.
+    // The push's read of the whisper (at delivery, in its snapshot's transaction) held until released.
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
-    const real = app.deps.db.query;
-    app.deps.db.query = (async (text: unknown, params?: unknown) => {
-      if (typeof text === "string" && /from whispers where owner_id = \$1 and id = any/.test(text)) await held;
-      return (real as Function).call(app.deps.db, text, params);
-    }) as typeof real;
+    const real = app.deps.db.tx;
+    app.deps.db.tx = ((fn: (t: any) => Promise<unknown>) =>
+      real.call(app.deps.db, (t: any) =>
+        fn(
+          new Proxy(t, {
+            get: (o, p) =>
+              p === "query"
+                ? async (text: unknown, params?: unknown) => {
+                    if (typeof text === "string" && /from whispers where owner_id = \$1 and id = any/.test(text)) await held;
+                    return o.query(text, params);
+                  }
+                : Reflect.get(o, p),
+          }),
+        ),
+      )) as typeof real;
     try {
       const made = await whisper(w);
       const seq = await say(w.mia, w.g, "照常说话");
@@ -265,7 +280,7 @@ describe("the owner learns of it", () => {
       release();
       await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === made.id);
     } finally {
-      app.deps.db.query = real;
+      app.deps.db.tx = real;
       release();
     }
   });
@@ -532,9 +547,9 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
 
   it("an answer waits for a delete's lock on the Agent's row before it takes the whisper's: with a hook that locks the Agent, no deadlock", async () => {
     const w = await world();
-    const made = await whisper(w);
-    const realHook = ANSWER_HOOKS.memory;
-    ANSWER_HOOKS.memory = LOCKS_THE_AGENT;
+    const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });
+    const realHook = ANSWER_HOOKS.found_elsewhere;
+    ANSWER_HOOKS.found_elsewhere = LOCKS_THE_AGENT;
     try {
       // The delete: the Agent's conversation and row, then (once the accept waits) its whispers — whisper rows last — and commit.
       const del = holding(
@@ -549,27 +564,30 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
       expect(await accepting).toEqual({ status: 404, json: { error: "not_found" } });
       expect(await statusOf(made.id)).toBe("expired");
     } finally {
-      ANSWER_HOOKS.memory = realHook;
+      ANSWER_HOOKS.found_elsewhere = realHook;
     }
   });
 
   it("an accept and the Agent's delete at the same moment, 20 times: never an error, and one outcome each time", async () => {
     const w = await world();
-    const realHook = ANSWER_HOOKS.memory;
-    ANSWER_HOOKS.memory = LOCKS_THE_AGENT;
+    const realHook = ANSWER_HOOKS.found_elsewhere;
+    let hooked = 0;
+    ANSWER_HOOKS.found_elsewhere = { accepted: async (t, x) => void (hooked++, await LOCKS_THE_AGENT.accepted(t, x)) };
     try {
       for (let i = 0; i < 20; i++) {
         const agent = await mustCreateAgent(app, w.owner, { model: FAST });
         expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/members`, { principalId: agent.id })).status).toBe(201);
-        const made = await whisper(w, { agentId: agent.id });
+        const made = await whisper(w, { agentId: agent.id, kind: "found_elsewhere", body: found(w) });
+        const before = hooked;
         const [accepted, deleted] = await Promise.all([api(app, w.owner, "POST", `/api/whispers/${made.id}/accept`), api(app, w.owner, "DELETE", `/api/agents/${agent.id}`)]);
         expect([i, deleted.status]).toEqual([i, 200]);
-        const status = await statusOf(made.id);
-        if (accepted.status === 200) expect([i, status]).toEqual([i, "accepted"]);
-        else expect([i, accepted.status, status]).toEqual([i, 404, "expired"]);
+        // Answered first (its hook ran, nothing stored), then expired by the delete; or found gone (404) after it.
+        if (accepted.status === 200) expect([i, accepted.json.status, hooked - before]).toEqual([i, "open", 1]);
+        else expect([i, accepted.status, hooked - before]).toEqual([i, 404, 0]);
+        expect([i, await statusOf(made.id)]).toEqual([i, "expired"]);
       }
     } finally {
-      ANSWER_HOOKS.memory = realHook;
+      ANSWER_HOOKS.found_elsewhere = realHook;
     }
   }, 60_000);
 
@@ -584,8 +602,8 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
       const both = deferred();
       meet = { arrived: 0, both: both.promise, release: () => both.resolve() };
     };
-    const realHook = ANSWER_HOOKS.memory;
-    ANSWER_HOOKS.memory = {
+    const realHook = ANSWER_HOOKS.found_elsewhere;
+    ANSWER_HOOKS.found_elsewhere = {
       accepted: async (t, x) => {
         if (++meet.arrived === 2) meet.release();
         await Promise.race([meet.both, new Promise((r) => setTimeout(r, 300))]);
@@ -595,13 +613,14 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
     try {
       for (let i = 0; i < 20; i++) {
         round();
-        const [a, b] = [await whisper(w), await whisper(w, { conversationId: g2 })];
+        const [a, b] = [await whisper(w, { kind: "found_elsewhere", body: found(w) }), await whisper(w, { conversationId: g2, kind: "found_elsewhere", body: found(w) })];
         const answers = await Promise.all([a, b].map((x) => api(app, w.owner, "POST", `/api/whispers/${x.id}/accept`)));
-        expect([i, answers.map((r) => r.status)]).toEqual([i, [200, 200]]);
-        expect([i, await statusOf(a.id), await statusOf(b.id)]).toEqual([i, "accepted", "accepted"]);
+        expect([i, answers.map((r) => r.status), meet!.arrived]).toEqual([i, [200, 200], 2]);
+        // Both answered: nothing stored (the hook's told reply would be what makes them telling).
+        expect([i, await statusOf(a.id), await statusOf(b.id)]).toEqual([i, "open", "open"]);
       }
     } finally {
-      ANSWER_HOOKS.memory = realHook;
+      ANSWER_HOOKS.found_elsewhere = realHook;
     }
   }, 60_000);
 });

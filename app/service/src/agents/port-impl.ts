@@ -601,8 +601,9 @@ export class DbAgentPort implements AgentPort {
       // A reply `告诉他们` queued (Task 8): what its whisper found elsewhere, read now as its owner may read it now
       // (Redesign D: a hit she can no longer read is left out), shown to it as material in its system text
       // (tools/elsewhere.ts `toldPassage`); it answers no call, and is offered no tools. Its whisper gone (deleted 30 days
-      // after it was made) or no hit left to read: there is nothing to tell.
-      const told = group ? await toldHits(t, run.id, config.siteTimezone) : null;
+      // after it was made), no longer one it may tell (declined, expired: whispers/store.ts `mayTell`) or no hit left to
+      // read: there is nothing to tell.
+      const told = group ? await toldHits(t, run.id, { timeZone: config.siteTimezone, elsewhereTtlHours: config.whispers.elsewhereTtlHours }) : null;
       if (told !== null && told.length === 0) return { end: NOTHING_LEFT };
       // A reply nobody asked for that someone has called since its claim: no unasked remark now. What was noted on it
       // stays noted, so its follow-up answers the call in the caller's lane.

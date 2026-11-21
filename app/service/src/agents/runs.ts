@@ -12,6 +12,7 @@ import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
 import { agentModelOf, lockAgent, type AgentRow } from "./store.ts";
+import { mayTell } from "../whispers/store.ts";
 
 /**
  * Reply runs (`agent_runs` rows of purpose `reply`) as the routes and the send path see them: the trigger, retry, stop,
@@ -1506,7 +1507,7 @@ export async function retryRun(
   ownerId: string,
   conversationId: string,
   agentId: string | undefined,
-  config: RunLimits & Pick<Config, "siteModels">,
+  config: RunLimits & Pick<Config, "siteModels" | "whispers">,
 ): Promise<Announced> {
   if (await isGroup(t, conversationId)) return retryInGroup(t, ownerId, conversationId, agentId, config);
   const ownAgentId = await ownedAgentOf(t, ownerId, conversationId);
@@ -1545,7 +1546,7 @@ async function retryInGroup(
   ownerId: string,
   conversationId: string,
   agentId: string | undefined,
-  config: RunLimits & Pick<Config, "siteModels">,
+  config: RunLimits & Pick<Config, "siteModels" | "whispers">,
 ): Promise<Announced> {
   const own = await ownAgentInGroup(t, ownerId, conversationId, agentId);
   const joinedSeq = own.joinedSeq;
@@ -1559,6 +1560,11 @@ async function retryInGroup(
     throw new AppError(400, "invalid_request");
   }
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
+  // A told reply tells again only a whisper that reads open (whispers/store.ts `mayTell`, the one rule a press and a told
+  // reply's beginning keep too): declined and expired are final. Under the group's row and the Agent's, held.
+  if (latest.whisper_id !== null && !(await mayTell(t, { id: latest.whisper_id, ownerId }, { ttlHours: config.whispers.elsewhereTtlHours })).may) {
+    throw new AppError(409, "stale_whisper");
+  }
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
   if (latest.whisper_id === null) {
     const queued = await queueRun(t, agent, conversationId, Number(latest.answers), latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids);

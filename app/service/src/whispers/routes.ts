@@ -8,8 +8,9 @@ import { perPrincipalLimit } from "../limits.ts";
 import { positiveIntString, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
 import type { Hub } from "../sync/hub.ts";
+import { onSnapshot } from "../db.ts";
 import { listWhispers, resolveWhisper, type Whisper, type WhisperAnswer, type WhisperKind } from "./store.ts";
-import { wireWhispers, wireWhisperSchema } from "./wire.ts";
+import { wireWhispers, wireWhispersOf, wireWhisperSchema, type WireOptions } from "./wire.ts";
 
 /**
  * What answering a whisper of a kind does besides its status: run in the answer's transaction, after the status is written
@@ -45,6 +46,7 @@ const idParams = z.object({ id: uuidParam });
  */
 export function registerWhisperRoutes(app: FastifyInstance): void {
   const { db, config } = app.deps;
+  const wire: WireOptions = { timeZone: config.siteTimezone, elsewhereTtlHours: config.whispers.elsewhereTtlHours };
   const api = app.withTypeProvider<ZodTypeProvider>();
   const readLimit = perPrincipalLimit(app, 120);
   const answerLimit = perPrincipalLimit(app, 30);
@@ -61,9 +63,13 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
     async (req) => {
       const me = await requirePrincipal(req);
       await readLimit(req, me.id);
-      const page = await listWhispers(db, me.id, req.params.id, { before: req.query.before, limit: req.query.limit ?? 50 });
+      // The page and all its copies are derived from: one snapshot.
+      const page = await onSnapshot(db, async (t) => {
+        const found = await listWhispers(t, me.id, req.params.id, { before: req.query.before, limit: req.query.limit ?? 50 });
+        return found && { whispers: await wireWhispers(t, found.whispers, wire), nextBefore: found.nextBefore };
+      });
       if (!page) throw notFound();
-      return { whispers: await wireWhispers(db, page.whispers, config.siteTimezone), nextBefore: page.nextBefore };
+      return page;
     },
   );
 
@@ -79,17 +85,18 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
         await answerLimit(req, me.id);
         let afterCommit: (() => void) | void = undefined;
         const outcome = await db.tx(async (t) => {
-          const resolved = await resolveWhisper(t, me.id, req.params.id, to);
+          const resolved = await resolveWhisper(t, me.id, req.params.id, to, wire.elsewhereTtlHours);
           if (typeof resolved !== "string") afterCommit = await ANSWER_HOOKS[resolved.kind]?.[to]?.(t, resolved, app);
           return resolved;
         });
         if (outcome === "gone") throw notFound();
         if (outcome === "stale") throw new AppError(409, "stale_whisper");
         if (outcome === "busy") throw new AppError(409, "busy_run");
-        const [wire] = await wireWhispers(db, [outcome], config.siteTimezone);
+        // As it is now that the answer has committed, read on one snapshot.
+        const [now] = await wireWhispersOf(db, me.id, [outcome.id], wire);
         app.realtime.pushWhisper(outcome);
         (afterCommit as (() => void) | void)?.();
-        return wire!;
+        return now ?? (await wireWhispers(db, [outcome], wire))[0]!;
       },
     );
   answer("accept", "accepted");

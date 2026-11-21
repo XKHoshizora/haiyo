@@ -9,12 +9,13 @@
 -- What was stored before: a told one (answered `accepted`, a told reply of it posted) keeps nothing more — stored open, it
 -- reads told from that message. Every other open or `accepted` one is expired: its hits are copies of text, with no
 -- reference to read, so it could be neither shown nor told under the new rule (converting them is not worth it: a
--- `found_elsewhere` whisper expires a day after it was made).
-update whispers w set status = 'open', resolved_at = null
+-- `found_elsewhere` whisper expires a day after it was made). Either way the old copies of what was found (`detail.hits`)
+-- are taken out of the row: nothing of them is kept at rest.
+update whispers w set status = 'open', resolved_at = null, body = w.body #- '{detail,hits}'
  where w.kind = 'found_elsewhere' and w.status = 'accepted'
    and exists (select 1 from agent_runs r join messages m on m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text
                 where r.whisper_id = w.id and r.owner_id = w.owner_id);
-update whispers w set status = 'expired', resolved_at = now()
+update whispers w set status = 'expired', resolved_at = now(), body = w.body #- '{detail,hits}'
  where w.kind = 'found_elsewhere' and w.status in ('open', 'accepted')
    and not exists (select 1 from agent_runs r join messages m on m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text
                     where r.whisper_id = w.id and r.owner_id = w.owner_id);

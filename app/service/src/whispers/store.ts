@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from "fastify";
 import { cleanText } from "../agents/runtime/prompt.ts";
 import { DEFAULT_WHISPERS } from "../config.ts";
 import { lockConversation, visibleJoin } from "../conversations/store.ts";
+import { handleOf } from "../principals/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { weight } from "../metering/tokens.ts";
 
@@ -138,36 +139,47 @@ const toldSql = (w: string): string =>
 /** SQL: a told reply of whisper `w` is queued or running — the whisper is telling (an Agent has one such run there at most). */
 const tellingSql = (w: string): string =>
   `exists (select 1 from agent_runs tr where tr.whisper_id = ${w}.id and tr.owner_id = ${w}.owner_id and tr.status in ('queued', 'running'))`;
-const UUID_SHAPE = `'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'`;
+/** The shape of a uuid, the one pattern a reference's `conversationId` is held to (SQL here; agents/tools/elsewhere.ts makes them). */
+const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+/** `WHISPERS.elsewhereTtlHours` as it goes into SQL: a whole number of hours (config.ts takes 1–168), never anything else. */
+function hours(ttlHours: number): string {
+  if (!Number.isSafeInteger(ttlHours) || ttlHours < 1) throw new Error("whispers: elsewhereTtlHours must be a whole number of hours");
+  return String(ttlHours);
+}
+/** SQL: `found_elsewhere` whisper `w` is a day old (`ttlHours`): it reads expired from then, before the sweep stores it so. */
+const agedSql = (w: string, ttlHours: number): string => `(${w}.created_at <= now() - ${hours(ttlHours)} * interval '1 hour')`;
 /**
- * SQL: one of the messages whisper `w` found (its `detail.hits`, each `{conversationId, seq}`: agents/tools/elsewhere.ts) is
- * one its owner can read now — a current member there, the message after their joining (`visibleJoin`: the rule every read
- * of a message keeps, and the one `readHits` reads them by). A reference of another shape points at nothing.
+ * SQL, the FROM items of THE rule for whether a hit can be read (one definition, for every predicate here and the hits'
+ * own read, `readableHits`): each of whisper `w`'s references (`detail.hits`: `{conversationId, seq, at}`, agents/tools/
+ * elsewhere.ts) as `h (ref, ord)`, joined to the message it points at (`m`) as its owner may read it now (`visibleJoin`: a
+ * current member there, the message after their joining). With `HIT_READABLE` in the WHERE: a text or file message, and a
+ * reference of exactly that shape — anything else points at nothing, for all of them alike.
  */
-const readableHitSql = (w: string): string =>
-  `exists (select 1 from jsonb_array_elements(case when jsonb_typeof(${w}.body -> 'detail' -> 'hits') = 'array' then ${w}.body -> 'detail' -> 'hits' else '[]'::jsonb end) as h (ref)
-             cross join lateral (select ${w}.owner_id as reader_id) as r
-             join messages m on m.conversation_id = case when jsonb_typeof(h.ref -> 'conversationId') = 'string' and (h.ref ->> 'conversationId') ~ ${UUID_SHAPE} then (h.ref ->> 'conversationId')::uuid end
-                            and m.seq = case when jsonb_typeof(h.ref -> 'seq') = 'number' and (h.ref ->> 'seq') ~ '^[1-9][0-9]{0,15}$' then (h.ref ->> 'seq')::bigint end
-             ${visibleJoin("r.reader_id")}
-            where m.kind in ('text', 'file'))`;
+const hitFrom = (w: string): string =>
+  `jsonb_array_elements(case when jsonb_typeof(${w}.body -> 'detail' -> 'hits') = 'array' then ${w}.body -> 'detail' -> 'hits' else '[]'::jsonb end) with ordinality as h (ref, ord)
+   cross join lateral (select ${w}.owner_id as reader_id) as r
+   join messages m on m.conversation_id = case when jsonb_typeof(h.ref -> 'conversationId') = 'string' and (h.ref ->> 'conversationId') ~ '${UUID_PATTERN}' then (h.ref ->> 'conversationId')::uuid end
+                  and m.seq = case when jsonb_typeof(h.ref -> 'seq') = 'number' and (h.ref ->> 'seq') ~ '^[1-9][0-9]{0,15}$' then (h.ref ->> 'seq')::bigint end
+   ${visibleJoin("r.reader_id")}`;
+const HIT_READABLE = `m.kind in ('text', 'file') and jsonb_typeof(h.ref -> 'at') = 'number' and (h.ref ->> 'at') ~ '^[0-9]{1,9}$'`;
+/** SQL: one of whisper `w`'s hits can be read by its owner now (`hitFrom`). */
+const readableHitSql = (w: string): string => `exists (select 1 from ${hitFrom(w)} where ${HIT_READABLE})`;
+/** SQL: `found_elsewhere` whisper `w` reads open — stored open, not told, not telling, not a day old, a hit left to read. */
+const readsOpenSql = (w: string, ttlHours: number): string =>
+  `(${w}.status = 'open' and not ${toldSql(w)} and not ${tellingSql(w)} and not ${agedSql(w, ttlHours)} and ${readableHitSql(w)})`;
 /**
- * SQL: whisper `w` is still live for its owner — open; a `found_elsewhere` one open or telling. What sync and catch-up
- * always carry, and what that kind's cap counts.
+ * SQL: whisper `w` is still live for its owner — open; a `found_elsewhere` one reading open or telling. What sync and
+ * catch-up always carry, and what that kind's cap counts.
  */
-const liveSql = (w: string): string =>
-  `(${w}.status = 'open' and (${w}.kind <> 'found_elsewhere' or (not ${toldSql(w)} and (${tellingSql(w)} or ${readableHitSql(w)}))))`;
-/**
- * SQL: whisper `w` waits for its owner's answer — open and offering a button; a `found_elsewhere` one neither told nor
- * telling, with a hit its owner can read. The conversation entry's `whispers: n` (sync/read.ts).
- */
-export const waitingSql = (w: string): string =>
-  `(${w}.status = 'open' and jsonb_array_length(${w}.body -> 'actions') > 0
-    and (${w}.kind <> 'found_elsewhere' or (not ${toldSql(w)} and not ${tellingSql(w)} and ${readableHitSql(w)})))`;
+const liveSql = (w: string, ttlHours: number): string =>
+  `(${w}.status = 'open' and (${w}.kind <> 'found_elsewhere' or ${tellingSql(w)} and not ${toldSql(w)} or ${readsOpenSql(w, ttlHours)}))`;
+/** SQL: whisper `w` waits for its owner's answer — open and offering a button; a `found_elsewhere` one reading open. The conversation entry's `whispers: n` (sync/read.ts). */
+export const waitingSql = (w: string, ttlHours: number): string =>
+  `(${w}.status = 'open' and jsonb_array_length(${w}.body -> 'actions') > 0 and (${w}.kind <> 'found_elsewhere' or ${readsOpenSql(w, ttlHours)}))`;
 /** SQL: whisper `w` is not a told `found_elsewhere` one (told is final: nothing expires it). */
 const notTold = (w: string): string => `(${w}.kind <> 'found_elsewhere' or not ${toldSql(w)})`;
 
-/** What the told replies of a `found_elsewhere` whisper say of it now. */
+/** What the told replies of a `found_elsewhere` whisper, and its age, say of it now. */
 export interface TellState {
   /** How many told replies it has had. */
   runs: number;
@@ -175,26 +187,130 @@ export interface TellState {
   telling: boolean;
   /** One of them posted its reply. */
   told: boolean;
+  /** It is `elsewhereTtlHours` old: it reads expired unless told or telling. */
+  aged: boolean;
 }
-export const NO_TELL: Readonly<TellState> = Object.freeze({ runs: 0, telling: false, told: false });
+export const NO_TELL: Readonly<TellState> = Object.freeze({ runs: 0, telling: false, told: false, aged: false });
 
-/** The told replies of each of `whispers` (their owner's runs only), as they are now, by whisper id: one statement. */
-export async function tellStates(q: Queryable, whispers: ReadonlyArray<Pick<Whisper, "id" | "ownerId">>): Promise<Map<string, TellState>> {
+/** The told replies and the age of each of `ids` (their owner's runs only), as they are now, by whisper id: one statement. */
+export async function tellStates(q: Queryable, ids: readonly string[], ttlHours: number): Promise<Map<string, TellState>> {
   const out = new Map<string, TellState>();
-  if (whispers.length === 0) return out;
-  const { rows } = await q.query<{ id: string; runs: number; telling: boolean; told: boolean }>(
+  if (ids.length === 0) return out;
+  const { rows } = await q.query<{ id: string } & TellState>(
     `select w.id, count(r.id)::int as runs, coalesce(bool_or(r.status in ('queued', 'running')), false) as telling,
-            coalesce(bool_or(exists (select 1 from messages m where m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text)), false) as told
-       from unnest($1::uuid[], $2::uuid[]) as w (id, owner_id)
-       left join agent_runs r on r.whisper_id = w.id and r.owner_id = w.owner_id
+            coalesce(bool_or(exists (select 1 from messages m where m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text)), false) as told,
+            ${agedSql("w", ttlHours)} as aged
+       from whispers w left join agent_runs r on r.whisper_id = w.id and r.owner_id = w.owner_id
+      where w.id = any($1::uuid[])
       group by w.id`,
-    [whispers.map((w) => w.id), whispers.map((w) => w.ownerId)],
+    [ids],
   );
-  for (const r of rows) out.set(r.id, { runs: r.runs, telling: r.telling, told: r.told });
+  for (const r of rows) out.set(r.id, { runs: r.runs, telling: r.telling, told: r.told, aged: r.aged });
   return out;
 }
 
-/** `ownerId`'s whispers among `ids`, as stored (the hub reads the one it pushes when it delivers it). */
+/** One hit of a whisper, as its owner may read it now (`readableHits`): what agents/tools/elsewhere.ts shows of it. */
+export interface HitRow {
+  whisperId: string;
+  /** Its place among the whisper's hits (1 the newest). */
+  ord: number;
+  /** Where the words are in its text, once on one line. */
+  at: number;
+  createdAt: Date;
+  text: string | null;
+  /** A file message's file name. */
+  attachmentName: string | null;
+  senderName: string;
+  senderHandle: string;
+  /** The conversation's title (a group's; null when it has none) and type. */
+  title: string | null;
+  conversationType: string;
+}
+
+/** The hits of each of `ids` its owner can read now (THE rule, `hitFrom`), in each whisper's order: one statement. */
+export async function readableHits(q: Queryable, ids: readonly string[]): Promise<HitRow[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await q.query<{
+    whisper_id: string;
+    ord: string;
+    at: number;
+    created_at: Date;
+    text: string | null;
+    attachment_name: string | null;
+    sender_name: string;
+    sender_handle: string;
+    title: string | null;
+    conversation_type: string;
+  }>(
+    `select w.id as whisper_id, h.ord, (h.ref ->> 'at')::int as at, m.created_at, m.body ->> 'text' as text,
+            case when m.kind = 'file' then m.body -> 'attachment' ->> 'name' end as attachment_name,
+            sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, c.title, c.type as conversation_type
+       from whispers w
+      cross join ${hitFrom("w")}
+       join principals sp on sp.id = m.sender_id
+       join conversations c on c.id = m.conversation_id
+      where w.id = any($1::uuid[]) and ${HIT_READABLE}
+      order by w.id, h.ord`,
+    [ids],
+  );
+  return rows.map((r) => ({
+    whisperId: r.whisper_id,
+    ord: Number(r.ord),
+    at: r.at,
+    createdAt: r.created_at,
+    text: r.text,
+    attachmentName: r.attachment_name,
+    senderName: r.sender_name,
+    senderHandle: r.sender_handle,
+    title: r.title,
+    conversationType: r.conversation_type,
+  }));
+}
+
+/**
+ * THE rule for whether a told reply of `found_elsewhere` whisper `w` may begin now — a press of 告诉他们
+ * (`resolveWhisper`), a retry of its failed told reply (agents/runs.ts `retryInGroup`) and the told reply's own beginning
+ * (agents/tools/elsewhere.ts `toldHits`) all ask this, and nothing else: it reads open (stored open, not told, not
+ * telling, not `ttlHours` old, a hit left to read), or `ownRunId` is the told reply that is telling it (a day may have
+ * passed since its owner pressed). `telling` and `told` say why not, for the answer's refusal. Declined and expired are so
+ * final: nothing can tell them.
+ */
+export async function mayTell(
+  q: Queryable,
+  w: Pick<Whisper, "id" | "ownerId">,
+  { ttlHours, ownRunId = null }: { ttlHours: number; ownRunId?: string | null },
+): Promise<{ may: boolean; telling: boolean; told: boolean }> {
+  const { rows } = await q.query<{ may: boolean; telling: boolean; told: boolean }>(
+    `select (${readsOpenSql("w", ttlHours)}
+             or (w.status = 'open' and not ${toldSql("w")} and ${readableHitSql("w")}
+                 and exists (select 1 from agent_runs o where o.id = $3::uuid and o.whisper_id = w.id and o.owner_id = w.owner_id and o.status in ('queued', 'running')))) as may,
+            ${tellingSql("w")} as telling, ${toldSql("w")} as told
+       from whispers w where w.id = $1 and w.owner_id = $2 and w.kind = 'found_elsewhere'`,
+    [w.id, w.ownerId, ownRunId],
+  );
+  return rows[0] ?? { may: false, telling: false, told: false };
+}
+
+/**
+ * The live `found_elsewhere` whispers of `ownerIds` (stored open, not told) any of whose references points into
+ * `conversationId`: in the transaction that ends their access there (conversations/groups.ts `removeMember`), what to push
+ * to them once it commits — read as they are then, without the hits they can no longer read (Redesign D, fix round 1). The
+ * owner's open whispers are found by the partial index on them (`whispers_open_owner_conversation_idx`); they are few.
+ */
+export async function whispersPointingInto(q: Queryable, conversationId: string, ownerIds: readonly string[]): Promise<Whisper[]> {
+  if (ownerIds.length === 0) return [];
+  const { rows } = await q.query<WhisperRow>(
+    `select ${columns("w")} from whispers w
+      where w.owner_id = any($2::uuid[]) and w.status = 'open' and w.kind = 'found_elsewhere'
+        and jsonb_typeof(w.body -> 'detail' -> 'hits') = 'array'
+        and w.body -> 'detail' -> 'hits' @> jsonb_build_array(jsonb_build_object('conversationId', $1::uuid::text))
+        and ${notTold("w")}`,
+    [conversationId, ownerIds],
+  );
+  return rows.map(toWhisper);
+}
+
+/** `ownerId`'s whispers among `ids`, as stored (a push, an answer: read again in the snapshot its copy is made in). */
 export async function readWhispers(q: Queryable, ownerId: string, ids: readonly string[]): Promise<Whisper[]> {
   if (ids.length === 0) return [];
   const { rows } = await q.query<WhisperRow>(`select ${COLUMNS} from whispers where owner_id = $1 and id = any($2::uuid[])`, [ownerId, ids]);
@@ -325,13 +441,14 @@ export async function roomForFoundElsewhere(
   t: Queryable,
   w: { ownerId: string; conversationId: string; agentId: string; runId: string },
   openMax: number,
+  ttlHours: number,
 ): Promise<boolean> {
   const { rows } = await t.query<{ mine: boolean; open: number }>(
     `select exists (select 1 from whispers w join agent_runs r on r.id = $4
                      where w.owner_id = $1 and w.conversation_id = $2 and w.agent_id = $3 and w.kind = 'found_elsewhere'
                        and w.created_at >= coalesce(r.started_at, r.created_at)) as mine,
             (select count(*)::int from whispers w
-              where w.owner_id = $1 and w.conversation_id = $2 and w.kind = 'found_elsewhere' and ${liveSql("w")}) as open`,
+              where w.owner_id = $1 and w.conversation_id = $2 and w.kind = 'found_elsewhere' and ${liveSql("w", ttlHours)}) as open`,
     [w.ownerId, w.conversationId, w.agentId, w.runId],
   );
   return rows[0]?.mine === false && (rows[0]?.open ?? 0) < openMax;
@@ -369,7 +486,13 @@ export async function whisperOfRun(q: Queryable, runId: string): Promise<Whisper
  * both hold it and then wait to strengthen it), then the whisper's. A told reply posts under the conversation's row, held
  * here from the first read: whether it has posted cannot change before this answer commits.
  */
-export async function resolveWhisper(t: Tx, ownerId: string, id: string, to: WhisperAnswer): Promise<Whisper | "gone" | "stale" | "busy"> {
+export async function resolveWhisper(
+  t: Tx,
+  ownerId: string,
+  id: string,
+  to: WhisperAnswer,
+  ttlHours: number = DEFAULT_WHISPERS.elsewhereTtlHours,
+): Promise<Whisper | "gone" | "stale" | "busy"> {
   const found = await t.query<{ conversation_id: string; agent_id: string }>("select conversation_id, agent_id from whispers where id = $1 and owner_id = $2", [id, ownerId]);
   if (!found.rows[0]) return "gone";
   const { conversation_id: conversationId, agent_id: agentId } = found.rows[0];
@@ -386,14 +509,9 @@ export async function resolveWhisper(t: Tx, ownerId: string, id: string, to: Whi
   if (present.rows[0]?.n !== 2) return "gone";
   if (row.status !== "open" || !Array.isArray(row.body.actions) || !row.body.actions.includes(BUTTON_OF[to])) return "stale";
   if (row.kind === "found_elsewhere") {
-    const now = await t.query<{ told: boolean; telling: boolean; readable: boolean }>(
-      `select ${toldSql("w")} as told, ${tellingSql("w")} as telling, ${readableHitSql("w")} as readable from whispers w where w.id = $1`,
-      [id],
-    );
-    const { told, telling, readable } = now.rows[0]!;
-    if (told) return "stale";
-    if (telling) return "busy";
-    if (!readable) return "stale";
+    // THE rule (`mayTell`): answered only while it reads open.
+    const { may, telling, told } = await mayTell(t, toWhisper(row), { ttlHours });
+    if (!may) return telling && !told ? "busy" : "stale";
     // 告诉他们 stores nothing: the told reply its hook queues is what the whisper's state is read from.
     if (to === "accepted") return toWhisper(row);
   }
@@ -459,16 +577,23 @@ export async function listWhispers(
  * ascending by `afterSeq`, then `createdAt`, conversations in the order of `from`. At most `WHISPERS_PER_ANSWER`: every live
  * one first, then the newest others. What `GET /api/sync` and catch-up carry for the owner alone (whispers/wire.ts).
  */
-export async function whispersFrom(q: Queryable, ownerId: string, from: ReadonlyArray<{ conversationId: string; seq: number }>): Promise<Whisper[]> {
+export async function whispersFrom(
+  q: Queryable,
+  ownerId: string,
+  from: ReadonlyArray<{ conversationId: string; seq: number }>,
+  ttlHours: number,
+): Promise<Whisper[]> {
   if (from.length === 0) return [];
   const { rows } = await q.query<WhisperRow & { ord: string }>(
+    // Whether each is live is asked once (`live.v`), for both what is carried and in what order.
     `select x.* from (
        select ${columns("w")}, f.ord
          from unnest($2::uuid[], $3::bigint[]) with ordinality as f (id, from_seq, ord)
          join memberships me on me.conversation_id = f.id and me.principal_id = $1 and me.left_seq is null
          join whispers w on w.owner_id = $1 and w.conversation_id = f.id and w.after_seq >= me.joined_seq
-                        and (${liveSql("w")} or w.after_seq >= f.from_seq)
-        order by ${liveSql("w")} desc, w.created_at desc, w.id desc limit $4
+         cross join lateral (select ${liveSql("w", ttlHours)} as v) live
+        where live.v or w.after_seq >= f.from_seq
+        order by live.v desc, w.created_at desc, w.id desc limit $4
      ) x order by x.ord, x.after_seq, x.created_at, x.id`,
     [ownerId, from.map((f) => f.conversationId), from.map((f) => f.seq), WHISPERS_PER_ANSWER],
   );
