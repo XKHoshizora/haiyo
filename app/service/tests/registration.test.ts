@@ -39,7 +39,7 @@ describe("registering an e-mail that already has an account", () => {
     return (await accountOf(email))[0]!;
   }
   const notices = async (email: string) =>
-    (await db.query<{ subject: string; body: string }>("select subject, body from mail_outbox where kind = 'registration_attempt' and recipient = $1", [email])).rows;
+    (await db.query<{ subject: string; body: string; html: string | null }>("select subject, body, html from mail_outbox where kind = 'registration_attempt' and recipient = $1", [email])).rows;
 
   test("an invite holder learns nothing: whatever the e-mail, the invite is used up and every answer is the same", async () => {
     const verified = await signUp(app, "has_account");
@@ -73,7 +73,8 @@ describe("registering an e-mail that already has an account", () => {
     expect(await inviteState(code)).toEqual({ usedBy: null, used: true });
     const [notice, ...more] = await notices(owner.email);
     expect(more).toEqual([]);
-    expect(notice!.subject).toBe("有人尝试用你的邮箱注册 Agent Family");
+    expect(notice!.subject).toBe("有人尝试用你的邮箱注册 Haiyo");
+    expect(notice!.html).toContain("有人尝试用你的邮箱注册");
     expect(notice!.body.split("\n")).toEqual(expect.arrayContaining(["http://localhost:5173/signin", "http://localhost:5173/forgot"]));
     // No verification mail: nothing was created.
     expect(await count("select count(*) n from mail_outbox where kind = 'verify_email' and recipient = $1", [owner.email])).toBe(1);

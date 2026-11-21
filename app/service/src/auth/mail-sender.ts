@@ -45,6 +45,8 @@ interface Claimed {
   recipient: string;
   subject: string;
   body: string;
+  /** Null for a mail queued before the HTML version existed: it goes out as text only. */
+  html: string | null;
   attempts: number;
 }
 
@@ -74,6 +76,7 @@ async function call(fetchFn: typeof fetch, url: string, settings: MailSettings, 
         to: [row.recipient],
         subject: row.subject,
         text: row.body,
+        ...(row.html === null ? {} : { html: row.html }),
         ...(settings.replyTo === undefined ? {} : { reply_to: settings.replyTo }),
       }),
       signal,
@@ -132,7 +135,7 @@ export function createMailSender(opts: { db: Db; settings: MailSettings | undefi
           order by id limit 1 for update skip locked)
        update mail_outbox m set attempts = m.attempts + 1, next_attempt_at = now() + make_interval(secs => $1)
          from due where m.id = due.id
-      returning m.id::text as id, m.recipient, m.subject, m.body, m.attempts`,
+      returning m.id::text as id, m.recipient, m.subject, m.body, m.html, m.attempts`,
       [LEASE_SECONDS],
     );
     return rows[0];

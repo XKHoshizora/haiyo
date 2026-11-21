@@ -12,6 +12,7 @@ import { AppError, isBusy } from "../errors.ts";
 import { clientIp } from "../limits.ts";
 import { lockAccountEmail } from "./accounts.ts";
 import { holdUntilFloor, startAnswerClock, type AnswerFloor } from "./answer-floor.ts";
+import { PRODUCT_NAME } from "../brand.ts";
 import { RESET_PASSWORD_TTL_SECONDS, VERIFY_EMAIL_TTL_SECONDS, resetPasswordMail, verifyEmailMail } from "./mail-copy.ts";
 import { mailPolicy, sendMail } from "./mailer.ts";
 
@@ -230,7 +231,7 @@ export function createAuth(config: Config, db: Db, sessions: SessionEvents, log:
   const isHttps = new URL(config.appOrigin).protocol === "https:";
 
   return betterAuth({
-    appName: "Agent Family",
+    appName: PRODUCT_NAME,
     baseURL: config.appOrigin,
     basePath: AUTH_BASE_PATH,
     secret: config.authSecret,
@@ -277,7 +278,7 @@ export function createAuth(config: Config, db: Db, sessions: SessionEvents, log:
       sendResetPassword: async ({ user, token }) => {
         const link = `${config.appOrigin}/reset-password?token=${encodeURIComponent(token)}`;
         const mail = resetPasswordMail(link);
-        await sendMail(mailDb(), "reset_password", user.email, mail.subject, mail.body, policy);
+        await sendMail(mailDb(), "reset_password", user.email, mail.subject, mail.body, policy, mail.html);
       },
     },
     emailVerification: {
@@ -288,7 +289,7 @@ export function createAuth(config: Config, db: Db, sessions: SessionEvents, log:
       sendOnSignIn: true,
       sendVerificationEmail: async ({ user, url }) => {
         const mail = verifyEmailMail(url);
-        await sendMail(mailDb(), "verify_email", user.email, mail.subject, mail.body, policy);
+        await sendMail(mailDb(), "verify_email", user.email, mail.subject, mail.body, policy, mail.html);
       },
     },
     databaseHooks: {

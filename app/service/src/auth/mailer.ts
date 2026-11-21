@@ -39,6 +39,8 @@ export async function sendMail(
   subject: string,
   body: string,
   policy: MailPolicy,
+  /** The HTML version, sent next to `body` (Resend's `html` beside `text`). Rows written before it existed have none and go out as text only. */
+  html?: string,
 ): Promise<void> {
   const write = async (t: Queryable): Promise<void> => {
     // After any lock of the registration path (the address's account lock is always taken first), never before.
@@ -49,9 +51,9 @@ export async function sendMail(
     );
     const capped = policy.deliver && (recent.rows[0]?.n ?? 0) >= policy.perAddressHour;
     await t.query(
-      `insert into mail_outbox (recipient, kind, subject, body, deliver, status, expires_at)
-       values ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))`,
-      [recipient, kind, subject, body, policy.deliver && !capped, capped ? "capped" : "queued", EXPIRES_AFTER_SECONDS[kind]],
+      `insert into mail_outbox (recipient, kind, subject, body, html, deliver, status, expires_at)
+       values ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8))`,
+      [recipient, kind, subject, body, html ?? null, policy.deliver && !capped, capped ? "capped" : "queued", EXPIRES_AFTER_SECONDS[kind]],
     );
   };
   const pool = q as Partial<Db>;

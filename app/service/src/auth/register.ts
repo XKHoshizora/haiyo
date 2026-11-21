@@ -38,7 +38,7 @@ async function noticeRegistrationAttempt(t: Tx, account: ExistingAccount, appOri
   );
   if (recent.rowCount) return;
   const mail = registrationAttemptMail(`${appOrigin}/signin`, `${appOrigin}/forgot`);
-  await sendMail(t, "registration_attempt", account.email, mail.subject, mail.body, policy);
+  await sendMail(t, "registration_attempt", account.email, mail.subject, mail.body, policy, mail.html);
 }
 
 export function registerRegistrationRoutes(

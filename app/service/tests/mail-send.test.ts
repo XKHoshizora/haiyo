@@ -94,6 +94,43 @@ describe("mail is really sent", () => {
     expect((await db.query("select count(*)::int n from memory_stats")).rows[0].n).toBe(0);
   });
 
+  test("a mail with an HTML version goes out as multipart: Resend's html next to text", async () => {
+    await sendMail(db, "verify_email", TO, "Subject line", "plain text", OPEN, "<!doctype html><p>html body</p>");
+    expect((await db.query<{ html: string }>("select html from mail_outbox order by id desc limit 1")).rows[0]!.html).toBe("<!doctype html><p>html body</p>");
+    expect(await app.mailSender.runOnce()).toBe(1);
+    expect(seen[0]!.json).toEqual({
+      from: "Haiyo <no-reply@mail.example>",
+      to: [TO],
+      subject: "Subject line",
+      text: "plain text",
+      html: "<!doctype html><p>html body</p>",
+      reply_to: "help@mail.example",
+    });
+  });
+
+  test("a mail queued before the HTML existed (no html stored) is still sent, as text only", async () => {
+    await db.query(
+      `insert into mail_outbox (recipient, kind, subject, body, deliver, status, expires_at)
+       values ($1, 'verify_email', 'Old subject', 'old text', true, 'queued', now() + interval '1 hour')`,
+      [TO],
+    );
+    expect(await app.mailSender.runOnce()).toBe(1);
+    expect(seen[0]!.json).toEqual({ from: "Haiyo <no-reply@mail.example>", to: [TO], subject: "Old subject", text: "old text", reply_to: "help@mail.example" });
+    expect("html" in seen[0]!.json).toBe(false);
+  });
+
+  test("the real mails are queued with their HTML and sent with it", async () => {
+    const a = await signUp(app, "html_user");
+    await api(app, null, "POST", "/api/auth/request-password-reset", { email: a.email });
+    await db.query("update mail_outbox set next_attempt_at = now() where deliver");
+    seen.length = 0;
+    await app.mailSender.runOnce();
+    const kinds = (await db.query<{ kind: string; html: string | null }>("select kind, html from mail_outbox where deliver order by id")).rows;
+    expect(kinds.length).toBeGreaterThan(0);
+    for (const k of kinds) expect([k.kind, k.html?.startsWith("<!doctype html>")]).toEqual([k.kind, true]);
+    for (const s of seen) expect([typeof s.json.text, typeof s.json.html]).toEqual(["string", "string"]);
+  });
+
   test("the idempotency key follows the content: same id with other content is another key; a retry of one row keeps its key", async () => {
     script = [{ status: 500 }];
     const id = await queue("first body");
