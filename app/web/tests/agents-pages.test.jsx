@@ -754,6 +754,7 @@ describe("editing an Agent", () => {
       expect(order).toEqual(["patch", "avatar"]);
       expect(uploadAgentAvatar.mock.calls[0][0]).toBe(AG1);
       expect(sentCrop(uploadAgentAvatar.mock.calls[0])).not.toBe(file);
+      expect(await sentCrop(uploadAgentAvatar.mock.calls[0]).text()).toBe("cropped-bytes"); // the file held is the one sent
       expect(document.querySelector(".main-col .lead").textContent).toBe("新简介");
     });
 
@@ -800,6 +801,33 @@ describe("editing an Agent", () => {
       await click(within(dialog()).getByRole("button", { name: "放弃" }));
       expect(document.querySelector(".main-col [role=tablist]")).toBeTruthy();
       expect(uploadAgentAvatar).not.toHaveBeenCalled();
+    });
+
+    it("holds the crop as a preview whose URL is revoked when it is dropped, replaced and when the form goes away", async () => {
+      await openEdit({ uploadAgentAvatar: vi.fn() });
+      await pick(png());
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      await pick(png());
+      expect(URL.revokeObjectURL).toHaveBeenLastCalledWith("blob:preview-1");
+      await click(inMain().getByRole("button", { name: "不用这张" }));
+      expect(URL.revokeObjectURL).toHaveBeenLastCalledWith("blob:preview-2");
+      await pick(png());
+      cleanup();
+      expect(URL.revokeObjectURL).toHaveBeenLastCalledWith("blob:preview-3");
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3);
+    });
+
+    it("the dialog is not inside the form (Enter on its slider cannot submit it), and focus stays on the same button after 保存", async () => {
+      await openEdit({ uploadAgentAvatar: vi.fn() });
+      const chooseBtn = inMain().getByRole("button", { name: "选择头像" });
+      chooseBtn.focus();
+      fireEvent.change(inMain().getByLabelText("选择头像图片"), { target: { files: [png()] } });
+      await flush();
+      expect(dialog().closest("form")).toBeNull();
+      await click(within(dialog()).getByRole("button", { name: "保存" }));
+      expect(document.activeElement).toBe(chooseBtn);
+      expect(chooseBtn.textContent).toBe("换一张");
     });
 
     it("nothing picked, or the pick dropped (不用这张): 取消 leaves at once and nothing is uploaded", async () => {

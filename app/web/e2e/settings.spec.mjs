@@ -19,7 +19,19 @@ test("the avatar set in Settings is seen by a friend", async ({ people }) => {
   const picture = png(40, 30);
 
   await goTo(ann.page, "设置");
+  // What the browser sends is recorded from inside the page (the request's own body is not given for a binary upload).
+  await ann.page.evaluate(() => {
+    const send = window.fetch;
+    window.fetch = async (url, init) => {
+      if (init?.method === "PUT" && init.body instanceof Blob) {
+        const bytes = new Uint8Array(await init.body.arrayBuffer());
+        window.__put = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""));
+      }
+      return send(url, init);
+    };
+  });
   await saveAvatarDialog(await pickAvatarUi(ann.page, "更换头像", { name: "我的头像.png", mimeType: "image/png", buffer: picture }));
+  const uploaded = Buffer.from(await ann.page.evaluate(() => window.__put), "base64");
   await expect(ann.page.getByRole("status").filter({ hasText: "头像已更新" })).toBeVisible();
   // What is saved is the adjusted crop, 512 × 512 (not the picked file, which never left the device).
   await expectPicture(rail(ann.page), "你", [512, 512]);
@@ -33,7 +45,8 @@ test("the avatar set in Settings is seen by a friend", async ({ people }) => {
   expect(served.headers()["content-type"]).toBe("image/webp");
   const bytes = await served.body();
   expect(bytes.length, "well under the service's 2 MB").toBeLessThan(2 * 1024 * 1024);
-  expect(Buffer.compare(bytes, picture), "Bo gets the cropped picture, not the picked file").not.toBe(0);
+  expect(Buffer.compare(bytes, picture), "not the picked file").not.toBe(0);
+  expect(Buffer.compare(bytes, uploaded), "Bo gets exactly the bytes Ann's browser uploaded").toBe(0);
 });
 
 /** Settings → 更换头像 → `picture` → 保存 in the dialog, in `page`. */

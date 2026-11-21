@@ -9,7 +9,10 @@ import {
   clampView,
   coverScale,
   cropTransform,
+  DECODE_SHORT_SIDE,
+  decodeResize,
   exifOrientation,
+  imageSize,
   initialView,
   orientationMatrix,
   orientedSize,
@@ -131,7 +134,6 @@ describe("zoom about a point", () => {
   });
 
   it("a wheel turn and a step zoom by a smooth factor, the same both ways, inside the limits", () => {
-    near(wheelZoom(2, 100) * wheelZoom(1, -100) / 1, wheelZoom(2, 100) * wheelZoom(1, -100));
     expect(wheelZoom(2, -100)).toBeGreaterThan(2);
     expect(wheelZoom(2, 100)).toBeLessThan(2);
     near(wheelZoom(wheelZoom(2, -120), 120), 2);
@@ -237,6 +239,22 @@ describe("orientation", () => {
       }
       expect(Math.abs(a * d - b * c)).toBe(1); // a turn or a mirror: nothing is stretched
     }
+    // Where the stored top-left corner (0,0) and top-right corner (w,0) land, per orientation: the eight are told apart.
+    const landing = (o, x, y) => {
+      const [a, b, c, d, e, f] = orientationMatrix(o, w, h);
+      return [a * x + c * y + e, b * x + d * y + f];
+    };
+    const expected = {
+      1: [[0, 0], [w, 0]],
+      2: [[w, 0], [0, 0]],
+      3: [[w, h], [0, h]],
+      4: [[0, h], [w, h]],
+      5: [[0, 0], [0, w]],
+      6: [[h, 0], [h, w]],
+      7: [[h, w], [h, 0]],
+      8: [[0, w], [0, 0]],
+    };
+    for (let o = 1; o <= 8; o++) expect([landing(o, 0, 0), landing(o, w, 0)], `orientation ${o}`).toEqual(expected[o]);
     // 6: a quarter turn clockwise — the stored top-left corner ends top-right, the stored top-right bottom-right.
     const [a, b, c, d, e, f] = orientationMatrix(6, w, h);
     expect([a * 0 + c * 0 + e, b * 0 + d * 0 + f]).toEqual([h, 0]);
@@ -259,5 +277,81 @@ describe("orientation", () => {
         near(b * sx + d * sy + f, ey, 6);
       }
     }
+  });
+});
+
+describe("the size, from the header bytes", () => {
+  const be32 = (n) => [n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const be16 = (n) => [n >> 8, n & 255];
+  const le16 = (n) => [n & 255, n >> 8];
+  const le24 = (n) => [n & 255, (n >> 8) & 255, (n >> 16) & 255];
+  const text = (s) => [...s].map((c) => c.charCodeAt(0));
+  const png = (w, h) => Uint8Array.from([0x89, ...text("PNG"), 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, ...text("IHDR"), ...be32(w), ...be32(h), 8, 2, 0, 0, 0]);
+  const segment = (marker, body) => [0xff, marker, ...be16(body.length + 2), ...body];
+  const jpeg = (w, h, { sof = 0xc0, before = [] } = {}) =>
+    Uint8Array.from([0xff, 0xd8, ...before, ...segment(sof, [8, ...be16(h), ...be16(w), 3, 1, 0x22, 0]), 0xff, 0xda, 0, 2]);
+  const webpHead = (chunk, body) => Uint8Array.from([...text("RIFF"), 0, 0, 0, 0, ...text("WEBP"), ...text(chunk), 0, 0, 0, 0, ...body]);
+  const webpLossy = (w, h) => webpHead("VP8 ", [0, 0, 0, 0x9d, 0x01, 0x2a, ...le16(w), ...le16(h)]);
+  const webpLossless = (w, h) => {
+    const v = (w - 1) | ((h - 1) << 14);
+    return webpHead("VP8L", [0x2f, v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255]);
+  };
+  const webpExtended = (w, h) => webpHead("VP8X", [0, 0, 0, 0, ...le24(w - 1), ...le24(h - 1)]);
+  const SIZES = [[1, 1], [9, 10], [99, 100], [101, 99], [640, 480], [8000, 8000], [8001, 100], [100, 8001], [12000, 9000], [16383, 16383]];
+
+  it("PNG, JPEG (baseline and progressive), WebP lossy, lossless and extended: the stored size, at sizes around 10, 100 and 8000", () => {
+    for (const [w, h] of SIZES) {
+      expect(imageSize(png(w, h)), `png ${w}x${h}`).toEqual({ width: w, height: h });
+      if (w <= 65535) {
+        expect(imageSize(jpeg(w, h)), `jpeg ${w}x${h}`).toEqual({ width: w, height: h });
+        expect(imageSize(jpeg(w, h, { sof: 0xc2 })), `progressive ${w}x${h}`).toEqual({ width: w, height: h });
+      }
+      expect(imageSize(webpLossless(w, h)), `lossless ${w}x${h}`).toEqual({ width: w, height: h });
+      expect(imageSize(webpExtended(w, h)), `extended ${w}x${h}`).toEqual({ width: w, height: h });
+      if (w <= 16383 && h <= 16383) expect(imageSize(webpLossy(w, h)), `lossy ${w}x${h}`).toEqual({ width: w, height: h });
+    }
+  });
+
+  it("a JPEG whose frame header comes after a large EXIF segment, a thumbnail's own header included, is read from the right one", () => {
+    const thumb = jpeg(160, 120); // the EXIF thumbnail is a whole JPEG with a frame header of its own
+    const bigApp1 = segment(0xe1, [...text("Exif"), 0, 0, ...thumb, ...new Array(60000).fill(7)]);
+    const jfif = segment(0xe0, [...text("JFIF"), 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+    const file = jpeg(8001, 6000, { before: [...jfif, ...bigApp1] });
+    expect(file.length).toBeGreaterThan(60000);
+    expect(imageSize(file)).toEqual({ width: 8001, height: 6000 });
+    // A table segment, a comment, and a marker without a length before it do not matter.
+    const dht = segment(0xc4, [0, ...new Array(16).fill(0)]);
+    const comment = segment(0xfe, text("hello"));
+    expect(imageSize(jpeg(300, 200, { before: [...dht, ...comment, 0xff, 0xd0] }))).toEqual({ width: 300, height: 200 });
+  });
+
+  it("null for anything not readable: unknown formats, empty, cut off anywhere, a frame header beyond the bytes, zero sizes", () => {
+    expect(imageSize(new Uint8Array(0))).toBeNull();
+    expect(imageSize(Uint8Array.from(text("GIF89a\x01\x00\x01\x00")))).toBeNull();
+    expect(imageSize(png(0, 5))).toBeNull();
+    expect(imageSize(jpeg(0, 5))).toBeNull();
+    const beyond = Uint8Array.from([0xff, 0xd8, ...segment(0xe1, new Array(70000).fill(0))].slice(0, 70000));
+    expect(imageSize(beyond)).toBeNull();
+    for (const whole of [png(640, 480), jpeg(640, 480, { before: segment(0xe0, [1, 2, 3]) }), webpLossy(640, 480), webpLossless(640, 480), webpExtended(640, 480)]) {
+      for (let cut = 0; cut < whole.length; cut++) {
+        const got = imageSize(whole.subarray(0, cut));
+        expect(got === null || (got.width === 640 && got.height === 480), `cut ${cut}`).toBe(true);
+      }
+    }
+    const noise = Uint8Array.from({ length: 400 }, (_, i) => (i * 131 + 17) & 255);
+    noise[0] = 0xff;
+    noise[1] = 0xd8;
+    expect(() => imageSize(noise)).not.toThrow();
+  });
+
+  it("a decode needs at most 512 × the highest zoom on the short side, by the one option that gets it, and nothing when small", () => {
+    expect(DECODE_SHORT_SIDE).toBe(512 * MAX_ZOOM);
+    expect(decodeResize(8000, 8000)).toEqual({ resizeWidth: DECODE_SHORT_SIDE });
+    expect(decodeResize(12000, 9000)).toEqual({ resizeHeight: DECODE_SHORT_SIDE });
+    expect(decodeResize(9000, 3000)).toEqual({ resizeHeight: DECODE_SHORT_SIDE });
+    expect(decodeResize(3000, 9000)).toEqual({ resizeWidth: DECODE_SHORT_SIDE });
+    expect(decodeResize(DECODE_SHORT_SIDE, 8000)).toBeNull();
+    expect(decodeResize(DECODE_SHORT_SIDE + 1, 8000)).toEqual({ resizeWidth: DECODE_SHORT_SIDE });
+    expect(decodeResize(99, 100)).toBeNull();
   });
 });

@@ -97,9 +97,9 @@ export function Notice({ tone = "info", children, action }) {
   );
 }
 
-export function Btn({ variant = "ghost", small, reason, className = "", children, ...rest }) {
+export function Btn({ variant = "ghost", small, reason, className = "", children, ref, ...rest }) {
   return (
-    <button type="button" className={`btn btn-${variant} ${small ? "btn-sm" : ""} ${className}`} title={rest.disabled ? reason : undefined} {...rest}>
+    <button ref={ref} type="button" className={`btn btn-${variant} ${small ? "btn-sm" : ""} ${className}`} title={rest.disabled ? reason : undefined} {...rest}>
       {children}
     </button>
   );

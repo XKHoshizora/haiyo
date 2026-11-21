@@ -314,4 +314,85 @@ describe("saving, cancelling, focus", () => {
     expect(late.close).toHaveBeenCalledTimes(1);
     expect(late.paint).not.toHaveBeenCalled();
   });
+
+  it("the error state keeps the focus in the dialog: 知道了 has it, Tab stays, Esc closes, and focus returns to the opener", async () => {
+    fake.fail = "这张图片无法读取，请换一张。";
+    function Host() {
+      const [shown, setShown] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setShown(true)}>更换头像</button>
+          {shown && <AvatarDialog file={file()} onCancel={() => setShown(false)} onSave={async () => ""} />}
+        </>
+      );
+    }
+    render(<Host />);
+    const opener = screen.getByRole("button", { name: "更换头像" });
+    opener.focus();
+    fireEvent.click(opener);
+    await flush();
+    const dlg = screen.getByRole("dialog");
+    expect(document.activeElement).toBe(within(dlg).getByRole("button", { name: "知道了" }));
+    fireEvent.keyDown(document.activeElement, { key: "Tab" });
+    expect(dlg.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement, { key: "Tab", shiftKey: true });
+    expect(dlg.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement, { key: "Escape" });
+    await flush();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("while saving the focus stays inside the dialog (on the stage), and the wheel and the keys do nothing", async () => {
+    let finish;
+    await open({ onSave: () => new Promise((r) => (finish = r)) });
+    await act(async () => fireEvent.click(button("保存")));
+    expect(document.activeElement).toBe(stage());
+    const slow = await (async () => {
+      fireEvent.wheel(stage(), { deltaY: -500 });
+      press("+");
+      return slider().getAttribute("aria-valuetext");
+    })();
+    expect(slow).toBe("100%");
+    await act(async () => finish(""));
+  });
+});
+
+describe("pointers, the finer points", () => {
+  const pointer = (type, id, x, y, extra = {}) => {
+    const event = new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, ...extra });
+    Object.defineProperty(event, "pointerId", { value: id });
+    if (extra.pointerType) Object.defineProperty(event, "pointerType", { value: extra.pointerType });
+    fireEvent(stage(), event);
+  };
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: STAGE, height: STAGE, right: STAGE, bottom: STAGE, x: 0, y: 0 });
+  });
+
+  it("only the primary mouse button drags", async () => {
+    fake.size = { width: 1000, height: 1000 };
+    await open();
+    fireEvent.change(slider(), { target: { value: "2" } });
+    const before = await viewNow();
+    pointer("pointerdown", 1, 100, 100, { pointerType: "mouse", button: 2 });
+    pointer("pointermove", 1, 140, 100, { pointerType: "mouse", button: 2 });
+    pointer("pointerup", 1, 140, 100, { pointerType: "mouse", button: 2 });
+    expect(await viewNow()).toEqual(before);
+    pointer("pointerdown", 1, 100, 100, { pointerType: "mouse", button: 0 });
+    pointer("pointermove", 1, 140, 100, { pointerType: "mouse", button: 0 });
+    pointer("pointerup", 1, 140, 100, { pointerType: "mouse", button: 0 });
+    expect((await viewNow()).cx).toBeLessThan(before.cx);
+  });
+
+  it("three fingers: when one lifts the other two pinch on at once", async () => {
+    fake.size = { width: 1000, height: 1000 };
+    await open();
+    pointer("pointerdown", 1, 60, 140);
+    pointer("pointerdown", 2, 140, 140);
+    pointer("pointerdown", 3, 220, 140);
+    pointer("pointerup", 3, 220, 140);
+    const start = await viewNow();
+    pointer("pointermove", 2, 220, 140); // 1 and 2 were 80 apart, now 160
+    expect((await viewNow()).zoom).toBeGreaterThan(start.zoom * 1.5);
+  });
 });

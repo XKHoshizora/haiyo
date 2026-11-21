@@ -194,3 +194,77 @@ export function cropTransform(rect, out, orientation, width, height) {
   const k = out / rect.size;
   return [a * k, b * k, c * k, d * k, (e - rect.x) * k, (f - rect.y) * k];
 }
+
+// ───────── size from the header
+
+/**
+ * The stored size `{width, height}` of a PNG, JPEG or WebP read from its first bytes, without decoding it, or null when the
+ * header is not there (a format not known, cut off, damaged, a JPEG whose frame header lies beyond the bytes given). The
+ * size rule is checked on this before a picture is decoded: a 20 MB file can hold a far larger picture than a device can.
+ */
+export function imageSize(bytes) {
+  const n = bytes.length;
+  const be16 = (at) => (bytes[at] << 8) | bytes[at + 1];
+  const le16 = (at) => bytes[at] | (bytes[at + 1] << 8);
+  const le24 = (at) => bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16);
+  const ascii = (at, text) => at + text.length <= n && [...text].every((c, i) => bytes[at + i] === c.charCodeAt(0));
+  // PNG: the signature, then IHDR first: width and height as 32-bit big-endian numbers.
+  if (n >= 24 && bytes[0] === 0x89 && ascii(1, "PNG") && ascii(12, "IHDR")) {
+    const w = ((bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]) >>> 0;
+    const h = ((bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]) >>> 0;
+    return w > 0 && h > 0 ? { width: w, height: h } : null;
+  }
+  // JPEG: walk the segments to the first frame header (any SOFn but DHT, JPG and DAC), whatever came before it.
+  if (n >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let p = 2;
+    while (p + 4 <= n) {
+      if (bytes[p] !== 0xff) return null;
+      const marker = bytes[p + 1];
+      if (marker === 0xff) {
+        p += 1;
+        continue;
+      }
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        p += 2; // markers without a length
+        continue;
+      }
+      if (marker === 0xda || marker === 0xd9) return null;
+      const length = be16(p + 2);
+      if (length < 2) return null;
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        if (p + 9 > n) return null;
+        const h = be16(p + 5);
+        const w = be16(p + 7);
+        return w > 0 && h > 0 ? { width: w, height: h } : null;
+      }
+      p += 2 + length;
+    }
+    return null;
+  }
+  // WebP: RIFF, the size, "WEBP", then the first chunk: VP8 (lossy), VP8L (lossless) or VP8X (extended).
+  if (n >= 25 && ascii(0, "RIFF") && ascii(8, "WEBP")) {
+    if (n >= 30 && ascii(12, "VP8X")) return { width: le24(24) + 1, height: le24(27) + 1 };
+    if (ascii(12, "VP8L") && bytes[20] === 0x2f) {
+      const b = [bytes[21], bytes[22], bytes[23], bytes[24]];
+      return { width: 1 + (((b[1] & 0x3f) << 8) | b[0]), height: 1 + (((b[3] & 0x0f) << 10) | (b[2] << 2) | ((b[1] & 0xc0) >> 6)) };
+    }
+    if (n >= 30 && ascii(12, "VP8 ") && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+      const w = le16(26) & 0x3fff;
+      const h = le16(28) & 0x3fff;
+      return w > 0 && h > 0 ? { width: w, height: h } : null;
+    }
+  }
+  return null;
+}
+
+/** The short side a decode needs at most: 512 pixels at the highest zoom. More is never seen in the saved picture. */
+export const DECODE_SHORT_SIDE = OUTPUT_SIZE * MAX_ZOOM;
+
+/**
+ * How to decode a picture of `width` × `height` (as it will be upright) at a size that costs little: the one resize option
+ * that brings its short side to `DECODE_SHORT_SIDE` (the other follows by the aspect ratio), or null when it is small enough.
+ */
+export function decodeResize(width, height) {
+  if (Math.min(width, height) <= DECODE_SHORT_SIDE) return null;
+  return width <= height ? { resizeWidth: DECODE_SHORT_SIDE } : { resizeHeight: DECODE_SHORT_SIDE };
+}

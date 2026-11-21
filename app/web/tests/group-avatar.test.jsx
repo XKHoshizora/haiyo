@@ -178,6 +178,7 @@ describe("changing it", () => {
     expect(toastText()).toBe("群头像已移除");
     expect(document.querySelector(".profile-head .group-avatar")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "移除头像" })).toBeNull();
+    expect(document.activeElement).toBe(button("更换头像")); // the pressed button is gone: focus goes to the first one
   });
 
   it("a refused removal says why", async () => {

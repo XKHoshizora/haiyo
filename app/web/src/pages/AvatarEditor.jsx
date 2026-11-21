@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { Avatar, Btn } from "../ui/primitives.jsx";
@@ -40,6 +41,7 @@ export function AvatarEditor({
   const [error, setError] = useState("");
   const urlRef = useRef(null);
   const inputRef = useRef(null);
+  const browseRef = useRef(null);
   const holding = typeof onPick === "function";
 
   const discard = () => {
@@ -87,29 +89,24 @@ export function AvatarEditor({
   };
   const remove = async () => {
     const res = await run("remove", onRemove, removeErrorText ?? (() => "没有移除成功，请再试一次。"));
-    if (res.ok) dispatch({ type: "toast", text: removedText });
+    if (res.ok) {
+      dispatch({ type: "toast", text: removedText });
+      browseRef.current?.focus(); // the button that was pressed is gone
+    }
   };
   const browse = () => inputRef.current?.click();
 
-  let buttons;
-  if (holding) {
-    buttons = held ? (
-      <>
-        <Btn disabled={disabled} onClick={browse}>换一张</Btn>
-        {/* Not "取消": the form around it has its own. */}
-        <Btn disabled={disabled} onClick={drop}>不用这张</Btn>
-      </>
-    ) : (
-      <Btn disabled={disabled} onClick={browse}>选择头像</Btn>
-    );
-  } else {
-    buttons = (
-      <>
-        <Btn disabled={busy !== null} onClick={browse}>更换头像</Btn>
-        {onRemove && canRemove && <Btn disabled={busy !== null} onClick={remove}>{busy === "remove" ? "移除中…" : "移除头像"}</Btn>}
-      </>
-    );
-  }
+  // The first button is one element in every state (its label changes), so the dialog's focus return always finds it.
+  const buttons = (
+    <>
+      <Btn ref={browseRef} disabled={holding ? disabled : busy !== null} onClick={browse}>
+        {holding ? (held ? "换一张" : "选择头像") : "更换头像"}
+      </Btn>
+      {/* Not "取消": the form around it has its own. */}
+      {holding && held && <Btn disabled={disabled} onClick={drop}>不用这张</Btn>}
+      {!holding && onRemove && canRemove && <Btn disabled={busy !== null} onClick={remove}>{busy === "remove" ? "移除中…" : "移除头像"}</Btn>}
+    </>
+  );
 
   const limits = "支持 PNG、JPEG、WebP，不超过 20 MB；选好后可以拖动和缩放。";
   return (
@@ -130,7 +127,8 @@ export function AvatarEditor({
       <p className={error ? "field-msg" : "field-hint"} role={error ? "alert" : undefined}>
         {error || hint || (holding ? `${limits}不选择则使用默认头像。` : limits)}
       </p>
-      {picked && <AvatarDialog key={picked.name + picked.size + picked.lastModified} file={picked} onCancel={() => setPicked(null)} onSave={take} />}
+      {/* In the body, not inside a form around this (Enter on the slider would submit it). */}
+      {picked && createPortal(<AvatarDialog key={picked.name + picked.size + picked.lastModified} file={picked} onCancel={() => setPicked(null)} onSave={take} />, document.body)}
     </div>
   );
 }

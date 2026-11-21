@@ -36,6 +36,7 @@ export function AvatarDialog({ file, onCancel, onSave }) {
   const pointers = useRef(new Map());
   const pinching = useRef(null);
   const busyRef = useRef(false);
+  const okButton = useRef(null);
   const helpId = useId();
 
   useEffect(() => {
@@ -55,6 +56,11 @@ export function AvatarDialog({ file, onCancel, onSave }) {
       opened?.close();
     };
   }, [file]);
+
+  // The stage that had the focus is gone when the picture cannot be read: the one button that is left takes it.
+  useEffect(() => {
+    if (load.kind === "error") okButton.current?.focus();
+  }, [load.kind]);
 
   const image = load.kind === "ready" ? load.image : null;
   useEffect(() => {
@@ -78,6 +84,7 @@ export function AvatarDialog({ file, onCancel, onSave }) {
     if (!node || !image) return undefined;
     const onWheel = (e) => {
       e.preventDefault();
+      if (busyRef.current) return;
       const at = stagePoint(e.clientX, e.clientY);
       const lines = e.deltaMode === 1 ? 16 : 1;
       setView((v) => zoomAbout(v, wheelZoom(v.zoom, e.deltaY * lines), image.width, image.height, at.x, at.y));
@@ -87,7 +94,7 @@ export function AvatarDialog({ file, onCancel, onSave }) {
   }, [image]);
 
   const down = (e) => {
-    if (!image || busyRef.current) return;
+    if (!image || busyRef.current || (e.pointerType === "mouse" && e.button !== 0)) return;
     stage.current?.setPointerCapture?.(e.pointerId);
     pointers.current.set(e.pointerId, stagePoint(e.clientX, e.clientY));
     if (pointers.current.size === 2) {
@@ -110,8 +117,13 @@ export function AvatarDialog({ file, onCancel, onSave }) {
   };
   const up = (e) => {
     pointers.current.delete(e.pointerId);
-    pinching.current = null;
-    // The finger that stays carries on as a drag from where it is.
+    // Two fingers left (of three): a new pinch from where they are; one: it carries on as a drag from where it is.
+    if (pointers.current.size === 2 && view) {
+      const [a, b] = [...pointers.current.values()];
+      pinching.current = { view, distance: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+    } else {
+      pinching.current = null;
+    }
   };
 
   const keys = (e) => {
@@ -133,6 +145,8 @@ export function AvatarDialog({ file, onCancel, onSave }) {
   const save = async () => {
     if (!image || busyRef.current) return;
     busyRef.current = true;
+    // The button about to be disabled has the focus: it goes to the stage, so Esc and Tab keep working in the dialog.
+    stage.current?.focus();
     setBusy(true);
     setProblem("");
     try {
@@ -160,7 +174,7 @@ export function AvatarDialog({ file, onCancel, onSave }) {
       onClose={close}
       footer={
         load.kind === "error" ? (
-          <Btn variant="primary" onClick={onCancel}>知道了</Btn>
+          <Btn ref={okButton} variant="primary" onClick={onCancel}>知道了</Btn>
         ) : (
           <>
             <Btn disabled={!ready || busy} onClick={() => image && setView(initialView(image.width, image.height))}>重置</Btn>
