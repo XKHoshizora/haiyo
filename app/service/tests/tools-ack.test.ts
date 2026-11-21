@@ -41,10 +41,23 @@ const toolbox: Toolbox = {
     return { output: { hits: [] } };
   },
 };
-function toolWorker(models: ScriptedGateway = gateway): { port: DbAgentPort; worker: AgentWorker } {
+/** The tags this file's runs drew (tools/refs.ts), in order: `tk000001`, `tk000002`… — one a run. */
+const drawn: string[] = [];
+/** The tag the next run offered tools draws. */
+const nextTag = (): string => `tk${String(drawn.length + 1).padStart(6, "0")}`;
+const drawTag = (): string => {
+  const tag = nextTag();
+  drawn.push(tag);
+  return tag;
+};
+/** The mark of every group run of this file's ports (prompt.ts `newMark`): nothing it shows holds it. */
+const MARK = "mkzq9w";
+/** `timeoutMs`: a reply's whole time (`TOOLS.runTimeoutMs`), when shorter than the site's. */
+function toolWorker(models: ScriptedGateway = gateway, timeoutMs?: number): { port: DbAgentPort; worker: AgentWorker } {
   const { db: pool, blobs, conversations, reads, config } = app.deps;
-  const port = createAgentPort({ db: pool, config, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox, drawTag: () => "k7q2" });
-  return { port, worker: createAgentWorker({ port, models, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools }) };
+  const port = createAgentPort({ db: pool, config, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox, drawTag, drawMark: () => MARK });
+  const tools = timeoutMs === undefined ? config.tools : { ...config.tools, runTimeoutMs: timeoutMs };
+  return { port, worker: createAgentWorker({ port, models, runTimeoutMs: timeoutMs ?? config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools }) };
 }
 
 let txn = 0;
@@ -63,8 +76,11 @@ const messages = async (conv: string) =>
 const lastRun = async (agentId: string, conv: string) =>
   (await db.query<{ id: string; status: string }>("select id, status from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at desc limit 1", [agentId, conv])).rows[0]!;
 
-afterEach(() => {
+afterEach(async () => {
   duringTool = async () => {};
+  // No Agent's message ever keeps a run's tag, nor its mark: not its text, its reasoning, its search words or anything else.
+  const { rows } = await db.query<{ body: unknown }>("select m.body from messages m join principals p on p.id = m.sender_id where p.kind = 'agent'");
+  for (const { body } of rows) for (const secret of [...drawn, MARK]) expect([secret, JSON.stringify(body).toLowerCase().includes(secret)]).toEqual([secret, false]);
 });
 
 async function owned(name = "olive") {
@@ -238,7 +254,7 @@ describe("an acknowledgement, then the answer", () => {
     const { db: pool, blobs, conversations, reads, config } = app.deps;
     // A limit of 2: the acknowledgement and the answer would be two Agent messages in a row; only the answer counts.
     const limited = { ...config, agentChainLimit: 2 };
-    const port = createAgentPort({ db: pool, config: limited, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox, drawTag: () => "k7q2" });
+    const port = createAgentPort({ db: pool, config: limited, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox, drawTag });
     const worker = createAgentWorker({ port, models: gateway, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools });
     gateway.callTools([{ name: "search", input: { query: "x" } }], { text: "我先查一下。" }).reply("@owen_two 你接着说。");
     expect(await worker.runOnce()).toBe(true);
@@ -311,10 +327,11 @@ describe("an acknowledgement, then the answer", () => {
     duringTool = async (scope) => {
       scope.refs.message(own, asked);
     };
+    const tag = nextTag();
     gateway
       .callTools([{ name: "search", input: { query: "店" } }])
-      .callTools([{ name: "search", input: { query: "地址" } }], { text: "找到了〔m1·k7q2〕〔m2·k7q2〕，〔m1〕再看看地址。", reasoning: "m1 是〔m1·k7q2〕。" })
-      .reply("在河边〔m1·k7q2〕。");
+      .callTools([{ name: "search", input: { query: "地址" } }], { text: `找到了〔m1·${tag}〕〔m2·${tag}〕，〔m1〕再看看地址。`, reasoning: `m1 是〔m1·${tag}〕。` })
+      .reply(`在河边〔m1·${tag}〕。`);
     expect(await toolWorker().worker.runOnce()).toBe(true);
     await socket.waitFor((e) => e.type === "run" && e.conversationId === own && e.run?.status === "done");
     const mine = (await messages(own)).filter((m) => m.sender === agent.id);
@@ -323,7 +340,7 @@ describe("an acknowledgement, then the answer", () => {
       { text: "在河边。", lookups: { search: 2 }, cites: [{ at: 3, kind: "m", ref: { conversationId: own, seq: asked } }] },
     ]);
     // Nothing that reached the owner's socket held the run's tag: not the pieces as they streamed, not the messages.
-    expect(JSON.stringify(socket.events)).not.toContain("k7q2");
+    expect(JSON.stringify(socket.events)).not.toContain(tag);
   });
 
   it("an acknowledgement naming another Agent calls nobody (its mentions are not read); the answer is read as any reply", async () => {
@@ -339,5 +356,129 @@ describe("an acknowledgement, then the answer", () => {
     expect(await toolWorker().worker.runOnce()).toBe(true);
     expect((await messages(g)).filter((m) => m.sender === agent.id).map((m) => m.body.text)).toEqual(["@mia_bot 你也帮我看看。", "查完了。"]);
     expect((await db.query("select 1 from agent_runs where agent_id = $1", [other.id])).rowCount).toBe(0);
+  });
+});
+
+describe("a reply offered tools keeps nothing of its run's tokens, nor its tag, wherever it ends up (fix round 1)", () => {
+  /** The pieces of the reply that reached `socket` for `conv`, of `kind`, joined. */
+  const streamed = (socket: { events: Push[] }, conv: string, kind: "text" | "reasoning" = "text"): string =>
+    socket.events
+      .filter((e) => e.type === "delta" && e.conversationId === conv)
+      .map((e) => (e[kind] as string | undefined) ?? "")
+      .join("");
+  const ended = (conv: string) => (e: Push) => e.type === "run" && e.conversationId === conv && ["done", "failed", "stopped"].includes(e.run?.status);
+
+  it("I-1: a proposal whose persona and intro hold the run's tokens is stored, shown, confirmed and put in a later system text without them; the reply's text cites where it stood", async () => {
+    const { owner, agent, own } = await owned();
+    const asked = await say(owner, own, "把我最近说过的喜好写进人设");
+    duringTool = async (scope) => void scope.refs.message(own, asked);
+    const tag = nextTag();
+    const t1 = `〔m1·${tag}〕`;
+    gateway
+      .callTools([{ name: "search", input: { query: "喜好" } }])
+      .reply(`我改了一下${t1}。\n<af-intro>爱吃火锅${t1}</af-intro>\n<af-persona>你是小助手，主人爱吃火锅${t1}。</af-persona>`);
+    expect(await toolWorker().worker.runOnce()).toBe(true);
+    const reply = (await messages(own)).filter((m) => m.sender === agent.id).at(-1)!;
+    expect(reply.body).toMatchObject({ text: "我改了一下。", cites: [{ at: 5, kind: "m", ref: { conversationId: own, seq: asked } }] });
+    const wire = (await api(app, owner, "GET", `/api/conversations/${own}/messages/${reply.seq}`)).json.message;
+    expect(wire.proposal).toEqual({ id: expect.any(String), status: "open", persona: "你是小助手，主人爱吃火锅。", intro: "爱吃火锅" });
+    const stored = await db.query("select persona, intro, field from persona_proposals where id = $1", [wire.proposal.id]);
+    expect(stored.rows).toEqual([{ persona: "你是小助手，主人爱吃火锅。", intro: "爱吃火锅", field: null }]);
+    expect((await api(app, owner, "POST", `/api/agents/${agent.id}/proposals/${wire.proposal.id}/confirm`)).status).toBe(200);
+    expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json).toMatchObject({ persona: "你是小助手，主人爱吃火锅。", intro: "爱吃火锅" });
+    await say(owner, own, "你好");
+    gateway.reply("你好。");
+    expect(await toolWorker().worker.runOnce()).toBe(true);
+    const later = gateway.calls.at(-1)!;
+    expect(later.system).toContain("你是小助手，主人爱吃火锅。");
+    expect(JSON.stringify(later.messages)).toContain("<af-persona>你是小助手，主人爱吃火锅。</af-persona>");
+    expect(JSON.stringify(later)).not.toContain(tag);
+  });
+
+  it("M-2: a reply stopped inside a token keeps nothing of it — stored or streamed", async () => {
+    const { owner, agent, own } = await owned();
+    const socket = await connect(app, owner);
+    await say(owner, own, "接着说");
+    const tag = nextTag();
+    const stopping = scriptedGateway();
+    const held = stopping.hangAfter(`又见〔m1·${tag.slice(0, 5)}`);
+    const { port, worker } = toolWorker(stopping);
+    const running = worker.runOnce();
+    await held.reached;
+    port.requestStop((await lastRun(agent.id, own)).id);
+    expect(await running).toBe(true);
+    await socket.waitFor(ended(own));
+    expect((await messages(own)).filter((m) => m.sender === agent.id).map((m) => m.body)).toEqual([{ text: "又见", stopped: true }]);
+    expect(streamed(socket, own)).toBe("又见");
+    expect(JSON.stringify(socket.events)).not.toContain(tag.slice(0, 5));
+  });
+
+  it("M-1: at every end — cut by its limit, failed, cut off, out of time — what may have begun a token is never pushed, nor stored", async () => {
+    for (const [name, how] of [
+      ["elimit", "limit"],
+      ["efail", "failed"],
+      ["ecut", "cut off"],
+      ["etime", "timeout"],
+    ] as const) {
+      const { owner, agent, own } = await owned(name);
+      const socket = await connect(app, owner);
+      await say(owner, own, "说下去");
+      const tag = nextTag();
+      const said = `说到〔m1·${tag.slice(0, 6)}`;
+      const models = scriptedGateway();
+      if (how === "limit") models.reply(said, { truncated: true });
+      else if (how === "failed") models.fail("provider_unavailable", { afterText: said });
+      else if (how === "cut off") models.cut(said);
+      else models.hangAfter(said);
+      expect(await toolWorker(models, how === "timeout" ? 400 : undefined).worker.runOnce()).toBe(true);
+      await socket.waitFor(ended(own));
+      expect([how, streamed(socket, own)]).toEqual([how, "说到"]);
+      expect([how, JSON.stringify(socket.events).includes(tag.slice(0, 6))]).toEqual([how, false]);
+      const stored = (await messages(own)).filter((m) => m.sender === agent.id).map((m) => m.body.text);
+      expect([how, stored]).toEqual([how, how === "limit" || how === "timeout" ? ["说到"] : []]);
+      expect(models.pending()).toBe(0);
+      socket.close();
+    }
+  });
+
+  it("M-1: a control character inside a token of the reasoning makes it no less a token: neither streamed nor stored", async () => {
+    const { owner, agent, own } = await owned();
+    const socket = await connect(app, owner);
+    await say(owner, own, "想想");
+    const tag = nextTag();
+    gateway.reply("好。", { reasoning: `想〔m1·${tag.slice(0, 4)}\u0001${tag.slice(4)}〕好` });
+    expect(await toolWorker().worker.runOnce()).toBe(true);
+    await socket.waitFor(ended(own));
+    expect(streamed(socket, own, "reasoning")).toBe("想好");
+    expect((await messages(own)).filter((m) => m.sender === agent.id).at(-1)!.body).toEqual({ text: "好。", reasoning: "想好" });
+  });
+
+  it("tokens go before anything reads a reply in a group: a mark, or a block, that taking them out put together goes as it always does, the cites moved with the text", async () => {
+    const [owner, mia] = [await signUp(app, "owen"), await signUp(app, "mia")];
+    const agent = await mustCreateAgent(app, owner, { handle: "owen_bot", name: "小助手", model: FAST, persona: "简短地回答。" });
+    const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);
+    expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
+    const said = await say(mia, g, "周五吃火锅");
+    const also = await say(mia, g, "周六爬山");
+    duringTool = async (scope) => {
+      scope.refs.message(g, said);
+      scope.refs.message(g, also);
+    };
+    const reply = async (text: (tag: string) => string) => {
+      await say(mia, g, "@owen_bot 查一下");
+      gateway.callTools([{ name: "search", input: { query: "周" } }]).reply(text(nextTag()));
+      expect(await toolWorker().worker.runOnce()).toBe(true);
+      return (await messages(g)).filter((m) => m.sender === agent.id).at(-1)!.body;
+    };
+    // `mkz` + a token + `q9w`: the mark, once the token is out.
+    expect(await reply((tag) => `答案〔m1·${tag}〕：mkz〔m2·${tag}〕q9w完`)).toMatchObject({
+      text: "答案：完",
+      cites: [
+        { at: 2, kind: "m", ref: { conversationId: g, seq: said } },
+        { at: 3, kind: "m", ref: { conversationId: g, seq: also } },
+      ],
+    });
+    // `<a` + a token + `f-`: a block start, once the token is out — the text ends there, and so do its cites.
+    expect(await reply((tag) => `好〔m1·${tag}〕<a〔m2·${tag}〕f-persona>坏`)).toMatchObject({ text: "好", cites: [{ at: 1, kind: "m", ref: { conversationId: g, seq: said } }] });
   });
 });

@@ -699,26 +699,34 @@ export class DbAgentPort implements AgentPort {
       // bring back (below).
       let offer: Offer | null = told === null && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, { group }) : null;
       if (offer !== null && offer.tools.length === 0) offer = null;
-      // A reply offered tools numbers the files its context labels (`[文件 〔f1·k7q2〕：name]`), with its run's tag, so that
-      // its file tool can name them and its text cite them (tools/refs.ts); one offered none is shown them as always.
-      const refs = offer === null ? null : new RunRefs((this.deps.drawTag ?? drawTag)());
-      const numbered = refs === null ? plan : { ...plan, fileRef: (id: string, seq: number) => refs.file(id, { conversationId: run.conversationId, seq }) };
+      // A reply offered tools numbers the files its context labels (`[文件 〔f1·k7q2m9x4〕：name]`), with its run's tag, so
+      // that its file tool can name them and its text cite them (tools/refs.ts) — afresh for each plan, so that no number a
+      // plan leaves out is ever minted; one offered none is shown them as always. The tag is drawn again, and the plan made
+      // again, for as long as it occurs in anything the plan shows of what anyone wrote (`LoadedContext.holds`), as a
+      // group's mark is (prompt.ts `newMark`): no text anyone typed can carry it.
+      const draw = this.deps.drawTag ?? drawTag;
+      /** One plan: offered tools, with the numbers of `tag`, made afresh; else with none. */
+      const planOf = async (tag: string | null, reserved: number): Promise<{ loaded: LoadedContext; refs: RunRefs | null }> => {
+        const refs = tag === null ? null : new RunRefs(tag);
+        return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}) }, resolved, system(refs !== null), this.deps.drawMark), refs };
+      };
       const definitions = offer === null ? 0 : estimateTokens(JSON.stringify(offer.tools), planned * TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
       let reserved = definitions;
-      let loaded = await loadContext(t, { ...numbered, reserved }, resolved, system(offer !== null), this.deps.drawMark);
-      if (offer !== null && holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
+      let { loaded, refs } = await planOf(offer === null ? null : draw(), reserved);
+      if (refs !== null && holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
         // And room for what the tools bring back, from what that plan gives the conversation (`resultReserve`), with
         // the last call's line: reserved as the definitions are.
         reserved = definitions + estimateTokens(`\n\n${FINAL_LINE}`, planned) + resultReserve(config.tools.resultMaxWeight, planned, loaded.budget);
-        loaded = await loadContext(t, { ...numbered, reserved }, resolved, system(true), this.deps.drawMark);
+        ({ loaded, refs } = await planOf(refs.tag, reserved));
       }
-      if (offer !== null && !holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
+      if (refs !== null && !holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
         // With the tools reserved the conversation would not get the room a call needs at least: none are offered, and
         // the reply is planned, and made, as one that offers none (its system text saying so).
         offer = null;
         reserved = 0;
-        loaded = await loadContext(t, plan, resolved, system(false), this.deps.drawMark);
+        ({ loaded, refs } = await planOf(null, 0));
       }
+      while (refs !== null && loaded.holds(refs.tag)) ({ loaded, refs } = await planOf(draw(), reserved));
       if (!hasOwnerTurn(loaded)) return { end: loaded.topicStart > 0 && covers <= loaded.topicStart ? STARTED_OVER : BUSY };
       if (!holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) return { end: TOO_SMALL };
       // A reply offered tools also carries the text a reply offered none is sent (the same mark and roster), for whenever

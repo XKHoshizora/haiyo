@@ -11,13 +11,13 @@ import { acknowledgementTxn, postingRun } from "../messages/read.ts";
 import { insertMessage, MESSAGE_COLUMNS, toStored, type MessageBody, type MessageRow, type StoredMessage } from "../messages/model.ts";
 import { MESSAGE_TEXT_MAX } from "../messages/send.ts";
 import { cleanModelText, hasVisibleText } from "../schemas.ts";
-import { mentionsAtSend } from "./mentions.ts";
-import { parseProposalBlock, PROPOSAL_PLACEHOLDER, storeProposal, withoutUnfinishedBlock } from "./persona.ts";
+import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
+import { parseProposalBlock, PROPOSAL_PLACEHOLDER, storeProposal } from "./persona.ts";
 import { RunNotRunning } from "./runtime/port.ts";
-import { withoutMark, withoutMarkAtCut } from "./runtime/prompt.ts";
+import { withoutSecretsPlaced } from "./runtime/prompt.ts";
 import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
 import { forgetSummaries } from "./summary/store.ts";
-import { takeCites, type RunRefs } from "./tools/refs.ts";
+import { cutPlaced, takeCites, trimPlaced, withoutSecretsFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
 import {
   agentLimit,
   assertModelChoice,
@@ -190,6 +190,12 @@ export interface AgentReply extends LookupFields {
  * `client_txn` = the run's id, so posting a run's reply again returns the stored message (`duplicate`) and stores
  * nothing; by it, too, its owner's copy of the message names the run's model, level and charge (`via`, messages/read.ts).
  *
+ * First of all, a reply offered tools (`refs`, the numbers its run gave) loses its run's tokens and tag from all it says —
+ * its text, its reasoning and its search words, once each follows the rules of message text (`cleanModelText`) — before
+ * anything reads it (agents/tools/refs.ts `takeCites`): those of its text become its citations, places in its text
+ * carried through every step below (refs.ts `Placed`: a cut takes the ones past it, a block the ones in it), so that no
+ * proposal, block or cut ever holds a token. An acknowledgement cites nothing.
+ *
  * In the Agent's own conversation: the text follows the rules of message text (`cleanModelText`: what a send would
  * refuse is removed); a persona proposal in it (`parseProposalBlock`: the reply's text only, never its reasoning) is
  * taken out — the fixed `PROPOSAL_PLACEHOLDER` stands in when nothing visible is left — and stored in this same
@@ -208,15 +214,18 @@ export interface AgentReply extends LookupFields {
  * owner's decision of 2026-11-18, replacing plan ruling 2): every member reads the message, but its reasoning is sent
  * only to the owner of the Agent that sent it (messages/read.ts `toWireForReaders`), since a model's thinking often
  * restates its persona. Then the text is cut at 8 000 characters as above. Only then do the text and the reasoning lose
- * the run's `mark` (runtime/prompt.ts `withoutMark`), so no more is cleaned than a message stores — what the model
- * writes may be shaped against the cleaner, and whoever runs the model's endpoint reads the mark in the system text.
+ * the run's `mark` — and, from a reply offered tools, its tag once more, whatever a step before put together
+ * (runtime/prompt.ts `withoutSecrets`; in its own conversation too) —, so no more is cleaned than a message stores — what
+ * the model writes may be shaped against the cleaner, and whoever runs the model's endpoint reads the mark in the system
+ * text.
  * `mark` is the one the run drew, as the port kept it from `begin` (port-impl.ts `RunFlags.mark`): only a run begun in
  * this process is posted, so in a group it is always there, and a reply there without one is thrown, never posted
  * uncleaned. What was cut for length — the text when it is `truncated`, the reasoning when it was cut here or the reply
  * was — also loses what the cut left at its very end of the mark or of a label (`withoutMarkAtCut`); `truncated` says
  * what it always said. The text then loses again any block that taking the mark out put together; a reply that was
  * nothing but the mark and labels is left with no visible text (null, below). Who its mentions mean is read once from that
- * text and stored with it (mentions.ts `mentionsAtSend`, Task M). The message may then call other Agents there — those
+ * text and stored with it (mentions.ts `mentionsAtSend`, Task M); of its citations those a link is drawn at are kept with
+ * it (`drawnCites`). The message may then call other Agents there — those
  * its stored mentions mean —
  * in this same transaction (runs.ts `triggerFromAgent`, which locks no further `agents` row, not even by a foreign key of
  * what it writes), as the call of the person
@@ -270,41 +279,40 @@ export async function postAsAgent(
   if (!own && !(await currentMembership(t, conversationId, agentId))) throw new AppError(409, "agent_removed");
   if (!own && mark === null) throw new Error("a reply in a group is posted only with the mark its run drew");
 
-  let text = cleanModelText(reply.text);
+  // A reply offered tools: its run's tokens go first, from all it says — its text, its reasoning, its search words —
+  // before anything reads it (a proposal, the block rule, the cut, the mark): those of its text become its citations
+  // (an acknowledgement cites nothing), carried as places through every step after (refs.ts `Placed`).
+  const refs = reply.refs ?? null;
+  const here = (r: MessageRef): boolean => own || r.conversationId === conversationId;
+  let placed: Placed = refs ? takeCites(cleanModelText(reply.text), refs, { cite: !ack, keep: here }) : { text: cleanModelText(reply.text), cites: [] };
+  let reasoning = refs ? takeCites(cleanModelText(reply.reasoning), refs, { cite: false }).text : cleanModelText(reply.reasoning);
+  const searched = refs && Array.isArray(reply.queries) ? reply.queries.map((q) => (typeof q === "string" ? takeCites(q, refs, { cite: false }).text : q)) : reply.queries;
   // In a group nothing is a proposal, and no block of one is shown; nor in an acknowledgement.
-  const proposal = own && !ack ? parseProposalBlock(text) : null;
-  if (!own || ack) text = withoutUnfinishedBlock(text);
+  const proposal = own && !ack ? parseProposalBlock(placed.text) : null;
+  if (!own || ack) placed = withoutUnfinishedBlockPlaced(placed);
   const proposalId = proposal ? randomUUID() : null;
-  if (proposal) text = hasVisibleText(proposal.visible) ? proposal.visible : PROPOSAL_PLACEHOLDER;
+  if (proposal) placed = hasVisibleText(proposal.visible) ? withoutProposalPlaced(placed, proposal.visible) : { text: PROPOSAL_PLACEHOLDER, cites: [] };
   let truncated = reply.truncated;
-  const characters = Array.from(text);
+  const characters = Array.from(placed.text);
   if (characters.length > MESSAGE_TEXT_MAX) {
-    text = characters.slice(0, MESSAGE_TEXT_MAX).join("").trimEnd();
+    placed = trimPlaced(cutPlaced(placed, characters.slice(0, MESSAGE_TEXT_MAX).join("").length));
     truncated = true;
   }
-  if (!proposal && (reply.stopped || truncated)) text = withoutUnfinishedBlock(text);
+  if (!proposal && (reply.stopped || truncated)) placed = withoutUnfinishedBlockPlaced(placed);
   // Kept as in its own conversation; in a group only its owner is ever sent it (messages/read.ts).
-  let reasoning = cleanModelText(reply.reasoning);
   const thought = Array.from(reasoning);
   if (thought.length > REASONING_MAX) reasoning = thought.slice(0, REASONING_MAX).join("").trimEnd();
-  // In a group: the run's mark goes, from no more than is kept — and from the end of what was cut for length, what the
-  // cut left of the mark or of a label.
+  // The run's secrets go last, from no more than is kept, whatever a step before put together: in a group its mark —
+  // from the end of what was cut for length also what the cut left of the mark or of a label —, and the tag of a reply
+  // offered tools; then, in a group, an acknowledgement or a reply stopped or cut, a block that put together.
   const thoughtCut = reply.truncated || thought.length > REASONING_MAX;
-  if (mark !== null) {
-    const clean = (s: string, cut: boolean): string => (cut ? withoutMarkAtCut(s, mark) : withoutMark(s, mark)).trim();
-    text = withoutUnfinishedBlock(clean(text, truncated));
-    reasoning = clean(reasoning, thoughtCut);
+  const tag = refs?.tag ?? null;
+  if (mark !== null || tag !== null) {
+    placed = trimPlaced(withoutSecretsFrom(placed, mark, tag, truncated));
+    if (!own || ack || (!proposal && (reply.stopped || truncated))) placed = withoutUnfinishedBlockPlaced(placed);
+    reasoning = withoutSecretsPlaced(reasoning, mark, tag, [], thoughtCut).text.trim();
   }
-  // A reply offered tools: its run's tokens go — those of its text become its citations, kept beside it (an
-  // acknowledgement cites nothing) — and what taking them out put together goes as the mark and a block always do.
-  const here = (r: MessageRef): boolean => own || r.conversationId === conversationId;
-  let cites: Cite[] = [];
-  if (reply.refs) {
-    ({ text, cites } = takeCites(text, reply.refs, { cite: !ack, keep: here, cut: truncated }));
-    reasoning = takeCites(reasoning, reply.refs, { cite: false, cut: thoughtCut }).text;
-    ({ text, cites } = cleanedAgain(text, cites, mark, !own || ack || reply.stopped || truncated));
-    if (mark !== null) reasoning = withoutMark(reasoning, mark).trim();
-  }
+  const text = placed.text;
   // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted.
   if (!hasVisibleText(text) && (!own || !hasVisibleText(reasoning))) return null;
 
@@ -337,14 +345,15 @@ export async function postAsAgent(
   if (lookups) body.lookups = lookups;
   const found = foundOf(reply.found).filter(here);
   if (found.length > 0) body.found = found;
-  // What its text cites, beside it, as `found` is kept: in a group only that group's messages (each reader is sent only
-  // those they can see, messages/read.ts).
-  if (cites.length > 0) body.cites = cites;
-  const queries = own ? queriesOf(reply.queries) : [];
+  const queries = own ? queriesOf(searched) : [];
   if (queries.length > 0) body.queries = queries;
   // Who its mentions mean, read once, now, from the text it stores (Task M: a model's text is typed text), and stored with
   // it: what it calls below, and everything after, reads that.
   const read = await mentionsAtSend(t, { id: conversationId, type: own ? "agent" : "group" }, text);
+  // What its text cites, beside it, as `found` is kept: in a group only that group's messages (each reader is sent only
+  // those they can see, messages/read.ts) — where a link can be drawn, in its plain and its rendered text alike.
+  const cites = drawnCites(text, placed.cites, read.mentions ?? []);
+  if (cites.length > 0) body.cites = cites;
   const message = await insertMessage(t, conversationId, agentId, "text", body, runId, read);
   if (proposal && proposalId !== null) await storeProposal(t, agent, proposalId, message.id, proposal.proposal);
   // An Agent posts only in its own conversation and in groups it is a member of: elsewhere than its own is a group. Who
@@ -360,20 +369,43 @@ export async function postAsAgent(
   return { message, duplicate: false, triggered };
 }
 
+/** `p` as `withoutUnfinishedBlock` leaves its text: cut at its first `<af-` (the cites after it gone), its end trimmed. */
+function withoutUnfinishedBlockPlaced(p: Placed): Placed {
+  const at = p.text.indexOf("<af-");
+  return at < 0 ? p : trimPlaced(cutPlaced(p, at));
+}
+
 /**
- * `text` and its `cites` once its run's tokens are out (`postAsAgent`), held again to what the text was held to before
- * them, since taking them out joins what stood around them: a mark that put together goes (runtime/prompt.ts
- * `withoutMark`), and then no place in the text is known any more, so it cites nothing — only a text shaped against the
- * cleaner can do that, a token holding no mark; with `blocks` (in a group, an acknowledgement, a reply stopped or cut) a
- * block start (`<af-`) that put together cuts the text there (`withoutUnfinishedBlock`), with the cites after it.
+ * `p` without its proposal's block, as `parseProposalBlock` leaves it (`visible`): the block — from its first `<af-` to
+ * the end of its last `</af-…>`, every one of them the block's own — taken out, with the cites in it, and trimmed.
  */
-function cleanedAgain(text: string, cites: Cite[], mark: string | null, blocks: boolean): { text: string; cites: Cite[] } {
-  const again = mark === null ? text : withoutMark(text, mark).trim();
-  if (again !== text) return { text: blocks ? withoutUnfinishedBlock(again) : again, cites: [] };
-  const start = blocks ? text.indexOf("<af-") : -1;
-  if (start < 0) return { text, cites };
-  const cut = withoutUnfinishedBlock(text);
-  return { text: cut, cites: cites.filter((c) => c.at <= start).map((c) => ({ ...c, at: Math.min(c.at, cut.length) })) };
+function withoutProposalPlaced(p: Placed, visible: string): Placed {
+  const start = p.text.indexOf("<af-");
+  const end = p.text.indexOf(">", p.text.lastIndexOf("</af-")) + 1;
+  const done = trimPlaced(withoutSpanPlaced(p, start, end));
+  return done.text === visible ? done : { text: visible, cites: [] };
+}
+
+/** A Markdown link's text, `[…]` before `(`, as `[from, to)` (the `]` at `to`). */
+const LINK_TEXT = /\[[^[\]\n]*\]\(/g;
+
+/**
+ * Of `cites` (places in `text`, a reply's as stored), those a link is drawn at — in its plain text and its rendered
+ * Markdown alike, as its mentions are (mentions.ts): none inside code (`codeRanges`), inside an address or at either end of
+ * one (`addressRanges`: its mark would land in the link, or keep it from being one), or inside a link's text — and one
+ * inside a mention (`mentions`, of the same text) at its end.
+ */
+function drawnCites(text: string, cites: readonly Cite[], mentions: ReadonlyArray<{ start: number; length: number }>): Cite[] {
+  if (cites.length === 0) return [];
+  const code = codeRanges(text);
+  const addresses = addressRanges(text);
+  const links = [...text.matchAll(LINK_TEXT)].map((m) => [m.index, m.index + m[0].length - 2] as const);
+  return cites
+    .filter(({ at }) => !code.some(([a, b]) => at > a && at < b) && !addresses.some(([a, b]) => at >= a && at <= b) && !links.some(([a, b]) => at > a && at <= b))
+    .map((c) => {
+      const inside = mentions.find((m) => c.at > m.start && c.at < m.start + m.length);
+      return inside ? { ...c, at: inside.start + inside.length } : c;
+    });
 }
 
 /**

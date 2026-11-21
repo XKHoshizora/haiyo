@@ -65,8 +65,8 @@ export const CITE_HOW = "引用查到的消息或文件时，在那句话末尾�
 export function toolsPassage(group: boolean): string {
   return [
     group
-      ? "你可以用三个工具：search_messages 按原文查这个群的聊天记录；current_time 看现在的日期和时间；read_file 读对话里的文本文件（用文件名前面的编号，比如 f1；图片和 PDF 读不了）。"
-      : "你可以用三个工具：search_messages 按原文查聊天记录（我们之间的，和你所在的群里的）；current_time 看现在的日期和时间；read_file 读对话里的文本文件（用文件名前面的编号，比如 f1；图片和 PDF 读不了）。",
+      ? "你可以用三个工具：search_messages 按原文查这个群的聊天记录；current_time 看现在的日期和时间；read_file 读对话里的文本文件（用文件名前面的编号，原样照抄；图片和 PDF 读不了）。"
+      : "你可以用三个工具：search_messages 按原文查聊天记录（我们之间的，和你所在的群里的）；current_time 看现在的日期和时间；read_file 读对话里的文本文件（用文件名前面的编号，原样照抄；图片和 PDF 读不了）。",
     ...(group ? ["你只能查这个群里的记录。查不到就照实说没找到，不要提别的地方。"] : []),
     "不要为了闲聊去查；只有回答需要时才查。要查东西或做要花点时间的事时，先用一句很短的话说一声，再用工具；直接能回答的就直接回答，不用先说要去查。",
     TOOL_MATERIAL,
@@ -510,37 +510,104 @@ export function newMark(taken: (mark: string) => boolean, draw: () => string = d
  * own conversation) the text is as written.
  */
 export function withoutMark(text: string, mark: string | null): string {
-  if (!mark) return text;
-  const wanted = Array.from(mark);
-  const last = wanted.at(-1)!;
+  return mark ? secretScan(text, mark, null).kept.join("") : text;
+}
+
+/**
+ * Text without the run's secrets: the mark as `withoutMark` takes it out (`mark`, a group's) and every occurrence of the
+ * tag of a reply offered tools (`tag`, agents/tools/refs.ts; its letters in any case) — also one that taking out the
+ * other, or another, put together — in the same one pass. What anyone wrote that a run's tools show its model (a file's
+ * text, a search's results) goes through it, so that nobody can plant the real tag there; and what a run stores, last.
+ */
+export function withoutSecrets(text: string, mark: string | null, tag: string | null): string {
+  return mark || tag ? secretScan(text, mark, tag).kept.join("") : text;
+}
+
+/**
+ * `withoutSecrets` of `text` with `places` in it (ascending UTF-16 offsets: a reply's citations) moved onto what is left
+ * — a place inside what goes is where it went — and, with `cut` (the text was cut for length), as `withoutMarkAtCut`
+ * leaves it at its end, a place past the end at the end.
+ */
+export function withoutSecretsPlaced(text: string, mark: string | null, tag: string | null, places: readonly number[], cut = false): { text: string; places: number[] } {
+  if (!mark && !tag) return { text, places: [...places] };
+  const { kept, origin } = secretScan(text, mark, tag);
+  let out = kept.join("");
+  if (cut && mark) out = cutMarkTail(out, mark);
+  // Each kept character's place, in UTF-16, and where it stood before: a place goes to the count of what was kept before it.
+  const moved: number[] = [];
+  let k = 0;
+  let units = 0;
+  for (const p of places) {
+    while (k < kept.length && origin[k]! < p) units += kept[k++]!.length;
+    moved.push(Math.min(units, out.length));
+  }
+  return { text: out, places: moved };
+}
+
+/**
+ * Where a run's secrets are taken out of a text, in one pass (`withoutMark`, `withoutSecrets`): what is kept is built
+ * up as the text is read, each character with where it stood (`origin`, UTF-16); a mark or the tag it comes to end with
+ * is dropped at once, and a label carrying the mark as its `〕` comes. Neither secret is ever made of a bracket, the
+ * separator or a line break.
+ */
+function secretScan(text: string, mark: string | null, tag: string | null): { kept: string[]; origin: number[] } {
+  const wanted = mark ? Array.from(mark) : [];
+  const lastOfMark = wanted.at(-1);
+  const tagged = tag ? Array.from(tag.toLowerCase()) : [];
+  const lastOfTag = tagged.at(-1);
   const kept: string[] = [];
+  const origin: number[] = [];
   /**
    * Where in `kept` a label could still begin — a `〔` with no `〕` and no line break after it — innermost last; and
    * whether what came after it had the separator and the mark (a label after it that was taken out took its own along).
    */
   const opens: Array<{ at: number; separated: boolean; marked: boolean }> = [];
-  const endsWithMark = (): boolean => kept.length >= wanted.length && wanted.every((c, i) => kept[kept.length - wanted.length + i] === c);
+  const endsWith = (w: readonly string[], fold: boolean): boolean =>
+    kept.length >= w.length && w.every((c, i) => (fold ? kept[kept.length - w.length + i]!.toLowerCase() : kept[kept.length - w.length + i]) === c);
+  const drop = (n: number): void => {
+    kept.length -= n;
+    origin.length = kept.length;
+  };
+  let at = 0;
   for (const c of text) {
     const open = opens.at(-1);
-    if (c === CLOSE && open !== undefined && open.separated && open.marked) {
+    if (mark && c === CLOSE && open !== undefined && open.separated && open.marked) {
       kept.length = open.at;
+      origin.length = open.at;
       opens.pop();
     } else if (c === OPEN) {
       kept.push(c);
+      origin.push(at);
       opens.push({ at: kept.length - 1, separated: false, marked: false });
     } else if (c === CLOSE || hasVerticalSpace(c)) {
       kept.push(c);
+      origin.push(at);
       opens.length = 0;
     } else {
       kept.push(c);
+      origin.push(at);
       if (c === SEPARATOR && open !== undefined) open.separated = true;
-      if (c === last && endsWithMark()) {
-        kept.length -= wanted.length;
+      if (mark && c === lastOfMark && endsWith(wanted, false)) {
+        drop(wanted.length);
         if (open !== undefined) open.marked = true;
-      }
+      } else if (tag && c.toLowerCase() === lastOfTag && endsWith(tagged, true)) drop(tagged.length);
+    }
+    at += c.length;
+  }
+  return { kept, origin };
+}
+
+/** What a cut left of the mark or of a label at the very end of `kept` (a text without the mark), taken off (`withoutMarkAtCut`). */
+function cutMarkTail(kept: string, mark: string): string {
+  let out = kept;
+  for (let k = mark.length - 1; k >= 1; k--) {
+    if (out.endsWith(mark.slice(0, k))) {
+      out = out.slice(0, -k);
+      break;
     }
   }
-  return kept.join("");
+  const open = out.lastIndexOf(OPEN);
+  return open !== -1 && !out.includes(CLOSE, open) && !hasVerticalSpace(out.slice(open)) ? out.slice(0, open) : out;
 }
 
 /**
@@ -550,15 +617,7 @@ export function withoutMark(text: string, mark: string | null): string {
  * to the end. Anything earlier in the text is as `withoutMark` leaves it.
  */
 export function withoutMarkAtCut(text: string, mark: string): string {
-  let kept = withoutMark(text, mark);
-  for (let k = mark.length - 1; k >= 1; k--) {
-    if (kept.endsWith(mark.slice(0, k))) {
-      kept = kept.slice(0, -k);
-      break;
-    }
-  }
-  const open = kept.lastIndexOf(OPEN);
-  return open !== -1 && !kept.includes(CLOSE, open) && !hasVerticalSpace(kept.slice(open)) ? kept.slice(0, open) : kept;
+  return cutMarkTail(withoutMark(text, mark), mark);
 }
 
 /** How the roster is introduced, before its lines; and its last line when it lists fewer than are there. */

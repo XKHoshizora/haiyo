@@ -26,13 +26,16 @@ const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xd
 /**
  * One reply as it streams: the whole text and reasoning so far, and the pieces not yet pushed. Pieces are coalesced
  * so the owner's sockets get at most one delta every `intervalMs`: the first piece goes out at once, later ones wait
- * for the interval to pass. Characters a message may not hold (`stripUnsafeText`) are left out of the pushes; the
- * stored message is cleaned the same way. With `tag` (a reply offered tools: its run's, agents/tools/refs.ts) no token
- * carrying it is pushed, of the text or the reasoning: each is taken out as it completes, and what may still become one
- * waits for the next piece (`TokenHold`); the stored message keeps none either, its citations beside its text. The text
- * is pushed only up to the first `BLOCK_START` (looked for in the text as cleaned and without those tokens, as the
- * stored message is read): a `<` that may begin one waits for the next piece, and goes out in order once it turns out
- * not to (or at `end`). The reasoning is pushed as it comes.
+ * for the interval to pass. Characters a message may not hold (`stripUnsafeText`) are left out of each piece, of the
+ * text and the reasoning, as it comes (a high surrogate a piece ends with waits for the next); the stored message is
+ * cleaned the same way. With `tag` (a reply offered tools: its run's, agents/tools/refs.ts) no token carrying it, no part
+ * of one and not the tag is pushed, of the text or the reasoning: each piece, once cleaned, goes through `TokenHold` —
+ * a token goes as it completes, what may still become one waits for the next piece however deep it nests, and at every
+ * end (`end`, `flushNow`: a stop, a cut, a time limit, a failure, an acknowledgement) what may have begun one is
+ * dropped, never pushed; the stored message keeps none either, its citations beside its text. The text is pushed only up
+ * to the first `BLOCK_START` (looked for in the text as cleaned and without those tokens, as the stored message is
+ * read): a `<` that may begin one waits for the next piece, and goes out in order once it turns out not to (or at
+ * `end`). The reasoning is pushed as it comes.
  */
 export class ReplyStream {
   text = "";
@@ -47,7 +50,7 @@ export class ReplyStream {
   /** A block has begun: no more text is pushed. */
   private held = false;
   /** A high surrogate a piece ended with: kept for the next piece, so a pair split across pieces is not cleaned away. */
-  private carry = "";
+  private carry = { text: "", reasoning: "" };
   /** What of the text, and of the reasoning, may still become a token of the run's tag: held back (none without a tag). */
   private holds: { text: TokenHold; reasoning: TokenHold } | null;
 
@@ -61,8 +64,10 @@ export class ReplyStream {
 
   add(kind: "text" | "reasoning", piece: string): void {
     this[kind] += piece;
-    if (kind === "reasoning") this.pending.reasoning += this.holds ? this.holds.reasoning.push(piece) : piece;
-    else this.addText(piece);
+    if (kind === "reasoning") {
+      const cleaned = this.cleaned("reasoning", piece);
+      this.pending.reasoning += this.holds ? this.holds.reasoning.push(cleaned) : cleaned;
+    } else this.addText(piece);
     if (this.timer) return;
     const wait = this.lastSent + this.intervalMs - performance.now();
     if (wait <= 0) this.flush();
@@ -71,14 +76,19 @@ export class ReplyStream {
 
   private addText(piece: string): void {
     if (this.held) return;
-    let raw = this.carry + piece;
-    this.carry = "";
+    const cleaned = this.cleaned("text", piece);
+    this.show(this.holds ? this.holds.text.push(cleaned) : cleaned);
+  }
+
+  /** `piece` of `kind` without what a message may not hold, a high surrogate it ends with kept for the next piece. */
+  private cleaned(kind: "text" | "reasoning", piece: string): string {
+    let raw = this.carry[kind] + piece;
+    this.carry[kind] = "";
     if (raw !== "" && isHighSurrogate(raw.charCodeAt(raw.length - 1))) {
-      this.carry = raw.slice(-1);
+      this.carry[kind] = raw.slice(-1);
       raw = raw.slice(0, -1);
     }
-    const cleaned = stripUnsafeText(raw);
-    this.show(this.holds ? this.holds.text.push(cleaned) : cleaned);
+    return stripUnsafeText(raw);
   }
 
   /** `text` (cleaned, without tokens) joins what is shown, which is released up to a block's start (or what may begin one). */
@@ -91,7 +101,7 @@ export class ReplyStream {
     this.release(at >= 0 ? at : this.shown.length - pendingStart(this.shown));
   }
 
-  /** Nothing more comes for now: what was held for a token that never came is shown (the text's as any text is). */
+  /** Nothing more comes for now: of what was held, what may have begun a token goes, the rest is shown (the text's as any text is). */
   private settle(): void {
     if (!this.holds) return;
     this.pending.reasoning += this.holds.reasoning.end();
@@ -111,7 +121,7 @@ export class ReplyStream {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const text = this.pending.text;
-    const reasoning = stripUnsafeText(this.pending.reasoning);
+    const reasoning = this.pending.reasoning;
     this.pending = { text: "", reasoning: "" };
     if (text === "" && reasoning === "") return;
     this.lastSent = performance.now();
@@ -119,8 +129,8 @@ export class ReplyStream {
   }
 
   /**
-   * The reply is complete (before it is posted): what was held for a token that never came, and for a `<` that began no
-   * block, goes out, then everything pending.
+   * The reply has ended, however it ended (before it is posted, if it is): of what was held for a token, what may have
+   * begun one goes and the rest goes out, as does what was held for a `<` that began no block; then everything pending.
    */
   end(): void {
     this.settle();
@@ -146,7 +156,7 @@ export class ReplyStream {
     this.shown = "";
     this.released = 0;
     this.held = false;
-    this.carry = "";
+    this.carry = { text: "", reasoning: "" };
     this.holds = this.tag === null ? null : { text: new TokenHold(this.tag), reasoning: new TokenHold(this.tag) };
   }
 

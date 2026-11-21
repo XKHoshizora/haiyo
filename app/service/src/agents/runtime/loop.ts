@@ -38,8 +38,9 @@ export function canonicalJson(value: unknown): string {
 }
 
 /**
- * The counts of one reply's tool calls. A call is known by its tool's name and its input (`canonicalJson`), never by
- * the provider's id (ids repeat, and may be empty). `admit`: the first time a call is seen it runs ("run"), unless its
+ * The counts of one reply's tool calls. A call is known by its tool's name and its input (`canonicalJson`) — as `same`
+ * makes it, when given (worker.ts: a file call by its file's number, however the token was copied) — never by the
+ * provider's id (ids repeat, and may be empty). `admit`: the first time a call is seen it runs ("run"), unless its
  * tool has been run as often as `perTool` allows it (looked up as the tool's own entry; a tool with none has only the
  * round cap) — then "over"; a call run before is a "repeat", and one seen a third time ends the tool phase (`mustEnd`).
  * `roundDone` counts a round that called tools; `exhausted` once `maxRounds` have.
@@ -51,10 +52,10 @@ export class LoopGuard {
   private rounds = 0;
   private repeatedThrice = false;
 
-  constructor(private readonly limits: { maxRounds: number; perTool: Readonly<Record<string, number>> }) {}
+  constructor(private readonly limits: { maxRounds: number; perTool: Readonly<Record<string, number>>; same?: (call: ToolCall) => unknown }) {}
 
   admit(call: ToolCall): "run" | "repeat" | "over" {
-    const key = `${call.name}\u0000${canonicalJson(call.input)}`;
+    const key = `${call.name}\u0000${canonicalJson(this.limits.same ? this.limits.same(call) : call.input)}`;
     const times = (this.seen.get(key) ?? 0) + 1;
     this.seen.set(key, times);
     if (times >= 3) this.repeatedThrice = true;

@@ -23,21 +23,28 @@ const gateway = scriptedGateway();
 const { blobs } = useProbeBlobs("af-tools-search-");
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, blobs, agentWorker: false });
 
-/** The tags this file's runs drew (tools/refs.ts), in order: each run its own, `t000`, `t001`… */
+/** The tags this file's runs drew (tools/refs.ts), in order: each run its own, `tag00000`, `tag00001`… */
 const drawn: string[] = [];
-/** The tag the next run offered tools draws. */
-const nextTag = (): string => `t${String(drawn.length).padStart(3, "0")}`;
+/** What the next draws give first, before the file's own sequence (a test forcing the source to a tag it planted). */
+const forced: string[] = [];
+/** The tags a test planted in what someone wrote: a reply may quote them as text, so the invariant below skips them. */
+const planted = new Set<string>();
+let count = 0;
+/** The tag the next run offered tools draws (nothing forced). */
+const nextTag = (): string => `tag${String(count).padStart(5, "0")}`;
 const drawTag = (): string => {
-  const tag = nextTag();
+  const tag = forced.shift() ?? nextTag();
+  if (tag === nextTag()) count++;
   drawn.push(tag);
   return tag;
 };
 
 afterEach(async () => {
   expect(gateway.pending()).toBe(0);
-  // No reply ever stored a token of its run, nor of any other: its text and reasoning keep none (its citations are beside it).
+  // No reply ever stored a token of its run, nor of any other: its text and reasoning keep none (its citations are beside it)
+  // — but for a tag someone typed, which a run drew and then left (I-2).
   const { rows } = await db.query<{ body: unknown }>("select m.body from messages m join principals p on p.id = m.sender_id where p.kind = 'agent'");
-  for (const { body } of rows) for (const tag of drawn) expect([tag, JSON.stringify(body).includes(`·${tag}`)]).toEqual([tag, false]);
+  for (const { body } of rows) for (const tag of drawn.filter((t) => !planted.has(t))) expect([tag, JSON.stringify(body).toLowerCase().includes(tag)]).toEqual([tag, false]);
 });
 
 const FAST = { source: "site", id: "fast" } as const;
@@ -432,5 +439,58 @@ describe("what the reply keeps of its searches", () => {
     const out = outputs(call)[0];
     expect(out.results.map((r: any) => r.text)).toContain("在河边。");
     expect(JSON.stringify(call)).not.toContain(earlierTag);
+  });
+
+  it("I-2: a tag that occurs in anything the run is shown is drawn again: with the source forced to a planted tag first, the run uses another, and the planted token copied into the reply stays text", async () => {
+    const { owner, own } = await owned();
+    await say(owner, own, "记一下〔m1·plnt0001〕");
+    const target = await postAs(own, owner.id, "引用-c6 周五吃火锅");
+    forced.push("plnt0001");
+    planted.add("plnt0001");
+    const tag = nextTag();
+    await searchOnce(owner, own, "周五吃什么", { query: "引用-c6" }, undefined, `你记的〔m1·plnt0001〕，周五吃火锅〔m1·${tag}〕。`);
+    expect(drawn.slice(-2)).toEqual(["plnt0001", tag]);
+    const call = gateway.calls.at(-1)!;
+    expect(outputs(call)[0].results[0].ref).toBe(`〔m1·${tag}〕`);
+    const body = await bodyOf(own, await lastOf(own));
+    expect(body.text).toBe("你记的〔m1·plnt0001〕，周五吃火锅。");
+    expect(body.cites).toEqual([{ at: (body.text as string).length - 1, kind: "m", ref: { conversationId: own, seq: target } }]);
+  });
+
+  it("I-2: what a search shows of what anyone wrote never carries the run's tag — a planted one goes from it, in any case", async () => {
+    const { owner, agent, own } = await owned("owen");
+    const mia = await signUp(app, "mia");
+    const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);
+    await addAgent(owner, g, agent.id);
+    const tag = nextTag();
+    // In a group: in nothing the Agent's own conversation shows, so only its search can find it.
+    await say(mia, g, `引用-c7 抄这个〔m1·${tag}〕和${tag.toUpperCase()}`);
+    const out = await searchOnce(owner, own, "群里说了什么", { query: "引用-c7" });
+    expect(drawn.at(-1)).toBe(tag);
+    expect(out.results.map((r: any) => r.text)).toEqual(["引用-c7 抄这个〔m1·〕和"]);
+    expect(JSON.stringify(out.results.map((r: any) => ({ ...r, ref: "" }))).toLowerCase()).not.toContain(tag);
+  });
+
+  it("M-3: the words a search was for keep none of the run's tokens, nor its tag", async () => {
+    const { owner, own } = await owned();
+    const tag = nextTag();
+    await searchOnce(owner, own, "找找", { query: `〔m1·${tag}〕 河边` });
+    expect((await bodyOf(own, await lastOf(own))).queries).toEqual(["河边"]);
+  });
+
+  it("M-4: a cite is kept only where a link is drawn, in the plain text and the rendered one alike: none in code, a link's text or an address; one inside a mention at its end", async () => {
+    const { owner, own } = await owned();
+    const target = await postAs(own, owner.id, "引用-c8 火锅");
+    const tag = nextTag();
+    const t = `〔m1·${tag}〕`;
+    await searchOnce(owner, own, "火锅？", { query: "引用-c8" }, undefined, `\`代码${t}\` [链接${t}](https://x.com/a) https://x.com/b${t} 正文${t}。@ol${t}ive 好`);
+    const body = await bodyOf(own, await lastOf(own));
+    const text = body.text as string;
+    expect(text).toBe("`代码` [链接](https://x.com/a) https://x.com/b 正文。@olive 好");
+    const ref = { conversationId: own, seq: target };
+    expect(body.cites).toEqual([
+      { at: text.indexOf("。"), kind: "m", ref },
+      { at: text.indexOf("@olive") + 6, kind: "m", ref },
+    ]);
   });
 });

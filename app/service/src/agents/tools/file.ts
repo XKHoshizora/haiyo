@@ -4,7 +4,7 @@ import type { ToolSpec } from "../../models/gateway.ts";
 import { askerLine, readPrefix } from "../context.ts";
 import { fileText, startsLikeText, UTF8_MAX_BYTES_PER_CHAR } from "../runtime/context.ts";
 import type { ToolOutcome } from "../runtime/port.ts";
-import { TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
+import { TOOL_MATERIAL, withoutSecrets } from "../runtime/prompt.ts";
 import type { RunScope, ToolDeps } from "./index.ts";
 
 /**
@@ -35,11 +35,11 @@ export const READ_ON = "只读了一部分，可以用 from 接着读。";
 export const fileSpec: ToolSpec = {
   name: READ_FILE,
   description:
-    "读对话里一个文本文件的内容，用文件编号（对话里文件名前面的那个，或查找结果里 file 的 ref，原样照抄；只写 f1 这样的编号也行）。图片和 PDF 读不了。一次读一部分：还有没读的时候会给出 next，用 from 接着读。",
+    "读对话里一个文本文件的内容，用文件编号（对话里文件名前面的那个，或查找结果里 file 的 ref，连同〔〕原样照抄）。图片和 PDF 读不了。一次读一部分：还有没读的时候会给出 next，用 from 接着读。",
   parameters: {
     type: "object",
     properties: {
-      file: { type: "string", description: "文件编号，比如 f1。" },
+      file: { type: "string", description: "文件编号，连同〔〕原样照抄。" },
       from: { type: "integer", description: "从第几个字开始读，默认 0。" },
     },
     required: ["file"],
@@ -95,9 +95,10 @@ export async function readFile(deps: ToolDeps, scope: RunScope, input: FileInput
   const rest = shown.slice(0, text.chars).slice(from);
   if (rest.length === 0) return { output: { error: FROM_PAST_END } };
 
-  // In a group the run's mark is taken out; the rest is shown as it is (what looks like a citation in it is what someone
-  // wrote). `from` and `next` count the file's own characters.
-  const clean = (s: string): string => withoutMark(s, scope.group ? scope.mark : null);
+  // The run's secrets are taken out (runtime/prompt.ts `withoutSecrets`: in a group its mark, and always its tag, so that
+  // no planted token can carry it); the rest is shown as it is (what looks like a citation in it is what someone wrote).
+  // `from` and `next` count the file's own characters.
+  const clean = (s: string): string => withoutSecrets(s, scope.group ? scope.mark : null, scope.refs.tag);
   const name = clean(found.name);
   const page = (n: number): Page => {
     const next = n < rest.length || more ? from + n : null;

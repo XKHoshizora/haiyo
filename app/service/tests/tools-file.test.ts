@@ -5,6 +5,7 @@ import { createToolbox, READ_FILE, runTool, type ToolDeps } from "../src/agents/
 import { RunRefs } from "../src/agents/tools/refs.ts";
 import { weight } from "../src/metering/tokens.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
+import { REPEATED } from "../src/agents/runtime/loop.ts";
 import { TOOL_MATERIAL } from "../src/agents/runtime/prompt.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -23,13 +24,19 @@ const gateway = scriptedGateway();
 const { blobs } = useProbeBlobs("af-tools-file-");
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, blobs, agentWorker: false });
 
-afterEach(() => {
+afterEach(async () => {
   expect(gateway.pending()).toBe(0);
+  // No Agent's message ever keeps a run's tag (its citations are beside its text).
+  const { rows } = await db.query<{ body: unknown }>("select m.body from messages m join principals p on p.id = m.sender_id where p.kind = 'agent'");
+  for (const { body } of rows) expect(JSON.stringify(body).toLowerCase()).not.toContain("k7q2m");
 });
 
 const FAST = { source: "site", id: "fast" } as const;
-/** The tag of every run of this file's port (tools/refs.ts): what its tokens carry. */
-const TAG = "k7q2";
+/** The tag of every run of this file's port (tools/refs.ts): what its tokens carry, unless a test forces others first. */
+const TAG = "k7q2m9x4";
+/** What the next draws give first (a test forcing the source), before TAG again. */
+const forced: string[] = [];
+const drawTag = (): string => forced.shift() ?? TAG;
 
 function deps(over: Partial<ToolDeps> = {}): ToolDeps {
   const { db: pool, config, searches } = app.deps;
@@ -37,7 +44,7 @@ function deps(over: Partial<ToolDeps> = {}): ToolDeps {
 }
 function toolWorker(d: ToolDeps = deps()): AgentWorker {
   const { db: pool, blobs: store, conversations, reads, config } = app.deps;
-  const port = createAgentPort({ db: pool, config, blobs: store, realtime: app.realtime, conversations, reads, log: app.log, toolbox: createToolbox(d), drawTag: () => TAG });
+  const port = createAgentPort({ db: pool, config, blobs: store, realtime: app.realtime, conversations, reads, log: app.log, toolbox: createToolbox(d), drawTag });
   return createAgentWorker({ port, models: gateway, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools });
 }
 
@@ -89,8 +96,8 @@ describe("the numbers the model is shown", () => {
     expect(await toolWorker().runOnce()).toBe(true);
     const offered = textsOf(gateway.calls.at(-1)!);
     // Numbered as they are read, the newest first.
-    expect(offered).toContain("[图片 〔f1·k7q2〕：photo.png]");
-    expect(offered).toContain("[文件 〔f2·k7q2〕：notes.txt]\n第一行笔记");
+    expect(offered).toContain("[图片 〔f1·k7q2m9x4〕：photo.png]");
+    expect(offered).toContain("[文件 〔f2·k7q2m9x4〕：notes.txt]\n第一行笔记");
 
     await say(owner, own, "再看看");
     gateway.reply("好。");
@@ -172,14 +179,35 @@ describe("reading a file", () => {
     expect(await readOnce(owner, own, "从前面读", { file: "f1", from: -1 })).toEqual({ error: "from 要写 0 或更大的整数。" });
   });
 
-  it("a file is shown as it is, read by the tool or in the context, its text and its name: what looks like a citation in it is what someone wrote; it is read by its token too", async () => {
+  it("a file is shown as it is, read by the tool or in the context, its text and its name — what looks like a citation in it is what someone wrote — but for the run's tag, which goes from it (I-2); it is read by its token too", async () => {
     const { owner, own } = await owned();
-    await sendFile(owner, own, "引用〔m3〕.txt", "第一行〔m1〕\n第二行〔f2·k7q2〕结束");
-    const out = await readOnce(owner, own, "读一下", { file: "〔f1·k7q2〕" });
-    expect([out.name, out.text]).toEqual(["引用〔m3〕.txt", "第一行〔m1〕\n第二行〔f2·k7q2〕结束"]);
+    await sendFile(owner, own, "引用〔m3〕.txt", "第一行〔m1〕\n第二行〔f2·k7q2m9x4〕和K7Q2M9X4结束");
+    const out = await readOnce(owner, own, "读一下", { file: "〔f1·k7q2m9x4〕" });
+    expect([out.name, out.text]).toEqual(["引用〔m3〕.txt", "第一行〔m1〕\n第二行〔f2·〕和结束"]);
     const shown = JSON.stringify(gateway.calls.at(-1)!.messages);
-    expect(shown).toContain("[文件 〔f1·k7q2〕：引用〔m3〕.txt]");
-    expect(shown).toContain("第一行〔m1〕\\n第二行〔f2·k7q2〕结束");
+    expect(shown).toContain("[文件 〔f1·k7q2m9x4〕：引用〔m3〕.txt]");
+    expect(shown).toContain("第一行〔m1〕\\n第二行〔f2·〕和结束");
+  });
+
+  it("I-2: a file's name holding the drawn tag makes the run draw another: its labels and tokens carry that one", async () => {
+    const { owner, own } = await owned();
+    await sendFile(owner, own, "k7q2m9x4.txt", "内容");
+    forced.push(TAG, "k7q2m001");
+    const out = await readOnce(owner, own, "读一下", { file: "f1" });
+    expect(out.text).toBe("内容");
+    expect(textsOf(gateway.calls.at(-1)!)).toContain("[文件 〔f1·k7q2m001〕：k7q2m9x4.txt]\n内容");
+  });
+
+  it("M-7: the same file by its number in any form it was given is the same call: run once, then the fixed note, a third time the tool phase ends", async () => {
+    const { owner, own } = await owned();
+    await sendFile(owner, own, "notes.txt", "笔记");
+    await say(owner, own, "读一下");
+    const read = (file: string) => [{ name: READ_FILE, input: { file } }];
+    gateway.callTools(read("f1")).callTools(read("〔f1·k7q2m9x4〕")).callTools(read("〔F1 · K7Q2M9X4〕")).reply("好。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    const last = gateway.calls.at(-1)!;
+    expect(outputs(last)).toEqual([expect.objectContaining({ name: "notes.txt", text: "笔记" }), { note: REPEATED }, { note: REPEATED }]);
+    expect(last.toolChoice).toBe("none");
   });
 
   it("in a group, a file from before the run's asker's line is not read, whatever number is given for it", async () => {
