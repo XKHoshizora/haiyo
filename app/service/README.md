@@ -3248,8 +3248,8 @@ made, and what after one that wrote nothing*, is the pair's attempt state, kept 
 (`conversation_summary_attempts`, migration 059; `store.ts` `AttemptState`) and nowhere else: when the pair may be asked
 again (`not_before`), its calls in a row that wrote nothing (`failures`, and of them those at the smallest window), how far
 the window that failed reaches (`failed_upto`), the most messages its next window takes, how many messages were ever
-set aside for it (`skipped_messages`: below), and when its run of transient failures began (`transient_since`, migration
-060: below). One function decides (`job.ts` `shouldCall`): the pair must be due (`not_before` reached;
+set aside for it (`skipped_messages`: below), and its run of transient failures — when the latest came and how long it has
+been failing in a row (`transient_last`, `transient_ms`, migration 060: below). One function decides (`job.ts` `shouldCall`): the pair must be due (`not_before` reached;
 no state: due), and the window's messages that have something to fold in (any text left once cleaned) must weigh, each as a
 reply would show it — by the context's own rules: its text and its attachment's name, in a group one of someone else's with
 its marked label (`labelledEntry`, `minimalTokens`) —, at least `MEMORY.summaryMinFoldWeight` (half of `summaryMaxWeight`
@@ -3267,28 +3267,34 @@ pays for that window meanwhile, and a process that dies mid-call gives it back t
   members post, a pair's summary is written at most once per interval. Past the window that failed (below) it starts the
   failures over and makes the next window whole again; inside it the streak goes on (the rest of that window is taken at
   its halved size);
-- *a call that wrote nothing* (`job.ts` `afterFailure`) is one failure more, and the pair is asked again only after a
-  backoff of 5 minutes doubling with each failure in a row, at most a day (5, 10, 20, 40… minutes). The window's own
-  failures are: the call failed for a reason that does not clear by itself — the provider refusing the input once the
-  call has started with a 4xx other than a key refused (a moderation refusal is an HTTP 400 to the request; the memory
-  call carries the provider's status out, `MemoryCallReport.upstreamStatus`), or the model's own failure —; its answer was
-  not in the asked shape (no JSON object of the four lists, no item that can be kept, nothing), was cut at its limit, or
-  was a content filter's end; its input did not fit the model. For those, from the third failure in a row each halves the
-  next window (down to 10 messages); an input that does not fit, or an unusable answer for a full window, halves it at once.
-  *A transient failure* — the provider's 5xx, 408 or 429 (the statuses the standard retry policies retry), or no status at
-  all (a network failure, a timeout, a stream cut short) — is no failure of the window's (`job.ts` `isTransient`): it
-  never halves, never sets anything aside and counts no failure; the pair waits as long as the run of them has lasted, at
-  least 5 minutes and at most an hour (5, 5, 10, 20, 40, 60, 60… minutes; `transientBackoffMs`, the run's start kept in
-  `transient_since`, migration 060), so a 6-hour outage loses nothing and the summary catches up within an hour of the
-  provider's return, its windows whole. Only once the same window has failed so for a day in a row does the next such
-  failure count as the window's own (and every one after it, until a write passes the window): a provider that answers
-  one input with a steady 500 is then cornered and set aside like any other, a day later than a refusal would be. A
-  write ends the run (the provider answered), unless it has already turned; a failure of the window's own ends it too. *At the floor* — a window of 10 — three more
-  failures in a row *set the window aside*: what the summary covers moves past it with nothing folded (its items as they
+- *a call that wrote nothing* (`job.ts` `afterFailure`) is one of two kinds, by what the memory call reports (it carries
+  the provider's HTTP status out, `MemoryCallReport.upstreamStatus`):
+  - *A failure of the window's own* is one failure more, and the pair is asked again only after a backoff of 5 minutes
+    doubling with each such failure in a row, at most a day (5, 10, 20, 40… minutes). It is: the call failed for a reason
+    that does not clear by itself — the provider refusing the input once the call has started with a 4xx other than a key
+    refused (401, 403) or a model or address it does not have (404, 405) (a moderation refusal is an HTTP 400 to the
+    request), or the model's own failure —; its answer was not in the asked shape (no JSON object of the four lists, no
+    item that can be kept, nothing), was cut at its limit, or was a content filter's end; its input did not fit the model.
+    For those, from the third failure in a row each halves the next window (down to 10 messages); an input that does not
+    fit, or an unusable answer for a full window, halves it at once.
+  - *A transient failure* — the provider's 5xx, 408 or 429 (the statuses the standard retry policies retry), or no status
+    at all (a network failure, a timeout, a stream cut short) — is none of the window's (`job.ts` `isTransient`): it never
+    halves, never sets anything aside and counts no failure; the pair waits as long as the run of them has been failing,
+    at least 5 minutes and at most an hour (5, 5, 10, 20, 40, 60, 60… minutes on a busy pair; `transientBackoffMs`). A
+    run is failing time *in a row* on the window (`transient_last`, `transient_ms`, migration 060): each gap between two
+    of its failures counts at most two hours (`TRANSIENT_GAP_MS`, twice the longest wait) — a quiet pair, which no job
+    asked, is no evidence the provider was failing. So a 6-hour outage loses nothing, whatever blip came before a quiet
+    spell, and the summary catches up within an hour of the provider's return, its windows whole. Only once the run has
+    been failing a day does the next such failure count as the window's own (and every one after it, until a write passes
+    the window): a provider that answers one input with a steady 500 is then cornered and set aside like any other, a day
+    later than a refusal would be — on a quiet pair too, later still (a job every 3 hours: 36 hours on). A write ends the
+    run (the provider answered), unless it has already turned; a new window or a failure of the window's own ends it too.
+
+  *At the floor* — a window of 10 — three more failures of the window's own in a row *set the window aside*: what the summary covers moves past it with nothing folded (its items as they
   were), the failures start over, the pair waits the normal interval, and the row's `skipped_messages` grows by its
   messages (counted `summary_skipped`: a stuck pair can be found by its row). No model to call — none configured, a
-  choice not allowed, a saved key that cannot be opened, or a key or an address the provider or the guard refused — is no
-  fault of the window: it only backs off, never halves and never sets anything aside, and is logged as one warning a
+  choice not allowed, a saved key that cannot be opened, a key or an address the provider or the guard refused, or a
+  model or an address the provider does not have (its 404 or 405) — is no fault of the window: it only backs off, never halves and never sets anything aside, and is logged as one warning a
   backoff step (`summary: no memory model to call (…); asked again after a backoff`); an input that does not fit is logged
   as the memory call's own warning (also once a step). A streak is its window's: it lasts while the next window starts
   before where the window that failed ended (`failed_upto`) — the same window, or the rest of it once a halved part got
@@ -3377,7 +3383,7 @@ an owner's notes or vault is in its input, and nothing of it, or of what it was 
 refused. Summaries are conversation context, independent of the Agent's memory switch (a ruling of 2026-11-21).
 *Limits* — a message may for a while be neither shown nor in the summary: while what is left out past what it covers
 weighs less than `summaryMinFoldWeight` as a reply would show it (it waits for more); while the pair waits out its interval
-after a write, or its backoff after a call that wrote nothing (at most a day); for good, the messages of a window folded
+after a write, or its backoff after a call that wrote nothing (at most a day after a failure of the window's own, at most an hour after a transient one); for good, the messages of a window folded
 with nothing to add (nothing in them was worth keeping), and those of a window set aside (at most 10 a time, counted in the
 row); for one reply, when the current turn's attachment contents take room the
 by-name plan counted on (the left-out part is worked out before attachments are read: the next reply works it out again);
@@ -3867,7 +3873,7 @@ milliseconds.
 | `passageShare` | 0.25 (above 0, up to 1) | The notes passage of a run takes at most this share of the input the model has room for (its context less its output limit; the passage measured in weight, one weight a token, and the context budget counts it the same way: `systemTokens`, the system text without the passage a token a code point plus the passage in weight): over it entries are left out until it fits — what an Agent heard first (oldest said first), then its own notes, then those about the owner (each weakest `strength` first, then the oldest `seen_at`) — and nothing tells the model so, so the notes never crowd out the conversation. `GET /api/agents/:id/memory` says (`fits`) whether the Agent's model carries the whole palace |
 | `roomNotes` | 150 (1–100 000) | A room of notes holds at most this many notes besides its size limit: an addition beyond it is dropped as a full room (a review's, the owner's own add, confirming hearsay), and an undo or a confirm that would pass it is 409 `room_full` |
 | `summaryMinFoldWeight` | half of `summaryMaxWeight` (500; 1–100 000) | A rolling-summary job makes its call only when the messages it would fold in weigh at least this as a reply would show them (labels included), or its window is full; decided before the call (Agents and runs, The rolling summary). `summaryMinMessages`, the message count it replaces, is gone (2026-11-21): a configuration still naming it is refused at start-up, as any unknown key is |
-| `summaryMinIntervalMs` | 600 000 (0–86 400 000; 0: none) | After a pair's rolling summary is written (or a window set aside), how long the pair is not asked again, however much is posted meanwhile: at most one summary a pair per interval (6 an hour at the default; on an owner's own-provider memory model this, a pair at a time, is the only cap). A call that wrote nothing waits its backoff instead (5 minutes, doubling, at most a day); both are kept in the database (The rolling summary) |
+| `summaryMinIntervalMs` | 600 000 (0–86 400 000; 0: none) | After a pair's rolling summary is written (or a window set aside), how long the pair is not asked again, however much is posted meanwhile: at most one summary a pair per interval (6 an hour at the default; on an owner's own-provider memory model this, a pair at a time, is the only cap). A call that wrote nothing waits its backoff instead: after a failure of the window's own 5 minutes, doubling, at most a day; after a transient one (the provider's 5xx, 408 or 429, a network failure, a timeout) as long as the run of them has been failing, 5 minutes to an hour; both are kept in the database (The rolling summary) |
 | `summaryMaxWeight` | 1000 (1–2000: the database guards a summary's items at 256 KiB) | The most a rolling summary weighs as a reply is shown it (its passage's JSON value, its people table included): an answer over it, with the names of now and every account counted at its longest, loses whole items from the top section downwards when it is stored, so a rename drops nothing later (a reply's passage shortens names first, down to nothing, when one made it heavier); the call is asked for about half of it in text, and for at most 40 items |
 | `listenShare` | 0.5 (0–1) | A group judgement with no proactive Agent to pick, only Agents with memory listening for what is said about their owner, is skipped once the site's judgements of the day have reached this share of the judge's daily limit: listening never uses up what unasked replies need |
 
