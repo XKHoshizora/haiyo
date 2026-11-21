@@ -25,6 +25,7 @@ import {
   withSummary,
   type GroupPerson,
   type GroupScene,
+  type ShownSummary,
   type SystemText,
 } from "./runtime/prompt.ts";
 import type { AgentRow } from "./store.ts";
@@ -119,17 +120,17 @@ export interface ContextRun {
   summary?: PairSummary;
 }
 
-/** The pair's stored summary (null: none), and its text as a reply may be shown it (`shownSummary`; null: shown nothing). */
+/** The pair's stored summary (null: none), and the summary as a reply may be shown it (`shownSummary`; null: shown nothing). */
 export interface PairSummary {
   stored: Summary | null;
-  text: string | null;
+  shown: ShownSummary | null;
 }
 
-/** `PairSummary` of `run`'s pair: one read of the row and, in a group with a record of its labels, two indexed reads. */
+/** `PairSummary` of `run`'s pair: one read of the row and, when its items name anyone, one indexed read of those accounts. */
 export async function readPairSummary(q: Queryable, run: Pick<ContextRun, "agentId" | "ownerId" | "conversationId"> & { group: boolean }): Promise<PairSummary> {
   const stored = await readSummary(q, run.conversationId, run.agentId);
   const reader: PlacedReader = { agentId: run.agentId, ownerId: run.ownerId, conversationId: run.conversationId, group: run.group };
-  return { stored, text: stored === null ? null : await shownSummary(q, reader, stored) };
+  return { stored, shown: stored === null ? null : await shownSummary(q, reader, stored) };
 }
 
 /** What `loadContext` read: everything `buildContext` needs but the attachments' bytes. */
@@ -558,16 +559,16 @@ export async function loadContext(
   // no summary (the write side checks the same, job.ts). It is shown only when, besides, everything it covers is after the
   // asker's line (it is text about those messages: a reply is shown nothing derived from what is at or before its line), and
   // it leaves the run something to answer. Not shown, the conversation part is read as if there were none.
-  // Read once for the run (`ContextRun.summary`), or here; shown as summary/store.ts `shownSummary` has it — without citations,
-  // in a group only the lines whose labels the pair may hold, and a group's row from before migration 056 not at all.
+  // Read once for the run (`ContextRun.summary`), or here; shown as summary/store.ts `shownSummary` has it — each item under
+  // the label its account has now, without citations — and a row from before migration 059 (text only) not at all.
   const pair = run.summary ?? (await readPairSummary(q, { ...run, group: run.group !== null }));
   const stored = pair.stored;
   const base = baseOf(stay);
   const owned = stored !== null && base !== null && stored.fromSeq > base ? stored : null;
-  const summary = owned !== null && pair.text !== null && owned.fromSeq > line && owned.uptoSeq < run.coversSeq ? owned : null;
+  const summary = owned !== null && pair.shown !== null && owned.fromSeq > line && owned.uptoSeq < run.coversSeq ? owned : null;
   const reader: PlacedReader = { agentId: run.agentId, ownerId: run.ownerId, conversationId: run.conversationId, group: run.group !== null };
-  const carrying = (text: string | null) => (mark: string, speakers: readonly Speaker[]): SystemText => withSummary(system(mark, speakers), text);
-  const withPassage = carrying(summary === null ? null : pair.text);
+  const carrying = (shown: ShownSummary | null) => (mark: string, speakers: readonly Speaker[]): SystemText => withSummary(system(mark, speakers), shown);
+  const withPassage = carrying(summary === null ? null : pair.shown);
   const reading = budgetWith(withPassage("", []));
   // In a group, nothing at or before the asker's line either (`askerLine`): what is read starts after the later of the two;
   // with a summary shown, after what it covers.

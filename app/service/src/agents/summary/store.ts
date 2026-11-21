@@ -3,21 +3,22 @@ import type { Queryable } from "../../db.ts";
 import { notAcknowledgement, type AttachmentRef } from "../../messages/model.ts";
 import { postingRun } from "../../messages/read.ts";
 import { handleOf } from "../../principals/store.ts";
-import { personLabel } from "../runtime/prompt.ts";
+import { OWNER_WORD, personLabel, speakerRole } from "../runtime/prompt.ts";
 import { withoutCitations } from "../tools/refs.ts";
-import { keepLabelled, relabelled } from "./prompt.ts";
+import { GONE_PERSON, mapItems, SECTIONS, SHOWN_SELF, whoIn, type Item, type Person, type Sections } from "./prompt.ts";
 
 /**
- * The rolling summary's rows (migration 052; README "The rolling summary"): one per conversation and Agent. What reads it
- * is the reply's context (agents/context.ts `loadContext`, which decides whether a reply may be shown it) and the job that
- * updates it (job.ts); what deletes it, a new topic and the end of the Agent's membership of a group. Nothing else reads
- * it: no route, no search, no tool, no memory review.
+ * The rolling summary's rows (migrations 052, 059; README "The rolling summary"): one per conversation and Agent. What
+ * reads it is the reply's context (agents/context.ts `loadContext`, which decides whether a reply may be shown it) and the
+ * job that updates it (job.ts); what deletes it, a new topic and the end of the Agent's membership of a group. Nothing
+ * else reads it: no route, no search, no tool, no memory review.
  *
  * Also the one reader of the messages a summary is made of (`readPlaced`, `countPlaced`): by their *place* — a message's
  * seq, and for an Agent's reply posted by a run the seq that run covered (messages/read.ts `postingRun`), as the reply's
  * context orders them (agents/context.ts `loadPage`'s `answers`) — so that a reply always falls on the side of the question it
  * answered: a boundary of what is summarised never splits an exchange. A tool call and its result are never among them: they
- * live in one reply's rounds (agents/runtime/loop.ts) and are never stored as messages.
+ * live in one reply's rounds (agents/runtime/loop.ts) and are never stored as messages. And of how a summary names the
+ * accounts its items name (`peopleNow`).
  */
 
 /**
@@ -55,27 +56,11 @@ export async function countPlaced(q: Queryable, r: PlacedReader, after: number, 
   return rows[0]?.n ?? 0;
 }
 
-/** Everyone `r` reads a message of whose place is after `after` and at most `upto`: their name, handle (as everyone is shown it, `handleOf`: an Agent's is `owner.name`) and kind, each once. */
-export async function placedSpeakers(q: Queryable, r: PlacedReader, after: number, upto: number): Promise<Array<{ id: string; name: string; handle: string; kind: "human" | "agent" }>> {
-  if (upto <= after) return [];
-  const { rows } = await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent" }>(
-    `select distinct sp.id, sp.display_name as name, ${handleOf("sp")} as handle, sp.kind
-       ${PLACED_FROM}
-       join principals sp on sp.id = m.sender_id
-      ${PLACED_WHERE}`,
-    placedParams(r, after, upto),
-  );
-  return rows;
-}
-
-/** A message as a summary reads it: its place, who sent it (their name, handle as `placedSpeakers` reads it, and kind), its text and its attachment. */
+/** A message as a summary reads it: its place, who sent it (their account), its text and its attachment. */
 export interface PlacedMessage {
   at: number;
   seq: number;
   senderId: string;
-  name: string;
-  handle: string;
-  kind: "human" | "agent";
   text: string;
   attachment: AttachmentRef | null;
 }
@@ -83,26 +68,15 @@ export interface PlacedMessage {
 /** The first `limit` messages `r` reads whose place is after `after` and at most `upto`, by place and then seq. */
 export async function readPlaced(q: Queryable, r: PlacedReader, after: number, upto: number, limit: number): Promise<PlacedMessage[]> {
   if (upto <= after) return [];
-  const { rows } = await q.query<{ at: string; seq: string; sender_id: string; name: string; handle: string; kind: "human" | "agent"; text: string | null; attachment: AttachmentRef | null }>(
-    `select coalesce(r.covers_seq, m.seq)::text as at, m.seq::text as seq, m.sender_id, sp.display_name as name, ${handleOf("sp")} as handle, sp.kind,
-            m.body ->> 'text' as text, m.body -> 'attachment' as attachment
+  const { rows } = await q.query<{ at: string; seq: string; sender_id: string; text: string | null; attachment: AttachmentRef | null }>(
+    `select coalesce(r.covers_seq, m.seq)::text as at, m.seq::text as seq, m.sender_id, m.body ->> 'text' as text, m.body -> 'attachment' as attachment
        ${PLACED_FROM}
-       join principals sp on sp.id = m.sender_id
       ${PLACED_WHERE}
       order by coalesce(r.covers_seq, m.seq), m.seq
       limit $7`,
     [...placedParams(r, after, upto), limit],
   );
-  return rows.map((row) => ({
-    at: Number(row.at),
-    seq: Number(row.seq),
-    senderId: row.sender_id,
-    name: row.name,
-    handle: row.handle,
-    kind: row.kind,
-    text: row.text ?? "",
-    attachment: row.attachment,
-  }));
+  return rows.map((row) => ({ at: Number(row.at), seq: Number(row.seq), senderId: row.sender_id, text: row.text ?? "", attachment: row.attachment }));
 }
 
 /**
@@ -131,101 +105,101 @@ export const baseOf = (stay: { joined: number; topic: number } | null): number |
 export const summaryBase = async (q: Queryable, agentId: string, conversationId: string): Promise<number | null> => baseOf(await stayOf(q, agentId, conversationId));
 
 /**
- * A pair's summary: `text` covers the messages its Agent could see whose place in the conversation (`position`: a message's
- * seq; an Agent's reply, the seq its run covered) is from `fromSeq` to `uptoSeq`, both included. In a group, `speakers` says
- * whose each label in `text` was when it was written (migration 056: label → principal id); null when that is not recorded
- * (a row written before it, and the Agent's own conversation, which holds no label).
+ * A pair's summary: `items` cover the messages its Agent could see whose place in the conversation (`position`: a message's
+ * seq; an Agent's reply, the seq its run covered) is from `fromSeq` to `uptoSeq`, both included — each item's `who` the
+ * account that said or settled it (null: nobody in particular). `items` is null for a row written before migration 059,
+ * which holds text only: it is shown to no reply and no job builds on it (job.ts writes it anew from the messages).
  */
 export interface Summary {
   fromSeq: number;
   uptoSeq: number;
-  text: string;
-  speakers: Readonly<Record<string, string>> | null;
+  items: Sections | null;
+}
+
+/** An account id as `items` holds one (anything else is no account: such an item is not read). */
+const ACCOUNT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A row's `items` as stored, in the sections' order; null when there are none (a row written before migration 059). */
+function storedItems(raw: unknown): Sections | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const at = raw as Record<string, unknown>;
+  const items = {} as Sections;
+  for (const k of SECTIONS) {
+    const list: unknown[] = Array.isArray(at[k]) ? at[k] : [];
+    items[k] = list.flatMap((i): Item[] => {
+      if (typeof i !== "object" || i === null) return [];
+      const { who, text } = i as { who?: unknown; text?: unknown };
+      if (typeof text !== "string" || !(who === null || (typeof who === "string" && ACCOUNT.test(who)))) return [];
+      return [{ who, text }];
+    });
+  }
+  return items;
 }
 
 /** The summary of Agent `agentId` in `conversationId`, or null. A plain read. */
 export async function readSummary(q: Queryable, conversationId: string, agentId: string): Promise<Summary | null> {
-  const { rows } = await q.query<{ from_seq: string; upto_seq: string; text: string; speakers: Record<string, string> | null }>(
-    "select from_seq::text, upto_seq::text, text, speakers from conversation_summaries where conversation_id = $1 and agent_id = $2",
+  const { rows } = await q.query<{ from_seq: string; upto_seq: string; items: unknown }>(
+    "select from_seq::text, upto_seq::text, items from conversation_summaries where conversation_id = $1 and agent_id = $2",
     [conversationId, agentId],
   );
   const row = rows[0];
-  return row ? { fromSeq: Number(row.from_seq), uptoSeq: Number(row.upto_seq), text: row.text, speakers: row.speakers } : null;
+  return row ? { fromSeq: Number(row.from_seq), uptoSeq: Number(row.upto_seq), items: storedItems(row.items) } : null;
 }
-
-/** The labels a group summary may hold (prompt.ts `keepLabelled`): its owner's and everyone else's; `ids`, whose each is. */
-export interface SpeakerLabels {
-  owner: string;
-  people: ReadonlySet<string>;
-  ids: ReadonlyMap<string, string>;
-}
-
-/** `SpeakerLabels` of `owner` and of the people `rows` (as `placedSpeakers` reads them), by the names and handles given. */
-function labelled(owner: { id: string; name: string; handle: string }, rows: ReadonlyArray<{ id: string; name: string; handle: string }>): SpeakerLabels {
-  const ownerLabel = personLabel(withoutCitations(owner.name), withoutCitations(owner.handle), true);
-  const ids = new Map<string, string>([[ownerLabel, owner.id]]);
-  for (const p of rows) ids.set(personLabel(withoutCitations(p.name), withoutCitations(p.handle), false), p.id);
-  return { owner: ownerLabel, people: new Set([...ids.keys()].filter((l) => l !== ownerLabel)), ids };
-}
-
-/** The owner of `r`'s pair: their name and handle now. */
-const ownerNow = async (q: Queryable, r: PlacedReader): Promise<{ id: string; name: string; handle: string }> =>
-  (await q.query<{ id: string; name: string; handle: string }>(`select p.id, p.display_name as name, ${handleOf("p")} as handle from principals p where p.id = $1`, [r.ownerId])).rows[0]!;
 
 /**
- * The speaker labels a group summary of `r`'s pair may hold: the owner's, and everyone else's who has a message the pair
- * could cover (placed after `base` and up to `upTo`, `placedSpeakers`) — by their names and handles now (runtime/prompt.ts
- * `personLabel`; the owner's by account, `主人（…）`).
+ * How the summary of `r`'s pair names each of `ids` (accounts) now, in one read of those accounts: the Agent itself
+ * `self` (`SELF_WORD` to the call that writes it, `SHOWN_SELF` to a reply), role `助手`; its owner, by account only, role
+ * `主人` — in a group by the roster's label (runtime/prompt.ts `personLabel`, `主人（名字（@账号））`), in its own
+ * conversation `主人`; anyone else by the roster's label `名字（@账号）` (the name and handle of now, whether or not they are
+ * in the group now), role `Agent` or `群成员` by account (`speakerRole`); an account that is no longer there
+ * `GONE_PERSON`.
  */
-export async function speakerLabels(q: Queryable, r: PlacedReader, base: number, upTo: number): Promise<SpeakerLabels> {
-  return labelled(await ownerNow(q, r), (await placedSpeakers(q, r, base, upTo)).filter((p) => p.id !== r.ownerId && p.id !== r.agentId));
-}
-
-/** The labels of now of the owner of `r`'s pair and of the accounts `ids` (one read; an account no longer there has none). */
-async function labelsNow(q: Queryable, r: PlacedReader, ids: readonly string[]): Promise<SpeakerLabels> {
-  const owner = await ownerNow(q, r);
-  const { rows } = await q.query<{ id: string; name: string; handle: string }>(
-    `select p.id, p.display_name as name, ${handleOf("p")} as handle from principals p where p.id = any($1::uuid[]) and p.id <> $2 and p.id <> $3`,
-    [[...new Set(ids)], r.ownerId, r.agentId],
+export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly string[], self: string): Promise<Map<string, Person>> {
+  const asked = ids.filter((id) => id !== r.agentId && (r.group || id !== r.ownerId));
+  const { rows } =
+    asked.length === 0
+      ? { rows: [] }
+      : await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent" }>(
+          `select p.id, p.display_name as name, ${handleOf("p")} as handle, p.kind from principals p where p.id = any($1::uuid[])`,
+          [asked],
+        );
+  const found = new Map(rows.map((p) => [p.id, p]));
+  return new Map(
+    ids.map((id): [string, Person] => {
+      if (id === r.agentId) return [id, { label: self, role: "助手" }];
+      if (id === r.ownerId && !r.group) return [id, { label: OWNER_WORD, role: "主人" }];
+      const p = found.get(id);
+      if (p === undefined) return [id, { label: GONE_PERSON, role: "群成员" }];
+      const role = speakerRole(p.id, p.kind, r.ownerId);
+      return [id, { label: personLabel(withoutCitations(p.name), withoutCitations(p.handle), role === "你的主人"), role: role === "你的主人" ? "主人" : role }];
+    }),
   );
-  return labelled(owner, rows);
 }
 
 /**
- * The pair's stored summary `s` as a reply is shown it and a job builds on it (final review I-3, m-11): its text without any
- * citation (tools/refs.ts `withoutCitations`); in a group, then, each label it recorded (`speakers`) rewritten to how that
- * account is labelled now (prompt.ts `relabelled`: a rename changes the label, not the person), and the text held again to
- * the labels of now of the accounts it recorded and its owner (prompt.ts `keepLabelled`) — a line with any other is not shown.
- * Two indexed reads, nothing of the conversation's history. Null for a group's row that recorded nobody (written before
- * migration 056): no reply is shown it (round 2, N-4) until a job has rewritten it (`legacySummary`). Read only: the row is
- * never written back.
+ * The pair's stored summary `s` as a reply is shown it (final review I-3; redesign B): each item's `who` the label its
+ * account has now (`peopleNow`, the Agent itself `SHOWN_SELF`) — so a rename changes how an item is shown, never whose it
+ * is — and its text without any citation (tools/refs.ts `withoutCitations`). One indexed read of the accounts it names
+ * (none when it names nobody), nothing of the conversation's history. Null for a row written before migration 059 (text
+ * only): no reply is shown it until a job has written it anew. Read only: the row is never written back.
  */
-export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary): Promise<string | null> {
-  const text = withoutCitations(s.text);
-  if (!r.group) return text;
-  if (s.speakers === null) return null;
-  const now = await labelsNow(q, r, Object.values(s.speakers));
-  const byId = new Map([...now.ids].map(([label, id]) => [id, label]));
-  return keepLabelled(relabelled(text, s.speakers, byId), now).text;
+export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary): Promise<Sections | null> {
+  if (s.items === null) return null;
+  const people = await peopleNow(q, r, whoIn(s.items), SHOWN_SELF);
+  return mapItems(s.items, (id) => people.get(id)!.label, withoutCitations);
 }
 
 /**
- * A group's row that recorded nobody (written before migration 056) as the job builds on it — off any reply's path: without
- * citations, held to the labels of now of everyone placed after `base` up to what it covers (`speakerLabels`, a read of the
- * stay's history), so a line of someone renamed since goes. The job's next write records whose its labels are.
+ * Stores the pair's summary as `s` (inserted, or replacing the one there), in the caller's transaction: its items; a row
+ * written before migration 059 that it replaces loses its text and its 056 `speakers` record (both unused).
  */
-export async function legacySummary(q: Queryable, r: PlacedReader, base: number, s: Summary): Promise<string> {
-  return keepLabelled(withoutCitations(s.text), await speakerLabels(q, r, base, s.uptoSeq)).text;
-}
-
-/** Stores the pair's summary as `s` (inserted, or replacing the one there), in the caller's transaction. */
-export async function writeSummary(q: Queryable, conversationId: string, agentId: string, s: Summary): Promise<void> {
+export async function writeSummary(q: Queryable, conversationId: string, agentId: string, s: Summary & { items: Sections }): Promise<void> {
   await q.query(
-    `insert into conversation_summaries (conversation_id, agent_id, from_seq, upto_seq, text, speakers, updated_at)
-     values ($1, $2, $3, $4, $5, $6::jsonb, now())
+    `insert into conversation_summaries (conversation_id, agent_id, from_seq, upto_seq, items, text, speakers, updated_at)
+     values ($1, $2, $3, $4, $5::jsonb, null, null, now())
      on conflict (conversation_id, agent_id) do update
-       set from_seq = excluded.from_seq, upto_seq = excluded.upto_seq, text = excluded.text, speakers = excluded.speakers, updated_at = now()`,
-    [conversationId, agentId, s.fromSeq, s.uptoSeq, s.text, s.speakers === null ? null : JSON.stringify(s.speakers)],
+       set from_seq = excluded.from_seq, upto_seq = excluded.upto_seq, items = excluded.items, text = null, speakers = null, updated_at = now()`,
+    [conversationId, agentId, s.fromSeq, s.uptoSeq, JSON.stringify(s.items)],
   );
 }
 
