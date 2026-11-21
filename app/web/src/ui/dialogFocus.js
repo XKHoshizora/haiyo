@@ -38,9 +38,9 @@ export function useDialogFocus(ref, { onClose, returnTo = null }) {
     node.addEventListener("keydown", onKey);
     return () => {
       node.removeEventListener("keydown", onKey);
-      const opener = latest.current.returnTo?.();
-      const back = opener?.isConnected ? opener : previous;
-      if (back instanceof HTMLElement) back.focus();
+      // The element that opened it; else where the focus was — whichever is still on the page.
+      const back = [latest.current.returnTo?.(), previous].find((el) => el instanceof HTMLElement && el.isConnected);
+      back?.focus();
     };
   }, [ref]);
 }

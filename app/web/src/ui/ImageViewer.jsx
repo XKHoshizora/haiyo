@@ -34,7 +34,7 @@ const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 export function ImageViewerProvider({ messages, children }) {
   const images = useMemo(() => messages.filter((m) => m.kind === "image" && m.src && !m.hidden), [messages]);
   const [shown, setShown] = useState(null);
-  const api = useMemo(() => ({ open: (id, opener) => setShown({ id, opener }) }), []);
+  const api = useMemo(() => ({ open: (id, opener) => setShown({ id, opener, openedId: id }) }), []);
   const index = shown ? images.findIndex((m) => m.id === shown.id) : -1;
   // The picture is no longer among the messages (another conversation, a window of messages changed): nothing to show.
   useEffect(() => {
@@ -43,12 +43,12 @@ export function ImageViewerProvider({ messages, children }) {
   return (
     <ViewerContext.Provider value={api}>
       {children}
-      {shown && index >= 0 && createPortal(<Viewer images={images} index={index} opener={shown.opener} onShow={(i) => setShown({ id: images[i].id, opener: shown.opener })} onClose={() => setShown(null)} />, document.body)}
+      {shown && index >= 0 && createPortal(<Viewer images={images} index={index} opener={shown.opener} openedId={shown.openedId} onShow={(i) => setShown({ ...shown, id: images[i].id })} onClose={() => setShown(null)} />, document.body)}
     </ViewerContext.Provider>
   );
 }
 
-function Viewer({ images, index, opener, onShow, onClose }) {
+function Viewer({ images, index, opener, openedId, onShow, onClose }) {
   const { state } = useStore();
   const msg = images[index];
   const box = useRef(null);
@@ -69,7 +69,8 @@ function Viewer({ images, index, opener, onShow, onClose }) {
   const last = images.length - 1;
   const go = (to) => to >= 0 && to <= last && onShow(to);
 
-  useDialogFocus(box, { onClose, returnTo: () => opener });
+  // Back to the picture that opened it: the very node, or — when the list drew it again meanwhile — its new one.
+  useDialogFocus(box, { onClose, returnTo: () => (opener?.isConnected ? opener : document.querySelector(`[data-image="${CSS.escape(openedId)}"]`)) });
 
   // The page behind does not scroll.
   useEffect(() => {
@@ -80,11 +81,11 @@ function Viewer({ images, index, opener, onShow, onClose }) {
     };
   }, []);
 
-  // A button that went away (the end of the list) leaves the focus in the dialog, on the other arrow or the close button.
+  // A button that went away (the end of the list, Retry) leaves the focus in the dialog, on an arrow or the close button.
   useEffect(() => {
     const node = box.current;
     if (node && !node.contains(document.activeElement)) (node.querySelector("[data-viewer-nav]") ?? node.querySelector("[data-autofocus]"))?.focus();
-  }, [index]);
+  }, [index, phase, attempt]);
 
   const sizes = () => sizeOf(stageRef.current, imgRef.current);
   const fromCentre = (clientX, clientY) => {
@@ -139,7 +140,14 @@ function Viewer({ images, index, opener, onShow, onClose }) {
     }
     const dx = e.clientX - g.x;
     const dy = e.clientY - g.y;
-    if (Math.abs(dx) + Math.abs(dy) > TAP_SLOP) dragged.current = true;
+    if (Math.abs(dx) + Math.abs(dy) > TAP_SLOP) {
+      dragged.current = true;
+      // A drag of a zoomed picture goes on over the bar or outside the window: the stage keeps the pointer.
+      if (g.view.scale > 1 && !g.captured) {
+        g.captured = true;
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      }
+    }
     if (g.view.scale > 1) setView({ scale: g.view.scale, ...clampPan({ x: g.view.x + dx, y: g.view.y + dy }, g.view.scale, stage, image) });
   };
   const onPointerUp = (e) => {
@@ -184,6 +192,11 @@ function Viewer({ images, index, opener, onShow, onClose }) {
     if (e.target === e.currentTarget && !dragged.current) onClose();
   };
 
+  // A press on the picture or the backdrop would leave the focus on the page behind (nothing there can take it): the
+  // dialog takes it, so the keys and the Tab trap keep working. A press on a control leaves the focus to the control.
+  const keepFocus = (e) => {
+    if (!e.target.closest("button, a[href]")) box.current.focus({ preventScroll: true });
+  };
   const onKeyDown = (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
@@ -200,9 +213,8 @@ function Viewer({ images, index, opener, onShow, onClose }) {
   };
 
   const who = senderName(state, msg.from);
-  const place = `第 ${index + 1} 张，共 ${images.length} 张`;
   return (
-    <div className="viewer" role="dialog" aria-modal="true" aria-labelledby={nameId} ref={box} onKeyDown={onKeyDown}>
+    <div className="viewer" role="dialog" aria-modal="true" aria-labelledby={nameId} tabIndex={-1} ref={box} onKeyDown={onKeyDown} onPointerDown={keepFocus}>
       <header className="viewer-bar" onClick={(e) => e.target === e.currentTarget && onClose()}>
         <div className="viewer-meta">
           <strong>{who}</strong>
@@ -214,7 +226,7 @@ function Viewer({ images, index, opener, onShow, onClose }) {
           </span>
         </div>
         {images.length > 1 && (
-          <span className="viewer-count" role="status" aria-label={place}>
+          <span className="viewer-count" aria-live="polite">
             {index + 1} / {images.length}
           </span>
         )}

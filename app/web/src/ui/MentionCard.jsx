@@ -129,14 +129,16 @@ export function MentionChip({ id, spoken, shown, agent }) {
         role="button"
         tabIndex={0}
         data-mention={id}
-        aria-haspopup="true"
-        aria-expanded={open}
         aria-describedby={open ? cardId : undefined}
         onMouseEnter={() => later(show, OPEN_DELAY)}
         onMouseLeave={() => later(close, CLOSE_DELAY)}
         onFocus={show}
         onBlur={close}
-        onClick={show}
+        onClick={(e) => {
+          // (A click on a mention is for the mention: the message around it does not hear it.)
+          e.stopPropagation();
+          show();
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();

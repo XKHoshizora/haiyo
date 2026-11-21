@@ -161,6 +161,84 @@ describe("closing and the focus", () => {
   });
 });
 
+describe("the keyboard after the mouse (the focus never leaves the dialog)", () => {
+  it("a click on the picture or the empty stage gives the focus to the dialog, so Esc, the arrows and + still work", async () => {
+    await open(5);
+    const dialog = document.querySelector(".viewer");
+    expect(dialog.getAttribute("tabindex")).toBe("-1");
+    // The browser leaves the focus on the page's body after a press on something that cannot take it.
+    document.activeElement.blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.pointerDown(shownImg(), { pointerId: 1, pointerType: "mouse", clientX: 5, clientY: 5 });
+    expect(document.activeElement).toBe(dialog);
+    press("+");
+    expect(Number(shownImg().dataset.scale)).toBeGreaterThan(1);
+    press("ArrowRight");
+    expect(counter()).toBe("6 / 12");
+    document.activeElement.blur();
+    fireEvent.pointerDown(document.querySelector(".viewer-stage"), { pointerId: 1, pointerType: "mouse", clientX: 5, clientY: 5 });
+    press("Escape");
+    expect(document.querySelector(".viewer")).toBeNull();
+  });
+
+  it("a press on a button keeps the focus on it (the dialog does not take it)", async () => {
+    await open(5);
+    const next = screen.getByRole("button", { name: "下一张" });
+    next.focus();
+    fireEvent.pointerDown(next, { pointerId: 1, pointerType: "mouse" });
+    expect(document.activeElement).toBe(next);
+  });
+
+  it("after Retry (its button goes away) the focus is still inside, and Tab goes round inside", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.click(picture(3));
+    fireEvent.error(shownImg());
+    const retry = screen.getByRole("button", { name: "重试" });
+    retry.focus();
+    fireEvent.click(retry);
+    const dialog = document.querySelector(".viewer");
+    expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    const stops = [...dialog.querySelectorAll("button, a[href]")];
+    stops.at(-1).focus();
+    fireEvent.keyDown(stops.at(-1), { key: "Tab" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(stops[0]);
+  });
+
+  it("a mouse drag of a zoomed picture captures the pointer (a release outside the stage still ends it)", async () => {
+    const capture = vi.fn();
+    Element.prototype.setPointerCapture = capture;
+    try {
+      await open(5);
+      press("+");
+      const stage = document.querySelector(".viewer-stage");
+      fireEvent.pointerDown(shownImg(), { pointerId: 7, pointerType: "mouse", clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(stage, { pointerId: 7, pointerType: "mouse", clientX: 40, clientY: 10 });
+      expect(capture).toHaveBeenCalledWith(7);
+    } finally {
+      delete Element.prototype.setPointerCapture;
+    }
+  });
+
+  it("the focus goes back to the opener found again by its id when the opener node is gone", async () => {
+    const opener = await open(5);
+    // (Seen as gone once, by the viewer's own check; it is the node on the page when the focus is given back.)
+    let asked = 0;
+    Object.defineProperty(opener, "isConnected", { configurable: true, get: () => (asked += 1) > 1 });
+    press("Escape");
+    expect(document.activeElement).toBe(opener); // (the same picture's button, found by its data-image)
+  });
+
+  it("the counter is a polite live region without a role of its own", async () => {
+    await open(5);
+    const count = document.querySelector(".viewer-count");
+    expect(count.getAttribute("aria-live")).toBe("polite");
+    expect(count.getAttribute("role")).toBeNull();
+  });
+});
+
 describe("stepping through the conversation's pictures", () => {
   it("in message order, with a counter; the arrows, the buttons; only this conversation's, and the buttons hide at the ends", async () => {
     await open(1);

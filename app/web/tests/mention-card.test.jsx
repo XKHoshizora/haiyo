@@ -181,10 +181,10 @@ describe("the card", () => {
     expect(card()).toBeNull();
     fireEvent.keyDown(bo, { key: "Enter" });
     expect(card()).not.toBeNull();
-    expect(bo.getAttribute("aria-expanded")).toBe("true");
+    expect(bo.hasAttribute("aria-expanded")).toBe(false);
+    expect(bo.hasAttribute("aria-haspopup")).toBe(false);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(card()).toBeNull();
-    expect(bo.getAttribute("aria-expanded")).toBe("false");
     fireEvent.keyDown(bo, { key: " " });
     expect(card()).not.toBeNull();
     act(() => bo.blur());
@@ -199,6 +199,18 @@ describe("the card", () => {
     expect(card()).not.toBeNull();
     fireEvent.pointerDown(document.body);
     expect(card()).toBeNull();
+  });
+
+  it("a click on a mention does not reach a click handler of the message around it", async () => {
+    await openApp();
+    const seen = vi.fn();
+    document.addEventListener("click", seen);
+    try {
+      fireEvent.click(tags()[0]);
+      expect(seen).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("click", seen);
+    }
   });
 
   it("one card at a time", async () => {
@@ -219,7 +231,7 @@ describe("the card", () => {
     const sheet = readFileSync("src/styles.css", "utf8");
     expect(sheet).toMatch(/\.mention-card \{[^}]*position: fixed;/);
     // Only the chip's own state attributes differ.
-    expect(li.innerHTML.replace(/ aria-describedby="[^"]*"/, "").replace('aria-expanded="true"', 'aria-expanded="false"')).toBe(before);
+    expect(li.innerHTML.replace(/ aria-describedby="[^"]*"/, "")).toBe(before);
   });
 });
 
