@@ -456,7 +456,7 @@ describe("a reply's citations are beside its text: wherever its text is shown bu
     });
     const bubble = storedLi(4).querySelector(".bubble");
     expect(bubble.querySelector(".md")).not.toBeNull();
-    expect(bubble.textContent).toBe("😀提到 阿波@阿波 在春熙路1，🌊周一休息2。");
+    expect(bubble.textContent).toBe("😀@阿波提到 阿波 在春熙路1，🌊周一休息2。");
     expect([...bubble.querySelectorAll("sup.cite button")].map((b) => b.getAttribute("aria-label"))).toEqual(["引用 1", "引用 2"]);
     expect(storedLi(1).textContent).toContain(TYPED);
     expect(storedLi(1).querySelector("sup.cite")).toBeNull();

@@ -8,10 +8,12 @@ import { png, randomFile } from "./support/files.mjs";
 test("a picture opens a viewer in the same window: next, Esc, and the focus comes back @remote", async ({ people }) => {
   const ann = await people.member("Ann");
   const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
   await befriend(ann, bo);
+  await befriend(ann, cy);
   const tag = uniq(4);
   const title = `看图${tag}`;
-  await createGroupUi(ann.page, title, [bo.displayName]);
+  await createGroupUi(ann.page, title, [bo.displayName, cy.displayName]);
   const pictures = [1, 2, 3].map((n) => ({ name: `图${n}-${tag}.png`, mimeType: "image/png", buffer: png(40 + n, 30) }));
   for (const picture of pictures) await sendFile(ann.page, title, picture, "选择图片");
 
@@ -23,8 +25,8 @@ test("a picture opens a viewer in the same window: next, Esc, and the focus come
   await opener.click();
 
   // Same window: a dialog over the page, the picture, who sent it, a counter, no new tab.
-  const viewer = page.getByRole("dialog", { name: pictures[0].name });
-  await expect(viewer).toBeVisible();
+  await expect(page.getByRole("dialog", { name: pictures[0].name })).toBeVisible();
+  const viewer = page.getByRole("dialog"); // (its name is the file name shown, which changes as it steps)
   expect(page.context().pages().length).toBe(pagesBefore);
   await expect(viewer.getByText(ann.displayName)).toBeVisible();
   await expect(viewer.locator(".viewer-count")).toHaveText("1 / 3");
@@ -56,10 +58,12 @@ test("a picture opens a viewer in the same window: next, Esc, and the focus come
 test("a file is a card: an icon of its kind, the name's middle elided with its extension kept, one link that downloads @remote", async ({ people }) => {
   const ann = await people.member("Ann");
   const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
   await befriend(ann, bo);
+  await befriend(ann, cy);
   const tag = uniq(4);
   const title = `文件卡${tag}`;
-  await createGroupUi(ann.page, title, [bo.displayName]);
+  await createGroupUi(ann.page, title, [bo.displayName, cy.displayName]);
   const name = `第三季度销售数据汇总报告（含各区域明细和同比环比分析）最终修订版-${tag}.pdf`;
   await sendFile(ann.page, title, { name, mimeType: "application/pdf", buffer: randomFile(2_000) });
 

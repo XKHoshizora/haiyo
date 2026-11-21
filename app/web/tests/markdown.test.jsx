@@ -442,7 +442,7 @@ describe("an Agent's stored mentions in its Markdown (Task M)", () => {
   it("an escaped \\@ keeps its tag and shows no backslash (fix round 1, M-10)", async () => {
     const root = await showWith("转义 \\@阿波 好", [{ id: ANN, start: 4, length: 3 }]);
     await settle();
-    expect(root.querySelector(".md").textContent).toBe("转义 提到 阿波@阿波 好");
+    expect(root.querySelector(".md").textContent).toBe("转义 @阿波提到 阿波 好");
     expect(tags(root.querySelector(".md"))).toEqual([["提到 阿波", "@阿波"]]);
   });
 });

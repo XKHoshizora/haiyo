@@ -42,7 +42,10 @@ function Who({ id }) {
   );
 }
 
-/** `spoken`: what a screen reader says it means (提到 …); `shown`: the name on the tint (`@name`). */
+/**
+ * `spoken`: what a screen reader says it means (提到 …); `shown`: the name on the tint (`@name`). The visible name comes
+ * first, the hidden words after it: a pointer's target (a test's default hover, too) is then the name itself.
+ */
 export function MentionChip({ id, spoken, shown, agent }) {
   const [open, setOpen] = useState(false);
   const [place, setPlace] = useState(null);
@@ -141,8 +144,8 @@ export function MentionChip({ id, spoken, shown, agent }) {
           }
         }}
       >
-        <span className="sr-only">{spoken}</span>
         <span aria-hidden="true">{shown}</span>
+        <span className="sr-only">{spoken}</span>
       </span>
       {open &&
         createPortal(

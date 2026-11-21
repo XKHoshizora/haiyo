@@ -17,8 +17,14 @@ export const chatPane = (page, title) => page.getByRole("region", { name: title,
 
 export const messageList = (chat) => chat.getByTestId("message-list");
 
-/** The messages of an open conversation whose text contains `text`. */
-export const messagesWith = (chat, text) => messageList(chat).getByRole("listitem").filter({ hasText: withTags(text) });
+/**
+ * The messages of an open conversation whose text contains `text` — or whose picture is called `text` (a stored picture
+ * shows the picture alone; its file name is the picture's accessible name, `alt`).
+ */
+export const messagesWith = (chat, text) => {
+  const items = messageList(chat).getByRole("listitem");
+  return items.filter({ hasText: withTags(text) }).or(items.filter({ has: chat.page().locator(`img[alt=${JSON.stringify(text)}]`) }));
+};
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**

@@ -82,6 +82,14 @@ describe("what a mention shows", () => {
     expect(tags().map(spokenOf).slice(0, 2)).toEqual(["提到 波波", "提到 助理小助"]);
   });
 
+  it("the visible name comes first and the hidden words after it, so a pointer's target is the name", async () => {
+    await openApp();
+    for (const tag of tags()) {
+      expect(tag.firstElementChild.getAttribute("aria-hidden")).toBe("true");
+      expect(tag.lastElementChild.classList.contains("sr-only")).toBe(true);
+    }
+  });
+
   it("a mention of the reader herself is her display name and is the stronger one", async () => {
     await openApp();
     const [bo, agent, me] = tags();

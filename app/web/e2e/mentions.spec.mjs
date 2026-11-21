@@ -539,7 +539,7 @@ test("a mention is a tinted name; hovering it opens a card with the kind, the ac
   await expect(card).toBeVisible();
   await expect(card).toContainText(agent.name);
   await expect(card).toContainText("Agent");
-  await expect(card).toContainText(`主人：${ann.displayName}`);
+  await expect(card).toContainText(`主人：你`);
   await page.keyboard.press("Escape");
   await expect(card).toHaveCount(0);
 });

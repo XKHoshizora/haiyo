@@ -21,8 +21,8 @@ export function MentionTag({ text, id }) {
   if (!known) {
     return (
       <span className="mention mention-gone">
-        <span className="sr-only">{`提到 ${mentionName(text)}`}</span>
         <span aria-hidden="true">{text}</span>
+        <span className="sr-only">{`提到 ${mentionName(text)}`}</span>
       </span>
     );
   }
