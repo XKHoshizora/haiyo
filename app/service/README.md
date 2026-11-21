@@ -1566,7 +1566,9 @@ Agent in the group is queued (above; its refusals 409 `agent_paused`, 400 `inval
 `stale_whisper` when it is not open any more (answered, expired; a `found_elsewhere` one told, or with no hit left to
 read) or does not offer `"tell"`; 404 `not_found` for anyone
 else's whisper and an id that is none alike (one read, the same answer, the same cost), and for yours once its Agent is
-deleted or it or you are no longer a member of the conversation. Limit: 30 per minute, shared with decline.
+deleted or it or you are no longer a member of the conversation. Limit: 30 per minute, shared with decline. The copy
+it answers with is read in the answer's own transaction, so an answer once stored is always answered 200: nothing is
+read after it commits, and what is pushed or announced after it is caught (logged as a code).
 
 #### `POST /api/whispers/:id/decline`
 
