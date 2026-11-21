@@ -211,3 +211,37 @@ export async function renameGroup(t: Tx, conversationId: string, actorId: string
   const members = await currentMemberIds(t, conversationId);
   return { messages: [notice], conversations: [{ conversationId, principalIds: members }] };
 }
+
+/**
+ * Only the creator changes the group's avatar (the member who may also remove others; when the creator leaves, the next one
+ * may). Under the group's row, like a rename. `newKey` is the new blob's key, or null to take the avatar away. Returns the
+ * previous key (to hold in this transaction and delete after it commits: null when there was none) and what to announce: the
+ * members are told as for a rename, but no notice is written in the group. Taking away what is not there changes and
+ * announces nothing; every other change counts in `avatar_version`.
+ */
+export async function swapGroupAvatar(
+  t: Tx,
+  conversationId: string,
+  actorId: string,
+  newKey: string | null,
+): Promise<{ previous: string | null; change: Change }> {
+  const { conversation } = await lockGroup(t, conversationId, actorId);
+  if (conversation.creatorId !== actorId) throw forbidden();
+  const { rows } = await t.query<{ avatar_key: string | null }>("select avatar_key from conversations where id = $1", [conversationId]);
+  const previous = rows[0]!.avatar_key;
+  if (newKey === null && previous === null) return { previous: null, change: { messages: [], conversations: [] } };
+  await t.query("update conversations set avatar_key = $2, avatar_version = avatar_version + 1 where id = $1", [conversationId, newKey]);
+  const members = await currentMemberIds(t, conversationId);
+  return { previous, change: { messages: [], conversations: [{ conversationId, principalIds: members }] } };
+}
+
+/** The key of a group's avatar for a current member of it, or null (no avatar, not a group, not a member: not told apart). */
+export async function groupAvatarKey(q: Queryable, conversationId: string, viewerId: string): Promise<string | null> {
+  const { rows } = await q.query<{ avatar_key: string }>(
+    `select c.avatar_key from conversations c
+       join memberships m on m.conversation_id = c.id and m.principal_id = $2 and m.left_seq is null
+      where c.id = $1 and c.type = 'group' and c.avatar_key is not null`,
+    [conversationId, viewerId],
+  );
+  return rows[0]?.avatar_key ?? null;
+}

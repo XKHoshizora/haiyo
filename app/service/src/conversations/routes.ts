@@ -1,13 +1,15 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { announceEnded } from "../agents/group-leave.ts";
+import { AVATAR_HEADERS, avatarBudget, dropAvatar, readStoredAvatar, registerAvatarPut, storeAvatar } from "../principals/avatar-upload.ts";
 import { notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { agentProfileShape } from "../messages/principals.ts";
 import { groupTitle, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
-import { addMember, createGroup, removeMember, renameGroup } from "./groups.ts";
+import type { Change } from "./events.ts";
+import { addMember, createGroup, groupAvatarKey, removeMember, renameGroup, swapGroupAvatar } from "./groups.ts";
 import { listMembers } from "./store.ts";
 import { pushWhispers } from "../whispers/routes.ts";
 
@@ -16,7 +18,7 @@ const ok = z.object({ ok: z.literal(true) });
 const idParams = z.object({ id: uuidParam });
 
 export function registerConversationRoutes(app: FastifyInstance): void {
-  const { db, conversations } = app.deps;
+  const { db, conversations, blobs } = app.deps;
   const api = app.withTypeProvider<ZodTypeProvider>();
 
   const createLimit = perPrincipalLimit(app, 10);
@@ -65,6 +67,61 @@ export function registerConversationRoutes(app: FastifyInstance): void {
       return { id: req.params.id, title: req.body.title };
     },
   );
+
+  // The group's avatar: only the creator changes it. A change counts in the avatar budget (shared with a person's and an
+  // Agent's avatars: every one is a blob write) and in the budget of the other group changes.
+  const avatarLimit = avatarBudget(app);
+  registerAvatarPut(app, "/api/conversations/:id/avatar", idParams, async (req, body) => {
+    const me = await requirePrincipal(req);
+    await changeLimit(req, me.id);
+    await avatarLimit(req, me.id);
+    const id = (req.params as { id: string }).id;
+    let change: Change | null = null;
+    await storeAvatar(app, req.log, body, async (t, key) => {
+      const swapped = await swapGroupAvatar(t, id, me.id, key);
+      change = swapped.change;
+      return swapped.previous;
+    });
+    if (change) conversations.publish(change, req.log);
+  });
+
+  api.delete(
+    "/api/conversations/:id/avatar",
+    { schema: { params: idParams, querystring: empty, response: { 200: ok } } },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      await changeLimit(req, me.id);
+      let change: Change | null = null;
+      await dropAvatar(app, req.log, async (t) => {
+        const swapped = await swapGroupAvatar(t, req.params.id, me.id, null);
+        change = swapped.change;
+        return swapped.previous;
+      });
+      if (change) conversations.publish(change, req.log);
+      return { ok: true as const };
+    },
+  );
+
+  /** What `GET`/`HEAD …/avatar` answer: the stored image, to a current member only; 404 for everyone else and for a group without one. */
+  async function avatarOf(req: FastifyRequest<{ Params: { id: string } }>, whole: boolean) {
+    const me = await requirePrincipal(req);
+    const key = await groupAvatarKey(db, req.params.id, me.id);
+    const stored = key ? await readStoredAvatar(blobs, key, whole) : null;
+    if (!stored) throw notFound();
+    return stored;
+  }
+  const avatarSchema = { params: idParams, querystring: empty };
+  // Declared before the GET, so Fastify does not derive a HEAD from it (that one would read the whole blob).
+  app.withTypeProvider<ZodTypeProvider>().head("/api/conversations/:id/avatar", { schema: avatarSchema }, async (req, reply) => {
+    const found = await avatarOf(req, false);
+    reply.headers(AVATAR_HEADERS).type(found.type);
+    if (found.complete) reply.header("content-length", String(found.body.length));
+    return reply.send();
+  });
+  api.get("/api/conversations/:id/avatar", { schema: avatarSchema }, async (req, reply) => {
+    const found = await avatarOf(req, true);
+    return reply.headers(AVATAR_HEADERS).type(found.type).send(found.body);
+  });
 
   api.get(
     "/api/conversations/:id/members",

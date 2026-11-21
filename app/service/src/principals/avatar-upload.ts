@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { newBlobKey } from "../attachments/blob.ts";
+import type { Readable } from "node:stream";
+import { isMissingBlob, newBlobKey, type BlobStore } from "../attachments/blob.ts";
 import { discardBlob, holdBlob, releaseBlob } from "../attachments/pending.ts";
 import { sniff } from "../attachments/sniff.ts";
 import { liftBodyDeadline } from "../body-deadline.ts";
@@ -15,6 +16,55 @@ const AVATAR_MIMES = new Set(["image/png", "image/jpeg", "image/webp"]);
 export const SNIFF_BYTES = 4100;
 /** Avatar uploads one principal may make a minute: their own and their Agents' together (every one is a blob write). */
 export const AVATAR_UPLOADS_PER_MINUTE = 10;
+
+/** The headers every served avatar carries (person, Agent or group): only the bytes' own type is trusted, nothing runs. */
+export const AVATAR_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "cache-control": "private, max-age=60",
+  "content-security-policy": "default-src 'none'; sandbox",
+} as const;
+
+async function readAll(stream: AsyncIterable<Buffer>): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const c of stream) chunks.push(c);
+  return Buffer.concat(chunks);
+}
+
+/** The first `max` bytes (fewer if the stream is shorter); the rest is never pulled and the stream is closed. */
+async function readPrefix(stream: Readable, max: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let n = 0;
+  try {
+    for await (const c of stream as AsyncIterable<Buffer>) {
+      chunks.push(c);
+      n += c.length;
+      if (n >= max) break;
+    }
+  } finally {
+    stream.destroy();
+  }
+  return Buffer.concat(chunks).subarray(0, max);
+}
+
+/**
+ * A stored avatar as it is served: its type from the bytes, and only when browsers may show it. `whole: false` reads no more
+ * than the sniffing prefix (a HEAD does not drain the blob). Null when the blob is gone or is not an image to show.
+ */
+export async function readStoredAvatar(
+  blobs: BlobStore,
+  key: string,
+  whole: boolean,
+): Promise<{ type: string; body: Buffer; complete: boolean } | null> {
+  try {
+    const stream = await blobs.get(key);
+    const bytes = whole ? await readAll(stream) : await readPrefix(stream, SNIFF_BYTES);
+    const { mime, inline } = await sniff(bytes.subarray(0, SNIFF_BYTES));
+    return inline ? { type: mime, body: bytes, complete: whole } : null;
+  } catch (err) {
+    if (!isMissingBlob(err)) throw err;
+    return null;
+  }
+}
 
 const avatarBudgets = new WeakMap<FastifyInstance, PrincipalLimit>();
 
@@ -111,5 +161,20 @@ export async function storeAvatar(
     await discardBlob({ db, blobs }, key, log);
     throw err;
   }
+  if (previous) await discardBlob({ db, blobs }, previous, log);
+}
+
+/**
+ * Takes the avatar away: `drop` runs in the transaction that commits the change (it locks what it must, clears the key and
+ * returns the previous one, or null when there was none). The previous blob is held in that transaction and deleted after it
+ * commits; the sweep removes it when the delete fails.
+ */
+export async function dropAvatar(app: FastifyInstance, log: FastifyRequest["log"], drop: (t: Tx) => Promise<string | null>): Promise<void> {
+  const { db, blobs } = app.deps;
+  const previous = await db.tx(async (t) => {
+    const old = await drop(t);
+    if (old) await holdBlob(t, old);
+    return old;
+  });
   if (previous) await discardBlob({ db, blobs }, previous, log);
 }

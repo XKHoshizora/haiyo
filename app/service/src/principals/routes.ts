@@ -1,11 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { Readable } from "node:stream";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { chosenModel } from "../models/choice.ts";
 import { displayName, uuidParam } from "../schemas.ts";
-import { isMissingBlob } from "../attachments/blob.ts";
-import { sniff } from "../attachments/sniff.ts";
 import { AppError } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { assertModelChoice } from "../agents/store.ts";
@@ -14,38 +11,10 @@ import { MEMORY_LANGUAGE_CODES } from "../memory/language.ts";
 import { setDream, setMemoryLanguage, setMemoryModel, setNewNotes } from "../memory/store.ts";
 import { requirePrincipal } from "../session.ts";
 import { defaultAvatarSvg } from "./avatar.ts";
-import { avatarBudget, registerAvatarPut, SNIFF_BYTES, storeAvatar } from "./avatar-upload.ts";
+import { AVATAR_HEADERS, avatarBudget, readStoredAvatar, registerAvatarPut, storeAvatar } from "./avatar-upload.ts";
 import { changeHandle, findAvatarSubject, findByHandle, HANDLE_PATTERN, swapAvatarKey, updateDisplayName } from "./store.ts";
 
 const publicPrincipal = z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number() });
-
-const AVATAR_HEADERS = {
-  "x-content-type-options": "nosniff",
-  "cache-control": "private, max-age=60",
-  "content-security-policy": "default-src 'none'; sandbox",
-} as const;
-
-async function readAll(stream: AsyncIterable<Buffer>): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const c of stream) chunks.push(c);
-  return Buffer.concat(chunks);
-}
-
-/** The first `max` bytes (fewer if the stream is shorter); the rest is never pulled and the stream is closed. */
-async function readPrefix(stream: Readable, max: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let n = 0;
-  try {
-    for await (const c of stream as AsyncIterable<Buffer>) {
-      chunks.push(c);
-      n += c.length;
-      if (n >= max) break;
-    }
-  } finally {
-    stream.destroy();
-  }
-  return Buffer.concat(chunks).subarray(0, max);
-}
 
 export function registerPrincipalRoutes(app: FastifyInstance): void {
   const { db, blobs } = app.deps;
@@ -171,16 +140,8 @@ export function registerPrincipalRoutes(app: FastifyInstance): void {
     const me = await requirePrincipal(req);
     const subject = await findAvatarSubject(db, req.params.id, me.id);
     if (!subject) throw new AppError(404, "not_found");
-    if (subject.avatarKey) {
-      try {
-        const stream = await blobs.get(subject.avatarKey);
-        const bytes = whole ? await readAll(stream) : await readPrefix(stream, SNIFF_BYTES);
-        const { mime, inline } = await sniff(bytes.subarray(0, SNIFF_BYTES));
-        if (inline) return { type: mime, body: bytes, complete: whole };
-      } catch (err) {
-        if (!isMissingBlob(err)) throw err;
-      }
-    }
+    const stored = subject.avatarKey ? await readStoredAvatar(blobs, subject.avatarKey, whole) : null;
+    if (stored) return stored;
     return { type: "image/svg+xml", body: defaultAvatarSvg(subject.displayName, subject.id), complete: true };
   }
 

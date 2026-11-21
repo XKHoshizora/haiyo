@@ -27,6 +27,8 @@ export interface SyncConversation {
   title: string | null;
   /** Groups only: a direct chat has no creator role (and `isCreator` is false for both of its members). */
   creatorId?: string;
+  /** Groups with an avatar only: its change counter, for the avatar URL (`GET /api/conversations/:id/avatar?v=`). */
+  avatarVersion?: number;
   myRole: Role;
   closed: boolean;
   /** When the conversation was created (ISO 8601): `/api/sync`'s order, and a place for one without messages. */
@@ -90,6 +92,7 @@ async function conversationEntries(t: Tx, me: string, ttlHours: number, onlyId: 
     type: ConversationType;
     title: string | null;
     creator_id: string;
+    avatar_version: number | null;
     seq: string;
     closed: boolean;
     created_at: Date;
@@ -106,7 +109,9 @@ async function conversationEntries(t: Tx, me: string, ttlHours: number, onlyId: 
   }>(
     // A direct chat's other party comes from its pair (direct_pairs), the one source the send path uses;
     // only the peer's read marker is read from their membership.
-    `select c.id, c.type, c.title, c.creator_id, c.seq, c.closed_at is not null as closed, c.created_at, me.role, me.read_seq,
+    `select c.id, c.type, c.title, c.creator_id,
+            case when c.type = 'group' and c.avatar_key is not null then c.avatar_version end as avatar_version,
+            c.seq, c.closed_at is not null as closed, c.created_at, me.role, me.read_seq,
             pair.peer_id, peer.read_seq as peer_read_seq,
             ac.agent_id, ag.paused as agent_paused, ag.deleted_at is not null as agent_deleted, agm.read_seq as agent_read_seq,
             (select count(*) from messages m ${VISIBLE_JOIN}
@@ -167,6 +172,7 @@ async function conversationEntries(t: Tx, me: string, ttlHours: number, onlyId: 
       type: c.type,
       title: c.title,
       ...(c.type === "group" ? { creatorId: c.creator_id } : {}),
+      ...(c.avatar_version !== null ? { avatarVersion: c.avatar_version } : {}),
       myRole: c.role,
       closed: c.closed,
       createdAt: c.created_at.toISOString(),

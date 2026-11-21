@@ -61,7 +61,7 @@ export async function discardBlob(deps: { db: Queryable; blobs: BlobStore }, key
  * Deletes every blob held for longer than `olderThanMs`, blob first (with any partial file), then the
  * record, each in its own transaction that holds the record's row lock across the blob delete. If the
  * blob delete fails the transaction rolls back and the record stays for the next sweep. A key that an
- * attachment or an avatar references is never deleted (only its stray record is, and that is logged).
+ * attachment or an avatar (a person's, an Agent's or a group's) references is never deleted (only its stray record is, and that is logged).
  * Returns how many blobs were deleted.
  */
 export async function sweepPendingBlobs(
@@ -81,7 +81,8 @@ export async function sweepPendingBlobs(
       const deleted = await deps.db.tx(async (t) => {
         const found = await t.query<{ referenced: boolean }>(
           `select exists (select 1 from attachments where blob_key = p.key)
-               or exists (select 1 from principals where avatar_key = p.key) as referenced
+               or exists (select 1 from principals where avatar_key = p.key)
+               or exists (select 1 from conversations where avatar_key = p.key) as referenced
              from pending_blobs p
             where p.key = $1
               for update of p skip locked`,
