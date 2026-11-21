@@ -131,7 +131,7 @@ describe("picking files", () => {
     await flush();
     expect(api.sendMessage).toHaveBeenCalledWith(D1, { clientTxn: "tx-1", attachmentId: answer.id });
     const card = mine()[0].querySelector(".file-card");
-    const link = within(card).getByRole("link", { name: /下载/ });
+    const link = card.closest("a");
     expect(link.getAttribute("href")).toBe(`/api/attachments/${answer.id}`);
     expect(link.getAttribute("download")).toBe("报告.pdf");
     expect(within(mine()[0]).getByText("已发送")).toBeTruthy();
@@ -338,17 +338,19 @@ describe("failures", () => {
 });
 
 describe("showing attachments", () => {
-  it("an inline attachment is an image from the same-origin URL, lazy, with a new-tab link", async () => {
+  it("an inline attachment is only its picture: the same-origin URL, lazy, its file name as the accessible name, no caption, a button that opens the viewer", async () => {
     await openApp();
     await openChat("小安");
-    const img = timeline().querySelector("figure.attachment-image img");
+    const figure = timeline().querySelector("figure.attachment-image");
+    const img = figure.querySelector("img");
     expect(img.getAttribute("src")).toBe(`/api/attachments/${IMG_ID}`);
     expect(img.getAttribute("loading")).toBe("lazy");
     expect(img.getAttribute("alt")).toBe("咖啡馆.png");
-    const link = img.closest("a");
-    expect(link.getAttribute("href")).toBe(`/api/attachments/${IMG_ID}`);
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(figure.querySelector("figcaption")).toBeNull();
+    expect(figure.textContent).toBe("");
+    expect(figure.querySelector("a")).toBeNull();
+    const open = within(figure).getByRole("button", { name: "咖啡馆.png" });
+    expect(open.getAttribute("aria-haspopup")).toBe("dialog");
     expect(within(img.closest("li")).getByText("看看这个", { selector: ".bubble" })).toBeTruthy();
   });
 
@@ -370,11 +372,16 @@ describe("showing attachments", () => {
     expect(card.querySelector("img")).toBeNull();
     expect(timeline().querySelector("img[src=x]")).toBeNull();
     expect(card.textContent).toContain("1.5 KB · 仅本会话可见");
-    const link = within(card).getByRole("link", { name: /下载/ });
-    expect(link.getAttribute("href")).toBe(`/api/attachments/${FILE_ID}`);
-    expect(link.getAttribute("download")).toBe(EVIL);
-    expect(link.classList.contains("btn")).toBe(true); // an action: the app's secondary button, not a link style
-    expect(link.classList.contains("text-link")).toBe(false);
+    // The whole card is the one link that downloads; the button in it is its look, not a second tab stop.
+    expect(card.tagName).toBe("A");
+    expect(card.getAttribute("href")).toBe(`/api/attachments/${FILE_ID}`);
+    expect(card.getAttribute("download")).toBe(EVIL);
+    expect(card.getAttribute("aria-label")).toBe(`下载 ${EVIL}，1.5 KB`);
+    expect(card.querySelectorAll("a, button, [tabindex]")).toHaveLength(0);
+    const look = card.querySelector(".btn.btn-ghost.btn-sm");
+    expect(look.textContent).toContain("下载");
+    expect(look.getAttribute("aria-hidden")).toBe("true");
+    expect(card.classList.contains("text-link")).toBe(false);
   });
 
   it("a pushed image message from the other side is shown as an image", async () => {

@@ -8,6 +8,7 @@ import { MarkdownView, NEWEST_NEAR } from "../ui/markdownView.jsx";
 import { withoutBidiControls } from "../ui/markdownRules.js";
 import { REVEAL_FINISH_MS } from "../ui/reveal.js";
 import { MessageItem } from "./Messages.jsx";
+import { ImageViewerProvider } from "../ui/ImageViewer.jsx";
 import {
   AGENT_PAUSED_TEXT,
   GroupReplying,
@@ -523,6 +524,7 @@ export function ChatView({ conv }) {
           <SearchFooter search={search} emptyText="没有找到相关消息，请换个关键词" />
         </ul>
       )}
+      <ImageViewerProvider messages={messages}>
       <MarkdownView listRef={listRef} newest={newestAgentTexts} onChange={keepNewestInView}>
         <ol className="messages" data-testid="message-list" ref={listRef} onScroll={onScroll} style={showHits ? { display: "none" } : undefined}>
           {rows.map(({ msg, whisper, bubble }) =>
@@ -556,6 +558,7 @@ export function ChatView({ conv }) {
           <li aria-hidden="true" />
         </ol>
       </MarkdownView>
+      </ImageViewerProvider>
 
       {paused && <Notice tone="pause">{AGENT_PAUSED_TEXT}</Notice>}
       {group && conv.agentsTalking && <HaltBar key={conv.id} conv={conv} />}

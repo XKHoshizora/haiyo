@@ -7,13 +7,15 @@ import { useShowReplyPoints } from "../data/prefs.js";
 import { failureText, retryHopeless } from "../data/uploadErrors.js";
 import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
+import { FileCard } from "../ui/FileCard.jsx";
+import { useImageViewer } from "../ui/ImageViewer.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
 import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits.jsx";
 import { MemoryNotice } from "./MemoryChip.jsx";
 import { ReplyLookups } from "./ReplyLookups.jsx";
 import { CitesContext } from "../ui/cites.jsx";
-import { Reply, RotateCw, FileText, Check, CircleAlert, Download } from "../icons.js";
+import { Reply, RotateCw, FileText, Check, CircleAlert } from "../icons.js";
 
 /** The quoted message as the reader may see it: the service says whether it is visible to them. */
 function Quote({ quote }) {
@@ -52,38 +54,23 @@ function UnavailableCard({ name }) {
   );
 }
 
+/** A picture: only the picture (its file name is its accessible name); pressing it opens the viewer (ui/ImageViewer.jsx). */
 function ImageBody({ msg }) {
   const [broken, setBroken] = useState(false);
+  const viewer = useImageViewer();
   if (broken) return <UnavailableCard name={msg.text} />;
   return (
     <figure className="attachment-image">
-      <a href={msg.src} target="_blank" rel="noopener" aria-label={`在新标签页打开图片 ${msg.text}`}>
+      <button type="button" className="image-open" aria-haspopup="dialog" data-image={msg.id} onClick={(e) => viewer.open(msg.id, e.currentTarget)}>
         <img src={msg.src} alt={msg.text} loading="lazy" onError={() => setBroken(true)} />
-      </a>
-      <figcaption>{msg.text}</figcaption>
+      </button>
     </figure>
   );
 }
 
 function FileBody({ msg }) {
   const { upload, attachment } = msg;
-  return (
-    <div className="card file-card">
-      <FileText size={28} aria-hidden="true" />
-      <div>
-        <strong>{msg.text}</strong>
-        <p className="muted">{formatSize(attachment.size)} · 仅本会话可见</p>
-        {upload && <progress className="upload-progress" max={100} value={Math.round(upload.progress * 100)} aria-label="上传进度" />}
-        {attachment.url && (
-          <div className="card-actions">
-            <a className="btn btn-ghost btn-sm" href={attachment.url} download={attachment.name}>
-              <Download size={14} aria-hidden="true" /> 下载
-            </a>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  return <FileCard name={msg.text} size={attachment.size} mime={attachment.mime} url={attachment.url} upload={upload} />;
 }
 
 /** An Agent's text, with its citations (`msg.cites`, beside its text) as links that jump to their messages (`onJump`). */

@@ -494,7 +494,7 @@ function agentsTalking(model, conv, held, rows) {
 function pendingView(p, { held, alias, now }) {
   // An unsent file is never shown as an image: the service serves its bytes only once a message carries it.
   const file = p.attachment ?? p.file ?? null;
-  const attachment = file ? { id: p.attachment?.id ?? null, name: file.name, size: file.size, inline: false, url: null } : null;
+  const attachment = file ? { id: p.attachment?.id ?? null, name: file.name, size: file.size, inline: false, url: null, mime: file.type || null } : null;
   const quoted = p.replyToSeq !== null && p.replyToSeq !== undefined ? held.find((m) => m.seq === p.replyToSeq) : null;
   return {
     id: `tx:${p.clientTxn}`,

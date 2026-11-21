@@ -576,9 +576,11 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .md .hljs-emphasis { font-style: italic; }
 .md .hljs-strong { font-weight: 700; }
 
-.attachment-image { border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #fff; max-width: 320px; }
+/* A picture in a bubble: the picture alone, rounded; pressing it opens the viewer. */
+.attachment-image { border-radius: 12px; overflow: hidden; background: var(--surface-solid); max-width: 320px; }
+.attachment-image .image-open { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
 .attachment-image img { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; max-height: 240px; object-fit: cover; }
-.attachment-image figcaption { padding: 6px 10px; font-size: 12.5px; color: var(--ink-2); }
+.attachment-image .image-open:focus-visible { outline-offset: -2px; }
 .card {
   padding: 12px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.85); border: 1px solid var(--line-strong);
   width: min(520px, 100%); font-size: 14px; text-align: left;
@@ -586,10 +588,23 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .card-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
 .card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.file-card { display: flex; align-items: center; gap: 12px; width: auto; }
-.file-card svg { color: var(--purple); }
-.file-card > div { min-width: 0; }
-.file-card strong { overflow-wrap: anywhere; }
+.file-card { display: flex; align-items: center; gap: 12px; width: auto; max-width: min(360px, 100%); }
+.file-card .file-icon { flex: none; color: var(--purple); }
+.file-icon-pdf { color: var(--danger); }
+.file-icon-spreadsheet { color: var(--ok); }
+.file-icon-slides { color: var(--warn); }
+.file-icon-archive, .file-icon-audio, .file-icon-video { color: var(--pending); }
+.file-icon-other { color: var(--ink-3); }
+.file-card > div, .file-card-text { min-width: 0; flex: 1; }
+/* The name's middle goes with "…" and its end (the extension) stays. */
+.file-name { display: flex; min-width: 0; max-width: 100%; }
+.file-name-head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-name-tail { flex: none; white-space: pre; }
+.file-card .btn { flex: none; }
+/* A file ready to download: the whole card is the one link. */
+.file-card-link { color: inherit; text-decoration: none; cursor: pointer; }
+.file-card-link:hover { background: var(--surface-solid); border-color: var(--purple); }
+.file-card-link:hover .btn { background: #fff; }
 .upload-progress { display: block; width: 100%; height: 6px; margin-top: 6px; accent-color: var(--purple); }
 .chat.dropping { outline: 2px dashed var(--purple); outline-offset: -6px; }
 .mini-kv div { display: flex; gap: 10px; padding: 3px 0; }
@@ -916,3 +931,29 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .handle-input { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .handle-input .handle-prefix { color: var(--ink-3); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
 .handle-input input { flex: 1; min-width: 0; }
+
+/* ───────── image viewer (ui/ImageViewer.jsx): a dialog over a dark backdrop, the picture fitted to the window */
+.viewer { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: rgba(14, 12, 28, 0.94); color: #fff; overscroll-behavior: contain; }
+.viewer-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 12px; }
+.viewer-meta { flex: 1 1 200px; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 14px; }
+.viewer-meta time { color: rgba(255, 255, 255, 0.7); font-size: 13px; }
+.viewer-name { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; color: rgba(255, 255, 255, 0.85); font-size: 13px; }
+.viewer-count { flex: none; font-size: 13px; color: rgba(255, 255, 255, 0.85); font-variant-numeric: tabular-nums; }
+.viewer-actions { flex: none; display: flex; align-items: center; gap: 4px; }
+.viewer .viewer-btn { width: 44px; height: 44px; color: #fff; text-decoration: none; }
+.viewer .viewer-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+.viewer :focus-visible { outline-color: #fff; }
+.viewer-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; padding: 8px 16px 20px; touch-action: none; user-select: none; }
+.viewer-img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; transform-origin: center; will-change: transform; }
+.viewer-img[data-phase="loading"] { opacity: 0; }
+.viewer-img[data-scale]:not([data-scale="1"]) { cursor: grab; }
+.viewer-state { position: absolute; inset: 0; margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; pointer-events: none; color: rgba(255, 255, 255, 0.85); }
+.viewer-state .btn { pointer-events: auto; color: var(--ink); }
+.viewer-state p { margin: 0; }
+.viewer-spinner { width: 28px; height: 28px; border: 3px solid rgba(255, 255, 255, 0.25); border-top-color: #fff; border-radius: 50%; animation: viewer-spin 0.9s linear infinite; }
+@keyframes viewer-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .viewer-spinner { animation-duration: 3s; } }
+.viewer-nav { position: absolute; top: 50%; margin-top: -22px; background: rgba(0, 0, 0, 0.4); border-radius: 50%; }
+.viewer-prev { left: 12px; }
+.viewer-next { right: 12px; }
+@media (max-width: 480px) { .viewer-bar { padding: 6px 8px; } .viewer-stage { padding: 4px 8px 12px; } .viewer-prev { left: 4px; } .viewer-next { right: 4px; } }
