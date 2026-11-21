@@ -130,7 +130,15 @@ the file and the clock tool one reply may run, 1–1 000, default 6, 4 and 1), `
 (the most one tool result weighs when it goes back to the model, 1–100 000, default 3 000; a reply offered tools keeps
 room for two in its context plan, at most a third of the conversation's), `runTimeoutMs` (how long a
 reply that offers tools may take in all, 1 000–3 600 000, default 300 000: 5 minutes; a reply that offers none is held
-to `AGENT_RUN_TIMEOUT_MS` alone)),
+to `AGENT_RUN_TIMEOUT_MS` alone), `web` (the web search, an object, every field optional; Agents and runs, Web search:
+`enabled` (default **false**: no reply is offered it and nothing anywhere changes), `engine` (`deepseek_messages`, the
+only one), `baseUrl` (https, default `https://api.deepseek.com`), `apiKeyEnv` (the name of another variable holding the
+engine's key, default `WEB_SEARCH_API_KEY`; with `enabled` on and that variable empty the search is not offered and one
+line at start says so), `model` (default `deepseek-flash`), `pointsMicroPerSearch` (what one search costs the reply,
+fixed, in micro-points, default 770 350 — a placeholder: the measured 11 000 input tokens of one engine call and its one
+output token at 70 and 350 micro-points a token, Metering's worked example), `perReply` (1–20, default 1),
+`perOwnerPerDay` (default 20), `sitePerDay` (default 2 000), `maxAtOnce` (engine calls at once in the service, default
+4), `timeoutMs` (1 000–120 000, default 15 000), `maxResults` (1–20, default 6))),
 `HOLDS` (what one owner's open holds may add up to, JSON, every field optional; Metering, Money that does not block:
 `maxOpenShare` (an admission rule: the share of what is left of a source — today's free allowance, or the balance —
 that the holds of the owner's running calls against it, a starting reply's own included, may add up to before that reply
@@ -444,7 +452,7 @@ free-plus-balance figure (`via.points`, Wire shapes).
 *Session: required.* Your own account, and nothing else: the route takes no parameter (any query string is 400
 `invalid_request`). → 200 `{"tier", "agentLimit", "agentCount", "balance", "free": {"allowance", "used", "resetsAt"},
 "canStartFreeReply", "memory": {"allowance", "used", "resetsAt"}, "recent": [{"agentId", "purpose", "model", "source", "points",
-"replies", "paidBy"?}]}`.
+"replies", "paidBy"?, "webSearches"?}]}`.
 
 - `tier` is the account's tier (`free` until the operator sets another); `agentLimit` is what `AGENT_TIERS` allows it
   (a tier the configuration no longer names gets the `free` limit); `agentCount` is your Agents that are not deleted.
@@ -462,7 +470,7 @@ free-plus-balance figure (`via.points`, Wire shapes).
   balance; what was forgiven is not in it, so it is not the true cost (`"0"` for `provider`, and for site calls that were
   forgiven in full) —, `paidBy` is `"site"` on a `memory` row of a site model (the site's memory allowance paid it, not your
   points; `points` is then what that allowance paid, and no other row has the key), `replies` how many were
-  replies; `agentId` is `null` for persona drafts and memory calls. Largest first. Runs that never reached a model (no model recorded)
+  replies, `webSearches` (only when above 0) how many web searches its `points` include (Agents and runs, Web search); `agentId` is `null` for persona drafts and memory calls. Largest first. Runs that never reached a model (no model recorded)
   are not listed.
 - Limit: 60 per minute.
 - An account that has never been touched reads as tier `free`, balance `"0"`; reading creates nothing.
@@ -604,13 +612,13 @@ conversation. Like a person who left, an Agent that left a group stays named by 
 still read them (a member who has since left too) gets its entry in those reads' `principals` — name, handle, intro,
 field, owner, the current ones. Only its avatar stops: once either membership ends, the avatar route answers as for an
 id that does not exist (old messages then show the generated initial). Nobody but the owner ever receives its persona, persona version, model, `modelUsable`, reasoning
-level, reply mode, `groupMentions`, `chainBudget`, `othersBudget`, `othersSpentToday`, `proactive`, `proactiveLevel`, `proactiveBudget`, `proactiveSpentToday`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `ownerAppellation`, `appellations`, provider, pause or persona proposals, whether a reply of it was one nobody called for (Proactive replies), or the reasoning of its replies there (A reply
+level, reply mode, `groupMentions`, `chainBudget`, `othersBudget`, `othersSpentToday`, `proactive`, `proactiveLevel`, `proactiveBudget`, `proactiveSpentToday`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation`, `appellations`, provider, pause or persona proposals, whether a reply of it was one nobody called for (Proactive replies), or the reasoning of its replies there (A reply
 there), or which model and reasoning level a reply of it used and what it cost (`via`, Wire shapes), in any response,
 push or error. Fellow members see a changed name, intro or field the next time they load
 principals, as for people; a changed avatar, or a handle its owner's rename changed, is pushed to them (`principal`).
 
 **Agent** (owner only): `{"id", "handle", "name", "avatarVersion", "intro", "field", "persona", "personaVersion", "replyMode":
-"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersBudget", "othersSpentToday", "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
+"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersBudget", "othersSpentToday", "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
 "xhigh" | "max", "model": {"source": "site", "id"} | {"source": "provider", "providerId", "model"} | null, "modelUsable", "paused",
 "deleted", "conversationId", "createdAt"}`. `conversationId` is the Agent's dedicated conversation. `modelUsable` is
 false when its model is not there to call any more — taken off its provider's list, or a site model the site no longer
@@ -629,7 +637,9 @@ default false); `proactiveLevel` how readily (`less`, `normal` — the default �
 `memory` (default true) says whether it keeps notes (An Agent's memory); `memoryAsk` (default false) whether a change of
 its notes waits for your yes; `sharedNotes` (default true) whether it uses the notes about you that all your Agents
 share; `whisperElsewhere` (群里没找到时悄悄告诉我, default true) whether, when a search of its reply in a group finds
-nothing there, it looks in its other conversations and whispers what it finds to you (Whispers: `found_elsewhere`). `proactiveBudget` the most you pay, in points (a string as `chainBudget`, `"1"` to `"100000"`, default `"20"`; never
+nothing there, it looks in its other conversations and whispers what it finds to you (Whispers: `found_elsewhere`);
+`webSearch` (联网搜索, default true) whether its replies may search the web — there only while the site offers web search
+(`GET /api/models` `webSearchAvailable`; Agents and runs, Web search), absent otherwise. `proactiveBudget` the most you pay, in points (a string as `chainBudget`, `"1"` to `"100000"`, default `"20"`; never
 `null`: a reply nobody asked for always has a limit), in a site day, for those replies; `proactiveSpentToday` (a string of
 points) what they were charged since the site day began, settled charges only, as `othersSpentToday`. `ownerAppellation`
 is what the Agent calls you (1–20 characters, `null`: it uses your display name); `appellations` is what it calls
@@ -659,7 +669,7 @@ the display-name rule), and optionally `intro` (≤ 40), `field` (≤ 20), `pers
 to 100 000 with at most 6 decimals, no sign or exponent: `"50"`, `"12.5"`; default `"50"`), `othersBudget` (the same
 string, or `null` for no limit; default `"20"`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
 `more`, default `normal`), `proactiveBudget` (the string of `chainBudget`, never `null`; default `"20"`), `memory` (default `true`), `memoryAsk`
-(default `false`), `sharedNotes` (default `true`), `whisperElsewhere` (default `true`; booleans, never `null`), `ownerAppellation`
+(default `false`), `sharedNotes` (default `true`), `whisperElsewhere` (default `true`), `webSearch` (default `true`; booleans, never `null`), `ownerAppellation`
 (an appellation, below; default `null`), `reasoning` (default `none`), `model` (default `null`). → 201 Agent.
 
 - 409 `proactive_unavailable` for `"proactive": true` while the site has no judgement model (`JUDGE`), before anything is
@@ -726,7 +736,7 @@ for `GET /api/agents`.
 #### `PATCH /api/agents/:id`
 
 *Session: required.* Body (no other key: `handle` and the owner are 400): any of `name`, `intro`, `field`,
-`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersBudget` (`null`: no limit), `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
+`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersBudget` (`null`: no limit), `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
 model and the reasoning level are checked together when either is sent. A `persona` that differs from the stored one
 raises `personaVersion` by one. `catchUp` (boolean, default `false`) goes only with `"memory": true` for an Agent whose memory is
 off: whether the next review may read what was said while it was off, and nothing earlier (An Agent's memory, *Turning it back on*); a `memory` that
@@ -1899,7 +1909,7 @@ Stopping a call (its abort signal) ends it at once and closes the upstream conne
 
 *Session: required.* What a client's model picker reads: the models the site offers and the defaults a provider model
 gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision", "pdf", "reasoning": [levels],
-"contextTokens", "tools": boolean}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean}`.
+"contextTokens", "tools": boolean}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true}`.
 
 - `siteModels`: `SITE_MODELS` in configuration order (`[]` when none is configured). `id` is what an Agent's
   `{"source": "site", "id"}` names; `reasoning` the levels the model takes besides `none`, which every model takes (an
@@ -1907,6 +1917,7 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
   the operator said false). Nothing else of a site model is shown: never where it is called (`baseUrl`, `protocol`), the
   upstream model name, its key or the name of the variable holding it, or its prices.
 - `proactiveAvailable`: whether the judgement model is configured (`JUDGE`); turning an Agent's `proactive` on is refused (409 `proactive_unavailable`) when it is not.
+- `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
 - `providerDefaults`: `PROVIDER_DEFAULT_CONTEXT_TOKENS` (a provider model's context when its owner gives none) and
   `PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS` (the output limit of every call to a provider model at reasoning `none`, to which
   a level adds its thinking allowance, Calling a model; a provider model's context must be larger).
@@ -2527,7 +2538,7 @@ preview, a quote, a search hit) its text is shown as it is: it holds no citation
 
 **What a reply looked up** (`messages/lookups.ts`, `messages/read.ts` `toWireForReaders`; `tests/tool-lookups.test.ts`): a
 reply whose tools ran (Agents and runs, Tools in a reply) keeps, with its message, how many calls of each kind ran and
-answered with something usable (`lookups`: `search`, `file`, `time`; a call answered with a note or an error is not
+answered with something usable (`lookups`: `search`, `file`, `time`, and `web` for a run offered the web search; a call answered with a note or an error is not
 counted — the loop's own, or the tool's own refusal, an output `{"error": "…"}` such as a search that timed out, words
 too short to search for, or a file that cannot be read; nor is a tool the offer names no kind for, and what such calls
 found or searched for is not kept either), the messages its tools found (`found`: the first 20, in the order they came,
@@ -2540,6 +2551,17 @@ same rule as any message — a message from before they joined a group, one of a
 there any more is left out without a trace, and the key is absent when none is left; `queries` only to the owner of the
 Agent that sent it, in the Agent's own conversation (in a group they are not even kept). A reply whose tools ran none,
 and one offered none, carries none of these keys.
+
+**What a reply found on the web** (Agents and runs, Web search; `agents/tools/web/`; `tests/web-search.test.ts`): a reply
+whose run was handed web pages keeps every one of them beside its text, cited or not — `webSources: [{"n", "url",
+"title"}]`: the number its model was shown (`〔w2〕` is 2), the page's address (https, no credentials, at most 2 048
+characters, its host in ASCII) and its title as cleaned; no snippet is kept — and where its text cites them, `webCites:
+[{"at", "n"}]` (`at` as a cite's, ascending; only numbers the run handed out). Both go to every reader of the reply (they
+are public pages). `lookups.web` counts the searches that brought results back. A client shows the sources as a list
+under the lookup line, each row the title and the address's real host (`new URL(url).hostname`, never a site name), and
+a chip at each of `webCites`; in such a reply it shows the text's own links and bare addresses as plain text, so that
+only the sources open anything. `via.webSearches` (owner only, only when above 0): how many searches its `points`
+include. None of these keys exists while the site offers no web search.
 
 **`via`** (the product owner's decision of 2026-11-18): which model and reasoning level an Agent's reply used, and what it
 cost its owner. Only the owner of the Agent that sent it receives it — the sender principal's `owner_id` when the message
@@ -2645,7 +2667,7 @@ reconnect, `GET /api/conversations/:id/run` (an Agent's own conversation) says w
 text so far is not sent again; the posted message follows), and `GET /api/conversations/:id/runs` what a group shows.
 
 While a reply runs tools (Agents and runs, Tools in a reply) its `run` comes again whenever what it is doing changes, with
-`activity`: as a tool starts, the kind of its work — `"search"` (the chat history), `"file"`, `"time"` —, and `null` as
+`activity`: as a tool starts, the kind of its work — `"search"` (the chat history), `"file"`, `"time"`, `"web"` (the web search) —, and `null` as
 soon as the model is called again (and once the reply ends, if a tool was the last thing shown). The Agent's owner gets
 it with the Run (`running`), in its own conversation and in a group alike (where nothing else of the reply streams); in a
 group every other current member gets it with `agentId` and `"state": "replying"` — only while that is the Agent's state
@@ -3624,6 +3646,41 @@ so the next run's context starts the same up to where something new comes — un
 older message left out, a new topic, in a group its latest messages moving on), or someone typed a number among the
 labels' (they then move past it).
 
+**Web search** (`tools/web/`: `engine.ts`, `text.ts`, `hold.ts`, `tool.ts`; migration `064_web_search.sql`;
+`tests/web-search*.test.ts`). A fourth tool, `search_web {query}`, run by the service in the loop above — the site switch
+`TOOLS.web.enabled` is **off by default**, and while it is off (or its key is missing) nothing anywhere differs from
+before: the same three tools, the same system text to the byte, `〔w1〕` is text, and no key of it is on any wire. It is
+offered to a run only when all hold: the site switch and its key; the Agent's `webSearch` (default true); the run's
+model is a site model; and the run is its owner's own call — in their own conversation, a retry, or their own `@` in a
+group (lane `own`, called by a person's message: an Agent's relay the owner is behind, someone else's call and a reply
+nobody asked for are not). A run offered tools but not this one, while the site offers it, is told in one line that it
+cannot go online in this reply (`NO_WEB_HERE`); one offered no tools keeps `NO_TOOLS`. Kind `web` (its status
+正在上网查找…), `TOOLS.web.perReply` calls a reply; the loop's repeat rule reads the query's one form (NFKC, case-folded,
+one space). A call, in this order, each refusal an `{"error"}` in plain words (no lookup; the model words it):
+1. the query, cleaned as message text, 2 to 120 characters;
+2. the structural guard (`text.ts` `guardQuery`), nothing logged but the metric `web_query_refused`: refused when the
+   query shares 6 CJK characters in a row (spaces between them ignored), or 3 Latin words in a row, with any note or
+   hearsay text the run was shown — unless that same run is in its owner's latest message in the conversation (theirs
+   to search) — or, in a group, holds the display name or handle (2 characters or more) of a current member or of the
+   owner;
+3. one of the service's `TOOLS.web.maxAtOnce` engine places, or refused at once;
+4. **the pre-hold** (`hold.ts`, port-impl.ts `holdSearch`; Metering, A web search's price): counted and held in one
+   transaction before anything leaves the service;
+5. the engine (`engine.ts`, injected: `Deps.webEngine`), its result kept to the first `maxResults` with an https address
+   without credentials, titles (one line, no bidi control, at most 200 characters) and snippets (at most 300) with every
+   address-looking string and every `@` mention taken out;
+6. every title and snippet read for numbers someone typed (`RunRefs.plant`) **before** any `w` number is minted, then as
+   many as fit `TOOLS.resultMaxWeight`: `{"about", "results": [{"ref": "〔w1〕", "title", "date"?, "snippet"}]}` — no
+   address and no site name for the model to copy. The model cites with `〔w1〕` as with `〔m1〕` (Citations: the `w`
+   letter is a token for a run offered the web tool only); the reply keeps `webSources` and `webCites` (Wire shapes).
+The engine: `deepseek_messages`, `POST {baseUrl}/anthropic/v1/messages` with `max_tokens: 1` (one search round, its
+result block and no answer text, as measured on 2026-11-22), thinking off, `system` "Today is <site date>.", its own
+`deepseek_web_search` tool (never `tool_choice`), `safety_check` high; a raw `fetch` within `timeoutMs`, ended with the
+reply, reading at most 1 MB; a refusal, no result block (it answered without searching), any other status or a bad body
+are errors, never a throw. Its one log line per call names the engine, the status class, the time and the number of
+results — never the query, an address, a title, a snippet or an upstream body. The gateway never hands the loop a call
+the provider ran itself (`providerExecuted`): a relay's own `web_search` neither runs ours nor counts as garbled.
+
 **An acknowledgement, then the answer** ("先应一声、再交付", the product owner's design; `runtime/worker.ts` `toolReply`,
 `port-impl.ts` `acknowledge`, `conversation.ts` `postAsAgent`; `tests/tools-ack.test.ts`, `tests/tool-loop.test.ts`). In
 the Agent's own conversation and in a group alike: when a round of a reply offered tools calls a tool, what the reply
@@ -4285,6 +4342,29 @@ the new day's); a call on the balance is charged in full (up to its hold) and ma
 below zero nothing more starts on the balance until the operator's grants bring it above zero. Settlement releases the
 hold in the transaction that moves the run out of `running` (Agents and runs, `finish`), so a hold never stops counting
 before its cost lands.
+
+**A web search's price** (Agents and runs, Web search; `agents/tools/web/hold.ts`, `port-impl.ts` `holdSearch`, `extend`,
+`settle.ts`; migration `064_web_search.sql`; `tests/web-search.test.ts`). One search costs exactly
+`TOOLS.web.pointsMicroPerSearch` (a placeholder until the product owner decides; no metering of the engine: the site
+carries any difference, bounded by `sitePerDay`), held **before** the engine is called, in one transaction in the lock
+order — the run's conversation row, its Agent's and its own (`lockRun`), then today's counters (`web_search_days`, the
+owner's row, then the site's: counted at call time, the site day as everywhere), then the owner's account:
+1. today's searches: over `perOwnerPerDay`, or the site's over `sitePerDay`, refused (one statement each; two connections
+   racing for the last search are put in order by the row's lock);
+2. the money by Extension's rules, "ok" only: the model part of the reply so far at its bound (its hold, less the free
+   allowance's room for a last call and less its searches) with its searches and this one within `TOOLS.maxPoints` and no
+   budget of its lane reached, and its hold raised by the price within what is left of its own source beside the other
+   holds — on the free allowance the allowance itself, so a search is never paid by forgiveness; else refused, its hold
+   as it was;
+3. `agent_runs.web_searches + 1`, `web_micro + price`.
+Refused at any step, the transaction rolls back (a counter taken is given back), the engine is not called and the reply
+goes on. Past the pre-hold the count and the charge stand whatever happens — the engine failing, timing out, finding
+nothing, the reply stopped, the service closing, the worker dropping the call's outcome: the vendor was called. Extension
+counts the searches with what the reply has spent, outside the model's clip; settlement charges `min(model cost, model
+hold) + web_micro` (the model hold being the hold less the searches), records `cost_micro` as the model's cost and the
+searches', and the usage record keeps `web_searches` and `web_micro`. Only a settlement on our own failure (`busy`, the
+reply could not be stored) forgives the searches too, as it forgives everything; the count stands. A reply that made none
+is settled exactly as before.
 
 **The memory allowance** (`MEMORY.freeDailyPoints`, default 20 whole points per owner and site day, 0: none; migration
 `038_memory_allowance.sql`). What an owner's Agents' memory does in the background (reviews, hearsay, dreams, language

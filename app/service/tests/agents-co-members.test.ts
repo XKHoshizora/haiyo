@@ -70,6 +70,9 @@ const HIDDEN_KEYS = [
   "memoryAsk",
   "sharedNotes",
   "whisperElsewhere",
+  // 联网搜索 (lane websearch): the owner's switch, and how many searches a reply's points include (in `via`).
+  "webSearch",
+  "webSearches",
   "whisperId",
   "whisper_id",
   "newNotes",

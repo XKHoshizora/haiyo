@@ -30,7 +30,7 @@ export const SITE_SCOPE = "site";
  * counted. One statement: two connections racing for the last search are put in order by the row's lock, and the one
  * that comes second reads the first one's count.
  */
-async function countSearch(t: Tx, scope: string, day: string, cap: number): Promise<boolean> {
+export async function countSearch(t: Tx, scope: string, day: string, cap: number): Promise<boolean> {
   const { rowCount } = await t.query(
     `insert into web_search_days as d (scope, day, searches) values ($1, $2::date, 1)
      on conflict (scope, day) do update set searches = d.searches + 1 where d.searches < $3

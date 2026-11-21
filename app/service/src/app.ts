@@ -227,7 +227,10 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
  * default: nothing is logged); with it on but no key in the variable its `apiKeyEnv` names, none either, and one line at
  * start says so (the variable's name, never a value) — the search is simply not offered. The key is read once, here.
  */
-export function webEngineOf(config: Config, log: Pick<FastifyBaseLogger, "info" | "warn">): WebEngine | null {
+export function webEngineOf(
+  config: Config,
+  log: { info(details: Record<string, unknown>, msg: string): void; warn(details: Record<string, unknown>, msg: string): void },
+): WebEngine | null {
   const web = config.tools.web;
   if (!web.enabled) return null;
   const apiKey = process.env[web.apiKeyEnv];

@@ -54,6 +54,9 @@ export interface Settled {
  *   charged to nobody, not even the next day; `memory` (a memory call) grows the memory allowance of that site day the same way
  *   (`memory_usage`, `usage_records.memory_micro`) and never touches the other two; `balance` debits the whole charge to the ledger (`usage`), which may
  *   take the balance below zero. `forgiven_micro` is everything of the cost not charged.
+ * - Web searches (agents/tools/web/hold.ts: `agent_runs.web_searches`, `web_micro`, held before each engine call): their
+ *   fixed price is part of the cost and is charged in full, outside the model's clip — the model part at most the hold
+ *   less them —, whatever became of the reply; the usage record keeps both. None: everything as above.
  * - Appends the `usage_records` row and zeroes the run's `hold_micro`.
  * - Learns: a reply (purpose `reply`) whose input estimate admission recorded (`input_estimate`, `ratio_key`) and whose
  *   usage was reported teaches its model's ratio once (`learnRatio`, which never throws and never holds this up). Nothing
