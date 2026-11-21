@@ -77,7 +77,7 @@ describe("the DeepSeek engine", () => {
   it("the results: the first six with an https address, titles and snippets cleaned, the page's age kept; the vendor's queries and site names dropped", async () => {
     const results = [
       result(1, { url: "http://plain.example.com/1" }),
-      result(2, { title: "标题‮见 https://evil.example/x @alice" }),
+      result(2, { title: "标题\u202e见 https://evil.example/x @alice" }),
       result(3, { url: "https://u:p@creds.example.com/" }),
       result(4, { snippet: "字".repeat(400) }),
       result(5, { page_age: "not a date" }),

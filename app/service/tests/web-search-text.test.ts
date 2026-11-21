@@ -84,7 +84,7 @@ describe("what a result shows the model", () => {
   });
 
   it("a title: one line, no bidirectional control, at most 200 characters (then an ellipsis)", () => {
-    expect(cleanTitle("新闻‮标题\n第二行")).toBe("新闻标题 第二行");
+    expect(cleanTitle("新闻\u202e标题\n第二行")).toBe("新闻标题 第二行");
     const long = cleanTitle("长".repeat(250));
     expect(Array.from(long)).toHaveLength(201);
     expect(long.endsWith("…")).toBe(true);
