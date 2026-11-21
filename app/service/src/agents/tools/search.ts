@@ -259,10 +259,18 @@ function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { res
   // What anyone wrote of what is shown is read for numbers they typed before any is minted (refs.ts `RunRefs.plant`): the
   // results' numbers skip them, and one minted earlier in the run that someone typed here is never cited.
   for (const { result } of shown) for (const said of [result.text, result.who, result.where ?? "", result.file?.name ?? ""]) scope.refs.plant(said);
-  const results = shown.map(({ result, at, attachmentId }) => ({
-    ...result,
-    ref: scope.refs.message(at.conversationId, at.seq),
-    ...(result.file && attachmentId !== null ? { file: { ref: scope.refs.file(attachmentId, at), name: result.file.name } } : {}),
-  }));
-  return { results, refs: shown.map((d) => d.at), more };
+  // Past the largest number a token holds none is handed out (refs.ts `MAX_NUMBER`): the results stop there, `more`
+  // saying some were left out, and a file past it is shown with no number of its own.
+  const results: Result[] = [];
+  for (const { result, at, attachmentId } of shown) {
+    const ref = scope.refs.message(at.conversationId, at.seq);
+    if (ref === null) {
+      more = true;
+      break;
+    }
+    const fileRef = result.file && attachmentId !== null ? scope.refs.file(attachmentId, at) : null;
+    const { file: _file, ...rest } = result;
+    results.push({ ...rest, ref, ...(result.file && fileRef !== null ? { file: { ref: fileRef, name: result.file.name } } : {}) });
+  }
+  return { results, refs: shown.slice(0, results.length).map((d) => d.at), more };
 }

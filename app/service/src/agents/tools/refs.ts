@@ -1,5 +1,8 @@
 import { CITES_MAX, type Cite, type MessageRef } from "../../messages/lookups.ts";
 import { withoutMarkPlaced } from "../runtime/prompt.ts";
+import { CLOSE, fileNumber, INSIDE_MAX, MAX_NUMBER, OPEN, pendingStart, beginsToken, tokenRef } from "./tokens.ts";
+
+export { fileNumber } from "./tokens.ts";
 
 /**
  * The numbers a reply's model is given for what its tools and its context show it (README "Agents and runs", Tools in a
@@ -11,9 +14,10 @@ import { withoutMarkPlaced } from "../runtime/prompt.ts";
  * text as a citation. A number someone typed is never one of the run's (`plant`): every token-shaped string in what the
  * run is shown that its model did not write — what anyone wrote in its context and system text, a file's text, every
  * tool result — is read for its number as it arrives, numbering skips every number so read (`〔m1〕…〔m8〕` typed: the
- * run's finds start at m9), and one minted before it was read is never cited (`citable`). One per plan of a reply run, in
- * memory, held by the port from `begin` until the run is finished or released (port-impl.ts). A number is minted once
- * per thing, in the order things are first numbered.
+ * run's finds start at m9), and one minted before it was read is never cited (`citable`). Numbers go up to the largest a
+ * token holds, `MAX_NUMBER` (999999, tokens.ts): past it nothing is minted (`message` and `file` give null, and the
+ * thing is shown without one). One per plan of a reply run, in memory, held by the port from `begin` until the run is
+ * finished or released (port-impl.ts). A number is minted once per thing, in the order things are first numbered.
  */
 export class RunRefs {
   private readonly messages = new Map<string, string>();
@@ -24,7 +28,12 @@ export class RunRefs {
   /** Every number someone typed, token-shaped, in what the run was shown (`plant`): never one of the run's. */
   private readonly planted = new Set<string>();
   /** The last number minted of each kind: the next is the first after it nobody typed. */
-  private readonly last = { m: 0, f: 0 };
+  private readonly last: { m: number; f: number };
+
+  /** `start`: the last number already given of each kind (none: 0), so a test can number near the ceiling. */
+  constructor(start: Partial<Record<"m" | "f", number>> = {}) {
+    this.last = { m: start.m ?? 0, f: start.f ?? 0 };
+  }
 
   /** Reads `text` (what the run is shown that its model did not write) for numbers someone typed (`tokensIn`). */
   plant(text: string): void {
@@ -36,10 +45,11 @@ export class RunRefs {
     return this.targets.has(ref) && !this.planted.has(ref);
   }
 
-  /** The next number of `kind` nobody typed. */
-  private mint(kind: "m" | "f"): string {
+  /** The next number of `kind` nobody typed, or null past `MAX_NUMBER` (none is minted any more). */
+  private mint(kind: "m" | "f"): string | null {
     let n = this.last[kind] + 1;
-    while (this.planted.has(`${kind}${n}`)) n++;
+    while (n <= MAX_NUMBER && this.planted.has(`${kind}${n}`)) n++;
+    if (n > MAX_NUMBER) return null;
     this.last[kind] = n;
     return `${kind}${n}`;
   }
@@ -49,23 +59,25 @@ export class RunRefs {
     return `${OPEN}${number}${CLOSE}`;
   }
 
-  /** The token of message `seq` of `conversationId`: the number it was given, or the next `m`. */
-  message(conversationId: string, seq: number): string {
+  /** The token of message `seq` of `conversationId`: the number it was given, or the next `m` (null: none is left). */
+  message(conversationId: string, seq: number): string | null {
     const key = `${conversationId}|${seq}`;
-    let ref = this.messages.get(key);
-    if (ref === undefined) {
+    let ref = this.messages.get(key) ?? null;
+    if (ref === null) {
       ref = this.mint("m");
+      if (ref === null) return null;
       this.messages.set(key, ref);
       this.targets.set(ref, { kind: "m", ref: { conversationId, seq } });
     }
     return this.token(ref);
   }
 
-  /** The token of attachment `attachmentId` of the message `at`: the number it was given, or the next `f`. */
-  file(attachmentId: string, at: MessageRef): string {
-    let ref = this.files.get(attachmentId);
-    if (ref === undefined) {
+  /** The token of attachment `attachmentId` of the message `at`: the number it was given, or the next `f` (null: none is left). */
+  file(attachmentId: string, at: MessageRef): string | null {
+    let ref = this.files.get(attachmentId) ?? null;
+    if (ref === null) {
       ref = this.mint("f");
+      if (ref === null) return null;
       this.files.set(attachmentId, ref);
       this.byFileRef.set(ref, attachmentId);
       this.targets.set(ref, { kind: "f", ref: { conversationId: at.conversationId, seq: at.seq } });
@@ -73,7 +85,7 @@ export class RunRefs {
     return this.token(ref);
   }
 
-  /** The attachment `ref` names, as the file tool may be passed it (`fileNumber`: `f1` or `〔f1〕`), or null: one this run never gave. */
+  /** The attachment `ref` names, as the file tool may be passed it (`fileNumber`: `f1`, `〔f1〕`, `f01`, `〔ｆ１〕`), or null: one this run never gave. */
   fileOf(ref: string): string | null {
     return this.byFileRef.get(fileNumber(ref)) ?? null;
   }
@@ -84,31 +96,6 @@ export class RunRefs {
   }
 }
 
-/** A token's brackets. */
-const OPEN = "〔";
-const CLOSE = "〕";
-
-/**
- * A file number as the file tool may be passed it, made one form (so that one file is one call, runtime/loop.ts): its
- * spaces gone, lower case, without its brackets — `f1`, `〔f1〕` and `〔 F1 〕` are `f1`. Anything else is left as it is.
- */
-export function fileNumber(ref: string): string {
-  let s = ref.replace(/\s+/g, "").toLowerCase();
-  if (s.startsWith(OPEN) && s.endsWith(CLOSE)) s = s.slice(OPEN.length, -CLOSE.length);
-  return s;
-}
-
-/** The longest inside a token-shaped string may have: a letter, six digits, and spaces around them. */
-const INSIDE_MAX = 16;
-
-/** What a token-shaped string holds between its brackets: `m` or `f` in either case, one to six digits, spaces around each. */
-const INSIDE = /^\s*([mf])\s*([0-9]{1,6})\s*$/i;
-
-/** How one begins — `〔`, `〔m`, `〔m1`, spaces and case as `INSIDE` allows them. */
-const BEGINNING = /^〔\s*(?:[mf]\s*(?:[0-9]{1,6}\s*)?)?$/i;
-
-/** Whether `s` (from a `〔`, no `〕` after it) is how a token-shaped string begins (checked on at most `INSIDE_MAX` characters). */
-const beginsToken = (s: string): boolean => s.length <= INSIDE_MAX + 1 && BEGINNING.test(s);
 
 /**
  * Token-shaped strings taken out of a text as it is read, one UTF-16 unit at a time, in time proportional to the text
@@ -137,12 +124,12 @@ class TokenScanner {
       origin.push(from);
     } else if (c === CLOSE && opens.length > 0) {
       const at = opens[opens.length - 1]!;
-      const m = out.length - at - 1 <= INSIDE_MAX ? INSIDE.exec(out.slice(at + 1).join("")) : null;
-      if (m) {
+      const ref = out.length - at - 1 <= INSIDE_MAX ? tokenRef(out.slice(at + 1).join("")) : null;
+      if (ref !== null) {
         out.length = at;
         origin.length = at;
         opens.pop();
-        this.tokens.push({ at, ref: `${m[1]!.toLowerCase()}${m[2]}` });
+        this.tokens.push({ at, ref });
       } else {
         opens.length = 0;
         out.push(c);
@@ -167,14 +154,7 @@ class TokenScanner {
    * another goes once it closes, so the outer one may still close after it.
    */
   pendingFrom(from = 0): number {
-    const { out, opens } = this;
-    let at = out.length;
-    for (let k = opens.length - 1; k >= 0 && opens[k]! >= from; k--) {
-      const end = k === opens.length - 1 ? out.length : opens[k + 1]!;
-      if (end - opens[k]! > INSIDE_MAX + 1 || !beginsToken(out.slice(opens[k]!, end).join(""))) break;
-      at = opens[k]!;
-    }
-    return at;
+    return pendingStart(this.out, this.opens, from);
   }
 
   /** Whether the copy's last open `〔` still begins a token. */
@@ -214,9 +194,13 @@ export const withoutSpanPlaced = (p: Placed, start: number, end: number): Placed
     p.cites.map((c) => (c.at <= start ? c.at : c.at >= end ? c.at - (end - start) : null)),
   );
 
-/** `p` without a group's `mark` (runtime/prompt.ts `withoutMarkPlaced`; `cut`: also what a cut left of it), its cites moved onto what is left. */
-export function withoutMarkFrom(p: Placed, mark: string, cut = false): Placed {
-  const done = withoutMarkPlaced(p.text, mark, p.cites.map((c) => c.at), cut);
+/**
+ * `p` without a group's `mark` (runtime/prompt.ts `withoutMarkPlaced`; `cut`: also what a cut left of it) and, with
+ * `tokens` (a reply offered tools), without every token-shaped string, in the same one pass — so that neither taking out
+ * puts the other together (N-2, N-4) — its cites moved onto what is left. A token taken out here cites nothing.
+ */
+export function withoutMarkFrom(p: Placed, mark: string, cut = false, tokens = false): Placed {
+  const done = withoutMarkPlaced(p.text, mark, p.cites.map((c) => c.at), cut, tokens);
   return replaced(p, done.text, done.places);
 }
 
@@ -259,16 +243,6 @@ function stripped(text: string, places: readonly number[]): { text: string; toke
     if (i < copy.length && !loose.has(i)) out += copy[i];
   }
   return { text: out, tokens: tokens.map((t) => ({ ...t, at: shift[t.at]! })), places: moved.map((p) => shift[p]!) };
-}
-
-/**
- * `p` without any token-shaped string that a step after `takeCites` put together (agents/conversation.ts: taking out a
- * group's mark, N-2), as `takeCites` takes them out but citing nothing; its cites moved with the text, and trimmed.
- */
-export function withoutTokensFrom(p: Placed): Placed {
-  if (!p.text.includes(OPEN)) return p;
-  const done = stripped(p.text, p.cites.map((c) => c.at));
-  return trimPlaced(replaced(p, done.text, done.places));
 }
 
 /**

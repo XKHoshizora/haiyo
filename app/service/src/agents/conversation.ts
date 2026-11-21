@@ -17,7 +17,7 @@ import { RunNotRunning } from "./runtime/port.ts";
 import { withoutMarkPlaced } from "./runtime/prompt.ts";
 import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
 import { forgetSummaries } from "./summary/store.ts";
-import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, withoutTokensFrom, type Placed, type RunRefs } from "./tools/refs.ts";
+import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
 import {
   agentLimit,
   assertModelChoice,
@@ -305,14 +305,13 @@ export async function postAsAgent(
   const thought = Array.from(reasoning);
   if (thought.length > REASONING_MAX) reasoning = thought.slice(0, REASONING_MAX).join("").trimEnd();
   // In a group the run's mark goes last, from no more than is kept — from the end of what was cut for length also what
-  // the cut left of the mark or of a label —; then a token shape (N-2), and a block, that taking it out put together.
+  // the cut left of the mark or of a label — and, from a reply offered tools, every token shape in the same one pass, so
+  // that neither taking out puts the other together (N-2, N-4); then a block that it put together.
   const thoughtCut = reply.truncated || thought.length > REASONING_MAX;
   if (mark !== null) {
-    placed = trimPlaced(withoutMarkFrom(placed, mark, truncated));
-    if (refs) placed = withoutTokensFrom(placed);
+    placed = trimPlaced(withoutMarkFrom(placed, mark, truncated, refs !== null));
     placed = withoutUnfinishedBlockPlaced(placed);
-    reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut).text.trim();
-    if (refs) reasoning = withoutTokensFrom({ text: reasoning, cites: [] }).text;
+    reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut, refs !== null).text.trim();
   }
   const text = placed.text;
   // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted.

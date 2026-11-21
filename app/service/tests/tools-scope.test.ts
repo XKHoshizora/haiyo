@@ -233,6 +233,16 @@ describe("a group reply never sees past its asker's line", () => {
     expect((byText.output as { results: unknown[] }).results).toEqual([{ ref: "〔m1〕", who: "mia｜群成员", when: expect.any(String), text: "@scope_bot 看看这个" }]);
   });
 
+  it("N-6: numbering stops at 999999, the largest number a token holds: past it no result is handed out, and the search says more were left out", async () => {
+    const w = await world();
+    for (const i of [1, 2, 3]) await say(w.ned, w.a, `天花板-n6 第${i}条`);
+    await say(w.mia, w.a, "@scope_bot 找找");
+    const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs({ m: 999_998 }), heardTo: await conversationSeq(w.a), mark: null };
+    const out = (await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "天花板-n6" } }, new AbortController().signal)).output as { more: boolean; results: Array<{ ref: string }> };
+    expect([out.results.map((r) => r.ref), out.more]).toEqual([["〔m999999〕"], true]);
+  });
+
   it("nothing written after the reply began is found (heardTo), however well it matches", async () => {
     const w = await world();
     await say(w.mia, w.a, "@scope_bot 蓝鲸计划在哪？");

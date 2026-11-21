@@ -379,12 +379,15 @@ interface MessageRow {
   proposal_field: string | null;
 }
 
+/** A label's number, when there is one (none past the largest a token holds: refs.ts `MAX_NUMBER`). */
+const withRef = (ref: string | null): { ref?: string } => (ref === null ? {} : { ref });
+
 /** An attachment of message `seq` of `conversationId` as the context shows it; with `refs` (a reply offered tools), with its number. */
 const toAttachment = (a: AttachmentRef, seq: number, conversationId: string, refs: RunRefs | null): ContextAttachment => ({
   id: a.id,
   name: a.name,
   image: a.inline === true,
-  ...(refs ? { ref: refs.file(a.id, { conversationId, seq }) } : {}),
+  ...withRef(refs?.file(a.id, { conversationId, seq }) ?? null),
 });
 
 

@@ -454,9 +454,9 @@ describe("a reply offered tools keeps no token-shaped string, wherever it ends u
       scope.refs.message(g, said);
       scope.refs.message(g, also);
     };
-    const reply = async (text: string) => {
+    const reply = async (text: string, reasoning?: string) => {
       await say(mia, g, "@owen_bot 查一下");
-      gateway.callTools([{ name: "search", input: { query: "周" } }]).reply(text);
+      gateway.callTools([{ name: "search", input: { query: "周" } }]).reply(text, reasoning === undefined ? undefined : { reasoning });
       expect(await toolWorker().worker.runOnce()).toBe(true);
       return (await messages(g)).filter((m) => m.sender === agent.id).at(-1)!.body;
     };
@@ -473,5 +473,8 @@ describe("a reply offered tools keeps no token-shaped string, wherever it ends u
     // N-2: a token shape that taking the mark out put together (`〔m` + the mark + `1〕`) goes too, citing nothing.
     const joined = await reply(`看〔m${MARK}1〕这里`);
     expect([joined.text, joined.cites]).toEqual(["看这里", undefined]);
+    // N-4: nor the mark that taking out such a token puts together (its halves around it), in the text or the reasoning.
+    const halves = await reply(`看mkz〔m${MARK}1〕q9w这里`, `想mkz〔m${MARK}1〕q9w好`);
+    expect([halves.text, halves.reasoning, halves.cites]).toEqual(["看这里", "想好", undefined]);
   });
 });

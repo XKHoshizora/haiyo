@@ -4,7 +4,7 @@ import { CONTINUE_TURN, endWithPerson } from "../src/agents/runtime/context.ts";
 import { groupSystemText, notesPassage, withoutMarkPlaced } from "../src/agents/runtime/prompt.ts";
 import { ReplyStream } from "../src/agents/runtime/stream.ts";
 import { excerpt } from "../src/agents/tools/search.ts";
-import { fileNumber, RunRefs, takeCites, TokenHold, withoutTokensFrom } from "../src/agents/tools/refs.ts";
+import { fileNumber, RunRefs, takeCites, TokenHold, withoutMarkFrom } from "../src/agents/tools/refs.ts";
 import { CITES_MAX } from "../src/messages/lookups.ts";
 import { MESSAGE_TEXT_MAX } from "../src/messages/send.ts";
 import { expectLinear, LOADED_TIMEOUT_MS } from "./helpers/linear.ts";
@@ -68,7 +68,7 @@ describe("what a reply's token-shaped strings become", () => {
   });
 
   it("what is not token-shaped stays as written", () => {
-    const kept = "〔注〕〔m1·k7q2〕〔m1234567〕〔x1〕〔m〕〔1〕〔m-1〕【m1】〔ｍ1〕";
+    const kept = "〔注〕〔m1·k7q2〕〔m1234567〕〔x1〕〔m〕〔1〕〔m-1〕【m1】〔ｍ1·k7〕";
     expect(takeCites(kept, numbered())).toEqual({ text: kept, cites: [] });
   });
 
@@ -86,7 +86,7 @@ describe("what a reply's token-shaped strings become", () => {
   it("past the first 20 none is kept; the same number twice is cited twice", () => {
     const refs = numbered(25);
     const many = Array.from({ length: 22 }, (_, i) => `〔m${i + 1}〕`).join("");
-    const { text, cites } = takeCites(`a〔m26〕〔m0〕〔m01〕〔f2〕b〔m2〕c${many}`, refs);
+    const { text, cites } = takeCites(`a〔m26〕〔m0〕〔m00〕〔f2〕b〔m2〕c${many}`, refs);
     expect(text).toBe("abc");
     expect(cites).toHaveLength(CITES_MAX);
     expect(cites.slice(0, 2)).toEqual([
@@ -204,16 +204,76 @@ describe("a number someone typed is never this run's (N-1)", () => {
   });
 });
 
-describe("what taking out the mark puts together (N-2)", () => {
-  it("a token shape it put together goes too, the cites' places moving with the text", () => {
-    expect(withoutTokensFrom({ text: "看〔m1〕这里", cites: [{ at: 1, kind: "m", ref: at(1) }, { at: 5, kind: "m", ref: at(2) }] })).toEqual({
+describe("the group's mark and every token shape in one pass (N-2, N-4)", () => {
+  const mark = "k7f2ab";
+  it("neither puts the other together: 看〔m<mark>1〕这里 and 看<half>〔m<mark>1〕<half>这里 both leave 看这里, the cites' places moving with the text", () => {
+    expect(withoutMarkFrom({ text: `看〔m${mark}1〕这里`, cites: [] }, mark, false, true)).toEqual({ text: "看这里", cites: [] });
+    expect(
+      withoutMarkFrom({ text: `看k7f〔m${mark}1〕2ab这里`, cites: [{ at: 1, kind: "m", ref: at(1) }, { at: 17, kind: "m", ref: at(2) }] }, mark, false, true),
+    ).toEqual({
       text: "看这里",
       cites: [
         { at: 1, kind: "m", ref: at(1) },
         { at: 1, kind: "m", ref: at(2) },
       ],
     });
-    expect(withoutTokensFrom({ text: "好", cites: [] })).toEqual({ text: "好", cites: [] });
+    // A label put together by taking out a token goes as a label does.
+    expect(withoutMarkFrom({ text: `前〔${mark} 阿〔m1〕哲｜你的主人〕后`, cites: [] }, mark, false, true).text).toBe("前后");
+    // Without the token rule (a reply offered no tools): the mark alone.
+    expect(withoutMarkFrom({ text: `看〔m${mark}1〕这里`, cites: [] }, mark, false, false).text).toBe("看〔m1〕这里");
+  });
+
+  it("the reasoning the same way", () => {
+    expect(withoutMarkPlaced(`想k7f〔m${mark}1〕2ab好`, mark, [], false, true).text).toBe("想好");
+  });
+
+  it("linear in the text however the two are nested into each other", { timeout: LOADED_TIMEOUT_MS }, () => {
+    // Halves of the mark around a token that holds the mark, d deep; tokens around the mark, d deep: each goes only once
+    // what is inside it has gone.
+    const halves = (n: number): string => "k7f".repeat(n / 6) + `〔m${mark}1〕` + "2ab".repeat(n / 6);
+    const tokens = (n: number): string => "〔m".repeat(n / 4) + mark + "1〕".repeat(n / 4);
+    for (const make of [halves, tokens]) {
+      expectLinear({
+        n: Math.floor(MESSAGE_TEXT_MAX / 4 / 12) * 12,
+        make,
+        run: (text) => {
+          if (withoutMarkFrom({ text, cites: [] }, mark, false, true).text !== "") throw new Error("something was left");
+        },
+      });
+    }
+  });
+});
+
+describe("one matcher, normalised: full-width letters and digits, leading zeros (N-5)", () => {
+  it("read as the number they write: planted, taken out and cited alike, and read_file takes them", () => {
+    const typed = new RunRefs();
+    typed.plant("〔f01〕〔ｆ２〕〔 F3 〕");
+    expect([typed.file("a", at(1)), typed.file("b", at(2))]).toEqual(["〔f4〕", "〔f5〕"]);
+    const refs = numbered();
+    expect(takeCites("甲〔ｍ１〕乙〔m02〕丙〔Ｆ０１〕丁", refs)).toEqual({
+      text: "甲乙丙丁",
+      cites: [
+        { at: 1, kind: "m", ref: at(1) },
+        { at: 2, kind: "m", ref: at(2) },
+        { at: 3, kind: "f", ref: at(90) },
+      ],
+    });
+    for (const ref of ["〔ｆ１〕", "f01", "〔 Ｆ 0 1 〕"]) expect([ref, refs.fileOf(ref)]).toEqual([ref, "att-1"]);
+    expect(fileNumber("〔ｆ０２〕")).toBe("f2");
+  });
+});
+
+describe("the largest number a token holds: 999999 (N-6)", () => {
+  it("numbering stops there: past it nothing is minted, what has a number keeps it, and a longer number is no token", () => {
+    const refs = new RunRefs({ m: 999_998, f: 999_999 });
+    expect(refs.message("c", 1)).toBe("〔m999999〕");
+    expect(refs.message("c", 2)).toBeNull();
+    expect(refs.message("c", 1)).toBe("〔m999999〕");
+    expect(refs.file("a", at(1))).toBeNull();
+    const typed = new RunRefs({ m: 999_997 });
+    typed.plant("〔m999999〕");
+    expect([typed.message("c", 1), typed.message("c", 2)]).toEqual(["〔m999998〕", null]);
+    expect(takeCites("〔m1000000〕", refs).text).toBe("〔m1000000〕");
   });
 });
 

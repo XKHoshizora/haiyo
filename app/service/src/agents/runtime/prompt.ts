@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
 import { estimateTokens } from "../../metering/tokens.ts";
+import { INSIDE_MAX, pendingStart, tokenRef } from "../tools/tokens.ts";
 
 /**
  * The system text of a reply (spec 6.5 "发给模型的内容"). In the Agent's own conversation (`systemPrompt`): the site's
@@ -516,10 +517,13 @@ export function withoutMark(text: string, mark: string | null): string {
 /**
  * `withoutMark` of `text` with `places` in it (ascending UTF-16 offsets: a reply's citations) moved onto what is left —
  * a place inside what goes is where it went — and, with `cut` (the text was cut for length), as `withoutMarkAtCut`
- * leaves it at its end, a place past the end at the end.
+ * leaves it at its end, a place past the end at the end. With `tokens` (a reply offered tools, agents/conversation.ts)
+ * every token-shaped string goes too (agents/tools/tokens.ts, the one matcher), in the same one pass, with what may have
+ * begun one at the very end: neither taking out can put the other together (`看〔m<mark>1〕这里`, and the mark's halves
+ * around such a token, both leave `看这里`).
  */
-export function withoutMarkPlaced(text: string, mark: string, places: readonly number[], cut = false): { text: string; places: number[] } {
-  const { kept, origin } = markScan(text, mark);
+export function withoutMarkPlaced(text: string, mark: string, places: readonly number[], cut = false, tokens = false): { text: string; places: number[] } {
+  const { kept, origin } = markScan(text, mark, tokens);
   let out = kept.join("");
   if (cut) out = cutMarkTail(out, mark);
   // Each kept character's place, in UTF-16, and where it stood before: a place goes to the count of what was kept before it.
@@ -536,9 +540,12 @@ export function withoutMarkPlaced(text: string, mark: string, places: readonly n
 /**
  * Where the mark is taken out of a text, in one pass (`withoutMark`): what is kept is built up as the text is read, each
  * character with where it stood (`origin`, UTF-16); a mark it comes to end with is dropped at once, and a label carrying
- * it as its `〕` comes.
+ * it as its `〕` comes. With `tokens`, a token-shaped string is dropped as its `〕` comes too (from the last `〔` that
+ * may still open one — a line break ends no token, a `〕` that closes none ends them all, as agents/tools/refs.ts
+ * `TokenScanner` reads them), and so is what may have begun one at the very end; since both are dropped from what is
+ * kept, either one that the other's going puts together goes as well, each character looked at a bounded number of times.
  */
-function markScan(text: string, mark: string): { kept: string[]; origin: number[] } {
+function markScan(text: string, mark: string, tokens = false): { kept: string[]; origin: number[] } {
   const wanted = Array.from(mark);
   const last = wanted.at(-1)!;
   const kept: string[] = [];
@@ -548,19 +555,35 @@ function markScan(text: string, mark: string): { kept: string[]; origin: number[
    * whether what came after it had the separator and the mark (a label after it that was taken out took its own along).
    */
   const opens: Array<{ at: number; separated: boolean; marked: boolean }> = [];
+  /** With `tokens`: where in `kept` each `〔` stands that may still open a token. */
+  const tokenOpens: number[] = [];
   const endsWithMark = (): boolean => kept.length >= wanted.length && wanted.every((c, i) => kept[kept.length - wanted.length + i] === c);
+  /** What is kept cut back to `n` characters, and every open that stood in what went with it. */
+  const cutTo = (n: number): void => {
+    kept.length = n;
+    origin.length = n;
+    while (opens.length > 0 && opens.at(-1)!.at >= n) opens.pop();
+    while (tokenOpens.length > 0 && tokenOpens.at(-1)! >= n) tokenOpens.pop();
+  };
   let at = 0;
   for (const c of text) {
     const open = opens.at(-1);
+    const tokenAt = tokenOpens.at(-1);
     if (c === CLOSE && open !== undefined && open.separated && open.marked) {
-      kept.length = open.at;
-      origin.length = open.at;
-      opens.pop();
+      cutTo(open.at);
+    } else if (c === CLOSE && tokens && tokenAt !== undefined && kept.length - tokenAt - 1 <= INSIDE_MAX && tokenRef(kept.slice(tokenAt + 1).join("")) !== null) {
+      cutTo(tokenAt);
     } else if (c === OPEN) {
       kept.push(c);
       origin.push(at);
       opens.push({ at: kept.length - 1, separated: false, marked: false });
-    } else if (c === CLOSE || hasVerticalSpace(c)) {
+      if (tokens) tokenOpens.push(kept.length - 1);
+    } else if (c === CLOSE) {
+      kept.push(c);
+      origin.push(at);
+      opens.length = 0;
+      tokenOpens.length = 0;
+    } else if (hasVerticalSpace(c)) {
       kept.push(c);
       origin.push(at);
       opens.length = 0;
@@ -569,13 +592,14 @@ function markScan(text: string, mark: string): { kept: string[]; origin: number[
       origin.push(at);
       if (c === SEPARATOR && open !== undefined) open.separated = true;
       if (c === last && endsWithMark()) {
-        kept.length -= wanted.length;
-        origin.length = kept.length;
-        if (open !== undefined) open.marked = true;
+        cutTo(kept.length - wanted.length);
+        const inside = opens.at(-1);
+        if (inside !== undefined) inside.marked = true;
       }
     }
     at += c.length;
   }
+  if (tokens) cutTo(pendingStart(kept, tokenOpens));
   return { kept, origin };
 }
 

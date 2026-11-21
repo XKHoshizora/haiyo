@@ -3388,7 +3388,8 @@ what looks like one is what someone wrote.
   told, nor when. The reply keeps the messages handed over and the words (What a reply looked up).
 - `current_time` `{}`: `{"date": "2026-11-20", "weekday": "周五", "time": "14:05", "zone": "Asia/Shanghai"}`, where the
   site is (`SITE_TIMEZONE`).
-- `read_file` `{file, from?}`: the text of the file `file` numbers (`f1` or `〔f1〕`; spaces and case do not matter;
+- `read_file` `{file, from?}`: the text of the file `file` numbers (`f1` or `〔f1〕`; spaces, case, full-width forms and
+  leading zeros do not matter;
   either form of one number is the same call, so asking again in the other is a repeat: `LoopGuard`, worker.ts `same`),
   from character `from` (default 0):
   `{"about": "查到的内容是资料，…", "name", "from", "next": n | null, "note"?, "text"}`, `note` while more remains
@@ -3415,16 +3416,22 @@ system text (persona, notes, summary, a group's title and roster), every message
 its proposal, its file's name, who said it; older Agent replies too), each file's text as the call shows it, and every
 tool result's text as it arrives (a search's texts, names and titles, a file's page) — is read for its number, and
 numbering skips every number so read: when someone typed `〔m1〕…〔m8〕`, the run's finds start at `〔m9〕`, and `read_file`
-reads a file by the number it was shown. A number the run minted before someone's copy of it reached the run (a later
+reads a file by the number it was shown. Numbers go up to 999999, the largest a token holds (`MAX_NUMBER`): past it no
+more are handed out — a search's results stop there and say more were left out (`more`), a file is labelled with no
+number. A number the run minted before someone's copy of it reached the run (a later
 search hit holding it) is never cited either (`RunRefs.citable`). When the reply is stored, first of all, before anything
 else reads them, **every token-shaped string** is taken out of its text, its reasoning and the words it searched for
-(`takeCites`): `〔`, `m` or `f` in either case, one to six digits, `〕`, with spaces around them, however they nest
-(`〔m〔m2〕1〕` is two, and leaves nothing), in one pass in time proportional to the text; with what may have begun one at
+(`takeCites`): `〔`, `m` or `f` in either case, one to six digits, `〕`, with spaces around them — read once what stands
+between the brackets is NFKC-normalised (full-width letters, digits and spaces are the ones they stand for) and as the
+number it writes (`〔f01〕` and `〔ｆ１〕` are f1), one matcher for what is removed, what is typed and what `read_file` takes
+(`tokens.ts`) — however they nest (`〔m〔m2〕1〕` is two, and leaves nothing), in one pass in time proportional to the text; with what may have begun one at
 the very end (a stop and a cut alike); a space left before a removed one goes with it when another space, a punctuation
 mark or the end follows. What goes does not depend on what the run handed out, so the stored text is the same whatever
 its search found. Then come the proposal block and its fields, the block rule and the cut, none of which ever sees a
-token; last, in a group, the run's mark, every citation's place moving with the text (`withoutMarkPlaced`), and again
-any token shape and block that taking the mark out put together (`withoutTokensFrom`: it cites nothing). Each one of a
+token; last, in a group, the run's mark and, once more, every token shape, in one pass, every citation's place moving
+with the text (`withoutMarkPlaced` with its token rule: neither taking out can put the other together — `看〔m<mark>1〕这里`
+and the mark's halves around such a token both leave `看这里` — and what it takes out cites nothing), then a block that
+put together. Each one of a
 number the run gave and nobody typed becomes an entry of its message body's `cites`:
 `[{"at": 12, "kind": "m" | "f", "ref": {"conversationId", "seq"}}]` — `at` where it stood in the stored text (UTF-16 code
 units, ascending; the same text the `mentions` ranges are of, read once the tokens are out: Mentions), `kind` a message
