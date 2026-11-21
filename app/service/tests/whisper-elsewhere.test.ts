@@ -1184,6 +1184,88 @@ describe("fix round 1", () => {
   });
 });
 
+describe("fix round 2", () => {
+  /** Every transaction's statements while `work` runs, one list per transaction (app.deps.db.tx, wrapped). */
+  async function recordingTxs<T>(work: () => Promise<T>): Promise<{ result: T; txs: string[][] }> {
+    const real = app.deps.db.tx;
+    const txs: string[][] = [];
+    app.deps.db.tx = ((fn: (t: unknown) => Promise<unknown>) =>
+      real.call(app.deps.db, (t: any) => {
+        const seen: string[] = [];
+        txs.push(seen);
+        return fn(new Proxy(t, { get: (o, p) => (p === "query" ? (text: unknown, params?: unknown) => (seen.push(String(text)), o.query(text, params)) : Reflect.get(o, p)) }));
+      })) as typeof real;
+    try {
+      return { result: await work(), txs };
+    } finally {
+      app.deps.db.tx = real;
+    }
+  }
+
+  it("M-9: removing someone reads none of her whispers in the removal's transaction (nothing of its time depends on them); she is still pushed hers that pointed there, after it, on her own queue", async () => {
+    const w = await world();
+    // C is mia's: she says something there about 蓝鲸计划, and later takes olive out.
+    const c = await group(app, w.mia, "丙群", [w.owner, w.ned]);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${c}/members`, { principalId: w.agent.id })).status).toBe(201);
+    await say(w.mia, c, "丙群里说：蓝鲸计划改到后天");
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [made] = await whispersOf(w.owner.id, w.g);
+    const socket = await connect(app, w.owner);
+    const { result, txs } = await recordingTxs(() => api(app, w.mia, "DELETE", `/api/conversations/${c}/members/${w.owner.id}`));
+    expect(result.status).toBe(200);
+    const removal = txs.find((seen) => seen.some((s) => /update memberships set left_seq/.test(s)));
+    expect(removal).toBeDefined();
+    // No read of where her whispers point (the remover's request waits for nothing of hers).
+    expect(removal!.filter((s) => /jsonb_build_object\('conversationId'/.test(s))).toEqual([]);
+    const frame = await socket.next((e) => e.type === "whisper" && e.whisper.id === made!.id);
+    expect(frame.whisper.detail.hits.map((h: WireHit) => h.where)).not.toContain("丙群");
+  });
+
+  /** A whisper whose told reply failed: the Agent's slot in G, as its owner reads it (`GET …/runs`). */
+  async function failedTold() {
+    const w = await world();
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [whisper] = await whispersOf(w.owner.id, w.g);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
+    gateway.fail("provider_unavailable", { status: 502 });
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const told = (await runsOf(w.agent.id, w.g)).at(-1)!;
+    return { w, whisper: whisper!, told };
+  }
+  const slotOf = async (w: World, who: Actor) => (await api(app, who, "GET", `/api/conversations/${w.g}/runs`)).json;
+  const ownSlot = async (w: World) => (await slotOf(w, w.owner)).runs.find((e: { agentId: string }) => e.agentId === w.agent.id)?.run;
+
+  it("M-10: a failed told reply is offered 重试 (retryable) only while its whisper reads open: after 不用 its owner is pushed the slot without it, and reads it so; another member reads byte for byte what they read before", async () => {
+    const { w, whisper, told } = await failedTold();
+    const socket = await connect(app, w.owner);
+    expect(await ownSlot(w)).toMatchObject({ id: told.id, status: "failed", retryable: true });
+    const before = JSON.stringify(await slotOf(w, w.mia));
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/decline`)).status).toBe(200);
+    const pushed = await socket.next((e) => e.type === "run" && e.run?.id === told.id);
+    expect(pushed.run).toMatchObject({ status: "failed", retryable: false });
+    expect(await ownSlot(w)).toMatchObject({ id: told.id, status: "failed", retryable: false });
+    expect(JSON.stringify(await slotOf(w, w.mia))).toBe(before);
+    // The race answer stays: a retry asked anyway is refused stale.
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(409);
+  });
+
+  it("M-10: a day after the whisper was made its failed told reply is not offered 重试 — before the sweep (read so) and once the sweep expires it (pushed so)", async () => {
+    const { w, whisper, told } = await failedTold();
+    const socket = await connect(app, w.owner);
+    await db.query("update whispers set created_at = now() - interval '25 hours' where id = $1", [whisper.id]);
+    expect(await ownSlot(w)).toMatchObject({ id: told.id, status: "failed", retryable: false });
+    const from = socket.events.length;
+    await changeSweep(app.deps, app.deps.config, app.log, app.realtime);
+    const pushed = await socket.next((e) => e.type === "run" && e.run?.id === told.id, { from });
+    expect(pushed.run).toMatchObject({ status: "failed", retryable: false });
+  });
+
+  it("M-10: a failed told reply whose whisper still reads open is offered 重试 as any failed reply is", async () => {
+    const { w, told } = await failedTold();
+    expect(await ownSlot(w)).toMatchObject({ id: told.id, status: "failed", retryable: true });
+  });
+});
+
 describe("the service's own hook", () => {
   it("a reply on the app's worker whispers too (the toolbox the app builds carries the hook)", async () => {
     const w = await world();

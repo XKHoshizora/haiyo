@@ -129,12 +129,14 @@ export function registerConversationRoutes(app: FastifyInstance): void {
     async (req) => {
       const me = await requirePrincipal(req);
       await changeLimit(req, me.id);
-      const { change, ended, whispers } = await db.tx((t) => removeMember(t, req.params.id, me.id, req.params.principalId));
+      const { change, ended, whispers, personLeft } = await db.tx((t) => removeMember(t, req.params.id, me.id, req.params.principalId));
       // The replies of the Agents that left end (as a pause ends them) before the answer.
       announceEnded(app.agentPort, ended);
       conversations.publish(change, req.log);
-      // The whispers that leaving expired, each to its owner (after the leaving's own pushes).
+      // The whispers that leaving expired, each to its owner (after the leaving's own pushes); and the person who left, her
+      // whispers elsewhere that point here, as they read now (found on her own queue: the hub's).
       pushWhispers(app.realtime, whispers);
+      if (personLeft) app.realtime.pushWhispersPointingInto(personLeft, req.params.id);
       return { ok: true as const };
     },
   );

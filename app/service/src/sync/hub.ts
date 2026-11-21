@@ -11,6 +11,7 @@ import { toWireForReaders, type ReadEvents, type ReadMarker } from "../messages/
 import { handleOf } from "../principals/store.ts";
 import { liveSessions } from "../session.ts";
 import type { SocialEvents } from "../social/events.ts";
+import { whispersPointingInto } from "../whispers/store.ts";
 import { wireWhispersOf, type WireWhisper } from "../whispers/wire.ts";
 import type { TicketOwner } from "./tickets.ts";
 
@@ -77,6 +78,8 @@ type Task =
   | { kind: "charged"; principalId: string; seq: number }
   /** Whisper `whisperId` of `principalId`'s, as it is when delivered (`pushWhisper`). */
   | { kind: "whisper"; principalId: string; whisperId: string }
+  /** `principalId`'s whispers that point into `conversationId`, found and pushed when delivered (`pushWhispersPointingInto`). */
+  | { kind: "pointing"; principalId: string; conversationId: string }
   /**
    * Run `runId` of the conversation: `run` to the owner its row names (none: the owner is not told), its state to a
    * group's others. `activity` (`pushActivity`): what its tool is doing, with both — dropped if `wanted` says no by then.
@@ -287,6 +290,16 @@ export class Hub {
     this.enqueue(`${WHISPER_QUEUE}${ownerId}`, { kind: "whisper", principalId: ownerId, whisperId: whisper.id });
   }
 
+  /**
+   * After `ownerId` left `conversationId` (or was removed): her whispers elsewhere that point into it, found and pushed to
+   * her as they read then (without those hits) — on her own queue, when she is connected, so the leaving's request waits
+   * for none of it and nothing is read for her while she is away (her next sync reads them so anyway).
+   */
+  pushWhispersPointingInto(ownerId: string, conversationId: string): void {
+    const owner = ownerId.toLowerCase();
+    this.enqueue(`${WHISPER_QUEUE}${owner}`, { kind: "pointing", principalId: owner, conversationId });
+  }
+
   /** Registers an upgraded socket; closes the principal's oldest socket if this is one too many. */
   attach(ws: WebSocket, owner: TicketOwner): Connection {
     const principalId = owner.principalId.toLowerCase();
@@ -418,7 +431,16 @@ export class Hub {
         return this.pushCharged(conversationId, task.principalId, task.seq);
       case "whisper":
         return this.pushWhisperNow(task.principalId, task.whisperId);
+      case "pointing":
+        return this.pushPointingNow(task.principalId, task.conversationId);
     }
+  }
+
+  /** `pushWhispersPointingInto`'s delivery: each of her whispers that point there, as it reads now, when she is connected. */
+  private async pushPointingNow(principalId: string, conversationId: string): Promise<void> {
+    const [owner] = this.connectedAmong([principalId]);
+    if (!owner) return;
+    for (const w of await whispersPointingInto(this.deps.db, conversationId, [owner])) await this.pushWhisperNow(owner, w.id);
   }
 
   /** `pushWhisper`'s delivery: the whisper as its owner (`principalId`) may read it now, when they are connected. */

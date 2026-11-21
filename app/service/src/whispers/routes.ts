@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { tellFromWhisper } from "../agents/runs.ts";
+import { tellFromWhisper, toldSlotOf } from "../agents/runs.ts";
 import type { Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
@@ -96,6 +96,11 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
         const [now] = await wireWhispersOf(db, me.id, [outcome.id], wire);
         app.realtime.pushWhisper(outcome);
         (afterCommit as (() => void) | void)?.();
+        // 不用 on a whisper whose told reply failed: that slot no longer offers 重试 — told to its owner alone.
+        if (to === "declined" && outcome.kind === "found_elsewhere") {
+          const slot = await toldSlotOf(db, outcome, wire.elsewhereTtlHours);
+          if (slot) app.realtime.pushRunToOwner(slot.conversationId, slot.run);
+        }
         return now ?? (await wireWhispers(db, [outcome], wire))[0]!;
       },
     );

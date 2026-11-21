@@ -16,7 +16,7 @@ import {
   type Membership,
 } from "./store.ts";
 import { appendSystem } from "./system.ts";
-import { expireOnLeave, whispersPointingInto, type Whisper } from "../whispers/store.ts";
+import { expireOnLeave, type Whisper } from "../whispers/store.ts";
 import { forgetSummaries } from "../agents/summary/store.ts";
 
 const forbidden = () => new AppError(403, "forbidden");
@@ -158,7 +158,7 @@ export async function removeMember(
   conversationId: string,
   actorId: string,
   targetId: string,
-): Promise<{ change: Change; ended: EndedRuns; whispers: Whisper[] }> {
+): Promise<{ change: Change; ended: EndedRuns; whispers: Whisper[]; personLeft: string | null }> {
   const target = await principalOf(t, targetId);
   const { conversation, membership } = await lockGroup(t, conversationId, actorId);
   const leaving = targetId === actorId;
@@ -192,14 +192,13 @@ export async function removeMember(
   if (people.length === 0) await t.query("update conversations set closed_at = now() where id = $1", [conversationId]);
   const ended = await endRunsInGroup(t, conversationId, agent ? [targetId] : along.map((m) => m.principalId));
   // The whispers there of whoever left, and about the Agents that left, expire (src/whispers/): pushed to their owners after commit.
-  const expired = await expireOnLeave(t, conversationId, [...out]);
-  // And a person who left can no longer read what was said here: her whispers elsewhere that point here are pushed to her
-  // after commit too, read as they are then — without those hits (expired, with none left).
-  const pointing = agent ? [] : await whispersPointingInto(t, conversationId, [targetId]);
-  const whispers = [...expired, ...pointing.filter((p) => !expired.some((e) => e.id === p.id))];
+  const whispers = await expireOnLeave(t, conversationId, [...out]);
   // An Agent that left loses its rolling summary of the group (agents/summary/), here, with its membership.
   await forgetSummaries(t, conversationId, [...out]);
-  return { change: { messages, conversations: [{ conversationId, principalIds: members.map((m) => m.principalId) }] }, ended, whispers };
+  // A person who left can no longer read what was said here: `personLeft`, whose whispers elsewhere that point here are
+  // found and pushed to her after commit, on her own queue (sync/hub.ts `pushWhispersPointingInto`) — nothing of hers is
+  // read here, so nothing of this transaction's time depends on her whispers.
+  return { change: { messages, conversations: [{ conversationId, principalIds: members.map((m) => m.principalId) }] }, ended, whispers, personLeft: agent ? null : targetId };
 }
 
 /** Only the creator renames. Renaming to the current title changes nothing and announces nothing. */

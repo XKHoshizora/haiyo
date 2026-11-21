@@ -72,6 +72,7 @@ import {
   pushBudgetReached,
   refusedAtAdmission,
   RUN_COLUMNS,
+  withTellable,
   toWireRun,
   type Announced,
   type FollowUp,
@@ -1155,6 +1156,7 @@ export class DbAgentPort implements AgentPort {
       if (state.rows[0]?.status !== "running") {
         const current = await t.query<RunRow>(`select ${RUN_COLUMNS} from agent_runs r where r.id = $1`, [run.id]);
         if (!current.rows[0]) return null;
+        await withTellable(t, current.rows, config.whispers.elsewhereTtlHours);
         const ended: Announced = { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(current.rows[0]) };
         return { ended, followed: followUpOf(null), interrupted: false, reply: null, reminder: null };
       }
@@ -1186,6 +1188,7 @@ export class DbAgentPort implements AgentPort {
           where r.id = $1 returning ${RUN_COLUMNS}`,
         [run.id, final.status, error, resetsAt, droppedOnEnd(final), state.rows[0].told],
       );
+      await withTellable(t, updated.rows, config.whispers.elsewhereTtlHours);
       const ended: Announced = { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(updated.rows[0]!) };
       const next = followUpSeq(state.rows[0], agent, final);
       const followed =
@@ -1343,6 +1346,7 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
   );
   if (reply === null) return { runs: [], told: noneTold(), charged: null };
   const { agent, conversationId } = reply;
+  await withTellable(t, updated.rows, config.whispers.elsewhereTtlHours);
   const ended: Announced = { ownerId: agent.ownerId, conversationId, run: toWireRun(updated.rows[0]!) };
   // A failed run is followed by nothing on its own (its retry answers everything) — but a told reply's noted calls, which
   // were never part of what failed, are followed up at once (`keepsNothingNoted`).

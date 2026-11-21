@@ -12,7 +12,7 @@ import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
 import { agentModelOf, lockAgent, type AgentRow } from "./store.ts";
-import { mayTell } from "../whispers/store.ts";
+import { mayTell, tellableRuns } from "../whispers/store.ts";
 
 /**
  * Reply runs (`agent_runs` rows of purpose `reply`) as the routes and the send path see them: the trigger, retry, stop,
@@ -47,6 +47,37 @@ const NOT_RETRYABLE: ReadonlySet<string> = new Set(["provider_rejected", "addres
 export const retryable = (r: Pick<RunRow, "status" | "error">, modelUsable = r.error !== "model_gone"): boolean =>
   r.status === "failed" && modelUsable && !NOT_RETRYABLE.has(r.error ?? "");
 
+/**
+ * Each failed one of `rows` that is a told reply gets `tellable` (whispers/store.ts `tellableRuns`, THE rule), in place: so
+ * its owner's wire offers 重试 only while its whisper may be told again. One statement; others are left as they are.
+ */
+export async function withTellable<R extends RunRow>(q: Queryable, rows: readonly R[], ttlHours: number): Promise<readonly R[]> {
+  const failed = rows.filter((r) => r.status === "failed");
+  if (failed.length === 0) return rows;
+  const tellable = await tellableRuns(q, failed.map((r) => r.id), ttlHours);
+  for (const r of failed) if (tellable.has(r.id)) r.tellable = tellable.get(r.id)!;
+  return rows;
+}
+
+/**
+ * The run slot its owner holds of whisper `w`'s told reply, when that is the Agent's latest reply there and it failed: as
+ * it reads now (`tellable` by THE rule), to push to the owner alone (`Hub.pushRunToOwner`) once the whisper stops reading
+ * open — answered 不用, expired — so 重试 is no longer offered on her screen. Null when there is no such slot.
+ */
+export async function toldSlotOf(q: Queryable, w: { id: string; ownerId: string }, ttlHours: number): Promise<{ conversationId: string; run: WireRun } | null> {
+  const { rows } = await q.query<RunRow & { conversation_id: string }>(
+    `select ${RUN_COLUMNS}, r.conversation_id from agent_runs r
+      where r.whisper_id = $1 and r.owner_id = $2 and r.status = 'failed'
+        and r.id = (select l.id from agent_runs l where l.agent_id = r.agent_id and l.conversation_id = r.conversation_id and l.purpose = 'reply'
+                     order by l.created_at desc, l.id desc limit 1)`,
+    [w.id, w.ownerId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  await withTellable(q, [row], ttlHours);
+  return { conversationId: row.conversation_id, run: toWireRun(row) };
+}
+
 /** A run on the wire (README "Wire shapes"). */
 export const wireRunSchema = z.object({
   id: z.string(),
@@ -63,6 +94,11 @@ export interface RunRow {
   error: string | null;
   resets_at: Date | null;
   dismissed_at: Date | null;
+  /**
+   * A told reply (`告诉他们`): whether its whisper may be told again (whispers/store.ts `tellableRuns`, THE rule), read where
+   * its owner is told of it failed (`withTellable`); false keeps it from being offered 重试. Absent: not asked (any other run).
+   */
+  tellable?: boolean | null;
 }
 
 /** Columns of `agent_runs r` in the shape of `RunRow`. */
@@ -70,14 +106,15 @@ export const RUN_COLUMNS = "r.id, r.status, r.error, r.resets_at, r.dismissed_at
 
 /**
  * `retryable`: by its one rule (`retryable`, with the Agent's model as `modelUsable` says, where known), never for a run
- * that did not fail. `resetsAt` only for `no_quota` on a free-tier model.
+ * that did not fail — nor for a told reply whose whisper may not be told again (`tellable` false: declined, expired, a day
+ * old, told; its retry would be refused `stale_whisper`). `resetsAt` only for `no_quota` on a free-tier model.
  */
 export function toWireRun(r: RunRow, modelUsable?: boolean): WireRun {
   return {
     id: r.id,
     status: r.status,
     ...(r.error === null ? {} : { error: r.error }),
-    retryable: retryable(r, modelUsable),
+    retryable: retryable(r, modelUsable) && r.tellable !== false,
     ...(r.error === "no_quota" && r.resets_at ? { resetsAt: r.resets_at.toISOString() } : {}),
   };
 }
@@ -128,7 +165,7 @@ export interface GroupRunEntry {
  * there in its current stay (`latestInStay`) has a state for the reader (`groupRunState`), in `agentId` order; the run
  * itself on the reader's own Agents' entries only, `retryable` by the Agent's model as it is now (`retryable`).
  */
-export async function groupRuns(q: Queryable, readerId: string, conversationId: string, config: Pick<Config, "siteModels">): Promise<GroupRunEntry[]> {
+export async function groupRuns(q: Queryable, readerId: string, conversationId: string, config: Pick<Config, "siteModels" | "whispers">): Promise<GroupRunEntry[]> {
   if ((await peekConversation(q, conversationId))?.type !== "group" || !(await currentMembership(q, conversationId, readerId))) throw notFound();
   const { rows } = await q.query<RunRow & Parameters<typeof agentModelOf>[0] & { agent_id: string; owner_id: string; lane: Lane }>(
     `select m.principal_id as agent_id, p.owner_id, ${RUN_COLUMNS}, r.lane, a.model_source, a.site_model_id, a.provider_id, a.provider_model
@@ -143,6 +180,8 @@ export async function groupRuns(q: Queryable, readerId: string, conversationId: 
   const mine = rows.filter((row) => row.owner_id === readerId);
   const usable = new Map(mine.map((row, i) => [row.agent_id, i]));
   const now = await modelsUsable(q, config, readerId, mine.map(agentModelOf));
+  // The reader's own failed told replies: offered 重试 only while their whispers may be told again (THE rule).
+  await withTellable(q, mine.filter((row) => row.status === "failed"), config.whispers.elsewhereTtlHours);
   const entries: GroupRunEntry[] = [];
   for (const row of rows) {
     const owns = row.owner_id === readerId;

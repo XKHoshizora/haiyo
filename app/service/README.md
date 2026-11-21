@@ -1483,7 +1483,9 @@ hit left (`expired`). So a tell that posts nothing leaves nothing to repair: the
 `告诉他们` tells once more. Every change of its told reply is announced as any run's, and the announcement brings you the
 whisper as it is then (to you alone: no frame, count or key reaches anyone else). When you can no longer read a
 conversation one of your open whispers points into (you leave it or are removed), that whisper is pushed to you again
-once the leaving has committed, read as it is then: without those hits, or `expired` when none is left. `told`,
+once the leaving has committed, read as it is then: without those hits, or `expired` when none is left — found on your
+own queue of whisper pushes while you are connected, never in the leaving itself (whoever removed you waits for nothing
+of yours). `told`,
 `declined` and `expired` are final: **one rule decides whether a told reply may begin** — the whisper reads open (or that
 told reply is the one telling it) — and every way one starts keeps it: `告诉他们`, a retry of a failed told reply (409
 `stale_whisper` otherwise), and the told reply's own beginning (one that begins while its whisper is declined or expired
@@ -1518,8 +1520,9 @@ follow-up. (`让 Agent 停下`, a group member's halt, does
 not touch a told reply at all — it is your own, a person's call: it ends the runs Agents' messages called for and the
 replies nobody asked for, and a follow-up of noted calls that only Agents' messages made is such a run.) A retry of a told
 reply that failed keeps its whisper (it reads telling again), and tells again what it covered, with nothing noted; it is
-offered while the told reply is the Agent's latest run there and its whisper reads open (409 `stale_whisper` once you
-answered 不用 or it expired). `告诉他们` is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
+offered (`retryable`, on your wire only) while the told reply is the Agent's latest run there and its whisper reads open —
+by the same one rule: once you answer 不用 or it expires (a day old included), it is not offered, and its slot is pushed to
+you again without it (409 `stale_whisper` stays the answer to a retry that crosses that). `告诉他们` is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
 `busy_run` (a reply of it queued or running there), 429 `rate_limited` (your own replies a minute) — each leaves the
 whisper open, to answer again. `不用` (decline) does nothing more. Vault notes are not involved: hits are messages.
 `tools_off` — a reply found its provider model unable to use tools and the model was marked so

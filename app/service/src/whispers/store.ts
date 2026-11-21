@@ -268,6 +268,15 @@ export async function readableHits(q: Queryable, ids: readonly string[]): Promis
 }
 
 /**
+ * SQL, THE rule (`mayTell`) for whisper `w` and the told reply `ownRun` (an SQL expression: a run id): `w` reads open, or
+ * `ownRun` is the told reply of it that is telling it now (queued or running).
+ */
+const mayTellSql = (w: string, ttlHours: number, ownRun: string): string =>
+  `(${readsOpenSql(w, ttlHours)}
+    or (${w}.status = 'open' and not ${toldSql(w)} and ${readableHitSql(w)}
+        and exists (select 1 from agent_runs o where o.id = ${ownRun} and o.whisper_id = ${w}.id and o.owner_id = ${w}.owner_id and o.status in ('queued', 'running'))))`;
+
+/**
  * THE rule for whether a told reply of `found_elsewhere` whisper `w` may begin now — a press of 告诉他们
  * (`resolveWhisper`), a retry of its failed told reply (agents/runs.ts `retryInGroup`) and the told reply's own beginning
  * (agents/tools/elsewhere.ts `toldHits`) all ask this, and nothing else: it reads open (stored open, not told, not
@@ -281,10 +290,7 @@ export async function mayTell(
   { ttlHours, ownRunId = null }: { ttlHours: number; ownRunId?: string | null },
 ): Promise<{ may: boolean; telling: boolean; told: boolean }> {
   const { rows } = await q.query<{ may: boolean; telling: boolean; told: boolean }>(
-    `select (${readsOpenSql("w", ttlHours)}
-             or (w.status = 'open' and not ${toldSql("w")} and ${readableHitSql("w")}
-                 and exists (select 1 from agent_runs o where o.id = $3::uuid and o.whisper_id = w.id and o.owner_id = w.owner_id and o.status in ('queued', 'running')))) as may,
-            ${tellingSql("w")} as telling, ${toldSql("w")} as told
+    `select ${mayTellSql("w", ttlHours, "$3::uuid")} as may, ${tellingSql("w")} as telling, ${toldSql("w")} as told
        from whispers w where w.id = $1 and w.owner_id = $2 and w.kind = 'found_elsewhere'`,
     [w.id, w.ownerId, ownRunId],
   );
@@ -292,10 +298,29 @@ export async function mayTell(
 }
 
 /**
+ * Of the told replies among `runIds` (`agent_runs.whisper_id` set; any other is left out), whether THE rule (`mayTell`)
+ * lets each tell its whisper again — what decides whether a failed one is offered 重试 (agents/runs.ts `toWireRun`'s
+ * `retryable`, its owner's wire only): not once its whisper is declined, expired, a day old or told, or gone. One statement.
+ */
+export async function tellableRuns(q: Queryable, runIds: readonly string[], ttlHours: number): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  if (runIds.length === 0) return out;
+  const { rows } = await q.query<{ id: string; may: boolean }>(
+    `select r.id, coalesce((select ${mayTellSql("w", ttlHours, "r.id")} from whispers w where w.id = r.whisper_id and w.owner_id = r.owner_id and w.kind = 'found_elsewhere'), false) as may
+       from agent_runs r where r.id = any($1::uuid[]) and r.whisper_id is not null`,
+    [runIds],
+  );
+  for (const r of rows) out.set(r.id, r.may);
+  return out;
+}
+
+/**
  * The live `found_elsewhere` whispers of `ownerIds` (stored open, not told) any of whose references points into
- * `conversationId`: in the transaction that ends their access there (conversations/groups.ts `removeMember`), what to push
- * to them once it commits — read as they are then, without the hits they can no longer read (Redesign D, fix round 1). The
- * owner's open whispers are found by the partial index on them (`whispers_open_owner_conversation_idx`); they are few.
+ * `conversationId`: once a leaving or a removal that ended their access there has committed, what to push to them — read as
+ * they are then, without the hits they can no longer read (Redesign D, fix round 1). Asked on the owner's own queue of
+ * whisper pushes (sync/hub.ts `pushWhispersPointingInto`), never in the leaving's transaction: what it costs depends on
+ * nobody's whispers but hers, and nobody waits for it. Her open whispers are found by the partial index on them
+ * (`whispers_open_owner_conversation_idx`); they are few.
  */
 export async function whispersPointingInto(q: Queryable, conversationId: string, ownerIds: readonly string[]): Promise<Whisper[]> {
   if (ownerIds.length === 0) return [];
