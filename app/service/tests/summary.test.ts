@@ -1301,7 +1301,9 @@ describe("final review", () => {
     const sent = (summaryCalls()[0]!.messages[0]!.parts[0] as { text: string }).text;
     const input = inputOf(summaryCalls()[0]!);
     expect(input.summary).toEqual(sections({ 人物与称呼: [{ said_by: "p1", text: "说自己在〔m1〕群里" }], 定下的事: [{ said_by: null, text: "定下的事〔f3〕" }] }));
-    expect(input.people.p1).toEqual(IN_MEMBER("ff〔f1〕m", "ffm"));
+    // The name as the roster labels any name (`labelName`: its brackets are the roster's own), nothing taken out for a citation.
+    expect(input.people.p1).toEqual(IN_MEMBER(labelName("ff〔f1〕m", "ffm"), "ffm"));
+    expect(labelName("ff〔f1〕m", "ffm")).toContain("f1");
     expect(input.messages.find((l) => l.text === `见〔m11〕和〔 F2 〕${mid(11)}`)).toEqual({ said_by: "p1", text: `见〔m11〕和〔 F2 〕${mid(11)}` });
     expect(sent).toContain("〔m1〕");
     expect((await summaryOf(w.g, w.agent.id))!.items).toEqual(sections({ 人物与称呼: [{ said_by: w.m.id, text: "说自己在群里〔m4〕" }], 说过的事: [{ said_by: w.v.id, text: "说了〔f1〕很多" }] }));

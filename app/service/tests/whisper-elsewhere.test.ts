@@ -8,6 +8,8 @@ import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worke
 import { createElsewhere, ELSEWHERE_HITS_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
 import { createToolbox, SEARCH_MESSAGES, type ToolDeps } from "../src/agents/tools/index.ts";
+import { excerptAt, matchAt } from "../src/agents/tools/search.ts";
+import { QUOTE_MAX_CHARS } from "../src/agents/runtime/context.ts";
 import type { Db } from "../src/db.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
@@ -183,6 +185,23 @@ describe("a search in a group that finds nothing there", () => {
     // The model's whole call, and the reply in the group: nothing of it.
     expect(JSON.stringify(gateway.calls.at(-1))).not.toContain("CANARY-ew");
     expect(JSON.stringify((await api(app, w.mia, "GET", `/api/conversations/${w.g}/messages`)).json)).not.toContain("CANARY-ew");
+  });
+
+  it("a long hit: the place kept (`at`) is where the words are in the text as stored, and what she is shown is cut there — what looks like a citation before them is text, kept, and moves nothing", async () => {
+    const w = await world();
+    // Before the words, a person's typed numbers (a hundred characters of them) and more: the line is cut for its weight.
+    const said = `前面${"〔m1〕说过".repeat(60)}蓝鲸计划改在周五${"后面的话".repeat(60)}`;
+    const seq = await say(w.ned, w.b, said);
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [made] = await whispersOf(w.owner.id, w.g);
+    const ref = made!.body.detail!.hits.find((h) => h.conversationId === w.b && h.seq === seq)!;
+    expect(ref.at).toBe(matchAt(said, "蓝鲸计划"));
+    expect(ref.at).toBeGreaterThan(300);
+    const hit = (await wireOf(w.owner, w.g, made!.id))!.detail!.hits.find((h) => h.who === "ned")!;
+    expect(hit.text).toBe(Array.from(excerptAt(said, ref.at)).slice(0, QUOTE_MAX_CHARS).join(""));
+    expect(hit.text).toContain("蓝鲸计划改在周五");
+    expect(hit.text).toContain("〔m1〕说过");
+    expect(hit.text.startsWith("…")).toBe(true);
   });
 
   it("the model's tool result is the same, byte for byte, whether anything was found elsewhere or not", async () => {
