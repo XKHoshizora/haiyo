@@ -106,6 +106,14 @@ describe("what a search gives", () => {
     expect(agent.id).toBeTruthy();
   });
 
+  it("the newest hits by number whatever their digits (F6): of 105, the newest first, across 100", async () => {
+    const { owner, own } = await owned();
+    for (let i = 1; i <= 105; i++) await postAs(own, owner.id, `第${i}次：馄饨店在桥边`, new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString());
+    const out = await searchOnce(owner, own, "馄饨店在哪？", { query: "馄饨店" });
+    expect(out.more).toBe(true);
+    expect(out.results.map((r: any) => r.text)).toEqual(["馄饨店在哪？", ...[105, 104, 103, 102, 101, 100, 99].map((i) => `第${i}次：馄饨店在桥边`)]);
+  });
+
   it("a long message comes back as at most 200 weight around what matched, marked where it was cut", async () => {
     const { owner, own } = await owned();
     await postAs(own, owner.id, `${"前文很长。".repeat(100)}关键词在这里${"后文也很长。".repeat(100)}`);

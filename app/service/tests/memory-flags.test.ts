@@ -227,7 +227,8 @@ describe("listeners", () => {
   it("what the judge is shown starts after the latest join among the listeners", async () => {
     const w = await world();
     await agentOf(w.owner, "memo_a", w.g);
-    await say(w.member, w.g, "加入之前的话");
+    // The two joins stand on either side of 10 and 100 (F6): the latest is the larger number, not the larger text.
+    for (let i = 0; i < 100; i++) await say(w.member, w.g, `加入之前的话 ${i}`);
     const other = await signUp(app, "other");
     await join(w.g, other.id);
     await agentOf(other, "memo_b", w.g);

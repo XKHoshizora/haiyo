@@ -350,9 +350,12 @@ describe("the owner learns of it", () => {
     const w = await world();
     const made: Whisper[] = [];
     for (let i = 0; i < 5; i++) {
+      // Their places cross 10 and 100 (F6): pages by `afterSeq` go by number.
+      for (let k = 0; k < (i === 2 ? 8 : i === 4 ? 90 : 0); k++) await say(w.mia, w.g, `其间 ${i}.${k}`);
       made.push(await whisper(w, { body: { text: `第 ${i} 条`, actions: ["dismiss"] } }));
       await say(w.mia, w.g, `然后 ${i}`);
     }
+    expect([made[0]!.afterSeq < 10, made[2]!.afterSeq >= 10, made[3]!.afterSeq < 100, made[4]!.afterSeq >= 100]).toEqual([true, true, true, true]);
     // Two at the same place.
     const twin = await whisper(w, { body: { text: "同一处", actions: ["dismiss"] } });
     const twin2 = await whisper(w, { body: { text: "同一处 2", actions: ["dismiss"] } });

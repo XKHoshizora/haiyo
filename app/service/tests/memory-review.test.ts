@@ -209,11 +209,12 @@ describe("reviewInput", () => {
     expect(await run(0)).toBeNull();
     await api(app, w.owner, "POST", `/api/conversations/${w.conv}/topic`);
     expect(await run(0)).toBeNull();
-    for (let i = 1; i <= 45; i++) await say(w.owner, w.conv, i === 45 ? "长".repeat(600) : `第${i}句`);
+    // Seqs that cross 10 and 100 (F6): the newest 40 by number, shown oldest first.
+    for (let i = 1; i <= 105; i++) await say(w.owner, w.conv, i === 105 ? "长".repeat(600) : `第${i}句`);
     const input = (await run(0))!;
     const lines = JSON.parse(input.user).conversation as Array<{ who: string; text: string }>;
     expect(lines).toHaveLength(40);
-    expect(lines[0]).toEqual({ who: "owner", text: "第6句" });
+    expect(lines.slice(0, -1)).toEqual(Array.from({ length: 39 }, (_, i) => ({ who: "owner", text: `第${66 + i}句` })));
     expect(lines.at(-1)).toEqual({ who: "owner", text: "长".repeat(500) });
     expect(input.user).not.toContain("开始了新话题");
     const after = (await run(input.upToSeq))!;

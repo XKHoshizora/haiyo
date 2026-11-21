@@ -227,22 +227,24 @@ describe("in-conversation search", () => {
   it("pagination with nextBefore walks back through all hits without repeats", async () => {
     const [a, b] = await people("alice", "bob");
     const { conversationId: dm } = await befriend(app, a, b);
-    for (let i = 1; i <= 12; i++) await say(a, dm, i % 3 === 0 ? `filler ${i}` : `needle ${i}`);
+    // Seqs that cross 10 and 100 (F6): newest first by number, never as text.
+    for (let i = 1; i <= 105; i++) await say(a, dm, i % 3 === 0 ? `filler ${i}` : `needle ${i}`);
+    const needles = Array.from({ length: 105 }, (_, i) => 105 - i).filter((s) => s % 3 !== 0);
     const seen: number[] = [];
     let before = "";
-    for (let page = 0; page < 10; page++) {
-      const r = await inConv(b, dm, "needle", `&limit=3${before}`);
+    for (let page = 0; page < 20; page++) {
+      const r = await inConv(b, dm, "needle", `&limit=7${before}`);
       expect(r.status).toBe(200);
-      expect(r.json.messages.length).toBeLessThanOrEqual(3);
+      expect(r.json.messages.length).toBeLessThanOrEqual(7);
       seen.push(...r.json.messages.map((m: any) => m.seq));
       if (r.json.nextBefore === null) break;
       expect(typeof r.json.nextBefore).toBe("number");
       before = `&before=${r.json.nextBefore}`;
     }
-    expect(seen).toEqual([11, 10, 8, 7, 5, 4, 2, 1]);
+    expect(seen).toEqual(needles);
     // An exact fit ends with null, not an empty extra page.
-    const exact = await inConv(b, dm, "needle", "&limit=8");
-    expect(exact.json.messages).toHaveLength(8);
+    const exact = await inConv(b, dm, "needle", `&limit=${needles.length}`);
+    expect(exact.json.messages).toHaveLength(needles.length);
     expect(exact.json.nextBefore).toBeNull();
   });
 
@@ -383,23 +385,27 @@ describe("global search", () => {
     const [a, b] = await people("alice", "bob");
     const g1 = await group(a, "one", [b]);
     const g2 = await group(a, "two", [b]);
-    await say(a, g1, "tie one");
-    await say(a, g1, "tie two");
-    await say(a, g2, "tie three");
-    await say(a, g2, "tie four");
+    // The ties stand at seqs that cross 10 (in g1) and 100 (in g2) (F6): within one conversation they go by seq, as numbers.
+    for (let i = 0; i < 7; i++) await say(a, g1, `pad ${i}`);
+    for (let i = 0; i < 4; i++) await say(a, g1, `tie one ${i}`);
+    for (let i = 0; i < 97; i++) await say(a, g2, `pad ${i}`);
+    for (let i = 0; i < 4; i++) await say(a, g2, `tie two ${i}`);
     await db.query("update messages set created_at = '2026-01-01T00:00:00.123456Z' where body->>'text' like 'tie %'");
     const all = keys(await global(b, "tie"));
-    expect(all).toHaveLength(4);
+    expect(all).toHaveLength(8);
+    const seqsIn = (g: string) => all.filter((k) => k.startsWith(`${g}#`)).map((k) => Number(k.split("#")[1]));
+    for (const g of [g1, g2]) expect(seqsIn(g)).toEqual([...seqsIn(g)].sort((x, y) => y - x));
+    expect([Math.min(...seqsIn(g1)) < 10, Math.max(...seqsIn(g1)) >= 10, Math.min(...seqsIn(g2)) < 100, Math.max(...seqsIn(g2)) >= 100]).toEqual([true, true, true, true]);
     const walked: string[] = [];
     let before = "";
-    for (let page = 0; page < 10; page++) {
+    for (let page = 0; page < 20; page++) {
       const r = await global(b, "tie", `&limit=1${before}`);
       walked.push(...keys(r));
       if (r.json.nextBefore === null) break;
       before = `&before=${r.json.nextBefore}`;
     }
     expect(walked).toEqual(all);
-    expect(new Set(walked).size).toBe(4);
+    expect(new Set(walked).size).toBe(8);
   });
 
   it("the cursor does not reveal how many messages exist site-wide (two users see unrelated cursors)", async () => {

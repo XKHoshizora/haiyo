@@ -538,12 +538,13 @@ describe.each([false, true])("what the judgement model is asked (memory %s)", (m
   it("the transcript holds the last 15 messages that are not notices", async () => {
     const w = await world();
     await agentOf(w.owner, "anna", w.g);
-    for (let i = 1; i <= 17; i++) await say(w.member, w.g, `第${i}条`);
+    // Seqs that cross 10 and 100 (F6): the last 15 by number.
+    for (let i = 1; i <= 104; i++) await say(w.member, w.g, `第${i}条`);
     await api(app, w.owner, "PATCH", `/api/conversations/${w.g}`, { title: "新名字" });
-    const asked = await say(w.member, w.g, "第18条");
+    const asked = await say(w.member, w.g, "第105条");
     await decide(w.g, asked);
     const shown = judge.calls[0]!.state.split("\n").slice(1);
-    expect(shown).toEqual(Array.from({ length: 15 }, (_, i) => `${i === 14 ? "【新】" : ""}member：第${i + 4}条`));
+    expect(shown).toEqual(Array.from({ length: 15 }, (_, i) => `${i === 14 ? "【新】" : ""}member：第${i + 91}条`));
   });
 
   it("the messages since the options were last judged with an answer are marked new: a covered one too, one judged already not again", async () => {

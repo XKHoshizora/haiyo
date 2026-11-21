@@ -50,6 +50,16 @@ describe("applySync", () => {
     expect(again.messages[G1]).toBeUndefined();
   });
 
+  it("keeps a conversation's messages in seq order by number whatever their digits (F6): older pages across 100 and 10, pushes after them", () => {
+    let s = M.applySync(M.initial(), syncOf([direct(D1, ANN, { lastSeq: 105 })], range(D1, 101, 105)));
+    s = M.applyOlder(s, D1, { messages: range(D1, 95, 100), nextBefore: 95 });
+    s = M.applyOlder(s, D1, { messages: range(D1, 8, 94), nextBefore: 8 });
+    s = M.applyOlder(s, D1, { messages: range(D1, 1, 7), nextBefore: null });
+    s = M.applyMessage(s, wire(D1, 106, ANN)).state;
+    expect(seqs(s, D1)).toEqual(Array.from({ length: 106 }, (_, i) => i + 1));
+    expect(s.conversations[D1]).toMatchObject({ hasOlder: false });
+  });
+
   it("replaces held messages when the new window does not join up with them (no hole is kept)", () => {
     let s = M.applySync(M.initial(), syncOf([direct(D1, ANN, { lastSeq: 3 })], range(D1, 1, 3)));
     s = M.applySync(s, syncOf([direct(D1, ANN, { lastSeq: 100 })], range(D1, 71, 100)));

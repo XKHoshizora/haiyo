@@ -239,10 +239,11 @@ describe("GET /api/sync", () => {
   it("returns the last 30 visible messages per conversation, ascending", async () => {
     const [a, b] = await people("alice", "bob");
     const { conversationId: dm } = await befriend(app, a, b);
-    await bulk(dm, a.id, 35);
+    // Seqs that cross 10 and 100 (F6): the newest 30 are 86..115, in number order (as text, 100..115 would come first).
+    await bulk(dm, a.id, 115);
     const s = (await sync(b)).json;
-    expect(s.messages.map((m: any) => m.seq)).toEqual(Array.from({ length: 30 }, (_, i) => i + 6));
-    expect(s.conversations[0]).toMatchObject({ lastSeq: 35, unread: 35 });
+    expect(s.messages.map((m: any) => m.seq)).toEqual(Array.from({ length: 30 }, (_, i) => i + 86));
+    expect(s.conversations[0]).toMatchObject({ lastSeq: 115, unread: 115 });
   });
 });
 
@@ -421,6 +422,17 @@ describe("websocket pushes", () => {
     expect(so.events[joined]!.message).toMatchObject({ seq: seq + 1, kind: "system", system: { event: "member_joined" } });
     expect(so.events.slice(0, joined).filter(about(g))).toEqual([]);
     expect(JSON.stringify(so.events)).not.toContain("hello team");
+  });
+
+  it("a burst of messages whose seqs cross 10 and 100, sent at once, is pushed in seq order, each once (F6: what the hub fans out is ordered by number)", async () => {
+    const [a, b] = await people("alice", "bob");
+    const { conversationId: dm } = await befriend(app, a, b);
+    const sb = await connect(app, b);
+    const sent = await Promise.all(Array.from({ length: 105 }, (_, i) => say(a, dm, `burst ${i}`)));
+    expect(sent.every((r) => r.status === 201)).toBe(true);
+    await sb.waitFor(isMessage(dm, 105));
+    const pushed = sb.events.filter((e) => e.type === "message" && e.message.conversationId === dm).map((e) => e.message.seq);
+    expect(pushed).toEqual(Array.from({ length: 105 }, (_, i) => i + 1));
   });
 
   it("a socket that was open when its owner was removed receives a gone event and then nothing more from that conversation", async () => {

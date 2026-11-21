@@ -140,19 +140,32 @@ describe("sending and reading", () => {
   it("pagination with before walks back through history without gaps or repeats", async () => {
     const [a, b] = await people("alice", "bob");
     const { conversationId: dm } = await befriend(app, a, b);
-    for (let i = 1; i <= 25; i++) await say(i % 2 ? a : b, dm, `n${i}`);
+    // 105 messages: pages that cross 100 and 10 (F6) — ordered and cut by number, never as text.
+    for (let i = 1; i <= 105; i++) await say(i % 2 ? a : b, dm, `n${i}`);
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => i + from);
 
     const page1 = await history(a, dm, "?limit=10");
-    expect(page1.json.messages.map((m: any) => m.seq)).toEqual([16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
-    expect(page1.json.nextBefore).toBe(16);
-    const page2 = await history(a, dm, "?limit=10&before=16");
-    expect(page2.json.messages.map((m: any) => m.seq)).toEqual([6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-    expect(page2.json.nextBefore).toBe(6);
-    const page3 = await history(a, dm, "?limit=10&before=6");
-    expect(page3.json.messages.map((m: any) => m.seq)).toEqual([1, 2, 3, 4, 5]);
-    expect(page3.json.nextBefore).toBeNull();
-    expect(await seqs(a, dm)).toEqual(Array.from({ length: 25 }, (_, i) => i + 1)); // default limit 50
-    expect(await seqs(a, dm, "?limit=100&before=9007199254740991")).toHaveLength(25);
+    expect(page1.json.messages.map((m: any) => m.seq)).toEqual(range(96, 105));
+    expect(page1.json.nextBefore).toBe(96);
+    const page2 = await history(a, dm, "?limit=10&before=96");
+    expect(page2.json.messages.map((m: any) => m.seq)).toEqual(range(86, 95));
+    expect(page2.json.nextBefore).toBe(86);
+    const across = await history(a, dm, "?limit=10&before=16");
+    expect(across.json.messages.map((m: any) => m.seq)).toEqual(range(6, 15));
+    expect(across.json.nextBefore).toBe(6);
+    const last = await history(a, dm, "?limit=10&before=6");
+    expect(last.json.messages.map((m: any) => m.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(last.json.nextBefore).toBeNull();
+    // Walking the whole history back in pages of 7 gives every message once.
+    const walked: number[] = [];
+    for (let before: number | null = 9007199254740991; before !== null; ) {
+      const page = (await history(a, dm, `?limit=7&before=${before}`)).json;
+      walked.unshift(...page.messages.map((m: any) => m.seq));
+      before = page.nextBefore;
+    }
+    expect(walked).toEqual(range(1, 105));
+    expect(await seqs(a, dm)).toEqual(range(56, 105)); // default limit 50
+    expect(await seqs(a, dm, "?limit=100&before=9007199254740991")).toEqual(range(6, 105));
   });
 
   it("seq, before and limit must be bounded positive integers", async () => {

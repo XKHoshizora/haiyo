@@ -182,8 +182,11 @@ describe("the call", () => {
 
   it("at most 20 flagged messages (the oldest dropped), one window of the group with 3 messages of context at each end and no message twice; all the flags read are deleted", async () => {
     const w = await world("f");
+    // The flagged ones stand at seqs that cross 100 (F6): the newest 20 by number, never as text.
+    for (let i = 1; i <= 80; i++) await say(w.third, w.g, `填充${i}`);
     const seqs: number[] = [];
     for (let i = 1; i <= 25; i++) seqs.push(await say(w.mia, w.g, `消息${i}`));
+    expect([seqs[0]! < 100, seqs.at(-1)! >= 100]).toEqual([true, true]);
     for (const s of seqs) await db.query("insert into memory_flags (agent_id, conversation_id, seq, kind) values ($1, $2, $3, 'hearsay')", [w.agent.id, w.g, s]);
     const { hearsayInput } = await import("../src/memory/hearsay.ts");
     const input = (await hearsayInput(db, { id: w.agent.id, ownerId: w.owner.id }, w.g, { config: app.deps.config }))!;
