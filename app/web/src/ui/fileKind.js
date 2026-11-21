@@ -1,6 +1,6 @@
 // What a file card shows of a file besides its size: which icon (its kind), and its name cut for a narrow card.
 
-/** The kinds a file card has an icon for (ui/FileIcon.jsx draws one each). */
+/** The kinds a file card has an icon for (ui/FileCard.jsx draws one each). */
 export const FILE_KINDS = ["pdf", "document", "spreadsheet", "slides", "archive", "audio", "video", "code", "image", "other"];
 
 /** By type, first match wins: a specific type before a family (text/csv is a sheet before text/* is text). */
@@ -36,13 +36,16 @@ function extensionOf(name) {
 }
 
 /**
- * The kind of a file: from its type when that says something (`mime`), else from its extension, else "other". The wire
- * carries no type for an attachment, so in a chat this is mostly the extension; a file still being sent has its own.
+ * The kind of a file: from its extension when that is a known one, else from its type (`mime`), else "other". The
+ * extension goes first because a browser's type can be wrong (a .ts file is video/mp2t on Windows) and because the wire
+ * carries no type for a stored attachment: the same file shows the same icon while it is being sent and after.
  */
 export function fileKind({ mime, name }) {
+  const byName = BY_EXTENSION.get(extensionOf(name));
+  if (byName) return byName;
   const type = String(mime ?? "").toLowerCase();
   for (const [kind, pattern] of BY_MIME) if (pattern.test(type)) return kind;
-  return BY_EXTENSION.get(extensionOf(name)) ?? "other";
+  return "other";
 }
 
 /** An extension longer than this is not taken for one. */

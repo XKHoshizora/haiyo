@@ -42,8 +42,22 @@ describe("fileKind: the icon's kind", () => {
     [undefined, "a.exe", "other"],
   ])("no usable type (%s): %s is %s from its extension", (mime, name, kind) => expect(fileKind({ mime, name })).toBe(kind));
 
-  it("a known type wins over the extension", () => {
-    expect(fileKind({ mime: "application/pdf", name: "x.txt" })).toBe("pdf");
+  it("a known extension wins over the type (a browser's type can be wrong), the type decides when the extension is unknown", () => {
+    expect(fileKind({ mime: "video/mp2t", name: "main.ts" })).toBe("code");
+    expect(fileKind({ mime: "application/pdf", name: "x.txt" })).toBe("code");
+    expect(fileKind({ mime: "application/pdf", name: "报告.unknownext" })).toBe("pdf");
+    expect(fileKind({ mime: "application/pdf", name: "noext" })).toBe("pdf");
+    expect(fileKind({ mime: "audio/x-weird", name: ".hidden" })).toBe("audio");
+  });
+
+  it("every kind has its icon colour in the stylesheet and its class in the app's class list", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { APP_CLASSES } = await import("../src/ui/markdownRules.js");
+    const css = readFileSync("src/styles.css", "utf8");
+    for (const kind of FILE_KINDS) {
+      expect(css, kind).toMatch(new RegExp(String.raw`\.file-icon-${kind}\b[^{]*\{`));
+      expect(APP_CLASSES.has(`file-icon-${kind}`), kind).toBe(true);
+    }
   });
 
   it("every kind the function gives is in the list the icons are drawn for", () => {

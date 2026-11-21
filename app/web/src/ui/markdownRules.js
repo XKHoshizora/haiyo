@@ -131,7 +131,7 @@ export const APP_CLASSES = new Set(
   model-note model-check model-reason model-marks model-mark model-mark-free model-mark-paid model-empty model-foot model-scope side-model
   select-trigger select-label select-pop select-list select-option
   handle-input handle-prefix
-  image-open file-icon file-icon-pdf file-icon-spreadsheet file-icon-slides file-icon-archive file-icon-audio file-icon-video file-icon-other
+  image-open file-icon file-icon-document file-icon-code file-icon-image file-icon-pdf file-icon-spreadsheet file-icon-slides file-icon-archive file-icon-audio file-icon-video file-icon-other
   file-card-text file-card-link file-name file-name-head file-name-tail
   viewer viewer-bar viewer-meta viewer-name viewer-count viewer-actions viewer-btn viewer-stage viewer-img viewer-state viewer-spinner
   viewer-nav viewer-prev viewer-next

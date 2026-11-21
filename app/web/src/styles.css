@@ -590,11 +590,13 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .file-card { display: flex; align-items: center; gap: 12px; width: auto; max-width: min(360px, 100%); }
 .file-card .file-icon { flex: none; color: var(--purple); }
-.file-icon-pdf { color: var(--danger); }
-.file-icon-spreadsheet { color: var(--ok); }
-.file-icon-slides { color: var(--warn); }
-.file-icon-archive, .file-icon-audio, .file-icon-video { color: var(--pending); }
-.file-icon-other { color: var(--ink-3); }
+.file-card .file-icon-pdf { color: var(--danger); }
+.file-card .file-icon-document, .file-card .file-icon-image { color: var(--purple-dark); }
+.file-card .file-icon-spreadsheet { color: var(--ok); }
+.file-card .file-icon-slides { color: var(--warn); }
+.file-card .file-icon-archive, .file-card .file-icon-audio, .file-card .file-icon-video { color: var(--pending); }
+.file-card .file-icon-code { color: var(--ink-2); }
+.file-card .file-icon-other { color: var(--ink-3); }
 .file-card > div, .file-card-text { min-width: 0; flex: 1; }
 /* The name's middle goes with "…" and its end (the extension) stays. */
 .file-name { display: flex; min-width: 0; max-width: 100%; }
