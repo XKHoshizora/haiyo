@@ -585,16 +585,26 @@ describe("holds", () => {
     expect(await admitAt(d2, owner, a.resolved, now)).toMatchObject({ chargeTo: "free" });
     expect(await canStart()).toBe(true);
 
-    // A balance of 1 point: the waiting reply goes on to it, as admission always has once the allowance is all held — the
-    // only call holding against the balance, it starts whatever its hold.
+    // A balance of 1 point does not change it: the allowance is not used up, only all held, so the waiting reply keeps
+    // waiting for it (it is not charged to the balance meanwhile) — behind the calls holding it.
     await grant(db, owner.id, 1_000_000n);
-    expect(await admitAt(r2, owner, b.resolved, now)).toMatchObject({ chargeTo: "balance" });
+    const stillWaiting = await admitAt(r2, owner, b.resolved, now).catch((e: unknown) => e);
+    expect(stillWaiting).toBeInstanceOf(HeldBack);
+    expect((stillWaiting as HeldBack).behind).toEqual(expect.arrayContaining([r1]));
+    expect(await runRow(r2)).toEqual({ source: null, model: null, charge_to: null, hold: "0" });
 
-    // Settled: 0.5 + 2 of the allowance, the last draft its 0.5 left (the rest forgiven), the reply on the balance 2.
+    // A persona draft cannot wait: with the allowance all held and a balance there, it still takes the allowance.
+    const d3 = await runningRun(db, owner.id);
+    expect(await admitAt(d3, owner, a.resolved, now)).toMatchObject({ chargeTo: "free" });
+    await settleAt(d3, { inputTokens: 0, outputTokens: 0 }, { now });
+
+    // Settled: 0.5 + 2 of the allowance, the last draft its 0.5 left (the rest forgiven). The allowance is now truly used
+    // up, so the reply goes on to the balance, as the rule always was then, and settles 2 there.
     await settleAt(r1, { inputTokens: 0, outputTokens: 500 }, { now });
     await settleAt(d1, FULL_USAGE, { now });
     expect(await canStart()).toBe(true);
     await settleAt(d2, FULL_USAGE, { now });
+    expect(await admitAt(r2, owner, b.resolved, now)).toMatchObject({ chargeTo: "balance" });
     await settleAt(r2, FULL_USAGE, { now });
     expect((await api(app, owner, "GET", "/api/usage")).json.free.used).toBe("3");
     expect(await balanceOf(owner.id)).toBe(-1_000_000n);

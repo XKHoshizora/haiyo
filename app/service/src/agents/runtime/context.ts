@@ -86,24 +86,6 @@ export function contextBudget(contextTokens: number, maxOutputTokens: number, sy
   return Math.floor((contextTokens - maxOutputTokens - systemTokens(system, ratio) - reserved) * (1 - CONTEXT_HEADROOM));
 }
 
-/**
- * The person's turn a call ends with when the conversation shown ends with the Agent's own (`endWithPerson`): fixed text,
- * never anything anyone wrote.
- */
-export const CONTINUE_TURN = "（请继续回答上面的问题。）";
-
-/**
- * A call never ends with the Agent's own turn (Task 8 fix 1, X-1: a trailing assistant turn is a prefill to the Anthropic
- * protocol, which current models refuse, and a continuation to older ones): when `messages` ends with one, a person's turn
- * of fixed text (`closing`) is added. The tokens it adds (at ratio 1, as `build` counts), 0 when nothing was added.
- */
-export function endWithPerson(messages: ModelCall["messages"], closing: string = CONTINUE_TURN): number {
-  if (messages[messages.length - 1]?.role !== "assistant") return 0;
-  const part: Part = { type: "text", text: closing };
-  messages.push({ role: "user", parts: [part] });
-  return partTokens(part);
-}
-
 /** The first `QUOTE_MAX_CHARS` characters of a quoted message, each line as `> line`. */
 export function quoteLines(quoted: string): string {
   return Array.from(quoted)
@@ -369,11 +351,11 @@ export class ContextPlan {
    * The call's turns, oldest first: a turn of the Agent's first is left out (a call starts with the owner's), and
    * consecutive messages of one side are one turn, their parts in order. The turns never end with the Agent's own: what
    * is shown starts at the person's newest message (the constructor: an Agent's message after it — its acknowledgement a
-   * retry answers after, its own reply a told reply's group ends with — is not shown), and `endWithPerson` holds it even so.
+   * retry answers after, its own reply a told reply's group ends with — is not shown).
    * `tokens`: what they are counted as at ratio 1 (`partTokens`: the estimate admission corrects and settlement learns
    * from, not the plan's count); `fixed`: the part of it that is images and PDFs at their constants.
    */
-  build(closing: string = CONTINUE_TURN): { messages: ModelCall["messages"]; tokens: number; fixed: number } {
+  build(): { messages: ModelCall["messages"]; tokens: number; fixed: number } {
     const oldestFirst = [...this.kept].reverse();
     while (oldestFirst[0]?.entry.role === "assistant") oldestFirst.shift();
     const messages: ModelCall["messages"] = [];
@@ -392,7 +374,6 @@ export class ContextPlan {
       if (last?.role === entry.role) last.parts.push(...parts);
       else messages.push({ role: entry.role, parts });
     }
-    tokens += endWithPerson(messages, closing);
     return { messages, tokens, fixed };
   }
 }

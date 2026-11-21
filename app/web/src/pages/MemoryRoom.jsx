@@ -164,22 +164,30 @@ const tooLong = (text, left) => storedWeight(text) > left;
 const TOO_LONG = "这条太长了，这个房间装不下。";
 const ROOM_FULL = "这个房间装不下了，先删掉或合并几条。";
 
-/** The add row at the top of a room: a box and 添加; what was typed stays when the service refuses it. */
+/** The add row at the top of a room: a box, 放进保险箱 (the note is made in the vault, as a lock of the owner) and 添加; what was typed stays when the service refuses it. */
 function AddRow({ agentId, left, full, memory, inputRef }) {
   const { actions } = useStore();
   const { pending, error, write } = useNoteWrite(memory);
   const [text, setText] = useState("");
+  const [vault, setVault] = useState(false);
   const typed = text.trim();
   const over = typed !== "" && (full || tooLong(typed, left));
   const submit = async (event) => {
     event.preventDefault();
     if (!typed || over || pending) return;
-    if (await write(() => actions.addMemoryNote(agentId, { text: typed }))) setText("");
+    if (await write(() => actions.addMemoryNote(agentId, vault ? { text: typed, vault: true } : { text: typed }))) {
+      setText("");
+      setVault(false);
+    }
   };
   return (
     <form className="memory-add" onSubmit={submit}>
       <div className="memory-add-line">
         <input ref={inputRef} aria-label="新的笔记" value={text} onChange={(e) => setText(e.target.value)} placeholder="手动加一条" autoComplete="off" readOnly={pending} />
+        <label className="memory-add-vault">
+          <input type="checkbox" checked={vault} onChange={(e) => setVault(e.target.checked)} disabled={pending} />
+          <span>放进保险箱</span>
+        </label>
         <Btn type="submit" small variant="primary" disabled={pending || !typed || over}>添加</Btn>
       </div>
       {over && <p className="field-msg">{full ? ROOM_FULL : TOO_LONG}</p>}

@@ -232,6 +232,25 @@ describe("the 关于我 room on the Settings page", () => {
     expect(inRoom("关于我").getByLabelText("新的笔记").value).toBe("");
   });
 
+  it("adding with 放进保险箱 ticked sends vault true and the entry is listed in the vault; the box is unticked again, and an unticked add sends no vault", async () => {
+    const svc = service();
+    await openPalace(svc);
+    const scope = inRoom("关于我");
+    const tick = () => scope.getByRole("checkbox", { name: "放进保险箱" });
+    expect(tick().checked).toBe(false);
+    // Beside 添加, in the same row.
+    expect(tick().closest(".memory-add-line")).toBe(scope.getByRole("button", { name: "添加" }).closest(".memory-add-line"));
+    await click(tick());
+    typeInto(scope.getByLabelText("新的笔记"), "我的收入");
+    await click(scope.getByRole("button", { name: "添加" }));
+    expect(svc.api.addMemoryNote).toHaveBeenLastCalledWith({ text: "我的收入", vault: true });
+    expect(rowWith(room("关于我").querySelector(".memory-vault"), "我的收入")).toBeTruthy();
+    expect(tick().checked).toBe(false);
+    typeInto(scope.getByLabelText("新的笔记"), "我爱喝茶");
+    await click(scope.getByRole("button", { name: "添加" }));
+    expect(svc.api.addMemoryNote).toHaveBeenLastCalledWith({ text: "我爱喝茶" });
+  });
+
   it("an empty or blank entry cannot be added", async () => {
     await openPalace(service());
     const add = inRoom("关于我").getByRole("button", { name: "添加" });
@@ -959,6 +978,10 @@ describe("an Agent's page: its own notes and what it heard", () => {
     typeInto(scope.getByLabelText("新的笔记"), "新学的");
     await click(scope.getByRole("button", { name: "添加" }));
     expect(svc.api.addAgentMemoryNote).toHaveBeenCalledWith(AG1, { text: "新学的" });
+    await click(scope.getByRole("checkbox", { name: "放进保险箱" }));
+    typeInto(scope.getByLabelText("新的笔记"), "不外传的");
+    await click(scope.getByRole("button", { name: "添加" }));
+    expect(svc.api.addAgentMemoryNote).toHaveBeenLastCalledWith(AG1, { text: "不外传的", vault: true });
     await del(rowWith(room("小助手自己的笔记"), "新学的"));
     expect(svc.api.deleteAgentMemoryNote).toHaveBeenCalledWith(AG1, expect.any(String));
     expect(svc.api.addMemoryNote).not.toHaveBeenCalled();

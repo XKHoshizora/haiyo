@@ -238,6 +238,17 @@ describe("the owner's room: /api/memory/notes", () => {
     expect(judge.calls).toHaveLength(0);
   });
 
+  it("a note added with vault true lands in the vault as the owner's own lock whatever the setting says, in the owner's room and the Agent's, and the sorter is not asked", async () => {
+    const { owner, agent } = await world();
+    await setNewNotes(db, owner.id, "open");
+    judge.calls.splice(0);
+    const mine = await api(app, owner, "POST", "/api/memory/notes", { text: "手动放进保险箱的事", vault: true });
+    expect(await rowOf(mine.json.id)).toMatchObject({ vault: true, vault_by: "owner", unsure: false, origin: "owner" });
+    const theirs = await api(app, owner, "POST", `/api/agents/${agent.id}/memory/notes`, { text: "回答里不要提的事", vault: true });
+    expect((await db.query("select vault, vault_by, unsure from agent_notes where id = $1", [theirs.json.id])).rows[0]).toEqual({ vault: true, vault_by: "owner", unsure: false });
+    expect(judge.calls).toHaveLength(0);
+  });
+
   it("a 2500 character entry is refused by the room of 2000 and stored nowhere; 1500 fits and leaves 500", async () => {
     const { owner } = await world();
     const big = await api(app, owner, "POST", "/api/memory/notes", { text: "字".repeat(2500) });

@@ -106,24 +106,42 @@ export function headroom(state: { freeDailyMicro: bigint; freeUsedMicro: bigint;
   };
 }
 
-/**
- * The admission rule: a free-tier model takes today's allowance while some is left, then the balance; a paid-tier
- * model takes only the balance. Null when neither may be used.
- */
-export function chargeSource(tier: "free" | "paid", left: PerSource): ChargeTo | null {
-  if (tier === "free" && left.freeMicro > 0n) return "free";
-  return left.balanceMicro > 0n ? "balance" : null;
+/** SQL expressions (columns or bound values) for what the one source rule below reads. */
+export interface SourceCols {
+  /** Boolean: the model is free-tier (a site model without a tier is paid). */
+  freeTier: string;
+  /** Today's free allowance less what is used, holds aside. */
+  freeLeft: string;
+  /** The balance, and what running calls hold against it. */
+  balance: string;
+  balanceHeld: string;
 }
 
 /**
- * The product owner's open question (fix round 1 review, N-5), decided here and nowhere else: a free-tier call that finds
- * today's free allowance not spent but all held by the owner's running calls — something is left of it, nothing after
- * their holds. `"balance"` (as it always has been): it goes on to the balance, when the balance has room after its holds.
- * `"free"`: it waits for the free allowance instead — a reply is held back on it until one of those calls ends; a persona
- * draft, which never waits, takes it. Either answer is this one line.
+ * THE source rule, written once as SQL and used by admission (`pickSources`) and by the queue's prediction of where a
+ * queued reply would be paid from (agents/port-impl.ts `claimNext`), so the two cannot differ. A free-tier model takes
+ * today's free allowance while any of it is left, holds aside — one all held by the owner's running calls too: a reply
+ * then waits for them, a persona draft, which cannot wait, takes it — and the balance only once the allowance is used up,
+ * when the balance has room after its holds. A paid-tier model takes only the balance. Null: none.
  */
-export function whileFreeIsAllHeld(): "balance" | "free" {
-  return "balance";
+export const chosenSourceSql = (c: SourceCols): string =>
+  `(case when ${c.freeTier} and ${c.freeLeft} > 0 then 'free' when ${c.balance} - ${c.balanceHeld} > 0 then 'balance' end)`;
+
+/** What a call may use at all, holds aside (null: nothing is left: refused). The same rule's second half. */
+export const anySourceSql = (c: SourceCols): string =>
+  `(case when ${c.freeTier} and ${c.freeLeft} > 0 then 'free' when ${c.balance} > 0 then 'balance' end)`;
+
+/** The source rule on the owner's figures: `chosen` (on what is left after the holds) and `anything` (holds aside). */
+export async function pickSources(
+  q: Queryable,
+  f: { freeTier: boolean; freeLeft: bigint; balance: bigint; balanceHeld: bigint },
+): Promise<{ chosen: "free" | "balance" | null; anything: "free" | "balance" | null }> {
+  const cols: SourceCols = { freeTier: "$1::boolean", freeLeft: "$2::bigint", balance: "$3::bigint", balanceHeld: "$4::bigint" };
+  const { rows } = await q.query<{ chosen: "free" | "balance" | null; anything: "free" | "balance" | null }>(
+    `select ${chosenSourceSql(cols)} as chosen, ${anySourceSql(cols)} as anything`,
+    [f.freeTier, f.freeLeft.toString(), f.balance.toString(), f.balanceHeld.toString()],
+  );
+  return rows[0]!;
 }
 
 /** `share` (`HOLDS.maxOpenShare`, 0.01 to 1) of `micro`, rounded down, in whole micro-points. */
@@ -131,9 +149,9 @@ const shareOf = (micro: bigint, share: number): bigint => (micro * BigInt(Math.r
 
 /**
  * Admits one call on `resolved` for `ownerId`, under the account lock. A provider model: `{chargeTo: null,
- * holdMicro: 0n}`, nothing locked or read. A site model holds `maxCostMicro` against the source `chargeSource` picks by
- * what is left after the running calls' holds (`headroom`: so a free-tier reply goes on to the balance when the
- * allowance is all held, as it always has):
+ * holdMicro: 0n}`, nothing locked or read. A site model holds `maxCostMicro` against the source `pickSources` picks by
+ * what is left after the running calls' holds (`headroom`), a free-tier call taking the allowance while any of it is left,
+ * holds aside, and the balance only when it is used up:
  * - nothing left of either source the model may use (`raw`, holds aside) is 402 `no_quota` with `reason`
  *   `free_and_balance` (free-tier model; `resetsAt`: the next site midnight) or `balance` (paid-tier model);
  * - a reply (`purpose` `reply`) starts when no other running call holds against that source, or when every hold
@@ -173,10 +191,8 @@ export async function admit(
   const raw: PerSource = { freeMicro: config.freeDailyMicro - freeUsedMicro, balanceMicro: account.balanceMicro };
   const holds = await readHolds(t, ownerId);
   const firstMicro = maxCostMicro(resolved, inputTokensEstimate);
-  // The existing rule, on what is left after the holds; and on what is left, holds aside (whether anything is).
-  const afterHolds = headroom({ freeDailyMicro: config.freeDailyMicro, freeUsedMicro, balanceMicro: account.balanceMicro, holds });
-  const chargeTo = tier === "free" && raw.freeMicro > 0n && whileFreeIsAllHeld() === "free" ? "free" : chargeSource(tier, afterHolds);
-  const anything = chargeSource(tier, raw);
+  // The one source rule (`chosenSourceSql`): on what is left after the holds, and on what is left, holds aside (whether anything is).
+  const { chosen: chargeTo, anything } = await pickSources(t, { freeTier: tier === "free", freeLeft: raw.freeMicro, balance: raw.balanceMicro, balanceHeld: holds.balanceMicro });
   if (anything === null) {
     throw new AppError(
       402,

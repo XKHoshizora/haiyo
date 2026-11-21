@@ -423,10 +423,13 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .memory-head h3 { margin: 18px 0 4px; }
 .memory-room > p { margin: 0 0 8px; font-size: 13px; }
 .memory-add { margin: 8px 0; }
-.memory-add-line { display: flex; gap: 8px; align-items: center; }
+.memory-add-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.memory-add-vault { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--ink-2); white-space: nowrap; }
 .memory-add-line input, .memory-body input {
   flex: 1; min-width: 0; height: 38px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: rgba(255, 255, 255, 0.78); font: inherit; color: var(--ink);
 }
+.memory-add-line > input { flex: 1 1 160px; }
+.memory-add-line .memory-add-vault input { flex: none; width: auto; height: auto; padding: 0; margin: 0; }
 .memory-add-line input:focus, .memory-body input:focus { border-color: var(--purple); background: #fff; outline: 0; }
 .memory-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
 .memory-row { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.5); }
