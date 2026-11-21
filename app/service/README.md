@@ -1510,7 +1510,8 @@ follow-up. (`让 Agent 停下`, a group member's halt, does
 not touch a told reply at all — it is your own, a person's call: it ends the runs Agents' messages called for and the
 replies nobody asked for, and a follow-up of noted calls that only Agents' messages made is such a run.) A retry of a told
 reply that failed keeps its whisper (it reads telling again), and tells again what it covered, with nothing noted; it is
-offered while the told reply is the Agent's latest run there. `告诉他们` is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
+offered while the told reply is the Agent's latest run there (also after you answered 不用 or it expired: it is your own
+asking again — once it posts, the whisper reads told, which is what happened). `告诉他们` is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
 `busy_run` (a reply of it queued or running there), 429 `rate_limited` (your own replies a minute) — each leaves the
 whisper open, to answer again. `不用` (decline) does nothing more. Vault notes are not involved: hits are messages.
 `tools_off` — a reply found its provider model unable to use tools and the model was marked so
