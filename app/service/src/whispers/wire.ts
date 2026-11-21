@@ -147,9 +147,16 @@ export interface WireOptions {
 /**
  * Each of `whispers` as its owner receives it now (the order kept): a `found_elsewhere` one's state derived from its told
  * replies and its age (`tellStates`, one statement for all) and its hits read under its owner's access now (`readableHits`,
- * one statement for all) — only for one stored open and not told: nothing else shows them or depends on them. `q` must be
- * one snapshot with the read of `whispers` themselves (`wireWhispersOf`; sync and catch-up read on one already), so that a
- * copy never mixes two moments.
+ * one statement for all) — only for one stored open and not told: nothing else shows them or depends on them. `q` is one
+ * snapshot with the read of `whispers` themselves (`wireWhispersOf`; sync and catch-up read on one already), so that a
+ * copy never mixes two moments — with one exception: an answer's own copy (whispers/routes.ts) is read in the answer's
+ * transaction (read committed), after its writes, so that it sees the told reply it queued and nothing is read after its
+ * commit (a stored answer is never a 500). That is acceptable because the answer holds the conversation's row, the Agent's
+ * and the whisper's there: no told reply of that whisper can start, end or be retried between its reads, so the state it
+ * derives is of one moment; only its hits can mix two (a leaving elsewhere committing between `tellStates` and
+ * `readableHits` drops one), and the push that follows reads again on a snapshot of its own, so the owner's screen settles
+ * within milliseconds. Its cost: those two reads (at most five references) run while the answer holds the group's row,
+ * so a member's send there waits that much longer — milliseconds, under a lock the answer already held for its writes.
  */
 export async function wireWhispers(q: Queryable, whispers: readonly Whisper[], { timeZone, elsewhereTtlHours }: WireOptions): Promise<WireWhisper[]> {
   const found = whispers.filter((w) => w.kind === "found_elsewhere");
