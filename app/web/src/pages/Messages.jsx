@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
-import { isAgent, isMyAgent, lineText, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
+import { isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
 import { formatSize, namesAgent, replyPoints } from "../data/viewmodel.js";
 import { useShowReplyPoints } from "../data/prefs.js";
 import { failureText, retryHopeless } from "../data/uploadErrors.js";
@@ -23,7 +23,7 @@ function Quote({ quote }) {
   return (
     <blockquote>
       <strong>{quote.from ? senderName(state, quote.from) : ""}</strong>
-      {quote.kind === "file" ? quote.attachmentName : lineText(state, quote.from, quote.text, quote.senderKind)}
+      {quote.kind === "file" ? quote.attachmentName : quote.text}
     </blockquote>
   );
 }
@@ -86,10 +86,10 @@ function FileBody({ msg }) {
   );
 }
 
-/** An Agent's text, with what it cites (`msg.cites`) as links that jump to their messages (`onJump`). */
+/** An Agent's text, with its citations (`msg.cites`, beside its text) as links that jump to their messages (`onJump`). */
 function CitingAgentText({ msg, onJump }) {
   const { cites } = msg;
-  const value = useMemo(() => (cites && onJump ? { cites, onJump } : null), [cites, onJump]);
+  const value = useMemo(() => (cites?.length > 0 && onJump ? { cites, onJump } : null), [cites, onJump]);
   return (
     <CitesContext.Provider value={value}>
       <AgentText text={msg.text} id={msg.id} mentions={msg.mentions} />

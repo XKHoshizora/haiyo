@@ -3,7 +3,6 @@
 // PREVIEW_SOURCE_CHARS characters of the text, line by line, so its cost has a fixed ceiling whatever the text is.
 // What it cannot read as a marker it leaves as written; the message itself is rendered properly where it is opened.
 import { withoutBidiControls } from "./markdownRules.js";
-import { withoutCitations } from "./citations.js";
 
 /** How much of the text is read, and the most the preview is (the list cuts the line to its width anyway). */
 export const PREVIEW_SOURCE_CHARS = 600;
@@ -36,8 +35,6 @@ function withoutMarkers(line) {
   if (RULE.test(text) || DEFINITION.test(text)) return "";
   text = text.replace(HEADING, "").replace(HEADING_END, "");
   text = text.replace(LINK, "$1").replace(REFERENCE, "$1").replace(ANGLE, "$1").replace(CODE_AND_MATHS, "");
-  // A reply's citations (`〔m3〕`, `〔f2〕`) are links in the message and nothing in its preview (ui/citations.js).
-  text = withoutCitations(text);
   // Emphasis characters go, except where they are not emphasis: inside a word (`get_user_name`, `2*3`) or alone
   // between spaces (`a * b`).
   text = text.replace(EMPHASIS, (run, at) => {
@@ -49,8 +46,8 @@ function withoutMarkers(line) {
 }
 
 /**
- * The preview of an Agent's text: headings', quotes' and lists' markers, emphasis and code markers, link syntax and
- * its citations (`〔m3〕`, `〔f2〕`: the message shows them as links) taken out; a code fence is its first line of code (or nothing); everything on one line, at most PREVIEW_CHARS
+ * The preview of an Agent's text: headings', quotes' and lists' markers, emphasis and code markers and link syntax taken
+ * out (its citations are beside its text, never in it: nothing of them is here); a code fence is its first line of code (or nothing); everything on one line, at most PREVIEW_CHARS
  * characters. A text that is nothing but markers is shown as it was written (on one line).
  */
 export function previewOfMarkdown(text) {

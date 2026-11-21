@@ -2,9 +2,9 @@
 // each mention a small tag. Who a tag means is the stored id; nothing here reads the text to decide it. A screen reader
 // reads a tag as 提到 and the name of whom it means now (`MentionTag`), its tooltip says the same, an Agent's with its
 // owner, and an Agent's tag is drawn apart from a person's.
-import React from "react";
-import { CitedText } from "./cites.jsx";
-import { mentionName, mentionSegments } from "../data/mentions.js";
+import React, { Fragment } from "react";
+import { Cite, textPieces } from "./cites.jsx";
+import { mentionName, mentionsIn } from "../data/mentions.js";
 import { useStore } from "../data/store.jsx";
 import { entity, isAgent, nameOf, ownerOf } from "../state/selectors.js";
 
@@ -28,10 +28,21 @@ export function MentionTag({ text, id }) {
   );
 }
 
-/** `text` with `mentions` (`[{id, start, length}]`, stored with the message) as tags; plain text without any. */
-export function MentionText({ text, mentions }) {
-  if (!Array.isArray(mentions) || mentions.length === 0) return text ?? "";
-  return mentionSegments(text, mentions).map((part, i) =>
-    part.mention ? <MentionTag key={i} text={part.text} id={part.mention.id} /> : <CitedText key={i} text={part.text} />,
+/**
+ * `text` with `mentions` (`[{id, start, length}]`, stored with the message) as tags and, for an Agent's reply, its
+ * `cites` (numbered, ui/cites.jsx `numberedCites`: places in the same text) as links that `onJump`; plain text without any.
+ */
+export function MentionText({ text, mentions, cites = null, onJump = null }) {
+  const tags = Array.isArray(mentions) ? mentionsIn(text, mentions) : [];
+  const links = Array.isArray(cites) ? cites : [];
+  if (tags.length === 0 && links.length === 0) return text ?? "";
+  return textPieces(text, tags, links).map((part, i) =>
+    typeof part === "string" ? (
+      <Fragment key={i}>{part}</Fragment>
+    ) : part.mention ? (
+      <MentionTag key={i} text={part.text} id={part.mention.id} />
+    ) : (
+      <Cite key={i} cite={part.cite} onJump={onJump} />
+    ),
   );
 }

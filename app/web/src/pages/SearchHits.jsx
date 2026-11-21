@@ -1,6 +1,6 @@
 import React from "react";
 import { searchErrorText } from "../data/errorTexts.js";
-import { convTitle, lineText, senderName } from "../state/selectors.js";
+import { convTitle, senderName } from "../state/selectors.js";
 import { useStore } from "../data/store.jsx";
 import { Avatar, Btn, ConvAvatar } from "../ui/primitives.jsx";
 
@@ -83,7 +83,7 @@ export function GlobalHitRow({ hit, q, onPick }) {
           <span className="row-sub">
             <span className="row-preview">
               {hit.from ? `${senderName(state, hit.from)}：` : ""}
-              <Highlight text={excerpt(lineText(state, hit.from, hit.text), q)} q={q} />
+              <Highlight text={excerpt(hit.text, q)} q={q} />
             </span>
           </span>
         </span>
@@ -106,7 +106,7 @@ export function ChatHitRow({ hit, q, onPick }) {
           </span>
           <span className="row-sub">
             <span className="row-preview">
-              <Highlight text={excerpt(lineText(state, hit.from, hit.text), q)} q={q} />
+              <Highlight text={excerpt(hit.text, q)} q={q} />
             </span>
           </span>
         </span>

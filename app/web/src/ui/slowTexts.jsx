@@ -3,7 +3,6 @@
 // digest of each text is kept (a 64-bit non-cryptographic hash and its length), never the text. Storage that is
 // missing, full or refused only means a text is not remembered: rendering never depends on it.
 import React from "react";
-import { CitedText } from "./cites.jsx";
 
 export const SLOW_TEXT_NOTE = "这条回复内容过于复杂，已按纯文本显示。";
 const KEY = "agent-family.slow-markdown";
@@ -79,7 +78,7 @@ export function rememberSlowText(text) {
 export function PlainWithNote({ text }) {
   return (
     <>
-      <CitedText text={text} />
+      {text}
       <span className="md-note">{SLOW_TEXT_NOTE}</span>
     </>
   );
