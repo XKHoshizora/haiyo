@@ -140,7 +140,7 @@ export async function runCatchUp(deps: PipelineDeps, job: CatchUpJob, ctx: Catch
   const P = config.proactive;
   for (;;) {
     if (ctx.closing.aborted) return;
-    const { rows } = await db.query<{ seq: string }>(`select seq::text from messages where ${LINES} and seq >= $2 and seq <= $3 order by seq limit $4`, [
+    const { rows } = await db.query<{ seq: string }>(`select seq::text from messages where ${LINES} and seq >= $2 and seq <= $3 order by messages.seq limit $4`, [
       job.conversationId,
       next,
       row.to,

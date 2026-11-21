@@ -165,6 +165,20 @@ describe("也回顾一下 in a group: what members said while memory was off", (
     expect(scripted.calls.map((c) => c.state).join("\n")).not.toContain("小李的第1件旧事");
   });
 
+  it("lines go in seq order whatever their digits: a range crossing 9→10 and 99→100 is judged window by window, oldest first, every line once, none skipped", async () => {
+    app.deps.config.proactive.transcriptMessages = 7;
+    const w = await world("cu10");
+    await switched(w, { memory: false });
+    const off: number[] = [];
+    while (off.length === 0 || off.at(-1)! <= 105) off.push(await say(w.mia, w.g, `小李的第${off.length}件事`));
+    expect([off[0]! <= 9, off.includes(10), off.includes(99), off.includes(100)]).toEqual([true, true, true, true]);
+    await switched(w, { memory: true, catchUp: true });
+    expect(await flagRows(w.agent.id, "hearsay")).toEqual(off);
+    // What the judgement was shown as new, window by window: each line once, in order.
+    const shownNew = catchUpCalls().flatMap((c) => [...c.state.matchAll(/【新】[^\n]*小李的第(\d+)件事/g)].map((m) => Number(m[1])));
+    expect(shownNew).toEqual(off.map((_, i) => i));
+  });
+
   it("an acknowledgement is no line of a catch-up: it uses up none of MEMORY.catchUpLines, nor of a window (final review m-5)", async () => {
     app.deps.config.memory.catchUpLines = 3;
     app.deps.config.proactive.transcriptMessages = 2;
