@@ -130,6 +130,8 @@ describe("what a mention shows", () => {
     expect(rule(".mention.mention-gone")).toMatch(/color: var\(--ink-2\);/);
     // On my own (purple) bubble the accent text is under 4.5:1; plain ink there.
     expect(css).toMatch(/\.msg\.mine \.mention \{[^}]*color: var\(--ink\);/);
+    // ...but a gone mention stays muted there too (the rule above would out-rank it).
+    expect(css).toMatch(/\.msg\.mine \.mention\.mention-gone \{[^}]*color: var\(--ink-2\);/);
     // The composer's tags have the same tint and radius.
     const chip = rule(".composer-mirror .mention-chip");
     expect(chip).toMatch(/border-radius: 4px;/);

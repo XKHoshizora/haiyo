@@ -663,6 +663,7 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .mention.mention-gone { background: none; color: var(--ink-2); cursor: default; }
 /* On the purple bubble of my own message the accent text is under 4.5:1 (3.95 and 3.35 measured): plain ink there (8.8 and 7.4). */
 .msg.mine .mention { color: var(--ink); }
+.msg.mine .mention.mention-gone { color: var(--ink-2); }
 .mention:focus-visible { outline-offset: 1px; }
 /* The card of a mention (MentionCard.jsx): in the page's body, fixed, so it never moves the message. */
 .mention-card {
