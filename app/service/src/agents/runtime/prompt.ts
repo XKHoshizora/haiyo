@@ -1,4 +1,5 @@
 import { randomInt } from "node:crypto";
+import { PRODUCT_NAME } from "../../brand.ts";
 import { estimateTokens } from "../../metering/tokens.ts";
 import { INSIDE_MAX, pendingStart, tokenRef } from "../tools/tokens.ts";
 
@@ -136,7 +137,7 @@ export function systemText(
 ): SystemText {
   const appellation = shownAppellation(agent.ownerAppellation);
   const preamble = [
-    `你是「${agent.name}」，${owner.displayName} 在 Agent Family 里的个人 Agent。现在和你对话的是你的主人 ${owner.displayName}。` +
+    `你是「${agent.name}」，${owner.displayName} 在 ${PRODUCT_NAME} 里的个人 Agent。现在和你对话的是你的主人 ${owner.displayName}。` +
       (appellation === null ? "" : `称呼你的主人为「${appellation}」。`),
     `今天是${siteDate(now, timeZone)}。`,
     tools ? toolsPassage(false) : NO_TOOLS,
@@ -709,7 +710,7 @@ export function groupSystemText(
   tools: boolean | "told" = false,
 ): SystemText {
   const preamble = [
-    `你是「${agent.name}」（@${agent.handle}），${owner.displayName} 在 Agent Family 里的个人 Agent。现在你在一个群聊里。`,
+    `你是「${agent.name}」（@${agent.handle}），${owner.displayName} 在 ${PRODUCT_NAME} 里的个人 Agent。现在你在一个群聊里。`,
     `今天是${siteDate(now, timeZone)}。`,
     tools === true ? toolsPassage(true) : tools === "told" ? TOLD_NO_TOOLS : NO_TOOLS,
   ].join("\n");

@@ -125,7 +125,7 @@ describe("where an Agent's handle is shown, the full one", () => {
     gateway.reply("你好。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     const system = gateway.calls.at(-1)!.system;
-    expect(system).toContain("你是「贾维斯」（@xiaolin.jarvis），xiaolin 在 Agent Family 里的个人 Agent。");
+    expect(system).toContain("你是「贾维斯」（@xiaolin.jarvis），xiaolin 在 Haiyo 里的个人 Agent。");
     // Two jarvises here: only the full handle calls it, and that is all it is told.
     expect(system).toContain("有人在消息里写了 @xiaolin.jarvis 叫你，你才回复。");
     expect(system).toContain("- 阿杰（@bobby.jarvis）：擅长查资料");
