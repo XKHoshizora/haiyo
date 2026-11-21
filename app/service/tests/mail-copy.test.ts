@@ -60,7 +60,6 @@ describe("mail copy", () => {
       expect(reset.subject).toBe("重置你的 Haiyo 密码");
       expect(verify.html).toContain("验证你的邮箱");
       expect(reset.html).toContain("重置你的密码");
-      expect(a.email).toBeTruthy();
       expect(verify.body).toContain(NOT_REGISTERED);
       expect(reset.body).toContain(IGNORE);
       expect(await mailLink(app, a.email, "reset_password")).toMatch(/^\/reset-password\?token=/);

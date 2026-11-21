@@ -56,8 +56,9 @@ describe("mail HTML", () => {
     expect(count(m.html, `>${escaped}<`)).toBe(1);
     expect(count(m.html, "href=")).toBe(1);
     expect(m.html).toContain(">验证邮箱<");
-    expect(m.html).toMatch(/<a [^>]*background-color:#5b4fd6[^>]*color:#ffffff[^>]*border-radius:8px[^>]*>验证邮箱<\/a>/);
-    expect(m.html).toMatch(/padding:\d+px \d+px/);
+    // Bulletproof: the coloured, padded, rounded cell is a td (classic Outlook ignores padding on a link); the one link sits inside it.
+    expect(m.html).toMatch(/<td bgcolor="#5b4fd6" style="[^"]*background-color:#5b4fd6[^"]*padding:\d+px \d+px[^"]*border-radius:8px[^"]*"><a [^>]*color:#ffffff[^>]*>验证邮箱<\/a><\/td>/);
+    expect(m.html).not.toMatch(/<a [^>]*(padding|background-color)/);
     expect(m.html).toContain("24 小时");
     expect(m.html).toContain("打不开按钮？把下面的地址复制到浏览器：");
     expect(m.html).toContain("如果你没有注册 Haiyo，请不要点击链接，直接忽略这封邮件。");
@@ -83,7 +84,7 @@ describe("mail HTML", () => {
       expect([link, count(m.html, `href="${link}"`)]).toEqual([link, 1]);
       expect([link, count(m.html, `>${link}<`)]).toEqual([link, 1]);
     }
-    expect(count(m.html, "background-color:#5b4fd6")).toBe(2); // the cell and the link of the one button
+    expect(count(m.html, "background-color:#5b4fd6")).toBe(1); // the cell of the one button
     expect(m.html).toContain("如果这不是你本人的操作，请忽略这封邮件。");
   });
 
@@ -93,12 +94,14 @@ describe("mail HTML", () => {
     expect(pre).not.toBeNull();
     expect(m.html.indexOf(pre![0])).toBeLessThan(m.html.indexOf("验证你的邮箱"));
     expect(pre![1]).toContain("欢迎来到 Haiyo。");
+    // Padded with the usual run of zero-width non-joiner + nbsp pairs so the inbox preview shows nothing of the body.
+    expect(pre![0].split("&zwnj;&nbsp;").length - 1).toBeGreaterThanOrEqual(100);
   });
 
   test("the palette is light and dark friendly: white text only on the button, no pure black text", () => {
     const { html } = verifyEmailMail(URL_OK);
     for (const m of html.matchAll(/[^-]color:#ffffff/gi)) {
-      const around = html.slice(Math.max(0, m.index! - 120), m.index! + 60);
+      const around = html.slice(Math.max(0, m.index! - 260), m.index! + 60);
       expect(around).toContain("background-color:#5b4fd6");
     }
     expect(html).not.toMatch(/[^-]color:#000(000)?\b/i);
@@ -141,6 +144,13 @@ describe("mail HTML", () => {
       expect(safeHref("https://a.test/x?y=1&z=2")).toBe("https://a.test/x?y=1&amp;z=2");
       expect(safeHref("HTTP://a.test/")).toBe("HTTP://a.test/");
       expect(safeHref('javascript:"')).toBeUndefined();
+    });
+
+    test("whitespace or a control character anywhere in the address, or no host, means no link", () => {
+      for (const bad of ["https://a.test/x y", "https://a.test/x\ty", "https://a.test/x\ry", "https://a.test/x\ny", "https://a.te\u0000st/", "https://a.test/\u0000", "https://a.test/\u007f", "https:///path", "http://", "https://a b.test/"]) {
+        expect([JSON.stringify(bad), safeHref(bad)]).toEqual([JSON.stringify(bad), undefined]);
+      }
+      expect(safeHref("https://a.test/path?x=1")).toBe("https://a.test/path?x=1");
     });
   });
 });

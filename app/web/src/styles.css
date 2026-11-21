@@ -188,6 +188,7 @@ button.tag:hover { filter: brightness(0.96); }
   display: inline-flex; align-items: center; min-height: 32px; padding: 0 6px; margin: 0 -6px; border-radius: 6px;
   color: var(--purple-dark); text-decoration: none; font-size: 13px; font-weight: 500;
 }
+@media (pointer: coarse), (max-width: 480px) { .text-link { min-height: 44px; } }
 .text-link:visited { color: var(--purple-dark); }
 .text-link:hover, .text-link:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
 .icon-btn {

@@ -215,7 +215,7 @@ describe("register", () => {
     fill();
     submit("注册");
     await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
-    expect(screen.getByText("没收到？看看垃圾邮件箱；或者直接去登录，我们会再发一封。")).toBeTruthy();
+    expect(screen.getByText("没收到？看看垃圾邮件箱；还没验证时用注册的邮箱和密码登录，我们会再发一封。")).toBeTruthy();
   });
 
   it("its sign-in link and the one on the check-your-mailbox page are the shared text link", async () => {

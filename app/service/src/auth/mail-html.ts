@@ -13,9 +13,13 @@ export function escapeHtml(value: string): string {
 
 /** The value for an `href` (already escaped), or undefined unless the address is an http(s) URL: nothing else is ever linked. */
 export function safeHref(url: string): string | undefined {
-  if (!/^https?:\/\/[^\s]/i.test(url)) return undefined;
+  // No whitespace or control character anywhere (URL parsing would silently strip some of them), then a real parse.
+  if (/[\s\p{Cc}]/u.test(url)) return undefined;
+  // The URL parser forgives "https:///path" (host "path"): the text itself must put a host right after the two slashes.
+  if (!/^https?:\/\/[^/?#]/i.test(url)) return undefined;
   try {
-    new URL(url);
+    const u = new URL(url);
+    if ((u.protocol !== "http:" && u.protocol !== "https:") || u.hostname === "") return undefined;
   } catch {
     return undefined;
   }
@@ -50,14 +54,16 @@ export interface MailLayout {
 }
 
 const e = escapeHtml;
+/** After the preheader: the usual run of zero-width non-joiner + non-breaking space pairs, so a client fills the inbox preview with it and not with the body. */
+const PREHEADER_PAD = "&zwnj;&nbsp;".repeat(100);
 
 function button(label: string, url: string): string {
   const href = safeHref(url);
   if (href === undefined) return "";
   return (
     `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0 8px"><tr>` +
-    `<td bgcolor="${ACCENT}" style="background-color:${ACCENT};border-radius:8px">` +
-    `<a href="${href}" style="display:inline-block;padding:12px 28px;background-color:${ACCENT};color:#ffffff;border-radius:8px;font-family:${FONT};font-size:16px;font-weight:600;line-height:20px;text-decoration:none">${e(label)}</a>` +
+    `<td bgcolor="${ACCENT}" style="background-color:${ACCENT};padding:12px 28px;border-radius:8px">` +
+    `<a href="${href}" style="color:#ffffff;font-family:${FONT};font-size:16px;font-weight:600;line-height:20px;text-decoration:none">${e(label)}</a>` +
     `</td></tr></table>`
   );
 }
@@ -85,7 +91,7 @@ export function renderMailHtml(m: MailLayout): string {
     `<meta name="color-scheme" content="light dark">\n<meta name="supported-color-schemes" content="light dark">\n` +
     `<title>${e(m.title)}</title>\n</head>\n` +
     `<body style="margin:0;padding:0;background-color:${PAGE};font-family:${FONT}">\n` +
-    `<div style="display:none;max-height:0;overflow:hidden;opacity:0;font-size:1px;line-height:1px;mso-hide:all">${e(m.preheader)}</div>\n` +
+    `<div style="display:none;max-height:0;overflow:hidden;opacity:0;font-size:1px;line-height:1px;mso-hide:all">${e(m.preheader)}${PREHEADER_PAD}</div>\n` +
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${PAGE}" style="background-color:${PAGE}"><tr><td align="center" style="padding:24px 12px">\n` +
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${CARD}" style="max-width:480px;margin:0 auto;background-color:${CARD};border:1px solid ${RULE};border-radius:12px"><tr><td style="padding:28px 28px 8px;font-family:${FONT}">\n` +
     `<p style="margin:0 0 20px;font-size:20px;line-height:24px;font-weight:700;color:${ACCENT}">${e(PRODUCT_NAME)}</p>\n` +

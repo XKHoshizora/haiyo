@@ -167,7 +167,7 @@ export function Register({ api }) {
     return (
       <AuthCard title="请查收邮箱" footer={<Link to="/signin">去登录</Link>}>
         <Notice tone="ok">我们已向 {sentTo} 发送了一封验证邮件。点击邮件里的链接完成验证，之后就可以登录了。</Notice>
-        <p className="muted">没收到？看看垃圾邮件箱；或者直接去登录，我们会再发一封。</p>
+        <p className="muted">没收到？看看垃圾邮件箱；还没验证时用注册的邮箱和密码登录，我们会再发一封。</p>
       </AuthCard>
     );
   }

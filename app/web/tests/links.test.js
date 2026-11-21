@@ -40,6 +40,10 @@ describe("text links share one style", () => {
     expect(css).toMatch(/\.text-link:visited[^{]*\{[^}]*color:\s*var\(--purple-dark\)/);
   });
 
+  it("the hit area is 44px tall on a coarse pointer or a narrow viewport", () => {
+    expect(css).toMatch(/@media \(pointer: coarse\), \(max-width: 480px\) \{\s*\.text-link \{[^}]*min-height:\s*44px/);
+  });
+
   it("a link made a button has no underline and no browser blue", () => {
     expect(css).toMatch(/:where\(a\)\.btn\s*\{[^}]*color:\s*inherit[^}]*text-decoration:\s*none/);
   });

@@ -9,10 +9,10 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db, Queryable, Tx } from "../db.ts";
 import { AppError, isBusy } from "../errors.ts";
+import { PRODUCT_NAME } from "../brand.ts";
 import { clientIp } from "../limits.ts";
 import { lockAccountEmail } from "./accounts.ts";
 import { holdUntilFloor, startAnswerClock, type AnswerFloor } from "./answer-floor.ts";
-import { PRODUCT_NAME } from "../brand.ts";
 import { RESET_PASSWORD_TTL_SECONDS, VERIFY_EMAIL_TTL_SECONDS, resetPasswordMail, verifyEmailMail } from "./mail-copy.ts";
 import { mailPolicy, sendMail } from "./mailer.ts";
 
