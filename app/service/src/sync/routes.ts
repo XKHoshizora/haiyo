@@ -117,13 +117,14 @@ function registerSyncRoutes(app: FastifyInstance, tickets: TicketStore): void {
 
 /**
  * Sync, catch-up and pushes: `GET /api/sync`, `POST /api/sync/catchup`, `POST /api/ws-ticket`,
- * `GET /api/ws`. The ticket store and the hub live in this process (single instance; see README).
+ * `GET /api/ws`. The ticket store and the hub live in this process (single instance; see README). `heartbeat`: whether
+ * the hub's heartbeat runs on its timer (app.ts `BuildOptions.heartbeat`).
  */
-export async function registerSync(app: FastifyInstance): Promise<void> {
+export async function registerSync(app: FastifyInstance, opts: { heartbeat: boolean } = { heartbeat: true }): Promise<void> {
   const { db, config, conversations, social, reads } = app.deps;
   const tickets = createTicketStore();
   const hub = new Hub({ db, config, conversations, social, reads, log: app.log });
-  hub.start();
+  hub.start(opts);
   const offSessionEnded = onSessionEnded(app, (_principalId, sessionId) => {
     tickets.revokeSession(sessionId);
     hub.endSession(sessionId);

@@ -176,6 +176,12 @@ export interface BuildOptions {
    * was before tools (tests/helpers/harness.ts builds none unless a test asks).
    */
   tools?: false;
+  /**
+   * The realtime hub's heartbeat timer (src/sync/hub.ts `tick`: pings, and closes the sockets of expired sessions; default
+   * every `HEARTBEAT_MS`). Tests: `false` turns the timer off (`app.realtime.tick()` beats by hand), as the harness does, so
+   * that no timer starts a statement while it empties the database between two tests.
+   */
+  heartbeat?: false;
 }
 
 /**
@@ -362,7 +368,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
 
   // First among the routes: it registers the WebSocket plugin, whose route wrapper must see every route
   // (an upgrade request to any other route is then refused instead of answered over the raw socket).
-  await registerSync(app);
+  await registerSync(app, { heartbeat: options.heartbeat !== false });
 
   // The reply worker runs in this process (one instance, like the hub). Once the app is ready, the runs the previous
   // process left running are recovered and then the worker starts. It stops when the app starts closing, before the hub

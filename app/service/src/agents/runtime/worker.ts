@@ -102,6 +102,12 @@ export interface AgentWorker {
   /** Resolves once no claim is under way and no run is in flight (for tests: what a finished test leaves running). */
   idle(): Promise<void>;
   /**
+   * Holds the background loop (for tests: the harness between two tests, tests/helpers/harness.ts): from now on no claim
+   * starts by itself — neither the poll nor a wake-up; one asked for meanwhile is made once released — and a pump under way
+   * claims nothing more (`idle()` waits for it). `runOnce` and `drain` still claim. Returns the release (once; holds nest).
+   */
+  hold(): () => void;
+  /**
    * Stops (once; later calls wait for the same stop): no more claims; calls in flight, and replies still reading their
    * attachments, are abandoned without posting or admitting, and each such run is ended here as recovery would end it
    * (`AgentPort.release`); replies already being posted finish. Resolves once nothing runs any more, or after
@@ -211,6 +217,9 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
   let stopping: Promise<void> | null = null;
   let again = false;
   let timer: NodeJS.Timeout | null = null;
+  /** How many `hold()`s are not yet released, and whether a wake-up came meanwhile (answered at the last release). */
+  let holds = 0;
+  let wokenWhileHeld = false;
 
   async function finish(run: RunTicket, end: RunEnd, usage: Usage | null, fallback: Estimated): Promise<void> {
     try {
@@ -743,6 +752,10 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
 
   function wake(): void {
     if (!opts.background || !started || closing) return;
+    if (holds > 0) {
+      wokenWhileHeld = true;
+      return;
+    }
     if (pumping) {
       again = true;
       return;
@@ -751,7 +764,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       try {
         do {
           again = false;
-          while (!closing && inFlight.size < maxRunsInFlight) {
+          while (!closing && holds === 0 && inFlight.size < maxRunsInFlight) {
             const run = await port.claimNext();
             if (!run) break;
             void track(run);
@@ -795,6 +808,19 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     },
     async idle() {
       while (pumping || inFlight.size > 0) await Promise.allSettled([pumping, ...inFlight]);
+    },
+    hold() {
+      holds++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        holds--;
+        if (holds === 0 && wokenWhileHeld) {
+          wokenWhileHeld = false;
+          wake();
+        }
+      };
     },
     stop() {
       stopping ??= (async () => {

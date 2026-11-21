@@ -274,7 +274,11 @@ the gateway's own tests talk to `protocolStub()`, a local server speaking the fo
 files that insert queued runs themselves use it too, so no background worker picks them up. `useApp()` starts no
 stale-run sweep timer unless asked (`staleRunSweep`); tests sweep with `app.staleRunSweep.run()`. Nor does it build the
 proactive scheduler unless asked (`proactive`, with a judgement model configured: `tests/proactive-scheduler.test.ts`);
-other files that judge call `decideProactive` themselves.
+other files that judge call `decideProactive` themselves. Between two tests (`betweenTests`) it empties the database only
+once the app is quiet — its queues and jobs, and every other transaction of the database, one between two statements
+too — and holds the reply worker's loop until the truncate has ended; the hub's heartbeat runs on no timer under it
+(`app.realtime.tick()` beats by hand). So no work of the app's takes table locks against the truncate's
+(`tests/harness.test.ts`).
 
 ## HTTP API
 

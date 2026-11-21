@@ -148,8 +148,8 @@ export class Hub {
 
   constructor(private readonly deps: HubDeps) {}
 
-  /** Subscribes to the event registries and starts the heartbeat. */
-  start(): void {
+  /** Subscribes to the event registries and starts the heartbeat (unless `heartbeat` is false: `tick` then runs by hand). */
+  start({ heartbeat = true }: { heartbeat?: boolean } = {}): void {
     const { conversations, social, reads, log } = this.deps;
     this.unsubscribe.push(
       conversations.onMessages((messages) => this.onMessages(messages)),
@@ -159,8 +159,14 @@ export class Hub {
         for (const id of new Set(principalIds)) this.push(id, { type: "social" });
       }),
     );
+    if (!heartbeat) return;
     this.timer = setInterval(() => void this.tick().catch((err) => log.error({ err }, "realtime heartbeat failed")), HEARTBEAT_MS);
     this.timer.unref();
+  }
+
+  /** Whether the heartbeat runs on its timer. */
+  get beating(): boolean {
+    return this.timer !== null;
   }
 
   /** Resolves once no delivery is queued or under way (for tests: what a finished test leaves running). */
@@ -171,6 +177,7 @@ export class Hub {
   stop(): void {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    this.timer = null;
     for (const off of this.unsubscribe.splice(0)) off();
   }
 

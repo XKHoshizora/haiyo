@@ -60,13 +60,15 @@ export function testClock(): TestClock {
  */
 const HARNESS_STATEMENT_TIMEOUT = "110s";
 
+/** Empties every table but the migrations', taking them in name order (a known order: tests/harness.test.ts). */
 async function truncateAll(db: Db): Promise<void> {
   await db.tx(async (c) => {
     await c.query(`set local statement_timeout = '${HARNESS_STATEMENT_TIMEOUT}'`);
     const { rows } = await c.query<{ t: string }>(
       `select format('%I.%I', schemaname, tablename) as t
          from pg_tables
-        where schemaname = 'public' and tablename <> $1`,
+        where schemaname = 'public' and tablename <> $1
+        order by tablename`,
       [MIGRATIONS_TABLE],
     );
     if (rows.length === 0) return;
@@ -85,8 +87,10 @@ const idleNow = async (idle: (() => Promise<void>) | undefined): Promise<boolean
  * Waits until the app has nothing of its own under way — what a test leaves behind when it ends: a reply the worker's
  * loop claimed or is about to claim, the memory reviewer's and proactive scheduler's jobs, the memory counters written
  * without anyone waiting (`memory/stats.ts`), the realtime hub's deliveries, and (what none of those names) any
- * statement of this database still running for another connection. A truncate that starts while any of those is still
- * writing takes its table locks one by one against theirs, and Postgres ends the cycle with `deadlock detected`.
+ * transaction of this database still open on another connection — one running a statement, and one between two
+ * statements (`idle in transaction`) alike: a transaction that has read one table and is about to read another holds the
+ * first while it waits for the second. A truncate that starts while any of those is still at work takes its table locks
+ * one by one against theirs, and Postgres ends the cycle with `deadlock detected` (tests/harness.test.ts).
  * Nothing here retries: it only does not start the truncate until the work is over. It looks until two looks in a row
  * find everything quiet (work can start work: a reply's follow-up, a delivery's next step), and gives up after
  * `IDLE_WAIT_MS` (something a test leaves running on purpose then costs that, once, as it always did the truncate).
@@ -103,10 +107,12 @@ async function untilIdle(app: FastifyInstance, db: Db, backgroundWorker: boolean
       if ((await app.agentWorker.drain()) > 0) busy = true;
       if (!(await idleNow(() => app.agentWorker.idle()))) busy = true;
     }
-    const active = await db.query<{ n: number }>(
-      "select count(*)::int as n from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() and state = 'active'",
+    const open = await db.query<{ n: number }>(
+      `select count(*)::int as n from pg_stat_activity
+        where datname = current_database() and pid <> pg_backend_pid() and backend_type = 'client backend'
+          and (state = 'active' or state like 'idle in transaction%')`,
     );
-    if (active.rows[0]!.n > 0) busy = true;
+    if (open.rows[0]!.n > 0) busy = true;
     if (busy) {
       quiet = 0;
       await new Promise((r) => setTimeout(r, 5));
@@ -114,6 +120,23 @@ async function untilIdle(app: FastifyInstance, db: Db, backgroundWorker: boolean
       quiet++;
       await new Promise((r) => setImmediate(r));
     }
+  }
+}
+
+/**
+ * What runs between two tests: the database emptied once the app is quiet (`untilIdle`), with nothing started by a timer
+ * meanwhile — the reply worker's loop is held from before the first look until the truncate has ended (its poll and its
+ * wake-ups wait; what they asked for is claimed once released), the hub's heartbeat has no timer under the harness
+ * (`BuildOptions.heartbeat`), and the sweeps none unless a file asks for one (`useApp`); the proactive scheduler's and the
+ * memory reviewer's timers are part of their `idle()`.
+ */
+export async function betweenTests(app: FastifyInstance, db: Db, backgroundWorker: boolean): Promise<void> {
+  const release = app.agentWorker.hold();
+  try {
+    await untilIdle(app, db, backgroundWorker);
+    await truncateAll(db);
+  } finally {
+    release();
   }
 }
 
@@ -144,7 +167,7 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * runs outside the app's statement timeout.
  */
 export function useApp(
-  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools"> & {
+  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat"> & {
       memory?: boolean;
       tools?: boolean;
     } = {},
@@ -164,6 +187,8 @@ export function useApp(
     ...(agentWorker === false ? { agentWorker } : {}),
     // The mail sender's timer is off in tests unless a file asks for it (`app.mailSender.runOnce()` delivers by hand).
     mail: { sender: false, ...mail },
+    // Nor does the hub's heartbeat run on a timer (`app.realtime.tick()` beats by hand): see `betweenTests`.
+    heartbeat: false,
   };
   let instance: FastifyInstance | undefined;
   let database: Db | undefined;
@@ -208,9 +233,8 @@ export function useApp(
   });
 
   beforeEach(async () => {
-    // Before the truncate, what the previous test left running is over (see `untilIdle`).
-    await untilIdle(current(instance), current(database), agentWorker !== false);
-    await truncateAll(current(database));
+    // Before the truncate, what the previous test left running is over, and nothing starts meanwhile (`betweenTests`).
+    await betweenTests(current(instance), current(database), agentWorker !== false);
   });
 
   afterAll(async () => {
