@@ -501,6 +501,7 @@ describe("the memory configuration", () => {
     freeDailyPoints: 20,
     changesSweepMs: 3_600_000,
     summaryMaxWeight: 1000,
+    summaryMinIntervalMs: 600_000,
     summaryMinFoldWeight: 500,
   };
 
@@ -549,6 +550,9 @@ describe("the memory configuration", () => {
       expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY/);
     }
     for (const bad of ['{"summaryMinMessages":20}', '{"summaryMinMessages":5,"summaryMaxWeight":800}']) expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY.*summaryMinMessages/);
+    // The interval between a pair's summary calls after one is written: ten minutes by default, 0 for none, at most a day.
+    expect(loadConfig({ ...base, MEMORY: '{"summaryMinIntervalMs":0}' }).memory.summaryMinIntervalMs).toBe(0);
+    for (const bad of ['{"summaryMinIntervalMs":-1}', '{"summaryMinIntervalMs":1.5}', '{"summaryMinIntervalMs":86400001}']) expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY/);
     // A review's window no longer has to hold a summary's minimum: any size the review allows is accepted.
     expect(loadConfig({ ...base, MEMORY: '{"reviewMessages":10}' }).memory).toMatchObject({ reviewMessages: 10 });
   });

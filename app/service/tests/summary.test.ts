@@ -48,7 +48,8 @@ const ENV = {
   AGENT_TIERS: JSON.stringify({ free: 20, plus: 25 }),
   // Replies use `small`; the memory calls (the summary's) the large `keeper`, so that a job's input always fits.
   SITE_MODELS: JSON.stringify([model("small"), model("keeper", { contextTokens: 200_000, maxOutputTokens: 4000, inputMicroPerToken: 2 })]),
-  MEMORY: JSON.stringify({ model: "keeper" }),
+  // No minimum interval between a pair's summaries unless a test sets one (the interval's own tests do).
+  MEMORY: JSON.stringify({ model: "keeper", summaryMinIntervalMs: 0 }),
 };
 const gateway = scriptedGateway();
 const logLines: string[] = [];
@@ -790,12 +791,22 @@ describe("a summary never leaves its pair", () => {
 // --- fix round 1 -----------------------------------------------------------------------------------------------------
 
 /** What the job is handed when a test runs it straight (`runSummary`), and what it said of its attempt. */
-type Window = { from: number; upto: number };
-function jobContext(tried: Window | null = null): { ctx: SummaryContext; attempts: Array<Window | null> } {
-  const attempts: Array<Window | null> = [];
-  return { ctx: { closing: new AbortController().signal, summaryTried: tried, summaryAttempted: (window) => void attempts.push(window) }, attempts };
+/** What the job is handed when a test runs it straight (`runSummary`): as a new process would, nothing but its shutdown signal. */
+function jobContext(): { ctx: SummaryContext } {
+  return { ctx: { closing: new AbortController().signal } };
 }
-const jobDeps = () => ({ db, config: app.deps.config, models: gateway, log: app.log, inFlight: new Set<string>() });
+/** The job's dependencies on `d` (the app's database by default), on the test's clock. */
+const jobDeps = (d: Db = db) => ({ db: d, config: app.deps.config, models: gateway, log: app.log, inFlight: new Set<string>(), now: clock.now });
+/** The pair's attempt state (migration 059): the last attempt's window end, the failures in a row, when it may be asked again, the window's cap. */
+async function attemptOf(conv: string, agentId: string): Promise<{ upto: number | null; failures: number; notBefore: number | null; windowMessages: number | null } | null> {
+  const { rows } = await db.query<{ upto: string | null; failures: number; not_before: Date | null; window_messages: number | null }>(
+    "select attempt_upto::text as upto, failures, not_before, window_messages from conversation_summary_attempts where conversation_id = $1 and agent_id = $2",
+    [conv, agentId],
+  );
+  const r = rows[0];
+  return r ? { upto: r.upto === null ? null : Number(r.upto), failures: r.failures, notBefore: r.not_before === null ? null : r.not_before.getTime(), windowMessages: r.window_messages } : null;
+}
+const MINUTE = 60_000;
 const seqOf = async (conv: string): Promise<number> => Number((await db.query<{ s: string }>("select seq::text as s from conversations where id = $1", [conv])).rows[0]!.s);
 
 describe("fix round 1", () => {
@@ -831,16 +842,15 @@ describe("fix round 1", () => {
     }
   });
 
-  it("I-1: a job whose window weighs less than summaryMinFoldWeight makes no call and sets no gate", async () => {
+  it("I-1: a job whose window weighs less than summaryMinFoldWeight makes no call and writes no state", async () => {
     const w = await own("ib");
     const seeded = await longConversation(w, 30);
     const seqs = [...seeded.values()];
     // Four long lines (about 408 weight) past what the summary covers: below the threshold of 500.
     await storeSummary(w.conv, w.agent.id, seqs[0]!, seqs[25]!, saidAs(ITEMS, { p1: w.owner.id, p2: w.agent.id }));
-    const { ctx, attempts } = jobContext();
-    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs[29]! }, ctx);
+    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs[29]! }, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(0);
-    expect(attempts).toEqual([]);
+    expect(await attemptOf(w.conv, w.agent.id)).toBeNull();
   });
 
   it("C-1: namesakes of 主人, 助手, 你 and of the owner's own name are members by account — in the call's roster and in the passage; only the owner's account is 你的主人, only the Agent itself is 你", async () => {
@@ -988,7 +998,7 @@ describe("fix round 1", () => {
     }
   });
 
-  it("M-2: a call that could not start because the owner had as many calls running as they may sets no gate", async () => {
+  it("M-2: a call that could not start because the owner had as many calls running as they may changes no state; the next try calls", async () => {
     const w = await own("ih");
     const seqs = [...(await longConversation(w, 40)).values()];
     const running = await db.query<{ id: string }>(
@@ -997,30 +1007,28 @@ describe("fix round 1", () => {
       [w.owner.id, app.deps.config.agentMaxConcurrentRuns],
     );
     const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: seqs[35]! };
-    const capped = jobContext();
-    await runSummary(jobDeps(), job, capped.ctx);
+    await runSummary(jobDeps(), job, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(0);
-    expect(capped.attempts).toEqual([]);
+    expect(await attemptOf(w.conv, w.agent.id)).toBeNull();
     await db.query("delete from agent_runs where id = any($1::uuid[])", [running.rows.map((r) => r.id)]);
     gateway.reply(ANSWER);
-    const free = jobContext();
-    await runSummary(jobDeps(), job, free.ctx);
+    await runSummary(jobDeps(), job, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(1);
-    expect(free.attempts).toEqual([null]);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ upto: seqs[35], failures: 0, windowMessages: null });
   });
 
-  it("M-3: an answer with no item never replaces a summary that says something", async () => {
+  it("M-3: an answer with no item — nothing worth keeping — keeps a summary's items and advances what it covers; it is no failure", async () => {
     const w = await own("ii");
     const seqs = [...(await longConversation(w, 50)).values()];
     const stored = saidAs(ITEMS, { p1: w.owner.id, p2: w.agent.id });
     await storeSummary(w.conv, w.agent.id, seqs[0]!, seqs[9]!, stored);
     gateway.reply(answerOf({}));
-    const { ctx, attempts } = jobContext();
-    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs[40]! }, ctx);
+    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs[40]! }, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(1);
-    expect((await summaryOf(w.conv, w.agent.id))!).toEqual({ from: seqs[0], upto: seqs[9], items: stored });
-    expect(await counted("summary_failed")).toBe(1);
-    expect(attempts).toEqual([{ from: seqs[9], upto: seqs[40] }]);
+    expect((await summaryOf(w.conv, w.agent.id))!).toEqual({ from: seqs[0], upto: seqs[40], items: stored });
+    expect(await counted("summary_failed")).toBe(0);
+    expect(await counted("summary_nothing_new")).toBe(1);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ upto: seqs[40], failures: 0, windowMessages: null });
   });
 
   it("M-4: a deleted Agent's summary of its own conversation goes with the delete", async () => {
@@ -1041,10 +1049,9 @@ describe("tidy round", () => {
     const texts = Array.from({ length: 100 }, (_, i) => (i % 25 === 0 ? long(i) : "\u200b\u200b"));
     const seqs = await seed(w.conv, [w.owner.id, w.agent.id], texts);
     expect(texts.filter((t) => t.startsWith("第")).length).toBe(4);
-    const { ctx, attempts } = jobContext();
-    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, ctx);
+    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(0);
-    expect(attempts).toEqual([]);
+    expect(await attemptOf(w.conv, w.agent.id)).toBeNull();
   });
 
   it("M-B: an item whose said_by is absent or no key of the call's roster — an unknown key, a label, a name, a number — is dropped and counted; only an explicit null is nobody", async () => {
@@ -1080,21 +1087,41 @@ describe("tidy round", () => {
     expect(await counted("summary_who_unknown")).toBe(6);
   });
 
-  it("M-C: an answer with no item is no first summary: nothing stored, the messages not swallowed; so is one that is no JSON", async () => {
+  it("M-C: an answer not in the asked shape — text in the old shape, an object that is not the four lists — is a failure, asked again five minutes on; the four lists empty fold the window into a summary with no item, which no reply is shown", async () => {
     const w = await own("tc");
-    await longConversation(w, 60);
-    await say(w.owner, w.conv, "一");
-    await reply("好。", answerOf({}));
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! };
+    // Text in the old shape — section headings and lines — is no answer.
+    gateway.reply(["人物与称呼", "主人叫 tc", "说过的事", "定下的事", "还没解决的"].join("\n"));
+    const at = clock.now();
+    await runSummary(jobDeps(), job, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(1);
     expect(await summaryOf(w.conv, w.agent.id)).toBeNull();
     expect(await counted("summary_failed")).toBe(1);
-    // Text in the old shape — section headings and lines — is no answer either.
-    const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: (await seqOf(w.conv)) - 1 };
-    gateway.reply(["人物与称呼", "主人叫 tc", "说过的事", "定下的事", "还没解决的"].join("\n"));
+    const first = (await attemptOf(w.conv, w.agent.id))!;
+    expect(first).toMatchObject({ upto: seqs.at(-1), failures: 1, windowMessages: null });
+    expect(first.notBefore! - at).toBeGreaterThanOrEqual(5 * MINUTE);
+    expect(first.notBefore! - at).toBeLessThan(5 * MINUTE + 10_000);
+    // Nor is an object that is not the four lists.
+    clock.advance(5 * MINUTE + 1000);
+    gateway.reply(JSON.stringify({ 说过的事: "聊了旅行" }));
     await runSummary(jobDeps(), job, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(2);
     expect(await summaryOf(w.conv, w.agent.id)).toBeNull();
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 2 });
+    // The four lists, all empty: nothing worth keeping, no failure. The window is folded — what is covered moves on — into a
+    // summary with no item, which no reply is shown.
+    clock.advance(10 * MINUTE + 1000);
+    gateway.reply(answerOf({}));
+    await runSummary(jobDeps(), job, jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(3);
+    expect(await summaryOf(w.conv, w.agent.id)).toEqual({ from: seqs[0], upto: seqs.at(-1), items: sections({}) });
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 0, windowMessages: null });
     expect(await counted("summary_failed")).toBe(2);
+    expect(await counted("summary_nothing_new")).toBe(1);
+    const pair = await readPairSummary(db, { agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.conv, group: false }, app.deps.config.memory.summaryMaxWeight);
+    expect(pair.stored).not.toBeNull();
+    expect(pair.shown).toBeNull();
   });
 
   it("M-D: a reply is shown each person of its summary by the name and account its roster gives them, and the role its marked label gives them", async () => {
@@ -1204,10 +1231,9 @@ describe("final review", () => {
     }
     expect(seqs).toHaveLength(10);
     const job = (upTo: number) => ({ kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo });
-    const none = jobContext();
-    await runSummary(jobDeps(), job(seqs.at(-1)!), none.ctx);
+    await runSummary(jobDeps(), job(seqs.at(-1)!), jobContext().ctx);
     expect(summaryCalls()).toHaveLength(0);
-    expect(none.attempts).toEqual([]);
+    expect(await attemptOf(w.conv, w.agent.id)).toBeNull();
     // One more line: past the threshold. The call is made, and shown none of the acknowledgements.
     const [last] = await seed(w.conv, [w.agent.id], [long(4)]);
     gateway.reply(ANSWER);
@@ -1419,7 +1445,7 @@ describe("redesign B, fix round 1", () => {
     expect(passageOf(replyCalls()[1]!)!.说过的事).toEqual(kept.map((i) => ({ said_by: MEMBER("长".repeat(40), "szm"), text: i.text })));
   });
 
-  it("N-m1: when the cap binds, what is stored is held with every name at its longest, so a rename — to 40 CJK characters, or to 40 emoji — drops nothing a reply is shown; the row stays as stored", async () => {
+  it("N-m1: when the cap binds and a rename — to 40 CJK characters, or to 40 emoji — makes the passage heavier, names are shortened first and no item a reply is shown is dropped; the row stays as stored", async () => {
     const w = await groupWorld("sy", 0);
     await seed(w.g, [w.m.id], Array.from({ length: 120 }, (_, i) => long(i)));
     await say(w.v, w.g, `@${w.agent.handle} 说到哪了`);
@@ -1437,8 +1463,13 @@ describe("redesign B, fix round 1", () => {
       await reply("好。");
       const call = replyCalls().at(-1)!;
       expect(weight(JSON.stringify(passageRaw(call)!))).toBeLessThanOrEqual(cap);
-      // Every item stored is shown, under the name of now.
-      expect(passageOf(call)!.说过的事).toEqual(kept.map((i) => ({ said_by: MEMBER(name, "sym"), text: i.text })));
+      // Every item stored is shown, by account; the name, shortened when it had to be, is the start of the name of now.
+      const shown = passageOf(call)!.说过的事;
+      expect(shown.map((i) => i.text)).toEqual(kept.map((i) => i.text));
+      for (const i of shown) {
+        expect(i.said_by).toMatchObject({ role: "群成员", account: "@sym" });
+        expect(name.startsWith(i.said_by!.name!)).toBe(true);
+      }
     }
     expect((await summaryOf(w.g, w.agent.id))!.items!.说过的事).toEqual(kept);
   });
@@ -1618,13 +1649,12 @@ describe("redesign B, fix round 3", () => {
     expect(summaryCalls()).toHaveLength(1);
   });
 
-  it("N-I1: tiny chatter — 200 lines of 哈哈 and 好的, about 400 weight — is not worth a call: no model call, no gate", async () => {
+  it("N-I1: tiny chatter — 200 lines of 哈哈 and 好的, about 400 weight — is not worth a call: no model call, no state", async () => {
     const w = await own("tz");
     const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 200 }, (_, i) => (i % 2 === 0 ? "哈哈" : "好的")));
-    const { ctx, attempts } = jobContext();
-    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, ctx);
+    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
     expect(summaryCalls()).toHaveLength(0);
-    expect(attempts).toEqual([]);
+    expect(await attemptOf(w.conv, w.agent.id)).toBeNull();
     expect((await db.query<{ n: number }>("select count(*)::int as n from agent_runs where owner_id = $1 and purpose = 'memory'", [w.owner.id])).rows[0]!.n).toBe(0);
   });
 
@@ -1644,30 +1674,203 @@ describe("redesign B, fix round 3", () => {
     expect(summaryCalls()).toHaveLength(1);
   });
 
-  it("N-I1: no path asks the model twice for the same window: an answer that wrote nothing is not asked again until what is new past its window is worth it", async () => {
-    const w = await own("tv");
-    const job = (upTo: number) => ({ kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo });
-    const six = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 6 }, (_, i) => long(i)));
-    gateway.reply("这不是 JSON");
-    const first = jobContext();
-    await runSummary(jobDeps(), job(six.at(-1)!), first.ctx);
+  it("N3-I1: a full window whose call fails while the provider is down is asked again after 5, then 10 minutes — never twice within one — and the summary resumes without a restart", async () => {
+    const w = await own("ba");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 250 }, (_, i) => mid(i)));
+    const run = () => runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
+    gateway.fail("provider_unavailable");
+    await run();
     expect(summaryCalls()).toHaveLength(1);
-    expect(await summaryOf(w.conv, w.agent.id)).toBeNull();
-    const window = first.attempts[0]!;
-    expect(window).toEqual({ from: expect.any(Number), upto: six.at(-1) });
-    // The same window: no call.
-    await runSummary(jobDeps(), job(six.at(-1)!), jobContext(window).ctx);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 1, windowMessages: null });
+    // Within the backoff: no call, however often a job comes.
+    await run();
+    clock.advance(4 * MINUTE);
+    await run();
     expect(summaryCalls()).toHaveLength(1);
-    // One more line past it (about 102 weight, below the threshold): no call either.
-    const [seventh] = await seed(w.conv, [w.owner.id], [long(6)]);
-    await runSummary(jobDeps(), job(seventh!), jobContext(window).ctx);
-    expect(summaryCalls()).toHaveLength(1);
-    // Five more past it (about 510): asked again, once.
-    const more = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 4 }, (_, i) => long(i + 7)));
-    gateway.reply(ANSWER);
-    await runSummary(jobDeps(), job(more.at(-1)!), jobContext(window).ctx);
+    clock.advance(MINUTE + 1000);
+    gateway.fail("provider_unavailable");
+    await run();
     expect(summaryCalls()).toHaveLength(2);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 2, windowMessages: null });
+    clock.advance(9 * MINUTE);
+    await run();
+    expect(summaryCalls()).toHaveLength(2);
+    // The provider is back: the same full window, asked once more, is folded; the state starts over.
+    clock.advance(MINUTE + 1000);
+    gateway.reply(ANSWER);
+    await run();
+    expect(summaryCalls()).toHaveLength(3);
+    expect(await summaryOf(w.conv, w.agent.id)).toMatchObject({ upto: seqs[199] });
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ upto: seqs[199], failures: 0, windowMessages: null });
+  });
+
+  it("N3-I1: an answer that cannot be used for a full window — unusable, or cut at its limit — halves the next window, down to a floor; it gets through, and no message is skipped", async () => {
+    const w = await own("bb");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 250 }, (_, i) => mid(i)));
+    const run = () => runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
+    gateway.reply("这不是 JSON");
+    await run();
+    expect(inputOf(summaryCalls().at(-1)!).messages).toHaveLength(200);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 1, windowMessages: 100 });
+    clock.advance(5 * MINUTE + 1000);
+    gateway.reply('{"人物与称呼":[{"said_by":"p1","text":"说', { truncated: true });
+    await run();
+    expect(inputOf(summaryCalls().at(-1)!).messages).toHaveLength(100);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 2, windowMessages: 50 });
+    clock.advance(10 * MINUTE + 1000);
+    gateway.reply(ANSWER);
+    await run();
+    expect(summaryCalls()).toHaveLength(3);
+    expect(inputOf(summaryCalls().at(-1)!).messages).toHaveLength(50);
+    // Written from the stay's start: the first 50 of the window, nothing skipped; the next window is whole again.
+    expect(await summaryOf(w.conv, w.agent.id)).toMatchObject({ from: seqs[0], upto: seqs[49] });
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 0, windowMessages: null });
+    // The floor: a halved window never takes fewer than ten messages.
+    const { nextWindow } = await import("../src/agents/summary/job.ts");
+    expect([nextWindow(200), nextWindow(25), nextWindow(15), nextWindow(10), nextWindow(3)]).toEqual([100, 12, 10, 10, 10]);
+  });
+
+  it("N3-I1: the backoff doubles from five minutes and stops at a day", async () => {
+    const { backoffMs } = await import("../src/agents/summary/job.ts");
+    expect([1, 2, 3, 4, 9, 10, 20].map(backoffMs)).toEqual([5, 10, 20, 40, 1280, 1440, 1440].map((m) => m * MINUTE));
+  });
+
+  it("N3-m1: a member posting long messages drives at most one summary call per summaryMinIntervalMs per pair", async () => {
+    const interval = app.deps.config.memory.summaryMinIntervalMs;
+    app.deps.config.memory.summaryMinIntervalMs = 10 * MINUTE;
+    try {
+      const w = await groupWorld("iv", 0);
+      await seed(w.g, [w.m.id], Array.from({ length: 30 }, (_, i) => long(i)));
+      // Every reply pushes long messages out of the window: worth a call each time, were it not for the interval.
+      for (let k = 0; k < 4; k++) {
+        await seed(w.g, [w.m.id], Array.from({ length: 10 }, (_, i) => long(i, `第${k}轮`)));
+        await say(w.m, w.g, `@${w.agent.handle} 第${k}问`);
+        await reply("好。", ...(k === 0 ? [ANSWER] : []));
+      }
+      expect(summaryCalls()).toHaveLength(1);
+      clock.advance(10 * MINUTE + 1000);
+      await seed(w.g, [w.m.id], Array.from({ length: 10 }, (_, i) => long(i, "再")));
+      await say(w.m, w.g, `@${w.agent.handle} 再问`);
+      await reply("好。", ANSWER);
+      expect(summaryCalls()).toHaveLength(2);
+    } finally {
+      app.deps.config.memory.summaryMinIntervalMs = interval;
+    }
+  });
+
+  it("N3-m2: with no memory model, a job warns once per backoff step and reads no window while it waits", async () => {
+    const w = await own("nm");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! };
+    // No memory model: none named, and no free site model to fall back on.
+    const [model, siteModels] = [app.deps.config.memory.model, app.deps.config.siteModels];
+    app.deps.config.memory.model = null;
+    app.deps.config.siteModels = [];
+    try {
+      const warned = () => logLines.filter((l) => l.includes("summary: no memory model to call")).length;
+      await runSummary(jobDeps(), job, jobContext().ctx);
+      expect(warned()).toBe(1);
+      expect(await counted("summary_no_model")).toBe(1);
+      expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 1 });
+      // While it waits: a look at one row, no window read, no warning.
+      const spy = spyDb(app.deps.db);
+      for (let k = 0; k < 5; k++) await runSummary(jobDeps(spy.db), job, jobContext().ctx);
+      expect(spy.sql.filter((q) => /order by coalesce\(r\.covers_seq, m\.seq\), m\.seq/.test(q))).toEqual([]);
+      expect(warned()).toBe(1);
+      // The next step: one more warning.
+      clock.advance(5 * MINUTE + 1000);
+      await runSummary(jobDeps(), job, jobContext().ctx);
+      expect(warned()).toBe(2);
+      expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 2 });
+    } finally {
+      app.deps.config.memory.model = model;
+      app.deps.config.siteModels = siteModels;
+    }
+    expect(summaryCalls()).toHaveLength(0);
+  });
+
+  it("N3-m2: the memory allowance spent changes no state: the next job looks again, and calls once it is back", async () => {
+    const w = await own("na");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! };
+    const allowance = app.deps.config.memory.freeDailyPoints;
+    app.deps.config.memory.freeDailyPoints = 0;
+    try {
+      await runSummary(jobDeps(), job, jobContext().ctx);
+      await runSummary(jobDeps(), job, jobContext().ctx);
+    } finally {
+      app.deps.config.memory.freeDailyPoints = allowance;
+    }
+    expect(summaryCalls()).toHaveLength(0);
+    expect(await attemptOf(w.conv, w.agent.id)).toBeNull();
+    gateway.reply(ANSWER);
+    await runSummary(jobDeps(), job, jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(1);
+  });
+
+  it("restart: a new process (a new job context, the same database) does not call again before not_before", async () => {
+    const w = await own("rs");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! };
+    gateway.fail("provider_unavailable");
+    await runSummary(jobDeps(), job, jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    // As if the service restarted: a fresh context and fresh dependencies, nothing remembered but the database.
+    await runSummary({ ...jobDeps(), inFlight: new Set<string>() }, job, { closing: new AbortController().signal });
+    expect(summaryCalls()).toHaveLength(1);
+    clock.advance(5 * MINUTE + 1000);
+    gateway.reply(ANSWER);
+    await runSummary({ ...jobDeps(), inFlight: new Set<string>() }, job, { closing: new AbortController().signal });
+    expect(summaryCalls()).toHaveLength(2);
+  });
+
+  it("two connections deciding at once pay for one call: the claim is taken under the pair's lock", async () => {
+    const w = await own("tc2");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! };
+    gateway.reply(ANSWER);
+    await Promise.all([runSummary(jobDeps(), job, jobContext().ctx), runSummary(jobDeps(), job, jobContext().ctx)]);
+    expect(summaryCalls()).toHaveLength(1);
     expect(await summaryOf(w.conv, w.agent.id)).not.toBeNull();
+  });
+
+  it("a claimed window that the service abandons mid-call is asked again only once the claim lapses", async () => {
+    const w = await own("cl");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    const job = { kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! };
+    const held = gateway.hang();
+    const closing = new AbortController();
+    const first = runSummary(jobDeps(), job, { closing: closing.signal });
+    await held.reached;
+    // Another process meanwhile: the window is claimed.
+    await runSummary(jobDeps(), job, jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    closing.abort();
+    await first;
+    // Still claimed after the shutdown: not asked again before the claim lapses (the run's deadline and a minute).
+    await runSummary(jobDeps(), job, jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    clock.advance(app.deps.config.agentRunTimeoutMs + MINUTE + 1000);
+    gateway.reply(ANSWER);
+    await runSummary(jobDeps(), job, jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(2);
+  });
+
+  it("a new topic, and the end of a stay, forget the attempt state with the summary", async () => {
+    const w = await own("fg");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    gateway.fail("provider_unavailable");
+    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
+    expect(await attemptOf(w.conv, w.agent.id)).not.toBeNull();
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.conv}/topic`)).status).toBe(201);
+    expect(await attemptOf(w.conv, w.agent.id)).toBeNull();
+    const g = await groupWorld("fh2", 0);
+    const gs = await seed(g.g, [g.v.id, g.m.id], Array.from({ length: 30 }, (_, i) => long(i)));
+    gateway.fail("provider_unavailable");
+    await runSummary(jobDeps(), { kind: "summary", agentId: g.agent.id, conversationId: g.g, upTo: gs.at(-1)! }, jobContext().ctx);
+    expect(await attemptOf(g.g, g.agent.id)).not.toBeNull();
+    expect((await api(app, g.v, "DELETE", `/api/conversations/${g.g}/members/${g.agent.id}`)).status).toBe(200);
+    expect(await attemptOf(g.g, g.agent.id)).toBeNull();
   });
 
   it("N-I1: a full window — 200 lines, whatever they weigh — is folded, so a long run of one-word lines cannot hold back what follows it", async () => {
@@ -1680,8 +1883,57 @@ describe("redesign B, fix round 3", () => {
     expect(await summaryOf(w.conv, w.agent.id)).toMatchObject({ upto: seqs[199] });
   });
 
+  it("a full window of chatter answered with no item is nothing worth keeping: folded, no failure, and the next window starts after it with no old summary", async () => {
+    const w = await own("ce");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 250 }, (_, i) => (i % 2 === 0 ? "哈哈" : "好的")));
+    const run = (upTo: number) => runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo }, jobContext().ctx);
+    gateway.reply(answerOf({}));
+    await run(seqs.at(-1)!);
+    expect(summaryCalls()).toHaveLength(1);
+    expect(inputOf(summaryCalls()[0]!).messages).toHaveLength(200);
+    expect(await summaryOf(w.conv, w.agent.id)).toEqual({ from: seqs[0], upto: seqs[199], items: sections({}) });
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ upto: seqs[199], failures: 0, windowMessages: null });
+    expect(await counted("summary_failed")).toBe(0);
+    // The other 50 one-word lines: under the threshold, and not a full window — no call.
+    await run(seqs.at(-1)!);
+    expect(summaryCalls()).toHaveLength(1);
+    // Then something worth keeping: the call is given those 50 and what came after, from where the fold ended, and no old summary.
+    const more = await seed(w.conv, [w.owner.id], Array.from({ length: 6 }, (_, i) => long(i)));
+    gateway.reply(ANSWER);
+    await run(more.at(-1)!);
+    expect(summaryCalls()).toHaveLength(2);
+    const input = inputOf(summaryCalls()[1]!);
+    expect(input.summary).toBeNull();
+    expect(input.messages).toHaveLength(56);
+    expect(await summaryOf(w.conv, w.agent.id)).toMatchObject({ from: seqs[0], upto: more.at(-1) });
+  });
+
   it("N-I1: summaryMinFoldWeight defaults to half of summaryMaxWeight", () => {
     expect(app.deps.config.memory.summaryMinFoldWeight).toBe(500);
+  });
+
+  it("N-m1: the passage's names are shortened before any item is dropped, down to empty — role and account still say who", async () => {
+    const { fitted, shownForm } = await import("../src/agents/summary/prompt.ts");
+    const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
+    const people = new Map([
+      [ids[0]!, { kind: "member" as const, name: "长".repeat(40), account: "@aaa" }],
+      [ids[1]!, { kind: "owner" as const, name: "主人的名字", account: "@bbb" }],
+    ]);
+    const items = sections({ 说过的事: Array.from({ length: 6 }, (_, i) => ({ said_by: ids[i % 2]!, text: `第${i}件事` })) }) as Parameters<typeof shownForm>[0];
+    const whole = weight(JSON.stringify(shownForm(items, people)));
+    // Room for all: as it is.
+    expect(fitted(items, people, whole)).toEqual({ items, people });
+    // A little less: the names shortened, every item kept.
+    const short = fitted(items, people, whole - 20);
+    expect(short.items).toEqual(items);
+    expect(weight(JSON.stringify(shownForm(short.items, short.people)))).toBeLessThanOrEqual(whole - 20);
+    expect(Array.from(short.people.get(ids[0]!)!.name!).length).toBeLessThan(40);
+    // Less than the names can give: names empty, then items go from the top.
+    const empty = new Map([...people].map(([id, p]) => [id, { ...p, name: "" }]));
+    const bare = weight(JSON.stringify(shownForm(items, empty)));
+    const tight = fitted(items, people, bare - 1);
+    expect([...tight.people.values()].map((p) => p.name)).toEqual(["", ""]);
+    expect(tight.items.说过的事.length).toBeLessThan(6);
   });
 
   it("N-m2: the summary prompt asks for no speaker's name in a text", async () => {
