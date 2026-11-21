@@ -61,7 +61,7 @@ test("spec §7.1: sign up, verify, reset, befriend, chat both ways; history surv
   await expect(elsewhere.page.getByRole("heading", { name: "密码已重置" })).toBeVisible();
 
   // The reset ended Bo's first session: that browser is back at sign-in (its socket closed), told why.
-  await expect(bo.page.getByRole("heading", { name: "登录 Agent Family" })).toBeVisible();
+  await expect(bo.page.getByRole("heading", { name: "登录 Haiyo" })).toBeVisible();
   await expect(bo.page.getByText("登录已失效，请重新登录。")).toBeVisible();
   await expect.poll(() => boSocket.isClosed()).toBe(true);
   await signInUi(bo.page, { email: boId.email, password: oldPassword });

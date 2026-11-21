@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // Contacts, friend requests and blocks over the real data layer (fake transport and fake route API).
+import { PRODUCT_NAME } from "../src/brand.js";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
@@ -80,7 +81,7 @@ describe("contacts list", () => {
     await openRow("小安");
     for (const part of [".list-col", ".main-col"]) {
       const node = document.querySelector(part);
-      expect((node.textContent + (node.querySelector("input")?.placeholder ?? "")).replace("Agent Family", "")).not.toMatch(/Agent|主人|以谁的身份|扩展|恢复/);
+      expect((node.textContent + (node.querySelector("input")?.placeholder ?? "")).replace(PRODUCT_NAME, "")).not.toMatch(/Agent|主人|以谁的身份|扩展|恢复/);
     }
     expect(document.querySelector(".main-col select")).toBeNull();
   });

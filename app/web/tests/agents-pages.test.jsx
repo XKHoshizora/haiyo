@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // The Agent pages (list, create, edit, detail, pause, delete) and the "我的 Agent" group of the contacts, over the real
 // data layer with the fake transport and fake routes.
+import { PRODUCT_NAME } from "../src/brand.js";
 import "./markdown-ready.js";
 import { readFileSync } from "node:fs";
 import React from "react";
@@ -1297,7 +1298,7 @@ describe("contacts: 我的 Agent", () => {
     expect(row.querySelector(".row-preview").textContent).toBe("@helper");
     expect(document.querySelector(".list-col [role=tablist]")).toBeNull();
     expect(inList().getByRole("button", { name: "添加好友" })).toBeTruthy();
-    expect(document.querySelector(".list-col").textContent.replace("Agent Family", "").match(/Agent/g)).toHaveLength(2);
+    expect(document.querySelector(".list-col").textContent.replace(PRODUCT_NAME, "").match(/Agent/g)).toHaveLength(2);
     await click(row);
     expect(sectionShown()).toContain("消息");
     expect(chatTitle()).toBe("小助手");

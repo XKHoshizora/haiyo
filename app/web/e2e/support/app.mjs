@@ -144,7 +144,7 @@ export async function openContact(page, name) {
 export async function signOutUi(page) {
   await goTo(page, "设置");
   await page.getByRole("button", { name: "退出登录" }).click();
-  await expect(page.getByRole("heading", { name: "登录 Agent Family" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "登录 Haiyo" })).toBeVisible();
 }
 
 /** The sign-in screen, filled and submitted. */

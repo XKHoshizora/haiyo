@@ -27,7 +27,7 @@ test("sign-out in one tab ends the other tab's session (socket 4001) and it land
 
   await signOutUi(first);
 
-  await expect(second.getByRole("heading", { name: "登录 Agent Family" })).toHaveCount(1);
+  await expect(second.getByRole("heading", { name: "登录 Haiyo" })).toHaveCount(1);
   await expect(second).toHaveURL(/\/signin$/);
   await expect.poll(() => second.evaluate(() => window.__wsCloseCodes)).toContain(4001);
   expect(landings, "the second tab went to /signin exactly once").toHaveLength(1);

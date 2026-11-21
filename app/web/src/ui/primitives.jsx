@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import { X, Info, CircleAlert, CircleCheck, CirclePause } from "../icons.js";
+import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
 import { avatarUrl } from "../api/routes.js";
 import { entity, isAgent, nameOf, ownerOf, otherMember } from "../state/selectors.js";
@@ -33,7 +34,7 @@ export function Avatar({ id, size = 44, online = false, className = "" }) {
 }
 
 export function BrandMark({ size = 36 }) {
-  return <img className="brand-mark" src={asset("assets/agent-family-mark-v2.png")} width={size} height={size} alt="Agent Family" />;
+  return <img className="brand-mark" src={asset("assets/agent-family-mark-v2.png")} width={size} height={size} alt={PRODUCT_NAME} />;
 }
 
 // Composite of 2–4 speaking members. Never substitutes an owner's face for an Agent.

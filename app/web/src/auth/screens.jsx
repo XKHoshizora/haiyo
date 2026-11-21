@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import { PRODUCT_NAME } from "../brand.js";
 import { BrandMark, Btn, Field, Notice, focusInvalid } from "../ui/primitives.jsx";
 import { fieldOf, messageFor, verifyMessage } from "./errors.js";
 import { clearResetToken, navigate, takeResetToken } from "./router.js";
@@ -128,7 +129,7 @@ export function SignIn({ api, onSignedIn, expired }) {
   });
   return (
     <AuthCard
-      title="登录 Agent Family"
+      title={`登录 ${PRODUCT_NAME}`}
       footer={
         <>
           <Link to="/forgot">忘记密码</Link>
@@ -164,6 +165,7 @@ export function Register({ api }) {
     return (
       <AuthCard title="请查收邮箱" footer={<Link to="/signin">去登录</Link>}>
         <Notice tone="ok">我们已向 {sentTo} 发送了一封验证邮件。点击邮件里的链接完成验证，之后就可以登录了。</Notice>
+        <p className="muted">没收到？看看垃圾邮件箱；或者直接去登录，我们会再发一封。</p>
       </AuthCard>
     );
   }
@@ -186,6 +188,7 @@ export function Register({ api }) {
           <input type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} {...form.bind("handle")} />
         </Field>
       </FormBody>
+      <p className="muted">已经注册过？直接登录就行。</p>
     </AuthCard>
   );
 }

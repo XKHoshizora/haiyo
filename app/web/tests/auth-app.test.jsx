@@ -129,6 +129,13 @@ describe("sign-in", () => {
     await screen.findByRole("button", { name: "登录" });
   }
 
+  it("names the product Haiyo in the heading and on the mark", async () => {
+    await signedOutAt(signInApi());
+    expect(screen.getByRole("heading", { name: "登录 Haiyo" })).toBeTruthy();
+    expect(screen.getByAltText("Haiyo")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Agent Family");
+  });
+
   it("sets the right autocomplete attributes", async () => {
     await signedOutAt(signInApi());
     expect(screen.getByLabelText("邮箱").getAttribute("autocomplete")).toBe("username");
@@ -185,6 +192,23 @@ describe("register", () => {
     await screen.findByRole("button", { name: "注册" });
     return api;
   }
+
+  it("always carries the line that points a registered person to sign-in (it never depends on the address)", async () => {
+    await open(outApi({ register: vi.fn(async () => Promise.reject(new ApiError(400, "invalid_invite"))) }));
+    expect(screen.getByText("已经注册过？直接登录就行。")).toBeTruthy();
+    fill();
+    submit("注册");
+    await screen.findByText("邀请码无效或已过期，请向邀请你的人确认。");
+    expect(screen.getAllByText("已经注册过？直接登录就行。")).toHaveLength(1);
+  });
+
+  it("the check-your-mailbox page tells what to do when nothing arrives", async () => {
+    await open();
+    fill();
+    submit("注册");
+    await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
+    expect(screen.getByText("没收到？看看垃圾邮件箱；或者直接去登录，我们会再发一封。")).toBeTruthy();
+  });
 
   it("sets autocomplete for the new password and e-mail", async () => {
     await open();

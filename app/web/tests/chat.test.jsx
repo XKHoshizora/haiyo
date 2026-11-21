@@ -148,7 +148,7 @@ describe("conversation list", () => {
     expect(screen.getByRole("button", { name: /添加好友/ })).toBeTruthy();
     await openChat("周末小组");
     fireEvent.click(screen.getByRole("button", { name: "会话资料" }));
-    // (the list header's brand name "Agent Family" stays)
+    // (the list header's brand name stays)
     for (const part of [".list-col .menu", ".list-col .search", ".list-col .rows", ".main-col", ".side-col"]) {
       const node = document.querySelector(part);
       expect(node.textContent + (node.querySelector("input,textarea")?.placeholder ?? "")).not.toMatch(/Agent|主人|插话/);

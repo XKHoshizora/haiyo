@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // Settings (profile, avatar, blocked people), avatars on screen, the Agent empty state, the lazy application shell.
+import { PRODUCT_NAME } from "../src/brand.js";
 import React from "react";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -42,7 +43,7 @@ describe("settings list", () => {
     await openApp({ sync: baseSync });
     await goSettings();
     expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑"]);
-    const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll("Agent Family", "");
+    const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll(PRODUCT_NAME, "");
     for (const word of ["Agent", "设备", "演示", "重置", "示例数据"]) expect(text).not.toContain(word);
     expect(document.querySelector(".list-col .settings-me").textContent).toContain("Mei");
   });

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
 import { agentDeleted, convTitle, entity, lastPreview, TYPE_LABEL, otherMember } from "../state/selectors.js";
 import { ConvAvatar, IconBtn, Tag } from "../ui/primitives.jsx";
@@ -18,7 +19,7 @@ const FILTERS = [
 export function ListHeader({ title, action }) {
   return (
     <header className="list-head">
-      <p className="brand-name">Agent Family</p>
+      <p className="brand-name">{PRODUCT_NAME}</p>
       <div className="list-title">
         <h1>{title}</h1>
         {action}
