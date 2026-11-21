@@ -116,6 +116,14 @@ export interface SearchRowsOptions {
    * Absent or null: the reader alone decides.
    */
   alsoVisibleTo?: string | null;
+  /**
+   * A reply's own search (agents/tools/search.ts): never the messages reply run `runId` answers in `conversationId` — the
+   * calls it answers (`call_seqs`; its `covers_seq` when not known) and the latest message it covers (`covers_seq`) —
+   * which its model is shown already (item E: a question would otherwise match itself, and nothing would ever be "not
+   * found" there). Read in this same statement, so `limit` (and the paging flag made of it) counts what is left. Absent
+   * or null: nothing is left out.
+   */
+  answering?: { runId: string; conversationId: string } | null;
   limit: number;
 }
 
@@ -184,6 +192,10 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
         and ($13::uuid is null or exists (select 1 from memberships ov
                                            where ov.conversation_id = m.conversation_id and ov.principal_id = $13::uuid
                                              and ov.left_seq is null and ov.joined_seq < m.seq))
+        and ($14::uuid is null or m.conversation_id <> $15::uuid
+             or not exists (select 1 from agent_runs ar
+                             where ar.id = $14::uuid
+                               and (m.seq = ar.covers_seq or m.seq = any(coalesce(ar.call_seqs, array[ar.covers_seq])))))
       order by m.created_at desc, m.conversation_id desc, m.seq desc
       limit $12`,
     [
@@ -200,6 +212,8 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
       o.window?.calls ?? [],
       o.limit,
       o.alsoVisibleTo ?? null,
+      o.answering?.runId ?? null,
+      o.answering?.conversationId ?? null,
     ],
   );
   return rows;

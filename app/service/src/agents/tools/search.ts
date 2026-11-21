@@ -151,7 +151,9 @@ const timedOut = (err: unknown): boolean => (err as { code?: unknown } | null)?.
  * Runs one search for `scope`'s reply: refuses words too short or too heavy and dates not written as days without
  * touching the database; then, holding one of the Agent's search slots (as a person's search holds theirs: two at once,
  * four in the whole service; none free: `SEARCH_BUSY`), one read-only transaction under the search timeout
- * (`inSearchBudget`; past it: `SEARCH_TIMEOUT`). The output is `{about, more, results}` — `TOOL_MATERIAL`, then the
+ * (`inSearchBudget`; past it: `SEARCH_TIMEOUT`). It never finds the messages the run answers (`answering`, item E: the
+ * question is in the model's context already, and would otherwise match itself), so "nothing found" — and the elsewhere
+ * hook with it — is decided without them. The output is `{about, more, results}` — `TOOL_MATERIAL`, then the
  * paging flag before the results (so a cut of the result, runtime/loop.ts, keeps it), the newest `SEARCH_RESULTS_MAX`
  * at most, as many as fit `TOOLS.resultMaxWeight` — or, with nothing found, `{results: [], note}`. In a group nothing
  * found also starts the elsewhere hook (`ToolDeps.elsewhere`, Task 8) on its own, never awaited (`lookElsewhere`): what
@@ -215,7 +217,10 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
     const { rows } = await t.query<{ id: string }>("select conversation_id as id from memberships where principal_id = $1 and left_seq is null order by conversation_id", [scope.agentId]);
     conversationIds = rows.map((r) => r.id);
   }
-  const rows = await searchRows(t, scope.agentId, { conversationIds, ...o, timeZone: deps.config.siteTimezone, window, limit: SEARCH_RESULTS_MAX + 1 });
+  // Never what this run answers (its calls, the latest message it covers): its model is shown them already, and a question
+  // would match itself (item E). Left out in the same statement, so the page and `more` count what is left.
+  const answering = { runId: scope.id, conversationId: scope.conversationId };
+  const rows = await searchRows(t, scope.agentId, { conversationIds, ...o, timeZone: deps.config.siteTimezone, window, answering, limit: SEARCH_RESULTS_MAX + 1 });
   let ownerAsked = false;
   if (scope.group && rows.length === 0) {
     const asked = await t.query<{ only: boolean | null }>("select coalesce(asker_ids, '{}') = array[$2::uuid] as only from agent_runs where id = $1", [scope.id, scope.ownerId]);

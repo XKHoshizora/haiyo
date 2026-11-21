@@ -148,6 +148,18 @@ const slotOf = async (w: World, who: Actor) => (await api(app, who, "GET", `/api
 const ownSlot = async (w: World) => (await slotOf(w, w.owner)).runs.find((e: { agentId: string }) => e.agentId === w.agent.id)?.run;
 
 describe("a search in a group that finds nothing there", () => {
+  it("item E: a real question holding its own search words is not its own result — nothing is found in the group, and the whisper is made", async () => {
+    const w = await world();
+    const hook = createElsewhere(elsewhereDeps());
+    await say(w.mia, w.g, "@olive_bot 查一下群里有没有人说过蓝鲸计划");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("这个群的记录里没找到。");
+    expect(await toolWorker(toolDeps(hook)).runOnce()).toBe(true);
+    await hook.idle();
+    expect(outputs(gateway.calls.at(-1)!)[0]).toEqual({ results: [], note: "这个群的记录里没找到。" });
+    const [made] = await whispersOf(w.owner.id, w.g);
+    expect(made).toMatchObject({ status: "open", body: { text: FOUND_ELSEWHERE, actions: ["tell", "dismiss"] } });
+  });
+
   it("found elsewhere: one whisper to the owner, keeping references to what it found (never its text or names); she reads the hits; the model is told the plain not-found, and nobody else is sent or shown anything", async () => {
     const w = await world();
     const sockets = { owner: await connect(app, w.owner), mia: await connect(app, w.mia), ned: await connect(app, w.ned) };
