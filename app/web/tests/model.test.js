@@ -33,6 +33,17 @@ describe("applySync", () => {
     expect(s.conversations[G1].createdAt).toBeNull();
   });
 
+  it("keeps a group's avatar version, and nothing of it for a group without one, a direct chat or a bad number", () => {
+    const s = M.applySync(
+      M.initial(),
+      syncOf([direct(D1, ANN, { avatarVersion: 4 }), group(G1, { avatarVersion: 7 }), group("00000000-0000-4000-8000-0000000000c4", { avatarVersion: -1 }), group("00000000-0000-4000-8000-0000000000c5")]),
+    );
+    expect(s.conversations[G1].avatarVersion).toBe(7);
+    expect(s.conversations[D1].avatarVersion).toBeNull();
+    expect(s.conversations["00000000-0000-4000-8000-0000000000c4"].avatarVersion).toBeNull();
+    expect(s.conversations["00000000-0000-4000-8000-0000000000c5"].avatarVersion).toBeNull();
+  });
+
   it("knows whether older history may exist from the size of the window", () => {
     const full = M.applySync(M.initial(), syncOf([direct(D1, ANN, { lastSeq: 40 })], range(D1, 11, 40)));
     expect(full.conversations[D1].hasOlder).toBe(true);

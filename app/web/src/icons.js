@@ -28,6 +28,7 @@ export {
   Lock,
   LogOut,
   Menu,
+  Minus,
   MessageCircle,
   Monitor,
   Paperclip,

@@ -916,3 +916,21 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .handle-input { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .handle-input .handle-prefix { color: var(--ink-3); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
 .handle-input input { flex: 1; min-width: 0; }
+
+/* ───────── 调整头像: the stage, its circular frame and the zoom row */
+.avatar-adjust { display: flex; flex-direction: column; gap: 12px; }
+.avatar-adjust > p { margin: 0; }
+.avatar-stage {
+  --stage: min(280px, calc(100vw - 96px)); position: relative; overflow: hidden; width: var(--stage); aspect-ratio: 1; margin: 0 auto;
+  border-radius: 12px; background: #1d1b2e; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.avatar-stage:active { cursor: grabbing; }
+.avatar-stage:focus-visible { outline: 2px solid var(--purple); outline-offset: 3px; }
+.avatar-stage-picture { position: absolute; display: block; max-width: none; pointer-events: none; }
+.avatar-stage-note { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; font-size: 14px; }
+/* The circle is a hole in a dimming shadow; the square's corners outside it are the dimmed part. */
+.avatar-frame { position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.9); box-shadow: 0 0 0 100vmax rgba(20, 16, 36, 0.55); pointer-events: none; }
+.avatar-zoom { display: flex; align-items: center; gap: 8px; width: var(--stage-row, min(280px, calc(100vw - 96px))); margin: 0 auto; }
+.avatar-zoom input[type="range"] { flex: 1; min-width: 0; height: 44px; accent-color: var(--purple); }
+.avatar-zoom .icon-btn { flex: none; width: 44px; height: 44px; }
+.group-picture .avatar-fallback img { border-radius: 50%; }

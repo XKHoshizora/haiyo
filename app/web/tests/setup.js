@@ -1,3 +1,10 @@
+import { vi } from "vitest";
+
+// The avatar adjust dialog decodes and encodes pictures with a canvas, which jsdom does not have: every test sees the stand-in
+// (tests/avatar-fake.js). It is mocked here, before anything imports the real module; the arithmetic is tested for real in
+// tests/avatar-crop.test.js.
+vi.mock("../src/ui/avatarImage.js", () => import("./avatar-fake.js"));
+
 // The signed-in application is a lazy chunk (src/App.jsx). Tests that render <App> load it up front, so it is
 // ready the moment React asks for it and fake timers never wait on a module being read from disk.
 if (typeof document !== "undefined") await import("../src/AppShell.jsx");

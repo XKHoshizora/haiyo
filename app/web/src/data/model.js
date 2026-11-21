@@ -237,6 +237,8 @@ function metadata(entry) {
     title: entry.title ?? null,
     // A direct chat has no creator role, whatever the entry says.
     creatorId: isGroup ? entry.creatorId ?? null : null,
+    // A group's avatar: its change counter, or null for a group without one (the service sends it only when there is one).
+    avatarVersion: isGroup && isVersion(entry.avatarVersion) ? entry.avatarVersion : null,
     myRole: entry.myRole,
     closed: Boolean(entry.closed),
     peerId: isGroup || isAgent ? null : entry.peerId ?? null,

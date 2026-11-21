@@ -50,9 +50,22 @@ export function GroupAvatar({ ids, size = 46 }) {
   );
 }
 
+/** A group's own picture; when it cannot be shown (not loaded, gone), the composite of its members stands in. */
+function GroupPicture({ src, ids, size }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <GroupAvatar ids={ids} size={size} />;
+  return (
+    <span className="avatar group-picture" style={{ width: size, height: size }} role="img" aria-label="群头像">
+      <span className="avatar-img avatar-fallback" style={{ width: size, height: size }}>
+        <img key={src} src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
+      </span>
+    </span>
+  );
+}
+
 export function ConvAvatar({ conv, size = 46 }) {
   if (conv.type === "human" || conv.type === "agent") return <Avatar id={otherMember(conv)} size={size} />;
-  return <GroupAvatar ids={conv.members} size={size} />;
+  return conv.avatar ? <GroupPicture key={conv.avatar} src={conv.avatar} ids={conv.members} size={size} /> : <GroupAvatar ids={conv.members} size={size} />;
 }
 
 export function Tag({ tone = "agent", children }) {
@@ -125,7 +138,7 @@ export function Modal({ title, onClose, children, footer, wide }) {
   useEffect(() => {
     const previous = document.activeElement;
     const node = ref.current;
-    const focusables = () => node.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]");
+    const focusables = () => node.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])");
     const first = node.querySelector("[data-autofocus]") || focusables()[0];
     first?.focus();
     const onKey = (e) => {

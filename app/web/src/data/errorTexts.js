@@ -67,6 +67,14 @@ const GROUPS = {
     already_member: "对方已经在群里了。",
     forbidden: "没能添加：对方已不是你的好友、与你存在拉黑，或本群已满 500 人。",
   },
+  // The avatar of a group (upload and removal): the creator only.
+  avatar: {
+    forbidden: "只有群的创建者可以修改群头像。",
+    not_found: "你已不在这个群聊中。",
+    invalid_request: "头像需要是 PNG、JPEG 或 WebP 格式的图片。",
+    too_large: "头像不能超过 2 MB。",
+    rate_limited: "头像改得太频繁了，请稍等一分钟再试。",
+  },
   remove: {
     forbidden: "只有群的创建者可以移除成员。",
     not_found: "这位成员已经不在群里了。",
@@ -110,7 +118,7 @@ export const whisperErrorText = (error) => pick(WHISPER, "answer", error);
 
 /** action: lookup | sendRequest | accept | reject | withdraw | unfriend | block | unblock */
 export const friendErrorText = (action, error) => pick(FRIENDS, action, error);
-/** action: create | rename | add | remove | leave, and addAgent | removeAgent (the member is an Agent) */
+/** action: create | rename | avatar | add | remove | leave, and addAgent | removeAgent (the member is an Agent) */
 export const groupErrorText = (action, error) => pick(GROUPS, action, error);
 
 const SEARCH = {

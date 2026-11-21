@@ -102,6 +102,18 @@ const modelBox = () => inMain().getByLabelText("模型");
  * Opens the picker and chooses the row whose accessible name is `name` — or begins with it: a row reads its name, then
  * its marks (“小模型 · 免费 · 工具”).
  */
+/** Picks a picture, adjusts nothing, and saves the dialog: the crop is what the form then holds. */
+const pickAvatar = async (file) => {
+  fireEvent.change(inMain().getByLabelText("选择头像图片"), { target: { files: [file] } });
+  await flush();
+  await click(within(dialog()).getByRole("button", { name: "保存" }));
+};
+const sentCrop = (call) => {
+  const sent = call[call.length - 1];
+  expect(sent.name).toBe("avatar.webp");
+  expect(sent.type).toBe("image/webp");
+  return sent;
+};
 const chooseModel = async (name) => {
   if (modelBox().getAttribute("aria-expanded") !== "true") await click(modelBox());
   const option = [...document.querySelectorAll('.model-pop [role="option"]')].find((o) => {
@@ -398,15 +410,15 @@ describe("creating an Agent", () => {
     app = await openAgents({ api: { createAgent, uploadAgentAvatar } });
     await openCreate();
     const file = fakeFile("bot.png", 1000, "image/png");
-    fireEvent.change(inMain().getByLabelText("选择头像图片"), { target: { files: [file] } });
-    await flush();
+    await pickAvatar(file);
     expect(document.querySelector('img[alt="新头像预览"]').getAttribute("src")).toBe("blob:preview-1");
     expect(uploadAgentAvatar).not.toHaveBeenCalled();
     type("名称", "MyBot");
     await chooseModel("小模型 · 免费");
     await click(createButton());
     expect(order).toEqual(["create", "avatar"]);
-    expect(uploadAgentAvatar).toHaveBeenCalledWith(AG1, file);
+    expect(uploadAgentAvatar.mock.calls[0][0]).toBe(AG1);
+    expect(sentCrop(uploadAgentAvatar.mock.calls[0])).not.toBe(file);
     await flush();
     expect(sectionShown()).toContain("消息");
   });
@@ -422,8 +434,7 @@ describe("creating an Agent", () => {
     });
     app = await openAgents({ api: { createAgent, uploadAgentAvatar } });
     await openCreate();
-    fireEvent.change(inMain().getByLabelText("选择头像图片"), { target: { files: [fakeFile("bot.png", 1000, "image/png")] } });
-    await flush();
+    await pickAvatar(fakeFile("bot.png", 1000, "image/png"));
     type("名称", "MyBot");
     await chooseModel("小模型 · 免费");
     await click(createButton());
@@ -720,10 +731,7 @@ describe("editing an Agent", () => {
 
   describe("the avatar", () => {
     const png = () => fakeFile("bot.png", 1000, "image/png");
-    const pick = async (file) => {
-      fireEvent.change(inMain().getByLabelText("选择头像图片"), { target: { files: [file] } });
-      await flush();
-    };
+    const pick = pickAvatar;
 
     it("is held and sent by 保存, after the other changes; the form has no separate 保存头像", async () => {
       const order = [];
@@ -744,7 +752,8 @@ describe("editing an Agent", () => {
       type("简介", "新简介");
       await click(inMain().getByRole("button", { name: "保存" }));
       expect(order).toEqual(["patch", "avatar"]);
-      expect(uploadAgentAvatar).toHaveBeenCalledWith(AG1, file);
+      expect(uploadAgentAvatar.mock.calls[0][0]).toBe(AG1);
+      expect(sentCrop(uploadAgentAvatar.mock.calls[0])).not.toBe(file);
       expect(document.querySelector(".main-col .lead").textContent).toBe("新简介");
     });
 
