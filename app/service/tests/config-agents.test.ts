@@ -459,6 +459,25 @@ describe("the holds and allowance configuration", () => {
   });
 });
 
+describe("the whispers configuration", () => {
+  test("unset or empty: a found-elsewhere whisper expires 24 hours after it was made", () => {
+    expect(loadConfig(base).whispers).toEqual({ elsewhereTtlHours: 24 });
+    expect(loadConfig({ ...base, WHISPERS: "" }).whispers).toEqual({ elsewhereTtlHours: 24 });
+    expect(loadConfig({ ...base, WHISPERS: "{}" }).whispers).toEqual({ elsewhereTtlHours: 24 });
+  });
+
+  test("an override: whole hours from 1 to 168 (a week, how long other whispers stay open)", () => {
+    expect(loadConfig({ ...base, WHISPERS: '{"elsewhereTtlHours":1}' }).whispers).toEqual({ elsewhereTtlHours: 1 });
+    expect(loadConfig({ ...base, WHISPERS: '{"elsewhereTtlHours":168}' }).whispers).toEqual({ elsewhereTtlHours: 168 });
+  });
+
+  test("0, a fraction, more than a week, a string, an unknown key and bad JSON refuse", () => {
+    for (const bad of ['{"elsewhereTtlHours":0}', '{"elsewhereTtlHours":1.5}', '{"elsewhereTtlHours":169}', '{"elsewhereTtlHours":"24"}', '{"nope":1}', "[]", "nope"]) {
+      expect(() => loadConfig({ ...base, WHISPERS: bad }), bad).toThrow(/WHISPERS/);
+    }
+  });
+});
+
 describe("the memory configuration", () => {
   const defaults = {
     model: null,

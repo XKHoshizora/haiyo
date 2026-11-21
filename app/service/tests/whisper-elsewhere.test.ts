@@ -1,10 +1,11 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort, recoverRuns, sweepStaleRuns } from "../src/agents/port-impl.ts";
-import { afterTell, afterTellsEnded, createWhisper } from "../src/whispers/store.ts";
+import { createWhisper, expireWhispers } from "../src/whispers/store.ts";
 import { changeSweep } from "../src/app.ts";
 import { NO_TOOLS, TOLD_NO_TOOLS, TOOL_MATERIAL } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
-import { createElsewhere, ELSEWHERE_HITS_MAX, ELSEWHERE_OPEN_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, TOLD_TURN, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
+import { createElsewhere, ELSEWHERE_HITS_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, TOLD_TURN, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
 import { createToolbox, SEARCH_MESSAGES, type ToolDeps } from "../src/agents/tools/index.ts";
 import type { Db } from "../src/db.ts";
@@ -20,7 +21,9 @@ import { closeAllSockets, connect, type TestSocket } from "./helpers/ws.ts";
  * finds nothing there and its Agent's `whisperElsewhere` is on, the same words are looked for once more — on their own,
  * after the search has answered — in the Agent's other conversations that its owner can read now; hits become one whisper
  * to the owner (`告诉他们` / `不用`). The run's model is told nothing, and no one else learns anything. `告诉他们` queues one
- * reply of the Agent in the group, its owner's own, that is shown the hits and offered no tools.
+ * reply of the Agent in the group, its owner's own, that is shown the hits and offered no tools. Redesign D: the whisper keeps
+ * references to the messages it found (read under its owner's access now, whenever it is shown or told), and its state is
+ * derived — telling while a told reply of it is queued or running, told once one has posted; nothing stores either.
  */
 
 const gateway = scriptedGateway();
@@ -32,6 +35,8 @@ afterEach(async () => {
 
 const FAST = { source: "site", id: "fast" } as const;
 const CANARY = "CANARY-ew 蓝鲸计划在三楼";
+const OWN_NOTE = "记一下：蓝鲸计划的口令是七七";
+const HOUR = 3_600_000;
 
 /** Every statement sent through `real`, its transactions' too. */
 function spyDb(real: Db): { db: Db; sql: string[] } {
@@ -76,16 +81,27 @@ const say = async (who: Actor, conv: string, text: string): Promise<number> => {
   return sent.json.message.seq as number;
 };
 const outputs = (call: ModelCall): unknown[] => (call.steps ?? []).flatMap((s) => s.results.map((r) => r.output));
+type Ref = { conversationId: string; seq: number; at: number };
+/** The owner's whispers of a conversation as their rows hold them, oldest first. */
 const whispersOf = async (ownerId: string, conv: string) =>
-  (await db.query<{ id: string; status: string; body: { text: string; actions: string[]; detail?: { hits: Array<{ where: string; who: string; when: string; text: string }> } } }>(
+  (await db.query<{ id: string; status: string; body: { text: string; actions: string[]; detail?: { hits: Ref[]; askedSeq?: number } } }>(
     "select id, status, body from whispers where owner_id = $1 and conversation_id = $2 order by created_at",
     [ownerId, conv],
   )).rows;
+type WireHit = { where: string; who: string; when: string; text: string };
+/** A whisper as its owner reads it now (the list route). */
+const wireOf = async (owner: Actor, conv: string, id: string) =>
+  (await api(app, owner, "GET", `/api/conversations/${conv}/whispers`)).json.whispers.find((x: { id: string }) => x.id === id) as
+    | { id: string; status: string; actions: string[]; lastTellFailed?: boolean; revision: number; detail?: { hits: WireHit[] } }
+    | undefined;
 const runsOf = async (agentId: string, conv: string) =>
   (await db.query<{ id: string; status: string; lane: string; triggered_by: string; caller_id: string | null; whisper_id: string | null }>(
     "select id, status, lane, triggered_by, caller_id, whisper_id from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at",
     [agentId, conv],
   )).rows;
+/** What the Agent said in `conv`, as a member reads it. */
+const agentSaid = async (w: World, conv: string = w.g) =>
+  (await api(app, w.mia, "GET", `/api/conversations/${conv}/messages`)).json.messages.filter((m: { senderId: string }) => m.senderId === w.agent.id);
 
 /**
  * olive and her Agent: in group G with mia and ned, where nothing says 蓝鲸计划; in group B with them too, where the canary is
@@ -98,39 +114,51 @@ async function world() {
   const b = await group(app, owner, "乙群", [mia, ned]);
   for (const c of [g, b]) expect((await api(app, owner, "POST", `/api/conversations/${c}/members`, { principalId: agent.id })).status).toBe(201);
   await say(mia, b, CANARY);
-  await say(owner, agent.conversationId, "记一下：蓝鲸计划的口令是七七");
+  await say(owner, agent.conversationId, OWN_NOTE);
   // (The Agent's own conversation: the message started a reply there; it is not this file's business.)
   await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [agent.id]);
   return { owner, mia, ned, agent: agent as { id: string; conversationId: string }, g, b };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
-/** One reply in G, asked by `asker`, whose search (`input`) finds nothing in G: what its model was handed. */
+/** One reply in G, asked by `asker`, whose search (`input`) finds nothing in G: what its model was handed, and the question's seq. */
 async function askInGroup(w: World, hook: ElsewhereHook, asker: Actor = w.mia, d?: Db, input: Record<string, unknown> = { query: "蓝鲸计划" }) {
-  await say(asker, w.g, "@olive_bot 上次说的那个计划在哪？");
+  const asked = await say(asker, w.g, "@olive_bot 上次说的那个计划在哪？");
   gateway.callTools([{ name: SEARCH_MESSAGES, input }]).reply("这个群的记录里没找到。");
   expect(await toolWorker(toolDeps(hook, d)).runOnce()).toBe(true);
   await hook.idle();
-  return outputs(gateway.calls.at(-1)!)[0];
+  return { output: outputs(gateway.calls.at(-1)!)[0], asked };
 }
 
 describe("a search in a group that finds nothing there", () => {
-  it("found elsewhere: one whisper to the owner with the hits; the model is told the plain not-found, and nobody else is sent or shown anything", async () => {
+  it("found elsewhere: one whisper to the owner, keeping references to what it found (never its text or names); she reads the hits; the model is told the plain not-found, and nobody else is sent or shown anything", async () => {
     const w = await world();
     const sockets = { owner: await connect(app, w.owner), mia: await connect(app, w.mia), ned: await connect(app, w.ned) };
     const hook = createElsewhere(elsewhereDeps());
-    const told = await askInGroup(w, hook);
-    expect(told).toEqual({ results: [], note: "这个群的记录里没找到。" });
+    const { output, asked } = await askInGroup(w, hook);
+    expect(output).toEqual({ results: [], note: "这个群的记录里没找到。" });
     const [made] = await whispersOf(w.owner.id, w.g);
     expect(made).toMatchObject({ status: "open", body: { text: FOUND_ELSEWHERE, actions: ["tell", "dismiss"] } });
-    const hits = made!.body.detail!.hits;
-    expect(hits.map((h) => [h.where, h.text])).toEqual([
-      ["我们的专属会话", "记一下：蓝鲸计划的口令是七七"],
-      ["乙群", CANARY],
+    // Kept: for each hit the conversation and the message it points at (and where in it the words are), and which message
+    // asked — nothing of what was said, where or by whom.
+    expect(made!.body.detail).toEqual({
+      hits: [
+        { conversationId: w.agent.conversationId, seq: expect.any(Number), at: expect.any(Number) },
+        { conversationId: w.b, seq: expect.any(Number), at: expect.any(Number) },
+      ],
+      askedSeq: asked,
+    });
+    const stored = JSON.stringify(made!.body.detail);
+    for (const never of ["CANARY", "蓝鲸计划", "乙群", "我们的专属会话", "olive", "mia"]) expect([never, stored.includes(never)]).toEqual([never, false]);
+    // What she reads (the list route, her push): each hit as it is now — where, who, when, what.
+    const wire = await wireOf(w.owner, w.g, made!.id);
+    expect(wire!.detail!.hits.map((h) => [h.where, h.who, h.text])).toEqual([
+      ["我们的专属会话", "olive", OWN_NOTE],
+      ["乙群", "mia", CANARY],
     ]);
-    expect(Object.keys(hits[0]!).sort()).toEqual(["text", "when", "where", "who"]);
-    expect(hits.map((h) => h.who)).toEqual(["olive", "mia"]);
-    await sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === made!.id);
+    expect(Object.keys(wire!.detail!.hits[0]!).sort()).toEqual(["text", "when", "where", "who"]);
+    const push = await sockets.owner.next((e) => e.type === "whisper" && e.whisper.id === made!.id);
+    expect(push.whisper.detail).toEqual(wire!.detail);
     // Their frames once everything the run and the whisper pushed has reached them.
     await settled([sockets.mia, sockets.ned], w.ned, w.g);
     for (const socket of [sockets.mia, sockets.ned]) {
@@ -145,9 +173,9 @@ describe("a search in a group that finds nothing there", () => {
   it("the model's tool result is the same, byte for byte, whether anything was found elsewhere or not", async () => {
     const w = await world();
     const hook = createElsewhere(elsewhereDeps());
-    const withHits = await askInGroup(w, hook);
+    const withHits = (await askInGroup(w, hook)).output;
     await db.query("update agents set whisper_elsewhere = false where principal_id = $1", [w.agent.id]);
-    const without = await askInGroup(w, hook);
+    const without = (await askInGroup(w, hook)).output;
     expect(JSON.stringify(withHits)).toBe(JSON.stringify(without));
   });
 
@@ -201,7 +229,7 @@ describe("a search in a group that finds nothing there", () => {
     const hook = createElsewhere(elsewhereDeps());
     await askInGroup(w, hook, w.mia, undefined, { query: "蓝鲸计划", from: "mia" });
     const [made] = await whispersOf(w.owner.id, w.g);
-    expect(made!.body.detail!.hits.map((h) => h.text)).toEqual([CANARY]);
+    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.map((h) => h.text)).toEqual([CANARY]);
     await db.query("delete from whispers where id = $1", [made!.id]);
     await askInGroup(w, hook, w.mia, undefined, { query: "蓝鲸计划", before: "2000-01-01" });
     expect(await whispersOf(w.owner.id, w.g)).toEqual([]);
@@ -266,16 +294,21 @@ describe("a search in a group that finds nothing there", () => {
     expect(await whispersOf(w.owner.id, w.g)).toHaveLength(1);
   });
 
-  it("at most 5 hits, the newest first, each text at most 200 characters", async () => {
+  it("at most 5 hits, the newest first, each text at most 200 characters — around the words, as it is read now", async () => {
     const w = await world();
-    for (let i = 0; i < 6; i++) await say(w.mia, w.b, `第${i}次：蓝鲸计划${"很长的话".repeat(80)}`);
+    for (let i = 0; i < 6; i++) await say(w.mia, w.b, `第${i}次：${"很长的话".repeat(30)}蓝鲸计划${"很长的话".repeat(80)}`);
     const hook = createElsewhere(elsewhereDeps());
     await askInGroup(w, hook);
     const [made] = await whispersOf(w.owner.id, w.g);
-    const hits = made!.body.detail!.hits;
+    expect(made!.body.detail!.hits).toHaveLength(ELSEWHERE_HITS_MAX);
+    const hits = (await wireOf(w.owner, w.g, made!.id))!.detail!.hits;
     expect(hits).toHaveLength(ELSEWHERE_HITS_MAX);
-    expect(hits.map((h) => h.text.slice(0, 3))).toEqual(["第5次", "第4次", "第3次", "第2次", "第1次"]);
+    // Cut around the words (where they are in the message is all that was kept of them).
+    expect(hits.every((h) => h.text.startsWith("…") && h.text.includes("蓝鲸计划"))).toBe(true);
     expect(hits.every((h) => Array.from(h.text).length <= 200)).toBe(true);
+    // The newest first.
+    const seqs = made!.body.detail!.hits.map((h) => h.seq);
+    expect(seqs).toEqual([...seqs].sort((a, b) => b - a));
   });
 
   it("hits come only from what the owner can read now: not a message of B from before her current stay there, nor a group she is not in now", async () => {
@@ -291,17 +324,18 @@ describe("a search in a group that finds nothing there", () => {
     const hook = createElsewhere(elsewhereDeps());
     await askInGroup(w, hook);
     const [made] = await whispersOf(w.owner.id, w.g);
-    expect(made!.body.detail!.hits.map((h) => [h.where, h.text])).toEqual([["我们的专属会话", "记一下：蓝鲸计划的口令是七七"]]);
+    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.map((h) => [h.where, h.text])).toEqual([["我们的专属会话", OWN_NOTE]]);
+    expect(made!.body.detail!.hits.map((h) => h.conversationId)).toEqual([w.agent.conversationId]);
   });
 });
 
 describe("告诉他们", () => {
-  async function whispered() {
+  async function whispered(asker?: (w: World) => Actor) {
     const w = await world();
     const hook = createElsewhere(elsewhereDeps());
-    await askInGroup(w, hook);
+    const { asked } = await askInGroup(w, hook, asker?.(w) ?? w.mia);
     const [made] = await whispersOf(w.owner.id, w.g);
-    return { w, whisper: made! };
+    return { w, whisper: made!, asked };
   }
 
   it("queues one reply of the Agent in the group, its owner's own, shown the hits as material and offered no tools; it posts there", async () => {
@@ -309,7 +343,7 @@ describe("告诉他们", () => {
     const ownerSocket = await connect(app, w.owner);
     const accepted = await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`);
     expect(accepted.status).toBe(200);
-    expect(accepted.json.status).toBe("accepted");
+    expect(accepted.json.status).toBe("telling");
     const runs = (await runsOf(w.agent.id, w.g)).filter((r) => r.status === "queued");
     expect(runs).toEqual([{ id: expect.any(String), status: "queued", lane: "own", triggered_by: "human", caller_id: w.owner.id, whisper_id: whisper.id }]);
     await ownerSocket.waitFor((e) => e.type === "run" && e.run?.id === runs[0]!.id);
@@ -320,9 +354,10 @@ describe("告诉他们", () => {
     expect(call.system).toContain(TELL_THEM);
     expect(call.system).toContain(TOOL_MATERIAL);
     expect(call.system).toContain(CANARY);
-    const last = (await api(app, w.mia, "GET", `/api/conversations/${w.g}/messages`)).json.messages.at(-1);
+    const last = (await agentSaid(w)).at(-1);
     expect([last.senderId, last.text]).toEqual([w.agent.id, "蓝鲸计划在三楼。"]);
-    // Answered once: again is stale.
+    // Told: final — again is stale.
+    expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("told");
     expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(409);
   });
 
@@ -338,7 +373,7 @@ describe("告诉他们", () => {
     const hook = createElsewhere(elsewhereDeps());
     await askInGroup(w, hook);
     const [made] = await whispersOf(w.owner.id, w.g);
-    const hits = made!.body.detail!.hits;
+    const hits = (await wireOf(w.owner, w.g, made!.id))!.detail!.hits;
     // The owner is shown where and who (the title without its citation).
     expect(hits[0]).toMatchObject({ where: "丙群CANARY-where", who: "CANARY-who", text: "@someone_bot 蓝鲸计划改到周五了" });
     const nedSocket = await connect(app, w.ned);
@@ -365,6 +400,32 @@ describe("告诉他们", () => {
     for (const never of ["CANARY-where", "CANARY-who"]) expect([never, frames.includes(never)]).toEqual([never, false]);
   });
 
+  it("the told reply quotes the message that asked (its reply-to), so it makes sense hours later", async () => {
+    const { w, whisper, asked } = await whispered();
+    // Much said since.
+    for (let i = 0; i < 3; i++) await say(w.ned, w.g, `后来的话 ${i}`);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(200);
+    gateway.reply("蓝鲸计划在三楼。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const told = (await agentSaid(w)).at(-1);
+    expect(told.text).toBe("蓝鲸计划在三楼。");
+    expect(told.replyTo).toMatchObject({ seq: asked, visible: true, senderId: w.mia.id });
+    expect(told.replyTo.text).toContain("上次说的那个计划在哪");
+  });
+
+  it("the message that asked no longer visible to the Agent (it left the group and came back since): the told reply is posted without the quote", async () => {
+    const { w, whisper } = await whispered();
+    // As if the Agent had left and come back after the question.
+    await db.query("update memberships set joined_seq = (select seq from conversations where id = $1) where conversation_id = $1 and principal_id = $2", [w.g, w.agent.id]);
+    await say(w.ned, w.g, "它回来了");
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(200);
+    gateway.reply("蓝鲸计划在三楼。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const told = (await agentSaid(w)).at(-1);
+    expect(told.text).toBe("蓝鲸计划在三楼。");
+    expect(told.replyTo).toBeUndefined();
+  });
+
   it("a told reply that failed is told again by a retry: the retry keeps the whisper, the passage, and no tools", async () => {
     const { w, whisper } = await whispered();
     expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(200);
@@ -375,12 +436,14 @@ describe("告诉他们", () => {
     expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
     const retry = (await runsOf(w.agent.id, w.g)).at(-1)!;
     expect([retry.status, retry.whisper_id]).toEqual(["queued", whisper.id]);
+    expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("telling");
     gateway.reply("蓝鲸计划在三楼。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     const call = gateway.calls.at(-1)!;
     expect(call.tools ?? []).toEqual([]);
     expect(call.system).toContain(TELL_THEM);
     expect(call.system).toContain(CANARY);
+    expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("told");
   });
 
   it("refused like the owner's retry, and the whisper stays open: a reply of it under way there (409 busy_run), paused (409 agent_paused), no model (400)", async () => {
@@ -399,6 +462,8 @@ describe("告诉他们", () => {
     const bare = await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`);
     expect([bare.status, bare.json.error]).toEqual([400, "invalid_request"]);
     expect((await whispersOf(w.owner.id, w.g))[0]!.status).toBe("open");
+    expect((await wireOf(w.owner, w.g, whisper.id))).toMatchObject({ status: "open" });
+    expect((await wireOf(w.owner, w.g, whisper.id))!.lastTellFailed).toBeUndefined();
     expect(await told()).toEqual([]);
   });
 
@@ -437,7 +502,7 @@ describe("告诉他们", () => {
     expect(followCall.system).not.toContain(TELL_THEM);
     expect(JSON.stringify(followCall.messages)).toContain("周五几点开会");
     // Each posted once.
-    const said = (await api(app, w.mia, "GET", `/api/conversations/${w.g}/messages`)).json.messages.filter((m: any) => m.senderId === w.agent.id).map((m: any) => m.text);
+    const said = (await agentSaid(w)).map((m: any) => m.text);
     expect(said.slice(-2)).toEqual(["蓝鲸计划在三楼。", "周五下午三点。"]);
     expect(said.filter((t: string) => t === "蓝鲸计划在三楼。")).toHaveLength(1);
   });
@@ -458,8 +523,7 @@ describe("告诉他们", () => {
     gateway.reply("蓝鲸计划在三楼。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect((await runsOf(w.agent.id, w.g)).find((r) => r.id === told.id)!.status).toBe("done");
-    const said = async () =>
-      (await api(app, w.mia, "GET", `/api/conversations/${w.g}/messages`)).json.messages.filter((m: any) => m.senderId === w.agent.id).map((m: any) => m.text);
+    const said = async () => (await agentSaid(w)).map((m: any) => m.text);
     expect((await said()).at(-1)).toBe("蓝鲸计划在三楼。");
     const follow = (await db.query<{ lane: string; caller_id: string | null; calls: string[] }>(
       "select lane, caller_id, call_seqs::text[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'",
@@ -529,8 +593,7 @@ describe("告诉他们", () => {
   const answered = async (w: World) => {
     gateway.reply("周五下午三点。");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    const said = (await api(app, w.mia, "GET", `/api/conversations/${w.g}/messages`)).json.messages.filter((m: any) => m.senderId === w.agent.id).map((m: any) => m.text);
-    expect(said.at(-1)).toBe("周五下午三点。");
+    expect((await agentSaid(w)).at(-1).text).toBe("周五下午三点。");
   };
 
   it("a told reply that fails as it runs: the members' calls noted on it are followed up at once", async () => {
@@ -600,68 +663,114 @@ describe("告诉他们", () => {
   });
 });
 
-describe("a tell is never lost (round 3)", () => {
-  const whisperStatus = async (id: string) => (await db.query<{ status: string }>("select status from whispers where id = $1", [id])).rows[0]!.status;
-  /** The whisper made, its owner's 告诉他们 answered, and the told reply queued; the sockets of all three, open from the start. */
+describe("the state of a told whisper is derived, never stored (Redesign D)", () => {
+  /** What a whisper's row holds: telling it — however that goes — changes none of it. */
+  const rowOf = async (id: string) => (await db.query("select status, resolved_at, revision, body from whispers where id = $1", [id])).rows[0];
+  /** The whisper made, its owner's 告诉他们 answered `telling`, and the told reply queued; the sockets of all three, open from the start. */
   async function toldQueued() {
     const w = await world();
     const sockets = { owner: await connect(app, w.owner), mia: await connect(app, w.mia), ned: await connect(app, w.ned) };
     await askInGroup(w, createElsewhere(elsewhereDeps()));
     const [whisper] = await whispersOf(w.owner.id, w.g);
-    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
+    const before = await rowOf(whisper!.id);
+    const accepted = await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`);
+    expect([accepted.status, accepted.json.status]).toEqual([200, "telling"]);
     const told = (await runsOf(w.agent.id, w.g)).find((r) => r.whisper_id !== null)!;
-    return { w, whisper: whisper!, told, sockets };
+    return { w, whisper: whisper!, told, sockets, before };
   }
-  /** The owner was pushed the whisper open again; nobody else was pushed anything of it (their frames once everything has reached them). */
-  async function reopenedForOwnerOnly(x: Awaited<ReturnType<typeof toldQueued>>) {
+  type Told = Awaited<ReturnType<typeof toldQueued>>;
+  /** The whisper frames its owner was pushed of `id`, in order. */
+  const framesOf = (socket: TestSocket, id: string) => socket.events.filter((e) => e.type === "whisper" && e.whisper.id === id).map((e) => e.whisper);
+  /** Nothing of the whisper reached the members' sockets: no frame of it, no key, its id, a hit's text. */
+  async function nothingForMembers(x: Told) {
     const { w, whisper, sockets } = x;
-    expect(await whisperStatus(whisper.id)).toBe("open");
-    await sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === whisper.id && e.whisper.status === "open");
     await settled([sockets.mia, sockets.ned], w.ned, w.g);
     for (const socket of [sockets.mia, sockets.ned]) {
       expect(socket.events.some((e) => e.type === "whisper")).toBe(false);
-      expect(JSON.stringify(socket.events)).not.toContain(whisper.id);
+      const frames = JSON.stringify(socket.events);
+      for (const never of [whisper.id, "lastTellFailed", "CANARY-ew", "telling", "revision"]) expect([never, frames.includes(never)]).toEqual([never, false]);
     }
-    // Its hits and both buttons, as before; and 告诉他们 once more queues a fresh told reply.
-    const [again] = await whispersOf(w.owner.id, w.g);
-    expect(again!.body.actions).toEqual(["tell", "dismiss"]);
-    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(200);
+    // Nor what they read: their sync (which holds B, where mia said the canary herself), the group's catch-up and replies.
+    for (const who of [w.mia, w.ned]) {
+      const sync = JSON.stringify((await api(app, who, "GET", "/api/sync")).json);
+      const group = JSON.stringify([
+        (await api(app, who, "POST", "/api/sync/catchup", { positions: { [w.g]: 0 } })).json,
+        (await api(app, who, "GET", `/api/conversations/${w.g}/runs`)).json,
+      ]);
+      for (const never of [whisper.id, "lastTellFailed", "telling", "\"whisper", "afterSeq", "revision"]) expect([who.handle, never, sync.includes(never)]).toEqual([who.handle, never, false]);
+      for (const never of [whisper.id, "lastTellFailed", "CANARY-ew", "telling", "\"whisper", "afterSeq", "revision"]) expect([who.handle, never, group.includes(never)]).toEqual([who.handle, never, false]);
+    }
+  }
+  /**
+   * The told reply ended without posting: the whisper reads open again for its owner — its hits, both buttons, and that the
+   * last tell failed —, waits for an answer (counted), and its row is as it was before the tell: nothing was stored, so there
+   * is nothing to repair. Pushed to its owner (when `pushed`: the ending was announced) and to nobody else.
+   */
+  async function openAgain(x: Told, { pushed = true }: { pushed?: boolean } = {}) {
+    const { w, whisper, sockets, before } = x;
+    expect(await rowOf(whisper.id)).toEqual(before);
+    const wire = (await wireOf(w.owner, w.g, whisper.id))!;
+    expect(wire).toMatchObject({ status: "open", lastTellFailed: true, actions: ["tell", "dismiss"] });
+    expect(wire.detail!.hits.map((h) => h.text)).toEqual([OWN_NOTE, CANARY]);
+    expect((await api(app, w.owner, "GET", `/api/conversations/${w.g}`)).json.whispers).toBe(1);
+    if (pushed) await sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === whisper.id && e.whisper.lastTellFailed === true);
+    // Of two copies the later never has the lower revision (the web keeps the higher).
+    const revisions = framesOf(sockets.owner, whisper.id).map((f) => f.revision as number);
+    expect(revisions).toEqual([...revisions].sort((a, b) => a - b));
+    await nothingForMembers(x);
+  }
+  /** 告诉他们 once more tells, once: told, and still nothing stored. */
+  async function tellsAgain(x: Told) {
+    const { w, whisper, before } = x;
+    const again = await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`);
+    expect([again.status, again.json.status, "lastTellFailed" in again.json]).toEqual([200, "telling", false]);
     expect((await runsOf(w.agent.id, w.g)).filter((r) => r.whisper_id === whisper.id && r.status === "queued")).toHaveLength(1);
+    gateway.reply("蓝鲸计划在三楼。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect((await agentSaid(w)).filter((m: any) => m.text === "蓝鲸计划在三楼。")).toHaveLength(1);
+    expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("told");
+    expect(await rowOf(whisper.id)).toEqual(before);
   }
 
-  it("failed as it ran: its whisper is open again, pushed to its owner alone; 告诉他们 tells once more", async () => {
+  it("telling while its told reply is queued or running: counted as waiting for nothing; 告诉他们 and 不用 are refused as busy (409 busy_run)", async () => {
+    const x = await toldQueued();
+    const { w, whisper } = x;
+    expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("telling");
+    expect("whispers" in (await api(app, w.owner, "GET", `/api/conversations/${w.g}`)).json).toBe(false);
+    for (const verb of ["accept", "decline"]) expect([verb, await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/${verb}`)]).toEqual([verb, { status: 409, json: { error: "busy_run" } }]);
+    await app.agentPort.claimNext();
+    expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("telling");
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(409);
+    await x.sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === whisper.id && e.whisper.status === "telling");
+    await app.agentPort.releaseRun(x.told.id);
+    await openAgain(x);
+  });
+
+  it("a told reply that fails: open again with lastTellFailed, pushed to its owner alone; nothing was stored to repair; 告诉他们 tells once more", async () => {
     const x = await toldQueued();
     gateway.fail("provider_unavailable", { status: 502 });
     expect(await app.agentWorker.runOnce()).toBe(true);
-    await reopenedForOwnerOnly(x);
+    await openAgain(x);
+    await tellsAgain(x);
   });
 
-  it("ended by a release (as recovery ends one), twice at once: open again, once", async () => {
-    const x = await toldQueued();
-    const ticket = (await app.agentPort.claimNext())!;
-    expect((await Promise.all([app.agentPort.releaseRun(ticket.id), app.agentPort.releaseRun(ticket.id)])).sort()).toEqual([false, true]);
-    await reopenedForOwnerOnly(x);
-    // Its frames: made (open), answered, given back (open) once, answered again.
-    const frames = x.sockets.owner.events.filter((e) => e.type === "whisper" && e.whisper.id === x.whisper.id).map((e: any) => e.whisper.status);
-    expect(frames).toEqual(["open", "accepted", "open", "accepted"]);
-  });
+  for (const end of ["a release", "recovery at start-up", "the stale-run sweep"] as const) {
+    it(`ended by ${end}: the same`, async () => {
+      const x = await toldQueued();
+      const ticket = (await app.agentPort.claimNext())!;
+      if (end === "a release") expect(await app.agentPort.releaseRun(ticket.id)).toBe(true);
+      if (end === "recovery at start-up") expect(await recoverRuns(app.deps.db, app.deps.config, app.log)).toBe(1);
+      if (end === "the stale-run sweep") {
+        await db.query("update agent_runs set started_at = now() - interval '12 minutes' where id = $1", [ticket.id]);
+        expect(await sweepStaleRuns(app.agentPort, app.deps.db, app.deps.config, app.log, () => false)).toBe(1);
+      }
+      // (Recovery at start-up announces nothing: no socket could be open yet. The owner's next read has it.)
+      await openAgain(x, { pushed: end !== "recovery at start-up" });
+      await tellsAgain(x);
+    });
+  }
 
-  it("ended by recovery at start-up: open again", async () => {
-    const x = await toldQueued();
-    await app.agentPort.claimNext();
-    expect(await recoverRuns(app.deps.db, app.deps.config, app.log)).toBe(1);
-    expect(await whisperStatus(x.whisper.id)).toBe("open");
-  });
-
-  it("ended by the stale-run sweep: open again", async () => {
-    const x = await toldQueued();
-    const ticket = (await app.agentPort.claimNext())!;
-    await db.query("update agent_runs set started_at = now() - interval '12 minutes' where id = $1", [ticket.id]);
-    expect(await sweepStaleRuns(app.agentPort, app.deps.db, app.deps.config, app.log, () => false)).toBe(1);
-    await reopenedForOwnerOnly(x);
-  });
-
-  it("stopped by its owner while queued: the tell ends and its whisper is open again; a member's call noted on it still gets its follow-up", async () => {
+  it("stopped by its owner while queued: the tell ends, open again; a member's call noted on it still gets its follow-up", async () => {
     const x = await toldQueued();
     const call = await say(x.w.ned, x.w.g, "@olive_bot 另外，周五几点开会？");
     expect((await api(app, x.w.owner, "POST", `/api/conversations/${x.w.g}/runs/${x.told.id}/stop`)).status).toBe(200);
@@ -671,96 +780,186 @@ describe("a tell is never lost (round 3)", () => {
       [x.w.agent.id, x.w.g],
     )).rows;
     expect(follow).toEqual([{ whisper_id: null, lane: "others", caller_id: x.w.ned.id, calls: [String(call)] }]);
-    expect(await whisperStatus(x.whisper.id)).toBe("open");
-    await x.sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === x.whisper.id && e.whisper.status === "open");
+    await openAgain(x);
     gateway.reply("周五下午三点。");
     expect(await app.agentWorker.runOnce()).toBe(true);
+    await tellsAgain(x);
   });
 
-  it("cancelled by its owner's pause while queued: open again (to tell once the Agent is resumed)", async () => {
+  it("cancelled by its owner's pause while queued: open again, to tell once the Agent is resumed", async () => {
     const x = await toldQueued();
     expect((await api(app, x.w.owner, "POST", `/api/agents/${x.w.agent.id}/pause`)).status).toBe(200);
     expect((await runsOf(x.w.agent.id, x.w.g)).find((r) => r.id === x.told.id)!.status).toBe("cancelled");
-    expect(await whisperStatus(x.whisper.id)).toBe("open");
-    await x.sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === x.whisper.id && e.whisper.status === "open");
+    await openAgain(x);
+    expect((await api(app, x.w.owner, "POST", `/api/agents/${x.w.agent.id}/resume`)).status).toBe(200);
+    await tellsAgain(x);
   });
 
-  it("posted: the whisper stays answered", async () => {
+  it("two endings racing change nothing wrong: two releases at once, and a stop and a pause at once, each leave it open, once", async () => {
+    const x = await toldQueued();
+    const ticket = (await app.agentPort.claimNext())!;
+    expect((await Promise.all([app.agentPort.releaseRun(ticket.id), app.agentPort.releaseRun(ticket.id)])).sort()).toEqual([false, true]);
+    await openAgain(x);
+    // Told again, and this time its owner stops it and pauses the Agent at the same moment.
+    expect((await api(app, x.w.owner, "POST", `/api/whispers/${x.whisper.id}/accept`)).status).toBe(200);
+    const second = (await runsOf(x.w.agent.id, x.w.g)).filter((r) => r.whisper_id === x.whisper.id).at(-1)!;
+    const [stopped, paused] = await Promise.all([
+      api(app, x.w.owner, "POST", `/api/conversations/${x.w.g}/runs/${second.id}/stop`),
+      api(app, x.w.owner, "POST", `/api/agents/${x.w.agent.id}/pause`),
+    ]);
+    expect([stopped.status, paused.status]).toEqual([200, 200]);
+    expect(["stopped", "cancelled"]).toContain((await runsOf(x.w.agent.id, x.w.g)).find((r) => r.id === second.id)!.status);
+    await openAgain(x);
+    expect(framesOf(x.sockets.owner, x.whisper.id).some((f) => f.status === "told")).toBe(false);
+  });
+
+  it("told once a told reply posted: final (409 stale_whisper for 告诉他们 and 不用), not counted; its row says open as it always did — nothing stores accepted", async () => {
     const x = await toldQueued();
     gateway.reply("蓝鲸计划在三楼。");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(await whisperStatus(x.whisper.id)).toBe("accepted");
+    const { w, whisper, before } = x;
+    await x.sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === whisper.id && e.whisper.status === "told");
+    expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("told");
+    for (const verb of ["accept", "decline"]) expect([verb, await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/${verb}`)]).toEqual([verb, { status: 409, json: { error: "stale_whisper" } }]);
+    expect("whispers" in (await api(app, w.owner, "GET", `/api/conversations/${w.g}`)).json).toBe(false);
+    expect(await rowOf(whisper.id)).toEqual(before);
+    expect((await db.query("select count(*)::int as n from whispers where status = 'accepted'")).rows[0].n).toBe(0);
+    await nothingForMembers(x);
   });
 
-  it("the kind's cap holds: with 3 open there already, it stays answered", async () => {
-    const x = await toldQueued();
-    // Three more found_elsewhere whispers of the owner there, open (as later searches would make them).
-    for (let i = 0; i < 3; i++) {
-      await db.tx((t) => createWhisper(t, { conversationId: x.w.g, ownerId: x.w.owner.id, agentId: x.w.agent.id, kind: "found_elsewhere", body: { text: FOUND_ELSEWHERE, actions: ["tell", "dismiss"], detail: { hits: [] } } }));
-    }
+  it("the cap counts the whispers whose state is open or telling: a telling one counts; a told one, or one with no hit left, makes room", async () => {
+    const w = await world();
+    const hook = createElsewhere(elsewhereDeps());
+    for (let i = 0; i < 3; i++) await askInGroup(w, hook);
+    const [a, b, c] = await whispersOf(w.owner.id, w.g);
+    // A's told reply queued: telling, still counted — a lookup of another reply there makes nothing.
+    expect((await api(app, w.owner, "POST", `/api/whispers/${a!.id}/accept`)).status).toBe(200);
+    const done = (await db.query<{ id: string }>("insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane) values ('reply', $1, $2, $3, 'done', 1, 'human', 'own') returning id", [w.g, w.agent.id, w.owner.id])).rows[0]!.id;
+    const scope = { id: done, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.g, group: true, refs: new RunRefs(), heardTo: 1, mark: null };
+    await hook(scope, { term: "蓝鲸计划", from: null, before: null, after: null });
+    expect(await whispersOf(w.owner.id, w.g)).toHaveLength(3);
+    // A told (in words the group's next search does not find): room for one.
+    gateway.reply("在三楼。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect((await wireOf(w.owner, w.g, a!.id))!.status).toBe("told");
+    await askInGroup(w, hook);
+    expect(await whispersOf(w.owner.id, w.g)).toHaveLength(4);
+    // B's hits no longer readable by its owner (as if what it found were gone): expired, room for one more.
+    await db.query("update whispers set body = jsonb_set(body, '{detail,hits}', $2::jsonb) where id = $1", [b!.id, JSON.stringify([{ conversationId: w.b, seq: 999_999, at: 0 }])]);
+    expect((await wireOf(w.owner, w.g, b!.id))!.status).toBe("expired");
+    await askInGroup(w, hook);
+    expect(await whispersOf(w.owner.id, w.g)).toHaveLength(5);
+    expect((await wireOf(w.owner, w.g, c!.id))!.status).toBe("open");
+  });
+});
+
+describe("hits are references, read under the owner's access when shown or told", () => {
+  it("a hit whose message the owner can no longer read is left out of the bubble and of the told reply's passage", async () => {
+    const w = await world();
+    const ownerSocket = await connect(app, w.owner);
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [made] = await whispersOf(w.owner.id, w.g);
+    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.map((h) => h.text)).toEqual([OWN_NOTE, CANARY]);
+    // olive leaves B: what was said there is no longer hers to read.
+    expect((await api(app, w.owner, "DELETE", `/api/conversations/${w.b}/members/${w.owner.id}`)).status).toBe(200);
+    const wire = (await wireOf(w.owner, w.g, made!.id))!;
+    expect(wire.status).toBe("open");
+    expect(wire.detail!.hits.map((h) => [h.where, h.text])).toEqual([["我们的专属会话", OWN_NOTE]]);
+    expect(JSON.stringify((await api(app, w.owner, "GET", "/api/sync")).json)).not.toContain("CANARY-ew");
+    // Told now: the passage holds what she can read now, and nothing of B.
+    const accepted = await api(app, w.owner, "POST", `/api/whispers/${made!.id}/accept`);
+    expect(JSON.stringify(accepted.json)).not.toContain("CANARY-ew");
+    gateway.reply("口令是七七。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const call = gateway.calls.at(-1)!;
+    expect(call.system).toContain(OWN_NOTE);
+    expect(call.system).not.toContain("CANARY-ew");
+    const frames = ownerSocket.events.filter((e) => e.type === "whisper" && e.whisper.id === made!.id);
+    expect(JSON.stringify(frames.slice(1))).not.toContain("CANARY-ew");
+  });
+
+  it("no hit left: the whisper is expired (已过期) — not counted, 告诉他们 and 不用 409 stale_whisper, no room taken; a told reply that begins with none left tells nothing", async () => {
+    const w = await world();
+    const hook = createElsewhere(elsewhereDeps());
+    // Only mia's line in B is found (`from`).
+    await askInGroup(w, hook, w.mia, undefined, { query: "蓝鲸计划", from: "mia" });
+    const [made] = await whispersOf(w.owner.id, w.g);
+    expect((await api(app, w.owner, "GET", `/api/conversations/${w.g}`)).json.whispers).toBe(1);
+    // Told: queued — and before it begins, olive leaves B.
+    expect((await api(app, w.owner, "POST", `/api/whispers/${made!.id}/accept`)).status).toBe(200);
+    expect((await api(app, w.owner, "DELETE", `/api/conversations/${w.b}/members/${w.owner.id}`)).status).toBe(200);
+    const before = gateway.calls.length;
+    const said = (await agentSaid(w)).length;
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect(gateway.calls.length).toBe(before);
+    expect((await agentSaid(w)).length).toBe(said);
+    const wire = (await wireOf(w.owner, w.g, made!.id))!;
+    expect(wire.status).toBe("expired");
+    expect(wire.detail?.hits ?? []).toEqual([]);
+    expect("whispers" in (await api(app, w.owner, "GET", `/api/conversations/${w.g}`)).json).toBe(false);
+    for (const verb of ["accept", "decline"]) expect([verb, await api(app, w.owner, "POST", `/api/whispers/${made!.id}/${verb}`)]).toEqual([verb, { status: 409, json: { error: "stale_whisper" } }]);
+  });
+});
+
+describe("expiry: a found-elsewhere whisper a day after it was made", () => {
+  it("expires 24 h after it was made (`WHISPERS.elsewhereTtlHours`), pushed to its owner; a told one stays told; other kinds keep their 7 days", async () => {
+    const w = await world();
+    const ownerSocket = await connect(app, w.owner);
+    const hook = createElsewhere(elsewhereDeps());
+    for (let i = 0; i < 3; i++) await askInGroup(w, hook);
+    const [old, young, told] = await whispersOf(w.owner.id, w.g);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${told!.id}/accept`)).status).toBe(200);
+    gateway.reply("蓝鲸计划在三楼。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const other = (await db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, kind: "memory", body: { text: "别的", actions: ["dismiss"] } })))!;
+    const age = (id: string, hours: number) => db.query("update whispers set created_at = now() - $2::int * interval '1 hour' where id = $1", [id, hours]);
+    await age(old!.id, 25);
+    await age(young!.id, 23);
+    await age(told!.id, 25);
+    await age(other.id, 25);
+    expect(app.deps.config.whispers.elsewhereTtlHours).toBe(24);
+    // Set longer, the sweep leaves it.
+    await changeSweep(app.deps, { ...app.deps.config, whispers: { elsewhereTtlHours: 48 } }, app.log, app.realtime);
+    expect((await wireOf(w.owner, w.g, old!.id))!.status).toBe("open");
+    await changeSweep(app.deps, app.deps.config, app.log, app.realtime);
+    expect(await Promise.all([old, young, told].map(async (x) => (await wireOf(w.owner, w.g, x!.id))!.status))).toEqual(["expired", "open", "told"]);
+    expect((await db.query("select status from whispers where id = $1", [other.id])).rows[0].status).toBe("open");
+    await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === old!.id && e.whisper.status === "expired");
+    expect(await api(app, w.owner, "POST", `/api/whispers/${old!.id}/accept`)).toEqual({ status: 409, json: { error: "stale_whisper" } });
+    // The clock is the sweep's argument: an hour later, the young one too.
+    expect((await expireWhispers(db, new Date(Date.now() + 2 * HOUR))).map((x) => x.id)).toEqual([young!.id]);
+  });
+});
+
+describe("migration 061: what was stored before", () => {
+  it("a told whisper (answered, its told reply posted) keeps nothing more: it reads told; one answered whose tell posted nothing, or open, is expired (its hits were copies, with nothing to read)", async () => {
+    const w = await world();
+    const hook = createElsewhere(elsewhereDeps());
+    for (let i = 0; i < 3; i++) await askInGroup(w, hook);
+    const [told, unposted, open] = await whispersOf(w.owner.id, w.g);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${told!.id}/accept`)).status).toBe(200);
+    gateway.reply("蓝鲸计划在三楼。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${unposted!.id}/accept`)).status).toBe(200);
     gateway.fail("provider_unavailable", { status: 502 });
     expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(await whisperStatus(x.whisper.id)).toBe("accepted");
-  });
-
-  it("its owner gone from the group meanwhile: it stays closed", async () => {
-    const x = await toldQueued();
-    const ticket = (await app.agentPort.claimNext())!;
-    expect((await api(app, x.w.owner, "DELETE", `/api/conversations/${x.w.g}/members/${x.w.owner.id}`)).status).toBe(200);
-    await app.agentPort.releaseRun(ticket.id);
-    // Still answered: a leaving expires only open whispers, and the give-back refuses an owner no longer there.
-    expect(await whisperStatus(x.whisper.id)).toBe("accepted");
-  });
-
-  it("round 4, I-1: the give-back after a pause catches a failure per run — the others still go, and what changed is still returned (to push); the log names no content", async () => {
-    const x = await toldQueued();
-    // As the pause's own transaction leaves it: cancelled, its whisper still answered.
-    await db.query("update agent_runs set status = 'cancelled', error = 'agent_paused', finished_at = now() where id = $1", [x.told.id]);
-    const logged: unknown[] = [];
-    const log = { error: (obj: unknown) => void logged.push(obj) };
-    const given = await afterTellsEnded(app.deps.db, ["00000000-0000-0000-0000-00000000zzzz", x.told.id], ELSEWHERE_OPEN_MAX, log);
-    expect(given.map((g) => [g.id, g.status])).toEqual([[x.whisper.id, "open"]]);
-    expect(logged).toHaveLength(1);
-    expect(JSON.stringify(logged)).not.toContain(CANARY);
-  });
-
-  it("round 4, I-1: the periodic sweep repairs a tell whose give-back never ran (the process stopped between the two): open again, pushed to its owner alone; only for an ending between a minute and a day ago", async () => {
-    const x = await toldQueued();
-    // The cancel committed; the give-back after it never ran.
-    const ended = (ago: string) => db.query(`update agent_runs set status = 'cancelled', error = 'agent_paused', finished_at = now() - interval '${ago}' where id = $1`, [x.told.id]);
-    // Not yet (under a minute: its own give-back may still be on its way), nor any more (over a day).
-    for (const ago of ["10 seconds", "2 days"]) {
-      await ended(ago);
-      await changeSweep(app.deps, app.deps.config, app.log, app.realtime);
-      expect([ago, await whisperStatus(x.whisper.id)]).toEqual([ago, "accepted"]);
-    }
-    // Two minutes ago: given back.
-    await ended("2 minutes");
-    await changeSweep(app.deps, app.deps.config, app.log, app.realtime);
-    await reopenedForOwnerOnly(x);
-    // Idempotent: the next sweep changes nothing more (it is answered again by now, and its told run is no longer the latest).
-    await changeSweep(app.deps, app.deps.config, app.log, app.realtime);
-    expect(await whisperStatus(x.whisper.id)).toBe("accepted");
-  });
-
-  it("round 4, M-1: only the whisper's latest told run gives it back — an earlier one ended without posting does not, once a newer tell was made", async () => {
-    const x = await toldQueued();
-    gateway.fail("provider_unavailable", { status: 502 });
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(await whisperStatus(x.whisper.id)).toBe("open");
-    // Told once more: a newer run, the whisper answered again.
-    expect((await api(app, x.w.owner, "POST", `/api/whispers/${x.whisper.id}/accept`)).status).toBe(200);
-    expect(await db.tx((t) => afterTell(t, x.told.id, false, ELSEWHERE_OPEN_MAX))).toBeNull();
-    expect(await whisperStatus(x.whisper.id)).toBe("accepted");
-  });
-
-  it("round 4, M-3: a tell with no hits left to tell does not loop — its whisper closes (expired, as one gone stale) instead of opening again", async () => {
-    const x = await toldQueued();
-    await db.query("update whispers set body = jsonb_set(body, '{detail,hits}', '[]'::jsonb) where id = $1", [x.whisper.id]);
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    expect((await runsOf(x.w.agent.id, x.w.g)).find((r) => r.id === x.told.id)!.status).toBe("cancelled");
-    expect(await whisperStatus(x.whisper.id)).toBe("expired");
-    await x.sockets.owner.waitFor((e) => e.type === "whisper" && e.whisper.id === x.whisper.id && e.whisper.status === "expired");
+    const sql = readFileSync(new URL("../migrations/061_whisper_derived_state.sql", import.meta.url), "utf8");
+    const [up, down] = sql.split("-- Down Migration") as [string, string];
+    const after = await db
+      .tx(async (t) => {
+        await t.query(down);
+        // As the rows stood before: answered `accepted`, hits as copies.
+        await t.query("update whispers set status = 'accepted', resolved_at = now() where id = any($1::uuid[])", [[told!.id, unposted!.id]]);
+        await t.query(`update whispers set body = jsonb_set(body, '{detail}', '{"hits": [{"where": "乙群", "who": "mia", "when": "2026-11-20 10:00", "text": "蓝鲸计划在三楼"}]}'::jsonb)`);
+        await t.query(up);
+        const rows = (await t.query<{ id: string; status: string }>("select id, status from whispers where owner_id = $1", [w.owner.id])).rows;
+        throw Object.assign(new Error("rollback"), { rows });
+      })
+      .catch((err: { rows?: Array<{ id: string; status: string }> }) => err.rows);
+    const statusOf = (id: string) => after!.find((r) => r.id === id)!.status;
+    expect([statusOf(told!.id), statusOf(unposted!.id), statusOf(open!.id)]).toEqual(["open", "expired", "expired"]);
+    // And as the service reads them: told stays told, whatever the hits were.
+    expect((await wireOf(w.owner, w.g, told!.id))!.status).toBe("told");
   });
 });
 
@@ -772,6 +971,7 @@ describe("the service's own hook", () => {
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("这个群的记录里没找到。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     const frame = await ownerSocket.next((e) => e.type === "whisper");
-    expect(frame).toMatchObject({ type: "whisper", whisper: { conversationId: w.g, kind: "found_elsewhere", text: FOUND_ELSEWHERE } });
+    expect(frame).toMatchObject({ type: "whisper", whisper: { conversationId: w.g, kind: "found_elsewhere", text: FOUND_ELSEWHERE, status: "open" } });
+    expect(frame.whisper.detail.hits.map((h: WireHit) => h.text)).toEqual([OWN_NOTE, CANARY]);
   });
 });

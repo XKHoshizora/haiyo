@@ -11,9 +11,12 @@ import { toWireForReaders, type ReadEvents, type ReadMarker } from "../messages/
 import { handleOf } from "../principals/store.ts";
 import { liveSessions } from "../session.ts";
 import type { SocialEvents } from "../social/events.ts";
-import type { WireWhisper } from "../whispers/wire.ts";
+import { readWhispers } from "../whispers/store.ts";
+import { wireWhispers, type WireWhisper } from "../whispers/wire.ts";
 import type { TicketOwner } from "./tickets.ts";
 
+/** The key of a principal's own queue of whisper pushes (`pushWhisper`), beside the conversations' (a uuid never starts so). */
+const WHISPER_QUEUE = "whispers:";
 /** A principal's 6th socket closes its oldest. */
 export const MAX_SOCKETS_PER_PRINCIPAL = 5;
 /** WebSocket-level ping interval; a socket that has not answered the previous ping by the next one is dropped. */
@@ -73,6 +76,8 @@ type Task =
   | { kind: "push"; principalId: string; event: PushEvent; wanted?: () => boolean }
   /** The Agent's reply at `seq`, again, to `principalId` (its run's owner) once its run is charged. */
   | { kind: "charged"; principalId: string; seq: number }
+  /** Whisper `whisperId` of `principalId`'s, as it is when delivered (`pushWhisper`). */
+  | { kind: "whisper"; principalId: string; whisperId: string }
   /**
    * Run `runId` of the conversation: `run` to the owner its row names (none: the owner is not told), its state to a
    * group's others. `activity` (`pushActivity`): what its tool is doing, with both — dropped if `wanted` says no by then.
@@ -86,8 +91,8 @@ interface Queue {
 
 export interface HubDeps {
   db: Queryable;
-  /** The site models' labels, read when a message is rendered (`via`). */
-  config: Pick<Config, "siteModels">;
+  /** The site models' labels, read when a message is rendered (`via`); the site's time zone, a whisper's hits' times. */
+  config: Pick<Config, "siteModels" | "siteTimezone">;
   conversations: ConversationEvents;
   social: SocialEvents;
   reads: ReadEvents;
@@ -113,7 +118,12 @@ export interface HubDeps {
  * - a reply's progress (`run`, `delta`), in order with the conversation's messages: `delta` to the Agent's owner only;
  *   `run` to the owner the run's row names (also after they left a group), and in a group also its state
  *   (`replying` / `unavailable` / null) to every other current member, read once per delivery whatever their number
- *   (`announceRun`); what its tool is doing (`pushActivity`) with both, as a kind only.
+ *   (`announceRun`); what its tool is doing (`pushActivity`) with both, as a kind only;
+ * - a whisper (`pushWhisper`): to its owner only, as it is when delivered (whispers/wire.ts `wireWhispers`: a
+ *   `found_elsewhere` one's state derived then, its hits read as she may read them then), on a queue of that owner's
+ *   whispers alone; and, after each delivery of a run that tells one (`告诉他们`'s told reply, `agent_runs.whisper_id`),
+ *   that whisper too — so every change of a told reply (queued, running, ended, posted or not) reaches its owner's view of
+ *   the whisper, without anything being written to the whisper itself.
  */
 export class Hub {
   /** Open connections per principal, oldest first. */
@@ -267,12 +277,15 @@ export class Hub {
   }
 
   /**
-   * A whisper of `ownerId`'s (src/whispers/), made or changed — answered, expired —, to their sockets only: nobody else is
-   * pushed anything of it, ever. Through its conversation's queue, so it comes after the message it follows (`afterSeq`)
-   * was pushed. Not replayed: `GET /api/sync` and catch-up carry the owner's whispers.
+   * A whisper of its owner's (src/whispers/), made or changed — answered, expired, its told reply moved on —, to their
+   * sockets only: nobody else is pushed anything of it, ever. Read when it is delivered, so it goes as it is then (each
+   * push carries the state at its delivery, and its revision). Through a queue of its owner's whispers, never its
+   * conversation's: what is read for it delays nothing any other member is sent (no timing of theirs depends on it); a
+   * client places it by `afterSeq` whenever it comes. Not replayed: `GET /api/sync` and catch-up carry the owner's whispers.
    */
-  pushWhisper(ownerId: string, whisper: WireWhisper): void {
-    this.enqueue(whisper.conversationId, { kind: "push", principalId: ownerId.toLowerCase(), event: { type: "whisper", whisper } });
+  pushWhisper(whisper: { id: string; ownerId: string }): void {
+    const ownerId = whisper.ownerId.toLowerCase();
+    this.enqueue(`${WHISPER_QUEUE}${ownerId}`, { kind: "whisper", principalId: ownerId, whisperId: whisper.id });
   }
 
   /** Registers an upgraded socket; closes the principal's oldest socket if this is one too many. */
@@ -404,7 +417,19 @@ export class Hub {
         return this.announceRun(task);
       case "charged":
         return this.pushCharged(conversationId, task.principalId, task.seq);
+      case "whisper":
+        return this.pushWhisperNow(task.principalId, task.whisperId);
     }
+  }
+
+  /** `pushWhisper`'s delivery: the whisper as its owner (`principalId`) may read it now, when they are connected. */
+  private async pushWhisperNow(principalId: string, whisperId: string): Promise<void> {
+    const [owner] = this.connectedAmong([principalId]);
+    if (!owner) return;
+    const found = await readWhispers(this.deps.db, owner, [whisperId]);
+    if (found.length === 0) return;
+    const [whisper] = await wireWhispers(this.deps.db, found, this.deps.config.siteTimezone);
+    this.push(owner, { type: "whisper", whisper: whisper! });
   }
 
   /** `pushChargedReply`'s delivery: the reply as `principalId` may read it now, when that carries `via`. */
@@ -458,6 +483,9 @@ export class Hub {
     }
     const { agentId, state } = audience;
     if (run) this.push(ownerId, { type: "run", conversationId, agentId, run, ...tool });
+    // A told reply (`告诉他们`): its whisper as its owner reads it then — telling, told, or open again —, to them alone, on
+    // their whispers' own queue (nothing is read for it here, before what the others are told).
+    if (run && audience.whisperId !== null) this.pushWhisper({ id: audience.whisperId, ownerId });
     if (task.ownerOnly) return;
     if (task.activity !== undefined && state !== "replying") return;
     for (const id of this.connectedAmong(audience.memberIds)) {

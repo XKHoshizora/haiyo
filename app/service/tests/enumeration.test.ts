@@ -609,7 +609,7 @@ describe("enumeration by timing (coarse)", () => {
     const g = await group(app, alice, "told", [eve, bob]);
     const agent = await mustCreateAgent(app, alice, { model: { source: "site", id: "fast" } });
     expect((await api(app, alice, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
-    const make = () => db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "found_elsewhere", body: { text: "只给 alice", actions: ["tell", "dismiss"] } }));
+    const make = () => db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "memory", body: { text: "只给 alice", actions: ["tell", "dismiss"] } }));
     const open = (await make())!;
     const answered = (await make())!;
     expect((await api(app, alice, "POST", `/api/whispers/${answered.id}/decline`)).status).toBe(200);
@@ -628,7 +628,7 @@ describe("enumeration by timing (coarse)", () => {
     const g = await group(app, alice, "told", [eve, bob]);
     const agent = await mustCreateAgent(app, alice, { model: { source: "site", id: "fast" } });
     expect((await api(app, alice, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
-    const told = await db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "found_elsewhere", body: { text: "只给 alice", actions: ["tell", "dismiss"] } }));
+    const told = await db.tx((t) => createWhisper(t, { conversationId: g, ownerId: alice.id, agentId: agent.id, kind: "memory", body: { text: "只给 alice", actions: ["tell", "dismiss"] } }));
     const accept = (id: string) => async () => {
       const res = await api(app, eve, "POST", `/api/whispers/${id}/accept`);
       expect(res).toEqual({ status: 404, json: { error: "not_found" } });

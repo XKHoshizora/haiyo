@@ -62,8 +62,7 @@ import type { Hub } from "./sync/hub.ts";
 import { registerSync } from "./sync/routes.ts";
 import { registerWebClient } from "./web.ts";
 import { pushWhispers, registerWhisperRoutes } from "./whispers/routes.ts";
-import { expireWhispers, removeOldWhispers, repairTells } from "./whispers/store.ts";
-import { ELSEWHERE_OPEN_MAX } from "./agents/tools/elsewhere.ts";
+import { expireWhispers, removeOldWhispers } from "./whispers/store.ts";
 import { deliverReminders } from "./metering/reminders.ts";
 
 /** Everything the app needs from outside; tests override pieces (e.g. raised rate limits). */
@@ -187,17 +186,15 @@ export interface BuildOptions {
  * One run of the sweep on the memory changes' timer (`MEMORY.changesSweepMs`). Each step's failure is logged (a code, never a
  * note or a whisper) and the next goes on:
  * - the record of what memory changed, kept 30 days (memory/sweep.ts);
- * - whispers left open 7 days expire (whispers/store.ts), each pushed to its owner (never logged); answered and expired
- *   ones made 30 days ago are deleted;
+ * - whispers left open 7 days expire — a `found_elsewhere` one a day (`WHISPERS.elsewhereTtlHours`) — (whispers/store.ts),
+ *   each pushed to its owner (never logged); answered and expired ones made 30 days ago are deleted;
  * - reminders about money recorded by a settlement whose whisper was never made (the service stopped between the two) are
- *   made, pushed and counted (metering/reminders.ts `deliverReminders`);
- * - told replies that ended without posting and whose whisper is still answered get it back (whispers/store.ts
- *   `repairTells`: a give-back lost between two transactions, or one the cap held; round 4, I-1), pushed to its owner.
+ *   made, pushed and counted (metering/reminders.ts `deliverReminders`).
  * `hub` null: nobody to tell yet.
  */
 export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: FastifyBaseLogger, hub: Pick<Hub, "pushWhisper"> | null): Promise<{ unsent: number; abandoned: number }> {
   await sweepMemoryChanges(deps.db).catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "memory change sweep failed; trying again next interval"));
-  const expired = await expireWhispers(deps.db).catch((err: unknown) => {
+  const expired = await expireWhispers(deps.db, new Date(), { elsewhereTtlHours: config.whispers.elsewhereTtlHours }).catch((err: unknown) => {
     log.warn({ code: (err as { code?: string }).code }, "whisper sweep failed; trying again next interval");
     return [];
   });
@@ -207,11 +204,7 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
     return [];
   });
   for (const r of reminded) log.info({ metric: r.metric }, "a reminder about money was made for its owner");
-  const given = await repairTells(deps.db, ELSEWHERE_OPEN_MAX, log).catch((err: unknown) => {
-    log.warn({ code: (err as { code?: string }).code }, "told replies' whispers repair failed; trying again next interval");
-    return [];
-  });
-  if (hub) pushWhispers(hub, [...expired, ...reminded.flatMap((r) => (r.whisper ? [r.whisper] : [])), ...given]);
+  if (hub) pushWhispers(hub, [...expired, ...reminded.flatMap((r) => (r.whisper ? [r.whisper] : []))]);
   return { unsent: 0, abandoned: 0 };
 }
 

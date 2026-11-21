@@ -1,11 +1,12 @@
 import { VISIBLE_JOIN, type ConversationType } from "../conversations/store.ts";
+import type { Config } from "../config.ts";
 import type { Db, Tx } from "../db.ts";
 import { MESSAGE_COLUMNS, notAcknowledgement, toStored, type MessageRow, type StoredMessage, type WireMessage } from "../messages/model.ts";
 import { mentionedIn, readPrincipals, type SyncPrincipal } from "../messages/principals.ts";
 import { toWireFor, type ReadConfig } from "../messages/read.ts";
 import { canDirectSendMany, type DirectRefusal } from "../social/relations.ts";
-import { whispersFrom } from "../whispers/store.ts";
-import { toWireWhisper, type WireWhisper } from "../whispers/wire.ts";
+import { waitingSql, whispersFrom } from "../whispers/store.ts";
+import { wireWhispers, type WireWhisper } from "../whispers/wire.ts";
 
 /** How many of the newest visible messages per conversation `GET /api/sync` returns. */
 export const SYNC_MESSAGES_PER_CONVERSATION = 30;
@@ -116,9 +117,10 @@ async function conversationEntries(t: Tx, me: string, onlyId: string | null = nu
             ac.agent_id, ag.paused as agent_paused, ag.deleted_at is not null as agent_deleted, agm.read_seq as agent_read_seq,
             (select count(*) from messages m ${VISIBLE_JOIN}
               where m.conversation_id = c.id and m.seq > me.read_seq and m.kind <> 'system' and m.sender_id <> $1 and ${notAcknowledgement("m")}) as unread,
-            -- The caller's own open whispers there that wait for an answer (offer a button), and nobody else's (owner_id is the reader).
+            -- The caller's own whispers there that wait for an answer (open, offering a button; a found-elsewhere one neither
+            -- told nor telling, with a hit left to read: whispers/store.ts), and nobody else's (owner_id is the reader).
             (select count(*) from whispers w
-              where w.owner_id = $1 and w.conversation_id = c.id and w.status = 'open' and jsonb_array_length(w.body -> 'actions') > 0
+              where w.owner_id = $1 and w.conversation_id = c.id and ${waitingSql("w")}
                 and w.after_seq >= me.joined_seq) as whispers
        from memberships me
        join conversations c on c.id = me.conversation_id
@@ -199,7 +201,7 @@ export async function syncConversation(db: Db, me: string, conversationId: strin
 }
 
 /** Everything the web client loads at start: the caller's current conversations and what they may read of them. */
-export async function syncView(db: Db, me: string, config: ReadConfig): Promise<SyncView> {
+export async function syncView(db: Db, me: string, config: ReadConfig & Pick<Config, "siteTimezone">): Promise<SyncView> {
   return onSnapshot(db, async (t) => {
     const out = await conversationEntries(t, me);
 
@@ -242,7 +244,7 @@ export async function syncView(db: Db, me: string, config: ReadConfig): Promise<
       conversations: out,
       principals,
       messages,
-      ...(whispers.length > 0 ? { whispers: whispers.map(toWireWhisper) } : {}),
+      ...(whispers.length > 0 ? { whispers: await wireWhispers(t, whispers, config.siteTimezone) } : {}),
     };
   });
 }
@@ -273,7 +275,7 @@ function allot(backlogs: Array<{ id: string; missed: number }>, budget: number):
  * not a current member of are only listed in `gone`, whatever the reason; conversations the caller is in
  * but sent no position for are not looked at.
  */
-export async function catchUp(db: Db, me: string, positions: ReadonlyMap<string, number>, config: ReadConfig): Promise<CatchUp> {
+export async function catchUp(db: Db, me: string, positions: ReadonlyMap<string, number>, config: ReadConfig & Pick<Config, "siteTimezone">): Promise<CatchUp> {
   if (positions.size === 0) return { messages: [], gone: [], more: false };
   const ids = [...positions.keys()];
 
@@ -291,7 +293,7 @@ export async function catchUp(db: Db, me: string, positions: ReadonlyMap<string,
     if (memberIds.length === 0) return { messages: [], gone, more: false };
     // The caller's own whispers there: the open ones, and those at or after the position (made or answered meanwhile).
     const found = await whispersFrom(t, me, memberIds.map((id) => ({ conversationId: id, seq: positions.get(id)! })));
-    const whispers = found.length > 0 ? { whispers: found.map(toWireWhisper) } : {};
+    const whispers = found.length > 0 ? { whispers: await wireWhispers(t, found, config.siteTimezone) } : {};
 
     // Per conversation the caller is in: how many visible messages follow the position (counted up to
     // one past the cap: enough to know whether more remain).

@@ -9,7 +9,7 @@ import { positiveIntString, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
 import type { Hub } from "../sync/hub.ts";
 import { listWhispers, resolveWhisper, type Whisper, type WhisperAnswer, type WhisperKind } from "./store.ts";
-import { toWireWhisper, wireWhisperSchema } from "./wire.ts";
+import { wireWhispers, wireWhisperSchema } from "./wire.ts";
 
 /**
  * What answering a whisper of a kind does besides its status: run in the answer's transaction, after the status is written
@@ -17,7 +17,8 @@ import { toWireWhisper, wireWhisperSchema } from "./wire.ts";
  * hook may lock the Agent's row again — `lockAgent` with the whisper's conversation —, then run rows and accounts); what
  * it returns runs once that transaction has committed (pushes, announcements). A throw rolls the answer back (the whisper
  * stays open). `found_elsewhere` (Task 8): `告诉他们` queues one reply of the Agent in the group that tells what was found
- * (agents/runs.ts `tellFromWhisper`), announced once committed; `不用` does nothing more.
+ * (agents/runs.ts `tellFromWhisper`), announced once committed — nothing is written to the whisper (Redesign D: that run
+ * is what it reads telling from); `不用` does nothing more.
  */
 export type WhisperHook = (t: Tx, whisper: Whisper, app: FastifyInstance) => Promise<(() => void) | void>;
 export const ANSWER_HOOKS: { [K in WhisperKind]?: Partial<Record<WhisperAnswer, WhisperHook>> } = {
@@ -29,9 +30,9 @@ export const ANSWER_HOOKS: { [K in WhisperKind]?: Partial<Record<WhisperAnswer, 
   },
 };
 
-/** Each whisper to its owner's sockets as it is now (after a commit that changed them). */
+/** Each whisper to its owner's sockets as it is when delivered (after a commit that changed them: `Hub.pushWhisper`). */
 export function pushWhispers(realtime: Pick<Hub, "pushWhisper">, whispers: readonly Whisper[]): void {
-  for (const w of whispers) realtime.pushWhisper(w.ownerId, toWireWhisper(w));
+  for (const w of whispers) realtime.pushWhisper(w);
 }
 
 const empty = z.object({});
@@ -43,7 +44,7 @@ const idParams = z.object({ id: uuidParam });
  * `not_found`, found by one read of the caller's own rows (store.ts), so it costs what an id that is none costs.
  */
 export function registerWhisperRoutes(app: FastifyInstance): void {
-  const { db } = app.deps;
+  const { db, config } = app.deps;
   const api = app.withTypeProvider<ZodTypeProvider>();
   const readLimit = perPrincipalLimit(app, 120);
   const answerLimit = perPrincipalLimit(app, 30);
@@ -62,12 +63,13 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
       await readLimit(req, me.id);
       const page = await listWhispers(db, me.id, req.params.id, { before: req.query.before, limit: req.query.limit ?? 50 });
       if (!page) throw notFound();
-      return { whispers: page.whispers.map(toWireWhisper), nextBefore: page.nextBefore };
+      return { whispers: await wireWhispers(db, page.whispers, config.siteTimezone), nextBefore: page.nextBefore };
     },
   );
 
-  // Answered once: the whisper as it is now, pushed to the owner's sockets too (their other tabs). Again, the other answer,
-  // or an answer whose button it does not offer: 409 `stale_whisper`.
+  // Answered once: the whisper as it is now (a `found_elsewhere` one told: `telling`), pushed to the owner's sockets too
+  // (their other tabs). Again, the other answer, or an answer whose button it does not offer: 409 `stale_whisper`; a
+  // `found_elsewhere` one while its told reply is queued or running: 409 `busy_run`.
   const answer = (verb: "accept" | "decline", to: WhisperAnswer) =>
     api.post(
       `/api/whispers/:id/${verb}`,
@@ -83,10 +85,11 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
         });
         if (outcome === "gone") throw notFound();
         if (outcome === "stale") throw new AppError(409, "stale_whisper");
-        const wire = toWireWhisper(outcome);
-        app.realtime.pushWhisper(me.id, wire);
+        if (outcome === "busy") throw new AppError(409, "busy_run");
+        const [wire] = await wireWhispers(db, [outcome], config.siteTimezone);
+        app.realtime.pushWhisper(outcome);
         (afterCommit as (() => void) | void)?.();
-        return wire;
+        return wire!;
       },
     );
   answer("accept", "accepted");

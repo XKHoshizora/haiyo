@@ -137,6 +137,8 @@ that the holds of the owner's running calls against it, a starting reply's own i
 waits, queued; a reply's later rounds are held against all that is left; 0.01–1, default 1)),
 `ALLOWANCE` (when an owner is reminded of the day's free allowance, JSON, every field optional; Metering, Reminders:
 `warnAt` (the share of it used at which they are told, once a day; above 0 and below 1, default 0.8)),
+`WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
+whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
 `HOST` (the address to listen on: an IPv4/IPv6 address or `localhost`, default `0.0.0.0`, every interface; `127.0.0.1` for local-only),
 `WEB_DIST` (optional: directory of the built web client to serve, see Deployment; unset serves none),
 `S3_*` (optional, all-or-none), `REGISTRATION_MODE` (`invite` | `open`, default `invite`),
@@ -1416,28 +1418,36 @@ member of (a direct chat and an Agent's own conversation too). Limit: 20 per min
 ### Whispers
 
 A whisper (悄悄话, `src/whispers/`) is a small note in a conversation — an Agent's own, or a group — that only the owner
-of one of its Agents ever sees, with the buttons it offers: `告诉他们` (`"tell"`, answers it `accepted`) and `不用`
-(`"dismiss"`, `declined`). The service makes them (later batches say when); nobody sends one. It is **never a message**:
+of one of its Agents ever sees, with the buttons it offers: `告诉他们` (`"tell"`, answers it `accepted`; a `found_elsewhere`
+one stores nothing for it — its state is derived, below) and `不用` (`"dismiss"`, `declined`). The service makes them (later batches say when); nobody sends one. It is **never a message**:
 it takes no seq (seqs stay gapless for everyone), and sits after the message that was the conversation's last when it was
 made (`afterSeq`; several there: by `createdAt`). So it is in no history, search, unread count, `lastSeq`, quote or
 catch-up `messages`, and never in what an Agent's model is shown. Its owner gets it in the `whisper` push, in
 `GET /api/sync` and catch-up (`whispers`), in the conversation entry's count of open ones that wait for an answer
 (`whispers: n`, only when n > 0, of your current stay there as the lists are; one that offers no button only tells, and
-is not counted), and from the list route
+is not counted, nor is a `found_elsewhere` one that is telling, told or has no hit left), and from the list route
 below; **nobody else gets anything of it — no frame, no key, no count**: a fellow member's
 answers are byte for byte what they were before it existed. Its owner gets only the whispers of their current stay in the
 conversation (made at or after the seq their membership began): after leaving and coming back, the earlier ones are not
 sent again.
 
 **WireWhisper**: `{"id", "conversationId", "agentId", "afterSeq": 42, "kind": "found_elsewhere" | "tools_off" | "memory" | "allowance",
-"text": "…", "actions": ["tell", "dismiss"], "status": "open" | "accepted" | "declined" | "expired", "createdAt",
-"revision": 0, "detail"?: …}`. `revision` is raised by one at every change of its status (an answer, an expiry, a
-reopening, below): of two copies a client holds the one with the higher (a copy read before a change never undoes it). `text` is one line (at most 2 000 weight); `actions` the buttons it offers (none, one or both, each once);
+"text": "…", "actions": ["tell", "dismiss"], "status": "open" | "telling" | "told" | "accepted" | "declined" | "expired",
+"lastTellFailed"?: true, "createdAt", "revision": 0, "detail"?: …}`. `telling`, `told` and `lastTellFailed` are a
+`found_elsewhere` whisper's only (below); it is never `accepted`. `revision` orders two copies of one whisper: it is
+computed from the state the whisper is read in — never stored —, and is never lower for a later state; a client keeps the
+copy with the higher (a copy read before a change never undoes it; two with the same say the same). For a
+`found_elsewhere` whisper it is 8 for each told reply it has had, 4 more once the latest of them has ended, 2 more once one
+has posted, 1 more once it is final otherwise (declined or expired); for any other kind 0 while open, 1 once answered or
+expired. `text` is one line (at most 2 000 weight); `actions` the buttons it offers (none, one or both, each once);
 `detail` what its kind keeps with it, when it has any: at most 8 192 bytes of JSON (utf-8), nested at most 6 deep, at most
 200 values; no string in a whisper holds U+0000 or a lone surrogate (the service makes no whisper whose body breaks one of
-these, and logs only its kind). An open whisper is answered once; it expires — `status: "expired"`, pushed to its owner —
-7 days after it was made, when its owner or its Agent leaves the conversation (or is removed), and when its Agent is
-deleted (everywhere at once). An answered or expired one is deleted 30 days after it was made. Both run on the existing
+these, and logs only its kind). A `found_elsewhere` whisper's `detail` is not what its row keeps but what was found, read
+now (below), and only while it is open or telling. An open whisper is answered once; it expires — `status: "expired"`,
+pushed to its owner — 7 days after it was made (a `found_elsewhere` one **a day** after: `WHISPERS.elsewhereTtlHours`,
+default 24, the product owner's decision; not one that is told, nor one telling until its told reply has ended), when its
+owner or its Agent leaves the conversation (or is removed), and when its Agent is deleted (everywhere at once). An answered
+or expired one is deleted 30 days after it was made, and so is any `found_elsewhere` one. Both run on the existing
 periodic sweep of memory changes, on its schedule (`MEMORY.changesSweepMs`; `0` stops them too; `attachments:sweep` runs
 them by hand), in bounded batches that never wait for a row in use. Its row goes with the conversation's, the owner's or
 the Agent's.
@@ -1452,22 +1462,38 @@ message after your joining; its own conversation with you included, `我们的�
 found something. The caps below are read before that query (none runs without room for a whisper), and at most 2 such
 queries run at once in the whole service (`ELSEWHERE_AT_ONCE`, apart from the search slots, which are the models'): one
 more is skipped, and counted (`elsewhere_skipped`, Metrics in the log).
-`群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？`, buttons `tell` and `dismiss`, `detail` `{"hits": [{"where", "who",
-"when", "text"}]}` — at most 5, the newest first: `where` the group's title (without citations; `某个群` without one) or `我们的专属会话`, `who`
-the sender's name as a label shows it, `when` `YYYY-MM-DD HH:mm` in the site's time zone, `text` on one line around the
-words, at most 200 characters, without citations. At most one a reply, and none while you have 3 open `found_elsewhere`
-whispers in that group; with the switch off the second query is not run at all. Made under the group's row and then the
+`群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？`, buttons `tell` and `dismiss`. **Its hits are references**: its row
+keeps, for each of at most 5 hits (the newest first), the conversation and the message it points at and where the words
+are in it — never the text, a title or a name — and which message of the group asked (the call the search answered).
+Whenever it is shown to you (the push, sync, catch-up, the list route, an answer) and when its told reply begins, each is
+read again **under your access then**: a hit you can no longer read (you left that group, say) is left out; with none left
+the whisper reads `expired`. You are sent `detail` `{"hits": [{"where", "who", "when", "text"}]}`, read so: `where` the
+group's title now (without citations; `某个群` without one) or `我们的专属会话`, `who` the sender's name as a label shows it,
+`when` `YYYY-MM-DD HH:mm` in the site's time zone, `text` on one line around the words, at most 200 characters, without
+citations. At most one a reply, and none while you have 3 `found_elsewhere` whispers in that group whose state is open or
+telling (a told one, or one with no hit left, takes no room); with the switch off the second query is not run at all.
+**Its state is derived, never stored**: it is `told` only because a posted message of a told reply of it exists (the
+message whose transaction id is that run's), `telling` while its latest told reply is queued or running, and otherwise
+`open` — with `lastTellFailed: true` once a told reply of it ended without posting (failed, ended by recovery, a release
+or the stale-run sweep, stopped by you, cancelled by your pause: however) — unless it is `declined`, `expired`, or has no
+hit left (`expired`). So a tell that posts nothing leaves nothing to repair: the whisper simply reads open again, and
+`告诉他们` tells once more. Every change of its told reply is announced as any run's, and the announcement brings you the
+whisper as it is then (to you alone: no frame, count or key reaches anyone else). `told`, `declined` and `expired` are
+final. Made under the group's row and then the
 Agent's (`lockAgent`, before the whisper); one that cannot be made (you or the Agent no longer there, the Agent deleted)
 is simply none. Nobody else learns anything of it; the reply's model is told the group's plain not-found, byte for byte.
-`告诉他们` (accept) queues ONE reply of the Agent in the group (agents/runs.ts `tellFromWhisper`): your own (`triggered_by`
+`告诉他们` (accept; only while it reads open: 409 `busy_run` while telling, 409 `stale_whisper` once final) stores nothing and
+queues ONE reply of the Agent in the group (agents/runs.ts `tellFromWhisper`): your own (`triggered_by`
 `human`, lane `own`, you its caller and the one it answers), covering the group's latest message — whoever's it is: it
 answers nobody's call (`call_seqs` empty), so a block between you and that message's sender, either way, does not end it
 as a reply whose calls were all blocked since does — with the whisper (`agent_runs.whisper_id`); its system text gains `主人让你把下面查到的内容告诉大家，用你自己的话简短地说。`,
 `不要说是在哪里看到的，也不要说是谁说的。`, the sentence that what follows is material and not instructions, and the hits as one
-JSON object `{"hits": [{"when", "text"}]}` — each hit's time and text only, never where it was said or who said it (they
-stay in the whisper, for you), and no `@` that would call anyone in a text. It is offered no tools, and says so in its
+JSON object `{"hits": [{"when", "text"}]}` — read as you may read them as it begins (one you can no longer read left out;
+none left: it ends, telling nothing), each hit's time and text only, never where it was said or who said it (those are
+shown to you alone), and no `@` that would call anyone in a text. It is offered no tools, and says so in its
 own words (`TOLD_NO_TOOLS`: no tools, nothing more to look up, what it tells was looked up before) instead of `NO_TOOLS`;
-it posts in the group as any reply (a `found_elsewhere` whisper that holds no hits queues nothing). What it is shown of
+it posts in the group as any reply, **as a reply to the message that asked** (its quote), so it makes sense however long
+after it comes — without the quote when the Agent can no longer see that message (the rule a person's quote is held to). What it is shown of
 the hits lies outside every late-joiner line of this group — none of its members could see those messages: that is
 acceptable only because it is your own, deliberate telling of what you can read; nothing else crosses. The words
 themselves are told: a hit's own text can name its group or its speaker (an Agent's earlier reply, `mia 在乙群说…`), and
@@ -1478,27 +1504,13 @@ group only up to what it covers; its follow-up then answers exactly the calls re
 sent is none of them, whatever has changed since — as an ordinary reply: with tools, in the caller's lane, each held to
 the block rule as any follow-up's calls. Those calls are never held to you: however the told reply ends — posted or
 not, failed as it ran, ended by recovery, a release or the stale-run sweep (where a failed run is otherwise followed by
-nothing) — they go to that follow-up at once, and the told reply keeps none of them. A tell is never lost: when a told reply ends having posted nothing — it failed, recovery, a release or the stale-run
-sweep ended it, you stopped it (queued or under way), or your pause cancelled it — its whisper goes back to `open`
-(`revision` raised, pushed to you alone: no frame, count or key reaches anyone else), with its hits and both buttons, so
-`告诉他们` tells once more (a fresh told reply) or `不用` declines (`whispers/store.ts` `afterTell`). Not when it posted (it
-stays `accepted`; one open again since, its run retried, is answered again when that posts), nor when you or the Agent
-are no longer in the group, the Agent is deleted, or you have 3 `found_elsewhere` whispers open there already (a reopened
-one counts); once reopened, any other ending of it changes nothing, and only the whisper's latest told reply decides (an
-earlier one's end does nothing once you told it again). A known limit: over that cap the bubble reads 已告诉他们 though
-nothing was posted, until room is made and the periodic sweep (below) gives it back. A whisper with no hit left to tell is
-not given back to be pressed in vain: it is closed as gone stale (`expired`, 已过期). A given-back whisper keeps its
-`createdAt` (and so its place, and the 7 days it may stay open count from when it was made — kept so, since a newer
-`createdAt` would also count as one more made by the next reply, which may make one at most). The periodic sweep on the
-memory changes' timer (`MEMORY.changesSweepMs`) is the safety net: a told reply that ended between a minute and a day ago
-without posting, the latest of its whisper's, whose whisper is still `accepted` — its give-back lost (the process stopped
-between a pause's commit and the give-back after it) or held by the cap — is given it again (`repairTells`), pushed to you
-alone. Stopping a told reply while it is queued ends the
-tell only: the members' calls noted on it still get their ordinary follow-up. (`让 Agent 停下`, a group member's halt, does
+nothing) — they go to that follow-up at once, and the told reply keeps none of them. Stopping a told reply while it is
+queued ends the tell only (the whisper reads open again): the members' calls noted on it still get their ordinary
+follow-up. (`让 Agent 停下`, a group member's halt, does
 not touch a told reply at all — it is your own, a person's call: it ends the runs Agents' messages called for and the
 replies nobody asked for, and a follow-up of noted calls that only Agents' messages made is such a run.) A retry of a told
-reply that failed keeps its whisper, and tells again what it covered, with nothing noted; it is offered while the told
-reply is the Agent's latest run there. It is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
+reply that failed keeps its whisper (it reads telling again), and tells again what it covered, with nothing noted; it is
+offered while the told reply is the Agent's latest run there. `告诉他们` is held to what a retry of yours is: 409 `agent_paused`, 400 `invalid_request` (no model), 409
 `busy_run` (a reply of it queued or running there), 429 `rate_limited` (your own replies a minute) — each leaves the
 whisper open, to answer again. `不用` (decline) does nothing more. Vault notes are not involved: hits are messages.
 `tools_off` — a reply found its provider model unable to use tools and the model was marked so
@@ -1522,18 +1534,20 @@ an id that is none: the same answer; what it costs depends on nobody's whispers 
 
 #### `POST /api/whispers/:id/accept`
 
-*Session: required.* Body: none or `{}`. Answers your open whisper `告诉他们` → 200 WireWhisper with `status: "accepted"`,
-pushed to your sockets too. What an answer does besides that is its kind's: for `found_elsewhere`, one reply of the Agent
-in the group (above; its refusals 409 `agent_paused`, 400 `invalid_request`, 409 `busy_run`, 429 `rate_limited` leave
-the whisper open); for the others nothing yet. 409
-`stale_whisper` when it is not open any more (answered, expired) or does not offer `"tell"`; 404 `not_found` for anyone
+*Session: required.* Body: none or `{}`. Answers your open whisper `告诉他们` → 200 WireWhisper as it is now, pushed to
+your sockets too: `status: "accepted"`; a `found_elsewhere` one stores nothing and reads `telling` — its one reply of the
+Agent in the group is queued (above; its refusals 409 `agent_paused`, 400 `invalid_request`, 409 `busy_run`, 429
+`rate_limited` leave it open); 409 `busy_run` too while its told reply is queued or running. For the others nothing yet. 409
+`stale_whisper` when it is not open any more (answered, expired; a `found_elsewhere` one told, or with no hit left to
+read) or does not offer `"tell"`; 404 `not_found` for anyone
 else's whisper and an id that is none alike (one read, the same answer, the same cost), and for yours once its Agent is
 deleted or it or you are no longer a member of the conversation. Limit: 30 per minute, shared with decline.
 
 #### `POST /api/whispers/:id/decline`
 
 *Session: required.* Body: none or `{}`. Answers your open whisper `不用` → 200 WireWhisper with `status: "declined"`,
-pushed to your sockets too; otherwise as accept (409 `stale_whisper` when it is not open or does not offer `"dismiss"`).
+pushed to your sockets too; otherwise as accept (409 `stale_whisper` when it is not open or does not offer `"dismiss"`;
+409 `busy_run` while a `found_elsewhere` one is telling).
 
 ### Model providers
 
@@ -2426,7 +2440,7 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
   "unread": 2,         // visible messages from others, not system notices nor Agents' acknowledgements, after readSeq
   "peerReadSeq": 41,   // direct chats: how far the other side has read; Agent conversations: how far the Agent has
                        // (it reads up to what a reply covers when the reply starts); absent in groups
-  "whispers": 1        // how many of your own whispers there wait for your answer (Whispers: open, offering a button); absent at 0, and nobody else's are counted
+  "whispers": 1        // how many of your own whispers there wait for your answer (Whispers: open, offering a button; a found_elsewhere one neither telling nor told, with a hit left); absent at 0, and nobody else's are counted
 }
 ```
 

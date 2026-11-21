@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWhisper, expireWhispers, type Whisper } from "../src/whispers/store.ts";
-import { toWireWhisper } from "../src/whispers/wire.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -28,7 +27,7 @@ const FAST = { source: "site", id: "fast" } as const;
 const RANDOM = "6a0d4c2e-1b3f-4a5e-9c7d-8e9f0a1b2c3d";
 const CANARY = "WHISPER-zq9 只给主人看的悄悄话";
 /** Keys only a whisper's owner ever receives (also in agents-co-members.test.ts and proactive-decide.test.ts). */
-const WHISPER_KEYS = ["whisper", "whispers", "afterSeq"];
+const WHISPER_KEYS = ["whisper", "whispers", "afterSeq", "lastTellFailed"];
 
 let txn = 0;
 const say = async (who: Actor, conv: string, text: string): Promise<number> => {
@@ -63,10 +62,10 @@ type World = Awaited<ReturnType<typeof world>>;
 
 async function whisper(w: World, conversationId = w.g): Promise<Whisper> {
   const made = await db.tx((t) =>
-    createWhisper(t, { conversationId, ownerId: w.owner.id, agentId: w.agent.id, kind: "found_elsewhere", body: { text: CANARY, actions: ["tell", "dismiss"], detail: { seq: 1 } } }),
+    createWhisper(t, { conversationId, ownerId: w.owner.id, agentId: w.agent.id, kind: "memory", body: { text: CANARY, actions: ["tell", "dismiss"], detail: { seq: 1 } } }),
   );
   if (!made) throw new Error("whisper refused");
-  app.realtime.pushWhisper(made.ownerId, toWireWhisper(made));
+  app.realtime.pushWhisper(made);
   return made;
 }
 
@@ -159,7 +158,7 @@ describe("a whisper's whole life, as everyone but its owner sees it", () => {
     const c = await whisper(w);
     ids.push(c.id);
     await db.query("update whispers set created_at = now() - interval '8 days' where id = $1", [c.id]);
-    for (const x of await expireWhispers(db)) app.realtime.pushWhisper(x.ownerId, toWireWhisper(x));
+    for (const x of await expireWhispers(db)) app.realtime.pushWhisper(x);
     await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === c.id && e.whisper.status === "expired");
     await phase("expired", c.id);
     // One open in the Agent's own conversation too.

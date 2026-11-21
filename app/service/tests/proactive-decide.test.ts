@@ -13,7 +13,6 @@ import type { Db } from "../src/db.ts";
 import { JudgeError, MAX_CHOICE_OPTIONS, type Answer, type Judge, type Question } from "../src/judge/client.ts";
 import { insertMessage } from "../src/messages/model.ts";
 import { createWhisper } from "../src/whispers/store.ts";
-import { toWireWhisper } from "../src/whispers/wire.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -1149,7 +1148,7 @@ describe("what reaches anyone", () => {
       }
     return into;
   };
-  const HIDDEN_KEYS = ["proactive", "proactiveLevel", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "newNotes", "memoryModel", "memoryModelUsable", "modelUsable", "memoryLanguage", "lane", "callerId", "caller", "quiet", "surcharge", "judgedAt", "probability", "probabilities", "threshold", "whisper", "whispers", "afterSeq", "queries", "tools", "askerIds", "asker_ids", "askers", "callSeqs", "call_seqs", "sourceLines", "whisperElsewhere", "whisperId", "whisper_id", "handleChangeAvailableAt", "asksAgent", "asks_agent", "canStartFreeReply", "heldBackBy", "held_back_by", "stopAsked", "stop_asked", "revision"];
+  const HIDDEN_KEYS = ["proactive", "proactiveLevel", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "newNotes", "memoryModel", "memoryModelUsable", "modelUsable", "memoryLanguage", "lane", "callerId", "caller", "quiet", "surcharge", "judgedAt", "probability", "probabilities", "threshold", "whisper", "whispers", "afterSeq", "queries", "tools", "askerIds", "asker_ids", "askers", "callSeqs", "call_seqs", "sourceLines", "whisperElsewhere", "whisperId", "whisper_id", "handleChangeAvailableAt", "asksAgent", "asks_agent", "canStartFreeReply", "heldBackBy", "held_back_by", "stopAsked", "stop_asked", "revision", "lastTellFailed"];
 
   it("no frame and no view of another member names proactive replies, lanes, callers, thresholds or probabilities; the log only ids and reasons", async () => {
     const w = await world();
@@ -1172,7 +1171,7 @@ describe("what reaches anyone", () => {
     publish(await decide(w.g, await say(w.member, w.g, "这机器人话有点多啊")));
     // A whisper of the owner's about anna there (src/whispers/), pushed to them: theirs alone.
     const told = await db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: anna.id, kind: "tools_off", body: { text: "这一轮没有用工具", actions: ["dismiss"] } }));
-    app.realtime.pushWhisper(w.owner.id, toWireWhisper(told!));
+    app.realtime.pushWhisper(told!);
 
     const bodies: Array<[string, unknown]> = [];
     for (const who of [w.member, w.third]) {
