@@ -267,6 +267,24 @@ describe("register", () => {
     submit("注册");
     await screen.findByText("操作太频繁了，请稍等一分钟再试。");
   });
+
+  it("on a site that sends no mail (GET /api/site), the page after registering says so instead of a mail sent", async () => {
+    const api = await open(outApi({ getSite: vi.fn(async () => ({ mailDelivered: false })) }));
+    fill();
+    submit("注册");
+    await screen.findByText("这个站点不发送邮件。请向管理员索取验证链接。");
+    expect(document.body.textContent).not.toMatch(/发送了一封|查收|垃圾邮件/);
+    expect(screen.getByRole("link", { name: "去登录" }).classList.contains("text-link")).toBe(true);
+    expect(api.getSite).toHaveBeenCalledTimes(1);
+  });
+
+  it("on a site that sends mail the page is as it was", async () => {
+    await open(outApi({ getSite: vi.fn(async () => ({ mailDelivered: true })) }));
+    fill();
+    submit("注册");
+    await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
+    expect(screen.queryByText("这个站点不发送邮件。请向管理员索取验证链接。")).toBeNull();
+  });
 });
 
 describe("verification landing", () => {
@@ -314,6 +332,18 @@ describe("forgot and reset password", () => {
     typeInto("邮箱", "nobody@x.com");
     submit("发送重置邮件");
     await screen.findByText("如果这个邮箱已注册，我们会发送一封重置密码的邮件。链接 1 小时内有效。");
+    expect(api.requestPasswordReset).toHaveBeenCalledWith({ email: "nobody@x.com" });
+  });
+
+  it("forgot: on a site that sends no mail the confirmation says so, the same for every address", async () => {
+    const api = outApi({ getSite: vi.fn(async () => ({ mailDelivered: false })) });
+    at("/forgot");
+    mount(api);
+    await screen.findByRole("button", { name: "发送重置邮件" });
+    typeInto("邮箱", "nobody@x.com");
+    submit("发送重置邮件");
+    await screen.findByText("这个站点不发送邮件。请向管理员索取验证链接。");
+    expect(document.body.textContent).not.toMatch(/我们会发送|查收/);
     expect(api.requestPasswordReset).toHaveBeenCalledWith({ email: "nobody@x.com" });
   });
 

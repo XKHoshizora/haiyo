@@ -105,6 +105,29 @@ function useAuthForm({ initial, rules: fieldRules, submit }) {
   return { values, errors, formError, busy, bind, onSubmit, formRef };
 }
 
+/** What the pages that would say "we sent you a mail" say on a site that sends none (`GET /api/site`). */
+export const NO_MAIL = "这个站点不发送邮件。请向管理员索取验证链接。";
+
+/**
+ * Whether this site really sends mail (`GET /api/site`, asked once per page): false on a site that only keeps mail in its
+ * outbox; null while not known, or when it could not be asked (the page then says what it always said).
+ */
+function useMailDelivered(api) {
+  const [delivered, setDelivered] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (typeof api.getSite !== "function") return undefined;
+    api.getSite().then(
+      (site) => alive && typeof site?.mailDelivered === "boolean" && setDelivered(site.mailDelivered),
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [api]);
+  return delivered;
+}
+
 function FormBody({ form, submitLabel, children }) {
   return (
     <form className="auth-form" onSubmit={form.onSubmit} ref={form.formRef} noValidate>
@@ -154,6 +177,7 @@ export function SignIn({ api, onSignedIn, expired }) {
 
 export function Register({ api }) {
   const [sentTo, setSentTo] = useState(null);
+  const mailDelivered = useMailDelivered(api);
   const form = useAuthForm({
     initial: { inviteCode: "", email: "", password: "", displayName: "", handle: "" },
     rules: { inviteCode: rules.inviteCode, email: rules.email, password: rules.newPassword, displayName: rules.displayName, handle: rules.handle },
@@ -163,6 +187,14 @@ export function Register({ api }) {
     },
   });
 
+  if (sentTo && mailDelivered === false) {
+    // The same page whether or not the address had an account (the service's answer is the same).
+    return (
+      <AuthCard title="验证邮箱" footer={<Link to="/signin">去登录</Link>}>
+        <Notice>{NO_MAIL}</Notice>
+      </AuthCard>
+    );
+  }
   if (sentTo) {
     return (
       <AuthCard title="请查收邮箱" footer={<Link to="/signin">去登录</Link>}>
@@ -211,6 +243,7 @@ export function Verify({ error, signedIn }) {
 
 export function Forgot({ api }) {
   const [sent, setSent] = useState(false);
+  const mailDelivered = useMailDelivered(api);
   const form = useAuthForm({
     initial: { email: "" },
     rules: { email: rules.email },
@@ -219,6 +252,13 @@ export function Forgot({ api }) {
       setSent(true);
     },
   });
+  if (sent && mailDelivered === false) {
+    return (
+      <AuthCard title="重置密码" footer={<Link to="/signin">回到登录</Link>}>
+        <Notice>{NO_MAIL}</Notice>
+      </AuthCard>
+    );
+  }
   if (sent) {
     return (
       <AuthCard title="请查收邮箱" footer={<Link to="/signin">回到登录</Link>}>

@@ -1918,6 +1918,14 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
 
 *Session: none.* → 200 `{"ok": true}` once the database answers a query; 503 `busy` when it does not in time.
 
+#### `GET /api/site`
+
+*Session: none.* → 200 `{"mailDelivered": boolean}`: whether this site really delivers mail (`MAIL_MODE=resend`;
+false in `outbox` mode, where mail is only written to `mail_outbox`). The page after registering and the
+forgot-password page read it, so that a site that sends no mail says so (这个站点不发送邮件。请向管理员索取验证链接。)
+instead of saying a mail was sent. The same answer for every caller, signed in or not; nothing else about the mail
+setup. Not rate limited (it reads no database).
+
 ### Accounts and sessions
 
 Accounts are Better Auth's (e-mail + password, verified e-mail required) mounted at `/api/auth/*`, with a

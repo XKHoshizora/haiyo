@@ -573,6 +573,21 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     },
   );
 
+  // What a page shown before sign-in needs of the site's setup (README "Site"): whether mail is really delivered, so the
+  // pages that would say "we sent you a mail" tell the truth. One boolean, the same for every caller; nothing else of the
+  // mail setup.
+  api.get(
+    "/api/site",
+    {
+      schema: {
+        params: z.object({}),
+        querystring: z.object({}),
+        response: { 200: z.object({ mailDelivered: z.boolean() }) },
+      },
+    },
+    async () => ({ mailDelivered: config.mailMode === "resend" }),
+  );
+
   // Last: the wildcard must never get ahead of an API route (a more specific route always wins, but be explicit).
   await registerWebClient(app);
 

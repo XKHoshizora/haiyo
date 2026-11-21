@@ -20,6 +20,8 @@ export const signOut = () => request("POST", "/api/auth/sign-out");
 export const verifyEmail = (token) => request("GET", withQuery("/api/auth/verify-email", { token }));
 export const requestPasswordReset = (body) => request("POST", "/api/auth/request-password-reset", body); // {email, redirectTo?}
 export const resetPassword = (body) => request("POST", "/api/auth/reset-password", body); // {newPassword, token}
+/** No session needed. → {mailDelivered}: whether this site really sends mail (false: mail is only kept in its outbox). */
+export const getSite = () => request("GET", "/api/site");
 
 // ───────── me and principals
 export const getMe = () => request("GET", "/api/me");
