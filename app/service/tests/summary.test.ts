@@ -1586,15 +1586,22 @@ describe("redesign B, fix round 1", () => {
     };
     const all = sections({ 人物与称呼: [{ said_by: "p1", text: item("甲") }, { said_by: "p2", text: item("乙") }], 说过的事: [{ said_by: null, text: item("丙") }], 定下的事: [{ said_by: null, text: item("丁") }], 还没解决的: [{ said_by: "p1", text: item("戊") }] });
     // Bare, or in a fenced block; an unknown key and an absent said_by are both counted.
-    expect(parseSummary(JSON.stringify(raw), keys, 200)).toEqual({ sections: all, unknown: 2 });
-    expect(parseSummary("```json\n" + JSON.stringify(raw) + "\n```", keys, 200)).toEqual({ sections: all, unknown: 2 });
+    expect(parseSummary(JSON.stringify(raw), keys, 200)).toEqual({ sections: all, unknown: 2, empty: false });
+    expect(parseSummary("```json\n" + JSON.stringify(raw) + "\n```", keys, 200)).toEqual({ sections: all, unknown: 2, empty: false });
     // Each item cut to the item cap.
     expect(parseSummary(JSON.stringify({ 说过的事: [{ said_by: null, text: "字".repeat(50) }] }), keys, 20).sections!.说过的事).toEqual([{ said_by: null, text: "字".repeat(20) }]);
     // Nothing to keep, or no JSON object: no summary.
-    expect(parseSummary(JSON.stringify({ 人物与称呼: [], 说过的事: [{ said_by: null, text: "\u200b" }] }), keys, 200)).toEqual({ sections: null, unknown: 0 });
-    expect(parseSummary("人物与称呼\n主人说了很多", keys, 200)).toEqual({ sections: null, unknown: 0 });
-    expect(parseSummary("[1, 2]", keys, 200)).toEqual({ sections: null, unknown: 0 });
-    expect(parseSummary(JSON.stringify({ 说过的事: [{ said_by: "p9", text: "谁也不是" }] }), keys, 200)).toEqual({ sections: null, unknown: 1 });
+    expect(parseSummary(JSON.stringify({ 人物与称呼: [], 说过的事: [{ said_by: null, text: "\u200b" }] }), keys, 200)).toEqual({ sections: null, unknown: 0, empty: false });
+    expect(parseSummary("人物与称呼\n主人说了很多", keys, 200)).toEqual({ sections: null, unknown: 0, empty: false });
+    expect(parseSummary("[1, 2]", keys, 200)).toEqual({ sections: null, unknown: 0, empty: false });
+    expect(parseSummary(JSON.stringify({ 说过的事: [{ said_by: "p9", text: "谁也不是" }] }), keys, 200)).toEqual({ sections: null, unknown: 1, empty: false });
+    // The asked shape with nothing in it — the four lists, each empty — is an answer: nothing worth keeping. A missing list,
+    // or one that is not a list, is not the asked shape.
+    expect(parseSummary(JSON.stringify(sections({})), keys, 200)).toEqual({ sections: null, unknown: 0, empty: true });
+    expect(parseSummary("```json\n" + JSON.stringify(sections({})) + "\n```", keys, 200)).toEqual({ sections: null, unknown: 0, empty: true });
+    expect(parseSummary(JSON.stringify({ 人物与称呼: [], 说过的事: [], 定下的事: [] }), keys, 200).empty).toBe(false);
+    expect(parseSummary(JSON.stringify({ ...sections({}), 还没解决的: "" }), keys, 200).empty).toBe(false);
+    expect(parseSummary("{}", keys, 200).empty).toBe(false);
 
     // Held as rendered: whole items go from the top section down until what is rendered weighs at most the cap.
     const render = (s: typeof all) => JSON.stringify(s);

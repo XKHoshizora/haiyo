@@ -159,7 +159,11 @@ export async function runSummary(deps: SummaryDeps, job: SummaryJob, ctx: Summar
   const state = await readAttempt(db, job.conversationId, agent.id);
   if (!due(state, now())) return;
   // A call could not start now, for a reason that clears by itself: nothing changes; the next reply's job looks again.
-  if ((await allowanceRefuses(db, config, agent.ownerId, new Date(now()))) || (await callsAtCap(db, config, agent.ownerId))) return;
+  if (await allowanceRefuses(db, config, agent.ownerId, new Date(now()))) {
+    count(db, "memory_refused_allowance");
+    return;
+  }
+  if (await callsAtCap(db, config, agent.ownerId)) return;
 
   const limit = Math.min(SUMMARY_MAX_MESSAGES, state?.windowMessages ?? SUMMARY_MAX_MESSAGES);
   // What the call is shown, read in ONE snapshot (round 2, N-5): the messages, and who everyone they and the old summary
