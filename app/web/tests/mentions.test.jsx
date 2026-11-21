@@ -498,14 +498,14 @@ describe("a stored message shows its mentions as tags", () => {
     expect(tags(3)).toEqual([]);
   });
 
-  it("a tag's spoken name and tooltip are its principal's current name, an Agent's with its owner (fix round 1, M-2)", async () => {
+  it("a tag shows its principal's current name, not the one it was sent with, and is read as 提到 and that name (fix round 1, M-2)", async () => {
     const messages = [wire(G1, 1, ANN, "@旧名字 你好", { mentions: [{ id: BO, start: 0, length: 4 }] })];
     await openApp({ messages });
     await openChat("周末小组");
     const tag = document.querySelector('li[data-msg="m1"] .mention');
     expect(tag.querySelector(".sr-only").textContent).toBe("提到 阿波");
-    expect(tag.getAttribute("title")).toBe("阿波");
-    expect(tag.querySelector('[aria-hidden="true"]').textContent).toBe("@旧名字");
+    expect(tag.querySelector('[aria-hidden="true"]').textContent).toBe("@阿波");
+    expect(tag.getAttribute("title")).toBeNull();
   });
 
   it("MentionText: the text as sent, cut at its mentions", () => {

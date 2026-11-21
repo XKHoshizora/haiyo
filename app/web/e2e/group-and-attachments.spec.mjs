@@ -34,22 +34,29 @@ test("spec §7.2: a group of three exchanges messages, an image and a file; host
   await expect(chats.ann.getByRole("heading", { name: title, exact: true })).toBeVisible();
   await expect(messagesWith(chats.ann, `from Cy ${tag}`).getByText(HOSTILE, { exact: true }).first()).toBeVisible();
 
-  // An image: shown inline to the others at its real size; opening it in a new tab gives the same bytes.
+  // An image: shown inline to the others at its real size, the picture alone (no caption); pressing it opens the viewer in
+  // the same window, whose "open the original" gives the same bytes in a new tab.
   const image = { name: `照片-${tag}.png`, mimeType: "image/png", buffer: png(48, 32) };
   await sendFile(ann.page, title, image, "选择图片");
   for (const who of [bo, cy]) {
     const chat = chats[who.label.toLowerCase()];
-    const shown = chat.getByRole("img", { name: image.name, exact: true });
+    const shown = chat.locator(`figure.attachment-image img[alt="${image.name}"]`);
     await expect(shown).toBeVisible();
+    await expect(chat.locator("figure.attachment-image figcaption")).toHaveCount(0);
     await expect.poll(() => shown.evaluate((img) => [img.naturalWidth, img.naturalHeight])).toEqual([48, 32]);
+    await chat.getByRole("button", { name: image.name, exact: true }).click();
+    const viewer = who.page.getByRole("dialog", { name: image.name });
+    await expect(viewer).toBeVisible();
     const response = who.context.waitForEvent("response", (r) => /\/api\/attachments\/[0-9a-f-]+$/.test(r.url()));
     const popup = who.page.waitForEvent("popup");
-    await chat.getByRole("link", { name: `在新标签页打开图片 ${image.name}` }).click();
+    await viewer.getByRole("link", { name: "在新标签页打开原图" }).click();
     const opened = await response;
     expect(opened.status()).toBe(200);
     expect(opened.headers()["content-type"]).toBe("image/png");
     expect(Buffer.compare(await opened.body(), image.buffer), `${who.label} opened the same image bytes`).toBe(0);
     await (await popup).close();
+    await who.page.keyboard.press("Escape");
+    await expect(viewer).toHaveCount(0);
   }
 
   // A file (no known type, so a download) and a file whose name is the probe.
@@ -61,7 +68,7 @@ test("spec §7.2: a group of three exchanges messages, an image and a file; host
     const chat = chats[who.label.toLowerCase()];
     await expectStored(chat, hostileFile.name);
     const download = who.page.waitForEvent("download");
-    await messagesWith(chat, file.name).getByRole("link", { name: "下载" }).click();
+    await messagesWith(chat, file.name).getByRole("link", { name: `下载 ${file.name}`, exact: false }).click();
     const done = await download;
     expect(done.suggestedFilename()).toBe(file.name);
     expect(Buffer.compare(await readFile(await done.path()), file.buffer), `${who.label} downloaded the same file bytes`).toBe(0);

@@ -490,9 +490,58 @@ test("sent: stored with its mentions; the picked Agent replies, the picked perso
     await expect(tags, `${who} sees two tags`).toHaveCount(2);
     await expect(tags.nth(0).locator('[aria-hidden="true"]')).toHaveText(`@${bo.displayName}`);
     await expect(tags.nth(1)).toHaveClass(/mention-agent/);
-    await expect(tags.nth(1)).toHaveAttribute("title", new RegExp(`^${agent.name} · Agent · 主人：`));
+    await expect(tags.nth(1).locator('[aria-hidden="true"]')).toHaveText(`@${agent.name}`);
   }
   await shot(bo.page, "mentions-message", { show: messageList(boChat).locator(`li.msg[data-msg="m${stored.seq}"]`) });
+});
+
+// --- 5b. the card of a mention --------------------------------------------------------------------------------------
+
+test("a mention is a tinted name; hovering it opens a card with the kind, the account name and an Agent's owner; Esc closes it", async ({ people }) => {
+  const { ann, bo, agent, title } = await world(people);
+  const page = ann.page;
+  const chat = await openChat(page, title);
+  await modelStub.reply("收到。");
+  const box = boxOf(page, title);
+  await box.click();
+  await pick(page, bo.displayName);
+  await pick(page, agent.name);
+  await page.keyboard.type("看一下");
+  await page.keyboard.press("Enter");
+  const message = messageList(chat).locator("li.msg.mine[data-msg^='m']").filter({ hasText: "看一下" });
+  await expect(message).toHaveCount(1);
+  const [person, bot] = [message.locator(".mention").nth(0), message.locator(".mention").nth(1)];
+
+  // The tint, the radius, no frame (the stylesheet's own numbers, in a real engine).
+  const look = await person.evaluate((el) => {
+    const css = getComputedStyle(el);
+    return { radius: css.borderTopLeftRadius, padding: css.padding, shadow: css.boxShadow, background: css.backgroundColor };
+  });
+  expect(look.radius).toBe("4px");
+  expect(look.padding).toBe("1px 4px");
+  expect(look.shadow).toBe("none");
+  expect(look.background).not.toBe("rgba(0, 0, 0, 0)");
+
+  await person.hover();
+  const card = page.getByRole("tooltip");
+  await expect(card).toBeVisible();
+  await expect(card).toContainText(bo.displayName);
+  await expect(card).toContainText("真人");
+  await expect(card).toContainText(`@${bo.handle}`);
+  // It hangs over the page, outside the message: the message did not move.
+  const before = await message.boundingBox();
+  await page.keyboard.press("Escape");
+  await expect(card).toHaveCount(0);
+  expect(await message.boundingBox()).toEqual(before);
+
+  // By keyboard: Tab to the Agent's mention opens its card, with its owner.
+  await bot.focus();
+  await expect(card).toBeVisible();
+  await expect(card).toContainText(agent.name);
+  await expect(card).toContainText("Agent");
+  await expect(card).toContainText(`主人：${ann.displayName}`);
+  await page.keyboard.press("Escape");
+  await expect(card).toHaveCount(0);
 });
 
 // --- 6. a name of two words -----------------------------------------------------------------------------------------

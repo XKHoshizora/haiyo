@@ -1,31 +1,32 @@
-// A message's text with its stored mentions shown as tags over their ranges (data/mentions.js): the text as it was sent,
-// each mention a small tag. Who a tag means is the stored id; nothing here reads the text to decide it. A screen reader
-// reads a tag as 提到 and the name of whom it means now (`MentionTag`), its tooltip says the same, an Agent's with its
-// owner, and an Agent's tag is drawn apart from a person's.
+// A message's text with its stored mentions shown as tags over their ranges (data/mentions.js): each one the current
+// display name of whom it means (`@小助`, follows a rename) on a light tint, with a card on hover or focus (ui/MentionCard.jsx).
+// Who a tag means is the stored id; nothing here reads the text to decide it. A screen reader reads a tag as 提到 and
+// that name. A mention of someone no longer here keeps the name it was sent with, muted, and has no card.
 import React, { Fragment } from "react";
 import { Cite, textPieces } from "./cites.jsx";
 import { mentionName, mentionsIn } from "../data/mentions.js";
 import { useStore } from "../data/store.jsx";
-import { entity, isAgent, nameOf, ownerOf } from "../state/selectors.js";
+import { entity, isAgent } from "../state/selectors.js";
+import { MentionChip } from "./MentionCard.jsx";
 
 /**
- * One mention: its text as sent (`@Jarvis Lee`), shown as a tag; read as `提到` and the current name of the principal
- * it means (`id`; the text after its "@" when that is not known, or outside the app's store), with that name as its
- * tooltip — for an Agent `{name} · Agent · 主人：{owner}`. The hidden words are not selected or copied with the text
- * (styles.css `.mention .sr-only`).
+ * One mention: `@` and the current display name of the principal it means (`id`) — the reader herself is `mention-self`,
+ * on a stronger tint —, read as `提到` and that name. When that principal is not known (gone, no id, or outside the
+ * app's store) it shows `text` as it was sent, muted (`mention-gone`), and nothing opens. The hidden words are not
+ * selected or copied with the text (styles.css `.mention .sr-only`).
  */
 export function MentionTag({ text, id }) {
   const state = useStore()?.state ?? null;
   const known = state && id ? entity(state, id) : null;
-  const name = known?.name || mentionName(text);
-  const agent = Boolean(state && id && isAgent(state, id));
-  const title = agent ? `${name} · Agent · 主人：${nameOf(state, ownerOf(state, id))}` : name;
-  return (
-    <span className={agent ? "mention mention-agent" : "mention"} data-mention={id ?? undefined} title={title}>
-      <span className="sr-only">{`提到 ${name}`}</span>
-      <span aria-hidden="true">{text}</span>
-    </span>
-  );
+  if (!known) {
+    return (
+      <span className="mention mention-gone">
+        <span className="sr-only">{`提到 ${mentionName(text)}`}</span>
+        <span aria-hidden="true">{text}</span>
+      </span>
+    );
+  }
+  return <MentionChip id={id} spoken={`提到 ${known.name}`} shown={`@${known.displayName || known.name}`} agent={isAgent(state, id)} />;
 }
 
 /**
