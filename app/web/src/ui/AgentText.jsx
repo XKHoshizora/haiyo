@@ -163,7 +163,7 @@ export const AgentText = memo(function AgentText({ text, id = null, mentions = n
   const cites = cited?.cites ?? NO_IDS;
   // The mentions and citations, as a key that stays the same while they do (the message's view is made again at every change).
   const key = Array.isArray(mentions) ? mentions.map((m) => `${m?.id}:${m?.start}:${m?.length}`).join(",") : "";
-  const citeKey = cites.map((c) => `${c.at}:${c.conversationId}:${c.seq}`).join(",");
+  const citeKey = cites.map((c) => `${c.at}:${c.conversationId}:${c.seq}:${c.url ?? ""}`).join(",");
   // Any mark of mentionMarks.js the text holds itself is taken out, the mentions and citations moved onto what is left
   // (only marks put in here make a tag or a link, M-1; a forged one hides only itself, fix round 2 M-4); then
   // bidirectional controls. (The service keeps none of those in a reply: when it took any out, neither is shown.)

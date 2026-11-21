@@ -243,6 +243,15 @@ describe("which model and level a reply of mine used (via)", () => {
     expect(storedLi(3).querySelector(".bubble").textContent).toBe("好的");
   });
 
+  it("a reply whose run searched the web says how many searches its points include (webSearches); anything but a count above 0 says nothing", async () => {
+    await openAgentChat({
+      messages: [...BASE, wire(A1, 3, AG1, "晴", { via: { ...SOL, webSearches: 1 } }), wire(A1, 4, AG1, "嗯", { via: { ...SOL, webSearches: 0 } }), wire(A1, 5, AG1, "好", { via: { ...SOL, webSearches: "2" } })],
+    });
+    expect(viaLine(3).textContent).toBe("GPT-6 Sol · 思考：中 · 联网搜索 1 次");
+    expect(viaLine(4).textContent).toBe("GPT-6 Sol · 思考：中");
+    expect(viaLine(5).textContent).toBe("GPT-6 Sol · 思考：中");
+  });
+
   it("says each thinking level in words: 不思考, 思考：低, 中, 高, 很高, 最高", async () => {
     const levels = ["none", "low", "medium", "high", "xhigh", "max"];
     await openAgentChat({ messages: [...BASE, ...levels.map((reasoning, i) => wire(A1, 3 + i, AG1, `第${i}`, { via: { ...SOL, reasoning } }))] });

@@ -161,7 +161,11 @@ export function UsagePage({ back }) {
                   <strong>{agentName(r.agentId, r.purpose)}</strong>
                   <p>{modelName(r)}</p>
                 </div>
-                <span>{r.paidBy === "site" ? "由站点承担" : `${r.pointsText} 点${r.agentId ? ` · ${r.replies} 次回复` : ""}`}</span>
+                <span>
+                  {r.paidBy === "site"
+                    ? "由站点承担"
+                    : `${r.pointsText} 点${r.agentId ? ` · ${r.replies} 次回复` : ""}${r.webSearches > 0 ? ` · 含联网搜索 ${r.webSearches} 次` : ""}`}
+                </span>
               </li>
             ))}
           </ul>

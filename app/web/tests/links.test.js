@@ -13,8 +13,11 @@ function* files(dir) {
   }
 }
 
-/** Anchors that are deliberately not text links: an image that opens its picture, and the links of rendered Markdown (styled by `.md a`). */
-const OWN_STYLE = new Set(["pages/Messages.jsx", "ui/Markdown.jsx"]);
+/**
+ * Anchors that are deliberately not text links: an image that opens its picture, the links of rendered Markdown (styled by
+ * `.md a`), and a web page's citation chip (a superscript number, `.cite-web`, ui/cites.jsx).
+ */
+const OWN_STYLE = new Set(["pages/Messages.jsx", "ui/Markdown.jsx", "ui/cites.jsx"]);
 
 describe("text links share one style", () => {
   it("every anchor in the app is the shared text link or a button, or is on the short list of own-style ones", () => {

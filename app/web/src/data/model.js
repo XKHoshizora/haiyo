@@ -1181,7 +1181,7 @@ function wireRun(run) {
 const isActive = (status) => status === "queued" || status === "running";
 
 /** The kinds of a tool's work a running reply's status may say (a `run` push's `activity`); anything else is none. */
-const ACTIVITIES = new Set(["search", "file", "time"]);
+const ACTIVITIES = new Set(["search", "file", "time", "web"]);
 const isActivity = (value) => typeof value === "string" && ACTIVITIES.has(value);
 
 /** Whether a message of the conversation's Agent after `since` is held (or shown in a detached window). */
@@ -1568,5 +1568,5 @@ export function applyModels(state, answer) {
     }));
   const d = answer.providerDefaults;
   const providerDefaults = d && typeof d === "object" ? { contextTokens: d.contextTokens, maxOutputTokens: d.maxOutputTokens } : state.providerDefaults;
-  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true };
+  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true, webSearchAvailable: answer.webSearchAvailable === true };
 }

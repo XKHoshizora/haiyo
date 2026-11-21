@@ -12,6 +12,7 @@ import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx
 import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits.jsx";
 import { MemoryNotice } from "./MemoryChip.jsx";
 import { ReplyLookups } from "./ReplyLookups.jsx";
+import { citingOf, WebSources } from "./WebSources.jsx";
 import { CitesContext } from "../ui/cites.jsx";
 import { Reply, RotateCw, FileText, Check, CircleAlert, Download } from "../icons.js";
 
@@ -86,10 +87,13 @@ function FileBody({ msg }) {
   );
 }
 
-/** An Agent's text, with its citations (`msg.cites`, beside its text) as links that jump to their messages (`onJump`). */
+/**
+ * An Agent's text, with its citations (`msg.cites`, beside its text) as links that jump to their messages (`onJump`), and
+ * the chips of the web pages it cites (`msg.webCites`), which open them. A reply whose run searched the web
+ * (`msg.webSources`) shows its own links as plain text (`plainLinks`): only its sources open anything.
+ */
 function CitingAgentText({ msg, onJump }) {
-  const { cites } = msg;
-  const value = useMemo(() => (cites?.length > 0 && onJump ? { cites, onJump } : null), [cites, onJump]);
+  const value = useMemo(() => citingOf(msg, onJump), [msg.cites, msg.webCites, msg.webSources, onJump]);
   return (
     <CitesContext.Provider value={value}>
       <AgentText text={msg.text} id={msg.id} mentions={msg.mentions} />
@@ -136,7 +140,9 @@ function ReplyVia({ via, agentId = null }) {
     if (model.source === "provider" && via.points === "0") points = " · 不扣点";
     else if (replyPoints(via.points)) points = ` · ${replyPoints(via.points)} 点`;
   }
-  const rest = ` · ${levelWords(via.reasoning)}${points}${via.proactive ? " · 主动回复" : ""}`;
+  // Its web searches (their price is in its points): only when its run made any.
+  const searched = via.webSearches > 0 ? ` · 联网搜索 ${via.webSearches} 次` : "";
+  const rest = ` · ${levelWords(via.reasoning)}${points}${searched}${via.proactive ? " · 主动回复" : ""}`;
   if (agentId) {
     return (
       <p className="msg-via">
@@ -213,6 +219,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
         <Body msg={msg} agent={agent} onJump={onJump} />
         {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation). */}
         {agent && <ReplyLookups key={`${conv.id}:${msg.id}`} msg={msg} conv={conv} onJump={onJump} />}
+        {agent && <WebSources sources={msg.webSources} />}
         {ownChat && msg.proposal && <ProposalCard msg={msg} conv={conv} />}
         {thinking && msg.via && <ReplyVia via={msg.via} agentId={!ownChat && state.agents[msg.from]?.loaded ? msg.from : null} />}
         <div className="msg-foot">
