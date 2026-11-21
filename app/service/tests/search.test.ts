@@ -242,9 +242,9 @@ describe("in-conversation search", () => {
       before = `&before=${r.json.nextBefore}`;
     }
     expect(seen).toEqual(needles);
-    // An exact fit ends with null, not an empty extra page.
-    const exact = await inConv(b, dm, "needle", `&limit=${needles.length}`);
-    expect(exact.json.messages).toHaveLength(needles.length);
+    // An exact fit ends with null, not an empty extra page: below 11 lie seven hits (10, 8, 7, 5, 4, 2, 1).
+    const exact = await inConv(b, dm, "needle", "&limit=7&before=11");
+    expect(exact.json.messages.map((m: any) => m.seq)).toEqual([10, 8, 7, 5, 4, 2, 1]);
     expect(exact.json.nextBefore).toBeNull();
   });
 
