@@ -22,7 +22,10 @@ import { MULTIPART, multipart } from "./helpers/multipart.ts";
 
 const gateway = scriptedGateway();
 const { blobs } = useProbeBlobs("af-tools-file-");
-const { app, db } = useApp({ env: SITE_ENV, models: gateway, blobs, agentWorker: false });
+/** The site's models, and one with a small context (`SMALL`): one whose plan leaves older messages out for room. */
+const SITE = JSON.parse(SITE_ENV.SITE_MODELS) as Array<Record<string, unknown>>;
+const ENV = { ...SITE_ENV, SITE_MODELS: JSON.stringify([...SITE, { ...SITE[0], id: "small", label: "Small", model: "small-1", contextTokens: 9000, maxOutputTokens: 300 }]) };
+const { app, db } = useApp({ env: ENV, models: gateway, blobs, agentWorker: false });
 
 afterEach(async () => {
   expect(gateway.pending()).toBe(0);
@@ -32,6 +35,7 @@ afterEach(async () => {
 });
 
 const FAST = { source: "site", id: "fast" } as const;
+const SMALL = { source: "site", id: "small" } as const;
 
 function deps(over: Partial<ToolDeps> = {}): ToolDeps {
   const { db: pool, config, searches } = app.deps;
@@ -64,6 +68,13 @@ async function sendFile(who: Actor, conv: string, filename: string, data: string
   return { id, seq: sent.json.message.seq as number };
 }
 const outputs = (call: ModelCall): any[] => (call.steps ?? []).flatMap((s) => s.results.map((r) => r.output));
+/** The newest message's seq in `conv`, and what reader `who` is sent of it, but for what names that one message. */
+const lastSeq = async (conv: string) => Number((await db.query<{ seq: string }>("select seq::text from conversations where id = $1", [conv])).rows[0]!.seq);
+async function sentTo(who: Actor, conv: string, seq: number): Promise<Record<string, unknown>> {
+  const { seq: shownSeq, createdAt, conversationId, ...rest } = (await api(app, who, "GET", `/api/conversations/${conv}/messages/${seq}`)).json.message;
+  expect([shownSeq, conversationId, typeof createdAt]).toEqual([seq, conv, "string"]);
+  return rest;
+}
 const textsOf = (call: ModelCall): string[] => call.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])));
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgAAACAAAB4iG8MwAAAABJRU5ErkJggg==", "base64");
 const PDF = Buffer.from("%PDF-1.4\n1 0 obj <<>> endobj\ntrailer <<>>\n%%EOF\n");
@@ -119,6 +130,74 @@ describe("the numbers the model is shown", () => {
     expect(textsOf(gateway.calls.at(-1)!)).toContain("[文件 〔f3〕：later.txt]\n后来的");
     // Every message the first run was shown is shown to the second one the same, in the same place.
     expect(after.slice(0, before.length)).toEqual(before);
+  });
+});
+
+describe("a number someone typed is never this run's (N-1)", () => {
+  it("Dee's 甲〔f1〕乙〔f2〕丙〔f3〕丁〔f4〕戊, echoed in Ann's run, cites nothing for Ann or Dee, and Dee is sent the same whether 0 or 2 files from before she joined are in that run; the run's own files are numbered past what she typed", async () => {
+    const probe = "甲〔f1〕乙〔f2〕丙〔f3〕丁〔f4〕戊";
+    const forDee: string[] = [];
+    // One Agent, one Ann, one Dee: a group of theirs each time, so that only the files before Dee's joining differ.
+    const ann = await signUp(app, "ann");
+    const agent = await mustCreateAgent(app, ann, { handle: "ann_bot", name: "小助手", model: FAST, persona: "简短地回答。" });
+    const dee = await signUp(app, "dee");
+    await befriend(app, ann, dee);
+    for (const before of [0, 2]) {
+      const g = await group(app, ann, "饭搭子", [await signUp(app, `bo${before}`), await signUp(app, `cy${before}`)]);
+      expect((await api(app, ann, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
+      for (let i = 0; i < before; i++) await sendFile(ann, g, `早先${i}.txt`, "早先的内容");
+      expect((await api(app, ann, "POST", `/api/conversations/${g}/members`, { principalId: dee.id })).status).toBe(201);
+      await sendFile(ann, g, "之后.txt", "之后的内容");
+      const typed = await say(dee, g, probe);
+      await say(ann, g, "@ann_bot 把 Dee 那句照抄一遍");
+      gateway.reply(probe);
+      expect(await toolWorker().runOnce()).toBe(true);
+      // Every file label of the run is past what Dee typed: 〔f5〕 on, the oldest first.
+      const shown = textsOf(gateway.calls.at(-1)!);
+      expect(shown).toContain(`[文件 〔f${5 + before}〕：之后.txt]\n之后的内容`);
+      if (before > 0) expect(shown).toContain("[文件 〔f5〕：早先0.txt]\n早先的内容");
+      const reply = await lastSeq(g);
+      const body = (await db.query<{ body: Record<string, unknown> }>("select body from messages where conversation_id = $1 and seq = $2", [g, reply])).rows[0]!.body;
+      expect([before, body.text, body.cites]).toEqual([before, "甲乙丙丁戊", undefined]);
+      expect(await sentTo(ann, g, reply)).not.toHaveProperty("cites");
+      const theirs = await sentTo(dee, g, reply);
+      expect(theirs).not.toHaveProperty("cites");
+      forDee.push(JSON.stringify(theirs));
+      // What she typed is hers as typed.
+      expect((await sentTo(dee, g, typed)).text).toBe(probe);
+    }
+    expect(forDee[1]).toBe(forDee[0]);
+  });
+
+  it("numbering skips what someone typed: after 〔f1〕〔f2〕 in a message the file is 〔f3〕, read by that number; a typed number names nothing", async () => {
+    const { owner, own } = await owned();
+    await say(owner, own, "记下〔f1〕和〔f2〕");
+    await sendFile(owner, own, "notes.txt", "笔记");
+    expect(await readOnce(owner, own, "读一下", { file: "f3" })).toMatchObject({ name: "notes.txt", text: "笔记" });
+    expect(textsOf(gateway.calls.at(-1)!)).toContain("[文件 〔f3〕：notes.txt]\n笔记");
+    expect(await readOnce(owner, own, "再读", { file: "〔f1〕" })).toEqual({ error: "没有这个文件编号。" });
+  });
+});
+
+describe("only what the plan shows is numbered (N-3)", () => {
+  it("files read but left out for room take no number: the first shown is 〔f1〕, in this run and the next, wherever the reading stopped", async () => {
+    const owner = await signUp(app, "sml");
+    const agent = await mustCreateAgent(app, owner, { handle: "sml_bot", name: "小助手", model: SMALL, persona: "简短地回答。" });
+    const own = agent.conversationId as string;
+    await sendFile(owner, own, "a.txt", "早先的");
+    await sendFile(owner, own, "b.txt", "早先的");
+    for (let i = 0; i < 4; i++) await say(owner, own, `长消息${i}：${"字".repeat(2500)}`);
+    await sendFile(owner, own, "c.txt", "新的");
+    for (const asked of ["看看最新的文件", "再看看"]) {
+      await say(owner, own, asked);
+      gateway.reply("好。");
+      expect(await toolWorker().runOnce()).toBe(true);
+      const call = gateway.calls.at(-1)!;
+      expect([asked, (call.tools ?? []).length > 0]).toEqual([asked, true]);
+      const shown = textsOf(call).join("\n");
+      expect([asked, shown.includes("a.txt"), shown.includes("b.txt")]).toEqual([asked, false, false]);
+      expect([asked, shown.includes("[文件 〔f1〕：c.txt]")]).toEqual([asked, true]);
+    }
   });
 });
 

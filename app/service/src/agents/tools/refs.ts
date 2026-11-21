@@ -8,8 +8,12 @@ import { withoutMarkPlaced } from "../runtime/prompt.ts";
  * an attachment id: the model names a thing only by a number this run gave it, and a number means nothing in any other
  * run. Each is shown plainly, `〔m1〕`, and the model is told to cite by copying one: nothing about them is secret. What a
  * reply offered tools says loses every token-shaped string (`takeCites`), one of a number its run gave kept beside its
- * text as a citation. One per plan of a reply run, in memory, held by the port from `begin` until the run is finished or
- * released (port-impl.ts). A number is minted once per thing, in the order things are first numbered.
+ * text as a citation. A number someone typed is never one of the run's (`plant`): every token-shaped string in what the
+ * run is shown that its model did not write — what anyone wrote in its context and system text, a file's text, every
+ * tool result — is read for its number as it arrives, numbering skips every number so read (`〔m1〕…〔m8〕` typed: the
+ * run's finds start at m9), and one minted before it was read is never cited (`citable`). One per plan of a reply run, in
+ * memory, held by the port from `begin` until the run is finished or released (port-impl.ts). A number is minted once
+ * per thing, in the order things are first numbered.
  */
 export class RunRefs {
   private readonly messages = new Map<string, string>();
@@ -17,6 +21,28 @@ export class RunRefs {
   private readonly byFileRef = new Map<string, string>();
   /** What each number names: the message, or for a file the message it is attached to. */
   private readonly targets = new Map<string, { kind: Cite["kind"]; ref: MessageRef }>();
+  /** Every number someone typed, token-shaped, in what the run was shown (`plant`): never one of the run's. */
+  private readonly planted = new Set<string>();
+  /** The last number minted of each kind: the next is the first after it nobody typed. */
+  private readonly last = { m: 0, f: 0 };
+
+  /** Reads `text` (what the run is shown that its model did not write) for numbers someone typed (`tokensIn`). */
+  plant(text: string): void {
+    for (const ref of tokensIn(text)) this.planted.add(ref);
+  }
+
+  /** Whether `ref` (`m1`, as a token holds it) can become a citation: a number the run gave, and nobody typed. */
+  citable(ref: string): boolean {
+    return this.targets.has(ref) && !this.planted.has(ref);
+  }
+
+  /** The next number of `kind` nobody typed. */
+  private mint(kind: "m" | "f"): string {
+    let n = this.last[kind] + 1;
+    while (this.planted.has(`${kind}${n}`)) n++;
+    this.last[kind] = n;
+    return `${kind}${n}`;
+  }
 
   /** `number` (`m1`, `f2`) as the model is shown it: `〔m1〕`. */
   token(number: string): string {
@@ -28,7 +54,7 @@ export class RunRefs {
     const key = `${conversationId}|${seq}`;
     let ref = this.messages.get(key);
     if (ref === undefined) {
-      ref = `m${this.messages.size + 1}`;
+      ref = this.mint("m");
       this.messages.set(key, ref);
       this.targets.set(ref, { kind: "m", ref: { conversationId, seq } });
     }
@@ -39,7 +65,7 @@ export class RunRefs {
   file(attachmentId: string, at: MessageRef): string {
     let ref = this.files.get(attachmentId);
     if (ref === undefined) {
-      ref = `f${this.files.size + 1}`;
+      ref = this.mint("f");
       this.files.set(attachmentId, ref);
       this.byFileRef.set(ref, attachmentId);
       this.targets.set(ref, { kind: "f", ref: { conversationId: at.conversationId, seq: at.seq } });
@@ -96,26 +122,36 @@ const beginsToken = (s: string): boolean => s.length <= INSIDE_MAX + 1 && BEGINN
  */
 class TokenScanner {
   readonly out: string[] = [];
+  /** Where each character of `out` stood in what was pushed (its UTF-16 offset), in order. */
+  readonly origin: number[] = [];
   readonly opens: number[] = [];
   readonly tokens: Array<{ at: number; ref: string }> = [];
+  private pushed = 0;
 
   push(c: string): void {
-    const { out, opens } = this;
+    const { out, origin, opens } = this;
+    const from = this.pushed++;
     if (c === OPEN) {
       opens.push(out.length);
       out.push(c);
+      origin.push(from);
     } else if (c === CLOSE && opens.length > 0) {
       const at = opens[opens.length - 1]!;
       const m = out.length - at - 1 <= INSIDE_MAX ? INSIDE.exec(out.slice(at + 1).join("")) : null;
       if (m) {
         out.length = at;
+        origin.length = at;
         opens.pop();
         this.tokens.push({ at, ref: `${m[1]!.toLowerCase()}${m[2]}` });
       } else {
         opens.length = 0;
         out.push(c);
+        origin.push(from);
       }
-    } else out.push(c);
+    } else {
+      out.push(c);
+      origin.push(from);
+    }
   }
 
   /** The tokens with their final places (see above). */
@@ -184,8 +220,56 @@ export function withoutMarkFrom(p: Placed, mark: string, cut = false): Placed {
   return replaced(p, done.text, done.places);
 }
 
+/** Every token-shaped string's number in `text` (`m1`, as `TokenScanner` reads it, however they nest), in one pass. */
+function tokensIn(text: string): string[] {
+  if (!text.includes(OPEN)) return [];
+  const scanner = new TokenScanner();
+  for (let i = 0; i < text.length; i++) scanner.push(text[i]!);
+  return scanner.tokens.map((t) => t.ref);
+}
+
 /** Where a space before a removed token goes with it: before another space, a punctuation mark, or the end. */
 const LOOSE_AFTER = /[\s\p{P}]/u;
+
+/**
+ * `text` without any token-shaped string and without what may have begun one at its very end, a loose space before a
+ * removed one taken with it (`takeCites`): what is left, each token's number with where it stood in it, and `places`
+ * (ascending UTF-16 offsets in `text`) moved onto it — a place inside what goes is where it went.
+ */
+function stripped(text: string, places: readonly number[]): { text: string; tokens: Array<{ at: number; ref: string }>; places: number[] } {
+  const scanner = new TokenScanner();
+  for (let i = 0; i < text.length; i++) scanner.push(text[i]!);
+  const end = scanner.pendingFrom();
+  const copy = scanner.out.slice(0, end).join("");
+  const tokens = scanner.settled().map((t) => ({ ...t, at: Math.min(t.at, end) }));
+  // A place goes to how many kept characters stood before it (the kept ones stand in order).
+  const origin = scanner.origin;
+  let k = 0;
+  const moved = places.map((p) => {
+    while (k < end && origin[k]! < p) k++;
+    return k;
+  });
+  // A space left before a removed one, with another space, a punctuation mark or the end after it, goes with it.
+  const loose = new Set<number>();
+  for (const { at } of tokens) if (at > 0 && copy[at - 1] === " " && (at === copy.length || LOOSE_AFTER.test(copy[at]!))) loose.add(at - 1);
+  let out = "";
+  const shift: number[] = [];
+  for (let i = 0; i <= copy.length; i++) {
+    shift.push(out.length);
+    if (i < copy.length && !loose.has(i)) out += copy[i];
+  }
+  return { text: out, tokens: tokens.map((t) => ({ ...t, at: shift[t.at]! })), places: moved.map((p) => shift[p]!) };
+}
+
+/**
+ * `p` without any token-shaped string that a step after `takeCites` put together (agents/conversation.ts: taking out a
+ * group's mark, N-2), as `takeCites` takes them out but citing nothing; its cites moved with the text, and trimmed.
+ */
+export function withoutTokensFrom(p: Placed): Placed {
+  if (!p.text.includes(OPEN)) return p;
+  const done = stripped(p.text, p.cites.map((c) => c.at));
+  return trimPlaced(replaced(p, done.text, done.places));
+}
 
 /**
  * What a reply offered tools says, as it is stored (design rule 4; README "Agents and runs", Citations;
@@ -196,32 +280,20 @@ const LOOSE_AFTER = /[\s\p{P}]/u;
  * depend on what the run handed out, so the text is the same whatever it found. With `cite` (the default) each one of
  * a number the run gave becomes a cite where it stood in the text that is left (`at`, UTF-16 code units, ascending):
  * what it names (a message, or the message a file is in), when `keep` lets the reply point at it, the first `CITES_MAX`
- * only. One of a number the run never gave, past those, or one `keep` refuses, goes all the same and cites nothing; so
- * does every one of an acknowledgement, a reasoning and a search word (`cite` false).
+ * only. One of a number the run never gave, or one someone typed in what the run was shown (`RunRefs.citable`), past
+ * those, or one `keep` refuses, goes all the same and cites nothing; so does every one of an acknowledgement, a reasoning
+ * and a search word (`cite` false).
  */
 export function takeCites(text: string, refs: RunRefs, { cite = true, keep = () => true }: { cite?: boolean; keep?: (r: MessageRef) => boolean } = {}): Placed {
-  const scanner = new TokenScanner();
-  for (let i = 0; i < text.length; i++) scanner.push(text[i]!);
-  const end = scanner.pendingFrom();
-  const copy = scanner.out.slice(0, end).join("");
-  const tokens = scanner.settled().map((t) => ({ ...t, at: Math.min(t.at, end) }));
-  // A space left before a removed one, with another space, a punctuation mark or the end after it, goes with it.
-  const loose = new Set<number>();
-  for (const { at } of tokens) if (at > 0 && copy[at - 1] === " " && (at === copy.length || LOOSE_AFTER.test(copy[at]!))) loose.add(at - 1);
-  let out = "";
-  const shift: number[] = [];
-  for (let i = 0; i <= copy.length; i++) {
-    shift.push(out.length);
-    if (i < copy.length && !loose.has(i)) out += copy[i];
-  }
+  const done = stripped(text, []);
   const cites: Cite[] = [];
-  for (const t of tokens) {
+  for (const t of done.tokens) {
     if (!cite || cites.length >= CITES_MAX) break;
-    const target = refs.target(t.ref);
+    const target = refs.citable(t.ref) ? refs.target(t.ref) : null;
     if (target === null || !keep(target.ref)) continue;
-    cites.push({ at: shift[t.at]!, kind: target.kind, ref: target.ref });
+    cites.push({ at: t.at, kind: target.kind, ref: target.ref });
   }
-  return trimPlaced({ text: out, cites });
+  return trimPlaced({ text: done.text, cites });
 }
 
 /**

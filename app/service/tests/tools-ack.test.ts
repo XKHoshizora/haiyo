@@ -469,5 +469,8 @@ describe("a reply offered tools keeps no token-shaped string, wherever it ends u
     });
     // `<a` + a token + `f-`: a block start, once the token is out — the text ends there, and so do its cites.
     expect(await reply("好〔m1〕<a〔m2〕f-persona>坏")).toMatchObject({ text: "好", cites: [{ at: 1, kind: "m", ref: { conversationId: g, seq: said } }] });
+    // N-2: a token shape that taking the mark out put together (`〔m` + the mark + `1〕`) goes too, citing nothing.
+    const joined = await reply(`看〔m${MARK}1〕这里`);
+    expect([joined.text, joined.cites]).toEqual(["看这里", undefined]);
   });
 });

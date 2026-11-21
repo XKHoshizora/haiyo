@@ -110,5 +110,9 @@ export async function readFile(deps: ToolDeps, scope: RunScope, input: FileInput
     if (weight(JSON.stringify(page(mid))) <= max) low = mid;
     else high = mid - 1;
   }
-  return { output: page(low) };
+  // What the page shows of what anyone wrote is read for numbers they typed (refs.ts `RunRefs.plant`): none is cited.
+  const shownPage = page(low);
+  scope.refs.plant(shownPage.name);
+  scope.refs.plant(shownPage.text);
+  return { output: shownPage };
 }

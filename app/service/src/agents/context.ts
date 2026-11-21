@@ -106,10 +106,12 @@ export interface ContextRun {
    */
   reserved?: number;
   /**
-   * A reply offered tools: the numbers of its plan (agents/tools/refs.ts `RunRefs`), by which each attachment it is shown
-   * gets its number (`RunRefs.file`, the message it was sent in), which its label carries — the message's own and a quoted
-   * one's alike —, in the order the context shows them, the oldest first (`loadContext`): a later file leaves the labels
-   * before it as they were, so the context a provider caches starts the same. Absent: labels carry none.
+   * A reply offered tools: the numbers of its plan (agents/tools/refs.ts `RunRefs`), by which each attachment of a
+   * message the plan can show gets its number (`RunRefs.file`, the message it was sent in), which its label carries — the
+   * message's own and a quoted one's alike —, in the order they are shown, the oldest first (`loadContext`): a later file
+   * leaves the labels before it as they were, so the context a provider caches starts the same. What the plan shows of
+   * what anyone wrote is read for numbers they typed first (`RunRefs.plant`), and the files' texts as `buildContext`
+   * reads them. Absent: labels carry none.
    */
   refs?: RunRefs;
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
@@ -167,6 +169,8 @@ export interface LoadedContext {
   leftOut: LeftOut | null;
   /** The pair's summary as the system text carries it (`withSummary`); null when it carries none. */
   summary: Summary | null;
+  /** A reply offered tools: its numbers (`ContextRun.refs`), which a file's text is read into as `buildContext` shows it. */
+  refs: RunRefs | null;
 }
 
 /** What a conversation part left out (`LoadedContext.leftOut`). */
@@ -604,16 +608,13 @@ export async function loadContext(
     before = page.oldest;
   }
   const kept = more ? loaded.filter((l) => l.answers >= oldest) : loaded;
-  // A reply offered tools: the files of what is shown get their numbers in the order they are shown, the oldest first
-  // (`ContextRun.refs`), so that a later file leaves every label before it as it was.
-  if (run.refs) for (const l of inAnsweredOrder(kept)) l.entry = l.build(run.refs);
   const speakers = speakersOf(kept);
   const unmarked = withPassage("", speakers);
   const mark = run.group === null ? null : newMark((m) => unmarked.text.includes(m) || kept.some((l) => shows(l, m)), draw);
   let text = mark === null ? unmarked : withPassage(mark, speakers);
   let budget = budgetWith(text);
   const ordered = inAnsweredOrder(kept);
-  const entries = ordered.map((l) => shown(l, mark));
+  let entries = ordered.map((l) => shown(l, mark));
   // The summary's passage goes first when, with it, the newest message would not fit whole (the mark, drawn with it there,
   // is in no part of what is left).
   let carried = summary;
@@ -625,8 +626,21 @@ export async function loadContext(
   }
 
   // The attachments of every message the plan could keep (those it keeps with no attachment contents at all).
-  const could = new ContextPlan(entries, budget, ratio);
+  let could = new ContextPlan(entries, budget, ratio);
   could.keepOlder();
+  if (run.refs) {
+    // A reply offered tools: what it is shown that anyone wrote — the system text, and of every message read its text, its
+    // quote, its proposal, its file's name and who said it — is read for numbers they typed (refs.ts `RunRefs.plant`), so
+    // that none is the run's; then the files of the messages the plan can show, and of no other, get their numbers in the
+    // order they are shown, the oldest first, so that a later file leaves every label before it as it was, wherever the
+    // reading stopped. (The plan is made again with the labels as they are now: they are a little longer.)
+    run.refs.plant(text.text);
+    for (const l of kept) for (const said of [l.entry.text, l.entry.attachment?.name ?? "", l.speaker?.name ?? "", l.speaker?.handle ?? ""]) run.refs.plant(said);
+    for (const at of could.shownAt()) ordered[at]!.entry = ordered[at]!.build(run.refs);
+    entries = ordered.map((l) => shown(l, mark));
+    could = new ContextPlan(entries, budget, ratio);
+    could.keepOlder();
+  }
   // What it left out, by place: from where the conversation part starts — or, past it, what the pair's summary covers
   // already, shown to this run or not — to the oldest message it shows (after `from`).
   const after = Math.max(from, owned?.uptoSeq ?? 0);
@@ -645,7 +659,7 @@ export async function loadContext(
     const found = await findDownloadable(q, run.agentId, a.id);
     if (found) attachments.set(a.id, found);
   }
-  return { system: text, speakers, mark, budget, planRatio: ratio, entries, attachments, topicStart: start, leftOut, summary: carried };
+  return { system: text, speakers, mark, budget, planRatio: ratio, entries, attachments, topicStart: start, leftOut, summary: carried, refs: run.refs ?? null };
 }
 
 /**
@@ -823,7 +837,10 @@ export async function buildContext(
       const max = Math.min(found.size, maxChars * UTF8_MAX_BYTES_PER_CHAR, plan.bytesLeft);
       const got = await read(attachment, found.blobKey, max, startsLikeText);
       const text = got ? fileText(got.data, got.complete, maxChars) : null;
-      if (text) plan.offer(slot, { type: "text", text: withoutMark(text.text, loaded.mark), chars: text.chars });
+      if (!text) return;
+      // What it shows of what anyone wrote is read for numbers they typed (refs.ts `RunRefs.plant`): none is cited.
+      const shownText = withoutMark(text.text, loaded.mark);
+      if (plan.offer(slot, { type: "text", text: shownText, chars: text.chars })) loaded.refs?.plant(shownText);
     }
   }
 

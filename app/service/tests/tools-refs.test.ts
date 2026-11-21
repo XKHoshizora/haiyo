@@ -4,7 +4,7 @@ import { CONTINUE_TURN, endWithPerson } from "../src/agents/runtime/context.ts";
 import { groupSystemText, notesPassage, withoutMarkPlaced } from "../src/agents/runtime/prompt.ts";
 import { ReplyStream } from "../src/agents/runtime/stream.ts";
 import { excerpt } from "../src/agents/tools/search.ts";
-import { fileNumber, RunRefs, takeCites, TokenHold } from "../src/agents/tools/refs.ts";
+import { fileNumber, RunRefs, takeCites, TokenHold, withoutTokensFrom } from "../src/agents/tools/refs.ts";
 import { CITES_MAX } from "../src/messages/lookups.ts";
 import { MESSAGE_TEXT_MAX } from "../src/messages/send.ts";
 import { expectLinear, LOADED_TIMEOUT_MS } from "./helpers/linear.ts";
@@ -166,6 +166,54 @@ describe("what a reply's token-shaped strings become", () => {
         if (takeCites(text, refs).text !== "") throw new Error("brackets left something");
       },
     });
+  });
+});
+
+describe("a number someone typed is never this run's (N-1)", () => {
+  it("numbering skips every number typed in what the run was shown before it is minted: the run's own start after them", () => {
+    const refs = new RunRefs();
+    refs.plant("记下〔m1〕〔 M2 〕和〔f1〕，还有〔m〔m4〕3〕");
+    expect([refs.message("c", 1), refs.message("c", 2), refs.file("att-1", at(1))]).toEqual(["〔m5〕", "〔m6〕", "〔f2〕"]);
+    expect(refs.fileOf("f2")).toBe("att-1");
+    expect(refs.fileOf("f1")).toBeNull();
+  });
+
+  it("a token cites only a number the run handed out that nobody typed; one typed after it was handed out cites nothing; every one goes from the text", () => {
+    const refs = new RunRefs();
+    refs.plant("〔m1〕");
+    expect(refs.message("c", 1)).toBe("〔m2〕");
+    expect(refs.message("c", 2)).toBe("〔m3〕");
+    refs.plant("后来有人写了〔m3〕");
+    const { text, cites } = takeCites("甲〔m1〕乙〔m2〕丙〔m3〕丁", refs);
+    expect(text).toBe("甲乙丙丁");
+    expect(cites).toEqual([{ at: 2, kind: "m", ref: at(1) }]);
+  });
+
+  it("linear however many numbers were typed: reading them, and numbering past them", { timeout: LOADED_TIMEOUT_MS }, () => {
+    const typed = (n: number): string => Array.from({ length: Math.floor(n / 8) }, (_, i) => `〔m${i + 1}〕`).join("");
+    expectLinear({
+      n: 40_000,
+      make: typed,
+      run: (text) => {
+        const refs = new RunRefs();
+        refs.plant(text);
+        refs.message("c", 1);
+        if (takeCites(text, refs).cites.length !== 0) throw new Error("a typed number was cited");
+      },
+    });
+  });
+});
+
+describe("what taking out the mark puts together (N-2)", () => {
+  it("a token shape it put together goes too, the cites' places moving with the text", () => {
+    expect(withoutTokensFrom({ text: "看〔m1〕这里", cites: [{ at: 1, kind: "m", ref: at(1) }, { at: 5, kind: "m", ref: at(2) }] })).toEqual({
+      text: "看这里",
+      cites: [
+        { at: 1, kind: "m", ref: at(1) },
+        { at: 1, kind: "m", ref: at(2) },
+      ],
+    });
+    expect(withoutTokensFrom({ text: "好", cites: [] })).toEqual({ text: "好", cites: [] });
   });
 });
 

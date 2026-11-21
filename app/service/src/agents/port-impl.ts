@@ -698,8 +698,9 @@ export class DbAgentPort implements AgentPort {
       let offer: Offer | null = told === null && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, { group }) : null;
       if (offer !== null && offer.tools.length === 0) offer = null;
       // A reply offered tools numbers the files its context labels (`[文件 〔f1〕：name]`), so that its file tool can name
-      // them and its text cite them (tools/refs.ts) — afresh for each plan, so that no number a plan leaves out is ever
-      // minted; one offered none is shown them as always.
+      // them and its text cite them (tools/refs.ts) — afresh for each plan, and in a plan only those of the messages it can
+      // show (context.ts `loadContext`), past any number someone typed in what it is shown; one offered none is shown them
+      // as always.
       /** One plan: offered tools (`numbered`), with numbers made afresh; else with none. */
       const planOf = async (numbered: boolean, reserved: number): Promise<{ loaded: LoadedContext; refs: RunRefs | null }> => {
         const refs = numbered ? new RunRefs() : null;

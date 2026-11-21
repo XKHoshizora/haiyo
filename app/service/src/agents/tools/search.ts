@@ -256,6 +256,9 @@ function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { res
     const without = weight(JSON.stringify({ about: TOOL_MATERIAL, more, results: [{ ...first, text: "" }] }));
     first.text = cutToWeight(first.text, Math.max(0, max - without - 2));
   }
+  // What anyone wrote of what is shown is read for numbers they typed before any is minted (refs.ts `RunRefs.plant`): the
+  // results' numbers skip them, and one minted earlier in the run that someone typed here is never cited.
+  for (const { result } of shown) for (const said of [result.text, result.who, result.where ?? "", result.file?.name ?? ""]) scope.refs.plant(said);
   const results = shown.map(({ result, at, attachmentId }) => ({
     ...result,
     ref: scope.refs.message(at.conversationId, at.seq),

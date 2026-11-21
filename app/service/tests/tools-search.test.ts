@@ -381,56 +381,77 @@ describe("what the reply keeps of its searches", () => {
     expect([forMia.text, forSam.text]).toEqual(["说过。", "说过。"]);
   });
 
-  it("a member's token-shaped text is hers as typed, in her message and to the model; an Agent that copies it loses it — a number its run handed out cites that run's own find (the one thing given up), any other is dropped", async () => {
+  it("a member's token-shaped text is hers as typed, in her message and to the model; a number she typed is never the run's — its finds are numbered past it — so an Agent that copies it cites nothing, and it goes from the reply", async () => {
     const { owner, agent } = await owned("owen");
     const mia = await signUp(app, "mia");
     const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);
     await addAgent(owner, g, agent.id);
     const target = await say(mia, g, "引用-c4 周五吃火锅");
     const planted = await say(mia, g, "记一下〔m1〕和〔m7〕");
-    // m1 is the question itself (it holds the words), m2 the message she meant.
-    await searchOnce(mia, g, "@owen_bot 查查引用-c4", { query: "引用-c4" }, undefined, "她写了〔m1〕和〔m7〕，周五吃火锅〔m2〕。");
+    // m1 and m7 are hers: the question itself (it holds the words) is m2, the message she meant m3.
+    const out = await searchOnce(mia, g, "@owen_bot 查查引用-c4", { query: "引用-c4" }, undefined, "她写了〔m1〕和〔m7〕，周五吃火锅〔m3〕。");
+    expect(out.results.map((r: any) => r.ref)).toEqual(["〔m2〕", "〔m3〕"]);
     expect(JSON.stringify(gateway.calls.at(-1)!.messages)).toContain("记一下〔m1〕和〔m7〕");
     expect((await bodyOf(g, planted)).text).toBe("记一下〔m1〕和〔m7〕");
     const body = await bodyOf(g, await lastOf(g));
     expect(body.text).toBe("她写了和，周五吃火锅。");
-    expect(body.cites).toEqual([
-      { at: 3, kind: "m", ref: { conversationId: g, seq: target + 2 } },
-      { at: 10, kind: "m", ref: { conversationId: g, seq: target } },
-    ]);
+    expect(body.cites).toEqual([{ at: 10, kind: "m", ref: { conversationId: g, seq: target } }]);
   });
 
-  it("the stored reply is the same whatever its search found: a member's 〔m1〕…〔m8〕, echoed, leaves the same text, and a later joiner is sent the same message, whether 0, 3 or 8 were found", async () => {
+  it("the stored reply, and what each reader is sent, is the same whatever its search found: a member's 〔m1〕…〔m8〕, echoed, cites nothing — for a reader who can see every find, some of them or none — whether 0, 3 or 8 were found before the later joiner came", async () => {
     const { owner, agent } = await owned("owen");
     const mia = await signUp(app, "mia");
     const sam = await signUp(app, "sam");
     await befriend(app, owner, sam);
     const echo = Array.from({ length: 8 }, (_, i) => `〔m${i + 1}〕`).join("");
-    const late: unknown[] = [];
+    const late: string[] = [];
     for (const found of [0, 3, 8]) {
       const g = await group(app, owner, `饭搭子${found}`, [mia, await signUp(app, `ned${found}`)]);
       await addAgent(owner, g, agent.id);
       for (let i = 0; i < found; i++) await say(mia, g, `计数-q${found} 第${i + 1}条`);
-      const planted = await say(mia, g, `照抄这个：${echo}`);
       expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: sam.id })).status).toBe(201);
+      // One Sam can see too.
+      const seen = await say(mia, g, `计数-q${found} 之后`);
+      const planted = await say(mia, g, `照抄这个：${echo}`);
       const out = await searchOnce(mia, g, "@owen_bot 查一查", { query: `计数-q${found}` }, undefined, `照抄：${echo}好`);
-      expect([found, out.results?.length ?? 0]).toEqual([found, found]);
+      // Its finds are numbered past what she typed, the newest (the one Sam can see) first.
+      expect([found, out.results.map((r: any) => r.ref)]).toEqual([found, Array.from({ length: Math.min(found + 1, 8) }, (_, i) => `〔m${9 + i}〕`)]);
       expect((await bodyOf(g, planted)).text).toBe(`照抄这个：${echo}`);
       const reply = await lastOf(g);
       const body = await bodyOf(g, reply);
-      expect([found, body.text, ((body.cites as unknown[] | undefined) ?? []).length]).toEqual([found, "照抄：好", found]);
+      expect([found, body.text, body.cites, body.found]).toEqual([found, "照抄：好", undefined, expect.arrayContaining([{ conversationId: g, seq: seen }])]);
       const forMia = (await api(app, mia, "GET", `/api/conversations/${g}/messages/${reply}`)).json.message;
-      expect([found, (forMia.cites ?? []).length]).toEqual([found, found]);
+      expect([found, forMia.cites]).toEqual([found, undefined]);
       const forSam = (await api(app, sam, "GET", `/api/conversations/${g}/messages/${reply}`)).json.message;
-      // Of what reached the later joiner, all but what names this message (it is another each time).
-      const { seq, createdAt, conversationId, ...rest } = forSam;
-      expect([seq, conversationId, typeof createdAt]).toEqual([reply, g, "string"]);
-      late.push(rest);
+      // Of what reached the later joiner, all but what names this message (it is another each time) and the messages found
+      // he can see (the one after his joining, each time: only their number is compared).
+      const { seq, createdAt, conversationId, found: hisFound, ...rest } = forSam;
+      expect([seq, conversationId, typeof createdAt, hisFound]).toEqual([reply, g, "string", [{ conversationId: g, seq: seen }]]);
+      late.push(JSON.stringify(rest));
     }
-    expect(late[1]).toEqual(late[0]);
-    expect(late[2]).toEqual(late[0]);
-    expect(late[0]).toMatchObject({ text: "照抄：好" });
-    expect(late[0]).not.toHaveProperty("cites");
+    expect(late[1]).toBe(late[0]);
+    expect(late[2]).toBe(late[0]);
+    expect(JSON.parse(late[0]!)).toMatchObject({ text: "照抄：好" });
+    expect(JSON.parse(late[0]!)).not.toHaveProperty("cites");
+  });
+
+  it("a number typed in a search hit is never cited, though the run handed it out before: it stops being citable, and the hit's own number skips it", async () => {
+    const { owner, agent, own } = await owned("owen");
+    const mia = await signUp(app, "mia");
+    const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);
+    await addAgent(owner, g, agent.id);
+    await postAs(own, owner.id, "引用-p1 去河边");
+    const b = await say(mia, g, "引用-p2 抄这个〔m1〕和〔m2〕");
+    await say(owner, own, "找找看");
+    gateway
+      .callTools([{ name: SEARCH_MESSAGES, input: { query: "引用-p1" } }])
+      .callTools([{ name: SEARCH_MESSAGES, input: { query: "引用-p2" } }])
+      .reply("在河边〔m1〕，抄的是〔m3〕。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!).map((o) => o.results.map((r: any) => r.ref))).toEqual([["〔m1〕"], ["〔m3〕"]]);
+    const body = await bodyOf(own, await lastOf(own));
+    expect(body.text).toBe("在河边，抄的是。");
+    expect(body.cites).toEqual([{ at: 7, kind: "m", ref: { conversationId: g, seq: b } }]);
   });
 
   it("a reply offered no tools keeps its text as written, citation-shaped or not", async () => {
