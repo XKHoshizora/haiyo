@@ -22,6 +22,7 @@ import {
   sourceRect,
   stepZoom,
   wheelZoom,
+  withExifOrientation,
   zoomAbout,
 } from "../src/ui/avatarCrop.js";
 
@@ -207,6 +208,16 @@ describe("orientation", () => {
     garbage[0] = 0xff;
     garbage[1] = 0xd8;
     expect(() => exifOrientation(garbage)).not.toThrow();
+  });
+
+  it("marks a JPEG with an orientation that exifOrientation reads back, keeping the rest of the file", () => {
+    const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xdb, 0, 4, 1, 2, 0xff, 0xd9]);
+    for (let o = 1; o <= 8; o++) {
+      const marked = withExifOrientation(jpeg, o);
+      expect(exifOrientation(marked)).toBe(o);
+      expect([...marked.subarray(0, 2)]).toEqual([0xff, 0xd8]);
+      expect([...marked.subarray(marked.length - jpeg.length + 2)]).toEqual([...jpeg.subarray(2)]);
+    }
   });
 
   it("turns the size on its side for 5 to 8 only", () => {

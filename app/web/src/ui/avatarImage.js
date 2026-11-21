@@ -9,6 +9,7 @@ import {
   orientedSize,
   sizeProblem,
   sourceRect,
+  withExifOrientation,
 } from "./avatarCrop.js";
 
 /** What went wrong in a way the person can read: `text` is the sentence. */
@@ -22,10 +23,36 @@ export class AvatarProblem extends Error {
 /** The longest side of the picture the stage paints (a copy of the oriented picture; the saved crop is cut from the original). */
 const PREVIEW_SIDE = 1600;
 
+let engineTurns = null;
+
+/**
+ * Whether this browser turns a picture by its EXIF orientation when it decodes it (every current one does, and `imageOrientation:
+ * "none"` is not honoured by all of them, so it is asked once with a 2 × 1 picture marked as turned a quarter). When it cannot
+ * be found out, the browser is trusted: a picture is never turned twice.
+ */
+function browserTurnsPictures() {
+  engineTurns ??= (async () => {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 2;
+      canvas.height = 1;
+      canvas.getContext("2d").fillRect(0, 0, 2, 1);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg"));
+      const marked = withExifOrientation(new Uint8Array(await blob.arrayBuffer()), 6);
+      const bitmap = await createImageBitmap(new Blob([marked], { type: "image/jpeg" }));
+      const turned = bitmap.width === 1 && bitmap.height === 2;
+      bitmap.close?.();
+      return turned;
+    } catch {
+      return true;
+    }
+  })();
+  return engineTurns;
+}
+
 async function bitmapOf(file) {
-  // Stored pixels as they are: the orientation is applied by `cropTransform`, the same way for the stage and the result.
   try {
-    return await createImageBitmap(file, { imageOrientation: "none" });
+    return await createImageBitmap(file);
   } catch {
     throw new AvatarProblem("这张图片无法读取，请换一张。");
   }
@@ -38,8 +65,10 @@ async function bitmapOf(file) {
  */
 export async function decodeAvatar(file) {
   const head = new Uint8Array(await file.slice(0, 128 * 1024).arrayBuffer());
-  const orientation = exifOrientation(head);
   const bitmap = await bitmapOf(file);
+  // A browser that already turned the picture needs no turn of ours: its bitmap is upright (orientation 1 from here on).
+  const tagged = exifOrientation(head);
+  const orientation = tagged !== 1 && (await browserTurnsPictures()) ? 1 : tagged;
   const stored = { width: bitmap.width, height: bitmap.height };
   const size = orientedSize(stored.width, stored.height, orientation);
   const problem = sizeProblem(size.width, size.height) || sizeProblem(stored.width, stored.height);

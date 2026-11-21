@@ -1,7 +1,7 @@
 // An avatar set in Settings is the picture a friend sees, also on a page they already have open.
 import { test, expect } from "./support/fixtures.mjs";
 import { befriend } from "./support/accounts.mjs";
-import { chatPane, goTo, openChat, rail } from "./support/app.mjs";
+import { chatPane, goTo, openChat, pickAvatarUi, rail, saveAvatarDialog } from "./support/app.mjs";
 import { png } from "./support/files.mjs";
 
 /** The picture inside an avatar labelled `name` (the first one on the page), once it has loaded. */
@@ -19,31 +19,27 @@ test("the avatar set in Settings is seen by a friend", async ({ people }) => {
   const picture = png(40, 30);
 
   await goTo(ann.page, "设置");
-  const chooser = ann.page.waitForEvent("filechooser");
-  await ann.page.getByRole("button", { name: "更换头像" }).click();
-  await (await chooser).setFiles({ name: "我的头像.png", mimeType: "image/png", buffer: picture });
-  await expect(ann.page.getByRole("img", { name: "新头像预览" })).toBeVisible();
-  await ann.page.getByRole("button", { name: "保存头像" }).click();
+  await saveAvatarDialog(await pickAvatarUi(ann.page, "更换头像", { name: "我的头像.png", mimeType: "image/png", buffer: picture }));
   await expect(ann.page.getByRole("status").filter({ hasText: "头像已更新" })).toBeVisible();
-  await expectPicture(rail(ann.page), "你", [40, 30]);
+  // What is saved is the adjusted crop, 512 × 512 (not the picked file, which never left the device).
+  await expectPicture(rail(ann.page), "你", [512, 512]);
 
   // Bo's app shows Ann's new picture (40×30, not the generated 128×128 one), and it is the uploaded file.
   bo.page = await people.openApp(bo);
   await goTo(bo.page, "通讯录");
-  const shown = await expectPicture(bo.page, ann.displayName, [40, 30]);
+  const shown = await expectPicture(bo.page, ann.displayName, [512, 512]);
   const src = await shown.getAttribute("src");
   const served = await bo.request.get(src);
-  expect(served.headers()["content-type"]).toBe("image/png");
-  expect(Buffer.compare(await served.body(), picture), "Bo gets the uploaded bytes").toBe(0);
+  expect(served.headers()["content-type"]).toBe("image/webp");
+  const bytes = await served.body();
+  expect(bytes.length, "well under the service's 2 MB").toBeLessThan(2 * 1024 * 1024);
+  expect(Buffer.compare(bytes, picture), "Bo gets the cropped picture, not the picked file").not.toBe(0);
 });
 
-/** Settings → 更换头像 → `picture` → 保存头像, in `page`. */
+/** Settings → 更换头像 → `picture` → 保存 in the dialog, in `page`. */
 async function changeAvatar(page, picture) {
   await goTo(page, "设置");
-  const chooser = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "更换头像" }).click();
-  await (await chooser).setFiles({ name: "新头像.png", mimeType: "image/png", buffer: picture });
-  await page.getByRole("button", { name: "保存头像" }).click();
+  await saveAvatarDialog(await pickAvatarUi(page, "更换头像", { name: "新头像.png", mimeType: "image/png", buffer: picture }));
   await expect(page.getByRole("status").filter({ hasText: "头像已更新" })).toBeVisible();
 }
 
@@ -62,7 +58,7 @@ test("spec 6.11 item 1: a friend's open page shows my new avatar at once, withou
   await changeAvatar(ann.page, png(40, 30));
 
   // Every picture of Ann on Bo's open page is the new one, and the page was not reloaded.
-  await expect.poll(sizes, { message: "the new avatar, everywhere" }).toEqual(Array((await pictures.count())).fill([40, 30]));
+  await expect.poll(sizes, { message: "the new avatar, everywhere" }).toEqual(Array((await pictures.count())).fill([512, 512]));
   await expect(chatPane(bo.page, ann.displayName)).toBeVisible();
   expect(await bo.page.evaluate(() => window.__sameDocument), "Bo's page was not reloaded").toBe(true);
 });

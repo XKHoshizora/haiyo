@@ -153,6 +153,18 @@ function orientationOfTiff(bytes, start, end) {
   return 1;
 }
 
+/**
+ * The bytes of a JPEG with an EXIF segment that says `orientation` (1–8) put right after its start (any EXIF it had is left
+ * where it is: the first one a reader meets wins, as in `exifOrientation`). The browser side makes a 2 × 1 picture of this to
+ * learn whether the browser turns a picture by itself (avatarImage.js).
+ */
+export function withExifOrientation(jpeg, orientation) {
+  const tiff = [0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, orientation, 0, 0, 0, 0, 0, 0, 0];
+  const exif = [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+  const segment = [0xff, 0xe1, 0, exif.length + 2, ...exif];
+  return Uint8Array.from([...jpeg.subarray(0, 2), ...segment, ...jpeg.subarray(2)]);
+}
+
 /** The size of a picture of `width` × `height` stored pixels once its orientation is applied (5–8 turn it on its side). */
 export const orientedSize = (width, height, orientation) => (orientation >= 5 && orientation <= 8 ? { width: height, height: width } : { width, height });
 
