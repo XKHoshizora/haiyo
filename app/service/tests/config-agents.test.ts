@@ -541,7 +541,7 @@ describe("the memory configuration", () => {
     expect(loadConfig({ ...base, MEMORY: "{}" }).memory).not.toHaveProperty("reviewMergeAt");
   });
 
-  test("the rolling summary: a job once 20 messages are left out, a summary of at most 800 weight; whole numbers, the cap at most 2000 (the database holds 6000 characters)", () => {
+  test("the rolling summary: a job once 20 messages are left out, a summary of at most 800 weight; whole numbers, the cap at most 2000 (the database guards a summary's items at 256 KiB)", () => {
     expect(loadConfig({ ...base, MEMORY: '{"summaryMinMessages":5,"summaryMaxWeight":2000}' }).memory).toMatchObject({ summaryMinMessages: 5, summaryMaxWeight: 2000 });
     for (const bad of ['{"summaryMinMessages":0}', '{"summaryMinMessages":1.5}', '{"summaryMinMessages":201}', '{"summaryMaxWeight":0}', '{"summaryMaxWeight":2001}', '{"summaryMaxWeight":"800"}']) {
       expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY/);

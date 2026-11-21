@@ -423,7 +423,7 @@ const memorySchema = z.preprocess(renamedReviewWeight, z.strictObject({
   freeDailyPoints: z.number().int().min(0).max(1_000_000).default(20),
   // 0 (no timer) or at least a minute: anything between would sweep back to back.
   changesSweepMs: z.number().int().min(0).max(86_400_000).refine((ms) => ms === 0 || ms >= 60_000).default(3_600_000),
-  // At most what one job reads (200 messages); the cap at most 2000 weight: the database holds a summary at 6000 characters.
+  // At most what one job reads (200 messages); the cap at most 2000 weight: the database guards a summary's items at 256 KiB (migration 059).
   summaryMinMessages: positive(20, 200),
   summaryMaxWeight: positive(800, 2000),
 }).refine((m) => m.reviewMessages >= m.summaryMinMessages, {
