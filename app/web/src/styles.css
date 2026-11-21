@@ -515,11 +515,12 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .cite-web > a:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
 /* The web pages a reply was handed, under its lookup line: quiet numbered rows, each its title and the address's real host. */
 .web-sources { margin: 2px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--ink-3); }
-.web-sources > li { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.web-sources > li { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .web-source-n { flex: none; min-width: 1.2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-3); }
-.web-sources .text-link { font-size: 12px; font-weight: 400; min-width: 0; max-width: 100%; gap: 6px; }
-.web-source-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; unicode-bidi: isolate; }
-.web-source-host { flex: none; color: var(--ink-3); overflow-wrap: anywhere; unicode-bidi: isolate; }
+.web-sources .text-link { flex: 1 1 auto; font-size: 12px; font-weight: 400; min-width: 0; max-width: 100%; gap: 6px; margin: 0; }
+.web-source-title, .web-source-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; unicode-bidi: isolate; }
+.web-source-title { flex: 0 1 auto; }
+.web-source-host { flex: 0 1 auto; max-width: 45%; color: var(--ink-3); }
 /* A link of a reply whose run searched the web: shown as its text and host, nothing to open. */
 .md-link-plain { color: inherit; }
 /* A deleted Agent's model where a live one's is switched (its conversation's header, the details panel): a plain label. */
