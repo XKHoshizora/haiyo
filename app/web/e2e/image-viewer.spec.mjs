@@ -4,6 +4,7 @@ import { test, expect } from "./support/fixtures.mjs";
 import { befriend, uniq } from "./support/accounts.mjs";
 import { chatPane, createGroupUi, openChat, sendFile } from "./support/app.mjs";
 import { png, randomFile } from "./support/files.mjs";
+import { polishShot } from "./support/shots.mjs";
 
 test("a picture opens a viewer in the same window: next, Esc, and the focus comes back @remote", async ({ people }) => {
   const ann = await people.member("Ann");
@@ -34,6 +35,15 @@ test("a picture opens a viewer in the same window: next, Esc, and the focus come
   await expect.poll(() => viewer.locator(".viewer-img").evaluate((img) => img.naturalWidth)).toBe(41);
   await expect(viewer.getByRole("button", { name: "关闭" })).toBeFocused();
 
+  await polishShot(page, "viewer-1280x800");
+  await page.setViewportSize({ width: 360, height: 740 });
+  await polishShot(page, "viewer-360x740");
+  await page.setViewportSize({ width: 1280, height: 860 });
+
+  // A click on the picture (and on the backdrop's drag) leaves the keys working: the dialog has the focus.
+  await viewer.locator(".viewer-img").click();
+  await expect(viewer).toBeFocused();
+
   // Next, by the arrow key and by the button; the last has no next.
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("dialog", { name: pictures[1].name })).toBeVisible();
@@ -49,7 +59,8 @@ test("a picture opens a viewer in the same window: next, Esc, and the focus come
   await page.keyboard.press("0");
   await expect(viewer.locator(".viewer-img")).toHaveAttribute("data-scale", "1");
 
-  // Esc closes it and the focus is back on the picture that opened it.
+  // Esc closes it (after a click on the picture, too) and the focus is back on the picture that opened it.
+  await viewer.locator(".viewer-img").click();
   await page.keyboard.press("Escape");
   await expect(viewer).toHaveCount(0);
   await expect(opener).toBeFocused();
@@ -87,6 +98,8 @@ test("a file is a card: an icon of its kind, the name's middle elided with its e
   expect(cut.tail.endsWith(".pdf")).toBe(true);
   expect(cut.tailInside).toBe(true);
   expect(cut.cardInside).toBe(true);
+
+  await polishShot(bo.page, "file-card-360", { clip: await chat.getByTestId("message-list").boundingBox() });
 
   // Clicking anywhere on the card downloads the file.
   const download = bo.page.waitForEvent("download");

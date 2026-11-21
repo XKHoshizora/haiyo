@@ -127,7 +127,9 @@ describe("what a mention shows", () => {
     expect(css).not.toMatch(/\.mention\.mention-agent \{[^}]*box-shadow/);
     const strength = (text) => Number(text.match(/var\(--purple\) (\d+)%/)?.[1]);
     expect(strength(rule(".mention.mention-self"))).toBeGreaterThan(strength(base));
-    expect(rule(".mention.mention-gone")).toMatch(/color: var\(--ink-3\);/);
+    expect(rule(".mention.mention-gone")).toMatch(/color: var\(--ink-2\);/);
+    // On my own (purple) bubble the accent text is under 4.5:1; plain ink there.
+    expect(css).toMatch(/\.msg\.mine \.mention \{[^}]*color: var\(--ink\);/);
     // The composer's tags have the same tint and radius.
     const chip = rule(".composer-mirror .mention-chip");
     expect(chip).toMatch(/border-radius: 4px;/);

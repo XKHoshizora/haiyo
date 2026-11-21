@@ -603,6 +603,8 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .file-name-head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-name-tail { flex: none; white-space: pre; }
 .file-card .btn { flex: none; }
+/* On a phone the download button goes under the name rather than squeezing it. */
+@media (max-width: 480px) { .file-card { flex-wrap: wrap; } .file-card > div { flex: 1 1 140px; } .file-card .btn { margin-left: 40px; } }
 /* A file ready to download: the whole card is the one link. */
 .file-card-link { color: inherit; text-decoration: none; cursor: pointer; }
 .file-card-link:hover { background: var(--surface-solid); border-color: var(--purple); }
@@ -658,7 +660,9 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 /* The reader herself: a stronger tint. */
 .mention.mention-self { background: color-mix(in srgb, var(--purple) 28%, transparent); font-weight: 600; }
 /* Someone no longer here: the name it was sent with, quiet, nothing opens. */
-.mention.mention-gone { background: none; color: var(--ink-3); cursor: default; }
+.mention.mention-gone { background: none; color: var(--ink-2); cursor: default; }
+/* On the purple bubble of my own message the accent text is under 4.5:1 (3.95 and 3.35 measured): plain ink there (8.8 and 7.4). */
+.msg.mine .mention { color: var(--ink); }
 .mention:focus-visible { outline-offset: 1px; }
 /* The card of a mention (MentionCard.jsx): in the page's body, fixed, so it never moves the message. */
 .mention-card {
@@ -950,7 +954,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 
 /* ───────── image viewer (ui/ImageViewer.jsx): a dialog over a dark backdrop, the picture fitted to the window */
 .viewer {
-  --viewer-bg: rgba(14, 12, 28, 0.94); --viewer-ink: #fff; --viewer-ink-2: rgba(255, 255, 255, 0.85); --viewer-ink-3: rgba(255, 255, 255, 0.7);
+  --viewer-bg: rgba(14, 12, 28, 0.97); --viewer-ink: #fff; --viewer-ink-2: rgba(255, 255, 255, 0.85); --viewer-ink-3: rgba(255, 255, 255, 0.7);
   --viewer-line: rgba(255, 255, 255, 0.25); --viewer-hover: rgba(255, 255, 255, 0.16); --viewer-scrim: rgba(0, 0, 0, 0.4);
   position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: var(--viewer-bg); color: var(--viewer-ink); overscroll-behavior: contain; }
 .viewer-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 12px; }

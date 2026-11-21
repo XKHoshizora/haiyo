@@ -50,3 +50,13 @@ export async function capture(page, name, { mobile, show, batch = DEFAULT_BATCH 
 
 /** `capture` into the record of `batch` (e.g. "batch2c"): `captureIn("batch2c")(page, name, options)`. */
 export const captureIn = (batch) => (page, name, options = {}) => capture(page, name, { ...options, batch });
+
+const POLISH_DIR = path.resolve(WEB_DIR, "..", "..", "docs", "acceptance", "polish-2026-11-22", "shots");
+
+/** One screenshot `<name>.png` of the page as it is, for the polish round's acceptance record (only with E2E_SHOTS=1). */
+export async function polishShot(page, name, { clip } = {}) {
+  if (!shooting) return;
+  mkdirSync(POLISH_DIR, { recursive: true });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(POLISH_DIR, `${name}.png`), animations: "disabled", caret: "hide", clip });
+}

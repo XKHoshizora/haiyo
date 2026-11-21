@@ -10,7 +10,7 @@ import { befriend, createGroupApi, signInApi, uniq } from "./support/accounts.mj
 import { agentMessagesWith, chatPane, composer, messageList, openChat, rail } from "./support/app.mjs";
 import { canControlService } from "./support/control.mjs";
 import { modelStub } from "./support/model-stub.mjs";
-import { captureIn } from "./support/shots.mjs";
+import { captureIn, polishShot } from "./support/shots.mjs";
 
 const shot = captureIn("batch2-tools");
 
@@ -533,6 +533,18 @@ test("a mention is a tinted name; hovering it opens a card with the kind, the ac
   await page.keyboard.press("Escape");
   await expect(card).toHaveCount(0);
   expect(await message.boundingBox()).toEqual(before);
+  await page.mouse.move(0, 0);
+  await person.hover();
+  await expect(card).toBeVisible();
+  await polishShot(page, "mention-own-bubble-card");
+  await page.mouse.move(0, 0);
+  await expect(card).toHaveCount(0);
+  await polishShot(page, "mention-own-bubble");
+  // The same message in another person's bubble (Bo's page).
+  const boChat = await openChat(bo.page, title);
+  const theirs = messageList(boChat).locator("li.msg.theirs").filter({ hasText: "看一下" });
+  await expect(theirs).toHaveCount(1);
+  await polishShot(bo.page, "mention-other-bubble");
 
   // By keyboard: Tab to the Agent's mention opens its card, with its owner.
   await bot.focus();
