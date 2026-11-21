@@ -41,8 +41,8 @@ import { EXPLICIT } from "./review.ts";
  * stored (`memory_catchups`), and `resume` queues every one a restart left unfinished; they run as any job of the Agent (one at a time).
  * The rolling summary (agents/summary/job.ts) runs here too: after a reply whose context left out enough (`summarise`), a
  * `summary` job — one per pair at a time (one job per Agent at a time, as every job), within `MAX_REVIEWS_AT_ONCE`; a second
- * request while one waits only moves what it is to cover up to. Where a pair's last attempt that wrote nothing was to cover
- * up to is remembered here (in this process: a restart forgets it, which costs at most one more attempt).
+ * request while one waits only moves what it is to cover up to. Nothing of when a pair may be asked again is kept here: that
+ * is the pair's attempt state, in the database (agents/summary/store.ts `AttemptState`).
  */
 
 export const MAX_REVIEWS_AT_ONCE = 4;
@@ -145,8 +145,6 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
   const dreaming = new Set<string>();
   /** Each owner's latest conversion: under way, or what it did (until the next one; a restart forgets them all). */
   const conversions = new Map<string, { state: "running" } | { state: "done"; result: ConvertResult }>();
-  /** Each pair's last summary call that wrote nothing: its window (`SummaryContext.summaryTried`). */
-  const summaryTried = new Map<string, { from: number; upto: number }>();
   let waiting: Job[] = [];
   const running = new Set<string>();
   /** Evaluations of a trigger under way (they read the database before deciding). */
@@ -191,8 +189,6 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
         dream,
         enqueue: (next) => enqueue(next),
         flagged: (agentId, conversationId, kind) => api.flagged(agentId, conversationId, kind),
-        summaryTried: summaryTried.get(key) ?? null,
-        summaryAttempted: (window) => void (window === null ? summaryTried.delete(key) : summaryTried.set(key, window)),
       };
       if (job.kind === "flags") hearsayCalls.set(key, ctx.hearsayCalls);
       void Promise.resolve()
@@ -480,7 +476,6 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
       retries.clear();
       hearsayCalls.clear();
       attempted.clear();
-      summaryTried.clear();
       for (const job of waiting) if (job.kind === "convert") job.settle(null);
       waiting = [];
       stop.abort();

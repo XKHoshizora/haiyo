@@ -6,7 +6,7 @@ import { handleOf } from "../../principals/store.ts";
 import { DISPLAY_NAME_MAX } from "../../schemas.ts";
 import { labelName, speakerRole } from "../runtime/prompt.ts";
 import { withoutCitations } from "../tools/refs.ts";
-import { capped, hasItems, mapItems, SECTIONS, shownForm, whoIn, type Item, type Passage, type Sections, type Speaker } from "./prompt.ts";
+import { fitted, hasItems, mapItems, SECTIONS, shownForm, whoIn, type Item, type Passage, type Sections, type Speaker } from "./prompt.ts";
 
 /**
  * The rolling summary's rows (migrations 052, 059; README "The rolling summary"): one per conversation and Agent. What
@@ -200,7 +200,7 @@ export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly str
       const p = found.get(id);
       if (p === undefined) return [id, { kind: "gone", name: null, account: null }];
       const handle = withoutCitations(p.handle);
-      // The roster's name, cut at the display-name limit (folding may lengthen one): what `atLongest` reserves room for.
+      // The roster's name, cut at the display-name limit (folding may lengthen one).
       const name = Array.from(labelName(withoutCitations(p.name), handle)).slice(0, DISPLAY_NAME_MAX).join("");
       if (p.deleted) return [id, { kind: "deletedAgent", name, account: null }];
       const role = speakerRole(p.id, p.kind, r.ownerId);
@@ -212,21 +212,19 @@ export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly str
 /**
  * The pair's stored summary `s` as a reply is shown it (final review I-3; redesign B): its speakers once, each as who that
  * account is now (`peopleNow`, `shownForm`: the role by account, the name and account of now, under a key the system gives
- * it), each item's `said_by` that key — so a rename changes how an item is shown, never whose it is —, its text without any citation (tools/refs.ts `withoutCitations`), and the whole held
- * again to `maxWeight` as it is shown (prompt.ts `capped`: whole items from the top section down), so that no rename since
- * it was stored takes it past the cap. One indexed read of the accounts it names (none when it names nobody), nothing of
- * the conversation's history. Null for a row written before migration 059 (text only) — no reply is shown it until a job
- * has written it anew — and when nothing of it fits. Read only: the row is never written back.
+ * it), each item's `said_by` that key — so a rename changes how an item is shown, never whose it is —, its text without
+ * any citation (tools/refs.ts `withoutCitations`), and the whole held again to `maxWeight` as it is shown (prompt.ts
+ * `fitted`: names shortened first, down to nothing — role and account still say who it is —, and only then whole items
+ * from the top section down), so that no rename since it was stored takes it past the cap, nor costs it an item (it was
+ * stored held to the cap with every account at its longest: job.ts). One indexed read of the accounts it names (none when
+ * it names nobody), nothing of the conversation's history. Null for a row written before migration 059 (text only) — no
+ * reply is shown it until a job has written it anew — and when it holds no item (a window folded with nothing to add) or
+ * nothing of it fits. Read only: the row is never written back.
  */
 export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary, maxWeight: number): Promise<Passage | null> {
-  if (s.items === null) return null;
-  const people = await peopleNow(q, r, whoIn(s.items));
-  const kept = capped(
-    mapItems(s.items, (id) => id, withoutCitations),
-    maxWeight,
-    (items) => JSON.stringify(shownForm(items, people)),
-  );
-  return hasItems(kept) ? shownForm(kept, people) : null;
+  if (s.items === null || !hasItems(s.items)) return null;
+  const { items, people } = fitted(mapItems(s.items, (id) => id, withoutCitations), await peopleNow(q, r, whoIn(s.items)), maxWeight);
+  return hasItems(items) ? shownForm(items, people) : null;
 }
 
 /**
@@ -244,10 +242,76 @@ export async function writeSummary(q: Queryable, conversationId: string, agentId
 }
 
 /**
- * Deletes the summaries of `conversationId` of whichever of `principalIds` are Agents, in the caller's transaction: a new
- * topic (its Agent), and the end of memberships of a group (everyone who left: only an Agent has one).
+ * Deletes the summaries of `conversationId` of whichever of `principalIds` are Agents, and their attempt states, in the
+ * caller's transaction: a new topic (its Agent), and the end of memberships of a group (everyone who left: only an Agent
+ * has one).
  */
 export async function forgetSummaries(q: Queryable, conversationId: string, principalIds: readonly string[]): Promise<void> {
   if (principalIds.length === 0) return;
-  await q.query("delete from conversation_summaries where conversation_id = $1 and agent_id = any($2::uuid[])", [conversationId, [...new Set(principalIds)]]);
+  const ids = [...new Set(principalIds)];
+  await q.query("delete from conversation_summaries where conversation_id = $1 and agent_id = any($2::uuid[])", [conversationId, ids]);
+  await q.query("delete from conversation_summary_attempts where conversation_id = $1 and agent_id = any($2::uuid[])", [conversationId, ids]);
+}
+
+/**
+ * A pair's attempt state (migration 059; README "The rolling summary"): what decides when its summary job may call
+ * (job.ts `shouldCall`) and what after a call that wrote nothing. `attemptUpto`: the end of its last attempt's window
+ * (null: none yet); `failures`: its calls in a row that wrote nothing; `notBefore`: when it may be asked again, in ms
+ * (null: at once) — the minimum interval after a summary is written, the backoff after a call that wrote nothing, a
+ * claim's lapse while a call is under way; `windowMessages`: the most messages its next window takes (null: the most a
+ * job reads), after a full window that could not be summarised whole. Forgotten with the summary (`forgetSummaries`).
+ */
+export interface AttemptState {
+  attemptUpto: number | null;
+  failures: number;
+  notBefore: number | null;
+  windowMessages: number | null;
+}
+
+/** The pair's attempt state, or null (never asked, or forgotten since). A plain read of one row. */
+export async function readAttempt(q: Queryable, conversationId: string, agentId: string): Promise<AttemptState | null> {
+  const { rows } = await q.query<{ upto: string | null; failures: number; not_before: Date | null; window_messages: number | null }>(
+    `select attempt_upto::text as upto, failures, not_before, window_messages
+       from conversation_summary_attempts where conversation_id = $1 and agent_id = $2`,
+    [conversationId, agentId],
+  );
+  const r = rows[0];
+  return r
+    ? { attemptUpto: r.upto === null ? null : Number(r.upto), failures: r.failures, notBefore: r.not_before === null ? null : r.not_before.getTime(), windowMessages: r.window_messages }
+    : null;
+}
+
+/** A moment in ms as the database is given it (to the millisecond, as it is read back). */
+const instant = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
+
+/** Stores the pair's attempt state as `s` (inserted, or replacing the one there), in the caller's transaction (job.ts: under the pair's lock). */
+export async function writeAttempt(q: Queryable, conversationId: string, agentId: string, s: AttemptState): Promise<void> {
+  await q.query(
+    `insert into conversation_summary_attempts (conversation_id, agent_id, attempt_upto, failures, not_before, window_messages)
+     values ($1, $2, $3, $4, $5::timestamptz, $6)
+     on conflict (conversation_id, agent_id) do update
+       set attempt_upto = excluded.attempt_upto, failures = excluded.failures, not_before = excluded.not_before, window_messages = excluded.window_messages`,
+    [conversationId, agentId, s.attemptUpto, s.failures, instant(s.notBefore), s.windowMessages],
+  );
+}
+
+/**
+ * Ends the claim `lease` (as job.ts wrote it): the pair's state becomes `next` (null: none) — only while the row is still
+ * that claim, so that one that lapsed and was claimed again, or that was forgotten meanwhile (a new topic, the end of a
+ * stay), is left as it is. One statement.
+ */
+export async function settleAttempt(q: Queryable, conversationId: string, agentId: string, lease: AttemptState, next: AttemptState | null): Promise<void> {
+  if (next === null) {
+    await q.query("delete from conversation_summary_attempts where conversation_id = $1 and agent_id = $2 and not_before = $3::timestamptz", [
+      conversationId,
+      agentId,
+      instant(lease.notBefore),
+    ]);
+    return;
+  }
+  await q.query(
+    `update conversation_summary_attempts set attempt_upto = $4, failures = $5, not_before = $6::timestamptz, window_messages = $7
+      where conversation_id = $1 and agent_id = $2 and not_before = $3::timestamptz`,
+    [conversationId, agentId, instant(lease.notBefore), next.attemptUpto, next.failures, instant(next.notBefore), next.windowMessages],
+  );
 }

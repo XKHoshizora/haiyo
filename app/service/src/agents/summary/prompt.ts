@@ -1,7 +1,6 @@
 import { weight, cutToWeight } from "../../metering/tokens.ts";
 import { parseAnswer } from "../../memory/ops.ts";
 import { HANDLE_MAX } from "../../principals/store.ts";
-import { DISPLAY_NAME_MAX } from "../../schemas.ts";
 import { cleanText, SHOWN_ROLE, type ShownSpeaker, type SpeakerKind } from "../runtime/prompt.ts";
 import { withoutCitations } from "../tools/refs.ts";
 
@@ -57,15 +56,15 @@ export const callPerson = (s: Speaker): ShownSpeaker => ({ role: CALL_ROLE[s.kin
 export const shownSpeaker = (s: Speaker): ShownSpeaker => ({ role: SHOWN_ROLE[s.kind], name: s.name, account: s.account });
 
 /**
- * `s` with the longest name and account it could have by the time a reply is shown its summary: a name of
- * `DISPLAY_NAME_MAX` characters of the heaviest kind (4 bytes each — a shown name is cut there, store.ts `peopleNow`), a
- * person's handle or an Agent's full handle at its longest (`HANDLE_MAX`; `owner.name`). Who someone is (`kind`) does not
- * change but for an Agent deleted, or an account gone, and each of those shows less (no account). What a summary is held to
- * when it is stored (job.ts), so that no rename since takes it past the cap when a reply is shown it.
+ * `s` with the longest account it could have by the time a reply is shown its summary: a person's handle or an Agent's
+ * full handle at its longest (`HANDLE_MAX`; `owner.name`); its name as it is. Who someone is (`kind`) does not change but for
+ * an Agent deleted, or an account gone, and each of those shows less (no account). What a summary is held to when it is
+ * stored (job.ts): a rename since can then cost names only — a reply's passage shortens them, down to nothing, before it
+ * drops an item (`fitted`).
  */
 export const atLongest = (s: Speaker): Speaker => ({
   kind: s.kind,
-  name: s.name === null ? null : String.fromCodePoint(0x20000).repeat(DISPLAY_NAME_MAX),
+  name: s.name,
   account: s.account === null ? null : `@${"a".repeat(s.kind === "agent" ? 2 * HANDLE_MAX + 1 : HANDLE_MAX)}`,
 });
 
@@ -138,6 +137,35 @@ export function capped<W>(s: Sections<W>, maxWeight: number, render: (s: Section
 /** Whether a summary holds any item. */
 export const hasItems = (s: Sections<unknown>): boolean => itemCount(s) > 0;
 
+/** A summary with no item: the four lists, empty. */
+export const noItems = <W = string>(): Sections<W> => Object.fromEntries(SECTIONS.map((k) => [k, []])) as unknown as Sections<W>;
+
+/**
+ * `s` and `people` as a reply is shown them, held to `maxWeight` as `shownForm` writes them (the passage's JSON value) and to
+ * `SUMMARY_MAX_ITEMS` items: as they are when they fit; else with every name cut to the most characters at which they
+ * fit — down to none: the role and the account still say who it is; else, every name empty, whole items going from the
+ * top section down (`capped`). A summary is stored held to the cap with each account at its longest (`atLongest`), so a
+ * rename since can cost names, never an item. Pure.
+ */
+export function fitted(s: Sections, people: ReadonlyMap<string, Speaker>, maxWeight: number): { items: Sections; people: ReadonlyMap<string, Speaker> } {
+  const render = (p: ReadonlyMap<string, Speaker>) => (x: Sections): string => JSON.stringify(shownForm(x, p));
+  const items = capped(s, Number.POSITIVE_INFINITY, render(people));
+  const fits = (p: ReadonlyMap<string, Speaker>): boolean => weight(render(p)(items)) <= maxWeight;
+  if (fits(people)) return { items, people };
+  const cut = (n: number): ReadonlyMap<string, Speaker> =>
+    new Map([...people].map(([id, p]) => [id, p.name === null ? p : { ...p, name: Array.from(p.name).slice(0, n).join("") }]));
+  const bare = cut(0);
+  if (!fits(bare)) return { items: capped(items, maxWeight, render(bare)), people: bare };
+  // The most characters a name keeps: `lo` fits, `hi` (every name whole) does not.
+  let [lo, hi] = [0, Math.max(...[...people.values()].map((p) => Array.from(p.name ?? "").length))];
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fits(cut(mid))) lo = mid;
+    else hi = mid;
+  }
+  return { items, people: cut(lo) };
+}
+
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
@@ -183,7 +211,8 @@ export const summaryInput = (people: Readonly<Record<string, ShownSpeaker>>, old
 
 /**
  * The answer's items, their `said_by` still the call's keys — `sections` null when none is left (no item, or no JSON
- * object) — and how many items went for their `said_by` (`unknown`). The answer is one JSON object, bare or in a fenced
+ * object) —, how many items went for their `said_by` (`unknown`), and whether it is the asked shape with nothing in it
+ * (`empty`: the four lists, each empty — nothing worth keeping, which is an answer). The answer is one JSON object, bare or in a fenced
  * block (memory/ops.ts `parseAnswer`); of it only the four sections' lists are read (a missing one is empty, any other
  * key is ignored), and of each only items with a text: the text cleaned — on one line, without invisible and control
  * characters or whitespace runs (`cleanText`), without any citation (tools/refs.ts `withoutCitations`), cleaned again — and
@@ -191,9 +220,10 @@ export const summaryInput = (people: Readonly<Record<string, ShownSpeaker>>, old
  * without one, or with any other (a key the call was not given, a label, a name, anything that is no string), goes,
  * counted. The whole is held to the cap later, as shown (`capped`). Pure and total: it never throws.
  */
-export function parseSummary(answer: string, keys: ReadonlySet<string>, itemMaxWeight: number): { sections: Sections | null; unknown: number } {
+export function parseSummary(answer: string, keys: ReadonlySet<string>, itemMaxWeight: number): { sections: Sections | null; unknown: number; empty: boolean } {
   const parsed = parseAnswer(answer);
-  if (!isRecord(parsed)) return { sections: null, unknown: 0 };
+  if (!isRecord(parsed)) return { sections: null, unknown: 0, empty: false };
+  const empty = SECTIONS.every((k) => Array.isArray(parsed[k]) && parsed[k].length === 0);
   let unknown = 0;
   const sections = {} as Sections;
   for (const k of SECTIONS) {
@@ -210,5 +240,5 @@ export function parseSummary(answer: string, keys: ReadonlySet<string>, itemMaxW
       return [{ said_by: who as string | null, text }];
     });
   }
-  return { sections: hasItems(sections) ? sections : null, unknown };
+  return { sections: hasItems(sections) ? sections : null, unknown, empty };
 }

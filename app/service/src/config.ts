@@ -367,10 +367,12 @@ export interface MemoryConfig {
   /**
    * The rolling summary (agents/summary/; README "The rolling summary"): after a reply whose context left out anything, a job
    * folds into the pair's summary — at most `summaryMaxWeight` weight as a reply is shown it — what has left the window, once
-   * that weighs at least `summaryMinFoldWeight` as a reply would show it (half of `summaryMaxWeight` unless set).
+   * that weighs at least `summaryMinFoldWeight` as a reply would show it (half of `summaryMaxWeight` unless set). After a
+   * summary is written the pair is not asked again for `summaryMinIntervalMs` (0: at once), whatever is posted meanwhile.
    */
   summaryMaxWeight: number;
   summaryMinFoldWeight: number;
+  summaryMinIntervalMs: number;
 }
 
 /** `reviewMessageChars` was this setting's name before sizes were measured in weight: still read, when the new name is absent. */
@@ -428,6 +430,8 @@ const memorySchema = z.preprocess(renamedReviewWeight, z.strictObject({
   summaryMaxWeight: positive(1000, 2000),
   // Unset: half of summaryMaxWeight (below).
   summaryMinFoldWeight: z.number().int().min(1).max(100_000).optional(),
+  // Ten minutes: a pair is summarised at most six times an hour, however much is posted. 0: no wait; at most a day.
+  summaryMinIntervalMs: z.number().int().min(0).max(86_400_000).default(600_000),
 }).transform((m) => ({ ...m, summaryMinFoldWeight: m.summaryMinFoldWeight ?? Math.floor(m.summaryMaxWeight / 2) })));
 
 const allowanceTokens = z.number().int().min(0).max(200_000);

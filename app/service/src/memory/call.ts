@@ -184,6 +184,21 @@ export interface MemoryCallReport {
   started?: boolean;
   /** Set when no call was started because the owner already had `agentMaxConcurrentRuns` calls running (a moment later it may start). */
   capped?: boolean;
+  /**
+   * Set when no call was started for a reason that does not clear by itself: `no_model` — no model to call (none
+   * configured, a choice not allowed, a saved key that cannot be opened); `too_big` — the input does not fit the model's context.
+   */
+  unstartable?: "no_model" | "too_big";
+}
+
+/**
+ * Whether `ownerId` already has `agentMaxConcurrentRuns` calls running, so that a memory call would not start now
+ * (`MemoryCallReport.capped`). Reads only, no lock: a cheap look before something else is spent on a call (admission
+ * decides, under the lock).
+ */
+export async function callsAtCap(q: Queryable, config: Pick<Config, "agentMaxConcurrentRuns">, ownerId: string): Promise<boolean> {
+  const { rows } = await q.query<{ n: number }>("select count(*)::int as n from agent_runs where owner_id = $1 and status = 'running'", [ownerId]);
+  return (rows[0]?.n ?? 0) >= config.agentMaxConcurrentRuns;
 }
 
 async function callOnce(deps: MemoryCallDeps, ownerId: string, input: MemoryCallInput, closing: AbortSignal, report?: MemoryCallReport): Promise<string | null> {
@@ -215,6 +230,7 @@ async function callOnce(deps: MemoryCallDeps, ownerId: string, input: MemoryCall
       if (report) report.refused = true;
     }
     if (err instanceof AppError && err.status === 429 && report) report.capped = true;
+    if (err instanceof AppError && (err.status === 502 || err.status === 400) && report) report.unstartable = err.code === "context_too_small" ? "too_big" : "no_model";
     if (!(err instanceof AppError)) log.error({ err, ownerId }, "memory call: could not be started");
     else if (err.status === 400) log.warn({ ownerId }, "memory call: the input does not fit the model's context; skipped");
     return null;
