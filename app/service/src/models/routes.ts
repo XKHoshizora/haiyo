@@ -20,6 +20,8 @@ const modelsResponse = z.object({
   ),
   providerDefaults: z.object({ contextTokens: z.number(), maxOutputTokens: z.number() }),
   proactiveAvailable: z.boolean(),
+  /** Present (true) only while the site offers web search (`TOOLS.web.enabled` and its key there): the Agent form then shows 联网搜索. */
+  webSearchAvailable: z.literal(true).optional(),
 });
 
 /**
@@ -27,7 +29,7 @@ const modelsResponse = z.object({
  * order, each with what its owner chooses by and whether its replies may be offered tools (`tools`) — never where it is
  * called (`baseUrl`, `protocol`), by what upstream name, with which key (`apiKeyEnv`, the key) or at what price — the
  * defaults a provider model gets, and whether proactive replies can be turned on (`proactiveAvailable`: the judgement
- * model is configured).
+ * model is configured), and — only when it does — that the site offers web search (`webSearchAvailable`).
  */
 export function registerModelRoutes(app: FastifyInstance): void {
   const { config } = app.deps;
@@ -54,6 +56,7 @@ export function registerModelRoutes(app: FastifyInstance): void {
         })),
         providerDefaults: { contextTokens: config.providerDefaultContextTokens, maxOutputTokens: config.providerDefaultMaxOutputTokens },
         proactiveAvailable: config.judge !== null,
+        ...(app.deps.webEngine !== null ? { webSearchAvailable: true as const } : {}),
       };
     },
   );

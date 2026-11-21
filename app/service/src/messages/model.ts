@@ -284,13 +284,22 @@ export const wireMessageSchema = z.object({
       points: z.string(),
       /** Present (true) only when nobody called the Agent: the reply came from a proactive run. Never false. */
       proactive: z.literal(true).optional(),
+      /** Present only when its run searched the web (agents/tools/web): how many searches its `points` include. */
+      webSearches: z.number().optional(),
     })
     .optional(),
   /**
    * An Agent's reply whose tools ran: how many calls of each kind (only kinds above 0), to whoever reads the reply. A
-   * count of lookups, not of what they found.
+   * count of lookups, not of what they found. `web`: web searches that brought results back (a run offered the web tool).
    */
-  lookups: z.object({ search: z.number().optional(), file: z.number().optional(), time: z.number().optional() }).optional(),
+  lookups: z.object({ search: z.number().optional(), file: z.number().optional(), time: z.number().optional(), web: z.number().optional() }).optional(),
+  /**
+   * An Agent's reply whose run searched the web (agents/tools/web; lane websearch): every page its run was handed, cited
+   * or not — its number, address (https) and title — to every reader of the reply alike (public pages). Absent otherwise.
+   */
+  webSources: z.array(z.object({ n: z.number(), url: z.string(), title: z.string() })).optional(),
+  /** Where its text cites one of `webSources` (`at` as a cite's, ascending; `n` its number). Absent when none. */
+  webCites: z.array(z.object({ at: z.number(), n: z.number() })).optional(),
   /** Of the messages its tools found, those this reader can see now (VISIBLE_JOIN), in order; absent when none is. */
   found: z.array(z.object({ conversationId: z.string(), seq: z.number() })).optional(),
   /** The words its searches were for: to the Agent's owner, in the Agent's own conversation only. */

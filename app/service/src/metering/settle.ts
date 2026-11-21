@@ -86,7 +86,12 @@ export async function settle(
     hold_micro: string;
     input_estimate: number | null;
     ratio_key: string | null;
-  }>("select owner_id, agent_id, purpose, source, model, charge_to, hold_micro::text, input_estimate, ratio_key from agent_runs where id = $1 for update", [runId]);
+    web_searches: number;
+    web_micro: string;
+  }>(
+    "select owner_id, agent_id, purpose, source, model, charge_to, hold_micro::text, input_estimate, ratio_key, web_searches, web_micro::text from agent_runs where id = $1 for update",
+    [runId],
+  );
   const run = rows[0];
   if (!run) throw new Error(`settle: no run ${runId}`);
   if ((await t.query("select 1 from usage_records where run_id = $1", [runId])).rowCount !== 0) {
@@ -108,12 +113,19 @@ export async function settle(
     }
   }
 
+  // The web searches its tool held before the engine was called (agents/tools/web/hold.ts): their fixed price stands
+  // whatever became of the reply (the vendor was called), outside the model's clip — the model part is charged at most
+  // what was held for it (the hold less them), the searches in full. 0 for a reply that made none: everything as before.
+  const web = BigInt(run.web_micro);
+  const modelCost = cost;
+  cost = modelCost + web;
   let freeMicro = 0n;
   let balanceMicro = 0n;
   let memoryMicro = 0n;
   let after: Settled["after"] = null;
   if (run.charge_to !== null) {
-    const charged = forgiveAll ? 0n : min(cost, BigInt(run.hold_micro));
+    const modelHold = BigInt(run.hold_micro) - web > 0n ? BigInt(run.hold_micro) - web : 0n;
+    const charged = forgiveAll ? 0n : min(modelCost, modelHold) + web;
     const account = await lockAccount(t, run.owner_id);
     if (run.charge_to === "free" || run.charge_to === "balance") {
       after = { freeUsedMicro: await freeUsedToday(t, run.owner_id, now, config.siteTimezone), balanceMicro: account.balanceMicro };
@@ -148,12 +160,13 @@ export async function settle(
 
   const inserted = await t.query<{ id: string }>(
     `insert into usage_records (owner_id, agent_id, run_id, purpose, source, model, input_tokens, output_tokens, estimated,
-                                cost_micro, free_micro, balance_micro, memory_micro, forgiven_micro, outcome)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                cost_micro, free_micro, balance_micro, memory_micro, forgiven_micro, outcome, web_searches, web_micro)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      returning id::text`,
     [
       run.owner_id, run.agent_id, runId, run.purpose, run.source, run.model, input, output, !reported || !priced,
       cost.toString(), freeMicro.toString(), balanceMicro.toString(), memoryMicro.toString(), forgivenMicro.toString(), outcome,
+      run.web_searches, web.toString(),
     ],
   );
   if (balanceMicro > 0n) await applyLedger(t, run.owner_id, -balanceMicro, "usage", null, inserted.rows[0]!.id);

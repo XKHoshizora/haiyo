@@ -60,6 +60,11 @@ export interface AgentRow {
    * what it finds to its owner (群里没找到时悄悄告诉我, Task 8: tools/elsewhere.ts). The owner's setting; on by default.
    */
   whisperElsewhere: boolean;
+  /**
+   * Whether its replies may search the web (联网搜索, lane websearch: tools/web/), while the site offers web search. The owner's
+   * setting; on by default.
+   */
+  webSearch: boolean;
   /** What it calls its owner (1–20 characters, one line); null: by name. The owner's setting. */
   ownerAppellation: string | null;
   reasoning: ReasoningLevel;
@@ -93,6 +98,7 @@ interface AgentDbRow {
   memory_ask: boolean;
   shared_notes: boolean;
   whisper_elsewhere: boolean;
+  web_search: boolean;
   owner_appellation: string | null;
   reasoning: ReasoningLevel;
   model_source: "site" | "provider" | null;
@@ -107,7 +113,7 @@ interface AgentDbRow {
 
 const SELECT = `select p.id, p.owner_id, ${handleOf("p")} as handle, p.handle::text as name_part, p.display_name as name, p.avatar_version, a.intro, a.field, a.persona,
        a.persona_version, a.reply_mode, a.group_mentions, a.chain_budget_micro::text,
-       a.others_budget_micro::text, a.proactive, a.proactive_level, a.proactive_budget_micro::text, a.memory, a.memory_ask, a.shared_notes, a.whisper_elsewhere, a.owner_appellation, a.reasoning, a.model_source, a.site_model_id, a.provider_id, a.provider_model,
+       a.others_budget_micro::text, a.proactive, a.proactive_level, a.proactive_budget_micro::text, a.memory, a.memory_ask, a.shared_notes, a.whisper_elsewhere, a.web_search, a.owner_appellation, a.reasoning, a.model_source, a.site_model_id, a.provider_id, a.provider_model,
        a.paused, a.deleted_at is not null as deleted, ac.conversation_id, a.created_at
   from agents a
   join principals p on p.id = a.principal_id
@@ -150,6 +156,7 @@ function toAgent(r: AgentDbRow): AgentRow {
     memoryAsk: r.memory_ask,
     sharedNotes: r.shared_notes,
     whisperElsewhere: r.whisper_elsewhere,
+    webSearch: r.web_search,
     ownerAppellation: r.owner_appellation,
     reasoning: r.reasoning,
     model,
@@ -288,6 +295,7 @@ export interface AgentPatch {
   memoryAsk?: boolean;
   sharedNotes?: boolean;
   whisperElsewhere?: boolean;
+  webSearch?: boolean;
   ownerAppellation?: string | null;
   reasoning?: ReasoningLevel;
   model?: AgentModel;
@@ -301,7 +309,7 @@ export async function updateAgent(t: Tx, current: AgentRow, patch: AgentPatch): 
     `update agents set intro = $2, field = $3, persona = $4, persona_version = $5, reply_mode = $6, group_mentions = $7,
             reasoning = $8, model_source = $9, site_model_id = $10, provider_id = $11, provider_model = $12, chain_budget_micro = $13,
             others_budget_micro = $14, owner_appellation = $15, proactive = $16, proactive_level = $17,
-            proactive_budget_micro = $18, memory = $19, memory_ask = $20, shared_notes = $21, whisper_elsewhere = $22
+            proactive_budget_micro = $18, memory = $19, memory_ask = $20, shared_notes = $21, whisper_elsewhere = $22, web_search = $23
       where principal_id = $1`,
     [
       current.id,
@@ -323,6 +331,7 @@ export async function updateAgent(t: Tx, current: AgentRow, patch: AgentPatch): 
       next.memoryAsk,
       next.sharedNotes,
       next.whisperElsewhere,
+      next.webSearch,
     ],
   );
   if (next.name !== current.name) await t.query("update principals set display_name = $2 where id = $1", [current.id, next.name]);

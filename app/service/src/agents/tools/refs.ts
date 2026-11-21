@@ -1,4 +1,4 @@
-import { CITES_MAX, type Cite, type MessageRef } from "../../messages/lookups.ts";
+import { CITES_MAX, WEB_CITES_MAX, type Cite, type MessageRef, type WebSource } from "../../messages/lookups.ts";
 import { withoutMarkPlaced } from "../runtime/prompt.ts";
 import { CLOSE, fileNumber, INSIDE_MAX, MAX_NUMBER, OPEN, pendingStart, beginsToken, tokenRef } from "./tokens.ts";
 
@@ -18,6 +18,8 @@ export { fileNumber } from "./tokens.ts";
  * token holds, `MAX_NUMBER` (999999, tokens.ts): past it nothing is minted (`message` and `file` give null, and the
  * thing is shown without one). One per plan of a reply run, in memory, held by the port from `begin` until the run is
  * finished or released (port-impl.ts). A number is minted once per thing, in the order things are first numbered.
+ * A run offered the web tool (`web`, lane websearch) numbers the web pages its search hands the model `w1`, `w2`… too
+ * (`web`), and `〔w1〕` is a token for it alone (tokens.ts): for every other run it is text, as it always was.
  */
 export class RunRefs {
   private readonly messages = new Map<string, string>();
@@ -25,14 +27,23 @@ export class RunRefs {
   private readonly byFileRef = new Map<string, string>();
   /** What each number names: the message, or for a file the message it is attached to. */
   private readonly targets = new Map<string, { kind: Cite["kind"]; ref: MessageRef }>();
+  /** The web pages handed out, in the order they were numbered (a run offered the web tool only). */
+  private readonly pages: WebSource[] = [];
+  private readonly pageNumbers = new Set<string>();
   /** Every number someone typed, token-shaped, in what the run was shown (`plant`): never one of the run's. */
   private readonly planted = new Set<string>();
   /** The last number minted of each kind: the next is the first after it nobody typed. */
-  private readonly last: { m: number; f: number };
+  private readonly last: { m: number; f: number; w: number };
 
-  /** `start`: the last number already given of each kind (none: 0), so a test can number near the ceiling. */
-  constructor(start: Partial<Record<"m" | "f", number>> = {}) {
-    this.last = { m: start.m ?? 0, f: start.f ?? 0 };
+  /**
+   * `start`: the last number already given of each kind (none: 0), so a test can number near the ceiling. `webOffered`:
+   * the run was offered the web tool (port-impl.ts `begin`).
+   */
+  constructor(
+    start: Partial<Record<"m" | "f" | "w", number>> = {},
+    readonly webOffered = false,
+  ) {
+    this.last = { m: start.m ?? 0, f: start.f ?? 0, w: start.w ?? 0 };
   }
 
   /**
@@ -42,17 +53,35 @@ export class RunRefs {
    */
   plant(text: string): void {
     const normalised = text.normalize("NFKC");
-    for (const ref of tokensIn(text)) this.planted.add(ref);
-    if (normalised !== text) for (const ref of tokensIn(normalised)) this.planted.add(ref);
+    for (const ref of tokensIn(text, this.webOffered)) this.planted.add(ref);
+    if (normalised !== text) for (const ref of tokensIn(normalised, this.webOffered)) this.planted.add(ref);
   }
 
   /** Whether `ref` (`m1`, as a token holds it) can become a citation: a number the run gave, and nobody typed. */
   citable(ref: string): boolean {
-    return this.targets.has(ref) && !this.planted.has(ref);
+    return (this.targets.has(ref) || this.pageNumbers.has(ref)) && !this.planted.has(ref);
+  }
+
+  /**
+   * The token of a web page the run's search hands the model (`〔w1〕`), the next `w` nobody typed; null for a run not
+   * offered the web tool, or past `MAX_NUMBER`. Each call is a page of its own (a search's results are handed once).
+   */
+  web(page: { url: string; title: string }): string | null {
+    if (!this.webOffered) return null;
+    const ref = this.mint("w");
+    if (ref === null) return null;
+    this.pages.push({ n: Number(ref.slice(1)), url: page.url, title: page.title });
+    this.pageNumbers.add(ref);
+    return this.token(ref);
+  }
+
+  /** Every web page the run handed out, in order, with its number: what its reply keeps as `webSources`, cited or not. */
+  webSources(): WebSource[] {
+    return this.pages.map((p) => ({ ...p }));
   }
 
   /** The next number of `kind` nobody typed, or null past `MAX_NUMBER` (none is minted any more). */
-  private mint(kind: "m" | "f"): string | null {
+  private mint(kind: "m" | "f" | "w"): string | null {
     let n = this.last[kind] + 1;
     while (n <= MAX_NUMBER && this.planted.has(`${kind}${n}`)) n++;
     if (n > MAX_NUMBER) return null;
@@ -111,7 +140,7 @@ export class RunRefs {
  * anything else stays, and then no `〔` before it can open one any more (a token holds no bracket). Each token taken out
  * is kept with where it stood (`tokens`); one taken out where an earlier one stood inside it moves that one to where it
  * stood itself (`settled`: a later token at a smaller place always held the earlier ones — the copy is only ever cut back
- * at a `〔`).
+ * at a `〔`). `web`: a run offered the web tool, whose `〔w1〕` is a token too (tokens.ts).
  */
 class TokenScanner {
   readonly out: string[] = [];
@@ -120,6 +149,8 @@ class TokenScanner {
   readonly opens: number[] = [];
   readonly tokens: Array<{ at: number; ref: string }> = [];
   private pushed = 0;
+
+  constructor(readonly web = false) {}
 
   push(c: string): void {
     const { out, origin, opens } = this;
@@ -130,7 +161,7 @@ class TokenScanner {
       origin.push(from);
     } else if (c === CLOSE && opens.length > 0) {
       const at = opens[opens.length - 1]!;
-      const ref = out.length - at - 1 <= INSIDE_MAX ? tokenRef(out.slice(at + 1).join("")) : null;
+      const ref = out.length - at - 1 <= INSIDE_MAX ? tokenRef(out.slice(at + 1).join(""), this.web) : null;
       if (ref !== null) {
         out.length = at;
         origin.length = at;
@@ -160,20 +191,23 @@ class TokenScanner {
    * another goes once it closes, so the outer one may still close after it.
    */
   pendingFrom(from = 0): number {
-    return pendingStart(this.out, this.opens, from);
+    return pendingStart(this.out, this.opens, from, this.web);
   }
 
   /** Whether the copy's last open `〔` still begins a token. */
   lastBegins(): boolean {
     const at = this.opens.at(-1);
-    return at !== undefined && this.out.length - at <= INSIDE_MAX + 1 && beginsToken(this.out.slice(at).join(""));
+    return at !== undefined && this.out.length - at <= INSIDE_MAX + 1 && beginsToken(this.out.slice(at).join(""), this.web);
   }
 }
+
+/** A citation as a reply's text carries it: of a message or a file (`Cite`), or of a web page its run handed out (`w`, its number). */
+export type PlacedCite = Cite | { at: number; kind: "w"; n: number };
 
 /** A text and its citations' places in it: what a reply's text is carried as through what cuts it (agents/conversation.ts). */
 export interface Placed {
   text: string;
-  cites: Cite[];
+  cites: PlacedCite[];
 }
 
 /** `p` with `places` (one per cite, in order) as its cites' new places; a cite whose place is null is gone. */
@@ -205,15 +239,15 @@ export const withoutSpanPlaced = (p: Placed, start: number, end: number): Placed
  * `tokens` (a reply offered tools), without every token-shaped string, in the same one pass — so that neither taking out
  * puts the other together (N-2, N-4) — its cites moved onto what is left. A token taken out here cites nothing.
  */
-export function withoutMarkFrom(p: Placed, mark: string, cut = false, tokens = false): Placed {
-  const done = withoutMarkPlaced(p.text, mark, p.cites.map((c) => c.at), cut, tokens);
+export function withoutMarkFrom(p: Placed, mark: string, cut = false, tokens = false, web = false): Placed {
+  const done = withoutMarkPlaced(p.text, mark, p.cites.map((c) => c.at), cut, tokens, web);
   return replaced(p, done.text, done.places);
 }
 
 /** Every token-shaped string's number in `text` (`m1`, as `TokenScanner` reads it, however they nest), in one pass. */
-function tokensIn(text: string): string[] {
+function tokensIn(text: string, web = false): string[] {
   if (!text.includes(OPEN)) return [];
-  const scanner = new TokenScanner();
+  const scanner = new TokenScanner(web);
   for (let i = 0; i < text.length; i++) scanner.push(text[i]!);
   return scanner.tokens.map((t) => t.ref);
 }
@@ -226,8 +260,8 @@ const LOOSE_AFTER = /[\s\p{P}]/u;
  * removed one taken with it (`takeCites`): what is left, each token's number with where it stood in it, and `places`
  * (ascending UTF-16 offsets in `text`) moved onto it — a place inside what goes is where it went.
  */
-function stripped(text: string, places: readonly number[]): { text: string; tokens: Array<{ at: number; ref: string }>; places: number[] } {
-  const scanner = new TokenScanner();
+function stripped(text: string, places: readonly number[], web = false): { text: string; tokens: Array<{ at: number; ref: string }>; places: number[] } {
+  const scanner = new TokenScanner(web);
   for (let i = 0; i < text.length; i++) scanner.push(text[i]!);
   const end = scanner.pendingFrom();
   const copy = scanner.out.slice(0, end).join("");
@@ -262,15 +296,26 @@ function stripped(text: string, places: readonly number[]): { text: string; toke
  * what it names (a message, or the message a file is in), when `keep` lets the reply point at it, the first `CITES_MAX`
  * only. One of a number the run never gave, or one someone typed in what the run was shown (`RunRefs.citable`), past
  * those, or one `keep` refuses, goes all the same and cites nothing; so does every one of an acknowledgement, a reasoning
- * and a search word (`cite` false).
+ * and a search word (`cite` false). A run offered the web tool (`refs.webOffered`) reads `〔w1〕` too: one of a page it
+ * handed out becomes a web cite (`{at, kind: "w", n}`), the first `WEB_CITES_MAX` of those, counted apart.
  */
 export function takeCites(text: string, refs: RunRefs, { cite = true, keep = () => true }: { cite?: boolean; keep?: (r: MessageRef) => boolean } = {}): Placed {
-  const done = stripped(text, []);
-  const cites: Cite[] = [];
+  const done = stripped(text, [], refs.webOffered);
+  const cites: PlacedCite[] = [];
+  let kept = 0;
+  let pages = 0;
   for (const t of done.tokens) {
-    if (!cite || cites.length >= CITES_MAX) break;
-    const target = refs.citable(t.ref) ? refs.target(t.ref) : null;
-    if (target === null || !keep(target.ref)) continue;
+    if (!cite) break;
+    if (!refs.citable(t.ref)) continue;
+    if (t.ref.startsWith("w")) {
+      if (pages >= WEB_CITES_MAX) continue;
+      pages++;
+      cites.push({ at: t.at, kind: "w", n: Number(t.ref.slice(1)) });
+      continue;
+    }
+    const target = refs.target(t.ref);
+    if (kept >= CITES_MAX || target === null || !keep(target.ref)) continue;
+    kept++;
     cites.push({ at: t.at, kind: target.kind, ref: target.ref });
   }
   return trimPlaced({ text: done.text, cites });
@@ -284,9 +329,14 @@ export function takeCites(text: string, refs: RunRefs, { cite = true, keep = () 
  * with the reply (`pendingFrom`, as the stored text loses it), the rest of what was held goes out.
  */
 export class TokenHold {
-  private scanner = new TokenScanner();
+  private scanner: TokenScanner;
   /** How much of the scanner's copy has gone out. */
   private released = 0;
+
+  /** `web`: a run offered the web tool, whose `〔w1〕` is held and taken out too. */
+  constructor(private readonly web = false) {
+    this.scanner = new TokenScanner(web);
+  }
 
   push(piece: string): string {
     for (let i = 0; i < piece.length; i++) this.scanner.push(piece[i]!);
@@ -308,7 +358,7 @@ export class TokenHold {
   /** Nothing more comes of this text: what may have begun a token goes, the rest goes out, and a text after it starts afresh. */
   end(): string {
     const shown = this.release(this.scanner.pendingFrom(this.released));
-    this.scanner = new TokenScanner();
+    this.scanner = new TokenScanner(this.web);
     this.released = 0;
     return shown;
   }

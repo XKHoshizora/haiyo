@@ -208,7 +208,58 @@ export interface ToolsConfig {
    * also within `AGENT_RUN_TIMEOUT_MS`); a reply that offers none is held to `AGENT_RUN_TIMEOUT_MS` alone, as before.
    */
   runTimeoutMs: number;
+  /** The web search (`search_web`, src/agents/tools/web/; `TOOLS.web`): off unless the operator turns it on. */
+  web: WebSearchConfig;
 }
+
+/**
+ * The web search's site settings (`TOOLS.web`; README "Agents and runs", Web search). Every field has a default, so a
+ * `TOOLS` without `web` parses as before and the search stays off. The money values are placeholders until the product
+ * owner decides who pays and how much.
+ */
+export interface WebSearchConfig {
+  /** The site switch: false (the default), no reply is offered the web search and nothing anywhere changes. */
+  enabled: boolean;
+  /** Which adapter calls the engine (src/agents/tools/web/engine.ts). */
+  engine: "deepseek_messages";
+  /** The engine's address (https) and the environment variable holding its key (missing: not offered; a start-up line says so). */
+  baseUrl: string;
+  apiKeyEnv: string;
+  model: string;
+  /**
+   * What one search costs the reply, fixed, in micro-points (no metering of the engine; the site carries any difference,
+   * bounded by `sitePerDay`). Default 770 350: the measured 11 000 input tokens of one engine call and its one output
+   * token at the site's existing unit price of a fast model (70 and 350 micro-points a token, README "Metering" Luna).
+   */
+  pointsMicroPerSearch: number;
+  /** Searches one reply may run; one owner's searches a site day; the whole site's a site day; engine calls at once in the service. */
+  perReply: number;
+  perOwnerPerDay: number;
+  sitePerDay: number;
+  maxAtOnce: number;
+  /** How long one engine call may take, in ms. */
+  timeoutMs: number;
+  /** The most results one search hands the model (the first ones). */
+  maxResults: number;
+}
+
+const webSearchSchema = z.strictObject({
+  enabled: z.boolean().default(false),
+  engine: z.enum(["deepseek_messages"]).default("deepseek_messages"),
+  baseUrl: z
+    .url()
+    .refine((u) => u.startsWith("https://"), "must be an https address")
+    .default("https://api.deepseek.com"),
+  apiKeyEnv: keyVariable.default("WEB_SEARCH_API_KEY"),
+  model: z.string().min(1).max(200).default("deepseek-flash"),
+  pointsMicroPerSearch: z.number().int().min(0).max(1_000_000_000_000).default(770_350),
+  perReply: positive(1, 20),
+  perOwnerPerDay: positive(20, 100_000),
+  sitePerDay: positive(2000, 10_000_000),
+  maxAtOnce: positive(4, 100),
+  timeoutMs: z.number().int().min(1000).max(120_000).default(15_000),
+  maxResults: positive(6, 20),
+});
 
 const toolsSchema = z.strictObject({
   enabled: z.boolean().default(true),
@@ -219,6 +270,7 @@ const toolsSchema = z.strictObject({
   timePerReply: positive(1, 1000),
   resultMaxWeight: positive(3000, 100_000),
   runTimeoutMs: z.number().int().min(1000).max(3_600_000).default(300_000),
+  web: webSearchSchema.prefault({} as never),
 });
 
 /** `TOOLS` unset: every default. */
