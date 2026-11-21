@@ -3212,11 +3212,11 @@ items with a text; each text cleaned (`cleanText`, every citation taken out — 
 another —, then `cleanText` again) and cut at `modelEntryMax`, an item nothing is left of dropped; an item whose `who` is
 neither null nor one of the call's keys — a key it was not given, a label, a name, a number — dropped and counted
 (`summary_who_unknown`); then, while the texts weigh more than the cap, whole items cut from the top section downwards,
-never part of one. Each key left is turned back into its account, and that is what is stored. A stored summary is shown
-(`shownSummary`, for a reply's passage, and the same for the old summary a job builds on) with each `who` the label of its
-account at that moment, as the roster labels it — the owner, by account only; the Agent itself `你` to a reply (`助手` to the
-job); someone whose account is gone `已离开的成员`; one who left the group by their label as ever — and every citation taken
-out of its texts (the row itself is not rewritten). A reply reads it once, however many times its context is planned
+never part of one. Each key left is turned back into its account, and that is what is stored. A reply is shown a stored
+summary (`shownSummary`) with each `who` the label of its account at that moment, as the roster labels it — the owner, by
+account only; the Agent itself `你`; someone who left the group, or a deleted Agent, by their label as ever; someone whose
+account is gone `已离开的成员` — and every citation taken out of its texts (the row itself is not rewritten); a job is given
+it under its call's keys, those accounts labelled the same way in `people` (the Agent itself `助手`). A reply reads it once, however many times its context is planned
 (`readPairSummary`, in `begin`'s first step under the conversation's row, which its job writes under: one read of the row
 and, when an item names someone, one indexed read of the accounts it names; nothing of the conversation's history). An
 answer with no item is no summary, first or not, nor is one that is no JSON object: nothing is stored and the messages are
