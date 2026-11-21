@@ -27,7 +27,7 @@ const FAST = { source: "site", id: "fast" } as const;
 const RANDOM = "6a0d4c2e-1b3f-4a5e-9c7d-8e9f0a1b2c3d";
 const CANARY = "WHISPER-zq9 只给主人看的悄悄话";
 /** Keys only a whisper's owner ever receives (also in agents-co-members.test.ts and proactive-decide.test.ts). */
-const WHISPER_KEYS = ["whisper", "whispers", "afterSeq", "lastTellFailed"];
+const WHISPER_KEYS = ["whisper", "whispers", "afterSeq", "lastTellFailed", "openUntil", "retryableUntil"];
 
 let txn = 0;
 const say = async (who: Actor, conv: string, text: string): Promise<number> => {

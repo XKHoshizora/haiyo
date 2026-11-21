@@ -6,9 +6,9 @@
 import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { A1, AG1, ANN, BO, G1, ME_ID, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, at, deferred, group, range, syncOf, wire } from "./fixtures.js";
-import { click, elapse, flush, installBrowser, openApp, push } from "./harness.jsx";
+import { NOW, click, elapse, flush, installBrowser, openApp, push } from "./harness.jsx";
 import { WHISPER_RETRY_MS } from "../src/data/actions.js";
 import { applyCatchup, applyGone, applySync, applyWhisper, initial } from "../src/data/model.js";
 import { placeWhispers } from "../src/data/viewmodel.js";
@@ -564,6 +564,58 @@ describe("the held whispers (model.js)", () => {
     expect(ids(placeWhispers([m(4), m(5)], [w("b", 4), w("c", 5)], { complete: true, toEnd: true, bubble: "m5" }))).toEqual(["m4", "w:b", "bubble", "w:c"]);
     // Once it has finished, the message is where the bubble was: nothing moved.
     expect(ids(placeWhispers([m(4), m(5)], [w("b", 4), w("c", 5)], { complete: true, toEnd: true }))).toEqual(["m4", "w:b", "m5", "w:c"]);
+  });
+});
+
+describe("a deadline the service sent passes on screen without a frame (fix round 3)", () => {
+  const IN_A_MINUTE = new Date(NOW + 60_000).toISOString();
+  const failedTold = (fields = {}) => ({ type: "run", conversationId: G1, agentId: AG1, run: { id: "r-told", status: "failed", error: "provider_unavailable", retryable: true, ...fields } });
+  const retryButton = () => screen.queryByRole("button", { name: "重试" });
+  const wake = () => act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+  it("a failed told reply's 重试 is offered until `retryableUntil`, then gone on its own — no frame came", async () => {
+    const { transport } = await openGroup();
+    await push(transport, failedTold({ retryableUntil: IN_A_MINUTE }));
+    expect(retryButton()).toBeTruthy();
+    const frames = transport.log.length;
+    await elapse(59_000);
+    expect(retryButton()).toBeTruthy();
+    await elapse(1_500);
+    expect(retryButton()).toBeNull();
+    expect(transport.log.length).toBe(frames);
+  });
+
+  it("a tab woken after the deadline (its timer never ran) is right at once", async () => {
+    const { transport } = await openGroup();
+    await push(transport, failedTold({ retryableUntil: IN_A_MINUTE }));
+    expect(retryButton()).toBeTruthy();
+    vi.setSystemTime(NOW + 10 * 60_000);
+    await wake();
+    expect(retryButton()).toBeNull();
+  });
+
+  it("a failed reply with no deadline keeps 重试 (only the service's `retryableUntil` ends it)", async () => {
+    const { transport } = await openGroup();
+    await push(transport, failedTold());
+    await elapse(24 * 3_600_000);
+    expect(retryButton()).toBeTruthy();
+  });
+
+  it("an open found_elsewhere bubble reads 已过期 at its `openUntil` — the dot goes with it — without a frame; and a woken tab is right at once", async () => {
+    const { transport } = await openGroup({ whispers: [found("w1", 2, { openUntil: IN_A_MINUTE }), found("w2", 3, { openUntil: new Date(NOW + 120_000).toISOString() })] });
+    expect(inWhisper("w1").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+    expect(within(listRow("周末小组")).getByLabelText(DOT)).toBeTruthy();
+    const frames = transport.log.length;
+    await elapse(61_000);
+    expect(whisperLi("w1").textContent).toBe("已过期");
+    expect(inWhisper("w2").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+    expect(within(listRow("周末小组")).getByLabelText(DOT)).toBeTruthy();
+    // Asleep past the second one's deadline: on waking it is right at once.
+    vi.setSystemTime(NOW + 10 * 60_000);
+    await wake();
+    expect(whisperLi("w2").textContent).toBe("已过期");
+    expect(within(listRow("周末小组")).queryByLabelText(DOT)).toBeNull();
+    expect(transport.log.length).toBe(frames);
   });
 });
 

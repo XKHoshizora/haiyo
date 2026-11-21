@@ -420,11 +420,11 @@ const ENDED_IN_GROUP = new Set(["halted", "agent_removed"]);
  * - `status`: my Agent's reply failed, was halted, or its Agent was taken out — the status line, with `run`;
  * - `unavailable`: someone else's Agent could not reply (no reason is known, nor shown).
  */
-function groupRunRow(agentId, slot) {
+function groupRunRow(agentId, slot, offersAt) {
   // A reply being written that runs a tool now: what kind of thing it looks at (its status line); no key otherwise.
   const activity = slot.activity ? { activity: slot.activity } : {};
   if ("run" in slot) {
-    const run = slot.run;
+    const run = offerAsOf(slot.run, offersAt);
     if (!run) return null;
     if (runActive(run.status)) return slot.posted || slot.unknown ? null : { agentId, mine: true, kind: "replying", run, ...activity };
     if (run.status === "failed" || (run.status === "cancelled" && ENDED_IN_GROUP.has(run.error))) return { agentId, mine: true, kind: "status", run };
@@ -435,12 +435,37 @@ function groupRunRow(agentId, slot) {
   return null;
 }
 
+// ───────── moments the service sent, kept by the view (fix round 3)
+//
+// An offer the service will refuse from a known moment on ends on screen at that moment, with no frame: a failed told
+// reply's 重试 at its `retryableUntil`, an open found_elsewhere whisper (its buttons, its dot) at its `openUntil` (both:
+// the whisper's day, the same rule the service keeps). `toView` judges them as of `offersAt` (the wall clock, as the
+// service's moments are; `now`, by default: the clock its times are written with); the store (store.jsx) reads it again
+// at the nearest such moment ahead (`deadlinesOf`: one timer) and whenever it renders or the tab wakes, so a tab that
+// slept past one is right at once. The service's own answer to a press in a race stays the word (409).
+
+/** Whether the moment `iso` (if any) has come by `now`. */
+const hasCome = (iso, now) => typeof iso === "string" && Date.parse(iso) <= now;
+/** A run as of `now`: past its `retryableUntil`, no longer offered 重试. */
+const offerAsOf = (run, now) => (run && run.retryable && hasCome(run.retryableUntil, now) ? { ...run, retryable: false } : run);
+/** A whisper as of `now`: an open one past its `openUntil` reads expired (its buttons and its dot go). */
+const whisperAsOf = (w, now) => (w.status === "open" && hasCome(w.openUntil, now) ? { ...w, status: "expired" } : w);
+
+/** Every such moment the held model knows of, as ms (offers still made), for the store's one timer. */
+export function deadlinesOf(model) {
+  const out = [];
+  for (const byId of Object.values(model.whispers ?? {})) for (const w of Object.values(byId)) if (w.status === "open" && w.openUntil) out.push(Date.parse(w.openUntil));
+  const runs = [...Object.values(model.runs ?? {}), ...Object.values(model.groupRuns ?? {}).flatMap((slots) => Object.values(slots).map((slot) => slot?.run))];
+  for (const run of runs) if (run?.retryable && run.retryableUntil) out.push(Date.parse(run.retryableUntil));
+  return out.filter((ms) => Number.isFinite(ms));
+}
+
 /** A group's rows, one per Agent with something to show, in the group's member order (then by id). */
-function groupRunRows(conv, slots) {
+function groupRunRows(conv, slots, offersAt) {
   const at = new Map(conv.members.map((m, i) => [m.id, i]));
   const place = (id) => at.get(id) ?? Number.MAX_SAFE_INTEGER;
   return Object.entries(slots ?? {})
-    .map(([agentId, slot]) => groupRunRow(agentId, slot))
+    .map(([agentId, slot]) => groupRunRow(agentId, slot, offersAt))
     .filter(Boolean)
     .sort((a, b) => place(a.agentId) - place(b.agentId) || (a.agentId < b.agentId ? -1 : 1));
 }
@@ -646,7 +671,7 @@ function usageView(u) {
  * @returns {{people, agents, convs, order, relations, blocks, drafts, account, loaded, providers, usage, siteModels,
  *   providerDefaults, proactiveAvailable, avatarVersions}} — merged by the store with the UI state (nav, toast) and `connection`.
  */
-export function toView(model, { now = Date.now() } = {}) {
+export function toView(model, { now = Date.now(), offersAt = now } = {}) {
   const meId = model.me?.id ?? null;
   const alias = (id) => (id === null || id === undefined ? null : id === meId ? ME : id);
   const social = model.social;
@@ -748,12 +773,15 @@ export function toView(model, { now = Date.now() } = {}) {
     // The reply in progress: its run (none while its state is unknown), and its streamed text as one bubble while it
     // runs in order with the pushes and its message has not come (never both: the stored message replaces the bubble).
     const heldRun = model.runs?.[conv.id] ?? null;
-    const run = heldRun && !heldRun.unknown ? heldRun : null;
+    const run = heldRun && !heldRun.unknown ? offerAsOf(heldRun, offersAt) : null;
     const streamed = run && run.status === "running" && !run.posted && !run.joined ? model.streams?.[run.id] : null;
     // A group: each Agent's reply in progress or failed (never streamed), and whether its Agents are talking.
-    const agentRuns = conv.type === "group" ? groupRunRows(conv, model.groupRuns?.[conv.id]) : [];
-    // My whispers here, where they sit (`placeWhispers` interleaves them with the messages shown).
-    const whispers = Object.values(model.whispers?.[conv.id] ?? {}).sort(byPlace).map((w) => ({ ...w, agentId: alias(w.agentId) }));
+    const agentRuns = conv.type === "group" ? groupRunRows(conv, model.groupRuns?.[conv.id], offersAt) : [];
+    // My whispers here, where they sit (`placeWhispers` interleaves them with the messages shown); an open one past its
+    // `openUntil` reads expired (`whisperAsOf`).
+    const whispers = Object.values(model.whispers?.[conv.id] ?? {})
+      .sort(byPlace)
+      .map((w) => ({ ...whisperAsOf(w, offersAt), agentId: alias(w.agentId) }));
     convs[conv.id] = {
       id: conv.id,
       type: direct ? "human" : agentChat ? "agent" : "group",

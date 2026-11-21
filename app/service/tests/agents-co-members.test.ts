@@ -122,6 +122,9 @@ const HIDDEN_KEYS = [
   // A whisper's revision and whether its last tell failed (Redesign D): its owner's only, as every whisper field.
   "revision",
   "lastTellFailed",
+  // When a found_elsewhere whisper stops reading open, and its failed told reply stops being offered 重试 (fix round 3).
+  "openUntil",
+  "retryableUntil",
 ];
 const HUMAN_PRINCIPAL_KEYS = ["avatarVersion", "displayName", "handle", "id", "kind"];
 

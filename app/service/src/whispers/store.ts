@@ -146,8 +146,14 @@ function hours(ttlHours: number): string {
   if (!Number.isSafeInteger(ttlHours) || ttlHours < 1) throw new Error("whispers: elsewhereTtlHours must be a whole number of hours");
   return String(ttlHours);
 }
-/** SQL: `found_elsewhere` whisper `w` is a day old (`ttlHours`): it reads expired from then, before the sweep stores it so. */
-const agedSql = (w: string, ttlHours: number): string => `(${w}.created_at <= now() - ${hours(ttlHours)} * interval '1 hour')`;
+/**
+ * SQL: the moment `found_elsewhere` whisper `w` is a day old (`ttlHours` after it was made) — the one definition of it: it
+ * reads expired from then (`agedSql`), and its owner's wire says when (`openUntil`, `retryableUntil`: fix round 3), so her
+ * screen stops offering it at that moment on its own, without waiting for the sweep's push.
+ */
+const endsSql = (w: string, ttlHours: number): string => `(${w}.created_at + ${hours(ttlHours)} * interval '1 hour')`;
+/** SQL: `found_elsewhere` whisper `w` is a day old (`endsSql` has come): it reads expired from then, before the sweep stores it so. */
+const agedSql = (w: string, ttlHours: number): string => `(${endsSql(w, ttlHours)} <= now())`;
 /**
  * SQL, the FROM items of THE rule for whether a hit can be read (one definition, for every predicate here and the hits'
  * own read, `readableHits`): each of whisper `w`'s references (`detail.hits`: `{conversationId, seq, at}`, agents/tools/
@@ -189,8 +195,10 @@ export interface TellState {
   told: boolean;
   /** It is `elsewhereTtlHours` old: it reads expired unless told or telling. */
   aged: boolean;
+  /** The moment it is that old (`endsSql`); null only in `NO_TELL`. */
+  ends: Date | null;
 }
-export const NO_TELL: Readonly<TellState> = Object.freeze({ runs: 0, telling: false, told: false, aged: false });
+export const NO_TELL: Readonly<TellState> = Object.freeze({ runs: 0, telling: false, told: false, aged: false, ends: null });
 
 /** The told replies and the age of each of `ids` (their owner's runs only), as they are now, by whisper id: one statement. */
 export async function tellStates(q: Queryable, ids: readonly string[], ttlHours: number): Promise<Map<string, TellState>> {
@@ -199,13 +207,13 @@ export async function tellStates(q: Queryable, ids: readonly string[], ttlHours:
   const { rows } = await q.query<{ id: string } & TellState>(
     `select w.id, count(r.id)::int as runs, coalesce(bool_or(r.status in ('queued', 'running')), false) as telling,
             coalesce(bool_or(exists (select 1 from messages m where m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text)), false) as told,
-            ${agedSql("w", ttlHours)} as aged
+            ${agedSql("w", ttlHours)} as aged, ${endsSql("w", ttlHours)} as ends
        from whispers w left join agent_runs r on r.whisper_id = w.id and r.owner_id = w.owner_id
       where w.id = any($1::uuid[])
       group by w.id`,
     [ids],
   );
-  for (const r of rows) out.set(r.id, { runs: r.runs, telling: r.telling, told: r.told, aged: r.aged });
+  for (const r of rows) out.set(r.id, { runs: r.runs, telling: r.telling, told: r.told, aged: r.aged, ends: r.ends });
   return out;
 }
 
@@ -297,20 +305,31 @@ export async function mayTell(
   return rows[0] ?? { may: false, telling: false, told: false };
 }
 
+/** Whether a told reply may tell its whisper again (`tellableRuns`), and until when at the latest (its whisper's `endsSql`). */
+export interface Tellable {
+  may: boolean;
+  /** While it may: the moment its whisper is a day old, when that stops (other answers stop it sooner, and are pushed). */
+  until: Date | null;
+}
+
 /**
  * Of the told replies among `runIds` (`agent_runs.whisper_id` set; any other is left out), whether THE rule (`mayTell`)
  * lets each tell its whisper again — what decides whether a failed one is offered 重试 (agents/runs.ts `toWireRun`'s
- * `retryable`, its owner's wire only): not once its whisper is declined, expired, a day old or told, or gone. One statement.
+ * `retryable`, its owner's wire only): not once its whisper is declined, expired, a day old or told, or gone — and while it
+ * may, until when (`until`, its whisper's day: the moment the rule itself turns, fix round 3). One statement.
  */
-export async function tellableRuns(q: Queryable, runIds: readonly string[], ttlHours: number): Promise<Map<string, boolean>> {
-  const out = new Map<string, boolean>();
+export async function tellableRuns(q: Queryable, runIds: readonly string[], ttlHours: number): Promise<Map<string, Tellable>> {
+  const out = new Map<string, Tellable>();
   if (runIds.length === 0) return out;
-  const { rows } = await q.query<{ id: string; may: boolean }>(
-    `select r.id, coalesce((select ${mayTellSql("w", ttlHours, "r.id")} from whispers w where w.id = r.whisper_id and w.owner_id = r.owner_id and w.kind = 'found_elsewhere'), false) as may
-       from agent_runs r where r.id = any($1::uuid[]) and r.whisper_id is not null`,
+  const { rows } = await q.query<{ id: string; may: boolean | null; until: Date | null }>(
+    `select r.id, t.may, t.until
+       from agent_runs r
+       left join lateral (select ${mayTellSql("w", ttlHours, "r.id")} as may, ${endsSql("w", ttlHours)} as until
+                            from whispers w where w.id = r.whisper_id and w.owner_id = r.owner_id and w.kind = 'found_elsewhere') t on true
+      where r.id = any($1::uuid[]) and r.whisper_id is not null`,
     [runIds],
   );
-  for (const r of rows) out.set(r.id, r.may);
+  for (const r of rows) out.set(r.id, { may: r.may === true, until: r.may === true ? r.until : null });
   return out;
 }
 

@@ -866,7 +866,7 @@ other current member learns only whether it is replying. Failures are never mess
 owner learns from the `run` push and from `GET /api/conversations/:id/run` (in a group, `GET …/runs`).
 
 **Run**: `{"id", "status": "queued" | "running" | "done" | "failed" | "stopped" | "cancelled", "error"?, "retryable",
-"resetsAt"?}`. `error`: for `failed` why (`provider_rejected`, `provider_unavailable`, `address_not_allowed`, `no_quota`,
+"retryableUntil"?, "resetsAt"?}`. `error`: for `failed` why (`provider_rejected`, `provider_unavailable`, `address_not_allowed`, `no_quota`,
 `context_too_small` — the model's context cannot hold your newest message, or 200 tokens of it, after the persona —,
 `thinking_exhausted` — the model used its whole output limit thinking and gave no answer; charged what the upstream
 reported; retry, or choose a lower reasoning level —, `model_gone` — the Agent's model is not there to call any more (someone else's call on it is recorded so at once, queuing nothing; your own call queues a reply that ends so as it begins)
@@ -889,7 +889,11 @@ such a person is dropped and the others are still answered; with none left nothi
 after `provider_rejected`, `address_not_allowed` and `context_too_small`, while the Agent's model is not there to call —
 `modelUsable` false (Agent): a `model_gone` failure is retryable again once it is, as read now by `GET …/run` and
 `GET …/runs` —, and for every run that did not fail; true
-after `rate_limited`, which a retry within the same minute meets again as 429). `resetsAt` (ISO instant): for
+after `rate_limited`, which a retry within the same minute meets again as 429). `retryableUntil` (ISO instant): for a
+told reply (`告诉他们`, Whispers) offered `retryable`, the moment that stops — its whisper is a day old then
+(`WHISPERS.elsewhereTtlHours` after it was made, the moment the service's own rule turns): stop offering 重试 at that
+moment yourself, without waiting for a push (the slot is pushed again without it within the sweep's interval; a retry that
+crosses it is refused 409 `stale_whisper`). Only ever on its owner's wire. `resetsAt` (ISO instant): for
 `no_quota` on a free-tier model, the next midnight in `SITE_TIMEZONE`, when the free allowance starts again.
 
 **In a group.** What an Agent's replies there show is decided per reader from its **latest run in the group during its
@@ -1435,8 +1439,11 @@ sent again.
 
 **WireWhisper**: `{"id", "conversationId", "agentId", "afterSeq": 42, "kind": "found_elsewhere" | "tools_off" | "memory" | "allowance",
 "text": "…", "actions": ["tell", "dismiss"], "status": "open" | "telling" | "told" | "accepted" | "declined" | "expired",
-"lastTellFailed"?: true, "createdAt", "revision": 0, "detail"?: …}`. `telling`, `told` and `lastTellFailed` are a
-`found_elsewhere` whisper's only (below); it is never `accepted`. `revision` orders two copies of one whisper: it is
+"lastTellFailed"?: true, "openUntil"?, "createdAt", "revision": 0, "detail"?: …}`. `telling`, `told`, `lastTellFailed`
+and `openUntil` are a `found_elsewhere` whisper's only (below); it is never `accepted`. `openUntil` (ISO instant), on an
+open one only: the moment it reads `expired` — a day after it was made (`WHISPERS.elsewhereTtlHours`), the moment the
+service's own rule turns —; show it expired from then yourself, its buttons gone, without waiting for the sweep's push
+(an answer that crosses it is refused 409 `stale_whisper`). `revision` orders two copies of one whisper: it is
 computed from the state the whisper is read in — never stored —, and is never lower for a later state; a client keeps the
 copy with the higher (a copy read before a change never undoes it; two with the same say the same). For a
 `found_elsewhere` whisper it is 8 for each told reply it has had, 4 more once the latest of them has ended, 2 more once one

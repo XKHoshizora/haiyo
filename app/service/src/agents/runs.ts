@@ -48,14 +48,20 @@ export const retryable = (r: Pick<RunRow, "status" | "error">, modelUsable = r.e
   r.status === "failed" && modelUsable && !NOT_RETRYABLE.has(r.error ?? "");
 
 /**
- * Each failed one of `rows` that is a told reply gets `tellable` (whispers/store.ts `tellableRuns`, THE rule), in place: so
- * its owner's wire offers 重试 only while its whisper may be told again. One statement; others are left as they are.
+ * Each failed one of `rows` that is a told reply gets `tellable` and `tellable_until` (whispers/store.ts `tellableRuns`,
+ * THE rule), in place: so its owner's wire offers 重试 only while its whisper may be told again, and says until when. One
+ * statement; others are left as they are.
  */
 export async function withTellable<R extends RunRow>(q: Queryable, rows: readonly R[], ttlHours: number): Promise<readonly R[]> {
   const failed = rows.filter((r) => r.status === "failed");
   if (failed.length === 0) return rows;
   const tellable = await tellableRuns(q, failed.map((r) => r.id), ttlHours);
-  for (const r of failed) if (tellable.has(r.id)) r.tellable = tellable.get(r.id)!;
+  for (const r of failed) {
+    const t = tellable.get(r.id);
+    if (!t) continue;
+    r.tellable = t.may;
+    r.tellable_until = t.until;
+  }
   return rows;
 }
 
@@ -84,6 +90,7 @@ export const wireRunSchema = z.object({
   status: z.enum(RUN_STATUSES),
   error: z.string().optional(),
   retryable: z.boolean(),
+  retryableUntil: z.string().optional(),
   resetsAt: z.string().optional(),
 });
 export type WireRun = z.infer<typeof wireRunSchema>;
@@ -99,6 +106,8 @@ export interface RunRow {
    * its owner is told of it failed (`withTellable`); false keeps it from being offered 重试. Absent: not asked (any other run).
    */
   tellable?: boolean | null;
+  /** With `tellable` true: the moment it stops (its whisper is a day old), for the wire's `retryableUntil`. */
+  tellable_until?: Date | null;
 }
 
 /** Columns of `agent_runs r` in the shape of `RunRow`. */
@@ -107,14 +116,18 @@ export const RUN_COLUMNS = "r.id, r.status, r.error, r.resets_at, r.dismissed_at
 /**
  * `retryable`: by its one rule (`retryable`, with the Agent's model as `modelUsable` says, where known), never for a run
  * that did not fail — nor for a told reply whose whisper may not be told again (`tellable` false: declined, expired, a day
- * old, told; its retry would be refused `stale_whisper`). `resetsAt` only for `no_quota` on a free-tier model.
+ * old, told; its retry would be refused `stale_whisper`); `retryableUntil`, for a told reply offered it, the moment that
+ * stops (its whisper is a day old: fix round 3), so its owner's screen stops offering it then on its own. `resetsAt` only
+ * for `no_quota` on a free-tier model.
  */
 export function toWireRun(r: RunRow, modelUsable?: boolean): WireRun {
+  const offered = retryable(r, modelUsable) && r.tellable !== false;
   return {
     id: r.id,
     status: r.status,
     ...(r.error === null ? {} : { error: r.error }),
-    retryable: retryable(r, modelUsable) && r.tellable !== false,
+    retryable: offered,
+    ...(offered && r.tellable === true && r.tellable_until ? { retryableUntil: r.tellable_until.toISOString() } : {}),
     ...(r.error === "no_quota" && r.resets_at ? { resetsAt: r.resets_at.toISOString() } : {}),
   };
 }

@@ -1266,6 +1266,66 @@ describe("fix round 2", () => {
   });
 });
 
+describe("fix round 3: the moment an offer ends, on its owner's wire", () => {
+  const HOURS = () => app.deps.config.whispers.elsewhereTtlHours * HOUR;
+  const madeAt = async (id: string) => (await db.query<{ ms: string }>("select floor(extract(epoch from created_at) * 1000)::bigint::text as ms from whispers where id = $1", [id])).rows[0]!.ms;
+  /** The whisper's own made time, to the millisecond, plus `WHISPERS.elsewhereTtlHours`: when the server's rule (`mayTell`) stops letting it be told. */
+  const endOf = async (id: string) => new Date(Number(await madeAt(id)) + HOURS()).toISOString();
+  const ownSlot = async (w: World) => (await api(app, w.owner, "GET", `/api/conversations/${w.g}/runs`)).json.runs.find((e: { agentId: string }) => e.agentId === w.agent.id)?.run;
+
+  it("a failed told reply's slot carries `retryableUntil` — its whisper's made time plus the day — to its owner alone; the server's own rule turns at that same moment", async () => {
+    const w = await world();
+    const [mia] = [await connect(app, w.mia)];
+    const ownerSocket = await connect(app, w.owner);
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [whisper] = await whispersOf(w.owner.id, w.g);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
+    gateway.fail("provider_unavailable", { status: 502 });
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const told = (await runsOf(w.agent.id, w.g)).at(-1)!;
+    const until = await endOf(whisper!.id);
+    // The owner's push of the failed run, and her read of the slot.
+    const pushed = await ownerSocket.next((e) => e.type === "run" && e.run?.id === told.id && e.run.status === "failed");
+    expect(pushed.run).toMatchObject({ retryable: true, retryableUntil: until });
+    expect(await ownSlot(w)).toMatchObject({ retryable: true, retryableUntil: until });
+    // Nobody else: not in a member's read of the group's replies, nor in any frame of hers.
+    await settled([mia], w.ned, w.g);
+    expect(JSON.stringify((await api(app, w.mia, "GET", `/api/conversations/${w.g}/runs`)).json)).not.toContain("retryableUntil");
+    expect(JSON.stringify(mia.events)).not.toContain("retryableUntil");
+    // The server's rule turns at that moment: a minute before it, a retry is taken; a minute after, refused.
+    await db.query("update whispers set created_at = now() - ($2::bigint - 60000) * interval '1 millisecond' where id = $1", [whisper!.id, HOURS()]);
+    expect((await ownSlot(w)).retryable).toBe(true);
+    await db.query("update whispers set created_at = now() - ($2::bigint + 60000) * interval '1 millisecond' where id = $1", [whisper!.id, HOURS()]);
+    const after = await ownSlot(w);
+    expect([after.retryable, "retryableUntil" in after]).toEqual([false, false]);
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).toEqual({ status: 409, json: { error: "stale_whisper" } });
+  });
+
+  it("an open found_elsewhere whisper carries `openUntil` — the same moment — to its owner alone (none while telling, told or ended); the server reads it expired from then", async () => {
+    const w = await world();
+    const mia = await connect(app, w.mia);
+    const ownerSocket = await connect(app, w.owner);
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [whisper] = await whispersOf(w.owner.id, w.g);
+    const until = await endOf(whisper!.id);
+    expect((await wireOf(w.owner, w.g, whisper!.id)) as unknown).toMatchObject({ status: "open", openUntil: until });
+    const push = await ownerSocket.next((e) => e.type === "whisper" && e.whisper.id === whisper!.id);
+    expect(push.whisper.openUntil).toBe(until);
+    // Telling: no offer to end.
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).json).not.toHaveProperty("openUntil");
+    await settled([mia], w.ned, w.g);
+    expect(JSON.stringify(mia.events)).not.toContain("openUntil");
+    expect(JSON.stringify((await api(app, w.mia, "GET", "/api/sync")).json)).not.toContain("openUntil");
+    // Past that moment (its told reply ended without posting meanwhile): expired, and nothing to end.
+    gateway.fail("provider_unavailable", { status: 502 });
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect((await wireOf(w.owner, w.g, whisper!.id)) as unknown).toMatchObject({ status: "open", openUntil: until });
+    await db.query("update whispers set created_at = now() - ($2::bigint + 60000) * interval '1 millisecond' where id = $1", [whisper!.id, HOURS()]);
+    const ended = (await wireOf(w.owner, w.g, whisper!.id))!;
+    expect([ended.status, "openUntil" in ended]).toEqual(["expired", false]);
+  });
+});
+
 describe("the service's own hook", () => {
   it("a reply on the app's worker whispers too (the toolbox the app builds carries the hook)", async () => {
     const w = await world();

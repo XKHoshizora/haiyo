@@ -35,6 +35,11 @@ export interface WireWhisper {
   status: WireStatus;
   /** A `found_elsewhere` one that is open again because its latest told reply ended without posting (present only then). */
   lastTellFailed?: true;
+  /**
+   * An open `found_elsewhere` one (present only then): the moment it reads expired, a day after it was made — so its owner's
+   * screen says so at that moment, without waiting for the sweep's push. Other answers end it sooner, and are pushed.
+   */
+  openUntil?: string;
   createdAt: string;
   /**
    * Which of two copies is the later: computed from the state it is read in, never stored (`revisionOf`), and never lower
@@ -54,6 +59,7 @@ export const wireWhisperSchema = z.object({
   actions: z.array(z.enum(WHISPER_ACTIONS)),
   status: z.enum(WIRE_STATUSES),
   lastTellFailed: z.literal(true).optional(),
+  openUntil: z.string().optional(),
   createdAt: z.string(),
   revision: z.number(),
   detail: z.unknown().optional(),
@@ -63,6 +69,8 @@ export const wireWhisperSchema = z.object({
 export interface FoundView {
   status: WireStatus;
   lastTellFailed: boolean;
+  /** While open: the moment it reads expired (whispers/store.ts `endsSql`, the moment its rule turns). */
+  openUntil: Date | null;
   revision: number;
   /** The hits, read now: given for an open or telling one only (nothing else shows them). */
   hits: ElsewhereHit[] | null;
@@ -73,12 +81,18 @@ export interface FoundView {
  * can read now (`readable`): told once a told reply of it posted (final); else what is stored when that is no longer open
  * (declined, expired: final); else telling while a told reply of it is queued or running; else expired when it is a day old
  * (`WHISPERS.elsewhereTtlHours`, before the sweep stores it so) or no hit is left to read; else open — `lastTellFailed`
- * when it has had a told reply (none posted, none under way: its latest ended without posting). Open is exactly what
- * whispers/store.ts `mayTell` lets a told reply begin from. Its revision rises with every step of that (`revisionOf`).
+ * when it has had a told reply (none posted, none under way: its latest ended without posting), and `openUntil` the
+ * moment it will be a day old. Open is exactly what whispers/store.ts `mayTell` lets a told reply begin from. Its revision
+ * rises with every step of that (`revisionOf`).
  */
 export function foundView(w: Pick<Whisper, "status">, tell: TellState, readable: number): Omit<FoundView, "hits"> {
   const status: WireStatus = tell.told ? "told" : w.status !== "open" ? w.status : tell.telling ? "telling" : tell.aged || readable === 0 ? "expired" : "open";
-  return { status, lastTellFailed: status === "open" && tell.runs > 0, revision: revisionOf(w, tell, status) };
+  return {
+    status,
+    lastTellFailed: status === "open" && tell.runs > 0,
+    openUntil: status === "open" ? tell.ends : null,
+    revision: revisionOf(w, tell, status),
+  };
 }
 
 /**
@@ -105,6 +119,7 @@ export function toWireWhisper(w: Whisper, found?: FoundView): WireWhisper {
       ...base,
       status: found.status,
       ...(found.lastTellFailed ? { lastTellFailed: true as const } : {}),
+      ...(found.openUntil ? { openUntil: found.openUntil.toISOString() } : {}),
       createdAt: w.createdAt.toISOString(),
       revision: found.revision,
       ...(found.hits === null ? {} : { detail: { hits: found.hits } }),
