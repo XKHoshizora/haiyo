@@ -42,6 +42,7 @@ export function AvatarEditor({
   const urlRef = useRef(null);
   const inputRef = useRef(null);
   const browseRef = useRef(null);
+  const [refocus, setRefocus] = useState(false);
   const holding = typeof onPick === "function";
 
   const discard = () => {
@@ -55,6 +56,14 @@ export function AvatarEditor({
     },
     [],
   );
+
+  // Focus goes to the first button only when it is enabled again (it is disabled while the removal was busy).
+  useEffect(() => {
+    if (refocus && busy === null) {
+      browseRef.current?.focus();
+      setRefocus(false);
+    }
+  }, [refocus, busy]);
 
   const choose = (event) => {
     const file = event.target.files?.[0];
@@ -91,7 +100,7 @@ export function AvatarEditor({
     const res = await run("remove", onRemove, removeErrorText ?? (() => "没有移除成功，请再试一次。"));
     if (res.ok) {
       dispatch({ type: "toast", text: removedText });
-      browseRef.current?.focus(); // the button that was pressed is gone
+      setRefocus(true); // the button that was pressed is gone: the first one takes the focus once nothing is busy
     }
   };
   const browse = () => inputRef.current?.click();

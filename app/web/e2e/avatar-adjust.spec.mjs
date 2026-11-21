@@ -223,6 +223,8 @@ test("a group's avatar: the creator sets and removes it, a member sees it and ha
   // The creator removes it: the member's list is back to the composite, and the service answers 404 to everyone.
   await profile.getByRole("button", { name: "移除头像" }).click();
   await expect(ann.page.getByRole("status").filter({ hasText: "群头像已移除" })).toBeVisible();
+  // The pressed button is gone and the first one was disabled while it worked: focus must still end up on 更换头像.
+  await expect(profile.getByRole("button", { name: "更换头像", exact: true })).toBeFocused();
   await expect(listPicture(bo.page)).toHaveCount(0);
   await expect(listRow(bo.page, title).first().locator(".group-avatar")).toBeVisible();
   expect((await avatarOf(bo)).status()).toBe(404);
