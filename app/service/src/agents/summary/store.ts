@@ -255,29 +255,50 @@ export async function forgetSummaries(q: Queryable, conversationId: string, prin
 
 /**
  * A pair's attempt state (migration 059; README "The rolling summary"): what decides when its summary job may call
- * (job.ts `shouldCall`) and what after a call that wrote nothing. `attemptUpto`: the end of its last attempt's window
- * (null: none yet); `failures`: its calls in a row that wrote nothing; `notBefore`: when it may be asked again, in ms
- * (null: at once) — the minimum interval after a summary is written, the backoff after a call that wrote nothing, a
- * claim's lapse while a call is under way; `windowMessages`: the most messages its next window takes (null: the most a
- * job reads), after a full window that could not be summarised whole. Forgotten with the summary (`forgetSummaries`).
+ * (job.ts `shouldCall`) and what after a call that wrote nothing (job.ts `afterFailure`, `afterWrite`). `failedUpto`: how
+ * far the window that failed reaches while its failure streak runs (null: none); `failures`: its calls in a row that wrote
+ * nothing; `floorFailures`: those made at the smallest window; `emptyAnswer`: the last of them was a long window answered
+ * with nothing; `notBefore`: when it may be asked again, in ms (null: at once) — the minimum interval after a write, the
+ * backoff after a call that wrote nothing, a claim's lapse while a call is under way; `windowMessages`: the most messages
+ * its next window takes (null: the most a job reads); `skippedMessages`: how many messages were ever set aside for the
+ * pair. Forgotten with the summary (`forgetSummaries`).
  */
 export interface AttemptState {
-  attemptUpto: number | null;
+  failedUpto: number | null;
   failures: number;
+  floorFailures: number;
+  emptyAnswer: boolean;
   notBefore: number | null;
   windowMessages: number | null;
+  skippedMessages: number;
 }
 
 /** The pair's attempt state, or null (never asked, or forgotten since). A plain read of one row. */
 export async function readAttempt(q: Queryable, conversationId: string, agentId: string): Promise<AttemptState | null> {
-  const { rows } = await q.query<{ upto: string | null; failures: number; not_before: Date | null; window_messages: number | null }>(
-    `select attempt_upto::text as upto, failures, not_before, window_messages
+  const { rows } = await q.query<{
+    upto: string | null;
+    failures: number;
+    floor_failures: number;
+    empty_answer: boolean;
+    not_before: Date | null;
+    window_messages: number | null;
+    skipped_messages: number;
+  }>(
+    `select failed_upto::text as upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages
        from conversation_summary_attempts where conversation_id = $1 and agent_id = $2`,
     [conversationId, agentId],
   );
   const r = rows[0];
   return r
-    ? { attemptUpto: r.upto === null ? null : Number(r.upto), failures: r.failures, notBefore: r.not_before === null ? null : r.not_before.getTime(), windowMessages: r.window_messages }
+    ? {
+        failedUpto: r.upto === null ? null : Number(r.upto),
+        failures: r.failures,
+        floorFailures: r.floor_failures,
+        emptyAnswer: r.empty_answer,
+        notBefore: r.not_before === null ? null : r.not_before.getTime(),
+        windowMessages: r.window_messages,
+        skippedMessages: r.skipped_messages,
+      }
     : null;
 }
 
@@ -287,11 +308,14 @@ const instant = (ms: number | null): string | null => (ms === null ? null : new 
 /** Stores the pair's attempt state as `s` (inserted, or replacing the one there), in the caller's transaction (job.ts: under the pair's lock). */
 export async function writeAttempt(q: Queryable, conversationId: string, agentId: string, s: AttemptState): Promise<void> {
   await q.query(
-    `insert into conversation_summary_attempts (conversation_id, agent_id, attempt_upto, failures, not_before, window_messages)
-     values ($1, $2, $3, $4, $5::timestamptz, $6)
+    `insert into conversation_summary_attempts
+            (conversation_id, agent_id, failed_upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages)
+     values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9)
      on conflict (conversation_id, agent_id) do update
-       set attempt_upto = excluded.attempt_upto, failures = excluded.failures, not_before = excluded.not_before, window_messages = excluded.window_messages`,
-    [conversationId, agentId, s.attemptUpto, s.failures, instant(s.notBefore), s.windowMessages],
+       set failed_upto = excluded.failed_upto, failures = excluded.failures, floor_failures = excluded.floor_failures,
+           empty_answer = excluded.empty_answer, not_before = excluded.not_before, window_messages = excluded.window_messages,
+           skipped_messages = excluded.skipped_messages`,
+    [conversationId, agentId, s.failedUpto, s.failures, s.floorFailures, s.emptyAnswer, instant(s.notBefore), s.windowMessages, s.skippedMessages],
   );
 }
 
@@ -310,8 +334,21 @@ export async function settleAttempt(q: Queryable, conversationId: string, agentI
     return;
   }
   await q.query(
-    `update conversation_summary_attempts set attempt_upto = $4, failures = $5, not_before = $6::timestamptz, window_messages = $7
+    `update conversation_summary_attempts
+        set failed_upto = $4, failures = $5, floor_failures = $6, empty_answer = $7, not_before = $8::timestamptz, window_messages = $9,
+            skipped_messages = $10
       where conversation_id = $1 and agent_id = $2 and not_before = $3::timestamptz`,
-    [conversationId, agentId, instant(lease.notBefore), next.attemptUpto, next.failures, instant(next.notBefore), next.windowMessages],
+    [
+      conversationId,
+      agentId,
+      instant(lease.notBefore),
+      next.failedUpto,
+      next.failures,
+      next.floorFailures,
+      next.emptyAnswer,
+      instant(next.notBefore),
+      next.windowMessages,
+      next.skippedMessages,
+    ],
   );
 }

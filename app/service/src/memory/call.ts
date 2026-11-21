@@ -4,7 +4,7 @@ import type { Db, Queryable } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { memoryLeft } from "../metering/admit.ts";
 import { ownerCall } from "../metering/owner-call.ts";
-import type { ModelGateway } from "../models/gateway.ts";
+import type { ModelErrorCode, ModelGateway } from "../models/gateway.ts";
 import { resolveModel, type Resolved } from "../models/resolve.ts";
 import { KeyUnreadableError } from "../providers/crypto.ts";
 import { count } from "./stats.ts";
@@ -189,6 +189,8 @@ export interface MemoryCallReport {
    * configured, a choice not allowed, a saved key that cannot be opened); `too_big` — the input does not fit the model's context.
    */
   unstartable?: "no_model" | "too_big";
+  /** Set when the call was started and failed: how (`provider_rejected` for a key the provider refused, `address_not_allowed`, …). */
+  failure?: ModelErrorCode;
 }
 
 /**
@@ -232,11 +234,13 @@ async function callOnce(deps: MemoryCallDeps, ownerId: string, input: MemoryCall
     if (err instanceof AppError && err.status === 429 && report) report.capped = true;
     if (err instanceof AppError && (err.status === 502 || err.status === 400) && report) report.unstartable = err.code === "context_too_small" ? "too_big" : "no_model";
     if (!(err instanceof AppError)) log.error({ err, ownerId }, "memory call: could not be started");
-    else if (err.status === 400) log.warn({ ownerId }, "memory call: the input does not fit the model's context; skipped");
+    else if (err.code === "context_too_small") log.warn({ ownerId }, "memory call: the input does not fit the model's context; skipped");
+    else if (err.status === 400) log.warn({ ownerId, code: err.code }, "memory call: the memory model cannot be used for this owner; skipped");
     return null;
   }
   if (report) report.started = true;
   if (outcome.kind !== "ended") return null;
+  if (report && outcome.end.status === "failed") report.failure = outcome.end.error;
   if (report && outcome.answered) report.answered = true;
   if (outcome.end.status !== "done" || outcome.truncated) return null;
   return outcome.answer;

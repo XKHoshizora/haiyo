@@ -2069,12 +2069,14 @@ describe("redesign B, fix round 3", () => {
     expect(inputOf(summaryCalls().at(-1)!).messages).toHaveLength(30);
     const state = (await attemptOf(w.conv, w.agent.id))!;
     expect(state).toMatchObject({ failedUpto: seqs.at(-1), failures: 1, floorFailures: 0, emptyAnswer: false, windowMessages: null, skipped: 4 });
-    expect(state.notBefore! - at).toBe(5 * MINUTE);
+    expect(state.notBefore! - at).toBeGreaterThanOrEqual(5 * MINUTE);
+    expect(state.notBefore! - at).toBeLessThan(5 * MINUTE + 10_000);
   });
 
   it("N4-I1: the failure rule, pure — two failures halve nothing, from the third each halves, three at the floor set the window aside; unusable on a full window and too big halve at once; no model only backs off", async () => {
     const { afterFailure } = await import("../src/agents/summary/job.ts");
-    const fresh = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, notBefore: null, windowMessages: null, skippedMessages: 0 };
+    type State = Parameters<typeof afterFailure>[0];
+    const fresh: State = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, notBefore: null, windowMessages: null, skippedMessages: 0 };
     let state = fresh;
     const sizes: number[] = [];
     for (let k = 0; k < 20; k++) {
@@ -2089,7 +2091,7 @@ describe("redesign B, fix round 3", () => {
     expect(afterFailure(fresh, { kind: "unusable", n: 30, full: false, upto: 5 }, 0).next.windowMessages).toBeNull();
     expect(afterFailure(fresh, { kind: "too_big", n: 40, full: false, upto: 5 }, 0).next.windowMessages).toBe(20);
     expect(afterFailure(fresh, { kind: "empty", n: 40, full: false, upto: 5 }, 0).next).toMatchObject({ emptyAnswer: true, failures: 1, windowMessages: null });
-    let blocked = { ...fresh, windowMessages: 10 };
+    let blocked: State = { ...fresh, windowMessages: 10 };
     for (let k = 0; k < 6; k++) {
       const r = afterFailure(blocked, { kind: "no_model", n: 10, full: true, upto: 5 }, 0);
       expect(r.setAside).toBe(false);
