@@ -130,6 +130,21 @@ async function askInGroup(w: World, hook: ElsewhereHook, asker: Actor = w.mia, d
   return { output: outputs(gateway.calls.at(-1)!)[0], asked };
 }
 
+/** A whisper whose told reply failed (its question's search `input`): the whisper, and the failed told run — the Agent's latest in G. */
+async function failedTold(input?: Record<string, unknown>) {
+  const w = await world();
+  await askInGroup(w, createElsewhere(elsewhereDeps()), w.mia, undefined, input);
+  const [whisper] = await whispersOf(w.owner.id, w.g);
+  expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
+  gateway.fail("provider_unavailable", { status: 502 });
+  expect(await app.agentWorker.runOnce()).toBe(true);
+  const told = (await runsOf(w.agent.id, w.g)).at(-1)!;
+  return { w, whisper: whisper!, told };
+}
+/** The Agent's slot in G as `who` reads it (`GET …/runs`); its owner's own run there. */
+const slotOf = async (w: World, who: Actor) => (await api(app, who, "GET", `/api/conversations/${w.g}/runs`)).json;
+const ownSlot = async (w: World) => (await slotOf(w, w.owner)).runs.find((e: { agentId: string }) => e.agentId === w.agent.id)?.run;
+
 describe("a search in a group that finds nothing there", () => {
   it("found elsewhere: one whisper to the owner, keeping references to what it found (never its text or names); she reads the hits; the model is told the plain not-found, and nobody else is sent or shown anything", async () => {
     const w = await world();
@@ -1221,20 +1236,6 @@ describe("fix round 2", () => {
     expect(frame.whisper.detail.hits.map((h: WireHit) => h.where)).not.toContain("丙群");
   });
 
-  /** A whisper whose told reply failed: the Agent's slot in G, as its owner reads it (`GET …/runs`). */
-  async function failedTold() {
-    const w = await world();
-    await askInGroup(w, createElsewhere(elsewhereDeps()));
-    const [whisper] = await whispersOf(w.owner.id, w.g);
-    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
-    gateway.fail("provider_unavailable", { status: 502 });
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    const told = (await runsOf(w.agent.id, w.g)).at(-1)!;
-    return { w, whisper: whisper!, told };
-  }
-  const slotOf = async (w: World, who: Actor) => (await api(app, who, "GET", `/api/conversations/${w.g}/runs`)).json;
-  const ownSlot = async (w: World) => (await slotOf(w, w.owner)).runs.find((e: { agentId: string }) => e.agentId === w.agent.id)?.run;
-
   it("M-10: a failed told reply is offered 重试 (retryable) only while its whisper reads open: after 不用 its owner is pushed the slot without it, and reads it so; another member reads byte for byte what they read before", async () => {
     const { w, whisper, told } = await failedTold();
     const socket = await connect(app, w.owner);
@@ -1271,7 +1272,6 @@ describe("fix round 3: the moment an offer ends, on its owner's wire", () => {
   const madeAt = async (id: string) => (await db.query<{ ms: string }>("select floor(extract(epoch from created_at) * 1000)::bigint::text as ms from whispers where id = $1", [id])).rows[0]!.ms;
   /** The whisper's own made time, to the millisecond, plus `WHISPERS.elsewhereTtlHours`: when the server's rule (`mayTell`) stops letting it be told. */
   const endOf = async (id: string) => new Date(Number(await madeAt(id)) + HOURS()).toISOString();
-  const ownSlot = async (w: World) => (await api(app, w.owner, "GET", `/api/conversations/${w.g}/runs`)).json.runs.find((e: { agentId: string }) => e.agentId === w.agent.id)?.run;
 
   it("a failed told reply's slot carries `retryableUntil` — its whisper's made time plus the day — to its owner alone; the server's own rule turns at that same moment", async () => {
     const w = await world();
@@ -1323,6 +1323,83 @@ describe("fix round 3: the moment an offer ends, on its owner's wire", () => {
     await db.query("update whispers set created_at = now() - ($2::bigint + 60000) * interval '1 millisecond' where id = $1", [whisper!.id, HOURS()]);
     const ended = (await wireOf(w.owner, w.g, whisper!.id))!;
     expect([ended.status, "openUntil" in ended]).toEqual(["expired", false]);
+  });
+});
+
+describe("fix round 4", () => {
+  /**
+   * Each task the hub delivers on `conversationId`'s queue, with the statements it sends as it starts — before it first
+   * waits, which is where it reads what it needs (`runAudience`, the members, the messages) — and every statement with its
+   * parameters meanwhile; `stop` puts both back.
+   */
+  function onQueue(conversationId: string) {
+    const hub = app.realtime as unknown as { run(id: string, task: object): Promise<void> };
+    const real = app.deps.db.query;
+    const tasks: { task: string; sql: string[] }[] = [];
+    const sent: { text: string; params: unknown }[] = [];
+    let current: string[] | null = null;
+    app.deps.db.query = ((text: unknown, params?: unknown) => {
+      sent.push({ text: String(text), params });
+      current?.push(String(text));
+      return (real as (...a: unknown[]) => unknown).call(app.deps.db, text, params);
+    }) as typeof real;
+    const run = Object.getPrototypeOf(hub).run as typeof hub.run;
+    hub.run = function (id, task) {
+      if (id !== conversationId.toLowerCase()) return run.call(this, id, task);
+      const sql: string[] = [];
+      tasks.push({ task: JSON.stringify(task), sql });
+      current = sql;
+      try {
+        return run.call(this, id, task);
+      } finally {
+        current = null;
+      }
+    };
+    return {
+      tasks,
+      sent,
+      stop: () => {
+        delete (hub as { run?: unknown }).run;
+        app.deps.db.query = real;
+      },
+    };
+  }
+  /** `runAudience`'s one statement (agents/runs.ts): who is told what of a run, read for its delivery. */
+  const AUDIENCE = /select c\.type, a\.agent_id, a\.owner_id, a\.whisper_id/;
+
+  it("M-11: the slot pushed to its owner after 不用 reads nothing on the group's queue — a member's message sent at that moment is fanned out with no statement of it before", async () => {
+    const { w, whisper, told } = await failedTold();
+    const [owner, ned] = [await connect(app, w.owner), await connect(app, w.ned)];
+    const from = owner.events.length;
+    const queue = onQueue(w.g);
+    try {
+      const [declined, seq] = await Promise.all([api(app, w.owner, "POST", `/api/whispers/${whisper.id}/decline`), say(w.mia, w.g, "就现在")]);
+      expect(declined.status).toBe(200);
+      expect((await owner.next((e) => e.type === "run" && e.run?.id === told.id, { from })).run).toMatchObject({ status: "failed", retryable: false });
+      await ned.waitFor((e) => e.type === "message" && e.message.conversationId === w.g && e.message.seq === seq);
+    } finally {
+      queue.stop();
+    }
+    const slot = queue.tasks.filter((t) => t.task.includes(told.id));
+    expect(slot).toHaveLength(1);
+    expect(slot[0]!.sql).toEqual([]);
+    // Nothing anywhere read who is told what of that run: the push knew it (its owner, its Agent).
+    expect(queue.sent.filter((s) => AUDIENCE.test(s.text) && JSON.stringify(s.params).includes(told.id))).toEqual([]);
+  });
+
+  it("M-12: a told reply failed, then its owner leaves the group its only hit was in: the bubble is pushed 已过期 and the slot without 重试 — no reconnect, no read of hers", async () => {
+    const { w, whisper, told } = await failedTold({ query: "蓝鲸计划", from: "mia" });
+    expect(whisper.body.detail!.hits.map((h) => h.conversationId)).toEqual([w.b]);
+    const socket = await connect(app, w.owner);
+    expect(await ownSlot(w)).toMatchObject({ id: told.id, status: "failed", retryable: true });
+    const from = socket.events.length;
+    expect((await api(app, w.owner, "DELETE", `/api/conversations/${w.b}/members/${w.owner.id}`)).status).toBe(200);
+    const bubble = await socket.next((e) => e.type === "whisper" && e.whisper.id === whisper.id, { from });
+    expect([bubble.whisper.status, bubble.whisper.detail]).toEqual(["expired", undefined]);
+    const slot = await socket.next((e) => e.type === "run" && e.run?.id === told.id, { from });
+    expect(slot).toMatchObject({ conversationId: w.g, agentId: w.agent.id, run: { status: "failed", retryable: false } });
+    expect(slot.run).not.toHaveProperty("retryableUntil");
+    expect(await ownSlot(w)).toMatchObject({ id: told.id, retryable: false });
   });
 });
 

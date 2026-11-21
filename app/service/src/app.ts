@@ -63,7 +63,6 @@ import { registerSync } from "./sync/routes.ts";
 import { registerWebClient } from "./web.ts";
 import { pushWhispers, registerWhisperRoutes } from "./whispers/routes.ts";
 import { expireWhispers, removeOldWhispers } from "./whispers/store.ts";
-import { toldSlotOf } from "./agents/runs.ts";
 import { deliverReminders } from "./metering/reminders.ts";
 
 /** Everything the app needs from outside; tests override pieces (e.g. raised rate limits). */
@@ -188,12 +187,13 @@ export interface BuildOptions {
  * note or a whisper) and the next goes on:
  * - the record of what memory changed, kept 30 days (memory/sweep.ts);
  * - whispers left open 7 days expire — a `found_elsewhere` one a day (`WHISPERS.elsewhereTtlHours`) — (whispers/store.ts),
- *   each pushed to its owner (never logged); answered and expired ones made 30 days ago are deleted;
+ *   each pushed to its owner (never logged; a failed told reply's slot follows its push, sync/hub.ts); answered and
+ *   expired ones made 30 days ago are deleted;
  * - reminders about money recorded by a settlement whose whisper was never made (the service stopped between the two) are
  *   made, pushed and counted (metering/reminders.ts `deliverReminders`).
  * `hub` null: nobody to tell yet.
  */
-export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: FastifyBaseLogger, hub: Pick<Hub, "pushWhisper" | "pushRunToOwner"> | null): Promise<{ unsent: number; abandoned: number }> {
+export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: FastifyBaseLogger, hub: Pick<Hub, "pushWhisper"> | null): Promise<{ unsent: number; abandoned: number }> {
   await sweepMemoryChanges(deps.db).catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "memory change sweep failed; trying again next interval"));
   const expired = await expireWhispers(deps.db, new Date(), { elsewhereTtlHours: config.whispers.elsewhereTtlHours }).catch((err: unknown) => {
     log.warn({ code: (err as { code?: string }).code }, "whisper sweep failed; trying again next interval");
@@ -206,12 +206,6 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
   });
   for (const r of reminded) log.info({ metric: r.metric }, "a reminder about money was made for its owner");
   if (hub) pushWhispers(hub, [...expired, ...reminded.flatMap((r) => (r.whisper ? [r.whisper] : []))]);
-  // An expired found_elsewhere whisper whose told reply failed: that slot no longer offers 重试, told to its owner alone.
-  for (const w of expired) {
-    if (w.kind !== "found_elsewhere" || !hub) continue;
-    const slot = await toldSlotOf(deps.db, w, config.whispers.elsewhereTtlHours).catch(() => null);
-    if (slot) hub.pushRunToOwner(slot.conversationId, slot.run);
-  }
   return { unsent: 0, abandoned: 0 };
 }
 

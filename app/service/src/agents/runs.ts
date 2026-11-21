@@ -67,12 +67,17 @@ export async function withTellable<R extends RunRow>(q: Queryable, rows: readonl
 
 /**
  * The run slot its owner holds of whisper `w`'s told reply, when that is the Agent's latest reply there and it failed: as
- * it reads now (`tellable` by THE rule), to push to the owner alone (`Hub.pushRunToOwner`) once the whisper stops reading
- * open — answered 不用, expired — so 重试 is no longer offered on her screen. Null when there is no such slot.
+ * it reads now (`tellable` by THE rule), with its group and Agent — what its owner is pushed once the whisper stops
+ * reading open (sync/hub.ts, the whisper's own delivery: one place, whatever ended it), so 重试 is no longer offered on
+ * her screen. Null when there is no such slot.
  */
-export async function toldSlotOf(q: Queryable, w: { id: string; ownerId: string }, ttlHours: number): Promise<{ conversationId: string; run: WireRun } | null> {
-  const { rows } = await q.query<RunRow & { conversation_id: string }>(
-    `select ${RUN_COLUMNS}, r.conversation_id from agent_runs r
+export async function toldSlotOf(
+  q: Queryable,
+  w: { id: string; ownerId: string },
+  ttlHours: number,
+): Promise<{ conversationId: string; agentId: string; run: WireRun } | null> {
+  const { rows } = await q.query<RunRow & { conversation_id: string; agent_id: string }>(
+    `select ${RUN_COLUMNS}, r.conversation_id, r.agent_id from agent_runs r
       where r.whisper_id = $1 and r.owner_id = $2 and r.status = 'failed'
         and r.id = (select l.id from agent_runs l where l.agent_id = r.agent_id and l.conversation_id = r.conversation_id and l.purpose = 'reply'
                      order by l.created_at desc, l.id desc limit 1)`,
@@ -81,7 +86,7 @@ export async function toldSlotOf(q: Queryable, w: { id: string; ownerId: string 
   const row = rows[0];
   if (!row) return null;
   await withTellable(q, [row], ttlHours);
-  return { conversationId: row.conversation_id, run: toWireRun(row) };
+  return { conversationId: row.conversation_id, agentId: row.agent_id, run: toWireRun(row) };
 }
 
 /** A run on the wire (README "Wire shapes"). */

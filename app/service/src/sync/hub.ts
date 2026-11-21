@@ -1,6 +1,6 @@
 import type { WebSocket } from "@fastify/websocket";
 import type { FastifyBaseLogger } from "fastify";
-import { runAudience, type GroupRunState, type RunAudience, type WireRun } from "../agents/runs.ts";
+import { runAudience, toldSlotOf, type GroupRunState, type RunAudience, type WireRun } from "../agents/runs.ts";
 import type { Activity } from "../agents/runtime/port.ts";
 import type { Config } from "../config.ts";
 import type { ConversationEvents } from "../conversations/events.ts";
@@ -17,6 +17,12 @@ import type { TicketOwner } from "./tickets.ts";
 
 /** The key of a principal's own queue of whisper pushes (`pushWhisper`), beside the conversations' (a uuid never starts so). */
 const WHISPER_QUEUE = "whispers:";
+/**
+ * The states in which a `found_elsewhere` whisper no longer reads open for good (whispers/wire.ts `foundView`): delivered so,
+ * its failed told reply's slot follows (`pushWhisperNow`). Not `telling`: then its latest reply there is that told reply,
+ * under way, whose own deliveries say so.
+ */
+const ENDED: ReadonlySet<string> = new Set(["told", "declined", "expired"]);
 /** A principal's 6th socket closes its oldest. */
 export const MAX_SOCKETS_PER_PRINCIPAL = 5;
 /** WebSocket-level ping interval; a socket that has not answered the previous ping by the next one is dropped. */
@@ -125,7 +131,9 @@ export interface HubDeps {
  *   `found_elsewhere` one's state derived then, its hits read as she may read them then), on a queue of that owner's
  *   whispers alone; and, after each delivery of a run that tells one (`告诉他们`'s told reply, `agent_runs.whisper_id`),
  *   that whisper too — so every change of a told reply (queued, running, ended, posted or not) reaches its owner's view of
- *   the whisper, without anything being written to the whisper itself.
+ *   the whisper, without anything being written to the whisper itself. A `found_elsewhere` whisper delivered no longer
+ *   reading open — whatever ended it: 不用, its day, its last hit lost to a leaving, told — is followed by its failed told
+ *   reply's slot (`ENDED`), read there and pushed as it is on the group's queue, so 重试 goes at once (fix round 4).
  */
 export class Hub {
   /** Open connections per principal, oldest first. */
@@ -443,13 +451,31 @@ export class Hub {
     for (const w of await whispersPointingInto(this.deps.db, conversationId, [owner])) await this.pushWhisperNow(owner, w.id);
   }
 
-  /** `pushWhisper`'s delivery: the whisper as its owner (`principalId`) may read it now, when they are connected. */
+  /**
+   * `pushWhisper`'s delivery: the whisper as its owner (`principalId`) may read it now, when they are connected. The one
+   * place a whisper's no longer reading open reaches the slot of its told reply (M-12): delivered ended (`ENDED`), the
+   * slot its owner holds of its failed told reply, if any, is read here — on her own queue — and pushed to her alone as
+   * it is on the group's queue (M-11: that task reads nothing; it keeps its place among the run's other pushes). A read
+   * that fails is logged as a code; she reads the slot so at her next sync.
+   */
   private async pushWhisperNow(principalId: string, whisperId: string): Promise<void> {
     const [owner] = this.connectedAmong([principalId]);
     if (!owner) return;
     const { siteTimezone: timeZone, whispers } = this.deps.config;
     const [whisper] = await wireWhispersOf(this.deps.db, owner, [whisperId], { timeZone, elsewhereTtlHours: whispers.elsewhereTtlHours });
-    if (whisper) this.push(owner, { type: "whisper", whisper });
+    if (!whisper) return;
+    this.push(owner, { type: "whisper", whisper });
+    if (whisper.kind !== "found_elsewhere" || !ENDED.has(whisper.status)) return;
+    let slot: Awaited<ReturnType<typeof toldSlotOf>>;
+    try {
+      slot = await toldSlotOf(this.deps.db, { id: whisper.id, ownerId: owner }, whispers.elsewhereTtlHours);
+    } catch (err) {
+      this.deps.log.error({ code: (err as { code?: string }).code }, "realtime: a told reply's slot could not be read; its owner reads it at her next sync");
+      return;
+    }
+    if (!slot) return;
+    const { conversationId, agentId, run } = slot;
+    this.enqueue(conversationId, { kind: "push", principalId: owner, event: { type: "run", conversationId, agentId, run } });
   }
 
   /** `pushChargedReply`'s delivery: the reply as `principalId` may read it now, when that carries `via`. */

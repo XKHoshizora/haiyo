@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { leaveGroupsOfDeleted } from "../src/agents/group-leave.ts";
 import { lockAgent, setAgentState } from "../src/agents/store.ts";
 import { buildApp } from "../src/app.ts";
@@ -466,6 +466,40 @@ describe("answering", () => {
       { status: "accepted", resolved: true },
       { status: "declined", resolved: true },
     ]);
+  });
+
+  it("M-13: an answer once stored stands — a push after it that fails is logged as a code, nothing of the whisper, and the answer is 200", async () => {
+    const w = await world();
+    const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });
+    const from = logLines.length;
+    const failing = vi.spyOn(app.realtime, "pushWhisper").mockImplementation(() => {
+      throw Object.assign(new Error(`push failed: ${BODY.text}`), { code: "XX000" });
+    });
+    const declined = await api(app, w.owner, "POST", `/api/whispers/${made.id}/decline`).finally(() => failing.mockRestore());
+    expect([declined.status, declined.json.status]).toEqual([200, "declined"]);
+    expect(await statusOf(made.id)).toBe("declined");
+    const lines = logLines.slice(from);
+    expect(lines.filter((l) => l.includes('"code":"XX000"'))).toHaveLength(1);
+    expect(lines.join("\n")).not.toContain(BODY.text);
+    expect(lines.join("\n")).not.toContain("周五");
+  });
+
+  it("M-13: an accept whose push fails still does what follows it (its hook's step after commit: the told reply's announcement)", async () => {
+    const w = await world();
+    const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });
+    const realHook = ANSWER_HOOKS.found_elsewhere;
+    let followed = 0;
+    ANSWER_HOOKS.found_elsewhere = { accepted: async () => () => void followed++ };
+    const failing = vi.spyOn(app.realtime, "pushWhisper").mockImplementation(() => {
+      throw Object.assign(new Error("push failed"), { code: "XX000" });
+    });
+    try {
+      expect((await api(app, w.owner, "POST", `/api/whispers/${made.id}/accept`)).status).toBe(200);
+    } finally {
+      failing.mockRestore();
+      ANSWER_HOOKS.found_elsewhere = realHook;
+    }
+    expect(followed).toBe(1);
   });
 
   it("only with a button it offers: accept needs `tell`, decline `dismiss`", async () => {

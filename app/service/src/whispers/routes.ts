@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { tellFromWhisper, toldSlotOf } from "../agents/runs.ts";
+import { tellFromWhisper } from "../agents/runs.ts";
 import type { Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
@@ -74,8 +74,10 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
   );
 
   // Answered once: the whisper as it is now (a `found_elsewhere` one told: `telling`), pushed to the owner's sockets too
-  // (their other tabs). Again, the other answer, or an answer whose button it does not offer: 409 `stale_whisper`; a
-  // `found_elsewhere` one while its told reply is queued or running: 409 `busy_run`.
+  // (their other tabs; a `found_elsewhere` one declined: its failed told reply's slot follows, sync/hub.ts). Again, the
+  // other answer, or an answer whose button it does not offer: 409 `stale_whisper`; a `found_elsewhere` one while its
+  // told reply is queued or running: 409 `busy_run`. Once the answer has committed it stands: what is pushed or announced
+  // after it is caught, and logged as a code (never the whisper), as the sweep logs its own.
   const answer = (verb: "accept" | "decline", to: WhisperAnswer) =>
     api.post(
       `/api/whispers/:id/${verb}`,
@@ -92,15 +94,16 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
         if (outcome === "gone") throw notFound();
         if (outcome === "stale") throw new AppError(409, "stale_whisper");
         if (outcome === "busy") throw new AppError(409, "busy_run");
+        // Each on its own: one that fails skips none of the others (the push to her tabs; a told reply's announcement).
+        for (const step of [() => app.realtime.pushWhisper(outcome), afterCommit as (() => void) | void]) {
+          try {
+            step?.();
+          } catch (err) {
+            req.log.warn({ code: (err as { code?: string }).code }, "a whisper's answer was stored; what follows it could not be pushed");
+          }
+        }
         // As it is now that the answer has committed, read on one snapshot.
         const [now] = await wireWhispersOf(db, me.id, [outcome.id], wire);
-        app.realtime.pushWhisper(outcome);
-        (afterCommit as (() => void) | void)?.();
-        // 不用 on a whisper whose told reply failed: that slot no longer offers 重试 — told to its owner alone.
-        if (to === "declined" && outcome.kind === "found_elsewhere") {
-          const slot = await toldSlotOf(db, outcome, wire.elsewhereTtlHours);
-          if (slot) app.realtime.pushRunToOwner(slot.conversationId, slot.run);
-        }
         return now ?? (await wireWhispers(db, [outcome], wire))[0]!;
       },
     );
