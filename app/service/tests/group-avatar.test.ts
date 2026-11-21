@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { abandonedAfterMs, sweepPendingBlobs } from "../src/attachments/pending.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
-import { PNG } from "./helpers/agents.ts";
+import { PNG, mustCreateAgent } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 import { holdThen, someoneWaits } from "./helpers/locks.ts";
@@ -108,15 +108,42 @@ describe("who may change a group's avatar", () => {
     expect((await get(b, g)).statusCode).toBe(404);
   });
 
-  it("a direct chat, an Agent's conversation and a closed group have none: 404", async () => {
-    const { a, b, g } = await team();
-    const direct = (await api<{ conversations: { id: string; type: string }[] }>(app, a, "GET", "/api/sync")).json.conversations.find((c) => c.type === "direct")!.id;
-    expect((await put(a, direct, PNG)).statusCode).toBe(404);
-    expect((await get(a, direct)).statusCode).toBe(404);
-    expect(await remove(a, direct)).toMatchObject({ status: 404 });
+  it("a direct chat, an Agent's conversation and a closed group have none: 404 for every verb", async () => {
+    const { a, g } = await team();
+    const agent = await mustCreateAgent(app, a);
+    const entries = (await api<{ conversations: { id: string; type: string }[] }>(app, a, "GET", "/api/sync")).json.conversations;
+    const direct = entries.find((c) => c.type === "direct")!.id;
+    const agentChat = entries.find((c) => c.type === "agent")!.id;
+    expect(agent.id).toBeTruthy();
+    for (const conv of [direct, agentChat]) {
+      expect((await put(a, conv, PNG)).statusCode, conv).toBe(404);
+      expect((await get(a, conv)).statusCode, conv).toBe(404);
+      expect(await remove(a, conv)).toMatchObject({ status: 404 });
+    }
+    expect((await put(a, g, PNG)).statusCode).toBe(200);
     await db.query("update conversations set closed_at = now() where id = $1", [g]);
     expect((await put(a, g, PNG)).statusCode).toBe(404);
-    expect(b.id).toBeTruthy();
+    expect(await remove(a, g)).toMatchObject({ status: 404 });
+    expect((await get(a, g)).statusCode).toBe(404); // a closed group is read by nobody
+  });
+
+  it("a group that closes (its last person leaves) drops its avatar: the blob is deleted and nothing stays held", async () => {
+    const { a, b, c, g } = await team();
+    expect((await put(a, g, PNG)).statusCode).toBe(200);
+    expect(blobFiles().length).toBe(1);
+    for (const who of [a, b, c]) expect((await api(app, who, "DELETE", `/api/conversations/${g}/members/${who.id}`)).status).toBe(200);
+    expect(await row(g)).toEqual({ avatar_key: null, avatar_version: 2 });
+    expect(blobFiles()).toEqual([]);
+    expect(await held()).toEqual([]);
+  });
+
+  it("a group that closes with a delete that fails holds the old blob for the sweep", async () => {
+    const { a, b, c, g } = await team();
+    expect((await put(a, g, PNG)).statusCode).toBe(200);
+    const key = (await row(g)).avatar_key!;
+    probe.failNextDeletes = 1;
+    for (const who of [a, b, c]) expect((await api(app, who, "DELETE", `/api/conversations/${g}/members/${who.id}`)).status).toBe(200);
+    expect(await held()).toEqual([key]);
   });
 
   it("when the creator leaves, the new creator may change it and the old one may not", async () => {
@@ -128,6 +155,28 @@ describe("who may change a group's avatar", () => {
     expect((await put(other, g, PNG)).statusCode).toBe(403);
     expect((await put(heir, g, JPEG, "image/jpeg")).statusCode).toBe(200);
     expect((await put(a, g, PNG)).statusCode).toBe(404);
+  });
+});
+
+describe("who is asking is checked before a blob is written", () => {
+  it("a member who is not the creator, a non-member and an unknown id write no blob; the answers do not depend on the bytes", async () => {
+    const { a, b, d, g } = await team();
+    const none = "00000000-0000-4000-8000-000000000000";
+    probe.puts.length = 0;
+    expect((await put(b, g, PNG)).statusCode).toBe(403);
+    expect((await put(d, g, PNG)).statusCode).toBe(404);
+    expect((await put(d, none, PNG)).statusCode).toBe(404);
+    // Bad bytes from a non-member are the answer of a non-member, not 400.
+    expect((await put(d, g, HTML)).statusCode).toBe(404);
+    expect((await put(b, g, HTML)).statusCode).toBe(403);
+    expect(probe.puts).toEqual([]);
+    expect(blobFiles()).toEqual([]);
+    expect((await put(a, g, HTML)).statusCode).toBe(400);
+  });
+
+  it("the sweep's question about a key is answered by an index on the group's avatar key", async () => {
+    const { rows } = await db.query<{ indexdef: string }>("select indexdef from pg_indexes where indexname = 'conversations_avatar_key_idx'");
+    expect(rows[0]?.indexdef).toContain("avatar_key");
   });
 });
 
@@ -216,7 +265,7 @@ describe("the blobs of a group's avatar", () => {
     expect((await put(a, g, JPEG, "image/jpeg")).statusCode).toBe(404);
     expect(blobFiles()).toEqual([key]);
     expect(await held()).toEqual([]);
-    expect(b.id).toBeTruthy();
+    expect(await get(b, g)).toMatchObject({ statusCode: 200 });
   });
 });
 
@@ -247,9 +296,9 @@ describe("what the members are told", () => {
     const sd = await connect(app, d);
     expect((await put(a, g, PNG)).statusCode).toBe(200);
     expect((await remove(a, g)).status).toBe(200);
-    // Sentinel on another channel: whatever d is told would have come before it.
-    await api(app, d, "PATCH", "/api/me", { displayName: "Dave D" });
-    await new Promise((r) => setTimeout(r, 150));
+    // A sentinel the outsider does hear, sent after: whatever else they were told would have come before it.
+    expect((await api(app, a, "POST", "/api/friend-requests", { handle: d.handle })).status).toBe(201);
+    await sd.next((e) => e.type === "social");
     expect(sd.events.filter((e) => e.id === g || e.conversationId === g)).toEqual([]);
   });
 });

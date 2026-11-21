@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { announceEnded } from "../agents/group-leave.ts";
+import { discardBlob } from "../attachments/pending.ts";
 import { AVATAR_HEADERS, avatarBudget, dropAvatar, readStoredAvatar, registerAvatarPut, storeAvatar } from "../principals/avatar-upload.ts";
 import { notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
@@ -9,7 +10,7 @@ import { agentProfileShape } from "../messages/principals.ts";
 import { groupTitle, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
 import type { Change } from "./events.ts";
-import { addMember, createGroup, groupAvatarKey, removeMember, renameGroup, swapGroupAvatar } from "./groups.ts";
+import { addMember, assertMayChangeAvatar, createGroup, groupAvatarKey, removeMember, renameGroup, swapGroupAvatar } from "./groups.ts";
 import { listMembers } from "./store.ts";
 import { pushWhispers } from "../whispers/routes.ts";
 
@@ -76,7 +77,8 @@ export function registerConversationRoutes(app: FastifyInstance): void {
     await changeLimit(req, me.id);
     await avatarLimit(req, me.id);
     const id = (req.params as { id: string }).id;
-    let change: Change | null = null;
+    await assertMayChangeAvatar(db, id, me.id);
+    let change = null as Change | null;
     await storeAvatar(app, req.log, body, async (t, key) => {
       const swapped = await swapGroupAvatar(t, id, me.id, key);
       change = swapped.change;
@@ -91,7 +93,7 @@ export function registerConversationRoutes(app: FastifyInstance): void {
     async (req) => {
       const me = await requirePrincipal(req);
       await changeLimit(req, me.id);
-      let change: Change | null = null;
+      let change = null as Change | null;
       await dropAvatar(app, req.log, async (t) => {
         const swapped = await swapGroupAvatar(t, req.params.id, me.id, null);
         change = swapped.change;
@@ -186,9 +188,10 @@ export function registerConversationRoutes(app: FastifyInstance): void {
     async (req) => {
       const me = await requirePrincipal(req);
       await changeLimit(req, me.id);
-      const { change, ended, whispers, personLeft } = await db.tx((t) => removeMember(t, req.params.id, me.id, req.params.principalId));
+      const { change, ended, whispers, personLeft, droppedAvatar } = await db.tx((t) => removeMember(t, req.params.id, me.id, req.params.principalId));
       // The replies of the Agents that left end (as a pause ends them) before the answer.
       announceEnded(app.agentPort, ended);
+      if (droppedAvatar) await discardBlob({ db, blobs }, droppedAvatar, req.log);
       conversations.publish(change, req.log);
       // The whispers that leaving expired, each to its owner (after the leaving's own pushes); and the person who left, her
       // whispers elsewhere that point here, as they read now (found on her own queue: the hub's).
