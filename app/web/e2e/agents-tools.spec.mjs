@@ -340,10 +340,10 @@ test("a number the Agent copied from its search into its answer is a link where 
   for (const person of [ann, bo, dee]) chats[person.label] = await openChat(person.page, title);
 
   const tag = uniq(4);
-  // The model copies the number its search handed it ({{m1}}: the stub writes it as the search did, model-stub.mjs), and
-  // one Bo typed that the search never handed out.
+  // The model copies the number its search handed it — 〔m2〕: m1 and m7 are Bo's, typed, so the run's numbers skip them
+  // ({{m2}}: the stub writes it as the search did, model-stub.mjs) — and Bo's 〔m1〕, which is his, not the run's.
   await modelStub.callTools(searchFor(word));
-  await modelStub.reply(`周五晚上七点吃火锅{{m1}}。Bo 写的〔m7〕不算。${tag}`);
+  await modelStub.reply(`周五晚上七点吃火锅{{m2}}。Bo 写的〔m1〕不算。${tag}`);
   await sendText(ann.page, title, `@${agent.handle} 聚餐吃什么？${tag}`);
 
   const link = (chat) => agentMessagesWith(chat, `周五晚上七点吃火锅`).filter({ hasText: tag }).getByRole("button", { name: "引用 1" });
@@ -356,7 +356,7 @@ test("a number the Agent copied from its search into its answer is a link where 
     // (The link's number stands where the token stood, before the 。.)
     await expect(reply).toContainText("。Bo 写的不算。");
     await expect(reply).not.toContainText("〔");
-    await expect(reply).not.toContainText("{{m1}}");
+    await expect(reply).not.toContainText("{{m2}}");
     await expect(messagesWith(chat, planted).getByRole("button", { name: /^引用/ })).toHaveCount(0);
     // The cited message is far above (45 messages came after it): the link scrolls to it and it flashes.
     await clickCite(person.page, link(chat));
@@ -380,8 +380,8 @@ test("a number the Agent copied from its search into its answer is a link where 
   expect(received).not.toContain('"cites"');
   // The answer as stored holds no number: neither the one the model copied from its search nor Bo's.
   expect(received).toContain(`周五晚上七点吃火锅。Bo 写的不算。${tag}`);
-  expect(received).not.toContain("火锅〔m1〕");
-  expect(received).not.toContain("写的〔m7〕");
+  expect(received).not.toContain("火锅〔m2〕");
+  expect(received).not.toContain("写的〔m1〕");
 });
 
 // --- 6. the file tool and the clock ---------------------------------------------------------------------------------------

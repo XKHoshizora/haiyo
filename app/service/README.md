@@ -3443,9 +3443,12 @@ stripped of citations, and an Agent that copies a person's `〔m1〕` cites noth
 run's. So a member cannot place a link, and echoing typed tokens can never tell a reader where the links they cannot
 see would stand (`tests/tools-search.test.ts`: a member's `〔m1〕…〔m8〕`, echoed, cites nothing for any reader, and a later
 joiner who can see some of the finds is sent the same message whether 0, 3 or 8 others were found; `tests/tools-file.test.ts`:
-the same for files from before a member joined). What remains, accepted: when the model itself cites what it found, a
-reader who can see only some of those messages is sent only theirs, at their places — a reply in a group may show that
-its asker's run saw more than a later joiner can open, as its text may say anyway. An image or a PDF is sent as it is and
+the same for files from before a member joined). What remains, by the product owner's ruling: when the model itself
+cites what it found, a reader who can see only some of those messages is sent only theirs, at their places. That an older
+member's question reached more than a newcomer can open is no leak — an older member sees more, as everyone knows. What
+is never revealed is the content of what a newcomer cannot see, or anything that locates one particular such message:
+its entry is not sent to them at all (no place, no number, no gap in their numbering), and nothing typed can put a link
+where someone chose. An image or a PDF is sent as it is and
 cannot be read for numbers: one written in it could still be cited by a model that copies it. A reply stored before this
 rule (its text holding `〔m3〕`, its `cites` an object) has no other reading: its text shows the token as written and it
 has no citations (the acceptance data may be cleared). Attachment labels are numbered over the messages the plan can

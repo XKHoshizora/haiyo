@@ -59,10 +59,11 @@ const say = async (who: Actor, conv: string, text: string): Promise<number> => {
   if (sent.status !== 201) throw new Error(`say: ${sent.status} ${JSON.stringify(sent.json)}`);
   return sent.json.message.seq as number;
 };
+/** `conv`'s messages in seq order (by the column: `order by seq` would order the text the query selects, 10 before 9). */
 const messages = async (conv: string) =>
   (
     await db.query<{ seq: string; sender_id: string; body: Record<string, unknown>; client_txn: string | null }>(
-      "select seq::text, sender_id, body, client_txn from messages where conversation_id = $1 and kind <> 'system' order by seq",
+      "select seq::text, sender_id, body, client_txn from messages where conversation_id = $1 and kind <> 'system' order by messages.seq",
       [conv],
     )
   ).rows.map((r) => ({ seq: Number(r.seq), sender: r.sender_id, body: r.body, txn: r.client_txn }));
