@@ -484,6 +484,24 @@ describe("answering", () => {
     expect(lines.join("\n")).not.toContain("周五");
   });
 
+  it("an answer's own copy is read in its own transaction: a database that fails once the answer has committed cannot turn a stored answer into a 500", async () => {
+    const w = await world();
+    for (const verb of ["decline", "accept"] as const) {
+      const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });
+      const real = app.deps.db.tx.bind(app.deps.db);
+      let committed = false;
+      const failing = vi.spyOn(app.deps.db, "tx").mockImplementation((async (fn: Parameters<typeof real>[0]) => {
+        if (committed) throw Object.assign(new Error("the database went away"), { code: "57P01" });
+        const done = await real(fn);
+        committed = true;
+        return done;
+      }) as typeof real);
+      const answered = await api(app, w.owner, "POST", `/api/whispers/${made.id}/${verb}`).finally(() => failing.mockRestore());
+      expect([verb, answered.status, answered.json.status]).toEqual([verb, 200, verb === "decline" ? "declined" : "telling"]);
+      expect([verb, committed]).toEqual([verb, true]);
+    }
+  });
+
   it("M-13: an accept whose push fails still does what follows it (its hook's step after commit: the told reply's announcement)", async () => {
     const w = await world();
     const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });

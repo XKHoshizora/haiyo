@@ -1158,7 +1158,7 @@ describe("fix round 1", () => {
   }
 
   // M-4: one copy, one moment.
-  it("M-4: a copy of a whisper (a push, the list route, an answer) is read in one snapshot: the row, its told replies and its hits", async () => {
+  it("M-4: a copy of a whisper (a push, the list route, an answer) is read at one moment: the row, its told replies and its hits", async () => {
     const w = await world();
     await askInGroup(w, createElsewhere(elsewhereDeps()));
     const [whisper] = await whispersOf(w.owner.id, w.g);
@@ -1189,9 +1189,13 @@ describe("fix round 1", () => {
       expect(pushed!.some((s) => /from whispers where owner_id = \$1 and id = any/.test(s))).toBe(true);
       txs.length = 0;
       expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
-      const answered = txs.filter((seen) => seen.some(readsHits)).at(-1);
-      expect(answered?.[0]).toMatch(/repeatable read/);
-      expect(answered!.some((s) => /from whispers where owner_id = \$1 and id = any/.test(s))).toBe(true);
+      // An answer's own copy is read in the answer's transaction, after what it wrote (the told reply it queued: telling),
+      // so nothing is read after its commit (F3): there the whisper's row, the Agent's (which every told reply's start and
+      // retry takes) and the conversation's are held, so its told replies cannot change between its reads — one moment for
+      // all it is derived from. Its push is read on a snapshot of its own, as every push.
+      const answered = txs.find((seen) => seen.some((s) => /from whispers where id = \$1 and owner_id = \$2 for update/.test(s)));
+      expect(answered!.some(readsHits)).toBe(true);
+      expect(answered!.some((s) => /left join agent_runs r/.test(s))).toBe(true);
     } finally {
       app.deps.db.tx = real;
     }

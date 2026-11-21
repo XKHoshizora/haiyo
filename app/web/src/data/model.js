@@ -1381,6 +1381,10 @@ function ownerSlot(prev, run, ordered, from, heldReply, activity) {
   if (next && next.status === "failed" && prev?.dismissed === next.id) next = null;
   // An answer never replaces what a push of this connection named with another run, or with none.
   if (!ordered && prev && !prev.joined && !prev.unknown && (next === null || next.id !== prevRun?.id)) return prev;
+  // Nor does a push naming another run that has ended while the one held is queued or running: an Agent has at most one
+  // reply queued or running in a conversation, and none ends while another is active, so that frame is older than what is
+  // held (a failed told reply's slot pushed again late, say). One held but not known for sure (`unknown`) gives way.
+  if (ordered && next && prevRun && !prev.unknown && next.id !== prevRun.id && isActive(prevRun.status) && !isActive(next.status)) return prev;
   const slot = { run: next };
   if (prev?.dismissed) slot.dismissed = prev.dismissed;
   let placed = false;

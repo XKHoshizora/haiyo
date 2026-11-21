@@ -10,7 +10,7 @@ import { requirePrincipal } from "../session.ts";
 import type { Hub } from "../sync/hub.ts";
 import { onSnapshot } from "../db.ts";
 import { listWhispers, resolveWhisper, type Whisper, type WhisperAnswer, type WhisperKind } from "./store.ts";
-import { wireWhispers, wireWhispersOf, wireWhisperSchema, type WireOptions } from "./wire.ts";
+import { wireWhispers, wireWhisperSchema, type WireOptions } from "./wire.ts";
 
 /**
  * What answering a whisper of a kind does besides its status: run in the answer's transaction, after the status is written
@@ -76,8 +76,9 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
   // Answered once: the whisper as it is now (a `found_elsewhere` one told: `telling`), pushed to the owner's sockets too
   // (their other tabs; a `found_elsewhere` one declined: its failed told reply's slot follows, sync/hub.ts). Again, the
   // other answer, or an answer whose button it does not offer: 409 `stale_whisper`; a `found_elsewhere` one while its
-  // told reply is queued or running: 409 `busy_run`. Once the answer has committed it stands: what is pushed or announced
-  // after it is caught, and logged as a code (never the whisper), as the sweep logs its own.
+  // told reply is queued or running: 409 `busy_run`. Once the answer has committed it stands: the copy it answers with is
+  // read in its own transaction (it sees the told reply it queued), so nothing is read after the commit, and what is pushed
+  // or announced after it is caught, and logged as a code (never the whisper), as the sweep logs its own.
   const answer = (verb: "accept" | "decline", to: WhisperAnswer) =>
     api.post(
       `/api/whispers/:id/${verb}`,
@@ -88,23 +89,23 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
         let afterCommit: (() => void) | void = undefined;
         const outcome = await db.tx(async (t) => {
           const resolved = await resolveWhisper(t, me.id, req.params.id, to, wire.elsewhereTtlHours);
-          if (typeof resolved !== "string") afterCommit = await ANSWER_HOOKS[resolved.kind]?.[to]?.(t, resolved, app);
-          return resolved;
+          if (typeof resolved === "string") return resolved;
+          afterCommit = await ANSWER_HOOKS[resolved.kind]?.[to]?.(t, resolved, app);
+          const [copy] = await wireWhispers(t, [resolved], wire);
+          return { whisper: resolved, copy: copy! };
         });
         if (outcome === "gone") throw notFound();
         if (outcome === "stale") throw new AppError(409, "stale_whisper");
         if (outcome === "busy") throw new AppError(409, "busy_run");
         // Each on its own: one that fails skips none of the others (the push to her tabs; a told reply's announcement).
-        for (const step of [() => app.realtime.pushWhisper(outcome), afterCommit as (() => void) | void]) {
+        for (const step of [() => app.realtime.pushWhisper(outcome.whisper), afterCommit as (() => void) | void]) {
           try {
             step?.();
           } catch (err) {
             req.log.warn({ code: (err as { code?: string }).code }, "a whisper's answer was stored; what follows it could not be pushed");
           }
         }
-        // As it is now that the answer has committed, read on one snapshot.
-        const [now] = await wireWhispersOf(db, me.id, [outcome.id], wire);
-        return now ?? (await wireWhispers(db, [outcome], wire))[0]!;
+        return outcome.copy;
       },
     );
   answer("accept", "accepted");

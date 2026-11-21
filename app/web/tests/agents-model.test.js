@@ -778,6 +778,26 @@ describe("an Agent's reply in a group (batch 2C)", () => {
     expect(rows(put(s, ownerPush(runOf(R2, "queued"))))).toMatchObject([{ agentId: AG1, kind: "replying" }]);
   });
 
+  it("a pushed end of another run while my Agent's reply is queued or running is an older frame (a failed told reply's slot pushed again late): the slot keeps the reply; once that has ended, or is not known for sure, frames apply as ever", () => {
+    const late = ownerPush(runOf(R1, "failed", { error: "busy", retryable: false }));
+    for (const status of ["queued", "running"]) {
+      const s = put(inGroup(), ownerPush(runOf(R2, status)));
+      expect([status, put(s, late)]).toEqual([status, s]);
+      expect(rows(put(s, late))).toMatchObject([{ agentId: AG1, kind: "replying", run: { id: R2, status } }]);
+    }
+    // Its own end applies; after it, another run's frame applies too.
+    let s = put(put(inGroup(), ownerPush(runOf(R2, "running"))), ownerPush(runOf(R2, "done")));
+    expect(s.groupRuns[G1][AG1].run).toMatchObject({ id: R2, status: "done" });
+    s = put(s, ownerPush(failed));
+    expect(s.groupRuns[G1][AG1].run).toMatchObject({ id: R1, status: "failed" });
+    // A new reply (another run, active) replaces the one held, as ever.
+    s = put(put(inGroup(), ownerPush(runOf(R1, "running"))), ownerPush(runOf(R2, "queued")));
+    expect(s.groupRuns[G1][AG1].run).toMatchObject({ id: R2, status: "queued" });
+    // Held but not known for sure (it could not be fetched): any frame says what it is.
+    s = M.markGroupRunsUnknown(put(inGroup(), ownerPush(runOf(R2, "running"))), G1);
+    expect(put(s, late).groupRuns[G1][AG1].run).toMatchObject({ id: R1, status: "failed" });
+  });
+
   it("runs that could not be fetched are not shown as replying until a push or an answer says what they are", () => {
     let s = M.clearStreams(put(put(inGroup(), memberPush("replying")), ownerPush(runOf(R1, "queued"))));
     s = M.markGroupRunsUnknown(s, G1);
