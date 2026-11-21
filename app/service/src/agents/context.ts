@@ -114,10 +114,10 @@ export interface ContextRun {
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
   upTo?: number;
   /**
-   * The pair's summary and what of it may be shown (`readPairSummary`), read once for a run whose context is planned more than
-   * once (port-impl.ts `begin`, round 2 N-4). Absent: read here.
+   * The pair's summary and what of it may be shown (`readPairSummary`, held to `MEMORY.summaryMaxWeight` as shown), read
+   * once for the run however many times its context is planned (port-impl.ts `begin`, round 2 N-4).
    */
-  summary?: PairSummary;
+  summary: PairSummary;
 }
 
 /** The pair's stored summary (null: none), and the summary as a reply may be shown it (`shownSummary`; null: shown nothing). */
@@ -126,11 +126,18 @@ export interface PairSummary {
   shown: ShownSummary | null;
 }
 
-/** `PairSummary` of `run`'s pair: one read of the row and, when its items name anyone, one indexed read of those accounts. */
-export async function readPairSummary(q: Queryable, run: Pick<ContextRun, "agentId" | "ownerId" | "conversationId"> & { group: boolean }): Promise<PairSummary> {
+/**
+ * `PairSummary` of `run`'s pair, what it shows held to `maxWeight` as shown (`MEMORY.summaryMaxWeight`): one read of the row
+ * and, when its items name anyone, one indexed read of those accounts.
+ */
+export async function readPairSummary(
+  q: Queryable,
+  run: Pick<ContextRun, "agentId" | "ownerId" | "conversationId"> & { group: boolean },
+  maxWeight: number,
+): Promise<PairSummary> {
   const stored = await readSummary(q, run.conversationId, run.agentId);
   const reader: PlacedReader = { agentId: run.agentId, ownerId: run.ownerId, conversationId: run.conversationId, group: run.group };
-  return { stored, shown: stored === null ? null : await shownSummary(q, reader, stored) };
+  return { stored, shown: stored === null ? null : await shownSummary(q, reader, stored, maxWeight) };
 }
 
 /** What `loadContext` read: everything `buildContext` needs but the attachments' bytes. */
@@ -559,9 +566,10 @@ export async function loadContext(
   // no summary (the write side checks the same, job.ts). It is shown only when, besides, everything it covers is after the
   // asker's line (it is text about those messages: a reply is shown nothing derived from what is at or before its line), and
   // it leaves the run something to answer. Not shown, the conversation part is read as if there were none.
-  // Read once for the run (`ContextRun.summary`), or here; shown as summary/store.ts `shownSummary` has it — each item under
-  // the label its account has now, without citations — and a row from before migration 059 (text only) not at all.
-  const pair = run.summary ?? (await readPairSummary(q, { ...run, group: run.group !== null }));
+  // Read once for the run (`ContextRun.summary`); shown as summary/store.ts `shownSummary` has it — each item said by whom
+  // its account is now, without citations, held to the cap as shown — and a row from before migration 059 (text only) not
+  // at all.
+  const pair = run.summary;
   const stored = pair.stored;
   const base = baseOf(stay);
   const owned = stored !== null && base !== null && stored.fromSeq > base ? stored : null;

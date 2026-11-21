@@ -677,7 +677,7 @@ export class DbAgentPort implements AgentPort {
       const cap = group ? { maxTokens: config.agentGroupContextTokens, maxMessages: GROUP_CONTEXT_MESSAGES, after: line, calls } : null;
       // The pair's summary and what of it may be shown, read once for every plan below (round 2, N-4: two indexed reads at
       // most, nothing of the conversation's history), here, under the row its job writes it under.
-      const summary = await readPairSummary(t, { agentId: agent.id, ownerId: agent.ownerId, conversationId: run.conversationId, group });
+      const summary = await readPairSummary(t, { agentId: agent.id, ownerId: agent.ownerId, conversationId: run.conversationId, group }, config.memory.summaryMaxWeight);
       const plan = {
         agentId: agent.id,
         ownerId: agent.ownerId,

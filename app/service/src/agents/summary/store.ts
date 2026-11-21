@@ -3,9 +3,9 @@ import type { Queryable } from "../../db.ts";
 import { notAcknowledgement, type AttachmentRef } from "../../messages/model.ts";
 import { postingRun } from "../../messages/read.ts";
 import { handleOf } from "../../principals/store.ts";
-import { OWNER_WORD, personLabel, speakerRole } from "../runtime/prompt.ts";
+import { labelName, speakerRole, type ShownSpeaker } from "../runtime/prompt.ts";
 import { withoutCitations } from "../tools/refs.ts";
-import { GONE_PERSON, mapItems, SECTIONS, SHOWN_SELF, whoIn, type Item, type Person, type Sections } from "./prompt.ts";
+import { capped, hasItems, mapItems, SECTIONS, shownForm, whoIn, type Item, type Sections, type Speaker } from "./prompt.ts";
 
 /**
  * The rolling summary's rows (migrations 052, 059; README "The rolling summary"): one per conversation and Agent. What
@@ -106,7 +106,7 @@ export const summaryBase = async (q: Queryable, agentId: string, conversationId:
 
 /**
  * A pair's summary: `items` cover the messages its Agent could see whose place in the conversation (`position`: a message's
- * seq; an Agent's reply, the seq its run covered) is from `fromSeq` to `uptoSeq`, both included — each item's `who` the
+ * seq; an Agent's reply, the seq its run covered) is from `fromSeq` to `uptoSeq`, both included — each item's `said_by` the
  * account that said or settled it (null: nobody in particular). `items` is null for a row written before migration 059,
  * which holds text only: it is shown to no reply and no job builds on it (job.ts writes it anew from the messages).
  */
@@ -128,9 +128,9 @@ function storedItems(raw: unknown): Sections | null {
     const list: unknown[] = Array.isArray(at[k]) ? at[k] : [];
     items[k] = list.flatMap((i): Item[] => {
       if (typeof i !== "object" || i === null) return [];
-      const { who, text } = i as { who?: unknown; text?: unknown };
+      const { said_by: who, text } = i as { said_by?: unknown; text?: unknown };
       if (typeof text !== "string" || !(who === null || (typeof who === "string" && ACCOUNT.test(who)))) return [];
-      return [{ who, text }];
+      return [{ said_by: who, text }];
     });
   }
   return items;
@@ -147,58 +147,69 @@ export async function readSummary(q: Queryable, conversationId: string, agentId:
 }
 
 /**
- * How the summary of `r`'s pair names each of `ids` (accounts) now, in one read of those accounts: the Agent itself
- * `self` (`SELF_WORD` to the call that writes it, `SHOWN_SELF` to a reply), role `助手`; its owner, by account only, role
- * `主人` — in a group by the roster's label (runtime/prompt.ts `personLabel`, `主人（名字（@账号））`), in its own
- * conversation `主人`; anyone else by the roster's label `名字（@账号）` (the name and handle of now, whether or not they are
- * in the group now), role `Agent` or `群成员` by account (`speakerRole`); an account that is no longer there
- * `GONE_PERSON`.
+ * Who each of `ids` (accounts) is to the Agent of `r`'s pair now, in one read of those accounts — by account only, never
+ * by a name (runtime/prompt.ts `speakerRole`): the Agent itself (`self`, no name, no account: its role says it); its
+ * owner (`owner`); an Agent (`agent`), or one that was deleted (`deletedAgent`: its name, no account — a deleted Agent's
+ * name part is free at once, so its full handle may be a new Agent's now); a person (`member`), whether or not they are in
+ * the group now; an account that is no longer there (`gone`, no name, no account). The name is the roster's
+ * (`labelName`: the name of now as a label shows it), the account `@` and the handle of now (`handleOf`).
  */
-export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly string[], self: string): Promise<Map<string, Person>> {
-  const asked = ids.filter((id) => id !== r.agentId && (r.group || id !== r.ownerId));
+export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly string[]): Promise<Map<string, Speaker>> {
+  const asked = ids.filter((id) => id !== r.agentId);
   const { rows } =
     asked.length === 0
       ? { rows: [] }
-      : await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent" }>(
-          `select p.id, p.display_name as name, ${handleOf("p")} as handle, p.kind from principals p where p.id = any($1::uuid[])`,
+      : await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent"; deleted: boolean }>(
+          `select p.id, p.display_name as name, ${handleOf("p")} as handle, p.kind,
+                  exists (select 1 from agents a where a.principal_id = p.id and a.deleted_at is not null) as deleted
+             from principals p where p.id = any($1::uuid[])`,
           [asked],
         );
   const found = new Map(rows.map((p) => [p.id, p]));
   return new Map(
-    ids.map((id): [string, Person] => {
-      if (id === r.agentId) return [id, { label: self, role: "助手" }];
-      if (id === r.ownerId && !r.group) return [id, { label: OWNER_WORD, role: "主人" }];
+    ids.map((id): [string, Speaker] => {
+      if (id === r.agentId) return [id, { kind: "self", name: null, account: null }];
       const p = found.get(id);
-      if (p === undefined) return [id, { label: GONE_PERSON, role: "群成员" }];
+      if (p === undefined) return [id, { kind: "gone", name: null, account: null }];
+      const handle = withoutCitations(p.handle);
+      const name = labelName(withoutCitations(p.name), handle);
+      if (p.deleted) return [id, { kind: "deletedAgent", name, account: null }];
       const role = speakerRole(p.id, p.kind, r.ownerId);
-      return [id, { label: personLabel(withoutCitations(p.name), withoutCitations(p.handle), role === "你的主人"), role: role === "你的主人" ? "主人" : role }];
+      return [id, { kind: role === "你的主人" ? "owner" : role === "Agent" ? "agent" : "member", name, account: `@${handle}` }];
     }),
   );
 }
 
 /**
- * The pair's stored summary `s` as a reply is shown it (final review I-3; redesign B): each item's `who` the label its
- * account has now (`peopleNow`, the Agent itself `SHOWN_SELF`) — so a rename changes how an item is shown, never whose it
- * is — and its text without any citation (tools/refs.ts `withoutCitations`). One indexed read of the accounts it names
- * (none when it names nobody), nothing of the conversation's history. Null for a row written before migration 059 (text
- * only): no reply is shown it until a job has written it anew. Read only: the row is never written back.
+ * The pair's stored summary `s` as a reply is shown it (final review I-3; redesign B): each item's `said_by` who that
+ * account is now (`peopleNow`, `shownForm`: the role by account, the name and account of now) — so a rename changes how an
+ * item is shown, never whose it is —, its text without any citation (tools/refs.ts `withoutCitations`), and the whole held
+ * again to `maxWeight` as it is shown (prompt.ts `capped`: whole items from the top section down), so that no rename since
+ * it was stored takes it past the cap. One indexed read of the accounts it names (none when it names nobody), nothing of
+ * the conversation's history. Null for a row written before migration 059 (text only) — no reply is shown it until a job
+ * has written it anew — and when nothing of it fits. Read only: the row is never written back.
  */
-export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary): Promise<Sections | null> {
+export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary, maxWeight: number): Promise<Sections<ShownSpeaker> | null> {
   if (s.items === null) return null;
-  const people = await peopleNow(q, r, whoIn(s.items), SHOWN_SELF);
-  return mapItems(s.items, (id) => people.get(id)!.label, withoutCitations);
+  const people = await peopleNow(q, r, whoIn(s.items));
+  const kept = capped(
+    mapItems(s.items, (id) => id, withoutCitations),
+    maxWeight,
+    (items) => JSON.stringify(shownForm(items, people)),
+  );
+  return hasItems(kept) ? shownForm(kept, people) : null;
 }
 
 /**
  * Stores the pair's summary as `s` (inserted, or replacing the one there), in the caller's transaction: its items; a row
- * written before migration 059 that it replaces loses its text and its 056 `speakers` record (both unused).
+ * written before migration 059 that it replaces loses its text. The 056 `speakers` column is left as it is, unused.
  */
 export async function writeSummary(q: Queryable, conversationId: string, agentId: string, s: Summary & { items: Sections }): Promise<void> {
   await q.query(
-    `insert into conversation_summaries (conversation_id, agent_id, from_seq, upto_seq, items, text, speakers, updated_at)
-     values ($1, $2, $3, $4, $5::jsonb, null, null, now())
+    `insert into conversation_summaries (conversation_id, agent_id, from_seq, upto_seq, items, text, updated_at)
+     values ($1, $2, $3, $4, $5::jsonb, null, now())
      on conflict (conversation_id, agent_id) do update
-       set from_seq = excluded.from_seq, upto_seq = excluded.upto_seq, items = excluded.items, text = null, speakers = null, updated_at = now()`,
+       set from_seq = excluded.from_seq, upto_seq = excluded.upto_seq, items = excluded.items, text = null, updated_at = now()`,
     [conversationId, agentId, s.fromSeq, s.uptoSeq, JSON.stringify(s.items)],
   );
 }
