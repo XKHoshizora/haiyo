@@ -50,14 +50,13 @@ const memoryKindOf = (body) => {
 };
 
 /**
- * `text` with each `{{m1}}` (`{{f2}}`…) as the model copies a citation: the token of that number the call was sent last
- * (`〔m1·k7q2m9x4〕`: what the service's tools label things with, carrying the reply's own tag — its tool results come after
- * the conversation, where anyone may have typed one), whole; left as it is when the call was sent none.
+ * `text` with each `{{m1}}` (`{{f2}}`…) as the model copies a citation: that number as the service's tools write it,
+ * `〔m1〕`, when the call was sent it; left as it is when the call was sent none.
  */
 const withTokens = (text, body) => {
   if (!text.includes("{{")) return text;
   const sent = JSON.stringify(body ?? null);
-  return text.replace(/\{\{([mf][1-9][0-9]*)\}\}/g, (whole, number) => [...sent.matchAll(new RegExp(`〔${number}·[a-z0-9]+〕`, "g"))].at(-1)?.[0] ?? whole);
+  return text.replace(/\{\{([mf][1-9][0-9]*)\}\}/g, (whole, number) => (sent.includes(`〔${number}〕`) ? `〔${number}〕` : whole));
 };
 
 /** One server-sent event: an `event:` line when named, then the JSON as `data:`. */
