@@ -28,11 +28,11 @@ const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xd
  * so the owner's sockets get at most one delta every `intervalMs`: the first piece goes out at once, later ones wait
  * for the interval to pass. Characters a message may not hold (`stripUnsafeText`) are left out of each piece, of the
  * text and the reasoning, as it comes (a high surrogate a piece ends with waits for the next); the stored message is
- * cleaned the same way. With `tag` (a reply offered tools: its run's, agents/tools/refs.ts) no token carrying it, no part
- * of one and not the tag is pushed, of the text or the reasoning: each piece, once cleaned, goes through `TokenHold` —
- * a token goes as it completes, what may still become one waits for the next piece however deep it nests, and at every
+ * cleaned the same way. With `holdTokens` (a reply offered tools, whose stored text keeps no token-shaped string:
+ * agents/tools/refs.ts) none is pushed, of the text or the reasoning: each piece, once cleaned, goes through `TokenHold`
+ * — a token goes as it completes, what may still become one waits for the next piece however deep it nests, and at every
  * end (`end`, `flushNow`: a stop, a cut, a time limit, a failure, an acknowledgement) what may have begun one is
- * dropped, never pushed; the stored message keeps none either, its citations beside its text. The text is pushed only up
+ * dropped, never pushed. Nothing of it is secret: the stream shows what the stored message will. The text is pushed only up
  * to the first `BLOCK_START` (looked for in the text as cleaned and without those tokens, as the stored message is
  * read): a `<` that may begin one waits for the next piece, and goes out in order once it turns out not to (or at
  * `end`). The reasoning is pushed as it comes.
@@ -51,15 +51,15 @@ export class ReplyStream {
   private held = false;
   /** A high surrogate a piece ended with: kept for the next piece, so a pair split across pieces is not cleaned away. */
   private carry = { text: "", reasoning: "" };
-  /** What of the text, and of the reasoning, may still become a token of the run's tag: held back (none without a tag). */
+  /** What of the text, and of the reasoning, may still become a token: held back (none without `holdTokens`). */
   private holds: { text: TokenHold; reasoning: TokenHold } | null;
 
   constructor(
     private readonly send: (delta: Delta) => void,
     private readonly intervalMs: number = DELTA_INTERVAL_MS,
-    private readonly tag: string | null = null,
+    private readonly holdTokens = false,
   ) {
-    this.holds = tag === null ? null : { text: new TokenHold(tag), reasoning: new TokenHold(tag) };
+    this.holds = holdTokens ? { text: new TokenHold(), reasoning: new TokenHold() } : null;
   }
 
   add(kind: "text" | "reasoning", piece: string): void {
@@ -157,7 +157,7 @@ export class ReplyStream {
     this.released = 0;
     this.held = false;
     this.carry = { text: "", reasoning: "" };
-    this.holds = this.tag === null ? null : { text: new TokenHold(this.tag), reasoning: new TokenHold(this.tag) };
+    this.holds = this.holdTokens ? { text: new TokenHold(), reasoning: new TokenHold() } : null;
   }
 
   /** Drops what is pending (nothing more will be pushed). */

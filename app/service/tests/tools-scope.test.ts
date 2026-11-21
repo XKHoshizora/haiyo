@@ -66,7 +66,7 @@ function deps(over: Partial<ToolDeps> = {}): ToolDeps {
 /** A worker on a port of the app's own with the real toolbox on `deps`. */
 function toolWorker(d: ToolDeps = deps()): AgentWorker {
   const { db: pool, blobs: store, conversations, reads, config } = app.deps;
-  const port = createAgentPort({ db: pool, config, blobs: store, realtime: app.realtime, conversations, reads, log: app.log, toolbox: createToolbox(d), drawTag: () => "k7q2m9x4" });
+  const port = createAgentPort({ db: pool, config, blobs: store, realtime: app.realtime, conversations, reads, log: app.log, toolbox: createToolbox(d) });
   return createAgentWorker({ port, models: gateway, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools });
 }
 
@@ -149,7 +149,7 @@ describe("a search in a group cannot leave it", () => {
     expect(await toolWorker().runOnce()).toBe(true);
     const [result] = outputs(gateway.calls.at(-1)!) as [{ results: Array<Record<string, unknown>>; more: boolean }];
     expect(result.more).toBe(false);
-    expect(result.results).toEqual([{ ref: "〔m1·k7q2m9x4〕", where: "乙群-秘密", who: "ned｜群成员", when: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} 周./), text: `${CANARY}：下周三在老地方` }]);
+    expect(result.results).toEqual([{ ref: "〔m1〕", where: "乙群-秘密", who: "ned｜群成员", when: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} 周./), text: `${CANARY}：下周三在老地方` }]);
   });
 
   it("a group the Agent has left is never searched, nor a message from before the Agent joined", async () => {
@@ -225,12 +225,12 @@ describe("a group reply never sees past its asker's line", () => {
     expect((await api(app, w.owner, "POST", `/api/conversations/${w.a}/members`, { principalId: sam.id })).status).toBe(201);
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     await db.query("update agent_runs set asker_ids = array[$2::uuid, $3::uuid] where id = $1", [run, w.mia.id, sam.id]);
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs("k7q2m9x4"), heardTo: await conversationSeq(w.a), mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo: await conversationSeq(w.a), mark: null };
     const signal = new AbortController().signal;
     const byName = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "预算表-m3" } }, signal);
     expect(byName.output).toEqual({ results: [], note: "这个群的记录里没找到。" });
     const byText = await runTool(deps(), scope, { id: "c2", name: SEARCH_MESSAGES, input: { query: "看看这个" } }, signal);
-    expect((byText.output as { results: unknown[] }).results).toEqual([{ ref: "〔m1·k7q2m9x4〕", who: "mia｜群成员", when: expect.any(String), text: "@scope_bot 看看这个" }]);
+    expect((byText.output as { results: unknown[] }).results).toEqual([{ ref: "〔m1〕", who: "mia｜群成员", when: expect.any(String), text: "@scope_bot 看看这个" }]);
   });
 
   it("nothing written after the reply began is found (heardTo), however well it matches", async () => {
@@ -239,7 +239,7 @@ describe("a group reply never sees past its asker's line", () => {
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     const heardTo = await conversationSeq(w.a);
     await say(w.ned, w.a, "后来才说：蓝鲸计划在五楼");
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs("k7q2m9x4"), heardTo, mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo, mark: null };
     const out = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }, new AbortController().signal);
     expect((out.output as { results: Array<{ text: string }> }).results.map((r) => r.text)).toEqual(["@scope_bot 蓝鲸计划在哪？"]);
   });
@@ -280,12 +280,12 @@ describe("a file is read only where it may be", () => {
   it("a ref minted in the own conversation for B's file reads it there, and fails inside A", async () => {
     const w = await world();
     await sendFile(w.ned, w.b, "蓝鲸计划.txt", "第一行：蓝鲸计划\n第二行：预算三万");
-    const refs = new RunRefs("k7q2m9x4");
+    const refs = new RunRefs();
     const own = await scopeOf(w, w.own, false, refs);
     const signal = new AbortController().signal;
     const found = await runTool(deps(), own, { id: "c1", name: SEARCH_MESSAGES, input: { query: "蓝鲸计划.txt" } }, signal);
     const hit = (found.output as { results: Array<{ file?: { ref: string; name: string } }> }).results.find((r) => r.file);
-    expect(hit?.file).toEqual({ ref: "〔f1·k7q2m9x4〕", name: "蓝鲸计划.txt" });
+    expect(hit?.file).toEqual({ ref: "〔f1〕", name: "蓝鲸计划.txt" });
     const there = await runTool(deps(), own, { id: "c2", name: READ_FILE, input: { file: "f1" } }, signal);
     expect(there.output).toEqual({ about: TOOL_MATERIAL, name: "蓝鲸计划.txt", from: 0, next: null, text: "第一行：蓝鲸计划\n第二行：预算三万" });
 

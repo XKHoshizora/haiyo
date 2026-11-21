@@ -14,10 +14,10 @@ import { cleanModelText, hasVisibleText } from "../schemas.ts";
 import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
 import { parseProposalBlock, PROPOSAL_PLACEHOLDER, storeProposal } from "./persona.ts";
 import { RunNotRunning } from "./runtime/port.ts";
-import { withoutSecretsPlaced } from "./runtime/prompt.ts";
+import { withoutMarkPlaced } from "./runtime/prompt.ts";
 import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
 import { forgetSummaries } from "./summary/store.ts";
-import { cutPlaced, takeCites, trimPlaced, withoutSecretsFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
+import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
 import {
   agentLimit,
   assertModelChoice,
@@ -174,8 +174,9 @@ export interface AgentReply extends LookupFields {
   stopped: boolean;
   truncated: boolean;
   /**
-   * A reply offered tools: the numbers its run gave (agents/tools/refs.ts), whose tokens its text and reasoning lose as
-   * they are stored, those of its text kept beside it as its citations (`takeCites`). Absent: none was offered.
+   * A reply offered tools: the numbers its run gave (agents/tools/refs.ts). Its text, reasoning and search words lose every
+   * token-shaped string as they are stored, those of its text of a number the run gave kept beside it as its citations
+   * (`takeCites`). Absent: none was offered, and what it says is stored as written.
    */
   refs?: RunRefs | null;
 }
@@ -190,11 +191,12 @@ export interface AgentReply extends LookupFields {
  * `client_txn` = the run's id, so posting a run's reply again returns the stored message (`duplicate`) and stores
  * nothing; by it, too, its owner's copy of the message names the run's model, level and charge (`via`, messages/read.ts).
  *
- * First of all, a reply offered tools (`refs`, the numbers its run gave) loses its run's tokens and tag from all it says —
- * its text, its reasoning and its search words, once each follows the rules of message text (`cleanModelText`) — before
- * anything reads it (agents/tools/refs.ts `takeCites`): those of its text become its citations, places in its text
- * carried through every step below (refs.ts `Placed`: a cut takes the ones past it, a block the ones in it), so that no
- * proposal, block or cut ever holds a token. An acknowledgement cites nothing.
+ * First of all, a reply offered tools (`refs`, the numbers its run gave) loses every token-shaped string from all it says
+ * — its text, its reasoning and its search words, once each follows the rules of message text (`cleanModelText`) —
+ * before anything reads it (agents/tools/refs.ts `takeCites`), whatever the run handed out, so the text is the same
+ * whatever it found: those of its text of a number the run gave become its citations, places in its text carried through
+ * every step below (refs.ts `Placed`: a cut takes the ones past it, a block the ones in it), so that no proposal, block or
+ * cut ever holds one. An acknowledgement cites nothing.
  *
  * In the Agent's own conversation: the text follows the rules of message text (`cleanModelText`: what a send would
  * refuse is removed); a persona proposal in it (`parseProposalBlock`: the reply's text only, never its reasoning) is
@@ -214,10 +216,9 @@ export interface AgentReply extends LookupFields {
  * owner's decision of 2026-11-18, replacing plan ruling 2): every member reads the message, but its reasoning is sent
  * only to the owner of the Agent that sent it (messages/read.ts `toWireForReaders`), since a model's thinking often
  * restates its persona. Then the text is cut at 8 000 characters as above. Only then do the text and the reasoning lose
- * the run's `mark` — and, from a reply offered tools, its tag once more, whatever a step before put together
- * (runtime/prompt.ts `withoutSecrets`; in its own conversation too) —, so no more is cleaned than a message stores — what
- * the model writes may be shaped against the cleaner, and whoever runs the model's endpoint reads the mark in the system
- * text.
+ * the run's `mark` (runtime/prompt.ts `withoutMarkPlaced`, the citations' places moved with the text), so no more is
+ * cleaned than a message stores — what the model writes may be shaped against the cleaner, and whoever runs the model's
+ * endpoint reads the mark in the system text.
  * `mark` is the one the run drew, as the port kept it from `begin` (port-impl.ts `RunFlags.mark`): only a run begun in
  * this process is posted, so in a group it is always there, and a reply there without one is thrown, never posted
  * uncleaned. What was cut for length — the text when it is `truncated`, the reasoning when it was cut here or the reply
@@ -279,9 +280,10 @@ export async function postAsAgent(
   if (!own && !(await currentMembership(t, conversationId, agentId))) throw new AppError(409, "agent_removed");
   if (!own && mark === null) throw new Error("a reply in a group is posted only with the mark its run drew");
 
-  // A reply offered tools: its run's tokens go first, from all it says — its text, its reasoning, its search words —
-  // before anything reads it (a proposal, the block rule, the cut, the mark): those of its text become its citations
-  // (an acknowledgement cites nothing), carried as places through every step after (refs.ts `Placed`).
+  // A reply offered tools: every token-shaped string goes first, from all it says — its text, its reasoning, its search
+  // words — before anything reads it (a proposal, the block rule, the cut, the mark): those of its text of a number the
+  // run gave become its citations (an acknowledgement cites nothing), carried as places through every step after (refs.ts
+  // `Placed`).
   const refs = reply.refs ?? null;
   const here = (r: MessageRef): boolean => own || r.conversationId === conversationId;
   let placed: Placed = refs ? takeCites(cleanModelText(reply.text), refs, { cite: !ack, keep: here }) : { text: cleanModelText(reply.text), cites: [] };
@@ -302,15 +304,13 @@ export async function postAsAgent(
   // Kept as in its own conversation; in a group only its owner is ever sent it (messages/read.ts).
   const thought = Array.from(reasoning);
   if (thought.length > REASONING_MAX) reasoning = thought.slice(0, REASONING_MAX).join("").trimEnd();
-  // The run's secrets go last, from no more than is kept, whatever a step before put together: in a group its mark —
-  // from the end of what was cut for length also what the cut left of the mark or of a label —, and the tag of a reply
-  // offered tools; then, in a group, an acknowledgement or a reply stopped or cut, a block that put together.
+  // In a group the run's mark goes last, from no more than is kept — from the end of what was cut for length also what
+  // the cut left of the mark or of a label —; then a block that taking it out put together.
   const thoughtCut = reply.truncated || thought.length > REASONING_MAX;
-  const tag = refs?.tag ?? null;
-  if (mark !== null || tag !== null) {
-    placed = trimPlaced(withoutSecretsFrom(placed, mark, tag, truncated));
-    if (!own || ack || (!proposal && (reply.stopped || truncated))) placed = withoutUnfinishedBlockPlaced(placed);
-    reasoning = withoutSecretsPlaced(reasoning, mark, tag, [], thoughtCut).text.trim();
+  if (mark !== null) {
+    placed = trimPlaced(withoutMarkFrom(placed, mark, truncated));
+    placed = withoutUnfinishedBlockPlaced(placed);
+    reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut).text.trim();
   }
   const text = placed.text;
   // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted.

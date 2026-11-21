@@ -225,9 +225,9 @@ describe("LoopGuard", () => {
   });
 
   it("M-7: given `same`, a call is known by what it makes of the call: two forms of one input are one call", () => {
-    const guard = new LoopGuard({ maxRounds: 8, perTool: {}, same: (c) => (c.name === "read_file" ? { file: String((c.input as { file: string }).file).replace(/[〔〕]|·.*$/g, "") } : c.input) });
+    const guard = new LoopGuard({ maxRounds: 8, perTool: {}, same: (c) => (c.name === "read_file" ? { file: String((c.input as { file: string }).file).replace(/[〔〕]/g, "") } : c.input) });
     expect(guard.admit(call("read_file", { file: "f1" }))).toBe("run");
-    expect(guard.admit(call("read_file", { file: "〔f1·k7q2m9x4〕" }))).toBe("repeat");
+    expect(guard.admit(call("read_file", { file: "〔f1〕" }))).toBe("repeat");
     expect(guard.mustEnd()).toBe(false);
     expect(guard.admit(call("read_file", { file: "f1" }))).toBe("repeat");
     expect(guard.mustEnd()).toBe(true);

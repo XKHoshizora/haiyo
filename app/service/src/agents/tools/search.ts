@@ -5,7 +5,7 @@ import { cutToWeight, lastToWeight, weight } from "../../metering/tokens.ts";
 import type { ToolSpec } from "../../models/gateway.ts";
 import { askerLine, callsSeen } from "../context.ts";
 import type { ToolOutcome } from "../runtime/port.ts";
-import { cleanText, labelName, NO_GROUP_TITLE, oneLine, speakerRole, TOOL_MATERIAL, withoutSecrets } from "../runtime/prompt.ts";
+import { cleanText, labelName, NO_GROUP_TITLE, oneLine, speakerRole, TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
 import { siteDateTime, siteWeekday } from "./clock.ts";
 import type { ElsewhereAsk, RunScope, ToolDeps } from "./index.ts";
 
@@ -218,13 +218,12 @@ const WIDEST_FILE = "f999999";
  * role`, as a group's labels name people: by account, never by what anyone wrote; `你自己` for the Agent), when (the
  * site's time, `YYYY-MM-DD HH:mm 周X`), what (`excerpt`), where (in the Agent's own conversation, a group's title for
  * what was said there), and a file's number and name — not for a call at or before a group reply's line, which is shown
- * as its text only. Whatever anyone wrote loses the run's secrets (runtime/prompt.ts `withoutSecrets`): in a group its
- * mark, and always its tag, so that no planted token can carry it; the rest is shown as it is stored (no stored text holds
- * a citation: what looks like one is what someone wrote). Each message and file is named by its token, carrying the
- * run's tag (`ref`, refs.ts): the only numbers it can cite.
+ * as its text only. In a group the run's mark is taken out of whatever someone else wrote; the rest is shown as it is
+ * stored (no stored text holds a citation: what looks like one is what someone wrote). Each message and file is named
+ * by its number as the model is shown it, `〔m1〕` (`ref`, refs.ts): the only numbers it can cite.
  */
 function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { results: Result[]; refs: MessageRef[]; more: boolean } {
-  const clean = (s: string): string => withoutSecrets(s, scope.group ? scope.mark : null, scope.refs.tag);
+  const clean = (s: string): string => withoutMark(s, scope.group ? scope.mark : null);
   const drafts = found.rows.slice(0, SEARCH_RESULTS_MAX).map((row) => {
     const seq = Number(row.seq);
     // Who they are to the Agent by account, as a group's labels say it (`speakerRole`); the Agent itself is `你自己`.

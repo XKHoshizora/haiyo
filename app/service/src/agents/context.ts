@@ -20,7 +20,7 @@ import {
   speakerLabel,
   speakerRole,
   systemTokens,
-  withoutSecrets,
+  withoutMark,
   withSummary,
   type GroupPerson,
   type GroupScene,
@@ -107,8 +107,9 @@ export interface ContextRun {
   reserved?: number;
   /**
    * A reply offered tools: the numbers of its plan (agents/tools/refs.ts `RunRefs`), by which each attachment it is shown
-   * gets its token (`RunRefs.file`, the message it was sent in), which its label carries — the message's own and a quoted
-   * one's alike —, and whose tag a file's text loses (`buildContext`). Absent: labels carry none.
+   * gets its number (`RunRefs.file`, the message it was sent in), which its label carries — the message's own and a quoted
+   * one's alike —, in the order the context shows them, the oldest first (`loadContext`): a later file leaves the labels
+   * before it as they were, so the context a provider caches starts the same. Absent: labels carry none.
    */
   refs?: RunRefs;
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
@@ -166,15 +167,6 @@ export interface LoadedContext {
   leftOut: LeftOut | null;
   /** The pair's summary as the system text carries it (`withSummary`); null when it carries none. */
   summary: Summary | null;
-  /** A reply offered tools: its tag (`ContextRun.refs`), which a file's text loses when it is read (`buildContext`). */
-  tag: string | null;
-  /**
-   * Whether `text` (lower case, a run's tag) occurs, in any case, in anything it shows that anyone wrote — the system text
-   * (a persona, notes, a summary, names, a title), and of each message loaded its text, its quote, its proposal, its file's
-   * name and who said it, as stored (`Loaded.said`: never the labels the plan writes) —, so that a run's tag is drawn
-   * again while it does (port-impl.ts `begin`).
-   */
-  holds: (text: string) => boolean;
 }
 
 /** What a conversation part left out (`LoadedContext.leftOut`). */
@@ -338,7 +330,10 @@ export type Speaker = Omit<Member, "appellation">;
 
 /** A message as loaded: its entry, its seq, and where it belongs (`answers`). */
 interface Loaded {
+  /** Its entry: as loaded, without numbers; with a reply's numbers once what is shown is known (`build`, `loadContext`). */
   entry: ContextEntry;
+  /** Its entry with the attachment labels numbered by `refs` (its quote's file, then its own), or without numbers (null). */
+  build: (refs: RunRefs | null) => ContextEntry;
   seq: number;
   /** The owner's message: its seq. The Agent's reply: the seq its run had covered when it began. */
   answers: number;
@@ -355,8 +350,6 @@ interface Loaded {
    * the run's mark is drawn (`shown`).
    */
   speaker: (Speaker & { present: boolean; quoted: boolean }) | null;
-  /** What anyone wrote that the model is shown of it, as stored: its text, its quote's, its proposal, its file's name, who said it. */
-  said: string[];
 }
 
 interface MessageRow {
@@ -382,12 +375,12 @@ interface MessageRow {
   proposal_field: string | null;
 }
 
-/** An attachment of message `seq` of `run` as the context shows it; a reply offered tools (`ContextRun.refs`), with its token. */
-const toAttachment = (a: AttachmentRef, seq: number, run: Pick<ContextRun, "refs" | "conversationId">): ContextAttachment => ({
+/** An attachment of message `seq` of `conversationId` as the context shows it; with `refs` (a reply offered tools), with its number. */
+const toAttachment = (a: AttachmentRef, seq: number, conversationId: string, refs: RunRefs | null): ContextAttachment => ({
   id: a.id,
   name: a.name,
   image: a.inline === true,
-  ...(run.refs ? { ref: run.refs.file(a.id, { conversationId: run.conversationId, seq }) } : {}),
+  ...(refs ? { ref: refs.file(a.id, { conversationId, seq }) } : {}),
 });
 
 
@@ -446,9 +439,9 @@ async function loadPage(
     [run.agentId, run.conversationId, from, before, run.coversSeq, run.ownerId, limit, group, run.group?.calls ?? [], run.upTo ?? null],
   );
   const quotedSeqs = [...new Set(rows.flatMap((r) => (typeof r.reply_to === "number" && Number.isSafeInteger(r.reply_to) ? [r.reply_to] : [])))];
+  /** A quoted message as it is shown: its text, or (when it has none) its attachment, labelled once numbers are known. */
   const quotes = new Map<number, string>();
-  /** What anyone wrote of each quoted message, as stored (`Loaded.said`). */
-  const quotedSaid = new Map<number, string[]>();
+  const quotedFiles = new Map<number, AttachmentRef>();
   if (quotedSeqs.length > 0) {
     const quoted = await q.query<{ seq: string; text: string | null; attachment: AttachmentRef | null }>(
       `select m.seq::text as seq, m.body ->> 'text' as text, m.body -> 'attachment' as attachment
@@ -457,24 +450,29 @@ async function loadPage(
       [run.agentId, run.conversationId, quotedSeqs, run.group?.after ?? 0],
     );
     for (const r of quoted.rows) {
-      const shown = r.text || (r.attachment ? attachmentLabel(toAttachment(r.attachment, Number(r.seq), run)) : "");
-      if (shown !== "") quotes.set(Number(r.seq), shown);
-      quotedSaid.set(Number(r.seq), [r.text ?? "", r.attachment?.name ?? ""]);
+      if (r.text) quotes.set(Number(r.seq), r.text);
+      else if (r.attachment) quotedFiles.set(Number(r.seq), r.attachment);
     }
   }
   const loaded = rows.flatMap((r): Loaded[] => {
     const role = r.sender_id === run.agentId ? "assistant" : group || r.sender_id === run.ownerId ? "user" : null;
     if (role === null) return [];
-    const quoted = typeof r.reply_to === "number" ? (quotes.get(r.reply_to) ?? null) : null;
+    const replyTo = typeof r.reply_to === "number" ? r.reply_to : null;
+    const quotedText = replyTo === null ? undefined : quotes.get(replyTo);
+    const quotedFile = replyTo === null ? undefined : quotedFiles.get(replyTo);
     const seq = Number(r.seq);
-    let text = entryText(r.text ?? "", quoted);
-    const said = [r.text ?? "", r.attachment?.name ?? "", ...(typeof r.reply_to === "number" ? (quotedSaid.get(r.reply_to) ?? []) : [])];
-    if (role === "assistant" && r.proposal_persona !== null) {
-      const block = renderProposalBlock({ persona: r.proposal_persona, intro: r.proposal_intro, field: r.proposal_field });
-      text = text === "" ? block : `${text}\n\n${block}`;
-      said.push(block);
-    }
-    const entry: ContextEntry = { role, text, attachment: r.attachment ? toAttachment(r.attachment, seq, run) : null };
+    const block = role === "assistant" && r.proposal_persona !== null ? renderProposalBlock({ persona: r.proposal_persona, intro: r.proposal_intro, field: r.proposal_field }) : null;
+    const build = (refs: RunRefs | null): ContextEntry => {
+      const quote = quotedText ?? (quotedFile && replyTo !== null ? attachmentLabel(toAttachment(quotedFile, replyTo, run.conversationId, refs)) : null);
+      const text = entryText(r.text ?? "", quote);
+      return {
+        role,
+        text: block === null ? text : text === "" ? block : `${text}\n\n${block}`,
+        attachment: r.attachment ? toAttachment(r.attachment, seq, run.conversationId, refs) : null,
+      };
+    };
+    const entry = build(null);
+    const quoted = quotedText !== undefined || quotedFile !== undefined;
     const speaker =
       group && role === "user"
         ? {
@@ -483,11 +481,10 @@ async function loadPage(
             handle: r.sender_handle,
             role: speakerRole(r.sender_id, r.sender_kind, run.ownerId),
             present: r.sender_present,
-            quoted: quoted !== null,
+            quoted,
           }
         : null;
-    if (speaker !== null) said.push(r.sender_name, r.sender_handle);
-    return [{ entry, seq, answers: r.answers === null ? seq : Number(r.answers), reply: r.answers !== null, placed: r.placed, speaker, said }];
+    return [{ entry, build, seq, answers: r.answers === null ? seq : Number(r.answers), reply: r.answers !== null, placed: r.placed, speaker }];
   });
   return { loaded, oldest: rows.length > 0 ? Number(rows[rows.length - 1]!.seq) : null, more: rows.length === limit };
 }
@@ -607,6 +604,9 @@ export async function loadContext(
     before = page.oldest;
   }
   const kept = more ? loaded.filter((l) => l.answers >= oldest) : loaded;
+  // A reply offered tools: the files of what is shown get their numbers in the order they are shown, the oldest first
+  // (`ContextRun.refs`), so that a later file leaves every label before it as it was.
+  if (run.refs) for (const l of inAnsweredOrder(kept)) l.entry = l.build(run.refs);
   const speakers = speakersOf(kept);
   const unmarked = withPassage("", speakers);
   const mark = run.group === null ? null : newMark((m) => unmarked.text.includes(m) || kept.some((l) => shows(l, m)), draw);
@@ -645,9 +645,7 @@ export async function loadContext(
     const found = await findDownloadable(q, run.agentId, a.id);
     if (found) attachments.set(a.id, found);
   }
-  const shownText = text.text.toLowerCase();
-  const holds = (wanted: string): boolean => shownText.includes(wanted) || kept.some((l) => l.said.some((x) => x.toLowerCase().includes(wanted)));
-  return { system: text, speakers, mark, budget, planRatio: ratio, entries, attachments, topicStart: start, leftOut, summary: carried, tag: run.refs?.tag ?? null, holds };
+  return { system: text, speakers, mark, budget, planRatio: ratio, entries, attachments, topicStart: start, leftOut, summary: carried };
 }
 
 /**
@@ -766,9 +764,9 @@ export function withRoster(scene: LoadedScene, speakers: readonly Speaker[]): Gr
  * attachments when the model can take them and they fit — checked on their stored size before a byte is read: a PNG,
  * JPEG or WebP image (a GIF is named) up to 5 MB when the model sees images; a PDF up to 10 MB when it reads PDFs; any
  * other file as text when its bytes are text (`fileText`), read at most 4 bytes per character it may still show; never
- * more than the call's `bytesLeft`. A file's text loses the run's secrets (`withoutSecrets`): in a group its mark, and the
- * tag of a reply offered tools: files are read after both are drawn, so this is how a file filled with guessed labels or
- * tokens can never carry the real one. An image's or a PDF's bytes go to the model as they are and cannot be cleaned so. A missing blob is shown by name (and logged). So is
+ * more than the call's `bytesLeft`. In a group a file's text loses the run's mark (`withoutMark`): files are read after
+ * the mark is drawn, so this is how a file filled with guessed labels can never carry the real one. An image's or a
+ * PDF's bytes go to the model as they are and cannot be cleaned so. A missing blob is shown by name (and logged). So is
  * one whose read fails or takes longer than `BLOB_READ_TIMEOUT_MS` (logged once) — unless no read of this build has
  * succeeded and this is the second that failed: then the store is down (`BlobStoreDown` is thrown). Once one read has
  * succeeded (a missing blob counts: the store answered), every later failure is shown by its name. Once `stop()` says
@@ -825,7 +823,7 @@ export async function buildContext(
       const max = Math.min(found.size, maxChars * UTF8_MAX_BYTES_PER_CHAR, plan.bytesLeft);
       const got = await read(attachment, found.blobKey, max, startsLikeText);
       const text = got ? fileText(got.data, got.complete, maxChars) : null;
-      if (text) plan.offer(slot, { type: "text", text: withoutSecrets(text.text, loaded.mark, loaded.tag), chars: text.chars });
+      if (text) plan.offer(slot, { type: "text", text: withoutMark(text.text, loaded.mark), chars: text.chars });
     }
   }
 
