@@ -412,6 +412,29 @@ describe("reminders of the day's free allowance and of the balance", () => {
     expect(await whispersIn(owner, ann.conversationId)).toEqual([EMPTY]);
   });
 
+  it("the sweep delivers what is due oldest first, and reminders recorded together in the order they were recorded: ids as numbers, 10 after 9, not as text", async () => {
+    const owners: Array<{ owner: Actor; agent: { id: string } }> = [];
+    for (const name of ["tiea", "tieb", "tiec"]) {
+      const owner = await signUp(app, name);
+      owners.push({ owner, agent: await mustCreateAgent(app, owner, { model: FREE, name: "Ann", persona: "简短地回答。" }) });
+    }
+    // Eight done before (ids 1–8), then three recorded together — one statement, one created_at: ids 9, 10 and 11.
+    await db.query(
+      "insert into allowance_reminders (owner_id, day, threshold, agent_id, delivered_at) select $1, (now() at time zone 'Asia/Shanghai')::date, 'balance', $2, now() from generate_series(1, 8)",
+      [owners[0]!.owner.id, owners[0]!.agent.id],
+    );
+    await db.query(
+      `insert into allowance_reminders (owner_id, day, threshold, agent_id)
+       select o, (now() at time zone 'Asia/Shanghai')::date, 'warn', a from unnest($1::uuid[], $2::uuid[]) with ordinality as t(o, a, n) order by n`,
+      [owners.map((o) => o.owner.id), owners.map((o) => o.agent.id)],
+    );
+    const due = (await db.query("select id::int as id, owner_id from allowance_reminders where delivered_at is null order by allowance_reminders.id")).rows;
+    expect(due).toEqual(owners.map((o, i) => ({ id: 9 + i, owner_id: o.owner.id })));
+    const { deliverReminders } = await import("../src/metering/reminders.ts");
+    const made = await deliverReminders(db, app.deps.config, app.log);
+    expect(made.map((r) => r.whisper?.ownerId)).toEqual(owners.map((o) => o.owner.id));
+  });
+
   it("a reminder whose whisper was never made — the service stopped between the settlement and the whisper — is made by the periodic sweep, once, also when two sweeps run at once", async () => {
     const owner = await signUp(app, "sweepwarn");
     const ann = await mustCreateAgent(app, owner, { model: FREE, name: "Ann", persona: "简短地回答。" });
