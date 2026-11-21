@@ -105,6 +105,11 @@ export function initial() {
     proactiveAvailable: null,
     /** What a provider model gets when its entry says nothing: {contextTokens, maxOutputTokens}, or null before it. */
     providerDefaults: null,
+    /**
+     * How far back turning an Agent's memory on again may look (`GET /api/models` `memoryCatchUp`): {days, lines}, or null
+     * before it, or when the service does not say.
+     */
+    memoryCatchUp: null,
     /** conversation id → its latest run (see the header), or null when there is none to show. */
     runs: {},
     /** conversation id → the id of the failed run I dismissed (see the header). */
@@ -1568,5 +1573,8 @@ export function applyModels(state, answer) {
     }));
   const d = answer.providerDefaults;
   const providerDefaults = d && typeof d === "object" ? { contextTokens: d.contextTokens, maxOutputTokens: d.maxOutputTokens } : state.providerDefaults;
-  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true };
+  const c = answer.memoryCatchUp;
+  const whole = (n) => Number.isSafeInteger(n) && n > 0;
+  const memoryCatchUp = c && typeof c === "object" && whole(c.days) && whole(c.lines) ? { days: c.days, lines: c.lines } : null;
+  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true, memoryCatchUp };
 }

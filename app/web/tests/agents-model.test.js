@@ -543,6 +543,15 @@ describe("providers, usage and site models", () => {
     expect(view(M.applyModels(M.applyModels(M.initial(), answer({ proactiveAvailable: true })), answer())).proactiveAvailable).toBe(false);
   });
 
+  it("applyModels keeps how far back turning memory on again looks (memoryCatchUp), only as whole numbers; null until said", () => {
+    const answer = (extra) => ({ siteModels: [], providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 }, ...extra });
+    expect(view(M.initial()).memoryCatchUp).toBeNull();
+    expect(view(M.applyModels(M.initial(), answer({ memoryCatchUp: { days: 30, lines: 200 } }))).memoryCatchUp).toEqual({ days: 30, lines: 200 });
+    for (const bad of [{ days: "30", lines: 200 }, { days: 30 }, { days: 0, lines: 200 }, { days: 1.5, lines: 200 }, null, "30/200"]) {
+      expect([bad, view(M.applyModels(M.initial(), answer({ memoryCatchUp: bad }))).memoryCatchUp]).toEqual([bad, null]);
+    }
+  });
+
   it("an Agent's proactive settings come only as the service says them, and a malformed one is not kept", () => {
     const agentOfView = (fields) => Object.values(view(M.applyAgent(M.initial(), { id: "00000000-0000-4000-8000-0000000000a1", handle: "h", name: "n", ...fields })).agents)[0];
     expect(agentOfView({})).not.toHaveProperty("proactive");

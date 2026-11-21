@@ -20,6 +20,7 @@ const modelsResponse = z.object({
   ),
   providerDefaults: z.object({ contextTokens: z.number(), maxOutputTokens: z.number() }),
   proactiveAvailable: z.boolean(),
+  memoryCatchUp: z.object({ days: z.number(), lines: z.number() }),
 });
 
 /**
@@ -27,7 +28,8 @@ const modelsResponse = z.object({
  * order, each with what its owner chooses by and whether its replies may be offered tools (`tools`) — never where it is
  * called (`baseUrl`, `protocol`), by what upstream name, with which key (`apiKeyEnv`, the key) or at what price — the
  * defaults a provider model gets, and whether proactive replies can be turned on (`proactiveAvailable`: the judgement
- * model is configured).
+ * model is configured), and how far back turning an Agent's memory on again may look (`memoryCatchUp`: `MEMORY.catchUpDays`
+ * and `MEMORY.catchUpLines`, what the question under 记忆 says).
  */
 export function registerModelRoutes(app: FastifyInstance): void {
   const { config } = app.deps;
@@ -54,6 +56,8 @@ export function registerModelRoutes(app: FastifyInstance): void {
         })),
         providerDefaults: { contextTokens: config.providerDefaultContextTokens, maxOutputTokens: config.providerDefaultMaxOutputTokens },
         proactiveAvailable: config.judge !== null,
+        // How far back turning an Agent's memory on again may look (memory/catchup.ts): what its question says.
+        memoryCatchUp: { days: config.memory.catchUpDays, lines: config.memory.catchUpLines },
       };
     },
   );

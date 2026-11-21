@@ -859,6 +859,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     providerDefaults: model.providerDefaults ?? null,
     /** true or false once the site's models have answered; null before (not known yet). */
     proactiveAvailable: typeof model.proactiveAvailable === "boolean" ? model.proactiveAvailable : null,
+    /** {days, lines}: how far back turning an Agent's memory on again looks, as the site says; null when not said. */
+    memoryCatchUp: model.memoryCatchUp ?? null,
     /** principal id (the real one, mine too) → the version in its avatar URL; for an avatar of someone nobody names. */
     avatarVersions: versions,
   };

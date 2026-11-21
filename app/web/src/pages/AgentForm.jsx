@@ -39,6 +39,8 @@ const MEMORY_SWITCHES = [
 ];
 /** Asked, under 记忆, when it is turned back on for an Agent that has had it off: the answer is sent at once (`catchUp`). */
 const CATCH_UP_QUESTION = "关掉期间聊过的内容，要不要也让它回顾一下？";
+/** Under the question: how far back it looks, from the site's own numbers (`GET /api/models` `memoryCatchUp`). */
+const catchUpBounds = ({ days, lines }) => `最多回看最近 ${days} 天、每个群最近 ${lines} 条。`;
 /** What the service takes when a switch is not said (the form's defaults, `recordFields`). */
 const MEMORY_DEFAULTS = { memory: true, memoryAsk: false, sharedNotes: true };
 const MEMORY_KEYS = Object.keys(MEMORY_DEFAULTS);
@@ -696,6 +698,7 @@ export function AgentForm({ agent = null }) {
               </p>
               {askCatchUp && (
                 <>
+                  {state.memoryCatchUp && <p className="field-hint">{catchUpBounds(state.memoryCatchUp)}</p>}
                   <div className="card-actions">
                     <Btn variant="primary" disabled={catchUp.busy !== null} onClick={() => answerCatchUp(false)}>
                       {catchUp.busy === "later" ? "处理中…" : "只记以后的"}

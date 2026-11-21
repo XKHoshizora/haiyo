@@ -2135,6 +2135,26 @@ describe("the 记忆 section of the form", () => {
       expect(sw(MEMORY).checked).toBe(false);
     });
 
+    it("under the question, how far back it looks, from the site's real numbers (GET /api/models memoryCatchUp); the buttons are unchanged", async () => {
+      const record = agentOf(AG1, { model: SITE_MODEL, memory: false });
+      const app = await openAgents({ agents: [record], models: { ...MODELS, memoryCatchUp: { days: 7, lines: 150 } } });
+      app.transport.handlers.agent = () => record;
+      await openRow("小助手");
+      await click(inMain().getByRole("button", { name: /编辑/ }));
+      expect(inMain().queryByText(/最多回看最近/)).toBeNull();
+      fireEvent.click(sw(MEMORY));
+      const box = question().closest(".memory-catch-up");
+      expect(within(box).getByText("最多回看最近 7 天、每个群最近 150 条。")).toBeTruthy();
+      expect(within(box).getAllByRole("button").map((b) => b.textContent)).toEqual([ONLY_LATER, LOOK_BACK]);
+    });
+
+    it("a service that does not say how far back it looks: the question alone, no made-up numbers", async () => {
+      await openEditOf({ memory: false });
+      fireEvent.click(sw(MEMORY));
+      expect(question()).toBeTruthy();
+      expect(inMain().queryByText(/最多回看最近/)).toBeNull();
+    });
+
     it("the question is announced: a polite live region is there, empty, before it asks, and the question is put into that same region", async () => {
       await openEditOf({ memory: false });
       const section = sw(MEMORY).closest("fieldset");
