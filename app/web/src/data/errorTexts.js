@@ -297,6 +297,8 @@ const REPLY = {
     invalid_request: "现在没有可以重试的回复，或这个 Agent 还没有选择模型。",
     not_found: NOT_FOUND,
     rate_limited: "回复太频繁了，请稍等一分钟再试。",
+    // A told reply (告诉他们) whose whisper no longer reads open: said as the whisper itself says it.
+    stale_whisper: "这条悄悄话已经处理过了。",
   },
   dismiss: { not_found: NOT_FOUND },
   topic: {

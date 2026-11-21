@@ -12,6 +12,7 @@ import { click, elapse, flush, installBrowser, openApp, push } from "./harness.j
 import { WHISPER_RETRY_MS } from "../src/data/actions.js";
 import { applyCatchup, applyGone, applySync, applyWhisper, initial } from "../src/data/model.js";
 import { placeWhispers } from "../src/data/viewmodel.js";
+import { replyErrorText } from "../src/data/errorTexts.js";
 
 beforeEach(() => {
   installBrowser();
@@ -563,6 +564,12 @@ describe("the held whispers (model.js)", () => {
     expect(ids(placeWhispers([m(4), m(5)], [w("b", 4), w("c", 5)], { complete: true, toEnd: true, bubble: "m5" }))).toEqual(["m4", "w:b", "bubble", "w:c"]);
     // Once it has finished, the message is where the bubble was: nothing moved.
     expect(ids(placeWhispers([m(4), m(5)], [w("b", 4), w("c", 5)], { complete: true, toEnd: true }))).toEqual(["m4", "w:b", "m5", "w:c"]);
+  });
+});
+
+describe("the retry of a told reply whose whisper no longer reads open", () => {
+  it("is refused stale (409 stale_whisper): the retry says the whisper was handled already, as the whisper itself would", () => {
+    expect(replyErrorText("retry", { status: 409, code: "stale_whisper" })).toBe("这条悄悄话已经处理过了。");
   });
 });
 
