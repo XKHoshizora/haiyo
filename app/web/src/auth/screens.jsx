@@ -1,23 +1,25 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import { PRODUCT_NAME } from "../brand.js";
-import { BrandMark, Btn, Field, Notice, focusInvalid } from "../ui/primitives.jsx";
+import { BrandMark, Btn, Field, Notice, TextLink, focusInvalid } from "../ui/primitives.jsx";
 import { fieldOf, messageFor, verifyMessage } from "./errors.js";
 import { clearResetToken, navigate, takeResetToken } from "./router.js";
 import * as rules from "./validation.js";
 
 function Link({ to, children, primary = false }) {
-  return (
-    <a
-      className={primary ? "btn btn-primary" : "btn btn-text btn-sm"}
-      href={to}
-      onClick={(e) => {
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-        e.preventDefault();
-        navigate(to);
-      }}
-    >
+  const onClick = (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    navigate(to);
+  };
+  // The one prominent link of a page is a button; the others are the shared text link.
+  return primary ? (
+    <a className="btn btn-primary" href={to} onClick={onClick}>
       {children}
     </a>
+  ) : (
+    <TextLink href={to} onClick={onClick}>
+      {children}
+    </TextLink>
   );
 }
 

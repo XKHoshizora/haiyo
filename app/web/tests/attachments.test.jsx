@@ -373,6 +373,8 @@ describe("showing attachments", () => {
     const link = within(card).getByRole("link", { name: /下载/ });
     expect(link.getAttribute("href")).toBe(`/api/attachments/${FILE_ID}`);
     expect(link.getAttribute("download")).toBe(EVIL);
+    expect(link.classList.contains("btn")).toBe(true); // an action: the app's secondary button, not a link style
+    expect(link.classList.contains("text-link")).toBe(false);
   });
 
   it("a pushed image message from the other side is shown as an image", async () => {

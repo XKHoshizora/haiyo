@@ -136,6 +136,14 @@ describe("sign-in", () => {
     expect(document.body.textContent).not.toContain("Agent Family");
   });
 
+  it("its secondary links are the shared text link, not a raw anchor", async () => {
+    await signedOutAt(signInApi());
+    for (const name of ["忘记密码", "注册新账号"]) {
+      const link = screen.getByRole("link", { name });
+      expect([name, link.classList.contains("text-link"), link.classList.contains("btn")]).toEqual([name, true, false]);
+    }
+  });
+
   it("sets the right autocomplete attributes", async () => {
     await signedOutAt(signInApi());
     expect(screen.getByLabelText("邮箱").getAttribute("autocomplete")).toBe("username");
@@ -208,6 +216,15 @@ describe("register", () => {
     submit("注册");
     await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
     expect(screen.getByText("没收到？看看垃圾邮件箱；或者直接去登录，我们会再发一封。")).toBeTruthy();
+  });
+
+  it("its sign-in link and the one on the check-your-mailbox page are the shared text link", async () => {
+    await open();
+    expect(screen.getByRole("link", { name: "已有账号？去登录" }).classList.contains("text-link")).toBe(true);
+    fill();
+    submit("注册");
+    await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
+    expect(screen.getByRole("link", { name: "去登录" }).classList.contains("text-link")).toBe(true);
   });
 
   it("sets autocomplete for the new password and e-mail", async () => {

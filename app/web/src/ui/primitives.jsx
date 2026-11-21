@@ -92,6 +92,15 @@ export function Btn({ variant = "ghost", small, reason, className = "", children
   );
 }
 
+/** The one style of a plain text link (navigation): accent colour, underlined on hover and keyboard focus (styles.css `.text-link`). An action is a button (`Btn`, or `btn` on an anchor), not this. */
+export function TextLink({ className = "", children, ...rest }) {
+  return (
+    <a className={`text-link ${className}`.trim()} {...rest}>
+      {children}
+    </a>
+  );
+}
+
 export function IconBtn({ label, children, className = "", ...rest }) {
   return (
     <button type="button" className={`icon-btn ${className}`} aria-label={label} title={label} {...rest}>
