@@ -9,7 +9,6 @@ import { cleanText, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/
 import { lockAgent } from "../store.ts";
 import { siteDateTime } from "./clock.ts";
 import type { ElsewhereAsk, RunScope } from "./index.ts";
-import { withoutCitations } from "./refs.ts";
 import { excerptAt, matchAt } from "./search.ts";
 
 /**
@@ -144,9 +143,10 @@ async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk):
 /**
  * A hit's text as it is cut and shown: the one place both where the words are (`refOf`, when the whisper is made) and the
  * cut around them (`hitOf`, whenever it is read) start from — so whatever is changed in it changes both alike and a kept
- * `at` stays where the words are.
+ * `at` stays where the words are. It is the stored text as it is: a message's text never holds a citation (its cites are
+ * stored beside it, agents/tools/refs.ts), so nothing is taken out of it.
  */
-const hitLine = (text: string | null): string => withoutCitations(text ?? "");
+const hitLine = (text: string | null): string => text ?? "";
 
 /** What the whisper keeps of a row: where it points, and where in its text (as a hit shows it) the words are. */
 function refOf(row: SearchRow, term: string): HitRef {
@@ -192,14 +192,14 @@ export function askedOf(detail: unknown): number | null {
  * A hit as its owner is shown it, from what whispers/store.ts `readableHits` read of its message (under her access now,
  * the one rule): where (a group's title, `某个群` when it has none; `我们的专属会话` for the Agent's own), who (the sender's name
  * as a label shows it), when (in `timeZone`, the site's), and what — on one line, cut around the words as the search cut
- * it (`excerptAt` at the kept `at`), without any citation, at most `QUOTE_MAX_CHARS` characters (a file message without
- * text: its name).
+ * it (`excerptAt` at the kept `at`, from the same `hitLine` the place was found in), at most `QUOTE_MAX_CHARS` characters
+ * (a file message without text: its name).
  */
 export function hitOf(row: HitRow, timeZone: string): ElsewhereHit {
   const { date, time } = siteDateTime(row.createdAt, timeZone);
   const said = Array.from(excerptAt(hitLine(row.text), row.at)).slice(0, QUOTE_MAX_CHARS).join("");
   return {
-    where: row.conversationType === "agent" ? OWN_PLACE : cleanText(withoutCitations(row.title ?? "")) || NO_GROUP_TITLE,
+    where: row.conversationType === "agent" ? OWN_PLACE : cleanText(row.title ?? "") || NO_GROUP_TITLE,
     who: labelName(row.senderName, row.senderHandle),
     when: `${date} ${time}`,
     text: said !== "" ? said : row.attachmentName ? cleanText(row.attachmentName) : "",

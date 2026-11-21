@@ -79,25 +79,36 @@ export function foundOf(value: unknown): MessageRef[] {
   return out;
 }
 
-/** A citation's number as a reply writes it (agents/tools/refs.ts): `m` and a whole number from 1, at most six digits. */
-const CITE_KEY = /^m[1-9][0-9]{0,5}$/;
+/**
+ * A citation of a reply, stored beside its text as a mention is (README "Agents and runs", Citations; agents/tools/refs.ts
+ * `takeCites`): where it stands in the stored text (`at`, UTF-16 code units: a link is drawn there), whether it cites a
+ * message or a file (`kind`), and the message it points to — for a file, the message the file was sent in. The text
+ * itself never holds a citation.
+ */
+export interface Cite {
+  at: number;
+  kind: "m" | "f";
+  ref: MessageRef;
+}
+
 /** The most citations a reply keeps: the first ones. */
 export const CITES_MAX = 20;
 
 /**
- * The citations `value` holds (a reply's `cites`, a stored body's): each number (`m3`) with the message it points to,
- * only those whose number and message are well formed, at most `CITES_MAX`, in their order; `keep` (default all) says
- * which messages may be pointed to.
+ * The citations `value` holds (a stored body's `cites`): the first `CITES_MAX` of its entries, in order, those well formed
+ * — a place no further than `length` (the text's) and no earlier than the one before, a kind, a message — and then of
+ * those the ones `keep` (default all) lets a reader be pointed at. Anything else (a body from before citations were kept
+ * beside the text holds an object here) is none.
  */
-export function citesOf(value: unknown, keep: (r: MessageRef) => boolean = () => true): Record<string, MessageRef> {
-  const out: Record<string, MessageRef> = {};
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return out;
-  let n = 0;
-  for (const [key, r] of Object.entries(value)) {
-    if (n >= CITES_MAX) break;
-    if (!CITE_KEY.test(key) || !isMessageRef(r) || !keep(r)) continue;
-    out[key] = { conversationId: r.conversationId, seq: r.seq };
-    n++;
+export function citesOf(value: unknown, keep: (r: MessageRef) => boolean = () => true, length = Number.POSITIVE_INFINITY): Cite[] {
+  if (!Array.isArray(value)) return [];
+  const out: Cite[] = [];
+  let last = 0;
+  for (const c of value.slice(0, CITES_MAX)) {
+    const { at, kind, ref } = (typeof c === "object" && c !== null ? c : {}) as Partial<Cite>;
+    if (!Number.isSafeInteger(at) || at! < last || at! > length || (kind !== "m" && kind !== "f") || !isMessageRef(ref)) continue;
+    last = at!;
+    if (keep(ref)) out.push({ at: at!, kind, ref: { conversationId: ref.conversationId, seq: ref.seq } });
   }
   return out;
 }

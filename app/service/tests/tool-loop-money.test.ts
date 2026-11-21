@@ -810,11 +810,11 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // The newest message, then older ones, newest first, while they fit what the plan leaves them. Reserved: the
     // definitions and what providers add around them; the last call's line; and room for what the tools bring back —
     // two results of `resultMaxWeight`, but at most a third of what the plan would give the conversation beside the
-    // definitions (about 3 785 tokens here, its system text with the tools' passage: 1 261 are kept).
+    // definitions (about 3 750 tokens here, its system text with the tools' passage: 1 249 are kept).
     const definitions = estimateTokens(JSON.stringify([BIG]), TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
     const conversation = contextBudget(8192, a.maxOutputTokens, { rest: a.system, passage: "" }, 1, definitions);
     const results = Math.min(Math.ceil(2 * app.deps.config.tools.resultMaxWeight * TOOL_TEXT_FACTOR), Math.floor(conversation / 3));
-    expect(results).toBe(1261);
+    expect(results).toBe(1249);
     const reserved = definitions + estimateTokens(`\n\n${FINAL_LINE}`) + results;
     const shown = (budget: number) => 1 + Math.min(older.length, Math.floor((budget - estimateTokens("附近有什么好吃的？")) / 310));
     const plans = [contextBudget(8192, b.maxOutputTokens, { rest: b.system, passage: "" }), contextBudget(8192, a.maxOutputTokens, { rest: a.system, passage: "" }, 1, reserved)];

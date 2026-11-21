@@ -4,7 +4,6 @@ import { notAcknowledgement, type AttachmentRef } from "../../messages/model.ts"
 import { postingRun } from "../../messages/read.ts";
 import { handleOf } from "../../principals/store.ts";
 import { personLabel } from "../runtime/prompt.ts";
-import { withoutCitations } from "../tools/refs.ts";
 import { keepLabelled, relabelled } from "./prompt.ts";
 
 /**
@@ -162,9 +161,9 @@ export interface SpeakerLabels {
 
 /** `SpeakerLabels` of `owner` and of the people `rows` (as `placedSpeakers` reads them), by the names and handles given. */
 function labelled(owner: { id: string; name: string; handle: string }, rows: ReadonlyArray<{ id: string; name: string; handle: string }>): SpeakerLabels {
-  const ownerLabel = personLabel(withoutCitations(owner.name), withoutCitations(owner.handle), true);
+  const ownerLabel = personLabel(owner.name, owner.handle, true);
   const ids = new Map<string, string>([[ownerLabel, owner.id]]);
-  for (const p of rows) ids.set(personLabel(withoutCitations(p.name), withoutCitations(p.handle), false), p.id);
+  for (const p of rows) ids.set(personLabel(p.name, p.handle, false), p.id);
   return { owner: ownerLabel, people: new Set([...ids.keys()].filter((l) => l !== ownerLabel)), ids };
 }
 
@@ -192,8 +191,8 @@ async function labelsNow(q: Queryable, r: PlacedReader, ids: readonly string[]):
 }
 
 /**
- * The pair's stored summary `s` as a reply is shown it and a job builds on it (final review I-3, m-11): its text without any
- * citation (tools/refs.ts `withoutCitations`); in a group, then, each label it recorded (`speakers`) rewritten to how that
+ * The pair's stored summary `s` as a reply is shown it and a job builds on it (final review I-3, m-11): its text as stored;
+ * in a group, then, each label it recorded (`speakers`) rewritten to how that
  * account is labelled now (prompt.ts `relabelled`: a rename changes the label, not the person), and the text held again to
  * the labels of now of the accounts it recorded and its owner (prompt.ts `keepLabelled`) — a line with any other is not shown.
  * Two indexed reads, nothing of the conversation's history. Null for a group's row that recorded nobody (written before
@@ -201,21 +200,20 @@ async function labelsNow(q: Queryable, r: PlacedReader, ids: readonly string[]):
  * never written back.
  */
 export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary): Promise<string | null> {
-  const text = withoutCitations(s.text);
-  if (!r.group) return text;
+  if (!r.group) return s.text;
   if (s.speakers === null) return null;
   const now = await labelsNow(q, r, Object.values(s.speakers));
   const byId = new Map([...now.ids].map(([label, id]) => [id, label]));
-  return keepLabelled(relabelled(text, s.speakers, byId), now).text;
+  return keepLabelled(relabelled(s.text, s.speakers, byId), now).text;
 }
 
 /**
- * A group's row that recorded nobody (written before migration 056) as the job builds on it — off any reply's path: without
- * citations, held to the labels of now of everyone placed after `base` up to what it covers (`speakerLabels`, a read of the
+ * A group's row that recorded nobody (written before migration 056) as the job builds on it — off any reply's path:
+ * held to the labels of now of everyone placed after `base` up to what it covers (`speakerLabels`, a read of the
  * stay's history), so a line of someone renamed since goes. The job's next write records whose its labels are.
  */
 export async function legacySummary(q: Queryable, r: PlacedReader, base: number, s: Summary): Promise<string> {
-  return keepLabelled(withoutCitations(s.text), await speakerLabels(q, r, base, s.uptoSeq)).text;
+  return keepLabelled(s.text, await speakerLabels(q, r, base, s.uptoSeq)).text;
 }
 
 /** Stores the pair's summary as `s` (inserted, or replacing the one there), in the caller's transaction. */

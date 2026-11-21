@@ -16,7 +16,7 @@ import { markRead, type ReadEvents } from "../messages/read.ts";
 import type { ToolCall, ToolSpec } from "../models/gateway.ts";
 import { resolveModel, type Resolved } from "../models/resolve.ts";
 import { toldHits, toldPassage } from "./tools/elsewhere.ts";
-import { citesIn, RunRefs, withoutCitations } from "./tools/refs.ts";
+import { RunRefs } from "./tools/refs.ts";
 import type { RunScope } from "./tools/index.ts";
 import { KeyUnreadableError } from "../providers/crypto.ts";
 import { markToolsOff } from "../providers/store.ts";
@@ -696,25 +696,30 @@ export class DbAgentPort implements AgentPort {
       // bring back (below).
       let offer: Offer | null = told === null && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, { group }) : null;
       if (offer !== null && offer.tools.length === 0) offer = null;
-      // A reply offered tools numbers the files its context labels (`[文件 f1：name]`), so that its file tool can name
-      // them (tools/refs.ts); one offered none is shown them as always.
-      const refs = offer === null ? null : new RunRefs();
-      const numbered = refs === null ? plan : { ...plan, fileRef: (id: string) => refs.file(id) };
+      // A reply offered tools numbers the files its context labels (`[文件 〔f1〕：name]`), so that its file tool can name
+      // them and its text cite them (tools/refs.ts) — afresh for each plan, and in a plan only those of the messages it can
+      // show (context.ts `loadContext`), past any number someone typed in what it is shown; one offered none is shown them
+      // as always.
+      /** One plan: offered tools (`numbered`), with numbers made afresh; else with none. */
+      const planOf = async (numbered: boolean, reserved: number): Promise<{ loaded: LoadedContext; refs: RunRefs | null }> => {
+        const refs = numbered ? new RunRefs() : null;
+        return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}) }, resolved, system(refs !== null), this.deps.drawMark), refs };
+      };
       const definitions = offer === null ? 0 : estimateTokens(JSON.stringify(offer.tools), planned * TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
       let reserved = definitions;
-      let loaded = await loadContext(t, { ...numbered, reserved }, resolved, system(offer !== null), this.deps.drawMark);
-      if (offer !== null && holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
+      let { loaded, refs } = await planOf(offer !== null, reserved);
+      if (refs !== null && holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
         // And room for what the tools bring back, from what that plan gives the conversation (`resultReserve`), with
         // the last call's line: reserved as the definitions are.
         reserved = definitions + estimateTokens(`\n\n${FINAL_LINE}`, planned) + resultReserve(config.tools.resultMaxWeight, planned, loaded.budget);
-        loaded = await loadContext(t, { ...numbered, reserved }, resolved, system(true), this.deps.drawMark);
+        ({ loaded, refs } = await planOf(true, reserved));
       }
-      if (offer !== null && !holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
+      if (refs !== null && !holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) {
         // With the tools reserved the conversation would not get the room a call needs at least: none are offered, and
         // the reply is planned, and made, as one that offers none (its system text saying so).
         offer = null;
         reserved = 0;
-        loaded = await loadContext(t, plan, resolved, system(false), this.deps.drawMark);
+        ({ loaded, refs } = await planOf(false, 0));
       }
       if (!hasOwnerTurn(loaded)) return { end: loaded.topicStart > 0 && covers <= loaded.topicStart ? STARTED_OVER : BUSY };
       if (!holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) return { end: TOO_SMALL };
@@ -1031,26 +1036,28 @@ export class DbAgentPort implements AgentPort {
    * recovery recorded it.
    */
   async post(run: RunTicket, out: Reply): Promise<"posted" | "refused" | "empty"> {
-    const flags = this.flags.get(run.id);
-    // A reply offered tools: its citations checked against the numbers it was given (tools/refs.ts `citesIn`); one
-    // offered none is posted as written.
-    const reply = flags?.tools ? (({ text, cites }) => ({ ...out, text, cites }))(citesIn(out.text, flags.tools.refs)) : out;
-    return this.posting(run, reply, "reply");
+    return this.posting(run, out, "reply");
   }
 
   /**
    * `AgentPort.acknowledge`: what the reply said before it called a tool, posted at once as its acknowledgement
    * (`postAsAgent` "ack", in its own transaction), published after commit as any message of the Agent's — it calls
    * nobody — and, in a group, dropping the proactive judgement waiting there as the Agent's reply would. It cites
-   * nothing: every citation it writes is taken out (tools/refs.ts `withoutCitations`). Refused, or empty, as `post`.
+   * nothing: every token of its run is taken out (tools/refs.ts `takeCites`). Refused, or empty, as `post`.
    */
   acknowledge(run: RunTicket, said: { text: string; reasoning: string }): Promise<"posted" | "refused" | "empty"> {
-    return this.posting(run, { ...said, text: withoutCitations(said.text), stopped: false, truncated: false }, "ack");
+    return this.posting(run, { ...said, stopped: false, truncated: false }, "ack");
   }
 
-  /** `post` and `acknowledge`: `postAsAgent` with the run's mark, announced after commit, its refusals told apart. */
-  private async posting(run: RunTicket, reply: AgentReply, as: "reply" | "ack"): Promise<"posted" | "refused" | "empty"> {
-    const mark = this.flags.get(run.id)?.mark ?? null;
+  /**
+   * `post` and `acknowledge`: `postAsAgent` with the run's mark and, for a reply offered tools, its numbers — the port's
+   * own copies, kept from `begin` (`RunFlags`), never what the worker could hand it: its text and reasoning lose their
+   * run's tokens, its text's kept beside it as citations — announced after commit, its refusals told apart.
+   */
+  private async posting(run: RunTicket, said: Reply, as: "reply" | "ack"): Promise<"posted" | "refused" | "empty"> {
+    const flags = this.flags.get(run.id);
+    const mark = flags?.mark ?? null;
+    const reply: AgentReply = { ...said, refs: flags?.tools?.refs ?? null };
     try {
       const posted = await this.deps.db.tx((t) => postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as));
       if (!posted) return "empty";

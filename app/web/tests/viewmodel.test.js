@@ -128,7 +128,7 @@ describe("messages", () => {
     expect(text).toMatchObject({ id: "m2", from: ANN, kind: "text", text: "早上好", at: "09:02", status: "sent", replyTo: null, quote: null });
     expect(file).toMatchObject({ kind: "file", text: "报告.pdf", caption: "", attachment: { id: FILE, name: "报告.pdf", size: 1234, inline: false, url: `/api/attachments/${FILE}` } });
     expect(image).toMatchObject({ from: ME, kind: "image", text: "a.png", caption: "看这个", src: `/api/attachments/${IMG}`, replyTo: "m2" });
-    expect(image.quote).toEqual({ seq: 2, visible: true, from: ANN, text: "早上好", kind: "text", attachmentName: null, senderKind: null });
+    expect(image.quote).toEqual({ seq: 2, visible: true, from: ANN, text: "早上好", kind: "text", attachmentName: null });
     expect(lastPreview(v, v.convs[G1])).toBe("你：[图片]");
   });
 

@@ -291,8 +291,8 @@ describe("in-conversation search", () => {
     await say(b, g, "needle about the file", { replyToSeq: file.json.message.seq });
     const forBob = await inConv(b, g, "needle");
     expect(forBob.json.messages.map((m: any) => m.replyTo)).toEqual([
-      { seq: file.json.message.seq, visible: true, senderId: a.id, senderKind: "human", text: "", kind: "file", attachmentName: "plan.pdf" },
-      { seq: 2, visible: true, senderId: a.id, senderKind: "human", text: "pre-join secret", kind: "text" },
+      { seq: file.json.message.seq, visible: true, senderId: a.id, text: "", kind: "file", attachmentName: "plan.pdf" },
+      { seq: 2, visible: true, senderId: a.id, text: "pre-join secret", kind: "text" },
     ]);
     const forCarol = await inConv(c, g, "needle");
     expect(forCarol.json.messages.map((m: any) => m.replyTo)).toEqual([

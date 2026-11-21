@@ -231,7 +231,7 @@ export async function deliverReminders(
 ): Promise<Reminded[]> {
   const today = siteDay(now, config.siteTimezone);
   await db.query("update allowance_reminders set delivered_at = now() where delivered_at is null and day < $1::date", [today]);
-  const { rows } = await db.query<{ id: string }>("select id::text from allowance_reminders where delivered_at is null order by created_at, id limit 500");
+  const { rows } = await db.query<{ id: string }>("select id::text from allowance_reminders where delivered_at is null order by created_at, allowance_reminders.id limit 500");
   const made: Reminded[] = [];
   for (const { id } of rows) {
     try {

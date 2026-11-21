@@ -85,8 +85,9 @@ export interface AttachmentRef {
  * `messages.body`. Text messages carry `text` (and `replyToSeq` when quoting); file messages carry
  * `attachment` and an optional caption in `text`; system notices carry a `SystemEvent` plus the rendered
  * `text`. An Agent's reply (`postAsAgent`) may add `reasoning` (non-empty), `stopped: true`, `truncated: true` and
- * `proposalId` (the `persona_proposals` row it made), and what its tools looked up (messages/lookups.ts: `lookups`,
- * `found`, and in its own conversation `queries` — never sent as stored: messages/read.ts); its greeting `fixed: true`.
+ * `proposalId` (the `persona_proposals` row it made), what its tools looked up (messages/lookups.ts: `lookups`,
+ * `found`, and in its own conversation `queries` — never sent as stored: messages/read.ts) and its citations, beside its
+ * text (`cites`, messages/lookups.ts `Cite`: its text holds none); its greeting `fixed: true`.
  * Later kinds (task cards...) add fields, so readers must not assume more than this.
  */
 export type MessageBody = {
@@ -227,8 +228,6 @@ export const wireMessageSchema = z.object({
         seq: z.number(),
         visible: z.literal(true),
         senderId: z.string().nullable(),
-        /** Whether a person or an Agent wrote it (absent for a notice). */
-        senderKind: z.enum(["human", "agent"]).optional(),
         text: z.string(),
         /** What was quoted: a file message may have no caption, so `text` alone cannot say. */
         kind: z.enum(["text", "file"]),
@@ -297,10 +296,14 @@ export const wireMessageSchema = z.object({
   /** The words its searches were for: to the Agent's owner, in the Agent's own conversation only. */
   queries: z.array(z.string()).optional(),
   /**
-   * What its text cites by number (`〔m3〕`, agents/tools/refs.ts): of those, the messages this reader can see now
-   * (VISIBLE_JOIN), by number; absent when none is. A number in the text with no entry here is plain text to this reader.
+   * An Agent's reply: its citations, kept beside its text (messages/lookups.ts `Cite`; the text holds none) — where each
+   * stands in `text` (UTF-16 code units, ascending), whether it cites a message or a file, and the message it points to
+   * (for a file, the message it was sent in): of those, the ones whose message this reader can see now (VISIBLE_JOIN);
+   * absent when none is.
    */
-  cites: z.record(z.string(), z.object({ conversationId: z.string(), seq: z.number() })).optional(),
+  cites: z
+    .array(z.object({ at: z.number(), kind: z.enum(["m", "f"]), ref: z.object({ conversationId: z.string(), seq: z.number() }) }))
+    .optional(),
   createdAt: z.string(),
 });
 

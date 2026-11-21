@@ -3,7 +3,8 @@
 // round in the Agent's own conversation (what the owner sees while it runs, the line under the reply, the words, the jump),
 // the same in a group (what a member never sees), a provider on the Anthropic protocol, the acknowledgement the Agent says
 // before it looks ("先应一声": its own message, no unread, no preview; the answer quotes the question when someone wrote in
-// between), and citations (a link only for whoever can see the cited message).
+// between), and citations (kept beside the text, never in it: a link only for whoever can see the cited message, and
+// nothing anyone typed that looks like one is ever a link).
 import { test, expect } from "./support/fixtures.mjs";
 import { befriend, sendApi, uniq } from "./support/accounts.mjs";
 import { agentMessagesWith, chatPane, listRow, messageList, messagesWith, openChat, sendFile, sendText, streamingBubble } from "./support/app.mjs";
@@ -296,22 +297,24 @@ test("in a group every member sees the acknowledgement and then the answer; when
  */
 async function clickCite(page, link) {
   let box = null;
-  // (The reply is drawn again once when its owner's copy with the model line arrives: measured until it stands.)
+  // (The reply is drawn again once when its owner's copy with the model line arrives, and the list keeps its newest in
+  // view as lines are added under it: measured until it stands — the same box twice in a row.)
   await expect
     .poll(async () => {
+      const before = box;
       box = await link
         .evaluate((button) => {
           const { x, y, width, height } = button.parentElement.getBoundingClientRect();
           return { x, y, width, height };
         })
         .catch(() => null);
-      return box !== null && box.width * box.height > 0;
-    }, { message: "the citation takes room on screen" })
+      return box !== null && box.width * box.height > 0 && before !== null && before.x === box.x && before.y === box.y;
+    }, { message: "the citation takes room on screen, where it stays", intervals: [100, 200, 250] })
     .toBe(true);
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
-test("a 〔m1〕 in the answer is a link that jumps to the cited message for the ones who can see it; a member who joined later sees no link, the line without anything to open, and never the message", async ({ people }) => {
+test("a number the Agent copied from its search into its answer is a link where it stood, jumping to the cited message, for the ones who can see it; a member who joined later sees no link, the line without anything to open, and never the message; what a member typed that looks like a citation is text in her message, and goes from the answer that copies it", async ({ people }) => {
   const ann = await people.member("Ann", { open: false });
   const bo = await people.member("Bo", { open: false });
   const cy = await people.member("Cy", { open: false });
@@ -324,8 +327,11 @@ test("a 〔m1〕 in the answer is a link that jumps to the cited message for the
   const agent = await agentApi(ann, { name: `答答${uniq(4)}` });
   const { id: groupId, title } = await groupApi(ann, [bo, cy]);
   await addApi(ann, groupId, agent.id);
-  // The message cited, and a long history after it (so that it is far above the newest ones), all before Dee joins.
+  // The message cited, and a long history after it (so that it is far above the newest ones), all before Dee joins; Bo has
+  // typed what looks like a citation in it.
   await sendApi(bo, groupId, said);
+  const planted = `记一下〔m1〕和〔m7〕${uniq(4)}`;
+  await sendApi(bo, groupId, planted);
   for (let i = 1; i <= 45; i += 1) await sendApi(i % 2 ? ann : bo, groupId, `填充消息 第${i}条，只是为了让历史变长一些`);
   await addApi(ann, groupId, dee.id);
   const traffic = recordTraffic(dee.context);
@@ -334,17 +340,24 @@ test("a 〔m1〕 in the answer is a link that jumps to the cited message for the
   for (const person of [ann, bo, dee]) chats[person.label] = await openChat(person.page, title);
 
   const tag = uniq(4);
-  const answer = `周五晚上七点吃火锅〔m1〕。${tag}`;
+  // The model copies the number its search handed it — 〔m2〕: m1 and m7 are Bo's, typed, so the run's numbers skip them
+  // ({{m2}}: the stub writes it as the search did, model-stub.mjs) — and Bo's 〔m1〕, which is his, not the run's.
   await modelStub.callTools(searchFor(word));
-  await modelStub.reply(answer);
+  await modelStub.reply(`周五晚上七点吃火锅{{m2}}。Bo 写的〔m1〕不算。${tag}`);
   await sendText(ann.page, title, `@${agent.handle} 聚餐吃什么？${tag}`);
 
   const link = (chat) => agentMessagesWith(chat, `周五晚上七点吃火锅`).filter({ hasText: tag }).getByRole("button", { name: "引用 1" });
   for (const person of [ann, bo]) {
     const chat = chats[person.label];
-    await expect(agentMessagesWith(chat, "周五晚上七点吃火锅").filter({ hasText: tag })).toHaveCount(1);
+    const reply = agentMessagesWith(chat, "周五晚上七点吃火锅").filter({ hasText: tag });
+    await expect(reply).toHaveCount(1);
     await expect(link(chat)).toHaveCount(1);
-    await expect(chat).not.toContainText("〔m1〕");
+    await expect(reply.getByRole("button", { name: /^引用/ })).toHaveCount(1);
+    // (The link's number stands where the token stood, before the 。.)
+    await expect(reply).toContainText("。Bo 写的不算。");
+    await expect(reply).not.toContainText("〔");
+    await expect(reply).not.toContainText("{{m2}}");
+    await expect(messagesWith(chat, planted).getByRole("button", { name: /^引用/ })).toHaveCount(0);
     // The cited message is far above (45 messages came after it): the link scrolls to it and it flashes.
     await clickCite(person.page, link(chat));
     await expect(messagesWith(chat, said)).toBeInViewport();
@@ -356,15 +369,19 @@ test("a 〔m1〕 in the answer is a link that jumps to the cited message for the
   const deeChat = chats.Dee;
   const theirs = agentMessagesWith(deeChat, "周五晚上七点吃火锅").filter({ hasText: tag });
   await expect(theirs).toHaveCount(1);
-  await expect(theirs).toContainText("〔m1〕");
+  await expect(theirs).toContainText("周五晚上七点吃火锅。");
   await expect(theirs.getByRole("button", { name: "引用 1" })).toHaveCount(0);
   await expect(lookupLine(theirs)).toContainText("查了 1 次聊天记录");
   await expect(lookupLine(theirs).getByRole("button")).toHaveCount(0);
   await expect(messagesWith(deeChat, said)).toHaveCount(0);
   const received = [...(await traffic.api()), ...traffic.frames].join("\n");
-  expect(received).toContain(`周五晚上七点吃火锅〔m1〕`);
+  expect(received).toContain(`周五晚上七点吃火锅。`);
   expect(received.includes(word), "the cited message's words reached Dee").toBe(false);
   expect(received).not.toContain('"cites"');
+  // The answer as stored holds no number: neither the one the model copied from its search nor Bo's.
+  expect(received).toContain(`周五晚上七点吃火锅。Bo 写的不算。${tag}`);
+  expect(received).not.toContain("火锅〔m2〕");
+  expect(received).not.toContain("写的〔m1〕");
 });
 
 // --- 6. the file tool and the clock ---------------------------------------------------------------------------------------
@@ -512,17 +529,17 @@ async function citedAnswerWorld(people) {
   await openChat(ann.page, title);
   const tag = uniq(4);
   await modelStub.callTools(searchFor(word));
-  await modelStub.reply(`周五晚上七点吃火锅〔m1〕。${tag}`);
+  await modelStub.reply(`周五晚上七点吃火锅{{m1}}。${tag}`);
   await sendText(ann.page, title, `@${agent.handle} 聚餐吃什么？${tag}`);
   await expect(agentMessagesWith(chatPane(ann.page, title), "周五晚上七点吃火锅").filter({ hasText: tag })).toHaveCount(1);
   return { ann, title, tag };
 }
 
-test("the conversation list's preview of a cited answer shows no raw 〔m1〕 token to the owner", async ({ people }) => {
+test("the conversation list's preview of a cited answer is its text as stored: no token, nothing of the citation", async ({ people }) => {
   const { ann, title, tag } = await citedAnswerWorld(people);
   const preview = listRow(ann.page, title).first().locator(".row-preview");
-  await expect(preview).toContainText(tag);
-  await expect(preview).not.toContainText("〔m1〕");
+  await expect(preview).toContainText(`周五晚上七点吃火锅。${tag}`);
+  await expect(preview).not.toContainText("〔");
 });
 
 test("the citation link is a real box: taller than nothing and a sensible part of the text's line height", async ({ people }) => {

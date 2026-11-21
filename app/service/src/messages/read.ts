@@ -5,7 +5,7 @@ import { VISIBLE_JOIN, visibleJoin, type ConversationType } from "../conversatio
 import type { Queryable } from "../db.ts";
 import type { StoredOp } from "../memory/apply.ts";
 import { dreamLines, linesOf } from "../memory/lines.ts";
-import { citesOf, foundOf, lookupsOf, queriesOf, type MessageRef } from "./lookups.ts";
+import { citesOf, foundOf, lookupsOf, queriesOf, type Cite, type MessageRef } from "./lookups.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type StoredMessage, type WireMessage } from "./model.ts";
 import { principalsOf, type SyncPrincipal } from "./principals.ts";
 
@@ -158,14 +158,14 @@ const isNoteOp = (op: ChangeRow["ops"][number]): op is StoredOp => op.op !== "he
 
 /**
  * What this reader is sent of what a reply's tools looked up besides its counts: the messages found they can see, the
- * words when they are for them, and of what its text cites the messages they can see.
+ * words when they are for them, and of its text's citations those whose message they can see.
  */
 interface Looked {
   found: MessageRef[];
   queries: string[];
-  cites: Record<string, MessageRef>;
+  cites: Cite[];
 }
-const NOTHING_LOOKED: Looked = { found: [], queries: [], cites: {} };
+const NOTHING_LOOKED: Looked = { found: [], queries: [], cites: [] };
 
 /**
  * Module-private on purpose: it renders whatever quote, proposal, `via` and `looked` it is handed, and the reasoning when
@@ -177,7 +177,7 @@ const NOTHING_LOOKED: Looked = { found: [], queries: [], cites: {} };
  */
 function toWire(
   msg: StoredMessage,
-  visibleQuote: (StoredMessage & { senderKind?: "human" | "agent" }) | null,
+  visibleQuote: StoredMessage | null,
   proposal: ProposalRow | null,
   withReasoning: boolean,
   via: WireVia | null,
@@ -203,9 +203,6 @@ function toWire(
         seq: replyToSeq,
         visible: true,
         senderId: q.kind === "system" ? null : q.senderId,
-        // Whether a person or an Agent wrote it (not secret: the quote names its sender already), so a client can show an
-        // Agent's quoted text without its citations even when it does not hold that Agent (round 3).
-        ...(q.kind !== "system" && q.senderKind ? { senderKind: q.senderKind } : {}),
         text: truncate(wireText(q), QUOTE_MAX_CHARS),
         kind: q.kind === "file" ? "file" : "text",
       };
@@ -235,7 +232,7 @@ function toWire(
     if (lookups) wire.lookups = lookups;
     if (looked.found.length > 0) wire.found = looked.found;
     if (looked.queries.length > 0) wire.queries = looked.queries;
-    if (Object.keys(looked.cites).length > 0) wire.cites = looked.cites;
+    if (looked.cites.length > 0) wire.cites = looked.cites;
   }
   return wire;
 }
@@ -304,29 +301,28 @@ export async function toWireForReaders(
   }
 
   const quoting = msgs.filter((m) => typeof m.body.replyToSeq === "number" && shownToAnyone.has(m.id));
-  const quotes = new Map<string, StoredMessage & { senderKind: "human" | "agent" }>();
+  const quotes = new Map<string, StoredMessage>();
   if (quoting.length > 0) {
-    const { rows } = await q.query<MessageRow & { reader_id: string; sender_kind: "human" | "agent" }>(
-      `select r.reader_id, ${MESSAGE_COLUMNS}, qp.kind as sender_kind
+    const { rows } = await q.query<MessageRow & { reader_id: string }>(
+      `select r.reader_id, ${MESSAGE_COLUMNS}
          from unnest($1::uuid[]) as r (reader_id)
          cross join unnest($2::uuid[], $3::bigint[]) as wanted (conversation_id, seq)
          join messages m on m.conversation_id = wanted.conversation_id and m.seq = wanted.seq
-         join principals qp on qp.id = m.sender_id
          ${visibleJoin("r.reader_id")}`,
       [readers, quoting.map((m) => m.conversationId), quoting.map((m) => m.body.replyToSeq)],
     );
-    for (const r of rows) quotes.set(`${r.reader_id}|${r.conversation_id}|${r.seq}`, { ...toStored(r), senderKind: r.sender_kind });
+    for (const r of rows) quotes.set(`${r.reader_id}|${r.conversation_id}|${r.seq}`, toStored(r));
   }
 
-  // What a reply's tools found, and what its text cites: each message by the same rule as the reply itself (VISIBLE_JOIN,
+  // What a reply's tools found, and what its text's citations point at: each message by the same rule as the reply itself (VISIBLE_JOIN,
   // the reader's own), so a reader is pointed only at what they can open — not at a message from before they joined, of
   // a conversation they are not in, or that is not there. One query for every reader and reply, both together.
   const replies = msgs.filter((m) => m.kind === "text" && shownToAnyone.has(m.id));
   const foundIn = new Map(replies.map((m) => [m.id, foundOf(m.body.found)]));
-  const citesIn = new Map(replies.map((m) => [m.id, citesOf(m.body.cites)]));
+  const citesOfReply = new Map(replies.map((m) => [m.id, citesOf(m.body.cites, undefined, wireText(m).length)]));
   const refs = new Map<string, MessageRef>();
   for (const list of foundIn.values()) for (const r of list) refs.set(`${r.conversationId}|${r.seq}`, r);
-  for (const cited of citesIn.values()) for (const r of Object.values(cited)) refs.set(`${r.conversationId}|${r.seq}`, r);
+  for (const cited of citesOfReply.values()) for (const { ref: r } of cited) refs.set(`${r.conversationId}|${r.seq}`, r);
   /** reader|conversation|seq of the messages found that this reader can see. */
   const foundSeen = new Set<string>();
   if (refs.size > 0) {
@@ -347,7 +343,7 @@ export async function toWireForReaders(
   const lookedFor = (reader: string, m: StoredMessage, key: string): Looked => ({
     found: (foundIn.get(m.id) ?? []).filter(seen(reader)),
     queries: queriesFor.has(key) ? queriesOf(m.body.queries) : [],
-    cites: citesOf(citesIn.get(m.id) ?? {}, seen(reader)),
+    cites: (citesOfReply.get(m.id) ?? []).filter((c) => seen(reader)(c.ref)),
   });
 
   const proposals = await proposalsOf(q, msgs.filter((m) => shownToAnyone.has(m.id)));

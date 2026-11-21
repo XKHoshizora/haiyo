@@ -200,7 +200,7 @@ describe("visibility", () => {
     expect((await one(d, g, 6)).json.message.text).toBe("after");
     const reply = await say(d, g, "re after", { replyToSeq: 6 });
     expect(reply.status).toBe(201);
-    expect(reply.json.message.replyTo).toEqual({ seq: 6, visible: true, senderId: a.id, senderKind: "human", text: "after", kind: "text" });
+    expect(reply.json.message.replyTo).toEqual({ seq: 6, visible: true, senderId: a.id, text: "after", kind: "text" });
     const replyToNotice = await say(d, g, "re notice", { replyToSeq: 5 });
     expect(replyToNotice.json.message.replyTo).toMatchObject({ seq: 5, visible: true, senderId: null });
     expect(after.json.message.seq).toBe(6);
@@ -215,7 +215,7 @@ describe("visibility", () => {
     const long = "😀长".repeat(150); // 300 characters
     const quoted = await say(a, g, long); // seq 2
     const quoting = await say(b, g, "quoting", { replyToSeq: quoted.json.message.seq }); // seq 3
-    expect(quoting.json.message.replyTo).toEqual({ seq: 2, visible: true, senderId: a.id, senderKind: "human", text: "😀长".repeat(100), kind: "text" });
+    expect(quoting.json.message.replyTo).toEqual({ seq: 2, visible: true, senderId: a.id, text: "😀长".repeat(100), kind: "text" });
 
     await befriend(app, a, d);
     await add(a, g, d);
@@ -409,7 +409,7 @@ describe("fan-out rendering", () => {
 
     expect([...out.keys()].sort()).toEqual([a.id, b.id, d.id, o.id].sort());
     expect(out.get(b.id)!.map((m) => m.seq)).toEqual([2, 4]);
-    expect(out.get(b.id)![1]!.replyTo).toEqual({ seq: 2, visible: true, senderId: a.id, senderKind: "human", text: "secret before dave", kind: "text" });
+    expect(out.get(b.id)![1]!.replyTo).toEqual({ seq: 2, visible: true, senderId: a.id, text: "secret before dave", kind: "text" });
     expect(out.get(a.id)!.map((m) => m.seq)).toEqual([2, 4]);
     // The late joiner does not get the pre-join message, and the quote of it is hidden.
     expect(out.get(d.id)!.map((m) => m.seq)).toEqual([4]);

@@ -49,6 +49,16 @@ const memoryKindOf = (body) => {
   return Object.keys(MEMORY_MARKS).find((kind) => system.includes(MEMORY_MARKS[kind])) ?? null;
 };
 
+/**
+ * `text` with each `{{m1}}` (`{{f2}}`…) as the model copies a citation: that number as the service's tools write it,
+ * `〔m1〕`, when the call was sent it; left as it is when the call was sent none.
+ */
+const withTokens = (text, body) => {
+  if (!text.includes("{{")) return text;
+  const sent = JSON.stringify(body ?? null);
+  return text.replace(/\{\{([mf][1-9][0-9]*)\}\}/g, (whole, number) => (sent.includes(`〔${number}〕`) ? `〔${number}〕` : whole));
+};
+
 /** One server-sent event: an `event:` line when named, then the JSON as `data:`. */
 const sse = (data, event) => `${event ? `event: ${event}\n` : ""}data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`;
 
@@ -120,8 +130,9 @@ function anthropicFrames(model, usage) {
 
 /**
  * The stub's server. Each streaming call takes the next scripted step (or the default reply) when it arrives:
- * `{text, reasoning?, chunkSize? (code points, default 4), delayMs? (before each piece), waitMs? (once, after the stream's
- * head and before its first piece), usage? ({input, output} tokens), status? (answer with this HTTP error instead), hang?
+ * `{text (each `{{m1}}` in it the token of that number the call was sent, as a model copies one: `withTokens`),
+ * reasoning?, chunkSize? (code points, default 4), delayMs? (before each piece), waitMs? (once, after the stream's head and
+ * before its first piece), usage? ({input, output} tokens), status? (answer with this HTTP error instead), hang?
  * (after the text, hold until released or until the caller goes), toolCalls? (`[{name, input, id?}]`: the round ends in these
  * calls after its text — the service runs them and calls again, taking the next step), message? (with `status`: the error's text)}`.
  * Every request is recorded: method, path, the Authorization / x-api-key it carried, its JSON body, and whether the
@@ -164,7 +175,7 @@ export function startModelStub() {
       }
     };
     await emit("reasoning", step.reasoning ?? "");
-    await emit("text", step.text ?? "");
+    await emit("text", withTokens(step.text ?? "", record.body));
     if (step.hang) {
       const rest = await new Promise((resolve) => {
         const hold = { record, release: resolve };

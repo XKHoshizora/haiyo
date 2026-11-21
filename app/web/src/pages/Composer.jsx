@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
-import { entity, isAgent, lineText, nameOf, ownerOf, senderName } from "../state/selectors.js";
+import { entity, isAgent, nameOf, ownerOf, senderName } from "../state/selectors.js";
 import { Avatar, Btn, IconBtn, composing } from "../ui/primitives.jsx";
 import { useSendFiles } from "./useSendFiles.js";
 import { hasVisibleText, messageText } from "../auth/validation.js";
@@ -317,7 +317,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
   };
   const sendNote = tooLong ? `消息最多 ${TEXT_LIMIT} 字，当前 ${length} 字，请删减后再发送` : invisible ? "消息里没有看得见的文字，无法发送" : null;
   return <footer className="composer" ref={rootRef} onKeyDown={e=>{if(e.key==="Escape"){setEmojiOpen(false);setMention(null);}}}>
-    {replyTo && <div className="reply-chip"><span>回复 {senderName(state,replyTo.from)}：{replyTo.kind==="image"?"[图片]":lineText(state,replyTo.from,replyTo.text)}</span><IconBtn label="取消回复" onClick={()=>setReplyTo(null)}><X size={14}/></IconBtn></div>}
+    {replyTo && <div className="reply-chip"><span>回复 {senderName(state,replyTo.from)}：{replyTo.kind==="image"?"[图片]":replyTo.text}</span><IconBtn label="取消回复" onClick={()=>setReplyTo(null)}><X size={14}/></IconBtn></div>}
     <div className="composer-tools">
       <div className="menu-anchor">
         <IconBtn label="表情" disabled={disabled} aria-expanded={emojiOpen} aria-controls="emoji-picker" onClick={()=>{setEmojiOpen(!emojiOpen);setMention(null);}}><Smile size={22}/></IconBtn>

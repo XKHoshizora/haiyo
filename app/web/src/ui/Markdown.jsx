@@ -6,7 +6,7 @@
 //     host after its text (always: also when the text is that address), both isolated from the text around them;
 //   - a code block has 复制, a table scrolls sideways inside the bubble.
 import React, { createElement, memo, useContext, useEffect, useRef, useState } from "react";
-import { CitesContext, withCites } from "./cites.jsx";
+import { Cite, CitesContext } from "./cites.jsx";
 import { linkTextShown, safeHref, withoutBidiControls } from "./markdownRules.js";
 import { mentionParts, withoutMarks } from "./mentionMarks.js";
 import { MentionTag } from "./MentionText.jsx";
@@ -75,13 +75,19 @@ const isKatexRoot = (node) => node.tag === "span" && (node.props?.className ?? [
 
 /**
  * A text of the tree: its mentions (between the marks the text was sent with, mentionMarks.js) as tags meaning the id of
- * their index in `ids`, and what the message cites (`cites`: cites.jsx) in the text between them as links; inside code or
- * maths (`plain`) the marks are only taken out — a mention there is plain text, and a citation there stays as written.
+ * their index in `ids`, and its citations' marks as the links of their index in `cites.list` (cites.jsx, jumping by
+ * `cites.onJump`); inside code or maths (`plain`) the marks are only taken out — a mention there is plain text, and a
+ * citation there is not shown.
  */
 const texts = (text, plain, ids, cites, key) =>
   plain
     ? [withoutMarks(text)]
-    : mentionParts(text).map((part, j) => (typeof part === "string" ? withCites(part, cites, `${key}-${j}`) : createElement(MentionTag, { text: part.text, id: ids[part.index] ?? null })));
+    : mentionParts(text).flatMap((part, j) => {
+        if (typeof part === "string") return [part];
+        if (part.cite === undefined) return [createElement(MentionTag, { text: part.text, id: ids[part.index] ?? null })];
+        const cite = cites?.list[part.cite];
+        return cite ? [createElement(Cite, { key: `${key}-${j}`, cite, onJump: cites.onJump })] : [];
+      });
 
 /**
  * One checked element as React's: the app's parts for links, code blocks and tables; classes joined; a cell's alignment;
@@ -106,10 +112,12 @@ function toElement(node, katex, ids, code = false, cites = null) {
 
 /**
  * A checked tree (markdownTree.js `validateTree`), shown; made again only when the tree, or what its message cites,
- * changes. `mentionIds`: who each marked mention means, by its index.
+ * changes. `mentionIds`: who each marked mention means, by its index; `citeList`: each marked citation, by its index
+ * (numbered, cites.jsx `numberedCites`), whose links jump as the message's `CitesContext` says.
  */
-export const RichTree = memo(function RichTree({ tree, mentionIds = [] }) {
-  const cites = useContext(CitesContext);
+export const RichTree = memo(function RichTree({ tree, mentionIds = [], citeList = [] }) {
+  const value = useContext(CitesContext);
+  const cites = citeList.length > 0 ? { list: citeList, onJump: value?.onJump ?? null } : null;
   return createElement(
     "div",
     { className: "md" },

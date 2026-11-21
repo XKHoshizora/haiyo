@@ -65,7 +65,7 @@ async function usageRecords(runId: string) {
   const { rows } = await db.query(
     `select id::text, owner_id, agent_id, purpose, source, model, input_tokens::text, output_tokens::text, estimated,
             cost_micro::text, free_micro::text, balance_micro::text, forgiven_micro::text, outcome
-       from usage_records where run_id = $1 order by id`,
+       from usage_records where run_id = $1 order by usage_records.id`,
     [runId],
   );
   return rows;

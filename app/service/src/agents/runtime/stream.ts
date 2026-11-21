@@ -1,5 +1,6 @@
 import { estimateTokens } from "../../metering/tokens.ts";
 import { stripUnsafeText } from "../../schemas.ts";
+import { TokenHold } from "../tools/refs.ts";
 import type { Delta } from "./port.ts";
 
 /** At most one delta push per this many milliseconds. */
@@ -25,10 +26,16 @@ const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xd
 /**
  * One reply as it streams: the whole text and reasoning so far, and the pieces not yet pushed. Pieces are coalesced
  * so the owner's sockets get at most one delta every `intervalMs`: the first piece goes out at once, later ones wait
- * for the interval to pass. Characters a message may not hold (`stripUnsafeText`) are left out of the pushes; the
- * stored message is cleaned the same way. The text is pushed only up to the first `BLOCK_START` (looked for in the
- * text as cleaned, as the stored message is read): a `<` that may begin one waits for the next piece, and goes out in
- * order once it turns out not to (or at `end`). The reasoning is pushed as it comes.
+ * for the interval to pass. Characters a message may not hold (`stripUnsafeText`) are left out of each piece, of the
+ * text and the reasoning, as it comes (a high surrogate a piece ends with waits for the next); the stored message is
+ * cleaned the same way. With `holdTokens` (a reply offered tools, whose stored text keeps no token-shaped string:
+ * agents/tools/refs.ts) none is pushed, of the text or the reasoning: each piece, once cleaned, goes through `TokenHold`
+ * — a token goes as it completes, what may still become one waits for the next piece however deep it nests, and at every
+ * end (`end`, `flushNow`: a stop, a cut, a time limit, a failure, an acknowledgement) what may have begun one is
+ * dropped, never pushed. Nothing of it is secret: the stream shows what the stored message will. The text is pushed only up
+ * to the first `BLOCK_START` (looked for in the text as cleaned and without those tokens, as the stored message is
+ * read): a `<` that may begin one waits for the next piece, and goes out in order once it turns out not to (or at
+ * `end`). The reasoning is pushed as it comes.
  */
 export class ReplyStream {
   text = "";
@@ -43,17 +50,24 @@ export class ReplyStream {
   /** A block has begun: no more text is pushed. */
   private held = false;
   /** A high surrogate a piece ended with: kept for the next piece, so a pair split across pieces is not cleaned away. */
-  private carry = "";
+  private carry = { text: "", reasoning: "" };
+  /** What of the text, and of the reasoning, may still become a token: held back (none without `holdTokens`). */
+  private holds: { text: TokenHold; reasoning: TokenHold } | null;
 
   constructor(
     private readonly send: (delta: Delta) => void,
     private readonly intervalMs: number = DELTA_INTERVAL_MS,
-  ) {}
+    private readonly holdTokens = false,
+  ) {
+    this.holds = holdTokens ? { text: new TokenHold(), reasoning: new TokenHold() } : null;
+  }
 
   add(kind: "text" | "reasoning", piece: string): void {
     this[kind] += piece;
-    if (kind === "reasoning") this.pending.reasoning += piece;
-    else this.addText(piece);
+    if (kind === "reasoning") {
+      const cleaned = this.cleaned("reasoning", piece);
+      this.pending.reasoning += this.holds ? this.holds.reasoning.push(cleaned) : cleaned;
+    } else this.addText(piece);
     if (this.timer) return;
     const wait = this.lastSent + this.intervalMs - performance.now();
     if (wait <= 0) this.flush();
@@ -62,18 +76,37 @@ export class ReplyStream {
 
   private addText(piece: string): void {
     if (this.held) return;
-    let raw = this.carry + piece;
-    this.carry = "";
+    const cleaned = this.cleaned("text", piece);
+    this.show(this.holds ? this.holds.text.push(cleaned) : cleaned);
+  }
+
+  /** `piece` of `kind` without what a message may not hold, a high surrogate it ends with kept for the next piece. */
+  private cleaned(kind: "text" | "reasoning", piece: string): string {
+    let raw = this.carry[kind] + piece;
+    this.carry[kind] = "";
     if (raw !== "" && isHighSurrogate(raw.charCodeAt(raw.length - 1))) {
-      this.carry = raw.slice(-1);
+      this.carry[kind] = raw.slice(-1);
       raw = raw.slice(0, -1);
     }
+    return stripUnsafeText(raw);
+  }
+
+  /** `text` (cleaned, without tokens) joins what is shown, which is released up to a block's start (or what may begin one). */
+  private show(text: string): void {
     // Searched from just before what was released: a start that straddles two pieces is found too.
     const from = Math.max(0, this.shown.length - (BLOCK_START.length - 1));
-    this.shown += stripUnsafeText(raw);
+    this.shown += text;
     const at = this.shown.indexOf(BLOCK_START, from);
     if (at >= 0) this.held = true;
     this.release(at >= 0 ? at : this.shown.length - pendingStart(this.shown));
+  }
+
+  /** Nothing more comes for now: of what was held, what may have begun a token goes, the rest is shown (the text's as any text is). */
+  private settle(): void {
+    if (!this.holds) return;
+    this.pending.reasoning += this.holds.reasoning.end();
+    const rest = this.holds.text.end();
+    if (!this.held && rest !== "") this.show(rest);
   }
 
   /** Hands `shown` up to `upTo` to the next push. */
@@ -88,15 +121,19 @@ export class ReplyStream {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const text = this.pending.text;
-    const reasoning = stripUnsafeText(this.pending.reasoning);
+    const reasoning = this.pending.reasoning;
     this.pending = { text: "", reasoning: "" };
     if (text === "" && reasoning === "") return;
     this.lastSent = performance.now();
     this.send({ ...(reasoning === "" ? {} : { reasoning }), ...(text === "" ? {} : { text }) });
   }
 
-  /** The reply is complete (before it is posted): what was held for a `<` that began no block goes out, then everything pending. */
+  /**
+   * The reply has ended, however it ended (before it is posted, if it is): of what was held for a token, what may have
+   * begun one goes and the rest goes out, as does what was held for a `<` that began no block; then everything pending.
+   */
   end(): void {
+    this.settle();
     if (!this.held) this.release(this.shown.length);
     this.flush();
   }
@@ -106,6 +143,7 @@ export class ReplyStream {
    * goes out now, as at `end` — so the owner's sockets have it before that message.
    */
   flushNow(): void {
+    this.settle();
     if (!this.held) this.release(this.shown.length);
     this.flush();
   }
@@ -118,7 +156,8 @@ export class ReplyStream {
     this.shown = "";
     this.released = 0;
     this.held = false;
-    this.carry = "";
+    this.carry = { text: "", reasoning: "" };
+    this.holds = this.holdTokens ? { text: new TokenHold(), reasoning: new TokenHold() } : null;
   }
 
   /** Drops what is pending (nothing more will be pushed). */

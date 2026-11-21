@@ -63,7 +63,7 @@ describe("mail is really sent", () => {
 
   const queue = async (body = "link https://app.example/verify?token=abc", kind: MailKind = "verify_email", policy = OPEN): Promise<string> => {
     await sendMail(db, kind, TO, "Subject line", body, policy);
-    return (await db.query<{ id: string }>("select id::text from mail_outbox order by id desc limit 1")).rows[0]!.id;
+    return (await db.query<{ id: string }>("select id::text from mail_outbox order by mail_outbox.id desc limit 1")).rows[0]!.id;
   };
   const row = async (id: string) =>
     (await db.query<Record<string, any>>("select status, attempts, sent_at, last_error, provider_id, next_attempt_at, expires_at, deliver from mail_outbox where id = $1", [id])).rows[0]!;

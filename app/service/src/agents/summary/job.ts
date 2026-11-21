@@ -6,7 +6,6 @@ import { count } from "../../memory/stats.ts";
 import { attachmentLabel } from "../runtime/context.ts";
 import { personLabel, speakerRole } from "../runtime/prompt.ts";
 import { liveAgent, lockAgent } from "../store.ts";
-import { withoutCitations } from "../tools/refs.ts";
 import { cleanSummary, hasContent, keepLabelled, OWNER, SELF, speakersIn, summaryInput, summarySystem, type SummaryLine } from "./prompt.ts";
 import { countPlaced, legacySummary, readPlaced, readSummary, shownSummary, speakerLabels, summaryBase, writeSummary, type PlacedMessage, type PlacedReader, type Summary } from "./store.ts";
 
@@ -53,12 +52,11 @@ export const SUMMARY_MAX_MESSAGES = 200;
  */
 function lineOf(m: PlacedMessage, reader: PlacedReader, maxWeight: number): SummaryLine {
   const label = m.attachment ? attachmentLabel({ name: m.attachment.name, image: m.attachment.inline === true }) : "";
-  // No number a reply's tools gave (`〔m3〕`) means anything to this call or to the summary it writes (tools/refs.ts `withoutCitations`).
-  const text = shown([label, withoutCitations(m.text)].filter((s) => s !== "").join(" "), maxWeight);
+  const text = shown([label, m.text].filter((s) => s !== "").join(" "), maxWeight);
   if (m.senderId === reader.agentId) return { who: SELF, text };
   if (!reader.group) return { who: OWNER, text };
   const role = speakerRole(m.senderId, m.kind, reader.ownerId);
-  return { who: personLabel(withoutCitations(m.name), withoutCitations(m.handle), role === "你的主人"), role: role === "你的主人" ? "主人" : role, text };
+  return { who: personLabel(m.name, m.handle, role === "你的主人"), role: role === "你的主人" ? "主人" : role, text };
 }
 
 /**

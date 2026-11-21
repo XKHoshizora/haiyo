@@ -8,10 +8,10 @@
 // from one the worker has yet to make: the text mounts plain, its tree is taken only once it is near, and every tree is
 // shown at an animation frame, a few per frame (markdownView.jsx `inFrame`). Bidirectional controls are taken out of
 // the text before it is shown either way.
-import React, { Suspense, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, memo, use, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChunkBoundary } from "./ChunkBoundary.jsx";
-import { CitedText } from "./cites.jsx";
-import { mentionsIn, outsideAddresses } from "../data/mentions.js";
+import { CitesContext, numberedCites } from "./cites.jsx";
+import { addressRanges, mentionsIn, outsideAddresses } from "../data/mentions.js";
 import { markMentions, withoutMarks, withoutMarksKeeping } from "./mentionMarks.js";
 import { MentionText } from "./MentionText.jsx";
 import { DROPPED, markdownClient, withNote } from "./markdownClient.js";
@@ -49,27 +49,43 @@ export function loadMarkdown(load = () => import("./Markdown.jsx")) {
 }
 
 /** The tree, once its chunk is here (suspends until then); says when it is shown (its height changed). */
-function LoadedTree({ tree, view, mentionIds }) {
+function LoadedTree({ tree, view, mentionIds, citeList }) {
   const { RichTree } = use(loadMarkdown());
   useLayoutEffect(() => view.changed(), [view, tree]);
-  return <RichTree tree={tree} mentionIds={mentionIds} />;
+  return <RichTree tree={tree} mentionIds={mentionIds} citeList={citeList} />;
 }
 
 /**
  * A checked tree shown, or `plain` while its chunk loads, if it cannot be loaded, or if showing it fails. `mentionIds`:
- * who each marked mention means, by its index (mentionMarks.js).
+ * who each marked mention means, by its index; `citeList`: each marked citation, by its index (mentionMarks.js).
  */
-function Rich({ tree, plain, view, mentionIds = NO_IDS }) {
+function Rich({ tree, plain, view, mentionIds = NO_IDS, citeList = NO_IDS }) {
   if (markdownChunk?.status === "rejected") return plain;
   return (
     <ChunkBoundary fallback={plain} resetKey={tree}>
       <Suspense fallback={plain}>
-        <LoadedTree tree={tree} view={view} mentionIds={mentionIds} />
+        <LoadedTree tree={tree} view={view} mentionIds={mentionIds} citeList={citeList} />
       </Suspense>
     </ChunkBoundary>
   );
 }
 const NO_IDS = Object.freeze([]);
+
+/**
+ * `cites` (places in `text`) that may be shown in it: none inside an address or at either end of one — its mark would land
+ * in the link, or keep it from being one, as a mention's would (mentionMarks.js), and the plain text shows what the
+ * rendered one does — and one inside a mention (`tags`) moved to its end, so that no mark ever lands between a mention's.
+ */
+function shownCites(text, cites, tags) {
+  if (cites.length === 0) return cites;
+  const addresses = addressRanges(text, tags.map((t) => [t.start, t.start + t.length]));
+  return cites
+    .filter((c) => !addresses.some(([a, b]) => c.at >= a && c.at <= b))
+    .map((c) => {
+      const inside = tags.find((t) => c.at > t.start && c.at < t.start + t.length);
+      return inside ? { ...c, at: inside.start + inside.length } : c;
+    });
+}
 
 /** Tells the view when what a text shows changes kind (plain, with the note, rich): its height may have changed. */
 function useShownKind(view, kind) {
@@ -80,7 +96,7 @@ function useShownKind(view, kind) {
   }, [view, kind]);
 }
 
-/** A plain result as shown: the text (`plain`, its mentions as tags and what it cites as links), with the note when it was too complex or too slow. */
+/** A plain result as shown: the text (`plain`, its mentions as tags and its citations as links), with the note when it was too complex or too slow. */
 const plainOf = (plain, result) => (withNote(result) ? <PlainWithNote text={plain} /> : plain);
 
 /**
@@ -139,22 +155,27 @@ const plainKnown = (client, text) => {
  * Agent texts are). Asked for once near — of the worker or of the answers the client has kept, alike; once rich it
  * stays rich while shown (unless the budget pushes it back). `mentions`: its stored mentions (ranges of `text`), shown
  * as tags — plain, and in the rich tree, where the worker is asked for the text with each mention between two marks
- * (mentionMarks.js; Markdown.jsx turns them into tags, and inside code into nothing: plain text there).
+ * (mentionMarks.js; Markdown.jsx turns them into tags, and inside code into nothing: plain text there). Its citations
+ * (places in `text`, from the message's `CitesContext`, cites.jsx) are shown as links where they stand, the same ways.
  */
 export const AgentText = memo(function AgentText({ text, id = null, mentions = null }) {
-  // The mentions, as a key that stays the same while they do (the message's view is made again at every change).
+  const cited = useContext(CitesContext);
+  const cites = cited?.cites ?? NO_IDS;
+  // The mentions and citations, as a key that stays the same while they do (the message's view is made again at every change).
   const key = Array.isArray(mentions) ? mentions.map((m) => `${m?.id}:${m?.start}:${m?.length}`).join(",") : "";
-  // Any mark of mentionMarks.js the text holds itself is taken out, the mentions moved onto what is left (only marks put
-  // in here make a tag, M-1; a forged one hides only itself, fix round 2 M-4); then bidirectional controls. (The service
-  // keeps none of those in a reply: when it took any out, the mentions are not shown.)
-  const unmarked = useMemo(() => withoutMarksKeeping(text, mentions), [text, key]);
+  const citeKey = cites.map((c) => `${c.at}:${c.conversationId}:${c.seq}`).join(",");
+  // Any mark of mentionMarks.js the text holds itself is taken out, the mentions and citations moved onto what is left
+  // (only marks put in here make a tag or a link, M-1; a forged one hides only itself, fix round 2 M-4); then
+  // bidirectional controls. (The service keeps none of those in a reply: when it took any out, neither is shown.)
+  const unmarked = useMemo(() => withoutMarksKeeping(text, mentions, cites), [text, key, citeKey]);
   const shown = useMemo(() => withoutBidiControls(unmarked.text), [unmarked]);
   // (None inside an address, in the plain text as in the rendered one: tidy round, m-10.)
   const tags = useMemo(() => (shown === unmarked.text ? outsideAddresses(shown, mentionsIn(shown, unmarked.mentions)) : []), [shown, unmarked]);
-  const asked = useMemo(() => markMentions(shown, tags), [shown, tags]);
+  const links = useMemo(() => (shown === unmarked.text ? numberedCites(shownCites(shown, unmarked.cites, tags)) : NO_IDS), [shown, unmarked, tags]);
+  const asked = useMemo(() => markMentions(shown, tags, links), [shown, tags, links]);
   const mentionIds = useMemo(() => tags.map((t) => t.id), [tags]);
-  // Plain: its mentions as tags, and what it cites (cites.jsx) as links; rich, the tree does the same.
-  const plain = tags.length > 0 ? <MentionText text={shown} mentions={tags} /> : <CitedText text={shown} />;
+  // Plain: its mentions as tags, and its citations as links; rich, the tree does the same.
+  const plain = <MentionText text={shown} mentions={tags} cites={links} onJump={cited?.onJump ?? null} />;
   const client = markdownClient();
   const view = useMarkdownView();
   const host = useRef(null);
@@ -187,7 +208,7 @@ export const AgentText = memo(function AgentText({ text, id = null, mentions = n
     body = plainOf(plain, result);
     kind = withNote(result) ? "note" : "plain";
   } else if (result?.tree && granted) {
-    body = <Rich tree={result.tree} plain={plain} view={view} mentionIds={mentionIds} />;
+    body = <Rich tree={result.tree} plain={plain} view={view} mentionIds={mentionIds} citeList={links} />;
     kind = "rich";
   }
   useShownKind(view, kind);

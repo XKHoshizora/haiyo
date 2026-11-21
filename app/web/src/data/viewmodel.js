@@ -62,8 +62,6 @@ function quoteView(replyTo, alias) {
     text: replyTo.text ?? "",
     kind: replyTo.kind ?? "text",
     attachmentName: replyTo.attachmentName ?? null,
-    // Whether a person or an Agent wrote it, as the service says (also for an Agent no longer held here).
-    senderKind: replyTo.senderKind === "agent" || replyTo.senderKind === "human" ? replyTo.senderKind : null,
   };
 }
 
@@ -291,20 +289,28 @@ function foundView(found) {
   return found.filter((f) => f && typeof f.conversationId === "string" && isCountAbove0(f.seq)).map((f) => ({ conversationId: f.conversationId, seq: f.seq }));
 }
 
-/** The numbers of a citation as a reply writes it (〔m3〕). */
-const CITE_NUMBER = /^m[1-9][0-9]{0,5}$/;
+/** The most citations a reply has (the service's `CITES_MAX`). */
+const CITES_MAX = 20;
+const isLowSurrogate = (code) => code >= 0xdc00 && code <= 0xdfff;
 
 /**
- * A reply's `cites` (of what its text cites, the messages I can see, by number) as `{m3: {conversationId, seq}}`; null
- * when there is none. A number it does not name is plain text in the reply.
+ * A reply's `cites` (its citations, beside its text: those whose message I can see) as `[{at, kind, conversationId, seq}]`
+ * — each that fits its `text`: a place in it (UTF-16 code units, not inside a surrogate pair), no earlier than the one
+ * before, a kind, a message; at most CITES_MAX. [] for anything else (a reply from before citations were kept beside the
+ * text has none: what looks like one in its text is text).
  */
-function citesView(cites) {
-  if (!cites || typeof cites !== "object" || Array.isArray(cites)) return null;
-  const out = {};
-  for (const [n, at] of Object.entries(cites)) {
-    if (CITE_NUMBER.test(n) && at && typeof at.conversationId === "string" && isCountAbove0(at.seq)) out[n] = { conversationId: at.conversationId, seq: at.seq };
+function citesView(cites, text) {
+  if (!Array.isArray(cites) || typeof text !== "string") return [];
+  const out = [];
+  let last = 0;
+  for (const c of cites.slice(0, CITES_MAX)) {
+    const at = c?.at;
+    if (!Number.isSafeInteger(at) || at < last || at > text.length || (c.kind !== "m" && c.kind !== "f")) continue;
+    if (typeof c.ref?.conversationId !== "string" || !isCountAbove0(c.ref.seq) || (at > 0 && isLowSurrogate(text.charCodeAt(at)))) continue;
+    out.push({ at, kind: c.kind, conversationId: c.ref.conversationId, seq: c.ref.seq });
+    last = at;
   }
-  return Object.keys(out).length > 0 ? out : null;
+  return out;
 }
 
 /**
@@ -393,8 +399,8 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
     // Who its mentions mean, as stored when it was sent (data/mentions.js `mentionsIn`: only those that fit its text —
     // a file's caption): shown as tags over their ranges. Never read from the text.
     mentions: kind === "system" ? [] : mentionsIn(m.text ?? "", m.mentions).map((x) => ({ ...x, id: alias(x.id) })),
-    // What its text cites (〔m3〕), of the messages I can see.
-    cites: m.kind === "text" ? citesView(m.cites) : null,
+    // Its citations, beside its text, of the messages I can see: links drawn where they stand.
+    cites: m.kind === "text" ? citesView(m.cites, m.text) : [],
     queries:
       m.kind === "text" && typeof agentId === "string" && m.senderId === agentId && Array.isArray(m.queries)
         ? m.queries.filter((q) => typeof q === "string" && q.trim() !== "")

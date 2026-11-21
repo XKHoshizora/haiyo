@@ -646,7 +646,7 @@ describe("a reply's thinking in a group is its Agent's owner's only", () => {
       const quoting = (await api(app, who, "GET", `/api/conversations/${w.g}/messages/${w.quote}`)).json.message;
       expect([who.handle, quoting.replyTo, "reasoning" in quoting]).toEqual([
         who.handle,
-        { seq: w.mine, visible: true, senderId: w.agent.id, senderKind: "agent", text: "REPLY-gr5 周六十点。", kind: "text" },
+        { seq: w.mine, visible: true, senderId: w.agent.id, text: "REPLY-gr5 周六十点。", kind: "text" },
         false,
       ]);
       const pushedQuote = w.sockets.get(who)!.events.find((e) => e.type === "message" && e.message.seq === w.quote)!.message;

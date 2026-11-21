@@ -52,6 +52,8 @@ const bubbleText = () => timeline().querySelector("li.streaming")?.querySelector
 const storedLi = (seq) => timeline().querySelector(`li[data-msg="m${seq}"]`);
 const lookupLine = (seq) => storedLi(seq).querySelector(".msg-lookups");
 const runPush = (transport, fields = {}) => push(transport, { type: "run", conversationId: A1, run: runOf(R1, "running"), ...fields });
+/** A reply's citation as the service sends it: where it stands in the text, the message it points to. */
+const cite = (at, conversationId, seq, kind = "m") => ({ at, kind, ref: { conversationId, seq } });
 
 /** A selector's specificity as [ids, classes, elements] (`:is`/`:not`/`:has` count their most specific argument, `:where` none). */
 function specificity(selector) {
@@ -349,11 +351,12 @@ describe("what a reply looked up", () => {
     expect(texts()).toEqual(["在吗", "这条消息已经看不到了", "你好，我是小助手"]);
   });
 
-  it("what a reply cites (〔m1〕) is a small superscript link that jumps to its message, here or in another conversation; a number it was sent nothing for stays the text it is", async () => {
+  it("what a reply cites is a small superscript link where the citation stands (its place beside the text), numbered by the message it points to, that jumps there, here or in another conversation; what only looks like a citation in its text stays the text it is", async () => {
     const listMessages = vi.fn(async (conversationId) => ({ messages: conversationId === G1 ? [wire(G1, 7, ANN, "蜀香在春熙路，周一休息")] : [], nextBefore: null, principals: {} }));
-    const cites = { m1: { conversationId: A1, seq: 2 }, m2: { conversationId: G1, seq: 7 } };
+    // "你问过¹，在春熙路²，也许〔m9〕¹。": the same message cited twice has the same number.
+    const cites = [cite(3, A1, 2), cite(8, G1, 7), cite(15, A1, 2)];
     await openChats({
-      messages: [...BASE, wire(A1, 3, AG1, "你问过〔m1〕，在春熙路〔m2〕，也许〔m9〕。", { lookups: { search: 1 }, cites })],
+      messages: [...BASE, wire(A1, 3, AG1, "你问过，在春熙路，也许〔m9〕。", { lookups: { search: 1 }, cites })],
       groupMessages: [wire(G1, 8, BO, "最新的一条")],
       api: { listMessages },
     });
@@ -362,8 +365,9 @@ describe("what a reply looked up", () => {
     expect(links.map((b) => [b.textContent, b.getAttribute("aria-label")])).toEqual([
       ["1", "引用 1"],
       ["2", "引用 2"],
+      ["1", "引用 1"],
     ]);
-    expect(bubble.textContent).toBe("你问过1，在春熙路2，也许〔m9〕。");
+    expect(bubble.textContent).toBe("你问过1，在春熙路2，也许〔m9〕1。");
     await click(links[0]);
     expect(storedLi(2).classList.contains("flash")).toBe(true);
     await click(links[1]);
@@ -372,8 +376,8 @@ describe("what a reply looked up", () => {
   });
 
   it("a citation's link is a real box as tall as the text line, its number set high in it as a superscript — in a rendered reply too, where the Markdown tree's own rule for a sup does not win (final review, item 13; round 2)", async () => {
-    const cites = { m1: { conversationId: A1, seq: 2 } };
-    await openChats({ messages: [...BASE, wire(A1, 3, AG1, "你问过〔m1〕。", { lookups: { search: 1 }, cites })] });
+    const cites = [cite(3, A1, 2)];
+    await openChats({ messages: [...BASE, wire(A1, 3, AG1, "你问过。", { lookups: { search: 1 }, cites })] });
     // The reply as the Markdown tree renders it: the citation's sup inside `.md`.
     const sup = storedLi(3).querySelector(".md sup.cite");
     expect(sup).not.toBeNull();
@@ -401,8 +405,8 @@ describe("what a reply looked up", () => {
   });
 
   it("a cited reply shown as plain text (too long to render, with the note) keeps its citations as links", async () => {
-    const cites = { m1: { conversationId: A1, seq: 2 } };
-    const long = `你问过〔m1〕。${"很长的一段话。".repeat(8000)}`;
+    const cites = [cite(3, A1, 2)];
+    const long = `你问过。${"很长的一段话。".repeat(8000)}`;
     await openChats({ messages: [...BASE, wire(A1, 3, AG1, long, { lookups: { search: 1 }, cites })] });
     const bubble = storedLi(3).querySelector(".bubble");
     expect(bubble.querySelector(".md-note")).not.toBeNull();
@@ -432,69 +436,73 @@ describe("what a reply looked up", () => {
   });
 });
 
-describe("a reply's citations are its links, and nothing wherever its text is previewed (round 2, N-6)", () => {
-  const CITED = "在春熙路〔m1〕，周一休息〔f2〕。";
-  const SHOWN = "在春熙路，周一休息。";
+describe("a reply's citations are beside its text: wherever its text is shown but in its message, it is the text as stored; what only looks like a citation is text", () => {
+  // A reply as stored (its citations beside it; what looks like one in it is what it copied of someone's text), and a text
+  // someone typed that looks like one.
+  const STORED = "她说在春熙路〔m1〕，周一休息。";
+  const TYPED = "在春熙路〔m1〕，周一休息〔f2·k7q2〕。";
 
-  it("a found message that is an Agent's reply: its row shows no citation", async () => {
-    const getMessage = vi.fn(async () => ({ message: wire(G1, 1, OAG, CITED), principals: {} }));
-    await openChats({
-      open: "周末小组",
-      groupMessages: [wire(G1, 1, OAG, CITED), wire(G1, 2, AG1, "见上。", { lookups: { search: 1 }, found: [{ conversationId: G1, seq: 1 }] })],
-      api: { getMessage },
-    });
-    await click(within(lookupLine(2)).getByRole("button", { name: "查了 1 次聊天记录" }));
-    expect([...lookupLine(2).querySelectorAll(".lookup-rows .row-preview")].map((p) => p.textContent)).toEqual([SHOWN]);
-  });
-
-  it("the quote of an Agent's reply shows no citation; a person's text is as written", async () => {
+  it("in the message itself: the links where they stand, around a mention, after surrogate pairs, plain and rendered alike; a person's citation-shaped text is text and never a link", async () => {
+    // "😀@阿波 在春熙路¹，🌊周一休息²。"
+    const text = "😀@阿波 在春熙路，🌊周一休息。";
+    const cites = [cite(10, G1, 1), cite(17, G1, 3)];
     await openChats({
       open: "周末小组",
       groupMessages: [
-        wire(G1, 1, OAG, CITED),
-        wire(G1, 2, ME_ID, "好的", { replyTo: { seq: 1, visible: true, senderId: OAG, text: CITED, kind: "text" } }),
-        wire(G1, 3, ANN, "我写的〔m1〕"),
-        wire(G1, 4, BO, "嗯", { replyTo: { seq: 3, visible: true, senderId: ANN, text: "我写的〔m1〕", kind: "text" } }),
+        wire(G1, 1, ANN, TYPED),
+        wire(G1, 3, BO, "好"),
+        wire(G1, 4, AG1, text, { mentions: [{ id: BO, start: 2, length: 3 }], lookups: { search: 1 }, cites }),
       ],
     });
-    expect(storedLi(2).querySelector("blockquote").textContent).toBe(`安的助手${SHOWN}`);
-    expect(storedLi(4).querySelector("blockquote").textContent).toBe("小安我写的〔m1〕");
+    const bubble = storedLi(4).querySelector(".bubble");
+    expect(bubble.querySelector(".md")).not.toBeNull();
+    expect(bubble.textContent).toBe("😀提到 阿波@阿波 在春熙路1，🌊周一休息2。");
+    expect([...bubble.querySelectorAll("sup.cite button")].map((b) => b.getAttribute("aria-label"))).toEqual(["引用 1", "引用 2"]);
+    expect(storedLi(1).textContent).toContain(TYPED);
+    expect(storedLi(1).querySelector("sup.cite")).toBeNull();
   });
 
-  it("the reply chip over the composer shows no citation of the Agent's reply it answers", async () => {
-    await openChats({ messages: [...BASE, wire(A1, 3, AG1, CITED)] });
-    await click(within(storedLi(3)).getByRole("button", { name: /回复/ }));
-    expect(document.querySelector(".reply-chip span").textContent).toBe(`回复 小助手：${SHOWN}`);
-  });
-
-  // An Agent I do not hold (it has left the group, say): the wire says it is one — a quote's senderKind, a search answer's principals.
-  const GONE = "00000000-0000-4000-8000-0000000000d9";
-
-  it("the quote of an Agent's reply shows no citation also when I no longer hold that Agent (the quote's senderKind says so; round 3)", async () => {
+  it("a found message that is an Agent's reply: its row is its text", async () => {
+    const getMessage = vi.fn(async () => ({ message: wire(G1, 1, OAG, STORED, { cites: [cite(4, G1, 9)] }), principals: {} }));
     await openChats({
       open: "周末小组",
-      groupMessages: [wire(G1, 2, ME_ID, "好的", { replyTo: { seq: 1, visible: true, senderId: GONE, senderKind: "agent", text: CITED, kind: "text" } })],
+      groupMessages: [wire(G1, 1, OAG, STORED, { cites: [cite(4, G1, 9)] }), wire(G1, 2, AG1, "见上。", { lookups: { search: 1 }, found: [{ conversationId: G1, seq: 1 }] })],
+      api: { getMessage },
     });
-    expect(storedLi(2).querySelector("blockquote").textContent).toContain(SHOWN);
-    expect(storedLi(2).querySelector("blockquote").textContent).not.toContain("〔");
+    await click(within(lookupLine(2)).getByRole("button", { name: "查了 1 次聊天记录" }));
+    expect([...lookupLine(2).querySelectorAll(".lookup-rows .row-preview")].map((p) => p.textContent)).toEqual([STORED]);
   });
 
-  it("a search hit of an Agent I no longer hold shows no citation (its answer's principals say it is an Agent; round 3)", async () => {
-    const gone = { id: GONE, handle: "olive.gone_bot", displayName: "走了的助手", avatarVersion: 0, kind: "agent" };
-    const searchAll = vi.fn(async () => ({ messages: [wire(G1, 1, GONE, CITED, { createdAt: at(1) })], nextBefore: null, principals: { [GONE]: gone } }));
-    await openChats({ groupMessages: [wire(G1, 2, BO, "最新的一条")], api: { searchAll } });
-    fireEvent.change(screen.getByLabelText("搜索联系人、群聊"), { target: { value: "春熙路" } });
-    await elapse(300);
-    const row = document.querySelector(".list-col .row-preview mark").closest("button");
-    expect(row.querySelector(".row-preview").textContent).toBe(`走了的助手：${SHOWN}`);
+  it("a quote shows the text as it is, an Agent's reply's and a person's alike", async () => {
+    await openChats({
+      open: "周末小组",
+      groupMessages: [
+        wire(G1, 1, OAG, STORED, { cites: [cite(4, G1, 9)] }),
+        wire(G1, 2, ME_ID, "好的", { replyTo: { seq: 1, visible: true, senderId: OAG, text: STORED, kind: "text" } }),
+        wire(G1, 3, ANN, TYPED),
+        wire(G1, 4, BO, "嗯", { replyTo: { seq: 3, visible: true, senderId: ANN, text: TYPED, kind: "text" } }),
+      ],
+    });
+    expect(storedLi(2).querySelector("blockquote").textContent).toBe(`安的助手${STORED}`);
+    expect(storedLi(4).querySelector("blockquote").textContent).toBe(`小安${TYPED}`);
   });
 
-  it("a hit of the list's search that is an Agent's reply shows no citation", async () => {
-    const searchAll = vi.fn(async () => ({ messages: [wire(G1, 1, OAG, CITED, { createdAt: at(1) })], nextBefore: null, principals: {} }));
-    await openChats({ groupMessages: [wire(G1, 1, OAG, CITED)], api: { searchAll } });
+  it("the reply chip over the composer shows the text of the Agent's reply it answers", async () => {
+    await openChats({ messages: [...BASE, wire(A1, 3, AG1, STORED, { cites: [cite(4, A1, 2)] })] });
+    await click(within(storedLi(3)).getByRole("button", { name: /回复/ }));
+    expect(document.querySelector(".reply-chip span").textContent).toBe(`回复 小助手：${STORED}`);
+  });
+
+  it("a hit of the list's search shows the text as it is: an Agent's reply's, and a person's that looks like a citation", async () => {
+    const searchAll = vi.fn(async () => ({
+      messages: [wire(G1, 1, OAG, STORED, { createdAt: at(1), cites: [cite(4, G1, 9)] }), wire(G1, 2, ANN, TYPED, { createdAt: at(2) })],
+      nextBefore: null,
+      principals: {},
+    }));
+    await openChats({ groupMessages: [wire(G1, 2, ANN, TYPED)], api: { searchAll } });
     fireEvent.change(screen.getByLabelText("搜索联系人、群聊"), { target: { value: "春熙路" } });
     await elapse(300);
-    const row = document.querySelector(".list-col .row-preview mark").closest("button");
-    expect(row.querySelector(".row-preview").textContent).toBe(`安的助手：${SHOWN}`);
+    const rows = [...document.querySelectorAll(".list-col .row-preview mark")].map((m) => m.closest("button").querySelector(".row-preview").textContent);
+    expect(rows.sort()).toEqual([`安的助手：${STORED}`, `小安：${TYPED}`].sort());
   });
 });
