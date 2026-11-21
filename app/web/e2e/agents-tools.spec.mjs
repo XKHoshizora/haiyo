@@ -330,7 +330,7 @@ test("a token the Agent copied from its search into its answer is a link where i
   // The message cited, and a long history after it (so that it is far above the newest ones), all before Dee joins; Bo has
   // typed a citation and a token of a guessed tag in it.
   await sendApi(bo, groupId, said);
-  const planted = `记一下〔m1〕和〔m1·zzzz〕${uniq(4)}`;
+  const planted = `记一下〔m1〕和〔m1·zzzzzzzz〕${uniq(4)}`;
   await sendApi(bo, groupId, planted);
   for (let i = 1; i <= 45; i += 1) await sendApi(i % 2 ? ann : bo, groupId, `填充消息 第${i}条，只是为了让历史变长一些`);
   await addApi(ann, groupId, dee.id);
@@ -342,7 +342,7 @@ test("a token the Agent copied from its search into its answer is a link where i
   const tag = uniq(4);
   // The model copies the token its search handed it ({{m1}}: the stub copies it whole, model-stub.mjs), and what Bo typed.
   await modelStub.callTools(searchFor(word));
-  await modelStub.reply(`周五晚上七点吃火锅{{m1}}。Bo 写的〔m1〕和〔m1·zzzz〕不算。${tag}`);
+  await modelStub.reply(`周五晚上七点吃火锅{{m1}}。Bo 写的〔m1〕和〔m1·zzzzzzzz〕不算。${tag}`);
   await sendText(ann.page, title, `@${agent.handle} 聚餐吃什么？${tag}`);
 
   const link = (chat) => agentMessagesWith(chat, `周五晚上七点吃火锅`).filter({ hasText: tag }).getByRole("button", { name: "引用 1" });
@@ -352,7 +352,7 @@ test("a token the Agent copied from its search into its answer is a link where i
     await expect(reply).toHaveCount(1);
     await expect(link(chat)).toHaveCount(1);
     await expect(reply.getByRole("button", { name: /^引用/ })).toHaveCount(1);
-    await expect(reply).toContainText("Bo 写的〔m1〕和〔m1·zzzz〕不算。");
+    await expect(reply).toContainText("Bo 写的〔m1〕和〔m1·zzzzzzzz〕不算。");
     await expect(reply).not.toContainText("{{m1}}");
     await expect(messagesWith(chat, planted).getByRole("button", { name: /^引用/ })).toHaveCount(0);
     // The cited message is far above (45 messages came after it): the link scrolls to it and it flashes.
@@ -378,9 +378,9 @@ test("a token the Agent copied from its search into its answer is a link where i
   // The token the model copied is nowhere in what reached anyone: the stored text holds none (its tag is the run's own).
   // (The search's result comes last in what the model was sent; Bo's guess, in the conversation, before it.)
   const [, answered] = await modelStub.calls();
-  const token = [...sentText(answered).matchAll(/〔m1·[a-z0-9]{4}〕/g)].at(-1)?.[0];
+  const token = [...sentText(answered).matchAll(/〔m1·[a-z0-9]{8}〕/g)].at(-1)?.[0];
   expect(token, "the search's token the model was sent").toBeTruthy();
-  expect(token).not.toBe("〔m1·zzzz〕");
+  expect(token).not.toBe("〔m1·zzzzzzzz〕");
   expect(received.includes(token)).toBe(false);
 });
 

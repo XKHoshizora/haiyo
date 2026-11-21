@@ -51,7 +51,7 @@ const memoryKindOf = (body) => {
 
 /**
  * `text` with each `{{m1}}` (`{{f2}}`…) as the model copies a citation: the token of that number the call was sent last
- * (`〔m1·k7q2〕`: what the service's tools label things with, carrying the reply's own tag — its tool results come after
+ * (`〔m1·k7q2m9x4〕`: what the service's tools label things with, carrying the reply's own tag — its tool results come after
  * the conversation, where anyone may have typed one), whole; left as it is when the call was sent none.
  */
 const withTokens = (text, body) => {

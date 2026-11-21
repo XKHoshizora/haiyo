@@ -46,3 +46,46 @@ describe("a reply's citations marked for the Markdown worker", () => {
     expect(mentionParts(markMentions(text, [], []))).toEqual(["在春熙路"]);
   });
 });
+
+// M-10: each runs in time linear in its text, with 20 mentions and 20 citations, on texts of 4 000 and 16 000 characters
+// (as tests/mentions.test.jsx measures the editor's: per call the shortest of three bursts, the median of five ratios).
+describe("in time linear in the text", () => {
+  const mark = (code) => String.fromCharCode(code);
+  const shapes = [
+    ["Chinese", (n) => "春熙路的火锅，周一休息。".repeat(n / 12 + 1)],
+    ["Chinese, @ and URLs", (n) => "你好@x https://a.b/@c ".repeat(n / 20 + 1)],
+    ["Markdown", (n) => "**粗体** `代码` [链接](https://a.b) ".repeat(n / 30 + 1)],
+  ];
+  const marked = (fill) => (n) => fill(n).replace(/好|火|码/g, (c) => `${mark(0xfde6)}${mark(0xfdd2)}${c}${mark(0xfdd0)}`);
+  const make = (fill, n) => fill(n).slice(0, n);
+  const mentionsOf = (n) => Array.from({ length: 20 }, (_, i) => ({ id: "b", start: Math.floor((i * n) / 21), length: 2 }));
+  const citesOf = (n) => Array.from({ length: 20 }, (_, i) => cite(Math.floor(((i + 0.5) * n) / 21), i));
+  const burst = (work) => {
+    let calls = 0;
+    const started = performance.now();
+    let spent = 0;
+    do {
+      work();
+      calls += 1;
+      spent = performance.now() - started;
+    } while (spent < 20);
+    return spent / calls;
+  };
+  const perCall = (work) => Math.min(burst(work), burst(work), burst(work));
+  const expectLinear = (name, run, withMarks = false) => {
+    for (const [shape, plain] of shapes) {
+      const fill = withMarks ? marked(plain) : plain;
+      const [small, large] = [make(fill, 4000), make(fill, 16000)];
+      expect(large.length, shape).toBe(16000);
+      const [inLarge, inSmall] = [() => run(large, 16000), () => run(small, 4000)];
+      burst(inLarge);
+      burst(inSmall);
+      const ratio = Array.from({ length: 5 }, () => perCall(inLarge) / perCall(inSmall)).sort((a, b) => a - b)[2];
+      expect(ratio, `${name}, ${shape}: 4× the text took ${ratio.toFixed(1)}× the time`).toBeLessThan(8);
+    }
+  };
+
+  it("textPieces", () => expectLinear("textPieces", (text, n) => textPieces(text, mentionsOf(n), citesOf(n))), 60_000);
+  it("markMentions, then mentionParts", () => expectLinear("markMentions", (text, n) => mentionParts(markMentions(text, mentionsOf(n), citesOf(n)))), 60_000);
+  it("withoutMarksKeeping (a text full of marks of its own)", () => expectLinear("withoutMarksKeeping", (text, n) => withoutMarksKeeping(text, mentionsOf(n), citesOf(n)), true), 60_000);
+});

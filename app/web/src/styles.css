@@ -458,7 +458,8 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 }
 .msg-lookups > button:hover { color: var(--purple-dark); }
 .lookup-words { margin: 4px 0 0; }
-/* What a reply cites (〔m3〕): a small superscript number that jumps to the message. The sup moves no line (no raise, the
+/* What a reply cites (its `cites`, stored beside its text; ui/cites.jsx): a small superscript number that jumps to the
+   message. The sup moves no line (no raise, the
    line's own height); its button is a box of the text's font and line height, so it is as tall as the line and easy to
    hit; the number is small, at the box's top. */
 .cite { vertical-align: baseline; font-size: inherit; line-height: inherit; }
