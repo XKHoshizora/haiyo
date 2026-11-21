@@ -339,8 +339,8 @@ describe("告诉他们", () => {
     await askInGroup(w, hook);
     const [made] = await whispersOf(w.owner.id, w.g);
     const hits = made!.body.detail!.hits;
-    // The owner is shown where and who (the title without its citation).
-    expect(hits[0]).toMatchObject({ where: "丙群CANARY-where", who: "CANARY-who", text: "@someone_bot 蓝鲸计划改到周五了" });
+    // The owner is shown where and who (the title as its members wrote it: what looks like a citation in it is text).
+    expect(hits[0]).toMatchObject({ where: "丙群〔m1〕CANARY-where", who: "CANARY-who", text: "@someone_bot 蓝鲸计划改到周五了" });
     const nedSocket = await connect(app, w.ned);
     expect((await api(app, w.owner, "POST", `/api/whispers/${made!.id}/accept`)).status).toBe(200);
     gateway.reply("蓝鲸计划改到周五了。");

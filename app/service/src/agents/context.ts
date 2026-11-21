@@ -11,7 +11,6 @@ import type { ModelCall } from "../models/gateway.ts";
 import type { Resolved } from "../models/resolve.ts";
 import { handleOf } from "../principals/store.ts";
 import { renderProposalBlock } from "./persona.ts";
-import { withoutCitations } from "./tools/refs.ts";
 import {
   GROUP_AGENTS_NAMED,
   GROUP_PEOPLE_NAMED,
@@ -106,10 +105,11 @@ export interface ContextRun {
    */
   reserved?: number;
   /**
-   * A reply offered tools: the number of each attachment it is shown (agents/tools/refs.ts `RunRefs.file`), which its
-   * label carries — the message's own and a quoted one's alike. Absent: labels carry none.
+   * A reply offered tools: the token of each attachment it is shown (agents/tools/refs.ts `RunRefs.file`; `seq`: the
+   * message it was sent in, of the run's conversation), which its label carries — the message's own and a quoted one's
+   * alike. Absent: labels carry none.
    */
-  fileRef?: (attachmentId: string) => string;
+  fileRef?: (attachmentId: string, seq: number) => string;
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
   upTo?: number;
   /**
@@ -370,12 +370,12 @@ interface MessageRow {
   proposal_field: string | null;
 }
 
-/** An attachment as the context shows it; with `fileRef` (a reply offered tools), with its number. */
-const toAttachment = (a: AttachmentRef, fileRef?: (attachmentId: string) => string): ContextAttachment => ({
+/** An attachment of message `seq` as the context shows it; with `fileRef` (a reply offered tools), with its token. */
+const toAttachment = (a: AttachmentRef, seq: number, fileRef?: (attachmentId: string, seq: number) => string): ContextAttachment => ({
   id: a.id,
-  name: withoutCitations(a.name),
+  name: a.name,
   image: a.inline === true,
-  ...(fileRef ? { ref: fileRef(a.id) } : {}),
+  ...(fileRef ? { ref: fileRef(a.id, seq) } : {}),
 });
 
 
@@ -401,8 +401,8 @@ const inGroupNow = (ms: string): string =>
  * read for a block again. (A reply in a group never proposes: nothing is looked up there.) In a group a quote of a
  * message at or before the asker's line (`ContextRun.group.after`) is left out as one the Agent cannot see is: the
  * quoting message's own text only; and the calls the run answers (`ContextRun.group.calls`) belong whatever `from` is,
- * one at or before `from` as its text only (no attachment: it is not read). No citation (`〔m3〕`) is shown, in a text, a
- * quote or a file's name (tools/refs.ts `withoutCitations`): a number means something only in the run that gave it.
+ * one at or before `from` as its text only (no attachment: it is not read). Every text is shown as it is stored:
+ * none holds a citation (README "Agents and runs", Citations), and one that looks like one is what someone wrote.
  * `more`: as many as `limit` (there may be older ones).
  */
 async function loadPage(
@@ -443,7 +443,7 @@ async function loadPage(
       [run.agentId, run.conversationId, quotedSeqs, run.group?.after ?? 0],
     );
     for (const r of quoted.rows) {
-      const shown = r.text ? withoutCitations(r.text) : r.attachment ? attachmentLabel(toAttachment(r.attachment, run.fileRef)) : "";
+      const shown = r.text || (r.attachment ? attachmentLabel(toAttachment(r.attachment, Number(r.seq), run.fileRef)) : "");
       if (shown !== "") quotes.set(Number(r.seq), shown);
     }
   }
@@ -452,12 +452,12 @@ async function loadPage(
     if (role === null) return [];
     const quoted = typeof r.reply_to === "number" ? (quotes.get(r.reply_to) ?? null) : null;
     const seq = Number(r.seq);
-    let text = entryText(withoutCitations(r.text ?? ""), quoted);
+    let text = entryText(r.text ?? "", quoted);
     if (role === "assistant" && r.proposal_persona !== null) {
       const block = renderProposalBlock({ persona: r.proposal_persona, intro: r.proposal_intro, field: r.proposal_field });
       text = text === "" ? block : `${text}\n\n${block}`;
     }
-    const entry: ContextEntry = { role, text, attachment: r.attachment ? toAttachment(r.attachment, run.fileRef) : null };
+    const entry: ContextEntry = { role, text, attachment: r.attachment ? toAttachment(r.attachment, seq, run.fileRef) : null };
     const speaker =
       group && role === "user"
         ? {
@@ -805,7 +805,7 @@ export async function buildContext(
       const max = Math.min(found.size, maxChars * UTF8_MAX_BYTES_PER_CHAR, plan.bytesLeft);
       const got = await read(attachment, found.blobKey, max, startsLikeText);
       const text = got ? fileText(got.data, got.complete, maxChars) : null;
-      if (text) plan.offer(slot, { type: "text", text: withoutCitations(withoutMark(text.text, loaded.mark)), chars: text.chars });
+      if (text) plan.offer(slot, { type: "text", text: withoutMark(text.text, loaded.mark), chars: text.chars });
     }
   }
 

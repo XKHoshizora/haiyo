@@ -52,6 +52,11 @@ export interface ToolRun {
    * never answered (a retry; agents/conversation.ts `standingAcknowledgement`) — so it posts none (worker.ts). Absent: false.
    */
   readonly acknowledged?: boolean;
+  /**
+   * The tag the run's numbers carry (agents/tools/refs.ts `RunRefs`): no token carrying it is streamed (stream.ts), and
+   * the port takes them out of what it posts. Absent: the stream shows the text as written.
+   */
+  readonly tag?: string;
   /** The model's context, in tokens. */
   readonly contextTokens: number;
   /** The images and PDFs the call shows, at their constants (metering/prices.ts): sent, and held, in every round. */

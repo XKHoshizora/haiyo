@@ -519,7 +519,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     const toolRatio = bounds.planRatio * TOOL_TEXT_FACTOR;
     const room = bounds.limit - bounds.planned - estimateTokens(toolsText, toolRatio) - estimateTokens(`\n\n${FINAL_LINE}`, bounds.planRatio) - TOOL_PREAMBLE_TOKENS;
     const guard = new LoopGuard({ maxRounds: limits.maxRounds, perTool: bounds.perTool });
-    const out = new ReplyStream((delta) => port.emit(run, delta));
+    // No token of the run's numbers is streamed: the stored reply keeps them beside its text, as citations.
+    const out = new ReplyStream((delta) => port.emit(run, delta), undefined, bounds.tag ?? null);
     const meter = new Meter();
     const steps: Array<{ assistant: unknown; results: ToolResult[] }> = [];
     let stepsTokens = 0;

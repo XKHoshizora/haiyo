@@ -8,7 +8,6 @@ import type { ToolOutcome } from "../runtime/port.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, oneLine, speakerRole, TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
 import { siteDateTime, siteWeekday } from "./clock.ts";
 import type { ElsewhereAsk, RunScope, ToolDeps } from "./index.ts";
-import { withoutCitations } from "./refs.ts";
 
 /**
  * The search tool (README "Agents and runs", Tools in a reply; design rules 1–4): the messages a reply's Agent can find
@@ -50,8 +49,8 @@ export function searchSpec(group: boolean): ToolSpec {
   return {
     name: SEARCH_MESSAGES,
     description: group
-      ? "在这个群的聊天记录里按原文查找消息：找包含这些字的消息，不是按意思找。返回最新的几条，每条有编号 ref（引用时写〔ref〕）、谁说的 who、什么时候 when、原文片段 text；文件消息还有 file（文件编号和文件名，可以用 read_file 读）。more 为 true 时还有更早的，可以换词或加日期再查。"
-      : "在我们的对话和你所在的群里按原文查找消息：找包含这些字的消息，不是按意思找。返回最新的几条，每条有编号 ref（引用时写〔ref〕）、谁说的 who、什么时候 when、原文片段 text；在群里说的有 where（群名），没有 where 的就是我们之间说的；文件消息还有 file（文件编号和文件名，可以用 read_file 读）。more 为 true 时还有更早的，可以换词或加日期再查。",
+      ? "在这个群的聊天记录里按原文查找消息：找包含这些字的消息，不是按意思找。返回最新的几条，每条有编号 ref（引用时把它原样照抄进回复）、谁说的 who、什么时候 when、原文片段 text；文件消息还有 file（文件编号和文件名，可以用 read_file 读）。more 为 true 时还有更早的，可以换词或加日期再查。"
+      : "在我们的对话和你所在的群里按原文查找消息：找包含这些字的消息，不是按意思找。返回最新的几条，每条有编号 ref（引用时把它原样照抄进回复）、谁说的 who、什么时候 when、原文片段 text；在群里说的有 where（群名），没有 where 的就是我们之间说的；文件消息还有 file（文件编号和文件名，可以用 read_file 读）。more 为 true 时还有更早的，可以换词或加日期再查。",
     parameters: {
       type: "object",
       properties: {
@@ -209,7 +208,7 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
   return { rows, line, ownerAsked };
 }
 
-/** The longest number a reply's search can mint (`refs.ts` citations go to six digits): what results are measured with. */
+/** The longest numbers a reply's search can mint (`refs.ts`: six digits), whose tokens results are measured with. */
 const WIDEST_MESSAGE = "m999999";
 const WIDEST_FILE = "f999999";
 
@@ -219,11 +218,12 @@ const WIDEST_FILE = "f999999";
  * role`, as a group's labels name people: by account, never by what anyone wrote; `你自己` for the Agent), when (the
  * site's time, `YYYY-MM-DD HH:mm 周X`), what (`excerpt`), where (in the Agent's own conversation, a group's title for
  * what was said there), and a file's number and name — not for a call at or before a group reply's line, which is shown
- * as its text only. In a group the run's mark is taken out of whatever someone else wrote; and no citation (`〔m3〕`,
- * tools/refs.ts `withoutCitations`) is shown in any of it: this run's numbers are the only ones it sees (`ref`).
+ * as its text only. In a group the run's mark is taken out of whatever someone else wrote; the rest is shown as it is
+ * stored (no stored text holds a citation: what looks like one is what someone wrote). Each message and file is named
+ * by its token, carrying the run's tag (`ref`, refs.ts): the only numbers it can cite.
  */
 function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { results: Result[]; refs: MessageRef[]; more: boolean } {
-  const clean = (s: string): string => withoutCitations(withoutMark(s, scope.group ? scope.mark : null));
+  const clean = (s: string): string => withoutMark(s, scope.group ? scope.mark : null);
   const drafts = found.rows.slice(0, SEARCH_RESULTS_MAX).map((row) => {
     const seq = Number(row.seq);
     // Who they are to the Agent by account, as a group's labels say it (`speakerRole`); the Agent itself is `你自己`.
@@ -232,12 +232,12 @@ function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { res
     const elsewhere = !scope.group && row.conversation_id !== scope.conversationId;
     const file = row.attachment && !(scope.group && seq <= found.line) ? { id: row.attachment.id, name: clean(row.attachment.name) } : null;
     const result: Result = {
-      ref: WIDEST_MESSAGE,
+      ref: scope.refs.token(WIDEST_MESSAGE),
       ...(elsewhere ? { where: oneLine(clean(cleanText(row.title ?? ""))) || NO_GROUP_TITLE } : {}),
       who: role === null ? BY_YOU : `${clean(labelName(row.sender_name, row.sender_handle))}｜${role}`,
       when: `${date} ${time} ${siteWeekday(row.created_at, deps.config.siteTimezone)}`,
       text: excerpt(clean(row.text ?? ""), term),
-      ...(file ? { file: { ref: WIDEST_FILE, name: file.name } } : {}),
+      ...(file ? { file: { ref: scope.refs.token(WIDEST_FILE), name: file.name } } : {}),
     };
     return { result, at: { conversationId: row.conversation_id, seq }, attachmentId: file?.id ?? null };
   });
@@ -259,7 +259,7 @@ function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { res
   const results = shown.map(({ result, at, attachmentId }) => ({
     ...result,
     ref: scope.refs.message(at.conversationId, at.seq),
-    ...(result.file && attachmentId !== null ? { file: { ref: scope.refs.file(attachmentId), name: result.file.name } } : {}),
+    ...(result.file && attachmentId !== null ? { file: { ref: scope.refs.file(attachmentId, at), name: result.file.name } } : {}),
   }));
   return { results, refs: shown.map((d) => d.at), more };
 }

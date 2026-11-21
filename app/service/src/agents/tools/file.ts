@@ -6,7 +6,6 @@ import { fileText, startsLikeText, UTF8_MAX_BYTES_PER_CHAR } from "../runtime/co
 import type { ToolOutcome } from "../runtime/port.ts";
 import { TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
 import type { RunScope, ToolDeps } from "./index.ts";
-import { withoutCitations } from "./refs.ts";
 
 /**
  * The file tool (README "Agents and runs", Tools in a reply): the text of a file the reply was shown the number of — by
@@ -36,7 +35,7 @@ export const READ_ON = "只读了一部分，可以用 from 接着读。";
 export const fileSpec: ToolSpec = {
   name: READ_FILE,
   description:
-    "读对话里一个文本文件的内容，用文件编号（比如 f1：对话里文件名前面的那个，或查找结果里 file 的 ref）。图片和 PDF 读不了。一次读一部分：还有没读的时候会给出 next，用 from 接着读。",
+    "读对话里一个文本文件的内容，用文件编号（对话里文件名前面的那个，或查找结果里 file 的 ref，原样照抄；只写 f1 这样的编号也行）。图片和 PDF 读不了。一次读一部分：还有没读的时候会给出 next，用 from 接着读。",
   parameters: {
     type: "object",
     properties: {
@@ -96,9 +95,9 @@ export async function readFile(deps: ToolDeps, scope: RunScope, input: FileInput
   const rest = shown.slice(0, text.chars).slice(from);
   if (rest.length === 0) return { output: { error: FROM_PAST_END } };
 
-  // In a group the run's mark is taken out; and no citation (`〔m3〕`, refs.ts `withoutCitations`) is shown: this run's
-  // numbers are the only ones it sees. `from` and `next` count the file's own characters.
-  const clean = (s: string): string => withoutCitations(withoutMark(s, scope.group ? scope.mark : null));
+  // In a group the run's mark is taken out; the rest is shown as it is (what looks like a citation in it is what someone
+  // wrote). `from` and `next` count the file's own characters.
+  const clean = (s: string): string => withoutMark(s, scope.group ? scope.mark : null);
   const name = clean(found.name);
   const page = (n: number): Page => {
     const next = n < rest.length || more ? from + n : null;

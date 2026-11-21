@@ -1,6 +1,5 @@
 import { weight } from "../../metering/tokens.ts";
 import { cleanText, OWNER_WORD, SELF_WORD } from "../runtime/prompt.ts";
-import { withoutCitations } from "../tools/refs.ts";
 
 /**
  * What the rolling summary's call is asked and how its answer is kept (README "The rolling summary"). Pure: the job
@@ -116,9 +115,7 @@ const isHeading = (line: string): boolean => (SECTIONS as readonly string[]).inc
 
 /**
  * The answer as it is stored, or null when nothing is left of it: each line `cleanText`ed (invisible and control characters,
- * whitespace runs) and without any citation (tools/refs.ts `withoutCitations`: no number a reply's tools gave means anything
- * in a summary — taken out after the invisible characters, which could split one, and before any label is looked for
- * (`keepLabelled`), so that none can hide a label or make one; cleaned again for the spaces they leave), lines nothing is
+ * whitespace runs) and nothing more — labels are looked for (`keepLabelled`) in what is stored, as it is —, lines nothing is
  * left of dropped, then — while the whole (its lines joined by line breaks) weighs more than
  * `maxWeight` — whole lines cut from the top section downwards, never a line in the middle: the first line that is not a
  * section heading goes first; the headings stay unless nothing but headings is left over the cap.
@@ -126,7 +123,7 @@ const isHeading = (line: string): boolean => (SECTIONS as readonly string[]).inc
 export function cleanSummary(answer: string, maxWeight: number): string | null {
   const lines = answer
     .split(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/u)
-    .map((l) => cleanText(withoutCitations(cleanText(l))))
+    .map((l) => cleanText(l))
     .filter((l) => l !== "");
   const over = (): boolean => weight(lines.join("\n")) > maxWeight;
   while (lines.length > 0 && over()) {

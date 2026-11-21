@@ -252,7 +252,7 @@ describe("while a reply's tool runs, and what the reply keeps of it", () => {
       replies.push(...pick((await get("search", "GET", `/api/conversations/${g}/search?q=${encodeURIComponent("周一休息")}`)).messages));
       replies.push(...pick((await get("global search", "GET", `/api/search?q=${encodeURIComponent("周一休息")}`)).messages));
       const quote = (await get("a quote of it", "GET", `/api/conversations/${g}/messages/${quoteSeq}`)).message;
-      expect([who, quote.replyTo]).toEqual([who, { seq: replySeq, visible: true, senderId: agent.id, senderKind: "agent", text: "蜀香在春熙路，周一休息。", kind: "text" }]);
+      expect([who, quote.replyTo]).toEqual([who, { seq: replySeq, visible: true, senderId: agent.id, text: "蜀香在春熙路，周一休息。", kind: "text" }]);
       expect([who, replies.length]).toEqual([who, 6]);
       for (const m of replies) expect([who, (m as any).found, (m as any).lookups, "queries" in (m as any)]).toEqual([who, seen[who as keyof typeof seen], { search: 1 }, false]);
       for (const [label, body] of reads) {

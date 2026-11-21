@@ -43,7 +43,7 @@ const toolbox: Toolbox = {
 };
 function toolWorker(models: ScriptedGateway = gateway): { port: DbAgentPort; worker: AgentWorker } {
   const { db: pool, blobs, conversations, reads, config } = app.deps;
-  const port = createAgentPort({ db: pool, config, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox });
+  const port = createAgentPort({ db: pool, config, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox, drawTag: () => "k7q2" });
   return { port, worker: createAgentWorker({ port, models, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools }) };
 }
 
@@ -238,7 +238,7 @@ describe("an acknowledgement, then the answer", () => {
     const { db: pool, blobs, conversations, reads, config } = app.deps;
     // A limit of 2: the acknowledgement and the answer would be two Agent messages in a row; only the answer counts.
     const limited = { ...config, agentChainLimit: 2 };
-    const port = createAgentPort({ db: pool, config: limited, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox });
+    const port = createAgentPort({ db: pool, config: limited, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox, drawTag: () => "k7q2" });
     const worker = createAgentWorker({ port, models: gateway, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools });
     gateway.callTools([{ name: "search", input: { query: "x" } }], { text: "我先查一下。" }).reply("@owen_two 你接着说。");
     expect(await worker.runOnce()).toBe(true);
@@ -303,16 +303,27 @@ describe("an acknowledgement, then the answer", () => {
     expect(JSON.stringify(retried)).not.toContain(CONTINUE_TURN);
   });
 
-  it("an acknowledgement cites nothing: a number it writes is taken out of it", async () => {
+  it("an acknowledgement cites nothing: every token of its run is taken out of it, a number the run gave or not, and none is streamed; what only looks like one stays; the answer cites", async () => {
     const { owner, agent, own } = await owned();
-    await say(owner, own, "上次那家店");
+    const socket = await connect(app, owner);
+    const asked = await say(owner, own, "上次那家店");
+    // The first search hands the model the asked message as m1 (tools/refs.ts), as the real search would.
+    duringTool = async (scope) => {
+      scope.refs.message(own, asked);
+    };
     gateway
       .callTools([{ name: "search", input: { query: "店" } }])
-      .callTools([{ name: "search", input: { query: "地址" } }], { text: "找到了〔m1〕，再看看地址。" })
-      .reply("在河边。");
+      .callTools([{ name: "search", input: { query: "地址" } }], { text: "找到了〔m1·k7q2〕〔m2·k7q2〕，〔m1〕再看看地址。", reasoning: "m1 是〔m1·k7q2〕。" })
+      .reply("在河边〔m1·k7q2〕。");
     expect(await toolWorker().worker.runOnce()).toBe(true);
-    const ack = (await messages(own)).find((m) => m.sender === agent.id && m.body.ack === true)!;
-    expect(ack.body).toEqual({ text: "找到了，再看看地址。", ack: true });
+    await socket.waitFor((e) => e.type === "run" && e.conversationId === own && e.run?.status === "done");
+    const mine = (await messages(own)).filter((m) => m.sender === agent.id);
+    expect(mine.map((m) => m.body)).toEqual([
+      { text: "找到了，〔m1〕再看看地址。", reasoning: "m1 是。", ack: true },
+      { text: "在河边。", lookups: { search: 2 }, cites: [{ at: 3, kind: "m", ref: { conversationId: own, seq: asked } }] },
+    ]);
+    // Nothing that reached the owner's socket held the run's tag: not the pieces as they streamed, not the messages.
+    expect(JSON.stringify(socket.events)).not.toContain("k7q2");
   });
 
   it("an acknowledgement naming another Agent calls nobody (its mentions are not read); the answer is read as any reply", async () => {

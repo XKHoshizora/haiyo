@@ -6,7 +6,7 @@ import { currentMembership } from "../conversations/store.ts";
 import { appendSystem } from "../conversations/system.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
-import { citesOf, foundOf, lookupsOf, queriesOf, type LookupFields, type MessageRef } from "../messages/lookups.ts";
+import { foundOf, lookupsOf, queriesOf, type Cite, type LookupFields, type MessageRef } from "../messages/lookups.ts";
 import { acknowledgementTxn, postingRun } from "../messages/read.ts";
 import { insertMessage, MESSAGE_COLUMNS, toStored, type MessageBody, type MessageRow, type StoredMessage } from "../messages/model.ts";
 import { MESSAGE_TEXT_MAX } from "../messages/send.ts";
@@ -17,6 +17,7 @@ import { RunNotRunning } from "./runtime/port.ts";
 import { withoutMark, withoutMarkAtCut } from "./runtime/prompt.ts";
 import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
 import { forgetSummaries } from "./summary/store.ts";
+import { takeCites, type RunRefs } from "./tools/refs.ts";
 import {
   agentLimit,
   assertModelChoice,
@@ -172,8 +173,11 @@ export interface AgentReply extends LookupFields {
   reasoning: string;
   stopped: boolean;
   truncated: boolean;
-  /** The messages its text cites by number (agents/tools/refs.ts `citesIn`): only a reply offered tools has any. */
-  cites?: Record<string, MessageRef>;
+  /**
+   * A reply offered tools: the numbers its run gave (agents/tools/refs.ts), whose tokens its text and reasoning lose as
+   * they are stored, those of its text kept beside it as its citations (`takeCites`). Absent: none was offered.
+   */
+  refs?: RunRefs | null;
 }
 
 /**
@@ -285,10 +289,21 @@ export async function postAsAgent(
   if (thought.length > REASONING_MAX) reasoning = thought.slice(0, REASONING_MAX).join("").trimEnd();
   // In a group: the run's mark goes, from no more than is kept — and from the end of what was cut for length, what the
   // cut left of the mark or of a label.
+  const thoughtCut = reply.truncated || thought.length > REASONING_MAX;
   if (mark !== null) {
     const clean = (s: string, cut: boolean): string => (cut ? withoutMarkAtCut(s, mark) : withoutMark(s, mark)).trim();
     text = withoutUnfinishedBlock(clean(text, truncated));
-    reasoning = clean(reasoning, reply.truncated || thought.length > REASONING_MAX);
+    reasoning = clean(reasoning, thoughtCut);
+  }
+  // A reply offered tools: its run's tokens go — those of its text become its citations, kept beside it (an
+  // acknowledgement cites nothing) — and what taking them out put together goes as the mark and a block always do.
+  const here = (r: MessageRef): boolean => own || r.conversationId === conversationId;
+  let cites: Cite[] = [];
+  if (reply.refs) {
+    ({ text, cites } = takeCites(text, reply.refs, { cite: !ack, keep: here, cut: truncated }));
+    reasoning = takeCites(reasoning, reply.refs, { cite: false, cut: thoughtCut }).text;
+    ({ text, cites } = cleanedAgain(text, cites, mark, !own || ack || reply.stopped || truncated));
+    if (mark !== null) reasoning = withoutMark(reasoning, mark).trim();
   }
   // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted.
   if (!hasVisibleText(text) && (!own || !hasVisibleText(reasoning))) return null;
@@ -320,13 +335,11 @@ export async function postAsAgent(
   // its own conversation, its owner's to read — in a group they are not kept.
   const lookups = lookupsOf(reply.lookups);
   if (lookups) body.lookups = lookups;
-  const here = (r: MessageRef): boolean => own || r.conversationId === conversationId;
   const found = foundOf(reply.found).filter(here);
   if (found.length > 0) body.found = found;
-  // What its text cites, by number, as `found` is kept (each reader is sent only those they can see); a number whose
-  // message is not kept stays in the text as it is.
-  const cites = citesOf(reply.cites, here);
-  if (Object.keys(cites).length > 0) body.cites = cites;
+  // What its text cites, beside it, as `found` is kept: in a group only that group's messages (each reader is sent only
+  // those they can see, messages/read.ts).
+  if (cites.length > 0) body.cites = cites;
   const queries = own ? queriesOf(reply.queries) : [];
   if (queries.length > 0) body.queries = queries;
   // Who its mentions mean, read once, now, from the text it stores (Task M: a model's text is typed text), and stored with
@@ -345,6 +358,22 @@ export async function postAsAgent(
     ? noneTriggered()
     : await triggerFromAgent(t, conversationId, message, agent, postedBy, config, () => hearFrom(t, runId, covered, message.seq));
   return { message, duplicate: false, triggered };
+}
+
+/**
+ * `text` and its `cites` once its run's tokens are out (`postAsAgent`), held again to what the text was held to before
+ * them, since taking them out joins what stood around them: a mark that put together goes (runtime/prompt.ts
+ * `withoutMark`), and then no place in the text is known any more, so it cites nothing — only a text shaped against the
+ * cleaner can do that, a token holding no mark; with `blocks` (in a group, an acknowledgement, a reply stopped or cut) a
+ * block start (`<af-`) that put together cuts the text there (`withoutUnfinishedBlock`), with the cites after it.
+ */
+function cleanedAgain(text: string, cites: Cite[], mark: string | null, blocks: boolean): { text: string; cites: Cite[] } {
+  const again = mark === null ? text : withoutMark(text, mark).trim();
+  if (again !== text) return { text: blocks ? withoutUnfinishedBlock(again) : again, cites: [] };
+  const start = blocks ? text.indexOf("<af-") : -1;
+  if (start < 0) return { text, cites };
+  const cut = withoutUnfinishedBlock(text);
+  return { text: cut, cites: cites.filter((c) => c.at <= start).map((c) => ({ ...c, at: Math.min(c.at, cut.length) })) };
 }
 
 /**

@@ -15,8 +15,8 @@ import { MULTIPART, multipart } from "./helpers/multipart.ts";
 
 /**
  * The file tool (`read_file`, agents/tools/file.ts) and the file numbers the model is shown, on the real port, toolbox and
- * database: every attachment label of a reply offered tools carries its number; a text file is read in pages; anything
- * else is refused with a fixed error; a file is read only where the reply may see it.
+ * database: every attachment label of a reply offered tools carries its number, as a token with the run's tag; a text
+ * file is read in pages; anything else is refused with a fixed error; a file is read only where the reply may see it.
  */
 
 const gateway = scriptedGateway();
@@ -28,6 +28,8 @@ afterEach(() => {
 });
 
 const FAST = { source: "site", id: "fast" } as const;
+/** The tag of every run of this file's port (tools/refs.ts): what its tokens carry. */
+const TAG = "k7q2";
 
 function deps(over: Partial<ToolDeps> = {}): ToolDeps {
   const { db: pool, config, searches } = app.deps;
@@ -35,7 +37,7 @@ function deps(over: Partial<ToolDeps> = {}): ToolDeps {
 }
 function toolWorker(d: ToolDeps = deps()): AgentWorker {
   const { db: pool, blobs: store, conversations, reads, config } = app.deps;
-  const port = createAgentPort({ db: pool, config, blobs: store, realtime: app.realtime, conversations, reads, log: app.log, toolbox: createToolbox(d) });
+  const port = createAgentPort({ db: pool, config, blobs: store, realtime: app.realtime, conversations, reads, log: app.log, toolbox: createToolbox(d), drawTag: () => TAG });
   return createAgentWorker({ port, models: gateway, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools });
 }
 
@@ -78,7 +80,7 @@ async function readOnce(asker: Actor, conv: string, question: string, input: Rec
 }
 
 describe("the numbers the model is shown", () => {
-  it("offered tools, every attachment label carries its file's number; offered none, the labels are as they always were", async () => {
+  it("offered tools, every attachment label carries its file's number as the run's token; offered none, the labels are as they always were", async () => {
     const { owner, own } = await owned();
     await sendFile(owner, own, "notes.txt", "第一行笔记");
     await sendFile(owner, own, "photo.png", PNG, "image/png");
@@ -87,8 +89,8 @@ describe("the numbers the model is shown", () => {
     expect(await toolWorker().runOnce()).toBe(true);
     const offered = textsOf(gateway.calls.at(-1)!);
     // Numbered as they are read, the newest first.
-    expect(offered).toContain("[图片 f1：photo.png]");
-    expect(offered).toContain("[文件 f2：notes.txt]\n第一行笔记");
+    expect(offered).toContain("[图片 〔f1·k7q2〕：photo.png]");
+    expect(offered).toContain("[文件 〔f2·k7q2〕：notes.txt]\n第一行笔记");
 
     await say(owner, own, "再看看");
     gateway.reply("好。");
@@ -96,7 +98,7 @@ describe("the numbers the model is shown", () => {
     const plain = textsOf(gateway.calls.at(-1)!);
     expect(plain).toContain("[图片：photo.png]");
     expect(plain).toContain("[文件：notes.txt]\n第一行笔记");
-    expect(plain.join("\n")).not.toMatch(/f\d：/);
+    expect(plain.join("\n")).not.toMatch(/f\d|〔/);
   });
 });
 
@@ -170,15 +172,14 @@ describe("reading a file", () => {
     expect(await readOnce(owner, own, "从前面读", { file: "f1", from: -1 })).toEqual({ error: "from 要写 0 或更大的整数。" });
   });
 
-  it("a file keeps no citation, read by the tool or shown in the context, in its text or its name: a number means something only in its own run", async () => {
+  it("a file is shown as it is, read by the tool or in the context, its text and its name: what looks like a citation in it is what someone wrote; it is read by its token too", async () => {
     const { owner, own } = await owned();
-    await sendFile(owner, own, "引用〔m3〕.txt", "第一行〔m1〕\n第二行〔 F2 〕结束");
-    const out = await readOnce(owner, own, "读一下", { file: "f1" });
-    expect([out.name, out.text]).toEqual(["引用.txt", "第一行\n第二行结束"]);
+    await sendFile(owner, own, "引用〔m3〕.txt", "第一行〔m1〕\n第二行〔f2·k7q2〕结束");
+    const out = await readOnce(owner, own, "读一下", { file: "〔f1·k7q2〕" });
+    expect([out.name, out.text]).toEqual(["引用〔m3〕.txt", "第一行〔m1〕\n第二行〔f2·k7q2〕结束"]);
     const shown = JSON.stringify(gateway.calls.at(-1)!.messages);
-    expect(shown).toContain("引用.txt");
-    expect(shown).toContain("第一行\\n第二行结束");
-    expect(shown).not.toContain("〔");
+    expect(shown).toContain("[文件 〔f1·k7q2〕：引用〔m3〕.txt]");
+    expect(shown).toContain("第一行〔m1〕\\n第二行〔f2·k7q2〕结束");
   });
 
   it("in a group, a file from before the run's asker's line is not read, whatever number is given for it", async () => {
@@ -193,14 +194,14 @@ describe("reading a file", () => {
     await say(sam, g, "@owen_bot 早先那个文件写了什么？");
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2", [agent.id, g])).rows[0]!.id;
     const refs = new RunRefs();
-    const ref = refs.file(early.id);
+    const ref = refs.file(early.id, { conversationId: g, seq: early.seq });
     const heardTo = Number((await db.query<{ seq: string }>("select seq::text from conversations where id = $1", [g])).rows[0]!.seq);
     const scope = { id: run, agentId: agent.id, ownerId: owner.id, conversationId: g, group: true, refs, heardTo, mark: null };
     const out = await runTool(deps(), scope, { id: "c1", name: READ_FILE, input: { file: ref } }, new AbortController().signal);
     expect(out.output).toEqual({ error: "这个文件现在看不到了。" });
     // A file sent after the line (and within what the reply heard) is read.
     const later = await sendFile(mia, g, "later.txt", "后来的文件内容");
-    const after = refs.file(later.id);
+    const after = refs.file(later.id, { conversationId: g, seq: later.seq });
     const heardNow = Number((await db.query<{ seq: string }>("select seq::text from conversations where id = $1", [g])).rows[0]!.seq);
     const read = await runTool(deps(), { ...scope, heardTo: heardNow }, { id: "c2", name: READ_FILE, input: { file: after } }, new AbortController().signal);
     expect(read.output).toEqual({ about: TOOL_MATERIAL, name: "later.txt", from: 0, next: null, text: "后来的文件内容" });

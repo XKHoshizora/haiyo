@@ -10,7 +10,6 @@ import { cleanText, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/
 import { lockAgent } from "../store.ts";
 import { siteDateTime } from "./clock.ts";
 import type { ElsewhereAsk, RunScope } from "./index.ts";
-import { withoutCitations } from "./refs.ts";
 import { excerpt } from "./search.ts";
 
 /**
@@ -132,14 +131,14 @@ async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk):
 
 /**
  * A row as a hit: where (a group's title, `某个群` when it has none; `我们的专属会话` for the Agent's own), who (the
- * sender's name as a label shows it), when (the site's time), and what — on one line, around the words, without any
- * citation, at most `QUOTE_MAX_CHARS` characters.
+ * sender's name as a label shows it), when (the site's time), and what — on one line, around the words, at most
+ * `QUOTE_MAX_CHARS` characters.
  */
 function hitOf(row: SearchRow, query: string, timeZone: string): ElsewhereHit {
   const { date, time } = siteDateTime(row.created_at, timeZone);
-  const said = Array.from(excerpt(withoutCitations(row.text ?? ""), query)).slice(0, QUOTE_MAX_CHARS).join("");
+  const said = Array.from(excerpt(row.text ?? "", query)).slice(0, QUOTE_MAX_CHARS).join("");
   return {
-    where: row.conversation_type === "agent" ? OWN_PLACE : cleanText(withoutCitations(row.title ?? "")) || NO_GROUP_TITLE,
+    where: row.conversation_type === "agent" ? OWN_PLACE : cleanText(row.title ?? "") || NO_GROUP_TITLE,
     who: labelName(row.sender_name, row.sender_handle),
     when: `${date} ${time}`,
     text: said !== "" ? said : (row.attachment ? cleanText(row.attachment.name) : ""),

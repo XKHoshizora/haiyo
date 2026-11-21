@@ -1,5 +1,6 @@
 import { estimateTokens } from "../../metering/tokens.ts";
 import { stripUnsafeText } from "../../schemas.ts";
+import { TokenHold } from "../tools/refs.ts";
 import type { Delta } from "./port.ts";
 
 /** At most one delta push per this many milliseconds. */
@@ -26,9 +27,12 @@ const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xd
  * One reply as it streams: the whole text and reasoning so far, and the pieces not yet pushed. Pieces are coalesced
  * so the owner's sockets get at most one delta every `intervalMs`: the first piece goes out at once, later ones wait
  * for the interval to pass. Characters a message may not hold (`stripUnsafeText`) are left out of the pushes; the
- * stored message is cleaned the same way. The text is pushed only up to the first `BLOCK_START` (looked for in the
- * text as cleaned, as the stored message is read): a `<` that may begin one waits for the next piece, and goes out in
- * order once it turns out not to (or at `end`). The reasoning is pushed as it comes.
+ * stored message is cleaned the same way. With `tag` (a reply offered tools: its run's, agents/tools/refs.ts) no token
+ * carrying it is pushed, of the text or the reasoning: each is taken out as it completes, and what may still become one
+ * waits for the next piece (`TokenHold`); the stored message keeps none either, its citations beside its text. The text
+ * is pushed only up to the first `BLOCK_START` (looked for in the text as cleaned and without those tokens, as the
+ * stored message is read): a `<` that may begin one waits for the next piece, and goes out in order once it turns out
+ * not to (or at `end`). The reasoning is pushed as it comes.
  */
 export class ReplyStream {
   text = "";
@@ -44,15 +48,20 @@ export class ReplyStream {
   private held = false;
   /** A high surrogate a piece ended with: kept for the next piece, so a pair split across pieces is not cleaned away. */
   private carry = "";
+  /** What of the text, and of the reasoning, may still become a token of the run's tag: held back (none without a tag). */
+  private holds: { text: TokenHold; reasoning: TokenHold } | null;
 
   constructor(
     private readonly send: (delta: Delta) => void,
     private readonly intervalMs: number = DELTA_INTERVAL_MS,
-  ) {}
+    private readonly tag: string | null = null,
+  ) {
+    this.holds = tag === null ? null : { text: new TokenHold(tag), reasoning: new TokenHold(tag) };
+  }
 
   add(kind: "text" | "reasoning", piece: string): void {
     this[kind] += piece;
-    if (kind === "reasoning") this.pending.reasoning += piece;
+    if (kind === "reasoning") this.pending.reasoning += this.holds ? this.holds.reasoning.push(piece) : piece;
     else this.addText(piece);
     if (this.timer) return;
     const wait = this.lastSent + this.intervalMs - performance.now();
@@ -68,12 +77,26 @@ export class ReplyStream {
       this.carry = raw.slice(-1);
       raw = raw.slice(0, -1);
     }
+    const cleaned = stripUnsafeText(raw);
+    this.show(this.holds ? this.holds.text.push(cleaned) : cleaned);
+  }
+
+  /** `text` (cleaned, without tokens) joins what is shown, which is released up to a block's start (or what may begin one). */
+  private show(text: string): void {
     // Searched from just before what was released: a start that straddles two pieces is found too.
     const from = Math.max(0, this.shown.length - (BLOCK_START.length - 1));
-    this.shown += stripUnsafeText(raw);
+    this.shown += text;
     const at = this.shown.indexOf(BLOCK_START, from);
     if (at >= 0) this.held = true;
     this.release(at >= 0 ? at : this.shown.length - pendingStart(this.shown));
+  }
+
+  /** Nothing more comes for now: what was held for a token that never came is shown (the text's as any text is). */
+  private settle(): void {
+    if (!this.holds) return;
+    this.pending.reasoning += this.holds.reasoning.end();
+    const rest = this.holds.text.end();
+    if (!this.held && rest !== "") this.show(rest);
   }
 
   /** Hands `shown` up to `upTo` to the next push. */
@@ -95,8 +118,12 @@ export class ReplyStream {
     this.send({ ...(reasoning === "" ? {} : { reasoning }), ...(text === "" ? {} : { text }) });
   }
 
-  /** The reply is complete (before it is posted): what was held for a `<` that began no block goes out, then everything pending. */
+  /**
+   * The reply is complete (before it is posted): what was held for a token that never came, and for a `<` that began no
+   * block, goes out, then everything pending.
+   */
   end(): void {
+    this.settle();
     if (!this.held) this.release(this.shown.length);
     this.flush();
   }
@@ -106,6 +133,7 @@ export class ReplyStream {
    * goes out now, as at `end` — so the owner's sockets have it before that message.
    */
   flushNow(): void {
+    this.settle();
     if (!this.held) this.release(this.shown.length);
     this.flush();
   }
@@ -119,6 +147,7 @@ export class ReplyStream {
     this.released = 0;
     this.held = false;
     this.carry = "";
+    this.holds = this.tag === null ? null : { text: new TokenHold(this.tag), reasoning: new TokenHold(this.tag) };
   }
 
   /** Drops what is pending (nothing more will be pushed). */

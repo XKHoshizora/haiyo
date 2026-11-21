@@ -488,7 +488,7 @@ describe("websocket pushes", () => {
     expect(forDave.message.replyTo).toEqual({ seq: secret.json.message.seq, visible: false });
     expect(JSON.stringify(sd.events)).not.toContain("the secret plan");
     const forBob = await sb.next(isMessage(g, seq));
-    expect(forBob.message.replyTo).toEqual({ seq: secret.json.message.seq, visible: true, senderId: b.id, senderKind: "human", text: "the secret plan", kind: "text" });
+    expect(forBob.message.replyTo).toEqual({ seq: secret.json.message.seq, visible: true, senderId: b.id, text: "the secret plan", kind: "text" });
   });
 
   it("delivers to every socket of a principal", async () => {
