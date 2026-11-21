@@ -159,7 +159,7 @@ describe("sending and reading", () => {
     // Walking the whole history back in pages of 7 gives every message once.
     const walked: number[] = [];
     for (let before: number | null = 9007199254740991; before !== null; ) {
-      const page = (await history(a, dm, `?limit=7&before=${before}`)).json;
+      const page: { messages: Array<{ seq: number }>; nextBefore: number | null } = (await history(a, dm, `?limit=7&before=${before}`)).json;
       walked.unshift(...page.messages.map((m: any) => m.seq));
       before = page.nextBefore;
     }
