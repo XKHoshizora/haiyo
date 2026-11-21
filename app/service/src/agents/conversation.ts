@@ -12,7 +12,7 @@ import { insertMessage, MESSAGE_COLUMNS, toStored, type MessageBody, type Messag
 import { MESSAGE_TEXT_MAX } from "../messages/send.ts";
 import { cleanModelText, hasVisibleText } from "../schemas.ts";
 import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
-import { parseProposalBlock, PROPOSAL_PLACEHOLDER, storeProposal } from "./persona.ts";
+import { parseProposalBlock, storeProposal } from "./persona.ts";
 import { RunNotRunning } from "./runtime/port.ts";
 import { withoutMarkPlaced } from "./runtime/prompt.ts";
 import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
@@ -202,7 +202,8 @@ export interface AgentReply extends LookupFields {
  *
  * In the Agent's own conversation: the text follows the rules of message text (`cleanModelText`: what a send would
  * refuse is removed); a persona proposal in it (`parseProposalBlock`: the reply's text only, never its reasoning) is
- * taken out — the fixed `PROPOSAL_PLACEHOLDER` stands in when nothing visible is left — and stored in this same
+ * taken out — when nothing visible is left the message keeps no text at all (principle P2: no fixed sentence is put in
+ * the Agent's mouth; its owner is shown the proposal's card alone) — and stored in this same
  * transaction (`storeProposal`, against the persona version read under this lock), the message's body naming it
  * (`proposalId`). The text is then cut at 8 000 characters, which marks it `truncated`. Without a proposal, a reply that
  * was stopped or cut (`truncated`) loses everything from its first `<af-` on (`withoutUnfinishedBlock`: it ended inside
@@ -236,7 +237,8 @@ export interface AgentReply extends LookupFields {
  * through the Agent stays the member's — else the Agent's owner. `triggered` is what to announce and publish after
  * commit (nothing for a repeat, or in the Agent's own conversation).
  *
- * Null, storing nothing, when there is nothing to show: no visible text and, in its own conversation, no reasoning kept;
+ * Null, storing nothing, when there is nothing to show: no visible text and, in its own conversation, no reasoning kept
+ * and no proposal;
  * in a group no visible text (its members would be shown an empty message), whatever reasoning there is.
  *
  * `as` "ack": what the reply said before it called a tool, posted at once as its acknowledgement ("先应一声、再交付"),
@@ -298,7 +300,7 @@ export async function postAsAgent(
   const proposal = own && !ack ? parseProposalBlock(placed.text) : null;
   if (!own || ack) placed = withoutUnfinishedBlockPlaced(placed);
   const proposalId = proposal ? randomUUID() : null;
-  if (proposal) placed = hasVisibleText(proposal.visible) ? withoutProposalPlaced(placed, proposal.visible) : { text: PROPOSAL_PLACEHOLDER, cites: [] };
+  if (proposal) placed = hasVisibleText(proposal.visible) ? withoutProposalPlaced(placed, proposal.visible) : { text: "", cites: [] };
   let truncated = reply.truncated;
   const characters = Array.from(placed.text);
   if (characters.length > MESSAGE_TEXT_MAX) {
@@ -319,8 +321,9 @@ export async function postAsAgent(
     reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut, refs !== null).text.trim();
   }
   const text = placed.text;
-  // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted.
-  if (!hasVisibleText(text) && (!own || !hasVisibleText(reasoning))) return null;
+  // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted. In its own
+  // conversation a proposal is something to show (its card), with no text.
+  if (!hasVisibleText(text) && proposalId === null && (!own || !hasVisibleText(reasoning))) return null;
 
   const body: MessageBody = { text };
   if (reasoning !== "") body.reasoning = reasoning;

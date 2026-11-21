@@ -719,13 +719,13 @@ describe("a persona the Agent proposed", () => {
     const budget = 8000 - 500 - estimateTokens(call.system);
     expect(budget).toBeLessThan(10_000);
 
-    // With room for it, it is there in full, after the sentence that stood in for the reply's text.
+    // With room for it, it is there in full: the reply had no text of its own (no sentence stands in for it), only the block.
     const roomy = await owned("bigroom", "eyes");
     await say(roomy.owner, roomy.conv, "写一份很长的设定");
     await answer(`<af-persona>${persona}</af-persona>`);
     await say(roomy.owner, roomy.conv, "收到了吗");
     await answer("收到了。");
-    expect(textsOf(lastCall())[1]).toBe(`我整理了一份设定，请查看并确认。\n\n<af-persona>${persona}</af-persona>`);
+    expect(textsOf(lastCall())[1]).toBe(`<af-persona>${persona}</af-persona>`);
   });
 });
 

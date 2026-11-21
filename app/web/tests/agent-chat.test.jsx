@@ -1265,6 +1265,13 @@ describe("the proposal card", () => {
     });
   }
 
+  it("a reply that is only a proposal (no text: the service puts no sentence in the Agent's mouth) shows the card alone, no empty bubble", async () => {
+    await openAgentChat({ messages: [...BASE, wire(A1, 3, AG1, "", { proposal: { id: PID, status: "open", persona: "你是一位耐心的旅行规划师。" } })] });
+    expect(card().textContent).toContain("你是一位耐心的旅行规划师。");
+    expect(storedLi(3).querySelector(".bubble")).toBeNull();
+    expect(cardButton("确认")).not.toBeNull();
+  });
+
   it("a deleted Agent's open proposal can no longer be decided", async () => {
     await openAgentChat({ agent: { deleted: true }, messages: [...BASE, proposed("open")] });
     expect(card().textContent).toContain("未确认");

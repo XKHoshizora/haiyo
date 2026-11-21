@@ -814,7 +814,8 @@ proposal can carry the persona, the intro and the field, nothing else (not the m
 and no other `<af-` or `</af-` anywhere in the text (so nothing nested, repeated or unknown); the values are trimmed and
 checked by the rules of an edit (`PATCH /api/agents/:id`). Then, in the transaction that stores the reply (under the
 Agent's lock, `postAsAgent`), the block is taken out of the message — its text is what is left, trimmed, or, with
-nothing visible left, the fixed sentence `我整理了一份设定，请查看并确认。` — and the proposal is stored against the persona
+nothing visible left, no text at all (`""`: no fixed sentence is put in the Agent's mouth; the client shows the proposal's
+card alone, and the chat list says `[设定提议]`) — and the proposal is stored against the persona
 version of that moment; the Agent's earlier `open` proposals become `superseded`. Anything else (two blocks, a nested
 or unclosed one, an unknown `<af-…>` tag, a value over its limit) is no proposal: a complete reply is stored as written.
 A reply that was stopped or cut (`stopped`, or `truncated`: at the model's output limit, the time limit or 8 000

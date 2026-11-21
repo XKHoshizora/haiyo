@@ -72,6 +72,8 @@ export function lastPreview(state, conv) {
   let body = last.kind !== "system" && isAgent(state, last.from) && typeof last.text === "string" ? previewOfMarkdown(last.text) : last.text;
   if (last.kind === "image") body = "[图片]";
   if (last.kind === "file") body = "[文件]";
+  // A reply that is only a persona proposal has no text of its own.
+  if (last.kind === "text" && last.proposal && !body) body = "[设定提议]";
   const group = conv.type === "group";
   if (group && last.from === ME) return `你：${body}`;
   if (group && last.from) return `${senderName(state, last.from)}：${body}`;

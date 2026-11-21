@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { draftText, parseProposalBlock, PROPOSAL_PLACEHOLDER, renderProposalBlock } from "../src/agents/persona.ts";
+import { draftText, parseProposalBlock, renderProposalBlock } from "../src/agents/persona.ts";
 import { recoverRuns } from "../src/agents/port-impl.ts";
 import { systemPrompt } from "../src/agents/runtime/prompt.ts";
 import { ReplyStream } from "../src/agents/runtime/stream.ts";
@@ -111,13 +111,32 @@ describe("a proposal in a reply", () => {
     expect((await api(app, owner, "GET", `/api/search?q=${encodeURIComponent("擅长帮主人")}`)).json.messages).toEqual([]);
   });
 
-  it("a reply that is only the block reads as the fixed sentence; without intro and field the proposal has neither", async () => {
+  it("a reply that is only the block is stored with no text and its proposal — no sentence is put in the Agent's mouth (P2); without intro and field the proposal has neither", async () => {
     const { owner, agent, conv } = await owned("only");
     await answered(owner, conv, `  ${block(NEW_PERSONA)}\n`);
     const reply = await lastFromAgent(owner, conv, agent.id);
-    expect(reply.text).toBe(PROPOSAL_PLACEHOLDER);
-    expect(PROPOSAL_PLACEHOLDER).toBe("我整理了一份设定，请查看并确认。");
+    expect(reply.text).toBe("");
     expect(reply.proposal).toEqual({ id: expect.any(String), status: "open", persona: NEW_PERSONA });
+    const stored = (await db.query<{ body: { text: string; proposalId?: string } }>("select body from messages where conversation_id = $1 and seq = $2", [conv, reply.seq])).rows[0]!;
+    expect(stored.body.text).toBe("");
+    expect(typeof stored.body.proposalId).toBe("string");
+    // Nothing fixed is said for it anywhere the service keeps text.
+    expect(JSON.stringify(stored.body)).not.toContain("我整理了");
+    // Search finds nothing of it (it has no text).
+    expect((await api(app, owner, "GET", `/api/search?q=${encodeURIComponent("设定")}`)).json.messages).toEqual([]);
+  });
+
+  it("the next reply is shown a proposal-only reply as the block it wrote (its own output), never an empty turn", async () => {
+    const { owner, conv } = await owned("next");
+    await answered(owner, conv, `${block(NEW_PERSONA)}`);
+    await answered(owner, conv, "好的。");
+    const call = gateway.calls.at(-1)!;
+    const assistant = call.messages.filter((m) => m.role === "assistant");
+    expect(assistant).toHaveLength(1);
+    const text = assistant[0]!.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("");
+    expect(text).toContain("<af-persona>");
+    expect(text).toContain(NEW_PERSONA);
+    expect(text).not.toContain("我整理了");
   });
 
   it("text after the block stays; only the Agent's owner is shown the proposal", async () => {
