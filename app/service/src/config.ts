@@ -381,11 +381,14 @@ export interface MemoryConfig {
    */
   changesSweepMs: number;
   /**
-   * The rolling summary (agents/summary/; README "The rolling summary"): after a reply whose context left out at least
-   * `summaryMinMessages` messages, a job folds them into the pair's summary, which is at most `summaryMaxWeight` weight.
+   * The rolling summary (agents/summary/; README "The rolling summary"): after a reply whose context left out anything, a job
+   * folds into the pair's summary — at most `summaryMaxWeight` weight as a reply is shown it — what has left the window, once
+   * that weighs at least `summaryMinFoldWeight` as a reply would show it (half of `summaryMaxWeight` unless set). After a
+   * summary is written the pair is not asked again for `summaryMinIntervalMs` (0: at once), whatever is posted meanwhile.
    */
-  summaryMinMessages: number;
   summaryMaxWeight: number;
+  summaryMinFoldWeight: number;
+  summaryMinIntervalMs: number;
 }
 
 /** `reviewMessageChars` was this setting's name before sizes were measured in weight: still read, when the new name is absent. */
@@ -439,14 +442,13 @@ const memorySchema = z.preprocess(renamedReviewWeight, z.strictObject({
   freeDailyPoints: z.number().int().min(0).max(1_000_000).default(20),
   // 0 (no timer) or at least a minute: anything between would sweep back to back.
   changesSweepMs: z.number().int().min(0).max(86_400_000).refine((ms) => ms === 0 || ms >= 60_000).default(3_600_000),
-  // At most what one job reads (200 messages); the cap at most 2000 weight: the database holds a summary at 6000 characters.
-  summaryMinMessages: positive(20, 200),
-  summaryMaxWeight: positive(800, 2000),
-}).refine((m) => m.reviewMessages >= m.summaryMinMessages, {
-  // A summary job reads at most a review's window in weight: it must hold its minimum (agents/summary/job.ts).
-  message: "reviewMessages must be at least summaryMinMessages",
-  path: ["reviewMessages"],
-}));
+  // The cap at most 2000 weight: the database guards a summary's items at 256 KiB (migration 059).
+  summaryMaxWeight: positive(1000, 2000),
+  // Unset: half of summaryMaxWeight (below).
+  summaryMinFoldWeight: z.number().int().min(1).max(100_000).optional(),
+  // Ten minutes: a pair is summarised at most six times an hour, however much is posted. 0: no wait; at most a day.
+  summaryMinIntervalMs: z.number().int().min(0).max(86_400_000).default(600_000),
+}).transform((m) => ({ ...m, summaryMinFoldWeight: m.summaryMinFoldWeight ?? Math.floor(m.summaryMaxWeight / 2) })));
 
 const allowanceTokens = z.number().int().min(0).max(200_000);
 /** `REASONING_ALLOWANCE_TOKENS`: an object of levels (`low`..`max`), each 0–200 000; a level left out keeps its default. */

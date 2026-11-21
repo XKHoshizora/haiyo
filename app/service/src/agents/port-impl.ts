@@ -98,8 +98,8 @@ export interface AgentPortDeps {
   proactive?: Pick<ProactiveScheduler, "cancelled"> | null;
   /**
    * The reviewer (memory/reviewer.ts), when there is one: told after a reply was posted, so it can look at the conversation once
-   * it is quiet, and — when the reply's context left out at least `MEMORY.summaryMinMessages` messages — asked for the pair's
-   * rolling summary to take them in (`summarise`).
+   * it is quiet, and — when the reply's context left out anything — asked for the pair's rolling summary to take it in
+   * (`summarise`; the job weighs what waits before it makes a call).
    */
   memory?: Pick<Reviewer, "noted" | "summarise"> | null;
   /** The tools a reply may be offered and how they run; none (the default): no reply is offered any. */
@@ -676,7 +676,7 @@ export class DbAgentPort implements AgentPort {
       const cap = group ? { maxTokens: config.agentGroupContextTokens, maxMessages: GROUP_CONTEXT_MESSAGES, after: line, calls } : null;
       // The pair's summary and what of it may be shown, read once for every plan below (round 2, N-4: two indexed reads at
       // most, nothing of the conversation's history), here, under the row its job writes it under.
-      const summary = await readPairSummary(t, { agentId: agent.id, ownerId: agent.ownerId, conversationId: run.conversationId, group });
+      const summary = await readPairSummary(t, { agentId: agent.id, ownerId: agent.ownerId, conversationId: run.conversationId, group }, config.memory.summaryMaxWeight);
       const plan = {
         agentId: agent.id,
         ownerId: agent.ownerId,
@@ -1102,8 +1102,8 @@ export class DbAgentPort implements AgentPort {
    * process was not seen working on) is left as that recorded it, and its owner is told how it stands now, so no
    * "replying" stays shown. A run whose reply was posted is pushed that reply once more, to its owner only, before its
    * end (`Hub.pushChargedReply`): now that the run is charged, the reply carries its `via`. A reply that was posted is
-   * told to the reviewer (`noted`), and when its context left out at least `MEMORY.summaryMinMessages` messages (context.ts
-   * `leftOut`, kept from `begin` in `RunFlags.leftOut`) the pair's rolling summary is asked to take them in (`summarise`).
+   * told to the reviewer (`noted`), and when its context left out anything (context.ts `leftOut`, kept from `begin` in
+   * `RunFlags.leftOut`) the pair's rolling summary is asked to take it in (`summarise`; the job weighs it first).
    * The run's flags are forgotten in any case, also when this throws (a delta still waiting keeps its own).
    */
   async finish(run: RunTicket, end: RunEnd, usage: Usage | null, fallback: Estimated): Promise<void> {
@@ -1128,7 +1128,7 @@ export class DbAgentPort implements AgentPort {
     // remember (memory/review.ts `UNSPOKEN`).
     if (result.reply !== null) {
       this.deps.memory?.noted(run.agentId, run.conversationId);
-      if (leftOut !== null && leftOut.messages >= this.deps.config.memory.summaryMinMessages) this.deps.memory?.summarise(run.agentId, run.conversationId, leftOut.to);
+      if (leftOut !== null) this.deps.memory?.summarise(run.agentId, run.conversationId, leftOut.to);
     }
     if (result.followed.run) this.announce(result.followed.run);
     // A notice its follow-up appended (a chain budget or the others' daily budget spent): the group is told after the

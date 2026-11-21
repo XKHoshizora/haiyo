@@ -3,20 +3,22 @@ import type { Queryable } from "../../db.ts";
 import { notAcknowledgement, type AttachmentRef } from "../../messages/model.ts";
 import { postingRun } from "../../messages/read.ts";
 import { handleOf } from "../../principals/store.ts";
-import { personLabel } from "../runtime/prompt.ts";
-import { keepLabelled, relabelled } from "./prompt.ts";
+import { DISPLAY_NAME_MAX } from "../../schemas.ts";
+import { labelName, speakerRole } from "../runtime/prompt.ts";
+import { fitted, hasItems, SECTIONS, shownForm, whoIn, type Item, type Passage, type Sections, type Speaker } from "./prompt.ts";
 
 /**
- * The rolling summary's rows (migration 052; README "The rolling summary"): one per conversation and Agent. What reads it
- * is the reply's context (agents/context.ts `loadContext`, which decides whether a reply may be shown it) and the job that
- * updates it (job.ts); what deletes it, a new topic and the end of the Agent's membership of a group. Nothing else reads
- * it: no route, no search, no tool, no memory review.
+ * The rolling summary's rows (migrations 052, 059; README "The rolling summary"): one per conversation and Agent. What
+ * reads it is the reply's context (agents/context.ts `loadContext`, which decides whether a reply may be shown it) and the
+ * job that updates it (job.ts); what deletes it, a new topic and the end of the Agent's membership of a group. Nothing
+ * else reads it: no route, no search, no tool, no memory review.
  *
  * Also the one reader of the messages a summary is made of (`readPlaced`, `countPlaced`): by their *place* — a message's
  * seq, and for an Agent's reply posted by a run the seq that run covered (messages/read.ts `postingRun`), as the reply's
  * context orders them (agents/context.ts `loadPage`'s `answers`) — so that a reply always falls on the side of the question it
  * answered: a boundary of what is summarised never splits an exchange. A tool call and its result are never among them: they
- * live in one reply's rounds (agents/runtime/loop.ts) and are never stored as messages.
+ * live in one reply's rounds (agents/runtime/loop.ts) and are never stored as messages. And of how a summary names the
+ * accounts its items name (`peopleNow`).
  */
 
 /**
@@ -54,20 +56,10 @@ export async function countPlaced(q: Queryable, r: PlacedReader, after: number, 
   return rows[0]?.n ?? 0;
 }
 
-/** Everyone `r` reads a message of whose place is after `after` and at most `upto`: their name, handle (as everyone is shown it, `handleOf`: an Agent's is `owner.name`) and kind, each once. */
-export async function placedSpeakers(q: Queryable, r: PlacedReader, after: number, upto: number): Promise<Array<{ id: string; name: string; handle: string; kind: "human" | "agent" }>> {
-  if (upto <= after) return [];
-  const { rows } = await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent" }>(
-    `select distinct sp.id, sp.display_name as name, ${handleOf("sp")} as handle, sp.kind
-       ${PLACED_FROM}
-       join principals sp on sp.id = m.sender_id
-      ${PLACED_WHERE}`,
-    placedParams(r, after, upto),
-  );
-  return rows;
-}
-
-/** A message as a summary reads it: its place, who sent it (their name, handle as `placedSpeakers` reads it, and kind), its text and its attachment. */
+/**
+ * A message as a summary reads it: its place, who sent it (their account; their name, handle as everyone is shown it —
+ * `handleOf` — and kind, as a reply's context reads them to label it), its text and its attachment.
+ */
 export interface PlacedMessage {
   at: number;
   seq: number;
@@ -82,7 +74,16 @@ export interface PlacedMessage {
 /** The first `limit` messages `r` reads whose place is after `after` and at most `upto`, by place and then seq. */
 export async function readPlaced(q: Queryable, r: PlacedReader, after: number, upto: number, limit: number): Promise<PlacedMessage[]> {
   if (upto <= after) return [];
-  const { rows } = await q.query<{ at: string; seq: string; sender_id: string; name: string; handle: string; kind: "human" | "agent"; text: string | null; attachment: AttachmentRef | null }>(
+  const { rows } = await q.query<{
+    at: string;
+    seq: string;
+    sender_id: string;
+    name: string;
+    handle: string;
+    kind: "human" | "agent";
+    text: string | null;
+    attachment: AttachmentRef | null;
+  }>(
     `select coalesce(r.covers_seq, m.seq)::text as at, m.seq::text as seq, m.sender_id, sp.display_name as name, ${handleOf("sp")} as handle, sp.kind,
             m.body ->> 'text' as text, m.body -> 'attachment' as attachment
        ${PLACED_FROM}
@@ -130,108 +131,222 @@ export const baseOf = (stay: { joined: number; topic: number } | null): number |
 export const summaryBase = async (q: Queryable, agentId: string, conversationId: string): Promise<number | null> => baseOf(await stayOf(q, agentId, conversationId));
 
 /**
- * A pair's summary: `text` covers the messages its Agent could see whose place in the conversation (`position`: a message's
- * seq; an Agent's reply, the seq its run covered) is from `fromSeq` to `uptoSeq`, both included. In a group, `speakers` says
- * whose each label in `text` was when it was written (migration 056: label → principal id); null when that is not recorded
- * (a row written before it, and the Agent's own conversation, which holds no label).
+ * A pair's summary: `items` cover the messages its Agent could see whose place in the conversation (`position`: a message's
+ * seq; an Agent's reply, the seq its run covered) is from `fromSeq` to `uptoSeq`, both included — each item's `said_by` the
+ * account that said or settled it (null: nobody in particular). `items` is null for a row written before migration 059,
+ * which holds text only: it is shown to no reply and no job builds on it (job.ts writes it anew from the messages).
  */
 export interface Summary {
   fromSeq: number;
   uptoSeq: number;
-  text: string;
-  speakers: Readonly<Record<string, string>> | null;
+  items: Sections | null;
+}
+
+/** An account id as `items` holds one (anything else is no account: such an item is not read). */
+const ACCOUNT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A row's `items` as stored, in the sections' order; null when there are none (a row written before migration 059). */
+function storedItems(raw: unknown): Sections | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const at = raw as Record<string, unknown>;
+  const items = {} as Sections;
+  for (const k of SECTIONS) {
+    const list: unknown[] = Array.isArray(at[k]) ? at[k] : [];
+    items[k] = list.flatMap((i): Item[] => {
+      if (typeof i !== "object" || i === null) return [];
+      const { said_by: who, text } = i as { said_by?: unknown; text?: unknown };
+      if (typeof text !== "string" || !(who === null || (typeof who === "string" && ACCOUNT.test(who)))) return [];
+      return [{ said_by: who, text }];
+    });
+  }
+  return items;
 }
 
 /** The summary of Agent `agentId` in `conversationId`, or null. A plain read. */
 export async function readSummary(q: Queryable, conversationId: string, agentId: string): Promise<Summary | null> {
-  const { rows } = await q.query<{ from_seq: string; upto_seq: string; text: string; speakers: Record<string, string> | null }>(
-    "select from_seq::text, upto_seq::text, text, speakers from conversation_summaries where conversation_id = $1 and agent_id = $2",
+  const { rows } = await q.query<{ from_seq: string; upto_seq: string; items: unknown }>(
+    "select from_seq::text, upto_seq::text, items from conversation_summaries where conversation_id = $1 and agent_id = $2",
     [conversationId, agentId],
   );
   const row = rows[0];
-  return row ? { fromSeq: Number(row.from_seq), uptoSeq: Number(row.upto_seq), text: row.text, speakers: row.speakers } : null;
+  return row ? { fromSeq: Number(row.from_seq), uptoSeq: Number(row.upto_seq), items: storedItems(row.items) } : null;
 }
-
-/** The labels a group summary may hold (prompt.ts `keepLabelled`): its owner's and everyone else's; `ids`, whose each is. */
-export interface SpeakerLabels {
-  owner: string;
-  people: ReadonlySet<string>;
-  ids: ReadonlyMap<string, string>;
-}
-
-/** `SpeakerLabels` of `owner` and of the people `rows` (as `placedSpeakers` reads them), by the names and handles given. */
-function labelled(owner: { id: string; name: string; handle: string }, rows: ReadonlyArray<{ id: string; name: string; handle: string }>): SpeakerLabels {
-  const ownerLabel = personLabel(owner.name, owner.handle, true);
-  const ids = new Map<string, string>([[ownerLabel, owner.id]]);
-  for (const p of rows) ids.set(personLabel(p.name, p.handle, false), p.id);
-  return { owner: ownerLabel, people: new Set([...ids.keys()].filter((l) => l !== ownerLabel)), ids };
-}
-
-/** The owner of `r`'s pair: their name and handle now. */
-const ownerNow = async (q: Queryable, r: PlacedReader): Promise<{ id: string; name: string; handle: string }> =>
-  (await q.query<{ id: string; name: string; handle: string }>(`select p.id, p.display_name as name, ${handleOf("p")} as handle from principals p where p.id = $1`, [r.ownerId])).rows[0]!;
 
 /**
- * The speaker labels a group summary of `r`'s pair may hold: the owner's, and everyone else's who has a message the pair
- * could cover (placed after `base` and up to `upTo`, `placedSpeakers`) — by their names and handles now (runtime/prompt.ts
- * `personLabel`; the owner's by account, `主人（…）`).
+ * Who each of `ids` (accounts) is to the Agent of `r`'s pair now, in one read of those accounts — by account only, never
+ * by a name (runtime/prompt.ts `speakerRole`): the Agent itself (`self`, no name, no account: its role says it); its
+ * owner (`owner`); an Agent (`agent`), or one that was deleted (`deletedAgent`: its name, no account — a deleted Agent's
+ * name part is free at once, so its full handle may be a new Agent's now); a person (`member`), whether or not they are in
+ * the group now; an account that is no longer there (`gone`, no name, no account). The name is the roster's
+ * (`labelName`: the name of now as a label shows it, at most `DISPLAY_NAME_MAX` characters), the account `@` and the
+ * handle of now (`handleOf`).
  */
-export async function speakerLabels(q: Queryable, r: PlacedReader, base: number, upTo: number): Promise<SpeakerLabels> {
-  return labelled(await ownerNow(q, r), (await placedSpeakers(q, r, base, upTo)).filter((p) => p.id !== r.ownerId && p.id !== r.agentId));
-}
-
-/** The labels of now of the owner of `r`'s pair and of the accounts `ids` (one read; an account no longer there has none). */
-async function labelsNow(q: Queryable, r: PlacedReader, ids: readonly string[]): Promise<SpeakerLabels> {
-  const owner = await ownerNow(q, r);
-  const { rows } = await q.query<{ id: string; name: string; handle: string }>(
-    `select p.id, p.display_name as name, ${handleOf("p")} as handle from principals p where p.id = any($1::uuid[]) and p.id <> $2 and p.id <> $3`,
-    [[...new Set(ids)], r.ownerId, r.agentId],
+export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly string[]): Promise<Map<string, Speaker>> {
+  const asked = ids.filter((id) => id !== r.agentId);
+  const { rows } =
+    asked.length === 0
+      ? { rows: [] }
+      : await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent"; deleted: boolean }>(
+          `select p.id, p.display_name as name, ${handleOf("p")} as handle, p.kind,
+                  exists (select 1 from agents a where a.principal_id = p.id and a.deleted_at is not null) as deleted
+             from principals p where p.id = any($1::uuid[])`,
+          [asked],
+        );
+  const found = new Map(rows.map((p) => [p.id, p]));
+  return new Map(
+    ids.map((id): [string, Speaker] => {
+      if (id === r.agentId) return [id, { kind: "self", name: null, account: null }];
+      const p = found.get(id);
+      if (p === undefined) return [id, { kind: "gone", name: null, account: null }];
+      // The roster's name, cut at the display-name limit (folding may lengthen one).
+      const name = Array.from(labelName(p.name, p.handle)).slice(0, DISPLAY_NAME_MAX).join("");
+      if (p.deleted) return [id, { kind: "deletedAgent", name, account: null }];
+      const role = speakerRole(p.id, p.kind, r.ownerId);
+      return [id, { kind: role === "你的主人" ? "owner" : role === "Agent" ? "agent" : "member", name, account: `@${p.handle}` }];
+    }),
   );
-  return labelled(owner, rows);
 }
 
 /**
- * The pair's stored summary `s` as a reply is shown it and a job builds on it (final review I-3, m-11): its text as stored;
- * in a group, then, each label it recorded (`speakers`) rewritten to how that
- * account is labelled now (prompt.ts `relabelled`: a rename changes the label, not the person), and the text held again to
- * the labels of now of the accounts it recorded and its owner (prompt.ts `keepLabelled`) — a line with any other is not shown.
- * Two indexed reads, nothing of the conversation's history. Null for a group's row that recorded nobody (written before
- * migration 056): no reply is shown it (round 2, N-4) until a job has rewritten it (`legacySummary`). Read only: the row is
- * never written back.
+ * The pair's stored summary `s` as a reply is shown it (final review I-3; redesign B): its speakers once, each as who that
+ * account is now (`peopleNow`, `shownForm`: the role by account, the name and account of now, under a key the system gives
+ * it), each item's `said_by` that key — so a rename changes how an item is shown, never whose it is —, its text as stored
+ * (no stored text holds a citation: tools/refs.ts), and the whole held again to `maxWeight` as it is shown (prompt.ts
+ * `fitted`: names shortened first, down to nothing — role and account still say who it is —, and only then whole items
+ * from the top section down), so that no rename since it was stored takes it past the cap, nor costs it an item (it was
+ * stored held to the cap with every account at its longest: job.ts). One indexed read of the accounts it names (none when
+ * it names nobody), nothing of the conversation's history. Null for a row written before migration 059 (text only) — no
+ * reply is shown it until a job has written it anew — and when it holds no item (a window folded with nothing to add) or
+ * nothing of it fits. Read only: the row is never written back.
  */
-export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary): Promise<string | null> {
-  if (!r.group) return s.text;
-  if (s.speakers === null) return null;
-  const now = await labelsNow(q, r, Object.values(s.speakers));
-  const byId = new Map([...now.ids].map(([label, id]) => [id, label]));
-  return keepLabelled(relabelled(s.text, s.speakers, byId), now).text;
+export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary, maxWeight: number): Promise<Passage | null> {
+  if (s.items === null || !hasItems(s.items)) return null;
+  const { items, people } = fitted(s.items, await peopleNow(q, r, whoIn(s.items)), maxWeight);
+  return hasItems(items) ? shownForm(items, people) : null;
 }
 
 /**
- * A group's row that recorded nobody (written before migration 056) as the job builds on it — off any reply's path:
- * held to the labels of now of everyone placed after `base` up to what it covers (`speakerLabels`, a read of the
- * stay's history), so a line of someone renamed since goes. The job's next write records whose its labels are.
+ * Stores the pair's summary as `s` (inserted, or replacing the one there), in the caller's transaction: its items; a row
+ * written before migration 059 that it replaces loses its text. The 056 `speakers` column is left as it is, unused.
  */
-export async function legacySummary(q: Queryable, r: PlacedReader, base: number, s: Summary): Promise<string> {
-  return keepLabelled(s.text, await speakerLabels(q, r, base, s.uptoSeq)).text;
-}
-
-/** Stores the pair's summary as `s` (inserted, or replacing the one there), in the caller's transaction. */
-export async function writeSummary(q: Queryable, conversationId: string, agentId: string, s: Summary): Promise<void> {
+export async function writeSummary(q: Queryable, conversationId: string, agentId: string, s: Summary & { items: Sections }): Promise<void> {
   await q.query(
-    `insert into conversation_summaries (conversation_id, agent_id, from_seq, upto_seq, text, speakers, updated_at)
-     values ($1, $2, $3, $4, $5, $6::jsonb, now())
+    `insert into conversation_summaries (conversation_id, agent_id, from_seq, upto_seq, items, text, updated_at)
+     values ($1, $2, $3, $4, $5::jsonb, null, now())
      on conflict (conversation_id, agent_id) do update
-       set from_seq = excluded.from_seq, upto_seq = excluded.upto_seq, text = excluded.text, speakers = excluded.speakers, updated_at = now()`,
-    [conversationId, agentId, s.fromSeq, s.uptoSeq, s.text, s.speakers === null ? null : JSON.stringify(s.speakers)],
+       set from_seq = excluded.from_seq, upto_seq = excluded.upto_seq, items = excluded.items, text = null, updated_at = now()`,
+    [conversationId, agentId, s.fromSeq, s.uptoSeq, JSON.stringify(s.items)],
   );
 }
 
 /**
- * Deletes the summaries of `conversationId` of whichever of `principalIds` are Agents, in the caller's transaction: a new
- * topic (its Agent), and the end of memberships of a group (everyone who left: only an Agent has one).
+ * Deletes the summaries of `conversationId` of whichever of `principalIds` are Agents, and their attempt states, in the
+ * caller's transaction: a new topic (its Agent), and the end of memberships of a group (everyone who left: only an Agent
+ * has one).
  */
 export async function forgetSummaries(q: Queryable, conversationId: string, principalIds: readonly string[]): Promise<void> {
   if (principalIds.length === 0) return;
-  await q.query("delete from conversation_summaries where conversation_id = $1 and agent_id = any($2::uuid[])", [conversationId, [...new Set(principalIds)]]);
+  const ids = [...new Set(principalIds)];
+  await q.query("delete from conversation_summaries where conversation_id = $1 and agent_id = any($2::uuid[])", [conversationId, ids]);
+  await q.query("delete from conversation_summary_attempts where conversation_id = $1 and agent_id = any($2::uuid[])", [conversationId, ids]);
+}
+
+/**
+ * A pair's attempt state (migration 059; README "The rolling summary"): what decides when its summary job may call
+ * (job.ts `shouldCall`) and what after a call that wrote nothing (job.ts `afterFailure`, `afterWrite`). `failedUpto`: how
+ * far the window that failed reaches while its failure streak runs (null: none); `failures`: its calls in a row that wrote
+ * nothing; `floorFailures`: those made at the smallest window; `emptyAnswer`: the last of them was a long window answered
+ * with nothing; `notBefore`: when it may be asked again, in ms (null: at once) — the minimum interval after a write, the
+ * backoff after a call that wrote nothing, a claim's lapse while a call is under way; `windowMessages`: the most messages
+ * its next window takes (null: the most a job reads); `skippedMessages`: how many messages were ever set aside for the
+ * pair. Forgotten with the summary (`forgetSummaries`).
+ */
+export interface AttemptState {
+  failedUpto: number | null;
+  failures: number;
+  floorFailures: number;
+  emptyAnswer: boolean;
+  notBefore: number | null;
+  windowMessages: number | null;
+  skippedMessages: number;
+}
+
+/** The pair's attempt state, or null (never asked, or forgotten since). A plain read of one row. */
+export async function readAttempt(q: Queryable, conversationId: string, agentId: string): Promise<AttemptState | null> {
+  const { rows } = await q.query<{
+    upto: string | null;
+    failures: number;
+    floor_failures: number;
+    empty_answer: boolean;
+    not_before: Date | null;
+    window_messages: number | null;
+    skipped_messages: number;
+  }>(
+    `select failed_upto::text as upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages
+       from conversation_summary_attempts where conversation_id = $1 and agent_id = $2`,
+    [conversationId, agentId],
+  );
+  const r = rows[0];
+  return r
+    ? {
+        failedUpto: r.upto === null ? null : Number(r.upto),
+        failures: r.failures,
+        floorFailures: r.floor_failures,
+        emptyAnswer: r.empty_answer,
+        notBefore: r.not_before === null ? null : r.not_before.getTime(),
+        windowMessages: r.window_messages,
+        skippedMessages: r.skipped_messages,
+      }
+    : null;
+}
+
+/** A moment in ms as the database is given it (to the millisecond, as it is read back). */
+const instant = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
+
+/** Stores the pair's attempt state as `s` (inserted, or replacing the one there), in the caller's transaction (job.ts: under the pair's lock). */
+export async function writeAttempt(q: Queryable, conversationId: string, agentId: string, s: AttemptState): Promise<void> {
+  await q.query(
+    `insert into conversation_summary_attempts
+            (conversation_id, agent_id, failed_upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages)
+     values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9)
+     on conflict (conversation_id, agent_id) do update
+       set failed_upto = excluded.failed_upto, failures = excluded.failures, floor_failures = excluded.floor_failures,
+           empty_answer = excluded.empty_answer, not_before = excluded.not_before, window_messages = excluded.window_messages,
+           skipped_messages = excluded.skipped_messages`,
+    [conversationId, agentId, s.failedUpto, s.failures, s.floorFailures, s.emptyAnswer, instant(s.notBefore), s.windowMessages, s.skippedMessages],
+  );
+}
+
+/**
+ * Ends the claim `lease` (as job.ts wrote it): the pair's state becomes `next` (null: none) — only while the row is still
+ * that claim, so that one that lapsed and was claimed again, or that was forgotten meanwhile (a new topic, the end of a
+ * stay), is left as it is. One statement.
+ */
+export async function settleAttempt(q: Queryable, conversationId: string, agentId: string, lease: AttemptState, next: AttemptState | null): Promise<void> {
+  if (next === null) {
+    await q.query("delete from conversation_summary_attempts where conversation_id = $1 and agent_id = $2 and not_before = $3::timestamptz", [
+      conversationId,
+      agentId,
+      instant(lease.notBefore),
+    ]);
+    return;
+  }
+  await q.query(
+    `update conversation_summary_attempts
+        set failed_upto = $4, failures = $5, floor_failures = $6, empty_answer = $7, not_before = $8::timestamptz, window_messages = $9,
+            skipped_messages = $10
+      where conversation_id = $1 and agent_id = $2 and not_before = $3::timestamptz`,
+    [
+      conversationId,
+      agentId,
+      instant(lease.notBefore),
+      next.failedUpto,
+      next.failures,
+      next.floorFailures,
+      next.emptyAnswer,
+      instant(next.notBefore),
+      next.windowMessages,
+      next.skippedMessages,
+    ],
+  );
 }

@@ -60,6 +60,7 @@ async function load(w: Awaited<ReturnType<typeof world>>, contextTokens: number)
       coversSeq: covers,
       group: { maxTokens: app.deps.config.agentGroupContextTokens, maxMessages: GROUP_CONTEXT_MESSAGES, after: 0, calls: [covers] },
       planRatio: 1,
+      summary: { stored: null, shown: null },
     },
     resolvedOf(contextTokens),
     () => SYSTEM,

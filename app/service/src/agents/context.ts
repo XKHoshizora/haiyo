@@ -24,6 +24,7 @@ import {
   withSummary,
   type GroupPerson,
   type GroupScene,
+  type ShownSummary,
   type SystemText,
 } from "./runtime/prompt.ts";
 import type { AgentRow } from "./store.ts";
@@ -117,23 +118,30 @@ export interface ContextRun {
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
   upTo?: number;
   /**
-   * The pair's summary and what of it may be shown (`readPairSummary`), read once for a run whose context is planned more than
-   * once (port-impl.ts `begin`, round 2 N-4). Absent: read here.
+   * The pair's summary and what of it may be shown (`readPairSummary`, held to `MEMORY.summaryMaxWeight` as shown), read
+   * once for the run however many times its context is planned (port-impl.ts `begin`, round 2 N-4).
    */
-  summary?: PairSummary;
+  summary: PairSummary;
 }
 
-/** The pair's stored summary (null: none), and its text as a reply may be shown it (`shownSummary`; null: shown nothing). */
+/** The pair's stored summary (null: none), and the summary as a reply may be shown it (`shownSummary`; null: shown nothing). */
 export interface PairSummary {
   stored: Summary | null;
-  text: string | null;
+  shown: ShownSummary | null;
 }
 
-/** `PairSummary` of `run`'s pair: one read of the row and, in a group with a record of its labels, two indexed reads. */
-export async function readPairSummary(q: Queryable, run: Pick<ContextRun, "agentId" | "ownerId" | "conversationId"> & { group: boolean }): Promise<PairSummary> {
+/**
+ * `PairSummary` of `run`'s pair, what it shows held to `maxWeight` as shown (`MEMORY.summaryMaxWeight`): one read of the row
+ * and, when its items name anyone, one indexed read of those accounts.
+ */
+export async function readPairSummary(
+  q: Queryable,
+  run: Pick<ContextRun, "agentId" | "ownerId" | "conversationId"> & { group: boolean },
+  maxWeight: number,
+): Promise<PairSummary> {
   const stored = await readSummary(q, run.conversationId, run.agentId);
   const reader: PlacedReader = { agentId: run.agentId, ownerId: run.ownerId, conversationId: run.conversationId, group: run.group };
-  return { stored, text: stored === null ? null : await shownSummary(q, reader, stored) };
+  return { stored, shown: stored === null ? null : await shownSummary(q, reader, stored, maxWeight) };
 }
 
 /** What `loadContext` read: everything `buildContext` needs but the attachments' bytes. */
@@ -163,8 +171,8 @@ export interface LoadedContext {
    * where the part starts (the topic start; in a group the asker's line too) and past what the pair's summary covers (shown to
    * this run or not), and before the oldest message the plan shows (by name: `ContextPlan.shownAt`; in the Agent's own
    * conversation, at the last reply of the Agent's before it: `leftOutTo`) — in its own conversation because they did not fit,
-   * in a group also because they fell before the latest `maxMessages`. What `finish` acts on: `messages` against
-   * `MEMORY.summaryMinMessages`, `to` what the job is to cover up to. Null when none was left out.
+   * in a group also because they fell before the latest `maxMessages`. What `finish` acts on: anything left out queues a
+   * job, `to` what it is to cover up to (the job weighs it before it makes a call). Null when none was left out.
    */
   leftOut: LeftOut | null;
   /** The pair's summary as the system text carries it (`withSummary`); null when it carries none. */
@@ -382,8 +390,11 @@ interface MessageRow {
 /** A label's number, when there is one (none past the largest a token holds: refs.ts `MAX_NUMBER`). */
 const withRef = (ref: string | null): { ref?: string } => (ref === null ? {} : { ref });
 
-/** An attachment of message `seq` of `conversationId` as the context shows it; with `refs` (a reply offered tools), with its number. */
-const toAttachment = (a: AttachmentRef, seq: number, conversationId: string, refs: RunRefs | null): ContextAttachment => ({
+/**
+ * An attachment of message `seq` of `conversationId` as the context shows it; with `refs` (a reply offered tools), with its
+ * number. Without (null: the rolling summary's job, agents/summary/job.ts), no number.
+ */
+export const toAttachment = (a: AttachmentRef, seq: number, conversationId: string, refs: RunRefs | null): ContextAttachment => ({
   id: a.id,
   name: a.name,
   image: a.inline === true,
@@ -497,14 +508,19 @@ async function loadPage(
 }
 
 /**
- * A loaded message as the model is shown it: in a group, one of someone else's starts with its label carrying the run's
- * `mark` (`speakerLabel`; a quote goes on the next line). With no mark, as loaded.
+ * A message as a reply's model is shown it: in a group, one of someone else's (`speaker`) starts with its label carrying
+ * the run's `mark` (`speakerLabel`; a quote goes on the next line); with no speaker or no mark, `entry` as it is. The one
+ * rule of it: what a reply is shown (`shown`) and what the rolling summary weighs a message it replaces as
+ * (agents/summary/job.ts) are both this.
  */
-function shown(l: Loaded, mark: string | null): ContextEntry {
-  if (l.speaker === null || mark === null) return l.entry;
-  const { name, handle, role, quoted } = l.speaker;
-  return { ...l.entry, text: `${speakerLabel(mark, labelName(name, handle), role)}${quoted ? "\n" : ""}${l.entry.text}` };
+export function labelledEntry(entry: ContextEntry, speaker: Pick<Speaker, "name" | "handle" | "role"> & { quoted: boolean } | null, mark: string | null): ContextEntry {
+  if (speaker === null || mark === null) return entry;
+  const { name, handle, role, quoted } = speaker;
+  return { ...entry, text: `${speakerLabel(mark, labelName(name, handle), role)}${quoted ? "\n" : ""}${entry.text}` };
 }
+
+/** A loaded message as the model is shown it (`labelledEntry`, with the run's `mark`; with no mark, as loaded). */
+const shown = (l: Loaded, mark: string | null): ContextEntry => labelledEntry(l.entry, l.speaker, mark);
 
 /** Whether `mark` occurs in anything of a loaded message the model is shown: its text, its attachment's name, who said it. */
 const shows = (l: Loaded, mark: string): boolean =>
@@ -580,16 +596,17 @@ export async function loadContext(
   // no summary (the write side checks the same, job.ts). It is shown only when, besides, everything it covers is after the
   // asker's line (it is text about those messages: a reply is shown nothing derived from what is at or before its line), and
   // it leaves the run something to answer. Not shown, the conversation part is read as if there were none.
-  // Read once for the run (`ContextRun.summary`), or here; shown as summary/store.ts `shownSummary` has it — without citations,
-  // in a group only the lines whose labels the pair may hold, and a group's row from before migration 056 not at all.
-  const pair = run.summary ?? (await readPairSummary(q, { ...run, group: run.group !== null }));
+  // Read once for the run (`ContextRun.summary`); shown as summary/store.ts `shownSummary` has it — each item said by whom
+  // its account is now, its text as stored, held to the cap as shown — and a row from before migration 059 (text only) not
+  // at all.
+  const pair = run.summary;
   const stored = pair.stored;
   const base = baseOf(stay);
   const owned = stored !== null && base !== null && stored.fromSeq > base ? stored : null;
-  const summary = owned !== null && pair.text !== null && owned.fromSeq > line && owned.uptoSeq < run.coversSeq ? owned : null;
+  const summary = owned !== null && pair.shown !== null && owned.fromSeq > line && owned.uptoSeq < run.coversSeq ? owned : null;
   const reader: PlacedReader = { agentId: run.agentId, ownerId: run.ownerId, conversationId: run.conversationId, group: run.group !== null };
-  const carrying = (text: string | null) => (mark: string, speakers: readonly Speaker[]): SystemText => withSummary(system(mark, speakers), text);
-  const withPassage = carrying(summary === null ? null : pair.text);
+  const carrying = (shown: ShownSummary | null) => (mark: string, speakers: readonly Speaker[]): SystemText => withSummary(system(mark, speakers), shown);
+  const withPassage = carrying(summary === null ? null : pair.shown);
   const reading = budgetWith(withPassage("", []));
   // In a group, nothing at or before the asker's line either (`askerLine`): what is read starts after the later of the two;
   // with a summary shown, after what it covers.

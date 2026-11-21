@@ -41,8 +41,8 @@ import { EXPLICIT } from "./review.ts";
  * stored (`memory_catchups`), and `resume` queues every one a restart left unfinished; they run as any job of the Agent (one at a time).
  * The rolling summary (agents/summary/job.ts) runs here too: after a reply whose context left out enough (`summarise`), a
  * `summary` job — one per pair at a time (one job per Agent at a time, as every job), within `MAX_REVIEWS_AT_ONCE`; a second
- * request while one waits only moves what it is to cover up to. Where a pair's last attempt that wrote nothing was to cover
- * up to is remembered here (in this process: a restart forgets it, which costs at most one more attempt).
+ * request while one waits only moves what it is to cover up to. Nothing of when a pair may be asked again is kept here: that
+ * is the pair's attempt state, in the database (agents/summary/store.ts `AttemptState`).
  */
 
 export const MAX_REVIEWS_AT_ONCE = 4;
@@ -78,8 +78,9 @@ export interface Reviewer {
   /** After commit: the owner started a new topic in the Agent's own conversation. */
   topicReset(agentId: string, conversationId: string): void;
   /**
-   * After a reply of Agent `agentId` in `conversationId` was posted, whose context left out at least `MEMORY.summaryMinMessages`
-   * messages, the last of them placed at `upTo` (agents/port-impl.ts `finish`): a `summary` job is queued for the pair.
+   * After a reply of Agent `agentId` in `conversationId` was posted, whose context left out messages, the last of them placed
+   * at `upTo` (agents/port-impl.ts `finish`): a `summary` job is queued for the pair (it makes a call only when what waits is
+   * worth it, agents/summary/job.ts).
    */
   summarise(agentId: string, conversationId: string, upTo: number): void;
   /** After the row is written: a message of `conversationId` was flagged for the Agent (hearsay, or the owner's own remark). */
@@ -144,8 +145,6 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
   const dreaming = new Set<string>();
   /** Each owner's latest conversion: under way, or what it did (until the next one; a restart forgets them all). */
   const conversions = new Map<string, { state: "running" } | { state: "done"; result: ConvertResult }>();
-  /** Each pair's last summary attempt that wrote nothing: what it was to cover up to (`SummaryContext.summaryTried`). */
-  const summaryTried = new Map<string, number>();
   let waiting: Job[] = [];
   const running = new Set<string>();
   /** Evaluations of a trigger under way (they read the database before deciding). */
@@ -190,8 +189,6 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
         dream,
         enqueue: (next) => enqueue(next),
         flagged: (agentId, conversationId, kind) => api.flagged(agentId, conversationId, kind),
-        summaryTried: summaryTried.get(key) ?? null,
-        summaryAttempted: (upTo) => void (upTo === null ? summaryTried.delete(key) : summaryTried.set(key, upTo)),
       };
       if (job.kind === "flags") hearsayCalls.set(key, ctx.hearsayCalls);
       void Promise.resolve()
@@ -479,7 +476,6 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
       retries.clear();
       hearsayCalls.clear();
       attempted.clear();
-      summaryTried.clear();
       for (const job of waiting) if (job.kind === "convert") job.settle(null);
       waiting = [];
       stop.abort();

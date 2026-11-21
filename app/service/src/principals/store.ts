@@ -10,10 +10,12 @@ import { AppError } from "../errors.ts";
 export const handleOf = (p: string): string =>
   `(case when ${p}.kind = 'agent' then (select ho.handle::text from principals ho where ho.id = ${p}.owner_id) || '.' || ${p}.handle::text else ${p}.handle::text end)`;
 
-/** The shape of a person's handle (registration, a change, a lookup): 3 to 24 of `a-z0-9_`. */
-export const HANDLE_PATTERN = /^[a-z0-9_]{3,24}$/;
-/** The shape of an Agent's name part: 2 to 24 of `a-z0-9_`. Its handle is `<owner's handle>.<name part>`. */
-export const NAME_PART_PATTERN = /^[a-z0-9_]{2,24}$/;
+/** The most characters a person's handle has, and an Agent's name part. */
+export const HANDLE_MAX = 24;
+/** The shape of a person's handle (registration, a change, a lookup): 3 to `HANDLE_MAX` of `a-z0-9_`. */
+export const HANDLE_PATTERN = new RegExp(`^[a-z0-9_]{3,${HANDLE_MAX}}$`);
+/** The shape of an Agent's name part: 2 to `HANDLE_MAX` of `a-z0-9_`. Its handle is `<owner's handle>.<name part>`. */
+export const NAME_PART_PATTERN = new RegExp(`^[a-z0-9_]{2,${HANDLE_MAX}}$`);
 
 /**
  * Whether `handle` is free for `principalId` (null: a registration) to take: no person holds it now and no person gave it

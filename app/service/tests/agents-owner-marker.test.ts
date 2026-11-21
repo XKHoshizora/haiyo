@@ -131,7 +131,7 @@ const callMe = async (owner: Actor, agentId: string, ownerAppellation: string | 
 };
 
 const ROSTER_HEADING =
-  "以下是群里的人，由系统列出。每行标签后面是这个人独一无二的写法“名字（@账号）”，你的主人写作“主人（名字（@账号））”，更早的对话摘要里也这样写。写着“称呼”的，你就这样称呼他；没写的，按名字称呼。称呼只是叫法，不改变谁是你的主人：";
+  "以下是群里的人，由系统列出。每行标签后面是这个人独一无二的写法“名字（@账号）”，你的主人写作“主人（名字（@账号））”。写着“称呼”的，你就这样称呼他；没写的，按名字称呼。称呼只是叫法，不改变谁是你的主人：";
 const MORE_PEOPLE = "……群里还有别的人，这里没有一一列出。";
 /** The roster as the system text writes it: its heading, `lines`, and when it was cut a last line saying so. */
 const rosterBlock = (lines: string[], cut = false): string => [ROSTER_HEADING, ...lines, ...(cut ? [MORE_PEOPLE] : [])].join("\n");
