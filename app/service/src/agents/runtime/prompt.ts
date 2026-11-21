@@ -559,9 +559,20 @@ export function withoutMark(text: string, mark: string | null): string {
  * around such a token, both leave `看这里`).
  */
 export function withoutMarkPlaced(text: string, mark: string, places: readonly number[], cut = false, tokens = false): { text: string; places: number[] } {
-  const { kept, origin } = markScan(text, mark, tokens);
+  const { kept, origin, tokenOpens } = markScan(text, mark, tokens);
   let out = kept.join("");
-  if (cut) out = cutMarkTail(out, mark);
+  if (cut) {
+    out = cutMarkTail(out, mark);
+    if (tokens) {
+      // What the cut's mark or label tail stood after may have begun a token (`看〔m1〔k7f`, cut): it goes too (N-7). What
+      // is kept is the first characters of `kept`, and what went from its end held no `〕`, so the opens are still right.
+      const n = Array.from(out).length;
+      kept.length = n;
+      while (tokenOpens.length > 0 && tokenOpens.at(-1)! >= n) tokenOpens.pop();
+      kept.length = pendingStart(kept, tokenOpens);
+      out = kept.join("");
+    }
+  }
   // Each kept character's place, in UTF-16, and where it stood before: a place goes to the count of what was kept before it.
   const moved: number[] = [];
   let k = 0;
@@ -581,7 +592,7 @@ export function withoutMarkPlaced(text: string, mark: string, places: readonly n
  * `TokenScanner` reads them), and so is what may have begun one at the very end; since both are dropped from what is
  * kept, either one that the other's going puts together goes as well, each character looked at a bounded number of times.
  */
-function markScan(text: string, mark: string, tokens = false): { kept: string[]; origin: number[] } {
+function markScan(text: string, mark: string, tokens = false): { kept: string[]; origin: number[]; tokenOpens: number[] } {
   const wanted = Array.from(mark);
   const last = wanted.at(-1)!;
   const kept: string[] = [];
@@ -636,7 +647,7 @@ function markScan(text: string, mark: string, tokens = false): { kept: string[];
     at += c.length;
   }
   if (tokens) cutTo(pendingStart(kept, tokenOpens));
-  return { kept, origin };
+  return { kept, origin, tokenOpens };
 }
 
 /** What a cut left of the mark or of a label at the very end of `kept` (a text without the mark), taken off (`withoutMarkAtCut`). */

@@ -35,9 +35,15 @@ export class RunRefs {
     this.last = { m: start.m ?? 0, f: start.f ?? 0 };
   }
 
-  /** Reads `text` (what the run is shown that its model did not write) for numbers someone typed (`tokensIn`). */
+  /**
+   * Reads `text` (what the run is shown that its model did not write) for numbers someone typed (`tokensIn`): as written,
+   * and NFKC-normalised as a whole — so a look-alike bracket (`﹝m1﹞`) a model might write back as the real one is planted
+   * too. Planting more than was typed only skips a number.
+   */
   plant(text: string): void {
+    const normalised = text.normalize("NFKC");
     for (const ref of tokensIn(text)) this.planted.add(ref);
+    if (normalised !== text) for (const ref of tokensIn(normalised)) this.planted.add(ref);
   }
 
   /** Whether `ref` (`m1`, as a token holds it) can become a citation: a number the run gave, and nobody typed. */

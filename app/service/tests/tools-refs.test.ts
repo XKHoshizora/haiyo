@@ -258,8 +258,20 @@ describe("one matcher, normalised: full-width letters and digits, leading zeros 
         { at: 3, kind: "f", ref: at(90) },
       ],
     });
-    for (const ref of ["〔ｆ１〕", "f01", "〔 Ｆ 0 1 〕"]) expect([ref, refs.fileOf(ref)]).toEqual([ref, "att-1"]);
+    for (const ref of ["〔ｆ１〕", "f01", "〔 Ｆ 01 〕"]) expect([ref, refs.fileOf(ref)]).toEqual([ref, "att-1"]);
     expect(fileNumber("〔ｆ０２〕")).toBe("f2");
+  });
+
+  it("read_file reads a number by the same matcher (N-8): a token as written or its inside — not what is no token in a text", () => {
+    const refs = numbered();
+    for (const ref of ["〔 Ｆ 0 1 〕", "﹝f1﹞", "〔f1", "〔f1〕〕"]) expect([ref, refs.fileOf(ref), fileNumber(ref)]).toEqual([ref, null, ref]);
+    expect(fileNumber("  〔 F1 〕 ")).toBe("f1");
+  });
+
+  it("typed numbers are read from what the run is shown as written and NFKC-normalised: a look-alike bracket counts as typed", () => {
+    const refs = new RunRefs();
+    refs.plant("她写了﹝m1﹞和﹝ｆ２﹞");
+    expect([refs.message("c", 1), refs.file("a", at(1)), refs.file("b", at(2))]).toEqual(["〔m2〕", "〔f1〕", "〔f3〕"]);
   });
 });
 
@@ -285,6 +297,16 @@ describe("a group's mark, with places", () => {
 
   it("at a cut, what it left of the mark or of a label at the end goes too, a place past the end at the end", () => {
     expect(withoutMarkPlaced("好〔mkab", "mkabcd", [1, 5], true)).toEqual({ text: "好", places: [1, 1] });
+  });
+
+  it("at a cut in a reply offered tools, what may have begun a token before the mark's or a label's tail goes too (N-7)", () => {
+    expect(withoutMarkPlaced("看〔m1〔mka", "mkabcd", [1], true, true)).toEqual({ text: "看", places: [1] });
+    expect(withoutMarkPlaced("看〔m1〔mkabcd 阿", "mkabcd", [], true, true).text).toBe("看");
+    // A token closed before the tail stays out as ever, and what is not a token's beginning stays.
+    expect(withoutMarkPlaced("看〔m1〕了〔mka", "mkabcd", [], true, true).text).toBe("看了");
+    expect(withoutMarkPlaced("看〔x1〔mka", "mkabcd", [], true, true).text).toBe("看〔x1");
+    // Without the token rule (a reply offered no tools): as before, the mark and the label only.
+    expect(withoutMarkPlaced("看〔m1〔mka", "mkabcd", [], true, false).text).toBe("看〔m1");
   });
 });
 

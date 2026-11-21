@@ -54,13 +54,13 @@ export function pendingStart(kept: readonly string[], opens: readonly number[], 
 }
 
 /**
- * A file number as the file tool may be passed it, made one form (so that one file is one call, runtime/loop.ts):
- * normalised as a token's inside is, its spaces gone, lower case, without its brackets, and as the number it writes —
- * `f1`, `〔f1〕`, `〔 F1 〕`, `f01` and `〔ｆ１〕` are `f1`. Anything else is left as it is (so it names nothing).
+ * A file number as the file tool may be passed it, made one form (so that one file is one call, runtime/loop.ts): a
+ * token as written (its real brackets, spaces around them) or its inside alone, read by the same matcher (`tokenRef`) —
+ * `f1`, ` F1 `, `〔f1〕`, `〔 F1 〕`, `f01` and `〔ｆ１〕` are `f1`. Anything else is left as it is, so it names nothing:
+ * what is no token in a text (`〔 f 0 1 〕`, `﹝f1﹞`) is no file number either.
  */
 export function fileNumber(ref: string): string {
-  let s = ref.normalize("NFKC").replace(/\s+/g, "").toLowerCase();
-  if (s.startsWith(OPEN) && s.endsWith(CLOSE)) s = s.slice(OPEN.length, -CLOSE.length);
-  const m = /^([mf])([0-9]{1,6})$/.exec(s);
-  return m ? numbered(m[1]!, m[2]!) : s;
+  const s = ref.trim();
+  const inside = s.length >= OPEN.length + CLOSE.length && s.startsWith(OPEN) && s.endsWith(CLOSE) ? s.slice(OPEN.length, -CLOSE.length) : s;
+  return tokenRef(inside) ?? s;
 }
