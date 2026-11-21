@@ -10,8 +10,9 @@ import { withoutCitations } from "../tools/refs.ts";
  * their account; each message and each item of the old summary carries its speaker's key; and the answer is ONE JSON
  * object of the four sections, each a list of items `{said_by, text}` whose `said_by` is one of those keys or an explicit
  * null (`parseSummary`). The job turns each key back into the account it stands for, and whoever reads the summary is
- * shown who said each item as an object whose role is decided by account (`shownForm`): free text never decides who said
- * what, and no name can pass for a role. What is kept is held to the cap as a reply is shown it (`capped`). The call's
+ * shown its speakers once, as objects whose role is decided by account, and each item's `said_by` as a key the system gave
+ * them (`shownForm`): free text never decides who said what, and no name can pass for a role or a key. What is kept is
+ * held to the cap as a reply is shown it, its people included (`capped`). The call's
  * user message is ONE `JSON.stringify` object, and its system text is fixed text with numbers in it: nothing anyone
  * wrote enters it.
  */
@@ -75,8 +76,34 @@ export const whoIn = <W>(s: Sections<W>): W[] => [...new Set(SECTIONS.flatMap((k
 /** How many items a summary holds. */
 const itemCount = (s: Sections<unknown>): number => SECTIONS.reduce((n, k) => n + s[k].length, 0);
 
-/** `s` (its accounts) as a reply is shown it: each `said_by` the speaker `people` says that account is (`shownSpeaker`). */
-export const shownForm = (s: Sections, people: ReadonlyMap<string, Speaker>): Sections<ShownSpeaker> => mapItems(s, (id) => shownSpeaker(people.get(id)!));
+/** The key a passage gives its `i`-th person (from 0): `a`, `b`, … `z`, `aa`, `ab`, … — short, and nobody's to type. */
+export const passageKey = (i: number): string => (i < 26 ? String.fromCharCode(97 + i) : passageKey(Math.floor(i / 26) - 1) + passageKey(i % 26));
+
+/** A summary as a reply is shown it: its people once, by passage key, and its sections, each `said_by` one of those keys. */
+export interface Passage {
+  people: Record<string, ShownSpeaker>;
+  sections: Sections;
+}
+
+/**
+ * `s` (its accounts) as a reply is shown it: each account an item names once in `people`, keyed by the system
+ * (`passageKey`) in the order it first comes (the top section first), as `people` says it is (`shownSpeaker`: the role by
+ * account) — nobody who said no item —, and each item's `said_by` that key. Pure.
+ */
+export function shownForm(s: Sections, people: ReadonlyMap<string, Speaker>): Passage {
+  const keys = new Map<string, string>();
+  const shown: Record<string, ShownSpeaker> = {};
+  const sections = mapItems(s, (id) => {
+    let key = keys.get(id);
+    if (key === undefined) {
+      key = passageKey(keys.size);
+      keys.set(id, key);
+      shown[key] = shownSpeaker(people.get(id)!);
+    }
+    return key;
+  });
+  return { people: shown, sections };
+}
 
 /**
  * `s` held to at most `SUMMARY_MAX_ITEMS` items and to `maxWeight` as `render` writes it (the passage's JSON value, with

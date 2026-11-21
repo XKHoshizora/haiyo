@@ -3,9 +3,9 @@ import type { Queryable } from "../../db.ts";
 import { notAcknowledgement, type AttachmentRef } from "../../messages/model.ts";
 import { postingRun } from "../../messages/read.ts";
 import { handleOf } from "../../principals/store.ts";
-import { labelName, speakerRole, type ShownSpeaker } from "../runtime/prompt.ts";
+import { labelName, speakerRole } from "../runtime/prompt.ts";
 import { withoutCitations } from "../tools/refs.ts";
-import { capped, hasItems, mapItems, SECTIONS, shownForm, whoIn, type Item, type Sections, type Speaker } from "./prompt.ts";
+import { capped, hasItems, mapItems, SECTIONS, shownForm, whoIn, type Item, type Passage, type Sections, type Speaker } from "./prompt.ts";
 
 /**
  * The rolling summary's rows (migrations 052, 059; README "The rolling summary"): one per conversation and Agent. What
@@ -181,15 +181,15 @@ export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly str
 }
 
 /**
- * The pair's stored summary `s` as a reply is shown it (final review I-3; redesign B): each item's `said_by` who that
- * account is now (`peopleNow`, `shownForm`: the role by account, the name and account of now) — so a rename changes how an
- * item is shown, never whose it is —, its text without any citation (tools/refs.ts `withoutCitations`), and the whole held
+ * The pair's stored summary `s` as a reply is shown it (final review I-3; redesign B): its speakers once, each as who that
+ * account is now (`peopleNow`, `shownForm`: the role by account, the name and account of now, under a key the system gives
+ * it), each item's `said_by` that key — so a rename changes how an item is shown, never whose it is —, its text without any citation (tools/refs.ts `withoutCitations`), and the whole held
  * again to `maxWeight` as it is shown (prompt.ts `capped`: whole items from the top section down), so that no rename since
  * it was stored takes it past the cap. One indexed read of the accounts it names (none when it names nobody), nothing of
  * the conversation's history. Null for a row written before migration 059 (text only) — no reply is shown it until a job
  * has written it anew — and when nothing of it fits. Read only: the row is never written back.
  */
-export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary, maxWeight: number): Promise<Sections<ShownSpeaker> | null> {
+export async function shownSummary(q: Queryable, r: PlacedReader, s: Summary, maxWeight: number): Promise<Passage | null> {
   if (s.items === null) return null;
   const people = await peopleNow(q, r, whoIn(s.items));
   const kept = capped(
