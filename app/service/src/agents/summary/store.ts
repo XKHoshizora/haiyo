@@ -3,6 +3,7 @@ import type { Queryable } from "../../db.ts";
 import { notAcknowledgement, type AttachmentRef } from "../../messages/model.ts";
 import { postingRun } from "../../messages/read.ts";
 import { handleOf } from "../../principals/store.ts";
+import { DISPLAY_NAME_MAX } from "../../schemas.ts";
 import { labelName, speakerRole } from "../runtime/prompt.ts";
 import { withoutCitations } from "../tools/refs.ts";
 import { capped, hasItems, mapItems, SECTIONS, shownForm, whoIn, type Item, type Passage, type Sections, type Speaker } from "./prompt.ts";
@@ -56,11 +57,17 @@ export async function countPlaced(q: Queryable, r: PlacedReader, after: number, 
   return rows[0]?.n ?? 0;
 }
 
-/** A message as a summary reads it: its place, who sent it (their account), its text and its attachment. */
+/**
+ * A message as a summary reads it: its place, who sent it (their account; their name, handle as everyone is shown it —
+ * `handleOf` — and kind, as a reply's context reads them to label it), its text and its attachment.
+ */
 export interface PlacedMessage {
   at: number;
   seq: number;
   senderId: string;
+  name: string;
+  handle: string;
+  kind: "human" | "agent";
   text: string;
   attachment: AttachmentRef | null;
 }
@@ -68,15 +75,35 @@ export interface PlacedMessage {
 /** The first `limit` messages `r` reads whose place is after `after` and at most `upto`, by place and then seq. */
 export async function readPlaced(q: Queryable, r: PlacedReader, after: number, upto: number, limit: number): Promise<PlacedMessage[]> {
   if (upto <= after) return [];
-  const { rows } = await q.query<{ at: string; seq: string; sender_id: string; text: string | null; attachment: AttachmentRef | null }>(
-    `select coalesce(r.covers_seq, m.seq)::text as at, m.seq::text as seq, m.sender_id, m.body ->> 'text' as text, m.body -> 'attachment' as attachment
+  const { rows } = await q.query<{
+    at: string;
+    seq: string;
+    sender_id: string;
+    name: string;
+    handle: string;
+    kind: "human" | "agent";
+    text: string | null;
+    attachment: AttachmentRef | null;
+  }>(
+    `select coalesce(r.covers_seq, m.seq)::text as at, m.seq::text as seq, m.sender_id, sp.display_name as name, ${handleOf("sp")} as handle, sp.kind,
+            m.body ->> 'text' as text, m.body -> 'attachment' as attachment
        ${PLACED_FROM}
+       join principals sp on sp.id = m.sender_id
       ${PLACED_WHERE}
       order by coalesce(r.covers_seq, m.seq), m.seq
       limit $7`,
     [...placedParams(r, after, upto), limit],
   );
-  return rows.map((row) => ({ at: Number(row.at), seq: Number(row.seq), senderId: row.sender_id, text: row.text ?? "", attachment: row.attachment }));
+  return rows.map((row) => ({
+    at: Number(row.at),
+    seq: Number(row.seq),
+    senderId: row.sender_id,
+    name: row.name,
+    handle: row.handle,
+    kind: row.kind,
+    text: row.text ?? "",
+    attachment: row.attachment,
+  }));
 }
 
 /**
@@ -152,7 +179,8 @@ export async function readSummary(q: Queryable, conversationId: string, agentId:
  * owner (`owner`); an Agent (`agent`), or one that was deleted (`deletedAgent`: its name, no account — a deleted Agent's
  * name part is free at once, so its full handle may be a new Agent's now); a person (`member`), whether or not they are in
  * the group now; an account that is no longer there (`gone`, no name, no account). The name is the roster's
- * (`labelName`: the name of now as a label shows it), the account `@` and the handle of now (`handleOf`).
+ * (`labelName`: the name of now as a label shows it, at most `DISPLAY_NAME_MAX` characters), the account `@` and the
+ * handle of now (`handleOf`).
  */
 export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly string[]): Promise<Map<string, Speaker>> {
   const asked = ids.filter((id) => id !== r.agentId);
@@ -172,7 +200,8 @@ export async function peopleNow(q: Queryable, r: PlacedReader, ids: readonly str
       const p = found.get(id);
       if (p === undefined) return [id, { kind: "gone", name: null, account: null }];
       const handle = withoutCitations(p.handle);
-      const name = labelName(withoutCitations(p.name), handle);
+      // The roster's name, cut at the display-name limit (folding may lengthen one): what `atLongest` reserves room for.
+      const name = Array.from(labelName(withoutCitations(p.name), handle)).slice(0, DISPLAY_NAME_MAX).join("");
       if (p.deleted) return [id, { kind: "deletedAgent", name, account: null }];
       const role = speakerRole(p.id, p.kind, r.ownerId);
       return [id, { kind: role === "你的主人" ? "owner" : role === "Agent" ? "agent" : "member", name, account: `@${handle}` }];

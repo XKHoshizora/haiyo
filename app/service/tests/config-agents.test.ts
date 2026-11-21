@@ -500,8 +500,8 @@ describe("the memory configuration", () => {
     passageShare: 0.25,
     freeDailyPoints: 20,
     changesSweepMs: 3_600_000,
-    summaryMinMessages: 20,
-    summaryMaxWeight: 800,
+    summaryMaxWeight: 1000,
+    summaryMinFoldWeight: 500,
   };
 
   test("unset or empty: every default", () => {
@@ -541,16 +541,16 @@ describe("the memory configuration", () => {
     expect(loadConfig({ ...base, MEMORY: "{}" }).memory).not.toHaveProperty("reviewMergeAt");
   });
 
-  test("the rolling summary: a job once 20 messages are left out, a summary of at most 800 weight; whole numbers, the cap at most 2000 (the database guards a summary's items at 256 KiB)", () => {
-    expect(loadConfig({ ...base, MEMORY: '{"summaryMinMessages":5,"summaryMaxWeight":2000}' }).memory).toMatchObject({ summaryMinMessages: 5, summaryMaxWeight: 2000 });
-    for (const bad of ['{"summaryMinMessages":0}', '{"summaryMinMessages":1.5}', '{"summaryMinMessages":201}', '{"summaryMaxWeight":0}', '{"summaryMaxWeight":2001}', '{"summaryMaxWeight":"800"}']) {
+  test("the rolling summary: a summary of at most 1000 weight as shown, a call only for at least summaryMinFoldWeight of material, half the cap by default; whole numbers, the cap at most 2000 (the database guards a summary's items at 256 KiB); the removed summaryMinMessages is refused at start-up, as any unknown key is", () => {
+    expect(loadConfig({ ...base, MEMORY: '{"summaryMaxWeight":2000}' }).memory).toMatchObject({ summaryMaxWeight: 2000, summaryMinFoldWeight: 1000 });
+    expect(loadConfig({ ...base, MEMORY: '{"summaryMaxWeight":801}' }).memory).toMatchObject({ summaryMaxWeight: 801, summaryMinFoldWeight: 400 });
+    expect(loadConfig({ ...base, MEMORY: '{"summaryMinFoldWeight":50}' }).memory).toMatchObject({ summaryMaxWeight: 1000, summaryMinFoldWeight: 50 });
+    for (const bad of ['{"summaryMaxWeight":0}', '{"summaryMaxWeight":2001}', '{"summaryMaxWeight":"800"}', '{"summaryMinFoldWeight":0}', '{"summaryMinFoldWeight":1.5}', '{"summaryMinFoldWeight":100001}']) {
       expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY/);
     }
-    // A job never reads fewer than its minimum for weight: a review's window holds at least as many messages.
-    for (const bad of ['{"reviewMessages":10}', '{"summaryMinMessages":41}', '{"reviewMessages":30,"summaryMinMessages":31}']) {
-      expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY.*reviewMessages/);
-    }
-    expect(loadConfig({ ...base, MEMORY: '{"reviewMessages":10,"summaryMinMessages":10}' }).memory).toMatchObject({ reviewMessages: 10, summaryMinMessages: 10 });
+    for (const bad of ['{"summaryMinMessages":20}', '{"summaryMinMessages":5,"summaryMaxWeight":800}']) expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY.*summaryMinMessages/);
+    // A review's window no longer has to hold a summary's minimum: any size the review allows is accepted.
+    expect(loadConfig({ ...base, MEMORY: '{"reviewMessages":10}' }).memory).toMatchObject({ reviewMessages: 10 });
   });
 
   test("the hearsay limits can be set", () => {

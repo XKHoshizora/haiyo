@@ -605,30 +605,19 @@ describe("in a group", () => {
     expect(await summaryOf(w.g, w.agent.id)).toBeNull();
   });
 
-  it("a summary that is not shorter, as shown, than what it replaces is refused and counted; the pair is not asked again until 20 more are left out", async () => {
+  it("N-I1: the reviewer's first case — 30-odd short lines (about 375 as a reply shows them) are not worth a call; once enough has left the window, ONE call, and its 3-item summary is stored", async () => {
     const w = await groupWorld("gd", 0);
     await seed(w.g, [w.v.id, w.m.id], Array.from({ length: 110 }, (_, i) => short(i)));
     await say(w.v, w.g, `@${w.agent.handle} 一`);
-    // Thirty-odd short lines (about 3 weight each) are left out; shown, this answer weighs more than all of them, though
-    // its text alone (8 weight) does not.
-    const longer = answerOf({ 说过的事: [{ said_by: "p1", text: "说要早点到" }, { said_by: "p2", text: "说好的" }, { said_by: "p1", text: "说带伞" }] });
-    await reply("好。", longer);
-    expect(summaryCalls()).toHaveLength(1);
-    expect(await summaryOf(w.g, w.agent.id)).toBeNull();
-    expect(await counted("summary_not_shorter")).toBe(1);
-
-    // One more reply with a few more left out: not asked again.
-    await seed(w.g, [w.v.id, w.m.id], Array.from({ length: 4 }, (_, i) => short(i, "又")));
-    await say(w.v, w.g, `@${w.agent.handle} 二`);
     await reply("好。");
+    expect(summaryCalls()).toHaveLength(0);
+    // Twenty more lines leave the window: now what waits weighs more than the threshold.
+    await seed(w.g, [w.v.id, w.m.id], Array.from({ length: 20 }, (_, i) => mid(i)));
+    await say(w.v, w.g, `@${w.agent.handle} 二`);
+    const SAID: Items = { 说过的事: [{ said_by: "p1", text: "说要早点到" }, { said_by: "p2", text: "说好的" }, { said_by: "p1", text: "说带伞" }] };
+    await reply("好。", answerOf(SAID));
     expect(summaryCalls()).toHaveLength(1);
-
-    // Twenty more left out past the last attempt: asked again.
-    await seed(w.g, [w.v.id, w.m.id], Array.from({ length: 24 }, (_, i) => mid(i, "再")));
-    await say(w.v, w.g, `@${w.agent.handle} 三`);
-    await reply("好。", ANSWER);
-    expect(summaryCalls()).toHaveLength(2);
-    expect((await summaryOf(w.g, w.agent.id))!.items).toEqual(saidAs(ITEMS, { p1: w.v.id, p2: w.m.id }));
+    expect((await summaryOf(w.g, w.agent.id))!.items).toEqual(saidAs(SAID, { p1: w.v.id, p2: w.m.id }));
   });
 
   it("a newcomer asks: a summary covering anything at or before their joining is not shown, nothing from before it is", async () => {
@@ -801,15 +790,16 @@ describe("a summary never leaves its pair", () => {
 // --- fix round 1 -----------------------------------------------------------------------------------------------------
 
 /** What the job is handed when a test runs it straight (`runSummary`), and what it said of its attempt. */
-function jobContext(tried: number | null = null): { ctx: SummaryContext; attempts: Array<number | null> } {
-  const attempts: Array<number | null> = [];
-  return { ctx: { closing: new AbortController().signal, summaryTried: tried, summaryAttempted: (upTo) => void attempts.push(upTo) }, attempts };
+type Window = { from: number; upto: number };
+function jobContext(tried: Window | null = null): { ctx: SummaryContext; attempts: Array<Window | null> } {
+  const attempts: Array<Window | null> = [];
+  return { ctx: { closing: new AbortController().signal, summaryTried: tried, summaryAttempted: (window) => void attempts.push(window) }, attempts };
 }
 const jobDeps = () => ({ db, config: app.deps.config, models: gateway, log: app.log, inFlight: new Set<string>() });
 const seqOf = async (conv: string): Promise<number> => Number((await db.query<{ s: string }>("select seq::text as s from conversations where id = $1", [conv])).rows[0]!.s);
 
 describe("fix round 1", () => {
-  it("I-1: replies a later joiner asks for, the summary hidden from them, call nothing until 20 are left out past what it covers", { timeout: 180_000 }, async () => {
+  it("I-1: replies a later joiner asks for, the summary hidden from them, call nothing until what is left out past what it covers is worth it", { timeout: 180_000 }, async () => {
     const w = await groupWorld("ia", 0);
     const joined = await joinedSeq(w.g, w.agent.id);
     await seed(w.g, [w.v.id, w.m.id], Array.from({ length: 10 }, (_, i) => short(i, "早")));
@@ -841,11 +831,12 @@ describe("fix round 1", () => {
     }
   });
 
-  it("I-1: a job whose window holds fewer than summaryMinMessages makes no call and sets no gate", async () => {
+  it("I-1: a job whose window weighs less than summaryMinFoldWeight makes no call and sets no gate", async () => {
     const w = await own("ib");
     const seeded = await longConversation(w, 30);
     const seqs = [...seeded.values()];
-    await storeSummary(w.conv, w.agent.id, seqs[0]!, seqs[19]!, saidAs(ITEMS, { p1: w.owner.id, p2: w.agent.id }));
+    // Four long lines (about 408 weight) past what the summary covers: below the threshold of 500.
+    await storeSummary(w.conv, w.agent.id, seqs[0]!, seqs[25]!, saidAs(ITEMS, { p1: w.owner.id, p2: w.agent.id }));
     const { ctx, attempts } = jobContext();
     await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs[29]! }, ctx);
     expect(summaryCalls()).toHaveLength(0);
@@ -1029,7 +1020,7 @@ describe("fix round 1", () => {
     expect(summaryCalls()).toHaveLength(1);
     expect((await summaryOf(w.conv, w.agent.id))!).toEqual({ from: seqs[0], upto: seqs[9], items: stored });
     expect(await counted("summary_failed")).toBe(1);
-    expect(attempts).toEqual([seqs[40]]);
+    expect(attempts).toEqual([{ from: seqs[9], upto: seqs[40] }]);
   });
 
   it("M-4: a deleted Agent's summary of its own conversation goes with the delete", async () => {
@@ -1044,12 +1035,12 @@ describe("fix round 1", () => {
 // --- tidy round ------------------------------------------------------------------------------------------------------
 
 describe("tidy round", () => {
-  it("M-A: no call while fewer than summaryMinMessages messages have text, however many were left out", async () => {
+  it("M-A: a message with nothing left once cleaned weighs nothing toward the threshold, however many there are", async () => {
     const w = await own("ta");
-    // 25 in the window, 6 of them with nothing left once cleaned (invisible characters only).
-    const texts = Array.from({ length: 25 }, (_, i) => (i % 4 === 1 && i < 24 ? "\u200b\u200b" : long(i)));
+    // 100 in the window: 4 long lines (about 408 weight), the rest invisible characters only.
+    const texts = Array.from({ length: 100 }, (_, i) => (i % 25 === 0 ? long(i) : "\u200b\u200b"));
     const seqs = await seed(w.conv, [w.owner.id, w.agent.id], texts);
-    expect(texts.filter((t) => t.startsWith("第")).length).toBe(19);
+    expect(texts.filter((t) => t.startsWith("第")).length).toBe(4);
     const { ctx, attempts } = jobContext();
     await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, ctx);
     expect(summaryCalls()).toHaveLength(0);
@@ -1200,30 +1191,30 @@ describe("final review", () => {
     expect(replyCalls()[0]!.system).toContain("fam（@fan.fam）");
   });
 
-  it("m-10: an acknowledgement is no line of a summary: not in its input, not counted toward its minimum", async () => {
+  it("m-10: an acknowledgement is no line of a summary: not in its input, and it weighs nothing toward the threshold", async () => {
     const w = await own("fe");
-    // 19 long lines and 6 acknowledgements of the Agent's among them: fewer than summaryMinMessages (20) lines.
+    // Four long lines (about 408 weight) and six long acknowledgements of the Agent's among them, which would be 600 more.
     const seqs: number[] = [];
-    for (let i = 0; i < 19; i++) {
+    for (let i = 0; i < 4; i++) {
       seqs.push(...(await seed(w.conv, [i % 2 === 0 ? w.owner.id : w.agent.id], [long(i)])));
-      if (i % 3 === 1) {
-        const ack = await db.tx((t) => insertMessage(t, w.conv, w.agent.id, "text", { text: `ACK-CANARY-${i} 我查一下`, ack: true } as never, `ack:${crypto.randomUUID()}`));
+      for (let k = 0; k < (i < 2 ? 3 : 0); k++) {
+        const ack = await db.tx((t) => insertMessage(t, w.conv, w.agent.id, "text", { text: `ACK-CANARY-${i}-${k} ${long(k)}`, ack: true } as never, `ack:${crypto.randomUUID()}`));
         seqs.push(ack.seq);
       }
     }
-    expect(seqs).toHaveLength(25);
+    expect(seqs).toHaveLength(10);
     const job = (upTo: number) => ({ kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo });
     const none = jobContext();
     await runSummary(jobDeps(), job(seqs.at(-1)!), none.ctx);
     expect(summaryCalls()).toHaveLength(0);
     expect(none.attempts).toEqual([]);
-    // One more line: twenty. The call is made, and shown none of the acknowledgements.
-    const [last] = await seed(w.conv, [w.agent.id], [long(19)]);
+    // One more line: past the threshold. The call is made, and shown none of the acknowledgements.
+    const [last] = await seed(w.conv, [w.agent.id], [long(4)]);
     gateway.reply(ANSWER);
     await runSummary(jobDeps(), job(last!), jobContext().ctx);
     expect(summaryCalls()).toHaveLength(1);
     const input = inputOf(summaryCalls()[0]!);
-    expect(input.messages).toHaveLength(20);
+    expect(input.messages).toHaveLength(5);
     expect(JSON.stringify(input)).not.toContain("ACK-CANARY");
   });
 
@@ -1428,7 +1419,7 @@ describe("redesign B, fix round 1", () => {
     expect(passageOf(replyCalls()[1]!)!.说过的事).toEqual(kept.map((i) => ({ said_by: MEMBER("长".repeat(40), "szm"), text: i.text })));
   });
 
-  it("I-1: when the cap binds, a rename that makes the passage heavier is cut again at show, whole items from the top, and the row stays as stored", async () => {
+  it("N-m1: when the cap binds, what is stored is held with every name at its longest, so a rename — to 40 CJK characters, or to 40 emoji — drops nothing a reply is shown; the row stays as stored", async () => {
     const w = await groupWorld("sy", 0);
     await seed(w.g, [w.m.id], Array.from({ length: 120 }, (_, i) => long(i)));
     await say(w.v, w.g, `@${w.agent.handle} 说到哪了`);
@@ -1436,20 +1427,19 @@ describe("redesign B, fix round 1", () => {
     await replyHeld("好。", (input) => answerOf({ 说过的事: Array.from({ length: 40 }, (_, i) => ({ said_by: keyOf(input, "@sym"), text: line(i) })) }));
     const cap = app.deps.config.memory.summaryMaxWeight;
     const kept = (await summaryOf(w.g, w.agent.id))!.items!.说过的事;
-    // Cut by weight, from the top: fewer than 40, the end of the answer, within the cap as shown then.
+    // Cut by weight, from the top: fewer than 40, the end of the answer.
     expect(kept.length).toBeGreaterThan(0);
     expect(kept.length).toBeLessThan(40);
     expect(kept.at(-1)).toEqual({ said_by: w.m.id, text: line(39) });
-    expect(weight(JSON.stringify(passageValue(sections({ 说过的事: kept.map((i) => ({ said_by: MEMBER("sym", "sym"), text: i.text })) }))))).toBeLessThanOrEqual(cap);
-    expect((await api(app, w.m, "PATCH", "/api/me", { displayName: "长".repeat(40) })).status).toBe(200);
-    await say(w.m, w.g, `@${w.agent.handle} 我们说到哪了`);
-    await reply("好。");
-    const raw = passageRaw(replyCalls()[1]!)!;
-    expect(weight(JSON.stringify(raw))).toBeLessThanOrEqual(cap);
-    const shown = passageOf(replyCalls()[1]!)!.说过的事;
-    expect(shown.length).toBeGreaterThan(0);
-    expect(shown.length).toBeLessThan(kept.length);
-    expect(shown).toEqual(kept.slice(kept.length - shown.length).map((i) => ({ said_by: MEMBER("长".repeat(40), "sym"), text: i.text })));
+    for (const [k, name] of ["长".repeat(40), String.fromCodePoint(0x1f431).repeat(40)].entries()) {
+      expect((await api(app, w.m, "PATCH", "/api/me", { displayName: name })).status).toBe(200);
+      await say(w.m, w.g, `@${w.agent.handle} 我们说到哪了${k}`);
+      await reply("好。");
+      const call = replyCalls().at(-1)!;
+      expect(weight(JSON.stringify(passageRaw(call)!))).toBeLessThanOrEqual(cap);
+      // Every item stored is shown, under the name of now.
+      expect(passageOf(call)!.说过的事).toEqual(kept.map((i) => ({ said_by: MEMBER(name, "sym"), text: i.text })));
+    }
     expect((await summaryOf(w.g, w.agent.id))!.items!.说过的事).toEqual(kept);
   });
 
@@ -1534,20 +1524,22 @@ describe("redesign B, fix round 1", () => {
       await db.query("update principals set display_name = $2 where id = $1", [actor.id, RAW[handle]]);
     }
     const handles = ["dqm", "dqn", "dqo", "dqp"] as const;
+    // The roster's name (`labelName`), cut at the display-name limit of 40 characters (one set straight in the database may be longer).
+    const shownName = (h: (typeof handles)[number]) => Array.from(labelName(RAW[h], h)).slice(0, 40).join("");
     const ids = { dqm: w.m.id, dqn: w.n.id, dqo: o.id, dqp: p.id };
     await seed(w.g, handles.map((h) => ids[h]), Array.from({ length: 120 }, (_, i) => mid(i)));
     await say(w.v, w.g, `@${w.agent.handle} 说到哪了`);
     await replyHeld("好。", (input) => {
       // Each one entry, a member, its name the roster's (`labelName`): one value, whatever it holds.
-      for (const h of handles) expect(input.people[keyOf(input, `@${h}`)]).toEqual(IN_MEMBER(labelName(RAW[h], h), h));
+      for (const h of handles) expect(input.people[keyOf(input, `@${h}`)]).toEqual(IN_MEMBER(shownName(h), h));
       return answerOf({ 说过的事: handles.map((h) => ({ said_by: keyOf(input, `@${h}`), text: `说了${h}` })) });
     });
     await say(w.m, w.g, `@${w.agent.handle} 我们说到哪了`);
     await reply("好。");
     const call = replyCalls()[1]!;
     // The passage is one line of JSON: exactly the four items, each a member by account; no name made a speaker of its own.
-    expect(passageOf(call)).toEqual(sections({ 说过的事: handles.map((h) => ({ said_by: MEMBER(labelName(RAW[h], h), h), text: `说了${h}` })) }));
-    expect(call.system).toContain(passageText(sections({ 说过的事: handles.map((h) => ({ said_by: MEMBER(labelName(RAW[h], h), h), text: `说了${h}` })) })));
+    expect(passageOf(call)).toEqual(sections({ 说过的事: handles.map((h) => ({ said_by: MEMBER(shownName(h), h), text: `说了${h}` })) }));
+    expect(call.system).toContain(passageText(sections({ 说过的事: handles.map((h) => ({ said_by: MEMBER(shownName(h), h), text: `说了${h}` })) })));
   });
 
   it("the pure parts: an answer held to its shape — said_by a key or an explicit null, each text cleaned and cut — and a summary held, as shown, to the cap and to 40 items, whole items from the top section down", async () => {
@@ -1600,6 +1592,119 @@ describe("redesign B, fix round 1", () => {
     expect(system).toContain("人物与称呼");
     expect(system).toContain("某人对自己或别人的说法");
     expect(system).not.toContain("text 里不用再写是谁说的");
+  });
+});
+
+describe("redesign B, fix round 3", () => {
+  it("N-I1: a 15-item summary of 200 short messages from six people is stored: the messages as a reply shows them, labels included, weigh far more", async () => {
+    const w = await groupWorld("hz", 0);
+    const more = [await signUp(app, "hzo"), await signUp(app, "hzp"), await signUp(app, "hzq")];
+    for (const a of more) {
+      await befriend(app, w.v, a);
+      await addMember(w.v, w.g, a.id);
+    }
+    const everyone = [w.v, w.m, w.n, ...more];
+    await seed(w.g, everyone.map((a) => a.id), Array.from({ length: 290 }, (_, i) => (i % 2 === 0 ? "哈哈" : "好的")));
+    await say(w.v, w.g, `@${w.agent.handle} 说到哪了`);
+    const handles = ["hzv", "hzm", "hzn", "hzo", "hzp", "hzq"];
+    let accounts: string[] = [];
+    await replyHeld("好。", (input) => {
+      expect(input.messages).toHaveLength(200);
+      accounts = Array.from({ length: 15 }, (_, i) => handles[i % 6]!);
+      return answerOf({ 说过的事: accounts.map((h, i) => ({ said_by: keyOf(input, `@${h}`), text: `说了第${i}件事` })) });
+    });
+    const ids = Object.fromEntries(everyone.map((a, i) => [handles[i]!, a.id]));
+    expect((await summaryOf(w.g, w.agent.id))!.items).toEqual(sections({ 说过的事: accounts.map((h, i) => ({ said_by: ids[h]!, text: `说了第${i}件事` })) }));
+    expect(summaryCalls()).toHaveLength(1);
+  });
+
+  it("N-I1: tiny chatter — 200 lines of 哈哈 and 好的, about 400 weight — is not worth a call: no model call, no gate", async () => {
+    const w = await own("tz");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 200 }, (_, i) => (i % 2 === 0 ? "哈哈" : "好的")));
+    const { ctx, attempts } = jobContext();
+    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, ctx);
+    expect(summaryCalls()).toHaveLength(0);
+    expect(attempts).toEqual([]);
+    expect((await db.query<{ n: number }>("select count(*)::int as n from agent_runs where owner_id = $1 and purpose = 'memory'", [w.owner.id])).rows[0]!.n).toBe(0);
+  });
+
+  it("N-I1: enough material makes exactly one call, and the window it folded is never asked again", async () => {
+    const w = await own("tw");
+    const job = (upTo: number) => ({ kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo });
+    const four = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 4 }, (_, i) => long(i)));
+    await runSummary(jobDeps(), job(four.at(-1)!), jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(0);
+    const [fifth] = await seed(w.conv, [w.owner.id], [long(4)]);
+    gateway.reply(ANSWER);
+    await runSummary(jobDeps(), job(fifth!), jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    expect(await summaryOf(w.conv, w.agent.id)).toMatchObject({ upto: fifth });
+    // The same place again (another reply that left out nothing new): nothing to fold, no call.
+    await runSummary(jobDeps(), job(fifth!), jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(1);
+  });
+
+  it("N-I1: no path asks the model twice for the same window: an answer that wrote nothing is not asked again until what is new past its window is worth it", async () => {
+    const w = await own("tv");
+    const job = (upTo: number) => ({ kind: "summary" as const, agentId: w.agent.id, conversationId: w.conv, upTo });
+    const six = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 6 }, (_, i) => long(i)));
+    gateway.reply("这不是 JSON");
+    const first = jobContext();
+    await runSummary(jobDeps(), job(six.at(-1)!), first.ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    expect(await summaryOf(w.conv, w.agent.id)).toBeNull();
+    const window = first.attempts[0]!;
+    expect(window).toEqual({ from: expect.any(Number), upto: six.at(-1) });
+    // The same window: no call.
+    await runSummary(jobDeps(), job(six.at(-1)!), jobContext(window).ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    // One more line past it (about 102 weight, below the threshold): no call either.
+    const [seventh] = await seed(w.conv, [w.owner.id], [long(6)]);
+    await runSummary(jobDeps(), job(seventh!), jobContext(window).ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    // Five more past it (about 510): asked again, once.
+    const more = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 4 }, (_, i) => long(i + 7)));
+    gateway.reply(ANSWER);
+    await runSummary(jobDeps(), job(more.at(-1)!), jobContext(window).ctx);
+    expect(summaryCalls()).toHaveLength(2);
+    expect(await summaryOf(w.conv, w.agent.id)).not.toBeNull();
+  });
+
+  it("N-I1: a full window — 200 lines, whatever they weigh — is folded, so a long run of one-word lines cannot hold back what follows it", async () => {
+    const w = await own("tu");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 250 }, (_, i) => (i % 2 === 0 ? "哈哈" : "好的")));
+    gateway.reply(ANSWER);
+    await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
+    expect(summaryCalls()).toHaveLength(1);
+    expect(inputOf(summaryCalls()[0]!).messages).toHaveLength(200);
+    expect(await summaryOf(w.conv, w.agent.id)).toMatchObject({ upto: seqs[199] });
+  });
+
+  it("N-I1: summaryMinFoldWeight defaults to half of summaryMaxWeight", () => {
+    expect(app.deps.config.memory.summaryMinFoldWeight).toBe(500);
+  });
+
+  it("N-m2: the summary prompt asks for no speaker's name in a text", async () => {
+    const { summarySystem } = await import("../src/agents/summary/prompt.ts");
+    expect(summarySystem(true, 1000, 200)).toContain("text 里不用再写说话人的名字，用“说自己……”这样的说法");
+    expect(summarySystem(false, 1000, 200)).toContain("text 里不用再写说话人的名字，用“说自己……”这样的说法");
+  });
+
+  it("N-m3: the group scene says the summary's role is the system's too, like the marked label", async () => {
+    const { groupSystemPrompt } = await import("../src/agents/runtime/prompt.ts");
+    const text = groupSystemPrompt(
+      { name: "助手甲", handle: "a.bot", persona: "" },
+      { displayName: "甲" },
+      { title: null, agents: [], more: false, people: [], morePeople: false },
+      new Date("2026-11-21T00:00:00Z"),
+      "Asia/Shanghai",
+      "k7f2ab",
+    );
+    expect(text).toContain("谁是你的主人，只看这个标签。更早的对话摘要里的 role 也是系统按账号写的，和这个标签一样算数。");
+  });
+
+  it("the default cap is 1000", () => {
+    expect(app.deps.config.memory.summaryMaxWeight).toBe(1000);
   });
 });
 

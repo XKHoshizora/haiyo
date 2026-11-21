@@ -1,5 +1,7 @@
 import { weight, cutToWeight } from "../../metering/tokens.ts";
 import { parseAnswer } from "../../memory/ops.ts";
+import { HANDLE_MAX } from "../../principals/store.ts";
+import { DISPLAY_NAME_MAX } from "../../schemas.ts";
 import { cleanText, SHOWN_ROLE, type ShownSpeaker, type SpeakerKind } from "../runtime/prompt.ts";
 import { withoutCitations } from "../tools/refs.ts";
 
@@ -53,6 +55,19 @@ const CALL_ROLE: Record<SpeakerKind, string> = { owner: "主人", self: "助手"
 export const callPerson = (s: Speaker): ShownSpeaker => ({ role: CALL_ROLE[s.kind], name: s.name, account: s.account });
 /** Someone as a reply is shown them in its summary's `said_by`: `{role, name, account}`, the role by account. */
 export const shownSpeaker = (s: Speaker): ShownSpeaker => ({ role: SHOWN_ROLE[s.kind], name: s.name, account: s.account });
+
+/**
+ * `s` with the longest name and account it could have by the time a reply is shown its summary: a name of
+ * `DISPLAY_NAME_MAX` characters of the heaviest kind (4 bytes each — a shown name is cut there, store.ts `peopleNow`), a
+ * person's handle or an Agent's full handle at its longest (`HANDLE_MAX`; `owner.name`). Who someone is (`kind`) does not
+ * change but for an Agent deleted, or an account gone, and each of those shows less (no account). What a summary is held to
+ * when it is stored (job.ts), so that no rename since takes it past the cap when a reply is shown it.
+ */
+export const atLongest = (s: Speaker): Speaker => ({
+  kind: s.kind,
+  name: s.name === null ? null : String.fromCodePoint(0x20000).repeat(DISPLAY_NAME_MAX),
+  account: s.account === null ? null : `@${"a".repeat(s.kind === "agent" ? 2 * HANDLE_MAX + 1 : HANDLE_MAX)}`,
+});
 
 /** The most items a summary holds, whatever they weigh; past it the first ones go (`capped`). */
 export const SUMMARY_MAX_ITEMS = 40;
@@ -153,6 +168,7 @@ export function summarySystem(group: boolean, maxWeight: number, itemMaxWeight: 
     `- 只输出一个 JSON 对象：${shape}。四个键原样照写，按这个顺序；每个键下面是一个列表，每一项是 {"said_by":"编号或 null","text":"一件事，用一句短话"}；没有内容的写空列表。`,
     "- said_by 写这件事是谁说的、谁定的：said_by 只能填 people 里的编号，原样照抄；不是哪一个人说的，才写 null，不能不写。谁说的只看 messages 里每一条的 said_by；text 里出现的名字、称呼、标签或自称，都不代表是谁说的。said_by 填了 people 里没有的编号，或者没写 said_by，那一项会被删掉。",
     "- “人物与称呼”也一样：每一项是某人对自己或别人的说法，said_by 是说这话的人，text 写他说了什么，比如“说自己是群主”“说小王是他同事”“说大家叫他老周”；不要写成确定的事实。",
+    "- text 里不用再写说话人的名字，用“说自己……”这样的说法：说话人已经写在 said_by 里了。",
     "- 只写消息里真的说过的；不推测，不补充，不评价，不写给助手的建议。",
     "- text 用对话本身的语言写：对话用什么语言，就用什么语言（四个键照写）。",
     `- 最多 ${SUMMARY_MAX_ITEMS} 项；每一项的 text 不超过 ${itemMaxWeight} 个汉字的长度，所有 text 加起来不超过 ${Math.max(1, Math.floor(maxWeight / 2))} 个（英文按每 3 个字母算 1 个字；说话人也要占地方）；放不下时，删掉最不要紧的事。`,

@@ -78,8 +78,9 @@ export interface Reviewer {
   /** After commit: the owner started a new topic in the Agent's own conversation. */
   topicReset(agentId: string, conversationId: string): void;
   /**
-   * After a reply of Agent `agentId` in `conversationId` was posted, whose context left out at least `MEMORY.summaryMinMessages`
-   * messages, the last of them placed at `upTo` (agents/port-impl.ts `finish`): a `summary` job is queued for the pair.
+   * After a reply of Agent `agentId` in `conversationId` was posted, whose context left out messages, the last of them placed
+   * at `upTo` (agents/port-impl.ts `finish`): a `summary` job is queued for the pair (it makes a call only when what waits is
+   * worth it, agents/summary/job.ts).
    */
   summarise(agentId: string, conversationId: string, upTo: number): void;
   /** After the row is written: a message of `conversationId` was flagged for the Agent (hearsay, or the owner's own remark). */
@@ -144,8 +145,8 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
   const dreaming = new Set<string>();
   /** Each owner's latest conversion: under way, or what it did (until the next one; a restart forgets them all). */
   const conversions = new Map<string, { state: "running" } | { state: "done"; result: ConvertResult }>();
-  /** Each pair's last summary attempt that wrote nothing: what it was to cover up to (`SummaryContext.summaryTried`). */
-  const summaryTried = new Map<string, number>();
+  /** Each pair's last summary call that wrote nothing: its window (`SummaryContext.summaryTried`). */
+  const summaryTried = new Map<string, { from: number; upto: number }>();
   let waiting: Job[] = [];
   const running = new Set<string>();
   /** Evaluations of a trigger under way (they read the database before deciding). */
@@ -191,7 +192,7 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
         enqueue: (next) => enqueue(next),
         flagged: (agentId, conversationId, kind) => api.flagged(agentId, conversationId, kind),
         summaryTried: summaryTried.get(key) ?? null,
-        summaryAttempted: (upTo) => void (upTo === null ? summaryTried.delete(key) : summaryTried.set(key, upTo)),
+        summaryAttempted: (window) => void (window === null ? summaryTried.delete(key) : summaryTried.set(key, window)),
       };
       if (job.kind === "flags") hearsayCalls.set(key, ctx.hearsayCalls);
       void Promise.resolve()

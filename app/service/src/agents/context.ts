@@ -167,8 +167,8 @@ export interface LoadedContext {
    * where the part starts (the topic start; in a group the asker's line too) and past what the pair's summary covers (shown to
    * this run or not), and before the oldest message the plan shows (by name: `ContextPlan.shownAt`; in the Agent's own
    * conversation, at the last reply of the Agent's before it: `leftOutTo`) — in its own conversation because they did not fit,
-   * in a group also because they fell before the latest `maxMessages`. What `finish` acts on: `messages` against
-   * `MEMORY.summaryMinMessages`, `to` what the job is to cover up to. Null when none was left out.
+   * in a group also because they fell before the latest `maxMessages`. What `finish` acts on: anything left out queues a
+   * job, `to` what it is to cover up to (the job weighs it before it makes a call). Null when none was left out.
    */
   leftOut: LeftOut | null;
   /** The pair's summary as the system text carries it (`withSummary`); null when it carries none. */
@@ -379,7 +379,7 @@ interface MessageRow {
 }
 
 /** An attachment as the context shows it; with `fileRef` (a reply offered tools), with its number. */
-const toAttachment = (a: AttachmentRef, fileRef?: (attachmentId: string) => string): ContextAttachment => ({
+export const toAttachment = (a: AttachmentRef, fileRef?: (attachmentId: string) => string): ContextAttachment => ({
   id: a.id,
   name: withoutCitations(a.name),
   image: a.inline === true,
@@ -483,14 +483,19 @@ async function loadPage(
 }
 
 /**
- * A loaded message as the model is shown it: in a group, one of someone else's starts with its label carrying the run's
- * `mark` (`speakerLabel`; a quote goes on the next line). With no mark, as loaded.
+ * A message as a reply's model is shown it: in a group, one of someone else's (`speaker`) starts with its label carrying
+ * the run's `mark` (`speakerLabel`; a quote goes on the next line); with no speaker or no mark, `entry` as it is. The one
+ * rule of it: what a reply is shown (`shown`) and what the rolling summary weighs a message it replaces as
+ * (agents/summary/job.ts) are both this.
  */
-function shown(l: Loaded, mark: string | null): ContextEntry {
-  if (l.speaker === null || mark === null) return l.entry;
-  const { name, handle, role, quoted } = l.speaker;
-  return { ...l.entry, text: `${speakerLabel(mark, labelName(name, handle), role)}${quoted ? "\n" : ""}${l.entry.text}` };
+export function labelledEntry(entry: ContextEntry, speaker: Pick<Speaker, "name" | "handle" | "role"> & { quoted: boolean } | null, mark: string | null): ContextEntry {
+  if (speaker === null || mark === null) return entry;
+  const { name, handle, role, quoted } = speaker;
+  return { ...entry, text: `${speakerLabel(mark, labelName(name, handle), role)}${quoted ? "\n" : ""}${entry.text}` };
 }
+
+/** A loaded message as the model is shown it (`labelledEntry`, with the run's `mark`; with no mark, as loaded). */
+const shown = (l: Loaded, mark: string | null): ContextEntry => labelledEntry(l.entry, l.speaker, mark);
 
 /** Whether `mark` occurs in anything of a loaded message the model is shown: its text, its attachment's name, who said it. */
 const shows = (l: Loaded, mark: string): boolean =>
