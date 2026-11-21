@@ -191,6 +191,8 @@ export interface MemoryCallReport {
   unstartable?: "no_model" | "too_big";
   /** Set when the call was started and failed: how (`provider_rejected` for a key the provider refused, `address_not_allowed`, …). */
   failure?: ModelErrorCode;
+  /** With `failure`: the provider's HTTP status, when it answered with one (none: a network failure, a timeout, a stream cut short). */
+  upstreamStatus?: number;
 }
 
 /**
@@ -240,7 +242,10 @@ async function callOnce(deps: MemoryCallDeps, ownerId: string, input: MemoryCall
   }
   if (report) report.started = true;
   if (outcome.kind !== "ended") return null;
-  if (report && outcome.end.status === "failed") report.failure = outcome.end.error;
+  if (report && outcome.end.status === "failed") {
+    report.failure = outcome.end.error;
+    if (outcome.upstreamStatus !== undefined) report.upstreamStatus = outcome.upstreamStatus;
+  }
   if (report && outcome.answered) report.answered = true;
   if (outcome.end.status !== "done" || outcome.truncated) return null;
   return outcome.answer;

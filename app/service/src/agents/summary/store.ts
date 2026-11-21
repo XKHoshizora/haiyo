@@ -259,7 +259,8 @@ export async function forgetSummaries(q: Queryable, conversationId: string, prin
  * with nothing; `notBefore`: when it may be asked again, in ms (null: at once) — the minimum interval after a write, the
  * backoff after a call that wrote nothing, a claim's lapse while a call is under way; `windowMessages`: the most messages
  * its next window takes (null: the most a job reads); `skippedMessages`: how many messages were ever set aside for the
- * pair. Forgotten with the summary (`forgetSummaries`).
+ * pair; `transientSince` (migration 060): when the window's unbroken run of transient failures began, in ms (null: none).
+ * Forgotten with the summary (`forgetSummaries`).
  */
 export interface AttemptState {
   failedUpto: number | null;
@@ -269,6 +270,7 @@ export interface AttemptState {
   notBefore: number | null;
   windowMessages: number | null;
   skippedMessages: number;
+  transientSince: number | null;
 }
 
 /** The pair's attempt state, or null (never asked, or forgotten since). A plain read of one row. */
@@ -281,8 +283,9 @@ export async function readAttempt(q: Queryable, conversationId: string, agentId:
     not_before: Date | null;
     window_messages: number | null;
     skipped_messages: number;
+    transient_since: Date | null;
   }>(
-    `select failed_upto::text as upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages
+    `select failed_upto::text as upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages, transient_since
        from conversation_summary_attempts where conversation_id = $1 and agent_id = $2`,
     [conversationId, agentId],
   );
@@ -296,6 +299,7 @@ export async function readAttempt(q: Queryable, conversationId: string, agentId:
         notBefore: r.not_before === null ? null : r.not_before.getTime(),
         windowMessages: r.window_messages,
         skippedMessages: r.skipped_messages,
+        transientSince: r.transient_since === null ? null : r.transient_since.getTime(),
       }
     : null;
 }
@@ -307,13 +311,13 @@ const instant = (ms: number | null): string | null => (ms === null ? null : new 
 export async function writeAttempt(q: Queryable, conversationId: string, agentId: string, s: AttemptState): Promise<void> {
   await q.query(
     `insert into conversation_summary_attempts
-            (conversation_id, agent_id, failed_upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages)
-     values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9)
+            (conversation_id, agent_id, failed_upto, failures, floor_failures, empty_answer, not_before, window_messages, skipped_messages, transient_since)
+     values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9, $10::timestamptz)
      on conflict (conversation_id, agent_id) do update
        set failed_upto = excluded.failed_upto, failures = excluded.failures, floor_failures = excluded.floor_failures,
            empty_answer = excluded.empty_answer, not_before = excluded.not_before, window_messages = excluded.window_messages,
-           skipped_messages = excluded.skipped_messages`,
-    [conversationId, agentId, s.failedUpto, s.failures, s.floorFailures, s.emptyAnswer, instant(s.notBefore), s.windowMessages, s.skippedMessages],
+           skipped_messages = excluded.skipped_messages, transient_since = excluded.transient_since`,
+    [conversationId, agentId, s.failedUpto, s.failures, s.floorFailures, s.emptyAnswer, instant(s.notBefore), s.windowMessages, s.skippedMessages, instant(s.transientSince)],
   );
 }
 
@@ -334,7 +338,7 @@ export async function settleAttempt(q: Queryable, conversationId: string, agentI
   await q.query(
     `update conversation_summary_attempts
         set failed_upto = $4, failures = $5, floor_failures = $6, empty_answer = $7, not_before = $8::timestamptz, window_messages = $9,
-            skipped_messages = $10
+            skipped_messages = $10, transient_since = $11::timestamptz
       where conversation_id = $1 and agent_id = $2 and not_before = $3::timestamptz`,
     [
       conversationId,
@@ -347,6 +351,7 @@ export async function settleAttempt(q: Queryable, conversationId: string, agentI
       instant(next.notBefore),
       next.windowMessages,
       next.skippedMessages,
+      instant(next.transientSince),
     ],
   );
 }

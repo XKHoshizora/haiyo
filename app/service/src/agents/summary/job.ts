@@ -72,6 +72,30 @@ export const SUMMARY_MIN_WINDOW = 10;
 /** The wait after the `failures`-th call in a row that wrote nothing: five minutes, doubling each time, at most a day. */
 export const backoffMs = (failures: number): number => Math.min(5 * 60_000 * 2 ** Math.max(0, failures - 1), 24 * 60 * 60_000);
 
+/** The longest wait after a transient failure (`afterFailure`): a provider back from an outage is asked within this. */
+export const TRANSIENT_BACKOFF_MAX_MS = 60 * 60_000;
+/** How long one window may fail transiently in a row before its failures count as its own (`afterFailure`). */
+export const TRANSIENT_FOR_MS = 24 * 60 * 60_000;
+
+/**
+ * The wait after a transient failure, its run having begun at `since`: as long as it has lasted — five minutes at least, an
+ * hour at most (5, 5, 10, 20, 40, 60, 60… minutes: doubling, as `backoffMs`, from the run's own length, so it needs no count).
+ */
+export const transientBackoffMs = (since: number, now: number): number => Math.min(TRANSIENT_BACKOFF_MAX_MS, Math.max(5 * 60_000, now - since));
+
+/**
+ * Whether a started call that failed failed for a reason that clears by itself (a transient failure): the provider's 5xx,
+ * 408 (timeout) or 429 (too many requests) — the statuses the standard retry policies retry —, or no status at all (a
+ * network failure, a timeout, a stream cut short), or a failure the call did not name. Any other 4xx (but 401/403: a key
+ * refused, `no_model`), and an answer the model ended with nothing usable in it, are the window's own.
+ */
+export function isTransient(report: Pick<MemoryCallReport, "failure" | "upstreamStatus">): boolean {
+  if (report.failure === undefined) return true;
+  if (report.failure !== "provider_unavailable") return false;
+  const s = report.upstreamStatus;
+  return s === undefined || s >= 500 || s === 408 || s === 429;
+}
+
 /** The most messages the window after one of `tried` messages that could not be summarised whole takes: half, at least `SUMMARY_MIN_WINDOW`. */
 export const nextWindow = (tried: number): number => Math.max(SUMMARY_MIN_WINDOW, Math.floor(tried / 2));
 
@@ -105,45 +129,68 @@ const inStreak = (state: AttemptState | null, start: number): boolean => state !
 const carried = (state: AttemptState | null, start: number): AttemptState =>
   inStreak(state, start)
     ? state!
-    : { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, notBefore: state?.notBefore ?? null, windowMessages: null, skippedMessages: state?.skippedMessages ?? 0 };
+    : {
+        failedUpto: null,
+        failures: 0,
+        floorFailures: 0,
+        emptyAnswer: false,
+        notBefore: state?.notBefore ?? null,
+        windowMessages: null,
+        skippedMessages: state?.skippedMessages ?? 0,
+        transientSince: null,
+      };
 
 /**
- * Why a call wrote nothing, for the rule (`afterFailure`): the window's own — `failed` (the call failed: an outage, a
- * timeout, or the provider refusing the input once the call started, as a moderation refusal comes: they cannot be told
- * apart), `unusable` (answered, not in the asked shape, or cut at its limit), `too_big` (the input does not fit the
- * model), `empty` (a long window answered with nothing, doubted once) — or `no_model`, no fault of the window: nothing to
- * call it on (none configured, a choice not allowed, a saved key that cannot be opened, a key or an address the provider
- * or the guard refused).
+ * Why a call wrote nothing, for the rule (`afterFailure`): the window's own — `failed` (the call failed for a reason that
+ * does not clear by itself: a 4xx that is not a key refused, as a moderation refusal comes, or the model's own failure),
+ * `unusable` (answered, not in the asked shape, cut at its limit, or ended by a content filter), `too_big` (the input
+ * does not fit the model), `empty` (a long window answered with nothing, doubted once) —; `transient`, a failure that
+ * clears by itself (`isTransient`: a 5xx, 408 or 429, a network failure, a timeout); or `no_model`, no fault of the window:
+ * nothing to call it on (none configured, a choice not allowed, a saved key that cannot be opened, a key or an address the
+ * provider or the guard refused).
  */
-export type FailureKind = "failed" | "unusable" | "too_big" | "empty" | "no_model";
+export type FailureKind = "failed" | "unusable" | "too_big" | "empty" | "transient" | "no_model";
 
 /**
  * THE failure rule: what the pair's state becomes after the call of the claim `lease` wrote nothing on a window of `n`
  * messages ending at `upto` (`full`: cut at its size), at `now` — and whether that window is set aside:
- * - every failure is one more in a row, and the pair waits `backoffMs` of them;
+ * - every failure but a transient one is one more in a row, and the pair waits `backoffMs` of them;
  * - the window's own: from the `FAILURES_BEFORE_HALVING`-th in a row each halves the next window (`nextWindow`, down to
  *   `SUMMARY_MIN_WINDOW`); an input too big, or an unusable answer for a full window, halves it at once; a failure made at
  *   the floor counts there too, and the `FAILURES_AT_FLOOR`-th of those sets the window aside;
+ * - `transient`: it never halves, never sets aside and counts no failure; the pair waits as long as the run of them has
+ *   lasted, at most `TRANSIENT_BACKOFF_MAX_MS` (`transientBackoffMs`) — so a provider back from an outage is asked within an
+ *   hour, the window whole. Only once the same window has failed so for `TRANSIENT_FOR_MS` in a row (since
+ *   `transientSince`) is the next one counted as the window's own (`failed`), so that one input a provider always answers
+ *   with a 500 is cornered and set aside like any other;
  * - `no_model`: the backoff only — it never halves and never sets anything aside;
  * - the window that failed reaches as far as the furthest that did (`failedUpto`), and the streak lasts until a write
  *   passes it (`afterWrite`).
  * Pure.
  */
 export function afterFailure(lease: AttemptState, failed: { kind: FailureKind; n: number; full: boolean; upto: number }, now: number): { next: AttemptState; setAside: boolean } {
+  const failedUpto = Math.max(lease.failedUpto ?? failed.upto, failed.upto);
+  const since = failed.kind === "transient" ? (lease.transientSince ?? now) : null;
+  if (since !== null && now - since < TRANSIENT_FOR_MS) {
+    return { next: { ...lease, failedUpto, notBefore: now + transientBackoffMs(since, now), transientSince: since }, setAside: false };
+  }
+  // A day of transient failures on this window: from now on as its own; the run's start is kept, so the next one is too.
+  const kind: Exclude<FailureKind, "transient"> = failed.kind === "transient" ? "failed" : failed.kind;
   const failures = lease.failures + 1;
-  const ours = failed.kind !== "no_model";
+  const ours = kind !== "no_model";
   const atFloor = lease.windowMessages !== null && lease.windowMessages <= SUMMARY_MIN_WINDOW;
   const floorFailures = ours && atFloor ? lease.floorFailures + 1 : lease.floorFailures;
-  const halve = ours && (failed.kind === "too_big" || (failed.kind === "unusable" && failed.full) || failures >= FAILURES_BEFORE_HALVING);
+  const halve = ours && (kind === "too_big" || (kind === "unusable" && failed.full) || failures >= FAILURES_BEFORE_HALVING);
   return {
     next: {
-      failedUpto: Math.max(lease.failedUpto ?? failed.upto, failed.upto),
+      failedUpto,
       failures,
       floorFailures,
-      emptyAnswer: failed.kind === "empty",
+      emptyAnswer: kind === "empty",
       notBefore: now + backoffMs(failures),
       windowMessages: halve ? nextWindow(failed.n) : lease.windowMessages,
       skippedMessages: lease.skippedMessages,
+      transientSince: since,
     },
     setAside: ours && floorFailures >= FAILURES_AT_FLOOR,
   };
@@ -153,13 +200,19 @@ export function afterFailure(lease: AttemptState, failed: { kind: FailureKind; n
  * What the pair's state becomes after a write ending at `upto` (a summary, a window folded with nothing to add, or one set
  * aside: `skipped` its messages), from the claim's `lease`, at `now`: the pair waits `intervalMs`. Inside the window that
  * failed (`failedUpto` past `upto`, and nothing set aside) the streak goes on — the rest of that window is taken at its
- * halved size, and a failure there halves again at once, so that what fails is cornered rather than met afresh —; past it,
- * or after a set-aside, it starts over: the next window is whole. Pure.
+ * halved size, and a failure there halves again at once, so that what fails is cornered rather than met afresh; a run of
+ * transient failures ends with the write (the provider answered), unless it has already turned into the window's own —;
+ * past it, or after a set-aside, it starts over: the next window is whole. Pure.
  */
 export function afterWrite(lease: AttemptState, upto: number, now: number, intervalMs: number, skipped = 0): AttemptState {
-  const fresh = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, windowMessages: null };
+  const fresh = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, windowMessages: null, transientSince: null };
   const inside = skipped === 0 && lease.failedUpto !== null && upto < lease.failedUpto;
-  return { ...(inside ? { ...lease, floorFailures: 0, emptyAnswer: false } : fresh), notBefore: now + intervalMs, skippedMessages: lease.skippedMessages + skipped };
+  const turned = lease.transientSince !== null && now - lease.transientSince >= TRANSIENT_FOR_MS ? lease.transientSince : null;
+  return {
+    ...(inside ? { ...lease, floorFailures: 0, emptyAnswer: false, transientSince: turned } : fresh),
+    notBefore: now + intervalMs,
+    skippedMessages: lease.skippedMessages + skipped,
+  };
 }
 
 /**
@@ -184,13 +237,15 @@ function lineText(m: PlacedMessage, maxWeight: number): string {
 /**
  * Why a call wrote nothing: `unchanged` — it could not start for a reason that clears by itself (the memory allowance
  * spent, the owner's calls running at once): nothing changes, the next job looks again; else a `FailureKind` for the rule.
- * A started call that failed for its key or its address (`provider_rejected`, `address_not_allowed`) is `no_model`.
+ * A started call that failed for its key or its address (`provider_rejected`, `address_not_allowed`) is `no_model`; one
+ * the model answered with nothing usable is `unusable`; one that failed is `transient` or `failed` by `isTransient`.
  */
 function outcomeOf(report: MemoryCallReport, answer: string | null): "unchanged" | FailureKind {
   if (report.refused === true || report.capped === true) return "unchanged";
   if (report.unstartable !== undefined) return report.unstartable;
   if (report.failure === "provider_rejected" || report.failure === "address_not_allowed") return "no_model";
-  return report.answered || answer !== null ? "unusable" : "failed";
+  if (report.answered || answer !== null) return "unusable";
+  return isTransient(report) ? "transient" : "failed";
 }
 
 /**

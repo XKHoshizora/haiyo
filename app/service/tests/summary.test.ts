@@ -798,9 +798,9 @@ function jobContext(): { ctx: SummaryContext } {
 /** The job's dependencies on `d` (the app's database by default), on the test's clock. */
 const jobDeps = (d: Db = db) => ({ db: d, config: app.deps.config, models: gateway, log: app.log, inFlight: new Set<string>(), now: clock.now });
 /**
- * The pair's attempt state (migration 059): the end of the window that failed (while a streak runs), the failures in a row,
- * those at the floor, whether the last one was an empty answer, when it may be asked again, the window's cap, and how many
- * messages were ever set aside for the pair.
+ * The pair's attempt state (migrations 059, 060): the end of the window that failed (while a streak runs), the failures in a
+ * row, those at the floor, whether the last one was an empty answer, when it may be asked again, the window's cap, how many
+ * messages were ever set aside for the pair, and when the window's run of transient failures began.
  */
 async function attemptOf(conv: string, agentId: string): Promise<{
   failedUpto: number | null;
@@ -810,9 +810,20 @@ async function attemptOf(conv: string, agentId: string): Promise<{
   notBefore: number | null;
   windowMessages: number | null;
   skipped: number;
+  transientSince: number | null;
 } | null> {
-  const { rows } = await db.query<{ upto: string | null; failures: number; floor: number; empty: boolean; not_before: Date | null; window_messages: number | null; skipped: number }>(
-    `select failed_upto::text as upto, failures, floor_failures as floor, empty_answer as empty, not_before, window_messages, skipped_messages as skipped
+  const { rows } = await db.query<{
+    upto: string | null;
+    failures: number;
+    floor: number;
+    empty: boolean;
+    not_before: Date | null;
+    window_messages: number | null;
+    skipped: number;
+    transient_since: Date | null;
+  }>(
+    `select failed_upto::text as upto, failures, floor_failures as floor, empty_answer as empty, not_before, window_messages, skipped_messages as skipped,
+            transient_since
        from conversation_summary_attempts where conversation_id = $1 and agent_id = $2`,
     [conv, agentId],
   );
@@ -826,10 +837,12 @@ async function attemptOf(conv: string, agentId: string): Promise<{
         notBefore: r.not_before === null ? null : r.not_before.getTime(),
         windowMessages: r.window_messages,
         skipped: r.skipped,
+        transientSince: r.transient_since === null ? null : r.transient_since.getTime(),
       }
     : null;
 }
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const seqOf = async (conv: string): Promise<number> => Number((await db.query<{ s: string }>("select seq::text as s from conversations where id = $1", [conv])).rows[0]!.s);
 
 describe("fix round 1", () => {
@@ -1727,29 +1740,34 @@ describe("redesign B, fix round 3", () => {
     expect(summaryCalls()).toHaveLength(1);
   });
 
-  it("N3-I1: a full window whose call fails while the provider is down is asked again after 5, then 10 minutes — never twice within one — and the summary resumes without a restart", async () => {
+  it("N3-I1 / F5: a full window whose call fails while the provider is down (no answer, then a 503: transient) is asked again after 5 minutes, then as long as the outage has lasted — never twice within one —, no failure counted, and the summary resumes without a restart", async () => {
     const w = await own("ba");
     const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 250 }, (_, i) => mid(i)));
     const run = () => runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
     gateway.fail("provider_unavailable");
+    const began = clock.now();
     await run();
     expect(summaryCalls()).toHaveLength(1);
-    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 1, windowMessages: null });
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 0, windowMessages: null, transientSince: expect.any(Number) });
     // Within the backoff: no call, however often a job comes.
     await run();
     clock.advance(4 * MINUTE);
     await run();
     expect(summaryCalls()).toHaveLength(1);
     clock.advance(MINUTE + 1000);
-    gateway.fail("provider_unavailable");
+    gateway.fail("provider_unavailable", { status: 503 });
     await run();
     expect(summaryCalls()).toHaveLength(2);
-    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 2, windowMessages: null });
-    clock.advance(9 * MINUTE);
+    const second = (await attemptOf(w.conv, w.agent.id))!;
+    expect(second).toMatchObject({ failures: 0, windowMessages: null });
+    // The run has lasted about five minutes: the next try is about five minutes on (at least five, at most an hour).
+    expect(second.notBefore! - clock.now()).toBeGreaterThanOrEqual(5 * MINUTE - 1000);
+    expect(second.notBefore! - began).toBeLessThan(11 * MINUTE + 10_000);
+    clock.advance(4 * MINUTE);
     await run();
     expect(summaryCalls()).toHaveLength(2);
     // The provider is back: the same full window, asked once more, is folded; the state starts over.
-    clock.advance(MINUTE + 1000);
+    clock.advance(second.notBefore! - clock.now() + 1000);
     gateway.reply(ANSWER);
     await run();
     expect(summaryCalls()).toHaveLength(3);
@@ -2064,7 +2082,8 @@ describe("redesign B, fix round 3", () => {
        values ($1, $2, 0, 9, 2, true, null, 10, 4)`,
       [w.conv, w.agent.id],
     );
-    gateway.fail("provider_unavailable");
+    // The window's own failure (a 400 once the call has started): a transient one counts none (F5).
+    gateway.fail("provider_unavailable", { status: 400 });
     const at = clock.now();
     await runSummary(jobDeps(), { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
     // The whole window, not the stale cap of 10; a first failure's state, its backoff five minutes.
@@ -2078,7 +2097,7 @@ describe("redesign B, fix round 3", () => {
   it("N4-I1: the failure rule, pure — two failures halve nothing, from the third each halves, three at the floor set the window aside; unusable on a full window and too big halve at once; no model only backs off", async () => {
     const { afterFailure } = await import("../src/agents/summary/job.ts");
     type State = Parameters<typeof afterFailure>[0];
-    const fresh: State = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, notBefore: null, windowMessages: null, skippedMessages: 0 };
+    const fresh: State = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, notBefore: null, windowMessages: null, skippedMessages: 0, transientSince: null };
     let state = fresh;
     const sizes: number[] = [];
     for (let k = 0; k < 20; k++) {
@@ -2103,6 +2122,133 @@ describe("redesign B, fix round 3", () => {
     // The window that failed reaches as far as the furthest that did.
     expect(afterFailure({ ...fresh, failedUpto: 50, failures: 1 }, { kind: "failed", n: 10, full: false, upto: 40 }, 0).next.failedUpto).toBe(50);
     expect(afterFailure({ ...fresh, failedUpto: 50, failures: 1 }, { kind: "failed", n: 10, full: false, upto: 60 }, 0).next.failedUpto).toBe(60);
+  });
+
+  it("F5: transient or the window's own, by the provider's status — a 5xx, 408, 429 or none (network, timeout) clears by itself; any other 4xx, or the model's own failure, is the window's", async () => {
+    const { isTransient } = await import("../src/agents/summary/job.ts");
+    const statuses = [undefined, 500, 502, 503, 504, 408, 429, 400, 404, 413, 422];
+    expect(statuses.map((upstreamStatus) => isTransient({ failure: "provider_unavailable", upstreamStatus }))).toEqual([true, true, true, true, true, true, true, false, false, false, false]);
+    expect(isTransient({ failure: "thinking_exhausted" })).toBe(false);
+    // A call that ended with no failure named (its settlement could not be written, say): no fault of the window.
+    expect(isTransient({})).toBe(true);
+  });
+
+  it("F5: the transient rule, pure — it never halves, never sets aside and counts no failure; it waits as long as its run has lasted, 5 minutes to an hour; after a day of them on one window the next counts as the window's own; a failure of the window's own or a write ends the run", async () => {
+    const { afterFailure, afterWrite, TRANSIENT_FOR_MS } = await import("../src/agents/summary/job.ts");
+    type State = Parameters<typeof afterFailure>[0];
+    const fresh: State = { failedUpto: null, failures: 0, floorFailures: 0, emptyAnswer: false, notBefore: null, windowMessages: null, skippedMessages: 0, transientSince: null };
+    // Even at the floor, with two failures there already: a transient one sets nothing aside.
+    let state: State = { ...fresh, failedUpto: 500, failures: 7, floorFailures: 2, windowMessages: 10 };
+    let t = 0;
+    const waits: number[] = [];
+    while (t < TRANSIENT_FOR_MS) {
+      const r = afterFailure(state, { kind: "transient", n: 10, full: true, upto: 500 }, t);
+      expect(r.setAside).toBe(false);
+      waits.push((r.next.notBefore! - t) / MINUTE);
+      state = r.next;
+      t = r.next.notBefore!;
+    }
+    expect(waits.slice(0, 7)).toEqual([5, 5, 10, 20, 40, 60, 60]);
+    expect(Math.max(...waits)).toBe(60);
+    expect(state).toMatchObject({ failures: 7, floorFailures: 2, windowMessages: 10, transientSince: 0, failedUpto: 500 });
+    // A day on: the next one is the window's own — here the third at the floor, which sets the window aside.
+    const turned = afterFailure(state, { kind: "transient", n: 10, full: true, upto: 500 }, t);
+    expect(turned).toMatchObject({ setAside: true, next: { failures: 8, floorFailures: 3, transientSince: 0 } });
+    // On a whole window a day of them halves from the third, as the window's own failures do.
+    let whole: State = { ...fresh, transientSince: 0 };
+    const sizes: number[] = [];
+    for (let k = 0; k < 4; k++) {
+      const n = whole.windowMessages ?? 200;
+      sizes.push(n);
+      whole = afterFailure(whole, { kind: "transient", n, full: true, upto: 500 }, TRANSIENT_FOR_MS + k * HOUR).next;
+    }
+    expect(sizes).toEqual([200, 200, 200, 100]);
+    // The window's own failure ends a run; so does a write (the provider answered) — unless it had already turned.
+    expect(afterFailure({ ...fresh, transientSince: 0 }, { kind: "failed", n: 10, full: false, upto: 5 }, HOUR).next.transientSince).toBeNull();
+    expect(afterWrite({ ...fresh, failedUpto: 500, transientSince: 0 }, 100, HOUR, 10 * MINUTE).transientSince).toBeNull();
+    expect(afterWrite({ ...fresh, failedUpto: 500, transientSince: 0 }, 100, TRANSIENT_FOR_MS, 10 * MINUTE).transientSince).toBe(0);
+    expect(afterWrite({ ...fresh, failedUpto: 500, transientSince: 0 }, 500, TRANSIENT_FOR_MS, 10 * MINUTE).transientSince).toBeNull();
+  });
+
+  it("F5: a 6-hour outage (the provider answers 503) loses nothing: the window is never halved, the pair is asked at most an hour apart, and once the provider is back the summary catches up within the hour", async () => {
+    const w = await own("ou");
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], Array.from({ length: 250 }, (_, i) => mid(i)));
+    let down = true;
+    const calls: Array<{ at: number; n: number }> = [];
+    const provider = {
+      async *stream(call: ModelCall) {
+        calls.push({ at: clock.now(), n: inputOf(call).messages.length });
+        if (down) throw new ModelError("provider_unavailable", 503);
+        yield { type: "text" as const, delta: ANSWER };
+        yield { type: "finish" as const, usage: { inputTokens: 1, outputTokens: 1 }, truncated: false, toolCalls: [], assistant: null };
+      },
+      listModels: async () => [],
+    };
+    const run = () => runSummary({ ...jobDeps(), models: provider }, { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
+    const began = clock.now();
+    // A job every 10 minutes (the replies of a busy conversation), for 6 hours.
+    while (clock.now() - began < 6 * HOUR) {
+      await run();
+      clock.advance(10 * MINUTE);
+    }
+    const during = calls.length;
+    const gaps = calls.slice(1).map((c, i) => c.at - calls[i]!.at);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(HOUR + 10 * MINUTE);
+    expect(during).toBeLessThanOrEqual(12);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failures: 0, windowMessages: null, skipped: 0 });
+    down = false;
+    const back = clock.now();
+    while (((await summaryOf(w.conv, w.agent.id))?.upto ?? 0) < seqs[199]! && clock.now() - back < 3 * HOUR) {
+      await run();
+      clock.advance(10 * MINUTE);
+    }
+    expect(await summaryOf(w.conv, w.agent.id)).toMatchObject({ from: seqs[0], upto: seqs[199] });
+    expect(calls.at(-1)!.at - back).toBeLessThanOrEqual(HOUR);
+    // Every call was given the whole window: nothing halved, nothing set aside.
+    expect(calls.map((c) => c.n)).toEqual(calls.map(() => 200));
+    expect(await counted("summary_skipped")).toBe(0);
+    expect(await attemptOf(w.conv, w.agent.id)).toMatchObject({ failedUpto: null, failures: 0, windowMessages: null, skipped: 0, transientSince: null });
+  });
+
+  it("F5: a provider that answers one message with a steady 500 cannot hold the pair back: after a day of it the window is cornered as the window's own failures are, and that message's floor-sized window is set aside; everything before and after it is summarised", { timeout: 60_000 }, async () => {
+    const w = await own("sx");
+    const POISON = 120;
+    const texts = Array.from({ length: 250 }, (_, i) => (i === POISON ? `${mid(i)}，ALWAYS-500` : mid(i)));
+    const seqs = await seed(w.conv, [w.owner.id, w.agent.id], texts);
+    const calls: Array<{ at: number; texts: string[]; refused: boolean }> = [];
+    const provider = {
+      async *stream(call: ModelCall) {
+        const input = inputOf(call);
+        const refused = input.messages.some((m) => m.text.includes("ALWAYS-500"));
+        calls.push({ at: clock.now(), texts: input.messages.map((m) => m.text), refused });
+        if (refused) throw new ModelError("provider_unavailable", 500);
+        yield { type: "text" as const, delta: ANSWER };
+        yield { type: "finish" as const, usage: { inputTokens: 1, outputTokens: 1 }, truncated: false, toolCalls: [], assistant: null };
+      },
+      listModels: async () => [],
+    };
+    const run = () => runSummary({ ...jobDeps(), models: provider }, { kind: "summary", agentId: w.agent.id, conversationId: w.conv, upTo: seqs.at(-1)! }, jobContext().ctx);
+    const began = clock.now();
+    for (let k = 0; k < 80 && ((await summaryOf(w.conv, w.agent.id))?.upto ?? 0) < seqs.at(-1)!; k++) {
+      const before = calls.length;
+      await run();
+      expect(calls.length).toBe(before + 1);
+      const state = await attemptOf(w.conv, w.agent.id);
+      if (state?.notBefore != null && state.notBefore > clock.now()) clock.advance(state.notBefore - clock.now());
+    }
+    expect((await summaryOf(w.conv, w.agent.id))!).toMatchObject({ from: seqs[0], upto: seqs.at(-1) });
+    // The first day: the whole window each time, an hour apart at most.
+    const firstDay = calls.filter((c) => c.at - began < 24 * HOUR);
+    expect(firstDay.every((c) => c.refused && c.texts.length === 200)).toBe(true);
+    // Then as the window's own: within what the set-aside rule bounds (10 refused calls, about 43 1/2 hours).
+    expect(calls.filter((c) => c.refused && c.at - began >= 24 * HOUR).length).toBeLessThanOrEqual(10);
+    expect(clock.now() - began).toBeLessThanOrEqual(24 * HOUR + 43 * HOUR + 30 * MINUTE + HOUR);
+    const folded = new Set(calls.filter((c) => !c.refused).flatMap((c) => c.texts));
+    const missing = texts.flatMap((t, i) => (folded.has(t) ? [] : [i]));
+    expect(missing).toContain(POISON);
+    expect(missing.length).toBeLessThanOrEqual(10);
+    expect(missing.at(-1)! - missing[0]! + 1).toBe(missing.length);
+    expect(await counted("summary_skipped")).toBe(1);
   });
 
   it("N-I1: summaryMinFoldWeight defaults to half of summaryMaxWeight", () => {

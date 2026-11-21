@@ -89,6 +89,8 @@ export type OwnerCallOutcome =
       runId: string;
       /** How the run ended. `failed` carries the code: a `ModelErrorCode` (`UNAVAILABLE` included). */
       end: { status: "done" } | { status: "failed"; error: ModelErrorCode };
+      /** The provider's HTTP status when the call failed with one (`ModelError.upstreamStatus`); absent otherwise. */
+      upstreamStatus?: number;
       /** `spec.answer` of the text; null when it held nothing usable. */
       answer: string | null;
       /** The model reported its end (`finish`), and no failure came; `abandoned` is false. */
@@ -158,6 +160,7 @@ export async function ownerCall(deps: OwnerCallDeps, spec: OwnerCallSpec, closin
     let reasoning = "";
     let finished: { usage: Usage | null; truncated: boolean } | null = null;
     let failure: ModelErrorCode | null = null;
+    let upstreamStatus: number | undefined;
     try {
       const stream = models.stream({
         ...started.call,
@@ -181,6 +184,7 @@ export async function ownerCall(deps: OwnerCallDeps, spec: OwnerCallSpec, closin
       }
       if (!closing.aborted && !deadline.aborted) {
         failure = err instanceof ModelError ? err.code : "provider_unavailable";
+        if (err instanceof ModelError) upstreamStatus = err.upstreamStatus;
         // A failure the upstream reported usage for (`thinking_exhausted`) is charged that usage.
         if (err instanceof ModelError && err.usage) finished = { usage: err.usage, truncated: false };
         if (!(err instanceof ModelError)) log.error({ err, runId: started.runId }, `${label}: the model call failed unexpectedly`);
@@ -237,6 +241,7 @@ export async function ownerCall(deps: OwnerCallDeps, spec: OwnerCallSpec, closin
       kind: "ended",
       runId: started.runId,
       end,
+      ...(failure !== null && upstreamStatus !== undefined ? { upstreamStatus } : {}),
       answer,
       answered: failure === null && !abandoned && finished !== null,
       truncated: finished?.truncated === true,
