@@ -512,7 +512,8 @@ describe("a reply that offers tools", () => {
     const failed = fakePort();
     await runOn(failed, failing);
     expect(failing.calls).toHaveLength(2);
-    expect(finishedAs(failed)).toEqual([{ status: "failed", error: "provider_unavailable" }]);
+    // (With the upstream's status: whether the system tries it again by itself reads it — runs.ts `transientFailure`.)
+    expect(finishedAs(failed)).toEqual([{ status: "failed", error: "provider_unavailable", upstreamStatus: 502 }]);
 
     // The ordinary call refused as well: failed.
     const twice = scriptedGateway()
@@ -522,7 +523,7 @@ describe("a reply that offers tools", () => {
     const again = fakePort();
     await runOn(again, twice);
     expect(twice.calls).toHaveLength(3);
-    expect(finishedAs(again)).toEqual([{ status: "failed", error: "provider_unavailable" }]);
+    expect(finishedAs(again)).toEqual([{ status: "failed", error: "provider_unavailable", upstreamStatus: 400 }]);
   });
 
   it("the ordinary call after a later round refused is told it has no tools: the prepared text for going without them, when the call has one, and nothing else changes", async () => {
