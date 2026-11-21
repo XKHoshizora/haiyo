@@ -5,6 +5,7 @@ import { useStore } from "../data/store.jsx";
 import { avatarUrl } from "../api/routes.js";
 import { entity, isAgent, nameOf, ownerOf, otherMember } from "../state/selectors.js";
 import { ME } from "../data/identities.js";
+import { useDialogFocus } from "./dialogFocus.js";
 
 export const asset = (path) => `${import.meta.env.BASE_URL}${String(path).replace(/^\//, "")}`;
 
@@ -122,37 +123,7 @@ export function Reason({ children }) {
 export function Modal({ title, onClose, children, footer, wide }) {
   const ref = useRef(null);
   const titleId = useId();
-  useEffect(() => {
-    const previous = document.activeElement;
-    const node = ref.current;
-    const focusables = () => node.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]");
-    const first = node.querySelector("[data-autofocus]") || focusables()[0];
-    first?.focus();
-    const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-      if (e.key === "Tab") {
-        const list = [...focusables()];
-        if (!list.length) return;
-        const head = list[0];
-        const tail = list[list.length - 1];
-        if (e.shiftKey && document.activeElement === head) {
-          e.preventDefault();
-          tail.focus();
-        } else if (!e.shiftKey && document.activeElement === tail) {
-          e.preventDefault();
-          head.focus();
-        }
-      }
-    };
-    node.addEventListener("keydown", onKey);
-    return () => {
-      node.removeEventListener("keydown", onKey);
-      if (previous instanceof HTMLElement) previous.focus();
-    };
-  }, []);
+  useDialogFocus(ref, { onClose });
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref}>
