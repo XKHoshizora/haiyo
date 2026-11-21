@@ -1081,6 +1081,11 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
       call(() => api.createGroup({ title, memberIds: memberIds.map(realId) }), () => request({ sync: true })),
     renameGroup: (conversationId, title) =>
       call(() => api.renameGroup(conversationId, title), () => request({ conversation: conversationId }), staleConversation(conversationId)),
+    /** The group's new avatar (the creator): the conversation is fetched again, with its new avatar version. */
+    uploadGroupAvatar: (conversationId, file) =>
+      call(() => api.uploadGroupAvatar(conversationId, file), () => request({ conversation: conversationId }), staleConversation(conversationId)),
+    removeGroupAvatar: (conversationId) =>
+      call(() => api.removeGroupAvatar(conversationId), () => request({ conversation: conversationId }), staleConversation(conversationId)),
     addMember: (conversationId, principalId) =>
       call(
         () => api.addMember(conversationId, realId(principalId)),

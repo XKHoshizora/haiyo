@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]";
+const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
 
 /**
  * The focus of a dialog (`ref`: its box), the same for every one: when it opens the focus goes to its `[data-autofocus]`

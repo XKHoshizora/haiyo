@@ -18,6 +18,7 @@ import {
 import { appendSystem } from "./system.ts";
 import { expireOnLeave, type Whisper } from "../whispers/store.ts";
 import { forgetSummaries } from "../agents/summary/store.ts";
+import { holdBlob } from "../attachments/pending.ts";
 
 const forbidden = () => new AppError(403, "forbidden");
 
@@ -158,7 +159,7 @@ export async function removeMember(
   conversationId: string,
   actorId: string,
   targetId: string,
-): Promise<{ change: Change; ended: EndedRuns; whispers: Whisper[]; personLeft: string | null }> {
+): Promise<{ change: Change; ended: EndedRuns; whispers: Whisper[]; personLeft: string | null; droppedAvatar: string | null }> {
   const target = await principalOf(t, targetId);
   const { conversation, membership } = await lockGroup(t, conversationId, actorId);
   const leaving = targetId === actorId;
@@ -189,7 +190,18 @@ export async function removeMember(
   await t.query("update memberships set left_seq = $2 where id = $1", [targetMembership.id, notice.seq]);
   messages.push(notice);
   if (newCreatorId) await t.query("update conversations set creator_id = $2 where id = $1", [conversationId, newCreatorId]);
-  if (people.length === 0) await t.query("update conversations set closed_at = now() where id = $1", [conversationId]);
+  // A group that closes keeps no avatar: nobody can read it any more, and a referenced blob is never swept. Its key is held
+  // here and the route deletes the blob after commit (as `dropAvatar` does).
+  let droppedAvatar: string | null = null;
+  if (people.length === 0) {
+    const { rows } = await t.query<{ avatar_key: string | null }>("select avatar_key from conversations where id = $1", [conversationId]);
+    droppedAvatar = rows[0]?.avatar_key ?? null;
+    await t.query(
+      "update conversations set closed_at = now(), avatar_key = null, avatar_version = avatar_version + (avatar_key is not null)::int where id = $1",
+      [conversationId],
+    );
+    if (droppedAvatar) await holdBlob(t, droppedAvatar);
+  }
   const ended = await endRunsInGroup(t, conversationId, agent ? [targetId] : along.map((m) => m.principalId));
   // The whispers there of whoever left, and about the Agents that left, expire (src/whispers/): pushed to their owners after commit.
   const whispers = await expireOnLeave(t, conversationId, [...out]);
@@ -198,7 +210,7 @@ export async function removeMember(
   // A person who left can no longer read what was said here: `personLeft`, whose whispers elsewhere that point here are
   // found and pushed to her after commit, on her own queue (sync/hub.ts `pushWhispersPointingInto`) — nothing of hers is
   // read here, so nothing of this transaction's time depends on her whispers.
-  return { change: { messages, conversations: [{ conversationId, principalIds: members.map((m) => m.principalId) }] }, ended, whispers, personLeft: agent ? null : targetId };
+  return { change: { messages, conversations: [{ conversationId, principalIds: members.map((m) => m.principalId) }] }, ended, whispers, personLeft: agent ? null : targetId, droppedAvatar };
 }
 
 /** Only the creator renames. Renaming to the current title changes nothing and announces nothing. */
@@ -210,4 +222,54 @@ export async function renameGroup(t: Tx, conversationId: string, actorId: string
   const notice = await appendSystem(t, conversationId, { event: "group_renamed", actorId, title });
   const members = await currentMemberIds(t, conversationId);
   return { messages: [notice], conversations: [{ conversationId, principalIds: members }] };
+}
+
+/**
+ * Only the creator changes the group's avatar (the member who may also remove others; when the creator leaves, the next one
+ * may). Under the group's row, like a rename. `newKey` is the new blob's key, or null to take the avatar away. Returns the
+ * previous key (to hold in this transaction and delete after it commits: null when there was none) and what to announce: the
+ * members are told as for a rename, but no notice is written in the group. Taking away what is not there changes and
+ * announces nothing; every other change counts in `avatar_version`.
+ */
+export async function swapGroupAvatar(
+  t: Tx,
+  conversationId: string,
+  actorId: string,
+  newKey: string | null,
+): Promise<{ previous: string | null; change: Change }> {
+  const { conversation } = await lockGroup(t, conversationId, actorId);
+  if (conversation.creatorId !== actorId) throw forbidden();
+  const { rows } = await t.query<{ avatar_key: string | null }>("select avatar_key from conversations where id = $1", [conversationId]);
+  const previous = rows[0]!.avatar_key;
+  if (newKey === null && previous === null) return { previous: null, change: { messages: [], conversations: [] } };
+  await t.query("update conversations set avatar_key = $2, avatar_version = avatar_version + 1 where id = $1", [conversationId, newKey]);
+  const members = await currentMemberIds(t, conversationId);
+  return { previous, change: { messages: [], conversations: [{ conversationId, principalIds: members }] } };
+}
+
+/** The key of a group's avatar for a current member of it, or null (no avatar, not a group, not a member: not told apart). */
+export async function groupAvatarKey(q: Queryable, conversationId: string, viewerId: string): Promise<string | null> {
+  const { rows } = await q.query<{ avatar_key: string }>(
+    `select c.avatar_key from conversations c
+       join memberships m on m.conversation_id = c.id and m.principal_id = $2 and m.left_seq is null
+      where c.id = $1 and c.type = 'group' and c.closed_at is null and c.avatar_key is not null`,
+    [conversationId, viewerId],
+  );
+  return rows[0]?.avatar_key ?? null;
+}
+
+/**
+ * The cheap look, before a 2 MB blob is written, at whether `actorId` may change the group's avatar: the answers of
+ * `swapGroupAvatar` (404 unless a current member of an open group, 403 unless its creator). Nothing is locked: the swap
+ * checks again under the row.
+ */
+export async function assertMayChangeAvatar(q: Queryable, conversationId: string, actorId: string): Promise<void> {
+  const { rows } = await q.query<{ creator_id: string }>(
+    `select c.creator_id from conversations c
+       join memberships m on m.conversation_id = c.id and m.principal_id = $2 and m.left_seq is null
+      where c.id = $1 and c.type = 'group' and c.closed_at is null`,
+    [conversationId, actorId],
+  );
+  if (!rows[0]) throw notFound();
+  if (rows[0].creator_id !== actorId) throw forbidden();
 }

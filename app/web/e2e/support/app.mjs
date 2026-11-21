@@ -28,14 +28,14 @@ export const messagesWith = (chat, text) => {
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
- * `text` as it reads in a message whose mentions are drawn as tags: a tag's hidden words (「提到 名字」, read by screen
- * readers) come right before its `@handle`, so a text with words just before an `@handle` is matched with them allowed there.
- * A text without `@` is matched as it is.
+ * `text` as it reads in a message whose mentions are drawn as tags: a tag shows `@name` and, for screen readers, hides
+ * 「提到 名字」 right after it (a stored mention of someone gone: before it), so each `@name` in `text` is matched with those
+ * words allowed on either side. A text without `@` is matched as it is.
  */
 export function withTags(text) {
   if (typeof text !== "string" || !text.includes("@")) return text;
-  const parts = text.split(/(@[A-Za-z0-9_.]+)/);
-  return new RegExp(parts.map((part, i) => (i % 2 === 1 ? `(?:提到 [^@]*?)?${escapeRegExp(part)}` : escapeRegExp(part))).join(""));
+  const parts = text.split(/(@[^\s，。,.:：;；!?！？、]+)/);
+  return new RegExp(parts.map((part, i) => (i % 2 === 1 ? `(?:提到 [^@]*?)?${escapeRegExp(part)}(?:提到 \\S+)?` : escapeRegExp(part))).join(""));
 }
 
 export const composer = (chat) => chat.getByRole("textbox", { name: "消息内容" });
@@ -84,7 +84,28 @@ export async function createGroupUi(page, title, memberNames) {
   return chat;
 }
 
-/** Picks `file` ({name, mimeType, buffer}) in the open conversation's image or file picker; resolves once sent. */
+/**
+ * Presses `opener` (a button that opens the file picker of an avatar: 更换头像, 选择头像), picks `file` ({name, mimeType,
+ * buffer}) and resolves with the 调整头像 dialog that opens. Nothing is saved yet.
+ */
+export async function pickAvatarUi(page, opener, file) {
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: opener, exact: true }).click();
+  await (await chooser).setFiles(file);
+  const dialog = page.getByRole("dialog", { name: "调整头像" });
+  await expect(dialog).toBeVisible();
+  // The picture is decoded and painted: the controls are on.
+  await expect(dialog.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+  return dialog;
+}
+
+/** 保存 in the 调整头像 dialog; resolves once it is closed (the service took the picture). */
+export async function saveAvatarDialog(dialog) {
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
+}
+
+/** Picks `file` in the open conversation's image or file picker; resolves once sent. */
 export async function sendFile(page, title, file, picker = "选择文件") {
   const chat = chatPane(page, title);
   await chat.getByLabel(picker).setInputFiles(file);

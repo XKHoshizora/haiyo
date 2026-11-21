@@ -23,6 +23,7 @@ const conversationEntry = z.object({
   type: z.enum(["direct", "group", "agent"]),
   title: z.string().nullable(),
   creatorId: z.string().optional(),
+  avatarVersion: z.number().optional(),
   myRole: role,
   closed: z.boolean(),
   createdAt: z.string(),

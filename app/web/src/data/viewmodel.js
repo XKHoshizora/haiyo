@@ -1,7 +1,7 @@
 // Model → the state shape the prototype's pages and selectors read (people, agents, convs, order,
 // relations, blocks). The signed-in user appears as the alias id "me"; every other id is the real one.
 // Every avatar URL carries its principal's version (`avatarUrl(id, version)`), so a changed avatar shows at once.
-import { attachmentUrl, avatarUrl } from "../api/routes.js";
+import { attachmentUrl, avatarUrl, groupAvatarUrl } from "../api/routes.js";
 import { ME } from "./identities.js";
 import { mentionsIn } from "./mentions.js";
 import { ownsAgent } from "./model.js";
@@ -806,6 +806,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
       /** How many of them wait for my answer: open, offering a button (the chat list's mark; one offering none only tells). */
       openWhispers: whispers.filter((w) => w.status === "open" && w.actions.length > 0).length,
       title: direct ? null : conv.title,
+      /** A group's own picture (its URL, versioned), or null: the composite of its members then shows as it always did. */
+      avatar: conv.type === "group" && conv.avatarVersion !== null && conv.avatarVersion !== undefined ? groupAvatarUrl(conv.id, conv.avatarVersion) : null,
       members,
       memberRoles: conv.members.map((m) => ({ id: alias(m.id), role: m.role, isCreator: Boolean(m.isCreator) })),
       admin: direct ? null : alias(conv.creatorId),

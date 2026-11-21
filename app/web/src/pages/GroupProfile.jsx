@@ -5,6 +5,7 @@ import { groupTitle } from "../auth/validation.js";
 import { ME } from "../data/identities.js";
 import { convTitle, entity, isMyAgent, nameOf } from "../state/selectors.js";
 import { Avatar, ConvAvatar, Tag, Btn, Field, IdentityLine, KV, Reason, focusInvalid } from "../ui/primitives.jsx";
+import { AvatarEditor } from "./AvatarEditor.jsx";
 import { Pills } from "./ChatList.jsx";
 import { AddMemberModal, LeaveModal, RemoveMemberModal } from "./GroupModals.jsx";
 import { useAction } from "./useAction.js";
@@ -104,6 +105,23 @@ function GroupSettings({ conv }) {
     <>
       <h3>群设置</h3>
       <KV rows={[["群创建者", nameOf(state, conv.admin)], ...(creator ? [] : [["群名称", convTitle(state, conv)]])]} />
+      {creator && (
+        <>
+          <h3>群头像</h3>
+          {/* The creator's: pick, adjust, save; 移除 goes back to the members' faces. Everyone else sees the picture above. */}
+          <AvatarEditor
+            current={<ConvAvatar conv={conv} size={84} />}
+            upload={(file) => actions.uploadGroupAvatar(conv.id, file)}
+            errorText={(e) => groupErrorText("avatar", e)}
+            doneText="群头像已更新"
+            onRemove={() => actions.removeGroupAvatar(conv.id)}
+            canRemove={Boolean(conv.avatar)}
+            removedText="群头像已移除"
+            removeErrorText={(e) => groupErrorText("avatar", e)}
+            hint="只有创建者可以修改。支持 PNG、JPEG、WebP，不超过 20 MB；不设置时显示成员头像的拼图。"
+          />
+        </>
+      )}
       {creator && <Rename conv={conv} />}
       <h3>我的操作</h3>
       <div className="stack-actions">

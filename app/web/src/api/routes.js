@@ -56,6 +56,14 @@ export const createGroup = ({ title, memberIds }) => request("POST", "/api/conve
 /** One conversation in the shape of a `/api/sync` entry (404 when you are not a member now). */
 export const getConversation = (conversationId) => request("GET", `/api/conversations/${seg(conversationId)}`);
 export const renameGroup = (conversationId, title) => request("PATCH", `/api/conversations/${seg(conversationId)}`, { title });
+/** Replaces the group's avatar with the image file (the rules of my own avatar; the creator only) → {ok: true} */
+export const uploadGroupAvatar = (conversationId, file) =>
+  requestBytes("PUT", `/api/conversations/${seg(conversationId)}/avatar`, file, file.type && file.type.startsWith("image/") ? file.type : "application/octet-stream");
+/** Takes the group's avatar away (the creator only) → {ok: true} */
+export const removeGroupAvatar = (conversationId) => request("DELETE", `/api/conversations/${seg(conversationId)}/avatar`);
+/** A group's avatar, for a member. `version` is its `avatarVersion` from the conversation: a changed avatar is a new URL. */
+export const groupAvatarUrl = (conversationId, version = 0) =>
+  `/api/conversations/${seg(conversationId)}/avatar${version ? `?v=${encodeURIComponent(String(version))}` : ""}`;
 export const listMembers = (conversationId) => request("GET", `/api/conversations/${seg(conversationId)}/members`);
 export const addMember = (conversationId, principalId) => request("POST", `/api/conversations/${seg(conversationId)}/members`, { principalId });
 export const removeMember = (conversationId, principalId) =>

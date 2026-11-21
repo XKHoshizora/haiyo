@@ -129,6 +129,27 @@ describe("routes.js builds the service's method, path and body", () => {
   });
 });
 
+describe("a group's avatar routes", () => {
+  it("uploadGroupAvatar PUTs the raw bytes; removeGroupAvatar DELETEs; both for the one conversation", async () => {
+    const file = new File(["webp"], "avatar.webp", { type: "image/webp" });
+    await routes.uploadGroupAvatar(ID, file);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`/api/conversations/${ID}/avatar`);
+    expect(init).toMatchObject({ method: "PUT", credentials: "same-origin", body: file });
+    expect(init.headers["Content-Type"]).toBe("image/webp");
+    await routes.removeGroupAvatar(ID);
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/conversations/${ID}/avatar`);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "DELETE" });
+  });
+
+  it("builds the versioned URL of a group's avatar", () => {
+    expect(routes.groupAvatarUrl(ID)).toBe(`/api/conversations/${ID}/avatar`);
+    expect(routes.groupAvatarUrl(ID, 0)).toBe(`/api/conversations/${ID}/avatar`);
+    expect(routes.groupAvatarUrl(ID, 3)).toBe(`/api/conversations/${ID}/avatar?v=3`);
+    expect(routes.groupAvatarUrl("a/b", 1)).toBe("/api/conversations/a%2Fb/avatar?v=1");
+  });
+});
+
 describe("URL builders", () => {
   it("builds attachment and avatar URLs", () => {
     expect(routes.attachmentUploadUrl(ID)).toBe(`/api/conversations/${ID}/attachments`);

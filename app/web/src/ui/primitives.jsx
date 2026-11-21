@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useId, useRef, useState } from "react";
 import { X, Info, CircleAlert, CircleCheck, CirclePause } from "../icons.js";
 import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
@@ -51,9 +51,22 @@ export function GroupAvatar({ ids, size = 46 }) {
   );
 }
 
+/** A group's own picture; when it cannot be shown (not loaded, gone), the composite of its members stands in. */
+function GroupPicture({ src, ids, size }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <GroupAvatar ids={ids} size={size} />;
+  return (
+    <span className="avatar group-picture" style={{ width: size, height: size }} role="img" aria-label="群头像">
+      <span className="avatar-img avatar-fallback" style={{ width: size, height: size }}>
+        <img key={src} src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
+      </span>
+    </span>
+  );
+}
+
 export function ConvAvatar({ conv, size = 46 }) {
   if (conv.type === "human" || conv.type === "agent") return <Avatar id={otherMember(conv)} size={size} />;
-  return <GroupAvatar ids={conv.members} size={size} />;
+  return conv.avatar ? <GroupPicture key={conv.avatar} src={conv.avatar} ids={conv.members} size={size} /> : <GroupAvatar ids={conv.members} size={size} />;
 }
 
 export function Tag({ tone = "agent", children }) {
@@ -85,9 +98,9 @@ export function Notice({ tone = "info", children, action }) {
   );
 }
 
-export function Btn({ variant = "ghost", small, reason, className = "", children, ...rest }) {
+export function Btn({ variant = "ghost", small, reason, className = "", children, ref, ...rest }) {
   return (
-    <button type="button" className={`btn btn-${variant} ${small ? "btn-sm" : ""} ${className}`} title={rest.disabled ? reason : undefined} {...rest}>
+    <button ref={ref} type="button" className={`btn btn-${variant} ${small ? "btn-sm" : ""} ${className}`} title={rest.disabled ? reason : undefined} {...rest}>
       {children}
     </button>
   );

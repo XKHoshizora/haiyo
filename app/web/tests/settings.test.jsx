@@ -7,9 +7,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ANN, BO, D1, G1, ME, ME_ID, apiError, deferred, direct, emptySocial, fakeFile, group, syncOf, wire } from "./fixtures.js";
+import { decodeAvatar, fake, resetFake } from "./avatar-fake.js";
 import { DORA, NOW, PEOPLE, button, click, dialog, flush, goContacts, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
 
 beforeEach(() => {
+  resetFake();
   installBrowser();
   let n = 0;
   URL.createObjectURL = vi.fn(() => `blob:preview-${++n}`);
@@ -198,7 +200,13 @@ describe("account name (账号名, Task N)", () => {
 });
 
 describe("avatar", () => {
-  it("refuses a file that is not PNG, JPEG or WebP, or is over 2 MB, without a preview or a request", async () => {
+  const dialogOf = () => screen.queryByRole("dialog", { name: "调整头像" });
+  const saveInDialog = async () => {
+    await click(dialogButton("保存"));
+    await flush();
+  };
+
+  it("refuses a file that is not PNG, JPEG or WebP, or is over 20 MB, without a dialog or a request", async () => {
     const uploadAvatar = vi.fn(async () => ({ ok: true }));
     await openApp({ sync: baseSync, api: { uploadAvatar } });
     await goSettings();
@@ -206,36 +214,42 @@ describe("avatar", () => {
     expect(screen.getByText("头像需要是 PNG、JPEG 或 WebP 格式的图片。")).toBeTruthy();
     await choose(fakeFile("a.svg", 100, "image/svg+xml"));
     expect(screen.getByText("头像需要是 PNG、JPEG 或 WebP 格式的图片。")).toBeTruthy();
-    await choose(fakeFile("big.png", 2 * 1024 * 1024 + 1, "image/png"));
-    expect(screen.getByText("头像不能超过 2 MB。")).toBeTruthy();
-    expect(URL.createObjectURL).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "保存头像" })).toBeNull();
+    await choose(fakeFile("big.png", 20 * 1024 * 1024 + 1, "image/png"));
+    expect(screen.getByText("图片不能超过 20 MB。")).toBeTruthy();
+    expect(dialogOf()).toBeNull();
+    expect(decodeAvatar).not.toHaveBeenCalled();
     expect(uploadAvatar).not.toHaveBeenCalled();
   });
 
-  it("accepts PNG, JPEG and WebP up to exactly 2 MB, and a file whose type is unknown but whose name says so", async () => {
+  it("opens the adjust dialog for PNG, JPEG and WebP up to exactly 20 MB, and a file whose type is unknown but whose name says so", async () => {
     await openApp({ sync: baseSync, api: { uploadAvatar: vi.fn() } });
     await goSettings();
-    for (const file of [png(2 * 1024 * 1024), fakeFile("a.jpg", 10, "image/jpeg"), fakeFile("a.webp", 10, "image/webp"), fakeFile("a.JPEG", 10, "")]) {
+    for (const file of [png(20 * 1024 * 1024), fakeFile("a.jpg", 10, "image/jpeg"), fakeFile("a.webp", 10, "image/webp"), fakeFile("a.JPEG", 10, "")]) {
       await choose(file);
-      expect(screen.getByRole("button", { name: "保存头像" })).toBeTruthy();
+      expect(dialogOf()).toBeTruthy();
+      await click(dialogButton("取消"));
+      expect(dialogOf()).toBeNull();
     }
+    expect(decodeAvatar).toHaveBeenCalledTimes(4);
   });
 
-  it("previews the picked image, uploads it on 保存头像, revokes the preview and gives my avatar a new version", async () => {
+  it("uploads what the dialog saved, never the picked file, and gives my avatar a new version", async () => {
     const uploadAvatar = vi.fn(async () => ({ ok: true }));
     await openApp({ sync: baseSync, api: { uploadAvatar } });
     await goSettings();
     const mine = () => [...document.querySelectorAll(".rail-me img, .settings-me img, .avatar-editor img")].map((i) => i.getAttribute("src"));
     expect(mine().every((src) => src === `/api/principals/${ME_ID}/avatar`)).toBe(true);
-    const file = png();
+    const file = png(15 * 1024 * 1024);
     await choose(file);
-    expect(document.querySelector('img[alt="新头像预览"]').getAttribute("src")).toBe("blob:preview-1");
     expect(uploadAvatar).not.toHaveBeenCalled();
-    await click(button("保存头像"));
-    expect(uploadAvatar).toHaveBeenCalledWith(file);
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview-1");
-    expect(document.querySelector('img[alt="新头像预览"]')).toBeNull();
+    await saveInDialog();
+    expect(uploadAvatar).toHaveBeenCalledTimes(1);
+    const sent = uploadAvatar.mock.calls[0][0];
+    expect(sent).not.toBe(file);
+    expect(sent.type).toBe("image/webp");
+    expect(sent.name).toBe("avatar.webp");
+    expect(await sent.text()).toBe("cropped-bytes");
+    expect(dialogOf()).toBeNull();
     expect(toastText()).toBe("头像已更新");
     const versioned = `/api/principals/${ME_ID}/avatar?v=${NOW}`;
     expect(mine().length).toBeGreaterThanOrEqual(3);
@@ -246,56 +260,82 @@ describe("avatar", () => {
     await openApp({ sync: baseSync, api: { uploadAvatar: vi.fn(async () => ({ ok: true })) } });
     await goSettings();
     await choose(png());
-    await click(button("保存头像"));
+    await saveInDialog();
     await click(rail(/^消息/));
     const src = document.querySelector(".list-col .row img").getAttribute("src");
     expect(src).toBe(`/api/principals/${ANN}/avatar`);
   });
 
-  it("revokes the preview when it is dropped, replaced, or the page goes away", async () => {
-    await openApp({ sync: baseSync, api: { uploadAvatar: vi.fn() } });
+  it("cancelling leaves everything as it was: nothing is uploaded, the avatar and its version stay, and focus returns to the button", async () => {
+    const uploadAvatar = vi.fn(async () => ({ ok: true }));
+    await openApp({ sync: baseSync, api: { uploadAvatar } });
     await goSettings();
+    const opener = button("更换头像");
+    opener.focus();
     await choose(png());
-    await click(button("取消"));
-    expect(URL.revokeObjectURL).toHaveBeenLastCalledWith("blob:preview-1");
+    await click(dialogButton("取消"));
+    expect(uploadAvatar).not.toHaveBeenCalled();
+    expect(toastText()).toBeNull();
+    expect(document.querySelector(".rail-me img").getAttribute("src")).toBe(`/api/principals/${ME_ID}/avatar`);
+    expect(document.activeElement).toBe(opener);
+    // Esc does the same.
     await choose(png());
-    await choose(png());
-    expect(URL.revokeObjectURL).toHaveBeenLastCalledWith("blob:preview-2");
-    await click(settingsRow("拉黑"));
-    expect(URL.revokeObjectURL).toHaveBeenLastCalledWith("blob:preview-3");
-    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3);
+    fireEvent.keyDown(dialog(), { key: "Escape" });
+    await flush();
+    expect(dialogOf()).toBeNull();
+    expect(uploadAvatar).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(opener);
+    expect(fake.images.every((image) => image.close.mock.calls.length === 1)).toBe(true);
   });
 
-  it("a refusal says why, keeps the preview and does not change the avatar", async () => {
+  it("a refusal says why in the dialog, which stays; saving again works once the service accepts", async () => {
     const uploadAvatar = vi.fn(async () => {
       throw apiError(413, "too_large");
     });
     await openApp({ sync: baseSync, api: { uploadAvatar } });
     await goSettings();
     await choose(png());
-    await click(button("保存头像"));
-    expect(toastText()).toBe("头像不能超过 2 MB。");
-    expect(document.querySelector('img[alt="新头像预览"]')).toBeTruthy();
-    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    await saveInDialog();
+    expect(within(dialog()).getByRole("alert").textContent).toBe("头像不能超过 2 MB。");
     uploadAvatar.mockImplementation(async () => {
       throw apiError(400, "invalid_request");
     });
-    await click(button("保存头像"));
-    expect(toastText()).toBe("头像需要是 PNG、JPEG 或 WebP 格式的图片。");
+    await saveInDialog();
+    expect(within(dialog()).getByRole("alert").textContent).toBe("头像需要是 PNG、JPEG 或 WebP 格式的图片。");
     expect(document.querySelector(".rail-me img").getAttribute("src")).toBe(`/api/principals/${ME_ID}/avatar`);
+    uploadAvatar.mockImplementation(async () => ({ ok: true }));
+    await saveInDialog();
+    expect(dialogOf()).toBeNull();
+    expect(toastText()).toBe("头像已更新");
   });
 
-  it("shows a pending state while uploading", async () => {
+  it("shows a pending state while uploading, and Esc does not drop a save under way", async () => {
     const pending = deferred();
     await openApp({ sync: baseSync, api: { uploadAvatar: vi.fn(() => pending.promise) } });
     await goSettings();
     await choose(png());
-    await click(button("保存头像"));
-    expect(button("保存中…").disabled).toBe(true);
-    expect(button("取消").disabled).toBe(true);
+    await saveInDialog();
+    expect(dialogButton("保存中…").disabled).toBe(true);
+    expect(dialogButton("取消").disabled).toBe(true);
+    fireEvent.keyDown(dialog(), { key: "Escape" });
+    await flush();
+    expect(dialogOf()).toBeTruthy();
     await act(async () => pending.resolve({ ok: true }));
     await flush();
-    expect(screen.queryByRole("button", { name: "保存中…" })).toBeNull();
+    expect(dialogOf()).toBeNull();
+  });
+
+  it("a picture that cannot be decoded gets a clear message, not a broken dialog", async () => {
+    const uploadAvatar = vi.fn();
+    await openApp({ sync: baseSync, api: { uploadAvatar } });
+    await goSettings();
+    fake.fail = "这张图片无法读取，请换一张。";
+    await choose(png());
+    expect(within(dialog()).getByRole("alert").textContent).toBe("这张图片无法读取，请换一张。");
+    expect(within(dialog()).queryByRole("button", { name: "保存" })).toBeNull();
+    await click(dialogButton("知道了"));
+    expect(dialogOf()).toBeNull();
+    expect(uploadAvatar).not.toHaveBeenCalled();
   });
 });
 

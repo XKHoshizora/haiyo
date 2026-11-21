@@ -542,7 +542,7 @@ export function AgentForm({ agent = null }) {
             id={agent ? agent.id : null}
             onPick={pickAvatar}
             disabled={busy !== null}
-            hint={agent ? "支持 PNG、JPEG、WebP，不超过 2 MB；保存后生效。" : undefined}
+            hint={agent ? "支持 PNG、JPEG、WebP，不超过 20 MB；选好后可以拖动和缩放，保存后生效。" : undefined}
           />
           {avatarError && <p className="field-msg" role="alert">{avatarError}</p>}
         </div>

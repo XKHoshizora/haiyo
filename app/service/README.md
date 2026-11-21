@@ -372,7 +372,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `GET /api/usage` | 60 | principal |
 | `GET /api/models` | 120 | principal |
 | `PATCH /api/me` | 10 | principal |
-| `PUT /api/me/avatar` + `PUT /api/agents/:id/avatar` (yours and your Agents' avatars) | 10 together | principal |
+| `PUT /api/me/avatar` + `PUT /api/agents/:id/avatar` + `PUT /api/conversations/:id/avatar` (yours, your Agents' and your groups' avatars) | 10 together | principal |
 | `POST /api/agents`, `PATCH`, `DELETE` + `POST …/pause`, `…/resume` + `PUT …/avatar` + `PUT`, `DELETE …/appellations/:principalId` + `POST …/proposals/:proposalId/confirm`, `…/discard` of `/api/agents/:id`, `POST /api/conversations/:id/topic` | 30 together | principal |
 | `POST /api/agents/draft-persona` | 5 (a budget of its own); besides, it is one of the model calls you may have running at once (`AGENT_MAX_CONCURRENT_RUNS`, replies, drafts and memory calls together: over it 429; a draft and a reply starting at the same moment may briefly exceed it by one) | principal |
 | `POST /api/providers`, `PATCH` + `DELETE /api/providers/:id` | 20 together | principal |
@@ -380,7 +380,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `POST /api/friend-requests` | 20 | principal |
 | `PUT` + `DELETE /api/blocks/:principalId` | 20 together | principal |
 | `POST /api/conversations` | 10 | principal |
-| `PATCH /api/conversations/:id`, `POST /api/conversations/:id/members`, `DELETE /api/conversations/:id/members/:principalId` | 20 together | principal |
+| `PATCH /api/conversations/:id`, `POST /api/conversations/:id/members`, `DELETE /api/conversations/:id/members/:principalId`, `PUT`, `DELETE /api/conversations/:id/avatar` | 20 together | principal |
 | `POST /api/conversations/:id/messages` | 120 | principal |
 | Replies started (each message that queues a reply of one of your Agents — yours, or anyone's or an Agent's in a group the Agent is in —, each follow-up in a group: the reply that answers what was noted while one of your Agents was replying there, and `POST …/runs/retry`) | Counted for you in two lanes, each from the stored runs under your account's lock (so exactly, also for messages to two of your Agents at the same moment) and not scaled by `RATE_LIMIT_SCALE`: 20 for the replies you called for yourself — your own lane: your messages to your Agents, in their conversations and in groups, your Agents' calls on each other that you are behind, retries, follow-ups that answer you (`AGENT_RUNS_PER_MINUTE`) — and 20 together for every reply someone else called for on your Agents (`AGENT_OTHERS_RUNS_PER_MINUTE`), so that others' mentions cannot use up your own minute. A run is `own` when you called for it — yourself, or through an Agent's message you are behind — else `others` (a third lane, `proactive`, is for replies nobody called for — an Agent answering in a group unasked — and counts with `others` toward `AGENT_OTHERS_RUNS_PER_MINUTE`), and keeps its lane. An Agent's message is the call of whoever called for the reply that posted it, unless that reply was its owner's own: then its owner's (Agents and runs, In a group); so a member's call that one of your Agents relays to another of yours is the member's, not yours. Neither lane nor caller is ever on the wire. Over the count of its lane a message (or a follow-up in a group) starts no reply: the message is still sent, and a `failed` run with error `rate_limited` (retryable) is recorded instead, so you see it (`run` push, `GET …/run`, in a group `GET …/runs`) and can retry — it started nothing and is not counted; in a group one such run per Agent stands for every mention and follow-up over the limit while it is the Agent's latest there and you have not dismissed it; a retry over it is 429. A follow-up in your Agent's own conversation (it answers what you wrote while it replied) is queued whatever the count, and counts toward it; one in a group counts in the lane of what it answers (Agents and runs, In a group). A reply that ended `model_gone` called nothing and is not counted either; and someone else's call on an Agent of yours whose model is not there to call (`modelUsable` false) starts no reply at all: a `failed` run with error `model_gone` is recorded at once (the group shows its one 暂时无法回复 line), not counted toward your minute — so such calls cannot crowd out calls on your other Agents — and counted toward the caller's own (below) | owner |
 | Calls on other people's Agents (a mention in a group that would start a reply of an Agent whose owner is someone else, made by a person or by an Agent's message they are behind: their own Agent's, or one relaying their call) | 5 together per person (`AGENT_CALLER_RUNS_PER_MINUTE`), counted from the stored runs under the caller's account lock, so exactly, and not scaled by `RATE_LIMIT_SCALE`; calls on the caller's own Agents never count. Over it the mention starts nothing and nothing of it is recorded — no run, no `rate_limited` run, no notice to the group or to the Agent's owner (the message is sent as any), only one log line (Metrics in the log) and, when a person's own message made the call, a word to that person alone in the answer to their send (`notCalled`, `POST /api/conversations/:id/messages`). A mention folded into a reply already under way starts nothing, so it is neither counted nor refused. It is checked after the Agent's others' daily budget (Agents in a group) and before the owner's replies a minute | caller |
@@ -2259,6 +2259,37 @@ id that does not exist. Fetch it on a `conversation` push instead of a full sync
   creator).
 - Limit: 20 per minute together with adding and removing members. Pushes: `conversation`, the notice.
 
+#### `PUT /api/conversations/:id/avatar`
+
+*Session: required.* The group's creator sets its avatar (the member who may also remove others; when the creator leaves, the
+next one may). The rules and limits of `PUT /api/me/avatar`: the raw image bytes, PNG, JPEG or WebP by the bytes, at most
+2 MiB, and the same 10 a minute together with your own and your Agents' avatars (refused uploads count).
+
+- 200 `{"ok": true}`; the group's `avatarVersion` counts the change. A replaced image is released.
+- Errors: 404 `not_found` (not a current member, a direct chat, closed, unknown), 403 `forbidden` (not the creator), and
+  those of `PUT /api/me/avatar` for the bytes.
+- Limit: also the 20 a minute of renaming and adding and removing members. Pushes: `conversation` (to every current member);
+  no notice is written in the group.
+
+#### `DELETE /api/conversations/:id/avatar`
+
+*Session: required.* The creator takes the group's avatar away: it looks as a group without one does, and the image is
+released.
+
+- 200 `{"ok": true}` (also when there was none: nothing changes, nothing is pushed).
+- Errors: as `PUT`. Limit: the 20 a minute of renaming. Pushes: `conversation`.
+
+#### `GET /api/conversations/:id/avatar`
+
+*Session: required.* The stored image, only to a current member (type from the bytes, the headers of
+`GET /api/principals/:id/avatar`). 404 `not_found` for everyone else — a non-member, a direct chat, an unknown id — and for a
+group without an avatar: whether a group has one is not to be learnt from here. A client asks only for a group whose entry
+in `/api/sync` has `avatarVersion`, with `?v=<avatarVersion>` in the URL (ignored by the route).
+
+#### `HEAD /api/conversations/:id/avatar`
+
+*Session: required.* The same decision and headers as the `GET`, no body; only the first bytes of the image are read.
+
 #### `GET /api/conversations/:id/members`
 
 *Session: required.* → 200 `{"members": [{"id", "handle", "displayName", "avatarVersion", "kind", "role", "isCreator",
@@ -2455,6 +2486,7 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
 {
   "id": "…", "type": "direct" | "group" | "agent", "title": "team" /* null in direct chats */,
   "creatorId": "…",                                // groups only: a direct chat has no creator role
+  "avatarVersion": 3,                              // groups with an avatar only (GET /api/conversations/:id/avatar?v=)
   "myRole": "speaker" | "observer", "closed": false,
   "createdAt": "2026-11-16T01:02:03.000Z",       // when the conversation was created; /api/sync lists them in this order
   "peerId": "…",                                   // direct chats only: the other person of the pair
