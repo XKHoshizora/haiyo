@@ -122,7 +122,10 @@ export const discardMemoryChange = (agentId, changeId) => request("POST", `/api/
 /** → {whispers: WireWhisper[] (newest first), nextBefore}: mine there, before `before` (an afterSeq); 404 where I can have none. */
 export const listWhispers = (conversationId, { before, limit } = {}) =>
   request("GET", withQuery(`/api/conversations/${seg(conversationId)}/whispers`, { before, limit }));
-/** 告诉他们 → the whisper, `accepted`. 409 stale_whisper when it is not open (or offers no 告诉他们). */
+/**
+ * 告诉他们 → the whisper as it is now (`accepted`; a found_elsewhere one `telling`). 409 stale_whisper when it is not open
+ * (or offers no 告诉他们), 409 busy_run while a found_elsewhere one's told reply is under way.
+ */
 export const acceptWhisper = (whisperId) => request("POST", `/api/whispers/${seg(whisperId)}/accept`);
 /** 不用 → the whisper, `declined`. */
 export const declineWhisper = (whisperId) => request("POST", `/api/whispers/${seg(whisperId)}/decline`);

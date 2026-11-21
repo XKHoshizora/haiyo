@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { leaveGroupsOfDeleted } from "../src/agents/group-leave.ts";
 import { lockAgent, setAgentState } from "../src/agents/store.ts";
 import { buildApp } from "../src/app.ts";
@@ -28,7 +28,8 @@ import { closeAllSockets, connect } from "./helpers/ws.ts";
 /**
  * Whispers (悄悄话, design rules 16 and 19): a small note in a conversation that only the owner of one of its Agents ever
  * sees, with the buttons it offers. Never a message (no seq); the owner is pushed it, finds it in their sync, catch-up and
- * the list route; answers it once; it expires after 7 days (the periodic sweep), when its owner or its Agent leaves, and
+ * the list route; answers it once; it expires after 7 days (the periodic sweep; a `found_elsewhere` one after a day, in
+ * whisper-elsewhere.test.ts with the rest of that kind), when its owner or its Agent leaves, and
  * when its Agent is deleted. What nobody else may learn of it is in whispers-privacy.test.ts.
  */
 
@@ -58,15 +59,20 @@ async function world() {
   const g = await group(app, owner, "team", [mia, ned]);
   expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
   await say(mia, g, "大家好");
-  return { owner, mia, ned, agent: agent as { id: string; conversationId: string }, g };
+  // What a found_elsewhere whisper of hers points at (`found`): her own note to her Agent.
+  const note = await say(owner, agent.conversationId, "记一下：周五有空");
+  await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [agent.id]);
+  return { owner, mia, ned, agent: agent as { id: string; conversationId: string }, g, note };
 }
+/** A found_elsewhere whisper's body whose one hit is a real reference (her note): it reads open. */
+const found = (w: { agent: { conversationId: string }; note: number }): WhisperBody => ({ ...BODY, detail: { hits: [{ conversationId: w.agent.conversationId, seq: w.note, at: 0 }] } });
 type World = Awaited<ReturnType<typeof world>>;
 
 /** A whisper of olive's about her Agent in `conv` (the group by default), pushed to her as a later task will. */
 async function whisper(w: World, over: Partial<{ conversationId: string; body: WhisperBody; kind: Whisper["kind"]; agentId: string }> = {}): Promise<Whisper> {
-  const made = await db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, kind: "found_elsewhere", body: BODY, ...over }));
+  const made = await db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, kind: "memory", body: BODY, ...over }));
   if (!made) throw new Error("whisper refused");
-  app.realtime.pushWhisper(made.ownerId, toWireWhisper(made));
+  app.realtime.pushWhisper(made);
   return made;
 }
 /** Moves a whisper `days` days into the past. */
@@ -114,7 +120,7 @@ describe("createWhisper", () => {
     const before = await lastSeqOf(w.g);
     const messages = Number((await db.query("select count(*) n from messages")).rows[0].n);
     const made = await whisper(w);
-    expect(made).toMatchObject({ conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, afterSeq: before, kind: "found_elsewhere", status: "open", resolvedAt: null, body: BODY });
+    expect(made).toMatchObject({ conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, afterSeq: before, kind: "memory", status: "open", resolvedAt: null, body: BODY });
     expect(await lastSeqOf(w.g)).toBe(before);
     expect(Number((await db.query("select count(*) n from messages")).rows[0].n)).toBe(messages);
     // The next message takes the next seq, as if nothing had happened.
@@ -172,7 +178,7 @@ describe("createWhisper", () => {
 describe("a body that could not be stored or would weigh on every sync", () => {
   const SECRET = "SECRET-dz7 只给主人";
   const make = (t: Parameters<Parameters<typeof db.tx>[0]>[0], w: World, body: unknown) =>
-    createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, kind: "found_elsewhere", body: body as WhisperBody }, app.log);
+    createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, kind: "memory", body: body as WhisperBody }, app.log);
   const nested = (n: number): unknown => (n === 0 ? SECRET : { d: nested(n - 1) });
   const cycle: Record<string, unknown> = { text: SECRET };
   cycle.self = cycle;
@@ -224,7 +230,7 @@ describe("a body that could not be stored or would weigh on every sync", () => {
     const lines = logLines.slice(from);
     const warned = lines.map((l) => JSON.parse(l) as { level: number; kind?: string; msg: string }).filter((l) => l.level === 40 && /whisper/.test(l.msg));
     expect(warned).toHaveLength(REFUSED.length);
-    for (const l of warned) expect(l.kind).toBe("found_elsewhere");
+    for (const l of warned) expect(l.kind).toBe("memory");
     for (const line of lines) {
       expect(line).not.toContain("SECRET-dz7");
       expect(line).not.toContain("只给主人");
@@ -240,8 +246,43 @@ describe("the owner learns of it", () => {
     const push = await socket.next((e) => e.type === "whisper");
     expect(push).toEqual({
       type: "whisper",
-      whisper: { id: made.id, conversationId: w.g, agentId: w.agent.id, afterSeq: made.afterSeq, kind: "found_elsewhere", text: BODY.text, actions: ["tell", "dismiss"], status: "open", createdAt: made.createdAt.toISOString(), revision: 0 },
+      whisper: { id: made.id, conversationId: w.g, agentId: w.agent.id, afterSeq: made.afterSeq, kind: "memory", text: BODY.text, actions: ["tell", "dismiss"], status: "open", createdAt: made.createdAt.toISOString(), revision: 0 },
     });
+  });
+
+  it("what is read for its push delays nothing the other members are sent: it goes on its owner's own queue, not the conversation's", async () => {
+    const w = await world();
+    const [ownerSocket, nedSocket] = [await connect(app, w.owner), await connect(app, w.ned)];
+    // The push's read of the whisper (at delivery, in its snapshot's transaction) held until released.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const real = app.deps.db.tx;
+    app.deps.db.tx = ((fn: (t: any) => Promise<unknown>) =>
+      real.call(app.deps.db, (t: any) =>
+        fn(
+          new Proxy(t, {
+            get: (o, p) =>
+              p === "query"
+                ? async (text: unknown, params?: unknown) => {
+                    if (typeof text === "string" && /from whispers where owner_id = \$1 and id = any/.test(text)) await held;
+                    return o.query(text, params);
+                  }
+                : Reflect.get(o, p),
+          }),
+        ),
+      )) as typeof real;
+    try {
+      const made = await whisper(w);
+      const seq = await say(w.mia, w.g, "照常说话");
+      // ned's frame of the message comes while the whisper's read is still held.
+      await nedSocket.waitFor((e) => e.type === "message" && e.message.conversationId === w.g && e.message.seq === seq, { timeoutMs: 3000 });
+      expect(ownerSocket.events.some((e) => e.type === "whisper")).toBe(false);
+      release();
+      await ownerSocket.waitFor((e) => e.type === "whisper" && e.whisper.id === made.id);
+    } finally {
+      app.deps.db.tx = real;
+      release();
+    }
   });
 
   it("in /api/sync (its open ones, and the answered ones of the messages it holds) and `whispers: n` on that conversation only, absent at 0", async () => {
@@ -349,7 +390,7 @@ describe("the owner learns of it", () => {
   const answeredMany = (w: World, n: number, afterSeq: number) =>
     db.query(
       `insert into whispers (conversation_id, owner_id, agent_id, after_seq, kind, body, status, created_at, resolved_at)
-       select $1, $2, $3, $4, 'found_elsewhere', '{"text": "答过了", "actions": ["dismiss"]}', 'declined', now() + g * interval '1 second', now()
+       select $1, $2, $3, $4, 'memory', '{"text": "答过了", "actions": ["dismiss"]}', 'declined', now() + g * interval '1 second', now()
          from generate_series(1, $5::int) g`,
       [w.g, w.owner.id, w.agent.id, afterSeq, n],
     );
@@ -412,8 +453,8 @@ describe("answering", () => {
     const b = await whisper(w);
     await socket.waitFor((e) => e.type === "whisper" && e.whisper.id === b.id);
     const accepted = await api(app, w.owner, "POST", `/api/whispers/${a.id}/accept`);
-    // Answered: its status, and its revision raised by one (migration 057: which copy is the later).
-    expect(accepted).toEqual({ status: 200, json: { ...JSON.parse(JSON.stringify(toWireWhisper(a))), status: "accepted", revision: a.revision + 1 } });
+    // Answered: its status, and a higher revision (of two copies, the later: its owner's clients keep it).
+    expect(accepted).toEqual({ status: 200, json: { ...JSON.parse(JSON.stringify(toWireWhisper(a))), status: "accepted", revision: 1 } });
     expect(await socket.next((e) => e.type === "whisper" && e.whisper.status === "accepted")).toEqual({ type: "whisper", whisper: accepted.json });
     expect(await api(app, w.owner, "POST", `/api/whispers/${a.id}/accept`)).toEqual({ status: 409, json: { error: "stale_whisper" } });
     expect(await api(app, w.owner, "POST", `/api/whispers/${a.id}/decline`)).toEqual({ status: 409, json: { error: "stale_whisper" } });
@@ -425,6 +466,40 @@ describe("answering", () => {
       { status: "accepted", resolved: true },
       { status: "declined", resolved: true },
     ]);
+  });
+
+  it("M-13: an answer once stored stands — a push after it that fails is logged as a code, nothing of the whisper, and the answer is 200", async () => {
+    const w = await world();
+    const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });
+    const from = logLines.length;
+    const failing = vi.spyOn(app.realtime, "pushWhisper").mockImplementation(() => {
+      throw Object.assign(new Error(`push failed: ${BODY.text}`), { code: "XX000" });
+    });
+    const declined = await api(app, w.owner, "POST", `/api/whispers/${made.id}/decline`).finally(() => failing.mockRestore());
+    expect([declined.status, declined.json.status]).toEqual([200, "declined"]);
+    expect(await statusOf(made.id)).toBe("declined");
+    const lines = logLines.slice(from);
+    expect(lines.filter((l) => l.includes('"code":"XX000"'))).toHaveLength(1);
+    expect(lines.join("\n")).not.toContain(BODY.text);
+    expect(lines.join("\n")).not.toContain("周五");
+  });
+
+  it("M-13: an accept whose push fails still does what follows it (its hook's step after commit: the told reply's announcement)", async () => {
+    const w = await world();
+    const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });
+    const realHook = ANSWER_HOOKS.found_elsewhere;
+    let followed = 0;
+    ANSWER_HOOKS.found_elsewhere = { accepted: async () => () => void followed++ };
+    const failing = vi.spyOn(app.realtime, "pushWhisper").mockImplementation(() => {
+      throw Object.assign(new Error("push failed"), { code: "XX000" });
+    });
+    try {
+      expect((await api(app, w.owner, "POST", `/api/whispers/${made.id}/accept`)).status).toBe(200);
+    } finally {
+      failing.mockRestore();
+      ANSWER_HOOKS.found_elsewhere = realHook;
+    }
+    expect(followed).toBe(1);
   });
 
   it("only with a button it offers: accept needs `tell`, decline `dismiss`", async () => {
@@ -469,7 +544,7 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
       await expireOfAgent(t, w.agent.id);
     });
     await del.held;
-    const made = db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, kind: "found_elsewhere", body: BODY }));
+    const made = db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: w.owner.id, agentId: w.agent.id, kind: "memory", body: BODY }));
     const waited = await waitsForALock(made);
     del.release();
     await del.done;
@@ -506,7 +581,7 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
 
   it("an answer waits for a delete's lock on the Agent's row before it takes the whisper's: with a hook that locks the Agent, no deadlock", async () => {
     const w = await world();
-    const made = await whisper(w);
+    const made = await whisper(w, { kind: "found_elsewhere", body: found(w) });
     const realHook = ANSWER_HOOKS.found_elsewhere;
     ANSWER_HOOKS.found_elsewhere = LOCKS_THE_AGENT;
     try {
@@ -530,17 +605,20 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
   it("an accept and the Agent's delete at the same moment, 20 times: never an error, and one outcome each time", async () => {
     const w = await world();
     const realHook = ANSWER_HOOKS.found_elsewhere;
-    ANSWER_HOOKS.found_elsewhere = LOCKS_THE_AGENT;
+    let hooked = 0;
+    ANSWER_HOOKS.found_elsewhere = { accepted: async (t, x) => void (hooked++, await LOCKS_THE_AGENT.accepted(t, x)) };
     try {
       for (let i = 0; i < 20; i++) {
         const agent = await mustCreateAgent(app, w.owner, { model: FAST });
         expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/members`, { principalId: agent.id })).status).toBe(201);
-        const made = await whisper(w, { agentId: agent.id });
+        const made = await whisper(w, { agentId: agent.id, kind: "found_elsewhere", body: found(w) });
+        const before = hooked;
         const [accepted, deleted] = await Promise.all([api(app, w.owner, "POST", `/api/whispers/${made.id}/accept`), api(app, w.owner, "DELETE", `/api/agents/${agent.id}`)]);
         expect([i, deleted.status]).toEqual([i, 200]);
-        const status = await statusOf(made.id);
-        if (accepted.status === 200) expect([i, status]).toEqual([i, "accepted"]);
-        else expect([i, accepted.status, status]).toEqual([i, 404, "expired"]);
+        // Answered first (its hook ran, nothing stored), then expired by the delete; or found gone (404) after it.
+        if (accepted.status === 200) expect([i, accepted.json.status, hooked - before]).toEqual([i, "open", 1]);
+        else expect([i, accepted.status, hooked - before]).toEqual([i, 404, 0]);
+        expect([i, await statusOf(made.id)]).toEqual([i, "expired"]);
       }
     } finally {
       ANSWER_HOOKS.found_elsewhere = realHook;
@@ -569,10 +647,11 @@ describe("against the Agent's delete and its leaving (lock order: conversation �
     try {
       for (let i = 0; i < 20; i++) {
         round();
-        const [a, b] = [await whisper(w), await whisper(w, { conversationId: g2 })];
+        const [a, b] = [await whisper(w, { kind: "found_elsewhere", body: found(w) }), await whisper(w, { conversationId: g2, kind: "found_elsewhere", body: found(w) })];
         const answers = await Promise.all([a, b].map((x) => api(app, w.owner, "POST", `/api/whispers/${x.id}/accept`)));
-        expect([i, answers.map((r) => r.status)]).toEqual([i, [200, 200]]);
-        expect([i, await statusOf(a.id), await statusOf(b.id)]).toEqual([i, "accepted", "accepted"]);
+        expect([i, answers.map((r) => r.status), meet!.arrived]).toEqual([i, [200, 200], 2]);
+        // Both answered: nothing stored (the hook's told reply would be what makes them telling).
+        expect([i, await statusOf(a.id), await statusOf(b.id)]).toEqual([i, "open", "open"]);
       }
     } finally {
       ANSWER_HOOKS.found_elsewhere = realHook;
@@ -697,7 +776,7 @@ describe("expiry", () => {
     expect((await api(app, ned, "POST", `/api/conversations/${w.g}/members`, { principalId: nedsAgent.id })).status).toBe(201);
     const mine = await whisper(w);
     const elsewhere = await whisper(w, { conversationId: w.agent.conversationId });
-    const neds = await db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: ned.id, agentId: nedsAgent.id, kind: "found_elsewhere", body: BODY }));
+    const neds = await db.tx((t) => createWhisper(t, { conversationId: w.g, ownerId: ned.id, agentId: nedsAgent.id, kind: "memory", body: BODY }));
     expect((await api(app, w.owner, "DELETE", `/api/conversations/${w.g}/members/${w.owner.id}`)).status).toBe(200);
     expect([await statusOf(mine.id), await statusOf(elsewhere.id), await statusOf(neds!.id)]).toEqual(["expired", "open", "open"]);
     expect((await db.query("select resolved_at is not null as done from whispers where id = $1", [mine.id])).rows[0]).toEqual({ done: true });
@@ -743,5 +822,8 @@ describe("expiry", () => {
     expect(rows.some((r) => /\(status, created_at\)/.test(r.indexdef))).toBe(true);
     // The open ones of an owner in a conversation (their count on every sync, the open half of sync): a partial index.
     expect(rows.some((r) => /\(owner_id, conversation_id\) WHERE \(status = 'open'::text\)/.test(r.indexdef))).toBe(true);
+    // A whisper's told replies (its state is read from them: telling, told): migration 061.
+    const runs = await db.query<{ indexdef: string }>("select indexdef from pg_indexes where tablename = 'agent_runs'");
+    expect(runs.rows.some((r) => /\(whisper_id\) WHERE \(whisper_id IS NOT NULL\)/.test(r.indexdef))).toBe(true);
   });
 });

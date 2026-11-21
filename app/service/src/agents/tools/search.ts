@@ -100,10 +100,23 @@ function findIn(text: string, term: string): number {
 
 /** `text` as a result shows it: on one line, and when heavier than `EXCERPT_MAX_WEIGHT` cut around where `term` is in it. */
 export function excerpt(text: string, term: string): string {
+  return excerptAt(text, matchAt(text, term));
+}
+
+/** Where `term` is in `text` once on one line (as a result shows it, `excerptAt`), case ignored; -1 when nowhere. */
+export function matchAt(text: string, term: string): number {
+  return findIn(oneLine(text), term);
+}
+
+/**
+ * `text` on one line, and when heavier than `EXCERPT_MAX_WEIGHT` cut around `at` — where the words are in that line
+ * (`matchAt`; at most 0, or past its end: from its start). What a whisper keeps of a hit is that place, not the words
+ * (agents/tools/elsewhere.ts): its excerpt is cut so again when it is read.
+ */
+export function excerptAt(text: string, at: number): string {
   const line = oneLine(text);
   if (weight(line) <= EXCERPT_MAX_WEIGHT) return line;
-  const at = findIn(line, term);
-  if (at <= 0) return cutToWeight(line, EXCERPT_MAX_WEIGHT - weight(ELLIPSIS)) + ELLIPSIS;
+  if (at <= 0 || at >= line.length) return cutToWeight(line, EXCERPT_MAX_WEIGHT - weight(ELLIPSIS)) + ELLIPSIS;
   const before = lastToWeight(line.slice(0, at), EXCERPT_BEFORE_WEIGHT);
   const head = before.length < at ? ELLIPSIS + before : before;
   const rest = cutToWeight(line.slice(at), EXCERPT_MAX_WEIGHT - weight(head) - weight(ELLIPSIS));

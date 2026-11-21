@@ -32,6 +32,17 @@ export async function tx<T>(pool: pg.Pool, fn: (client: pg.PoolClient) => Promis
 }
 
 /** Default `statement_timeout` of a pool (`DB_STATEMENT_TIMEOUT_MS`). */
+/**
+ * Runs `fn` in a read-only transaction on one snapshot, so every part of an answer describes the same moment (sync and
+ * catch-up; a whisper's copy: its row, its told replies and its hits).
+ */
+export function onSnapshot<T>(db: Db, fn: (t: Tx) => Promise<T>): Promise<T> {
+  return db.tx(async (t) => {
+    await t.query("set transaction isolation level repeatable read, read only");
+    return fn(t);
+  });
+}
+
 export const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 /** Default wait for a pool connection (`DB_ACQUIRE_TIMEOUT_MS`). */
 export const DEFAULT_ACQUIRE_TIMEOUT_MS = 10_000;

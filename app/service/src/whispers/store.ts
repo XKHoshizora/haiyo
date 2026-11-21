@@ -1,6 +1,8 @@
 import type { FastifyBaseLogger } from "fastify";
 import { cleanText } from "../agents/runtime/prompt.ts";
-import { lockConversation } from "../conversations/store.ts";
+import { DEFAULT_WHISPERS } from "../config.ts";
+import { lockConversation, visibleJoin } from "../conversations/store.ts";
+import { handleOf } from "../principals/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { weight } from "../metering/tokens.ts";
 
@@ -14,9 +16,17 @@ import { weight } from "../metering/tokens.ts";
  * the conversation (`after_seq >= joined_seq` of their current membership, the seq the message visibility rule starts at).
  *
  * A whisper is open until its owner answers it (`resolveWhisper`, once), it is 7 days old (`expireWhispers`, the periodic
- * sweep), its owner or its Agent leaves the conversation (`expireOnLeave`), or its Agent is deleted (`expireOfAgent`); it
- * goes with the conversation's, the owner's or the Agent's row, and an answered or expired one is deleted 30 days after it
- * was made (`removeOldWhispers`, the same sweep). Nothing here reads, logs or returns a whisper's text to anyone but its owner.
+ * sweep; a `found_elsewhere` one a day, `WHISPERS.elsewhereTtlHours`), its owner or its Agent leaves the conversation
+ * (`expireOnLeave`), or its Agent is deleted (`expireOfAgent`); it goes with the conversation's, the owner's or the Agent's
+ * row, and an answered or expired one is deleted 30 days after it was made (`removeOldWhispers`, the same sweep). Nothing
+ * here reads, logs or returns a whisper's text to anyone but its owner.
+ *
+ * A `found_elsewhere` whisper (Redesign D) stores `open`, `declined` or `expired` only — never `accepted` (migration 061):
+ * what its owner reads of it is derived from its told replies (`agent_runs.whisper_id`). It is told only because a posted
+ * message of a told reply of it exists (the message whose `client_txn` is that run's id); telling while a told reply of it
+ * is queued or running; otherwise open — with `lastTellFailed` once one ended without posting — unless none of the messages
+ * it found (its references, agents/tools/elsewhere.ts) can be read by its owner now: then it reads expired. Nothing about a
+ * tell is ever written to the whisper, so a tell that posts nothing leaves nothing to repair: it simply reads open again.
  *
  * Lock order, one rule for everything here and for whatever calls it: the conversation's row → the Agent's `agents` row
  * (`createWhisper` takes it for share, `resolveWhisper` for update) → run rows → `accounts` rows (runs.ts's order) → whisper
@@ -31,9 +41,16 @@ import { weight } from "../metering/tokens.ts";
 
 export const WHISPER_KINDS = ["found_elsewhere", "tools_off", "memory", "allowance"] as const;
 export type WhisperKind = (typeof WHISPER_KINDS)[number];
+/** What a whisper's row stores (a `found_elsewhere` one never `accepted`: migration 061). */
 export const WHISPER_STATUSES = ["open", "accepted", "declined", "expired"] as const;
 export type WhisperStatus = (typeof WHISPER_STATUSES)[number];
-/** The buttons a whisper may offer: `tell` (告诉他们) answers it `accepted`, `dismiss` (不用) `declined`. */
+/** What its owner reads (whispers/wire.ts): the stored status, or for a `found_elsewhere` one its derived state. */
+export const WIRE_STATUSES = ["open", "telling", "told", "accepted", "declined", "expired"] as const;
+export type WireStatus = (typeof WIRE_STATUSES)[number];
+/**
+ * The buttons a whisper may offer: `tell` (告诉他们) answers it `accepted` — a `found_elsewhere` one stores nothing for it, its
+ * told reply is queued instead (whispers/routes.ts) —, `dismiss` (不用) `declined`.
+ */
 export const WHISPER_ACTIONS = ["tell", "dismiss"] as const;
 export type WhisperAction = (typeof WHISPER_ACTIONS)[number];
 export type WhisperAnswer = "accepted" | "declined";
@@ -49,19 +66,19 @@ export const WHISPER_DETAIL_MAX = 8192;
 /** How deep a `detail` may nest (it counts 1), and how many values it may hold in all (itself included). */
 const DETAIL_DEPTH_MAX = 6;
 const DETAIL_VALUES_MAX = 200;
-/** An open whisper this many days old is expired by the sweep. */
+/** An open whisper this many days old is expired by the sweep (a `found_elsewhere` one: `WHISPERS.elsewhereTtlHours`). */
 export const WHISPER_OPEN_DAYS = 7;
 /** An answered or expired whisper this many days old (from when it was made) is deleted by the sweep. */
 export const WHISPER_KEEP_DAYS = 30;
 /** A sweep works through at most `WHISPER_SWEEP_BATCHES` batches of `WHISPER_SWEEP_BATCH` rows (for each of its two jobs); what is left waits for the next run. */
 export const WHISPER_SWEEP_BATCH = 500;
 export const WHISPER_SWEEP_BATCHES = 20;
-/** At most this many whispers go with one sync or catch-up answer: every open one first, then the newest answered ones. */
+/** At most this many whispers go with one sync or catch-up answer: every live one first, then the newest others. */
 export const WHISPERS_PER_ANSWER = 500;
 /** A page of the list route adds at most this many whispers of the place its last one sits at (the rest of that place). */
 export const WHISPERS_PER_PLACE = 100;
 
-/** What a whisper says: its text, its buttons and what a later task keeps with it (`detail`, given back to the owner as it is). */
+/** What a whisper says: its text, its buttons and what a later task keeps with it (`detail`). */
 export interface WhisperBody {
   text: string;
   actions: WhisperAction[];
@@ -77,11 +94,10 @@ export interface Whisper {
   afterSeq: number;
   kind: WhisperKind;
   body: WhisperBody;
+  /** As stored (a `found_elsewhere` one's state is derived when it is read: whispers/wire.ts `wireWhispers`). */
   status: WhisperStatus;
   createdAt: Date;
   resolvedAt: Date | null;
-  /** Raised by one at every change of its status (migration 057): which of two copies is the later. */
-  revision: number;
 }
 
 interface WhisperRow {
@@ -95,11 +111,10 @@ interface WhisperRow {
   status: WhisperStatus;
   created_at: Date;
   resolved_at: Date | null;
-  revision: number;
 }
 
 const columns = (alias: string): string =>
-  ["id", "conversation_id", "owner_id", "agent_id", "after_seq", "kind", "body", "status", "created_at", "resolved_at", "revision"].map((c) => `${alias}.${c}`).join(", ");
+  ["id", "conversation_id", "owner_id", "agent_id", "after_seq", "kind", "body", "status", "created_at", "resolved_at"].map((c) => `${alias}.${c}`).join(", ");
 const COLUMNS = columns("whispers");
 
 const toWhisper = (r: WhisperRow): Whisper => ({
@@ -113,8 +128,238 @@ const toWhisper = (r: WhisperRow): Whisper => ({
   status: r.status,
   createdAt: r.created_at,
   resolvedAt: r.resolved_at,
-  revision: r.revision,
 });
+
+// ───────── what a `found_elsewhere` whisper's state is derived from (Redesign D)
+
+/** SQL: a told reply of whisper `w` (an alias) has posted its reply — the whisper is told. */
+const toldSql = (w: string): string =>
+  `exists (select 1 from agent_runs tr join messages tm on tm.conversation_id = tr.conversation_id and tm.sender_id = tr.agent_id and tm.client_txn = tr.id::text
+            where tr.whisper_id = ${w}.id and tr.owner_id = ${w}.owner_id)`;
+/** SQL: a told reply of whisper `w` is queued or running — the whisper is telling (an Agent has one such run there at most). */
+const tellingSql = (w: string): string =>
+  `exists (select 1 from agent_runs tr where tr.whisper_id = ${w}.id and tr.owner_id = ${w}.owner_id and tr.status in ('queued', 'running'))`;
+/** The shape of a uuid, the one pattern a reference's `conversationId` is held to (SQL here; agents/tools/elsewhere.ts makes them). */
+const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+/** `WHISPERS.elsewhereTtlHours` as it goes into SQL: a whole number of hours (config.ts takes 1–168), never anything else. */
+function hours(ttlHours: number): string {
+  if (!Number.isSafeInteger(ttlHours) || ttlHours < 1) throw new Error("whispers: elsewhereTtlHours must be a whole number of hours");
+  return String(ttlHours);
+}
+/**
+ * SQL: the moment `found_elsewhere` whisper `w` is a day old (`ttlHours` after it was made) — the one definition of it: it
+ * reads expired from then (`agedSql`), and its owner's wire says when (`openUntil`, `retryableUntil`: fix round 3), so her
+ * screen stops offering it at that moment on its own, without waiting for the sweep's push.
+ */
+const endsSql = (w: string, ttlHours: number): string => `(${w}.created_at + ${hours(ttlHours)} * interval '1 hour')`;
+/** SQL: `found_elsewhere` whisper `w` is a day old (`endsSql` has come): it reads expired from then, before the sweep stores it so. */
+const agedSql = (w: string, ttlHours: number): string => `(${endsSql(w, ttlHours)} <= now())`;
+/**
+ * SQL, the FROM items of THE rule for whether a hit can be read (one definition, for every predicate here and the hits'
+ * own read, `readableHits`): each of whisper `w`'s references (`detail.hits`: `{conversationId, seq, at}`, agents/tools/
+ * elsewhere.ts) as `h (ref, ord)`, joined to the message it points at (`m`) as its owner may read it now (`visibleJoin`: a
+ * current member there, the message after their joining). With `HIT_READABLE` in the WHERE: a text or file message, and a
+ * reference of exactly that shape — anything else points at nothing, for all of them alike.
+ */
+const hitFrom = (w: string): string =>
+  `jsonb_array_elements(case when jsonb_typeof(${w}.body -> 'detail' -> 'hits') = 'array' then ${w}.body -> 'detail' -> 'hits' else '[]'::jsonb end) with ordinality as h (ref, ord)
+   cross join lateral (select ${w}.owner_id as reader_id) as r
+   join messages m on m.conversation_id = case when jsonb_typeof(h.ref -> 'conversationId') = 'string' and (h.ref ->> 'conversationId') ~ '${UUID_PATTERN}' then (h.ref ->> 'conversationId')::uuid end
+                  and m.seq = case when jsonb_typeof(h.ref -> 'seq') = 'number' and (h.ref ->> 'seq') ~ '^[1-9][0-9]{0,15}$' then (h.ref ->> 'seq')::bigint end
+   ${visibleJoin("r.reader_id")}`;
+const HIT_READABLE = `m.kind in ('text', 'file') and jsonb_typeof(h.ref -> 'at') = 'number' and (h.ref ->> 'at') ~ '^[0-9]{1,9}$'`;
+/** SQL: one of whisper `w`'s hits can be read by its owner now (`hitFrom`). */
+const readableHitSql = (w: string): string => `exists (select 1 from ${hitFrom(w)} where ${HIT_READABLE})`;
+/** SQL: `found_elsewhere` whisper `w` reads open — stored open, not told, not telling, not a day old, a hit left to read. */
+const readsOpenSql = (w: string, ttlHours: number): string =>
+  `(${w}.status = 'open' and not ${toldSql(w)} and not ${tellingSql(w)} and not ${agedSql(w, ttlHours)} and ${readableHitSql(w)})`;
+/**
+ * SQL: whisper `w` is still live for its owner — open; a `found_elsewhere` one reading open or telling. What sync and
+ * catch-up always carry, and what that kind's cap counts.
+ */
+const liveSql = (w: string, ttlHours: number): string =>
+  `(${w}.status = 'open' and (${w}.kind <> 'found_elsewhere' or ${tellingSql(w)} and not ${toldSql(w)} or ${readsOpenSql(w, ttlHours)}))`;
+/** SQL: whisper `w` waits for its owner's answer — open and offering a button; a `found_elsewhere` one reading open. The conversation entry's `whispers: n` (sync/read.ts). */
+export const waitingSql = (w: string, ttlHours: number): string =>
+  `(${w}.status = 'open' and jsonb_array_length(${w}.body -> 'actions') > 0 and (${w}.kind <> 'found_elsewhere' or ${readsOpenSql(w, ttlHours)}))`;
+/** SQL: whisper `w` is not a told `found_elsewhere` one (told is final: nothing expires it). */
+const notTold = (w: string): string => `(${w}.kind <> 'found_elsewhere' or not ${toldSql(w)})`;
+
+/** What the told replies of a `found_elsewhere` whisper, and its age, say of it now. */
+export interface TellState {
+  /** How many told replies it has had. */
+  runs: number;
+  /** One of them is queued or running. */
+  telling: boolean;
+  /** One of them posted its reply. */
+  told: boolean;
+  /** It is `elsewhereTtlHours` old: it reads expired unless told or telling. */
+  aged: boolean;
+  /** The moment it is that old (`endsSql`); null only in `NO_TELL`. */
+  ends: Date | null;
+}
+export const NO_TELL: Readonly<TellState> = Object.freeze({ runs: 0, telling: false, told: false, aged: false, ends: null });
+
+/** The told replies and the age of each of `ids` (their owner's runs only), as they are now, by whisper id: one statement. */
+export async function tellStates(q: Queryable, ids: readonly string[], ttlHours: number): Promise<Map<string, TellState>> {
+  const out = new Map<string, TellState>();
+  if (ids.length === 0) return out;
+  const { rows } = await q.query<{ id: string } & TellState>(
+    `select w.id, count(r.id)::int as runs, coalesce(bool_or(r.status in ('queued', 'running')), false) as telling,
+            coalesce(bool_or(exists (select 1 from messages m where m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text)), false) as told,
+            ${agedSql("w", ttlHours)} as aged, ${endsSql("w", ttlHours)} as ends
+       from whispers w left join agent_runs r on r.whisper_id = w.id and r.owner_id = w.owner_id
+      where w.id = any($1::uuid[])
+      group by w.id`,
+    [ids],
+  );
+  for (const r of rows) out.set(r.id, { runs: r.runs, telling: r.telling, told: r.told, aged: r.aged, ends: r.ends });
+  return out;
+}
+
+/** One hit of a whisper, as its owner may read it now (`readableHits`): what agents/tools/elsewhere.ts shows of it. */
+export interface HitRow {
+  whisperId: string;
+  /** Its place among the whisper's hits (1 the newest). */
+  ord: number;
+  /** Where the words are in its text, once on one line. */
+  at: number;
+  createdAt: Date;
+  text: string | null;
+  /** A file message's file name. */
+  attachmentName: string | null;
+  senderName: string;
+  senderHandle: string;
+  /** The conversation's title (a group's; null when it has none) and type. */
+  title: string | null;
+  conversationType: string;
+}
+
+/** The hits of each of `ids` its owner can read now (THE rule, `hitFrom`), in each whisper's order: one statement. */
+export async function readableHits(q: Queryable, ids: readonly string[]): Promise<HitRow[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await q.query<{
+    whisper_id: string;
+    ord: string;
+    at: number;
+    created_at: Date;
+    text: string | null;
+    attachment_name: string | null;
+    sender_name: string;
+    sender_handle: string;
+    title: string | null;
+    conversation_type: string;
+  }>(
+    `select w.id as whisper_id, h.ord, (h.ref ->> 'at')::int as at, m.created_at, m.body ->> 'text' as text,
+            case when m.kind = 'file' then m.body -> 'attachment' ->> 'name' end as attachment_name,
+            sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, c.title, c.type as conversation_type
+       from whispers w
+      cross join ${hitFrom("w")}
+       join principals sp on sp.id = m.sender_id
+       join conversations c on c.id = m.conversation_id
+      where w.id = any($1::uuid[]) and ${HIT_READABLE}
+      order by w.id, h.ord`,
+    [ids],
+  );
+  return rows.map((r) => ({
+    whisperId: r.whisper_id,
+    ord: Number(r.ord),
+    at: r.at,
+    createdAt: r.created_at,
+    text: r.text,
+    attachmentName: r.attachment_name,
+    senderName: r.sender_name,
+    senderHandle: r.sender_handle,
+    title: r.title,
+    conversationType: r.conversation_type,
+  }));
+}
+
+/**
+ * SQL, THE rule (`mayTell`) for whisper `w` and the told reply `ownRun` (an SQL expression: a run id): `w` reads open, or
+ * `ownRun` is the told reply of it that is telling it now (queued or running).
+ */
+const mayTellSql = (w: string, ttlHours: number, ownRun: string): string =>
+  `(${readsOpenSql(w, ttlHours)}
+    or (${w}.status = 'open' and not ${toldSql(w)} and ${readableHitSql(w)}
+        and exists (select 1 from agent_runs o where o.id = ${ownRun} and o.whisper_id = ${w}.id and o.owner_id = ${w}.owner_id and o.status in ('queued', 'running'))))`;
+
+/**
+ * THE rule for whether a told reply of `found_elsewhere` whisper `w` may begin now — a press of 告诉他们
+ * (`resolveWhisper`), a retry of its failed told reply (agents/runs.ts `retryInGroup`) and the told reply's own beginning
+ * (agents/tools/elsewhere.ts `toldHits`) all ask this, and nothing else: it reads open (stored open, not told, not
+ * telling, not `ttlHours` old, a hit left to read), or `ownRunId` is the told reply that is telling it (a day may have
+ * passed since its owner pressed). `telling` and `told` say why not, for the answer's refusal. Declined and expired are so
+ * final: nothing can tell them.
+ */
+export async function mayTell(
+  q: Queryable,
+  w: Pick<Whisper, "id" | "ownerId">,
+  { ttlHours, ownRunId = null }: { ttlHours: number; ownRunId?: string | null },
+): Promise<{ may: boolean; telling: boolean; told: boolean }> {
+  const { rows } = await q.query<{ may: boolean; telling: boolean; told: boolean }>(
+    `select ${mayTellSql("w", ttlHours, "$3::uuid")} as may, ${tellingSql("w")} as telling, ${toldSql("w")} as told
+       from whispers w where w.id = $1 and w.owner_id = $2 and w.kind = 'found_elsewhere'`,
+    [w.id, w.ownerId, ownRunId],
+  );
+  return rows[0] ?? { may: false, telling: false, told: false };
+}
+
+/** Whether a told reply may tell its whisper again (`tellableRuns`), and until when at the latest (its whisper's `endsSql`). */
+export interface Tellable {
+  may: boolean;
+  /** While it may: the moment its whisper is a day old, when that stops (other answers stop it sooner, and are pushed). */
+  until: Date | null;
+}
+
+/**
+ * Of the told replies among `runIds` (`agent_runs.whisper_id` set; any other is left out), whether THE rule (`mayTell`)
+ * lets each tell its whisper again — what decides whether a failed one is offered 重试 (agents/runs.ts `toWireRun`'s
+ * `retryable`, its owner's wire only): not once its whisper is declined, expired, a day old or told, or gone — and while it
+ * may, until when (`until`, its whisper's day: the moment the rule itself turns, fix round 3). One statement.
+ */
+export async function tellableRuns(q: Queryable, runIds: readonly string[], ttlHours: number): Promise<Map<string, Tellable>> {
+  const out = new Map<string, Tellable>();
+  if (runIds.length === 0) return out;
+  const { rows } = await q.query<{ id: string; may: boolean | null; until: Date | null }>(
+    `select r.id, t.may, t.until
+       from agent_runs r
+       left join lateral (select ${mayTellSql("w", ttlHours, "r.id")} as may, ${endsSql("w", ttlHours)} as until
+                            from whispers w where w.id = r.whisper_id and w.owner_id = r.owner_id and w.kind = 'found_elsewhere') t on true
+      where r.id = any($1::uuid[]) and r.whisper_id is not null`,
+    [runIds],
+  );
+  for (const r of rows) out.set(r.id, { may: r.may === true, until: r.may === true ? r.until : null });
+  return out;
+}
+
+/**
+ * The live `found_elsewhere` whispers of `ownerIds` (stored open, not told) any of whose references points into
+ * `conversationId`: once a leaving or a removal that ended their access there has committed, what to push to them — read as
+ * they are then, without the hits they can no longer read (Redesign D, fix round 1). Asked on the owner's own queue of
+ * whisper pushes (sync/hub.ts `pushWhispersPointingInto`), never in the leaving's transaction: what it costs depends on
+ * nobody's whispers but hers, and nobody waits for it. Her open whispers are found by the partial index on them
+ * (`whispers_open_owner_conversation_idx`); they are few.
+ */
+export async function whispersPointingInto(q: Queryable, conversationId: string, ownerIds: readonly string[]): Promise<Whisper[]> {
+  if (ownerIds.length === 0) return [];
+  const { rows } = await q.query<WhisperRow>(
+    `select ${columns("w")} from whispers w
+      where w.owner_id = any($2::uuid[]) and w.status = 'open' and w.kind = 'found_elsewhere'
+        and jsonb_typeof(w.body -> 'detail' -> 'hits') = 'array'
+        and w.body -> 'detail' -> 'hits' @> jsonb_build_array(jsonb_build_object('conversationId', $1::uuid::text))
+        and ${notTold("w")}`,
+    [conversationId, ownerIds],
+  );
+  return rows.map(toWhisper);
+}
+
+/** `ownerId`'s whispers among `ids`, as stored (a push, an answer: read again in the snapshot its copy is made in). */
+export async function readWhispers(q: Queryable, ownerId: string, ids: readonly string[]): Promise<Whisper[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await q.query<WhisperRow>(`select ${COLUMNS} from whispers where owner_id = $1 and id = any($2::uuid[])`, [ownerId, ids]);
+  return rows.map(toWhisper);
+}
 
 /** Why a body that is one in shape cannot be kept (content-free: what a refusal's warning says). */
 type Refusal = "text_too_long" | "detail_too_large" | "detail_too_deep" | "unstorable";
@@ -232,156 +477,43 @@ export async function createWhisper(
  * Whether one more `found_elsewhere` whisper of `ownerId` may be made in `conversationId` for Agent `agentId`'s reply run
  * `runId` (Task 8, agents/tools/elsewhere.ts): not when that reply has made one already (a `found_elsewhere` whisper of the
  * Agent there made since the run began: an Agent has one reply under way there at most), nor while the owner has `openMax`
- * open there. Read once before the lookup's query (so a lookup with no room costs none), and again in the whisper's
- * transaction, under the Agent's row it has locked (so two of one reply are one after the other); it locks nothing itself.
+ * there whose state is open or telling (`liveSql`: a told one, or one with no hit left to read, takes no room). Read once
+ * before the lookup's query (so a lookup with no room costs none), and again in the whisper's transaction, under the
+ * Agent's row it has locked (so two of one reply are one after the other); it locks nothing itself.
  */
 export async function roomForFoundElsewhere(
   t: Queryable,
   w: { ownerId: string; conversationId: string; agentId: string; runId: string },
   openMax: number,
+  ttlHours: number,
 ): Promise<boolean> {
   const { rows } = await t.query<{ mine: boolean; open: number }>(
     `select exists (select 1 from whispers w join agent_runs r on r.id = $4
                      where w.owner_id = $1 and w.conversation_id = $2 and w.agent_id = $3 and w.kind = 'found_elsewhere'
                        and w.created_at >= coalesce(r.started_at, r.created_at)) as mine,
             (select count(*)::int from whispers w
-              where w.owner_id = $1 and w.conversation_id = $2 and w.kind = 'found_elsewhere' and w.status = 'open') as open`,
+              where w.owner_id = $1 and w.conversation_id = $2 and w.kind = 'found_elsewhere' and ${liveSql("w", ttlHours)}) as open`,
     [w.ownerId, w.conversationId, w.agentId, w.runId],
   );
   return rows[0]?.mine === false && (rows[0]?.open ?? 0) < openMax;
 }
 
 /**
- * The `detail` of the whisper reply run `runId` was queued to tell (`agent_runs.whisper_id`, Task 8's `告诉他们`), read as
- * the run's owner, its owner (`owner_id = r.owner_id`): undefined when the run was queued for none; null when its whisper
- * is gone (deleted 30 days after it was made).
+ * The whisper reply run `runId` was queued to tell (`agent_runs.whisper_id`, Task 8's `告诉他们`), read as the run's owner
+ * (`owner_id = r.owner_id`): undefined when the run was queued for none; null when its whisper is gone (deleted 30 days
+ * after it was made). What its told reply is shown and quotes is read from it (agents/tools/elsewhere.ts `toldHits`,
+ * agents/conversation.ts `postAsAgent`).
  */
-export async function detailOfRunWhisper(q: Queryable, runId: string): Promise<{ detail: unknown } | null | undefined> {
-  const { rows } = await q.query<{ whisper_id: string | null; found: boolean; detail: unknown }>(
-    `select r.whisper_id, w.id is not null as found, w.body -> 'detail' as detail
+export async function whisperOfRun(q: Queryable, runId: string): Promise<Whisper | null | undefined> {
+  const { rows } = await q.query<{ told_id: string | null } & { [K in keyof WhisperRow]: WhisperRow[K] | null }>(
+    `select r.whisper_id as told_id, ${columns("w")}
        from agent_runs r left join whispers w on w.id = r.whisper_id and w.owner_id = r.owner_id
       where r.id = $1`,
     [runId],
   );
   const row = rows[0];
-  if (!row || row.whisper_id === null) return undefined;
-  return row.found ? { detail: row.detail } : null;
-}
-
-/** SQL: run `r` (an `agent_runs` alias) is the latest told run of the whisper it was queued to tell (round 4, M-1). */
-const LATEST_TELL = `not exists (select 1 from agent_runs y where y.whisper_id = r.whisper_id and (y.created_at, y.id) > (r.created_at, r.id))`;
-/** SQL: whisper `w` holds a hit its told reply could tell (agents/tools/elsewhere.ts `toldHits`: four strings each). */
-const HAS_HITS = `exists (select 1 from jsonb_array_elements(case when jsonb_typeof(w.body -> 'detail' -> 'hits') = 'array' then w.body -> 'detail' -> 'hits' else '[]'::jsonb end) h
-                   where jsonb_typeof(h -> 'where') = 'string' and jsonb_typeof(h -> 'who') = 'string' and jsonb_typeof(h -> 'when') = 'string' and jsonb_typeof(h -> 'text') = 'string')`;
-
-/**
- * What the end of reply run `runId` does to the whisper it was queued to tell (`agent_runs.whisper_id`: 告诉他们 answered it
- * `accepted`; round 3, a tell is never lost), under the conversation's row, which the caller holds (every writer of the
- * kind's whispers there takes it), and only for the whisper's latest told run (an earlier one's end changes nothing once
- * a newer tell was made: round 4, M-1). When nothing of the reply was posted (`posted` false: it failed, was recovered,
- * released, swept, stopped or cancelled), the whisper goes back to `open` — its hits and both buttons, for its owner to tell
- * once more or not — unless it is no longer `accepted` (given back already: idempotent), its owner or its Agent is no
- * longer a current member of the conversation or the Agent is deleted (a leaving or a delete closes it for good), or its
- * owner has `openMax` of the kind open there already (the kind's cap, which a reopened one counts toward: it stays answered,
- * and the periodic sweep tries again within a day, `repairTells`). A whisper with no hit left to tell is not given back to
- * be pressed in vain: it is closed, `expired`, as one gone stale (round 4, M-3). When the reply was posted, the tell was
- * made: a whisper open again since (its run retried after a reopening) is answered again. Returns the whisper when it
- * changed — for its owner's sockets alone once committed — else null. Whisper rows last, as everywhere.
- */
-export async function afterTell(t: Tx, runId: string, posted: boolean, openMax: number): Promise<Whisper | null> {
-  if (posted) {
-    const { rows } = await t.query<WhisperRow>(
-      `update whispers w set status = 'accepted', resolved_at = now(), revision = w.revision + 1
-         from agent_runs r
-        where r.id = $1 and w.id = r.whisper_id and w.owner_id = r.owner_id and w.status = 'open' and ${LATEST_TELL}
-        returning ${columns("w")}`,
-      [runId],
-    );
-    return rows[0] ? toWhisper(rows[0]) : null;
-  }
-  const { rows } = await t.query<WhisperRow>(
-    `update whispers w
-        set status = case when ${HAS_HITS} then 'open' else 'expired' end,
-            resolved_at = case when ${HAS_HITS} then null else now() end,
-            revision = w.revision + 1
-       from agent_runs r
-      where r.id = $1 and w.id = r.whisper_id and w.owner_id = r.owner_id and w.kind = 'found_elsewhere' and w.status = 'accepted' and ${LATEST_TELL}
-        and exists (select 1 from memberships me where me.conversation_id = w.conversation_id and me.principal_id = w.owner_id and me.left_seq is null)
-        and exists (select 1 from memberships am join agents a on a.principal_id = am.principal_id
-                     where am.conversation_id = w.conversation_id and am.principal_id = w.agent_id and am.left_seq is null and a.deleted_at is null)
-        and (not ${HAS_HITS}
-             or (select count(*) from whispers o
-                  where o.owner_id = w.owner_id and o.conversation_id = w.conversation_id and o.kind = 'found_elsewhere' and o.status = 'open') < $2)
-      returning ${columns("w")}`,
-    [runId, openMax],
-  );
-  return rows[0] ? toWhisper(rows[0]) : null;
-}
-
-/**
- * The told replies among `runIds` that ended without posting, given `afterTell` by a transaction which could not hold their
- * conversations' rows when they ended — after a pause's or a resume's (which holds the Agent's: runs.ts `interruptRuns`,
- * `endWhatPauseMissed`), and by the periodic sweep's repair (`repairTells`): each in a transaction of its own, under its
- * conversation's row and then the Agent's (`for share`), the lock order. A run whose transaction fails is logged (its id and
- * the error's code, nothing of any whisper) and the rest go on (round 4, I-1). Returns the whispers that changed, for their
- * owners' sockets.
- */
-export async function afterTellsEnded(
-  db: { tx: <T>(fn: (t: Tx) => Promise<T>) => Promise<T> },
-  runIds: readonly string[],
-  openMax: number,
-  log: Pick<FastifyBaseLogger, "error">,
-): Promise<Whisper[]> {
-  const changed: Whisper[] = [];
-  for (const runId of runIds) {
-    try {
-      const w = await db.tx(async (t) => {
-        const { rows } = await t.query<{ conversation_id: string; agent_id: string; status: string; told: boolean; posted: boolean }>(
-          `select r.conversation_id, r.agent_id, r.status, r.whisper_id is not null as told,
-                  exists (select 1 from messages m where m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text) as posted
-             from agent_runs r where r.id = $1`,
-          [runId],
-        );
-        const run = rows[0];
-        if (!run || !run.told || run.status === "queued" || run.status === "running") return null;
-        await lockConversation(t, run.conversation_id);
-        await t.query("select 1 from agents where principal_id = $1 for share", [run.agent_id]);
-        return afterTell(t, runId, run.posted, openMax);
-      });
-      if (w) changed.push(w);
-    } catch (err) {
-      log.error({ runId, code: (err as { code?: string } | null)?.code }, "a told reply's whisper could not be given back to its owner now; the periodic sweep tries again");
-    }
-  }
-  return changed;
-}
-
-/** The told replies the periodic sweep looks at: those that ended this long ago at least (their own give-back may be on its way)… */
-export const REPAIR_AFTER = "1 minute";
-/** …and at most this long ago. */
-export const REPAIR_WITHIN = "1 day";
-/** At most this many told replies a sweep looks at. */
-export const REPAIR_BATCH = 500;
-
-/**
- * The periodic sweep's safety net (app.ts `changeSweep`; round 4, I-1): every told reply (`whisper_id` set), the latest of its
- * whisper's, that ended — however — between `REPAIR_WITHIN` and `REPAIR_AFTER` ago without posting, and whose whisper is still
- * `accepted`, is given `afterTell` again (`afterTellsEnded`) — so a give-back lost between two transactions (the process
- * stopped after a pause's commit), or one the cap held, is made. Idempotent: everything is asked again inside. At most
- * `REPAIR_BATCH`, oldest ending first. Returns the whispers that changed, for their owners' sockets.
- */
-export async function repairTells(db: Queryable & { tx: <T>(fn: (t: Tx) => Promise<T>) => Promise<T> }, openMax: number, log: Pick<FastifyBaseLogger, "error">): Promise<Whisper[]> {
-  const { rows } = await db.query<{ id: string }>(
-    `select r.id from agent_runs r join whispers w on w.id = r.whisper_id and w.owner_id = r.owner_id
-      where r.whisper_id is not null and r.status not in ('queued', 'running') and w.status = 'accepted'
-        and r.finished_at >= now() - $1::interval and r.finished_at <= now() - $2::interval
-        and ${LATEST_TELL}
-        and not exists (select 1 from messages m where m.conversation_id = r.conversation_id and m.sender_id = r.agent_id and m.client_txn = r.id::text)
-      order by r.finished_at, r.id
-      limit $3`,
-    [REPAIR_WITHIN, REPAIR_AFTER, REPAIR_BATCH],
-  );
-  return rows.length === 0 ? [] : afterTellsEnded(db, rows.map((r) => r.id), openMax, log);
+  if (!row || row.told_id === null) return undefined;
+  return row.id === null ? null : toWhisper(row as WhisperRow);
 }
 
 /**
@@ -389,12 +521,22 @@ export async function repairTells(db: Queryable & { tx: <T>(fn: (t: Tx) => Promi
  * and nothing else (what an answer does for a kind is the caller's, whispers/routes.ts `ANSWER_HOOKS`). "gone" when there is
  * no whisper `id` of `ownerId`'s — anyone else's and none are found by the same single read —, and as well when its Agent
  * is deleted or it or its owner is no longer a current member of the conversation (whatever expired it or not); "stale"
- * when it is not open any more, or does not offer that answer's button. Takes, in the lock order, the conversation's row,
- * the Agent's (`for update`: what an answer's hook will lock next, held from here, so a delete in flight is waited for before
- * the whisper's row is taken, and two answers about one Agent never both hold it and then wait to strengthen it), then the
- * whisper's.
+ * when it is not open any more, or does not offer that answer's button. A `found_elsewhere` one is answered only while its
+ * derived state is open: "busy" while it is telling (a told reply of it queued or running), "stale" once it is told or
+ * when none of what it found can be read by its owner now (it reads expired); and `accepted` stores nothing — the told
+ * reply its hook queues is what makes it telling (Redesign D), so a tell that posts nothing leaves it open, to answer again.
+ * Takes, in the lock order, the conversation's row, the Agent's (`for update`: what an answer's hook will lock next, held
+ * from here, so a delete in flight is waited for before the whisper's row is taken, and two answers about one Agent never
+ * both hold it and then wait to strengthen it), then the whisper's. A told reply posts under the conversation's row, held
+ * here from the first read: whether it has posted cannot change before this answer commits.
  */
-export async function resolveWhisper(t: Tx, ownerId: string, id: string, to: WhisperAnswer): Promise<Whisper | "gone" | "stale"> {
+export async function resolveWhisper(
+  t: Tx,
+  ownerId: string,
+  id: string,
+  to: WhisperAnswer,
+  ttlHours: number = DEFAULT_WHISPERS.elsewhereTtlHours,
+): Promise<Whisper | "gone" | "stale" | "busy"> {
   const found = await t.query<{ conversation_id: string; agent_id: string }>("select conversation_id, agent_id from whispers where id = $1 and owner_id = $2", [id, ownerId]);
   if (!found.rows[0]) return "gone";
   const { conversation_id: conversationId, agent_id: agentId } = found.rows[0];
@@ -410,7 +552,14 @@ export async function resolveWhisper(t: Tx, ownerId: string, id: string, to: Whi
   );
   if (present.rows[0]?.n !== 2) return "gone";
   if (row.status !== "open" || !Array.isArray(row.body.actions) || !row.body.actions.includes(BUTTON_OF[to])) return "stale";
-  const updated = await t.query<WhisperRow>(`update whispers set status = $2, resolved_at = now(), revision = revision + 1 where id = $1 returning ${COLUMNS}`, [id, to]);
+  if (row.kind === "found_elsewhere") {
+    // THE rule (`mayTell`): answered only while it reads open.
+    const { may, telling, told } = await mayTell(t, toWhisper(row), { ttlHours });
+    if (!may) return telling && !told ? "busy" : "stale";
+    // 告诉他们 stores nothing: the told reply its hook queues is what the whisper's state is read from.
+    if (to === "accepted") return toWhisper(row);
+  }
+  const updated = await t.query<WhisperRow>(`update whispers set status = $2, resolved_at = now() where id = $1 returning ${COLUMNS}`, [id, to]);
   return toWhisper(updated.rows[0]!);
 }
 
@@ -466,22 +615,29 @@ export async function listWhispers(
 }
 
 /**
- * `ownerId`'s whispers in each conversation of `from` they are a current member of: the open ones, and those at or after
- * the seq given for it (sync: the oldest message it returns of that conversation, 0 when it returns all; catch-up: the
- * position), of their current stay there (`after_seq >= joined_seq`) — ascending by `afterSeq`, then `createdAt`,
- * conversations in the order of `from`. At most `WHISPERS_PER_ANSWER`: every open one first, then the newest answered ones.
- * What `GET /api/sync` and catch-up carry for the owner alone.
+ * `ownerId`'s whispers in each conversation of `from` they are a current member of: the live ones (open; a `found_elsewhere`
+ * one open or telling: `liveSql`), and those at or after the seq given for it (sync: the oldest message it returns of that
+ * conversation, 0 when it returns all; catch-up: the position), of their current stay there (`after_seq >= joined_seq`) —
+ * ascending by `afterSeq`, then `createdAt`, conversations in the order of `from`. At most `WHISPERS_PER_ANSWER`: every live
+ * one first, then the newest others. What `GET /api/sync` and catch-up carry for the owner alone (whispers/wire.ts).
  */
-export async function whispersFrom(q: Queryable, ownerId: string, from: ReadonlyArray<{ conversationId: string; seq: number }>): Promise<Whisper[]> {
+export async function whispersFrom(
+  q: Queryable,
+  ownerId: string,
+  from: ReadonlyArray<{ conversationId: string; seq: number }>,
+  ttlHours: number,
+): Promise<Whisper[]> {
   if (from.length === 0) return [];
   const { rows } = await q.query<WhisperRow & { ord: string }>(
+    // Whether each is live is asked once (`live.v`), for both what is carried and in what order.
     `select x.* from (
        select ${columns("w")}, f.ord
          from unnest($2::uuid[], $3::bigint[]) with ordinality as f (id, from_seq, ord)
          join memberships me on me.conversation_id = f.id and me.principal_id = $1 and me.left_seq is null
          join whispers w on w.owner_id = $1 and w.conversation_id = f.id and w.after_seq >= me.joined_seq
-                        and (w.status = 'open' or w.after_seq >= f.from_seq)
-        order by (w.status = 'open') desc, w.created_at desc, w.id desc limit $4
+         cross join lateral (select ${liveSql("w", ttlHours)} as v) live
+        where live.v or w.after_seq >= f.from_seq
+        order by live.v desc, w.created_at desc, w.id desc limit $4
      ) x order by x.ord, x.after_seq, x.created_at, x.id`,
     [ownerId, from.map((f) => f.conversationId), from.map((f) => f.seq), WHISPERS_PER_ANSWER],
   );
@@ -490,19 +646,21 @@ export async function whispersFrom(q: Queryable, ownerId: string, from: Readonly
 
 /**
  * In the transaction that takes `leaving` (people and Agents) out of `conversationId`, under its row: the open whispers
- * there whose owner or Agent is among them are expired. Returns them, for their owners' sockets once committed.
+ * there whose owner or Agent is among them are expired (a told one stays told). Returns them, for their owners' sockets
+ * once committed.
  */
 export async function expireOnLeave(t: Tx, conversationId: string, leaving: readonly string[]): Promise<Whisper[]> {
   if (leaving.length === 0) return [];
   // Its rows taken in id order, as the Agent's delete takes its own (`expireOfAgent`): two of them never wait on each other.
   const { rows } = await t.query<WhisperRow>(
     `with batch as materialized (
-       select id from whispers
-        where conversation_id = $1 and status = 'open'
-          and owner_id in (select coalesce(p.owner_id, p.id) from principals p where p.id = any($2::uuid[]))
-          and (owner_id = any($2::uuid[]) or agent_id = any($2::uuid[]))
-        order by id for update)
-     update whispers set status = 'expired', resolved_at = now(), revision = revision + 1
+       select w.id from whispers w
+        where w.conversation_id = $1 and w.status = 'open'
+          and w.owner_id in (select coalesce(p.owner_id, p.id) from principals p where p.id = any($2::uuid[]))
+          and (w.owner_id = any($2::uuid[]) or w.agent_id = any($2::uuid[]))
+          and ${notTold("w")}
+        order by w.id for update of w)
+     update whispers set status = 'expired', resolved_at = now()
       where id in (select id from batch)
       returning ${COLUMNS}`,
     [conversationId, leaving],
@@ -510,14 +668,15 @@ export async function expireOnLeave(t: Tx, conversationId: string, leaving: read
   return rows.map(toWhisper);
 }
 
-/** In the transaction that deletes Agent `agentId`: its open whispers, everywhere, are expired. Returns them, for its owner's sockets. */
+/** In the transaction that deletes Agent `agentId`: its open whispers, everywhere, are expired (a told one stays told). Returns them, for its owner's sockets. */
 export async function expireOfAgent(t: Tx, agentId: string): Promise<Whisper[]> {
   // In id order, as a leaving takes its own (`expireOnLeave`).
   const { rows } = await t.query<WhisperRow>(
     `with batch as materialized (
-       select id from whispers where owner_id = (select owner_id from principals where id = $1) and agent_id = $1 and status = 'open'
-        order by id for update)
-     update whispers set status = 'expired', resolved_at = now(), revision = revision + 1
+       select w.id from whispers w
+        where w.owner_id = (select owner_id from principals where id = $1) and w.agent_id = $1 and w.status = 'open' and ${notTold("w")}
+        order by w.id for update of w)
+     update whispers set status = 'expired', resolved_at = now()
       where id in (select id from batch)
       returning ${COLUMNS}`,
     [agentId],
@@ -527,27 +686,38 @@ export async function expireOfAgent(t: Tx, agentId: string): Promise<Whisper[]> 
 
 /**
  * The periodic sweep (app.ts runs it with the memory changes' clean-up, on that timer; `attachments:sweep` by hand): an
- * open whisper `WHISPER_OPEN_DAYS` days old (`now` is the clock) is expired. Bounded work: at most `batches` batches of
- * `batch` rows (by default `WHISPER_SWEEP_BATCHES` × `WHISPER_SWEEP_BATCH`), found by the index `(status, created_at)`, taken
- * in id order and never waited for: a row another transaction holds (an answer, a leaving, a delete) is skipped (`skip
- * locked`), and is that transaction's or the next run's. The status is asked again in the update itself, so an answer that
- * got there first stands. Returns what it expired, for the owners' sockets. Never logs a whisper.
+ * open whisper `WHISPER_OPEN_DAYS` days old (`now` is the clock) is expired — a `found_elsewhere` one `elsewhereTtlHours`
+ * hours old (`WHISPERS.elsewhereTtlHours`, default 24), unless it is told (told is final) or telling (it is its told
+ * reply's: once that has ended without posting, a later run expires it). Bounded work: at most `batches` batches of `batch`
+ * rows (by default `WHISPER_SWEEP_BATCHES` × `WHISPER_SWEEP_BATCH`), found by the index `(status, created_at)`, taken in id
+ * order and never waited for: a row another transaction holds (an answer, a leaving, a delete) is skipped (`skip locked`),
+ * and is that transaction's or the next run's. The status is asked again in the update itself, so an answer that got there
+ * first stands. Returns what it expired, for the owners' sockets. Never logs a whisper.
  */
-export async function expireWhispers(q: Queryable, now: Date = new Date(), limits: { batch?: number; batches?: number } = {}): Promise<Whisper[]> {
+export async function expireWhispers(
+  q: Queryable,
+  now: Date = new Date(),
+  limits: { batch?: number; batches?: number; elsewhereTtlHours?: number } = {},
+): Promise<Whisper[]> {
   const batch = limits.batch ?? WHISPER_SWEEP_BATCH;
   const batches = limits.batches ?? WHISPER_SWEEP_BATCHES;
+  const elsewhereHours = limits.elsewhereTtlHours ?? DEFAULT_WHISPERS.elsewhereTtlHours;
   const expired: Whisper[] = [];
   for (let i = 0; i < batches; i++) {
     const { rows } = await q.query<WhisperRow>(
       // The batch is taken once (a CTE that is never folded into the update: a subquery inside `in (…)` may be run again,
-      // and so take more than `batch` rows past what it skipped).
+      // and so take more than `batch` rows past what it skipped). The index finds the open ones older than the shorter of
+      // the two ages; each kind's own is asked of each.
       `with batch as materialized (
-         select id from whispers where status = 'open' and created_at < $1::timestamptz - $2::int * interval '1 day'
-          order by id limit $3 for update skip locked)
-       update whispers set status = 'expired', resolved_at = $1::timestamptz, revision = revision + 1
+         select w.id from whispers w
+          where w.status = 'open' and w.created_at < $1::timestamptz - least($2::int * interval '1 day', $4::int * interval '1 hour')
+            and w.created_at < $1::timestamptz - case when w.kind = 'found_elsewhere' then $4::int * interval '1 hour' else $2::int * interval '1 day' end
+            and (w.kind <> 'found_elsewhere' or not (${toldSql("w")} or ${tellingSql("w")}))
+          order by w.id limit $3 for update of w skip locked)
+       update whispers set status = 'expired', resolved_at = $1::timestamptz
         where id in (select id from batch) and status = 'open'
         returning ${COLUMNS}`,
-      [now, WHISPER_OPEN_DAYS, batch],
+      [now, WHISPER_OPEN_DAYS, batch, elsewhereHours],
     );
     expired.push(...rows.map(toWhisper));
     if (rows.length < batch) break;
@@ -557,9 +727,10 @@ export async function expireWhispers(q: Queryable, now: Date = new Date(), limit
 
 /**
  * The same sweep's other job: an answered or expired whisper made `WHISPER_KEEP_DAYS` days ago (`now` is the clock) is
- * deleted — its owner's list no longer has it. Bounded as the expiry is (at most `batches` × `batch` rows, by default
- * `WHISPER_SWEEP_BATCHES` × `WHISPER_SWEEP_BATCH`, the index `(status, created_at)`, id order, `skip locked`). An open one
- * is never deleted here (the expiry comes first). Returns how many went. Never reads or logs a whisper's body.
+ * deleted — its owner's list no longer has it —, and so is a `found_elsewhere` one made that long ago whatever it stores (a
+ * told one is stored open: its state is derived). Bounded as the expiry is (at most `batches` × `batch` rows, by default
+ * `WHISPER_SWEEP_BATCHES` × `WHISPER_SWEEP_BATCH`, the index `(status, created_at)`, id order, `skip locked`). An open one of
+ * another kind is never deleted here (the expiry comes first). Returns how many went. Never reads or logs a whisper's body.
  */
 export async function removeOldWhispers(q: Queryable, now: Date = new Date(), limits: { batch?: number; batches?: number } = {}): Promise<number> {
   const batch = limits.batch ?? WHISPER_SWEEP_BATCH;
@@ -568,7 +739,8 @@ export async function removeOldWhispers(q: Queryable, now: Date = new Date(), li
   for (let i = 0; i < batches; i++) {
     const gone = await q.query(
       `with batch as materialized (
-         select id from whispers where status in ('accepted', 'declined', 'expired') and created_at < $1::timestamptz - $2::int * interval '1 day'
+         select id from whispers
+          where (status in ('accepted', 'declined', 'expired') or kind = 'found_elsewhere') and created_at < $1::timestamptz - $2::int * interval '1 day'
           order by id limit $3 for update skip locked)
        delete from whispers where id in (select id from batch)`,
       [now, WHISPER_KEEP_DAYS, batch],

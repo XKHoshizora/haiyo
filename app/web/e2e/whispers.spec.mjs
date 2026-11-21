@@ -1,6 +1,7 @@
 // Whispers (悄悄话) born of an Agent's tools, in real browsers against the real service, the model being the local stub
-// (support/model-stub.mjs): "not here, but I have it elsewhere" (found_elsewhere: only the owner sees it, with what was
-// found; 告诉他们 makes the Agent say it in the group without where or who), a provider that cannot use tools (tools_off),
+// (support/model-stub.mjs): "not here, but I have it elsewhere" (found_elsewhere: only the owner sees it, folded to one line
+// that opens to what was found; 告诉他们 makes the Agent say it in the group without where or who, quoting the question; a
+// tell that posts nothing leaves it open, to try again), a provider that cannot use tools (tools_off),
 // and the money reminder of a reply that used the allowance up. What a member's browser received is recorded from its first
 // request: for them none of it exists, not in the page, not in a frame, not in an answer of the service.
 import { test, expect } from "./support/fixtures.mjs";
@@ -21,6 +22,14 @@ const whispers = (chat) => messageList(chat).locator("li.msg-whisper");
 const whisperDot = (page, title) => listRow(page, title).first().getByRole("img", { name: "有只给你的悄悄话" });
 
 const ELSEWHERE_TEXT = "群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？";
+/** The one line a found_elsewhere whisper is folded to, which opens it. */
+const FOLDED = (n) => `在别处查到了 ${n} 条，要告诉他们吗？`;
+const TELL_FAILED = "刚才没发出去，可以再试一次。";
+/** Opens a folded found_elsewhere whisper (`n` hits): what it found and its buttons show. */
+async function unfold(whisper, n = 1) {
+  await whisper.getByRole("button", { name: FOLDED(n) }).click();
+  await expect(whisper.getByRole("button", { name: "收起" })).toBeVisible();
+}
 const TOOLS_OFF_TEXT = "这个模型不支持查东西，已改为普通聊天。可以在模型设置里重新打开再试。";
 
 /**
@@ -76,11 +85,15 @@ test("a group search that finds nothing, while the Agent has it elsewhere, leave
   await ask(world, tag);
   for (const chat of [annChat, boChat]) await expect(agentMessagesWith(chat, answer)).toHaveCount(1);
 
-  // Ann: a bubble only she sees, saying what it is and what was found (where · who · when, then the text), the two buttons;
-  // the list marks the group with a dot.
+  // Ann: a bubble only she sees, folded to one line; opened, it says what it is and what was found (where · who · when, then
+  // the text), and has the two buttons; the list marks the group with a dot.
   const whisper = whispers(annChat);
   await expect(whisper).toHaveCount(1);
   await expect(whisper.getByRole("note", { name: "只有你能看到" })).toBeVisible();
+  await expect(whisper).toHaveText(FOLDED(1));
+  await expect(whisper.locator(".whisper-hit")).toHaveCount(0);
+  await expect(whisper.getByRole("button", { name: "告诉他们", exact: true })).toHaveCount(0);
+  await unfold(whisper);
   await expect(whisper).toContainText(ELSEWHERE_TEXT);
   const hit = whisper.locator(".whisper-hit");
   await expect(hit).toHaveCount(1);
@@ -95,6 +108,7 @@ test("a group search that finds nothing, while the Agent has it elsewhere, leave
   await expect(whispers(boChat)).toHaveCount(0);
   await expect(whisperDot(bo.page, g.title)).toHaveCount(0);
   await expect(bo.page.getByText("只有你能看到")).toHaveCount(0);
+  await expect(bo.page.getByText("在别处查到了")).toHaveCount(0);
   const html = await bo.page.content();
   for (const secret of canaries) expect(html.includes(secret), `${secret} on Bo's page`).toBe(false);
   const frames = traffic.frames;
@@ -107,7 +121,7 @@ test("a group search that finds nothing, while the Agent has it elsewhere, leave
 
 // --- 2. 告诉他们 ------------------------------------------------------------------------------------------------------------
 
-test("告诉他们 while the Agent is still replying says 它正在回复，说完再点。 and keeps the buttons; after it, the Agent answers in the group in its own words, told neither where nor by whom", async ({ people }) => {
+test("告诉他们 while the Agent is still replying says 它正在回复，说完再点。 and keeps the buttons; after it, the Agent answers in the group in its own words, told neither where nor by whom, quoting the question", async ({ people }) => {
   const world = await elsewhereWorld(people);
   const { ann, annChat, boChat, word, hitText, hTitle, dee, traffic, canaries } = world;
   const tag = uniq(4);
@@ -123,6 +137,7 @@ test("告诉他们 while the Agent is still replying says 它正在回复，说�
   await modelStub.holding(1);
   const whisper = whispers(annChat);
   await expect(whisper).toHaveCount(1);
+  await unfold(whisper);
   await whisper.getByRole("button", { name: "告诉他们" }).click();
   await expect(whisper.getByRole("alert")).toHaveText("它正在回复，说完再点。");
   await expect(whisper.getByRole("button", { name: "告诉他们" })).toBeEnabled();
@@ -137,6 +152,8 @@ test("告诉他们 while the Agent is still replying says 它正在回复，说�
   await expect(whisper).toContainText("已告诉他们");
   await expect(whisper.getByRole("button")).toHaveCount(0);
   await expect(whisperDot(ann.page, world.g.title)).toHaveCount(0);
+  // It is a reply to Bo's question, quoted (so it makes sense however long after it comes), for both of them.
+  for (const chat of [annChat, boChat]) await expect(agentMessagesWith(chat, told).locator("blockquote")).toContainText(`周六有什么安排吗？${tag}`);
 
   // What the model was told to say it from: the owner's instruction, the sentence that it is material, and each hit's time and
   // text only; no tools; neither the other group's title nor the speaker's name anywhere in the request.
@@ -165,7 +182,7 @@ test("告诉他们 while the Agent is still replying says 它正在回复，说�
   expect(traffic.frames.filter((f) => /whisper/i.test(f))).toEqual([]);
 });
 
-test("告诉他们 whose call fails: the whisper comes back for its owner, with the hits and both buttons; a member's page and frames show nothing of it; pressing 告诉他们 again posts the answer once", async ({ people }) => {
+test("告诉他们 whose call fails: the whisper is open again for its owner — 刚才没发出去，可以再试一次。, the hits and both buttons; a member's page and frames show nothing of it; pressing 告诉他们 again posts the answer once", async ({ people }) => {
   const world = await elsewhereWorld(people);
   const { ann, annChat, boChat, word, hitText, traffic, canaries } = world;
   const tag = uniq(4);
@@ -177,15 +194,18 @@ test("告诉他们 whose call fails: the whisper comes back for its owner, with 
   for (const chat of [annChat, boChat]) await expect(agentMessagesWith(chat, first)).toHaveCount(1);
   const whisper = whispers(annChat);
   await expect(whisper).toHaveCount(1);
+  await unfold(whisper);
   await expect(whisper).toContainText(hitText.slice(0, 12));
+  await expect(whisper).not.toContainText(TELL_FAILED);
 
-  // The telling's model call fails: nothing is posted, and the whisper is open again, hits and buttons as before.
+  // The telling's model call fails: nothing is posted, and the whisper is open again — saying so —, hits and buttons as before.
   await modelStub.script({ status: 500, message: "upstream down" }, { status: 500, message: "upstream down" });
   await whisper.getByRole("button", { name: "告诉他们" }).click();
   await expect.poll(async () => (await modelStub.calls()).length, { message: "the telling's call was made" }).toBeGreaterThanOrEqual(3);
   await expect(whisper).toHaveCount(1);
   await expect(whisper).not.toContainText("已告诉他们");
   await expect(whisper.getByRole("button", { name: "告诉他们" })).toBeEnabled({ timeout: 30_000 });
+  await expect(whisper).toContainText(TELL_FAILED);
   await expect(whisper.getByRole("button", { name: "不用" })).toBeEnabled();
   await expect(whisper).toContainText(hitText.slice(0, 12));
   await expect(whisperDot(ann.page, world.g.title)).toHaveCount(1);
@@ -200,10 +220,44 @@ test("告诉他们 whose call fails: the whisper comes back for its owner, with 
   await expect(whisper.getByRole("button")).toHaveCount(0);
 
   // Bo saw only the Agent's answers: no whisper, no hit's text, title or name, at any point.
+  expect(traffic.frames.filter((f) => /lastTellFailed|telling/.test(f)), "the whisper's state reached Bo").toEqual([]);
   await bothCaughtUp(world);
   const received = [...(await traffic.api()), ...traffic.frames].join("\n");
   for (const secret of canaries) expect(received.includes(secret), `${secret} reached Bo's browser`).toBe(false);
   expect(traffic.frames.filter((f) => /whisper/i.test(f))).toEqual([]);
+});
+
+test("at phone width, an opened found-elsewhere whisper takes at most about half the screen: what it found scrolls inside it, its buttons stay in view", async ({ people }) => {
+  const world = await elsewhereWorld(people);
+  const { ann, annChat, dee, h, word } = world;
+  // Four more long lines with the word in H: five hits, far taller than half a phone's screen.
+  for (let i = 0; i < 4; i++) await sendApi(dee, h.id, `第${i}条：${word}${"这是一段很长很长的话，用来把这条悄悄话撑得很高。".repeat(8)}`);
+  const tag = uniq(4);
+  const answer = `这个群里没有查到。${tag}`;
+  await modelStub.callTools(searchFor(word));
+  await modelStub.reply(answer);
+  await ask(world, tag);
+  await expect(agentMessagesWith(annChat, answer)).toHaveCount(1);
+  const whisper = whispers(annChat);
+  await expect(whisper).toHaveCount(1);
+  const phone = { width: 375, height: 812 };
+  await ann.page.setViewportSize(phone);
+  try {
+    await unfold(whisper, 5);
+    const bubble = whisper.locator(".whisper");
+    const box = await bubble.boundingBox();
+    expect(box.height, "the opened bubble's height at phone width").toBeLessThanOrEqual(phone.height / 2 + 1);
+    const hits = whisper.locator(".whisper-hits");
+    const scrolls = await hits.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight, overflow: getComputedStyle(el).overflowY }));
+    expect(scrolls.overflow).toBe("auto");
+    expect(scrolls.scroll, "what it found is taller than its room: it scrolls").toBeGreaterThan(scrolls.client);
+    // Its buttons are in the bubble, not below it.
+    await whisper.getByRole("button", { name: "告诉他们" }).scrollIntoViewIfNeeded();
+    const tell = await whisper.getByRole("button", { name: "告诉他们" }).boundingBox();
+    expect(tell.y + tell.height).toBeLessThanOrEqual(box.y + box.height + 1);
+  } finally {
+    await ann.page.setViewportSize({ width: 1280, height: 860 });
+  }
 });
 
 // --- 3. a provider that cannot use tools -----------------------------------------------------------------------------------
@@ -324,6 +378,7 @@ test("不用 on a found-elsewhere whisper resolves it for the owner: 已忽略, 
   const before = await messageList(annChat).locator("li.msg").count();
   const framesBefore = traffic.frames.length;
 
+  await unfold(whisper);
   await whisper.getByRole("button", { name: "不用" }).click();
   await expect(whisper).toContainText("已忽略");
   await expect(whisper.getByRole("button")).toHaveCount(0);

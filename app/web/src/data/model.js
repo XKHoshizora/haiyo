@@ -44,10 +44,14 @@
 // Whispers (悄悄话, app/service/README.md "Whispers"). `whispers[conversationId][whisperId]` is a note only I see, about my
 // Agent there, as the service sent it: never a message (it takes no seq, so nothing here counts it as one — position,
 // unread, lastSeq), shown after the message it follows (`afterSeq`). An open one comes with /api/sync, catch-up, a `whisper`
-// push or the list route; an answered or expired one stays as history. Of two copies the one with the higher `revision`
-// (raised at every change of its status) is kept, so an older copy never undoes a change — an older copy saying open never
-// reopens an answered one — while a told reply that posted nothing gives its whisper back, open, as a later copy (the
-// service's round 3). A sync's list of open ones replaces the open ones held; a conversation that goes takes its whispers along.
+// push or the list route; an answered or expired one stays as history. A `found_elsewhere` one's status is the service's to
+// derive (its Redesign D): `telling` while its told reply is queued or running, `told` once that posted, `open` again — with
+// `lastTellFailed` — when it ended without posting. Of two copies the one with the higher `revision` (the service computes
+// it from that state: never lower for a later one) is kept, so an older copy never undoes a change — a copy saying open
+// never reopens an answered or told one —, while open again after a failed tell is a later copy. A sync's list of open
+// ones replaces the open ones held; a conversation that goes takes its whispers along. Two moments the service sends are
+// kept as sent, for the view to keep (viewmodel.js `deadlinesOf`): an open `found_elsewhere` one's `openUntil` (it reads
+// expired from then) and a told reply's run's `retryableUntil` (重试 is not offered from then).
 
 import { isMemoryLanguage } from "./memoryLanguages.js";
 
@@ -1065,7 +1069,7 @@ export function setMemoryChangeStatus(state, conversationId, changeId, status) {
 
 // ───────── whispers (see the header)
 
-const WHISPER_STATUSES = new Set(["open", "accepted", "declined", "expired"]);
+const WHISPER_STATUSES = new Set(["open", "telling", "told", "accepted", "declined", "expired"]);
 const WHISPER_ACTIONS = new Set(["tell", "dismiss"]);
 
 /** At most this many hits of a `found_elsewhere` whisper are kept (the service sends at most 5). */
@@ -1085,6 +1089,9 @@ function hitsOf(w) {
     .map(({ where, who, when, text }) => ({ where, who, when, text }));
 }
 
+/** A moment the service sent (an ISO instant). */
+const isMoment = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value));
+
 /** A whisper as the service sends it (README "Whispers"), only the fields shown; null when it is not one. */
 function whisperOf(w) {
   if (!w || typeof w !== "object" || typeof w.id !== "string" || typeof w.conversationId !== "string") return null;
@@ -1101,6 +1108,9 @@ function whisperOf(w) {
     status: w.status,
     createdAt: typeof w.createdAt === "string" ? w.createdAt : null,
     revision: Number.isSafeInteger(w.revision) ? w.revision : 0,
+    ...(w.lastTellFailed === true ? { lastTellFailed: true } : {}),
+    // An open found_elsewhere one reads expired from then (its day): the view says so at that moment (viewmodel.js).
+    ...(isMoment(w.openUntil) ? { openUntil: w.openUntil } : {}),
     ...(hits.length > 0 ? { hits } : {}),
   };
 }
@@ -1163,6 +1173,8 @@ function wireRun(run) {
   const out = { id: run.id, status: run.status, retryable: Boolean(run.retryable) };
   if (typeof run.error === "string") out.error = run.error;
   if (typeof run.resetsAt === "string") out.resetsAt = run.resetsAt;
+  // A told reply's 重试 is offered until then (its whisper's day): the view stops offering it at that moment (viewmodel.js).
+  if (isMoment(run.retryableUntil)) out.retryableUntil = run.retryableUntil;
   return out;
 }
 

@@ -409,6 +409,24 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .whisper-hit-more { margin-top: 2px; padding: 0; border: 0; background: none; color: var(--purple); font-size: 12px; cursor: pointer; }
 .whisper-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .whisper-done > span { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+/* A found_elsewhere whisper folded to its one line (the line opens it), and opened: 收起 beside 只有你能看到 */
+.whisper.whisper-folded { padding: 0; }
+.whisper-summary {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 12px; border: 0; border-radius: inherit;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.whisper-summary > span { flex: 1; min-width: 0; }
+.whisper-summary > svg { flex: none; color: var(--ink-3); }
+.whisper-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.whisper-fold { flex: none; padding: 0; border: 0; background: none; color: var(--purple); font-size: 12px; cursor: pointer; }
+/* Above its buttons, once its told reply posted nothing */
+.whisper-failed { margin: 8px 0 0; font-size: 12.5px; color: var(--ink-2); }
+/* A phone: an opened one takes at most about half the screen; what it found scrolls inside it, the rest stays in view. */
+@media (max-width: 480px) {
+  .whisper.whisper-open { max-height: 50dvh; display: flex; flex-direction: column; box-sizing: border-box; }
+  .whisper.whisper-open > * { flex: none; }
+  .whisper.whisper-open .whisper-hits { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+}
 /* The chat list: a conversation with whispers waiting for me */
 .whisper-dot { flex: none; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--purple); }
 /* The memory palace: a room's open entries as bordered rows, the vault block set apart under them. A row wraps (text, then its actions) on a phone. */

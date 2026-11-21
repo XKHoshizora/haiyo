@@ -12,8 +12,7 @@ import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
 import { agentModelOf, lockAgent, type AgentRow } from "./store.ts";
-import { ELSEWHERE_OPEN_MAX } from "./tools/elsewhere.ts";
-import { afterTell, type Whisper } from "../whispers/store.ts";
+import { mayTell, tellableRuns } from "../whispers/store.ts";
 
 /**
  * Reply runs (`agent_runs` rows of purpose `reply`) as the routes and the send path see them: the trigger, retry, stop,
@@ -48,12 +47,55 @@ const NOT_RETRYABLE: ReadonlySet<string> = new Set(["provider_rejected", "addres
 export const retryable = (r: Pick<RunRow, "status" | "error">, modelUsable = r.error !== "model_gone"): boolean =>
   r.status === "failed" && modelUsable && !NOT_RETRYABLE.has(r.error ?? "");
 
+/**
+ * Each failed one of `rows` that is a told reply gets `tellable` and `tellable_until` (whispers/store.ts `tellableRuns`,
+ * THE rule), in place: so its owner's wire offers 重试 only while its whisper may be told again, and says until when. One
+ * statement; others are left as they are.
+ */
+export async function withTellable<R extends RunRow>(q: Queryable, rows: readonly R[], ttlHours: number): Promise<readonly R[]> {
+  const failed = rows.filter((r) => r.status === "failed");
+  if (failed.length === 0) return rows;
+  const tellable = await tellableRuns(q, failed.map((r) => r.id), ttlHours);
+  for (const r of failed) {
+    const t = tellable.get(r.id);
+    if (!t) continue;
+    r.tellable = t.may;
+    r.tellable_until = t.until;
+  }
+  return rows;
+}
+
+/**
+ * The run slot its owner holds of whisper `w`'s told reply, when that is the Agent's latest reply there and it failed: as
+ * it reads now (`tellable` by THE rule), with its group and Agent — what its owner is pushed once the whisper stops
+ * reading open (sync/hub.ts, the whisper's own delivery: one place, whatever ended it), so 重试 is no longer offered on
+ * her screen. Null when there is no such slot.
+ */
+export async function toldSlotOf(
+  q: Queryable,
+  w: { id: string; ownerId: string },
+  ttlHours: number,
+): Promise<{ conversationId: string; agentId: string; run: WireRun } | null> {
+  const { rows } = await q.query<RunRow & { conversation_id: string; agent_id: string }>(
+    `select ${RUN_COLUMNS}, r.conversation_id, r.agent_id from agent_runs r
+      where r.whisper_id = $1 and r.owner_id = $2 and r.status = 'failed'
+        and r.id = (select l.id from agent_runs l where l.agent_id = r.agent_id and l.conversation_id = r.conversation_id and l.purpose = 'reply'
+                     order by l.created_at desc, l.id desc limit 1)`,
+    [w.id, w.ownerId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  await withTellable(q, [row], ttlHours);
+  return { conversationId: row.conversation_id, agentId: row.agent_id, run: toWireRun(row) };
+}
+
 /** A run on the wire (README "Wire shapes"). */
 export const wireRunSchema = z.object({
   id: z.string(),
   status: z.enum(RUN_STATUSES),
   error: z.string().optional(),
   retryable: z.boolean(),
+  retryableUntil: z.string().optional(),
   resetsAt: z.string().optional(),
 });
 export type WireRun = z.infer<typeof wireRunSchema>;
@@ -64,6 +106,13 @@ export interface RunRow {
   error: string | null;
   resets_at: Date | null;
   dismissed_at: Date | null;
+  /**
+   * A told reply (`告诉他们`): whether its whisper may be told again (whispers/store.ts `tellableRuns`, THE rule), read where
+   * its owner is told of it failed (`withTellable`); false keeps it from being offered 重试. Absent: not asked (any other run).
+   */
+  tellable?: boolean | null;
+  /** With `tellable` true: the moment it stops (its whisper is a day old), for the wire's `retryableUntil`. */
+  tellable_until?: Date | null;
 }
 
 /** Columns of `agent_runs r` in the shape of `RunRow`. */
@@ -71,14 +120,19 @@ export const RUN_COLUMNS = "r.id, r.status, r.error, r.resets_at, r.dismissed_at
 
 /**
  * `retryable`: by its one rule (`retryable`, with the Agent's model as `modelUsable` says, where known), never for a run
- * that did not fail. `resetsAt` only for `no_quota` on a free-tier model.
+ * that did not fail — nor for a told reply whose whisper may not be told again (`tellable` false: declined, expired, a day
+ * old, told; its retry would be refused `stale_whisper`); `retryableUntil`, for a told reply offered it, the moment that
+ * stops (its whisper is a day old: fix round 3), so its owner's screen stops offering it then on its own. `resetsAt` only
+ * for `no_quota` on a free-tier model.
  */
 export function toWireRun(r: RunRow, modelUsable?: boolean): WireRun {
+  const offered = retryable(r, modelUsable) && r.tellable !== false;
   return {
     id: r.id,
     status: r.status,
     ...(r.error === null ? {} : { error: r.error }),
-    retryable: retryable(r, modelUsable),
+    retryable: offered,
+    ...(offered && r.tellable === true && r.tellable_until ? { retryableUntil: r.tellable_until.toISOString() } : {}),
     ...(r.error === "no_quota" && r.resets_at ? { resetsAt: r.resets_at.toISOString() } : {}),
   };
 }
@@ -129,7 +183,7 @@ export interface GroupRunEntry {
  * there in its current stay (`latestInStay`) has a state for the reader (`groupRunState`), in `agentId` order; the run
  * itself on the reader's own Agents' entries only, `retryable` by the Agent's model as it is now (`retryable`).
  */
-export async function groupRuns(q: Queryable, readerId: string, conversationId: string, config: Pick<Config, "siteModels">): Promise<GroupRunEntry[]> {
+export async function groupRuns(q: Queryable, readerId: string, conversationId: string, config: Pick<Config, "siteModels" | "whispers">): Promise<GroupRunEntry[]> {
   if ((await peekConversation(q, conversationId))?.type !== "group" || !(await currentMembership(q, conversationId, readerId))) throw notFound();
   const { rows } = await q.query<RunRow & Parameters<typeof agentModelOf>[0] & { agent_id: string; owner_id: string; lane: Lane }>(
     `select m.principal_id as agent_id, p.owner_id, ${RUN_COLUMNS}, r.lane, a.model_source, a.site_model_id, a.provider_id, a.provider_model
@@ -144,6 +198,8 @@ export async function groupRuns(q: Queryable, readerId: string, conversationId: 
   const mine = rows.filter((row) => row.owner_id === readerId);
   const usable = new Map(mine.map((row, i) => [row.agent_id, i]));
   const now = await modelsUsable(q, config, readerId, mine.map(agentModelOf));
+  // The reader's own failed told replies: offered 重试 only while their whispers may be told again (THE rule).
+  await withTellable(q, mine.filter((row) => row.status === "failed"), config.whispers.elsewhereTtlHours);
   const entries: GroupRunEntry[] = [];
   for (const row of rows) {
     const owns = row.owner_id === readerId;
@@ -163,6 +219,8 @@ export interface RunAudience {
   memberIds: string[];
   /** In a group, what its members other than the run's owner are told: the Agent's state there now. */
   state: GroupRunState;
+  /** The whisper the run tells (`告诉他们`'s told reply, `agent_runs.whisper_id`), its owner's: pushed to them after the run. */
+  whisperId: string | null;
 }
 
 /**
@@ -180,8 +238,9 @@ export async function runAudience(q: Queryable, conversationId: string, runId: s
     status: RunStatus | null;
     dismissed_at: Date | null;
     lane: Lane | null;
+    whisper_id: string | null;
   }>(
-    `select c.type, a.agent_id, a.owner_id,
+    `select c.type, a.agent_id, a.owner_id, a.whisper_id,
             case when c.type = 'group'
                  then array(select ms.principal_id from memberships ms where ms.conversation_id = c.id and ms.left_seq is null) end as members,
             r.status, r.dismissed_at, r.lane
@@ -195,7 +254,7 @@ export async function runAudience(q: Queryable, conversationId: string, runId: s
   const row = rows[0];
   if (!row) return null;
   const latest = row.status === null || row.lane === null ? null : { status: row.status, dismissed_at: row.dismissed_at, lane: row.lane };
-  return { type: row.type, agentId: row.agent_id, ownerId: row.owner_id, memberIds: row.members ?? [], state: groupRunState(latest, "member") };
+  return { type: row.type, agentId: row.agent_id, ownerId: row.owner_id, memberIds: row.members ?? [], state: groupRunState(latest, "member"), whisperId: row.whisper_id };
 }
 
 /** A run to push to its owner after the transaction that changed it commits. */
@@ -1454,15 +1513,16 @@ const isGroup = async (q: Queryable, conversationId: string): Promise<boolean> =
 
 /**
  * `告诉他们` on a `found_elsewhere` whisper (Task 8; whispers/routes.ts `ANSWER_HOOKS`), in the answer's transaction — the
- * group's row, the Agent's (for update) and the whisper's held, the whisper answered: ONE reply of the Agent in the group,
+ * group's row, the Agent's (for update) and the whisper's held, its state found open (nothing is written to it: this run is
+ * what makes it telling, and its posted reply what makes it told — Redesign D): ONE reply of the Agent in the group,
  * queued as its owner's own (`triggered_by` human, lane `own`, the owner its caller and the one it answers), covering the
  * group's latest message but answering no call (`call_seqs` empty: they will hold the calls noted on it, `reachAgents`),
  * that is shown the whisper's hits (`agent_runs.whisper_id`, read in port-impl.ts `begin`) and
  * offered no tools — none when the whisper holds no hits (nothing to tell: null). Held to what a retry by its owner is
  * held to (`retryInGroup`): 409 `agent_paused`, 400
  * `invalid_request` when it has no model, 409 `busy_run` while it has a reply queued or running there, 429 `rate_limited`
- * over the owner's own replies a minute — each thrown, so the answer is rolled back and the whisper stays open, to answer
- * again. (Its group gone, or the owner or the Agent no longer in it, or the Agent deleted: the answer is 404 before this,
+ * over the owner's own replies a minute — each thrown, so the answer is rolled back and the whisper is open as before, to
+ * answer again. (Its group gone, or the owner or the Agent no longer in it, or the Agent deleted: the answer is 404 before this,
  * whispers/store.ts `resolveWhisper`.) Lock order: the group's row and the Agent's (already held) → run rows → the owner's
  * `accounts` row.
  */
@@ -1504,7 +1564,7 @@ export async function retryRun(
   ownerId: string,
   conversationId: string,
   agentId: string | undefined,
-  config: RunLimits & Pick<Config, "siteModels">,
+  config: RunLimits & Pick<Config, "siteModels" | "whispers">,
 ): Promise<Announced> {
   if (await isGroup(t, conversationId)) return retryInGroup(t, ownerId, conversationId, agentId, config);
   const ownAgentId = await ownedAgentOf(t, ownerId, conversationId);
@@ -1543,7 +1603,7 @@ async function retryInGroup(
   ownerId: string,
   conversationId: string,
   agentId: string | undefined,
-  config: RunLimits & Pick<Config, "siteModels">,
+  config: RunLimits & Pick<Config, "siteModels" | "whispers">,
 ): Promise<Announced> {
   const own = await ownAgentInGroup(t, ownerId, conversationId, agentId);
   const joinedSeq = own.joinedSeq;
@@ -1557,6 +1617,11 @@ async function retryInGroup(
     throw new AppError(400, "invalid_request");
   }
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
+  // A told reply tells again only a whisper that reads open (whispers/store.ts `mayTell`, the one rule a press and a told
+  // reply's beginning keep too): declined and expired are final. Under the group's row and the Agent's, held.
+  if (latest.whisper_id !== null && !(await mayTell(t, { id: latest.whisper_id, ownerId }, { ttlHours: config.whispers.elsewhereTtlHours })).may) {
+    throw new AppError(409, "stale_whisper");
+  }
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
   if (latest.whisper_id === null) {
     const queued = await queueRun(t, agent, conversationId, Number(latest.answers), latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids);
@@ -1591,7 +1656,7 @@ export async function stopRun(
   conversationId: string,
   runId: string,
   config: RunLimits,
-): Promise<{ stopped: Announced | null; running: boolean; followed: FollowUp; whisper: Whisper | null }> {
+): Promise<{ stopped: Announced | null; running: boolean; followed: FollowUp }> {
   const group = await isGroup(t, conversationId);
   if (group) await lockForWrite(t, conversationId, ownerId);
   else if (!(await ownedAgentOf(t, ownerId, conversationId))) throw notFound();
@@ -1610,9 +1675,9 @@ export async function stopRun(
     // Kept in the row (`stop_asked`): an attempt that begins after this — the same, or the next after its admission held
     // it back — ends stopped (port-impl.ts `halted`), whatever this process's flags say.
     await t.query("update agent_runs set stop_asked = true where id = $1", [runId]);
-    return { stopped: null, running: true, followed: followUpOf(null), whisper: null };
+    return { stopped: null, running: true, followed: followUpOf(null) };
   }
-  if (status !== "queued") return { stopped: null, running: false, followed: followUpOf(null), whisper: null };
+  if (status !== "queued") return { stopped: null, running: false, followed: followUpOf(null) };
   const stopped = await t.query<RunRow>(
     `update agent_runs as r set status = 'stopped', finished_at = now(),
             pending_seq = case when r.whisper_id is null then r.pending_seq end, call_seqs = case when r.whisper_id is null then r.call_seqs else '{}' end
@@ -1620,16 +1685,16 @@ export async function stopRun(
     [runId],
   );
   const ended = { ownerId, conversationId, run: toWireRun(stopped.rows[0]!) };
-  if (agent === null) return { stopped: ended, running: false, followed: followUpOf(null), whisper: null };
-  // A told reply (`告诉他们`) its owner stops while queued: the stop ends the tell — its whisper goes back to its owner,
-  // open (whispers/store.ts `afterTell`) — but not the members' questions noted on it, which get their ordinary follow-up
-  // at once, by the rule every other ending of a told reply follows (port-impl.ts `keepsNothingNoted`; round 3).
+  if (agent === null) return { stopped: ended, running: false, followed: followUpOf(null) };
+  // A told reply (`告诉他们`) its owner stops while queued: the stop ends the tell — its whisper reads open again, nothing
+  // written to it (whispers/store.ts) — but not the members' questions noted on it, which get their ordinary follow-up at
+  // once, by the rule every other ending of a told reply follows (port-impl.ts `keepsNothingNoted`; round 3).
   const [covers, pending] = [Number(rows[0]!.covers ?? 0), Number(rows[0]!.pending ?? 0)];
   const followed =
     pending > covers && !agent.paused && !agent.deleted && agent.model !== null
       ? await followUp(t, agent, conversationId, covers, pending, rows[0]!.calls, config)
       : followUpOf(null);
-  return { stopped: ended, running: false, followed, whisper: await afterTell(t, runId, false, ELSEWHERE_OPEN_MAX) };
+  return { stopped: ended, running: false, followed };
 }
 
 /** A failure its owner dismissed in a group: the others are told its Agent's state again (`Hub.pushRunState`). */

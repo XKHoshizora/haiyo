@@ -250,6 +250,22 @@ const allowanceSchema = z.strictObject({
   warnAt: z.number().gt(0).lt(1).default(0.8),
 });
 
+/** How long whispers stay open (`WHISPERS`; README "Whispers"). Other kinds stay open 7 days (src/whispers/store.ts). */
+export interface WhispersConfig {
+  /**
+   * A `found_elsewhere` whisper ("not here, but I have it elsewhere") expires this many hours after it was made (the
+   * periodic sweep, src/whispers/store.ts `expireWhispers`): what it found is about a question asked then. 1 to 168.
+   */
+  elsewhereTtlHours: number;
+}
+
+const whispersSchema = z.strictObject({
+  elsewhereTtlHours: positive(24, 168),
+});
+
+/** `WHISPERS` unset: every default. */
+export const DEFAULT_WHISPERS: Readonly<WhispersConfig> = Object.freeze(whispersSchema.parse({}));
+
 /**
  * What an Agent's memory is tuned by (`MEMORY`); every number is a site setting with this default (the plan's Numbers;
  * tuned and recorded in the last tasks). Sizes are in weight (memory/weight.ts: ceil(utf-8 bytes / 3), about a token), times in milliseconds.
@@ -567,6 +583,8 @@ const envSchema = z.object({
   HOLDS: jsonVariable(holdsSchema, holdsSchema.parse({})),
   /** JSON object of when an owner is reminded of the day's free allowance (see AllowanceConfig); unset or empty: the default. */
   ALLOWANCE: jsonVariable(allowanceSchema, allowanceSchema.parse({})),
+  /** JSON object of how long whispers stay open (see WhispersConfig); unset or empty: the default. */
+  WHISPERS: jsonVariable(whispersSchema, whispersSchema.parse({})),
   BLOB_DIR: z.string().min(1).default("./data/blobs"),
   /** Directory with the built web client (index.html and /assets); unset: the service serves no web files. */
   WEB_DIST: optionalString,
@@ -705,6 +723,8 @@ export interface Config {
   holds: HoldsConfig;
   /** When an owner is reminded of the day's free allowance. */
   allowance: AllowanceConfig;
+  /** How long whispers stay open. */
+  whispers: WhispersConfig;
   blobDir: string;
   /** Absolute path of the built web client to serve, or undefined to serve none. */
   webDist: string | undefined;
@@ -875,6 +895,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     tools: e.TOOLS,
     holds: e.HOLDS,
     allowance: e.ALLOWANCE,
+    whispers: e.WHISPERS,
     blobDir: e.BLOB_DIR,
     webDist: e.WEB_DIST === undefined ? undefined : path.resolve(e.WEB_DIST),
     port: e.PORT,

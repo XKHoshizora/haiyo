@@ -6,7 +6,6 @@ import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { providerBody } from "./helpers/providers.ts";
 import { createWhisper } from "../src/whispers/store.ts";
-import { toWireWhisper } from "../src/whispers/wire.ts";
 
 /**
  * What the fellow members of a group learn about an Agent in it (design rules 16–17): its name, avatar, handle, intro,
@@ -120,8 +119,12 @@ const HIDDEN_KEYS = [
   "held_back_by",
   "stopAsked",
   "stop_asked",
-  // A whisper's revision (migration 057): its owner's only, as every whisper field.
+  // A whisper's revision and whether its last tell failed (Redesign D): its owner's only, as every whisper field.
   "revision",
+  "lastTellFailed",
+  // When a found_elsewhere whisper stops reading open, and its failed told reply stops being offered 重试 (fix round 3).
+  "openUntil",
+  "retryableUntil",
 ];
 const HUMAN_PRINCIPAL_KEYS = ["avatarVersion", "displayName", "handle", "id", "kind"];
 
@@ -234,7 +237,7 @@ async function world() {
   const lookedSeq = await postBody(g, agent.id, { text: "looked up co7", lookups: looked, found: [{ conversationId: dedicated, seq: 1 }, { conversationId: g, seq: agentSeq }], queries: [HIDDEN.query] });
   // An open whisper of the owner's about it there, pushed to them: the owner's alone.
   const whisper = await db.tx((t) => createWhisper(t, { conversationId: g, ownerId: owner.id, agentId: agent.id, kind: "found_elsewhere", body: { text: HIDDEN.whisper, actions: ["tell", "dismiss"] } }));
-  app.realtime.pushWhisper(owner.id, toWireWhisper(whisper!));
+  app.realtime.pushWhisper(whisper!);
   expect((await api(app, owner, "GET", "/api/sync")).json.whispers.map((x: any) => x.text)).toEqual([HIDDEN.whisper]);
 
   // The owner's view really holds every hidden value (so their absence below means something).

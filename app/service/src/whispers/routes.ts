@@ -8,8 +8,9 @@ import { perPrincipalLimit } from "../limits.ts";
 import { positiveIntString, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
 import type { Hub } from "../sync/hub.ts";
+import { onSnapshot } from "../db.ts";
 import { listWhispers, resolveWhisper, type Whisper, type WhisperAnswer, type WhisperKind } from "./store.ts";
-import { toWireWhisper, wireWhisperSchema } from "./wire.ts";
+import { wireWhispers, wireWhispersOf, wireWhisperSchema, type WireOptions } from "./wire.ts";
 
 /**
  * What answering a whisper of a kind does besides its status: run in the answer's transaction, after the status is written
@@ -17,7 +18,8 @@ import { toWireWhisper, wireWhisperSchema } from "./wire.ts";
  * hook may lock the Agent's row again — `lockAgent` with the whisper's conversation —, then run rows and accounts); what
  * it returns runs once that transaction has committed (pushes, announcements). A throw rolls the answer back (the whisper
  * stays open). `found_elsewhere` (Task 8): `告诉他们` queues one reply of the Agent in the group that tells what was found
- * (agents/runs.ts `tellFromWhisper`), announced once committed; `不用` does nothing more.
+ * (agents/runs.ts `tellFromWhisper`), announced once committed — nothing is written to the whisper (Redesign D: that run
+ * is what it reads telling from); `不用` does nothing more.
  */
 export type WhisperHook = (t: Tx, whisper: Whisper, app: FastifyInstance) => Promise<(() => void) | void>;
 export const ANSWER_HOOKS: { [K in WhisperKind]?: Partial<Record<WhisperAnswer, WhisperHook>> } = {
@@ -29,9 +31,9 @@ export const ANSWER_HOOKS: { [K in WhisperKind]?: Partial<Record<WhisperAnswer, 
   },
 };
 
-/** Each whisper to its owner's sockets as it is now (after a commit that changed them). */
+/** Each whisper to its owner's sockets as it is when delivered (after a commit that changed them: `Hub.pushWhisper`). */
 export function pushWhispers(realtime: Pick<Hub, "pushWhisper">, whispers: readonly Whisper[]): void {
-  for (const w of whispers) realtime.pushWhisper(w.ownerId, toWireWhisper(w));
+  for (const w of whispers) realtime.pushWhisper(w);
 }
 
 const empty = z.object({});
@@ -43,7 +45,8 @@ const idParams = z.object({ id: uuidParam });
  * `not_found`, found by one read of the caller's own rows (store.ts), so it costs what an id that is none costs.
  */
 export function registerWhisperRoutes(app: FastifyInstance): void {
-  const { db } = app.deps;
+  const { db, config } = app.deps;
+  const wire: WireOptions = { timeZone: config.siteTimezone, elsewhereTtlHours: config.whispers.elsewhereTtlHours };
   const api = app.withTypeProvider<ZodTypeProvider>();
   const readLimit = perPrincipalLimit(app, 120);
   const answerLimit = perPrincipalLimit(app, 30);
@@ -60,14 +63,21 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
     async (req) => {
       const me = await requirePrincipal(req);
       await readLimit(req, me.id);
-      const page = await listWhispers(db, me.id, req.params.id, { before: req.query.before, limit: req.query.limit ?? 50 });
+      // The page and all its copies are derived from: one snapshot.
+      const page = await onSnapshot(db, async (t) => {
+        const found = await listWhispers(t, me.id, req.params.id, { before: req.query.before, limit: req.query.limit ?? 50 });
+        return found && { whispers: await wireWhispers(t, found.whispers, wire), nextBefore: found.nextBefore };
+      });
       if (!page) throw notFound();
-      return { whispers: page.whispers.map(toWireWhisper), nextBefore: page.nextBefore };
+      return page;
     },
   );
 
-  // Answered once: the whisper as it is now, pushed to the owner's sockets too (their other tabs). Again, the other answer,
-  // or an answer whose button it does not offer: 409 `stale_whisper`.
+  // Answered once: the whisper as it is now (a `found_elsewhere` one told: `telling`), pushed to the owner's sockets too
+  // (their other tabs; a `found_elsewhere` one declined: its failed told reply's slot follows, sync/hub.ts). Again, the
+  // other answer, or an answer whose button it does not offer: 409 `stale_whisper`; a `found_elsewhere` one while its
+  // told reply is queued or running: 409 `busy_run`. Once the answer has committed it stands: what is pushed or announced
+  // after it is caught, and logged as a code (never the whisper), as the sweep logs its own.
   const answer = (verb: "accept" | "decline", to: WhisperAnswer) =>
     api.post(
       `/api/whispers/:id/${verb}`,
@@ -77,16 +87,24 @@ export function registerWhisperRoutes(app: FastifyInstance): void {
         await answerLimit(req, me.id);
         let afterCommit: (() => void) | void = undefined;
         const outcome = await db.tx(async (t) => {
-          const resolved = await resolveWhisper(t, me.id, req.params.id, to);
+          const resolved = await resolveWhisper(t, me.id, req.params.id, to, wire.elsewhereTtlHours);
           if (typeof resolved !== "string") afterCommit = await ANSWER_HOOKS[resolved.kind]?.[to]?.(t, resolved, app);
           return resolved;
         });
         if (outcome === "gone") throw notFound();
         if (outcome === "stale") throw new AppError(409, "stale_whisper");
-        const wire = toWireWhisper(outcome);
-        app.realtime.pushWhisper(me.id, wire);
-        (afterCommit as (() => void) | void)?.();
-        return wire;
+        if (outcome === "busy") throw new AppError(409, "busy_run");
+        // Each on its own: one that fails skips none of the others (the push to her tabs; a told reply's announcement).
+        for (const step of [() => app.realtime.pushWhisper(outcome), afterCommit as (() => void) | void]) {
+          try {
+            step?.();
+          } catch (err) {
+            req.log.warn({ code: (err as { code?: string }).code }, "a whisper's answer was stored; what follows it could not be pushed");
+          }
+        }
+        // As it is now that the answer has committed, read on one snapshot.
+        const [now] = await wireWhispersOf(db, me.id, [outcome.id], wire);
+        return now ?? (await wireWhispers(db, [outcome], wire))[0]!;
       },
     );
   answer("accept", "accepted");

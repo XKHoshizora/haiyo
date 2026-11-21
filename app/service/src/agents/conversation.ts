@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lockAccount } from "../accounts/store.ts";
 import type { Config } from "../config.ts";
 import type { Change } from "../conversations/events.ts";
-import { currentMembership } from "../conversations/store.ts";
+import { currentMembership, VISIBLE_JOIN } from "../conversations/store.ts";
 import { appendSystem } from "../conversations/system.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
@@ -17,6 +17,8 @@ import { RunNotRunning } from "./runtime/port.ts";
 import { withoutMark, withoutMarkAtCut } from "./runtime/prompt.ts";
 import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
 import { forgetSummaries } from "./summary/store.ts";
+import { askedOf } from "./tools/elsewhere.ts";
+import { whisperOfRun } from "../whispers/store.ts";
 import {
   agentLimit,
   assertModelChoice,
@@ -230,7 +232,10 @@ export interface AgentReply extends LookupFields {
  * nobody (its mentions are not read). The reply posted after it (`as` "reply", the default) quotes the question it
  * answers (`replyToSeq`: the seq the run covers) when anyone but the Agent wrote a text or file message in the
  * conversation after the acknowledgement that stands for it (`standingAcknowledgement`: its own, or the one an earlier
- * attempt at the same question left, a retry's); otherwise it is posted as ever.
+ * attempt at the same question left, a retry's); otherwise it is posted as ever. A reply `告诉他们` queued (a told reply,
+ * `agent_runs.whisper_id`) always quotes the message that asked what its whisper found (the whisper's `askedSeq`), so it
+ * makes sense however long after it comes — unless the Agent can no longer see that message (the rule a person's quote is
+ * held to as it is sent, messages/send.ts): then without a quote.
  */
 export async function postAsAgent(
   t: Tx,
@@ -254,8 +259,8 @@ export async function postAsAgent(
   // A run that has ended — another instance's recovery ended it while this one was still answering — is never posted;
   // nor is one its Agent's pause or delete interrupted, even once the Agent is resumed (runs.ts); nor a run of another
   // conversation's, here.
-  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string }>(
-    "select status, interrupted, lane, caller_id, covers_seq::text as covers from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
+  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string; told: boolean }>(
+    "select status, interrupted, lane, caller_id, covers_seq::text as covers, whisper_id is not null as told from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
     [runId, agentId, conversationId],
   );
   if (run.rows[0]?.status !== "running") throw new RunNotRunning(runId, run.rows[0]?.status ?? null);
@@ -315,6 +320,14 @@ export async function postAsAgent(
       ])
     ).rowCount !== 0;
   if (overtaken) body.replyToSeq = Number(run.rows[0].covers);
+  if (run.rows[0].told) {
+    // A told reply: the question it tells about, quoted, when the Agent may still see it (VISIBLE_JOIN, as a person's quote).
+    const whisper = await whisperOfRun(t, runId);
+    const asked = whisper ? askedOf(whisper.body.detail) : null;
+    const seen = asked !== null && (await t.query(`select 1 from messages m ${VISIBLE_JOIN} where m.conversation_id = $2 and m.seq = $3`, [agentId, conversationId, asked])).rowCount !== 0;
+    if (seen) body.replyToSeq = asked;
+    else delete body.replyToSeq;
+  }
   // What its tools looked up: the counts, and the messages found (each reader is sent only those they can see,
   // messages/read.ts) — in a group only that group's own, the only ones a reply there may find; the search words only in
   // its own conversation, its owner's to read — in a group they are not kept.

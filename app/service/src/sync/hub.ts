@@ -1,19 +1,28 @@
 import type { WebSocket } from "@fastify/websocket";
 import type { FastifyBaseLogger } from "fastify";
-import { runAudience, type GroupRunState, type RunAudience, type WireRun } from "../agents/runs.ts";
+import { runAudience, toldSlotOf, type GroupRunState, type RunAudience, type WireRun } from "../agents/runs.ts";
 import type { Activity } from "../agents/runtime/port.ts";
 import type { Config } from "../config.ts";
 import type { ConversationEvents } from "../conversations/events.ts";
 import { currentMemberIds, peekConversation } from "../conversations/store.ts";
-import type { Queryable } from "../db.ts";
+import type { Db } from "../db.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type StoredMessage, type WireMessage } from "../messages/model.ts";
 import { toWireForReaders, type ReadEvents, type ReadMarker } from "../messages/read.ts";
 import { handleOf } from "../principals/store.ts";
 import { liveSessions } from "../session.ts";
 import type { SocialEvents } from "../social/events.ts";
-import type { WireWhisper } from "../whispers/wire.ts";
+import { whispersPointingInto } from "../whispers/store.ts";
+import { wireWhispersOf, type WireWhisper } from "../whispers/wire.ts";
 import type { TicketOwner } from "./tickets.ts";
 
+/** The key of a principal's own queue of whisper pushes (`pushWhisper`), beside the conversations' (a uuid never starts so). */
+const WHISPER_QUEUE = "whispers:";
+/**
+ * The states in which a `found_elsewhere` whisper no longer reads open for good (whispers/wire.ts `foundView`): delivered so,
+ * its failed told reply's slot follows (`pushWhisperNow`). Not `telling`: then its latest reply there is that told reply,
+ * under way, whose own deliveries say so.
+ */
+const ENDED: ReadonlySet<string> = new Set(["told", "declined", "expired"]);
 /** A principal's 6th socket closes its oldest. */
 export const MAX_SOCKETS_PER_PRINCIPAL = 5;
 /** WebSocket-level ping interval; a socket that has not answered the previous ping by the next one is dropped. */
@@ -73,6 +82,10 @@ type Task =
   | { kind: "push"; principalId: string; event: PushEvent; wanted?: () => boolean }
   /** The Agent's reply at `seq`, again, to `principalId` (its run's owner) once its run is charged. */
   | { kind: "charged"; principalId: string; seq: number }
+  /** Whisper `whisperId` of `principalId`'s, as it is when delivered (`pushWhisper`). */
+  | { kind: "whisper"; principalId: string; whisperId: string }
+  /** `principalId`'s whispers that point into `conversationId`, found and pushed when delivered (`pushWhispersPointingInto`). */
+  | { kind: "pointing"; principalId: string; conversationId: string }
   /**
    * Run `runId` of the conversation: `run` to the owner its row names (none: the owner is not told), its state to a
    * group's others. `activity` (`pushActivity`): what its tool is doing, with both — dropped if `wanted` says no by then.
@@ -85,9 +98,9 @@ interface Queue {
 }
 
 export interface HubDeps {
-  db: Queryable;
-  /** The site models' labels, read when a message is rendered (`via`). */
-  config: Pick<Config, "siteModels">;
+  db: Db;
+  /** The site models' labels, read when a message is rendered (`via`); the site's time zone and `WHISPERS`, a whisper's copy. */
+  config: Pick<Config, "siteModels" | "siteTimezone" | "whispers">;
   conversations: ConversationEvents;
   social: SocialEvents;
   reads: ReadEvents;
@@ -113,7 +126,14 @@ export interface HubDeps {
  * - a reply's progress (`run`, `delta`), in order with the conversation's messages: `delta` to the Agent's owner only;
  *   `run` to the owner the run's row names (also after they left a group), and in a group also its state
  *   (`replying` / `unavailable` / null) to every other current member, read once per delivery whatever their number
- *   (`announceRun`); what its tool is doing (`pushActivity`) with both, as a kind only.
+ *   (`announceRun`); what its tool is doing (`pushActivity`) with both, as a kind only;
+ * - a whisper (`pushWhisper`): to its owner only, as it is when delivered (whispers/wire.ts `wireWhispers`: a
+ *   `found_elsewhere` one's state derived then, its hits read as she may read them then), on a queue of that owner's
+ *   whispers alone; and, after each delivery of a run that tells one (`告诉他们`'s told reply, `agent_runs.whisper_id`),
+ *   that whisper too — so every change of a told reply (queued, running, ended, posted or not) reaches its owner's view of
+ *   the whisper, without anything being written to the whisper itself. A `found_elsewhere` whisper delivered no longer
+ *   reading open — whatever ended it: 不用, its day, its last hit lost to a leaving, told — is followed by its failed told
+ *   reply's slot (`ENDED`), read there and pushed as it is on the group's queue, so 重试 goes at once (fix round 4).
  */
 export class Hub {
   /** Open connections per principal, oldest first. */
@@ -267,12 +287,25 @@ export class Hub {
   }
 
   /**
-   * A whisper of `ownerId`'s (src/whispers/), made or changed — answered, expired —, to their sockets only: nobody else is
-   * pushed anything of it, ever. Through its conversation's queue, so it comes after the message it follows (`afterSeq`)
-   * was pushed. Not replayed: `GET /api/sync` and catch-up carry the owner's whispers.
+   * A whisper of its owner's (src/whispers/), made or changed — answered, expired, its told reply moved on —, to their
+   * sockets only: nobody else is pushed anything of it, ever. Read when it is delivered, so it goes as it is then (each
+   * push carries the state at its delivery, and its revision). Through a queue of its owner's whispers, never its
+   * conversation's: what is read for it delays nothing any other member is sent (no timing of theirs depends on it); a
+   * client places it by `afterSeq` whenever it comes. Not replayed: `GET /api/sync` and catch-up carry the owner's whispers.
    */
-  pushWhisper(ownerId: string, whisper: WireWhisper): void {
-    this.enqueue(whisper.conversationId, { kind: "push", principalId: ownerId.toLowerCase(), event: { type: "whisper", whisper } });
+  pushWhisper(whisper: { id: string; ownerId: string }): void {
+    const ownerId = whisper.ownerId.toLowerCase();
+    this.enqueue(`${WHISPER_QUEUE}${ownerId}`, { kind: "whisper", principalId: ownerId, whisperId: whisper.id });
+  }
+
+  /**
+   * After `ownerId` left `conversationId` (or was removed): her whispers elsewhere that point into it, found and pushed to
+   * her as they read then (without those hits) — on her own queue, when she is connected, so the leaving's request waits
+   * for none of it and nothing is read for her while she is away (her next sync reads them so anyway).
+   */
+  pushWhispersPointingInto(ownerId: string, conversationId: string): void {
+    const owner = ownerId.toLowerCase();
+    this.enqueue(`${WHISPER_QUEUE}${owner}`, { kind: "pointing", principalId: owner, conversationId });
   }
 
   /** Registers an upgraded socket; closes the principal's oldest socket if this is one too many. */
@@ -404,7 +437,45 @@ export class Hub {
         return this.announceRun(task);
       case "charged":
         return this.pushCharged(conversationId, task.principalId, task.seq);
+      case "whisper":
+        return this.pushWhisperNow(task.principalId, task.whisperId);
+      case "pointing":
+        return this.pushPointingNow(task.principalId, task.conversationId);
     }
+  }
+
+  /** `pushWhispersPointingInto`'s delivery: each of her whispers that point there, as it reads now, when she is connected. */
+  private async pushPointingNow(principalId: string, conversationId: string): Promise<void> {
+    const [owner] = this.connectedAmong([principalId]);
+    if (!owner) return;
+    for (const w of await whispersPointingInto(this.deps.db, conversationId, [owner])) await this.pushWhisperNow(owner, w.id);
+  }
+
+  /**
+   * `pushWhisper`'s delivery: the whisper as its owner (`principalId`) may read it now, when they are connected. The one
+   * place a whisper's no longer reading open reaches the slot of its told reply (M-12): delivered ended (`ENDED`), the
+   * slot its owner holds of its failed told reply, if any, is read here — on her own queue — and pushed to her alone as
+   * it is on the group's queue (M-11: that task reads nothing; it keeps its place among the run's other pushes). A read
+   * that fails is logged as a code; she reads the slot so at her next sync.
+   */
+  private async pushWhisperNow(principalId: string, whisperId: string): Promise<void> {
+    const [owner] = this.connectedAmong([principalId]);
+    if (!owner) return;
+    const { siteTimezone: timeZone, whispers } = this.deps.config;
+    const [whisper] = await wireWhispersOf(this.deps.db, owner, [whisperId], { timeZone, elsewhereTtlHours: whispers.elsewhereTtlHours });
+    if (!whisper) return;
+    this.push(owner, { type: "whisper", whisper });
+    if (whisper.kind !== "found_elsewhere" || !ENDED.has(whisper.status)) return;
+    let slot: Awaited<ReturnType<typeof toldSlotOf>>;
+    try {
+      slot = await toldSlotOf(this.deps.db, { id: whisper.id, ownerId: owner }, whispers.elsewhereTtlHours);
+    } catch (err) {
+      this.deps.log.error({ code: (err as { code?: string }).code }, "realtime: a told reply's slot could not be read; its owner reads it at her next sync");
+      return;
+    }
+    if (!slot) return;
+    const { conversationId, agentId, run } = slot;
+    this.enqueue(conversationId, { kind: "push", principalId: owner, event: { type: "run", conversationId, agentId, run } });
   }
 
   /** `pushChargedReply`'s delivery: the reply as `principalId` may read it now, when that carries `via`. */
@@ -458,6 +529,9 @@ export class Hub {
     }
     const { agentId, state } = audience;
     if (run) this.push(ownerId, { type: "run", conversationId, agentId, run, ...tool });
+    // A told reply (`告诉他们`): its whisper as its owner reads it then — telling, told, or open again —, to them alone, on
+    // their whispers' own queue (nothing is read for it here, before what the others are told).
+    if (run && audience.whisperId !== null) this.pushWhisper({ id: audience.whisperId, ownerId });
     if (task.ownerOnly) return;
     if (task.activity !== undefined && state !== "replying") return;
     for (const id of this.connectedAmong(audience.memberIds)) {

@@ -3,15 +3,14 @@ import type { Config } from "../../config.ts";
 import type { Db, Queryable, Tx } from "../../db.ts";
 import { inSearchBudget, searchRows, type SearchRow } from "../../messages/search.ts";
 import type { Hub } from "../../sync/hub.ts";
-import { createWhisper, detailOfRunWhisper, roomForFoundElsewhere, type Whisper } from "../../whispers/store.ts";
-import { toWireWhisper } from "../../whispers/wire.ts";
+import { createWhisper, mayTell, readableHits, roomForFoundElsewhere, whisperOfRun, type HitRow, type Whisper } from "../../whispers/store.ts";
 import { QUOTE_MAX_CHARS } from "../runtime/context.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/prompt.ts";
 import { lockAgent } from "../store.ts";
 import { siteDateTime } from "./clock.ts";
 import type { ElsewhereAsk, RunScope } from "./index.ts";
 import { withoutCitations } from "./refs.ts";
-import { excerpt } from "./search.ts";
+import { excerptAt, matchAt } from "./search.ts";
 
 /**
  * "Not in this group, but I have it elsewhere" (Task 8; design rules 17, 18, decision 9). A search of a reply in a group
@@ -21,13 +20,17 @@ import { excerpt } from "./search.ts";
  * each one it is a current member of but this group, as the Agent sees it (VISIBLE_JOIN), and only what its owner can read
  * there now (a current member, a message after their joining): the owner is the one shown the hits; the late-joiner line of
  * another group's replies has nothing to do with it. At most `ELSEWHERE_HITS_MAX` hits, the newest. Hits become ONE
- * whisper to the owner in the group (`found_elsewhere`, `告诉他们` / `不用`), with the hits in its `detail` — at most one a
- * reply, and none while the owner has `ELSEWHERE_OPEN_MAX` open ones there. Under the Agent's row (`lockAgent`, which takes
- * the group's row first: the whisper lock order) before `createWhisper`; a whisper `createWhisper` does not make (the Agent
- * or its owner gone from the group, a body it cannot keep) is none, and nothing is said of it. Pushed to the owner alone,
- * once committed. Nothing found, or the switch off: nothing — with the switch off, not even the query; nor with no room
- * for a whisper (read before the query), nor while `atOnce` lookups already run. The same words and filters the model gave
- * the group's search (`ElsewhereAsk`). A failure is logged by its kind only, never the words or anything found.
+ * whisper to the owner in the group (`found_elsewhere`, `告诉他们` / `不用`) — at most one a reply, and none while the owner
+ * has `ELSEWHERE_OPEN_MAX` there whose state is open or telling. The whisper keeps REFERENCES, never what was said (Redesign
+ * D): for each hit the conversation and the message it points at, and where in it the words are (`HitRef`), and which
+ * message of the group asked (`askedSeq`: the told reply quotes it). Whenever it is shown to its owner, and when its told
+ * reply begins, each is read again under her access then (whispers/store.ts `readableHits`, `hitOf`): a hit she can no longer read is left out; with none
+ * left it reads expired. Under the Agent's row (`lockAgent`, which takes the group's row first: the whisper lock order)
+ * before `createWhisper`; a whisper `createWhisper` does not make (the Agent or its owner gone from the group, a body it
+ * cannot keep) is none, and nothing is said of it. Pushed to the owner alone, once committed. Nothing found, or the switch
+ * off: nothing — with the switch off, not even the query; nor with no room for a whisper (read before the query), nor while
+ * `atOnce` lookups already run. The same words and filters the model gave the group's search (`ElsewhereAsk`). A failure is
+ * logged by its kind only, never the words or anything found.
  */
 
 /** The whisper's text (the brief's words). */
@@ -42,10 +45,10 @@ export const ELSEWHERE_AT_ONCE = 2;
 export const OWN_PLACE = "我们的专属会话";
 /** At most this many hits. */
 export const ELSEWHERE_HITS_MAX = 5;
-/** No new `found_elsewhere` whisper while its owner has this many open in the group. */
+/** No new `found_elsewhere` whisper while its owner has this many there whose state is open or telling. */
 export const ELSEWHERE_OPEN_MAX = 3;
 
-/** One hit as the whisper keeps it, and as the run `告诉他们` queues is shown it. */
+/** One hit as its owner is shown it (read now: `hitOf`), and as the run `告诉他们` queues is shown it (`toldPassage`). */
 export interface ElsewhereHit {
   where: string;
   who: string;
@@ -53,9 +56,19 @@ export interface ElsewhereHit {
   text: string;
 }
 
+/**
+ * What a whisper keeps of a hit: the message it points at (its conversation, its seq) and where the words are in its text
+ * on one line (`at`, an index: what its excerpt is cut around when read). Never its text, a name or a title.
+ */
+export interface HitRef {
+  conversationId: string;
+  seq: number;
+  at: number;
+}
+
 export interface ElsewhereDeps {
   db: Db;
-  config: Pick<Config, "siteTimezone" | "searchStatementTimeoutMs">;
+  config: Pick<Config, "siteTimezone" | "searchStatementTimeoutMs" | "whispers">;
   realtime: Pick<Hub, "pushWhisper">;
   log: Pick<FastifyBaseLogger, "warn" | "error" | "info">;
 }
@@ -93,14 +106,15 @@ export function createElsewhere(deps: ElsewhereDeps, { atOnce = ELSEWHERE_AT_ONC
 /**
  * The whole of one lookup: the switch; the caps (read first, so a reply that whispered already, or an owner with 3 open
  * there, costs no query — and read again under the lock); the query, with the words and the filters the model gave the
- * group's search; then the whisper.
+ * group's search; then the whisper, keeping where each hit is.
  */
 async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk): Promise<void> {
   const { db, config } = deps;
   const on = await db.query<{ on: boolean }>("select whisper_elsewhere as on from agents where principal_id = $1", [scope.agentId]);
   if (on.rows[0]?.on !== true) return;
   const room = { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId, runId: scope.id };
-  if (!(await roomForFoundElsewhere(db, room, ELSEWHERE_OPEN_MAX))) return;
+  const ttlHours = config.whispers.elsewhereTtlHours;
+  if (!(await roomForFoundElsewhere(db, room, ELSEWHERE_OPEN_MAX, ttlHours))) return;
   const rows = await inSearchBudget(db, config.searchStatementTimeoutMs, async (t) => {
     const { rows: places } = await t.query<{ id: string }>(
       `select am.conversation_id as id from memberships am
@@ -123,42 +137,73 @@ async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk):
     });
   });
   if (rows.length === 0) return;
-  const hits = rows.map((row) => hitOf(row, ask.term, config.siteTimezone));
-  const made = await db.tx((t) => whisperHits(t, scope, hits, deps.log));
-  if (made) deps.realtime.pushWhisper(made.ownerId, toWireWhisper(made));
+  const made = await db.tx((t) => whisperHits(t, scope, rows.map((row) => refOf(row, ask.term)), ttlHours, deps.log));
+  if (made) deps.realtime.pushWhisper(made);
 }
 
 /**
- * A row as a hit: where (a group's title, `某个群` when it has none; `我们的专属会话` for the Agent's own), who (the
- * sender's name as a label shows it), when (the site's time), and what — on one line, around the words, without any
- * citation, at most `QUOTE_MAX_CHARS` characters.
+ * A hit's text as it is cut and shown: the one place both where the words are (`refOf`, when the whisper is made) and the
+ * cut around them (`hitOf`, whenever it is read) start from — so whatever is changed in it changes both alike and a kept
+ * `at` stays where the words are.
  */
-function hitOf(row: SearchRow, query: string, timeZone: string): ElsewhereHit {
-  const { date, time } = siteDateTime(row.created_at, timeZone);
-  const said = Array.from(excerpt(withoutCitations(row.text ?? ""), query)).slice(0, QUOTE_MAX_CHARS).join("");
-  return {
-    where: row.conversation_type === "agent" ? OWN_PLACE : cleanText(withoutCitations(row.title ?? "")) || NO_GROUP_TITLE,
-    who: labelName(row.sender_name, row.sender_handle),
-    when: `${date} ${time}`,
-    text: said !== "" ? said : (row.attachment ? cleanText(row.attachment.name) : ""),
-  };
+const hitLine = (text: string | null): string => withoutCitations(text ?? "");
+
+/** What the whisper keeps of a row: where it points, and where in its text (as a hit shows it) the words are. */
+function refOf(row: SearchRow, term: string): HitRef {
+  return { conversationId: row.conversation_id, seq: Number(row.seq), at: Math.max(0, matchAt(hitLine(row.text), term)) };
 }
 
 /**
  * The whisper, in the group's transaction: the Agent's row first (`lockAgent`: the group's row, then the Agent's, for
  * update — before `createWhisper` takes them again), then the two caps: none when this reply already whispered (a
  * `found_elsewhere` whisper of the Agent there made since the run began: the Agent has one active reply there at most)
- * or when the owner has `ELSEWHERE_OPEN_MAX` open there. Null: none made.
+ * or when the owner has `ELSEWHERE_OPEN_MAX` open or telling there. It keeps the references and the message that asked:
+ * the latest of the calls the run answers (those up to what it covers), else what it covers. Null: none made.
  */
-async function whisperHits(t: Tx, scope: RunScope, hits: ElsewhereHit[], log: Pick<FastifyBaseLogger, "warn">): Promise<Whisper | null> {
+async function whisperHits(t: Tx, scope: RunScope, hits: HitRef[], ttlHours: number, log: Pick<FastifyBaseLogger, "warn">): Promise<Whisper | null> {
   await lockAgent(t, scope.agentId, scope.conversationId);
-  const room = await roomForFoundElsewhere(t, { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId, runId: scope.id }, ELSEWHERE_OPEN_MAX);
+  const room = await roomForFoundElsewhere(t, { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId, runId: scope.id }, ELSEWHERE_OPEN_MAX, ttlHours);
   if (!room) return null;
+  const asked = await t.query<{ seq: string | null }>(
+    "select coalesce((select max(c.s) from unnest(r.call_seqs) as c (s) where c.s <= r.covers_seq), r.covers_seq)::text as seq from agent_runs r where r.id = $1",
+    [scope.id],
+  );
+  const askedSeq = asked.rows[0]?.seq == null ? null : Number(asked.rows[0].seq);
   return createWhisper(
     t,
-    { conversationId: scope.conversationId, ownerId: scope.ownerId, agentId: scope.agentId, kind: "found_elsewhere", body: { text: FOUND_ELSEWHERE, actions: ["tell", "dismiss"], detail: { hits } } },
+    {
+      conversationId: scope.conversationId,
+      ownerId: scope.ownerId,
+      agentId: scope.agentId,
+      kind: "found_elsewhere",
+      body: { text: FOUND_ELSEWHERE, actions: ["tell", "dismiss"], detail: { hits, ...(askedSeq === null ? {} : { askedSeq }) } },
+    },
     log,
   );
+}
+
+/** The message that asked, as a whisper's `detail` keeps it (`askedSeq`); null when it keeps none. */
+export function askedOf(detail: unknown): number | null {
+  const seq = (detail as { askedSeq?: unknown } | null | undefined)?.askedSeq;
+  return Number.isSafeInteger(seq) && (seq as number) > 0 ? (seq as number) : null;
+}
+
+/**
+ * A hit as its owner is shown it, from what whispers/store.ts `readableHits` read of its message (under her access now,
+ * the one rule): where (a group's title, `某个群` when it has none; `我们的专属会话` for the Agent's own), who (the sender's name
+ * as a label shows it), when (in `timeZone`, the site's), and what — on one line, cut around the words as the search cut
+ * it (`excerptAt` at the kept `at`), without any citation, at most `QUOTE_MAX_CHARS` characters (a file message without
+ * text: its name).
+ */
+export function hitOf(row: HitRow, timeZone: string): ElsewhereHit {
+  const { date, time } = siteDateTime(row.createdAt, timeZone);
+  const said = Array.from(excerptAt(hitLine(row.text), row.at)).slice(0, QUOTE_MAX_CHARS).join("");
+  return {
+    where: row.conversationType === "agent" ? OWN_PLACE : cleanText(withoutCitations(row.title ?? "")) || NO_GROUP_TITLE,
+    who: labelName(row.senderName, row.senderHandle),
+    when: `${date} ${time}`,
+    text: said !== "" ? said : row.attachmentName ? cleanText(row.attachmentName) : "",
+  };
 }
 
 /** `text` with no `@` that would call someone (agents/mentions.ts's rule): `@mia_bot` → `mia_bot`. */
@@ -167,25 +212,23 @@ const uncalled = (text: string): string => text.replace(/(?<![A-Za-z0-9_])@(?=[A
 /**
  * What the run `告诉他们` queued is told in its system text: what to do, what not to say, that the hits are material, and
  * the hits — each its time and its text only (Task 8 fix 1, I-1): never where it was said or who said it (the whisper
- * keeps those for the owner), so the group cannot learn another group's name, the owner's private chat, or a stranger's
- * name; and no `@` in a text, so telling it calls nobody here.
+ * shows those to the owner alone), so the group cannot learn another group's name, the owner's private chat, or a
+ * stranger's name; and no `@` in a text, so telling it calls nobody here.
  */
 export function toldPassage(hits: readonly ElsewhereHit[]): string {
   return [TELL_THEM, TELL_HOW, TOOL_MATERIAL, JSON.stringify({ hits: hits.map(({ when, text }) => ({ when, text: uncalled(text) })) })].join("\n");
 }
 
-/** Whether `h` is a hit as `hitOf` keeps it (four strings). */
-const isHit = (h: unknown): h is ElsewhereHit =>
-  typeof h === "object" && h !== null && ["where", "who", "when", "text"].every((k) => typeof (h as Record<string, unknown>)[k] === "string");
-
 /**
- * The hits reply run `runId` is to tell, when `告诉他们` queued it (`agent_runs.whisper_id`): its whisper's, as kept — []
- * when the whisper is gone or holds none; null for any other reply.
+ * The hits reply run `runId` is to tell, when `告诉他们` queued it (`agent_runs.whisper_id`): its whisper's references read
+ * now, as its owner may read them now — those she can no longer read left out; [] when the whisper is gone, when it is one
+ * no told reply may tell (whispers/store.ts `mayTell`, the one rule: declined, expired, told — with this run its own
+ * telling, a day may have passed), or none is left; null for any other reply.
  */
-export async function toldHits(q: Queryable, runId: string): Promise<ElsewhereHit[] | null> {
-  const told = await detailOfRunWhisper(q, runId);
-  if (told === undefined) return null;
-  const hits = (told?.detail as { hits?: unknown } | undefined)?.hits;
-  if (!Array.isArray(hits)) return [];
-  return hits.filter(isHit).map((h) => ({ where: h.where, who: h.who, when: h.when, text: h.text }));
+export async function toldHits(q: Queryable, runId: string, { timeZone, elsewhereTtlHours }: { timeZone: string; elsewhereTtlHours: number }): Promise<ElsewhereHit[] | null> {
+  const whisper = await whisperOfRun(q, runId);
+  if (whisper === undefined) return null;
+  if (whisper === null) return [];
+  if (!(await mayTell(q, whisper, { ttlHours: elsewhereTtlHours, ownRunId: runId })).may) return [];
+  return (await readableHits(q, [whisper.id])).map((row) => hitOf(row, timeZone));
 }

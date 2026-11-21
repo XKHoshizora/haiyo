@@ -83,7 +83,7 @@ function registerSyncRoutes(app: FastifyInstance, tickets: TicketStore): void {
     async (req) => {
       const me = await requirePrincipal(req);
       await conversationLimit(req, me.id);
-      const entry = await syncConversation(db, me.id, req.params.id);
+      const entry = await syncConversation(db, me.id, req.params.id, config);
       if (!entry) throw notFound();
       return entry;
     },

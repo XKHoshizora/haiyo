@@ -158,7 +158,7 @@ export async function removeMember(
   conversationId: string,
   actorId: string,
   targetId: string,
-): Promise<{ change: Change; ended: EndedRuns; whispers: Whisper[] }> {
+): Promise<{ change: Change; ended: EndedRuns; whispers: Whisper[]; personLeft: string | null }> {
   const target = await principalOf(t, targetId);
   const { conversation, membership } = await lockGroup(t, conversationId, actorId);
   const leaving = targetId === actorId;
@@ -195,7 +195,10 @@ export async function removeMember(
   const whispers = await expireOnLeave(t, conversationId, [...out]);
   // An Agent that left loses its rolling summary of the group (agents/summary/), here, with its membership.
   await forgetSummaries(t, conversationId, [...out]);
-  return { change: { messages, conversations: [{ conversationId, principalIds: members.map((m) => m.principalId) }] }, ended, whispers };
+  // A person who left can no longer read what was said here: `personLeft`, whose whispers elsewhere that point here are
+  // found and pushed to her after commit, on her own queue (sync/hub.ts `pushWhispersPointingInto`) — nothing of hers is
+  // read here, so nothing of this transaction's time depends on her whispers.
+  return { change: { messages, conversations: [{ conversationId, principalIds: members.map((m) => m.principalId) }] }, ended, whispers, personLeft: agent ? null : targetId };
 }
 
 /** Only the creator renames. Renaming to the current title changes nothing and announces nothing. */

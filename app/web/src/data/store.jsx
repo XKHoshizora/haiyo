@@ -4,7 +4,7 @@ import { reducer } from "../state/reducer.js";
 import { createActions } from "./actions.js";
 import { initial, resetKeepingDrafts } from "./model.js";
 import { httpTransport, start as startSync } from "./sync.js";
-import { toView } from "./viewmodel.js";
+import { deadlinesOf, toView } from "./viewmodel.js";
 
 const Ctx = createContext(null);
 
@@ -152,7 +152,33 @@ export function StoreProvider({ children, initialState, dataLayer }) {
   const [layer] = useState(() => dataLayer ?? createDataLayer());
   const snapshot = useSyncExternalStore(layer.subscribe, layer.getSnapshot, layer.getSnapshot);
   const [ui, dispatch] = useReducer(reducer, initialState, (s) => s || emptyState());
-  const view = useMemo(() => (initialState ? null : toView(snapshot.model, { now: layer.now() })), [initialState, snapshot.model, layer]);
+  // Moments the service sent at which an offer ends on screen (viewmodel.js `deadlinesOf`), on the wall clock (as the
+  // service's are; `layer.now` is the clock the view's times are written with): the view is read again when one has
+  // come — checked at every render (a tab woken from sleep is right at once), at the nearest one ahead (one
+  // timer, cleared when it changes or on unmount, armed again after each wake: a timer that ran early, or one held to the
+  // longest a timer waits, is set again), and when the tab is shown again.
+  const [woken, wake] = useReducer((n) => n + 1, 0);
+  const deadlines = useMemo(() => (initialState ? [] : deadlinesOf(snapshot.model)), [initialState, snapshot.model]);
+  const at = Date.now();
+  const come = deadlines.filter((ms) => ms <= at).length;
+  const next = deadlines.reduce((soonest, ms) => (ms > at && ms < soonest ? ms : soonest), Infinity);
+  useEffect(() => {
+    if (!Number.isFinite(next)) return undefined;
+    const handle = window.setTimeout(wake, Math.min(Math.max(0, next - Date.now()) + 1, 2_147_483_647));
+    return () => window.clearTimeout(handle);
+  }, [next, woken]);
+  useEffect(() => {
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("focus", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("focus", wake);
+    };
+  }, []);
+  const view = useMemo(
+    () => (initialState ? null : toView(snapshot.model, { now: layer.now(), offersAt: Date.now() })),
+    [initialState, snapshot.model, layer, come],
+  );
   const state = useMemo(() => (view ? { ...ui, ...view, connection: snapshot.connection } : ui), [ui, view, snapshot.connection]);
 
   useEffect(() => {

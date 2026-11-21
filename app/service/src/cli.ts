@@ -120,8 +120,8 @@ if (command === "migrate") {
     const changes = await sweepMemoryChanges(db);
     console.log(`swept ${changes.deleted} memory change record(s) older than ${CHANGE_KEEP_DAYS} days and discarded ${changes.discarded} that nobody answered`);
     // And the whispers left open (the server does this on the same timer; their owners are told at their next sync), and the old answered ones.
-    const whispers = await expireWhispers(db);
-    console.log(`expired ${whispers.length} whisper(s) left open ${WHISPER_OPEN_DAYS} days`);
+    const whispers = await expireWhispers(db, new Date(), { elsewhereTtlHours: config.whispers.elsewhereTtlHours });
+    console.log(`expired ${whispers.length} whisper(s) left open ${WHISPER_OPEN_DAYS} days (a found-elsewhere one ${config.whispers.elsewhereTtlHours} hours)`);
     const removed = await removeOldWhispers(db);
     console.log(`deleted ${removed} answered or expired whisper(s) made ${WHISPER_KEEP_DAYS} days ago`);
     // And the reminders about money a settlement recorded but whose whisper was never made (their owners see them at their next sync).

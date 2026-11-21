@@ -5,14 +5,19 @@
 // a conversation with open ones. Contract: app/service/README.md "Whispers".
 import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { A1, AG1, ANN, BO, G1, ME_ID, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, at, deferred, group, range, syncOf, wire } from "./fixtures.js";
-import { click, elapse, flush, installBrowser, openApp, push } from "./harness.jsx";
+import { NOW, click, elapse, flush, installBrowser, openApp, push } from "./harness.jsx";
 import { WHISPER_RETRY_MS } from "../src/data/actions.js";
 import { applyCatchup, applyGone, applySync, applyWhisper, initial } from "../src/data/model.js";
 import { placeWhispers } from "../src/data/viewmodel.js";
+import { replyErrorText } from "../src/data/errorTexts.js";
 
-beforeEach(() => installBrowser());
+beforeEach(() => {
+  installBrowser();
+  sessionStorage.clear();
+});
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -146,13 +151,14 @@ describe("a whisper in the conversation", () => {
     expect(whisperLi("w1").textContent).toBe("已过期");
   });
 
-  it("an open found_elsewhere whisper shows what was found before its buttons — where · who · when, then the text, a long one folded with 展开", async () => {
+  it("an open found_elsewhere whisper, opened, shows what was found before its buttons — where · who · when, then the text, a long one folded with 展开", async () => {
     const long = "很长的一段话".repeat(40);
     const hits = [
       { where: "我们的专属会话", who: "小美", when: "2026-11-20 14:05", text: "蓝鲸计划的口令是七七" },
       { where: "乙群", who: "小安", when: "2026-11-19 09:30", text: long },
     ];
-    await openGroup({ whispers: [whisper("w1", G1, 2, { detail: { hits } }), whisper("w2", G1, 3, { status: "accepted", detail: { hits } })] });
+    await openGroup({ whispers: [whisper("w1", G1, 2, { detail: { hits } }), whisper("w2", G1, 3, { status: "told", detail: { hits } })] });
+    await click(inWhisper("w1").getByRole("button", { name: SUMMARY(2) }));
     const items = [...whisperLi("w1").querySelectorAll(".whisper-hit")];
     expect(items.map((li) => li.querySelector(".whisper-hit-meta").textContent)).toEqual(["我们的专属会话 · 小美 · 2026-11-20 14:05", "乙群 · 小安 · 2026-11-19 09:30"]);
     expect(items.map((li) => li.querySelector(".whisper-hit-text").textContent)).toEqual(["蓝鲸计划的口令是七七", long]);
@@ -165,7 +171,7 @@ describe("a whisper in the conversation", () => {
     await click(within(items[1]).getByRole("button", { name: "展开" }));
     expect(items[1].querySelector(".whisper-hit-text").classList.contains("folded")).toBe(false);
     expect(within(items[1]).getByRole("button", { name: "收起" })).toBeTruthy();
-    // Answered: the quiet line only.
+    // Told: the quiet line only.
     expect(whisperLi("w2").textContent).toBe("已告诉他们");
   });
 
@@ -215,21 +221,115 @@ describe("a whisper in the conversation", () => {
     expect(document.querySelectorAll(".msg-whisper")).toHaveLength(1);
   });
 
-  it("a told reply that posted nothing gives its whisper back: a later copy (a higher revision) that says open brings its hits and both buttons back, and the dot; an older one never undoes the later (round 3)", async () => {
-    const hits = [{ where: "乙群", who: "mia", when: "2026-11-20 10:00", text: "蓝鲸计划在三楼" }];
-    const { transport } = await openGroup({ whispers: [whisper("w1", G1, 3, { detail: { hits }, revision: 0 })] });
-    await push(transport, { type: "whisper", whisper: whisper("w1", G1, 3, { detail: { hits }, status: "accepted", revision: 1 }) });
-    expect(whisperLi("w1").textContent).toBe("已告诉他们");
-    expect(within(listRow("周末小组")).queryByLabelText(DOT)).toBeNull();
-    // Given back, open again.
-    await push(transport, { type: "whisper", whisper: whisper("w1", G1, 3, { detail: { hits }, revision: 2 }) });
+});
+
+/** The one line a found_elsewhere whisper is folded to (its control that opens it). */
+const SUMMARY = (n) => `在别处查到了 ${n} 条，要告诉他们吗？`;
+const HITS = [
+  { where: "我们的专属会话", who: "小美", when: "2026-11-20 14:05", text: "蓝鲸计划的口令是七七" },
+  { where: "乙群", who: "小安", when: "2026-11-19 09:30", text: "蓝鲸计划在三楼" },
+];
+const found = (id, afterSeq, fields = {}) => whisper(id, G1, afterSeq, { detail: { hits: HITS }, ...fields });
+
+describe("a found_elsewhere whisper (its state is the service's to derive: Redesign D)", () => {
+  it("is folded by default to one line — 在别处查到了 2 条，要告诉他们吗？ — which opens it (the hits, the buttons) and folds it again; nothing is answered by it", async () => {
+    const { api } = await openGroup({ whispers: [found("w1", 2)] });
+    const summary = inWhisper("w1").getByRole("button", { name: SUMMARY(2) });
+    expect(summary.getAttribute("aria-expanded")).toBe("false");
+    expect(whisperLi("w1").textContent).toBe(SUMMARY(2));
+    expect(whisperLi("w1").querySelector(".whisper-hit")).toBeNull();
+    expect(inWhisper("w1").queryByRole("button", { name: "告诉他们" })).toBeNull();
+    // Still only mine to see: the lock, 只有你能看到 as its name.
+    expect(inWhisper("w1").getByRole("note", { name: "只有你能看到" })).toBeTruthy();
+    expect(whisperLi("w1").querySelector("svg")).toBeTruthy();
+    await click(summary);
+    expect(whisperLi("w1").querySelectorAll(".whisper-hit")).toHaveLength(2);
+    expect(whisperLi("w1").textContent).toContain("只有你能看到");
     expect(inWhisper("w1").getByRole("button", { name: "告诉他们" })).toBeTruthy();
     expect(inWhisper("w1").getByRole("button", { name: "不用" })).toBeTruthy();
-    expect(whisperLi("w1").textContent).toContain("蓝鲸计划在三楼");
-    expect(within(listRow("周末小组")).getByLabelText(DOT)).toBeTruthy();
-    // A copy read before (accepted, revision 1) arriving late changes nothing.
-    await push(transport, { type: "whisper", whisper: whisper("w1", G1, 3, { detail: { hits }, status: "accepted", revision: 1 }) });
+    const fold = inWhisper("w1").getByRole("button", { name: "收起" });
+    expect(fold.getAttribute("aria-expanded")).toBe("true");
+    await click(fold);
+    expect(whisperLi("w1").textContent).toBe(SUMMARY(2));
+    expect(api.acceptWhisper).not.toHaveBeenCalled();
+    expect(api.declineWhisper).not.toHaveBeenCalled();
+  });
+
+  it("opened, it stays open for this tab's session (that whisper only): shown again — another conversation opened and back, the page loaded again — it is still open; another whisper is folded", async () => {
+    await openGroup({ whispers: [found("w1", 2), found("w2", 3)] });
+    await click(inWhisper("w1").getByRole("button", { name: SUMMARY(2) }));
+    await click(screen.getByText("小助手", { selector: ".list-col .row-name" }));
+    await click(screen.getByText("周末小组", { selector: ".list-col .row-name" }));
     expect(inWhisper("w1").getByRole("button", { name: "告诉他们" })).toBeTruthy();
+    expect(inWhisper("w2").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+    cleanup();
+    await openGroup({ whispers: [found("w1", 2), found("w2", 3)] });
+    expect(inWhisper("w1").getByRole("button", { name: "告诉他们" })).toBeTruthy();
+    expect(inWhisper("w2").queryByRole("button", { name: "告诉他们" })).toBeNull();
+    // Folded again: remembered so too.
+    await click(inWhisper("w1").getByRole("button", { name: "收起" }));
+    cleanup();
+    await openGroup({ whispers: [found("w1", 2)] });
+    expect(inWhisper("w1").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+  });
+
+  it("telling (its told reply queued or running): a quiet line 正在告诉他们… with no button, and no dot; told: 已告诉他们", async () => {
+    const { transport } = await openGroup({ whispers: [found("w1", 2, { status: "telling", revision: 8 })] });
+    expect(whisperLi("w1").textContent).toBe("正在告诉他们…");
+    expect(inWhisper("w1").queryAllByRole("button")).toEqual([]);
+    expect(within(listRow("周末小组")).queryByLabelText(DOT)).toBeNull();
+    await push(transport, { type: "whisper", whisper: found("w1", 2, { status: "told", revision: 14 }) });
+    expect(whisperLi("w1").textContent).toBe("已告诉他们");
+  });
+
+  it("告诉他们 answers telling (the service's answer): the quiet line, until the push says how it went", async () => {
+    const w1 = found("w1", 2);
+    const { api } = await openGroup({ whispers: [w1], api: { acceptWhisper: vi.fn(async () => ({ ...w1, status: "telling", revision: 8 })) } });
+    await click(inWhisper("w1").getByRole("button", { name: SUMMARY(2) }));
+    await click(inWhisper("w1").getByRole("button", { name: "告诉他们" }));
+    expect(api.acceptWhisper).toHaveBeenCalledWith("w1");
+    expect(whisperLi("w1").textContent).toBe("正在告诉他们…");
+  });
+
+  it("open again after a tell that posted nothing (`lastTellFailed`): 刚才没发出去，可以再试一次。 above the buttons, which tell again; and the dot", async () => {
+    const { api, transport } = await openGroup({ whispers: [found("w1", 2, { status: "telling", revision: 8 })] });
+    await push(transport, { type: "whisper", whisper: found("w1", 2, { lastTellFailed: true, revision: 12 }) });
+    await click(inWhisper("w1").getByRole("button", { name: SUMMARY(2) }));
+    const line = [...whisperLi("w1").querySelectorAll("p")].find((p) => p.textContent === "刚才没发出去，可以再试一次。");
+    expect(line).toBeTruthy();
+    const tell = inWhisper("w1").getByRole("button", { name: "告诉他们" });
+    expect(line.compareDocumentPosition(tell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(listRow("周末小组")).getByLabelText(DOT)).toBeTruthy();
+    await click(tell);
+    expect(api.acceptWhisper).toHaveBeenCalledWith("w1");
+    // Without a failed tell, no such line.
+    cleanup();
+    await openGroup({ whispers: [found("w2", 2)] });
+    await click(inWhisper("w2").getByRole("button", { name: SUMMARY(2) }));
+    expect(whisperLi("w2").textContent).not.toContain("刚才没发出去");
+  });
+
+  it("of two copies the one with the higher revision is kept: open again (12) after telling (8); a late copy saying telling (8) changes nothing; told (14) is final", async () => {
+    const { transport } = await openGroup({ whispers: [found("w1", 3, { revision: 0 })] });
+    await push(transport, { type: "whisper", whisper: found("w1", 3, { status: "telling", revision: 8 }) });
+    expect(whisperLi("w1").textContent).toBe("正在告诉他们…");
+    await push(transport, { type: "whisper", whisper: found("w1", 3, { lastTellFailed: true, revision: 12 }) });
+    expect(inWhisper("w1").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+    await push(transport, { type: "whisper", whisper: found("w1", 3, { status: "telling", revision: 8 }) });
+    expect(inWhisper("w1").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+    await push(transport, { type: "whisper", whisper: found("w1", 3, { status: "told", revision: 14 }) });
+    await push(transport, { type: "whisper", whisper: found("w1", 3, { lastTellFailed: true, revision: 12 }) });
+    expect(whisperLi("w1").textContent).toBe("已告诉他们");
+  });
+
+  it("at phone width an opened one never takes more than about half the screen: its hits scroll inside (the rules; e2e/whispers.spec.mjs measures)", () => {
+    const css = readFileSync("src/styles.css", "utf8");
+    const phone = [...css.matchAll(/@media \(max-width: 480px\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]).join("\n");
+    const rule = (selector) => phone.split("\n").find((line) => line.trim().startsWith(`${selector} {`)) ?? "";
+    expect(rule(".whisper.whisper-open")).toMatch(/max-height:\s*50dvh/);
+    expect(rule(".whisper.whisper-open")).toMatch(/display:\s*flex/);
+    expect(rule(".whisper.whisper-open .whisper-hits")).toMatch(/overflow-y:\s*auto/);
+    expect(rule(".whisper.whisper-open .whisper-hits")).toMatch(/min-height:\s*0/);
   });
 });
 
@@ -421,6 +521,11 @@ describe("the held whispers (model.js)", () => {
     for (const bad of [null, { id: "x" }, { ...whisper("w2", G1, 1), afterSeq: "1" }, { ...whisper("w3", G1, 1), status: "maybe" }]) {
       expect(applyWhisper(state, bad)).toBe(state);
     }
+    // A found_elsewhere one's derived states, and whether its last tell failed (only when it says so).
+    state = applyWhisper(state, whisper("w4", G1, 3, { status: "telling", revision: 8 }));
+    state = applyWhisper(state, whisper("w5", G1, 3, { lastTellFailed: true, revision: 12 }));
+    state = applyWhisper(state, whisper("w6", G1, 3, { status: "told", revision: 14, lastTellFailed: "yes" }));
+    expect([state.whispers[G1].w4.status, state.whispers[G1].w5.lastTellFailed, state.whispers[G1].w6.status, "lastTellFailed" in state.whispers[G1].w6]).toEqual(["telling", true, "told", false]);
     state = applyGone(state, G1);
     expect(state.whispers[G1]).toBeUndefined();
   });
@@ -459,6 +564,64 @@ describe("the held whispers (model.js)", () => {
     expect(ids(placeWhispers([m(4), m(5)], [w("b", 4), w("c", 5)], { complete: true, toEnd: true, bubble: "m5" }))).toEqual(["m4", "w:b", "bubble", "w:c"]);
     // Once it has finished, the message is where the bubble was: nothing moved.
     expect(ids(placeWhispers([m(4), m(5)], [w("b", 4), w("c", 5)], { complete: true, toEnd: true }))).toEqual(["m4", "w:b", "m5", "w:c"]);
+  });
+});
+
+describe("a deadline the service sent passes on screen without a frame (fix round 3)", () => {
+  const IN_A_MINUTE = new Date(NOW + 60_000).toISOString();
+  const failedTold = (fields = {}) => ({ type: "run", conversationId: G1, agentId: AG1, run: { id: "r-told", status: "failed", error: "provider_unavailable", retryable: true, ...fields } });
+  const retryButton = () => screen.queryByRole("button", { name: "重试" });
+  const wake = () => act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+  it("a failed told reply's 重试 is offered until `retryableUntil`, then gone on its own — no frame came", async () => {
+    const { transport } = await openGroup();
+    await push(transport, failedTold({ retryableUntil: IN_A_MINUTE }));
+    expect(retryButton()).toBeTruthy();
+    const frames = transport.log.length;
+    await elapse(59_000);
+    expect(retryButton()).toBeTruthy();
+    await elapse(1_500);
+    expect(retryButton()).toBeNull();
+    expect(transport.log.length).toBe(frames);
+  });
+
+  it("a tab woken after the deadline (its timer never ran) is right at once", async () => {
+    const { transport } = await openGroup();
+    await push(transport, failedTold({ retryableUntil: IN_A_MINUTE }));
+    expect(retryButton()).toBeTruthy();
+    vi.setSystemTime(NOW + 10 * 60_000);
+    await wake();
+    expect(retryButton()).toBeNull();
+  });
+
+  it("a failed reply with no deadline keeps 重试 (only the service's `retryableUntil` ends it)", async () => {
+    const { transport } = await openGroup();
+    await push(transport, failedTold());
+    await elapse(24 * 3_600_000);
+    expect(retryButton()).toBeTruthy();
+  });
+
+  it("an open found_elsewhere bubble reads 已过期 at its `openUntil` — the dot goes with it — without a frame; and a woken tab is right at once", async () => {
+    const { transport } = await openGroup({ whispers: [found("w1", 2, { openUntil: IN_A_MINUTE }), found("w2", 3, { openUntil: new Date(NOW + 120_000).toISOString() })] });
+    expect(inWhisper("w1").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+    expect(within(listRow("周末小组")).getByLabelText(DOT)).toBeTruthy();
+    const frames = transport.log.length;
+    await elapse(61_000);
+    expect(whisperLi("w1").textContent).toBe("已过期");
+    expect(inWhisper("w2").getByRole("button", { name: SUMMARY(2) })).toBeTruthy();
+    expect(within(listRow("周末小组")).getByLabelText(DOT)).toBeTruthy();
+    // Asleep past the second one's deadline: on waking it is right at once.
+    vi.setSystemTime(NOW + 10 * 60_000);
+    await wake();
+    expect(whisperLi("w2").textContent).toBe("已过期");
+    expect(within(listRow("周末小组")).queryByLabelText(DOT)).toBeNull();
+    expect(transport.log.length).toBe(frames);
+  });
+});
+
+describe("the retry of a told reply whose whisper no longer reads open", () => {
+  it("is refused stale (409 stale_whisper): the retry says the whisper was handled already, as the whisper itself would", () => {
+    expect(replyErrorText("retry", { status: 409, code: "stale_whisper" })).toBe("这条悄悄话已经处理过了。");
   });
 });
 

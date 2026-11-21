@@ -17,9 +17,7 @@ import { NAME_PART_PATTERN, swapAvatarKey } from "../principals/store.ts";
 import { agentName, userText, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
 import { pushWhispers } from "../whispers/routes.ts";
-import { afterTellsEnded, expireOfAgent } from "../whispers/store.ts";
-import { ELSEWHERE_OPEN_MAX } from "./tools/elsewhere.ts";
-import { toWireWhisper } from "../whispers/wire.ts";
+import { expireOfAgent } from "../whispers/store.ts";
 import { createAgent, resetTopic } from "./conversation.ts";
 import { leaveGroupsOfDeleted } from "./group-leave.ts";
 import { agentField, agentIntro, agentPersona, confirmProposal, discardProposal, draftPersona, proposedPersona } from "./persona.ts";
@@ -329,7 +327,7 @@ export function registerAgentRoutes(
           // A reminder about money its settlement recorded, made once committed: pushed to its owner and counted.
           reminded: ({ whisper, metric }) => {
             req.log.info({ metric }, "a reminder about money was made for its owner");
-            if (whisper) app.realtime.pushWhisper(whisper.ownerId, toWireWhisper(whisper));
+            if (whisper) app.realtime.pushWhisper(whisper);
           },
         },
         me.id,
@@ -478,17 +476,11 @@ export function registerAgentRoutes(
           return { agent: { ...current, ...("deleted" in change ? { deleted: true } : change) }, changed, interrupted, whispers };
         });
         if (interrupted) {
-          // Before answering: from now on nothing of those runs reaches the owner, and their calls are abandoned.
+          // Before answering: from now on nothing of those runs reaches the owner, and their calls are abandoned. A told
+          // reply (`告诉他们`) cancelled so: its whisper reads open again, nothing written to it — the run's announcement
+          // brings its owner the whisper as it is now (sync/hub.ts).
           app.agentPort.interruptRuns(interrupted.running);
           for (const cancelled of interrupted.cancelled) app.agentPort.announce(cancelled);
-        }
-        if (interrupted && !("deleted" in change)) {
-          // A told reply (`告诉他们`) this pause or resume cancelled while it was queued gives its whisper back to its owner,
-          // open (round 3: a tell is never lost): in a transaction of its own per run, under its group's row, which this one
-          // does not hold (whispers/store.ts `afterTellsEnded`). A delete closes its whispers for good instead (above).
-          // Each run is tried on its own (a failure is logged and the rest go on); the periodic sweep repairs what is left
-          // (`repairTells`), also when the process stops before this.
-          pushWhispers(app.realtime, await afterTellsEnded(db, interrupted.cancelled.map((c) => c.run.id), ELSEWHERE_OPEN_MAX, req.log));
         }
         if (changed) {
           conversations.publish({ messages: [], conversations: [{ conversationId: agent.conversationId, principalIds: [me.id] }] }, req.log);

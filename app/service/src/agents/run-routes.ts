@@ -8,7 +8,6 @@ import { requirePrincipal } from "../session.ts";
 import { modelUsable } from "../models/resolve.ts";
 import { readOwnedAgent } from "./store.ts";
 import { dismissRun, groupRuns, haltAgents, latestRun, ownedAgentOf, pushBudgetReached, retryRun, stopRun, toWireRun, wireRunSchema } from "./runs.ts";
-import { toWireWhisper } from "../whispers/wire.ts";
 
 const empty = z.object({});
 const idParams = z.object({ id: uuidParam });
@@ -65,13 +64,13 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
     async (req) => {
       const me = await requirePrincipal(req);
       await writeLimit(req, me.id);
-      const { stopped, running, followed, whisper } = await db.tx((t) => stopRun(t, me.id, req.params.id, req.params.runId, config));
+      const { stopped, running, followed } = await db.tx((t) => stopRun(t, me.id, req.params.id, req.params.runId, config));
+      // (A told reply's announcement brings its owner its whisper as it is now: open again — sync/hub.ts.)
       if (stopped) app.agentPort.announce(stopped);
-      // A told reply stopped while queued: the members' calls noted on it are followed up, its whisper given back to its owner.
+      // A told reply stopped while queued: the members' calls noted on it are followed up.
       if (followed.run) app.agentPort.announce(followed.run);
       if (followed.notices.length > 0) app.deps.conversations.publish({ messages: followed.notices, conversations: [] }, req.log);
       pushBudgetReached(app.realtime, followed.budgetReached);
-      if (whisper) app.realtime.pushWhisper(whisper.ownerId, toWireWhisper(whisper));
       if (running) {
         // This process's worker stops it within 50 ms; a later attempt of it ends stopped (the stop is kept in its row).
         // A run nobody here is working on (another instance's, or one left by a process that is gone) would never read

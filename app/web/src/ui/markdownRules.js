@@ -125,6 +125,7 @@ export const APP_CLASSES = new Set(
   thinking-text toast typed up upload-progress vis-banner
   memory-card memory-chip memory-detail memory-foot memory-hint memory-lines memory-merged msg-memory
   msg-whisper whisper whisper-head whisper-text whisper-actions whisper-done whisper-dot whisper-hits whisper-hit whisper-hit-meta whisper-hit-text whisper-hit-more folded
+  whisper-folded whisper-summary whisper-top whisper-fold whisper-failed whisper-open
   memory-room memory-head memory-add memory-add-line memory-add-vault memory-rows memory-row memory-body memory-text memory-source memory-actions memory-open memory-stale memory-switches memory-catch-up memory-vault
   model-brand model-trigger model-name model-chevron model-pop model-scrim model-search model-list model-group-label model-option
   model-note model-check model-reason model-marks model-mark model-mark-free model-mark-paid model-empty model-foot model-scope side-model
