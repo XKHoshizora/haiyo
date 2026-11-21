@@ -525,39 +525,39 @@ export function ChatView({ conv }) {
         </ul>
       )}
       <ImageViewerProvider messages={messages}>
-      <MarkdownView listRef={listRef} newest={newestAgentTexts} onChange={keepNewestInView}>
-        <ol className="messages" data-testid="message-list" ref={listRef} onScroll={onScroll} style={showHits ? { display: "none" } : undefined}>
-          {rows.map(({ msg, whisper, bubble }) =>
-            bubble ? (
-              // One key wherever it is in the list: from written to finishing it is the same bubble, never made again.
-              <StreamBubble
-                key="stream-bubble"
-                conv={conv}
-                finishing={finishing}
-                onReveal={(runId, done) => {
-                  revealedAll.current = { runId, done };
-                }}
-                onFinished={() => setFinish(null)}
-              />
-            ) : whisper ? (
-              <Whisper key={`w:${whisper.id}`} whisper={whisper} conv={conv} />
-            ) : (
-              <MessageItem key={msg.id} msg={msg} conv={conv} flash={flash !== null && msg.seq === flash} onReply={block ? () => dispatch({ type: "toast", text: block.text }) : setReplyTo} onJump={jumpTo} />
-            ),
-          )}
-          {failedRun && <RunStatusLine key={failedRun.id} conv={conv} run={failedRun} />}
-          {groupRows.map((row) =>
-            row.kind === "replying" ? (
-              <GroupReplying key={`${row.agentId}:replying`} conv={conv} row={row} />
-            ) : row.kind === "status" ? (
-              <RunStatusLine key={`${row.agentId}:${row.run.id}`} conv={conv} run={row.run} agentId={row.agentId} />
-            ) : (
-              <GroupUnavailable key={`${row.agentId}:unavailable`} agentId={row.agentId} />
-            ),
-          )}
-          <li aria-hidden="true" />
-        </ol>
-      </MarkdownView>
+        <MarkdownView listRef={listRef} newest={newestAgentTexts} onChange={keepNewestInView}>
+          <ol className="messages" data-testid="message-list" ref={listRef} onScroll={onScroll} style={showHits ? { display: "none" } : undefined}>
+            {rows.map(({ msg, whisper, bubble }) =>
+              bubble ? (
+                // One key wherever it is in the list: from written to finishing it is the same bubble, never made again.
+                <StreamBubble
+                  key="stream-bubble"
+                  conv={conv}
+                  finishing={finishing}
+                  onReveal={(runId, done) => {
+                    revealedAll.current = { runId, done };
+                  }}
+                  onFinished={() => setFinish(null)}
+                />
+              ) : whisper ? (
+                <Whisper key={`w:${whisper.id}`} whisper={whisper} conv={conv} />
+              ) : (
+                <MessageItem key={msg.id} msg={msg} conv={conv} flash={flash !== null && msg.seq === flash} onReply={block ? () => dispatch({ type: "toast", text: block.text }) : setReplyTo} onJump={jumpTo} />
+              ),
+            )}
+            {failedRun && <RunStatusLine key={failedRun.id} conv={conv} run={failedRun} />}
+            {groupRows.map((row) =>
+              row.kind === "replying" ? (
+                <GroupReplying key={`${row.agentId}:replying`} conv={conv} row={row} />
+              ) : row.kind === "status" ? (
+                <RunStatusLine key={`${row.agentId}:${row.run.id}`} conv={conv} run={row.run} agentId={row.agentId} />
+              ) : (
+                <GroupUnavailable key={`${row.agentId}:unavailable`} agentId={row.agentId} />
+              ),
+            )}
+            <li aria-hidden="true" />
+          </ol>
+        </MarkdownView>
       </ImageViewerProvider>
 
       {paused && <Notice tone="pause">{AGENT_PAUSED_TEXT}</Notice>}
