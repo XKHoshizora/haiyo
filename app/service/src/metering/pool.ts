@@ -101,14 +101,44 @@ export function start(
   return { kind: "waits" };
 }
 
+/** What run `run`'s parts of class `cls` hold beyond their promise (a lone start's or a "final" round's over). */
+export function classOver(parts: readonly Part[], run: string, cls: PayClass): bigint {
+  return parts.filter((p) => p.run === run && p.cls === cls).reduce((s, p) => s + p.over, 0n);
+}
+
 /**
  * A later round raising a run's part of class `cls` by `x` (v3 §3): never refused — promised what fits the unscaled room,
- * the rest over; "ok" when nothing is over (another round may follow), else "final" (it is the reply's last).
+ * the rest over. "ok" (another round may follow) only when, after the raise, the run's parts of that class carry no over
+ * at all — a reply that started alone past its pot, or went "final" once, stays "final" even for a round asking nothing
+ * more (third attack V3-I1); else "final" (it is the reply's last).
  */
 export function round(pots: Pots, parts: readonly Part[], o: { run: string; cls: PayClass; x: bigint }): { answer: "ok" | "final"; add: Part } {
   const promised = min(o.x, room(pots, parts, o.cls));
   const over = o.x - promised;
-  return { answer: over === 0n ? "ok" : "final", add: { run: o.run, cls: o.cls, promised, over } };
+  const answer = over === 0n && classOver(parts, o.run, o.cls) === 0n ? "ok" : "final";
+  return { answer, add: { run: o.run, cls: o.cls, promised, over } };
+}
+
+/**
+ * `extend`'s two targets mapped onto `round` (third attack V3-I1, minor 4): the run's model part of class `cls`, holding
+ * `held` now (promised and over), would be raised to `ok` (another round: so far, the next call's most and the renewed
+ * room for a last call) or to `final` (so far and the next call's most: the reply's last). When tools are `allowed`
+ * (`TOOLS.maxPoints` and the lane budgets, the caller's), the raise to `ok` fits whole in the room and the run's class
+ * carries no over: "ok", raised to `ok`, all of it promised. Otherwise "final", raised to `final`: promised what fits, the
+ * rest over. A target at or below what is held raises nothing (holds are never lowered).
+ */
+export function extendRound(
+  pots: Pots,
+  parts: readonly Part[],
+  o: { run: string; cls: PayClass; held: bigint; ok: bigint; final: bigint; allowed: boolean },
+): { answer: "ok" | "final"; add: Part } {
+  const toOk = max(0n, o.ok - o.held);
+  if (o.allowed && toOk <= room(pots, parts, o.cls) && classOver(parts, o.run, o.cls) === 0n) {
+    return { answer: "ok", add: { run: o.run, cls: o.cls, promised: toOk, over: 0n } };
+  }
+  const toFinal = max(0n, o.final - o.held);
+  const promised = min(toFinal, room(pots, parts, o.cls));
+  return { answer: "final", add: { run: o.run, cls: o.cls, promised, over: toFinal - promised } };
 }
 
 /** A priced tool's hold `x` of class `cls` (v3 §3): held whole when it fits the unscaled room, else refused. */
