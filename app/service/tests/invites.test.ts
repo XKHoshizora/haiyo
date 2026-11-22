@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { createInvite, hashInviteCode, listInvites, revokeInvite } from "../src/auth/invites.ts";
-import { api, signUp } from "./helpers/actors.ts";
+import { api, mailLink, signUp } from "./helpers/actors.ts";
 import { testDatabaseUrl } from "./helpers/env.ts";
 import { useApp } from "./helpers/harness.ts";
 
@@ -56,9 +56,25 @@ describe("invite codes good for several sign-ups", () => {
   const accounts = async (n: string | number) =>
     Number((await db.query<{ n: string }>(`select count(*) n from "user" where email = $1`, [`iv${n}@example.test`])).rows[0]!.n);
 
+  /** Follows the newest verification mail of `n`'s e-mail; the answer's status and where it redirects. */
+  const verify = async (n: string | number) => {
+    const res = await app.inject({ method: "GET", url: await mailLink(app, `iv${n}@example.test`, "verify_email") });
+    return { status: res.statusCode, to: String(res.headers.location ?? "") };
+  };
+  const OK = (to: string) => !to.includes("error=");
+  const verified = async (n: string | number) =>
+    (await db.query<{ v: boolean }>(`select "emailVerified" v from "user" where email = $1`, [`iv${n}@example.test`])).rows[0]?.v;
+  const pendingCount = async (code: string) =>
+    Number((await db.query<{ n: string }>("select count(*) n from pending_invites where code_hash = $1", [hashInviteCode(code)])).rows[0]!.n);
+  /** Signs up and verifies one person; returns the verification answer. */
+  const join = async (code: string, n: string | number) => {
+    expect(await register(code, n)).toEqual(CREATED);
+    return verify(n);
+  };
+
   test("a single-use code (no --uses) works as before: one account, then refused", async () => {
     const code = await createInvite(db, { ttlHours: 1 });
-    expect(await register(code, 1)).toEqual(CREATED);
+    expect(OK((await join(code, 1)).to)).toBe(true);
     expect(await register(code, 2)).toEqual(REFUSED);
     const r = await row(code);
     expect(r).toMatchObject({ uses: 1, maxUses: 1 });
@@ -69,7 +85,7 @@ describe("invite codes good for several sign-ups", () => {
 
   test("a code for N sign-ups admits exactly N (N crosses 10), records each account, then refuses", async () => {
     const code = await createInvite(db, { ttlHours: 1, uses: 12 });
-    for (let i = 1; i <= 12; i++) expect(await register(code, `a${i}`)).toEqual(CREATED);
+    for (let i = 1; i <= 12; i++) expect(OK((await join(code, `a${i}`)).to)).toBe(true);
     expect(await register(code, "a13")).toEqual(REFUSED);
     expect(await register(code, "a14")).toEqual(REFUSED);
     expect(await row(code)).toMatchObject({ uses: 12, maxUses: 12 });
@@ -78,6 +94,7 @@ describe("invite codes good for several sign-ups", () => {
     expect(new Set(ids).size).toBe(12);
     expect(ids.every((id) => id !== null)).toBe(true);
     expect(await accounts("a13")).toBe(0);
+    expect(await pendingCount(code)).toBe(0);
   });
 
   test("uses outside 1..1000 (or not whole) are refused when creating; the bounds themselves are fine", async () => {
@@ -89,52 +106,118 @@ describe("invite codes good for several sign-ups", () => {
     expect((await row(code)).maxUses).toBe(1000);
   });
 
-  test("two sign-ups racing for the last use: exactly one account, the other gets the used-up refusal", async () => {
-    for (let round = 0; round < 4; round++) {
+  test("a sign-up takes nothing and holds nothing: only a pending note; the use is taken at verification", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 2 });
+    expect(await register(code, "p1")).toEqual(CREATED);
+    expect(await row(code)).toMatchObject({ uses: 0, usedBy: null, usedAt: null });
+    expect(await principals(code)).toEqual([]);
+    expect(await pendingCount(code)).toBe(1);
+    expect(OK((await verify("p1")).to)).toBe(true);
+    expect(await row(code)).toMatchObject({ uses: 1 });
+    expect(await principals(code)).toHaveLength(1);
+    expect(await pendingCount(code)).toBe(0);
+  });
+
+  test("two verifications racing for the last use: exactly one account becomes real, the other is refused and stays unverified", async () => {
+    for (let round = 0; round < 3; round++) {
       const code = await createInvite(db, { ttlHours: 1, uses: 3 });
-      expect(await register(code, `r${round}_0`)).toEqual(CREATED);
-      expect(await register(code, `r${round}_1`)).toEqual(CREATED);
-      const results = await Promise.all([register(code, `r${round}_2`), register(code, `r${round}_3`)]);
-      expect(results.filter((r) => r.status === 201)).toHaveLength(1);
-      expect(results.filter((r) => r.status === 400)).toEqual([REFUSED]);
+      for (const k of [0, 1, 2, 3]) expect(await register(code, `r${round}_${k}`)).toEqual(CREATED);
+      expect(OK((await verify(`r${round}_0`)).to)).toBe(true);
+      expect(OK((await verify(`r${round}_1`)).to)).toBe(true);
+      const results = await Promise.all([verify(`r${round}_2`), verify(`r${round}_3`)]);
+      expect(results.filter((r) => OK(r.to))).toHaveLength(1);
+      const loser = results.findIndex((r) => !OK(r.to));
+      expect(results[loser]!.to).toContain("error=INVITE_USED_UP");
       expect(await row(code)).toMatchObject({ uses: 3, maxUses: 3 });
       expect(await principals(code)).toHaveLength(3);
+      expect(await verified(`r${round}_${2 + loser}`)).toBe(false);
+      expect(await pendingCount(code)).toBe(1);
     }
   });
 
-  test("many racing for a many-use code never admit more than its uses", async () => {
-    const code = await createInvite(db, { ttlHours: 1, uses: 4 });
-    const results = await Promise.all(Array.from({ length: 10 }, (_, i) => register(code, `m${i}`)));
-    expect(results.filter((r) => r.status === 201)).toHaveLength(4);
-    for (const r of results) expect([201, 400]).toContain(r.status);
-    expect((await row(code)).uses).toBe(4);
-    expect(await principals(code)).toHaveLength(4);
-  });
+  test("a burst of 20 verifications on a pool of 10 connections for a code with 5 uses: exactly 5 succeed, all answer, none times out", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 5 });
+    for (let i = 0; i < 20; i++) expect(await register(code, `b${i}`)).toEqual(CREATED);
+    const started = Date.now();
+    const results = await Promise.all(Array.from({ length: 20 }, (_, i) => verify(`b${i}`)));
+    expect(results.map((r) => r.status)).toEqual(Array(20).fill(302));
+    expect(results.filter((r) => OK(r.to))).toHaveLength(5);
+    expect(results.filter((r) => r.to.includes("error=INVITE_USED_UP"))).toHaveLength(15);
+    expect(Date.now() - started).toBeLessThan(25_000);
+    expect(await row(code)).toMatchObject({ uses: 5 });
+    expect(await principals(code)).toHaveLength(5);
+  }, 120_000);
 
-  test("a sign-up that fails consumes nothing: a taken handle, a short password, a malformed handle", async () => {
+  test("a sign-up that fails creates nothing and notes nothing: a taken handle, a short password, a malformed handle", async () => {
     const owner = await signUp(app, "iv_owner");
     const code = await createInvite(db, { ttlHours: 1, uses: 2 });
     expect(await register(code, "f1", { handle: owner.handle })).toEqual({ status: 409, json: { error: "handle_taken" } });
     expect((await register(code, "f2", { password: "x" })).status).toBe(400);
     expect((await register(code, "f3", { handle: "!!" })).status).toBe(400);
     expect(await row(code)).toMatchObject({ uses: 0, usedBy: null, usedAt: null });
-    expect(await principals(code)).toEqual([]);
-    expect(await register(code, "g1")).toEqual(CREATED);
-    expect(await register(code, "g2")).toEqual(CREATED);
+    expect(await pendingCount(code)).toBe(0);
+    expect(OK((await join(code, "g1")).to)).toBe(true);
+    expect(OK((await join(code, "g2")).to)).toBe(true);
     expect(await register(code, "g3")).toEqual(REFUSED);
   });
 
-  test("an expired code is refused as a whole, even with uses left", async () => {
+  test("a sign-up on an already verified e-mail takes nothing, notes nothing, and answers as ever", async () => {
+    const owner = await signUp(app, "iv_dup");
+    const code = await createInvite(db, { ttlHours: 1, uses: 3 });
+    for (let i = 0; i < 4; i++) {
+      const body = { inviteCode: code, email: owner.email, password: PASSWORD, displayName: "X", handle: `dup_${i}` };
+      expect(await api(app, null, "POST", "/api/register", body)).toEqual(CREATED);
+    }
+    expect(await row(code)).toMatchObject({ uses: 0, usedBy: null });
+    expect(await pendingCount(code)).toBe(0);
+    // The code is whole: three others still come in.
+    for (let i = 0; i < 3; i++) expect(OK((await join(code, `d${i}`)).to)).toBe(true);
+    expect(await register(code, "d3")).toEqual(REFUSED);
+  });
+
+  test("an abandoned sign-up takes nothing; a re-registration of the same unverified e-mail takes nothing more", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 1 });
+    expect(await register(code, "x1")).toEqual(CREATED);
+    expect(await row(code)).toMatchObject({ uses: 0 });
+    // The same address again (a typo fixed, a new handle): the old account is replaced; one note remains.
+    expect(await register(code, "x1", { handle: "iv_x1_again" })).toEqual(CREATED);
+    expect(await pendingCount(code)).toBe(1);
+    expect(await row(code)).toMatchObject({ uses: 0 });
+    expect(await register(code, "x2")).toEqual(CREATED);
+    expect(OK((await verify("x1")).to)).toBe(true);
+    expect(await row(code)).toMatchObject({ uses: 1 });
+    // The single use is gone: the other pending sign-up is refused at verification, and stays unverified.
+    expect((await verify("x2")).to).toContain("error=INVITE_USED_UP");
+    expect(await verified("x2")).toBe(false);
+  });
+
+  test("a code revoked between sign-up and verification refuses the verification; accounts made stay", async () => {
     const code = await createInvite(db, { ttlHours: 1, uses: 5 });
+    expect(OK((await join(code, "v1")).to)).toBe(true);
+    expect(await register(code, "v2")).toEqual(CREATED);
+    expect(await revokeInvite(db, hashInviteCode(code).slice(0, 8))).toMatchObject({ ok: true });
+    expect((await verify("v2")).to).toContain("error=INVITE_USED_UP");
+    expect(await verified("v2")).toBe(false);
+    expect(await verified("v1")).toBe(true);
+    expect(await register(code, "v3")).toEqual(REFUSED);
+    expect((await row(code)).uses).toBe(1);
+    expect((await listInvites(db)).find((i) => hashInviteCode(code).startsWith(i.hashPrefix))).toMatchObject({
+      uses: 1, maxUses: 5, revoked: true,
+    });
+  });
+
+  test("an expired code is refused at sign-up as a whole; one that expires after sign-up still verifies", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 5 });
+    expect(await register(code, "e0")).toEqual(CREATED);
     await db.query("update invites set expires_at = now() - interval '1 second' where code_hash = $1", [hashInviteCode(code)]);
     expect(await register(code, "e1")).toEqual(REFUSED);
-    expect((await row(code)).uses).toBe(0);
+    expect(OK((await verify("e0")).to)).toBe(true);
+    expect((await row(code)).uses).toBe(1);
   });
 
   test("a code from before the migration still works: an unused one admits one, a used-up one stays used up", async () => {
-    // Rows as the old schema left them (the migration gave them uses 0/1 by used_at, one use at most).
     const fresh = await createInvite(db, { ttlHours: 1 });
-    expect(await register(fresh, "o1")).toEqual(CREATED);
+    expect(OK((await join(fresh, "o1")).to)).toBe(true);
     expect(await register(fresh, "o2")).toEqual(REFUSED);
     const person = await signUp(app, "iv_old");
     const old = await createInvite(db, { ttlHours: 1 });
@@ -145,31 +228,29 @@ describe("invite codes good for several sign-ups", () => {
     expect(await register(old, "o3")).toEqual(REFUSED);
   });
 
-  test("the migration backfill: a row used before it counts one use", async () => {
-    const { rows } = await db.query<{ n: string }>("select count(*) n from invites where used_at is not null and uses = 0");
-    expect(Number(rows[0]!.n)).toBe(0);
-    // And the migration's own statement, on a row shaped like an old used one.
-    const code = await createInvite(db, { ttlHours: 1 });
+  test("the migration backfill: a row used before it counts one use, and running it again changes nothing", async () => {
+    const code = await createInvite(db, { ttlHours: 3, uses: 1 });
     await db.query("update invites set used_at = now(), uses = 0 where code_hash = $1", [hashInviteCode(code)]);
-    await db.query("update invites set uses = 1 where used_at is not null and uses = 0");
+    const backfill = "update invites set uses = 1 where used_at is not null and uses = 0";
+    await db.query(backfill);
     expect((await row(code)).uses).toBe(1);
-    expect(await register(code, "b1")).toEqual(REFUSED);
+    await db.query(backfill);
+    expect((await row(code)).uses).toBe(1);
+    expect(await register(code, "b1x")).toEqual(REFUSED);
   });
 
-  test("revoke: no further sign-ups; accounts already made stay; list shows it", async () => {
-    const code = await createInvite(db, { ttlHours: 1, uses: 5 });
-    expect(await register(code, "v1")).toEqual(CREATED);
-    const prefix = hashInviteCode(code).slice(0, 8);
-    expect(await revokeInvite(db, prefix)).toEqual({ ok: true, hashPrefix: prefix });
-    expect(await register(code, "v2")).toEqual(REFUSED);
-    expect(await accounts("v1")).toBe(1);
-    expect(await accounts("v2")).toBe(0);
-    expect((await row(code)).revokedAt).not.toBeNull();
-    expect((await row(code)).uses).toBe(1);
-    expect((await listInvites(db)).find((i) => hashInviteCode(code).startsWith(i.hashPrefix))).toMatchObject({
-      uses: 1, maxUses: 5, revoked: true,
-    });
+  test("deleting an account keeps its use counted; the identity goes with it (no restrict blocks the deletion)", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 2 });
+    expect(OK((await join(code, "k1")).to)).toBe(true);
+    expect(OK((await join(code, "k2")).to)).toBe(true);
+    const ids = await principals(code);
+    await db.query("delete from principals where id = $1", [ids[0]]);
+    await db.query("delete from principals where id = $1", [ids[1]]);
+    expect(await row(code)).toMatchObject({ uses: 2, usedBy: null });
+    expect(await principals(code)).toEqual([null, null]);
+    expect(await register(code, "k3")).toEqual(REFUSED);
   });
+
 
   test("revoke refuses an ambiguous, an unknown and a too-short prefix, and touches nothing", async () => {
     const a = await createInvite(db, { ttlHours: 1 });

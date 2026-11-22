@@ -89,9 +89,13 @@ describe("accounts", () => {
   test("register with a used invite code is refused", async () => {
     const code = await invite();
     expect((await register({ inviteCode: code })).status).toBe(201);
+    // The use is taken when the account is verified, not at sign-up.
+    const early = await register({ inviteCode: code, email: "early@example.test", handle: "early_person" });
+    expect(early.status).toBe(201);
+    await app.inject({ method: "GET", url: await mailLink(app, "new@example.test", "verify_email") });
     const second = await register({ inviteCode: code, email: "other@example.test", handle: "other_person" });
     expect(second).toEqual({ status: 400, json: { error: "invalid_invite" } });
-    expect(await count("select count(*) n from principals")).toBe(1);
+    expect(await count("select count(*) n from principals")).toBe(2);
   });
 
   test("invite codes are 20 characters and only their SHA-256 is stored", async () => {
@@ -140,18 +144,15 @@ describe("accounts", () => {
     expect((await api(app, null, "POST", "/api/register", { handle: "x" })).status).toBe(400);
   });
 
-  test("a taken e-mail gets the same 201 and creates nothing; the invite is used up (more in registration.test.ts)", async () => {
+  test("a taken e-mail gets the same 201 and creates nothing; the invite is untouched (more in registration.test.ts)", async () => {
     const first = await signUp(app, "first_owner");
     const code = await invite();
     const res = await register({ inviteCode: code, email: first.email, handle: "second_try" });
     expect(res).toEqual({ status: 201, json: { ok: true } });
     expect(await count("select count(*) n from principals")).toBe(1);
     expect(await count(`select count(*) n from "user"`)).toBe(1);
-    expect(await count("select count(*) n from invites where used_at is null")).toBe(0);
-    expect(await register({ inviteCode: code, email: "fresh@example.test", handle: "fresh_one" })).toEqual({
-      status: 400,
-      json: { error: "invalid_invite" },
-    });
+    expect(await count("select count(*) n from invites where used_at is null")).toBe(1);
+    expect(await register({ inviteCode: code, email: "fresh@example.test", handle: "fresh_one" })).toEqual({ status: 201, json: { ok: true } });
   });
 
   test("registration is atomic: a failure after the auth user is written leaves no user, account, mail or used invite", async () => {

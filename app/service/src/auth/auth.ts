@@ -13,6 +13,7 @@ import { PRODUCT_NAME } from "../brand.ts";
 import { clientIp } from "../limits.ts";
 import { lockAccountEmail } from "./accounts.ts";
 import { holdUntilFloor, startAnswerClock, type AnswerFloor } from "./answer-floor.ts";
+import { isVerified, pendingInviteOf, takeInviteUse } from "./invites.ts";
 import { RESET_PASSWORD_TTL_SECONDS, VERIFY_EMAIL_TTL_SECONDS, resetPasswordMail, verifyEmailMail } from "./mail-copy.ts";
 import { mailPolicy, sendMail } from "./mailer.ts";
 
@@ -436,6 +437,19 @@ class Unsuccessful extends Error {
   }
 }
 
+/**
+ * The answer to a verification link whose invite ran out (or was revoked) after the sign-up: Better Auth's own shape for
+ * a failed link (a redirect to the callback with `error`), or its JSON code when the link names no callback.
+ */
+function inviteRunOutAnswer(callbackURL: string | undefined, appOrigin: string): Response {
+  if (callbackURL === undefined) {
+    return new Response(JSON.stringify({ code: "INVITE_USED_UP" }), { status: 400, headers: { "content-type": "application/json" } });
+  }
+  const url = new URL(callbackURL, appOrigin);
+  url.searchParams.set("error", "INVITE_USED_UP");
+  return new Response(null, { status: 302, headers: { location: url.toString() } });
+}
+
 /** Runs `fn` in a transaction of ours that Better Auth's queries join; commits only an answer below 400. */
 async function answerInTransaction(db: Db, fn: (t: Tx) => Promise<Response>): Promise<Response> {
   // Announcements made inside (ended sessions) wait for the commit; a rollback drops them.
@@ -521,9 +535,17 @@ export function registerAuthRoutes(app: FastifyInstance, rateLimitScale: number,
         const payload = await verifyJWT((req.query as { token: string }).token, app.deps.config.authSecret);
         const email = typeof payload?.email === "string" ? payload.email : null;
         if (email === null) return null;
+        const callbackURL = (req.query as { callbackURL?: string }).callbackURL;
         return async (t, handle) => {
           await lockAccountEmail(t, email);
-          return handle();
+          // The code this account signed up with takes its use now, as the account becomes real, in this
+          // transaction. A code that ran out or was revoked since the sign-up refuses the verification (rolled back).
+          const pending = await pendingInviteOf(t, email);
+          const response = await handle();
+          if (pending && response.status < 400 && (await isVerified(t, pending.userId))) {
+            if (!(await takeInviteUse(t, pending))) throw new Unsuccessful(inviteRunOutAnswer(callbackURL, app.deps.config.appOrigin));
+          }
+          return response;
         };
       },
     },

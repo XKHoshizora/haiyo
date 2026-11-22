@@ -29,29 +29,63 @@ export async function createInvite(db: Queryable, opts: { ttlHours: number; uses
 }
 
 /**
- * Takes one use of the invite, in the caller's transaction: true when the code exists, is not revoked, has not
- * expired and has a use left. One statement does the check and the count, and the row stays locked until the
- * transaction ends, so two sign-ups racing for the last use cannot both get it (the loser re-checks the row once the
- * winner commits). A transaction that rolls back gives the use back.
+ * Whether a sign-up may start with this code: it exists, is not revoked, has not expired and has a use left. Takes and
+ * holds nothing: a use is taken when the account becomes real, at e-mail verification (`takeInviteUse`), so a
+ * sign-up that creates nothing, is replaced or is never verified costs the code nothing.
  */
-export async function lockUsableInvite(q: Queryable, code: string): Promise<boolean> {
+export async function inviteUsable(q: Queryable, code: string): Promise<boolean> {
   const { rowCount } = await q.query(
-    `update invites set uses = uses + 1
-      where code_hash = $1 and uses < max_uses and revoked_at is null and expires_at > now()`,
+    "select 1 from invites where code_hash = $1 and uses < max_uses and revoked_at is null and expires_at > now()",
     [hashInviteCode(code)],
   );
   return rowCount === 1;
 }
 
+/** Remembers which code a new, unverified account signed up with (gone with the account if it is replaced or removed). */
+export async function rememberInvite(q: Queryable, code: string, principalId: string): Promise<void> {
+  await q.query("insert into pending_invites (principal_id, code_hash) values ($1, $2)", [principalId, hashInviteCode(code)]);
+}
+
+export interface PendingInvite {
+  userId: string;
+  principalId: string;
+  codeHash: string;
+}
+
+/** The code the not yet verified account of this e-mail signed up with, if any (the caller holds the address's lock). */
+export async function pendingInviteOf(q: Queryable, email: string): Promise<PendingInvite | null> {
+  const { rows } = await q.query<PendingInvite>(
+    `select u.id as "userId", p.id as "principalId", pi.code_hash as "codeHash"
+       from principals p join "user" u on u.id = p.auth_user_id join pending_invites pi on pi.principal_id = p.id
+      where u.email = $1 and not u."emailVerified"`,
+    [email.toLowerCase()],
+  );
+  return rows[0] ?? null;
+}
+
+/** Whether Better Auth has marked this user verified (inside the caller's transaction, which it joined). */
+export async function isVerified(q: Queryable, userId: string): Promise<boolean> {
+  const { rows } = await q.query<{ v: boolean }>('select "emailVerified" as v from public."user" where id = $1', [userId]);
+  return rows[0]?.v === true;
+}
+
 /**
- * Records who came in on the use `lockUsableInvite` took: `principalId` is the account it made; null when the
- * registration made none (the e-mail already had a verified account). An invite's use stays taken when that account is
- * later removed.
+ * Takes the use for an account that has just been verified, in the same transaction: true, with the use recorded for
+ * that account; false when the code has run out or been revoked since sign-up (the caller rolls the verification
+ * back). Expiry is not checked again: the person signed up in time and has proved the address. One statement checks
+ * and counts, and its row lock lasts only until the commit that follows; a loser re-checks the committed row
+ * (READ COMMITTED, the default: under a stricter level this would be a serialization error instead).
  */
-export async function markInviteUsed(q: Queryable, code: string, principalId: string | null): Promise<void> {
-  const hash = hashInviteCode(code);
-  await q.query("update invites set used_by = $2, used_at = now() where code_hash = $1", [hash, principalId]);
-  await q.query("insert into invite_uses (code_hash, principal_id) values ($1, $2)", [hash, principalId]);
+export async function takeInviteUse(q: Queryable, pending: PendingInvite): Promise<boolean> {
+  const { rowCount } = await q.query(
+    `update invites set uses = uses + 1, used_by = $2, used_at = now()
+      where code_hash = $1 and uses < max_uses and revoked_at is null`,
+    [pending.codeHash, pending.principalId],
+  );
+  if (rowCount !== 1) return false;
+  await q.query("insert into invite_uses (code_hash, principal_id) values ($1, $2)", [pending.codeHash, pending.principalId]);
+  await q.query("delete from pending_invites where principal_id = $1", [pending.principalId]);
+  return true;
 }
 
 export interface InviteListing {

@@ -151,6 +151,7 @@ describe("error codes", () => {
 
   it("verification failures: expired has its own text, the others share one", () => {
     expect(verifyMessage("TOKEN_EXPIRED")).toBe("验证链接已过期。请直接登录，我们会重新发送一封验证邮件。");
+    expect(verifyMessage("INVITE_USED_UP")).toBe("这个邀请码的名额已经用完。");
     for (const code of ["INVALID_TOKEN", "USER_NOT_FOUND", "INVALID_USER", "x"]) expect(verifyMessage(code)).toBe(VERIFY_FALLBACK);
   });
 });

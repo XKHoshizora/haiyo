@@ -9,7 +9,7 @@ import { displayName } from "../schemas.ts";
 import { findAccountByEmail, lockAccountEmail, removeUnverifiedAccount, type ExistingAccount } from "./accounts.ts";
 import { holdUntilFloor, startAnswerClock, type AnswerFloor } from "./answer-floor.ts";
 import { runInTransaction } from "./auth.ts";
-import { lockUsableInvite, markInviteUsed } from "./invites.ts";
+import { inviteUsable, rememberInvite } from "./invites.ts";
 import { registrationAttemptMail } from "./mail-copy.ts";
 import { mailPolicy, sendMail, type MailPolicy } from "./mailer.ts";
 
@@ -70,24 +70,23 @@ export function registerRegistrationRoutes(
       try {
         // One transaction for the whole decision: the invite lock, the address's lock and account, removing an
         // unverified one, Better Auth's user/account rows and mail (joined to this transaction, see auth.ts), the
-        // principal, and using the invite up all commit together, or nothing does.
+        // principal, and which invite it came with all commit together, or nothing does.
         told = await db.tx(async (client) => {
           // The invite first: without one, nothing (not even whether a handle is taken) is revealed.
           if (needsInvite) {
-            if (!inviteCode || !(await lockUsableInvite(client, inviteCode))) throw new AppError(400, "invalid_invite");
+            if (!inviteCode || !(await inviteUsable(client, inviteCode))) throw new AppError(400, "invalid_invite");
           }
 
           // Whoever holds the handle — also an unverified account this registration would replace — or gave it up
           // (`reserved_handles`: theirs for good), it is taken: the answer must not depend on whose e-mail is being registered.
           if (!(await handleFree(client, handle, null))) throw new AppError(409, "handle_taken");
 
-          // From here on the answer is 201, account or not, and the invite is used up either way.
+          // From here on the answer is 201, account or not; the invite is untouched either way (its use is taken at verification).
           await lockAccountEmail(client, email);
           const existing = await findAccountByEmail(client, email);
           if (existing?.verified) {
             // Never touched: its owner is told that someone tried, and nothing is created.
             await noticeRegistrationAttempt(client, existing, config.appOrigin, mailPolicy(config));
-            if (needsInvite) await markInviteUsed(client, inviteCode!, null);
             return [];
           }
           // An unverified account proves nobody owns the address yet: the newest registration replaces it.
@@ -115,7 +114,7 @@ export function registerRegistrationRoutes(
             if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new AppError(409, "handle_taken");
             throw err;
           }
-          if (needsInvite) await markInviteUsed(client, inviteCode!, principalId);
+          if (needsInvite) await rememberInvite(client, inviteCode!, principalId);
           return affected;
         });
       } catch (err) {

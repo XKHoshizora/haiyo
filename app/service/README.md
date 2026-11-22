@@ -2071,12 +2071,15 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   `email` (an e-mail address, at most 254), `password` (10–128 characters), `displayName` (see
   `PATCH /api/me`: 1–40 characters after removing format characters (not joiners) and trimming, one line), `handle`
   (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`).
-- 201 `{"ok": true}` whether or not the e-mail already has an account, and one use of the invite is taken either way: the
-  answer, its timing and the invite afterwards are the same. What an invite holder can still learn, accepted:
-  one answer per invite. After a 201 for an address, whether the chosen handle now exists (a handle lookup, a
-  second registration with that handle — 409 —, or signing in with the chosen password — 403
-  `email_not_verified` against 401) tells whether the address already had a verified account (then nothing was
-  created). Each such probe uses up a single-use invite and, for a verified account, mails its owner a
+- 201 `{"ok": true}` whether or not the e-mail already has an account, and the invite is untouched either way: a use of
+  it is taken when the account becomes real, at e-mail verification (in the same transaction; a code that has run out
+  or been revoked since the sign-up refuses that verification — the link redirects to `/verify?error=INVITE_USED_UP`
+  and the account stays unverified). So the answer, its timing and the invite afterwards are the same for every
+  address, an abandoned or replaced sign-up costs the code nothing, and a code made with `--uses n` admits n
+  verified accounts. What an invite holder can still learn, accepted: after a 201 for an address, whether the chosen
+  handle now exists (a handle lookup, a second registration with that handle — 409 —, or signing in with the chosen
+  password — 403 `email_not_verified` against 401) tells whether the address already had a verified account (then
+  nothing was created). Each such probe, for a verified account, mails its owner a
   `registration_attempt` notice (at most hourly). Held back
   like the reset request's answer: at least 400 ms (plus up to 50 ms at random) after its whole body was in;
   errors are not held back. What happens depends on the e-mail (compared lower-cased):
@@ -2087,7 +2090,7 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   - An account whose e-mail is not verified yet (it has never signed in): this registration replaces it, in the
     same transaction. The old account's principal, auth user, sessions, credentials and reset links are
     deleted; friend requests to it and blocks of it are deleted too (whoever made them gets a `social` push);
-    its handle is free again; the invite it was registered with stays used up. The new password, handle and
+    its handle is free again; its invite loses nothing (a use is taken only at verification). The new password, handle and
     display name apply and a fresh verification mail is sent. Links mailed for the old account stop working
     (its verification link redirects with `INVALID_TOKEN`, its reset links are `invalid_token`). An unverified
     account that holds anything only a signed-in person makes — messages, memberships, friendships, blocks it
@@ -2103,7 +2106,7 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
 - Errors: 400 `invalid_invite` (missing, unknown, expired, revoked or used-up invite — a code made with `--uses n` admits n sign-ups, then it is used up; checked first, so without a usable
   invite nothing else — not even whether the handle is taken — is revealed), 409 `handle_taken` (a person holds
   the handle, also an unverified account this registration would otherwise replace, or gave it up — Handles; an
-  Agent's name part is no person's handle; the invite is not used up), 400 `invalid_request` (shape, or a value
+  Agent's name part is no person's handle; the invite is untouched), 400 `invalid_request` (shape, or a value
   Better Auth refuses).
 - Limit: 10 per minute per client address.
 

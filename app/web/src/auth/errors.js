@@ -38,6 +38,7 @@ export const fieldOf = (code) => FIELDS[code] ?? null;
 
 const VERIFY_MESSAGES = {
   TOKEN_EXPIRED: "验证链接已过期。请直接登录，我们会重新发送一封验证邮件。",
+  INVITE_USED_UP: "这个邀请码的名额已经用完。",
 };
 export const VERIFY_FALLBACK = "验证链接无效或已被使用。如果还没验证，请直接登录，我们会重新发送一封验证邮件。";
 
