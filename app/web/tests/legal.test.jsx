@@ -6,7 +6,7 @@ import React from "react";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, configure, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApiError } from "../src/api/http.js";
 import { AuthRoot } from "../src/auth/AuthRoot.jsx";
 import { LEGAL_VERSIONS } from "../src/legal/versions.js";
@@ -151,7 +151,7 @@ describe("the public pages", () => {
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     expect(screen.queryByTestId("app")).toBeNull();
     expect(location.pathname).toBe(`/${doc}`);
-    expect(document.title).toBe(`${TITLES[doc].zh} · Haiyo`);
+    await waitFor(() => expect(document.title).toBe(`${TITLES[doc].zh} · Haiyo`));
   });
 
   it("opens when the service cannot be reached, and for a signed-out visitor stays where it is", async () => {
