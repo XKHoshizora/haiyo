@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort, recoverRuns, sweepStaleRuns } from "../src/agents/port-impl.ts";
-import { createWhisper, expireWhispers } from "../src/whispers/store.ts";
+import { createWhisper, expireWhispers, type HitRow } from "../src/whispers/store.ts";
 import { changeSweep } from "../src/app.ts";
 import { NO_TOOLS, TOLD_NO_TOOLS, TOOL_MATERIAL } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
-import { createElsewhere, ELSEWHERE_HITS_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, toldPassage, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
+import { createElsewhere, ELSEWHERE_HITS_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, hitOf, toldPassage, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
 import { createToolbox, SEARCH_MESSAGES, type ToolDeps } from "../src/agents/tools/index.ts";
 import { excerptAt, matchAt } from "../src/agents/tools/search.ts";
@@ -241,6 +241,33 @@ describe("a search in a group that finds nothing there", () => {
     expect(sockets.ned.events.some((e) => e.type === "whisper")).toBe(false);
     expect((await api(app, w.ned, "GET", `/api/conversations/${w.g}/whispers`)).json.whispers ?? []).toEqual([]);
     expect(toldPassage([{ where: "x", who: "y", when: "2026-01-01 10:00", text: "hello", mentions: [{ id: w.mia.id, start: 0, length: 3 }] }])).not.toContain(w.mia.id);
+    // A member's own sync (the list route, and the frames of a socket that stayed open) holds none of the hit: not its words, not its ranges.
+    for (const member of [w.mia, w.ned]) {
+      const theirs = JSON.stringify((await api(app, member, "GET", `/api/conversations/${w.g}/whispers`)).json);
+      expect([member.handle, theirs.includes("在三楼"), theirs.includes("改在周五"), theirs.includes('"mentions"')]).toEqual([member.handle, false, false, false]);
+    }
+    expect(JSON.stringify(sockets.ned.events)).not.toContain("改在周五");
+  });
+
+  it("telling it: the told run's system text holds the hits' words and times only — no mention id, no range", async () => {
+    const w = await world();
+    const mention = `@${w.mia.handle}`;
+    const sent = await api(app, w.ned, "POST", `/api/conversations/${w.b}/messages`, {
+      text: `${mention} 蓝鲸计划改在周五`,
+      clientTxn: `we${++txn}`,
+      mentions: [{ id: w.mia.id, start: 0, length: mention.length }],
+    });
+    expect(sent.status).toBe(201);
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [made] = await whispersOf(w.owner.id, w.g);
+    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.some((h) => h.mentions.some((m) => m.id === w.mia.id))).toBe(true); // (she is given it)
+    expect((await api(app, w.owner, "POST", `/api/whispers/${made!.id}/accept`)).status).toBe(200);
+    gateway.reply("蓝鲸计划改在周五。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const call = gateway.calls.at(-1)!;
+    expect(call.system).toContain(TELL_THEM);
+    expect(call.system).toContain("改在周五");
+    for (const never of [w.mia.id, w.ned.id, w.owner.id, '"mentions"', '"start"', '"length"']) expect([never, call.system.includes(never)]).toEqual([never, false]);
   });
 
   it("a long hit: the place kept (`at`) is where the words are in the text as stored, and what she is shown is cut there — what looks like a citation before them is text, kept, and moves nothing", async () => {
@@ -1572,5 +1599,77 @@ describe("the system's automatic retry and a found-elsewhere whisper (README Rep
     await hook.idle();
     expect(await whispersOf(w.owner.id, w.g)).toHaveLength(1);
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["failed", "done"]);
+  });
+});
+
+describe("hitOf: the ranges follow the cut", () => {
+  const typed = "@mia";
+  const row = (text: string, at: number, mentions: Array<{ id: string; start: number; length: number }>): HitRow => ({
+    whisperId: "w",
+    ord: 1,
+    at,
+    createdAt: new Date("2026-01-01T10:00:00Z"),
+    text,
+    mentions,
+    attachmentName: null,
+    senderName: "Ned",
+    senderHandle: "ned",
+    title: "乙群",
+    conversationType: "group",
+  });
+  // (A mention of characters that weigh as much as the words around it, so the windows below are cut by count: `typed` is ASCII, and weighs less.)
+  const wide = "＠米娅";
+  const range = (start: number, length = typed.length) => ({ id: "u1", start, length });
+  /** Every range is exactly the typed mention, whole, and no half of a surrogate pair is anywhere in the text. */
+  const intact = (hit: ReturnType<typeof hitOf>, name = typed) => {
+    for (const m of hit.mentions) expect(hit.text.slice(m.start, m.start + m.length)).toBe(name);
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(hit.text)).toBe(false);
+  };
+
+  it("the tail ellipsis: ranges before the cut are kept where they were; the one the end of the window straddles, and the one after it, are left out", () => {
+    // The window of a line cut from its start holds 199 characters (200 less the ellipsis).
+    const text = `${"字".repeat(10)}${wide}${"字".repeat(185)}${wide}${"字".repeat(60)}${wide}`;
+    expect(text.indexOf(wide, 20)).toBe(198); // (198 to 201: across the end of the window)
+    const hit = hitOf(row(text, 0, [range(10, 3), range(198, 3), range(text.length - 3, 3)]), "UTC");
+    expect(hit.text.endsWith("…")).toBe(true);
+    expect(hit.text.startsWith("…")).toBe(false);
+    expect(hit.mentions).toEqual([range(10, 3)]);
+    intact(hit, wide);
+  });
+
+  it("the head ellipsis: ranges move by its one character; the one the start of the window straddles is left out", () => {
+    // The words at 300; the window starts 60 characters before them, at 240: the first range (238 to 242) is across it, the second (262) is inside.
+    const text = `${"前".repeat(238)}${wide}${"前".repeat(21)}${wide}${"前".repeat(35)}蓝鲸计划${"后".repeat(300)}`;
+    expect(text.indexOf("蓝鲸计划")).toBe(300);
+    const hit = hitOf(row(text, 300, [range(238, 3), range(262, 3)]), "UTC");
+    expect(hit.text.startsWith("…")).toBe(true);
+    expect(hit.mentions).toEqual([range(262 - 240 + "…".length, 3)]);
+    intact(hit, wide);
+  });
+
+  it("a surrogate pair at the cut is never split; a range over the pair the cut took is left out, one over a pair that stays is kept", () => {
+    // 190 characters of 3 bytes after the mention, then pairs of 4: five of them fit the window (597 bytes), the sixth and seventh do not.
+    const text = `${typed}${"字".repeat(190)}${"😀".repeat(7)}`;
+    const fifth = 194 + 4 * 2;
+    const sixth = fifth + 2;
+    const hit = hitOf(row(text, 0, [range(0), range(fifth, 2), range(sixth, 2)]), "UTC");
+    expect(hit.text.endsWith("…")).toBe(true);
+    expect(Array.from(hit.text).filter((c) => c === "😀")).toHaveLength(5);
+    expect(hit.mentions).toEqual([range(0), range(fifth, 2)]);
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(hit.text)).toBe(false);
+    // A mention after a pair: its start counts the pair as two units, as the text it is drawn on does.
+    const after = hitOf(row(`好😀${typed}`, 0, [range(3)]), "UTC");
+    expect(after.mentions).toEqual([range(3)]);
+    intact(after);
+  });
+
+  it("the clip at 200 characters: a range wholly inside it is kept; one that crosses it, or lies past it though the window holds it, is left out", () => {
+    // ASCII weighs a third of a character: the window holds 597 of them, the hit shows 200.
+    const chars = Array.from({ length: 800 }, () => "a");
+    for (const at of [10, 197, 300]) chars.splice(at, typed.length, ...typed);
+    const hit = hitOf(row(chars.join(""), 0, [range(10), range(197), range(300)]), "UTC");
+    expect(Array.from(hit.text)).toHaveLength(QUOTE_MAX_CHARS);
+    expect(hit.mentions).toEqual([range(10)]);
+    intact(hit);
   });
 });

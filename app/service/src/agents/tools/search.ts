@@ -30,7 +30,7 @@ const EXCERPT_BEFORE_WEIGHT = 60;
 /** The words searched for weigh at most this much, once cleaned. */
 export const QUERY_MAX_WEIGHT = 60;
 /** What marks where an excerpt was cut. */
-const ELLIPSIS = "…";
+export const ELLIPSIS = "…";
 
 // The fixed sentences the model is answered with.
 export const SEARCH_TIMEOUT = "这次查找超时了。";
@@ -116,7 +116,11 @@ export function matchAt(text: string, term: string): number {
  * (agents/tools/elsewhere.ts): its excerpt is cut so again when it is read.
  */
 export function excerptAt(text: string, at: number): string {
-  const w = excerptWindow(text, at);
+  return shownOf(excerptWindow(text, at));
+}
+
+/** What a window shows: its part of the line with an ellipsis where it was cut — the one assembly of `excerptAt` and of a whisper hit (agents/tools/elsewhere.ts). */
+export function shownOf(w: { line: string; start: number; end: number; head: boolean; tail: boolean }): string {
   return (w.head ? ELLIPSIS : "") + w.line.slice(w.start, w.end) + (w.tail ? ELLIPSIS : "");
 }
 

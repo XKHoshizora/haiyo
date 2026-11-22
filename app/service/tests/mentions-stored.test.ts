@@ -11,6 +11,7 @@ import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
+import { MULTIPART, multipart } from "./helpers/multipart.ts";
 import { closeAllSockets, connect } from "./helpers/ws.ts";
 
 /**
@@ -668,6 +669,58 @@ describe("a quote carries the quoted message's mentions, under the preview's own
     const quote = quoteOf((await replyTo(bo, g, "回", said)).json.message);
     expect(Array.from(quote.text!).length).toBe(200);
     expect(quote.mentions).toEqual([{ id: bo.id, start: 0, length: first.length }]); // (the second lies past the cut)
+  });
+
+  it("a range the 200-character cut runs across is left out whole, not shortened: the preview ends before it", async () => {
+    const [ann, bo, extra] = [await signUp(app, "edge_ann"), await signUp(app, "edge_bo"), await signUp(app, "edge_cy")];
+    const g = await group(app, ann, "边界群", [bo, extra]);
+    const typed = `@${bo.handle}`;
+    const text = `${"字".repeat(198)}${typed}后面`; // (begins two characters before the cut, ends past it)
+    const said = await say(ann, g, text, [{ id: bo.id, start: 198, length: typed.length }]);
+    const quote = quoteOf((await replyTo(bo, g, "回", said)).json.message);
+    expect(Array.from(quote.text!)).toHaveLength(200);
+    expect(quote.mentions).toBeUndefined(); // (not `[]`, not a range into text that is not there)
+  });
+
+  it("an astral character before a range moves it by two units, as the text is drawn; one at the cut is not split", async () => {
+    const [ann, bo, extra] = [await signUp(app, "astral_ann"), await signUp(app, "astral_bo"), await signUp(app, "astral_cy")];
+    const g = await group(app, ann, "星群", [bo, extra]);
+    const typed = `@${bo.handle}`;
+    const text = `😀${typed} ${"字".repeat(190)}😀😀`;
+    const said = await say(ann, g, text, [{ id: bo.id, start: 2, length: typed.length }]);
+    const quote = quoteOf((await replyTo(bo, g, "回", said)).json.message);
+    expect(quote.mentions).toEqual([{ id: bo.id, start: 2, length: typed.length }]);
+    expect(quote.text!.slice(2, 2 + typed.length)).toBe(typed);
+    // The cut is of 200 characters (code points): a pair is whole or not there, never half.
+    const long = `${"字".repeat(199)}😀😀`;
+    const cut = quoteOf((await replyTo(bo, g, "回", await say(ann, g, long))).json.message);
+    expect(Array.from(cut.text!)).toHaveLength(200);
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(cut.text!)).toBe(false);
+  });
+
+  it("a file sent with a caption: its quote is a file's, with the file's name, and the caption's ranges inside it; a late joiner's is still only {seq, visible: false}", async () => {
+    const [ann, bo, extra, late] = [await signUp(app, "file_ann"), await signUp(app, "file_bo"), await signUp(app, "file_cy"), await signUp(app, "file_dee")];
+    const g = await group(app, ann, "文件群", [bo, extra]);
+    const typed = `@${bo.handle}`;
+    const uploaded = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${g}/attachments`,
+      headers: { cookie: ann.cookie, "content-type": MULTIPART },
+      payload: multipart([{ name: "file", filename: "plan.txt", type: "text/plain", data: "hello" }]),
+    });
+    expect(uploaded.statusCode).toBe(201);
+    const sent = await api(app, ann, "POST", `/api/conversations/${g}/messages`, {
+      attachmentId: uploaded.json().id,
+      text: `${typed} 请看`,
+      clientTxn: `ms${++txn}`,
+      mentions: [{ id: bo.id, start: 0, length: typed.length }],
+    });
+    expect(sent.status).toBe(201);
+    await join(g, late.id);
+    const reply = await replyTo(bo, g, "收到", sent.json.message.seq);
+    expect(quoteOf(reply.json.message)).toMatchObject({ visible: true, kind: "file", text: `${typed} 请看`, attachmentName: "plan.txt", mentions: [{ id: bo.id, start: 0, length: typed.length }] });
+    const lateQuote = quoteOf(await read(late, g, reply.json.message.seq));
+    expect(lateQuote).toEqual({ seq: sent.json.message.seq, visible: false });
   });
 
   it("a late joiner gets no preview, so no ranges, of a quoted message from before they joined; an earlier member gets both; nothing is widened", async () => {
