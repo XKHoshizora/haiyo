@@ -30,10 +30,10 @@ const recentRows = () =>
 const AGENTS = [agentOf(AG1), agentOf(AG2, { handle: "cook", name: "厨师", conversationId: A2, deleted: true })];
 
 /** The app with my two Agents (one deleted) and their conversations, on Settings › 用量与余额. */
-async function openUsage({ getUsage = vi.fn(async () => usageOf()), open = true } = {}) {
+async function openUsage({ getUsage = vi.fn(async () => usageOf()), open = true, models = MODELS } = {}) {
   const principals = [...PRINCIPALS, agentPrincipal(AG1), agentPrincipal(AG2, "cook", "厨师")];
   const sync = () => syncOf([agentConv(A1, AG1), agentConv(A2, AG2, { agent: { paused: false, deleted: true } })], [], principals);
-  const app = await openApp({ sync, api: { getUsage }, handlers: { agents: () => ({ agents: AGENTS }), models: () => MODELS } });
+  const app = await openApp({ sync, api: { getUsage }, handlers: { agents: () => ({ agents: AGENTS }), models: () => models } });
   fireEvent.click(rail(/^设置/));
   await flush();
   if (open) await click(settingsRow("用量与余额"));
@@ -80,7 +80,14 @@ describe("usage and balance", () => {
       ["小助手", "联网搜索", "8.47385 点 · 11 次"],
       ["已删除的 Agent", "联网搜索", "13 点 · 1 次"],
     ]);
-    expect(mainText()).toContain("联网搜索单独列出，用自己的供应商时也按次扣点。");
+    expect(mainText()).toContain("用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。联网搜索单独列出。");
+  });
+
+  it("while the site offers web search, with none in these days yet: the model costs no points, web searches do (fix round 1, I2)", async () => {
+    const usage = usageOf({ recent: [{ agentId: AG1, model: "own-1", source: "provider", points: "0", replies: 1 }] });
+    await openUsage({ getUsage: vi.fn(async () => usage), models: { ...MODELS, webSearchAvailable: true } });
+    expect(mainText()).toContain("最近 7 天（含今天），按 Agent 和模型汇总。用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。");
+    expect(mainText()).not.toContain("联网搜索单独列出");
   });
 
   it("with no web search in these days: no such line, and the page says nothing of it", async () => {

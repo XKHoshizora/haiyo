@@ -2393,6 +2393,36 @@ describe("联网搜索 (only while the site offers web search)", () => {
     expect((await createOn(ON_SITE, () => fireEvent.click(sw()))).mock.calls[0][0]).toMatchObject({ webSearch: false });
   });
 
+  it("the money hints of the budgets say that a provider-model Agent's web searches are charged, and bounded by them, only while the site offers web search (fix round 1, I2)", async () => {
+    const CHAIN = "一次接话最多花费（点）";
+    const OTHERS = "别人 @ 每天最多花";
+    const AMOUNT = "主动回复每天最多花";
+    const hintOf = (label) => document.getElementById(inMain().getByLabelText(label).getAttribute("aria-describedby"))?.textContent;
+    const open = async (models) => {
+      await openAgents({ models: { ...models, proactiveAvailable: true } });
+      await openCreate();
+      fireEvent.click(inMain().getByLabelText("主动参与群聊"));
+      return [hintOf(CHAIN) ?? inMain().getByLabelText(CHAIN).closest(".field").querySelector(".field-hint").textContent, hintOf(OTHERS), hintOf(AMOUNT)];
+    };
+    expect(await open(ON_SITE)).toEqual([
+      "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+      "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+    ]);
+    cleanup();
+    // The site offering none: the words as before, to the character.
+    expect(await open(MODELS)).toEqual([
+      "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
+      "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。",
+    ]);
+  });
+
+  it("a price of 0 says only where the words go (no 每次约 0 点)", async () => {
+    await openEditOf({ webSearch: true }, { ...MODELS, webSearchAvailable: true, webSearchPoints: "0" });
+    expect(inMain().getByText("搜索词会发给外部的搜索服务。").id).toBe(sw().getAttribute("aria-describedby"));
+  });
+
   it("its line says the price the service gives (13 for Exa's default), and without one says only where the words go", async () => {
     await openEditOf({ webSearch: true }, { ...MODELS, webSearchAvailable: true, webSearchPoints: "13" });
     expect(inMain().getByText("联网搜索由站点提供，每次约 13 点，先用每日免费额度。搜索词会发给外部的搜索服务。").id).toBe(sw().getAttribute("aria-describedby"));

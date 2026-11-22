@@ -152,7 +152,9 @@ export function UsagePage({ back }) {
 
         <h3>最近用量</h3>
         <p className="muted">
-          最近 7 天（含今天），按 Agent 和模型汇总。用你自己的供应商不扣点。{recentWeb.length > 0 && "联网搜索单独列出，用自己的供应商时也按次扣点。"}
+          最近 7 天（含今天），按 Agent 和模型汇总。
+          {state.webSearchAvailable === true || recentWeb.length > 0 ? "用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。" : "用你自己的供应商不扣点。"}
+          {recentWeb.length > 0 && "联网搜索单独列出。"}
         </p>
         {usage.memory && <p className="muted">记忆今天的额度：已用 {usage.memory.usedText} / {usage.memory.allowanceText}</p>}
         {recent.length === 0 && recentWeb.length === 0 ? (
