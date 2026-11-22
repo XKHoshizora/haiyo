@@ -39,7 +39,9 @@ export function Select({
   const typed = useRef({ text: "", at: 0 });
   // A Space that chose ends with a click on the button (at its keyup): that click must not open the list again.
   const spaceChose = useRef(false);
-  const { open, show, close, triggerRef, popRef, popStyle, up } = usePopover({ disabled, widthOf: (box) => Math.max(box.width, 200) });
+  const listRef = useRef(null);
+  // (On a phone the list is a sheet over an inert page: the focus goes to the list itself, which takes the same keys.)
+  const { open, sheet, show, close, triggerRef, popRef, popStyle, up } = usePopover({ disabled, widthOf: (box) => Math.max(box.width, 200), focus: (asSheet) => asSheet && listRef.current?.focus() });
 
   const optionId = new Map(options.map((o, i) => [o.value, `${base}-o${i}`]));
   const current = options.find((o) => o.value === value) ?? null;
@@ -141,7 +143,18 @@ export function Select({
         <div className="model-scrim" aria-hidden="true" />
         <div ref={popRef} className={`select-pop${up ? " up" : ""}`} style={popStyle}>
           {/* A press on an option leaves the focus on the button (one on the list's own scrollbar is let through). */}
-          <div className="select-list" role="listbox" id={listId} aria-label={listLabel} onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
+          <div
+            ref={listRef}
+            className="select-list"
+            role="listbox"
+            id={listId}
+            aria-label={listLabel}
+            tabIndex={sheet ? -1 : undefined}
+            aria-activedescendant={sheet && activeValue !== null ? optionId.get(activeValue) : undefined}
+            onKeyDown={sheet ? onKeyDown : undefined}
+            onKeyUp={sheet ? onKeyUp : undefined}
+            onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}
+          >
             {options.map((o) => (
               <div
                 key={o.value}
@@ -178,7 +191,7 @@ export function Select({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
-        aria-activedescendant={open && activeValue !== null ? optionId.get(activeValue) : undefined}
+        aria-activedescendant={open && !sheet && activeValue !== null ? optionId.get(activeValue) : undefined}
         aria-label={ariaLabel}
         aria-labelledby={labelledBy}
         aria-describedby={describedBy}

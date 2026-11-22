@@ -942,7 +942,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 
 /* ───────── modal & toast */
 .modal-backdrop {
-  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; place-items: center;
+  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; place-items: center; overflow: hidden; overscroll-behavior: contain;
   padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .modal {
@@ -952,7 +952,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .modal-head { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; padding: 14px 14px 8px 22px; }
 .modal-head .icon-btn { flex: none; }
 .modal-head h2 { font-size: 19px; font-weight: 700; }
-.modal-body { min-height: 0; padding: 4px 22px 14px; overflow-y: auto; font-size: 15px; }
+.modal-body { min-height: 0; padding: 4px 22px 14px; overflow-y: auto; overscroll-behavior: contain; font-size: 15px; }
 /* A second list in a dialog (添加成员: 我的 Agent under the friends). */
 .modal-body h3 { font-size: 15px; font-weight: 600; margin: 16px 0 2px; }
 .modal-foot { display: flex; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 12px 22px 18px; }

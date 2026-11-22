@@ -367,14 +367,24 @@ describe("popstate only re-renders", () => {
   });
 });
 
-describe("a dialog is not an address", () => {
-  it("one open when a popstate arrives closes, and no entry was made for it", () => {
+describe("a dialog is not an address: it is one entry at the page's address", () => {
+  it("opening one pushes an entry at the same address; Back leaves it, closes the dialog, and the page drawn is not moved (tests/layers.test.jsx has the rest)", async () => {
     const close = vi.fn();
-    const pushed = vi.spyOn(window.history, "pushState");
-    render(<Modal title="添加成员" onClose={close}>x</Modal>);
-    expect(pushed).not.toHaveBeenCalled();
-    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    render(<Probe />);
+    await settle();
+    await go(chatOf(C1));
+    const page = window.history.state;
+    const { unmount } = render(<Modal title="添加成员" onClose={close}>x</Modal>);
+    await settle();
+    expect(window.history.state).toMatchObject({ path: `/chat/${C1}`, index: page.index + 1, prev: `/chat/${C1}#` });
+    expect(window.history.state.layers).toHaveLength(1);
+    moves.length = 0;
+    await back();
     expect(close).toHaveBeenCalledTimes(1);
+    expect(at()).toBe(`/chat/${C1}`);
+    expect(navNow()).toMatchObject({ pane: "main", convId: C1 });
+    expect(window.history.state).toEqual(page);
+    unmount();
   });
 });
 

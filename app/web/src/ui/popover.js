@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isEscape } from "./keys.js";
+import { useLayer } from "./layers.js";
 
 // How a button's list opens, for the model picker (src/pages/ModelSelect.jsx) and the plain Select (src/ui/Select.jsx):
 // the same place, the same ways to close it, the same look (styles.css: .model-pop, .select-pop).
@@ -35,6 +36,9 @@ const onPhone = () => typeof window.matchMedia === "function" && window.matchMed
  */
 export function usePopover({ disabled = false, busy = false, widthOf, focus, onOpen }) {
   const [open, setOpen] = useState(false);
+  // On a phone the list is a sheet over a dimmed page: a modal layer (ui/layers.js) — the page inert, the focus in the sheet (`focus`
+  // gets `true`), Back closes the sheet only, and the focus comes back to the button.
+  const [sheet, setSheet] = useState(false);
   const [place, setPlace] = useState(null);
   const triggerRef = useRef(null);
   const popRef = useRef(null);
@@ -43,6 +47,7 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
 
   const show = () => {
     if (disabled || busy || open) return false;
+    setSheet(onPhone());
     setOpen(true);
     onOpen?.();
     return true;
@@ -51,10 +56,11 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
     setOpen(false);
     if (focusButton) triggerRef.current?.focus();
   };
+  useLayer(popRef, { active: open && sheet, onClose: () => close(true), returnTo: () => triggerRef.current, autofocus: false });
 
   useLayoutEffect(() => {
     if (!open) return undefined;
-    latest.current.focus?.();
+    latest.current.focus?.(sheet);
     const placeIt = () => {
       const button = triggerRef.current;
       if (!button) return;
@@ -120,5 +126,5 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
   const popStyle = place
     ? { "--pop-left": `${place.left}px`, "--pop-w": `${place.width}px`, "--pop-h": `${place.height}px`, ...(place.up ? { "--pop-bottom": `${place.bottom}px` } : { "--pop-top": `${place.top}px` }) }
     : undefined;
-  return { open, show, close, triggerRef, popRef, popStyle, up: Boolean(place?.up) };
+  return { open, sheet: open && sheet, show, close, triggerRef, popRef, popStyle, up: Boolean(place?.up) };
 }

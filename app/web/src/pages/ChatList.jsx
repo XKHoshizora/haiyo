@@ -103,7 +103,8 @@ export function ChatList() {
             </IconBtn>
             {menu && (
               <div className="menu" aria-label="新建选项">
-                <button type="button" onClick={() => (setMenu(false), setNewGroup(true))}>
+                {/* (The focus goes to 新建 before this item goes away: the dialog gives it back there when it closes.) */}
+                <button type="button" onClick={() => (menuRef.current?.querySelector("button")?.focus(), setMenu(false), setNewGroup(true))}>
                   <Users size={16} aria-hidden="true" /> 发起群聊
                 </button>
                 <button type="button" onClick={() => (setMenu(false), dispatch({ type: "nav", patch: { section: "contacts", pane: "list", addFriend: true } }))}>

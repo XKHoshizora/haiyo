@@ -2,14 +2,14 @@
 // backdrop; the picture fitted to the window; a bar with who sent it, when and its file name, and the buttons (close,
 // download, open the original in a new tab); the conversation's other pictures one step away (keys, buttons, a swipe);
 // zoom by wheel, pinch, double click or tap, and `+` `-` `0`. Its pieces: the arithmetic is ui/imageZoom.js, the
-// dialog's focus is ui/dialogFocus.js.
+// dialog itself (inert page, focus, Esc) is the one modal layer of ui/layers.js; its history entry is the viewer key of state/appHistory.js.
 import React, { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "../data/store.jsx";
 import { senderName } from "../state/selectors.js";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, ImageOff, RotateCw, X } from "../icons.js";
 import { IconBtn, Btn } from "./primitives.jsx";
-import { useDialogFocus } from "./dialogFocus.js";
+import { useLayer } from "./layers.js";
 import { useVisualViewportBox } from "./visualViewport.js";
 import { closeViewerEntry, dropViewerKey, openViewerEntry, stepViewerEntry, useViewerId } from "../state/appHistory.js";
 import { FIT, clampPan, keyZoom, swipeOf, toggleZoom, wheelFactor, zoomAt } from "./imageZoom.js";
@@ -88,16 +88,7 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
   const go = (to) => to >= 0 && to <= last && onShow(to);
 
   // Back to the picture that opened it: the very node, or — when the list drew it again meanwhile — its new one.
-  useDialogFocus(box, { onClose, returnTo: () => (opener?.isConnected ? opener : document.querySelector(`[data-image="${CSS.escape(openedId)}"]`)) });
-
-  // The page behind does not scroll.
-  useEffect(() => {
-    const before = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = before;
-    };
-  }, []);
+  useLayer(box, { onClose, history: false, autofocus: true, returnTo: () => (opener?.isConnected ? opener : document.querySelector(`[data-image="${CSS.escape(openedId)}"]`)) });
 
   // A button that went away (the end of the list, Retry) leaves the focus in the dialog, on an arrow or the close button.
   useEffect(() => {
