@@ -72,7 +72,7 @@ function bothShown(seq) {
   return { seen, onModel };
 }
 
-const card = (seq, status, id = P1) => wire(A1, seq, AG1, "我整理了一份设定，请查看并确认。", { proposal: { id, status, persona: "你是小助手。" } });
+const card = (seq, status, id = P1) => wire(A1, seq, AG1, "", { proposal: { id, status, persona: "你是小助手。" } });
 
 /** Two Agents of mine (their conversations A1 and A2) and a direct chat with Ann. */
 function agentsSync() {

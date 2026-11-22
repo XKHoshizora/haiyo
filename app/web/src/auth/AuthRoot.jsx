@@ -104,7 +104,7 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     case "register":
       return <Register api={api} />;
     case "verify":
-      return <Verify error={route.error} signedIn={running} />;
+      return <Verify api={api} error={route.error} signedIn={running} />;
     case "forgot":
       return <Forgot api={api} />;
     case "reset":

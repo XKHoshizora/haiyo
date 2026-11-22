@@ -52,14 +52,18 @@ const timeOf = (iso) => {
   return Number.isFinite(ms) ? ms : null;
 };
 
-function quoteView(replyTo, alias) {
+/** What a reply that is only a persona proposal reads as wherever its text would be shown (it has none). */
+export const PROPOSAL_ONLY = "[设定提议]";
+
+function quoteView(replyTo, alias, proposalAt = () => false) {
   if (!replyTo) return null;
   if (!replyTo.visible) return { seq: replyTo.seq, visible: false };
   return {
     seq: replyTo.seq,
     visible: true,
     from: alias(replyTo.senderId),
-    text: replyTo.text ?? "",
+    // A quoted reply that is only a proposal (held here: its message carries it) says so instead of nothing.
+    text: replyTo.text || ((replyTo.kind ?? "text") === "text" && proposalAt(replyTo.seq) ? PROPOSAL_ONLY : replyTo.text ?? ""),
     kind: replyTo.kind ?? "text",
     attachmentName: replyTo.attachmentName ?? null,
   };
@@ -355,7 +359,7 @@ function notCalledText(agentIds, nameOf) {
   return `你 @ 得太频繁了，${who}这次没有收到，稍后再试。`;
 }
 
-function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, keepsOwners }) {
+function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, keepsOwners, proposalAt }) {
   const attachment = m.kind === "file" ? attachmentView(m.attachment) : null;
   const kind = kindOf(m.kind, attachment);
   const system = systemView(m.system, alias);
@@ -382,7 +386,7 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
     // Read by the other side: the peer of a direct chat, or the Agent of its conversation.
     status: m.senderId === meId && pair && peerReadSeq !== null && m.seq <= peerReadSeq ? "read" : "sent",
     replyTo: m.replyTo ? `m${m.replyTo.seq}` : null,
-    quote: quoteView(m.replyTo, alias),
+    quote: quoteView(m.replyTo, alias, proposalAt),
     attachment,
     system,
     // An Agent's reply: its reasoning (shown folded) and which model and level it used (`via`), only when it is mine
@@ -752,8 +756,10 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     // else's Agent's.
     const keepsOwners = (senderId) =>
       typeof senderId === "string" && (agentChat ? senderId === conv.agentId : conv.type === "group" && ownsAgent(model, senderId));
+    // Which held messages are replies that are only a persona proposal (what a quote of one says).
+    const proposalOnly = new Set(held.filter((m) => m.proposal && !m.text).map((m) => m.seq));
     const viewOf = (m) =>
-      messageView(m, { alias, meId, pair: direct || agentChat, peerReadSeq: conv.peerReadSeq, now, nameOf, agentId: conv.agentId, keepsOwners });
+      messageView(m, { alias, meId, pair: direct || agentChat, peerReadSeq: conv.peerReadSeq, now, nameOf, agentId: conv.agentId, keepsOwners, proposalAt: (seq) => proposalOnly.has(seq) });
     const messages = held.map(viewOf);
     const win = model.windows?.[conv.id] ?? null;
     const claimed = new Set();

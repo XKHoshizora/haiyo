@@ -1263,7 +1263,7 @@ describe("a new topic", () => {
 describe("the proposal card", () => {
   const LONG = Array.from({ length: 12 }, (_, i) => `第${i + 1}行：你是一位耐心的旅行规划师。`).join("\n");
   const proposed = (status, fields = {}) =>
-    wire(A1, 3, AG1, "我整理了一份设定，请查看并确认。", {
+    wire(A1, 3, AG1, "", {
       proposal: { id: PID, status, persona: "你是一位耐心的旅行规划师。", intro: "帮你规划旅行", field: "旅行", ...fields },
     });
   const card = () => storedLi(3).querySelector(".proposal-card");
@@ -1295,6 +1295,13 @@ describe("the proposal card", () => {
     expect(card().textContent).toContain("你是一位耐心的旅行规划师。");
     expect(storedLi(3).querySelector(".bubble")).toBeNull();
     expect(cardButton("确认")).not.toBeNull();
+  });
+
+  it("a quote of a proposal-only reply, and the chip while replying to one, say [设定提议] instead of nothing", async () => {
+    const only = wire(A1, 3, AG1, "", { proposal: { id: PID, status: "open", persona: "你是一位耐心的旅行规划师。" } });
+    const quoting = wire(A1, 4, ME_ID, "这个好", { replyTo: { seq: 3, visible: true, senderId: AG1, text: "", kind: "text" } });
+    await openAgentChat({ messages: [...BASE, only, quoting] });
+    expect(storedLi(4).querySelector("blockquote").textContent).toContain("[设定提议]");
   });
 
   it("a deleted Agent's open proposal can no longer be decided", async () => {

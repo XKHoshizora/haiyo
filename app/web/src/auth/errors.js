@@ -17,7 +17,13 @@ const MESSAGES = {
 
 export const FALLBACK_MESSAGE = "出了点问题，请稍后再试。";
 
-export const messageFor = (code) => MESSAGES[code] ?? FALLBACK_MESSAGE;
+/** On a site that sends no mail (`GET /api/site`): what would promise a mail says the truth instead. */
+const NO_MAIL_MESSAGES = {
+  email_not_verified: "这个邮箱还没有验证。这个站点不发送邮件，请向管理员索取验证链接。",
+};
+
+/** `code` as a text; `noMail`: the site sends no mail (a text that would promise one says so instead). */
+export const messageFor = (code, noMail = false) => (noMail ? NO_MAIL_MESSAGES[code] : undefined) ?? MESSAGES[code] ?? FALLBACK_MESSAGE;
 
 const FIELDS = {
   invalid_invite: "inviteCode",
@@ -35,4 +41,7 @@ const VERIFY_MESSAGES = {
 };
 export const VERIFY_FALLBACK = "验证链接无效或已被使用。如果还没验证，请直接登录，我们会重新发送一封验证邮件。";
 
-export const verifyMessage = (code) => VERIFY_MESSAGES[code] ?? VERIFY_FALLBACK;
+/** On a site that sends no mail, whatever went wrong with a verification link. */
+export const VERIFY_NO_MAIL = "验证链接已过期或无效。这个站点不发送邮件，请向管理员索取新的验证链接。";
+
+export const verifyMessage = (code, noMail = false) => (noMail ? VERIFY_NO_MAIL : VERIFY_MESSAGES[code] ?? VERIFY_FALLBACK);

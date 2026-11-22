@@ -451,7 +451,7 @@ describe("Agents", () => {
 
 describe("persona proposal cards", () => {
   const P1 = "00000000-0000-4000-8000-0000000000f7";
-  const proposed = (status) => wire(A1, 3, AG1, "我整理了一份设定，请查看并确认。", { proposal: { id: P1, status, persona: "你是小助手。" } });
+  const proposed = (status) => wire(A1, 3, AG1, "", { proposal: { id: P1, status, persona: "你是小助手。" } });
 
   it("applyMessageUpdate replaces a held message, never adds one", () => {
     let s = M.applyMessage(loaded(), proposed("open")).state;

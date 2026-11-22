@@ -347,6 +347,26 @@ describe("forgot and reset password", () => {
     expect(api.requestPasswordReset).toHaveBeenCalledWith({ email: "nobody@x.com" });
   });
 
+  it("on a site that sends no mail: sign-in's not-verified error, a bad verification link and the forgot form's lead promise no mail", async () => {
+    const noMail = { getSite: vi.fn(async () => ({ mailDelivered: false })) };
+    at("/signin");
+    mount(outApi({ ...noMail, signIn: vi.fn(async () => Promise.reject(new ApiError(403, "email_not_verified"))) }));
+    await screen.findByRole("button", { name: "登录" });
+    typeInto("邮箱", "ann@x.com");
+    typeInto("密码", "0123456789");
+    submit("登录");
+    await screen.findByText("这个邮箱还没有验证。这个站点不发送邮件，请向管理员索取验证链接。");
+    cleanup();
+    at("/verify?error=TOKEN_EXPIRED");
+    mount(outApi(noMail));
+    await screen.findByText("验证链接已过期或无效。这个站点不发送邮件，请向管理员索取新的验证链接。");
+    expect(document.body.textContent).not.toContain("重新发送");
+    cleanup();
+    at("/forgot");
+    mount(outApi(noMail));
+    await screen.findByText("输入注册时用的邮箱。这个站点不发送邮件，提交后请向管理员索取重置链接。");
+  });
+
   it("forgot: rate_limited is shown instead", async () => {
     at("/forgot");
     mount(outApi({ requestPasswordReset: vi.fn(async () => Promise.reject(new ApiError(429, "rate_limited"))) }));

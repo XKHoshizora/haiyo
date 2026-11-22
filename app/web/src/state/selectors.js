@@ -1,5 +1,6 @@
 import { ME } from "../data/identities.js";
 import { previewOfMarkdown } from "../ui/markdownPreview.js";
+import { PROPOSAL_ONLY } from "../data/viewmodel.js";
 
 export const entity = (state, id) => state.people[id] || state.agents[id] || null;
 /** Any Agent: mine, or someone else's in a group I am in. */
@@ -73,7 +74,7 @@ export function lastPreview(state, conv) {
   if (last.kind === "image") body = "[图片]";
   if (last.kind === "file") body = "[文件]";
   // A reply that is only a persona proposal has no text of its own.
-  if (last.kind === "text" && last.proposal && !body) body = "[设定提议]";
+  if (last.kind === "text" && last.proposal && !body) body = PROPOSAL_ONLY;
   const group = conv.type === "group";
   if (group && last.from === ME) return `你：${body}`;
   if (group && last.from) return `${senderName(state, last.from)}：${body}`;

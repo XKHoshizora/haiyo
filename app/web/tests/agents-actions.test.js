@@ -45,7 +45,7 @@ const provider = (fields = {}) => ({
   ...fields,
 });
 
-const card = (status) => wire(A1, 3, AG1, "我整理了一份设定，请查看并确认。", { proposal: { id: P1, status, persona: "你是小助手。" } });
+const card = (status) => wire(A1, 3, AG1, "", { proposal: { id: P1, status, persona: "你是小助手。" } });
 
 function agentSync() {
   return syncOf(

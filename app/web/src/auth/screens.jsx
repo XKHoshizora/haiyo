@@ -44,7 +44,7 @@ function AuthCard({ title, lead, children, footer }) {
  * Values, inline errors, a busy flag and a form-level error. `submit(values)` runs once the rules pass;
  * a thrown ApiError is shown on its field (focused) or on the form. Nothing the user typed is ever logged.
  */
-function useAuthForm({ initial, rules: fieldRules, submit }) {
+function useAuthForm({ initial, rules: fieldRules, submit, noMail = false }) {
   const [values, setValues] = useState(initial);
   const [errors, setErrors] = useState({});
   const [formError, setFormError] = useState(null);
@@ -92,10 +92,10 @@ function useAuthForm({ initial, rules: fieldRules, submit }) {
       const code = err?.code;
       const field = fieldOf(code);
       if (field && field in values) {
-        setErrors({ [field]: messageFor(code) });
+        setErrors({ [field]: messageFor(code, noMail) });
         setFocusRequest((n) => n + 1);
       } else {
-        setFormError(messageFor(code));
+        setFormError(messageFor(code, noMail));
       }
     } finally {
       if (alive.current) setBusy(false);
@@ -116,7 +116,7 @@ function useMailDelivered(api) {
   const [delivered, setDelivered] = useState(null);
   useEffect(() => {
     let alive = true;
-    if (typeof api.getSite !== "function") return undefined;
+    if (typeof api?.getSite !== "function") return undefined;
     api.getSite().then(
       (site) => alive && typeof site?.mailDelivered === "boolean" && setDelivered(site.mailDelivered),
       () => {},
@@ -141,7 +141,9 @@ function FormBody({ form, submitLabel, children }) {
 }
 
 export function SignIn({ api, onSignedIn, expired }) {
+  const mailDelivered = useMailDelivered(api);
   const form = useAuthForm({
+    noMail: mailDelivered === false,
     initial: { email: "", password: "" },
     rules: { email: rules.email, password: rules.currentPassword },
     submit: async ({ email, password }) => {
@@ -228,15 +230,16 @@ export function Register({ api }) {
 }
 
 /** Where the verification link ends. `error` is Better Auth's code from the redirect, or empty for success. */
-export function Verify({ error, signedIn }) {
+export function Verify({ api, error, signedIn }) {
   const [code] = useState(error ?? null);
+  const mailDelivered = useMailDelivered(api);
   useEffect(() => {
     navigate("/verify", { replace: true }); // the address keeps no query
   }, []);
   const next = signedIn ? <Link to="/" primary={!code}>进入应用</Link> : <Link to="/signin" primary={!code}>去登录</Link>;
   return (
     <AuthCard title={code ? "邮箱没有验证成功" : "邮箱已验证"} footer={next}>
-      {code ? <Notice tone="warn">{verifyMessage(code)}</Notice> : <Notice tone="ok">邮箱已验证，现在可以登录了。</Notice>}
+      {code ? <Notice tone="warn">{verifyMessage(code, mailDelivered === false)}</Notice> : <Notice tone="ok">邮箱已验证，现在可以登录了。</Notice>}
     </AuthCard>
   );
 }
@@ -267,7 +270,11 @@ export function Forgot({ api }) {
     );
   }
   return (
-    <AuthCard title="忘记密码" lead="输入注册时用的邮箱，我们会发一封重置密码的邮件。" footer={<Link to="/signin">回到登录</Link>}>
+    <AuthCard
+      title="忘记密码"
+      lead={mailDelivered === false ? "输入注册时用的邮箱。这个站点不发送邮件，提交后请向管理员索取重置链接。" : "输入注册时用的邮箱，我们会发一封重置密码的邮件。"}
+      footer={<Link to="/signin">回到登录</Link>}
+    >
       <FormBody form={form} submitLabel="发送重置邮件">
         <Field label="邮箱" error={form.errors.email}>
           <input type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} {...form.bind("email")} />
