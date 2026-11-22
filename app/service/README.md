@@ -3252,8 +3252,11 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
 
 - The system text (`runtime/prompt.ts`), the site's fixed part always first: who the Agent is and whose, the owner's
   name, today's date in `SITE_TIMEZONE`, for a reply offered tools the language it replies in — every sentence in that of
-  the message it answers, the instructions being Chinese no hint to reply in Chinese (`REPLY_LANGUAGE`; never for a reply
-  offered none, whose text is exactly as it was, nor for a reply nobody called for) —, that it has no tools and must not
+  the message it answers, the instructions being Chinese no hint to reply in Chinese (`REPLY_LANGUAGE`, made concrete by `detectLanguage`
+  (`runtime/language.ts`, by script) from the message the run answers — its owner's that triggered it, in a group the
+  mention —: `REPLY_LANGUAGE_FOR`, one sentence naming zh / ja / en, only the code crossing into the text; a message with no
+  language in it keeps the abstract line; never for a reply offered none, whose text is exactly as it was, nor for a
+  reply nobody called for) —, that it has no tools and must not
   claim what it cannot do (a reply offered tools,
   Tools in a reply, is told nothing of tools: that sentence is left out, the tools' definitions speak for themselves; a
   reply offered none has it, word for word as always); then how to write a

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort } from "../src/agents/port-impl.ts";
-import { groupSystemText, HOW_TOLD, NO_NOTES, REPLY_LANGUAGE, systemText } from "../src/agents/runtime/prompt.ts";
+import { groupSystemText, HOW_TOLD, NO_NOTES, REPLY_LANGUAGE, REPLY_LANGUAGE_FOR, systemText } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { createToolbox, SEARCH_WEB } from "../src/agents/tools/index.ts";
 import type { WebEngine, WebResult, WebSearchError } from "../src/agents/tools/web/engine.ts";
@@ -226,7 +226,9 @@ describe("the reply's language and what a group's reply keeps to itself (replies
     expect(await worker.runOnce()).toBe(true);
     const ownCall = gateway.calls.at(-1)!;
     expect((ownCall.tools ?? []).length).toBeGreaterThan(0);
-    expect(ownCall.system).toContain(`\n${REPLY_LANGUAGE}\n`);
+    // The line names the language of the message being answered (lane lang: decided by code), not the abstract rule.
+    expect(ownCall.system).toContain(`\n${REPLY_LANGUAGE_FOR.ja}\n`);
+    expect(ownCall.system).not.toContain(REPLY_LANGUAGE);
     // A reply offered no tools: its text is exactly as it was (lane-rules: a model that cannot use tools replies as today).
     await say(owner, own, "ありがとう");
     gateway.reply("どういたしまして。");
@@ -239,7 +241,7 @@ describe("the reply's language and what a group's reply keeps to itself (replies
     gateway.reply("Sunny.");
     expect(await worker.runOnce()).toBe(true);
     const groupCall = gateway.calls.at(-1)!;
-    expect(groupCall.system).toContain(REPLY_LANGUAGE);
+    expect(groupCall.system).toContain(REPLY_LANGUAGE_FOR.en);
     expect(groupCall.system).toContain(MEASURED);
     expect(groupCall.system).toContain(`就说这些不能透露。${HOW_TOLD}`);
     // It says who someone is as ever; only the way of telling is kept to itself.
