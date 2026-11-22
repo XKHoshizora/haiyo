@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort } from "../src/agents/port-impl.ts";
-import { groupSystemText, HOW_TOLD, NO_NOTES, REPLY_LANGUAGE, systemText } from "../src/agents/runtime/prompt.ts";
+import { groupSystemText, HOW_TOLD, NO_NOTES, REPLY_LANGUAGE, REPLY_LANGUAGE_FOR, systemText } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { createToolbox, SEARCH_WEB } from "../src/agents/tools/index.ts";
 import type { WebEngine, WebResult, WebSearchError } from "../src/agents/tools/web/engine.ts";
@@ -22,11 +22,13 @@ import { closeAllSockets } from "./helpers/ws.ts";
  * and stopped searching; it answered a Japanese question in Chinese; it explained how it tells its owner apart; and a
  * reply that only copied a number someone typed was never posted.
  *
- * The first block is the specification of what history must carry (`it.fails`: it fails today, on the assertion that the
- * earlier reply's turn shows any trace of its tool calls — and only on it: a setup that fails makes the test fail,
- * `settled`). The fix is structural — what a past reply returns as — and goes
- * through a paper design first (prompt2-report.md, "Proposal"); when it lands these become `it`. They are written against
- * no format: only that the tool's name, and a page it was handed, are in that reply's turn.
+ * The first block is the specification of what history must carry. The fix is structural — what a past reply returns as
+ * — and went through a paper design (docs/design/2026-11-24-agent-harness-design.md): its step 1 returns a reply's tool
+ * use in its Agent's own conversation in the provider's own form (a native call; as one of the two most recent replies, the
+ * excerpt its search kept — each page's site, title and snippet — else a placeholder naming sites, never titles; the
+ * acknowledgement after the results), so the own-conversation specifications are tests now, in that form. The group's stays `it.fails` (it fails on
+ * the assertion that the earlier reply's turn shows any trace of its tool calls — and only on it: a setup that fails makes
+ * the test fail, `settled`) until groups get a replay, on their own signal (design §8).
  */
 
 const { app, db } = useApp({ env: METER_ENV, agentWorker: false });
@@ -69,8 +71,9 @@ async function owned(name: string) {
   return { owner, agent, own: agent.conversationId as string };
 }
 
-/** The call's turns as role and texts. */
-const turns = (call: ModelCall) => call.messages.map((t) => [t.role, t.parts.map((p) => (p.type === "text" ? p.text : p.type))] as const);
+/** The call's turns as role and texts (a replayed call or result as its kind and tool). */
+const turns = (call: ModelCall) =>
+  call.messages.map((t) => [t.role, t.parts.map((p) => (p.type === "text" ? p.text : p.type === "tool-call" || p.type === "tool-result" ? `${p.type} ${p.name}` : p.type))] as const);
 /** Everything the call shows in the turn of the Agent's earlier reply (the first assistant turn), joined. */
 const earlierReply = (call: ModelCall): string => (turns(call).find(([role]) => role === "assistant")?.[1] ?? []).join("\n");
 const agentMessages = async (conv: string, agentId: string) =>
@@ -91,8 +94,8 @@ async function settled<T>(setup: () => Promise<T>): Promise<T | null> {
   }
 }
 
-describe("what an earlier reply that looked something up returns as (the false confession; specification, fails today)", () => {
-  it("today: an earlier answer that searched comes back as its acknowledgement and its text alone — no call, no result, no source", async () => {
+describe("what an earlier reply that looked something up returns as (the false confession)", () => {
+  it("an earlier answer that searched comes back as its call, the call's result, then its acknowledgement and its text — no longer an answer citing results with nothing between", async () => {
     const gateway = scriptedGateway();
     const worker = webWorker(gateway, fakeEngine());
     const { owner, own } = await owned("rha");
@@ -103,16 +106,20 @@ describe("what an earlier reply that looked something up returns as (the false c
     gateway.reply("明天也晴。");
     expect(await worker.runOnce()).toBe(true);
     const later = gateway.calls.at(-1)!;
-    // The pattern a model reads as a claim with no evidence: "I'll look it up", then an answer citing results, nothing between.
+    // Before step 1 the pattern a model read as a claim with no evidence: "I'll look it up", then an answer citing results,
+    // nothing between. Now the call and its result stand before them, in the provider's own form (this run's rounds are
+    // `steps`), the acknowledgement heading the answer.
     expect(turns(later)).toEqual([
       ["user", ["北京今天天气怎么样？"]],
+      ["assistant", [`tool-call ${SEARCH_WEB}`]],
+      ["tool", [`tool-result ${SEARCH_WEB}`]],
       ["assistant", ["我查一下。", "根据搜索结果，今天晴，有风。"]],
       ["user", ["那明天呢？"]],
     ]);
     expect(later.steps ?? []).toEqual([]);
   });
 
-  it.fails("its own conversation: the earlier reply's turn shows that it ran the web search and what it was handed", async () => {
+  it("its own conversation: the earlier reply's turns show that it ran the web search and what it was handed — as a recent reply, each page's site, title and snippet (never its address)", async () => {
     const shown = await settled(async () => {
       const gateway = scriptedGateway();
       const worker = webWorker(gateway, fakeEngine());
@@ -124,14 +131,15 @@ describe("what an earlier reply that looked something up returns as (the false c
       gateway.reply("明天也晴。");
       expect(await worker.runOnce()).toBe(true);
       const later = gateway.calls.at(-1)!;
-      expect(later.messages.map((t) => t.role)).toEqual(["user", "assistant", "user"]);
-      return earlierReply(later);
+      expect(later.messages.map((t) => t.role)).toEqual(["user", "assistant", "tool", "assistant", "user"]);
+      // The earlier reply's turns: its call, and the result that stands for what it was handed.
+      return JSON.stringify(later.messages.slice(1, 4));
     });
     if (shown === null) return;
-    expect([shown.includes(SEARCH_WEB), shown.includes("新闻标题2")]).toEqual([true, true]);
+    expect([shown.includes(SEARCH_WEB), shown.includes("news2.example.com"), shown.includes("新闻标题2"), shown.includes("摘要内容2"), shown.includes(RESULTS[1]!.url)]).toEqual([true, true, true, true, false]);
   });
 
-  it.fails("a search that was refused: the reply that then said it could not search comes back with the trace that it tried, that once", async () => {
+  it("a search that was refused: the reply that then said it could not search comes back with the trace that it tried, that once — its query redacted, the tool's own sentence", async () => {
     const shown = await settled(async () => {
       const gateway = scriptedGateway();
       const worker = webWorker(gateway, fakeEngine(() => ({ error: "unavailable" })));
@@ -143,10 +151,13 @@ describe("what an earlier reply that looked something up returns as (the false c
       await say(owner, own, "上海呢？");
       gateway.reply("我再试试。");
       expect(await worker.runOnce()).toBe(true);
-      return earlierReply(gateway.calls.at(-1)!);
+      return gateway.calls.at(-1)!;
     });
     if (shown === null) return;
-    expect(shown).toContain(SEARCH_WEB);
+    const calls = shown.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool-call" ? [[p.name, p.input]] : [])));
+    const results = shown.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool-result" ? [(p.output as { error?: string }).error] : [])));
+    expect([calls, results]).toEqual([[[SEARCH_WEB, { query: "" }]], [WEB_UNAVAILABLE]]);
+    expect(JSON.stringify(shown.messages)).not.toContain(QUERY);
   });
 
   it.fails("in a group: the trace too — but never the search words (a group's reply keeps none)", async () => {
@@ -215,7 +226,9 @@ describe("the reply's language and what a group's reply keeps to itself (replies
     expect(await worker.runOnce()).toBe(true);
     const ownCall = gateway.calls.at(-1)!;
     expect((ownCall.tools ?? []).length).toBeGreaterThan(0);
-    expect(ownCall.system).toContain(`\n${REPLY_LANGUAGE}\n`);
+    // The line names the language of the message being answered (lane lang: decided by code), not the abstract rule.
+    expect(ownCall.system).toContain(`\n${REPLY_LANGUAGE_FOR.ja}\n`);
+    expect(ownCall.system).not.toContain(REPLY_LANGUAGE);
     // A reply offered no tools: its text is exactly as it was (lane-rules: a model that cannot use tools replies as today).
     await say(owner, own, "ありがとう");
     gateway.reply("どういたしまして。");
@@ -228,7 +241,7 @@ describe("the reply's language and what a group's reply keeps to itself (replies
     gateway.reply("Sunny.");
     expect(await worker.runOnce()).toBe(true);
     const groupCall = gateway.calls.at(-1)!;
-    expect(groupCall.system).toContain(REPLY_LANGUAGE);
+    expect(groupCall.system).toContain(REPLY_LANGUAGE_FOR.en);
     expect(groupCall.system).toContain(MEASURED);
     expect(groupCall.system).toContain(`就说这些不能透露。${HOW_TOLD}`);
     // It says who someone is as ever; only the way of telling is kept to itself.

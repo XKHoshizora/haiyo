@@ -35,7 +35,8 @@ describe("schema guarantees enforced by the database", () => {
   }
 
   async function rejectedWith(code: string, sql: string, params: unknown[] = []): Promise<void> {
-    await expect(db.query(sql, params)).rejects.toMatchObject({ code });
+    // `code` may name several (a|b): Postgres 18 reports a delete refused by `on delete restrict` as 23001, earlier versions as 23503.
+    await expect(db.query(sql, params)).rejects.toMatchObject({ code: expect.stringMatching(new RegExp(`^(${code})$`)) });
   }
 
   test("an agent with no owner is rejected", async () => {
@@ -247,7 +248,7 @@ describe("schema guarantees enforced by the database", () => {
     await rejectedWith(UNIQUE_VIOLATION, `insert into reserved_handles (handle, principal_id) values ('old_a', $1)`, [b]);
     for (const bad of ["ab", "OLD_B", "old.b"]) await rejectedWith(CHECK_VIOLATION, `insert into reserved_handles (handle, principal_id) values ($1, $2)`, [bad, b]);
     await rejectedWith(FOREIGN_KEY_VIOLATION, `insert into reserved_handles (handle, principal_id) values ('old_c', gen_random_uuid())`);
-    await rejectedWith(FOREIGN_KEY_VIOLATION, `delete from principals where id = $1`, [a]);
+    await rejectedWith(`${FOREIGN_KEY_VIOLATION}|23001`, `delete from principals where id = $1`, [a]);
   });
 
   test("friendships must be stored with the smaller id first", async () => {

@@ -11,7 +11,7 @@ import type { RunScope } from "../index.ts";
 import type { PlacedCite, RunRefs } from "../refs.ts";
 import type { EngineLog, WebEngine, WebResult, WebSearchError } from "./engine.ts";
 import { fuseMicroUsd, recordSearchCost, type HeldSearch } from "./hold.ts";
-import { WEB_BUSY, WEB_NO_RESULTS, WEB_QUERY_LENGTH, WEB_QUERY_PRIVATE, WEB_REFUSED, WEB_TIMEOUT, WEB_UNAVAILABLE } from "./words.ts";
+import { SEARCH_WEB, WEB_BUSY, WEB_NO_RESULTS, WEB_QUERY_LENGTH, WEB_QUERY_PRIVATE, WEB_REFUSED, WEB_TIMEOUT, WEB_UNAVAILABLE } from "./words.ts";
 
 export * from "./words.ts";
 import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
@@ -33,8 +33,6 @@ import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
  *    minted, then as many as fit `TOOLS.resultMaxWeight`, each numbered (`〔w1〕`) — `{about, results:[{ref, title, date,
  *    snippet}]}`: no address and no site name for the model to copy.
  */
-
-export const SEARCH_WEB = "search_web";
 
 // The fixed sentences the model is answered with (tool results, never the Agent's words): words.ts.
 

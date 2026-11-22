@@ -38,7 +38,8 @@ import {
   type LoadedContext,
   type Speaker,
 } from "./context.ts";
-import { contextBudget, holdsNewest } from "./runtime/context.ts";
+import { maxCallsOf } from "./replay.ts";
+import { contextBudget, holdsNewest, partText } from "./runtime/context.ts";
 import { FINAL_LINE } from "./runtime/loop.ts";
 import { postAsAgent, standingAcknowledgement, type AgentReply } from "./conversation.ts";
 import { namePartCalls } from "./mentions.ts";
@@ -61,6 +62,7 @@ import {
   type ToolOutcome,
   type Usage,
 } from "./runtime/port.ts";
+import { detectLanguage, type ReplyLanguage } from "./runtime/language.ts";
 import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, passageBudget, systemText, systemTokens, type PromptNotes, type SystemText, type ToolsPrompt, type WebPrompt } from "./runtime/prompt.ts";
 import { holdSearch as preHoldSearch, SearchRefused, type HeldSearch, type RefusedBy } from "./tools/web/hold.ts";
 import { fuseLine, WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
@@ -727,6 +729,9 @@ export class DbAgentPort implements AgentPort {
       // says of it then.
       const mayWeb = agent.webSearch;
       let web: WebPrompt | undefined;
+      // The language the message being answered is written in (lane lang), decided once here from that message and handed to
+      // the system text as its code only: set below, for a reply offered tools that answers a call.
+      let replyLanguage: ReplyLanguage | undefined;
       // A run still proactive when it starts (its stored lane: a mention that took it over changed it) is told nobody called it.
       // The system text with the run's mark and, in a group, its roster of who is there with those who spoke: a group's
       // carries both; the Agent's own conversation has neither (it says what to call the owner, if they set that). A reply
@@ -736,8 +741,8 @@ export class DbAgentPort implements AgentPort {
         (mark: string, speakers: readonly Speaker[]): SystemText => {
           const tools: ToolsPrompt = offered && web !== undefined ? { web } : offered;
           const text = scene
-            ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, state.lane === "proactive", notes, told === null ? tools : "told")
-            : systemText(agent, { displayName }, now, agent.persona === "" ? "onboarding" : "normal", config.siteTimezone, notes, tools);
+            ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, state.lane === "proactive", notes, told === null ? tools : "told", replyLanguage)
+            : systemText(agent, { displayName }, now, agent.persona === "" ? "onboarding" : "normal", config.siteTimezone, notes, tools, replyLanguage);
           // A new Agent's first reply greets its owner in its own words (`greets`): the fixed instruction last.
           if (state.greets && !group) return { text: `${text.text}\n\n${GREETING_LINE}`, rest: `${text.rest}\n\n${GREETING_LINE}`, passage: text.passage };
           // What a reply `告诉他们` queued is to tell, after the rest (measured with it: `rest`).
@@ -780,14 +785,30 @@ export class DbAgentPort implements AgentPort {
         told === null && !state.greets && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, mayWeb ? { group, web: true } : { group }) : null;
       if (offer !== null && offer.tools.length === 0) offer = null;
       web = offer?.web;
+      // Only a reply offered tools says its language (`REPLY_LANGUAGE`), and not one nobody called for. The message answered: in
+      // the Agent's own conversation its owner's latest at or before what the run covers; in a group the latest call it answers.
+      if (offer !== null && state.lane !== "proactive") {
+        const answered = await t.query<{ text: string | null }>(
+          group
+            ? "select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2"
+            : "select body ->> 'text' as text from messages where conversation_id = $1 and sender_id = $3 and kind in ('text', 'file') and (body -> 'fixed') is distinct from 'true'::jsonb and seq <= $2 order by seq desc limit 1",
+          group ? [run.conversationId, calls[calls.length - 1] ?? 0] : [run.conversationId, covers, agent.ownerId],
+        );
+        replyLanguage = detectLanguage(answered.rows[0]?.text ?? "") ?? undefined;
+      }
       // A reply offered tools numbers the files its context labels (`[文件 〔f1〕：name]`), so that its file tool can name
       // them and its text cite them (tools/refs.ts) — afresh for each plan, and in a plan only those of the messages it can
       // show (context.ts `loadContext`), past any number someone typed in what it is shown; one offered none is shown them
       // as always. One offered the web search reads `〔w1〕` too (its numbers' letter, refs.ts).
-      /** One plan: offered tools (`numbered`), with numbers made afresh; else with none. */
+      /**
+       * One plan: offered tools (`numbered`), with numbers made afresh — and, in the Agent's own conversation, its earlier
+       * replies' calls to a tool this reply is offered returning with them (`ContextRun.replay`; harness design §3) —; else
+       * with none.
+       */
       const planOf = async (numbered: boolean, reserved: number): Promise<{ loaded: LoadedContext; refs: RunRefs | null }> => {
         const refs = numbered ? new RunRefs({}, web === "offered") : null;
-        return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}) }, resolved, system(refs !== null), this.deps.drawMark), refs };
+        const replay = refs !== null && !group && offer !== null ? { replay: { tools: new Set(offer.tools.map((tool) => tool.name)), timeZone: config.siteTimezone, maxCalls: maxCallsOf(config.tools) } } : {};
+        return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}), ...replay }, resolved, system(refs !== null), this.deps.drawMark), refs };
       };
       const definitions = offer === null ? 0 : estimateTokens(JSON.stringify(offer.tools), planned * TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
       let reserved = definitions;
@@ -869,8 +890,9 @@ export class DbAgentPort implements AgentPort {
       // What admission holds for the input: the most it can cost — its text at its utf-8 bytes, at most what the context
       // leaves beside the output limit (`holdTokens`), images and PDFs at their constants — whatever the model's ratio.
       // Offered tools go with the call too: their definitions are held at their bytes as well, and what providers add
-      // around them.
-      const texts = [loaded.system.text, ...context.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])))];
+      // around them. Every part is held at the bytes of the text the plan weighed it as (`partText`): an earlier reply's
+      // replayed calls and results with the rest, once, and never among the images' and PDFs' constants.
+      const texts = [loaded.system.text, ...context.messages.flatMap((m) => m.parts.flatMap((p) => partText(p) ?? []))];
       const held =
         tools.length === 0
           ? holdTokens(texts, resolved.contextTokens, resolved.call.maxOutputTokens) + context.fixedTokens

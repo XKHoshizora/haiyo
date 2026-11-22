@@ -23,7 +23,7 @@ export const MENTION_LIMIT = 20;
  * looked at a bounded number of times: linear in the text, whatever it holds (long runs of `@`, `.` or word characters
  * included).
  */
-const MENTION = /(?<![A-Za-z0-9_])@([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?/g;
+export const MENTION = /(?<![A-Za-z0-9_])@([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?/g;
 
 /** A typed `@…`: the handle it names, lower-cased, and the code units it takes in the text. */
 export interface Token {
