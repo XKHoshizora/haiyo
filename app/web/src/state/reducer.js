@@ -1,5 +1,5 @@
 // Pure UI navigation and toast. Server-backed state is applied by the data layer (Task 2).
-import { NAV_KEYS, canonicalNav } from "./location.js";
+import { NAV_KEYS, addressOf, canonicalNav, keyOf } from "./location.js";
 
 /**
  * A field to focus on an Agent's page (`agentFocus`, ModelPicker.jsx `openModelChoice`) belongs to the page it was asked
@@ -16,7 +16,8 @@ function keptFocus(before, after, patch) {
  * goes to (a form that ends in what it made, a page that turned out to be gone); otherwise it is a new entry. The intent is recorded with the
  * navigation (`navIntent`) and read by the one history effect (state/appHistory.js): nothing is shared between effects.
  */
-const intentOf = (action) => (action.intent === "none" ? "none" : action.replace === true ? "replace" : "push");
+const intentOf = (action, before, after) =>
+  action.intent === "none" ? "none" : action.replace === true ? "replace" : keyOf(addressOf(before)) === keyOf(addressOf(after)) ? before.navIntent ?? "push" : "push";
 
 /** A page key that does not exist is a mistake in the code: in development and tests it throws, so a key that decides a page cannot slip in without an address. */
 function checkKeys(patch) {
@@ -29,33 +30,35 @@ const keptCreated = (after, patch) => ("providerId" in patch && !("providerCreat
 
 export function reducer(state, action) {
   switch (action.type) {
-    case "nav":
+    case "nav": {
       checkKeys(action.patch);
-      return { ...state, nav: { ...canonicalNav(keptCreated(keptFocus(state.nav, { ...state.nav, ...action.patch }, action.patch), action.patch)), navIntent: intentOf(action) } };
-    case "nav/openConv":
+      // (A move that changes no address — a note, a field to focus, a conversation waited for — keeps the intent of the move before it that has not been written yet:
+      // the two can fall in one commit, and the second must not turn the first one's replace into a push.)
+      const next = canonicalNav(keptCreated(keptFocus(state.nav, { ...state.nav, ...action.patch }, action.patch), action.patch));
+      return { ...state, nav: { ...next, navIntent: intentOf(action, state.nav, next) } };
+    }
+    case "nav/openConv": {
       checkKeys(action.patch);
-      return {
-        ...state,
-        nav: {
-          ...canonicalNav(keptFocus(
-            state.nav,
-            {
-              ...state.nav,
-              section: "chat",
-              convId: action.convId,
-              view: "chat",
-              pane: "main",
-              // (The details panel belongs to the one conversation it was opened in.)
-              detailsOpen: false,
-              // (A message to scroll to belongs to the conversation it was asked for.)
-              focus: state.nav.focus?.convId === action.convId ? state.nav.focus : null,
-              ...(action.patch || {}),
-            },
-            action.patch || {},
-          )),
-          navIntent: intentOf(action),
-        },
-      };
+      const next = canonicalNav(
+        keptFocus(
+          state.nav,
+          {
+            ...state.nav,
+            section: "chat",
+            convId: action.convId,
+            view: "chat",
+            pane: "main",
+            // (The details panel belongs to the one conversation it was opened in.)
+            detailsOpen: false,
+            // (A message to scroll to belongs to the conversation it was asked for.)
+            focus: state.nav.focus?.convId === action.convId ? state.nav.focus : null,
+            ...(action.patch || {}),
+          },
+          action.patch || {},
+        ),
+      );
+      return { ...state, nav: { ...next, navIntent: intentOf(action, state.nav, next) } };
+    }
     case "toast":
       return { ...state, seq: state.seq + 1, toast: { id: state.seq + 1, text: action.text } };
     case "toast/clear":

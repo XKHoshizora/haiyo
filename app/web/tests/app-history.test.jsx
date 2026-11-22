@@ -428,6 +428,15 @@ describe("the page-deciding keys equal their address after every move", () => {
     expect(reducer(state, { type: "nav/openConv", convId: C1, replace: true }).nav.navIntent).toBe("replace");
   });
 
+  it("a move that changes no address keeps the intent of the one before it, so two moves in one commit cannot turn a replace into a push", () => {
+    let state = reducer(initial(), { type: "nav", patch: { section: "agents", pane: "list" } });
+    state = reducer(state, { type: "nav", replace: true, patch: { section: "agents", pane: "main", agentId: AG, agentView: "detail" } });
+    state = reducer(state, { type: "nav", patch: { opening: { convId: C1 } } }); // (a conversation waited for: no address of its own)
+    expect(state.nav.navIntent).toBe("replace");
+    state = reducer(state, { type: "nav/openConv", convId: C1 });
+    expect(state.nav.navIntent).toBe("push"); // (a move to another address is its own: a push)
+  });
+
   it("n2: providerCreated belongs to the page it was set for: another provider page clears it", () => {
     let state = reducer(initial(), { type: "nav", patch: { section: "settings", pane: "main", settingsPage: "providers", providerId: "p1", providerCreated: true } });
     expect(state.nav.providerCreated).toBe(true);
