@@ -23,8 +23,12 @@ import * as WEB_WORDS from "./tools/web/words.ts";
  * (agents/context.ts `loadPage`); never the wire, search, a summary, a review, a group or a log. Pure.
  */
 
-/** The tools whose calls return (step 1): a reply that called any other returns as its text alone. */
-export const REPLAY_TOOLS: readonly string[] = [SEARCH_WEB, SEARCH_MESSAGES, CURRENT_TIME];
+/**
+ * The tools whose calls return (step 1): a reply that called any other returns as its text alone. Read when first asked,
+ * as every table here that names a tool: this module sits in an import cycle with the search tool (tools/search.ts →
+ * context.ts → here), whose names may still be unset while this one loads.
+ */
+export const replayTools = (): readonly string[] => [SEARCH_WEB, SEARCH_MESSAGES, CURRENT_TIME];
 
 /** A stored call's input, as JSON text, weighs at most this (metering/tokens.ts `weight`, escaping counted). */
 export const INPUT_MAX_WEIGHT = 60;
@@ -74,11 +78,8 @@ function refusalSentences(): ReadonlySet<string> {
 }
 
 /** The input keys each tool's stored input keeps, in order (string values only). */
-const INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
-  [SEARCH_WEB]: ["query"],
-  [SEARCH_MESSAGES]: ["query", "from", "before", "after"],
-  [CURRENT_TIME]: [],
-};
+const inputKeys = (name: string): readonly string[] =>
+  name === SEARCH_WEB ? ["query"] : name === SEARCH_MESSAGES ? ["query", "from", "before", "after"] : [];
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isCount = (n: unknown, max: number): n is number => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= max;
@@ -90,7 +91,7 @@ const isCount = (n: unknown, max: number): n is number => Number.isSafeInteger(n
  */
 function keptInput(name: string, input: unknown, refs: RunRefs | null): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const key of INPUT_KEYS[name] ?? []) {
+  for (const key of inputKeys(name)) {
     const value = isRecord(input) ? input[key] : undefined;
     if (typeof value !== "string") continue;
     const clean = cleanText(value);
@@ -111,12 +112,12 @@ function keptInput(name: string, input: unknown, refs: RunRefs | null): Record<s
 /**
  * What a reply keeps of the calls of its answering rounds (`toolCalls`; agents/conversation.ts `postAsAgent`, own
  * conversation only): null — nothing kept, the reply returns as its text — when there were none or any was to a tool that
- * does not return (`REPLAY_TOOLS`: a file read, a name the model made up). A call that ran keeps its input (`keptInput`)
+ * does not return (`replayTools`: a file read, a name the model made up). A call that ran keeps its input (`keptInput`)
  * and what it handed out (a messages search how many messages, a web search its pages' numbers); one refused keeps the
  * sentence it was answered with when that is one of the fixed ones, else `UNUSABLE` — and never an input.
  */
 export function storedToolCalls(trace: readonly ToolTrace[], refs: RunRefs | null): StoredToolCall[] | null {
-  if (trace.length === 0 || trace.length > CALLS_MAX || !trace.every((c) => REPLAY_TOOLS.includes(c.name))) return null;
+  if (trace.length === 0 || trace.length > CALLS_MAX || !trace.every((c) => replayTools().includes(c.name))) return null;
   if (!trace.every((c, i) => Number.isSafeInteger(c.round) && c.round >= 1 && c.round <= ROUNDS_MAX && (i === 0 || c.round >= trace[i - 1]!.round))) return null;
   return trace.map((c): StoredToolCall => {
     if (c.outcome !== "ok") return { name: c.name, round: c.round, outcome: "refused", error: c.said !== undefined && refusalSentences().has(c.said) ? c.said : UNUSABLE };
@@ -128,14 +129,14 @@ export function storedToolCalls(trace: readonly ToolTrace[], refs: RunRefs | nul
 
 /** One stored call read back, or null when it is not one `storedToolCalls` writes. */
 function storedCall(v: unknown): StoredToolCall | null {
-  if (!isRecord(v) || typeof v.name !== "string" || !REPLAY_TOOLS.includes(v.name) || !Number.isSafeInteger(v.round) || (v.round as number) < 1 || (v.round as number) > ROUNDS_MAX) return null;
+  if (!isRecord(v) || typeof v.name !== "string" || !replayTools().includes(v.name) || !Number.isSafeInteger(v.round) || (v.round as number) < 1 || (v.round as number) > ROUNDS_MAX) return null;
   const { name, round } = v as { name: string; round: number };
   if (v.outcome === "refused") {
     if (Object.hasOwn(v, "input") || typeof v.error !== "string" || !refusalSentences().has(v.error)) return null;
     return { name, round, outcome: "refused", error: v.error };
   }
   if (v.outcome !== "ok" || !isRecord(v.input)) return null;
-  const keys = INPUT_KEYS[name]!;
+  const keys = inputKeys(name);
   const input: Record<string, string> = {};
   for (const [key, value] of Object.entries(v.input)) {
     if (!keys.includes(key) || typeof value !== "string") return null;

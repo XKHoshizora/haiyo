@@ -38,7 +38,7 @@ import {
   type LoadedContext,
   type Speaker,
 } from "./context.ts";
-import { contextBudget, holdsNewest } from "./runtime/context.ts";
+import { contextBudget, holdsNewest, partText } from "./runtime/context.ts";
 import { FINAL_LINE } from "./runtime/loop.ts";
 import { postAsAgent, standingAcknowledgement, type AgentReply } from "./conversation.ts";
 import { namePartCalls } from "./mentions.ts";
@@ -784,10 +784,15 @@ export class DbAgentPort implements AgentPort {
       // them and its text cite them (tools/refs.ts) — afresh for each plan, and in a plan only those of the messages it can
       // show (context.ts `loadContext`), past any number someone typed in what it is shown; one offered none is shown them
       // as always. One offered the web search reads `〔w1〕` too (its numbers' letter, refs.ts).
-      /** One plan: offered tools (`numbered`), with numbers made afresh; else with none. */
+      /**
+       * One plan: offered tools (`numbered`), with numbers made afresh — and, in the Agent's own conversation, its earlier
+       * replies' calls to a tool this reply is offered returning with them (`ContextRun.replay`; harness design §3) —; else
+       * with none.
+       */
       const planOf = async (numbered: boolean, reserved: number): Promise<{ loaded: LoadedContext; refs: RunRefs | null }> => {
         const refs = numbered ? new RunRefs({}, web === "offered") : null;
-        return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}) }, resolved, system(refs !== null), this.deps.drawMark), refs };
+        const replay = refs !== null && !group && offer !== null ? { replay: { tools: new Set(offer.tools.map((tool) => tool.name)), timeZone: config.siteTimezone } } : {};
+        return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}), ...replay }, resolved, system(refs !== null), this.deps.drawMark), refs };
       };
       const definitions = offer === null ? 0 : estimateTokens(JSON.stringify(offer.tools), planned * TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
       let reserved = definitions;
@@ -869,8 +874,9 @@ export class DbAgentPort implements AgentPort {
       // What admission holds for the input: the most it can cost — its text at its utf-8 bytes, at most what the context
       // leaves beside the output limit (`holdTokens`), images and PDFs at their constants — whatever the model's ratio.
       // Offered tools go with the call too: their definitions are held at their bytes as well, and what providers add
-      // around them.
-      const texts = [loaded.system.text, ...context.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])))];
+      // around them. Every part is held at the bytes of the text the plan weighed it as (`partText`): an earlier reply's
+      // replayed calls and results with the rest, once, and never among the images' and PDFs' constants.
+      const texts = [loaded.system.text, ...context.messages.flatMap((m) => m.parts.flatMap((p) => partText(p) ?? []))];
       const held =
         tools.length === 0
           ? holdTokens(texts, resolved.contextTokens, resolved.call.maxOutputTokens) + context.fixedTokens

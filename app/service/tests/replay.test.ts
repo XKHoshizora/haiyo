@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INPUT_MAX_WEIGHT,
   MESSAGES_NOTE,
-  REPLAY_TOOLS,
+  replayTools,
   RESULT_MAX_WEIGHT,
   replayId,
   replayOf,
@@ -31,7 +31,7 @@ import { estimateTokens, TOOL_TEXT_FACTOR, weight } from "../src/metering/tokens
  */
 
 const DAY = "2026-11-22";
-const ALL = new Set(REPLAY_TOOLS);
+const ALL = new Set(replayTools());
 const sources = (hosts: string[]) => hosts.map((h, i) => ({ n: i + 1, url: `https://${h}/page/${i + 1}`, title: `标题${i + 1}` }));
 const web = (query: string, pages: number[], round = 1): ToolTrace => ({ name: SEARCH_WEB, round, outcome: "ok", input: { query }, pages });
 const refused = (said: string, name = SEARCH_WEB, round = 1): ToolTrace => ({ name, round, outcome: "refused", said });

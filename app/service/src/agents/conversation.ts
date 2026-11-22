@@ -13,7 +13,8 @@ import { MESSAGE_TEXT_MAX } from "../messages/send.ts";
 import { cleanModelText, hasVisibleText } from "../schemas.ts";
 import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
 import { parseProposalBlock, storeProposal } from "./persona.ts";
-import { RunNotRunning } from "./runtime/port.ts";
+import { storedToolCalls } from "./replay.ts";
+import { RunNotRunning, type ToolTrace } from "./runtime/port.ts";
 import { withoutMarkPlaced } from "./runtime/prompt.ts";
 import {
   callerOf,
@@ -201,6 +202,11 @@ export interface AgentReply extends LookupFields {
    * (`takeCites`). Absent: none was offered, and what it says is stored as written.
    */
   refs?: RunRefs | null;
+  /**
+   * The calls of the rounds its answer was written with (runtime/port.ts `Reply.toolCalls`): kept beside it as
+   * `toolCalls`, as agents/replay.ts `storedToolCalls` keeps them, in the Agent's own conversation only.
+   */
+  toolCalls?: readonly ToolTrace[];
 }
 
 /**
@@ -403,6 +409,11 @@ export async function postAsAgent(
   if (found.length > 0) body.found = found;
   const queries = own ? queriesOf(searched) : [];
   if (queries.length > 0) body.queries = queries;
+  // The calls of the rounds its answer was written with (harness design §3): in its own conversation only, where a later
+  // reply offered those tools is shown them (agents/replay.ts); never in a group. Read by that context alone
+  // (`CONTEXT_ONLY_KEYS`): never sent, searched or summarised.
+  const toolCalls = own && reply.toolCalls ? storedToolCalls(reply.toolCalls, refs) : null;
+  if (toolCalls !== null) body.toolCalls = toolCalls;
   // Who its mentions mean, read once, now, from the text it stores (Task M: a model's text is typed text), and stored with
   // it: what it calls below, and everything after, reads that.
   const read = await mentionsAtSend(t, { id: conversationId, type: own ? "agent" : "group" }, text);

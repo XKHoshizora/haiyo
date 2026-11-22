@@ -22,10 +22,13 @@ import {
   type RunTicket,
   type ToolOutcome,
   type ToolRun,
+  type ToolTrace,
   type Usage,
 } from "./port.ts";
+import { partText } from "./context.ts";
 import { ReplyStream } from "./stream.ts";
 import { fileNumber } from "../tools/refs.ts";
+import { CLOSE, OPEN, tokenRef } from "../tools/tokens.ts";
 import { queryForm } from "../tools/web/text.ts";
 
 /**
@@ -202,6 +205,27 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
       (e: unknown) => (signal.removeEventListener("abort", onAbort), reject(e)),
     );
   });
+}
+
+/**
+ * The numbers of the web pages a web search's output handed out (`〔w3〕` is 3), in order: what its trace keeps
+ * (`ToolTrace.pages`), read from the results' `ref`s (tools/web/tool.ts), before the output is cut for the model.
+ */
+function pagesOf(output: unknown): number[] {
+  const results = typeof output === "object" && output !== null ? (output as { results?: unknown }).results : undefined;
+  if (!Array.isArray(results)) return [];
+  return results.flatMap((r): number[] => {
+    const ref = typeof r === "object" && r !== null ? (r as { ref?: unknown }).ref : undefined;
+    if (typeof ref !== "string" || !ref.startsWith(OPEN) || !ref.endsWith(CLOSE)) return [];
+    const n = tokenRef(ref.slice(OPEN.length, -CLOSE.length), true);
+    return n !== null && n.startsWith("w") ? [Number(n.slice(1))] : [];
+  });
+}
+
+/** What a call the loop or its tool did not run was answered with: the sentence of its `{error}` or `{note}`, else `UNUSABLE`. */
+function sentenceOf(output: unknown): string {
+  const o = typeof output === "object" && output !== null ? (output as { error?: unknown; note?: unknown }) : {};
+  return typeof o.error === "string" ? o.error : typeof o.note === "string" ? o.note : UNUSABLE;
 }
 
 /** What goes between two rounds' text (or reasoning) in a reply: a paragraph break after visible text, none at its start. */
@@ -426,7 +450,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
    * The end of a reply once its model has stopped — after its one call, or the last round of several (`last`): what it
    * said is posted, with what its tools looked up (`looked`; nothing for a reply offered none), or the run fails, and it
    * is settled on `usage`, else `fallback` (`failedFallback` when the run fails). `noAnswer`: how a reply that said
-   * nothing fails when it did not fail otherwise.
+   * nothing fails when it did not fail otherwise. `trace`: the calls of the rounds its answer was written with
+   * (`Reply.toolCalls`), handed over only with an answer — never with what a stop or a time-out left.
    */
   async function conclude(
     run: RunTicket,
@@ -437,6 +462,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     failedFallback: Estimated,
     noAnswer: RunEnd = UNAVAILABLE,
     looked: LookupFields = {},
+    trace: readonly ToolTrace[] = [],
   ): Promise<void> {
     const { finished, failure, why } = last;
     // The service is closing: nothing is posted, and the run is ended here as recovery would end it (no charge).
@@ -472,7 +498,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — passing only when the
     // reply's time ran out before anything came; an answer that finished with nothing in it is the provider's answer.
     if (!said) return failed(noAnswer === UNAVAILABLE ? failedEnd("provider_unavailable", finished === null ? { kind: "timeout", progress: last.progress === true } : { kind: "nothing" }) : noAnswer);
-    const posted = await post(run, { text, reasoning, stopped: false, truncated: finished === null || finished.truncated, ...looked });
+    const toolCalls = finished !== null && trace.length > 0 ? { toolCalls: trace } : {};
+    const posted = await post(run, { text, reasoning, stopped: false, truncated: finished === null || finished.truncated, ...looked, ...toolCalls });
     // All it said was inside a persona block that a limit cut off (in a group, also: it only thought, or said only the
     // mark and labels): as an answer that said nothing.
     if (posted === "empty") return failed(noAnswer);
@@ -564,7 +591,9 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     const ordinary: Omit<ModelCall, "signal"> = systemWithoutTools === undefined ? withTools : { ...withTools, system: systemWithoutTools };
     const offered = new Map(tools.map((t) => [t.name, t]));
     const toolsText = JSON.stringify(tools);
-    const texts = prepared.call.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])));
+    // Every text the call sends, an earlier reply's replayed calls and results included, as the plan weighs them
+    // (`partText`): what each hold below counts at its bytes.
+    const texts = prepared.call.messages.flatMap((m) => m.parts.flatMap((p) => partText(p) ?? []));
     /** What the tools' text — definitions, steps, results — is planned at: the plan's ratio times `TOOL_TEXT_FACTOR`. */
     const toolRatio = bounds.planRatio * TOOL_TEXT_FACTOR;
     const room = bounds.limit - bounds.planned - estimateTokens(toolsText, toolRatio) - estimateTokens(`\n\n${FINAL_LINE}`, bounds.planRatio) - TOOL_PREAMBLE_TOKENS;
@@ -583,6 +612,10 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     const out = new ReplyStream((delta) => port.emit(run, delta), undefined, web ? "web" : true);
     const meter = new Meter();
     const steps: Array<{ assistant: unknown; results: ToolResult[] }> = [];
+    /** Each step's calls as they were answered (`ToolTrace`), step for step. */
+    const traces: ToolTrace[][] = [];
+    /** The calls of the steps the request that wrote the answer carried: set only when that round finished. */
+    let trace: readonly ToolTrace[] = [];
     let stepsTokens = 0;
     const tally = { rounds: 0, calls: 0, ran: 0, repeats: 0, over: 0, garbled: 0, failed: 0, plain: false };
     let final = false;
@@ -635,6 +668,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
             tools,
             ...(steps.length > 0 ? { steps: [...steps] } : {}),
           };
+      // How many steps this request carries: the plain call none.
+      const carried = plain ? 0 : steps.length;
       const said = { text: "", reasoning: "" };
       const gap = { text: gapAfter(out.text), reasoning: gapAfter(out.reasoning) };
       const round = await call(
@@ -688,9 +723,11 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         ending = { last: round };
         break;
       }
-      // An answer; or the last round, whose tool calls are not run.
+      // An answer; or the last round, whose tool calls are not run. Its request carried `carried` steps: their calls are
+      // what the answer was written with (harness design §3).
       if (final || plain || finished.toolCalls.length === 0) {
         ending = { last: round };
+        trace = traces.slice(0, carried).flat();
         break;
       }
       // Work follows: what the reply said before it, when it shows anything, is posted at once as its acknowledgement —
@@ -701,6 +738,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       guard.roundDone();
       tally.rounds++;
       const results: ToolResult[] = [];
+      const roundTrace: ToolTrace[] = [];
       let left = room - stepsTokens - estimateTokens(JSON.stringify({ assistant: finished.assistant, results: [] }), toolRatio);
       let cut: Interruption | null = null;
       for (const toolCall of finished.toolCalls) {
@@ -709,6 +747,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         tally.calls++;
         const spec = toolCall.input === null ? undefined : offered.get(toolCall.name);
         let output: unknown;
+        /** The call as its trace keeps it when it ran and answered with something usable; else it was refused. */
+        let traced: ToolTrace | null = null;
         if (finished.truncated || spec === undefined || !fitsSchema(toolCall.input, spec.parameters)) {
           tally.garbled++;
           output = { error: UNUSABLE };
@@ -743,7 +783,17 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
               try {
                 output = cutResult(ran.outcome.output, Math.min(limits.resultMaxWeight, weightWithin(Math.max(0, left - framing), toolRatio)));
                 // It ran and answered with something usable: what it looked up is the reply's. Its own refusal is not.
-                if (!isRefusal(ran.outcome.output)) looked.ran(kind, ran.outcome);
+                if (!isRefusal(ran.outcome.output)) {
+                  looked.ran(kind, ran.outcome);
+                  traced = {
+                    name: toolCall.name,
+                    round: tally.rounds,
+                    outcome: "ok",
+                    input: toolCall.input,
+                    ...(kind === "search" ? { found: ran.outcome.found?.length ?? 0 } : {}),
+                    ...(kind === "web" ? { pages: pagesOf(ran.outcome.output) } : {}),
+                  };
+                }
               } catch {
                 // Not JSON (a port's bug): nothing of it goes to the model.
                 tally.failed++;
@@ -754,6 +804,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         }
         const result: ToolResult = { id: toolCall.id, name: toolCall.name, output };
         results.push(result);
+        // Refused (the tool's refusal, the loop's note, garbled, failed): the sentence it got, never its input.
+        roundTrace.push(traced ?? { name: toolCall.name, round: tally.rounds, outcome: "refused", said: sentenceOf(output) });
         left -= estimateTokens(JSON.stringify(result), toolRatio);
       }
       if (cut !== null) {
@@ -762,6 +814,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       }
       const step = { assistant: finished.assistant, results };
       steps.push(step);
+      traces.push(roundTrace);
       // A tool round has completed: the reply has done something.
       progress = true;
       stepsTokens += estimateTokens(JSON.stringify(step), toolRatio);
@@ -789,7 +842,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     quiet();
     log.info({ metric: "tool_rounds", runId: run.id, ...tally, final }, "agent run: its tool rounds");
     const estimate = meter.estimated();
-    return conclude(run, out, { ...ending.last, progress }, meter.usage(), estimate, estimate, ending.noAnswer, looked.fields());
+    return conclude(run, out, { ...ending.last, progress }, meter.usage(), estimate, estimate, ending.noAnswer, looked.fields(), trace);
   }
 
   function track(run: RunTicket): Promise<void> {

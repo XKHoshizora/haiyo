@@ -271,7 +271,8 @@ describe("a reply that offers tools", () => {
     expect(second.tools).toEqual(TOOLS);
     expect(second).not.toHaveProperty("toolChoice");
     expect(resultsOf(second, 0)).toEqual([{ id: fake.tools[0]!.id, name: "search", output: { hits: [{ query: "川菜" }] } }]);
-    expect(fake.posted).toEqual([{ text: "去吃川菜吧。", reasoning: "", stopped: false, truncated: false, lookups: { search: 1 } }]);
+    // With its trace: the call of the round its answer was written with (harness design §3).
+    expect(fake.posted).toEqual([{ text: "去吃川菜吧。", reasoning: "", stopped: false, truncated: false, lookups: { search: 1 }, toolCalls: [{ name: "search", round: 1, outcome: "ok", input: { query: "川菜" }, found: 0 }] }]);
     // One settlement, on the rounds' summed usage.
     expect(fake.finished).toEqual([{ end: { status: "done" }, usage: U(700, 50), fallback: expect.any(Object) }]);
     // The port was asked about money once, between the rounds, with what the first round cost.
@@ -290,7 +291,7 @@ describe("a reply that offers tools", () => {
     await runOn(fake, gateway);
     expect(fake.order).toEqual(["ack", "tool", "post"]);
     expect(fake.acks).toEqual([{ text: "我先查一下。", reasoning: "要查记录。" }]);
-    expect(fake.posted).toEqual([{ text: "查到了：去吃川菜。", reasoning: "找到了。", stopped: false, truncated: false, lookups: { search: 1 } }]);
+    expect(fake.posted).toEqual([{ text: "查到了：去吃川菜。", reasoning: "找到了。", stopped: false, truncated: false, lookups: { search: 1 }, toolCalls: [{ name: "search", round: 1, outcome: "ok", input: { query: "川菜" }, found: 0 }] }]);
     // The stream: what the acknowledgement said, then the answer, with no paragraph break carried over.
     expect(fake.deltas.map((d) => d.text ?? "").join("")).toBe("我先查一下。查到了：去吃川菜。");
     expect(finishedAs(fake)).toEqual([{ status: "done" }]);
@@ -918,7 +919,10 @@ describe("what a reply's tools are doing, and what it looked up", () => {
     await runOn(fake, gateway);
     expect(fake.tools).toHaveLength(2);
     expect(fake.activities).toEqual(["search", null]);
-    expect(fake.posted).toStrictEqual([{ text: "好了。", reasoning: "", stopped: false, truncated: false, lookups: { search: 1 } }]);
+    // Its trace keeps both calls as they ran (what returns is the store's to decide, agents/replay.ts).
+    expect(fake.posted).toStrictEqual([
+      { text: "好了。", reasoning: "", stopped: false, truncated: false, lookups: { search: 1 }, toolCalls: [{ name: "search", round: 1, outcome: "ok", input: { query: "a" }, found: 0 }, { name: "read_file", round: 1, outcome: "ok", input: { name: "菜单.txt" } }] },
+    ]);
   });
 
   it("a tool's own refusal (its output an `{ error }`: it timed out, the query was too short, the file cannot be read) is not counted, and nothing it found or searched for is kept", async () => {
@@ -938,8 +942,20 @@ describe("what a reply's tools are doing, and what it looked up", () => {
     await runOn(fake, gateway);
     // The model is sent each refusal as it is.
     expect(outputsOf(gateway.calls[1]!, 0)).toEqual([{ error: "这次查找超时了。" }, { error: "这种文件不是文本，读不了内容。" }]);
-    // The reply looked nothing up: no key about it, as a reply whose tools ran none.
-    expect(fake.posted).toStrictEqual([{ text: "没查成。", reasoning: "", stopped: false, truncated: false }]);
+    // The reply looked nothing up: no key about it, as a reply whose tools ran none. Its trace says each was refused, with
+    // the sentence it got and nothing of its input.
+    expect(fake.posted).toStrictEqual([
+      {
+        text: "没查成。",
+        reasoning: "",
+        stopped: false,
+        truncated: false,
+        toolCalls: [
+          { name: "search", round: 1, outcome: "refused", said: "这次查找超时了。" },
+          { name: "read_file", round: 1, outcome: "refused", said: "这种文件不是文本，读不了内容。" },
+        ],
+      },
+    ]);
   });
 
   it("the reply carries what was looked up: per kind the tools that ran; what they found, in order, without repeats, the first 20; the first 6 search words, each cut to 60 weight", async () => {
@@ -982,10 +998,10 @@ describe("what a reply's tools are doing, and what it looked up", () => {
     const blank = scriptedGateway().callTools([{ name: "search", input: { query: "  " } }]).reply("好。");
     const quiet = fakePort({ tool: async (call) => ({ output: {}, query: (call.input as { query: string }).query }) });
     await runOn(quiet, blank);
-    expect(quiet.posted).toEqual([{ text: "好。", reasoning: "", stopped: false, truncated: false, lookups: { search: 1 } }]);
+    expect(quiet.posted).toEqual([{ text: "好。", reasoning: "", stopped: false, truncated: false, lookups: { search: 1 }, toolCalls: [{ name: "search", round: 1, outcome: "ok", input: { query: "  " }, found: 0 }] }]);
   });
 
-  it("a reply whose tools ran none posts exactly what a reply offered none posts: no key about lookups", async () => {
+  it("a reply whose tools ran none posts exactly what a reply offered none posts: no key about lookups (only its trace, each call refused)", async () => {
     const gateway = scriptedGateway()
       .callTools([{ name: "web_search", input: { query: "川菜" } }])
       .callTools([{ name: "search", input: { limit: 3 } }])
@@ -993,7 +1009,18 @@ describe("what a reply's tools are doing, and what it looked up", () => {
     const fake = fakePort();
     await runOn(fake, gateway);
     expect(fake.tools).toEqual([]);
-    expect(fake.posted).toEqual([{ text: "不用工具也能回答。", reasoning: "", stopped: false, truncated: false }]);
+    expect(fake.posted).toEqual([
+      {
+        text: "不用工具也能回答。",
+        reasoning: "",
+        stopped: false,
+        truncated: false,
+        toolCalls: [
+          { name: "web_search", round: 1, outcome: "refused", said: UNUSABLE },
+          { name: "search", round: 2, outcome: "refused", said: UNUSABLE },
+        ],
+      },
+    ]);
     expect(fake.activities).toEqual([]);
   });
 
@@ -1109,5 +1136,113 @@ describe("the service closing mid-call: the release passes on whether the reply 
     // per piece and not per round.
     expect([state, fake.progressed]).toEqual([state, state === "thought only" || state === "text streamed" || state === "acknowledged" ? 1 : 0]);
     expect(gateway.pending()).toBe(0);
+  });
+});
+
+describe("what a reply that ends as an answer hands over of its rounds (Reply.toolCalls; harness design §3)", () => {
+  const WEB: ToolSpec = { name: "search_web", description: "Search the web.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false } };
+  const WEB_KINDS = { search: "search" as const, read_file: "file" as const, search_web: "web" as const };
+  const toolCallsOf = (fake: Fake) => fake.posted.map((p) => p.toolCalls);
+
+  it("an answer after rounds: every call of the rounds its request carried, in order, each as it was answered — ran with its input and what it handed out, or refused with the sentence it got and no input", async () => {
+    const gateway = scriptedGateway()
+      .callTools(
+        [
+          { name: "search", input: { query: "川菜" } },
+          { name: "search", input: { query: "川菜" } },
+          { name: "search_web", input: { query: "成都 川菜 推荐" } },
+        ],
+        { text: "我查一下。" },
+      )
+      .callTools([
+        { name: "search", input: { query: "短" } },
+        { name: "search", input: { query: "boom" } },
+        { name: "search", input: { query: "第三次" } },
+        { name: "nope", input: { query: "私事" } },
+      ])
+      .reply("好了。");
+    const fake = fakePort({
+      tools: [SEARCH, READ, WEB],
+      perTool: { search: 3 },
+      toolRun: { kinds: WEB_KINDS },
+      tool: async (call) => {
+        const q = (call.input as { query: string }).query;
+        if (call.name === "search_web") return { output: { about: "资料", results: [{ ref: "〔w1〕", title: "a" }, { ref: "〔w2〕", title: "b" }] }, query: q };
+        if (q === "短") return { output: { error: "要查的词至少要两个字。" } };
+        if (q === "boom") throw new Error("the database is down");
+        return { output: { hits: [call.input] }, found: [{ conversationId: "c", seq: 1 }, { conversationId: "c", seq: 2 }], query: q };
+      },
+    });
+    await runOn(fake, gateway);
+    expect(toolCallsOf(fake)).toEqual([
+      [
+        { name: "search", round: 1, outcome: "ok", input: { query: "川菜" }, found: 2 },
+        { name: "search", round: 1, outcome: "refused", said: REPEATED },
+        { name: "search_web", round: 1, outcome: "ok", input: { query: "成都 川菜 推荐" }, pages: [1, 2] },
+        { name: "search", round: 2, outcome: "refused", said: "要查的词至少要两个字。" },
+        { name: "search", round: 2, outcome: "refused", said: UNUSABLE },
+        { name: "search", round: 2, outcome: "refused", said: OVER_CAP },
+        { name: "nope", round: 2, outcome: "refused", said: UNUSABLE },
+      ],
+    ]);
+    expect(JSON.stringify(fake.posted)).not.toContain("私事");
+  });
+
+  it("the last round's calls are not run and are not in it; an answer cut at its output limit keeps the rounds (its round finished)", async () => {
+    const final = scriptedGateway()
+      .callTools([{ name: "search", input: { query: "a" } }])
+      .callTools([{ name: "search", input: { query: "b" } }], { text: "就这样。" });
+    const last = fakePort();
+    await runOn(last, final, { tools: { maxRounds: 1 } });
+    expect(toolCallsOf(last)).toEqual([[{ name: "search", round: 1, outcome: "ok", input: { query: "a" }, found: 0 }]]);
+    const cut = scriptedGateway().callTools([{ name: "search", input: { query: "a" } }]).reply("说到一半", { truncated: true });
+    const atLimit = fakePort();
+    await runOn(atLimit, cut);
+    expect(atLimit.posted.map((p) => [p.truncated, p.toolCalls?.length])).toEqual([[true, 1]]);
+  });
+
+  it("none: no round, tools refused, the plain call after a later round's 400, the owner's stop, the reply's time, extend's stop or busy — what was written is posted with no trace", async () => {
+    const cases: Array<[string, ScriptedGateway, FakeOptions, { tools?: Partial<ToolLimits> }]> = [
+      ["no round", scriptedGateway().reply("直接回答。"), {}, {}],
+      ["tools refused", scriptedGateway().refuseTools("没有工具也能回答。"), {}, {}],
+      ["plain", scriptedGateway().callTools([{ name: "search", input: { query: "a" } }]).fail("provider_unavailable", { status: 400 }).reply("不查也能说。"), {}, {}],
+      ["stop", scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" }), { acknowledge: async () => "refused", extend: (_n, f) => (f.stop(), "ok") }, {}],
+      [
+        "time",
+        scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" }),
+        { acknowledge: async () => "refused", extend: () => new Promise((resolve) => setTimeout(() => resolve("ok"), 1_200)) },
+        { tools: { runTimeoutMs: 1_000 } },
+      ],
+      ["extend stop", scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" }), { acknowledge: async () => "refused", extend: () => "stop" }, {}],
+      [
+        "extend busy",
+        scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" }),
+        { acknowledge: async () => "refused", extend: () => Promise.reject(new Error("the database is down")) },
+        {},
+      ],
+    ];
+    for (const [label, gateway, options, over] of cases) {
+      const fake = fakePort(options);
+      await runOn(fake, gateway, over);
+      expect([label, fake.posted.length, fake.posted.map((p) => p.toolCalls)]).toEqual([label, 1, [undefined]]);
+    }
+  });
+
+  it("an upstream that refused a request carrying earlier tool use (replay_lowered): counted by protocol, nothing else logged of it, the reply goes on", async () => {
+    const inner = scriptedGateway().reply("好。");
+    const gateway: Pick<ModelGateway, "stream"> = {
+      stream: (call) =>
+        (async function* (): AsyncGenerator<ModelEvent> {
+          yield { type: "replay_lowered" };
+          yield* inner.stream(call);
+        })(),
+    };
+    const fake = fakePort();
+    const log = recordingLog();
+    await runOn(fake, gateway, { log });
+    expect(log.lines.filter((l) => (l as { details: { metric?: string } }).details.metric === "replay_lowered")).toEqual([
+      { level: "info", details: { metric: "replay_lowered", protocol: "openai_chat" }, msg: expect.any(String) },
+    ]);
+    expect([fake.posted.map((p) => p.text), finishedAs(fake), fake.unusable]).toEqual([["好。"], [{ status: "done" }], []]);
   });
 });

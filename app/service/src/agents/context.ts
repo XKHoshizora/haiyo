@@ -30,8 +30,12 @@ import {
 import type { AgentRow } from "./store.ts";
 import type { RunRefs } from "./tools/refs.ts";
 import { baseOf, countPlaced, readSummary, shownSummary, stayOf, type PlacedReader, type Summary } from "./summary/store.ts";
+import { replayOf } from "./replay.ts";
+import { siteDateTime } from "./tools/clock.ts";
+import { hasVisibleText } from "../schemas.ts";
 import {
   attachmentLabel,
+  partText,
   ContextPlan,
   contextBudget,
   entryText,
@@ -115,6 +119,13 @@ export interface ContextRun {
    * reads them. Absent: labels carry none.
    */
   refs?: RunRefs;
+  /**
+   * A reply in the Agent's own conversation offered tools (port-impl.ts `begin`): an earlier reply of the Agent's there
+   * that kept its calls (`toolCalls`, agents/replay.ts) returns with them (`ContextEntry.replay`) when every one is to a
+   * tool in `tools` — the names this request offers — its placeholders dated in `timeZone` (the site's). Absent (a group, a
+   * reply offered none, every other reader): every reply returns as its text alone.
+   */
+  replay?: { tools: ReadonlySet<string>; timeZone: string };
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
   upTo?: number;
   /**
@@ -398,6 +409,15 @@ interface MessageRow {
   proposal_persona: string | null;
   proposal_intro: string | null;
   proposal_field: string | null;
+  /**
+   * Only for a run with `ContextRun.replay`, and only of the Agent's own messages: what its replay is built from — the
+   * message's id, when it was posted, and its body's `toolCalls`, `webSources` and `webCites` as stored. Null otherwise.
+   */
+  message_id: string | null;
+  created_at: Date | null;
+  tool_calls: unknown;
+  web_sources: unknown;
+  web_cites: unknown;
 }
 
 /** A label's number, when there is one (none past the largest a token holds: refs.ts `MAX_NUMBER`). */
@@ -440,6 +460,9 @@ const inGroupNow = (ms: string): string =>
  * one at or before `from` as its text only (no attachment: it is not read). Every text is shown as it is stored:
  * none holds a citation (README "Agents and runs", Citations), and one that looks like one is what someone wrote (or an
  * Agent's reply that was nothing else, conversation.ts `postAsAgent`: read for its numbers as any, `RunRefs.plant`).
+ * With `run.replay` (its own conversation, a reply offered tools), a reply of the Agent's that kept its calls returns
+ * with them (agents/replay.ts `replayOf`: each call and a placeholder of stored facts, never what was found) when this
+ * request offers every tool they call; anything else of a body — or a body read for anyone else — is never read here.
  * `more`: as many as `limit` (there may be older ones).
  */
 async function loadPage(
@@ -456,7 +479,12 @@ async function loadPage(
                                      where sm.conversation_id = m.conversation_id and sm.principal_id = m.sender_id and ${inGroupNow("sm")}) as sender_present,
             m.body ->> 'text' as text, case when m.seq > $3 then m.body -> 'attachment' end as attachment,
             m.body -> 'replyToSeq' as reply_to, r.covers_seq::text as answers, ${notAcknowledgement("m")} as placed,
-            pp.persona as proposal_persona, pp.intro as proposal_intro, pp.field as proposal_field
+            pp.persona as proposal_persona, pp.intro as proposal_intro, pp.field as proposal_field,
+            case when $11::boolean and m.sender_id = $1 then m.id::text end as message_id,
+            case when $11::boolean and m.sender_id = $1 then m.created_at end as created_at,
+            case when $11::boolean and m.sender_id = $1 then m.body -> 'toolCalls' end as tool_calls,
+            case when $11::boolean and m.sender_id = $1 then m.body -> 'webSources' end as web_sources,
+            case when $11::boolean and m.sender_id = $1 then m.body -> 'webCites' end as web_cites
        from messages m ${VISIBLE_JOIN}
        join principals sp on sp.id = m.sender_id
        left join agent_runs r on m.sender_id = $1 and ${postingRun("m", "r")}
@@ -468,7 +496,7 @@ async function loadPage(
         and ($10::bigint is null or m.seq <= $10::bigint)
       order by m.seq desc
       limit $7`,
-    [run.agentId, run.conversationId, from, before, run.coversSeq, run.ownerId, limit, group, run.group?.calls ?? [], run.upTo ?? null],
+    [run.agentId, run.conversationId, from, before, run.coversSeq, run.ownerId, limit, group, run.group?.calls ?? [], run.upTo ?? null, !group && run.replay !== undefined],
   );
   const quotedSeqs = [...new Set(rows.flatMap((r) => (typeof r.reply_to === "number" && Number.isSafeInteger(r.reply_to) ? [r.reply_to] : [])))];
   /** A quoted message as it is shown: its text, or (when it has none) its attachment, labelled once numbers are known. */
@@ -494,6 +522,11 @@ async function loadPage(
     const quotedFile = replyTo === null ? undefined : quotedFiles.get(replyTo);
     const seq = Number(r.seq);
     const block = role === "assistant" && r.proposal_persona !== null ? renderProposalBlock({ persona: r.proposal_persona, intro: r.proposal_intro, field: r.proposal_field }) : null;
+    // An earlier reply that looked something up, with visible text, in a run that replays: its calls (harness design §3).
+    const replay =
+      run.replay !== undefined && role === "assistant" && r.message_id !== null && r.created_at !== null && hasVisibleText(r.text ?? "")
+        ? replayOf(r.tool_calls, { messageId: r.message_id, day: siteDateTime(r.created_at, run.replay.timeZone).date, webSources: r.web_sources, webCites: r.web_cites }, run.replay.tools)
+        : null;
     const build = (refs: RunRefs | null): ContextEntry => {
       const quote = quotedText ?? (quotedFile && replyTo !== null ? attachmentLabel(toAttachment(quotedFile, replyTo, run.conversationId, refs)) : null);
       const text = entryText(r.text ?? "", quote);
@@ -501,6 +534,7 @@ async function loadPage(
         role,
         text: block === null ? text : text === "" ? block : `${text}\n\n${block}`,
         attachment: r.attachment ? toAttachment(r.attachment, seq, run.conversationId, refs) : null,
+        ...(replay === null ? {} : { replay }),
       };
     };
     const entry = build(null);
@@ -670,6 +704,8 @@ export async function loadContext(
     // reading stopped. (The plan is made again with the labels as they are now: they are a little longer.)
     run.refs.plant(text.text);
     for (const l of kept) for (const said of [l.entry.text, l.entry.attachment?.name ?? "", l.speaker?.name ?? "", l.speaker?.handle ?? ""]) run.refs.plant(said);
+    // An earlier reply's replayed calls and results too: their inputs and sentences are text it is shown (R2-m3).
+    for (const l of kept) for (const round of l.entry.replay ?? []) for (const p of [...round.calls, ...round.results]) run.refs.plant(partText(p)!);
     for (const at of could.shownAt()) ordered[at]!.entry = ordered[at]!.build(run.refs);
     entries = ordered.map((l) => shown(l, mark));
     could = new ContextPlan(entries, budget, ratio);

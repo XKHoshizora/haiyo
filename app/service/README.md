@@ -424,7 +424,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 
 Everything else is not rate limited.
 
-**Metrics in the log.** The service writes nine kinds of line at `info`, each a JSON log object with a `metric` field,
+**Metrics in the log.** The service writes ten kinds of line at `info`, each a JSON log object with a `metric` field,
 for an operator to tune the numbers above (and the site's models) from (nothing else about them is recorded or exposed):
 
 - `{ "metric": "run_wait_ms", "lane", "ms" }`, once for each reply the worker claims (its first claim; not again when it is
@@ -461,6 +461,10 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   the bound — `web_refused_reply_cap` (the reply's `TOOLS.maxPoints`), `web_refused_lane_budget` (the others' daily, the
   proactive daily or the chain budget), `web_refused_no_points` (the owner's free allowance and balance),
   `web_site_fuse_refused` (the site's fuse), `web_query_refused` (the guard) — so the log shows which bound bites.
+- `{ "metric": "replay_lowered", "protocol" }`, once for each request carrying an earlier reply's tool use in the
+  provider's own form that its upstream answered 400 or 422 and that was made again with it lowered (Agents and runs,
+  Earlier tool use in history): it should stay 0 on every protocol — a rising count means a provider takes that form
+  badly (or the form is built wrong), and the acceptance smoke test is to check it.
 
 Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_partial`, `judge_daily_limit`): Proactive
 replies, Log.
@@ -1956,6 +1960,16 @@ sends its tools, is never asked again without them, and marks nothing: a 400 to 
 that offered tools and did not send them finishes `toolsRefused`, and was sent, in place of its system text, the one it
 gives for going without them when it gives one (`ModelCall.systemWithoutTools`: a reply's is exactly the text a reply
 offered no tools is sent, saying it has none), so that an answer written with no tools is never told it has some.
+An earlier reply's tool use may return in the conversation itself (`ModelCall.messages`: `tool-call` parts in an
+assistant turn, then a `tool` turn of `tool-result` parts; Agents and runs, Earlier tool use in history). It is sent with
+the builders the rounds use — on `openai_chat` an assistant message with `tool_calls` and a `tool` message, on
+`openai_responses` `function_call` and `function_call_output` items, on `anthropic` `tool_use` and `tool_result` blocks, on
+`gemini` `functionCall` and `functionResponse` parts, ids `call_…` (`toolu_01…` on Anthropic) — only when the call sends
+the tools and they offer every tool it calls, and never paired with this answer's `reasoning_content`; otherwise it is
+lowered to the turns as they were, which a call without it always gets byte for byte. A 400 or 422 to a request that
+sent it, before anything streamed, is asked once more with it lowered (before the refusal of tools is looked for; it is
+remembered nowhere and marks nothing), and that request is then handled as any call is; the stream says so first
+(`replay_lowered`).
 
 What follows for a person choosing a model and a level:
 
@@ -3915,6 +3929,48 @@ reply when it decides a review is due). Like any message of the Agent's in a
 group, it still drops a proactive judgement waiting there. Not posted (refused, or the store failed: logged), what the
 reply said stays with its answer.
 The system text of a reply offered tools asks for it (The three tools).
+
+**Earlier tool use in history** (step 1 of `docs/design/2026-11-24-agent-harness-design.md`; `runtime/worker.ts`
+`toolReply`, `replay.ts`, `context.ts` `loadPage`, `runtime/context.ts` `ContextPlan`, `models/gateway.ts`;
+`tests/replay.test.ts`, `tests/reply-replay.test.ts`, `tests/gateway-replay.test.ts`, `tests/tool-loop.test.ts`). A model
+shown its own earlier answers that said "根据搜索结果…" with no trace that a search ran took them for made up (measured
+live, lane prompt2). So, in the Agent's own conversation only:
+
+- *What is kept.* A reply that ends as an answer after tool rounds — its last round finished, complete or cut at its
+  output limit, and posted `done` — keeps beside its text, in body key `toolCalls`, the calls of exactly the rounds the
+  request that wrote it carried (the plain call after a refused later round carries none; a stop, the reply's time,
+  `extend`'s stop or busy keep none: only a finished round is stored), and only when every call was to `search_web`,
+  `search_messages` or `current_time`. Each is `{name, round, outcome: "ok", input, found?, pages?}` — the input cleaned as
+  the tool cleans it, its token-shaped strings out, at most 60 weight as JSON text; a messages search's count of what it
+  handed over; a web search's page numbers (its `webSources`) — or `{name, round, outcome: "refused", error}`, with no
+  input at all and `error` one of the tools' and the loop's fixed sentences (anything else: `这个请求无法执行。`).
+  Nothing is kept in a group, on an acknowledgement, or for any other tool.
+- *How it returns.* A later reply there that is offered tools (its plan: `ContextRun.replay`) is shown such a reply —
+  when it has visible text and every kept call is to a tool this request offers; else as its text alone, as is every
+  reply stored before — as its rounds, then its text: each round one assistant turn holding its calls (the first opened
+  by the acknowledgement, which precedes it), then one `tool` turn of their results, then the answer in a turn of its
+  own (a later round's text before its calls is part of the answer, so it comes after the last result). A call is as it
+  was made, its id 22 hex digits from the message and its place (`replay.ts` `replayId`; on the wire `call_…`, or
+  `toolu_01…` on Anthropic); a refused one has the redacted argument `{"query":""}` (the clock's `{}`). A result is a
+  placeholder of stored facts only, at most 72 weight: a web search
+  `{"note":"这次搜索的结果当时已经给你看过，系统没有保留原文。","sites":[…],"date":"YYYY-MM-DD"}` — at most 3 sites, the
+  cited pages' first, each a host kept by whole labels from the right while at most 30 characters, never a title or an
+  address —, a messages search `{"note":"这次查找的结果当时已经给你看过，系统没有保留原文。","found":n,"date":…}`, the clock
+  `{"note":"当时给过你那时的时间。","date":…}`, a refused call `{"error":"…","date":…}`; the date is the day the reply was
+  posted in `SITE_TIMEZONE`. Inputs and sentences are read for typed numbers as entry text is (`RunRefs.plant`).
+- *Weighed once.* A reply and its replay are one unit of the plan, kept or left out together; every part is weighed as
+  the text `partText` gives (a text part's text; a call `{"id","name","input"}`, a result `{"id","name","output"}` as
+  JSON) — in the plan at the tool ratio (`TOOL_TEXT_FACTOR`), at admission and in every later hold at its bytes, never
+  among the images' and PDFs' constants.
+- *On the wire* (Calling a model). Sent in the protocol's own form only when the call sends the tools and they offer
+  every tool the replay calls; otherwise lowered — the calls and `tool` turns left out and the turns they split joined —
+  which is exactly the request the conversation made before: a request without tools, or any call that sends none (an
+  upstream that refused them, the plain call), is byte for byte what it was. An upstream that answers 400 or 422, before
+  anything came back, to a request carrying the replay is asked once more with it lowered, which then gets every handling
+  a call gets (its own refusal of the tools included); nothing is remembered of the first, no tools are taken for refused
+  by it, and it is counted (Metrics in the log, `replay_lowered`, by protocol).
+- *One reader.* `toolCalls` is read by that context alone (`messages/model.ts` `CONTEXT_ONLY_KEYS`): never sent on the
+  wire, searched, summarised, reviewed or logged, and never read for a group or for anyone else.
 
 **Outcomes.** How a run ends — the message it leaves, its `status` and `error` code (`Run`, Replies), what it is charged
 (Metering):
