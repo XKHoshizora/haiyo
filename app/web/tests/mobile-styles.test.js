@@ -176,3 +176,21 @@ describe("the chat header on a phone is one row", () => {
     expect(narrow(".chat-title p", "(max-width: 339px)").display).toBe("none");
   });
 });
+
+describe("the two widths are one number each", () => {
+  it("the stylesheet's media queries use the constants of ui/breakpoints.js", async () => {
+    const { ONE_COLUMN_MAX, PHONE_MAX } = await import("../src/ui/breakpoints.js");
+    const conditions = new Set(rules.flatMap((r) => r.conditions));
+    expect(conditions.has(`(max-width: ${ONE_COLUMN_MAX}px)`)).toBe(true);
+    expect(conditions.has(`(max-width: ${PHONE_MAX}px)`)).toBe(true);
+    const { PHONE_QUERY } = await import("../src/ui/pointer.js");
+    expect(PHONE_QUERY).toBe(`(max-width: ${PHONE_MAX}px)`);
+  });
+});
+
+describe("the touch floor cannot shrink a field", () => {
+  it("no rule of the stylesheet sizes a field above 16px (the floor sets 16px: a larger authored size would be lost)", () => {
+    const fields = rules.filter((r) => r.selectors.some((s) => /(^|[\s>])(input|textarea|select)\b|\.composer-mirror|-input\b/.test(s)));
+    for (const r of fields) if (px(r.decl["font-size"]) !== null) expect(px(r.decl["font-size"]), r.selectors.join(", ")).toBeLessThanOrEqual(16);
+  });
+});

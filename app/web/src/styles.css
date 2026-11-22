@@ -262,8 +262,7 @@ svg.model-brand { color: var(--ink-3); }
 .model-trigger.compact > .model-name:first-child { color: inherit; }
 .model-trigger.compact[aria-expanded="true"] { background: var(--purple-tint); color: var(--purple-dark); }
 @media (hover: hover) { .model-trigger.compact:hover:not([aria-disabled="true"]) { background: var(--purple-tint); color: var(--purple-dark); } }
-.model-trigger.compact:focus-visible { background: none; }
-.model-trigger.compact:focus-visible { outline: 2px solid var(--purple); outline-offset: 0; box-shadow: none; }
+.model-trigger.compact:focus-visible { background: none; outline: 2px solid var(--purple); outline-offset: 0; box-shadow: none; }
 .model-trigger.compact .model-chevron { color: currentColor; opacity: 0.6; }
 /* The header line that ends with the model: one line, the model's name cut short first. */
 .chat-title p:has(> .model-trigger, > .head-model) { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; padding: 3px; margin: -3px; }
@@ -670,8 +669,10 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 @media (max-width: 480px) { .file-card { flex-wrap: wrap; } .file-card > div { flex: 1 1 140px; } .file-card .btn { margin-left: 40px; } }
 /* A file ready to download: the whole card is the one link. */
 .file-card-link { color: inherit; text-decoration: none; cursor: pointer; }
-@media (hover: hover) { .file-card-link:hover { background: var(--surface-solid); border-color: var(--purple); } }
-@media (hover: hover) { .file-card-link:hover .btn { background: var(--surface-solid); } }
+@media (hover: hover) {
+  .file-card-link:hover { background: var(--surface-solid); border-color: var(--purple); }
+  .file-card-link:hover .btn { background: var(--surface-solid); }
+}
 .upload-progress { display: block; width: 100%; height: 6px; margin-top: 6px; accent-color: var(--purple); }
 .chat.dropping { outline: 2px dashed var(--purple); outline-offset: -6px; }
 .mini-kv div { display: flex; gap: 10px; padding: 3px 0; }
@@ -1015,7 +1016,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   :root { --rail: 0px; --tabbar: 56px; }
   .app { flex-direction: column; }
   .rail {
-    order: 9; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; width: 100%; flex: none; align-items: stretch;
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; width: 100%; flex: none; align-items: stretch;
     padding: 0; padding-bottom: env(safe-area-inset-bottom); border-right: 0; border-top: 1px solid var(--line); background: var(--surface-solid);
   }
   .rail-nav, .rail-bottom { display: contents; }
@@ -1066,6 +1067,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 }
 .viewer-meta { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 14px; }
 .viewer-meta time { color: var(--viewer-ink-3); font-size: 13px; }
+.file-name .sr-only { user-select: none; -webkit-user-select: none; }
 .viewer-who { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-name { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--viewer-ink-2); font-size: 13px; }
 .viewer-count { flex: none; font-size: 13px; color: var(--viewer-ink-2); font-variant-numeric: tabular-nums; }

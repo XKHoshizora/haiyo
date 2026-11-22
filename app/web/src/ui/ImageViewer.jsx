@@ -11,9 +11,12 @@ import { ChevronLeft, ChevronRight, Download, ExternalLink, ImageOff, RotateCw, 
 import { IconBtn, Btn } from "./primitives.jsx";
 import { useDialogFocus } from "./dialogFocus.js";
 import { useVisualViewportBox } from "./visualViewport.js";
+import { closeViewerEntry, openViewerEntry, stepViewerEntry, useViewerId } from "../state/appHistory.js";
 import { FIT, clampPan, keyZoom, swipeOf, toggleZoom, wheelFactor, zoomAt } from "./imageZoom.js";
 
 const ViewerContext = createContext(null);
+/** `() => void` that the list of a conversation gives: a picture that grew (it is measured when it has loaded) asks it to keep the newest message in view. */
+export const GrowContext = createContext(null);
 const NOTHING = { open() {} };
 
 /** `{open(messageId, opener)}`: what an image in a bubble calls to open the viewer; a no-op outside a provider. */
@@ -34,36 +37,29 @@ const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
  */
 export function ImageViewerProvider({ messages, children }) {
   const images = useMemo(() => messages.filter((m) => m.kind === "image" && m.src && !m.hidden), [messages]);
-  const [shown, setShown] = useState(null);
-  const api = useMemo(() => ({ open: (id, opener) => setShown({ id, opener, openedId: id }) }), []);
-  const index = shown ? images.findIndex((m) => m.id === shown.id) : -1;
-  // An open viewer is one history entry: Back (the button, the edge swipe) closes it and stays in the chat; closing it by hand
-  // takes its entry away again, so none dangles.
-  const open = shown !== null;
+  // The open viewer is a key of the conversation's history entry (and one entry pushed with it): drawn from the entry, so Back
+  // closes it and nothing else (state/appHistory.js). The opener node is only for the focus's return.
+  const viewerId = useViewerId();
+  const opened = useRef(null);
+  const api = useMemo(
+    () => ({
+      open: (id, opener) => {
+        opened.current = { id, opener };
+        openViewerEntry(id);
+      },
+    }),
+    [],
+  );
+  const index = viewerId ? images.findIndex((m) => m.id === viewerId) : -1;
+  // The picture is not among the messages (another list, or a Forward to a viewer whose picture is gone): once the messages are
+  // there, the viewer is closed (the entry loses its key).
   useEffect(() => {
-    if (!open) return undefined;
-    let pushed = true;
-    window.history.pushState({ ...(window.history.state ?? {}), layer: "viewer" }, "");
-    const onPop = () => {
-      // (Another entry came and went above this one, e.g. a window resized across the one-column width: still in the viewer.)
-      if (window.history.state?.layer === "viewer") return;
-      pushed = false;
-      setShown(null);
-    };
-    window.addEventListener("popstate", onPop);
-    return () => {
-      window.removeEventListener("popstate", onPop);
-      if (pushed && window.history.state?.layer === "viewer") window.history.back();
-    };
-  }, [open]);
-  // The picture is no longer among the messages (another conversation, a window of messages changed): nothing to show.
-  useEffect(() => {
-    if (shown && index < 0) setShown(null);
-  }, [shown, index]);
+    if (viewerId && index < 0 && messages.length > 0) closeViewerEntry();
+  }, [viewerId, index, messages.length]);
   return (
     <ViewerContext.Provider value={api}>
       {children}
-      {shown && index >= 0 && createPortal(<Viewer images={images} index={index} opener={shown.opener} openedId={shown.openedId} onShow={(i) => setShown({ ...shown, id: images[i].id })} onClose={() => setShown(null)} />, document.body)}
+      {viewerId && index >= 0 && createPortal(<Viewer images={images} index={index} opener={opened.current?.opener} openedId={opened.current?.id ?? viewerId} onShow={(i) => stepViewerEntry(images[i].id)} onClose={closeViewerEntry} />, document.body)}
     </ViewerContext.Provider>
   );
 }

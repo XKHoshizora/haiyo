@@ -1,8 +1,9 @@
 // What kind of screen this is, read from the browser's media queries (and kept current): a phone is narrower than
 // PHONE_QUERY (styles.css has the same number); a touch screen is one whose main pointer is coarse (a finger).
 import { useMemo, useSyncExternalStore } from "react";
+import { PHONE_MAX } from "./breakpoints.js";
 
-export const PHONE_QUERY = "(max-width: 640px)";
+export const PHONE_QUERY = `(max-width: ${PHONE_MAX}px)`;
 export const COARSE_QUERY = "(pointer: coarse)";
 
 const matches = (query) => typeof window !== "undefined" && typeof window.matchMedia === "function" && Boolean(window.matchMedia(query)?.matches);

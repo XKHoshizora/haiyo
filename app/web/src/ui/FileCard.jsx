@@ -18,8 +18,11 @@ const ICONS = {
 };
 
 /** The width of `text` in the font of `node`, by a canvas (null where there is none, so nothing is measured). */
+let measuring;
 function textMeter(node) {
-  const context = document.createElement("canvas").getContext?.("2d");
+  // (One canvas for every card and every resize.)
+  measuring ??= document.createElement("canvas").getContext?.("2d") ?? false;
+  const context = measuring;
   if (!context) return null;
   const style = getComputedStyle(node);
   context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;

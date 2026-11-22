@@ -375,6 +375,43 @@ describe("showing attachments", () => {
     expect(figure().querySelector("button").style.aspectRatio).toBe("280 / 112");
   });
 
+  describe("a picture that grows when it has loaded", () => {
+    const measured = (list) => {
+      let top = 0;
+      Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => 1000 });
+      Object.defineProperty(list, "clientHeight", { configurable: true, get: () => 400 });
+      Object.defineProperty(list, "scrollTop", { configurable: true, get: () => top, set: (v) => (top = v) });
+      return { get top() { return top; }, set top(v) { top = v; } };
+    };
+    const loadIt = (img, w, h) => {
+      Object.defineProperty(img, "naturalWidth", { configurable: true, value: w });
+      Object.defineProperty(img, "naturalHeight", { configurable: true, value: h });
+      fireEvent.load(img);
+    };
+
+    it("a chat at its newest message stays there (the list is taken to its end after the growth)", async () => {
+      await openApp();
+      await openChat("小安");
+      const list = timeline();
+      const scroll = measured(list);
+      loadIt(list.querySelector("figure.attachment-image img"), 3000, 4000);
+      expect(scroll.top).toBe(1000);
+    });
+
+    it("a chat scrolled up does not jump", async () => {
+      await openApp();
+      await openChat("小安");
+      const list = timeline();
+      const scroll = measured(list);
+      scroll.top = 900;
+      fireEvent.scroll(list);
+      scroll.top = 100;
+      fireEvent.scroll(list);
+      loadIt(list.querySelector("figure.attachment-image img"), 3000, 4000);
+      expect(scroll.top).toBe(100);
+    });
+  });
+
   it("an image that fails to load becomes the neutral 文件不可用 card", async () => {
     await openApp();
     await openChat("小安");

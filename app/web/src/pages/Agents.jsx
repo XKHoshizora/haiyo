@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { MODEL_GONE } from "../data/errorTexts.js";
 import { formatPoints, pointsReached, proactiveLevelLabel } from "../data/viewmodel.js";
@@ -235,6 +236,7 @@ function DeleteModal({ agent, onClose }) {
 
 function AgentDetail({ agent }) {
   const { state, dispatch, actions } = useStore();
+  const up = useUp();
   const { busy, run } = useAction();
   const [deleting, setDeleting] = useState(false);
   const { nav } = state;
@@ -246,7 +248,7 @@ function AgentDetail({ agent }) {
 
   return (
     <section className="page" aria-label="Agent 管理">
-      <button type="button" className="back only-mobile" onClick={() => dispatch({ type: "nav", patch: { pane: "list" } })}>
+      <button type="button" className="back only-mobile" onClick={up}>
         <ChevronLeft size={20} aria-hidden="true" /> 返回我的 Agent
       </button>
       <header className="profile-head">

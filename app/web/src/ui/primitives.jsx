@@ -1,4 +1,4 @@
-import React, { useId, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { X, Info, CircleAlert, CircleCheck, CirclePause } from "../icons.js";
 import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
@@ -137,6 +137,14 @@ export function Modal({ title, onClose, children, footer, wide }) {
   const ref = useRef(null);
   const titleId = useId();
   useDialogFocus(ref, { onClose });
+  // A dialog is not an address: when Back or Forward arrives (a popstate) it closes, and leaves no entry behind.
+  const closing = useRef(onClose);
+  closing.current = onClose;
+  useEffect(() => {
+    const leave = () => closing.current?.();
+    window.addEventListener("popstate", leave);
+    return () => window.removeEventListener("popstate", leave);
+  }, []);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref}>

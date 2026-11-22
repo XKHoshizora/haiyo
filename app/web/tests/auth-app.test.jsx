@@ -172,6 +172,19 @@ describe("sign-in", () => {
     expect(layers[0].start).toHaveBeenCalledTimes(1);
   });
 
+  it("a link to a page of the app, opened signed out, is that page after signing in (not the list)", async () => {
+    const api = signInApi();
+    at("/chat/00000000-0000-4000-8000-0000000000c1");
+    mount(api);
+    await screen.findByRole("button", { name: "登录" });
+    expect(place()).toBe("/signin");
+    typeInto("邮箱", "ann@x.com");
+    typeInto("密码", "correct horse");
+    submit("登录");
+    await screen.findByTestId("app");
+    expect(place()).toBe("/chat/00000000-0000-4000-8000-0000000000c1");
+  });
+
   it.each([
     ["invalid_email_or_password", 401, "邮箱或密码不对，请再试一次。"],
     ["email_not_verified", 403, "这个邮箱还没有验证。我们刚刚又发了一封验证邮件，请查收后再登录。"],

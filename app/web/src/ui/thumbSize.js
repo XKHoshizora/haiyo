@@ -2,11 +2,13 @@
 // extreme shape (wider than 2.5:1, taller than 1:2.5) is cut: to that ratio, from the middle (the image's `object-fit: cover`),
 // so a panorama or a long screenshot is neither a sliver nor a whole screen.
 
+import { ONE_COLUMN_MAX } from "./breakpoints.js";
+
 export const THUMB = { maxWidth: 280, maxHeight: 320, minSide: 96, extreme: 2.5 };
 
 /** The widest picture box (px) for a window `viewportWidth` wide: 280 where there are several columns; on a phone 70% of the bubble column (82% of the list, which has 12px of padding a side). */
 export function thumbMaxWidth(viewportWidth) {
-  if (!(viewportWidth <= 860)) return THUMB.maxWidth;
+  if (!(viewportWidth <= ONE_COLUMN_MAX)) return THUMB.maxWidth;
   return Math.max(THUMB.minSide, Math.min(THUMB.maxWidth, Math.round(0.7 * 0.82 * (viewportWidth - 24))));
 }
 

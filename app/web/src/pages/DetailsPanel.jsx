@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { agentDeleted, convTitle, isMyAgent, TYPE_LABEL, nameOf, otherMember } from "../state/selectors.js";
 import { blockedMe, iBlocked } from "../state/social.js";
@@ -13,6 +14,7 @@ const AGENT_NOT_GRANTED = "对方的其他会话";
 
 export function DetailsPanel({ conv }) {
   const { state, dispatch } = useStore();
+  const up = useUp();
   const other = otherMember(conv);
   const group = conv.type === "group";
   const agentChat = conv.type === "agent";
@@ -30,7 +32,7 @@ export function DetailsPanel({ conv }) {
     <div className="side">
       <header className="side-head">
         <h2>会话资料</h2>
-        <IconBtn label="关闭" onClick={() => dispatch({ type: "nav", patch: { detailsOpen: false } })}><X size={18} /></IconBtn>
+        <IconBtn label="关闭" onClick={up}><X size={18} /></IconBtn>
       </header>
       <div className="side-body">
         <div className="side-hero">

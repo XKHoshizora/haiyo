@@ -82,12 +82,15 @@ describe("on a tablet or a desktop", () => {
     expect(bar()).toBeTruthy();
   });
 
-  it("设置 still opens the profile at once (pane main), as before", async () => {
+  it("设置 is its list at every width; the profile is drawn beside it by default (no width in what the page is)", async () => {
     await openApp({ sync });
     fireEvent.click(within(bar()).getByRole("button", { name: /^设置/ }));
     await flush();
-    expect(document.querySelector(".app").dataset.pane).toBe("main");
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(document.querySelector(".main-col").textContent).toContain("我的资料");
+    expect(window.location.pathname).toBe("/settings");
   });
+
 });
 
 describe("hints for a keyboard and a mouse", () => {
@@ -158,5 +161,42 @@ describe("the chat header of a group", () => {
   it("on a wide screen it is the text button, as before", async () => {
     await open();
     expect(within(document.querySelector(".chat-head")).getByRole("button", { name: "群资料" }).textContent).toBe("群资料");
+  });
+});
+
+describe("an address of a conversation that is not here", () => {
+  const GONE = "00000000-0000-4000-8000-0000000000ee";
+
+  it("a link or reload on it draws the list with the existing notice, and the entry becomes the list", async () => {
+    window.history.replaceState(null, "", `/chat/${GONE}`);
+    await openApp({ sync });
+    await flush();
+    expect(window.location.pathname).toBe("/");
+    expect(document.querySelector(".toast")?.textContent).toBe("你已不在该会话中");
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(document.querySelector(".list-col .row")).toBeTruthy();
+  });
+
+  it("Forward to a conversation that is gone by then shows the list, not the conversation (and not an 8 s wait)", async () => {
+    const { env, layer } = await openApp({ sync });
+    fireEvent.click(document.querySelector(".list-col .row"));
+    await flush();
+    const path = window.location.pathname;
+    expect(path).toMatch(/^\/chat\//);
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(window.location.pathname).toBe("/");
+    env.sync = () => syncOf([], []);
+    await act(async () => layer.actions.syncNow());
+    await flush();
+    await act(async () => {
+      window.history.forward();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    await flush();
+    expect(window.location.pathname).toBe("/");
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
   });
 });

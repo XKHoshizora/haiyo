@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import { markReplace, useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { NAME_PART_PATTERN, agentName as agentNameProblem, appellation as appellationProblem, namePart as namePartProblem } from "../auth/validation.js";
@@ -373,7 +374,8 @@ export function AgentForm({ agent = null }) {
     setAvatarError("");
   };
 
-  const back = () => dispatch({ type: "nav", patch: { agentView: "detail", pane: agent ? "main" : "list" } });
+  const up = useUp();
+  const back = up;
   // Editing: an avatar picked and not saved is not dropped without asking.
   const leave = () => (agent && avatarFile ? setConfirmLeave(true) : back());
 
@@ -424,9 +426,12 @@ export function AgentForm({ agent = null }) {
     if (!res.ok) return refused(res.error);
     const { created, avatarText } = res.value;
     if (!created?.id) {
+      markReplace();
       dispatch({ type: "nav", patch: { agentView: "detail", agentId: null, pane: "list" } });
       return;
     }
+    // (The form ends in what it made: its entry becomes the Agent's page or its chat, so Back does not return to an empty form.)
+    markReplace();
     const detail = { agentView: "detail", agentId: created.id, agentTab: "profile", pane: "main" };
     if (avatarText) {
       const text = `Agent 已创建，但头像没有上传成功：${avatarText}可以在「编辑」里重新上传。`;

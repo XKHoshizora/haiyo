@@ -3,7 +3,7 @@
 // What only an iPhone can show (the focus zoom itself, the safe areas, the edge swipe) is listed in the lane's report.
 import { test, expect } from "./support/fixtures.mjs";
 import { befriend, createGroupApi, sendApi, uniq } from "./support/accounts.mjs";
-import { chatPane, listRow, openChat, pickAvatarUi, sendFile } from "./support/app.mjs";
+import { chatPane, createAgentUi, listRow, openChat, pickAvatarUi, sendFile } from "./support/app.mjs";
 import { png } from "./support/files.mjs";
 import { polishShot } from "./support/shots.mjs";
 
@@ -161,10 +161,9 @@ test("the settings page and the avatar dialog fit 375 and 402 wide; the help nam
     });
     await save.click();
     const saving = dialog.getByRole("button", { name: "保存中…" });
-    if (await saving.count()) {
-      expect(Math.abs((await saving.boundingBox()).width - width)).toBeLessThanOrEqual(1);
-      expect(Math.abs((await dialog.getByRole("button", { name: "重置" }).boundingBox()).x - reset)).toBeLessThanOrEqual(1);
-    }
+    await expect(saving).toBeVisible(); // (the request is held for 600 ms: the state is there to be measured)
+    expect(Math.abs((await saving.boundingBox()).width - width)).toBeLessThanOrEqual(1);
+    expect(Math.abs((await dialog.getByRole("button", { name: "重置" }).boundingBox()).x - reset)).toBeLessThanOrEqual(1);
     await expect(dialog).toBeHidden();
   }
 });
@@ -404,4 +403,121 @@ test("desktop: the 回复 button shows on hover and the right-click menu opens (
   await expect(menu).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(button).toBeFocused();
+});
+
+test("history at 375: group info and the details panel are pages; the viewer survives a rotation; Back walks them one by one", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: PHONE });
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const title = `页面${uniq(4)}`;
+  await createGroupApi(ann, [bo, cy], title);
+  const page = ann.page;
+  await page.reload();
+  const chat = await openChat(page, title);
+  await sendFile(page, title, picture("轮转.png", 120, 80), "选择图片");
+
+  // The details panel is a page of its own: Back closes it and shows the chat.
+  await chat.getByRole("button", { name: "会话资料" }).click();
+  await expect(page.locator(".side-col")).toBeVisible();
+  await page.goBack();
+  await expect(page.locator(".side-col")).toHaveCount(0);
+  await expect(chat).toBeVisible();
+  // Closed by its own button it goes back too: the chat is the entry underneath, and Back from the chat is the list.
+  await chat.getByRole("button", { name: "会话资料" }).click();
+  await page.locator(".side-col").getByRole("button", { name: "关闭" }).click();
+  await expect(page.locator(".side-col")).toHaveCount(0);
+
+  // Group info: Back is the chat, and Back again the list.
+  await chat.getByRole("button", { name: "群资料" }).click();
+  await expect(page.getByRole("region", { name: "群资料" })).toBeVisible();
+  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]{36}\/info$/);
+  await page.goBack();
+  await expect(chat).toBeVisible();
+
+  // The viewer stays open while the phone turns (a width across 860px) and its entry is as it was.
+  await chat.getByRole("button", { name: "轮转.png" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  const entry = await page.evaluate(() => JSON.stringify(history.state));
+  await page.setViewportSize({ width: 874, height: 402 });
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.setViewportSize({ width: 402, height: 874 });
+  await expect(page.getByRole("dialog")).toBeVisible();
+  expect(await page.evaluate(() => JSON.stringify(history.state))).toBe(entry);
+  await page.goBack();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(chat).toBeVisible();
+  await page.goBack();
+  await expect(chat).toBeHidden();
+  await expect(bar(page)).toBeVisible();
+
+  // Reload inside a chat and Back: one Back reaches the list, and another does not show the chat again.
+  await listRow(page, title).first().click();
+  await expect(chat).toBeVisible();
+  await page.reload();
+  await expect(chatPane(page, title)).toBeVisible();
+  await page.goBack();
+  await expect(bar(page)).toBeVisible();
+  await expect(chatPane(page, title)).toBeHidden();
+  await page.goBack().catch(() => {});
+  await expect(chatPane(page, title)).toBeHidden();
+});
+
+test("history at 375: a new Agent ends in its chat and Back is its page, then the Agents list", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: PHONE });
+  const page = ann.page;
+  await bar(page).getByRole("button", { name: "Agent" }).click();
+  await page.getByRole("button", { name: "创建 Agent" }).click();
+  await expect(page).toHaveURL(/\/agents\/new$/);
+  // The form's own back goes back (the Agents list is the entry below).
+  await page.getByRole("button", { name: /^返回/ }).first().click();
+  await expect(page).toHaveURL(/\/agents$/);
+  await expect(bar(page)).toBeVisible();
+  await createAgentUi(page, { name: `小新${uniq(3)}` });
+  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]{36}$/);
+  await expect(page.getByRole("region", { name: /^小新/ })).toBeVisible();
+  // Back from its chat is the Agent's own page (the form's entry became it), and Back again the Agents list: never the empty form.
+  await page.goBack();
+  await expect(page).toHaveURL(/\/agents\/[0-9a-f-]{36}$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/agents$/);
+  await expect(bar(page)).toBeVisible();
+});
+
+test("history at 1280: a conversation is an address, selecting another is a push, Back walks them; a link opens it", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const page = ann.page;
+  await openChat(page, bo.displayName);
+  const first = new URL(page.url()).pathname;
+  expect(first).toMatch(/^\/chat\/[0-9a-f-]{36}$/);
+  await listRow(page, cy.displayName).first().click();
+  await expect(chatPane(page, cy.displayName)).toBeVisible();
+  const second = new URL(page.url()).pathname;
+  expect(second).not.toBe(first);
+  await page.goBack();
+  expect(new URL(page.url()).pathname).toBe(first);
+  await expect(chatPane(page, bo.displayName)).toBeVisible();
+  await page.goForward();
+  await expect(chatPane(page, cy.displayName)).toBeVisible();
+  // A link (a cold start) opens it; the rail is there and there are no entries made up.
+  const length = await page.evaluate(() => history.length);
+  await page.reload();
+  await expect(chatPane(page, cy.displayName)).toBeVisible();
+  expect(await page.evaluate(() => history.length)).toBe(length);
+  const fresh = await ann.context.newPage();
+  await fresh.goto(second);
+  await expect(chatPane(fresh, cy.displayName)).toBeVisible();
+});
+
+test("a conversation I am not in: the address shows the list with the notice, at once", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const page = await ann.context.newPage();
+  await page.goto("/chat/00000000-0000-4000-8000-0000000000ee");
+  await expect(page.locator(".toast")).toHaveText("你已不在该会话中");
+  await expect(page).toHaveURL(/\/$/);
 });

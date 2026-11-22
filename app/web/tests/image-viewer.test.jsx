@@ -435,53 +435,101 @@ describe("the viewer's layout hooks", () => {
   });
 });
 
-describe("the viewer is one history entry", () => {
-  it("opening adds one; Back closes the viewer and stays in the chat", async () => {
+describe("the viewer is a key of the conversation's entry (and one entry pushed with it)", () => {
+  const viewerKey = () => window.history.state?.viewer ?? null;
+  const settle = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+
+  it("opening pushes one entry on the conversation's own address; Back closes only the viewer and stays in the chat", async () => {
     await openApp();
     await openChat("小安");
-    expect(window.history.state?.layer).toBeUndefined();
+    const path = window.location.pathname;
+    expect(viewerKey()).toBeNull();
     fireEvent.click(picture(3));
     loaded();
-    expect(window.history.state.layer).toBe("viewer");
+    expect(viewerKey()).not.toBeNull();
+    expect(window.location.pathname).toBe(path);
     await act(async () => {
       window.history.back();
       await vi.advanceTimersByTimeAsync(50);
     });
     expect(document.querySelector(".viewer")).toBeNull();
     expect(document.querySelector("ol.messages")).toBeTruthy();
-    expect(window.history.state?.layer).toBeUndefined();
+    expect(viewerKey()).toBeNull();
+    // Forward is the viewer again (a page of its own); Back once more and then the list.
+    await act(async () => {
+      window.history.forward();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(document.querySelector(".viewer")).not.toBeNull();
   });
 
-  it("closing it with Esc or the button takes its entry away again: nothing dangles", async () => {
+  it("viewer → Back → chat → Back → the list", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.click(picture(3));
+    loaded();
+    for (const [step, expected] of [["viewer", null], ["chat", "/"]]) {
+      await act(async () => {
+        window.history.back();
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      if (step === "viewer") expect(document.querySelector("ol.messages")).toBeTruthy();
+      else expect(window.location.pathname).toBe(expected);
+    }
+    expect(document.querySelector("ol.messages")).toBeNull();
+  });
+
+  it("closing it with Esc or the button goes back to the conversation's entry: nothing dangles", async () => {
     await openApp();
     await openChat("小安");
     const entry = window.history.state;
     fireEvent.click(picture(3));
     loaded();
     press("Escape");
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(50);
-    });
+    await settle();
     expect(document.querySelector(".viewer")).toBeNull();
-    expect(window.history.state?.layer).toBeUndefined();
     expect(window.history.state).toEqual(entry);
   });
 
-  it("an entry the app pushes and pops above the viewer's does not close it", async () => {
-    await open(3);
-    window.history.pushState({ af: 1, depth: 1 }, "");
-    await act(async () => {
-      window.history.back();
-      await vi.advanceTimersByTimeAsync(50);
-    });
-    expect(document.querySelector(".viewer")).not.toBeNull();
-    expect(window.history.state.layer).toBe("viewer");
+  it("rotating the phone (a width change across 860px) does not touch it: still open, the entry as it was", async () => {
+    let wide = false;
+    const listeners = new Set();
+    window.matchMedia = (query) => ({ matches: query.includes("max-width") ? !wide : false, media: query, addEventListener: (_t, f) => listeners.add(f), removeEventListener: (_t, f) => listeners.delete(f) });
+    try {
+      await open(3);
+      const entry = window.history.state;
+      const length = window.history.length;
+      wide = true;
+      await act(async () => {
+        for (const f of listeners) f({ matches: false });
+        window.dispatchEvent(new Event("resize"));
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(document.querySelector(".viewer")).not.toBeNull();
+      expect(window.history.state).toEqual(entry);
+      expect(window.history.length).toBe(length);
+      wide = false;
+      await act(async () => {
+        for (const f of listeners) f({ matches: true });
+        window.dispatchEvent(new Event("resize"));
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(document.querySelector(".viewer")).not.toBeNull();
+      expect(window.history.state).toEqual(entry);
+    } finally {
+      delete window.matchMedia;
+    }
   });
 
-  it("stepping to the next picture adds nothing", async () => {
+  it("stepping to the next picture adds no entry (the key is rewritten)", async () => {
     await open(3);
-    const state = window.history.state;
+    const index = window.history.state.index;
+    const first = window.history.state.viewer;
     press("ArrowRight");
-    expect(window.history.state).toEqual(state);
+    expect(window.history.state.index).toBe(index);
+    expect(window.history.state.viewer).not.toBe(first);
   });
 });

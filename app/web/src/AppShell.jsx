@@ -3,8 +3,8 @@ import { useStore } from "./data/store.jsx";
 import { unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark } from "./ui/primitives.jsx";
-import { useMediaQuery, usePhone } from "./ui/pointer.js";
-import { ONE_COLUMN_QUERY, useAppHistory } from "./state/appHistory.js";
+import { usePhone } from "./ui/pointer.js";
+import { markReplace, useAppHistory } from "./state/appHistory.js";
 import { MessageCircle, Users, Bot, Settings } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
@@ -28,8 +28,8 @@ const NAV = [
 function Rail({ phone }) {
   const { state, dispatch } = useStore();
   const unread = unreadTotal(state);
-  // (A phone opens 设置 at its list, like the other tabs; a wide screen shows the profile beside it at once.)
-  const go = (section) => dispatch({ type: "nav", patch: { section, pane: section === "settings" && !phone ? "main" : "list" } });
+  // A section is its list, whatever the width (a wide screen draws the settings profile beside it by default).
+  const go = (section) => dispatch({ type: "nav", patch: { section, pane: "list" } });
   return (
     <nav className="rail" aria-label="主导航">
       {!phone && <BrandMark size={38} />}
@@ -50,7 +50,7 @@ function Rail({ phone }) {
         ))}
       </div>
       <div className="rail-bottom">
-        <button type="button" className={`rail-item ${state.nav.section === "settings" ? "active" : ""}`} onClick={() => go("settings")}>
+        <button type="button" className={`rail-item ${state.nav.section === "settings" ? "active" : ""}`} aria-current={state.nav.section === "settings" ? "page" : undefined} onClick={() => go("settings")}>
           <span className="rail-icon">
             <Settings size={26} aria-hidden="true" />
           </span>
@@ -76,6 +76,7 @@ function useCloseWhenRemoved(state, dispatch) {
     }
     if (!convId || convId !== shown.current || !state.loaded) return;
     shown.current = null;
+    markReplace();
     dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false } });
     if (section === "chat") dispatch({ type: "toast", text: "你已不在该会话中" });
   }, [convId, present, section, state.loaded, dispatch]);
@@ -151,10 +152,18 @@ export default function Shell() {
   // A phone shows one page at a time: the tab bar belongs to the top-level lists, not to a conversation or any page pushed
   // over them (those have their back button). A conversation that is gone leaves the list, not an empty page without a way out.
   const emptyChat = nav.section === "chat" && !conv;
-  const pane = phone && emptyChat ? "list" : nav.pane;
+  const pane = emptyChat ? "list" : nav.pane;
   const tabbar = phone && pane === "list";
-  // Back and the edge swipe walk the pages of one column (a conversation, group info, a settings page); the address follows the conversation.
-  useAppHistory({ nav, oneColumn: useMediaQuery(ONE_COLUMN_QUERY), dispatch });
+  // The address is where a person is (state/location.js); Back and the edge swipe walk its entries (state/appHistory.js).
+  useAppHistory({ nav, dispatch });
+  // An address of a conversation that is not here (removed, never a member, deleted; a Forward to it): the list, once, with the
+  // reason, and the entry is made the list so that nothing shows it again.
+  useEffect(() => {
+    if (!state.loaded || nav.section !== "chat" || nav.pane !== "main" || !nav.convId || nav.opening || state.convs[nav.convId]) return;
+    markReplace();
+    dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false, pane: "list" } });
+    dispatch({ type: "toast", text: "你已不在该会话中" });
+  }, [state.loaded, state.convs, nav.section, nav.pane, nav.convId, nav.opening, dispatch]);
   const noteScroll = useKeepListScroll(pane, nav.section);
   let list = null;
   let main = null;
@@ -181,10 +190,12 @@ export default function Shell() {
 
   return (
     <div className="app" data-pane={pane} data-side={side ? "open" : "closed"} data-tabbar={tabbar ? "on" : "off"}>
-      {(!phone || tabbar) && <Rail phone={phone} />}
+      {!phone && <Rail phone={false} />}
       <aside className="list-col" onScrollCapture={noteScroll}>{list}</aside>
       <main className="main-col">{main}</main>
-      {side && <aside className="side-col">{side}</aside>}
+      {side && pane === "main" && <aside className="side-col">{side}</aside>}
+      {/* (On a phone the tab bar comes after the pages, in the page's order as well as on screen.) */}
+      {tabbar && <Rail phone />}
       {state.toast && (
         <div className="toast" role="status" aria-live="polite">
           {state.toast.text}

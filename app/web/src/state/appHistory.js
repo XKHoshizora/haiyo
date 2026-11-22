@@ -1,140 +1,164 @@
-// The app's pages in the browser's history, so that Back (the button, the edge swipe) does what a person expects: on a phone
-// (one column at a time) a conversation and the pages pushed over a list are history entries; on a wide screen the address
-// follows the open conversation (`/chat/<id>`, replaced, not stacked: a mainstream web chat does not make Back walk through
-// every conversation one looked at). A reload on a conversation's address opens it. The rules are pure functions; the hook
-// is the glue between the store's navigation and `history`.
-import { useEffect, useRef } from "react";
+// The app's pages in the browser's history, by one rule (docs in .work/history-design.md, summarised in the lane report):
+// the address is the only source of truth for where a person is; navigating pushes an entry when the address differs; closing a page
+// goes back when the app's own entry below is its parent, else replaces by the parent; the popstate handler only re-renders; a cold
+// start draws its address with no entry made up; layout width is not an input. The mapping is state/location.js.
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useStore } from "../data/store.jsx";
+import { SOFT_KEYS, addressOf, keyOf, navOfAddress, parentOf, sameAddress } from "./location.js";
 
-/** The one-column layout (styles.css): one page at a time, the others behind it. */
-export const ONE_COLUMN_QUERY = "(max-width: 860px)";
+const CHANGED = "af-history";
+const read = () => (window.history.state?.af ? window.history.state : null);
+const notify = () => window.dispatchEvent(new Event(CHANGED));
+/** The address the browser is at: the path and the overlay of our entry. */
+export const hereNow = () => ({ path: window.location.pathname, overlay: read()?.overlay ?? null });
 
-const CHAT_PATH = /^\/chat\/([0-9a-f-]{36})(?:\/)?$/i;
-/** The conversation a path names, or null. */
-export const chatIdOf = (pathname) => CHAT_PATH.exec(pathname)?.[1] ?? null;
+/** An entry's state: `index` counts the app's own entries (0 for a cold start), `prev` is the key of the entry below. */
+const entry = ({ index, prev, address, nav, viewer = null }) => ({
+  af: 1,
+  index,
+  prev,
+  path: address.path,
+  overlay: address.overlay,
+  viewer,
+  nav: nav ? Object.fromEntries(SOFT_KEYS.map((key) => [key, nav[key] ?? null])) : {},
+});
+const softOf = (nav) => entry({ index: 0, prev: null, address: { path: "", overlay: null }, nav }).nav;
+const softSame = (a = {}, b = {}) => SOFT_KEYS.every((key) => (a[key] ?? null) === (b[key] ?? null));
 
-/** The keys of the navigation a history entry keeps, to show that page again on Back / Forward. */
-const PAGE_KEYS = ["section", "convId", "view", "contactId", "agentId", "agentView", "agentTab", "settingsPage"];
-export const snapshotOf = (nav) => Object.fromEntries(PAGE_KEYS.map((key) => [key, nav[key] ?? null]));
+/** A `history.back()` this module asked for is on its way (the browser answers with a popstate a moment later): the page it leads to is shown at once, and nothing is written to the history for it. */
+let expecting = null;
+let viewerClosing = false;
+window.addEventListener("popstate", () => {
+  expecting = null;
+  viewerClosing = false;
+});
 
-/**
- * Where the navigation `nav` is, as history sees it: the address and how many pages deep (0: a top-level list; 1: a page
- * pushed over it — a conversation, a contact, an Agent, a settings page; 2: one more — a group's info, an Agent's form).
- * On a wide screen everything is depth 0 (the three panes are all there); only the address follows the conversation.
- */
-export function locationOf(nav, oneColumn) {
-  const chat = nav.section === "chat" && nav.convId ? nav.convId : null;
-  if (!oneColumn) return { path: chat ? `/chat/${chat}` : "/", depth: 0 };
-  // (A conversation that is gone leaves the list, not an empty page: AppShell.jsx.)
-  if (nav.pane !== "main" || (nav.section === "chat" && !chat)) return { path: "/", depth: 0 };
-  const deeper = (nav.section === "chat" && nav.view === "profile") || (nav.section === "agents" && (nav.agentView === "create" || nav.agentView === "edit"));
-  return { path: nav.section === "chat" && chat ? `/chat/${chat}` : "/", depth: deeper ? 2 : 1 };
-}
+let replaceNext = false;
+/** The next move of the navigation replaces the entry it leaves (a form that ends in what it made, a page that is gone). */
+export const markReplace = () => {
+  replaceNext = true;
+};
 
-/**
- * What to do with the history when the page goes from `prev` to `next` (both from `locationOf`; `prev` null: nothing known):
- * `{do: "none"}`, `{do: "replace"}`, `{do: "push"}` (one entry) or `{do: "back", by: n}` (n entries, `history.go(-n)`, as
- * many as the pages left; `stack` is the depths of the entries pushed above the first, oldest first).
- */
-export function planStep(prev, next, stack = []) {
-  if (!prev) return { do: "replace" };
-  if (next.depth > prev.depth) return { do: "push" };
-  if (next.depth < prev.depth) {
-    let by = 0;
-    for (let i = stack.length - 1; i >= 0 && stack[i] > next.depth; i -= 1) by += 1;
-    return by > 0 ? { do: "back", by } : { do: "replace" };
+/** Where this entry's page goes when a page's own button closes it: back when our own parent entry is below, else replaced by the parent. */
+export function goUp(dispatch) {
+  const st = read();
+  const parent = parentOf(hereNow());
+  if (st && st.index > 0 && st.prev === keyOf(parent)) {
+    expecting = parent;
+    window.history.back();
+    dispatch({ type: "nav", patch: { ...navOfAddress(parent), ...(st.nav ?? {}) } });
+    return;
   }
-  return prev.path === next.path ? { do: "none" } : { do: "replace" };
+  window.history.replaceState(entry({ index: st?.index ?? 0, prev: st?.prev ?? null, address: parent, nav: null }), "", parent.path);
+  dispatch({ type: "nav", patch: navOfAddress(parent) });
+  notify();
 }
 
-const entry = (index, depth, nav) => ({ af: 1, index, depth, nav: snapshotOf(nav) });
+/** `() => void`: a page's own back or close button. */
+export function useUp() {
+  const { dispatch } = useStore();
+  return useCallback(() => goUp(dispatch), [dispatch]);
+}
+
+// ───────── the image viewer: a key on the conversation's entry, and one entry pushed with it
+const subscribe = (fn) => {
+  window.addEventListener("popstate", fn);
+  window.addEventListener(CHANGED, fn);
+  return () => {
+    window.removeEventListener("popstate", fn);
+    window.removeEventListener(CHANGED, fn);
+  };
+};
+/** The message id of the picture the viewer shows (from the entry), or null. */
+export const useViewerId = () => useSyncExternalStore(subscribe, () => (viewerClosing ? null : read()?.viewer ?? null), () => null);
+
+export function openViewerEntry(id) {
+  viewerClosing = false;
+  const st = read();
+  const here = hereNow();
+  window.history.pushState(entry({ index: (st?.index ?? 0) + 1, prev: keyOf(here), address: here, nav: st?.nav, viewer: id }), "", here.path);
+  notify();
+}
+export function stepViewerEntry(id) {
+  const st = read();
+  if (st) window.history.replaceState({ ...st, viewer: id }, "", window.location.pathname);
+  notify();
+}
+export function closeViewerEntry() {
+  const st = read();
+  if (!st?.viewer) return;
+  if (st.index > 0 && st.prev === keyOf(hereNow())) {
+    viewerClosing = true;
+    window.history.back();
+    notify();
+  } else {
+    window.history.replaceState({ ...st, viewer: null }, "", window.location.pathname);
+    notify();
+  }
+}
 
 /**
- * Keeps `history` and the navigation together. `oneColumn`: the layout shows one page at a time. `nav`, `dispatch`: the
- * store's. Run once, in the signed-in shell.
+ * Keeps the address and the store's navigation together; run once in the signed-in shell. The store's navigation is moved by pages
+ * and by this hook (from the address); every move of it is followed by the history operation the rule says.
  */
-export function useAppHistory({ nav, oneColumn, dispatch }) {
-  const live = useRef({ nav, oneColumn });
-  live.current = { nav, oneColumn };
-  /** The page history shows now, and the depths of the entries pushed above the first one. */
-  const applied = useRef(null);
-  const stack = useRef([]);
-  /** A conversation from the address is being opened: nothing is written to the history until it is shown (or given up). */
-  const deepLink = useRef({ waiting: false, seen: false });
+export function useAppHistory({ nav, dispatch }) {
+  const live = useRef(nav);
+  live.current = nav;
+  const send = useRef(dispatch);
+  send.current = dispatch;
+  /** The address a cold start was drawn from, until the navigation shows it (no history call is made before that). */
+  const cold = useRef(null);
 
-  // A reload or a link on a conversation's address opens that conversation (when it is there; `opening` waits for it and gives up);
-  // one column gets the list under it, so Back goes to the list. Any other entry we left behind is a top-level page again.
   useEffect(() => {
-    const id = chatIdOf(window.location.pathname);
-    const phone = live.current.oneColumn;
-    const wasPage = window.history.state?.af && window.history.state.depth > 0;
-    if (id) {
-      dispatch({ type: "nav", patch: { section: "chat", opening: { convId: id } } });
-      deepLink.current = { waiting: true, seen: false };
-      if (phone) {
-        window.history.replaceState(entry(0, 0, live.current.nav), "", "/");
-        window.history.pushState(entry(1, 1, { ...live.current.nav, section: "chat", convId: id }), "", `/chat/${id}`);
-        stack.current = [1];
-        applied.current = { path: `/chat/${id}`, depth: 1 };
-      } else applied.current = { path: `/chat/${id}`, depth: 0 };
-    } else if (wasPage) {
-      window.history.replaceState(entry(0, 0, live.current.nav), "", window.location.pathname);
+    const st = read();
+    const here = hereNow();
+    const patch = navOfAddress(here);
+    const canonical = addressOf({ ...live.current, ...patch });
+    if (!st) window.history.replaceState(entry({ index: 0, prev: null, address: canonical, nav: st?.nav ?? live.current }), "", canonical.path);
+    else if (!sameAddress(here, canonical)) window.history.replaceState({ ...st, path: canonical.path, overlay: canonical.overlay }, "", canonical.path);
+    if (!sameAddress(addressOf(live.current), canonical)) {
+      cold.current = canonical;
+      send.current({ type: "nav", patch: { ...patch, ...(st?.nav ?? {}) } });
     }
   }, []);
 
   // The navigation moved: say so to the history.
   useEffect(() => {
-    // (A conversation being waited for: the address is already its own.)
-    if (nav.opening) {
-      deepLink.current.seen = true;
+    const next = addressOf(nav);
+    // (The back asked for is in flight: the page it leads to is already shown, and writing it is the browser's.)
+    if (expecting) {
+      const mine = sameAddress(expecting, next);
+      expecting = null;
+      if (mine) return;
+    }
+    if (cold.current) {
+      if (!sameAddress(cold.current, next)) return;
+      cold.current = null;
+    }
+    const st = read();
+    const here = hereNow();
+    if (sameAddress(here, next)) {
+      if (st && !softSame(st.nav, softOf(nav))) window.history.replaceState({ ...st, nav: softOf(nav) }, "", window.location.pathname);
+      replaceNext = false;
       return;
     }
-    if (deepLink.current.waiting && !deepLink.current.seen) return;
-    deepLink.current.waiting = false;
-    const next = locationOf(nav, oneColumn);
-    const prev = applied.current ?? { path: window.location.pathname, depth: 0 };
-    const step = planStep(prev, next, stack.current);
-    applied.current = next;
-    if (step.do === "none") return;
-    const index = stack.current.length;
-    if (step.do === "push") {
-      stack.current = [...stack.current, next.depth];
-      window.history.pushState(entry(stack.current.length, next.depth, nav), "", next.path);
-    } else if (step.do === "back") {
-      stack.current = stack.current.slice(0, stack.current.length - step.by);
-      window.history.go(-step.by);
+    const index = st?.index ?? 0;
+    if (replaceNext) {
+      replaceNext = false;
+      window.history.replaceState(entry({ index, prev: st?.prev ?? null, address: next, nav }), "", next.path);
     } else {
-      window.history.replaceState(entry(index, next.depth, nav), "", next.path);
+      window.history.pushState(entry({ index: index + 1, prev: keyOf(here), address: next, nav }), "", next.path);
     }
-  }, [nav, oneColumn]);
+    notify();
+  }, [nav]);
 
-  // Back and Forward (the browser's own): show the page of the entry reached.
+  // Back and Forward (the browser's own): draw the entry reached. Nothing else.
   useEffect(() => {
     const onPop = () => {
-      const state = window.history.state;
-      const { nav: now, oneColumn: column } = live.current;
-      if (state?.layer) return; // (the image viewer's own entry: ui/ImageViewer.jsx)
-      if (!column) {
-        const id = chatIdOf(window.location.pathname);
-        if (id && id !== now.convId) dispatch({ type: "nav", patch: { section: "chat", opening: { convId: id } } });
-        return;
-      }
-      const depth = state?.af ? state.depth : 0;
-      const index = state?.af ? state.index : 0;
-      stack.current = stack.current.slice(0, index);
-      const same = depth > 0 && state?.nav && now.pane === "main" && JSON.stringify(snapshotOf(now)) === JSON.stringify(state.nav);
-      if (same) {
-        stack.current[index - 1] = depth; // (the viewer's entry was left: the page is the one shown)
-        applied.current = locationOf(now, true);
-      } else if (depth > 0 && state?.nav) {
-        stack.current[index - 1] = depth;
-        applied.current = locationOf({ ...state.nav, pane: "main" }, true);
-        dispatch({ type: "nav", patch: { ...state.nav, pane: "main" } });
-      } else {
-        applied.current = { path: "/", depth: 0 };
-        if (now.pane !== "list") dispatch({ type: "nav", patch: { pane: "list" } });
-      }
+      const st = read();
+      send.current({ type: "nav", patch: { ...navOfAddress(hereNow()), ...(st?.nav ?? {}) } });
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [dispatch]);
+  }, []);
 }

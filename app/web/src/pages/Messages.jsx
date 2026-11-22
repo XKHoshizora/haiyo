@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
@@ -11,7 +11,7 @@ import { FileCard } from "../ui/FileCard.jsx";
 import { thumbMaxWidth, thumbSize } from "../ui/thumbSize.js";
 import { useBubbleMenu } from "../ui/BubbleMenu.jsx";
 import { messageActions } from "./messageActions.js";
-import { useImageViewer } from "../ui/ImageViewer.jsx";
+import { GrowContext, useImageViewer } from "../ui/ImageViewer.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
 import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits.jsx";
@@ -69,10 +69,15 @@ function ImageBody({ msg }) {
   const [box, setBox] = useState(null);
   const img = useRef(null);
   const viewer = useImageViewer();
+  const grew = useContext(GrowContext);
   const measure = (node) => setBox(thumbSize({ width: node.naturalWidth, height: node.naturalHeight }, { maxWidth: thumbMaxWidth(window.innerWidth) }));
   useLayoutEffect(() => {
     if (img.current?.complete && img.current.naturalWidth) measure(img.current);
   }, [msg.src]);
+  // (The box is its final size now: a list that was at its newest message stays there; scrolled up, nothing moves.)
+  useLayoutEffect(() => {
+    if (box) grew?.();
+  }, [box?.width, box?.height]);
   if (broken) return <UnavailableCard name={msg.text} />;
   return (
     <figure className="attachment-image" data-sized={box ? "" : undefined} style={box ? { width: box.width } : undefined}>
