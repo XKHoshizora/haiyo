@@ -16,14 +16,23 @@ import { mailPolicy, sendMail, type MailPolicy } from "./mailer.ts";
 
 const UNIQUE_VIOLATION = "23505";
 
-export const registerBody = z.object({
+const accountFields = {
   inviteCode: z.string().max(100).optional(),
   email: z.email().max(254),
   password: z.string().min(10).max(128),
   displayName,
   handle: z.string().regex(HANDLE_PATTERN),
-  // The terms and the privacy policy the person was shown, and their 18+ declaration (src/legal.ts): required.
-  ...acceptanceFields,
+};
+
+/** While the site requires the terms (`LEGAL.required`): the terms and the privacy policy shown, and the 18+ declaration. */
+export const registerBody = z.object({ ...accountFields, ...acceptanceFields });
+
+/** While it does not: the same fields may come (a page that asks them), and are not read. */
+const registerBodyUnasked = z.object({
+  ...accountFields,
+  termsVersion: acceptanceFields.termsVersion.optional(),
+  privacyVersion: acceptanceFields.privacyVersion.optional(),
+  adult: z.boolean().optional(),
 });
 
 /** How often, at most, the owner of an address hears that someone tried to register it again. */
@@ -61,7 +70,7 @@ export function registerRegistrationRoutes(
       schema: {
         params: z.object({}),
         querystring: z.object({}),
-        body: registerBody,
+        body: config.legal.required ? registerBody : registerBodyUnasked,
         response: { 201: z.object({ ok: z.literal(true) }) },
       },
     },
@@ -69,7 +78,8 @@ export function registerRegistrationRoutes(
       const { inviteCode, email, password, displayName, handle } = req.body;
       const needsInvite = config.registrationMode === "invite";
       // Before anything is locked or used up: a page older than the documents in force is told to reload (409).
-      assertCurrentVersions(req.body);
+      const asksTerms = config.legal.required;
+      if (asksTerms) assertCurrentVersions(req.body as z.infer<typeof registerBody>);
 
       let told: string[];
       try {
@@ -120,7 +130,7 @@ export function registerRegistrationRoutes(
             throw err;
           }
           // What the new account accepted, with it (an account whose address was taken gets nothing: nothing was made).
-          await recordAcceptance(client, principalId);
+          if (asksTerms) await recordAcceptance(client, principalId);
           if (needsInvite) await rememberInvite(client, inviteCode!, principalId);
           return affected;
         });

@@ -10,10 +10,12 @@ import { closeAllSockets, connect } from "./helpers/ws.ts";
 /**
  * The terms, the privacy policy and the 18+ declaration (README "Accounts and sessions", Terms; migration 071): the service
  * refuses a registration that does not carry them, records which versions each account accepted and when, and asks again
- * (`termsAccepted: false` in `GET /api/me`) once either document has a new version.
+ * (`termsAccepted: false` in `GET /api/me`) once either document has a new version — all of it while the site requires it
+ * (`LEGAL={"required":true}`, `config.legal`); with the switch off (the default, while the texts are drafts) nothing of it is
+ * asked or enforced (the last describe).
  */
 
-const { app, db } = useApp();
+const { app, db } = useApp({ env: { LEGAL: JSON.stringify({ required: true }) } });
 
 const ACCEPTED = { termsVersion: LEGAL_VERSIONS.terms, privacyVersion: LEGAL_VERSIONS.privacy, adult: true };
 
@@ -227,5 +229,50 @@ describe("the service refuses every signed-in call until the documents in force 
       );
     const exempt = files("../src/").flatMap((f) => [...readFileSync(new URL(f, import.meta.url), "utf8").matchAll(/requirePrincipal\(req, \{ beforeTerms: true \}\)/g)].map(() => f));
     expect(exempt).toEqual(["../src/session.ts", "../src/session.ts"]);
+  });
+});
+describe("with LEGAL.required off (the default while the texts are drafts): nothing is asked, recorded or refused", () => {
+  /** The same wiring with the switch off; it shares the test pool. */
+  async function withSwitchOff<T>(work: (off: typeof app) => Promise<T>): Promise<T> {
+    const off = await buildApp({ config: { ...app.deps.config, legal: { required: false } }, db: app.deps.db }, { answerFloor: NO_ANSWER_FLOOR });
+    try {
+      return await work(off);
+    } finally {
+      await off.close();
+    }
+  }
+
+  test("sign-up without the fields succeeds and records nothing; fields sent (even an old version) are ignored", async () => {
+    await withSwitchOff(async (off) => {
+      const bare = await registerBody({ termsVersion: undefined, privacyVersion: undefined, adult: undefined });
+      for (const key of ["termsVersion", "privacyVersion", "adult"]) delete (bare as Record<string, unknown>)[key];
+      expect(await api(off, null, "POST", "/api/register", bare)).toEqual({ status: 201, json: { ok: true } });
+      expect(await api(off, null, "POST", "/api/register", await registerBody({ termsVersion: "2000-01-01" }))).toEqual({ status: 201, json: { ok: true } });
+      expect(await api(off, null, "POST", "/api/register", await registerBody())).toEqual({ status: 201, json: { ok: true } });
+      expect(await users()).toBe(3);
+      expect(Number((await db.query<{ n: string }>("select count(*) n from terms_acceptances")).rows[0]!.n)).toBe(0);
+      const { cookie } = await verifiedSignIn(bare);
+      expect((await api(off, { cookie }, "GET", "/api/me")).json).toMatchObject({ termsRequired: false, termsAccepted: false });
+    });
+  });
+
+  test("an account with no acceptance is served everywhere, the socket's ticket included; accepting still works", async () => {
+    const a = await signUp(app, "unasked");
+    await db.query("delete from terms_acceptances where principal_id = $1", [a.id]);
+    await withSwitchOff(async (off) => {
+      for (const [method, url] of [["GET", "/api/sync"], ["GET", "/api/social"], ["GET", "/api/agents"], ["POST", "/api/ws-ticket"]] as const) {
+        expect([url, (await api(off, a, method, url)).status]).toEqual([url, 200]);
+      }
+      expect((await api(off, a, "GET", "/api/me")).json).toMatchObject({ termsRequired: false, termsAccepted: false });
+      expect(await api(off, a, "POST", "/api/me/terms", ACCEPTED)).toEqual({ status: 200, json: { termsAccepted: true } });
+      expect((await api(off, a, "GET", "/api/me")).json).toMatchObject({ termsRequired: false, termsAccepted: true });
+    });
+    // On, the same account (accepted now) is served; one that has not accepted is refused, as above.
+    expect((await api(app, a, "GET", "/api/me")).json).toMatchObject({ termsRequired: true, termsAccepted: true });
+  });
+
+  test("GET /api/site says whether the site requires them, before anyone signs in", async () => {
+    expect((await api(app, null, "GET", "/api/site")).json).toMatchObject({ termsRequired: true });
+    await withSwitchOff(async (off) => expect((await api(off, null, "GET", "/api/site")).json).toMatchObject({ termsRequired: false }));
   });
 });

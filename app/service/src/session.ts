@@ -29,6 +29,7 @@ export interface Principal {
  * And 403 `terms_required` while the account has not accepted the terms and the privacy policy in force (src/legal.ts),
  * read in the same query: every signed-in route, the socket's ticket included, waits for the acceptance. Only what the
  * question itself needs passes `beforeTerms` (`GET /api/me`, `POST /api/me/terms`; signing out is Better Auth's own route).
+ * Only while the site requires them (`LEGAL.required`, config.ts `LegalConfig`); off, nobody is refused for them.
  */
 export async function requirePrincipal(req: FastifyRequest, { beforeTerms = false }: { beforeTerms?: boolean } = {}): Promise<Principal> {
   const session = await authCall(() => req.server.auth.api.getSession({ headers: fromNodeHeaders(req.headers) }));
@@ -41,7 +42,7 @@ export async function requirePrincipal(req: FastifyRequest, { beforeTerms = fals
   );
   const row = rows[0];
   if (!row) throw new AppError(401, "unauthenticated");
-  if (!row.accepted && !beforeTerms) throw new AppError(403, "terms_required");
+  if (!row.accepted && !beforeTerms && req.server.deps.config.legal.required) throw new AppError(403, "terms_required");
   return {
     id: row.id,
     handle: row.handle,
@@ -93,6 +94,7 @@ export function registerSessionRoutes(app: FastifyInstance): void {
             dream: z.boolean(),
             memoryLanguage: z.enum(MEMORY_LANGUAGE_CODES).nullable(),
             handleChangeAvailableAt: z.string().nullable(),
+            termsRequired: z.boolean(),
             termsAccepted: z.boolean(),
           }),
         },
@@ -124,6 +126,8 @@ export function registerSessionRoutes(app: FastifyInstance): void {
         dream,
         memoryLanguage,
         handleChangeAvailableAt: handleChangeAt === null ? null : handleChangeAt.toISOString(),
+        // Whether the site asks for them at all (`LEGAL.required`): false, and nobody is asked, whatever `termsAccepted` says.
+        termsRequired: config.legal.required,
         termsAccepted: accepted,
       };
     },

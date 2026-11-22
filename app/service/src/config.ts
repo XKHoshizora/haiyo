@@ -411,6 +411,24 @@ const agentsSchema = z.strictObject({
   autoRetryDelaysMs: z.array(z.number().int().min(0).max(600_000)).max(2).default([20_000, 120_000]),
 });
 
+/**
+ * Whether the site requires its terms of service and privacy policy (`LEGAL`; README "Accounts and sessions", Terms;
+ * src/legal.ts). Off by default: while the texts are drafts the owner has not approved, nobody is asked to accept them.
+ */
+export interface LegalConfig {
+  /**
+   * True: registration needs the acceptance and the 18+ declaration, every signed-in route answers 403 `terms_required`
+   * until the versions in force are accepted, and the web asks. False: nothing of it (the pages stay public; an acceptance
+   * sent is not recorded at registration, `POST /api/me/terms` still records one). Turn it on only after the owner has filled
+   * the placeholders and approved the texts.
+   */
+  required: boolean;
+}
+
+const legalSchema = z.strictObject({
+  required: z.boolean().default(false),
+});
+
 /** `WHISPERS` unset: every default. */
 export const DEFAULT_WHISPERS: Readonly<WhispersConfig> = Object.freeze(whispersSchema.parse({}));
 
@@ -748,6 +766,8 @@ const envSchema = z.object({
   WHISPERS: jsonVariable(whispersSchema, whispersSchema.parse({})),
   /** JSON object of how failed replies are tried again by the system (see AgentsConfig); unset or empty: the default. */
   AGENTS: jsonVariable(agentsSchema, agentsSchema.parse({})),
+  /** JSON object of whether the terms and the privacy policy are required (see LegalConfig); unset or empty: not required. */
+  LEGAL: jsonVariable(legalSchema, legalSchema.parse({})),
   BLOB_DIR: z.string().min(1).default("./data/blobs"),
   /** Directory with the built web client (index.html and /assets); unset: the service serves no web files. */
   WEB_DIST: optionalString,
@@ -965,6 +985,8 @@ export interface Config {
   whispers: WhispersConfig;
   /** How a reply that failed for a passing reason is tried again by the system. */
   agents: AgentsConfig;
+  /** Whether the terms and the privacy policy are required. */
+  legal: LegalConfig;
   blobDir: string;
   /** Absolute path of the built web client to serve, or undefined to serve none. */
   webDist: string | undefined;
@@ -1139,6 +1161,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     allowance: e.ALLOWANCE,
     whispers: e.WHISPERS,
     agents: e.AGENTS,
+    legal: e.LEGAL,
     blobDir: e.BLOB_DIR,
     webDist: e.WEB_DIST === undefined ? undefined : path.resolve(e.WEB_DIST),
     port: e.PORT,

@@ -53,7 +53,7 @@ describe("accounts", () => {
     const me = await api(app, { cookie: cookieHeaderFrom(ok.headers["set-cookie"]) }, "GET", "/api/me");
     expect(me.status).toBe(200);
     expect(me.json).toMatchObject({ handle: "new_person", displayName: "New Person", email: "new@example.test" });
-    expect(Object.keys(me.json).sort()).toEqual(["avatarVersion", "displayName", "dream", "email", "handle", "handleChangeAvailableAt", "id", "memoryLanguage", "memoryModel", "memoryModelUsable", "newNotes", "termsAccepted"]);
+    expect(Object.keys(me.json).sort()).toEqual(["avatarVersion", "displayName", "dream", "email", "handle", "handleChangeAvailableAt", "id", "memoryLanguage", "memoryModel", "memoryModelUsable", "newNotes", "termsAccepted", "termsRequired"]);
     expect(me.json.handleChangeAvailableAt).toBeNull();
     // Registered with the documents in force accepted (tests/terms.test.ts): nothing more to ask.
     expect(me.json.termsAccepted).toBe(true);

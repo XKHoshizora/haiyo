@@ -690,10 +690,11 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
       schema: {
         params: z.object({}),
         querystring: z.object({}),
-        response: { 200: z.object({ mailDelivered: z.boolean() }) },
+        response: { 200: z.object({ mailDelivered: z.boolean(), termsRequired: z.boolean() }) },
       },
     },
-    async () => ({ mailDelivered: config.mailMode === "resend" }),
+    // `termsRequired`: whether registration asks for the terms, the privacy policy and the 18+ declaration (`LEGAL.required`).
+    async () => ({ mailDelivered: config.mailMode === "resend", termsRequired: config.legal.required }),
   );
 
   // Apple's universal-links file: its own route, so the web client's wildcard never answers it with the page.

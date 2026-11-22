@@ -228,6 +228,8 @@ export function useApp(
         APP_ORIGIN: "http://localhost:5173",
         RATE_LIMIT_SCALE: "1000",
         SWEEP_INTERVAL_MINUTES: "0", // no background timer unless a test asks for one
+        // The terms required, as the site will have them once the owner approves the texts (tests/terms.test.ts tries it off too).
+        LEGAL: JSON.stringify({ required: true }),
         ...env,
       }),
       ...configured,
