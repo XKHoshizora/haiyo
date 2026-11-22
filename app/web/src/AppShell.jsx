@@ -6,6 +6,7 @@ import { Avatar, BrandMark, IconBtn, LoadingRow } from "./ui/primitives.jsx";
 import { useMediaQuery, usePhone } from "./ui/pointer.js";
 import { ONE_COLUMN_MAX } from "./ui/breakpoints.js";
 import { useRouteFocus } from "./ui/routeFocus.js";
+import { ToastRegion } from "./ui/Toast.jsx";
 import { SECTION_NAMES, pageTitle } from "./state/pageTitle.js";
 import { addressOf, keyOf } from "./state/location.js";
 import { alive, lastPageOf, useAppHistory, useUp } from "./state/appHistory.js";
@@ -253,11 +254,7 @@ export default function Shell() {
       {/* (On a phone the tab bar comes after the pages, in the page's order as well as on screen.) */}
       {tabbar && <Rail phone />}
       <p className="sr-only" aria-live="polite" data-route-announcer="" ref={announcer} />
-      {state.toast && (
-        <div className="toast" role="status" aria-live="polite">
-          {state.toast.text}
-        </div>
-      )}
+      <ToastRegion />
     </div>
   );
 }
