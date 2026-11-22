@@ -271,8 +271,10 @@ describe("the plan: a reply and its replay are one unit, weighed by one function
   it("kept or left out as one: a budget that holds the answer's text but not its replay shows neither (nor anything older)", () => {
     const entries = [user("北京今天天气？"), ack, answer([round("a1")]), user("那明天呢？")];
     const newest = minimalTokens(entries[3]!);
-    const answerText = estimateTokens("今天晴。");
-    const plan = new ContextPlan(entries, newest + answerText + 1);
+    // Room for every text, the older question's included, but not for the answer's replay: neither the answer nor
+    // anything older is shown (were the replay not counted with it, all four would be).
+    const texts = newest + estimateTokens("今天晴。") + estimateTokens("我查一下。") + estimateTokens("北京今天天气？");
+    const plan = new ContextPlan(entries, texts + 1);
     plan.keepOlder();
     expect(plan.shownAt()).toEqual([3]);
     const whole = new ContextPlan(entries, newest + minimalTokens(entries[2]!) + minimalTokens(entries[1]!) + minimalTokens(entries[0]!));
