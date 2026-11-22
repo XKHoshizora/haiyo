@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentPort, recoverRuns, sweepStaleRuns, type DbAgentPort } from "../src/agents/port-impl.ts";
 import { AUTO_RETRY_WINDOW_MS, queueRun, transientFailure } from "../src/agents/runs.ts";
-import { failedEnd, passingEnding, type Ending } from "../src/agents/runtime/port.ts";
+import { failedEnd, NOTHING, passingEnding, UNAVAILABLE, type Ending } from "../src/agents/runtime/port.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { createToolbox, SEARCH_MESSAGES } from "../src/agents/tools/index.ts";
 import type { Config } from "../src/config.ts";
@@ -10,6 +10,7 @@ import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
+import { MULTIPART, multipart } from "./helpers/multipart.ts";
 import { closeAllSockets, connect, type Push } from "./helpers/ws.ts";
 
 /**
@@ -24,7 +25,8 @@ import { closeAllSockets, connect, type Push } from "./helpers/ws.ts";
 
 const gateway = scriptedGateway();
 const lines: string[] = [];
-const { blobs } = useProbeBlobs("af-auto-retry-");
+const store = useProbeBlobs("af-auto-retry-");
+const { blobs } = store;
 const { app, db } = useApp({
   env: { ...SITE_ENV, AGENTS: JSON.stringify({ autoRetryDelaysMs: [20_000, 120_000] }) },
   models: gateway,
@@ -69,6 +71,17 @@ const runsOf = async (conv: string) =>
       [conv],
     )
   ).rows;
+/** A text file sent by `who` into `conv` as a message of its own (so a reply's context has an attachment to read). */
+const sendFile = async (who: Actor, conv: string, filename: string, data: string) => {
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${conv}/attachments`,
+    headers: { cookie: who.cookie, "content-type": MULTIPART },
+    payload: multipart([{ name: "file", filename, type: "text/plain", data }]),
+  });
+  expect(res.statusCode).toBe(201);
+  expect((await api(app, who, "POST", `/api/conversations/${conv}/messages`, { attachmentId: res.json().id, clientTxn: `ar${++txn}` })).status).toBe(201);
+};
 const slot = async (owner: Actor, conv: string) => (await api(app, owner, "GET", `/api/conversations/${conv}/run`)).json.run;
 const agentSaid = async (owner: Actor, conv: string, agentId: string) =>
   (await api(app, owner, "GET", `/api/conversations/${conv}/messages`)).json.messages.filter((m: { senderId: string }) => m.senderId === agentId).map((m: { text: string }) => m.text);
@@ -306,6 +319,34 @@ describe("in the Agent's own conversation", () => {
     // Counted as run only once admitted: this one never was.
     expect(metrics("auto_retry_ran")).toBe(0);
     expect(await instance().worker.runOnce()).toBe(false);
+  });
+
+  it("crossing 10 minutes while its attachments are read: what it took on at its start is handed back, and gets its own reply (round 2 R-4)", async () => {
+    const { owner, conv } = await own("ar_handback");
+    const { port } = instance();
+    await sendFile(owner, conv, "清单.txt", "牛奶、鸡蛋");
+    await say(owner, conv, "看看这个清单");
+    gateway.fail("provider_unavailable", { status: 503 });
+    expect(await instance().worker.runOnce()).toBe(true);
+    advance(20_000);
+    const retry = await port.claimNext();
+    expect(retry).not.toBeNull();
+    // Written after the retry's claim: noted on it, and taken on by its start (step 1, still inside the window).
+    const asked = await say(owner, conv, "再加一样：面包");
+    // The file is read (step 2) as the bound passes.
+    store.probe.beforeGet = () => advance(10 * 60_000);
+    const end = await port.begin(retry!);
+    expect(end).toEqual(UNAVAILABLE);
+    await port.finish(retry!, end as typeof UNAVAILABLE, null, NOTHING);
+    expect((await runsOf(conv)).map((r) => [r.status, r.auto_attempt, r.covers])).toEqual([
+      ["failed", 0, String(asked - 1)],
+      ["failed", 1, String(asked - 1)],
+      ["queued", 0, String(asked)],
+    ]);
+    expect(metrics("auto_retry_gave_up", '"why":"window"')).toBe(1);
+    store.probe.beforeGet = undefined;
+    gateway.fail("provider_unavailable", { status: 400 });
+    expect(await instance().worker.runOnce()).toBe(true);
   });
 
   it("nor when kept waiting past 10 minutes by its owner's other running reply (one place at a time)", async () => {
