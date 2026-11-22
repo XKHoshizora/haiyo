@@ -104,7 +104,7 @@ describe("configuration", () => {
     expect(half.apple.missing).toContain("APPLE_BUNDLE_ID");
   });
 
-  test("a malformed identifier stops the start, naming the variable", () => {
+  test("a malformed identifier never stops the start: no file (and no push), the variable named as malformed", () => {
     for (const [name, bad] of [
       ["APPLE_TEAM_ID", "abcde12345"],
       ["APPLE_TEAM_ID", "ABCDE1234"],
@@ -113,7 +113,8 @@ describe("configuration", () => {
       ["APPLE_BUNDLE_ID", "org.haiyo.app/x"],
       ["APPLE_BUNDLE_ID", "org..haiyo"],
     ] as const) {
-      expect(() => loadConfig({ ...base, ...APPLE, [name]: bad }), `${name}=${bad}`).toThrow(new RegExp(name));
+      const { apple } = loadConfig({ ...base, ...APPLE, [name]: bad });
+      expect([name, bad, apple.app, apple.malformed]).toEqual([name, bad, null, [name]]);
     }
   });
 });

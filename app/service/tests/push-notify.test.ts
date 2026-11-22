@@ -377,6 +377,26 @@ describe("what APNs answers, and what is logged", () => {
   });
 });
 
+describe("a malformed key", () => {
+  const off: string[] = [];
+  const KEY = "-----BEGIN PRIVATE KEY-----\nCANARYKEYMATERIAL\n-----END PRIVATE KEY-----";
+  const { app: plain } = useApp({
+    env: { APPLE_TEAM_ID: "ABCDE12345", APPLE_BUNDLE_ID: "org.haiyo.app", APNS_KEY_ID: "KEY1234567", APNS_KEY_P8: KEY },
+    logStream: { write: (l) => void off.push(l) },
+  });
+
+  test("the service starts; one WARN line names APNS_KEY_P8 as malformed and repeats nothing of it; nothing is pushed", async () => {
+    const lines = off.filter((l) => l.includes('"metric":"push_off"'));
+    expect(lines).toHaveLength(1);
+    const line = JSON.parse(lines[0]!);
+    expect(line.level).toBe(40);
+    expect(line).toMatchObject({ missing: [], malformed: ["APNS_KEY_P8"] });
+    expect(off.join("\n")).not.toContain("CANARYKEYMATERIAL");
+    expect(plain.deps.apns).toBeNull();
+    expect((await api(plain, null, "GET", "/api/health")).status).toBe(200);
+  });
+});
+
 describe("push not configured", () => {
   const off: string[] = [];
   const { app: plain } = useApp({ env: { APPLE_TEAM_ID: "ABCDE12345", APPLE_BUNDLE_ID: "org.haiyo.app" }, logStream: { write: (l) => void off.push(l) } });
@@ -384,7 +404,7 @@ describe("push not configured", () => {
   test("one line at start names what is missing; messages are sent as ever, nothing is pushed", async () => {
     const line = off.find((l) => l.includes('"metric":"push_off"'));
     expect(line).toBeDefined();
-    expect(JSON.parse(line!).missing).toEqual(["APNS_KEY_ID", "APNS_KEY_P8"]);
+    expect(JSON.parse(line!)).toMatchObject({ missing: ["APNS_KEY_ID", "APNS_KEY_P8"], malformed: [] });
     expect(plain.deps.apns).toBeNull();
     const a = await signUp(plain, "off_a");
     const b = await signUp(plain, "off_b");

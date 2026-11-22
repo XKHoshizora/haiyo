@@ -4,8 +4,8 @@ import { SERVICE_SECRET_VARIABLES, loadConfig } from "../src/config.ts";
 
 /**
  * The push variables (README "Push notifications"): `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID` (the push topic), `APNS_KEY_ID` and
- * `APNS_KEY_P8`. All four: pushes are sent. Any missing: none are, and nothing else changes — never a refused start. A
- * value that is there but malformed stops the start, naming the variable and never repeating a key.
+ * `APNS_KEY_P8`. All four: pushes are sent. Any missing or malformed: none are, and nothing else changes — never a refused
+ * start (a chat service must not fail to boot because of a push key); one warning at start names them (tests/push-notify).
  */
 
 const base = { DATABASE_URL: "postgres://x/y", APP_ORIGIN: "https://haiyo.example", AUTH_SECRET: "x".repeat(32), PROVIDER_KEY_SECRET: "p".repeat(32) };
@@ -42,24 +42,27 @@ describe("push configuration", () => {
     expect(loadConfig({ ...base, ...ALL, APNS_KEY_P8: oneLine }).apple.push?.keyPem).toBe(PEM.trim());
   });
 
-  test("a key that is no P-256 private key stops the start naming APNS_KEY_P8, and never repeats it", () => {
+  test("a key that is no P-256 private key never stops the start: push is off, the variable is named as malformed, and nothing of the key is kept", () => {
     const rsa = generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const secp384 = generateKeyPairSync("ec", { namedCurve: "secp384r1" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     for (const bad of ["not-a-key-CANARY-KEY-TEXT", rsa, secp384, PEM.replace("PRIVATE KEY", "PUBLIC KEY")]) {
-      let message = "";
-      try {
-        loadConfig({ ...base, ...ALL, APNS_KEY_P8: bad });
-      } catch (err) {
-        message = (err as Error).message;
-      }
-      expect(message).toMatch(/APNS_KEY_P8/);
-      expect(message).not.toContain("CANARY-KEY-TEXT");
-      expect(message).not.toContain(bad.split("\n")[1] ?? bad);
+      const { apple } = loadConfig({ ...base, ...ALL, APNS_KEY_P8: bad });
+      expect(apple.push).toBeNull();
+      expect(apple.malformed).toEqual(["APNS_KEY_P8"]);
+      expect(apple.missing).toEqual([]);
+      const kept = JSON.stringify(apple);
+      expect(kept).not.toContain("CANARY-KEY-TEXT");
+      expect(kept).not.toContain(bad.split("\n")[1] ?? bad);
+      // The universal links do not need the key.
+      expect(apple.app).toEqual({ teamId: "ABCDE12345", bundleId: "org.haiyo.app" });
     }
   });
 
-  test("a malformed key id stops the start naming APNS_KEY_ID", () => {
-    for (const bad of ["key1234567", "KEY123456", "KEY12345678"]) expect(() => loadConfig({ ...base, ...ALL, APNS_KEY_ID: bad }), bad).toThrow(/APNS_KEY_ID/);
+  test("a malformed key id: push is off, APNS_KEY_ID named as malformed, the start goes on", () => {
+    for (const bad of ["key1234567", "KEY123456", "KEY12345678"]) {
+      const { apple } = loadConfig({ ...base, ...ALL, APNS_KEY_ID: bad });
+      expect([bad, apple.push, apple.malformed]).toEqual([bad, null, ["APNS_KEY_ID"]]);
+    }
   });
 
   test("APNS_KEY_P8 is one of the service's own secrets: no site model may name it as its key", () => {

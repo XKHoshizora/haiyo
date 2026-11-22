@@ -824,15 +824,15 @@ const envSchema = z.object({
     .pipe(z.number().max(1440, "SWEEP_INTERVAL_MINUTES must be at most 1440 (one day)")),
   /** A search's statements are cancelled after this long (503 busy). */
   SEARCH_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
+  // The iOS app's four (`appleSettings` checks them): none of them ever stops the start — a chat service must not fail to
+  // boot because of a push key; a malformed one switches off what needs it, and a warning at start names it.
   /** The iOS app's Team ID at Apple (10 capitals and digits): the universal-links file and the push token's issuer. */
-  APPLE_TEAM_ID: optionalString.pipe(z.string().regex(/^[A-Z0-9]{10}$/, "must be the 10-character Team ID (capitals and digits)").optional()),
+  APPLE_TEAM_ID: optionalString,
   /** The iOS app's bundle id (reverse DNS, e.g. `org.haiyo.app`): the universal-links file and the push topic. */
-  APPLE_BUNDLE_ID: optionalString.pipe(
-    z.string().max(155).regex(/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/, "must be a bundle id such as org.haiyo.app").optional(),
-  ),
+  APPLE_BUNDLE_ID: optionalString,
   /** The Key ID of the APNs signing key (10 capitals and digits). */
-  APNS_KEY_ID: optionalString.pipe(z.string().regex(/^[A-Z0-9]{10}$/, "must be the 10-character Key ID (capitals and digits)").optional()),
-  /** A secret (one of `SERVICE_SECRET_VARIABLES`): the APNs signing key, the `.p8` file's PEM text. Never logged, never in an error. */
+  APNS_KEY_ID: optionalString,
+  /** A secret (one of `SERVICE_SECRET_VARIABLES`): the APNs signing key, the `.p8` file's PEM text. Never logged, never kept malformed. */
   APNS_KEY_P8: optionalString,
 });
 
@@ -847,37 +847,55 @@ export interface AppleConfig {
   push: { teamId: string; topic: string; keyId: string; keyPem: string } | null;
   /** Which of Apple's variables are unset when at least one of them is set (one line at start says so); empty when none is set. */
   missing: string[];
+  /** Which are set but malformed — taken as unset, never a refused start; the same line names them (never their values). */
+  malformed: string[];
 }
 
 /**
- * `APNS_KEY_P8` as the PEM it holds — also when pasted on one line with `\n` escapes —, or an error naming the variable when
- * it is no P-256 private key (APNs signs with ES256 only). The message never repeats any of the value.
+ * `APNS_KEY_P8` as the PEM it holds — also when pasted on one line with `\n` escapes —, or null when it is no P-256 private
+ * key (APNs signs with ES256 only). Nothing of a value that fails is kept or repeated.
  */
-function apnsKeyPem(raw: string): string {
+function apnsKeyPem(raw: string): string | null {
   const pem = raw.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").trim();
-  let ok = false;
   try {
     const key = createPrivateKey(pem);
-    ok = key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails?.namedCurve === "prime256v1";
+    return key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails?.namedCurve === "prime256v1" ? pem : null;
   } catch {
-    // reported below, without the reason (it could quote the value)
+    return null;
   }
-  if (!ok) throw new Error("Invalid configuration: APNS_KEY_P8 must be the APNs signing key, the .p8 file's text (a P-256 private key in PEM)");
-  return pem;
 }
+
+/** The shape each of Apple's ids must have (the key is checked by `apnsKeyPem`). */
+const APPLE_ID_SHAPES: Readonly<Record<"APPLE_TEAM_ID" | "APPLE_BUNDLE_ID" | "APNS_KEY_ID", RegExp>> = {
+  APPLE_TEAM_ID: /^[A-Z0-9]{10}$/,
+  APPLE_BUNDLE_ID: /^(?=.{1,155}$)[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/,
+  APNS_KEY_ID: /^[A-Z0-9]{10}$/,
+};
 
 /**
  * The app at Apple from its variables: both identifiers make the app (its universal links); those and the key's id and key
- * make the pushes. What is missing never stops the start: it is named (one line at start, src/push/notify.ts).
+ * make the pushes. Nothing here stops the start: a missing variable is named in `missing`, a malformed one is taken as unset
+ * and named in `malformed` (one warning at start, src/push/notify.ts).
  */
 function appleSettings(e: { APPLE_TEAM_ID?: string | undefined; APPLE_BUNDLE_ID?: string | undefined; APNS_KEY_ID?: string | undefined; APNS_KEY_P8?: string | undefined }): AppleConfig {
   const given = { APPLE_TEAM_ID: e.APPLE_TEAM_ID, APPLE_BUNDLE_ID: e.APPLE_BUNDLE_ID, APNS_KEY_ID: e.APNS_KEY_ID, APNS_KEY_P8: e.APNS_KEY_P8 };
   const unset = Object.entries(given).filter(([, v]) => v === undefined).map(([k]) => k);
-  const app = e.APPLE_TEAM_ID !== undefined && e.APPLE_BUNDLE_ID !== undefined ? { teamId: e.APPLE_TEAM_ID, bundleId: e.APPLE_BUNDLE_ID } : null;
-  // A key that is there is checked whatever else is missing: a broken one is said at once, not when the rest comes.
-  const keyPem = e.APNS_KEY_P8 === undefined ? undefined : apnsKeyPem(e.APNS_KEY_P8);
-  const push = app && e.APNS_KEY_ID !== undefined && keyPem !== undefined ? { teamId: app.teamId, topic: app.bundleId, keyId: e.APNS_KEY_ID, keyPem } : null;
-  return { app, push, missing: unset.length === Object.keys(given).length ? [] : unset };
+  const malformed: string[] = [];
+  const valid = (name: keyof typeof APPLE_ID_SHAPES): string | undefined => {
+    const v = given[name];
+    if (v === undefined) return undefined;
+    if (APPLE_ID_SHAPES[name].test(v)) return v;
+    malformed.push(name);
+    return undefined;
+  };
+  const teamId = valid("APPLE_TEAM_ID");
+  const bundleId = valid("APPLE_BUNDLE_ID");
+  const keyId = valid("APNS_KEY_ID");
+  const keyPem = e.APNS_KEY_P8 === undefined ? undefined : (apnsKeyPem(e.APNS_KEY_P8) ?? undefined);
+  if (e.APNS_KEY_P8 !== undefined && keyPem === undefined) malformed.push("APNS_KEY_P8");
+  const app = teamId !== undefined && bundleId !== undefined ? { teamId, bundleId } : null;
+  const push = app && keyId !== undefined && keyPem !== undefined ? { teamId: app.teamId, topic: app.bundleId, keyId, keyPem } : null;
+  return { app, push, missing: unset.length === Object.keys(given).length ? [] : unset, malformed };
 }
 
 export interface Config {

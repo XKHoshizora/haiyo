@@ -61,8 +61,9 @@ export interface NotifierDeps {
   presence: { hasSocketFor(sessionId: string): boolean };
   conversations: ConversationEvents;
   log: Pick<FastifyBaseLogger, "info" | "warn">;
-  /** The push variables that are unset when some are set (config.ts `AppleConfig.missing`): one line at start names them. */
+  /** The push variables that are unset when some are set, and those set but malformed (config.ts `AppleConfig`): one WARN line at start names them. */
   missing: string[];
+  malformed: string[];
 }
 
 /** One push to make: a phone, and the conversation it is about. */
@@ -105,8 +106,12 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   let authSaid = false;
   let closed = false;
 
-  if (apns === null && deps.missing.length > 0) {
-    log.warn({ metric: "push_off", missing: deps.missing }, "push notifications are off: these variables are not set");
+  if (apns === null && (deps.missing.length > 0 || deps.malformed.length > 0)) {
+    // Names only: never a value (the key is a secret). A malformed Team or bundle id also turns the universal-links file off.
+    log.warn(
+      { metric: "push_off", missing: deps.missing, malformed: deps.malformed },
+      "push notifications are off: these Apple variables are missing or malformed (a malformed one is ignored; fix it and restart)",
+    );
   }
 
   const count = (why: ApnsFailure) => {
