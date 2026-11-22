@@ -226,6 +226,27 @@ describe("the public pages", () => {
     expect(document.body.textContent).not.toContain("版本");
   });
 
+  it("moving to another of the three pages puts the focus on its heading (the link pressed went with the old page), and names the tab", async () => {
+    languages(["zh-CN"]);
+    vi.spyOn(Element.prototype, "getClientRects").mockImplementation(function rects() {
+      return this.isConnected ? [{ top: 0 }] : [];
+    });
+    at("/terms");
+    mount(pending());
+    await screen.findByRole("heading", { level: 1, name: "服务条款" });
+    const link = within(screen.getByRole("navigation", { name: "其他页面" })).getByRole("link", { name: "联系我们" });
+    link.focus();
+    fireEvent.click(link);
+    const heading = await screen.findByRole("heading", { level: 1, name: "联系我们" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(document.title).toBe("联系我们 · Haiyo");
+    // Switching the language keeps the focus on the switch.
+    const english = screen.getByRole("button", { name: "English" });
+    english.focus();
+    fireEvent.click(english);
+    await screen.findByRole("heading", { level: 1, name: "Contact" });
+    expect(document.activeElement).toBe(english);
+  });
   it("its link to the product goes to the app", async () => {
     languages(["zh-CN"]);
     at("/terms");

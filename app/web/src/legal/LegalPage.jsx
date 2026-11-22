@@ -2,10 +2,11 @@
 // session (App Review opens them from the store page; the app's screens link them in a new tab). Their own chunk; each text is
 // a file of ./texts/ loaded when it is shown. The app has no language setting, so these pages carry their own switch between
 // the three languages they are written in (docs.js `pickLanguage` chooses the first).
-import React, { useEffect, useState } from "react";
-import { PRODUCT_NAME } from "../brand.js";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { PRODUCT_NAME, titled } from "../brand.js";
 import { navigate } from "../auth/router.js";
 import { BrandMark, TextLink } from "../ui/primitives.jsx";
+import { focusOn, lost } from "../ui/focusRules.js";
 import { LEGAL_DOCS, LEGAL_LANGS, LEGAL_PATHS, pickLanguage } from "./docs.js";
 import { parseLegal } from "./legalText.js";
 import { LEGAL_VERSIONS } from "./versions.js";
@@ -88,13 +89,20 @@ export default function LegalPage({ doc }) {
   const chrome = CHROME[lang];
   const parsed = loaded.key === key && loaded.text !== null ? parseLegal(loaded.text) : null;
   const title = parsed?.title || chrome.names[doc];
+  // The tab's title, made as every page's is (brand.js `titled`; the signed-in pages' state/pageTitle.js, the account screens').
   useEffect(() => {
-    const before = document.title;
-    document.title = `${title} · ${PRODUCT_NAME}`;
-    return () => {
-      document.title = before;
-    };
+    document.title = titled(title);
   }, [title]);
+  // Another of the three pages, opened from this one: the link pressed went with the old page, so the focus goes to the new
+  // page's heading, which names it (the rule of ui/routeFocus.js, by its helpers in ui/focusRules.js). The first page of a
+  // visit, and a focus still on something shown (the language switch), are left alone.
+  const heading = useRef(null);
+  const shownDoc = useRef(doc);
+  useLayoutEffect(() => {
+    if (shownDoc.current === doc) return;
+    shownDoc.current = doc;
+    if (lost()) focusOn(heading.current);
+  }, [doc]);
 
   const choose = (next) => {
     setLang(next);
@@ -120,7 +128,7 @@ export default function LegalPage({ doc }) {
         </div>
       </header>
       <article className="legal-doc" lang={HTML_LANG[lang]}>
-        <h1>{title}</h1>
+        <h1 ref={heading}>{title}</h1>
         {doc !== "contact" && <p className="legal-version">{`${chrome.version} ${LEGAL_VERSIONS[doc]}`}</p>}
         {parsed ? (
           parsed.blocks.map((block, i) => <Block key={i} block={block} />)
