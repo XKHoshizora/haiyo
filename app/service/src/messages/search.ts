@@ -2,7 +2,7 @@ import { VISIBLE_JOIN } from "../conversations/store.ts";
 import type { Db, Queryable, Tx } from "../db.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type WireMessage } from "./model.ts";
 import { principalsOf, type SyncPrincipal } from "./principals.ts";
-import { toWireFor, type ReadConfig } from "./read.ts";
+import { postingRun, toWireFor, type ReadConfig } from "./read.ts";
 import { handleOf } from "../principals/store.ts";
 
 /** Searches one principal may have running at once, both routes together; one more is 429 `rate_limited`. */
@@ -118,10 +118,12 @@ export interface SearchRowsOptions {
   /**
    * A reply's own search (agents/tools/search.ts): never the messages reply run `runId` answers in `conversationId`, which
    * its model is shown already (item E: a question would otherwise match itself, and nothing would ever be "not found"
-   * there): the calls it answers (`call_seqs`, which in its Agent's own conversation hold every message of the turn it
-   * answers, agents/runs.ts `maybeTrigger`, `followUp`; its `covers_seq` when not known) and the latest it covers
-   * (`covers_seq`) — in a group other people's messages between them stay findable. Read in this same statement, so
-   * `limit` (and the paging flag made of it) counts what is left. Absent or null: nothing is left out.
+   * there). In a group: the calls it answers (`call_seqs`; its `covers_seq` when not known) and the latest it covers
+   * (`covers_seq`) — other people's messages between them stay findable. In its Agent's own conversation, by position:
+   * every message of the owner's after what the Agent's last posted reply there covered (its posting run's `covers_seq`),
+   * up to what this run covers — a question re-asked after a failure nobody retried, what was written while the Agent was
+   * paused or had no model or was not named, a follow-up's turn. Read in this same statement, so `limit` (and the paging
+   * flag made of it) counts what is left. Absent or null: nothing is left out.
    */
   answering?: { runId: string; conversationId: string } | null;
   limit: number;
@@ -194,7 +196,14 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
         and ($13::uuid is null or m.conversation_id <> $14::uuid
              or not exists (select 1 from agent_runs ar
                              where ar.id = $13::uuid
-                               and (m.seq = ar.covers_seq or m.seq = any(coalesce(ar.call_seqs, array[ar.covers_seq])))))
+                               and (m.seq = ar.covers_seq or m.seq = any(coalesce(ar.call_seqs, array[ar.covers_seq]))
+                                    or (m.sender_id <> ar.agent_id and m.seq <= ar.covers_seq
+                                        and exists (select 1 from agent_conversations ac where ac.conversation_id = ar.conversation_id and ac.agent_id = ar.agent_id)
+                                        and m.seq > coalesce((select max(pr.covers_seq)
+                                                                from messages pm
+                                                                join agent_runs pr on ${postingRun("pm", "pr")}
+                                                               where pm.conversation_id = ar.conversation_id and pm.sender_id = ar.agent_id
+                                                                 and pm.client_txn not like 'ack:%' and pr.id <> ar.id), 0)))))
       order by m.created_at desc, m.conversation_id desc, m.seq desc
       limit $11`,
     [

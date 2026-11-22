@@ -402,7 +402,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
   async function conclude(
     run: RunTicket,
     out: ReplyStream,
-    last: Pick<Round, "finished" | "failure" | "why" | "status"> & { said?: boolean },
+    last: Pick<Round, "finished" | "failure" | "why" | "status"> & { progress?: boolean },
     usage: Usage | null,
     fallback: Estimated,
     failedFallback: Estimated,
@@ -419,11 +419,11 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     const failed = (end: RunEnd) => finish(run, end, usage, failedFallback);
     // Tagged passing or not by THE classifier (port.ts `passingEnding`), with the upstream's status when it answered one.
     if (failure !== null) {
-      const ending = { kind: "upstream" as const, code: failure, ...(last.status === undefined ? {} : { status: last.status }), said: last.said === true };
+      const ending = { kind: "upstream" as const, code: failure, ...(last.status === undefined ? {} : { status: last.status }), progress: last.progress === true };
       return failed(failedEnd(failure, ending, last.status === undefined ? {} : { upstreamStatus: last.status }));
     }
     // The upstream ended the stream without its finish (cut off midway).
-    if (finished === null && why === null) return failed(failedEnd("provider_unavailable", { kind: "cut", said: last.said === true }));
+    if (finished === null && why === null) return failed(failedEnd("provider_unavailable", { kind: "cut", progress: last.progress === true }));
 
     const text = cleanModelText(out.text);
     const reasoning = cleanModelText(out.reasoning);
@@ -442,7 +442,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
     // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — passing only when the
     // reply's time ran out before anything came; an answer that finished with nothing in it is the provider's answer.
-    if (!said) return failed(noAnswer === UNAVAILABLE ? failedEnd("provider_unavailable", finished === null ? { kind: "timeout", said: false } : { kind: "nothing" }) : noAnswer);
+    if (!said) return failed(noAnswer === UNAVAILABLE ? failedEnd("provider_unavailable", finished === null ? { kind: "timeout", progress: last.progress === true } : { kind: "nothing" }) : noAnswer);
     const posted = await post(run, { text, reasoning, stopped: false, truncated: finished === null || finished.truncated, ...looked });
     // All it said was inside a persona block that a limit cut off (in a group, also: it only thought, or said only the
     // mark and labels): as an answer that said nothing.
@@ -484,8 +484,9 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     const usage = round.finished?.usage ?? null;
     // A call never made (a stop or pause landed between `begin` and it) costs nothing, not even its input.
     const fallback = round.opened ? { inputChars: prepared.inputChars, outputChars: out.outputChars() } : NOTHING;
-    // A failed call is charged only what the upstream reported: what it said is discarded and not counted.
-    return conclude(run, out, round, usage, fallback, { ...fallback, outputChars: 0 });
+    // A failed call is charged only what the upstream reported: what it said is discarded and not counted. Whether the reply
+    // had produced anything (port.ts `passingEnding`): what its one call streamed.
+    return conclude(run, out, { ...round, progress: round.said }, usage, fallback, { ...fallback, outputChars: 0 });
   }
 
   /**
@@ -579,7 +580,12 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         return "busy";
       }
     };
-    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status"> & { said?: boolean }; noAnswer?: RunEnd };
+    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status">; noAnswer?: RunEnd };
+    /**
+     * ONE fact about the reply as a whole, set once and never reset (port.ts `passingEnding`): it has produced something —
+     * text or thinking received in any round, its acknowledgement posted, a tool round completed.
+     */
+    let progress = false;
 
     for (;;) {
       const now = interrupted();
@@ -612,6 +618,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         Math.max(0, Math.min(opts.runTimeoutMs, deadline - Date.now())),
       );
       const { finished } = round;
+      if (round.said) progress = true;
       const input = plain
         ? prepared.inputChars
         : prepared.inputChars + estimateTokens(toolsText + (steps.length > 0 ? JSON.stringify(steps) : "") + (final ? `\n\n${FINAL_LINE}` : ""), bounds.ratio);
@@ -657,6 +664,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       // Work follows: what the reply said before it, when it shows anything, is posted at once as its acknowledgement —
       // one per reply — and the answer is what it says after it.
       if (!acknowledged && hasVisibleText(cleanModelText(out.text))) acknowledged = await acknowledge(run, out);
+      if (acknowledged) progress = true;
 
       guard.roundDone();
       tally.rounds++;
@@ -722,6 +730,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       }
       const step = { assistant: finished.assistant, results };
       steps.push(step);
+      // A tool round has completed: the reply has done something.
+      progress = true;
       stepsTokens += estimateTokens(JSON.stringify(step), toolRatio);
       if (tally.garbled >= 2 && !unusable) {
         unusable = true;
@@ -747,7 +757,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     quiet();
     log.info({ metric: "tool_rounds", runId: run.id, ...tally, final }, "agent run: its tool rounds");
     const estimate = meter.estimated();
-    return conclude(run, out, ending.last, meter.usage(), estimate, estimate, ending.noAnswer, looked.fields());
+    return conclude(run, out, { ...ending.last, progress }, meter.usage(), estimate, estimate, ending.noAnswer, looked.fields());
   }
 
   function track(run: RunTicket): Promise<void> {

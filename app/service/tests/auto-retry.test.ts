@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAgentPort, recoverRuns, type DbAgentPort } from "../src/agents/port-impl.ts";
+import { createAgentPort, recoverRuns, sweepStaleRuns, type DbAgentPort } from "../src/agents/port-impl.ts";
 import { AUTO_RETRY_WINDOW_MS, queueRun, transientFailure } from "../src/agents/runs.ts";
 import { failedEnd, passingEnding, type Ending } from "../src/agents/runtime/port.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
@@ -87,33 +87,111 @@ async function scene(name: string) {
   return { owner, mia, agent, g, call: `@${name}_bot` };
 }
 
-describe("THE classifier of passing endings (one table over every ending kind the worker and recovery produce)", () => {
-  const table: Array<[string, Ending, boolean]> = [
-    ["upstream 500", { kind: "upstream", code: "provider_unavailable", status: 500, said: false }, true],
-    ["upstream 503 after text", { kind: "upstream", code: "provider_unavailable", status: 503, said: true }, true],
-    ["upstream 408", { kind: "upstream", code: "provider_unavailable", status: 408, said: false }, true],
-    ["upstream 429", { kind: "upstream", code: "provider_unavailable", status: 429, said: false }, true],
-    ["upstream 400", { kind: "upstream", code: "provider_unavailable", status: 400, said: false }, false],
-    ["upstream 404", { kind: "upstream", code: "provider_unavailable", status: 404, said: false }, false],
-    ["upstream 422", { kind: "upstream", code: "provider_unavailable", status: 422, said: false }, false],
-    ["network error, nothing said", { kind: "upstream", code: "provider_unavailable", said: false }, true],
-    ["network error after text", { kind: "upstream", code: "provider_unavailable", said: true }, false],
-    ["key refused 401", { kind: "upstream", code: "provider_rejected", status: 401, said: false }, false],
-    ["address refused", { kind: "upstream", code: "address_not_allowed", said: false }, false],
-    ["thinking exhausted", { kind: "upstream", code: "thinking_exhausted", said: true }, false],
-    ["stream cut, nothing said", { kind: "cut", said: false }, true],
-    ["stream cut after text", { kind: "cut", said: true }, false],
-    ["the reply's time out, nothing said", { kind: "timeout", said: false }, true],
-    ["the reply's time out after text", { kind: "timeout", said: true }, false],
-    ["finished with nothing in it (refused, thought only, cut block)", { kind: "nothing" }, false],
-    ["lost mid-call (restart, release, sweep)", { kind: "lost" }, true],
+describe("THE classifier of passing endings: every ending kind × whether the reply had produced anything (design note, table 1)", () => {
+  /** Each ending kind as a function of the reply-wide `progress` fact; `passing`: passing while nothing was produced yet. */
+  const kinds: Array<[string, (progress: boolean) => Ending, boolean]> = [
+    ["upstream 500", (progress) => ({ kind: "upstream", code: "provider_unavailable", status: 500, progress }), true],
+    ["upstream 503", (progress) => ({ kind: "upstream", code: "provider_unavailable", status: 503, progress }), true],
+    ["upstream 408", (progress) => ({ kind: "upstream", code: "provider_unavailable", status: 408, progress }), true],
+    ["upstream 429", (progress) => ({ kind: "upstream", code: "provider_unavailable", status: 429, progress }), true],
+    ["upstream 400", (progress) => ({ kind: "upstream", code: "provider_unavailable", status: 400, progress }), false],
+    ["upstream 404", (progress) => ({ kind: "upstream", code: "provider_unavailable", status: 404, progress }), false],
+    ["upstream 422", (progress) => ({ kind: "upstream", code: "provider_unavailable", status: 422, progress }), false],
+    ["call error with no status", (progress) => ({ kind: "upstream", code: "provider_unavailable", progress }), true],
+    ["key refused 401", (progress) => ({ kind: "upstream", code: "provider_rejected", status: 401, progress }), false],
+    ["address refused", (progress) => ({ kind: "upstream", code: "address_not_allowed", progress }), false],
+    ["thinking exhausted", (progress) => ({ kind: "upstream", code: "thinking_exhausted", progress }), false],
+    ["stream cut", (progress) => ({ kind: "cut", progress }), true],
+    ["the reply's time out", (progress) => ({ kind: "timeout", progress }), true],
+    ["finished with nothing in it", () => ({ kind: "nothing" }), false],
+    ["lost mid-call", (progress) => ({ kind: "lost", progress }), true],
   ];
-  it.each(table)("%s → %s", (_name, ending, passing) => {
+  const cells = kinds.flatMap(([name, of, passing]) => [
+    [name, "nothing yet", of(false), passing] as const,
+    [name, "anything already", of(true), false] as const,
+  ]);
+  it.each(cells)("%s, %s → %s", (_name, _state, ending, passing) => {
     expect(passingEnding(ending)).toBe(passing);
     expect(transientFailure(failedEnd("provider_unavailable", ending))).toBe(passing);
   });
   it("nothing that is not a failure tagged passing is ever transient", () => {
     for (const end of [{ status: "failed" }, { status: "done" }, { status: "stopped" }, { status: "cancelled" }]) expect(transientFailure(end)).toBe(false);
+  });
+});
+
+describe("after the reply produced something, nothing is passing (round 2 R-2)", () => {
+  it("acknowledged, then a network error on its next round: the failure is shown at once, nothing queued", async () => {
+    const w = await scene("ar_acked");
+    const { worker } = instance(app.deps.config, true);
+    await say(w.mia, w.g, `${w.call} 打印机的维修电话？`);
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "维修电话" } }], { text: "我查一下。" }).fail("provider_unavailable");
+    expect(await worker.runOnce()).toBe(true);
+    expect((await runsOf(w.g)).map((r) => [r.status, r.error])).toEqual([["failed", "provider_unavailable"]]);
+  });
+
+  it("a run lost mid-call after its acknowledgement was posted is not tried again; one lost before anything is", async () => {
+    const w = await scene("ar_lost_acked");
+    const { port } = instance();
+    await say(w.mia, w.g, `${w.call} 在吗`);
+    const lost = await port.claimNext();
+    await db.query("update agent_runs set progressed = true where id = $1", [lost!.id]);
+    expect(await port.releaseRun(lost!.id)).toBe(true);
+    expect((await runsOf(w.g)).map((r) => r.status)).toEqual(["failed"]);
+    await say(w.mia, w.g, `${w.call} 还在吗`);
+    const fresh = await port.claimNext();
+    expect(await port.releaseRun(fresh!.id)).toBe(true);
+    expect((await runsOf(w.g)).map((r) => [r.status, r.auto_attempt])).toEqual([
+      ["failed", 0],
+      ["failed", 0],
+      ["queued", 1],
+    ]);
+    await db.query("update agent_runs set status = 'cancelled' where conversation_id = $1 and status = 'queued'", [w.g]);
+  });
+});
+
+describe("a greeting never hides its owner's message, however it ends (round 2 R-1)", () => {
+  /** A new Agent whose greeting is running (claimed here), and its owner's message written meanwhile. */
+  async function greetingRunning(name: string) {
+    const owner = await signUp(app, name);
+    const agent = await mustCreateAgent(app, owner, { model: FAST });
+    const conv = agent.conversationId as string;
+    await db.tx(async (t) => {
+      const q = await queueRun(t, { id: agent.id, ownerId: owner.id }, conv, 0, "human", { id: owner.id, lane: "own" }, [owner.id]);
+      await t.query("update agent_runs set greets = true, call_seqs = '{}' where id = $1", [q.run.id]);
+    });
+    const p = instance();
+    const greeting = await p.port.claimNext();
+    expect(greeting).not.toBeNull();
+    const asked = await say(owner, conv, "你好，在吗");
+    return { owner, conv, p, greeting: greeting!, asked };
+  }
+  const expectAnswered = async (owner: Actor, conv: string, asked: number) => {
+    expect((await runsOf(conv)).map((r) => [r.status, r.greets, r.covers])).toEqual([
+      ["cancelled", true, "0"],
+      ["queued", false, String(asked)],
+    ]);
+    gateway.fail("provider_unavailable", { status: 400 });
+    expect(await instance().worker.runOnce()).toBe(true);
+    expect(await slot(owner, conv)).toMatchObject({ status: "failed", error: "provider_unavailable", retryable: true });
+  };
+
+  it("(a) restart recovery: the greeting ends quietly and the message gets an ordinary reply (here failing visibly, with 重试)", async () => {
+    const { owner, conv, asked } = await greetingRunning("ar_gr_a");
+    expect(await recoverRuns(db, app.deps.config, app.log, now)).toBe(1);
+    await expectAnswered(owner, conv, asked);
+  });
+
+  it("(b) release at shutdown: the same", async () => {
+    const { owner, conv, p, greeting, asked } = await greetingRunning("ar_gr_b");
+    await p.port.release(greeting);
+    await expectAnswered(owner, conv, asked);
+  });
+
+  it("(c) the stale-run sweep: the same", async () => {
+    const { owner, conv, p, greeting, asked } = await greetingRunning("ar_gr_c");
+    await db.query("update agent_runs set started_at = now() - interval '1 day' where id = $1", [greeting.id]);
+    expect(await sweepStaleRuns(p.port, db, app.deps.config, app.log, () => false)).toBe(1);
+    await expectAnswered(owner, conv, asked);
   });
 });
 
@@ -225,6 +303,8 @@ describe("in the Agent's own conversation", () => {
     ]);
     expect(await slot(owner, conv)).toMatchObject({ status: "failed", retryable: true });
     expect(metrics("auto_retry_gave_up", '"why":"window"')).toBe(1);
+    // Counted as run only once admitted: this one never was.
+    expect(metrics("auto_retry_ran")).toBe(0);
     expect(await instance().worker.runOnce()).toBe(false);
   });
 
@@ -518,17 +598,14 @@ describe("in a group", () => {
     expect(o2.events.filter((e: Push) => e.type === "run" && e.run?.status === "failed")).toEqual([]);
   });
 
-  it("a retry after an acknowledgement and a tool round posts no second acknowledgement, and answers once", async () => {
+  it("a 503 after an acknowledgement and a tool round is no passing failure (the reply had done things): shown at once; the owner's 重试 posts no second acknowledgement", async () => {
     const w = await scene("ar_ack");
     const { worker } = instance(app.deps.config, true);
     await say(w.mia, w.g, `${w.call} 打印机的维修电话？`);
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "维修电话" } }], { text: "我查一下。" }).fail("provider_unavailable", { status: 503 });
     expect(await worker.runOnce()).toBe(true);
-    expect((await runsOf(w.g)).map((r) => [r.status, r.auto_attempt])).toEqual([
-      ["failed", 0],
-      ["queued", 1],
-    ]);
-    advance(20_000);
+    expect((await runsOf(w.g)).map((r) => [r.status, r.auto_attempt])).toEqual([["failed", 0]]);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "维修电话" } }], { text: "我再查一下。" }).reply("群里没人说过。");
     expect(await worker.runOnce()).toBe(true);
     // The retry's own words before its search are not posted as a second acknowledgement: they stay its answer's.

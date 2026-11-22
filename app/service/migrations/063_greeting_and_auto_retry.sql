@@ -14,12 +14,16 @@ alter table agent_runs add column retry_of uuid references agent_runs (id) on de
 alter table agent_runs add column auto_attempt smallint not null default 0 check (auto_attempt >= 0);
 alter table agent_runs add column not_before timestamptz;
 alter table agent_runs add column owner_retry boolean not null default false;
+-- Whether the reply had produced something before it ended — its acknowledgement posted, a tool round completed: read by
+-- recovery, for a run the service lost mid-call is passing only while it had produced nothing (runtime/port.ts `passingEnding`).
+alter table agent_runs add column progressed boolean not null default false;
 alter table agent_runs add constraint agent_runs_retry_attempt check (auto_attempt = 0 or retry_of is not null);
 create index agent_runs_retry_of_idx on agent_runs (retry_of) where retry_of is not null;
 
 -- Down Migration
 drop index agent_runs_retry_of_idx;
 alter table agent_runs drop constraint agent_runs_retry_attempt;
+alter table agent_runs drop column progressed;
 alter table agent_runs drop column owner_retry;
 alter table agent_runs drop column not_before;
 alter table agent_runs drop column auto_attempt;

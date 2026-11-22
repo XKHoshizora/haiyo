@@ -347,6 +347,8 @@ export async function postAsAgent(
   if (proposalId !== null) body.proposalId = proposalId;
   if (ack) {
     body.ack = true;
+    // The reply has produced something (what recovery reads after a restart: runtime/port.ts `passingEnding`).
+    await t.query("update agent_runs set progressed = true where id = $1", [runId]);
     return { message: await insertMessage(t, conversationId, agentId, "text", body, txn), duplicate: false, triggered: noneTriggered() };
   }
   // Someone else wrote after the acknowledgement that stands for it (its own, or an earlier attempt's: a retry's): the

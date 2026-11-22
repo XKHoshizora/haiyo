@@ -77,8 +77,29 @@ async function owned(name = "olive") {
   const agent = await mustCreateAgent(app, owner, { handle: `${name}_bot`, name: "小助手", model: FAST, persona: "简短地回答。" });
   return { owner, agent, own: agent.conversationId as string };
 }
+/**
+ * In an Agent's own conversation: everything written so far counts as answered — a reply of the Agent's, from a run that
+ * covered it, is put after it — so that the next question's search finds it (item E leaves out, by position, every
+ * message of the owner's after what the Agent's last reply covered). Nothing in a group.
+ */
+async function answeredSoFar(conv: string): Promise<void> {
+  const own = (await db.query<{ agent_id: string; owner_id: string }>("select agent_id, owner_id from agent_conversations where conversation_id = $1", [conv])).rows[0];
+  const seq = await lastOf(conv);
+  if (!own || seq === 0) return;
+  const run = await db.query<{ id: string }>(
+    "insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, caller_id, triggered_by) values ('reply', $1, $2, $3, 'done', $4, 'own', $3, 'human') returning id",
+    [conv, own.agent_id, own.owner_id, seq],
+  );
+  await db.query(
+    `with c as (update conversations set seq = seq + 1 where id = $1 returning seq)
+     insert into messages (conversation_id, seq, sender_id, kind, body, client_txn) select $1, c.seq, $2, 'text', '{"text":"收到。"}'::jsonb, $3 from c`,
+    [conv, own.agent_id, run.rows[0]!.id],
+  );
+  asWritten.add("收到。");
+}
 /** One reply in `conv` (asked by `asker` with `question`) whose first round calls the search with `input`: what it gave. */
 async function searchOnce(asker: Actor, conv: string, question: string, input: Record<string, unknown>, d?: ToolDeps, answer = "好。") {
+  await answeredSoFar(conv);
   await say(asker, conv, question);
   gateway.callTools([{ name: SEARCH_MESSAGES, input }]).reply(answer);
   expect(await toolWorker(d).runOnce()).toBe(true);
@@ -454,6 +475,7 @@ describe("what the reply keeps of its searches", () => {
     const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);
     await addAgent(owner, g, agent.id);
     await postAs(own, owner.id, "引用-p1 去河边");
+    await answeredSoFar(own);
     const b = await say(mia, g, "引用-p2 抄这个〔m1〕和〔m2〕");
     await say(owner, own, "找找看");
     gateway
@@ -571,6 +593,7 @@ describe("a search never returns the messages its run answers (item E): they are
   it("in the Agent's own conversation the whole turn it answers is left out: three messages folded into one reply, the middle one matching", async () => {
     const { owner, agent, own } = await owned("quinn");
     const earlier = await postAs(own, owner.id, "上周说过：钥匙在门口的鞋柜里");
+    await answeredSoFar(own);
     await say(owner, own, "我找不到东西了");
     await say(owner, own, "钥匙在哪来着？");
     await say(owner, own, "快帮我想想");
@@ -596,6 +619,47 @@ describe("a search never returns the messages its run answers (item E): they are
     expect(await toolWorker().runOnce()).toBe(true);
     expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["雨伞放在车里了"]);
     expect(answered).toBeGreaterThan(0);
+  });
+
+  it("own conversation, by position: a question whose reply failed and was not retried, asked again, is not found either", async () => {
+    const { owner, own } = await owned("sara");
+    await postAs(own, owner.id, "之前说过：护照在书桌的抽屉里");
+    await answeredSoFar(own);
+    await say(owner, own, "护照放在哪了？");
+    gateway.fail("provider_rejected", { status: 401 });
+    expect(await toolWorker().runOnce()).toBe(true);
+    await say(owner, own, "护照在哪，快想想");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "护照" } }]).reply("在抽屉里。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["之前说过：护照在书桌的抽屉里"]);
+  });
+
+  it("own conversation, by position: what the owner wrote while the Agent was paused, or not naming it in mention mode, is not found", async () => {
+    const { owner, agent, own } = await owned("tess");
+    await postAs(own, owner.id, "之前说过：雨衣挂在门后");
+    await answeredSoFar(own);
+    expect((await api(app, owner, "POST", `/api/agents/${agent.id}/pause`)).status).toBe(200);
+    await say(owner, own, "雨衣是哪件来着");
+    expect((await api(app, owner, "POST", `/api/agents/${agent.id}/resume`)).status).toBe(200);
+    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { replyMode: "mention" })).status).toBe(200);
+    await say(owner, own, "雨衣会不会在车里");
+    await say(owner, own, `@${agent.handle} 雨衣在哪？`);
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "雨衣" } }]).reply("门后。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["之前说过：雨衣挂在门后"]);
+  });
+
+  it("own conversation: `more` counts what is left after the turn is left out — 8 answered matches and 2 of the turn's (10 in all) are one whole page", async () => {
+    const { owner, own } = await owned("ursula");
+    for (let i = 3; i <= 10; i++) await postAs(own, owner.id, `第${i}次：眼镜在床头柜`, `2026-10-${String(i).padStart(2, "0")}T04:00:00Z`);
+    await answeredSoFar(own);
+    await say(owner, own, "眼镜在哪？");
+    await say(owner, own, "眼镜是不是在床头柜");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "眼镜" } }]).reply("在床头柜。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    const out = outputs(gateway.calls.at(-1)!)[0];
+    expect(out.results.map((r: any) => r.text)).toEqual([10, 9, 8, 7, 6, 5, 4, 3].map((i) => `第${i}次：眼镜在床头柜`));
+    expect(out.more).toBe(false);
   });
 
   it("in the Agent's own conversation too; and `more` is decided after the exclusion — 8 earlier matches (crossing seq 10) are the whole page, 10 are not", async () => {

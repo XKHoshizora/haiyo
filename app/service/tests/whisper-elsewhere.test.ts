@@ -1510,7 +1510,7 @@ describe("the system's automatic retry and a found-elsewhere whisper (README Rep
     ]);
   });
 
-  it("a reply whose later round fails after its search found nothing here is retried, and its retry makes no second whisper about the same question", async () => {
+  it("a reply whose later round fails after its search found nothing here is not retried by the system (it had done a tool round); its owner's 重试 searches again and makes no second whisper about the same question", async () => {
     offset = 0;
     const w = await world();
     const hook = createElsewhere(elsewhereDeps());
@@ -1520,7 +1520,9 @@ describe("the system's automatic retry and a found-elsewhere whisper (README Rep
     expect(await worker.runOnce()).toBe(true);
     await hook.idle();
     expect(await whispersOf(w.owner.id, w.g)).toHaveLength(1);
-    offset += 20_000;
+    offset += 200_000;
+    expect(await worker.runOnce()).toBe(false);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("这个群的记录里没找到。");
     expect(await worker.runOnce()).toBe(true);
     await hook.idle();

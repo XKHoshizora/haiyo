@@ -423,7 +423,7 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   "reminder_no_agent" }` once for each reminder that found its owner with no Agent at all to be told in.
 - `{ "metric": "run_held_back" }`, once each time a reply is held back at its admission (Metering, Money that does not
   block): how often replies wait for one another's holds — each time, its next claim reads its conversation again.
-- `{ "metric": "auto_retry_scheduled", "attempt" }`, `{ "metric": "auto_retry_ran", "attempt" }` (claimed) and
+- `{ "metric": "auto_retry_scheduled", "attempt" }`, `{ "metric": "auto_retry_ran", "attempt" }` (admitted: its call is made) and
   `{ "metric": "auto_retry_gave_up", "why": "attempts" | "window" | "rate_limited" }`, once each (Replies, Automatic retry):
   how often a model service's passing failure is tried again by the system, and how often that is not enough.
 - `{ "metric": "elsewhere_skipped", "runId" }`, once for each "not here, but elsewhere" lookup skipped because as many as
@@ -885,16 +885,22 @@ owner learns from the `run` push and from `GET /api/conversations/:id/run` (in a
 
 **Automatic retry** (`src/agents/runs.ts` `scheduleAutoRetry`, migration `063_greeting_and_auto_retry.sql`;
 `tests/auto-retry.test.ts`): a reply that failed for a reason that clears by itself is tried again by the system, nobody
-pressing anything. Passing means only an explicit signal (`src/agents/runtime/port.ts` `passingEnding`, THE classifier,
-which tags the failed end `transient`): the model service answered 5xx, 408 or 429; a call error with no status, a
-stream cut short or the reply's own time out, each before any text or thinking came; or the service lost the run
-mid-call (start-up recovery, the release at a stop, the stale-run sweep). An answer that finished with nothing in it (a
-content refusal, only thinking, a persona block cut at the limit, a group reply that was only its mark) is the
-provider's answer and is not retried; nor is anything else (no money, a model gone, a key or request refused, a context
-too small, a stop, a pause, a delete). Which runs (the table): an ordinary reply in the Agent's own conversation or in a
+pressing anything. Passing means only an explicit signal while THE REPLY AS A WHOLE has produced nothing yet
+(`src/agents/runtime/port.ts` `passingEnding`, THE classifier, which tags the failed end `transient`; one reply-wide
+fact, set once: any text or thinking received in any round, an acknowledgement posted, a tool round completed — for a run
+the service lost, `agent_runs.progressed`, set by the acknowledgement and by every step between tool rounds): the model
+service answered 5xx, 408 or 429; a call error with no status, a stream cut short or the reply's own time out; or the
+service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep). After anything
+was produced none of these is passing (the reply already spent and did things; repeating them unattended is not
+acceptable): it is the ordinary failure, with 重试. An answer that finished with nothing in it (a content refusal, only
+thinking, a persona block cut at the limit, a group reply that was only its mark) is the provider's answer and is not
+retried; nor is anything else (no money, a model gone, a key or request refused, a context too small, a stop, a pause,
+a delete). Which runs (the table): an ordinary reply in the Agent's own conversation or in a
 group, whoever called it (an Agent's relayed call included) — never a reply nobody asked for (lane `proactive`), a
 told reply (`告诉他们`: its owner has just pressed it; its whisper reads open again and offers 重试, and the members'
-calls noted on it get their follow-up at once), a new Agent's greeting, or a run queued by the owner's own 重试
+calls noted on it get their follow-up at once), a new Agent's greeting (what its owner wrote while it ran always gets an
+ordinary follow-up, however the greeting ends — answered, failed, stopped, lost at a restart, released at shutdown or by
+the stale-run sweep: `port-impl.ts` `followUpOnEnd`, the one place for every ending), or a run queued by the owner's own 重试
 (`owner_retry`: the owner is there). At most once per wait of `AGENTS.autoRetryDelaysMs` per original call (default
 `[20000, 120000]`: 20 s, then 2 min after the failure; `[]` turns it off; counted on the chain, `retry_of` /
 `auto_attempt`, also across restarts), and only when it can START within 10 minutes of the original call: one held back
@@ -3574,9 +3580,11 @@ what looks like one is what someone wrote.
   `begin`); in the Agent's own
   conversation, every conversation the Agent is a current member of (its own and its groups, each as the Agent sees it).
   Never the messages the reply answers (its model is shown them already; a question would match itself): in a group the
-  calls it answers and the latest it covers (other people's messages between them are found as any), in the Agent's own
-  conversation the whole turn it answers (every message of the owner's after what the Agent's last answered reply
-  covered); "nothing found", its note and the elsewhere lookup are decided without them, and so is `more`.
+  calls it answers and the latest it covers (other people's messages between them are found as any); in the Agent's own
+  conversation, by position, every message of the owner's after what the Agent's last posted reply there covered (its
+  posting run's `covers_seq`), up to what this reply covers — so also a question re-asked after a failure nobody retried,
+  and what was written while the Agent was paused, had no model or was not named; "nothing found", its note and the
+  elsewhere lookup are decided without them, and so is `more`.
   A new topic changes nothing here: search is history, not context. Matched as the search routes match (Search: a
   substring of the text or the file's name, any case); `query` is cleaned as a stored text is (`cleanText`), then refused
   under two characters (`要查的词至少要两个字。`) or over a weight of 60 (`要查的词太长了，换几个关键的字再查。`) without touching the

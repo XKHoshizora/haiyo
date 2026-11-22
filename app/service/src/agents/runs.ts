@@ -1318,12 +1318,7 @@ export async function followUp(
   config: RunLimits,
 ): Promise<FollowUp> {
   const owners = callerOf(agent.ownerId, agent.ownerId);
-  if (conversationId === agent.conversationId) {
-    // It answers every message its owner wrote meanwhile: those noted on the run that ended are its calls.
-    const queued = await queueRun(t, agent, conversationId, pending, "human", owners, [agent.ownerId]);
-    await answersCalls(t, queued.run.id, (callSeqs ?? []).map(Number).filter((s) => s > covers && s <= pending));
-    return followUpOf(queued);
-  }
+  if (conversationId === agent.conversationId) return followUpOf(await queueRun(t, agent, conversationId, pending, "human", owners, [agent.ownerId]));
   // The person behind each message (`behindMessageSql`): its sender; for an Agent's message, the caller of the run that
   // posted it (`postingRun`) unless that run is its owner's own (or there is none: the owner). A message does not count
   // when it was refused for this Agent when it was posted (`refused_agent_calls`), nor when there is a block, either way,
@@ -1458,13 +1453,10 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
   );
   const gaveWay: Announced[] = greeting.rows.map((r) => ({ ownerId: agent.ownerId, conversationId, run: toWireRun(r) }));
 
-  // Each of the owner's messages a reply answers is one of its calls (`call_seqs`): the whole turn, which its search never
-  // finds (item E); one noted on a running reply is its follow-up's (`followUp`).
   const folded = await t.query(
     `update agent_runs
         set covers_seq = case when status = 'queued' then greatest(covers_seq, $3) else covers_seq end,
-            pending_seq = case when status = 'running' then greatest(pending_seq, $3) else pending_seq end,
-            call_seqs = array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || $3::bigint) as x (s) order by s)
+            pending_seq = case when status = 'running' then greatest(pending_seq, $3) else pending_seq end
       where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')`,
     [agent.id, conversationId, message.seq],
   );
@@ -1698,7 +1690,6 @@ export async function retryRun(
   const latest = await latestRun(t, conversationId);
   if (latest?.status === "queued" || latest?.status === "running") throw new AppError(409, "busy_run");
   if (latest?.status !== "failed" || agent.model === null) throw new AppError(400, "invalid_request");
-  const failedCalls = await t.query<{ calls: string[] | null }>("select coalesce(call_seqs, array[covers_seq])::text[] as calls from agent_runs where id = $1", [latest.id]);
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
   const last = await t.query<{ seq: string | null }>(
@@ -1707,8 +1698,6 @@ export async function retryRun(
   );
   if (last.rows[0]?.seq == null) throw new AppError(400, "invalid_request");
   const queued = await queueRun(t, agent, conversationId, Number(last.rows[0].seq), "human", callerOf(ownerId, ownerId), [ownerId]);
-  // It answers what the failed one was to answer: its calls.
-  await answersCalls(t, queued.run.id, (failedCalls.rows[0]?.calls ?? []).map(Number));
   await ownersRetry(t, queued.run.id);
   return queued;
 }

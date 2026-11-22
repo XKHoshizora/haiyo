@@ -44,8 +44,8 @@ export interface CallToolsOptions {
 type Step =
   | Answer
   | { kind: "tools"; calls: Array<{ name: string; input: unknown }>; options: CallToolsOptions }
-  | { kind: "fail"; code: ModelErrorCode; afterText: string; status?: number; usage?: { inputTokens: number; outputTokens: number } }
-  | { kind: "cut"; text: string }
+  | { kind: "fail"; code: ModelErrorCode; afterText: string; afterReasoning: string; status?: number; usage?: { inputTokens: number; outputTokens: number } }
+  | { kind: "cut"; text: string; reasoning: string }
   | { kind: "hang"; before: string; gate: Promise<Answer>; reached: (call: ModelCall) => void };
 
 export interface ScriptedGateway extends ModelGateway {
@@ -76,9 +76,9 @@ export interface ScriptedGateway extends ModelGateway {
    * The next call throws `ModelError(code)` (with `usage`, as `thinking_exhausted` has it, and the upstream's HTTP `status`
    * when given), after streaming `afterText` if given.
    */
-  fail(code: ModelErrorCode, options?: { afterText?: string; status?: number; usage?: { inputTokens: number; outputTokens: number } }): ScriptedGateway;
+  fail(code: ModelErrorCode, options?: { afterText?: string; afterReasoning?: string; status?: number; usage?: { inputTokens: number; outputTokens: number } }): ScriptedGateway;
   /** The next call streams `text`, then simply ends: no `finish`, no error (an upstream that cut the stream short). */
-  cut(text: string): ScriptedGateway;
+  cut(text: string, reasoning?: string): ScriptedGateway;
   /** The next call hangs until released (or until its signal aborts). */
   hang(): Hold;
   /**
@@ -232,6 +232,7 @@ export function scriptedGateway(): ScriptedGateway {
       }
     };
     if (scripted.kind === "cut") {
+      yield* emit("reasoning", scripted.reasoning);
       yield* emit("text", scripted.text);
       return;
     }
@@ -250,6 +251,7 @@ export function scriptedGateway(): ScriptedGateway {
     delay = step.kind === "reply" ? (step.options.delayMsPerChunk ?? 0) : 0;
     size = step.kind === "reply" ? (step.options.chunkSize ?? 8) : 8;
     if (step.kind === "fail") {
+      yield* emit("reasoning", step.afterReasoning);
       yield* emit("text", step.afterText);
       throw new ModelError(step.code, step.status, step.usage);
     }
@@ -306,11 +308,11 @@ export function scriptedGateway(): ScriptedGateway {
       return gateway;
     },
     fail(code, options = {}) {
-      queue.push({ kind: "fail", code, afterText: options.afterText ?? "", ...(options.status ? { status: options.status } : {}), ...(options.usage ? { usage: options.usage } : {}) });
+      queue.push({ kind: "fail", code, afterText: options.afterText ?? "", afterReasoning: options.afterReasoning ?? "", ...(options.status ? { status: options.status } : {}), ...(options.usage ? { usage: options.usage } : {}) });
       return gateway;
     },
-    cut(text) {
-      queue.push({ kind: "cut", text });
+    cut(text, reasoning = "") {
+      queue.push({ kind: "cut", text, reasoning });
       return gateway;
     },
     hang() {

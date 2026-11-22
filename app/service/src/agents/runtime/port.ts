@@ -157,40 +157,41 @@ export type RunEnd =
 export const UNAVAILABLE = { status: "failed", error: "provider_unavailable" } as const satisfies RunEnd;
 
 /**
- * How a reply's model call ended badly, as the worker (and recovery) knows it: what `passingEnding` classifies.
- * - `upstream`: the call failed with an error of the gateway's (`code`), with the upstream's HTTP status when it answered
- *   one, and whether any text or thinking had come before (`said`);
- * - `cut`: the stream ended without its finish; `timeout`: the reply's own time ran out — each with `said`;
+ * How a reply's model call ended badly, as the worker (and recovery) knows it: what `passingEnding` classifies. Each
+ * carries `progress`, ONE fact about the reply as a whole, set once and never reset: whether it had produced anything yet
+ * — any text or thinking received in any round, an acknowledgement posted, a tool round completed (for a run the service
+ * lost, what its row recorded: `agent_runs.progressed`).
+ * - `upstream`: the call failed with an error of the gateway's (`code`), with the upstream's HTTP status when it answered one;
+ * - `cut`: the stream ended without its finish; `timeout`: the reply's own time ran out;
  * - `nothing`: the answer finished and nothing visible was left (a content refusal, only thinking, a persona block cut at
  *   the limit, a group reply that was only the mark and labels);
- * - `lost`: the service lost the run mid-call (start-up recovery, the release at a stop, the stale-run sweep).
+ * - `lost`: the service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep).
  */
 export type Ending =
-  | { kind: "upstream"; code: RunErrorCode; status?: number; said: boolean }
-  | { kind: "cut"; said: boolean }
-  | { kind: "timeout"; said: boolean }
+  | { kind: "upstream"; code: RunErrorCode; status?: number; progress: boolean }
+  | { kind: "cut"; progress: boolean }
+  | { kind: "timeout"; progress: boolean }
   | { kind: "nothing" }
-  | { kind: "lost" };
+  | { kind: "lost"; progress: boolean };
 
 /**
- * THE classifier of a passing (transient) ending — only an explicit signal: the upstream's 5xx, 408 or 429; a call error
- * with no status, the stream cut, or the reply's time out, each before any text or thinking came; or the service lost the
- * run mid-call. Never an answer that finished with nothing in it (the provider did answer: trying again gives the same),
- * never another status, never an error of another kind (a refused key, a refused address, thinking exhausted).
+ * THE classifier of a passing (transient) ending (README "Replies", Automatic retry, table 1): only an explicit signal,
+ * and only while the reply as a whole has produced nothing yet (`progress` false) — the upstream's 5xx, 408 or 429; a call
+ * error with no status, a cut stream or the reply's time out; or the service losing the run mid-call. After anything was
+ * produced nothing is passing: the reply already spent and did things, and repeating them unattended is not acceptable.
+ * Never an answer that finished with nothing in it, another status, or an error of another kind.
  */
 export function passingEnding(e: Ending): boolean {
   switch (e.kind) {
     case "upstream":
-      if (e.code !== "provider_unavailable") return false;
-      if (e.status !== undefined) return e.status >= 500 || e.status === 408 || e.status === 429;
-      return !e.said;
+      if (e.progress || e.code !== "provider_unavailable") return false;
+      return e.status === undefined || e.status >= 500 || e.status === 408 || e.status === 429;
     case "cut":
     case "timeout":
-      return !e.said;
+    case "lost":
+      return !e.progress;
     case "nothing":
       return false;
-    case "lost":
-      return true;
   }
 }
 
