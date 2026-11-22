@@ -111,6 +111,182 @@ describe("opening", () => {
   });
 });
 
+describe("a picture opens only on a genuine single-finger tap that began and ended on it", () => {
+  const down = (el, pointerId = 1, extra = {}) => fireEvent.pointerDown(el, { pointerId, pointerType: "touch", isPrimary: pointerId === 1, ...extra });
+  const up = (el, pointerId = 1) => fireEvent.pointerUp(el, { pointerId, pointerType: "touch", isPrimary: pointerId === 1 });
+  const viewerOpen = () => document.querySelector(".viewer") !== null;
+  /** The click of a pointer, as current browsers make it (a PointerEvent with the pointer's id); `fireEvent.click` is a plain MouseEvent (old Safari's, or an assistive one). */
+  const pclick = (el, pointerId = 1, pointerType = "touch") => act(() => void el.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerId, pointerType, detail: 1 })));
+
+  it("a plain tap (press, release, click) opens it on the first tap", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3));
+    up(picture(3));
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("two fingers down on it (a pinch), then the click some browsers synthesise: nothing opens", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    down(picture(3), 2);
+    up(picture(3), 2);
+    up(picture(3), 1);
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("the second finger landing anywhere else on the page while the first is on it is a pinch too", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    down(document.querySelector(".composer, .main-col") ?? document.body, 2);
+    up(picture(3), 1);
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("a press that began while the viewer was still there (on it), whose click reaches the picture once it is gone: nothing opens", async () => {
+    await open(3);
+    const stage = document.querySelector(".viewer");
+    down(stage, 1);
+    press("Escape"); // (closed under the finger)
+    expect(viewerOpen()).toBe(false);
+    up(picture(3), 1);
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("a cancelled press (the browser took the touch for a pinch or a scroll) opens nothing; the next plain tap does", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3));
+    fireEvent.pointerCancel(picture(3), { pointerId: 1, pointerType: "touch" });
+    pclick(picture(3), 1);
+    expect(viewerOpen()).toBe(false);
+    down(picture(3));
+    up(picture(3));
+    pclick(picture(3), 1);
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("by identity: a click of a pointer is judged by the press of THAT pointer — a pinch's (ids 1 and 2) refuses ids 1 and 2, never a click of pointer 9", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    down(picture(3), 2);
+    up(picture(3), 2);
+    up(picture(3), 1);
+    pclick(picture(3), 2);
+    expect(viewerOpen()).toBe(false);
+    down(picture(3), 1);
+    down(picture(3), 2);
+    up(picture(3), 2);
+    up(picture(3), 1);
+    pclick(picture(3), 9);
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("the reviewer's sequence: a long-press on picture A whose click the bubble menu swallows leaves nothing behind — Enter on picture B opens it, and so does an assistive click on it", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    expect(screen.queryByRole("menu")).not.toBeNull(); // (the long-press opened the menu)
+    up(picture(3), 1);
+    pclick(picture(3), 1); // (swallowed: never reaches the picture's handler)
+    expect(viewerOpen()).toBe(false);
+    fireEvent.click(picture(4), { detail: 0 }); // Tab to B and Enter
+    expect(viewerOpen()).toBe(true);
+    press("Escape");
+    expect(viewerOpen()).toBe(false);
+    fireEvent.click(picture(4), { detail: 1 }); // VoiceOver: a click with no pointer events
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("a pinch on a browser that focuses a tapped button: pointerdown, pointerup, focusin, mousedown, then the click — still refused", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    down(picture(3), 2);
+    up(picture(3), 2);
+    up(picture(3), 1);
+    fireEvent.focusIn(picture(3));
+    fireEvent.mouseDown(picture(3));
+    pclick(picture(3), 1);
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("the same order for a press that began on the viewer which closed under the finger: still refused", async () => {
+    await open(3);
+    down(document.querySelector(".viewer"), 1);
+    press("Escape");
+    up(picture(3), 1);
+    fireEvent.focusIn(picture(3));
+    fireEvent.mouseDown(picture(3));
+    pclick(picture(3), 1);
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("a right-click, then an assistive click with no pointer (detail 1) on a picture: it opens — the right press's record ended with its contextmenu", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.pointerDown(picture(3), { pointerId: 1, pointerType: "mouse", isPrimary: true, button: 2 });
+    fireEvent.contextMenu(picture(3));
+    fireEvent.pointerUp(picture(3), { pointerId: 1, pointerType: "mouse", isPrimary: true, button: 2 });
+    fireEvent.click(picture(4), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("a cancelled press with no scroll and no click leaves nothing behind: the next pointer-less click on another picture opens it", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    fireEvent.pointerCancel(picture(3), { pointerId: 1, pointerType: "touch" });
+    fireEvent.click(picture(4), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("a click with no pointer press at all opens it whatever `detail` says: assistive technology (VoiceOver) sends click with detail 1 and no pointerdown", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("a mouse press whose release never reached the window (let go outside it) does not cost the next click", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.pointerDown(picture(3), { pointerId: 7, pointerType: "mouse", isPrimary: true, button: 0 });
+    // (no pointerup, no click: gone)
+    fireEvent.pointerDown(picture(3), { pointerId: 7, pointerType: "mouse", isPrimary: true, button: 0 });
+    fireEvent.pointerUp(picture(3), { pointerId: 7, pointerType: "mouse", isPrimary: true });
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("a press elsewhere on the page that ended with no click does not refuse the later pointer-less click: a press is spent by the click, a scroll ends it", async () => {
+    await openApp();
+    await openChat("小安");
+    down(document.querySelector(".main-col"), 1);
+    up(document.querySelector(".main-col"), 1);
+    fireEvent.scroll(document.querySelector("ol.messages"));
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("the keyboard (Enter or Space is a click with no pointer) still opens it", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.click(picture(3), { detail: 0 });
+    expect(viewerOpen()).toBe(true);
+  });
+});
+
 describe("closing and the focus", () => {
   it("the focus goes to the close button, Esc closes it, and the focus goes back to the picture that opened it", async () => {
     const opener = await open(3);

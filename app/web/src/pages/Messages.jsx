@@ -9,6 +9,7 @@ import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
 import { FileCard } from "../ui/FileCard.jsx";
 import { thumbMaxWidth, thumbSize } from "../ui/thumbSize.js";
+import { useTapToOpen } from "../ui/tapOpen.js";
 import { useBubbleMenu } from "../ui/BubbleMenu.jsx";
 import { messageActions } from "./messageActions.js";
 import { GrowContext, useImageViewer } from "../ui/ImageViewer.jsx";
@@ -64,13 +65,14 @@ function UnavailableCard({ name }) {
  * A picture: only the picture (its file name is its accessible name); pressing it opens the viewer (ui/ImageViewer.jsx). It is
  * drawn in its own shape inside a box (ui/thumbSize.js; only an extreme shape is cut, from the middle). The wire carries no
  * width and height, so the box is reserved from the picture's natural size as soon as it is known (at once for a cached one);
- * until then the placeholder (3:2, styles.css) holds the place.
+ * until then the placeholder (3:2, styles.css) holds the place. What opens it: ui/tapOpen.js.
  */
 function ImageBody({ msg }) {
   const [broken, setBroken] = useState(false);
   const [box, setBox] = useState(null);
   const img = useRef(null);
   const viewer = useImageViewer();
+  const tap = useTapToOpen((node) => viewer.open(msg.id, node));
   const grew = useContext(GrowContext);
   const measure = (node) => setBox(thumbSize({ width: node.naturalWidth, height: node.naturalHeight }, { maxWidth: thumbMaxWidth(window.innerWidth) }));
   useLayoutEffect(() => {
@@ -89,7 +91,7 @@ function ImageBody({ msg }) {
         aria-haspopup="dialog"
         data-image={msg.id}
         style={box ? { aspectRatio: `${box.width} / ${box.height}` } : undefined}
-        onClick={(e) => viewer.open(msg.id, e.currentTarget)}
+        {...tap}
       >
         <img ref={img} src={msg.src} alt={msg.text} loading="lazy" onLoad={(e) => measure(e.currentTarget)} onError={() => setBroken(true)} />
       </button>

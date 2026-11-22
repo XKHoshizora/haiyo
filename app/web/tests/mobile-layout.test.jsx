@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 // The phone layout in the DOM: below 641px the rail is a bottom tab bar on the top-level list pages and is gone inside a
 // conversation; wider screens are untouched. (How it looks is pinned by tests/mobile-styles.test.js and e2e/mobile.spec.mjs.)
-import React from "react";
+import React, { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { ANN, D1, G1, apiError, deferred, direct, group, syncOf, wire } from "./fixtures.js";
+import { ANN, D1, G1, apiError, deferred, direct, fakeTimers, fakeTransport, group, syncOf, wire } from "./fixtures.js";
+import Shell from "../src/AppShell.jsx";
+import { StoreProvider, createDataLayer } from "../src/data/store.jsx";
 import { elapse, flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
 import { COARSE_QUERY, PHONE_QUERY } from "../src/ui/pointer.js";
 import { AvatarDialog } from "../src/pages/AvatarDialog.jsx";
@@ -40,6 +42,63 @@ describe("on a phone", () => {
     expect(bar().querySelector(".rail-me")).toBeNull();
     // The header already says the name.
     expect(document.querySelector(".list-head .brand-name")).toBeTruthy();
+  });
+
+  it("a reload inside a chat: the FIRST committed render is already the chat's — no list pane, no tab bar — before anything has been synced", () => {
+    history.replaceState(null, "", `/chat/${D1}`);
+    const seen = [];
+    // (A sibling's layout effect runs in the commit that put the shell on the page, before any effect of the shell's own.)
+    function Probe() {
+      useLayoutEffect(() => {
+        const app = document.querySelector(".app");
+        seen.push({ pane: app?.dataset.pane, tabbar: app?.dataset.tabbar, bar: Boolean(bar()), list: Boolean(document.querySelector(".list-col .row, .list-col .list-head")) && app?.dataset.pane === "list" });
+      }, []);
+      return null;
+    }
+    const layer = createDataLayer({ transport: fakeTransport({ sync: () => syncOf([]) }), api: {}, timers: fakeTimers(), now: () => 0, random: () => 0.5, uuid: () => "tx" });
+    render(
+      <StoreProvider dataLayer={layer}>
+        <Shell />
+        <Probe />
+      </StoreProvider>,
+    );
+    expect(seen).toEqual([{ pane: "main", tabbar: "off", bar: false, list: false }]);
+    // Not yet synced: the chat's own shell — its header with 返回列表, and the list's own loading line inside it — never the "choose a chat" text.
+    const main = within(document.querySelector(".main-col"));
+    expect(main.getByRole("button", { name: "返回列表" })).toBeTruthy();
+    expect(main.getByRole("status").textContent).toBe("正在读取…");
+    expect(document.querySelector(".main-col").textContent).not.toContain("选择一个会话开始聊天");
+  });
+
+  it("a reload inside a chat whose first sync fails: the connection state shows inside the chat, and 返回列表 reaches the list with its tab bar", async () => {
+    history.replaceState(null, "", `/chat/${D1}`);
+    await openApp({
+      sync: () => {
+        throw apiError(0, "network_error");
+      },
+    });
+    const main = within(document.querySelector(".main-col"));
+    expect(main.getByRole("status").textContent).toContain("连不上服务，正在重试…");
+    expect(main.getByRole("button", { name: "立即重试" })).toBeTruthy();
+    expect(bar()).toBeNull();
+    fireEvent.click(main.getByRole("button", { name: "返回列表" }));
+    await flush();
+    expect(location.pathname).toBe("/");
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(bar()).toBeTruthy();
+  });
+
+  it("a reload at a chat the sync then shows is not mine: today's fallback — the list, the tab bar, and the notice", async () => {
+    history.replaceState(null, "", "/chat/00000000-0000-4000-8000-00000000dead");
+    const answer = deferred();
+    await openApp({ sync: () => answer.promise });
+    expect(document.querySelector(".app").dataset.pane).toBe("main");
+    await act(async () => answer.resolve(sync()));
+    await flush();
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(bar()).toBeTruthy();
+    expect(location.pathname).toBe("/");
+    expect(toastText()).toBeTruthy();
   });
 
   it("is gone inside a conversation, and back with the list", async () => {
