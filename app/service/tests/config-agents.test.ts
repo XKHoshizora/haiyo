@@ -392,7 +392,30 @@ describe("the proactive replies' configuration", () => {
 });
 
 describe("the tools configuration", () => {
-  const defaults = { enabled: true, maxRounds: 8, maxPoints: 20, searchPerReply: 6, filePerReply: 4, timePerReply: 1, resultMaxWeight: 3000, runTimeoutMs: 300_000 };
+  /** The web search's defaults (lane websearch): off; the money values are placeholders until the owner decides. */
+  const web = {
+    enabled: false,
+    engine: "deepseek_messages",
+    baseUrl: "https://api.deepseek.com",
+    apiKeyEnv: "WEB_SEARCH_API_KEY",
+    model: "deepseek-flash",
+    pointsMicroPerSearch: 770_350,
+    perReply: 1,
+    perOwnerPerDay: 20,
+    sitePerDay: 2000,
+    maxAtOnce: 4,
+    timeoutMs: 15_000,
+    maxResults: 6,
+  };
+  const defaults = { enabled: true, maxRounds: 8, maxPoints: 20, searchPerReply: 6, filePerReply: 4, timePerReply: 1, resultMaxWeight: 3000, runTimeoutMs: 300_000, web };
+
+  test("the web search: off unless asked; a partial web keeps the rest; an http address, an unknown key or engine refuse", () => {
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"enabled":true}}' }).tools.web).toEqual({ ...web, enabled: true });
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"perOwnerPerDay":12,"pointsMicroPerSearch":0}}' }).tools.web).toEqual({ ...web, perOwnerPerDay: 12, pointsMicroPerSearch: 0 });
+    for (const bad of ['{"web":{"baseUrl":"http://api.deepseek.com"}}', '{"web":{"engine":"other"}}', '{"web":{"nope":1}}', '{"web":{"perReply":0}}', '{"web":{"apiKeyEnv":"1BAD"}}', '{"web":{"timeoutMs":999}}']) {
+      expect(() => loadConfig({ ...base, TOOLS: bad }), bad).toThrow(/TOOLS/);
+    }
+  });
 
   test("unset or empty: every default", () => {
     expect(loadConfig(base).tools).toEqual(defaults);

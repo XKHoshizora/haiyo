@@ -153,7 +153,8 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * be in production: what is read when used rather than at start-up (a site model's key, `resolveModel`) sees it too.
  * `allowInsecureLocal` lets the app's providers reach a local stub over plain HTTP (src/providers/guard.ts).
  * `models` replaces the model gateway (a `scriptedGateway()` from helpers/models.ts), `providerProbe` how the provider
- * routes reach a provider, `judge` the judgement model (`scriptedJudge()` from helpers/judge.ts). `agentWorker: false` turns the
+ * routes reach a provider, `judge` the judgement model (`scriptedJudge()` from helpers/judge.ts), `webEngine` the web search's
+ * engine (a fake: no test calls a real one; with it the site offers web search, whatever `TOOLS.web` says of a key). `agentWorker: false` turns the
  * reply worker's background loop off: the test then runs replies itself with `app.agentWorker.runOnce()`. The stale-run
  * sweep's timer is off unless `staleRunSweep` asks for it (`app.staleRunSweep.run()` sweeps by hand). So is the
  * proactive scheduler unless `proactive` asks for it (`{}`, or `{ delayMs }` for a shorter wait; built only when the
@@ -167,7 +168,7 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * runs outside the app's statement timeout.
  */
 export function useApp(
-  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat"> & {
+  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat"> & {
       memory?: boolean;
       tools?: boolean;
     } = {},

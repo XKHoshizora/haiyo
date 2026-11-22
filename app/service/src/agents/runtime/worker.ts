@@ -25,6 +25,7 @@ import {
 } from "./port.ts";
 import { ReplyStream } from "./stream.ts";
 import { fileNumber } from "../tools/refs.ts";
+import { queryForm } from "../tools/web/text.ts";
 
 /**
  * The reply worker (README "Agents and runs"): claims queued replies, calls the model, streams the reply to the owner
@@ -528,16 +529,19 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     /** What the tools' text — definitions, steps, results — is planned at: the plan's ratio times `TOOL_TEXT_FACTOR`. */
     const toolRatio = bounds.planRatio * TOOL_TEXT_FACTOR;
     const room = bounds.limit - bounds.planned - estimateTokens(toolsText, toolRatio) - estimateTokens(`\n\n${FINAL_LINE}`, bounds.planRatio) - TOOL_PREAMBLE_TOKENS;
-    // A file call is the same call whatever form of its file's number it gives (refs.ts `fileNumber`): `f1`, `〔f1〕`.
+    // A file call is the same call whatever form of its file's number it gives (refs.ts `fileNumber`): `f1`, `〔f1〕`; a web
+    // search the same whatever spacing, width or case its query has (tools/web/text.ts `queryForm`).
     const same = (c: ToolCall): unknown => {
       const input = c.input as Record<string, unknown> | null;
-      return Object.hasOwn(bounds.kinds, c.name) && bounds.kinds[c.name] === "file" && input !== null && typeof input === "object" && typeof input.file === "string"
-        ? { ...input, file: fileNumber(input.file) }
-        : c.input;
+      const kind = Object.hasOwn(bounds.kinds, c.name) ? bounds.kinds[c.name] : undefined;
+      if (kind === "web" && input !== null && typeof input === "object" && typeof input.query === "string") return { ...input, query: queryForm(input.query) };
+      return kind === "file" && input !== null && typeof input === "object" && typeof input.file === "string" ? { ...input, file: fileNumber(input.file) } : c.input;
     };
     const guard = new LoopGuard({ maxRounds: limits.maxRounds, perTool: bounds.perTool, same });
-    // No token-shaped string is streamed, as the stored reply keeps none (its citations are beside its text).
-    const out = new ReplyStream((delta) => port.emit(run, delta), undefined, true);
+    // No token-shaped string is streamed, as the stored reply keeps none (its citations are beside its text); a reply
+    // offered the web search holds its `〔w1〕` too.
+    const web = Object.values(bounds.kinds).includes("web");
+    const out = new ReplyStream((delta) => port.emit(run, delta), undefined, web ? "web" : true);
     const meter = new Meter();
     const steps: Array<{ assistant: unknown; results: ToolResult[] }> = [];
     let stepsTokens = 0;

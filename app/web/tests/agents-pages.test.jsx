@@ -2317,3 +2317,58 @@ describe("群里没找到时悄悄告诉我", () => {
     expect(off.mock.calls[0][0]).toMatchObject({ whisperElsewhere: false });
   });
 });
+
+describe("联网搜索 (only while the site offers web search)", () => {
+  const LABEL = "联网搜索";
+  const HELPER = "搜索词会发给外部的搜索服务。";
+  const ON_SITE = { ...MODELS, webSearchAvailable: true };
+  const sw = () => inMain().queryByLabelText(LABEL);
+  const save = () => click(inMain().getByRole("button", { name: "保存" }));
+  const openEditOf = async (fields = {}, models = ON_SITE) => {
+    const record = agentOf(AG1, { model: SITE_MODEL, ...fields });
+    const patchAgent = vi.fn(async (_id, patch) => ({ ...record, ...patch }));
+    const app = await openAgents({ agents: [record], api: { patchAgent }, models });
+    app.transport.handlers.agent = () => record;
+    await openRow("小助手");
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    return { patchAgent };
+  };
+  const createOn = async (models, choose = () => {}) => {
+    const createAgent = vi.fn(async () => agentOf(AG1));
+    await openAgents({ api: { createAgent }, models });
+    await openCreate();
+    type("名称", "MyBot");
+    await chooseModel("小模型 · 免费");
+    choose();
+    await click(createButton());
+    return createAgent;
+  };
+
+  it("the site offers none (the switch off, or no key): no switch on the form, nothing sent on create or edit", async () => {
+    const { patchAgent } = await openEditOf({}, MODELS);
+    expect(sw()).toBeNull();
+    expect(inMain().queryByText(HELPER)).toBeNull();
+    type("简介", "新的简介");
+    await save();
+    expect(patchAgent.mock.calls[0][1]).not.toHaveProperty("webSearch");
+    cleanup();
+    expect((await createOn(MODELS)).mock.calls[0][0]).not.toHaveProperty("webSearch");
+  });
+
+  it("the site offers it: a switch with its line, on unless the record says off; edit sends it when changed, create only when off", async () => {
+    const { patchAgent } = await openEditOf({ webSearch: true });
+    expect(sw().getAttribute("role")).toBe("switch");
+    expect(sw().checked).toBe(true);
+    expect(sw().getAttribute("aria-describedby")).toBe(inMain().getByText(HELPER).id);
+    fireEvent.click(sw());
+    await save();
+    expect(patchAgent.mock.calls[0][1]).toEqual({ webSearch: false });
+    cleanup();
+    await openEditOf({ webSearch: false });
+    expect(sw().checked).toBe(false);
+    cleanup();
+    expect((await createOn(ON_SITE)).mock.calls[0][0]).not.toHaveProperty("webSearch");
+    cleanup();
+    expect((await createOn(ON_SITE, () => fireEvent.click(sw()))).mock.calls[0][0]).toMatchObject({ webSearch: false });
+  });
+});

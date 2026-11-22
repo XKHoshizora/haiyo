@@ -17,10 +17,21 @@ import "katex/dist/katex.min.css";
  * A link: its text (one plain text, by the tree's check; put on one short line once more here), then where it really
  * goes, always. Without a safe address it is its text alone.
  */
-function Link({ href, text }) {
+function Link({ href, text, plain = false }) {
   const safe = safeHref(href);
   const cleaned = linkTextShown(withoutMarks(text));
   if (!safe) return cleaned;
+  // A reply whose run searched the web: its text and real host as plain text, nothing to open (its sources list is).
+  if (plain) {
+    return (
+      <span className="md-link md-link-plain" dir="auto">
+        {cleaned || safe}
+        <span className="md-host" dir="auto">
+          （{withoutBidiControls(shownHost(safe))}）
+        </span>
+      </span>
+    );
+  }
   return (
     <span className="md-link" dir="auto">
       <a href={safe} title={safe} target="_blank" rel="noopener noreferrer nofollow" dir="auto">
@@ -93,13 +104,13 @@ const texts = (text, plain, ids, cites, key) =>
  * One checked element as React's: the app's parts for links, code blocks and tables; classes joined; a cell's alignment;
  * in its text (not in code or a formula) its mentions as tags and what the message cites as links.
  */
-function toElement(node, katex, ids, code = false, cites = null) {
+function toElement(node, katex, ids, code = false, cites = null, plainLinks = false) {
   const inKatex = katex || isKatexRoot(node);
   const inCode = code || node.tag === "code" || node.tag === "pre";
   const { className, align, ...rest } = node.props ?? {};
-  if (!inKatex && node.tag === "a") return createElement(Link, { href: rest.href, text: linkText(node) });
+  if (!inKatex && node.tag === "a") return createElement(Link, { href: rest.href, text: linkText(node), plain: plainLinks });
   const children = (node.children ?? []).flatMap((child, i) =>
-    typeof child === "string" ? texts(child, inKatex || inCode, ids, cites, `c${i}`) : [toElement(child, inKatex, ids, inCode, cites)],
+    typeof child === "string" ? texts(child, inKatex || inCode, ids, cites, `c${i}`) : [toElement(child, inKatex, ids, inCode, cites, plainLinks)],
   );
   if (!inKatex && node.tag === "pre") return createElement(CodeBlock, null, ...children);
   if (!inKatex && node.tag === "table") return createElement(Table, null, ...children);
@@ -118,9 +129,11 @@ function toElement(node, katex, ids, code = false, cites = null) {
 export const RichTree = memo(function RichTree({ tree, mentionIds = [], citeList = [] }) {
   const value = useContext(CitesContext);
   const cites = citeList.length > 0 ? { list: citeList, onJump: value?.onJump ?? null } : null;
+  // A reply whose run searched the web (`CitesContext.plainLinks`): no link of its text opens anything.
+  const plainLinks = value?.plainLinks === true;
   return createElement(
     "div",
     { className: "md" },
-    ...tree.flatMap((node, i) => (typeof node === "string" ? texts(node, false, mentionIds, cites, `c${i}`) : [toElement(node, false, mentionIds, false, cites)])),
+    ...tree.flatMap((node, i) => (typeof node === "string" ? texts(node, false, mentionIds, cites, `c${i}`) : [toElement(node, false, mentionIds, false, cites, plainLinks)])),
   );
 });

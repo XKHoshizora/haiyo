@@ -19,6 +19,7 @@ import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, typ
 import { forgetSummaries } from "./summary/store.ts";
 import { askedOf } from "./tools/elsewhere.ts";
 import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
+import { webFields } from "./tools/web/tool.ts";
 import { whisperOfRun } from "../whispers/store.ts";
 import {
   agentLimit,
@@ -57,6 +58,8 @@ export interface NewAgent {
   memoryAsk: boolean;
   sharedNotes: boolean;
   whisperElsewhere: boolean;
+  /** 联网搜索 (lane websearch); absent: on, the column's default. */
+  webSearch?: boolean;
   ownerAppellation: string | null;
   reasoning: ReasoningLevel;
   model: AgentModel;
@@ -98,8 +101,8 @@ export async function createAgent(
   const created = await t.query<{ created_at: Date }>(
     `insert into agents (principal_id, intro, field, persona, persona_version, reply_mode, group_mentions, reasoning,
                          model_source, site_model_id, provider_id, provider_model, chain_budget_micro, others_budget_micro, owner_appellation,
-                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) returning created_at`,
+                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) returning created_at`,
     [
       id,
       input.intro,
@@ -120,6 +123,7 @@ export async function createAgent(
       input.memoryAsk,
       input.sharedNotes,
       input.whisperElsewhere,
+      input.webSearch ?? true,
     ],
   );
   const conversation = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent', $1) returning id", [ownerId]);
@@ -158,6 +162,7 @@ export async function createAgent(
     memoryAsk: input.memoryAsk,
     sharedNotes: input.sharedNotes,
     whisperElsewhere: input.whisperElsewhere,
+    webSearch: input.webSearch ?? true,
     ownerAppellation: input.ownerAppellation,
     reasoning: input.reasoning,
     model: input.model,
@@ -314,9 +319,9 @@ export async function postAsAgent(
   // that neither taking out puts the other together (N-2, N-4); then a block that it put together.
   const thoughtCut = reply.truncated || thought.length > REASONING_MAX;
   if (mark !== null) {
-    placed = trimPlaced(withoutMarkFrom(placed, mark, truncated, refs !== null));
+    placed = trimPlaced(withoutMarkFrom(placed, mark, truncated, refs !== null, refs?.webOffered === true));
     placed = withoutUnfinishedBlockPlaced(placed);
-    reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut, refs !== null).text.trim();
+    reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut, refs !== null, refs?.webOffered === true).text.trim();
   }
   const text = placed.text;
   // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted.
@@ -366,8 +371,11 @@ export async function postAsAgent(
   const read = await mentionsAtSend(t, { id: conversationId, type: own ? "agent" : "group" }, text);
   // What its text cites, beside it, as `found` is kept: in a group only that group's messages (each reader is sent only
   // those they can see, messages/read.ts) — where a link can be drawn, in its plain and its rendered text alike.
-  const cites = drawnCites(text, placed.cites, read.mentions ?? []);
+  const drawn = drawnCites(text, placed.cites, read.mentions ?? []);
+  const cites = drawn.filter((c): c is Cite => c.kind !== "w");
   if (cites.length > 0) body.cites = cites;
+  // A reply whose run was handed web pages (tools/web): every one of them, cited or not, and where its text cites them.
+  Object.assign(body, webFields(refs, drawn));
   const message = await insertMessage(t, conversationId, agentId, "text", body, runId, read);
   if (proposal && proposalId !== null) await storeProposal(t, agent, proposalId, message.id, proposal.proposal);
   // An Agent posts only in its own conversation and in groups it is a member of: elsewhere than its own is a group. Who
@@ -409,7 +417,7 @@ const LINK_TEXT = /\[[^[\]\n]*\]\(/g;
  * one (`addressRanges`: its mark would land in the link, or keep it from being one), or inside a link's text — and one
  * inside a mention (`mentions`, of the same text) at its end.
  */
-function drawnCites(text: string, cites: readonly Cite[], mentions: ReadonlyArray<{ start: number; length: number }>): Cite[] {
+function drawnCites<C extends { at: number }>(text: string, cites: readonly C[], mentions: ReadonlyArray<{ start: number; length: number }>): C[] {
   if (cites.length === 0) return [];
   const code = codeRanges(text);
   const addresses = addressRanges(text);

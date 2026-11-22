@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as M from "../src/data/model.js";
-import { toView, formatAt, formatMessageAt, formatMessageTitle, expiryText, formatPoints, replyPoints, namesAgent } from "../src/data/viewmodel.js";
+import { toView, formatAt, formatMessageAt, formatMessageTitle, expiryText, formatPoints, replyPoints, namesAgent, webAddress } from "../src/data/viewmodel.js";
 import { ME } from "../src/data/identities.js";
 import { convSubtitle, convTitle, entity, isAgent, lastPreview, myAgents, nameOf, ownerOf, publishBlock, senderName } from "../src/state/selectors.js";
 import {
@@ -790,5 +790,16 @@ describe("mentions as the service stored them (Task M): the web reads no mention
     expect(namesAgent({ text: "@xiaolin.jarvis 在吗", mentions: [] }, AG1)).toBe(false);
     expect(namesAgent({ text: "@xiaolin.jarvis 在吗" }, AG1)).toBe(false);
     expect(namesAgent({ text: "@阿波", mentions: [{ id: BO, start: 0, length: 3 }] }, AG1)).toBe(false);
+  });
+});
+
+describe("a web source's address (the web search)", () => {
+  it("https only, no credentials, no white space, at most 2 048 characters; its host as the browser reads it, a punycode host in ASCII", () => {
+    expect(webAddress("https://news.example.com/a?b=1")).toEqual({ url: "https://news.example.com/a?b=1", host: "news.example.com" });
+    expect(webAddress("https://bücher.example/")).toEqual({ url: "https://xn--bcher-kva.example/", host: "xn--bcher-kva.example" });
+    for (const bad of ["http://news.example.com/", "javascript:alert(1)", "https://u:p@news.example.com/", "https://u@news.example.com/", "https://a.example/ x", "/relative", 42, null]) expect(webAddress(bad)).toBeNull();
+    const base = "https://a.example/";
+    expect(webAddress(base + "x".repeat(2048 - base.length))?.url).toHaveLength(2048);
+    expect(webAddress(base + "x".repeat(2049 - base.length))).toBeNull();
   });
 });

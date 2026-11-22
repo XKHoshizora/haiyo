@@ -74,8 +74,8 @@ export interface ToolRun {
   readonly limit: number;
 }
 
-/** The status a tool's work shows while a reply runs tools. */
-export type Activity = "search" | "file" | "time";
+/** The status a tool's work shows while a reply runs tools (`web`: the web search, only for a run offered it). */
+export type Activity = "search" | "file" | "time" | "web";
 
 /**
  * What a tool call gave: its output (JSON-serialisable), for the model; and, for what the reply keeps of it

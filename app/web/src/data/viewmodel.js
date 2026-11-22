@@ -268,11 +268,18 @@ function viaView(via) {
   if (m?.source === "site" && isText(m.id) && isText(m.label)) model = { source: "site", id: m.id, label: m.label };
   else if (m?.source === "provider" && isText(m.model)) model = { source: "provider", model: m.model };
   if (!model) return null;
-  // `proactive` is there only when the reply was spoken unasked; anything but `true` is no key.
-  return { model, reasoning: via.reasoning, points: via.points, ...(via.proactive === true ? { proactive: true } : {}) };
+  // `proactive` is there only when the reply was spoken unasked; anything but `true` is no key. `webSearches`: how many web
+  // searches its points include, only when it made any.
+  return {
+    model,
+    reasoning: via.reasoning,
+    points: via.points,
+    ...(via.proactive === true ? { proactive: true } : {}),
+    ...(isCountAbove0(via.webSearches) ? { webSearches: via.webSearches } : {}),
+  };
 }
 
-const LOOKUP_KINDS = ["search", "file", "time"];
+const LOOKUP_KINDS = ["search", "file", "time", "web"];
 const isCountAbove0 = (n) => Number.isSafeInteger(n) && n > 0;
 
 /** A reply's `lookups` (how many calls of each kind its tools ran), only the counts that are whole numbers above 0; null when none is. */
@@ -314,14 +321,73 @@ function citesView(cites, text) {
 }
 
 /**
- * The quiet line under a reply that looked things up: 查了 n 次聊天记录 and 看了 n 个文件, joined with ，; time lookups are
- * never in it. Null when there is nothing to say (no lookups, or only at the time).
+ * The quiet line under a reply that looked things up: 查了 n 次聊天记录, 看了 n 个文件 and 查了 n 次网页, joined with ，; time
+ * lookups are never in it. Null when there is nothing to say (no lookups, or only at the time).
  */
 export function lookupLine(lookups) {
   const parts = [];
   if (lookups?.search > 0) parts.push(`查了 ${lookups.search} 次聊天记录`);
   if (lookups?.file > 0) parts.push(`看了 ${lookups.file} 个文件`);
+  if (lookups?.web > 0) parts.push(`查了 ${lookups.web} 次网页`);
   return parts.length > 0 ? parts.join("，") : null;
+}
+
+/** The most web pages and web citations a reply keeps (the service's `WEB_SOURCES_MAX`, `WEB_CITES_MAX`). */
+const WEB_MAX = 20;
+
+/**
+ * A web page's address as it may be shown and opened: an absolute https URL without a user name or password, at most 2 048
+ * characters (the service's rule); its host as the browser reads it (`URL.hostname`: a punycode host in its ASCII form, so a
+ * look-alike shows), never the engine's site name. Null for anything else.
+ */
+export function webAddress(value) {
+  if (typeof value !== "string" || value.length > 2048 || /[\s\p{Cc}]/u.test(value)) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname === "" || url.username || url.password) return null;
+  return { url: url.href, host: url.hostname };
+}
+
+/**
+ * A reply's `webSources` (the web pages its run was handed, lane websearch) as `[{n, shown, url, host, title}]`: each with a
+ * safe address (`webAddress`), its number once, at most WEB_MAX; `shown` is its place in the list, from 1 — what the list
+ * and the reply's chips say. [] for anything else.
+ */
+function webSourcesView(sources) {
+  if (!Array.isArray(sources)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const s of sources.slice(0, WEB_MAX)) {
+    const address = webAddress(s?.url);
+    if (!address || !isCountAbove0(s.n) || seen.has(s.n) || typeof s.title !== "string") continue;
+    seen.add(s.n);
+    out.push({ n: s.n, shown: out.length + 1, url: address.url, host: address.host, title: s.title });
+  }
+  return out;
+}
+
+/**
+ * A reply's `webCites` as chips for its text, `[{at, kind: "w", n, url, host, title}]` (`n` the source's place in the list):
+ * each of a number among `sources`, at a place in `text` no earlier than the one before (not inside a surrogate pair). []
+ * for anything else.
+ */
+function webCitesView(cites, sources, text) {
+  if (!Array.isArray(cites) || typeof text !== "string" || sources.length === 0) return [];
+  const byNumber = new Map(sources.map((s) => [s.n, s]));
+  const out = [];
+  let last = 0;
+  for (const c of cites.slice(0, WEB_MAX)) {
+    const at = c?.at;
+    const source = byNumber.get(c?.n);
+    if (!source || !Number.isSafeInteger(at) || at < last || at > text.length || (at > 0 && isLowSurrogate(text.charCodeAt(at)))) continue;
+    out.push({ at, kind: "w", n: source.shown, url: source.url, host: source.host, title: source.title });
+    last = at;
+  }
+  return out;
 }
 
 /** A byte count for people: "932 B", "1.4 KB", "12 MB" (one decimal below 10, base 1024). */
@@ -401,6 +467,11 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
     mentions: kind === "system" ? [] : mentionsIn(m.text ?? "", m.mentions).map((x) => ({ ...x, id: alias(x.id) })),
     // Its citations, beside its text, of the messages I can see: links drawn where they stand.
     cites: m.kind === "text" ? citesView(m.cites, m.text) : [],
+    // The web pages its run was handed and where its text cites them (the web search): to every reader alike.
+    webSources: m.kind === "text" ? webSourcesView(m.webSources) : [],
+    // Its run was handed web pages (the service's `plainLinks`, or any stored source at all, shown or not): its links show as
+    // plain text, whatever of its sources can be shown.
+    plainLinks: m.kind === "text" && (m.plainLinks === true || (Array.isArray(m.webSources) && m.webSources.length > 0)),
     queries:
       m.kind === "text" && typeof agentId === "string" && m.senderId === agentId && Array.isArray(m.queries)
         ? m.queries.filter((q) => typeof q === "string" && q.trim() !== "")
@@ -408,6 +479,7 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
     // Under my own message only: the Agents my own calls a minute kept it from (what its send answered, model.js `markSent`).
     notCalled: m.senderId === meId && Array.isArray(m.notCalled) && m.notCalled.length > 0 ? notCalledText(m.notCalled, nameOf) : null,
   };
+  view.webCites = m.kind === "text" ? webCitesView(m.webCites, view.webSources, m.text ?? "") : [];
   if (hidden) view.hidden = true;
   // An Agent's acknowledgement: shown as any message, but never the chat list's preview (state/selectors.js).
   if (m.ack === true) view.ack = true;
@@ -625,6 +697,8 @@ function agentView(a, version, loaded) {
     ...(typeof a.sharedNotes === "boolean" ? { sharedNotes: a.sharedNotes } : {}),
     /** 群里没找到时悄悄告诉我: only the owner's view has it. */
     ...(typeof a.whisperElsewhere === "boolean" ? { whisperElsewhere: a.whisperElsewhere } : {}),
+    // 联网搜索: the service sends it only while the site offers web search.
+    ...(typeof a.webSearch === "boolean" ? { webSearch: a.webSearch } : {}),
     model: a.model ?? null,
     /** False when the service says its model is not there to call any more (then MODEL_GONE's words, errorTexts.js); true otherwise. */
     modelUsable: a.modelUsable !== false,
@@ -861,6 +935,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     providerDefaults: model.providerDefaults ?? null,
     /** true or false once the site's models have answered; null before (not known yet). */
     proactiveAvailable: typeof model.proactiveAvailable === "boolean" ? model.proactiveAvailable : null,
+    // Whether the site offers web search (`GET /api/models` `webSearchAvailable`): the Agent form shows 联网搜索 only then.
+    webSearchAvailable: model.webSearchAvailable === true,
     /** principal id (the real one, mine too) → the version in its avatar URL; for an avatar of someone nobody names. */
     avatarVersions: versions,
   };

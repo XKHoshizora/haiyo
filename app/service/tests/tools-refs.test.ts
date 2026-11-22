@@ -59,7 +59,7 @@ describe("what a reply's token-shaped strings become", () => {
   it("spaces inside and either case make no difference", () => {
     const { text, cites } = takeCites("甲〔M1〕乙〔 m2 〕丙〔m 3〕丁〔F1〕", numbered());
     expect(text).toBe("甲乙丙丁");
-    expect(cites.map((c) => [c.at, c.kind, c.ref.seq])).toEqual([
+    expect(cites.map((c) => [c.at, c.kind, "ref" in c ? c.ref.seq : null])).toEqual([
       [1, "m", 1],
       [2, "m", 2],
       [3, "m", 3],

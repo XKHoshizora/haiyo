@@ -33,6 +33,8 @@ import { createReviewer, realTimer, type Reviewer, type SetTimer } from "./memor
 import { createAgentPort, recoverRuns, startStaleRunSweep, sweepStaleRuns, type DbAgentPort } from "./agents/port-impl.ts";
 import { createElsewhere } from "./agents/tools/elsewhere.ts";
 import { createToolbox } from "./agents/tools/index.ts";
+import { deepseekEngine, type WebEngine } from "./agents/tools/web/engine.ts";
+import { sweepSearchDays } from "./agents/tools/web/hold.ts";
 import { decideProactive } from "./agents/proactive/decide.ts";
 import { createProactiveScheduler, type ProactiveScheduler } from "./agents/proactive/scheduler.ts";
 import { actOnTriggered } from "./agents/runs.ts";
@@ -99,6 +101,12 @@ export interface Deps {
    * null in tests unless they ask (`BuildOptions.memory`).
    */
   memory: Reviewer | null;
+  /**
+   * The web search's engine (src/agents/tools/web/engine.ts): built when `TOOLS.web.enabled` and the variable its
+   * `apiKeyEnv` names holds a key; null otherwise (the default) — then no reply is offered web search and nothing shows
+   * it (`GET /api/models` has no `webSearchAvailable`). Tests inject a fake one; none ever calls a real engine.
+   */
+  webEngine: WebEngine | null;
 }
 
 /** One registered route (a GET also yields its HEAD), as declared: method, URL pattern and schema. */
@@ -196,7 +204,8 @@ export interface BuildOptions {
  *   each pushed to its owner (never logged; a failed told reply's slot follows its push, sync/hub.ts); answered and
  *   expired ones made 30 days ago are deleted;
  * - reminders about money recorded by a settlement whose whisper was never made (the service stopped between the two) are
- *   made, pushed and counted (metering/reminders.ts `deliverReminders`).
+ *   made, pushed and counted (metering/reminders.ts `deliverReminders`);
+ * - the web search's counts of site days more than a week old are deleted (agents/tools/web/hold.ts `sweepSearchDays`).
  * `hub` null: nobody to tell yet.
  */
 export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: FastifyBaseLogger, hub: Pick<Hub, "pushWhisper"> | null): Promise<{ unsent: number; abandoned: number }> {
@@ -211,8 +220,28 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
     return [];
   });
   for (const r of reminded) log.info({ metric: r.metric }, "a reminder about money was made for its owner");
+  await sweepSearchDays(deps.db, new Date(), config.siteTimezone).catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "web search count sweep failed; trying again next interval"));
   if (hub) pushWhispers(hub, [...expired, ...reminded.flatMap((r) => (r.whisper ? [r.whisper] : []))]);
   return { unsent: 0, abandoned: 0 };
+}
+
+/**
+ * The web search's engine for `config` (src/agents/tools/web/engine.ts): none while `TOOLS.web.enabled` is false (the
+ * default: nothing is logged); with it on but no key in the variable its `apiKeyEnv` names, none either, and one line at
+ * start says so (the variable's name, never a value) — the search is simply not offered. The key is read once, here.
+ */
+export function webEngineOf(
+  config: Config,
+  log: { info(details: Record<string, unknown>, msg: string): void; warn(details: Record<string, unknown>, msg: string): void },
+): WebEngine | null {
+  const web = config.tools.web;
+  if (!web.enabled) return null;
+  const apiKey = process.env[web.apiKeyEnv];
+  if (apiKey === undefined || apiKey.trim() === "") {
+    log.warn({ metric: "web_search_off", apiKeyEnv: web.apiKeyEnv }, "web search: TOOLS.web.enabled is on but its key variable is not set; it is not offered");
+    return null;
+  }
+  return deepseekEngine({ baseUrl: web.baseUrl, apiKey: apiKey.trim(), model: web.model, timeoutMs: web.timeoutMs, maxResults: web.maxResults, timeZone: config.siteTimezone, log });
 }
 
 export function redactQuery(url: string): string {
@@ -257,6 +286,8 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     // Built with the reply worker's port, below.
     proactive: null,
     memory: null,
+    // Built once the app's log is there, below (its log line, and the line saying why there is none).
+    webEngine: overrides.webEngine ?? null,
   };
 
   const underTest = process.env.NODE_ENV === "test" || Boolean(process.env.VITEST);
@@ -291,6 +322,8 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   registerErrorHandling(app);
+  // The web search's engine, unless a test gave one: only with the site switch on and its key there (else one line says so).
+  if (overrides.webEngine === undefined) deps.webEngine = webEngineOf(config, app.log);
 
   // Before any route: an onRoute hook only sees routes registered after it.
   const routeList: RouteEntry[] = [];
@@ -460,6 +493,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
             log: app.log,
             // In a group, a search that found nothing there: not here, but elsewhere (Task 8).
             elsewhere: createElsewhere({ db: deps.db, config, realtime: app.realtime, log: app.log }),
+            webEngine: deps.webEngine,
           }),
   });
   const agentWorker = createAgentWorker({

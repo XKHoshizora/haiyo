@@ -51,6 +51,9 @@ const PROACTIVE_LOST = "站点现在没有配置判断模型，主动参与不�
  */
 const ELSEWHERE_LABEL = "群里没找到时悄悄告诉我";
 const ELSEWHERE_HELPER = "它在别处查到了，会先悄悄问你要不要告诉大家。";
+/** 联网搜索 (`webSearch`, on unless the record says off): shown only while the site offers web search (`webSearchAvailable`). */
+const WEB_LABEL = "联网搜索";
+const WEB_HELPER = "搜索词会发给外部的搜索服务。";
 // A budget's amount, either of them, as the service takes it.
 const BUDGET_MIN = 1;
 const BUDGET_MAX = 100000;
@@ -141,6 +144,7 @@ const recordFields = (a) => ({
   proactiveLevel: isProactiveLevel(a?.proactiveLevel) ? a.proactiveLevel : "normal",
   proactiveBudget: budgetOf(a?.proactiveBudget) ?? PROACTIVE_BUDGET_DEFAULT,
   whisperElsewhere: a?.whisperElsewhere !== false,
+  webSearch: a?.webSearch !== false,
   ownerAppellation: a?.ownerAppellation ?? "",
   // The service's defaults when the record says nothing: remembers, tells me nothing first, uses the shared 关于我.
   memory: a?.memory !== false,
@@ -261,6 +265,8 @@ export function AgentForm({ agent = null }) {
   // Without one, an Agent that has it on still shows the switch alone, saying why, so that it can be turned off: never on.
   // Before the site's models have answered (null) neither is shown.
   const proactiveOffered = state.proactiveAvailable === true;
+  // 联网搜索: only while the site offers web search; otherwise neither shown nor sent.
+  const webOffered = state.webSearchAvailable === true;
   const proactiveOffOnly = state.proactiveAvailable === false && record.proactive;
   const proactiveAsked = proactiveOffered && f.proactive;
 
@@ -394,6 +400,7 @@ export function AgentForm({ agent = null }) {
     if (ownerAppellation) body.ownerAppellation = ownerAppellation;
     // Said only when it is off (on is the service's default).
     if (!f.whisperElsewhere) body.whisperElsewhere = false;
+    if (webOffered && !f.webSearch) body.webSearch = false;
     // Said only when it is not the service's default.
     for (const key of MEMORY_KEYS) if (f[key] !== MEMORY_DEFAULTS[key]) body[key] = f[key];
     body.reasoning = reasoning;
@@ -444,6 +451,7 @@ export function AgentForm({ agent = null }) {
       if (proactiveAsked) for (const key of ["proactiveLevel", "proactiveBudget"]) if (mine(key)) patch[key] = storedValue(key, f);
     }
     if (mine("whisperElsewhere")) patch.whisperElsewhere = f.whisperElsewhere;
+    if (webOffered && mine("webSearch")) patch.webSearch = f.webSearch;
     // 它怎么称呼你: cleared (emptied) is null, which the service reads as none.
     if (mine("ownerAppellation")) patch.ownerAppellation = ownerAppellation || null;
     for (const key of MEMORY_KEYS) if (mine(key)) patch[key] = f[key];
@@ -673,6 +681,11 @@ export function AgentForm({ agent = null }) {
         <div className="field">
           <Switch checked={f.whisperElsewhere} onChange={setSwitch("whisperElsewhere")} label={ELSEWHERE_LABEL} hint={ELSEWHERE_HELPER} hintClass="field-hint" />
         </div>
+        {webOffered && (
+          <div className="field">
+            <Switch checked={f.webSearch} onChange={setSwitch("webSearch")} label={WEB_LABEL} hint={WEB_HELPER} hintClass="field-hint" />
+          </div>
+        )}
         <fieldset className="form-section">
           <legend>称呼</legend>
           <Field label="它怎么称呼你" hint="最多 20 个字。只影响它怎么叫你，不影响它把谁当主人。" error={shown("ownerAppellation")}>

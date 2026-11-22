@@ -38,6 +38,7 @@ import {
   type AgentRow,
   type AppellationEntry,
 } from "./store.ts";
+import { siteOffersWebSearch } from "./tools/web/engine.ts";
 
 const empty = z.object({});
 const idParams = z.object({ id: uuidParam });
@@ -134,6 +135,7 @@ const agentSettings = {
   memoryAsk: z.boolean().optional(),
   sharedNotes: z.boolean().optional(),
   whisperElsewhere: z.boolean().optional(),
+  webSearch: z.boolean().optional(),
   ownerAppellation: ownerAppellation.optional(),
   reasoning: reasoning.optional(),
   model: model.optional(),
@@ -159,6 +161,8 @@ const agentView = z.object({
   memoryAsk: z.boolean(),
   sharedNotes: z.boolean(),
   whisperElsewhere: z.boolean(),
+  /** 联网搜索 (lane websearch): present only while the site offers web search (`GET /api/models` `webSearchAvailable`). */
+  webSearch: z.boolean().optional(),
   ownerAppellation: z.string().nullable(),
   appellations: z.array(
     z.object({
@@ -187,7 +191,7 @@ const agentView = z.object({
  * what it calls its owner and the people and Agents the owner named (`ownerAppellation`, `appellations`), and whether its
  * model is there to call (`modelUsable`, models/resolve.ts `modelsUsable`).
  */
-const toView = (a: AgentRow, spent: { others: bigint; proactive: bigint }, appellations: AppellationEntry[], modelUsable: boolean): z.infer<typeof agentView> => ({
+const toView = (a: AgentRow, spent: { others: bigint; proactive: bigint }, appellations: AppellationEntry[], modelUsable: boolean, web = false): z.infer<typeof agentView> => ({
   id: a.id,
   handle: a.handle,
   name: a.name,
@@ -207,6 +211,7 @@ const toView = (a: AgentRow, spent: { others: bigint; proactive: bigint }, appel
   memoryAsk: a.memoryAsk,
   sharedNotes: a.sharedNotes,
   whisperElsewhere: a.whisperElsewhere,
+  ...(web ? { webSearch: a.webSearch } : {}),
   ownerAppellation: a.ownerAppellation,
   appellations,
   othersSpentToday: formatPoints(spent.others),
@@ -234,6 +239,8 @@ export function registerAgentRoutes(
   { draftRuns, readLimit }: { draftRuns: Set<string>; readLimit: PrincipalLimit },
 ): { endDrafts(): Promise<void> } {
   const { db, config, conversations } = app.deps;
+  // Whether the site offers web search now (tools/web/engine.ts `siteOffersWebSearch`): the view shows the Agent's switch only then.
+  const web = siteOffersWebSearch(config, app.deps.webEngine);
   const api = app.withTypeProvider<ZodTypeProvider>();
   /** The owner's view of `agent`, with what other people's calls and its proactive replies have spent today, read now (runs.ts `spentTodayOf`). */
   const viewOf = async (agent: AgentRow) =>
@@ -242,6 +249,7 @@ export function registerAgentRoutes(
       (await spentTodayOf(db, [agent.id], siteToday(config))).get(agent.id) ?? NO_SPEND,
       (await appellationEntriesOf(db, [agent.id])).get(agent.id)!,
       (await modelsUsable(db, config, agent.ownerId, [agent.model]))[0]!,
+      web,
     );
 
   // Create, edit, pause, resume, delete, avatar, new topics and confirming or discarding a proposal share one budget.
@@ -289,6 +297,7 @@ export function registerAgentRoutes(
         memoryAsk: b.memoryAsk ?? false,
         sharedNotes: b.sharedNotes ?? true,
         whisperElsewhere: b.whisperElsewhere ?? true,
+        webSearch: b.webSearch ?? true,
         ownerAppellation: b.ownerAppellation ?? null,
         reasoning: b.reasoning ?? "none",
         model: b.model ?? null,
@@ -296,7 +305,7 @@ export function registerAgentRoutes(
       const { agent, change } = await db.tx((t) => createAgent(t, me.id, input, config));
       conversations.publish(change, req.log);
       // A new Agent has had no reply yet (nothing spent) and its owner has named nobody.
-      return reply.code(201).send(toView(agent, NO_SPEND, [], (await modelsUsable(db, config, me.id, [agent.model]))[0]!));
+      return reply.code(201).send(toView(agent, NO_SPEND, [], (await modelsUsable(db, config, me.id, [agent.model]))[0]!, web));
     },
   );
 
@@ -356,7 +365,7 @@ export function registerAgentRoutes(
       const spent = await spentTodayOf(db, ids, siteToday(config));
       const named = await appellationEntriesOf(db, ids);
       const usable = await modelsUsable(db, config, me.id, agents.map((a) => a.model));
-      return { agents: agents.map((a, i) => toView(a, spent.get(a.id) ?? NO_SPEND, named.get(a.id)!, usable[i]!)) };
+      return { agents: agents.map((a, i) => toView(a, spent.get(a.id) ?? NO_SPEND, named.get(a.id)!, usable[i]!, web)) };
     },
   );
 

@@ -29,6 +29,8 @@ const usageResponse = z.object({
       replies: z.number(),
       /** Present only for a memory call on a site model, and then `site`: the site's own allowance paid it, not the owner's points. */
       paidBy: z.literal("site").optional(),
+      /** Present only when its replies searched the web (lane websearch): how many searches its `points` include. */
+      webSearches: z.number().optional(),
     }),
   ),
 });
@@ -62,12 +64,12 @@ export function registerAccountRoutes(app: FastifyInstance): void {
         const agentCount = await countLiveAgents(t, me.id);
         const used = await freeUsedToday(t, me.id, now, config.siteTimezone);
         const memoryUsed = await memoryUsedToday(t, me.id, now, config.siteTimezone);
-        const recent = await t.query<{ agent_id: string | null; purpose: "reply" | "draft" | "memory"; model: string; source: "site" | "provider"; points: string; charged: string; replies: number }>(
+        const recent = await t.query<{ agent_id: string | null; purpose: "reply" | "draft" | "memory"; model: string; source: "site" | "provider"; points: string; charged: string; replies: number; web: number }>(
           // What the person was charged (the allowance and the balance), not the true cost: what was forgiven is not
           // theirs to see as spent. A memory call's `memory_micro` is the site's, shown as such (`paidBy`).
           `select agent_id, purpose, model, source, sum(free_micro + balance_micro + memory_micro)::text as points,
                   sum(free_micro + balance_micro)::text as charged,
-                  (count(*) filter (where purpose = 'reply'))::int as replies
+                  (count(*) filter (where purpose = 'reply'))::int as replies, sum(web_searches)::int as web
              from usage_records
             -- A run settled without reaching a model has no model to list (and cost nothing).
             where owner_id = $1 and created_at >= $2 and source is not null
@@ -108,6 +110,7 @@ export function registerAccountRoutes(app: FastifyInstance): void {
           replies: r.replies,
           // The site pays for a memory row only when nothing of it was charged to the owner (rows from before the allowance were).
           ...(r.purpose === "memory" && r.source === "site" && BigInt(r.charged) === 0n ? { paidBy: "site" as const } : {}),
+          ...(r.web > 0 ? { webSearches: r.web } : {}),
         })),
       };
     },

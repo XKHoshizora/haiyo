@@ -5,7 +5,7 @@ import { VISIBLE_JOIN, visibleJoin, type ConversationType } from "../conversatio
 import type { Queryable } from "../db.ts";
 import type { StoredOp } from "../memory/apply.ts";
 import { dreamLines, linesOf } from "../memory/lines.ts";
-import { citesOf, foundOf, lookupsOf, queriesOf, type Cite, type MessageRef } from "./lookups.ts";
+import { citesOf, foundOf, handedWebPages, lookupsOf, queriesOf, webCitesOf, webSourcesOf, type Cite, type MessageRef } from "./lookups.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type StoredMessage, type WireMessage } from "./model.ts";
 import { principalsOf, type SyncPrincipal } from "./principals.ts";
 
@@ -93,18 +93,27 @@ interface ViaRow {
   via_points: string | null;
   /** Whether the run was a proactive one (nobody called its Agent) as stored on the run row: a run a mention took over is not. */
   via_proactive: boolean | null;
+  /** The web searches its points include (usage record `web_searches`, migration 064). */
+  via_web: number | null;
 }
 
 /**
  * `via` from what the query read: a site model by its id and its configured label now (its id when it is no longer
- * configured; never its upstream name, address, key variable or prices), a provider model by the name its owner saved.
+ * configured; never its upstream name, address, key variable or prices), a provider model by the name its owner saved;
+ * `webSearches` only when its run searched the web.
  */
 function toWireVia(r: ViaRow, config: ReadConfig): WireVia | null {
   if (r.via_source === null || r.via_model === null || r.via_reasoning === null || r.via_points === null) return null;
   const id = r.via_model;
   const model: WireVia["model"] =
     r.via_source === "site" ? { source: "site", id, label: config.siteModels.find((m) => m.id === id)?.label ?? id } : { source: "provider", model: id };
-  return { model, reasoning: r.via_reasoning, points: formatPoints(BigInt(r.via_points)), ...(r.via_proactive === true ? { proactive: true as const } : {}) };
+  return {
+    model,
+    reasoning: r.via_reasoning,
+    points: formatPoints(BigInt(r.via_points)),
+    ...(r.via_proactive === true ? { proactive: true as const } : {}),
+    ...(r.via_web !== null && r.via_web > 0 ? { webSearches: r.via_web } : {}),
+  };
 }
 
 /**
@@ -233,6 +242,16 @@ function toWire(
     if (looked.found.length > 0) wire.found = looked.found;
     if (looked.queries.length > 0) wire.queries = looked.queries;
     if (looked.cites.length > 0) wire.cites = looked.cites;
+    // The web pages its run was handed (agents/tools/web) and where its text cites them: public pages, to every reader.
+    // That it was handed any is said apart (`plainLinks`: its links show as plain text), from the stored list as it is,
+    // whatever of it the checks below keep.
+    if (handedWebPages(msg.body.webSources)) wire.plainLinks = true;
+    const sources = webSourcesOf(msg.body.webSources);
+    if (sources.length > 0) {
+      wire.webSources = sources;
+      const webCites = webCitesOf(msg.body.webCites, sources, wireText(msg).length);
+      if (webCites.length > 0) wire.webCites = webCites;
+    }
   }
   return wire;
 }
@@ -272,13 +291,13 @@ export async function toWireForReaders(
             coalesce(c.type = 'agent' or (c.type = 'group' and sender.owner_id = r.reader_id), false) as with_reasoning,
             coalesce(c.type = 'agent' and sender.owner_id = r.reader_id, false) as with_queries,
             via.source as via_source, via.model as via_model, via.reasoning as via_reasoning, via.points as via_points,
-            via.proactive as via_proactive
+            via.proactive as via_proactive, via.web as via_web
        from unnest($1::uuid[]) as r (reader_id)
        cross join messages m ${visibleJoin("r.reader_id")}
        join conversations c on c.id = m.conversation_id
        left join principals sender on sender.id = m.sender_id
        left join lateral (
-         select run.source, run.model, run.reasoning, (u.free_micro + u.balance_micro)::text as points, run.lane = 'proactive' as proactive
+         select run.source, run.model, run.reasoning, (u.free_micro + u.balance_micro)::text as points, run.lane = 'proactive' as proactive, u.web_searches as web
            from agent_runs run
            join usage_records u on u.run_id = run.id
           where sender.owner_id = r.reader_id and m.kind = 'text' and ${postingRun("m", "run")} and m.client_txn = run.id::text

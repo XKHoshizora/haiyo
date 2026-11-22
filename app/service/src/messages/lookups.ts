@@ -9,8 +9,8 @@ import { cleanModelText, hasVisibleText } from "../schemas.ts";
  * their part (messages/read.ts `toWireForReaders`). None of it is text: no search matches it, no model is shown it.
  */
 
-/** The kinds of a tool's work, as a reply's status line says them and its lookups count them. */
-export const LOOKUP_KINDS: readonly Activity[] = ["search", "file", "time"];
+/** The kinds of a tool's work, as a reply's status line says them and its lookups count them (`web`: only a run offered the web tool has any). */
+export const LOOKUP_KINDS: readonly Activity[] = ["search", "file", "time", "web"];
 
 /** How many tool calls of each kind ran for a reply: only kinds above 0. */
 export type Lookups = Partial<Record<Activity, number>>;
@@ -91,8 +91,109 @@ export interface Cite {
   ref: MessageRef;
 }
 
-/** The most citations a reply keeps: the first ones. */
+/** The most citations a reply keeps: the first ones (of messages and files; web citations count apart, `WebCite`). */
 export const CITES_MAX = 20;
+
+/**
+ * A web page a reply's run was handed by its web search (agents/tools/web/tool.ts; lane websearch): the number its model
+ * was shown (`〔w2〕` is 2), the page's address (https, no credentials, at most `WEB_URL_MAX`) and its title as cleaned.
+ * Stored beside the reply as `webSources`, every one the run was handed, cited or not; no snippet is kept.
+ */
+export interface WebSource {
+  n: number;
+  url: string;
+  title: string;
+}
+
+/** Where a reply's text cites a web page of its `webSources` (`n`), as `Cite.at` says where (`webCites`). */
+export interface WebCite {
+  at: number;
+  n: number;
+}
+
+/** The most web pages a reply keeps (`webSources`), and the most of its web citations: the first ones. */
+export const WEB_SOURCES_MAX = 20;
+export const WEB_CITES_MAX = 20;
+/** The longest address a web source may have. */
+export const WEB_URL_MAX = 2048;
+/** The longest title a web source keeps (characters, an ellipsis after a cut counted among them). */
+export const WEB_TITLE_MAX = 200;
+
+/**
+ * `text` at most `max` characters (code points: a surrogate pair is never split), an ellipsis among them when it is cut:
+ * the one length rule of a web title and snippet, where they are written (agents/tools/web/text.ts) and where they are
+ * read (`webTitleOf`). Cutting what it already cut changes nothing.
+ */
+export function cutChars(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length <= max ? text : `${chars.slice(0, Math.max(0, max - 1)).join("").trimEnd()}…`;
+}
+
+/** A web source's title as stored and sent (`cutChars` at `WEB_TITLE_MAX`): a longer one is cut, never dropped. */
+export const webTitleOf = (title: string): string => cutChars(title, WEB_TITLE_MAX);
+
+/**
+ * A web page's address as it may be stored and shown (the existing `safeHref` rule, stricter): no white space or control
+ * character anywhere, `https://` and a host right after it, a real parse with a host and no user name or password, at most
+ * `WEB_URL_MAX` before and after the parse. The parsed form (`URL.href`: its host in ASCII, a punycode host as `xn--…`);
+ * null for anything else.
+ */
+export function webUrlOf(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > WEB_URL_MAX || /[\s\p{Cc}]/u.test(value) || !/^https:\/\/[^/?#]/i.test(value)) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname === "" || url.username !== "" || url.password !== "") return null;
+  return url.href.length <= WEB_URL_MAX ? url.href : null;
+}
+
+/**
+ * The web sources `value` holds (a stored body's `webSources`): well-formed ones — a number, a safe address, a title (cut
+ * to `WEB_TITLE_MAX` by the write rule, `webTitleOf`, never dropped for its length) —, each number once, at most
+ * `WEB_SOURCES_MAX`.
+ */
+export function webSourcesOf(value: unknown): WebSource[] {
+  if (!Array.isArray(value)) return [];
+  const out: WebSource[] = [];
+  const seen = new Set<number>();
+  for (const s of value) {
+    if (out.length >= WEB_SOURCES_MAX) break;
+    const { n, url, title } = (typeof s === "object" && s !== null ? s : {}) as Partial<WebSource>;
+    const href = webUrlOf(url);
+    if (!Number.isSafeInteger(n) || n! < 1 || seen.has(n!) || href === null || typeof title !== "string") continue;
+    seen.add(n!);
+    out.push({ n: n!, url: href, title: webTitleOf(title) });
+  }
+  return out;
+}
+
+/**
+ * Whether a stored body says its run was handed web pages (`webSources`, as stored: any entry, before any of them is
+ * checked) — the fact a reader's links-as-plain-text rule goes by (`plainLinks` on the wire), so that no page's own data
+ * can turn it off.
+ */
+export const handedWebPages = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
+
+/**
+ * The web citations `value` holds (a stored body's `webCites`): the first `WEB_CITES_MAX`, each a place no further than
+ * `length` (the text's) and no earlier than the one before, of a number among `sources`.
+ */
+export function webCitesOf(value: unknown, sources: readonly WebSource[], length = Number.POSITIVE_INFINITY): WebCite[] {
+  if (!Array.isArray(value)) return [];
+  const numbers = new Set(sources.map((s) => s.n));
+  const out: WebCite[] = [];
+  let last = 0;
+  for (const c of value.slice(0, WEB_CITES_MAX)) {
+    const { at, n } = (typeof c === "object" && c !== null ? c : {}) as Partial<WebCite>;
+    if (!Number.isSafeInteger(at) || at! < last || at! > length || !Number.isSafeInteger(n) || !numbers.has(n!)) continue;
+    last = at!;
+    out.push({ at: at!, n: n! });
+  }
+  return out;
+}
 
 /**
  * The citations `value` holds (a stored body's `cites`): the first `CITES_MAX` of its entries, in order, those well formed

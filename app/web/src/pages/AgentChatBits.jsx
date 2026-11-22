@@ -9,6 +9,7 @@ import { useStore } from "../data/store.jsx";
 import { MODEL_GONE, runFailureText } from "../data/errorTexts.js";
 import { nameOf, ownerOf, publishBlock } from "../state/selectors.js";
 import { GrowingText, StreamingAgentText } from "../ui/AgentText.jsx";
+import { CitesContext } from "../ui/cites.jsx";
 import { REVEAL_END_MS, REVEAL_FINISH_MS } from "../ui/reveal.js";
 import { Avatar, Btn, Field, IconBtn, Modal, Notice, Reason, Tag, focusInvalid } from "../ui/primitives.jsx";
 import { refusalText, settled, useAction, useNow } from "./useAction.js";
@@ -80,8 +81,8 @@ function Writing({ text = "正在回复…" }) {
 }
 
 /** What a reply says while its tool runs, by the kind of the tool's work (a run's `activity`). */
-const ACTIVITY_LINES = { search: "正在查聊天记录…", file: "正在看文件…", time: "正在看时间…" };
-/** The line for `activity` (`search`, `file`, `time`), or null for none — or for a kind this page does not know. */
+const ACTIVITY_LINES = { search: "正在查聊天记录…", file: "正在看文件…", time: "正在看时间…", web: "正在上网查找…" };
+/** The line for `activity` (`search`, `file`, `time`, `web`), or null for none — or for a kind this page does not know. */
 export const activityLine = (activity) => (typeof activity === "string" && Object.hasOwn(ACTIVITY_LINES, activity) ? ACTIVITY_LINES[activity] : null);
 
 /** What a reply that thinks says before its text: 正在思考…, then the whole seconds it has been thinking. */
@@ -151,6 +152,8 @@ function useRunClock(runId, text) {
  * `forgetRevealed`); the newest REVEALED_KEPT at most. A run id is never used twice, and its text only grows.
  */
 const revealedSoFar = new Map();
+/** What a reply being written hands its text while the site offers web search (ui/cites.jsx `CitesContext`): no citation, its links plain. */
+const PLAIN_LINKS = Object.freeze({ cites: [], onJump: null, plainLinks: true });
 const REVEALED_KEPT = 20;
 function noteRevealed(runId, upTo) {
   if (!revealedSoFar.has(runId) && revealedSoFar.size >= REVEALED_KEPT) revealedSoFar.delete(revealedSoFar.keys().next().value);
@@ -249,6 +252,9 @@ export function StreamBubble({ conv, finishing = null, onReveal = null, onFinish
   else if (thinks && clock.textAt) summary = thoughtFor(clock.textAt - clock.start);
   // What its tool looks at now, while one runs.
   const doing = finishing ? null : activityLine(run.activity);
+  // While the site offers web search, what any reply writes shows its links as plain text until it is stored (a reply that
+  // searched keeps them so, WebSources.jsx): this page may not have seen it search (a reload, another tab).
+  const linksPlain = state.webSearchAvailable === true ? PLAIN_LINKS : null;
   // (While its thinking streams, the line heads it: the bubble keeps the dots only; so it does for the frame before
   // the first characters of the text of a reply that thought.)
   const waiting = <Writing text={doing ?? (thinking ? (reasoning ? "" : line) : undefined)} />;
@@ -264,21 +270,23 @@ export function StreamBubble({ conv, finishing = null, onReveal = null, onFinish
         <div className="bubble">
           {text ? (
             <>
-              <StreamingAgentText
-                key={run.id}
-                text={text}
-                paced
-                ended={Boolean(stream.cut) || Boolean(finishing)}
-                endWithin={stream.cut ? REVEAL_END_MS : REVEAL_FINISH_MS}
-                all={stopped === run.id || (!finishing && run.status !== "running")}
-                resumeAt={revealedSoFar.get(run.id) ?? 0}
-                placeholder={thinks ? <Writing text="" /> : waiting}
-                onShown={(upTo, length) => {
-                  noteRevealed(run.id, upTo);
-                  onReveal?.(run.id, upTo >= length);
-                  if (finishing && upTo >= length) onFinished?.();
-                }}
-              />
+              <CitesContext.Provider value={linksPlain}>
+                <StreamingAgentText
+                  key={run.id}
+                  text={text}
+                  paced
+                  ended={Boolean(stream.cut) || Boolean(finishing)}
+                  endWithin={stream.cut ? REVEAL_END_MS : REVEAL_FINISH_MS}
+                  all={stopped === run.id || (!finishing && run.status !== "running")}
+                  resumeAt={revealedSoFar.get(run.id) ?? 0}
+                  placeholder={thinks ? <Writing text="" /> : waiting}
+                  onShown={(upTo, length) => {
+                    noteRevealed(run.id, upTo);
+                    onReveal?.(run.id, upTo >= length);
+                    if (finishing && upTo >= length) onFinished?.();
+                  }}
+                />
+              </CitesContext.Provider>
               {stream.cut && <StreamCutNote />}
               {doing && (
                 <p className="muted">

@@ -738,6 +738,9 @@ async function* attempt(call: ModelCall, fetch: typeof globalThis.fetch, left: R
           if (part.text !== "") yield { type: "reasoning", delta: part.text };
           break;
         case "tool-call": {
+          // A call the provider ran itself (a server tool of its own, `web_search` say) is none of ours: never handed to
+          // the loop, where it would be run again or counted as garbled (lane websearch, attack I7).
+          if (part.providerExecuted === true) break;
           // The reasoning the tap read before the call comes out before it.
           for (const delta of fromTap(tap?.leading() ?? [])) yield { type: "reasoning", delta };
           const made: ToolCall = { id: part.toolCallId, name: part.toolName, input: part.invalid === true ? null : part.input };

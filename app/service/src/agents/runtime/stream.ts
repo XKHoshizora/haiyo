@@ -54,12 +54,18 @@ export class ReplyStream {
   /** What of the text, and of the reasoning, may still become a token: held back (none without `holdTokens`). */
   private holds: { text: TokenHold; reasoning: TokenHold } | null;
 
+  /** `holdTokens` `"web"`: a reply offered the web tool too, whose `〔w1〕` is held and taken out as well. */
   constructor(
     private readonly send: (delta: Delta) => void,
     private readonly intervalMs: number = DELTA_INTERVAL_MS,
-    private readonly holdTokens = false,
+    private readonly holdTokens: boolean | "web" = false,
   ) {
-    this.holds = holdTokens ? { text: new TokenHold(), reasoning: new TokenHold() } : null;
+    this.holds = this.freshHolds();
+  }
+
+  private freshHolds(): { text: TokenHold; reasoning: TokenHold } | null {
+    const web = this.holdTokens === "web";
+    return this.holdTokens ? { text: new TokenHold(web), reasoning: new TokenHold(web) } : null;
   }
 
   add(kind: "text" | "reasoning", piece: string): void {
@@ -157,7 +163,7 @@ export class ReplyStream {
     this.released = 0;
     this.held = false;
     this.carry = { text: "", reasoning: "" };
-    this.holds = this.holdTokens ? { text: new TokenHold(), reasoning: new TokenHold() } : null;
+    this.holds = this.freshHolds();
   }
 
   /** Drops what is pending (nothing more will be pushed). */
