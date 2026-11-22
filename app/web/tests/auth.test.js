@@ -115,7 +115,7 @@ describe("error codes", () => {
   const table = {
     invalid_email_or_password: "邮箱或密码不对，请再试一次。",
     email_not_verified: "这个邮箱还没有验证。我们刚刚又发了一封验证邮件，请查收后再登录。",
-    invalid_invite: "邀请码无效或已过期，请向邀请你的人确认。",
+    invalid_invite: "邀请码无效、已过期或已用完，请向邀请你的人确认。",
     handle_taken: "这个账号名已被占用，换一个试试。",
     rate_limited: "操作太频繁了，请稍等一分钟再试。",
     invalid_token: "链接无效或已过期，请重新申请。",
