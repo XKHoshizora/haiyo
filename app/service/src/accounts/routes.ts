@@ -11,9 +11,11 @@ import { formatPoints, freeUsedToday, memoryUsedToday, nextSiteMidnight, siteDay
 const RECENT_DAYS = 7;
 
 /**
- * What a usage record's web searches were charged (lane websearch2): their price is charged in full before the model's
- * part (settle.ts: outside the model's clip), so it is the searches' price up to what the record charged at all — less
- * only when the whole record was forgiven (our own failure) or ran past the day's free allowance.
+ * What a usage record's web searches were charged (lane websearch2): the record's `web_micro` is the searches' charge —
+ * their price (an old code's record, `money_rule` 0) or their actual (`web_charge_micro`, the pool's) — and it is always
+ * covered by what the run held for them (settle.ts: a search is held whole, never over), so it is that charge up to what
+ * the record charged at all: less only when the whole record was forgiven (our own failure), or, by the old rule, ran
+ * past the day's free allowance.
  */
 const WEB_CHARGED = "least(web_micro, free_micro + balance_micro)";
 
