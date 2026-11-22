@@ -415,7 +415,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 
 Everything else is not rate limited.
 
-**Metrics in the log.** The service writes eight kinds of line at `info`, each a JSON log object with a `metric` field,
+**Metrics in the log.** The service writes nine kinds of line at `info`, each a JSON log object with a `metric` field,
 for an operator to tune the numbers above (and the site's models) from (nothing else about them is recorded or exposed):
 
 - `{ "metric": "run_wait_ms", "lane", "ms" }`, once for each reply the worker claims (its first claim; not again when it is
@@ -442,6 +442,13 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
 - `{ "metric": "elsewhere_skipped", "runId" }`, once for each "not here, but elsewhere" lookup skipped because as many as
   may run at once (2) already did (Whispers, `found_elsewhere`): how often an owner gets no whisper for that reason alone
   (nothing of what was asked is logged).
+- The web search's (Agents and runs, Web search; Metering, A web search's price), only while the site offers it, never
+  with a query, an address or a result: `{ "metric": "web_search", "engine", "status", "ms", "results" }` once for each
+  engine call; `{ "metric": "web_engine_refused", "engine", "http" }` once for each call the engine refused for the site's
+  key or account (401, 402 — out of credits —, 403), with a WARN line of the same at most once an hour; `{ "metric":
+  "web_site_fuse", "share": 80 }` when the day's money for searches reaches 80 % of `TOOLS.web.siteUsdPerDay`, and
+  `{ "metric": "web_site_fuse_refused" }` once for each search that fuse refused; `{ "metric": "web_query_refused" }` once
+  for each query the guard refused.
 
 Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_partial`, `judge_daily_limit`): Proactive
 replies, Log.

@@ -596,6 +596,8 @@ describe("the site's money fuse (the operator's cost insurance)", () => {
     const run = await lastRun(b.agent.id);
     expect([run.web_searches, (await recordOf(run.id)).web_micro]).toEqual([0, "0"]);
     expect(metricLines("web_site_fuse")).toHaveLength(1);
+    // Each search the fuse refuses: a count for the operator.
+    expect(metricLines("web_site_fuse_refused")).toHaveLength(1);
   });
 
   it("fed by what the engine says a call cost (Exa's costDollars): the estimate held at call time, replaced by the actual; absent, the estimate stands", async () => {

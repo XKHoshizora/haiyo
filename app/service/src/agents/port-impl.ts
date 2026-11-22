@@ -63,7 +63,7 @@ import {
 } from "./runtime/port.ts";
 import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, passageBudget, systemText, systemTokens, type PromptNotes, type SystemText, type ToolsPrompt, type WebPrompt } from "./runtime/prompt.ts";
 import { holdSearch as preHoldSearch, SearchRefused, type HeldSearch } from "./tools/web/hold.ts";
-import { fuseLine, WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
+import { fuseLine, WEB_NO_MONEY, WEB_SITE_DAY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
 import {
   actOnTriggered,
   budgetReachedWith,
@@ -1035,7 +1035,11 @@ export class DbAgentPort implements AgentPort {
       if (held.at80) fuseLine(this.deps.log);
       return held;
     } catch (err) {
-      if (err instanceof SearchRefused) return err.why;
+      if (err instanceof SearchRefused) {
+        // The site's money fuse refusing a search: the operator's metric (a count, nothing of the search).
+        if (err.why === WEB_SITE_DAY) this.deps.log.info({ metric: "web_site_fuse_refused" }, "web search: refused by the site's money fuse for today");
+        return err.why;
+      }
       if (err instanceof RunNotRunning) return WEB_UNAVAILABLE;
       throw err;
     }
