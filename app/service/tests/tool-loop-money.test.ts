@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentPort, staleAfterMs, type DbAgentPort, type Toolbox } from "../src/agents/port-impl.ts";
 import { contextBudget } from "../src/agents/runtime/context.ts";
 import { isRunEnd, type Prepared, type ToolOutcome } from "../src/agents/runtime/port.ts";
-import { NO_TOOLS, REPLY_LANGUAGE, toolsPassage } from "../src/agents/runtime/prompt.ts";
+import { NO_TOOLS, REPLY_LANGUAGE_FOR, toolsPassage } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import type { Config } from "../src/config.ts";
 import { CONTEXT_HEADROOM, estimateTokens, holdTokens, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR } from "../src/metering/tokens.ts";
@@ -740,10 +740,10 @@ describe("the tools' definitions, and room for what they bring back, in the cont
   /**
    * The system text's line saying the reply has no tools, with the line break before it: a reply offered tools is told
    * the tools' passage in its place (agents/runtime/prompt.ts `toolsPassage`), and before it the line of the language it
-   * replies in (`REPLY_LANGUAGE`, lane prompt2: a reply offered tools only), so its plan is made with that text.
+   * replies in (`REPLY_LANGUAGE`, lane prompt2: a reply offered tools only; lane lang: naming the language of the message answered, Chinese in these tests), so its plan is made with that text.
    */
   const NO_TOOLS_LINE = `\n${NO_TOOLS}`;
-  const PASSAGE_LINES = `\n${REPLY_LANGUAGE}\n${toolsPassage(false)}`;
+  const PASSAGE_LINES = `\n${REPLY_LANGUAGE_FOR.zh}\n${toolsPassage(false)}`;
   /** `system` as a reply offered tools would have it. */
   const offered = (system: string) => {
     expect(system).toContain(NO_TOOLS_LINE);
@@ -810,11 +810,11 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // The newest message, then older ones, newest first, while they fit what the plan leaves them. Reserved: the
     // definitions and what providers add around them; the last call's line; and room for what the tools bring back —
     // two results of `resultMaxWeight`, but at most a third of what the plan would give the conversation beside the
-    // definitions (about 3 710 tokens here, its system text with the tools' passage and the language line: 1 236 are kept).
+    // definitions (about 3 710 tokens here, its system text with the tools' passage and the language line: 1 239 are kept (1 236 with the abstract language line, 8 tokens heavier than the Chinese concrete one)).
     const definitions = estimateTokens(JSON.stringify([BIG]), TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
     const conversation = contextBudget(8192, a.maxOutputTokens, { rest: a.system, passage: "" }, 1, definitions);
     const results = Math.min(Math.ceil(2 * app.deps.config.tools.resultMaxWeight * TOOL_TEXT_FACTOR), Math.floor(conversation / 3));
-    expect(results).toBe(1236);
+    expect(results).toBe(1239);
     const reserved = definitions + estimateTokens(`\n\n${FINAL_LINE}`) + results;
     const shown = (budget: number) => 1 + Math.min(older.length, Math.floor((budget - estimateTokens("附近有什么好吃的？")) / 310));
     const plans = [contextBudget(8192, b.maxOutputTokens, { rest: b.system, passage: "" }), contextBudget(8192, a.maxOutputTokens, { rest: a.system, passage: "" }, 1, reserved)];
@@ -830,7 +830,7 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // weight fill what the definitions alone left the conversation to within about 200 tokens (the review's case: the
     // conversation filling its plan).
     // (The persona is as much shorter as the language line a reply offered tools has: lane prompt2.)
-    const { owner, conv } = await owned("fullplan", PAID, { persona: "简".repeat(4480 - estimateTokens(`\n${REPLY_LANGUAGE}`)) });
+    const { owner, conv } = await owned("fullplan", PAID, { persona: "简".repeat(4480 - estimateTokens(`\n${REPLY_LANGUAGE_FOR.zh}`)) });
     await grant(db, owner.id, 100n * POINT);
     // 32 older messages of 3 000 weight each, then the question: more than either plan holds.
     const older = Array.from({ length: 32 }, (_, i) => `${String(i).padStart(2, "0")}${"字".repeat(2999)}`);
