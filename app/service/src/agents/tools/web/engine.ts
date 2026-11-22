@@ -181,3 +181,10 @@ export function deepseekEngine(o: DeepseekOptions): WebEngine {
     },
   };
 }
+
+/**
+ * Whether the site offers web search now: an engine (`TOOLS.web.enabled` and its key, app.ts `webEngineOf`) while replies
+ * may be offered tools at all (`TOOLS.enabled`). What `GET /api/models` (`webSearchAvailable`) and an Agent's view
+ * (`webSearch`) go by.
+ */
+export const siteOffersWebSearch = (config: { tools: { enabled: boolean } }, engine: WebEngine | null): boolean => engine !== null && config.tools.enabled;

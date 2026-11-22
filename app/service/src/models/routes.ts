@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { siteOffersWebSearch } from "../agents/tools/web/engine.ts";
 import { REASONING_LEVELS } from "../config.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { requirePrincipal } from "../session.ts";
@@ -56,7 +57,7 @@ export function registerModelRoutes(app: FastifyInstance): void {
         })),
         providerDefaults: { contextTokens: config.providerDefaultContextTokens, maxOutputTokens: config.providerDefaultMaxOutputTokens },
         proactiveAvailable: config.judge !== null,
-        ...(app.deps.webEngine !== null ? { webSearchAvailable: true as const } : {}),
+        ...(siteOffersWebSearch(config, app.deps.webEngine) ? { webSearchAvailable: true as const } : {}),
       };
     },
   );

@@ -9,9 +9,11 @@ import { WEB_NO_MONEY, WEB_OWNER_DAY, WEB_SITE_DAY, WEB_UNAVAILABLE } from "./to
 /**
  * The web search's pre-hold (lane websearch; README "Metering", A web search's price): a search costs exactly
  * `TOOLS.web.pointsMicroPerSearch`, held before the engine is called, in one transaction in the project's lock order — the
- * run's conversation row, its Agent's row and its own (the caller's `lockRun`), then today's counters (the owner's row,
- * then the site's), then the owner's account (`raiseHold`). Refused at any step, the transaction rolls back (a counter
- * taken is given back) and the engine is not called; the reply goes on.
+ * run's conversation row, its Agent's row and its own (the caller's `lockRun`), then the owner's counter for today, then the
+ * owner's account (`raiseHold`), and only then the site's counter — the one row every pre-hold shares, held for the short
+ * rest of the transaction and never while an account is waited for (no other path takes it, so the order stays acyclic).
+ * Refused at any step, the transaction rolls back (a counter taken is given back, the hold is as it was) and the engine is
+ * not called; the reply goes on.
  */
 
 /** A refusal of the pre-hold: its plain words for the model (`{error}`). Thrown inside the transaction, so it rolls back. */
@@ -43,13 +45,14 @@ export async function countSearch(t: Tx, scope: string, day: string, cap: number
 /**
  * The pre-hold of one search of run `run` (locked by the caller under `lockRun`, still running), in this order:
  * 1. the run must be admitted on a site model (`source`, `charge_to`) — else refused (never offered otherwise);
- * 2. today's searches: the owner's (`perOwnerPerDay`), then the site's (`sitePerDay`) — over either, refused;
+ * 2. today's searches of the owner (`perOwnerPerDay`) — over it, refused;
  * 3. the money, by `extend`'s rules but "ok only": the model part of the reply so far at its bound (its hold, less the
  *    free allowance's room for a last call, `reserveMicro`, and less its searches) with its searches and this one within
  *    `TOOLS.maxPoints` and no budget of its lane reached (runs.ts `budgetReachedWith`), and its hold raised by the price
  *    within what is left of its own source beside the other holds (admit.ts `raiseHold` "ok": on the free allowance the
  *    allowance itself, so a search is never paid by forgiveness) — else refused, its hold as it was;
- * 4. `web_searches + 1`, `web_micro + price` on the run.
+ * 4. today's searches of the whole site (`sitePerDay`) — over it, refused (and all of the above given back);
+ * 5. `web_searches + 1`, `web_micro + price` on the run.
  * Throws `SearchRefused` for a refusal (the caller's transaction then rolls back).
  */
 export async function holdSearch(
@@ -73,7 +76,6 @@ export async function holdSearch(
   if (!row || row.source !== "site" || (row.charge_to !== "free" && row.charge_to !== "balance")) throw new SearchRefused(WEB_UNAVAILABLE);
   const day = siteDay(now, config.siteTimezone);
   if (!(await countSearch(t, o.run.ownerId, day, web.perOwnerPerDay))) throw new SearchRefused(WEB_OWNER_DAY);
-  if (!(await countSearch(t, SITE_SCOPE, day, web.sitePerDay))) throw new SearchRefused(WEB_SITE_DAY);
   const price = BigInt(web.pointsMicroPerSearch);
   const hold = BigInt(row.hold);
   const searched = BigInt(row.web);
@@ -85,5 +87,19 @@ export async function holdSearch(
     !(await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent, config));
   const answer = await raiseHold(t, config, { id: o.run.id, ownerId: o.run.ownerId, chargeTo: row.charge_to, holdMicro: hold }, { ok: hold + price, final: hold }, allowed, now);
   if (answer !== "ok") throw new SearchRefused(WEB_NO_MONEY);
+  // Last of the rows it takes: the site's (see above).
+  if (!(await countSearch(t, SITE_SCOPE, day, web.sitePerDay))) throw new SearchRefused(WEB_SITE_DAY);
   await t.query("update agent_runs set web_searches = web_searches + 1, web_micro = web_micro + $2::bigint where id = $1", [o.run.id, price.toString()]);
+}
+
+/** How many site days of counts are kept: today and the 7 before it. */
+export const COUNT_DAYS_KEPT = 7;
+
+/**
+ * Deletes the counter rows of site days more than `COUNT_DAYS_KEPT` before today (`siteDay`), the owners' and the site's
+ * alike (the change sweep, app.ts `changeSweep`): a count means nothing once its day is over. How many went.
+ */
+export async function sweepSearchDays(db: Pick<Tx, "query">, now: Date, timeZone: string): Promise<number> {
+  const { rowCount } = await db.query("delete from web_search_days where day < $1::date - $2::int", [siteDay(now, timeZone), COUNT_DAYS_KEPT]);
+  return rowCount ?? 0;
 }

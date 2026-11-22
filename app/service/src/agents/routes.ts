@@ -38,6 +38,7 @@ import {
   type AgentRow,
   type AppellationEntry,
 } from "./store.ts";
+import { siteOffersWebSearch } from "./tools/web/engine.ts";
 
 const empty = z.object({});
 const idParams = z.object({ id: uuidParam });
@@ -238,8 +239,8 @@ export function registerAgentRoutes(
   { draftRuns, readLimit }: { draftRuns: Set<string>; readLimit: PrincipalLimit },
 ): { endDrafts(): Promise<void> } {
   const { db, config, conversations } = app.deps;
-  // Whether the site offers web search now (app.ts `Deps.webEngine`): the view shows the Agent's switch only then.
-  const web = app.deps.webEngine !== null;
+  // Whether the site offers web search now (tools/web/engine.ts `siteOffersWebSearch`): the view shows the Agent's switch only then.
+  const web = siteOffersWebSearch(config, app.deps.webEngine);
   const api = app.withTypeProvider<ZodTypeProvider>();
   /** The owner's view of `agent`, with what other people's calls and its proactive replies have spent today, read now (runs.ts `spentTodayOf`). */
   const viewOf = async (agent: AgentRow) =>

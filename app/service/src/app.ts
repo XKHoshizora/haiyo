@@ -34,6 +34,7 @@ import { createAgentPort, recoverRuns, startStaleRunSweep, sweepStaleRuns, type 
 import { createElsewhere } from "./agents/tools/elsewhere.ts";
 import { createToolbox } from "./agents/tools/index.ts";
 import { deepseekEngine, type WebEngine } from "./agents/tools/web/engine.ts";
+import { sweepSearchDays } from "./agents/tools/web/hold.ts";
 import { decideProactive } from "./agents/proactive/decide.ts";
 import { createProactiveScheduler, type ProactiveScheduler } from "./agents/proactive/scheduler.ts";
 import { actOnTriggered } from "./agents/runs.ts";
@@ -203,7 +204,8 @@ export interface BuildOptions {
  *   each pushed to its owner (never logged; a failed told reply's slot follows its push, sync/hub.ts); answered and
  *   expired ones made 30 days ago are deleted;
  * - reminders about money recorded by a settlement whose whisper was never made (the service stopped between the two) are
- *   made, pushed and counted (metering/reminders.ts `deliverReminders`).
+ *   made, pushed and counted (metering/reminders.ts `deliverReminders`);
+ * - the web search's counts of site days more than a week old are deleted (agents/tools/web/hold.ts `sweepSearchDays`).
  * `hub` null: nobody to tell yet.
  */
 export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: FastifyBaseLogger, hub: Pick<Hub, "pushWhisper"> | null): Promise<{ unsent: number; abandoned: number }> {
@@ -218,6 +220,7 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
     return [];
   });
   for (const r of reminded) log.info({ metric: r.metric }, "a reminder about money was made for its owner");
+  await sweepSearchDays(deps.db, new Date(), config.siteTimezone).catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "web search count sweep failed; trying again next interval"));
   if (hub) pushWhispers(hub, [...expired, ...reminded.flatMap((r) => (r.whisper ? [r.whisper] : []))]);
   return { unsent: 0, abandoned: 0 };
 }

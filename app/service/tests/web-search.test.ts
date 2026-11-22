@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { webEngineOf } from "../src/app.ts";
+import { changeSweep, webEngineOf } from "../src/app.ts";
 import { createAgentPort, type DbAgentPort } from "../src/agents/port-impl.ts";
 import { NO_TOOLS, NO_WEB_HERE, toolsPassage, WEB_RULES } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
@@ -8,7 +8,7 @@ import { RunRefs } from "../src/agents/tools/refs.ts";
 import type { WebEngine, WebResult, WebSearchError } from "../src/agents/tools/web/engine.ts";
 import { countSearch, holdSearch, SearchRefused, SITE_SCOPE } from "../src/agents/tools/web/hold.ts";
 import { WEB_BUSY, WEB_NO_MONEY, WEB_NO_RESULTS, WEB_OWNER_DAY, WEB_QUERY_PRIVATE, WEB_SITE_DAY, WEB_TIMEOUT, WEB_UNAVAILABLE } from "../src/agents/tools/web/tool.ts";
-import { lockAgent } from "../src/agents/store.ts";
+import { lockAgent, type AgentRow } from "../src/agents/store.ts";
 import type { Config, WebSearchConfig } from "../src/config.ts";
 import { admitRun } from "../src/metering/admit.ts";
 import { settle } from "../src/metering/settle.ts";
@@ -16,7 +16,7 @@ import type { ModelCall, ToolCall } from "../src/models/gateway.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
-import { costOf, grant, METER_ENV, meteredAgent, OVER_USAGE, runningRun } from "./helpers/metering.ts";
+import { costOf, grant, METER_ENV, meteredAgent, OVER_USAGE, paidReply, runningRun } from "./helpers/metering.ts";
 import { scriptedGateway, type ScriptedGateway } from "./helpers/models.ts";
 import { providerBody } from "./helpers/providers.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
@@ -413,13 +413,83 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
        on conflict (owner_id, day) do update set used_micro = $2`,
       [ownerId, micro.toString()],
     );
-  const preHold = (r: Awaited<ReturnType<typeof admitted>>, config: Config) =>
+  /** The pre-hold of `r`'s run, as port-impl.ts calls it; `over`: another lane, conversation or Agent budgets for it. */
+  const preHold = (
+    r: Awaited<ReturnType<typeof admitted>>,
+    config: Config,
+    over: { lane?: { lane: "own" | "others" | "proactive"; coversSeq: number }; conversationId?: string; agent?: Partial<Pick<AgentRow, "othersBudgetMicro" | "chainBudgetMicro">> } = {},
+  ) =>
     db.tx(async (t) => {
       const locked = await lockAgent(t, r.agent.agentId, r.agent.conversationId);
       await t.query("select 1 from agent_runs where id = $1 for update", [r.runId]);
-      await holdSearch(t, config, { run: { id: r.runId, ownerId: r.owner.id, conversationId: r.agent.conversationId }, agent: locked, lane: { lane: "own", coversSeq: 0 }, reserveMicro: 0n }, new Date());
+      await holdSearch(
+        t,
+        config,
+        {
+          run: { id: r.runId, ownerId: r.owner.id, conversationId: over.conversationId ?? r.agent.conversationId },
+          agent: { ...locked, ...over.agent },
+          lane: over.lane ?? { lane: "own", coversSeq: 0 },
+          reserveMicro: 0n,
+        },
+        new Date(),
+      );
     });
   const runRow = async (id: string) => (await db.query<{ hold: string; web_searches: number; web_micro: string }>("select hold_micro::text as hold, web_searches, web_micro::text from agent_runs where id = $1", [id])).rows[0]!;
+
+  it("a budget of its lane reached with the search (the others' daily, crossing it; the chain budget in a group): refused, nothing counted", async () => {
+    // Others' daily budget 3 points: 0.5 settled today + the reply's 2 held + the search's 0.77 = 3.27 ≥ 3 — refused.
+    const r = await admitted("lanea");
+    await paidReply(db, { agentId: r.agent.agentId, ownerId: r.owner.id, conversationId: r.agent.conversationId, lane: "others", micro: 500_000n });
+    const others = { lane: { lane: "others" as const, coversSeq: 0 }, agent: { othersBudgetMicro: 3n * POINT } };
+    await expect(preHold(r, webConfig(), others)).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    expect([await runRow(r.runId), await countOf(r.owner.id), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0, 0]);
+    // Without what was settled before, 2.77 < 3: held.
+    const s = await admitted("laneb");
+    await preHold(s, webConfig(), others);
+    expect((await runRow(s.runId)).web_searches).toBe(1);
+    // A reply in a group covering more than its latest message from a person (an Agents' chain): its chain budget.
+    const c = await admitted("lanec");
+    const g = await group(app, c.owner, "链", [await signUp(app, "lanec_mia"), await signUp(app, "lanec_ned")]);
+    const human = await say(c.owner, g, "大家好");
+    const chain = { conversationId: g, lane: { lane: "own" as const, coversSeq: human + 1 } };
+    await expect(preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: POINT } })).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: 10n * POINT } });
+    expect((await runRow(c.runId)).web_searches).toBe(1);
+  });
+
+  it("the site's cap is counted last, after the account: refused there, the owner's count and the hold are given back; the site row is not held while the account is waited for", async () => {
+    const r = await admitted("sitea");
+    await setCount(SITE_SCOPE, 12);
+    await expect(preHold(r, webConfig({ sitePerDay: 12 }))).rejects.toEqual(new SearchRefused(WEB_SITE_DAY));
+    expect([await runRow(r.runId), await countOf(r.owner.id), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0, 12]);
+    // While the pre-hold waits for the owner's account, another transaction can take the site's row at once.
+    await setCount(SITE_SCOPE, 5);
+    let release!: () => void;
+    const gate = new Promise<void>((done) => (release = done));
+    let locked!: () => void;
+    const accountTaken = new Promise<void>((done) => (locked = done));
+    const holder = db.tx(async (t) => {
+      await t.query("select 1 from accounts where principal_id = $1 for update", [r.owner.id]);
+      locked();
+      await gate;
+    });
+    await accountTaken;
+    const waiting = preHold(r, webConfig({ sitePerDay: 12 }));
+    await new Promise((done) => setTimeout(done, 150));
+    const free = await db.tx(async (t) => {
+      try {
+        await t.query("select 1 from web_search_days where scope = $1 for update nowait", [SITE_SCOPE]);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    release();
+    await holder;
+    await waiting;
+    expect(free).toBe(true);
+    expect([(await runRow(r.runId)).web_searches, await countOf(SITE_SCOPE)]).toEqual([1, 6]);
+  });
 
   it("held: the hold grows by exactly the price, the run records it", async () => {
     const r = await admitted("mona");
@@ -710,5 +780,24 @@ describe("nothing of a query or a result is logged", () => {
     expect(lines.length).toBeGreaterThan(0);
     const all = lines.join("\n");
     for (const secret of ["北京 天气", "秘密笔记", "example.com", "新闻标题", "摘要内容"]) expect([secret, all.includes(secret)]).toEqual([secret, false]);
+  });
+});
+
+describe("old days' counts", () => {
+  it("the change sweep deletes counter days older than a week, the owners' and the site's (crossing 10 and 100 days)", async () => {
+    const owner = await signUp(app, "sweepa");
+    for (const ago of [0, 6, 7, 8, 11, 101]) {
+      for (const scope of [owner.id, SITE_SCOPE]) {
+        await db.query(
+          "insert into web_search_days (scope, day, searches) values ($1, (now() at time zone 'Asia/Shanghai')::date - $2::int, 3)",
+          [scope, ago],
+        );
+      }
+    }
+    await changeSweep(app.deps, app.deps.config, app.log, null);
+    const left = await db.query<{ scope: string; ago: number }>(
+      "select scope, ((now() at time zone 'Asia/Shanghai')::date - day)::int as ago from web_search_days order by scope, ago",
+    );
+    expect(left.rows).toEqual([0, 6, 7].map((ago) => ({ scope: owner.id, ago })).concat([0, 6, 7].map((ago) => ({ scope: SITE_SCOPE, ago }))).sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : a.ago - b.ago)));
   });
 });
