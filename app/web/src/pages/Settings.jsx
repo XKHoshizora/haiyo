@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
@@ -79,11 +80,11 @@ export function SettingsList() {
         </div>
       </div>
       <ul className="rows">
-        <SettingsRow name="我的资料" note="昵称、头像与账户" onOpen={() => open({ settingsPage: "profile" })} />
-        <SettingsRow name="模型供应商" note="你自己的模型服务账号与密钥" onOpen={() => open({ settingsPage: "providers" })} />
-        <SettingsRow name="用量与余额" note="今日免费额度、余额与最近用量" onOpen={() => open({ settingsPage: "usage" })} />
-        <SettingsRow name="记忆宫殿" note="记住的关于你的事，可以在这里整理" onOpen={() => open({ settingsPage: "memory" })} />
-        <SettingsRow name="拉黑" note="你拉黑的人，可在这里解除" onOpen={() => open({ settingsPage: "blocks" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.profile} note="昵称、头像与账户" onOpen={() => open({ settingsPage: "profile" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.providers} note="你自己的模型服务账号与密钥" onOpen={() => open({ settingsPage: "providers" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.usage} note="今日免费额度、余额与最近用量" onOpen={() => open({ settingsPage: "usage" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.memory} note="记住的关于你的事，可以在这里整理" onOpen={() => open({ settingsPage: "memory" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.blocks} note="你拉黑的人，可在这里解除" onOpen={() => open({ settingsPage: "blocks" })} />
         {/* (A phone has no profile page open beside this list: the way out of the account is here.) */}
         {phone && signOut && (
           <li>

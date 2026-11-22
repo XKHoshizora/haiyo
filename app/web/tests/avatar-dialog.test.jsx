@@ -8,8 +8,15 @@ import { AvatarDialog } from "../src/pages/AvatarDialog.jsx";
 import { MAX_ZOOM, STAGE, initialView } from "../src/ui/avatarCrop.js";
 import { fake, resetFake } from "./avatar-fake.js";
 
-beforeEach(() => resetFake());
-afterEach(cleanup);
+// (jsdom lays nothing out: every element is drawn here, as the app's tests have it — the focus goes back only to what is shown.)
+beforeEach(() => {
+  resetFake();
+  vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{ top: 0 }]);
+});
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const flush = () => act(async () => {});
 const file = () => new File(["x"], "me.png", { type: "image/png" });

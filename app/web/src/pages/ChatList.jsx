@@ -3,8 +3,10 @@ import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
 import { quiet, convTitle, entity, lastPreview, TYPE_LABEL, otherMember } from "../state/selectors.js";
 import { ConvAvatar, IconBtn, LoadingRow, Tag } from "../ui/primitives.jsx";
+import { isEscape } from "../ui/keys.js";
 import { Plus, Search, UserPlus, Users } from "../icons.js";
 import { NewGroupModal } from "./GroupModals.jsx";
+import { AddFriendModal } from "./AddFriendModal.jsx";
 import { GlobalHitRow, SearchFooter } from "./SearchHits.jsx";
 import { useJumpTo } from "./useJumpTo.js";
 import { useMessageSearch } from "./useMessageSearch.js";
@@ -74,11 +76,12 @@ export function ChatList() {
   const jumpTo = useJumpTo();
   const [menu, setMenu] = useState(false);
   const [newGroup, setNewGroup] = useState(false);
+  const [addFriend, setAddFriend] = useState(false);
   const menuRef = useRef(null);
   useEffect(() => {
     if (!menu) return;
     const outside = e => { if(!menuRef.current?.contains(e.target)) setMenu(false); };
-    const escape = e => { if(e.key === "Escape") { setMenu(false); menuRef.current?.querySelector('button')?.focus(); } };
+    const escape = e => { if(isEscape(e)) { e.preventDefault(); setMenu(false); menuRef.current?.querySelector('button')?.focus(); } };
     document.addEventListener("pointerdown",outside);
     document.addEventListener("keydown",escape);
     return () => {document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape);};
@@ -102,10 +105,12 @@ export function ChatList() {
             </IconBtn>
             {menu && (
               <div className="menu" aria-label="新建选项">
-                <button type="button" onClick={() => (setMenu(false), setNewGroup(true))}>
+                {/* (The focus goes to 新建 before this item goes away: the dialog gives it back there when it closes.) */}
+                <button type="button" onClick={() => (menuRef.current?.querySelector("button")?.focus(), setMenu(false), setNewGroup(true))}>
                   <Users size={16} aria-hidden="true" /> 发起群聊
                 </button>
-                <button type="button" onClick={() => (setMenu(false), dispatch({ type: "nav", patch: { section: "contacts", pane: "list", addFriend: true } }))}>
+                {/* (Over this list, as 发起群聊: one click is one entry — the dialog's — and Back closes it here.) */}
+                <button type="button" onClick={() => (menuRef.current?.querySelector("button")?.focus(), setMenu(false), setAddFriend(true))}>
                   <UserPlus size={16} aria-hidden="true" /> 添加好友
                 </button>
               </div>
@@ -156,6 +161,7 @@ export function ChatList() {
         )}
       </ul>
       {newGroup && <NewGroupModal onClose={() => setNewGroup(false)} />}
+      {addFriend && <AddFriendModal onClose={() => setAddFriend(false)} />}
     </>
   );
 }

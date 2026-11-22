@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { friendErrorText } from "../data/errorTexts.js";
@@ -33,6 +33,7 @@ const REL = {
 export function ContactsList() {
   const { state, dispatch, actions } = useStore();
   const [query, setQuery] = useState("");
+  const addButton = useRef(null);
   const now = useNow();
   const open = (id) => dispatch({ type: "nav", patch: { contactId: id, pane: "main" } });
   const visible = (id) => id !== ME && state.people[id] && matchesPerson(state.people[id], query);
@@ -52,7 +53,7 @@ export function ContactsList() {
       <ListHeader
         title="通讯录"
         action={
-          <IconBtn label="添加好友" className="boxed" onClick={() => dispatch({ type: "nav", patch: { addFriend: true } })}>
+          <IconBtn ref={addButton} label="添加好友" className="boxed" onClick={() => dispatch({ type: "nav", patch: { addFriend: true } })}>
             <UserPlus size={20} />
           </IconBtn>
         }
@@ -125,7 +126,8 @@ export function ContactsList() {
           <li className="rows-empty">{nothing && !query.trim() ? "还没有联系人，点右上角的按钮添加好友" : "没有找到匹配的联系人"}</li>
         )}
       </ul>
-      {state.nav.addFriend && <AddFriendModal onClose={() => dispatch({ type: "nav", patch: { addFriend: false } })} />}
+      {/* (Opened from the chat list's menu too: the focus then comes back to this list's own 添加好友.) */}
+      {state.nav.addFriend && <AddFriendModal returnTo={() => addButton.current} onClose={() => dispatch({ type: "nav", patch: { addFriend: false } })} />}
     </>
   );
 }

@@ -1,4 +1,4 @@
-import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as routes from "../api/routes.js";
 import { bumpSessionEpoch, setTermsRequiredHandler, setUnauthenticatedHandler } from "../api/http.js";
 import { createDataLayer } from "../data/store.jsx";
@@ -121,6 +121,21 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     if (decision.redirect === "/signin" && route.name === "app" && !wasIn.current) rememberReturn(globalThis.location.pathname);
     navigate(decision.redirect === "/" ? takeReturn() ?? "/" : decision.redirect, { replace: true });
   }, [decision.redirect]);
+
+  // A change of account screen (a link from 注册 to 登录) takes the control that was pressed with the old screen: the focus goes to
+  // the new screen's heading, which names it. (The first screen of a visit is left alone.)
+  const shownView = useRef(null);
+  useLayoutEffect(() => {
+    const was = shownView.current;
+    shownView.current = decision.view;
+    if (!was || was === decision.view || decision.view === "app" || decision.view === "loading") return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const heading = document.querySelector(".auth-card h1");
+    if (!heading) return;
+    heading.setAttribute("tabindex", "-1");
+    heading.focus({ preventScroll: true });
+  }, [decision.view]);
 
   switch (decision.view) {
     case "app":

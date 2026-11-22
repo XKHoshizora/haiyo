@@ -9,6 +9,7 @@ import { useStore } from "../data/store.jsx";
 import { formatAt } from "../data/viewmodel.js";
 import { Lock, Pencil, Trash2 } from "../icons.js";
 import { Btn, IconBtn, Tag } from "../ui/primitives.jsx";
+import { isEscape } from "../ui/keys.js";
 import { useRowWrite } from "./useAction.js";
 
 /** `已用 N%` of a room: rounded, never above 100. */
@@ -139,7 +140,12 @@ export function DeleteButton({ onDelete, disabled, describedBy, icon = false }) 
     "aria-describedby": describedBy,
     onClick: click,
     onBlur: () => setSure(false),
-    onKeyDown: (e) => e.key === "Escape" && setSure(false),
+    onKeyDown: (e) => {
+      if (!sure || !isEscape(e)) return;
+      // (The Esc is spent here: a dialog round the button does not close as well.)
+      e.preventDefault();
+      setSure(false);
+    },
   };
   if (sure) {
     return (

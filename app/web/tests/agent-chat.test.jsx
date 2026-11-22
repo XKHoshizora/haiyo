@@ -1361,6 +1361,21 @@ describe("the proposal card", () => {
     expect(cardButton("确认")).toBeNull();
   });
 
+  it("修改后确认's editor keeps the modal contract: the page inert, focus in, Esc closes it and the focus is back on 修改后确认", async () => {
+    await openAgentChat({ messages: [...BASE, proposed("open")] });
+    const opener = cardButton("修改后确认");
+    opener.focus();
+    await click(opener);
+    const app = document.querySelector(".app").closest("body > *");
+    expect(app.hasAttribute("inert")).toBe(true);
+    expect(dialog().contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement, { key: "Escape" });
+    await flush();
+    expect(dialog()).toBeNull();
+    expect(app.hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(cardButton("修改后确认"));
+  });
+
   it("修改后确认 opens the text in an editor and confirms with the values I changed, only those", async () => {
     const { api } = await openAgentChat({ messages: [...BASE, proposed("open")] });
     await click(cardButton("修改后确认"));

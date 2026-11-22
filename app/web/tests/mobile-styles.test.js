@@ -128,9 +128,9 @@ describe("the phone's bottom tab bar (the rail below 641px)", () => {
     expect(phone(".rail-item.active").color).toBe("var(--purple-dark)");
   });
 
-  it("the shell stacks the columns above it, and a toast clears it", () => {
+  it("the shell stacks the columns above it; the toast stands at the top, so it never meets the bar (tests/toast.test.jsx)", () => {
     expect(phone(".app")["flex-direction"]).toBe("column");
-    expect(rulesFor(rules, '.app[data-tabbar="on"] .toast', PHONE).length).toBe(1);
+    expect(rules.filter((r) => r.selectors.some((s) => s.includes(".toast")) && "bottom" in r.decl)).toEqual([]);
   });
 
   it("desktop and tablet keep the left rail exactly as it was", () => {

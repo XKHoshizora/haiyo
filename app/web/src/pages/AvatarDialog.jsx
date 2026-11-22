@@ -174,6 +174,7 @@ export function AvatarDialog({ file, onCancel, onSave }) {
     <Modal
       title="调整头像"
       onClose={close}
+      locked={busy}
       footer={
         load.kind === "error" ? (
           <Btn ref={okButton} variant="primary" onClick={onCancel}>知道了</Btn>

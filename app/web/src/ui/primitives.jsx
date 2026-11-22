@@ -1,11 +1,12 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { X, Info, CircleAlert, CircleCheck, CirclePause } from "../icons.js";
 import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
 import { avatarUrl } from "../api/routes.js";
 import { entity, isAgent, nameOf, ownerOf, otherMember } from "../state/selectors.js";
 import { ME } from "../data/identities.js";
-import { useDialogFocus } from "./dialogFocus.js";
+import { useLayer } from "./layers.js";
 
 export const asset = (path) => `${import.meta.env.BASE_URL}${String(path).replace(/^\//, "")}`;
 
@@ -133,40 +134,47 @@ export function Reason({ children }) {
   );
 }
 
-export function Modal({ title, onClose, children, footer, wide }) {
-  const ref = useRef(null);
+/**
+ * A dialog: a modal layer (ui/layers.js) drawn over everything, in document.body — the page behind inert, the focus in it and back
+ * to its opener (`returnTo()` when the opener went away, as a menu's item does), Esc, Back and the backdrop close it through
+ * `onClose`; `locked` while it may not be left (a save under way).
+ */
+export function Modal({ title, onClose, children, footer, wide, returnTo = null, locked = false }) {
+  const backdrop = useRef(null);
+  const anchor = useRef(null);
   const titleId = useId();
-  useDialogFocus(ref, { onClose });
-  // A dialog is not an address: when Back or Forward arrives (a popstate) it closes, and leaves no entry behind.
+  useLayer(backdrop, { onClose, returnTo, held: () => locked });
   const closing = useRef(onClose);
   closing.current = onClose;
   useEffect(() => {
-    const leave = () => closing.current?.();
-    // Nor does a dialog outlive the page it belongs to: when the layout no longer draws that page (a wide window narrowed to one column
-    // while a dialog of the page beside the list was open), it is not left mounted and unseen.
+    // A dialog does not outlive the page it belongs to: when the layout no longer draws that page (a wide window narrowed to one
+    // column while a dialog of the page beside the list was open), it is not left mounted and unseen. (Its place in the page is the anchor.)
     const lost = () => {
-      if (ref.current && ref.current.getClientRects().length === 0) closing.current?.();
+      const place = anchor.current?.parentElement;
+      if (place && place.getClientRects().length === 0) closing.current?.();
     };
-    window.addEventListener("popstate", leave);
     window.addEventListener("resize", lost);
-    return () => {
-      window.removeEventListener("popstate", leave);
-      window.removeEventListener("resize", lost);
-    };
+    return () => window.removeEventListener("resize", lost);
   }, []);
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref}>
-        <header className="modal-head">
-          <h2 id={titleId}>{title}</h2>
-          <IconBtn label="关闭" onClick={onClose}>
-            <X size={18} />
-          </IconBtn>
-        </header>
-        <div className="modal-body">{children}</div>
-        {footer && <footer className="modal-foot">{footer}</footer>}
-      </div>
-    </div>
+    <>
+      <span ref={anchor} hidden />
+      {createPortal(
+        <div className="modal-backdrop" ref={backdrop} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+          <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+            <header className="modal-head">
+              <h2 id={titleId}>{title}</h2>
+              <IconBtn label="关闭" onClick={onClose}>
+                <X size={18} />
+              </IconBtn>
+            </header>
+            <div className="modal-body">{children}</div>
+            {footer && <footer className="modal-foot">{footer}</footer>}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 
@@ -214,9 +222,6 @@ export function Switch({ checked, onChange, label, hint, hintClass }) {
     </>
   );
 }
-
-/** Whether a key event belongs to an input method's composition (Enter confirming a candidate is not Enter). */
-export const composing = (event) => event.nativeEvent.isComposing || event.keyCode === 229;
 
 export function focusInvalid(container) {
   requestAnimationFrame(() => {

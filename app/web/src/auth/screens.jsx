@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
-import { PRODUCT_NAME } from "../brand.js";
+import { PRODUCT_NAME, titled } from "../brand.js";
 import { BrandMark, Btn, Field, Notice, TextLink, focusInvalid } from "../ui/primitives.jsx";
 import { fieldOf, messageFor, verifyMessage } from "./errors.js";
 import { clearResetToken, navigate, takeResetToken, takeReturn } from "./router.js";
@@ -28,6 +28,10 @@ function Link({ to, children, primary = false }) {
 
 function AuthCard({ title, lead, children, footer }) {
   const titleId = useId();
+  // The tab's title is the screen's (brand.js `titled`, as the signed-in pages' in state/pageTitle.js).
+  useEffect(() => {
+    document.title = titled(title);
+  }, [title]);
   return (
     <AuthPage>
       <section className="auth-card" aria-labelledby={titleId}>
