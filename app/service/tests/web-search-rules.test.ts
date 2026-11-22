@@ -737,6 +737,11 @@ describe("the guard in every lane: the owner's own words, and only theirs", () =
 });
 
 describe("what people see of the price", () => {
+  it("the words a lane budget's refusal hands the model say nothing of the owner or of a cap (re-review N1); its own metric stays", () => {
+    expect(WEB_LANE_BUDGET).toBe("这次回复不能再联网搜索了。");
+    expect(WEB_LANE_BUDGET).not.toMatch(/主人|上限|点数/);
+  });
+
   it("about the price: one decimal at most, no trailing zero; at least 0.1 for a price above 0", () => {
     expect([770_350n, 1_000_000n, 1_250_000n, 1_240_000n, 50_000n, 40_000n, 1n, 0n, 12_000_000n].map(aboutPoints)).toEqual(["0.8", "1", "1.3", "1.2", "0.1", "0.1", "0.1", "0", "12"]);
   });
