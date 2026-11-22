@@ -151,7 +151,8 @@ async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk):
  * A hit's text as it is cut and shown: the one place both where the words are (`refOf`, when the whisper is made) and the
  * cut around them (`hitOf`, whenever it is read) start from — so whatever is changed in it changes both alike and a kept
  * `at` stays where the words are. It is the stored text as it is: a message's text never holds a citation (its cites are
- * stored beside it, agents/tools/refs.ts), so nothing is taken out of it.
+ * stored beside it, agents/tools/refs.ts; a reply of nothing but token-shaped strings keeps them as text, citing nothing:
+ * conversation.ts `postAsAgent`), so nothing is taken out of it.
  */
 const hitLine = (text: string | null): string => text ?? "";
 

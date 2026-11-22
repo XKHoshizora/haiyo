@@ -83,7 +83,8 @@ export function foundOf(value: unknown): MessageRef[] {
  * A citation of a reply, stored beside its text as a mention is (README "Agents and runs", Citations; agents/tools/refs.ts
  * `takeCites`): where it stands in the stored text (`at`, UTF-16 code units: a link is drawn there), whether it cites a
  * message or a file (`kind`), and the message it points to — for a file, the message the file was sent in. The text
- * itself never holds a citation.
+ * itself never holds a citation (a reply of nothing but token-shaped strings keeps them as text, citing nothing:
+ * agents/conversation.ts `postAsAgent`).
  */
 export interface Cite {
   at: number;
