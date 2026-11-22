@@ -46,6 +46,14 @@ function fakeApi(over = {}) {
   };
 }
 
+// The app is on screen a moment before AuthRoot's effect has registered the layer's sign-out handler (React runs passive effects
+// in a task of its own, and a slow machine lets Testing Library see the DOM first): a close sent then reaches nobody. The layer
+// is started in that same effect, so once `start` was called the handler is there.
+const closeWith4001 = async (layer) => {
+  await waitFor(() => expect(layer.start).toHaveBeenCalled());
+  act(() => layer.closeWith4001());
+};
+
 const outApi = (over) => fakeApi({ getMe: vi.fn(async () => Promise.reject(SIGNED_OUT())), ...over });
 const at = (path) => history.replaceState(null, "", path);
 const place = () => location.pathname + location.search;
@@ -504,7 +512,7 @@ describe("session lifecycle", () => {
     let release;
     vi.stubGlobal("fetch", () => new Promise((resolve) => (release = () => resolve(new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 })))));
     const stale = request("GET", "/api/sync").catch(() => {});
-    act(() => layers[0].closeWith4001());
+    await closeWith4001(layers[0]);
     await screen.findByRole("button", { name: "登录" });
     getMe.mockResolvedValueOnce(ANN);
     typeInto("邮箱", "ann@x.com");
@@ -603,7 +611,7 @@ describe("session lifecycle", () => {
   it("a socket close 4001 (the layer's onSignedOut) stops the layer and shows /signin with the notice", async () => {
     mount(fakeApi());
     await screen.findByTestId("app");
-    act(() => layers[0].closeWith4001());
+    await closeWith4001(layers[0]);
     await screen.findByRole("button", { name: "登录" });
     expect(layers[0].stop).toHaveBeenCalledTimes(1);
     expect(place()).toBe("/signin");
@@ -617,7 +625,7 @@ describe("session lifecycle", () => {
     expect(screen.getByTestId("app").dataset.key).toBe("0");
 
     const signInAs = async (who) => {
-      act(() => layers[layers.length - 1].closeWith4001());
+      await closeWith4001(layers[layers.length - 1]);
       await screen.findByRole("button", { name: "登录" });
       getMe.mockResolvedValueOnce(who);
       typeInto("邮箱", who.email);

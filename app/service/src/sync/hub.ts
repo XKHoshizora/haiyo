@@ -27,6 +27,8 @@ const ENDED: ReadonlySet<string> = new Set(["told", "declined", "expired"]);
 export const MAX_SOCKETS_PER_PRINCIPAL = 5;
 /** WebSocket-level ping interval; a socket that has not answered the previous ping by the next one is dropped. */
 export const HEARTBEAT_MS = 30_000;
+/** Conversations whose highest announced read marker the hub remembers (`Hub.announcedReads`). */
+const READ_GUARD_CONVERSATIONS = 5_000;
 /** A socket with this much unsent data cannot keep up; it is closed and its client catches up instead. */
 export const MAX_BUFFERED_BYTES = 1024 * 1024;
 /** At most this many messages of one conversation go out in one fan-out step; older ones are left to catch-up. */
@@ -142,6 +144,12 @@ export class Hub {
   private readonly queues = new Map<string, Queue>();
   /** The last seq fanned out per conversation. */
   private readonly fanned = new Map<string, number>();
+  /**
+   * The highest read marker announced so far, per conversation and (lower-cased) principal, so that what is pushed for one
+   * reader only ever moves forward. Bounded: at most `READ_GUARD_CONVERSATIONS` conversations, the oldest dropped first (a
+   * dropped one lets a very late, lower announcement through once, nothing worse). In this process only (see below).
+   */
+  private readonly announcedReads = new Map<string, Map<string, number>>();
   private readonly unsubscribe: Array<() => void> = [];
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
@@ -153,8 +161,11 @@ export class Hub {
     const { conversations, social, reads, log } = this.deps;
     this.unsubscribe.push(
       conversations.onMessages((messages) => this.onMessages(messages)),
-      conversations.onMembershipChanged((id, principalIds) => this.enqueue(id, { kind: "membership", principalIds })),
-      reads.onRead((marker) => this.enqueue(marker.conversationId, { kind: "read", marker })),
+      conversations.onMembershipChanged((id, principalIds) => {
+        this.announcedReads.delete(id.toLowerCase()); // (A member who comes back starts a marker of their own at 0.)
+        this.enqueue(id, { kind: "membership", principalIds });
+      }),
+      reads.onRead((marker) => this.onRead(marker)),
       social.on((principalIds) => {
         for (const id of new Set(principalIds)) this.push(id, { type: "social" });
       }),
@@ -393,6 +404,30 @@ export class Hub {
       ranges.set(m.conversationId, { fromSeq: Math.min(r?.fromSeq ?? m.seq, m.seq), toSeq: Math.max(r?.toSeq ?? m.seq, m.seq) });
     }
     for (const [conversationId, range] of ranges) this.enqueue(conversationId, { kind: "messages", ...range });
+  }
+
+  /**
+   * A reader's marker moved (`markRead` stored it, and `seq` is what that request stored). The stored marker only ever
+   * moves forward, but the requests that moved it call `publish` after their own commit, in whatever order their replies
+   * come back, so announcements may arrive out of the order they were committed in. The queue below keeps arrival order,
+   * so the order is settled here, synchronously, before anything is queued: an announcement not above the highest one
+   * already announced for this reader in this conversation is dropped (the higher one was, or is about to be, pushed, and
+   * the highest of all always is). With several replicas this map would be one per process, which stays correct (each
+   * process pushes only to its own sockets, and a marker only grows); only a shared bound would need the database.
+   */
+  private onRead(marker: ReadMarker): void {
+    if (this.stopped) return;
+    const conversation = marker.conversationId.toLowerCase();
+    const reader = marker.principalId.toLowerCase();
+    let readers = this.announcedReads.get(conversation);
+    if (!readers) {
+      readers = new Map();
+      this.announcedReads.set(conversation, readers);
+      if (this.announcedReads.size > READ_GUARD_CONVERSATIONS) this.announcedReads.delete(this.announcedReads.keys().next().value!);
+    }
+    if (marker.seq <= (readers.get(reader) ?? 0)) return;
+    readers.set(reader, marker.seq);
+    this.enqueue(marker.conversationId, { kind: "read", marker });
   }
 
   private enqueue(conversationId: string, task: Task): void {

@@ -607,6 +607,20 @@ describe("websocket pushes", () => {
     expect(syncC).not.toHaveProperty("peerReadSeq");
   });
 
+  it("the read position pushed for one reader never goes back, whatever order the marker announcements arrive in", async () => {
+    const [a, b] = await people("alice", "bob");
+    const { conversationId: dm } = await befriend(app, a, b);
+    for (let i = 0; i < 120; i++) await say(a, dm, `m${i}`);
+    const sa = await connect(app, a);
+    // Announcements as two requests that committed in the order 1, 4, 45 may reach the hub: later ones first, and
+    // 100 and 101 (the last the highest) after a lower one. Only a move forward is pushed.
+    const arrivals = [4, 1, 45, 43, 12, 101, 100, 7, 101];
+    for (const seq of arrivals) app.deps.reads.publish({ conversationId: dm, principalId: b.id, seq }, app.log);
+    await sa.waitFor((e) => e.type === "read" && e.seq === 101);
+    const seen = sa.events.filter((e) => e.type === "read").map((e) => e.seq);
+    expect(seen).toEqual([4, 45, 101]);
+  });
+
   it("answers an application ping with a pong and ignores every other inbound message", async () => {
     const [a] = await people("alice");
     const s = await connect(app, a);
