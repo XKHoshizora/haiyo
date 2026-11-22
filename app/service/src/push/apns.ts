@@ -18,6 +18,15 @@ export const APNS_ORIGINS: Readonly<Record<PushEnv, string>> = {
  */
 export const TOKEN_LIFETIME_MS = 50 * 60_000;
 export const TOKEN_MIN_AGE_MS = 20 * 60_000;
+/**
+ * How long pushes pause after APNs refused the configuration: the provider token (403: the key, its id, the Team ID), the
+ * topic (the bundle id), or the token's renewals (`TooManyProviderTokenUpdates`) — every push, which would all fail the same
+ * way; after `DeviceTokenNotForTopic`, only that token's (one phone of another app's build must not pause everyone's
+ * pushes). Nothing is deleted for these: the phones are not at fault.
+ */
+export const CONFIGURATION_PAUSE_MS = 15 * 60_000;
+/** At most this many tokens are remembered as paused (`DeviceTokenNotForTopic`); the oldest are forgotten first. */
+const MAX_PAUSED_TOKENS = 10_000;
 /** A push older than this is no news: APNs keeps it for a phone that is off at most this long (`apns-expiration`). */
 const EXPIRY_S = 24 * 3600;
 /** A connection idle this long is closed; the next push opens another ("Reuse a connection as long as possible"). */
@@ -25,10 +34,17 @@ const IDLE_CLOSE_MS = 60 * 60_000;
 /** An error answer's body is a small JSON object; more than this is not read. */
 const MAX_ANSWER_BYTES = 4096;
 
-/** Why a push was not delivered (the counters' classes: README "Push notifications"). */
-export type ApnsFailure = "throttled" | "server" | "network" | "timeout" | "auth" | "rejected" | "overloaded" | "closed";
+/**
+ * Why a push was not delivered (the counters' classes: README "Push notifications"). The configuration's refusals — `auth`
+ * (403), `topic` (the bundle id, or a token of another app), `token_rate` (`TooManyProviderTokenUpdates`) — start a pause
+ * (`CONFIGURATION_PAUSE_MS`), during which a push is `paused` without being sent.
+ */
+export type ApnsFailure = "throttled" | "server" | "network" | "timeout" | "auth" | "topic" | "token_rate" | "rejected" | "overloaded" | "closed" | "paused";
 
-/** `gone`: APNs says the token is dead (410, `BadDeviceToken`, `DeviceTokenNotForTopic`); the caller deletes the device. */
+/** The failures that are the configuration's, not a phone's: each is said once to the operator (src/push/notify.ts). */
+export const CONFIGURATION_FAILURES: ReadonlySet<ApnsFailure> = new Set(["auth", "topic", "token_rate"]);
+
+/** `gone`: APNs says the token is dead (410, 400 `BadDeviceToken`); the caller deletes the device. Nothing else is. */
 export type ApnsOutcome = { outcome: "sent" } | { outcome: "gone" } | { outcome: "failed"; why: ApnsFailure };
 
 export interface ApnsNotification {
@@ -96,6 +112,33 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
   const waits = new Set<{ timer: NodeJS.Timeout; resolve: () => void }>();
   let inFlight = 0;
   const queue: Array<() => void> = [];
+  /** Until when every push is paused (a configuration failure); 0: none. */
+  let pausedUntil = 0;
+  /** Tokens paused after `DeviceTokenNotForTopic`, until when (insertion order: the oldest first). */
+  const pausedTokens = new Map<string, number>();
+
+  /** Whether a push to `token` is paused now (a configuration failure, everyone's or that token's). */
+  function paused(token: string): boolean {
+    const at = now();
+    if (at < pausedUntil) return true;
+    const until = pausedTokens.get(token);
+    if (until === undefined) return false;
+    if (at < until) return true;
+    pausedTokens.delete(token);
+    return false;
+  }
+
+  /** Starts a pause of `CONFIGURATION_PAUSE_MS`: of every push, or of one token's. */
+  function holdBack(scope: "all" | { token: string }): void {
+    const until = now() + CONFIGURATION_PAUSE_MS;
+    if (scope === "all") {
+      pausedUntil = until;
+      return;
+    }
+    pausedTokens.delete(scope.token);
+    pausedTokens.set(scope.token, until);
+    if (pausedTokens.size > MAX_PAUSED_TOKENS) pausedTokens.delete(pausedTokens.keys().next().value!);
+  }
 
   /** The provider token: kept for `TOKEN_LIFETIME_MS`, or made anew now (`fresh`) when it is at least `TOKEN_MIN_AGE_MS` old. */
   function providerToken(fresh = false): string {
@@ -214,38 +257,59 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
     else inFlight--;
   }
 
-  async function deliver(n: ApnsNotification): Promise<ApnsOutcome> {
-    let refreshed = false;
+  /** A configuration failure: every push (or, `token`, that token's) paused for `CONFIGURATION_PAUSE_MS`; nothing gone. */
+  function refused(why: "auth" | "topic" | "token_rate", token?: string): ApnsOutcome {
+    holdBack(token === undefined ? "all" : { token });
+    return { outcome: "failed", why };
+  }
+
+  /**
+   * One push, attempt after attempt, holding a place only while an attempt is under way: during a retry's wait the place
+   * is given back (`waitOutside`), so one slow push never holds up the others.
+   */
+  async function deliver(n: ApnsNotification, waitOutside: (ms: number) => Promise<"ok" | "closed" | "overloaded">): Promise<ApnsOutcome> {
+    let renewed = false;
     for (let tries = 0; ; tries++) {
       if (closed) return { outcome: "failed", why: "closed" };
+      if (paused(n.token)) return { outcome: "failed", why: "paused" };
       let session: http2.ClientHttp2Session | null = null;
+      const jwt = providerToken();
       let a: Attempt;
       try {
         session = connection(n.env);
-        a = await attempt(session, n, providerToken());
+        a = await attempt(session, n, jwt);
       } catch {
         a = { error: "network" };
       }
       let retry: ApnsFailure | null = null;
       if ("error" in a) {
         retry = a.error;
-        // Only the connection this attempt used, never one another push opened meanwhile: broken, it is not used again;
-        // silent, it takes no new pushes (what is on it may still finish) and the retry opens another.
-        if (a.error === "network") session?.destroy();
-        else session?.close();
+        // Only the connection this attempt used, never one another push opened meanwhile. A broken connection forgets
+        // itself (its `error` / `close`); one stream reset leaves it up, for this push's retry and everyone else's. A silent
+        // one takes no new pushes (what is on it may still finish) and the retry opens another.
+        if (a.error === "timeout") session?.close();
       } else if (a.status === 200) {
         return { outcome: "sent" };
-      } else if (a.status === 410 || (a.status === 400 && (a.reason === "BadDeviceToken" || a.reason === "DeviceTokenNotForTopic"))) {
+      } else if (a.status === 410 || (a.status === 400 && a.reason === "BadDeviceToken")) {
         return { outcome: "gone" };
-      } else if (a.status === 403 && a.reason === "ExpiredProviderToken") {
-        // Once, and only with a token old enough to be made anew.
-        const before = current?.jwt;
-        if (refreshed || providerToken(true) === before) return { outcome: "failed", why: "auth" };
-        refreshed = true;
-        tries--;
-        continue;
-      } else if (a.status === 403 || (a.status === 429 && a.reason === "TooManyProviderTokenUpdates")) {
-        return { outcome: "failed", why: "auth" };
+      } else if (a.status === 400 && a.reason === "DeviceTokenNotForTopic") {
+        // A token of another app (another bundle id): that token alone is paused, never deleted.
+        return refused("topic", n.token);
+      } else if (a.status === 400 && (a.reason === "TopicDisallowed" || a.reason === "BadTopic" || a.reason === "MissingTopic")) {
+        return refused("topic");
+      } else if (a.status === 403 && a.reason === "ExpiredProviderToken" && !renewed) {
+        // Once: with the token another push has renewed since this attempt's, or with one made anew now if this one is old
+        // enough; else the configuration's (a clock that is off).
+        renewed = true;
+        if (current?.jwt !== jwt || providerToken(true) !== jwt) {
+          tries--;
+          continue;
+        }
+        return refused("auth");
+      } else if (a.status === 403) {
+        return refused("auth");
+      } else if (a.status === 429 && a.reason === "TooManyProviderTokenUpdates") {
+        return refused("token_rate");
       } else if (a.status === 429) {
         retry = "throttled";
       } else if (a.status >= 500) {
@@ -257,18 +321,29 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
       }
       const wait = retryDelays[tries];
       if (wait === undefined) return { outcome: "failed", why: retry };
-      if (!(await pause(wait))) return { outcome: "failed", why: "closed" };
+      const waited = await waitOutside(wait);
+      if (waited !== "ok") return { outcome: "failed", why: waited };
     }
   }
 
   return {
     async send(n) {
       if (closed) return { outcome: "failed", why: "closed" };
+      if (paused(n.token)) return { outcome: "failed", why: "paused" };
       if (!(await slot())) return { outcome: "failed", why: "overloaded" };
-      try {
-        return await deliver(n);
-      } finally {
+      let holding = true;
+      const waitOutside = async (ms: number): Promise<"ok" | "closed" | "overloaded"> => {
         release();
+        holding = false;
+        if (!(await pause(ms))) return "closed";
+        if (!(await slot())) return "overloaded";
+        holding = true;
+        return closed ? "closed" : "ok";
+      };
+      try {
+        return await deliver(n, waitOutside);
+      } finally {
+        if (holding) release();
       }
     },
     async close() {

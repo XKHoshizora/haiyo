@@ -1,6 +1,6 @@
 import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import { createApnsClient, type ApnsClient, type ApnsOptions } from "../src/push/apns.ts";
+import { CONFIGURATION_PAUSE_MS, createApnsClient, type ApnsClient, type ApnsOptions } from "../src/push/apns.ts";
 import { fakeApns, type FakeApns } from "./helpers/apns.ts";
 
 /**
@@ -146,6 +146,38 @@ describe("the token and the connection are kept", () => {
     expect(again).not.toBe(first);
   });
 
+  test("ExpiredProviderToken for a token another push has renewed meanwhile: retried with the new one, not failed", async () => {
+    const c = client();
+    await c.send(note());
+    clock += 25 * 60_000;
+    let first!: (a: { status: number; reason: string }) => void;
+    let second!: (a: { status: number; reason: string }) => void;
+    production.answer({ hold: new Promise((r) => (first = r)) }, { hold: new Promise((r) => (second = r)) });
+    const b = c.send(note());
+    const d = c.send({ ...note(), token: "cd".repeat(32) });
+    await production.waitFor(3);
+    first({ status: 403, reason: "ExpiredProviderToken" });
+    expect(await b).toEqual({ outcome: "sent" });
+    second({ status: 403, reason: "ExpiredProviderToken" });
+    expect(await d).toEqual({ outcome: "sent" });
+    const auths = production.requests.map((r) => String(r.headers.authorization));
+    expect(new Set(auths).size).toBe(2);
+    expect(auths.at(-1)).toBe(auths.at(-2));
+  });
+
+  test("one stream reset by the server (RST_STREAM) leaves the connection and its other pushes alone; that push is retried on it", async () => {
+    let release!: (a: { status: number }) => void;
+    production.answer("refuse", { hold: new Promise((r) => (release = r)) });
+    const c = client();
+    const refused = c.send(note());
+    await production.waitFor(1);
+    const other = c.send({ ...note(), token: "cd".repeat(32) });
+    expect(await refused).toEqual({ outcome: "sent" });
+    release({ status: 200 });
+    expect(await other).toEqual({ outcome: "sent" });
+    expect(production.requests.map((r) => r.connection)).toEqual([1, 1, 1]);
+  });
+
   test("ExpiredProviderToken on a token under 20 minutes old: not made anew (APNs refuses more than one a 20 minutes), failed auth", async () => {
     const c = client();
     await c.send(note());
@@ -157,12 +189,46 @@ describe("the token and the connection are kept", () => {
 });
 
 describe("what APNs answers", () => {
-  test("410, BadDeviceToken and DeviceTokenNotForTopic: gone (the caller deletes the device), not retried", async () => {
-    for (const answer of [{ status: 410, reason: "Unregistered" }, { status: 410, reason: "ExpiredToken" }, { status: 400, reason: "BadDeviceToken" }, { status: 400, reason: "DeviceTokenNotForTopic" }]) {
+  test("410 (Unregistered, ExpiredToken) and 400 BadDeviceToken: gone (the caller deletes the device), not retried", async () => {
+    for (const answer of [{ status: 410, reason: "Unregistered" }, { status: 410, reason: "ExpiredToken" }, { status: 400, reason: "BadDeviceToken" }]) {
       production.reset();
       production.answer(answer);
       expect([answer, await client().send(note())]).toEqual([answer, { outcome: "gone" }]);
       expect(production.requests).toHaveLength(1);
+    }
+  });
+
+  test("DeviceTokenNotForTopic is no dead token: failed topic, never gone; that token is paused for the cool-down, others are not", async () => {
+    const c = client();
+    production.answer({ status: 400, reason: "DeviceTokenNotForTopic" });
+    expect(await c.send(note())).toEqual({ outcome: "failed", why: "topic" });
+    expect(await c.send(note())).toEqual({ outcome: "failed", why: "paused" });
+    expect(production.requests).toHaveLength(1);
+    expect(await c.send({ ...note(), token: "cd".repeat(32) })).toEqual({ outcome: "sent" });
+    clock += CONFIGURATION_PAUSE_MS;
+    expect(await c.send(note())).toEqual({ outcome: "sent" });
+    expect(production.requests).toHaveLength(3);
+  });
+
+  test("a refused provider token (403) or topic (TopicDisallowed, BadTopic) is the configuration's: every push is paused for the cool-down, nothing is gone", async () => {
+    for (const [answer, why] of [
+      [{ status: 403, reason: "InvalidProviderToken" }, "auth"],
+      [{ status: 403, reason: "Forbidden" }, "auth"],
+      [{ status: 400, reason: "TopicDisallowed" }, "topic"],
+      [{ status: 400, reason: "BadTopic" }, "topic"],
+      [{ status: 429, reason: "TooManyProviderTokenUpdates" }, "token_rate"],
+    ] as const) {
+      production.reset();
+      clock = Date.parse("2026-11-23T00:00:00Z");
+      const c = client();
+      production.answer(answer);
+      expect([answer, await c.send(note())]).toEqual([answer, { outcome: "failed", why }]);
+      expect([answer, await c.send({ ...note(), token: "cd".repeat(32), env: "sandbox" })]).toEqual([answer, { outcome: "failed", why: "paused" }]);
+      expect(production.requests.length + sandbox.requests.length).toBe(1);
+      clock += CONFIGURATION_PAUSE_MS - 1;
+      expect(await c.send(note())).toEqual({ outcome: "failed", why: "paused" });
+      clock += 1;
+      expect([answer, await c.send(note())]).toEqual([answer, { outcome: "sent" }]);
     }
   });
 
@@ -198,18 +264,14 @@ describe("what APNs answers", () => {
     expect(production.requests).toHaveLength(3);
   });
 
-  test("InvalidProviderToken and TooManyProviderTokenUpdates: failed auth at once; other 4xx: failed rejected at once", async () => {
-    for (const [answer, why] of [
-      [{ status: 403, reason: "InvalidProviderToken" }, "auth"],
-      [{ status: 429, reason: "TooManyProviderTokenUpdates" }, "auth"],
-      [{ status: 400, reason: "BadCollapseId" }, "rejected"],
-      [{ status: 413, reason: "PayloadTooLarge" }, "rejected"],
-      [{ status: 400, reason: "TopicDisallowed" }, "rejected"],
-    ] as const) {
+  test("any other 4xx: failed rejected at once, not retried, nothing paused", async () => {
+    for (const answer of [{ status: 400, reason: "BadCollapseId" }, { status: 413, reason: "PayloadTooLarge" }, { status: 400, reason: "BadPriority" }]) {
       production.reset();
+      const c = client();
       production.answer(answer);
-      expect([answer, await client().send(note())]).toEqual([answer, { outcome: "failed", why }]);
-      expect(production.requests).toHaveLength(1);
+      expect([answer, await c.send(note())]).toEqual([answer, { outcome: "failed", why: "rejected" }]);
+      expect(await c.send(note())).toEqual({ outcome: "sent" });
+      expect(production.requests).toHaveLength(2);
     }
   });
 });
@@ -227,6 +289,17 @@ describe("bounds", () => {
     release({ status: 200 });
     expect(await first).toEqual({ outcome: "sent" });
     expect(await second).toEqual({ outcome: "sent" });
+  });
+
+  test("a push waiting for its retry holds no place: another goes through meanwhile", async () => {
+    const c = client({ maxInFlight: 1, maxQueued: 0, retryDelaysMs: [60_000] });
+    production.answer({ status: 503, reason: "ServiceUnavailable" });
+    const waiting = c.send(note());
+    await production.waitFor(1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await c.send({ ...note(), token: "cd".repeat(32) })).toEqual({ outcome: "sent" });
+    await c.close();
+    expect(await waiting).toEqual({ outcome: "failed", why: "closed" });
   });
 
   test("closed: a push waiting for its retry ends at once, and a new one is refused", async () => {

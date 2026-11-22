@@ -12,8 +12,11 @@ export interface ApnsRequest {
   connection: number;
 }
 
-/** How the fake answers one request: a status (and APNs reason), or a failure of the connection or the stream. */
-export type ApnsAnswer = { status: number; reason?: string } | "reset" | "hang" | { hold: Promise<{ status: number; reason?: string }> };
+/**
+ * How the fake answers one request: a status (and APNs reason), or a failure — `reset` breaks the whole connection,
+ * `refuse` resets this one stream (RST_STREAM REFUSED_STREAM) and leaves the connection up, `hang` never answers.
+ */
+export type ApnsAnswer = { status: number; reason?: string } | "reset" | "refuse" | "hang" | { hold: Promise<{ status: number; reason?: string }> };
 
 export interface FakeApns {
   /** `http://127.0.0.1:<port>`: plain HTTP/2 (h2c), what a test's client is pointed at instead of Apple's. */
@@ -60,6 +63,7 @@ export async function fakeApns(): Promise<FakeApns> {
         stream.end(a.status === 200 ? undefined : JSON.stringify({ reason: a.reason ?? "Unknown", ...(a.status === 410 ? { timestamp: Date.now() } : {}) }));
       };
       if (next === "reset") stream.session?.destroy();
+      else if (next === "refuse") stream.close(http2.constants.NGHTTP2_REFUSED_STREAM);
       else if (next === "hang") return;
       else if ("hold" in next) void next.hold.then(reply);
       else reply(next);
