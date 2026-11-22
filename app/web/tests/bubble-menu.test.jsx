@@ -187,6 +187,47 @@ describe("right-click and the keyboard", () => {
     expect(menu()).toBeNull();
   });
 
+  it("the order WebKit produces — the press, then the word under the pointer is selected, then contextmenu — opens our menu: what counts is the selection the person had BEFORE the press", () => {
+    render(<Item />);
+    const select = () => {
+      const range = document.createRange();
+      range.selectNodeContents(bubble());
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+    };
+    window.getSelection().removeAllRanges();
+    fireEvent.pointerDown(bubble(), { pointerId: 1, pointerType: "mouse", button: 2, clientX: 120, clientY: 90 });
+    select(); // (the browser's own, before it fires contextmenu)
+    expect(window.getSelection().toString()).not.toBe("");
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 90 });
+    act(() => void bubble().dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    expect(menu()).not.toBeNull();
+  });
+
+  it("a selection the person made before the press, and presses on, keeps the browser's menu (copy); a selection somewhere else does not", () => {
+    render(<Item extra={<p className="elsewhere">别处的字</p>} />);
+    const range = document.createRange();
+    range.selectNodeContents(bubble());
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    fireEvent.pointerDown(bubble(), { pointerId: 1, pointerType: "mouse", button: 2, clientX: 120, clientY: 90 });
+    const selected = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    act(() => void bubble().dispatchEvent(selected));
+    expect(selected.defaultPrevented).toBe(false);
+    expect(menu()).toBeNull();
+    // Words selected away from the bubble that is pressed are not what the menu would copy: ours opens.
+    const away = document.createRange();
+    away.selectNodeContents(document.querySelector(".elsewhere"));
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(away);
+    fireEvent.pointerDown(bubble(), { pointerId: 2, pointerType: "mouse", button: 2, clientX: 120, clientY: 90 });
+    const other = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    act(() => void bubble().dispatchEvent(other));
+    expect(other.defaultPrevented).toBe(true);
+    expect(menu()).not.toBeNull();
+  });
+
   it("Shift+F10 and the context-menu key on a control of the message open it; the first item has the focus", () => {
     render(<Item />);
     const control = document.querySelector(".msg-action");

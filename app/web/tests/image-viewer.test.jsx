@@ -111,6 +111,73 @@ describe("opening", () => {
   });
 });
 
+describe("a picture opens only on a genuine single-finger tap that began and ended on it", () => {
+  const down = (el, pointerId = 1, extra = {}) => fireEvent.pointerDown(el, { pointerId, pointerType: "touch", isPrimary: pointerId === 1, ...extra });
+  const up = (el, pointerId = 1) => fireEvent.pointerUp(el, { pointerId, pointerType: "touch", isPrimary: pointerId === 1 });
+  const viewerOpen = () => document.querySelector(".viewer") !== null;
+
+  it("a plain tap (press, release, click) opens it on the first tap", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3));
+    up(picture(3));
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("two fingers down on it (a pinch), then the click some browsers synthesise: nothing opens", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    down(picture(3), 2);
+    up(picture(3), 2);
+    up(picture(3), 1);
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("the second finger landing anywhere else on the page while the first is on it is a pinch too", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3), 1);
+    down(document.querySelector(".composer, .main-col") ?? document.body, 2);
+    up(picture(3), 1);
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("a press that began while the viewer was still there (on it), whose click reaches the picture once it is gone: nothing opens", async () => {
+    await open(3);
+    const stage = document.querySelector(".viewer");
+    down(stage, 1);
+    press("Escape"); // (closed under the finger)
+    expect(viewerOpen()).toBe(false);
+    up(picture(3), 1);
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(false);
+  });
+
+  it("a cancelled press (the browser took the touch for a pinch or a scroll) opens nothing; the next plain tap does", async () => {
+    await openApp();
+    await openChat("小安");
+    down(picture(3));
+    fireEvent.pointerCancel(picture(3), { pointerId: 1, pointerType: "touch" });
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(false);
+    down(picture(3));
+    up(picture(3));
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("the keyboard (Enter or Space is a click with no pointer) still opens it", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.click(picture(3), { detail: 0 });
+    expect(viewerOpen()).toBe(true);
+  });
+});
+
 describe("closing and the focus", () => {
   it("the focus goes to the close button, Esc closes it, and the focus goes back to the picture that opened it", async () => {
     const opener = await open(3);
