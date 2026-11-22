@@ -601,7 +601,8 @@ test("profile-style headers at 320 and 375: the title keeps a sensible width (a 
   for (const width of [320, 375]) {
     await page.setViewportSize({ width, height: 800 });
     // An Agent's page (my own).
-    for (let i = 0; i < 4 && (await bar(page).count()) === 0; i += 1) await page.goBack(); // (back to a list: the tab bar)
+    // (Back to a list: the tab bar. Each Back is given time to be drawn before the next: the first paint after the reload is already the chat's, with no bar.)
+    for (let i = 0; i < 4 && !(await bar(page).waitFor({ state: "visible", timeout: 1500 }).then(() => true, () => false)); i += 1) await page.goBack();
     await expect(bar(page)).toBeVisible();
     await bar(page).getByRole("button", { name: "Agent" }).click();
     await page.getByRole("button").filter({ hasText: latin }).first().click();
@@ -609,6 +610,9 @@ test("profile-style headers at 320 and 375: the title keeps a sensible width (a 
     expect(await noSideways(page)).toBe(true);
     await page.getByRole("button", { name: /^返回/ }).first().click();
     // Group info.
+    // (消息 returns to the chat that was open last — the Agent's, where the reload was — and a phone shows one page: its 返回列表 is the way to the list.)
+    await bar(page).getByRole("button", { name: /消息$/ }).click();
+    if ((await listRow(page, groupTitle).count()) === 0) await page.getByRole("button", { name: "返回列表" }).click();
     const chat = await openChat(page, groupTitle);
     await chat.getByRole("button", { name: "群资料" }).click();
     await check(page.getByRole("region", { name: "群资料" }).locator(".profile-head"), `group info at ${width}`);

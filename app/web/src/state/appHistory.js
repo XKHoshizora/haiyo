@@ -6,13 +6,11 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useStore } from "../data/store.jsx";
 import { forgetDrafts } from "../data/drafts.js";
 import { entity, isMyAgent } from "./selectors.js";
-import { SOFT_KEYS, addressOf, keyOf, navOfAddress, parentOf, sameAddress, sectionOfPath } from "./location.js";
+import { SOFT_KEYS, addressOf, hereNow, keyOf, navOfAddress, parentOf, readEntry, sameAddress, sectionOfPath } from "./location.js";
 
 const CHANGED = "af-history";
-const read = () => (window.history.state?.af ? window.history.state : null);
+const read = readEntry;
 const notify = () => window.dispatchEvent(new Event(CHANGED));
-/** The address the browser is at: the path and the overlay of our entry. */
-export const hereNow = () => ({ path: window.location.pathname, overlay: read()?.overlay ?? null });
 
 /** An entry's state: `index` counts the app's own entries (0 for a cold start), `prev` is the key of the entry below. */
 const entry = ({ index, prev, address, nav, viewer = null }) => ({

@@ -160,7 +160,8 @@ export default function Shell() {
   const phone = usePhone();
   // A phone shows one page at a time: the tab bar belongs to the top-level lists, not to a conversation or any page pushed
   // over them (those have their back button). A conversation that is gone leaves the list, not an empty page without a way out.
-  const emptyChat = nav.section === "chat" && !conv;
+  // (Until the first sync has said what there is, an address's chat is drawn as itself — empty — not as the list it would fall back to.)
+  const emptyChat = nav.section === "chat" && !conv && state.loaded;
   const pane = emptyChat ? "list" : nav.pane;
   const tabbar = phone && pane === "list";
   // The address is where a person is (state/location.js); Back and the edge swipe walk its entries (state/appHistory.js).
@@ -191,7 +192,7 @@ export default function Shell() {
 
   if (nav.section === "chat") {
     list = <ChatList />;
-    if (!conv) main = <div className="empty-main">选择一个会话开始聊天</div>;
+    if (!conv) main = nav.convId && !state.loaded ? <div className="empty-main" /> : <div className="empty-main">选择一个会话开始聊天</div>;
     else if (nav.view === "profile") main = <GroupProfile conv={conv} />;
     else {
       main = <ChatView conv={conv} />;

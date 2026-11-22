@@ -30,4 +30,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "off",
   },
+  // E2E_WEBKIT=1 runs the same specs in WebKit (desktop Safari's engine; `npx playwright install webkit` once — nothing is downloaded by the suite):
+  // it selects the word under a right-click before `contextmenu` and paints the first frame differently, which Chromium does not.
+  projects: process.env.E2E_WEBKIT ? [{ name: "webkit", use: { ...devices["Desktop Safari"], viewport: { width: 1280, height: 860 } } }] : undefined,
 });
