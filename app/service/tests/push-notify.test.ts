@@ -1,9 +1,9 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import net from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { StoredMessage } from "../src/messages/model.ts";
+import { MESSAGE_COLUMNS, toStored, type MessageRow, type StoredMessage } from "../src/messages/model.ts";
 import { createApnsClient, type ApnsClient } from "../src/push/apns.ts";
-import { countsForPush, PUSH_BODY } from "../src/push/notify.ts";
+import { countsForPush, PRESENCE_PROBE_MS, PUSH_BODY } from "../src/push/notify.ts";
 import { api, befriend, cookieHeaderFrom, group, signIn, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { fakeApns, type FakeApns } from "./helpers/apns.ts";
@@ -27,15 +27,18 @@ import { APP_ORIGIN, closeAllSockets, connect, issueTicket, listen, type TestSoc
 const fake: { apns?: FakeApns } = {};
 let real: ApnsClient | null = null;
 // The app is built before the fake listens: the client it is given forwards to one made for the fake's address.
-const apns: ApnsClient = { send: (n) => real!.send(n), close: async () => {} };
+const apns: ApnsClient = { send: (n) => real!.send(n), close: async () => real?.close() };
 const lines: string[] = [];
 const gateway = scriptedGateway();
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false, apns, logStream: { write: (l) => void lines.push(l) } });
 
+const PEM = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+/** A sender pointed at the fake (a test that pauses it swaps in its own: see `real`). */
+const client = (): ApnsClient =>
+  createApnsClient({ teamId: "ABCDE12345", keyId: "KEY1234567", keyPem: PEM, topic: "org.haiyo.app", origins: { production: fake.apns!.url, sandbox: fake.apns!.url }, retryDelaysMs: [5, 10] });
 beforeAll(async () => {
   fake.apns = await fakeApns();
-  const pem = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  real = createApnsClient({ teamId: "ABCDE12345", keyId: "KEY1234567", keyPem: pem, topic: "org.haiyo.app", origins: { production: fake.apns.url, sandbox: fake.apns.url }, retryDelaysMs: [5, 10] });
+  real = client();
 });
 afterAll(async () => {
   await real?.close();
@@ -108,6 +111,24 @@ async function rawSocket(who: Actor): Promise<{ socket: net.Socket; received: ()
   raws.add(socket);
   return { socket, received: () => buffer };
 }
+/** The opcodes of the server's frames in `buf` (unmasked, as a server sends them): 0x1 text, 0x8 close, 0x9 ping. */
+function frames(buf: Buffer): number[] {
+  const ops: number[] = [];
+  for (let i = 0; i + 2 <= buf.length; ) {
+    let len = buf[i + 1]! & 0x7f;
+    let head = 2;
+    if (len === 126) {
+      len = buf.readUInt16BE(i + 2);
+      head = 4;
+    } else if (len === 127) {
+      len = Number(buf.readBigUInt64BE(i + 2));
+      head = 10;
+    }
+    ops.push(buf[i]! & 0x0f);
+    i += head + len;
+  }
+  return ops;
+}
 const raws = new Set<net.Socket>();
 afterEach(() => {
   for (const s of raws) s.destroy();
@@ -179,7 +200,57 @@ describe("present: the phone's own session has a socket", () => {
     const s = await connect(app, b);
     await say(a, conversationId, "you see this live");
     expect(requests()).toEqual([]);
+    // Its socket was asked (a ping) and answered: present.
+    expect(app.push.flush()).toMatchObject({ sent: 0, present: 1 });
     s.close();
+  });
+
+  test("a socket that is open but silent (the app suspended, its close never sent): asked, no answer within the window, pushed", async () => {
+    const a = await signUp(app, "ghost_a");
+    const b = await signUp(app, "ghost_b");
+    const { conversationId } = await befriend(app, a, b);
+    const token = await phone(b);
+    const raw = await rawSocket(b);
+    expect(app.realtime.hasSocketFor(await sessionIdOf(b))).toBe(true);
+    const t0 = Date.now();
+    await say(a, conversationId, "after the lock");
+    expect(pushedTo()).toEqual([token]);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(PRESENCE_PROBE_MS - 50);
+    expect(frames(raw.received()).filter((f) => f === 0x9)).toHaveLength(1); // one ping
+  });
+
+  test("the socket closes while it is asked: pushed at once, not at the window's end", async () => {
+    const a = await signUp(app, "drops_a");
+    const b = await signUp(app, "drops_b");
+    const { conversationId } = await befriend(app, a, b);
+    const token = await phone(b);
+    const raw = await rawSocket(b);
+    const t0 = Date.now();
+    expect((await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "x", clientTxn: "drops1" })).status).toBe(201);
+    for (let i = 0; i < 100 && !frames(raw.received()).includes(0x9); i++) await new Promise((r) => setTimeout(r, 5));
+    raw.socket.destroy();
+    await app.push.idle();
+    expect(pushedTo()).toEqual([token]);
+    expect(Date.now() - t0).toBeLessThan(PRESENCE_PROBE_MS - 500);
+  });
+
+  test("many messages during one ask: one ping for the session, one push per conversation", async () => {
+    const a = await signUp(app, "burst_a");
+    const b = await signUp(app, "burst_b");
+    const c = await signUp(app, "burst_c");
+    const { conversationId: direct } = await befriend(app, a, b);
+    const conv = await group(app, a, "g", [b, c]);
+    const token = await phone(b);
+    const raw = await rawSocket(b);
+    requests().length = 0;
+    for (const [where, n] of [[direct, 1], [conv, 1], [direct, 2], [direct, 3], [conv, 2]] as const) {
+      expect((await api(app, a, "POST", `/api/conversations/${where}/messages`, { text: `m${n}`, clientTxn: `burst-${where}-${n}` })).status).toBe(201);
+    }
+    await app.push.idle();
+    expect(pushedTo()).toEqual([token, token]);
+    expect(requests().map((r) => r.headers["apns-collapse-id"]).sort()).toEqual([direct, conv].sort());
+    expect(frames(raw.received()).filter((f) => f === 0x9)).toHaveLength(1);
+    expect(app.push.flush()).toMatchObject({ sent: 2, present: 0, coalesced: 3 });
   });
 
   test("paused (the page closed its socket): the next message is pushed at once", async () => {
@@ -304,6 +375,33 @@ describe("what is pushed and to whom", () => {
     expect(pushedTo()).toEqual([td]);
   });
 
+  test("an Agent's message is held to its owner's blocks: a member who blocked the owner (or was blocked) gets nothing of it", async () => {
+    const owner = await signUp(app, "blocked_owner");
+    const b = await signUp(app, "blocks_owner");
+    const c = await signUp(app, "blocked_by_owner");
+    const d = await signUp(app, "bystander_d");
+    const agent = await mustCreateAgent(app, owner, { model: { source: "site", id: "fast" }, persona: "你是一个说话简洁的助手。" });
+    const conv = await group(app, owner, "g", [b, c, d]);
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/members`, { principalId: agent.id })).status).toBe(201);
+    await phone(b);
+    await phone(c);
+    const td = await phone(d);
+    expect((await api(app, b, "PUT", `/api/blocks/${owner.id}`)).status).toBe(200);
+    expect((await api(app, owner, "PUT", `/api/blocks/${c.id}`)).status).toBe(200);
+    await app.push.idle();
+    requests().length = 0;
+    // The Agent's message, stored and announced as a posted reply is.
+    const { rows } = await db.query<MessageRow>(
+      `with next as (update conversations set seq = seq + 1 where id = $1 returning seq)
+       insert into messages as m (conversation_id, seq, sender_id, kind, body) select $1, next.seq, $2, 'text', '{"text":"hi"}'::jsonb from next
+       returning ${MESSAGE_COLUMNS}`,
+      [conv, agent.id],
+    );
+    app.deps.conversations.publish({ messages: rows.map(toStored), conversations: [] }, app.log);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([td]);
+  });
+
   test("a member who left, and a phone whose session expired, get nothing", async () => {
     const a = await signUp(app, "gone_a");
     const b = await signUp(app, "gone_b");
@@ -331,7 +429,7 @@ describe("what APNs answers, and what is logged", () => {
     await say(a, conversationId, "again");
     expect(requests()).toHaveLength(1);
     const stats = app.push.flush();
-    expect(stats).toEqual({ sent: 0, removed: 1, present: 0, failed: {} });
+    expect(stats).toEqual({ sent: 0, removed: 1, present: 0, coalesced: 0, failed: {} });
     const pushLines = lines.filter((l) => l.includes('"metric":"push"'));
     expect(pushLines).toHaveLength(1);
     expect(JSON.parse(pushLines[0]!)).toMatchObject({ metric: "push", sent: 0, removed: 1, present: 0 });
@@ -340,6 +438,75 @@ describe("what APNs answers, and what is logged", () => {
     expect(own.length).toBeGreaterThan(0);
     const all = own.join("\n");
     for (const secret of [token, conversationId, "CANARY", a.id, b.id]) expect([secret, all.includes(secret)]).toEqual([secret, false]);
+  });
+
+  test("a message while that phone's push for the same conversation is still out adds no second push (coalesced)", async () => {
+    const a = await signUp(app, "out_a");
+    const b = await signUp(app, "out_b");
+    const { conversationId } = await befriend(app, a, b);
+    await phone(b);
+    let release!: (x: { status: number }) => void;
+    fake.apns!.answer({ hold: new Promise((r) => (release = r)) });
+    expect((await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "one", clientTxn: "out1" })).status).toBe(201);
+    await fake.apns!.waitFor(1);
+    expect((await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "two", clientTxn: "out2" })).status).toBe(201);
+    await new Promise((r) => setTimeout(r, 50));
+    release({ status: 200 });
+    await app.push.idle();
+    expect(requests()).toHaveLength(1);
+    expect(app.push.flush()).toMatchObject({ sent: 1, coalesced: 1 });
+    // Once it is over, the next message pushes again.
+    await say(a, conversationId, "three");
+    expect(requests()).toHaveLength(2);
+  });
+
+  test("APNs refusing the configuration: no phone is deleted, every push pauses, ONE warning names the class and nothing else", async () => {
+    const a = await signUp(app, "conf_a");
+    const b = await signUp(app, "conf_b");
+    const c = await signUp(app, "conf_c");
+    const { conversationId: withB } = await befriend(app, a, b);
+    const { conversationId: withC } = await befriend(app, a, c);
+    const tb = await phone(b);
+    const tc = await phone(c);
+    const shared = real;
+    real = client();
+    try {
+      requests().length = 0;
+      fake.apns!.answer({ status: 403, reason: "InvalidProviderToken" });
+      await say(a, withB, "one");
+      await say(a, withC, "two");
+      await say(a, withB, "three");
+      // The first push refused, every later one paused without being sent, whoever it is for.
+      expect(requests()).toHaveLength(1);
+      expect((await db.query("select token from push_devices where token = any($1) order by token", [[tb, tc]])).rows).toHaveLength(2);
+      const warned = lines.filter((l) => l.includes('"metric":"push_config_refused"'));
+      expect(warned).toHaveLength(1);
+      const line = JSON.parse(warned[0]!);
+      expect(line).toMatchObject({ level: 40, class: "auth" });
+      for (const secret of [tb, tc, withB, withC]) expect(warned[0]!.includes(secret)).toBe(false);
+      expect(app.push.flush()).toMatchObject({ sent: 0, removed: 0, failed: { auth: 1, paused: 2 } });
+    } finally {
+      await real.close();
+      real = shared;
+    }
+  });
+
+  test("DeviceTokenNotForTopic (a phone of another app's build): kept, not deleted; one warning of class topic", async () => {
+    const a = await signUp(app, "topic_a");
+    const b = await signUp(app, "topic_b");
+    const { conversationId } = await befriend(app, a, b);
+    const token = await phone(b);
+    const shared = real;
+    real = client();
+    try {
+      fake.apns!.answer({ status: 400, reason: "DeviceTokenNotForTopic" });
+      await say(a, conversationId, "x");
+      expect((await db.query("select 1 from push_devices where token = $1", [token])).rowCount).toBe(1);
+      expect(lines.filter((l) => l.includes('"metric":"push_config_refused"') && l.includes('"class":"topic"'))).toHaveLength(1);
+    } finally {
+      await real.close();
+      real = shared;
+    }
   });
 
   test("a phone that registers again while its push is out keeps its row, though APNs then says the token was dead", async () => {
@@ -370,10 +537,36 @@ describe("what APNs answers, and what is logged", () => {
     await say(a, conv, "one");
     await say(a, conv, "two");
     s.close();
-    expect(app.push.flush()).toEqual({ sent: 1, removed: 0, present: 2, failed: { rejected: 1 } });
+    expect(app.push.flush()).toEqual({ sent: 1, removed: 0, present: 2, coalesced: 0, failed: { rejected: 1 } });
     lines.length = 0;
-    expect(app.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, failed: {} });
+    expect(app.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} });
     expect(lines.filter((l) => l.includes('"metric":"push"'))).toEqual([]);
+  });
+});
+
+describe("the stop", () => {
+  let slow: ApnsClient | null = null;
+  const forward: ApnsClient = { send: (n) => slow!.send(n), close: async () => slow?.close() };
+  const { app: own } = useApp({ apns: forward });
+  beforeAll(() => {
+    slow = createApnsClient({ teamId: "ABCDE12345", keyId: "KEY1234567", keyPem: PEM, topic: "org.haiyo.app", origins: { production: fake.apns!.url, sandbox: fake.apns!.url }, retryDelaysMs: [60_000] });
+  });
+
+  test("a push waiting a minute for its retry does not hold the stop: the sender is closed first, the stop ends in seconds", async () => {
+    const a = await signUp(own, "stop_a");
+    const b = await signUp(own, "stop_b");
+    const { conversationId } = await befriend(own, a, b);
+    expect((await api(own, b, "POST", "/api/push/devices", { token: "ef".repeat(32), env: "production" })).status).toBe(200);
+    fake.apns!.reset();
+    fake.apns!.answer({ status: 503, reason: "ServiceUnavailable" });
+    expect((await api(own, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "x", clientTxn: "stop1" })).status).toBe(201);
+    await fake.apns!.waitFor(1);
+    await new Promise((r) => setTimeout(r, 20));
+    const t0 = Date.now();
+    await own.push.close();
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(own.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} }); // the stop wrote them
+    expect(fake.apns!.requests).toHaveLength(1);
   });
 });
 
@@ -412,6 +605,6 @@ describe("push not configured", () => {
     expect((await api(plain, b, "POST", "/api/push/devices", { token: "cd".repeat(32), env: "production" })).status).toBe(200);
     expect((await api(plain, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "hi", clientTxn: "off1" })).status).toBe(201);
     await plain.push.idle();
-    expect(plain.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, failed: {} });
+    expect(plain.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} });
   });
 });

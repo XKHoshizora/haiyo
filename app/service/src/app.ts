@@ -454,13 +454,11 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   await registerSync(app, { heartbeat: options.heartbeat !== false });
 
   // Pushes to phones (src/push/): every stored message, after commit, as the hub hears of it; the hub says whose session
-  // has a socket. Closed before the database (hooks run last-in first-out): what is under way ends, nothing new starts.
+  // has a socket and whether it answers. Closed before the hub and the database (hooks run last-in first-out): the stop
+  // closes the sender first (its retry waits end at once), then waits a bounded time for what is under way.
   const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed });
   app.decorate("push", push);
-  app.addHook("onClose", async () => {
-    await push.close();
-    await deps.apns?.close();
-  });
+  app.addHook("onClose", () => push.close());
 
   // The reply worker runs in this process (one instance, like the hub). Once the app is ready, the runs the previous
   // process left running are recovered and then the worker starts. It stops when the app starts closing, before the hub
