@@ -37,6 +37,23 @@ export function ImageViewerProvider({ messages, children }) {
   const [shown, setShown] = useState(null);
   const api = useMemo(() => ({ open: (id, opener) => setShown({ id, opener, openedId: id }) }), []);
   const index = shown ? images.findIndex((m) => m.id === shown.id) : -1;
+  // An open viewer is one history entry: Back (the button, the edge swipe) closes it and stays in the chat; closing it by hand
+  // takes its entry away again, so none dangles.
+  const open = shown !== null;
+  useEffect(() => {
+    if (!open) return undefined;
+    let pushed = true;
+    window.history.pushState({ ...(window.history.state ?? {}), layer: "viewer" }, "");
+    const onPop = () => {
+      pushed = false;
+      setShown(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (pushed && window.history.state?.layer === "viewer") window.history.back();
+    };
+  }, [open]);
   // The picture is no longer among the messages (another conversation, a window of messages changed): nothing to show.
   useEffect(() => {
     if (shown && index < 0) setShown(null);

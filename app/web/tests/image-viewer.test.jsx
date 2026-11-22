@@ -434,3 +434,43 @@ describe("the viewer's layout hooks", () => {
     }
   });
 });
+
+describe("the viewer is one history entry", () => {
+  it("opening adds one; Back closes the viewer and stays in the chat", async () => {
+    await openApp();
+    await openChat("小安");
+    expect(window.history.state?.layer).toBeUndefined();
+    fireEvent.click(picture(3));
+    loaded();
+    expect(window.history.state.layer).toBe("viewer");
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(document.querySelector(".viewer")).toBeNull();
+    expect(document.querySelector("ol.messages")).toBeTruthy();
+    expect(window.history.state?.layer).toBeUndefined();
+  });
+
+  it("closing it with Esc or the button takes its entry away again: nothing dangles", async () => {
+    await openApp();
+    await openChat("小安");
+    const entry = window.history.state;
+    fireEvent.click(picture(3));
+    loaded();
+    press("Escape");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(document.querySelector(".viewer")).toBeNull();
+    expect(window.history.state?.layer).toBeUndefined();
+    expect(window.history.state).toEqual(entry);
+  });
+
+  it("stepping to the next picture adds nothing", async () => {
+    await open(3);
+    const state = window.history.state;
+    press("ArrowRight");
+    expect(window.history.state).toEqual(state);
+  });
+});

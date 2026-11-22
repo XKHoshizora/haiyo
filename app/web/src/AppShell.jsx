@@ -1,9 +1,10 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { useStore } from "./data/store.jsx";
 import { unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark } from "./ui/primitives.jsx";
-import { usePhone } from "./ui/pointer.js";
+import { useMediaQuery, usePhone } from "./ui/pointer.js";
+import { ONE_COLUMN_QUERY, useAppHistory } from "./state/appHistory.js";
 import { MessageCircle, Users, Bot, Settings } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
@@ -120,6 +121,24 @@ function useDropStrayWindows(state, actions) {
   }, [stray, actions]);
 }
 
+/**
+ * The list a page was pushed over keeps its place: where one column shows the list or the page, the list is `display: none`
+ * while a page is open, and a browser forgets the scroll of what it hid. The place is noted as the list is scrolled and put
+ * back when the list shows again (Back from a conversation).
+ */
+function useKeepListScroll(pane, section) {
+  const saved = useRef({ section: null, top: 0 });
+  const note = (e) => {
+    if (pane === "list" && e.target.classList?.contains("rows")) saved.current = { section, top: e.target.scrollTop };
+  };
+  useLayoutEffect(() => {
+    if (pane !== "list" || saved.current.section !== section) return;
+    const rows = document.querySelector(".list-col .rows");
+    if (rows && saved.current.top > 0 && rows.scrollTop !== saved.current.top) rows.scrollTop = saved.current.top;
+  }, [pane, section]);
+  return note;
+}
+
 /** The signed-in application: rail, list, chat and side panel. Loaded on demand (see App.jsx). */
 export default function Shell() {
   const { state, dispatch, actions } = useStore();
@@ -134,6 +153,9 @@ export default function Shell() {
   const emptyChat = nav.section === "chat" && !conv;
   const pane = phone && emptyChat ? "list" : nav.pane;
   const tabbar = phone && pane === "list";
+  // Back and the edge swipe walk the pages of one column (a conversation, group info, a settings page); the address follows the conversation.
+  useAppHistory({ nav, oneColumn: useMediaQuery(ONE_COLUMN_QUERY), dispatch });
+  const noteScroll = useKeepListScroll(pane, nav.section);
   let list = null;
   let main = null;
   let side = null;
@@ -160,7 +182,7 @@ export default function Shell() {
   return (
     <div className="app" data-pane={pane} data-side={side ? "open" : "closed"} data-tabbar={tabbar ? "on" : "off"}>
       {(!phone || tabbar) && <Rail phone={phone} />}
-      <aside className="list-col">{list}</aside>
+      <aside className="list-col" onScrollCapture={noteScroll}>{list}</aside>
       <main className="main-col">{main}</main>
       {side && <aside className="side-col">{side}</aside>}
       {state.toast && (
