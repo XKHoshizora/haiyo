@@ -429,7 +429,7 @@ describe("the money of a reply that offers tools", () => {
     expect(await Promise.all(tickets.map((t) => holdOf(t.id)))).toEqual([wanted, wanted]);
   });
 
-  it("the free allowance, what is left between an ordinary call's most and the last call's own most: the last call, made within the room the reply kept for it from its admission (its hold is not raised); with nothing left after what was spent, the last call all the same — and the free allowance is never overdrawn (what passes it is forgiven), nor the balance touched", async () => {
+  it("the free allowance, what is left between an ordinary call's most and the last call's own most: the last call, made within the room the reply kept for it from its admission (its hold is not raised); the allowance spent with a balance there, the reply goes on, on the balance (Q1); with nothing left of either, the last call all the same", async () => {
     const hits = "川".repeat(3000);
     const two = [
       { name: "search", input: { query: "a" } },
@@ -475,10 +475,9 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ cost: cost.toString(), free: cost.toString(), balance: "0", forgiven: "0" }]);
     expect(await freeUsed(w.owner.id)).toBe((3n * POINT - leave + cost).toString());
 
-    // Nothing left: what the reply has spent is not covered — the last call all the same (a reply that has started is
-    // never refused for money), and it answers. What it wrote before its tool was its acknowledgement, posted then; the
-    // answer follows it. On the allowance, what passes what is left of it is forgiven; the balance it also has is never
-    // moved to.
+    // The allowance spent while the tools ran, a balance there: the two pots together still cover the next round, so it is
+    // an ordinary one, not the last (Q1: the allowance first, then the balance, mid-reply too), and it answers. What it
+    // wrote before its tool was its acknowledgement, posted then; the answer follows it. It is charged on the balance.
     const dear = await owned("headstop");
     await grant(db, dear.owner.id, 20n * POINT);
     const stopGateway = scriptedGateway()
@@ -487,7 +486,7 @@ describe("the money of a reply that offers tools", () => {
     await say(dear.owner, dear.conv, "查一查");
     expect(await toolWorker(stopGateway, toolbox(leaving(dear.owner.id, 0n))).worker.runOnce()).toBe(true);
     expect(stopGateway.calls).toHaveLength(2);
-    expect(isFinal(stopGateway.calls[1]!)).toBe(true);
+    expect(isFinal(stopGateway.calls[1]!)).toBe(false);
     const dearRun = await runOf(dear.owner.id);
     expect(dearRun).toMatchObject({ status: "done", hold: "0" });
     const replies = (await api(app, dear.owner, "GET", `/api/conversations/${dear.conv}/messages`)).json.messages.filter((m: any) => m.senderId === dear.agent.id);
@@ -495,10 +494,10 @@ describe("the money of a reply that offers tools", () => {
     expect(replies[0]).toMatchObject({ text: "我先查一下。", ack: true });
     expect(replies[1]).toMatchObject({ text: "就这样。" });
     expect(replies[1].truncated ?? false).toBe(false);
-    const dearCost = (costOf(U(1000, 500)) + costOf(U(500, 100))).toString();
-    expect(await recordsOf(dearRun.id)).toMatchObject([{ cost: dearCost, free: "0", balance: "0", forgiven: dearCost }]);
+    const dearCost = costOf(U(1000, 500)) + costOf(U(500, 100));
+    expect(await recordsOf(dearRun.id)).toMatchObject([{ cost: dearCost.toString(), free: "0", balance: dearCost.toString(), forgiven: "0" }]);
     expect(await freeUsed(dear.owner.id)).toBe("3000000");
-    expect(await balanceOf(dear.owner.id)).toBe(20n * POINT);
+    expect(await balanceOf(dear.owner.id)).toBe(20n * POINT - dearCost);
 
     // A cheap first round, nothing written: the last call answers all the same.
     const mute = await owned("headmute");

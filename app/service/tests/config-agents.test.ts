@@ -212,6 +212,27 @@ describe("agent and metering configuration", () => {
     }
   });
 
+  test("SITE_MODELS: an apiKeyEnv may name a web search engine's key only on that engine's own host (review M4): the Exa key never, the DeepSeek search key only for a model at api.deepseek.com", () => {
+    const keys = { WEB_SEARCH_API_KEY: "exa-key-value", WEB_SEARCH_DEEPSEEK_API_KEY: "deepseek-key-value" };
+    for (const [apiKeyEnv, baseUrl] of [
+      ["WEB_SEARCH_API_KEY", "https://api.example.test/v1"],
+      ["web_search_api_key", "https://api.example.test/v1"],
+      ["WEB_SEARCH_DEEPSEEK_API_KEY", "https://api.example.test/v1"],
+      ["WEB_SEARCH_DEEPSEEK_API_KEY", "https://proxy.deepseek.example.test/v1"],
+    ] as const) {
+      let message = "";
+      try {
+        loadConfig(withModels([{ ...model, apiKeyEnv, baseUrl }], { ...keys, web_search_api_key: "exa-lower" }));
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect([apiKeyEnv, baseUrl, message]).toEqual([apiKeyEnv, baseUrl, expect.stringMatching(new RegExp(`SITE_MODELS: model "fast" names ${apiKeyEnv}, the web search's .* key; only a model on .* may share it`))]);
+      expect([apiKeyEnv, /key-value|exa-lower/.test(message)]).toEqual([apiKeyEnv, false]);
+    }
+    // A DeepSeek model on DeepSeek's own host may share the DeepSeek search key (one account, one key).
+    expect(loadConfig(withModels([{ ...model, apiKeyEnv: "WEB_SEARCH_DEEPSEEK_API_KEY", baseUrl: "https://api.deepseek.com/v1" }], keys)).siteModels[0]!.apiKeyEnv).toBe("WEB_SEARCH_DEEPSEEK_API_KEY");
+  });
+
   test("SITE_MODELS: two models may share one apiKeyEnv (two models of one upstream account)", () => {
     const config = loadConfig(withModels([model, { ...model, id: "slow", label: "Slow", model: "slow-1" }]));
     expect(config.siteModels.map((m) => [m.id, m.apiKeyEnv])).toEqual([
@@ -305,6 +326,16 @@ describe("the judgement model's configuration", () => {
       // Each is set, so only the rule can refuse it.
       expect(() => loadConfig(withJudge(value, { database_url: "a-lower-case-variable" })), own).toThrow(new RegExp(`JUDGE: a channel names ${own}`));
     }
+  });
+
+  test("a key variable may name a web search engine's key only toward that engine's own host (review M4)", () => {
+    const keys = { WEB_SEARCH_API_KEY: "exa-key-value", WEB_SEARCH_DEEPSEEK_API_KEY: "deepseek-key-value" };
+    for (const apiKeyEnv of ["WEB_SEARCH_API_KEY", "WEB_SEARCH_DEEPSEEK_API_KEY"]) {
+      const value = { model: "m", channels: [{ url: "https://h.example.test/v1/systemone", apiKeyEnv }] };
+      expect(() => loadConfig(withJudge(value, keys)), apiKeyEnv).toThrow(new RegExp(`JUDGE: a channel names ${apiKeyEnv}, the web search's`));
+    }
+    const deepseek = { model: "m", channels: [{ url: "https://api.deepseek.com/v1/chat/completions", apiKeyEnv: "WEB_SEARCH_DEEPSEEK_API_KEY" }] };
+    expect(loadConfig(withJudge(deepseek, keys)).judge!.channels[0]!.apiKeyEnv).toBe("WEB_SEARCH_DEEPSEEK_API_KEY");
   });
 
   test("timeout and daily limit default; one channel is enough", () => {
@@ -456,6 +487,42 @@ describe("the tools configuration", () => {
     ]) {
       expect(() => loadConfig({ ...base, TOOLS: bad }), bad).toThrow(/TOOLS/);
     }
+  });
+
+  test("the engine's key variable is fixed: a TOOLS.web.apiKeyEnv naming any other variable — a service secret, the database's address, another vendor's key, with or without a proxy — refuses to start, naming the setting and printing nothing it was given", () => {
+    const secrets = { ...base, PROVIDER_KEY_SECRET: "provider-secret-value-0123456789", WEB_SEARCH_DEEPSEEK_API_KEY: "deepseek-key-value" };
+    for (const [web, engine] of [
+      ['"apiKeyEnv":"DATABASE_URL"', "exa_search"],
+      ['"apiKeyEnv":"PROVIDER_KEY_SECRET"', "exa_search"],
+      ['"apiKeyEnv":"database_url","baseUrl":"https://proxy.example.com","baseUrlProxy":true', "exa_search"],
+      ['"apiKeyEnv":"PROVIDER_KEY_SECRET","baseUrl":"https://proxy.example.com","baseUrlProxy":true', "exa_search"],
+      ['"apiKeyEnv":"WEB_SEARCH_DEEPSEEK_API_KEY"', "exa_search"],
+      ['"engine":"deepseek_messages","apiKeyEnv":"WEB_SEARCH_API_KEY"', "deepseek_messages"],
+      // A key pasted where the variable's name goes: refused, and not repeated in the error.
+      ['"apiKeyEnv":"sk_live_0123456789abcdef"', "exa_search"],
+    ] as const) {
+      let message = "";
+      try {
+        loadConfig({ ...secrets, TOOLS: `{"web":{"enabled":true,${web}}}` });
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect([web, message]).toEqual([web, expect.stringMatching(new RegExp(`TOOLS: web\\.apiKeyEnv: is fixed for ${engine}: its key is read from WEB_SEARCH_`))]);
+      for (const leaked of ["postgres://x/y", "provider-secret-value", "deepseek-key-value", "sk_live_", "DATABASE_URL", "database_url", "PROVIDER_KEY_SECRET"]) {
+        expect([web, message.includes(leaked)]).toEqual([web, false]);
+      }
+    }
+    // Repeating the engine's own variable is accepted, proxy or not: only that variable is ever sent.
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"apiKeyEnv":"WEB_SEARCH_API_KEY","baseUrl":"https://proxy.example.com","baseUrlProxy":true}}' }).tools.web).toMatchObject({
+      apiKeyEnv: "WEB_SEARCH_API_KEY",
+      baseUrl: "https://proxy.example.com",
+    });
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"engine":"deepseek_messages","apiKeyEnv":"WEB_SEARCH_DEEPSEEK_API_KEY"}}' }).tools.web.apiKeyEnv).toBe("WEB_SEARCH_DEEPSEEK_API_KEY");
+  });
+
+  test("PORT: unset or empty is 3000, not port 0; a number is taken; anything else refuses", () => {
+    expect([loadConfig(base).port, loadConfig({ ...base, PORT: "" }).port, loadConfig({ ...base, PORT: "8080" }).port]).toEqual([3000, 3000, 8080]);
+    for (const bad of ["abc", "-1", "65536", "80.5"]) expect(() => loadConfig({ ...base, PORT: bad }), bad).toThrow(/PORT/);
   });
 
   test("the first version's counts are refused at start, the error naming the key and saying it was removed and why", () => {

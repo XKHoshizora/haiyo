@@ -74,7 +74,8 @@ async function once(t: Tx, ownerId: string, day: string, threshold: "warn" | "em
 
 /** The reminder `settled` calls for, by the state after it (no rows written). */
 function due(config: Pick<Config, "freeDailyMicro" | "allowance">, settled: Settled): { empty: boolean; balance: boolean; warn: boolean } | null {
-  if ((settled.chargeTo !== "free" && settled.chargeTo !== "balance") || settled.after === null) return null;
+  // Only a settlement that could charge the allowance or the balance reads them (a provider model's run that searched too).
+  if (settled.after === null) return null;
   const allowance = config.freeDailyMicro;
   const { freeUsedMicro: used, balanceMicro: balance } = settled.after;
   const warnAt = BigInt(Math.round(config.allowance.warnAt * 1_000_000));

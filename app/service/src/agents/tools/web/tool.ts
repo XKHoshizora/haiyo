@@ -10,7 +10,7 @@ import { cleanText, TOOL_MATERIAL } from "../../runtime/prompt.ts";
 import type { RunScope } from "../index.ts";
 import type { PlacedCite, RunRefs } from "../refs.ts";
 import type { EngineLog, WebEngine, WebResult, WebSearchError } from "./engine.ts";
-import { fuseMicroUsd, recordSiteCost, type HeldSearch } from "./hold.ts";
+import { fuseMicroUsd, recordSearchCost, type HeldSearch } from "./hold.ts";
 import { WEB_BUSY, WEB_NO_RESULTS, WEB_QUERY_LENGTH, WEB_QUERY_PRIVATE, WEB_REFUSED, WEB_TIMEOUT, WEB_UNAVAILABLE } from "./words.ts";
 
 export * from "./words.ts";
@@ -28,7 +28,7 @@ import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
  * 4. the pre-hold (`RunScope.holdSearch`, port-impl.ts and hold.ts): counted and held in one transaction before anything
  *    leaves the service; the count and the charge stand whatever happens after;
  * 5. the engine (engine.ts), within its time, ended with the reply; what it says the call cost the site, when it says so,
- *    replaces the estimate in the site's money fuse (hold.ts `recordSiteCost`);
+ *    scales the owner's charge for it and replaces the estimate in the site's money fuse (hold.ts `recordSearchCost`);
  * 6. its results: every title and snippet read for numbers someone typed (`RunRefs.plant`) before any `w` number is
  *    minted, then as many as fit `TOOLS.resultMaxWeight`, each numbered (`〔w1〕`) — `{about, results:[{ref, title, date,
  *    snippet}]}`: no address and no site name for the model to copy.
@@ -135,14 +135,15 @@ async function guardReads(db: Db, scope: RunScope): Promise<{ ownerSaid: string 
 }
 
 /**
- * What the engine said the call cost the site (`actual`), in the site's money fuse in place of the estimate the pre-hold
- * held (hold.ts `recordSiteCost`); 80 % of the day's fuse first reached by it said in a metric line, and an unbelievable
- * report (outside a tenth to ten times the estimate: the estimate stands) in another. A failure to write it keeps the
- * estimate (the fuse counts at least that) and says so with its code only.
+ * What the engine said the call cost the site (`actual`): the owner's charge for the search scaled to it and the site's
+ * money fuse taking it in place of the estimate (hold.ts `recordSearchCost`); 80 % of the day's fuse first reached by it
+ * said in a metric line, and an unbelievable report (outside a tenth to ten times the estimate: the price and the
+ * estimate stand) in another. A failure to write it keeps the price and the estimate (the owner is charged and the fuse
+ * counts at least that) and says so with its code only.
  */
 async function siteCost(deps: WebToolDeps, held: HeldSearch, actual: bigint | undefined): Promise<void> {
   try {
-    const recorded = await recordSiteCost(deps.db, held, actual, fuseMicroUsd(deps.config));
+    const recorded = await recordSearchCost(deps.db, held, actual, fuseMicroUsd(deps.config));
     if (recorded.ignored) deps.log.info({ metric: "web_cost_ignored" }, "web search: the engine's cost report was outside what is believed; the estimate stands");
     if (recorded.at80) fuseLine(deps.log);
   } catch (err) {

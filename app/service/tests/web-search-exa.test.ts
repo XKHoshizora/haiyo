@@ -106,6 +106,9 @@ describe("the Exa engine", () => {
 
   it("what a call cost: costDollars as a number or as an object with a total, in micro-USD; absent or odd, nothing said", async () => {
     expect([0.013, { total: 0.007 }, { total: "0.01" }, undefined, null, -1, Number.NaN, { search: 1 }, 5000].map(exaCostOf)).toEqual([13_000n, 7000n, null, null, null, null, null, null, null]);
+    // Rounded up to a whole micro-USD (what the owner's charge is scaled by: never below what was said), a binary
+    // fraction's dust aside (wallet v3 §5).
+    expect([0.0000004, 0.0070000004, 0.0081, 0.1 + 0.2].map(exaCostOf)).toEqual([1n, 7001n, 8100n, 300_000n]);
     expect(await harness(() => json(answer([result(1)], { costDollars: 0.0081 }))).engine.searchWeb(QUERY, never)).toMatchObject({ costMicroUsd: 8100n });
     expect(await harness(() => json(answer([result(1)]))).engine.searchWeb(QUERY, never)).toMatchObject({ costMicroUsd: 13_000n });
     expect(await harness(() => json(answer([]))).engine.searchWeb(QUERY, never)).toEqual({ error: "no_results", costMicroUsd: 13_000n });

@@ -247,11 +247,17 @@ export function deepseekEngine(o: DeepseekOptions): WebEngine {
   };
 }
 
-/** What Exa says one call cost (`costDollars`: a number, or an object with a `total` number), in micro-USD; null when it does not say. */
+/**
+ * What Exa says one call cost (`costDollars`: a number, or an object with a `total` number), in micro-USD rounded up (what
+ * the owner's charge is scaled by: never below what was said); null when it does not say. A figure within a millionth of
+ * a micro-USD of a whole one is that one (binary fractions: 0.007 × 10⁶ is not exactly 7 000).
+ */
 export function exaCostOf(costDollars: unknown): bigint | null {
   const total = typeof costDollars === "number" ? costDollars : isRecord(costDollars) && typeof costDollars.total === "number" ? costDollars.total : null;
   if (total === null || !Number.isFinite(total) || total < 0 || total > 1000) return null;
-  return BigInt(Math.round(total * 1_000_000));
+  const micro = total * 1_000_000;
+  const whole = Math.round(micro);
+  return BigInt(Math.abs(micro - whole) < 1e-6 ? whole : Math.ceil(micro));
 }
 
 /** The most of Exa's `results` that is looked at, however many it sent. */

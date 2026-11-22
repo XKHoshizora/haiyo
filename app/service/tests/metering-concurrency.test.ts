@@ -15,7 +15,8 @@ import { costOf, ESTIMATE, FULL_USAGE, grant, MAX_COST, METER_ENV, meteredAgent,
  * with every call costing exactly what it held (`FULL_USAGE`) and once with every call reporting far more than it
  * held (`OVER_USAGE`, 15 points against a hold of 2), which settlement charges only up to the hold. Since Task H a reply
  * whose hold does not fit beside the others' is not refused but held back (it would wait, queued, for one of them to
- * end): only a reply that starts alone on a source may hold more than is left of it.
+ * end): only a reply that starts alone on its pots may hold more than is left of them (wallet v3: one pool of the
+ * allowance and the balance for a free-tier model).
  */
 
 const { app, db } = useApp({ env: METER_ENV });
@@ -136,7 +137,8 @@ describe(`${PARALLEL} replies started at once by one user`, () => {
       const owner = await signUp(app, `freerace${round}`);
       const agents = await agentsOf(owner, { source: "site", id: "meter_free" });
       const { admitted, refused, held, reasons } = split(await contend(owner.id, agents, round));
-      for (const a of admitted) expect(a).toEqual({ chargeTo: "free", holdMicro: MAX_COST });
+      // (One that starts alone on what is left holds the rest over: `overMicro`.)
+      for (const a of admitted) expect({ chargeTo: a.chargeTo, holdMicro: a.holdMicro }).toEqual({ chargeTo: "free", holdMicro: MAX_COST });
       expect(admitted.length + held.length + refused.length).toBe(PARALLEL);
       if (round % 2 === 0) expect([admitted.length, held.length]).toEqual([1, PARALLEL - 1]);
       // Each on its own: a reply that comes after the first has ended starts alone on what is left (1 point), and then
@@ -157,7 +159,8 @@ describe(`${PARALLEL} replies started at once by one user`, () => {
       const agents = await agentsOf(owner, { source: "site", id: "meter_paid" });
       await grant(db, owner.id, MAX_COST / 2n);
       const { admitted, refused, held, reasons } = split(await contend(owner.id, agents, round));
-      expect(admitted).toEqual([{ chargeTo: "balance", holdMicro: MAX_COST }]);
+      // Alone on half a maximum cost: that half promised, the other held over — its own debt at settlement.
+      expect(admitted).toEqual([{ chargeTo: "balance", holdMicro: MAX_COST, overMicro: MAX_COST / 2n }]);
       expect(held.length + refused.length).toBe(PARALLEL - 1);
       if (round % 2 === 0) expect(held).toHaveLength(PARALLEL - 1);
       expect(reasons.every((r) => r === "402 no_quota balance")).toBe(true);
@@ -168,17 +171,16 @@ describe(`${PARALLEL} replies started at once by one user`, () => {
     }
   });
 
-  it("free model with both an allowance and a balance: each bound holds on its own source", { timeout: 120_000 }, async () => {
+  it("free model with both an allowance and a balance: the bounds hold on the two pots together (Q1)", { timeout: 120_000 }, async () => {
     for (let round = 0; round < ROUNDS; round++) {
       const owner = await signUp(app, `bothrace${round}`);
       const agents = await agentsOf(owner, { source: "site", id: "meter_free" });
       await grant(db, owner.id, MAX_COST / 2n);
       const { admitted, refused, held, reasons } = split(await contend(owner.id, agents, round));
       expect(admitted.length + held.length + refused.length).toBe(PARALLEL);
-      // All at once: one on the allowance, the rest wait behind it (the allowance has something left after its hold, so a
-      // reply is not sent on to the balance). Each on its own: one more may start alone on each source as the one before
-      // it has ended.
-      if (round % 2 === 0) expect([admitted.map((a) => a.chargeTo), held.length]).toEqual([["free"], PARALLEL - 1]);
+      // All at once: the allowance (3) and the balance (1) together cover two holds of 2, so two start, the rest wait
+      // behind them. Each on its own: one more may start alone on what is left as the one before it has ended.
+      if (round % 2 === 0) expect([admitted.map((a) => a.chargeTo), held.length]).toEqual([["free", "free"], PARALLEL - 2]);
       else expect(admitted.length).toBeLessThanOrEqual(3);
       expect(reasons.every((r) => r === "402 no_quota free_and_balance")).toBe(true);
       const t = await totals(owner.id);
