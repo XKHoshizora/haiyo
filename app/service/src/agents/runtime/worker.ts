@@ -343,9 +343,11 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
           // Acted on at the finish, which alone says whether the round was cut (a call offering no tools gets none).
           if (event.type === "tool_call") continue;
           // The upstream refused the request carrying an earlier reply's tool use; it was made again with that lowered
-          // (gateway.ts `replay_lowered`). Counted only, by protocol: a broken builder shows as a rising count.
+          // (gateway.ts `replay_lowered`). Counted only, by protocol and, for a site model, its id (an owner's provider is
+          // never named): a broken builder, or an upstream that takes the form badly, shows as a rising count.
           if (event.type === "replay_lowered") {
-            log.info({ metric: "replay_lowered", protocol: request.protocol }, "agent run: a request carrying earlier tool calls was refused; it was made again without them");
+            const site = request.upstreamId?.startsWith("site:") ? { model: request.upstreamId.slice("site:".length) } : {};
+            log.info({ metric: "replay_lowered", protocol: request.protocol, ...site }, "agent run: a request carrying earlier tool calls was refused; it was made again without them");
             continue;
           }
           if (event.delta !== "") spoke = true;

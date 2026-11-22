@@ -461,7 +461,8 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   the bound — `web_refused_reply_cap` (the reply's `TOOLS.maxPoints`), `web_refused_lane_budget` (the others' daily, the
   proactive daily or the chain budget), `web_refused_no_points` (the owner's free allowance and balance),
   `web_site_fuse_refused` (the site's fuse), `web_query_refused` (the guard) — so the log shows which bound bites.
-- `{ "metric": "replay_lowered", "protocol" }`, once for each request carrying an earlier reply's tool use in the
+- `{ "metric": "replay_lowered", "protocol", "model"? }` (`model`: a site model's `id`; an owner's provider is never
+  named), once for each request carrying an earlier reply's tool use in the
   provider's own form that its upstream answered 400 or 422 and that was made again with it lowered (Agents and runs,
   Earlier tool use in history): it should stay 0 on every protocol — a rising count means a provider takes that form
   badly (or the form is built wrong), and the acceptance smoke test is to check it.
@@ -3940,10 +3941,14 @@ live, lane prompt2). So, in the Agent's own conversation only:
   output limit, and posted `done` — keeps beside its text, in body key `toolCalls`, the calls of exactly the rounds the
   request that wrote it carried (the plain call after a refused later round carries none; a stop, the reply's time,
   `extend`'s stop or busy keep none: only a finished round is stored), and only when every call was to `search_web`,
-  `search_messages` or `current_time`. Each is `{name, round, outcome: "ok", input, found?, pages?}` — the input cleaned as
+  `search_messages` or `current_time` and there were at most the per-reply caps of those three summed
+  (`TOOLS.web.perReply` + `searchPerReply` + `timePerReply`, 10 at the defaults: a model looping past its caps keeps
+  none, all or nothing — so one reply's replay is at most about 1 500 weight). Each is `{name, round, outcome: "ok", input, found?, pages?}` — the input cleaned as
   the tool cleans it, its token-shaped strings out, at most 60 weight as JSON text; a messages search's count of what it
   handed over; a web search's page numbers (its `webSources`) — or `{name, round, outcome: "refused", error}`, with no
-  input at all and `error` one of the tools' and the loop's fixed sentences (anything else: `这个请求无法执行。`).
+  input at all and `error` the tool's own refusal (web/words.ts, tools/search-words.ts); a call the loop answered
+  itself — a repeat, one over its tool's cap, a garbled or failed one — and any other sentence is kept as
+  `这个请求无法执行。`.
   Nothing is kept in a group, on an acknowledgement, or for any other tool.
 - *How it returns.* A later reply there that is offered tools (its plan: `ContextRun.replay`) is shown such a reply —
   when it has visible text and every kept call is to a tool this request offers; else as its text alone, as is every
@@ -3953,11 +3958,13 @@ live, lane prompt2). So, in the Agent's own conversation only:
   was made, its id 22 hex digits from the message and its place (`replay.ts` `replayId`; on the wire `call_…`, or
   `toolu_01…` on Anthropic); a refused one has the redacted argument `{"query":""}` (the clock's `{}`). A result is a
   placeholder of stored facts only, at most 72 weight: a web search
-  `{"note":"这次搜索的结果当时已经给你看过，系统没有保留原文。","sites":[…],"date":"YYYY-MM-DD"}` — at most 3 sites, the
+  `{"note":"那次的结果已不在这里，那次回答以外的细节要重新搜索","sites":[…],"date":"YYYY-MM-DD"}` — at most 3 sites, the
   cited pages' first, each a host kept by whole labels from the right while at most 30 characters, never a title or an
-  address —, a messages search `{"note":"这次查找的结果当时已经给你看过，系统没有保留原文。","found":n,"date":…}`, the clock
-  `{"note":"当时给过你那时的时间。","date":…}`, a refused call `{"error":"…","date":…}`; the date is the day the reply was
-  posted in `SITE_TIMEZONE`. Inputs and sentences are read for typed numbers as entry text is (`RunRefs.plant`).
+  address —, a messages search `{"note":"那次的结果已不在这里，那次回答以外的细节要重新查找","found":n,"date":…}`, the clock
+  `{"note":"当时给过你那时的时间。","date":…}`, a refused call `{"error":"…","note":"只限那次回复","date":…}`; the date is
+  the day the reply was posted in `SITE_TIMEZONE`. (The wording was measured: a model read "the results were shown to
+  you then" as "that search did not have it" and did not search again for a detail, and took an old refusal's `这次回复`
+  for the present reply.) Inputs and sentences are read for typed numbers as entry text is (`RunRefs.plant`).
 - *Weighed once.* A reply and its replay are one unit of the plan, kept or left out together; every part is weighed as
   the text `partText` gives (a text part's text; a call `{"id","name","input"}`, a result `{"id","name","output"}` as
   JSON) — in the plan at the tool ratio (`TOOL_TEXT_FACTOR`), at admission and in every later hold at its bytes, never
@@ -3968,7 +3975,9 @@ live, lane prompt2). So, in the Agent's own conversation only:
   upstream that refused them, the plain call), is byte for byte what it was. An upstream that answers 400 or 422, before
   anything came back, to a request carrying the replay is asked once more with it lowered, which then gets every handling
   a call gets (its own refusal of the tools included); nothing is remembered of the first, no tools are taken for refused
-  by it, and it is counted (Metrics in the log, `replay_lowered`, by protocol).
+  by it, and it is counted (Metrics in the log, `replay_lowered`, by protocol). Only the upstream's own 400 or 422 is
+  lowered: the SDK sends these parts without validating them (no SDK-side rejection of the form was found to lower), so
+  any other failure of such a request fails the call as any failure does.
 - *One reader.* `toolCalls` is read by that context alone (`messages/model.ts` `CONTEXT_ONLY_KEYS`): never sent on the
   wire, searched, summarised, reviewed or logged, and never read for a group or for anyone else.
 

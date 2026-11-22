@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAgentPort } from "../src/agents/port-impl.ts";
-import { MESSAGES_NOTE, replayId, TIME_NOTE, WEB_NOTE } from "../src/agents/replay.ts";
+import { MESSAGES_NOTE, REFUSAL_NOTE, replayId, TIME_NOTE, WEB_NOTE } from "../src/agents/replay.ts";
 import { partText } from "../src/agents/runtime/context.ts";
 import { isRunEnd, type AgentPort, type Prepared } from "../src/agents/runtime/port.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
@@ -21,6 +21,7 @@ import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { grant, METER_ENV } from "./helpers/metering.ts";
 import { protocolStub, scriptedGateway, STUB_MODEL, type ProtocolStub, type ScriptedGateway } from "./helpers/models.ts";
+import { providerBody } from "./helpers/providers.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 
 /**
@@ -232,7 +233,7 @@ describe("in the Agent's own conversation, a reply that searched returns in the 
     const expected = [
       ["user", ["附近有什么好吃的？"]],
       ["assistant", ["我查一下。", { call: SEARCH_WEB, id, input: { query: "" } }]],
-      ["tool", [{ result: SEARCH_WEB, id, output: { error: WEB_QUERY_PRIVATE, date: dayOf(answer.created_at) } }]],
+      ["tool", [{ result: SEARCH_WEB, id, output: { error: WEB_QUERY_PRIVATE, note: REFUSAL_NOTE, date: dayOf(answer.created_at) } }]],
       ["assistant", ["这个不能拿去搜。"]],
     ];
     // A vaulted note is shown in its own conversation's notes, as always — and nowhere in the turns.
@@ -315,6 +316,40 @@ describe("everything else is as it was", () => {
   });
 });
 
+describe("a reply that looped past its tools' caps (review I1)", () => {
+  it("24 calls in its rounds: nothing is kept, so on a model of 8 192 tokens a later reply is still shown the older turns, the reply as its text", async () => {
+    const gateway = scriptedGateway();
+    const { worker } = webWorker(gateway, fakeEngine());
+    const owner = await signUp(app, "rpl");
+    const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "small8k", contextTokens: 8192 }] }))).json;
+    const agent = await mustCreateAgent(app, owner, { handle: "rpl_bot", name: "小助手", model: { source: "provider", providerId: provider.id, model: "small8k" }, persona: "简短地回答。" });
+    await grant(db, owner.id, 20_000_000n);
+    const own = agent.conversationId as string;
+    await say(owner, own, "最早的问题：你好。");
+    gateway.reply("最早的回答：你好。");
+    expect(await worker.runOnce()).toBe(true);
+    await say(owner, own, "北京今天天气怎么样？");
+    // One round of 24 searches, each its own query: the first 3 run (the web search's cap), 21 are refused past it.
+    gateway.callTools(Array.from({ length: 24 }, (_, i) => ({ name: SEARCH_WEB, input: { query: `北京 天气 预报 第${i + 1}次 ${"详细".repeat(10)}` } })), { text: "我查一下。" }).reply("查到了：今天晴。");
+    expect(await worker.runOnce()).toBe(true);
+    expect(JSON.stringify(gateway.calls.at(-1)!.steps)).toContain('"note":"这类查询这次回复里不能再用了。"');
+    const looped = (await replies(own, agent.id)).find((r) => r.body.text === "查到了：今天晴。")!;
+    expect(looped.body).not.toHaveProperty("toolCalls");
+    await say(owner, own, "那明天呢？");
+    gateway.reply("明天也晴。");
+    expect(await worker.runOnce()).toBe(true);
+    const later = gateway.calls.at(-1)!;
+    expect((later.tools ?? []).length).toBeGreaterThan(0);
+    expect(shape(later)).toEqual([
+      ["user", ["最早的问题：你好。"]],
+      ["assistant", ["最早的回答：你好。"]],
+      ["user", ["北京今天天气怎么样？"]],
+      ["assistant", ["我查一下。", "查到了：今天晴。"]],
+      ["user", ["那明天呢？"]],
+    ]);
+  });
+});
+
 describe("the money: a replay is weighed once, as the plan weighs it (partText), and held for at least what the wire carries", () => {
   /** The UTF-8 bytes of every string a request body carries (texts, ids, names, arguments, results, the tools' words): what any tokenizer reads of it. */
   const contentBytes = (value: unknown): number =>
@@ -358,8 +393,11 @@ describe("the facts have one reader", () => {
     // Every SQL text of the service that reads the key is the context's (agents/context.ts `loadPage`).
     const SRC = fileURLToPath(new URL("../src/", import.meta.url));
     const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []));
-    const readers = files(SRC).filter((f) => /->>?\s*'toolCalls'/.test(readFileSync(f, "utf8")));
-    expect(readers.map((f) => path.relative(SRC, f).split(path.sep).join("/"))).toEqual(["agents/context.ts"]);
+    const named = (pattern: RegExp) => files(SRC).filter((f) => pattern.test(readFileSync(f, "utf8"))).map((f) => path.relative(SRC, f).split(path.sep).join("/")).sort();
+    expect(named(/->>?\s*'toolCalls'/)).toEqual(["agents/context.ts"]);
+    // And in code: the key named as a string, or a body's member, only where it is read for the context, written by the
+    // post, and listed as a context-only key (review M5).
+    expect(named(/["']toolCalls["']|body\??\.\s*toolCalls|body\??\[\s*["'`]toolCalls/)).toEqual(["agents/context.ts", "agents/conversation.ts", "messages/model.ts"]);
     expect(CONTEXT_ONLY_KEYS).toContain("toolCalls");
 
     logLines.length = 0;

@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   INPUT_MAX_WEIGHT,
+  maxCallsOf,
   MESSAGES_NOTE,
-  replayTools,
+  REFUSAL_NOTE,
+  REFUSAL_SENTENCES,
+  REPLAY_TOOLS,
   RESULT_MAX_WEIGHT,
   replayId,
-  replayOf,
+  replayOf as replayOfCapped,
   siteOf,
   SITE_MAX_CHARS,
-  storedToolCalls,
+  storedToolCalls as storedCapped,
   TIME_NOTE,
   toolCallsOf,
   WEB_NOTE,
@@ -17,7 +20,7 @@ import { ContextPlan, minimalTokens, partText, partTokens, type ContextEntry, ty
 import { OVER_CAP, REPEATED, UNUSABLE } from "../src/agents/runtime/loop.ts";
 import type { ToolTrace } from "../src/agents/runtime/port.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
-import { BAD_DATE, QUERY_TOO_LONG, QUERY_TOO_SHORT, SEARCH_BUSY, SEARCH_MESSAGES, SEARCH_TIMEOUT } from "../src/agents/tools/search.ts";
+import { BAD_DATE, QUERY_TOO_LONG, QUERY_TOO_SHORT, SEARCH_BUSY, SEARCH_MESSAGES, SEARCH_TIMEOUT } from "../src/agents/tools/search-words.ts";
 import { CURRENT_TIME } from "../src/agents/tools/clock.ts";
 import { SEARCH_WEB } from "../src/agents/tools/web/tool.ts";
 import * as WEB_WORDS from "../src/agents/tools/web/words.ts";
@@ -31,12 +34,21 @@ import { estimateTokens, TOOL_TEXT_FACTOR, weight } from "../src/metering/tokens
  */
 
 const DAY = "2026-11-22";
-const ALL = new Set(replayTools());
+const ALL = new Set(REPLAY_TOOLS);
+/** The step-1 tools' per-reply caps at their defaults (config.ts): web 3, messages search 6, clock 1. */
+const CAP = maxCallsOf({ web: { perReply: 3 }, searchPerReply: 6, timePerReply: 1 });
+const storedToolCalls = (trace: readonly ToolTrace[], refs: RunRefs | null, maxCalls = CAP) => storedCapped(trace, refs, maxCalls);
+const replayOf = (stored: unknown, facts: Parameters<typeof replayOfCapped>[1], offered: ReadonlySet<string>, maxCalls = CAP) => replayOfCapped(stored, facts, offered, maxCalls);
 const sources = (hosts: string[]) => hosts.map((h, i) => ({ n: i + 1, url: `https://${h}/page/${i + 1}`, title: `标题${i + 1}` }));
 const web = (query: string, pages: number[], round = 1): ToolTrace => ({ name: SEARCH_WEB, round, outcome: "ok", input: { query }, pages });
 const refused = (said: string, name = SEARCH_WEB, round = 1): ToolTrace => ({ name, round, outcome: "refused", said });
-/** Every fixed sentence a tool or the loop answers a call it did not run with. */
-const SENTENCES = [...(Object.values(WEB_WORDS) as unknown[]).filter((v): v is string => typeof v === "string"), SEARCH_TIMEOUT, SEARCH_BUSY, QUERY_TOO_SHORT, QUERY_TOO_LONG, BAD_DATE, UNUSABLE, REPEATED, OVER_CAP];
+/** Every fixed sentence a tool refuses a call with (and the loop's neutral one). */
+const SENTENCES = [
+  ...[WEB_WORDS.WEB_QUERY_LENGTH, WEB_WORDS.WEB_QUERY_PRIVATE, WEB_WORDS.WEB_BUSY, WEB_WORDS.WEB_SITE_DAY, WEB_WORDS.WEB_NO_MONEY, WEB_WORDS.WEB_REPLY_CAP, WEB_WORDS.WEB_LANE_BUDGET],
+  ...[WEB_WORDS.WEB_UNAVAILABLE, WEB_WORDS.WEB_TIMEOUT, WEB_WORDS.WEB_REFUSED, WEB_WORDS.WEB_NO_RESULTS, SEARCH_TIMEOUT, SEARCH_BUSY, QUERY_TOO_SHORT, QUERY_TOO_LONG, BAD_DATE, UNUSABLE],
+];
+/** The loop's notes about a reply's own rounds: a later reply is shown them as the neutral UNUSABLE. */
+const LOOP_NOTES = [REPEATED, OVER_CAP];
 
 describe("what a reply keeps of its calls (storedToolCalls)", () => {
   it("a search that ran: its query cleaned and its token-shaped strings out, the pages it handed out; a refused one: its sentence and no input at all", () => {
@@ -49,10 +61,23 @@ describe("what a reply keeps of its calls (storedToolCalls)", () => {
     expect(JSON.stringify(stored)).not.toContain("〔m1〕");
   });
 
-  it("a refused call never keeps its input, whatever the trace holds; a sentence that is none of the fixed ones is kept as UNUSABLE", () => {
+  it("a refused call never keeps its input, whatever the trace holds; its tool's own refusal is kept, the loop's notes and any other sentence as UNUSABLE", () => {
     const stored = storedToolCalls([{ name: SEARCH_WEB, round: 1, outcome: "refused", said: "我的私事 13800138000", input: { query: "我的私事 13800138000" } }], null);
     expect(stored).toEqual([{ name: SEARCH_WEB, round: 1, outcome: "refused", error: UNUSABLE }]);
+    expect([...REFUSAL_SENTENCES].sort()).toEqual([...SENTENCES].sort());
     for (const s of SENTENCES) expect(storedToolCalls([refused(s)], null)).toEqual([{ name: SEARCH_WEB, round: 1, outcome: "refused", error: s }]);
+    for (const s of LOOP_NOTES) expect(storedToolCalls([refused(s)], null)).toEqual([{ name: SEARCH_WEB, round: 1, outcome: "refused", error: UNUSABLE }]);
+  });
+
+  it("at most the step-1 tools' per-reply caps summed (10 at the defaults): one call more and nothing is kept, all or nothing — and nothing more is read back", () => {
+    expect(CAP).toBe(10);
+    const calls = (n: number): ToolTrace[] => Array.from({ length: n }, (_, i) => (i < 3 ? web(`q${i}`, [i + 1]) : refused(WEB_WORDS.WEB_QUERY_PRIVATE, SEARCH_WEB, 1 + Math.floor(i / 4))));
+    expect(storedToolCalls(calls(10), null)).toHaveLength(10);
+    for (const n of [11, 24, 100]) expect([n, storedToolCalls(calls(n), null)]).toEqual([n, null]);
+    // A body holding more (written by hand: the store writes none) returns as text.
+    const eleven = storedToolCalls(calls(11), null, 24)!;
+    expect(eleven).toHaveLength(11);
+    expect(replayOf(eleven, { messageId: "1", day: DAY, webSources: [], webCites: [] }, ALL)).toBeNull();
   });
 
   it("the input is at most 60 weight as JSON text (escaping counted); the messages search keeps its filters, the clock nothing", () => {
@@ -84,7 +109,7 @@ describe("what a reply keeps of its calls (storedToolCalls)", () => {
   });
 
   it("read back only when well formed (toolCallsOf): anything else is no replay", () => {
-    const good = storedToolCalls([web("天气", [1]), refused(REPEATED, SEARCH_WEB, 2)], null);
+    const good = storedToolCalls([web("天气", [1]), refused(WEB_WORDS.WEB_NO_MONEY, SEARCH_WEB, 2)], null);
     expect(toolCallsOf(good)).toEqual(good);
     for (const bad of [
       null,
@@ -93,6 +118,7 @@ describe("what a reply keeps of its calls (storedToolCalls)", () => {
       [{ name: "read_file", round: 1, outcome: "ok", input: {} }],
       [{ name: SEARCH_WEB, round: 0, outcome: "ok", input: { query: "a" } }],
       [{ name: SEARCH_WEB, round: 1, outcome: "refused", error: "我的私事" }],
+      [{ name: SEARCH_WEB, round: 1, outcome: "refused", error: REPEATED }],
       [{ name: SEARCH_WEB, round: 1, outcome: "refused", error: UNUSABLE, input: { query: "私事" } }],
       [{ name: SEARCH_WEB, round: 1, outcome: "ok", input: { query: "天".repeat(61) } }],
       [{ name: SEARCH_WEB, round: 2, outcome: "ok", input: { query: "a" } }, { name: SEARCH_WEB, round: 1, outcome: "ok", input: { query: "b" } }],
@@ -106,8 +132,8 @@ describe("what a reply keeps of its calls (storedToolCalls)", () => {
 describe("what it returns as (replayOf)", () => {
   const facts = (over: Partial<Parameters<typeof replayOf>[1]> = {}) => ({ messageId: "4711", day: DAY, webSources: sources(["news1.example.com", "news2.example.com", "news3.example.com", "news4.example.com"]), webCites: [], ...over });
 
-  it("round by round: each round's calls, then their results — a web search's sites (cited first, at most three), the date; ids from the message and the call's place", () => {
-    const stored = storedToolCalls([web("北京 天气", [1, 2, 3, 4]), { name: CURRENT_TIME, round: 1, outcome: "ok", input: {} }, refused(OVER_CAP, SEARCH_WEB, 2)], null);
+  it("round by round: each round's calls, then their results — a web search's sites (cited first, at most three), the date, its results said not to be here; a refusal scoped to that reply; ids from the message and the call's place", () => {
+    const stored = storedToolCalls([web("北京 天气", [1, 2, 3, 4]), { name: CURRENT_TIME, round: 1, outcome: "ok", input: {} }, refused(WEB_WORDS.WEB_NO_MONEY, SEARCH_WEB, 2)], null);
     const rounds = replayOf(stored, facts({ webCites: [{ at: 1, n: 3 }] }), ALL)!;
     const [a, b, c] = [replayId("4711", 0), replayId("4711", 1), replayId("4711", 2)];
     expect(rounds).toEqual([
@@ -123,7 +149,7 @@ describe("what it returns as (replayOf)", () => {
       },
       {
         calls: [{ type: "tool-call", id: c, name: SEARCH_WEB, input: { query: "" } }],
-        results: [{ type: "tool-result", id: c, name: SEARCH_WEB, output: { error: OVER_CAP, date: DAY } }],
+        results: [{ type: "tool-result", id: c, name: SEARCH_WEB, output: { error: WEB_WORDS.WEB_NO_MONEY, note: REFUSAL_NOTE, date: DAY } }],
       },
     ]);
     expect(new Set([a, b, c, replayId("4712", 0)]).size).toBe(4);
@@ -156,6 +182,12 @@ describe("what it returns as (replayOf)", () => {
     expect(replayOf([{ name: SEARCH_WEB }], facts(), ALL)).toBeNull();
   });
 
+  it("the placeholders' wording (fix round 1, measured live): a search's results are not here and a detail beyond the answer needs a new search; a refusal was that reply's alone", () => {
+    expect([WEB_NOTE, MESSAGES_NOTE, REFUSAL_NOTE]).toEqual(["那次的结果已不在这里，那次回答以外的细节要重新搜索", "那次的结果已不在这里，那次回答以外的细节要重新查找", "只限那次回复"]);
+    // Not the first wording, which was read as "that search did not have it".
+    for (const note of [WEB_NOTE, MESSAGES_NOTE]) expect(note).not.toContain("给你看过");
+  });
+
   it("bounds by construction: every result at most 72 weight, every input at most 60 — worst cases included", () => {
     const wide = Array.from({ length: 3 }, (_, i) => `${String.fromCharCode(97 + i).repeat(18)}.example.com`);
     expect(wide.every((h) => h.length === SITE_MAX_CHARS)).toBe(true);
@@ -167,8 +199,9 @@ describe("what it returns as (replayOf)", () => {
         { name: CURRENT_TIME, round: 3, outcome: "ok", input: {} },
       ],
       null,
+      24,
     );
-    const rounds = replayOf(stored, facts({ webSources: sources(wide) }), ALL)!;
+    const rounds = replayOf(stored, facts({ webSources: sources(wide) }), ALL, 24)!;
     const results = rounds.flatMap((r) => r.results);
     const calls = rounds.flatMap((r) => r.calls);
     const worst = { result: Math.max(...results.map((r) => weight(JSON.stringify(r.output)))), input: Math.max(...calls.map((c) => weight(JSON.stringify(c.input)))) };
@@ -176,7 +209,24 @@ describe("what it returns as (replayOf)", () => {
     expect(worst.input).toBeLessThanOrEqual(INPUT_MAX_WEIGHT);
     // One call with its result, as the plan and the holds weigh it (`partText`).
     const pair = Math.max(...calls.map((c, i) => weight(partText(c)!) + weight(partText(results[i]!)!)));
-    expect(pair).toBeLessThanOrEqual(INPUT_MAX_WEIGHT + RESULT_MAX_WEIGHT + 46);
+    expect(pair).toBeLessThanOrEqual(172);
+  });
+
+  it("one reply's whole replay at the default caps is within the design's 1 600 weight (worst: 3 web searches, 6 messages searches, the 10th call the heaviest refusal); a reply that looped past its caps keeps none", () => {
+    const wide = Array.from({ length: 3 }, (_, i) => `${String.fromCharCode(97 + i).repeat(18)}.example.com`);
+    const worst: ToolTrace[] = [
+      ...[0, 1, 2].map((i) => web("搜".repeat(80 + i), [1, 2, 3])),
+      ...[0, 1, 2, 3, 4, 5].map((i): ToolTrace => ({ name: SEARCH_MESSAGES, round: 2, outcome: "ok", input: { query: "找".repeat(90 + i), from: "名".repeat(40), before: "2026-11-20", after: "2026-11-01" }, found: 999 })),
+      refused(WEB_WORDS.WEB_QUERY_PRIVATE, SEARCH_WEB, 3),
+    ];
+    const rounds = replayOf(storedToolCalls(worst, null), facts({ webSources: sources(wide) }), ALL)!;
+    const total = rounds.flatMap((r) => [...r.calls, ...r.results]).reduce((n, p) => n + weight(partText(p)!), 0);
+    expect(total).toBeLessThanOrEqual(1600);
+    // The looping reply of the review (I1): 24 calls, 14 of them refused past the caps — about 3 000 weight had it been kept.
+    const looping: ToolTrace[] = [...worst, ...Array.from({ length: 14 }, () => refused(WEB_WORDS.WEB_QUERY_PRIVATE, SEARCH_WEB, 4))];
+    expect(storedToolCalls(looping, null)).toBeNull();
+    const kept = replayOf(storedToolCalls(looping, null, 24), facts({ webSources: sources(wide) }), ALL, 24)!;
+    expect(kept.flatMap((r) => [...r.calls, ...r.results]).reduce((n, p) => n + weight(partText(p)!), 0)).toBeGreaterThan(2500);
   });
 });
 

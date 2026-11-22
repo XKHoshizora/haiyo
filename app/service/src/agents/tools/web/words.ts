@@ -3,6 +3,9 @@
  * module of their own, imported by tool.ts and hold.ts alike, so that no import cycle can leave one undefined when a module
  * reads it as it loads (fix round 1: hold.ts builds its table of refusals at load).
  */
+/** The web search tool's name (tool.ts), here so that a reader of its name and sentences need not load the tool. */
+export const SEARCH_WEB = "search_web";
+
 export const WEB_QUERY_LENGTH = "搜索词要 2 到 120 个字。";
 export const WEB_QUERY_PRIVATE = "这个搜索词里有不能发到外面的内容（比如笔记里的私事，或群里的人名）。只写要查的公开信息，换个说法再搜。";
 export const WEB_BUSY = "现在联网搜索的人太多了，过一会儿再试。";

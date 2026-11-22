@@ -123,9 +123,10 @@ export interface ContextRun {
    * A reply in the Agent's own conversation offered tools (port-impl.ts `begin`): an earlier reply of the Agent's there
    * that kept its calls (`toolCalls`, agents/replay.ts) returns with them (`ContextEntry.replay`) when every one is to a
    * tool in `tools` — the names this request offers — its placeholders dated in `timeZone` (the site's). Absent (a group, a
-   * reply offered none, every other reader): every reply returns as its text alone.
+   * reply offered none, every other reader): every reply returns as its text alone. `maxCalls`: one that kept more calls
+ * than that (the step-1 tools' per-reply caps, replay.ts `maxCallsOf`) returns as its text too.
    */
-  replay?: { tools: ReadonlySet<string>; timeZone: string };
+  replay?: { tools: ReadonlySet<string>; timeZone: string; maxCalls: number };
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
   upTo?: number;
   /**
@@ -525,7 +526,7 @@ async function loadPage(
     // An earlier reply that looked something up, with visible text, in a run that replays: its calls (harness design §3).
     const replay =
       run.replay !== undefined && role === "assistant" && r.message_id !== null && r.created_at !== null && hasVisibleText(r.text ?? "")
-        ? replayOf(r.tool_calls, { messageId: r.message_id, day: siteDateTime(r.created_at, run.replay.timeZone).date, webSources: r.web_sources, webCites: r.web_cites }, run.replay.tools)
+        ? replayOf(r.tool_calls, { messageId: r.message_id, day: siteDateTime(r.created_at, run.replay.timeZone).date, webSources: r.web_sources, webCites: r.web_cites }, run.replay.tools, run.replay.maxCalls)
         : null;
     const build = (refs: RunRefs | null): ContextEntry => {
       const quote = quotedText ?? (quotedFile && replyTo !== null ? attachmentLabel(toAttachment(quotedFile, replyTo, run.conversationId, refs)) : null);

@@ -3,14 +3,26 @@ import { webCitesOf, webSourcesOf } from "../messages/lookups.ts";
 import { cutToWeight, weight } from "../metering/tokens.ts";
 import type { ReplayCall, ReplayResult } from "../models/gateway.ts";
 import type { ReplayRound } from "./runtime/context.ts";
-import { OVER_CAP, REPEATED, UNUSABLE } from "./runtime/loop.ts";
+import { UNUSABLE } from "./runtime/loop.ts";
 import type { ToolTrace } from "./runtime/port.ts";
 import { cleanText } from "./runtime/prompt.ts";
 import { CURRENT_TIME } from "./tools/clock.ts";
 import { takeCites, type RunRefs } from "./tools/refs.ts";
-import { BAD_DATE, QUERY_TOO_LONG, QUERY_TOO_SHORT, SEARCH_BUSY, SEARCH_MESSAGES, SEARCH_TIMEOUT } from "./tools/search.ts";
-import { SEARCH_WEB } from "./tools/web/tool.ts";
-import * as WEB_WORDS from "./tools/web/words.ts";
+import { BAD_DATE, QUERY_TOO_LONG, QUERY_TOO_SHORT, SEARCH_BUSY, SEARCH_MESSAGES, SEARCH_TIMEOUT } from "./tools/search-words.ts";
+import {
+  SEARCH_WEB,
+  WEB_BUSY,
+  WEB_LANE_BUDGET,
+  WEB_NO_MONEY,
+  WEB_NO_RESULTS,
+  WEB_QUERY_LENGTH,
+  WEB_QUERY_PRIVATE,
+  WEB_REFUSED,
+  WEB_REPLY_CAP,
+  WEB_SITE_DAY,
+  WEB_TIMEOUT,
+  WEB_UNAVAILABLE,
+} from "./tools/web/words.ts";
 
 /**
  * An Agent's earlier tool use returned in its own conversation's history (docs/design/2026-11-24-agent-harness-design.md
@@ -19,16 +31,14 @@ import * as WEB_WORDS from "./tools/web/words.ts";
  * (`storedToolCalls`, body key `toolCalls`: what each was, never what it found). A later reply of that conversation offered
  * those tools is shown it in the provider's own form (`replayOf`): each call as the call it was, its result a placeholder
  * built from stored facts only — the query, the date, the sites (hosts, never titles) — or, for a call that was refused, no
- * query at all and the tool's own sentence. One reader: the context of the same Agent's later replies there
- * (agents/context.ts `loadPage`); never the wire, search, a summary, a review, a group or a log. Pure.
+ * query at all and the tool's own sentence, scoped to that reply. One reader: the context of the same Agent's later
+ * replies there (agents/context.ts `loadPage`); never the wire, search, a summary, a review, a group or a log. Pure, and
+ * every module it imports is a leaf of the agents' code (the tools' names and sentences live in modules of their own): no
+ * import cycle can leave a value here unset.
  */
 
-/**
- * The tools whose calls return (step 1): a reply that called any other returns as its text alone. Read when first asked,
- * as every table here that names a tool: this module sits in an import cycle with the search tool (tools/search.ts →
- * context.ts → here), whose names may still be unset while this one loads.
- */
-export const replayTools = (): readonly string[] => [SEARCH_WEB, SEARCH_MESSAGES, CURRENT_TIME];
+/** The tools whose calls return (step 1): a reply that called any other returns as its text alone. */
+export const REPLAY_TOOLS: readonly string[] = [SEARCH_WEB, SEARCH_MESSAGES, CURRENT_TIME];
 
 /** A stored call's input, as JSON text, weighs at most this (metering/tokens.ts `weight`, escaping counted). */
 export const INPUT_MAX_WEIGHT = 60;
@@ -39,47 +49,62 @@ export const RESULT_MAX_WEIGHT = 72;
 /** The most sites a web search's placeholder names, and the longest a site is (whole labels from the right). */
 export const SITES_MAX = 3;
 export const SITE_MAX_CHARS = 30;
-/** The most calls one reply keeps (the tools' own caps are lower: anything over is no replay). */
+/**
+ * The most calls a stored body may hold, whatever the caps: a sanity bound of what is read back. What one reply keeps is
+ * bounded by its tools' per-reply caps (`storedToolCalls` `maxCalls`): 10 at the default caps.
+ */
 const CALLS_MAX = 24;
 /** The most rounds, and the most pages and messages a stored call may name (sanity bounds of a stored body). */
 const ROUNDS_MAX = 32;
 const PAGES_MAX = 20;
 const FOUND_MAX = 1000;
 
-// The placeholders' fixed sentences: tool results, never the Agent's words.
-export const WEB_NOTE = "这次搜索的结果当时已经给你看过，系统没有保留原文。";
-export const MESSAGES_NOTE = "这次查找的结果当时已经给你看过，系统没有保留原文。";
+/**
+ * The placeholders' fixed sentences: tool results, never the Agent's words, and nothing addressed to the owner. A search's
+ * says that its results are not here — not that they held nothing — and what follows from that: a detail the answer did
+ * not give needs a new search (measured live, fix round 1: the first wording was read as "that search did not have it",
+ * and a fresh search was not made). A refused call's says that the refusal was that reply's alone: its own sentence speaks
+ * of `这次回复`, which a later reply took for itself. Short enough that each result stays within `RESULT_MAX_WEIGHT`.
+ */
+export const WEB_NOTE = "那次的结果已不在这里，那次回答以外的细节要重新搜索";
+export const MESSAGES_NOTE = "那次的结果已不在这里，那次回答以外的细节要重新查找";
 export const TIME_NOTE = "当时给过你那时的时间。";
+export const REFUSAL_NOTE = "只限那次回复";
 
 /** What a reply keeps of one call (`toolCalls`): a call that ran, with its input and what it handed out; or one refused, with no input. */
 export type StoredToolCall =
   | { name: string; round: number; outcome: "ok"; input: Record<string, string>; found?: number; pages?: number[] }
   | { name: string; round: number; outcome: "refused"; error: string };
 
-let sentences: ReadonlySet<string> | null = null;
 /**
- * Every fixed sentence a call that did not run can have been answered with: the web search's (web/words.ts), the messages
- * search's, the loop's. Only one of these is ever kept as a refused call's `error` (anything else is kept as `UNUSABLE`):
- * so none can be query text. Built when first asked (the modules it reads may still be loading when this one is).
+ * The sentences a refused call keeps (its `error`): the tools' own refusals — the web search's (web/words.ts) and the
+ * messages search's — and `UNUSABLE`. A call the loop answered (`REPEATED`, `OVER_CAP`: notes about that reply's own
+ * rounds, one of them an imperative), or found garbled, or that failed, is kept as `UNUSABLE`, neutral; so is any other
+ * sentence. None can be query text.
  */
-function refusalSentences(): ReadonlySet<string> {
-  sentences ??= new Set([
-    ...(Object.values(WEB_WORDS) as unknown[]).filter((v): v is string => typeof v === "string"),
-    SEARCH_TIMEOUT,
-    SEARCH_BUSY,
-    QUERY_TOO_SHORT,
-    QUERY_TOO_LONG,
-    BAD_DATE,
-    UNUSABLE,
-    REPEATED,
-    OVER_CAP,
-  ]);
-  return sentences;
-}
+export const REFUSAL_SENTENCES: ReadonlySet<string> = new Set([
+  WEB_QUERY_LENGTH,
+  WEB_QUERY_PRIVATE,
+  WEB_BUSY,
+  WEB_SITE_DAY,
+  WEB_NO_MONEY,
+  WEB_REPLY_CAP,
+  WEB_LANE_BUDGET,
+  WEB_UNAVAILABLE,
+  WEB_TIMEOUT,
+  WEB_REFUSED,
+  WEB_NO_RESULTS,
+  SEARCH_TIMEOUT,
+  SEARCH_BUSY,
+  QUERY_TOO_SHORT,
+  QUERY_TOO_LONG,
+  BAD_DATE,
+  UNUSABLE,
+]);
 
 /** The input keys each tool's stored input keeps, in order (string values only). */
-const inputKeys = (name: string): readonly string[] =>
-  name === SEARCH_WEB ? ["query"] : name === SEARCH_MESSAGES ? ["query", "from", "before", "after"] : [];
+const INPUT_KEYS: Readonly<Record<string, readonly string[]>> = { [SEARCH_WEB]: ["query"], [SEARCH_MESSAGES]: ["query", "from", "before", "after"], [CURRENT_TIME]: [] };
+const inputKeys = (name: string): readonly string[] => (Object.hasOwn(INPUT_KEYS, name) ? INPUT_KEYS[name]! : []);
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isCount = (n: unknown, max: number): n is number => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= max;
@@ -111,16 +136,20 @@ function keptInput(name: string, input: unknown, refs: RunRefs | null): Record<s
 
 /**
  * What a reply keeps of the calls of its answering rounds (`toolCalls`; agents/conversation.ts `postAsAgent`, own
- * conversation only): null — nothing kept, the reply returns as its text — when there were none or any was to a tool that
- * does not return (`replayTools`: a file read, a name the model made up). A call that ran keeps its input (`keptInput`)
- * and what it handed out (a messages search how many messages, a web search its pages' numbers); one refused keeps the
- * sentence it was answered with when that is one of the fixed ones, else `UNUSABLE` — and never an input.
+ * conversation only): null — nothing kept, the reply returns as its text — when there were none, any was to a tool that
+ * does not return (`REPLAY_TOOLS`: a file read, a name the model made up), or there were more than `maxCalls`, the
+ * step-1 tools' per-reply caps summed (`maxCallsOf`). That last keeps one reply's replay within the design's bound
+ * (≤ 1 600 weight at the default caps) by construction: the calls the loop refuses past the caps count against no cap, so a
+ * model that loops past them would be replayed at about three times that. All or nothing, never the first ones: the trace
+ * is exact (design §9), and a prefix would show only some of the rounds the answer was written with. A call that ran keeps
+ * its input (`keptInput`) and what it handed out (a messages search how many messages, a web search its pages' numbers);
+ * one refused keeps the tool's own refusal when it is one (`REFUSAL_SENTENCES`), else `UNUSABLE` — and never an input.
  */
-export function storedToolCalls(trace: readonly ToolTrace[], refs: RunRefs | null): StoredToolCall[] | null {
-  if (trace.length === 0 || trace.length > CALLS_MAX || !trace.every((c) => replayTools().includes(c.name))) return null;
+export function storedToolCalls(trace: readonly ToolTrace[], refs: RunRefs | null, maxCalls: number): StoredToolCall[] | null {
+  if (trace.length === 0 || trace.length > Math.min(maxCalls, CALLS_MAX) || !trace.every((c) => REPLAY_TOOLS.includes(c.name))) return null;
   if (!trace.every((c, i) => Number.isSafeInteger(c.round) && c.round >= 1 && c.round <= ROUNDS_MAX && (i === 0 || c.round >= trace[i - 1]!.round))) return null;
   return trace.map((c): StoredToolCall => {
-    if (c.outcome !== "ok") return { name: c.name, round: c.round, outcome: "refused", error: c.said !== undefined && refusalSentences().has(c.said) ? c.said : UNUSABLE };
+    if (c.outcome !== "ok") return { name: c.name, round: c.round, outcome: "refused", error: c.said !== undefined && REFUSAL_SENTENCES.has(c.said) ? c.said : UNUSABLE };
     const found = c.name === SEARCH_MESSAGES ? { found: isCount(c.found, FOUND_MAX) ? c.found : 0 } : {};
     const pages = c.name === SEARCH_WEB ? { pages: (c.pages ?? []).filter((n) => Number.isSafeInteger(n) && n >= 1).slice(0, PAGES_MAX) } : {};
     return { name: c.name, round: c.round, outcome: "ok", input: keptInput(c.name, c.input, refs), ...found, ...pages };
@@ -129,10 +158,10 @@ export function storedToolCalls(trace: readonly ToolTrace[], refs: RunRefs | nul
 
 /** One stored call read back, or null when it is not one `storedToolCalls` writes. */
 function storedCall(v: unknown): StoredToolCall | null {
-  if (!isRecord(v) || typeof v.name !== "string" || !replayTools().includes(v.name) || !Number.isSafeInteger(v.round) || (v.round as number) < 1 || (v.round as number) > ROUNDS_MAX) return null;
+  if (!isRecord(v) || typeof v.name !== "string" || !REPLAY_TOOLS.includes(v.name) || !Number.isSafeInteger(v.round) || (v.round as number) < 1 || (v.round as number) > ROUNDS_MAX) return null;
   const { name, round } = v as { name: string; round: number };
   if (v.outcome === "refused") {
-    if (Object.hasOwn(v, "input") || typeof v.error !== "string" || !refusalSentences().has(v.error)) return null;
+    if (Object.hasOwn(v, "input") || typeof v.error !== "string" || !REFUSAL_SENTENCES.has(v.error)) return null;
     return { name, round, outcome: "refused", error: v.error };
   }
   if (v.outcome !== "ok" || !isRecord(v.input)) return null;
@@ -151,6 +180,9 @@ function storedCall(v: unknown): StoredToolCall | null {
   }
   return { name, round, outcome: "ok", input };
 }
+
+/** The most calls a reply keeps (`storedToolCalls`): the step-1 tools' per-reply caps, as configured, summed. */
+export const maxCallsOf = (tools: { searchPerReply: number; timePerReply: number; web: { perReply: number } }): number => tools.web.perReply + tools.searchPerReply + tools.timePerReply;
 
 /** The calls a stored body's `toolCalls` holds, as `storedToolCalls` wrote them, rounds in order; null when it is anything else. */
 export function toolCallsOf(value: unknown): StoredToolCall[] | null {
@@ -221,7 +253,7 @@ function sitesOf(pages: readonly number[], facts: ReplayFacts): string[] {
 
 /** A stored call's placeholder result: stored facts only (harness design §3, Placeholders). */
 function placeholder(c: StoredToolCall, facts: ReplayFacts): unknown {
-  if (c.outcome === "refused") return { error: c.error, date: facts.day };
+  if (c.outcome === "refused") return { error: c.error, note: REFUSAL_NOTE, date: facts.day };
   if (c.name === SEARCH_WEB) return { note: WEB_NOTE, sites: sitesOf(c.pages ?? [], facts), date: facts.day };
   if (c.name === SEARCH_MESSAGES) return { note: MESSAGES_NOTE, found: c.found ?? 0, date: facts.day };
   return { note: TIME_NOTE, date: facts.day };
@@ -231,11 +263,12 @@ function placeholder(c: StoredToolCall, facts: ReplayFacts): unknown {
  * A reply's stored calls (`toolCalls`, as stored) as they return in a later reply's history, round by round: each call as
  * it was made — a refused one with a redacted argument, `{"query":""}` (the clock's `{}`), which its tool's schema takes
  * and its length rule would refuse — and its placeholder result. Null, the reply returning as its text alone, when nothing
- * well formed is stored or a call is to a tool `offered` (this request's tools) does not hold.
+ * well formed is stored, more than `maxCalls` are (as `storedToolCalls` would keep none), or a call is to a tool
+ * `offered` (this request's tools) does not hold.
  */
-export function replayOf(toolCalls: unknown, facts: ReplayFacts, offered: ReadonlySet<string>): ReplayRound[] | null {
+export function replayOf(toolCalls: unknown, facts: ReplayFacts, offered: ReadonlySet<string>, maxCalls: number): ReplayRound[] | null {
   const calls = toolCallsOf(toolCalls);
-  if (calls === null || !calls.every((c) => offered.has(c.name))) return null;
+  if (calls === null || calls.length > maxCalls || !calls.every((c) => offered.has(c.name))) return null;
   const rounds: ReplayRound[] = [];
   let round = 0;
   for (const [index, c] of calls.entries()) {

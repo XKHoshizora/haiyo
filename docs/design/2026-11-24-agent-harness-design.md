@@ -60,7 +60,7 @@ A replan (too small for tools, the greeting turn) is a new plan, not a variant.
 3. The budget.
 4. History newest first. A reply and its replay are one unit, kept or dropped together.
 
-Whether tools are offered depends only on the newest message (`holdsNewest`, port-impl.ts:795, 801). So a replay can only push older history out; it never removes the tools. On an 8 k model, fewer old searched turns fit, about 85 weight more each, and the reply keeps its tools.
+Whether tools are offered depends only on the newest message (`holdsNewest`, port-impl.ts:795, 801). So a replay can only push older history out; it never removes the tools. On an 8 k model, fewer old searched turns fit, about 104 weight more each (about 156 tokens planned at the tool ratio), and the reply keeps its tools.
 
 **Target shape, not step 1.** `assemble(run, place)` and `PLACES[placeOf(…)]` (notes, summary, tools, replay, stream, acknowledgement, proposal per place) land with the social lane.
 
@@ -84,7 +84,8 @@ The social design needs one sentence. It goes in `docs/design/2026-11-23-agent-s
   - `{name, round, input, outcome: "ok", found?, pages?}`;
   - `input` is cleaned and cut to 60 weight after escaping (`{}` for `current_time`);
   - `pages` are the `webSources` numbers this call handed out.
-- **A call answered with an error** (the guard's `private` or `length`, money, busy, no results, a failure) is stored as `{name, round, outcome: "refused", error}`, **with no input at all**. `error` is the tool's own sentence: web/words.ts or the search tool's, ≤ 62 weight, and never query text.
+- **A call answered with an error** (the guard's `private` or `length`, money, busy, no results, a failure) is stored as `{name, round, outcome: "refused", error}`, **with no input at all**. `error` is the tool's own sentence: web/words.ts or the search tool's, ≤ 51 weight, and never query text. A call the loop answered itself (a repeat, one over its tool's cap, a garbled one) is stored as `UNUSABLE` ("这个请求无法执行。"): the loop's notes speak of that reply's own rounds, one in the imperative (fix round 1, review M4).
+- **At most the tools' caps.** A reply keeps its calls only when there were at most the step-1 tools' per-reply caps summed (`TOOLS.web.perReply` + `searchPerReply` + `timePerReply`: 3 + 6 + 1 = 10 at the defaults). One that made more — a model looping past its caps, whose refused calls count against no cap — keeps none and returns as its text: all or nothing, as the trace is exact (§9). The read side holds to the same count.
 - **Who reads it.** `toWire` picks its keys one by one (messages/read.ts:243–254), so `toolCalls` never reaches the wire. It is also never read by search, sync, the summary, the review or any group or social run.
 
 **When a reply is replayed.** All of these must hold:
@@ -101,23 +102,23 @@ Otherwise the reply returns as today's text. That covers:
 **The layout, round by round** (R2-m4). Each round is one assistant turn holding every call of that round, the first round's turn opening with the acknowledgement's text. Then comes one tool turn holding all its results. The answer text follows the last round.
 ```
 assistant  [我查一下今天上海的天气。, tool-call search_web {"query":"上海 今天 天气"}]
-tool       [{"note":"这次搜索的结果当时已经给你看过，系统没有保留原文。","sites":["tianqi.com","foreca.net","fengxian.gov.cn"],"date":"2026-11-22"}]
+tool       [{"note":"那次的结果已不在这里，那次回答以外的细节要重新搜索","sites":["tianqi.com","foreca.net","fengxian.gov.cn"],"date":"2026-11-22"}]
 assistant  [今天（11月22日，周日）上海多云为主……]
 ```
 
-**Placeholders.** These are the only things shown; each is at most 72 weight, built by construction.
+**Placeholders.** These are the only things shown; each is at most 72 weight, built by construction. Their wording was changed in fix round 1, from the live bench (haiku, 12 turns): the first ("这次搜索的结果当时已经给你看过，系统没有保留原文。") was read as "that search did not contain it", and a detail the answer had not given was not searched again (fu_search 11 of 20); and an old refusal's `这次回复` was taken for the present reply ("这次回复还不能再联网搜索"). Now a search's result says its results are not here and a detail beyond that answer needs a new search; a refusal says it was that reply's alone.
 
 | Call | Input shown | Result shown |
 |---|---|---|
-| web, ok | its stored query | `{note, sites, date}`: up to 3 sites, cited first. A host keeps whole labels from the right while it is ≤ 30 characters. 54 typical, 72 worst |
-| messages, ok | its stored input | `{note: "这次查找的结果当时已经给你看过，系统没有保留原文。", found, date}` |
-| time | `{}` | `{note: "当时给过你那时的时间。", date}` |
-| refused (any reason) | `{"query":""}`: a redacted argument. It fits the schema, so an imitation is refused by the tool's length rule and is never "garbled" | `{error, date}`: the tool's own sentence, e.g. "这次回复不能再联网搜索了；之后的回复可以照常再试。" (36), or `WEB_QUERY_PRIVATE` (62) |
+| web, ok | its stored query | `{note: "那次的结果已不在这里，那次回答以外的细节要重新搜索", sites, date}`: up to 3 sites, cited first. A host keeps whole labels from the right while it is ≤ 30 characters. 59 typical, 72 worst |
+| messages, ok | its stored input | `{note: "那次的结果已不在这里，那次回答以外的细节要重新查找", found, date}` (≤ 40) |
+| time | `{}` | `{note: "当时给过你那时的时间。", date}` (22) |
+| refused (any reason) | `{"query":""}`: a redacted argument. It fits the schema, so an imitation is refused by the tool's length rule and is never "garbled" | `{error, note: "只限那次回复", date}`: the tool's own sentence, e.g. "这次回复不能再联网搜索了；之后的回复可以照常再试。" (25), or `WEB_QUERY_PRIVATE` (51), scoped to that reply. 71 worst |
 
 **Bounds.**
-- One call (call plus result) is ≤ 159 weight, ≤ 475 bytes.
-- One reply has at most the per-reply caps of these tools (6 + 3 + 1), so ≤ 1 600 weight.
-- Typical: one web call, about 85 weight, about 260 bytes.
+- One call (call plus result) as `partText` weighs it — its id and name included, which the wire carries too — is ≤ 172 weight, ≤ 516 bytes (a web search with a 60-weight query and 3 sites of 30 characters); a messages search ≤ 144, a refusal ≤ 119, the clock 65.
+- One reply keeps at most the per-reply caps of these tools (web 3 + messages 6 + clock 1 = 10 calls; more and it keeps none), so ≤ 3·172 + 6·144 + 119 = 1 499 ≤ 1 600 weight at the default caps.
+- Typical: one web call, about 104 weight, about 310 bytes (the bench fixtures: 80–111).
 
 **Other rules.**
 - Inputs and errors pass `RunRefs.plant` like entry text (R2-m3).
@@ -149,7 +150,7 @@ It replaces the text-only `flatMap` at port-impl.ts:873 (admission) and worker.t
 
 The arithmetic is unchanged; only its inputs grow. Admission is still `holdTokens([system, ...texts], context, output)` + definitions + `TOOL_PREAMBLE_TOKENS` + fixed, and `holdTokens` still counts UTF-8 bytes up to the window. Each replayed reply adds its bytes: about 260 typical, ≤ 4 800 worst, capped by the window as before.
 
-`admitRun`, `extend`, `maxCostMicro` and the settlement are untouched. A test holds that the hold is at least the wire bytes, with 10 replayed replies.
+`admitRun`, `extend`, `maxCostMicro` and the settlement are untouched. A test holds that the hold is at least the UTF-8 bytes of every string the wire carries — texts, ids, names, arguments, results, the tools' words — with 10 replayed replies, on every protocol. (Not the body's JSON keys and punctuation: no tokenizer reads them as text, and a hold never bounded them even without a replay. A provider's template adds a few tokens per message; CJK at 3 bytes a character and `partText`'s own punctuation are the slack for it.)
 
 **What a tool-less request sees.** No replay: today's request, byte for byte (`reply-history.test.ts:175`, `:189`, `:251–289`). A model without tools still reads "我查一下。根据搜索结果…". We accept this, and keep it measured in §8.
 
@@ -211,7 +212,7 @@ Nobody writes calls as text in the assistant's voice. Bench B was imitated 11/16
 5. All four protocols: replay parts only when tools are sent; a no-tools call has A's bytes.
 6. The pins at `:175`, `:189` and `:251–289` stay unchanged.
 7. A 400 with a replay: one lowered retry, counted. `Refusals` is unchanged and nothing is marked tools-off.
-8. The hold ≥ the wire bytes with 10 replayed replies. The plan and the holds use `partText`.
+8. The hold ≥ the UTF-8 bytes of every string the wire carries, with 10 replayed replies, on every protocol. The plan, admission and the worker's holds use `partText` (each reverted to text only turns a test red).
 9. `toolCalls` never appears on the wire, in search, in a group or social request, the summary or review input, or a log line.
 10. Bounds, including a 253-character host; a reply and its replay kept or dropped as one unit.
 
@@ -268,7 +269,7 @@ Step 1 does not wait for this.
 ## 9. Decisions I made that were open
 
 - The step-1 tools are `search_web`, `search_messages` and `current_time`. A reply with any other call returns as today's text.
-- No cap on calls per reply beyond the tools' own per-reply caps. The trace is exact, not a prefix.
+- No cap on calls per reply beyond the tools' own per-reply caps: a reply with more calls than they sum to keeps none (fix round 1). The trace is exact, not a prefix.
 - Refused calls are redacted as `{"query":""}`, an argument that fits the schema, and show the tool's own sentence.
 - Wire fields stay as today. The replay reads only `toolCalls`, plus `webSources` for the hosts.
 - Live is one run as a cascade check; the statistics are in the bench.
@@ -281,7 +282,7 @@ Step 1 does not wait for this.
 | R1 C1 / R2-C1: tool-less requests; a refused private query | Tool-less requests byte-identical. Own only. A refused input is never stored and is replayed redacted. Vault, delete and memory-off are stated (§3) |
 | R1 I3 (patched) | Own conversation: only empty and unfinished-block answers remain; split code in §8 |
 | R1 I4 / R2-I2: a trace of unseen rounds | `toolCalls` holds only the answering request's steps; stop, time-out, `extend` and plain store none |
-| R1 I5: the bound | Hosts only; ≤ 72 per result, ≤ 159 per call, by construction |
+| R1 I5: the bound | Hosts only; ≤ 72 per result, ≤ 172 per call as `partText` weighs it, ≤ 1 600 per reply (at most the caps' calls kept), by construction |
 | R1 I6 / R2-I5: titles | Titles removed. Persistence is now ≤ 3 hosts of ≤ 30 characters per call inside a tool result, bounded by the tool caps |
 | R1 I7 / I8 / I10 / I11 | As revision 2; I11's order stands, with the holds fixed below |
 | R1 I9 | The one sentence for the social design, with its file and section (§2) |

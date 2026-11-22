@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { LoopGuard } from "../src/agents/runtime/loop.ts";
 import type { Activity, AgentPort, Delta, Estimated, Prepared, Reply, RunEnd, RunTicket, ToolOutcome, ToolRun, Usage } from "../src/agents/runtime/port.ts";
 import { createAgentWorker, type ToolLimits, type WorkerLog } from "../src/agents/runtime/worker.ts";
-import { CONTEXT_HEADROOM, estimateTokens, TOOL_TEXT_FACTOR, weight } from "../src/metering/tokens.ts";
+import { partText } from "../src/agents/runtime/context.ts";
+import { CONTEXT_HEADROOM, estimateTokens, holdTokens, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR, weight } from "../src/metering/tokens.ts";
 import type { ModelCall, ModelEvent, ModelGateway, ToolCall, ToolSpec } from "../src/models/gateway.ts";
 import { scriptedGateway, type ScriptedGateway } from "./helpers/models.ts";
 
@@ -1228,21 +1229,51 @@ describe("what a reply that ends as an answer hands over of its rounds (Reply.to
     }
   });
 
-  it("an upstream that refused a request carrying earlier tool use (replay_lowered): counted by protocol, nothing else logged of it, the reply goes on", async () => {
-    const inner = scriptedGateway().reply("好。");
-    const gateway: Pick<ModelGateway, "stream"> = {
-      stream: (call) =>
-        (async function* (): AsyncGenerator<ModelEvent> {
-          yield { type: "replay_lowered" };
-          yield* inner.stream(call);
-        })(),
-    };
-    const fake = fakePort();
-    const log = recordingLog();
-    await runOn(fake, gateway, { log });
-    expect(log.lines.filter((l) => (l as { details: { metric?: string } }).details.metric === "replay_lowered")).toEqual([
-      { level: "info", details: { metric: "replay_lowered", protocol: "openai_chat" }, msg: expect.any(String) },
-    ]);
-    expect([fake.posted.map((p) => p.text), finishedAs(fake), fake.unusable]).toEqual([["好。"], [{ status: "done" }], []]);
+  it("an upstream that refused a request carrying earlier tool use (replay_lowered): counted by protocol and a site model's id (never a provider's), nothing else logged of it, the reply goes on", async () => {
+    for (const [upstreamId, details] of [
+      [undefined, { metric: "replay_lowered", protocol: "openai_chat" }],
+      ["site:meter_paid", { metric: "replay_lowered", protocol: "openai_chat", model: "meter_paid" }],
+      ["provider:3f9a@https://relay.example.com/v1", { metric: "replay_lowered", protocol: "openai_chat" }],
+    ] as const) {
+      const inner = scriptedGateway().reply("好。");
+      const gateway: Pick<ModelGateway, "stream"> = {
+        stream: (call) =>
+          (async function* (): AsyncGenerator<ModelEvent> {
+            yield { type: "replay_lowered" };
+            yield* inner.stream(call);
+          })(),
+      };
+      const fake = fakePort(upstreamId === undefined ? {} : { call: { upstreamId } });
+      const log = recordingLog();
+      await runOn(fake, gateway, { log });
+      expect(log.lines.filter((l) => (l as { details: { metric?: string } }).details.metric === "replay_lowered")).toEqual([{ level: "info", details, msg: expect.any(String) }]);
+      expect(JSON.stringify(log.lines)).not.toContain("relay.example.com");
+      expect([fake.posted.map((p) => p.text), finishedAs(fake), fake.unusable]).toEqual([["好。"], [{ status: "done" }], []]);
+    }
+  });
+
+  it("the holds count an earlier reply's replayed calls and results as the plan does (partText): the next round's, and the plain call's after a later round's 400 (review I2)", async () => {
+    const id = "0123456789abcdef012345";
+    const messages: ModelCall["messages"] = [
+      { role: "user", parts: [{ type: "text", text: "北京今天天气怎么样？" }] },
+      { role: "assistant", parts: [{ type: "text", text: "我查一下。" }, { type: "tool-call", id, name: "search_web", input: { query: "北京 天气 预报" } }] },
+      { role: "tool", parts: [{ type: "tool-result", id, name: "search_web", output: { note: "那次的结果已不在这里", sites: ["news1.example.com", "news2.example.com"], date: "2026-11-22" } }] },
+      { role: "assistant", parts: [{ type: "text", text: "今天晴。" }] },
+      { role: "user", parts: [{ type: "text", text: "附近有什么好吃的？" }] },
+    ];
+    const texts = messages.flatMap((m) => m.parts.map((p) => partText(p)!));
+    const replayBytes = texts.slice(2, 4).reduce((n, t) => n + Buffer.byteLength(t), 0);
+    expect(replayBytes).toBeGreaterThan(150);
+    // The next round's hold: the last call's text, every part at its partText's bytes, the tools and the steps, and the preamble.
+    const next = scriptedGateway().callTools([{ name: "search", input: { query: "川菜" } }]).reply("去吃川菜吧。");
+    const round = fakePort({ call: { messages } });
+    await runOn(round, next);
+    expect(round.extends[0]!.next).toBe(holdTokens([`${SYSTEM}\n\n${FINAL_LINE}`, ...texts, JSON.stringify(TOOLS), JSON.stringify(next.calls[1]!.steps)], 100_000, 1000) + TOOL_PREAMBLE_TOKENS);
+    // The plain call's: its text and every part, as it is sent lowered (no tools: the gateway's lowering, which only shrinks it).
+    const PLAIN = "你是一个助手。你没有任何工具。";
+    const refused = scriptedGateway().callTools([{ name: "search", input: { query: "川菜" } }]).fail("provider_unavailable", { status: 400 }).reply("不查也能说：川菜。");
+    const plain = fakePort({ call: { messages, systemWithoutTools: PLAIN } });
+    await runOn(plain, refused);
+    expect(plain.extends[1]!.next).toBe(texts.reduce((n, t) => n + Buffer.byteLength(t), Buffer.byteLength(PLAIN)));
   });
 });
