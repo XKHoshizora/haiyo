@@ -100,14 +100,18 @@ describe("opening", () => {
     expect(dialog.getByRole("button", { name: "下一张" })).toBeTruthy();
   });
 
-  it("the page behind does not scroll while it is open", async () => {
+  it("the page behind is inert while it is open (the one modal layer, ui/layers.js), and not after; the body's own overflow is left alone", async () => {
     await openApp();
     await openChat("小安");
+    const app = document.querySelector(".app").closest("body > *");
     document.body.style.overflow = "auto";
     fireEvent.click(picture(3));
-    expect(document.body.style.overflow).toBe("hidden");
-    press("Escape");
+    expect(app.hasAttribute("inert")).toBe(true);
+    expect(document.querySelector(".viewer").closest("[inert]")).toBeNull();
+    // (The page never scrolls under it: the root does not scroll, and .viewer contains its own; styles.css.)
     expect(document.body.style.overflow).toBe("auto");
+    press("Escape");
+    expect(app.hasAttribute("inert")).toBe(false);
   });
 });
 

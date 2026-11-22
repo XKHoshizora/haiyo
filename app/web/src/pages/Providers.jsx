@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { modelLevels } from "../data/model.js";
 import { Btn, Field, Modal, Notice, Reason, Tag, focusInvalid } from "../ui/primitives.jsx";
+import { isEnter } from "../ui/keys.js";
 import { ChevronDown, ChevronLeft, Lock, Plus, Search } from "../icons.js";
 import { refusalText, settled, useAction } from "./useAction.js";
 import { forgetDraft, peekDraft, saveDraft } from "../data/drafts.js";
@@ -834,7 +835,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
   );
 
   const onNewModelKey = (event) => {
-    if (event.key !== "Enter") return;
+    if (!isEnter(event)) return;
     event.preventDefault();
     addModel();
   };

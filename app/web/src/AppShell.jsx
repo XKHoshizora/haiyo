@@ -3,7 +3,12 @@ import { useStore } from "./data/store.jsx";
 import { entity, isMyAgent, unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark, IconBtn, LoadingRow } from "./ui/primitives.jsx";
-import { usePhone } from "./ui/pointer.js";
+import { useMediaQuery, usePhone } from "./ui/pointer.js";
+import { ONE_COLUMN_MAX } from "./ui/breakpoints.js";
+import { useRouteFocus } from "./ui/routeFocus.js";
+import { ToastRegion } from "./ui/Toast.jsx";
+import { pageTitle } from "./state/pageTitle.js";
+import { addressOf, keyOf } from "./state/location.js";
 import { alive, lastPageOf, useAppHistory, useUp } from "./state/appHistory.js";
 import { MessageCircle, Users, Bot, Settings, ChevronLeft } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
@@ -206,6 +211,7 @@ export default function Shell() {
     else if (nav.section === "agents" && nav.agentView !== "create" && nav.agentId && !isMyAgent(state, nav.agentId)) fall({ agentId: null, agentView: "detail", pane: "list" }, was ? null : "找不到这个 Agent");
   }, [state.loaded, state.convs, state.agents, state.people, conv, nav.section, nav.pane, nav.convId, nav.view, nav.contactId, nav.agentId, nav.agentView, nav.opening, dispatch]);
   const noteScroll = useKeepListScroll(pane, nav.section);
+  const oneColumn = useMediaQuery(`(max-width: ${ONE_COLUMN_MAX}px)`);
   let list = null;
   let main = null;
   let side = null;
@@ -229,19 +235,26 @@ export default function Shell() {
     main = <SettingsMain />;
   }
 
+  // A change of page moves the focus somewhere sensible and names the page (ui/routeFocus.js); the tab's title is the page's.
+  const address = addressOf(nav);
+  const overlay = side && pane === "main" ? "details" : null;
+  const { label, title } = pageTitle(state);
+  // (What is drawn decides, not the address: an address of a page that is not here draws the list, and that is no change.)
+  const drawn = pane === "main" ? keyOf({ path: address.path, overlay }) : `${nav.section}:list`;
+  const announcer = useRouteFocus({ where: { key: drawn, path: address.path, pane, overlay }, label, title });
+  // In one column the details panel covers the whole conversation: the conversation under it is inert.
+  const covered = Boolean(overlay) && oneColumn;
+
   return (
     <div className="app" data-pane={pane} data-side={side ? "open" : "closed"} data-tabbar={tabbar ? "on" : "off"}>
       {!phone && <Rail phone={false} />}
       <aside className="list-col" onScrollCapture={noteScroll}>{list}</aside>
-      <main className="main-col">{main}</main>
+      <main className="main-col" inert={covered || undefined}>{main}</main>
       {side && pane === "main" && <aside className="side-col">{side}</aside>}
       {/* (On a phone the tab bar comes after the pages, in the page's order as well as on screen.) */}
       {tabbar && <Rail phone />}
-      {state.toast && (
-        <div className="toast" role="status" aria-live="polite">
-          {state.toast.text}
-        </div>
-      )}
+      <p className="sr-only" aria-live="polite" data-route-announcer="" ref={announcer} />
+      <ToastRegion />
     </div>
   );
 }

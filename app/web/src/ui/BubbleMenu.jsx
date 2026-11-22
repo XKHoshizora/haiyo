@@ -3,6 +3,7 @@
 // gestures that open it and what they must not do (select text, open the viewer or a mention card, hijack a link's own menu).
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { isEscape } from "./keys.js";
 
 /** How long a finger rests on a bubble before the menu opens (ms), and how far it may wander (px) before it is a scroll. */
 export const HOLD_MS = 450;
@@ -97,7 +98,7 @@ export function BubbleMenu({ anchor, bounds, actions, onClose, label = "消息�
     else if (e.key === "ArrowUp") go(at < 0 ? -1 : at - 1);
     else if (e.key === "Home") go(0);
     else if (e.key === "End") go(-1);
-    else if (e.key === "Escape") {
+    else if (isEscape(e)) {
       e.preventDefault();
       e.stopPropagation();
       onClose({ restore: true });

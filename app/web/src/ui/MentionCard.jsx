@@ -8,6 +8,7 @@ import { ME } from "../data/identities.js";
 import { useStore } from "../data/store.jsx";
 import { isAgent, nameOf, ownerOf } from "../state/selectors.js";
 import { Avatar, Tag } from "./primitives.jsx";
+import { isEnter, isEscape } from "./keys.js";
 
 /** The pointer rests this long (ms) on a mention before its card opens, and leaves it this long before it closes. */
 const OPEN_DELAY = 250;
@@ -112,7 +113,11 @@ export function MentionChip({ id, spoken, shown, agent }) {
   // Esc and a press anywhere else close it.
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => e.key === "Escape" && close();
+    const onKey = (e) => {
+      if (!isEscape(e)) return;
+      e.preventDefault();
+      close();
+    };
     const onPress = (e) => {
       if (!chip.current?.contains(e.target) && !card.current?.contains(e.target)) close();
     };
@@ -146,7 +151,7 @@ export function MentionChip({ id, spoken, shown, agent }) {
           show();
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
+          if (isEnter(e) || e.key === " ") {
             e.preventDefault();
             show();
           }

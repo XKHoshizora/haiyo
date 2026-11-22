@@ -19,7 +19,7 @@ function whyNot(state, person) {
 }
 
 /** Exact account-name lookup → the person's card → send a friend request. */
-export function AddFriendModal({ onClose }) {
+export function AddFriendModal({ onClose, returnTo }) {
   const { state, actions, dispatch } = useStore();
   const { busy, run } = useAction();
   const [text, setText] = useState("");
@@ -48,7 +48,7 @@ export function AddFriendModal({ onClose }) {
 
   const reason = found ? whyNot(state, found) : "";
   return (
-    <Modal title="添加好友" onClose={onClose} footer={<Btn onClick={onClose}>完成</Btn>}>
+    <Modal title="添加好友" onClose={onClose} returnTo={returnTo} footer={<Btn onClick={onClose}>完成</Btn>}>
       <form onSubmit={search}>
         <Field label="对方的账号名" error={error} hint="输入完整的账号名（不是昵称），例如 ann_li。">
           <input value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" autoCapitalize="none" spellCheck="false" data-autofocus />

@@ -2,7 +2,8 @@
   --field-w: 620px;
   --ink: #1d1b2e;
   --ink-2: #4a4763;
-  --ink-3: #77748f;
+  /* Muted text: 4.5:1 or more on every background it is drawn on, the page gradient's strongest stop and the purple tints included (tests/contrast.test.js). */
+  --ink-3: #585571;
   --line: rgba(120, 110, 180, 0.18);
   --line-strong: rgba(120, 110, 180, 0.32);
   --purple: #5b4fd6;
@@ -107,7 +108,7 @@ button:disabled { cursor: not-allowed; }
 .rail-icon { position: relative; display: grid; place-items: center; height: 30px; }
 .badge {
   position: absolute; top: -6px; right: -12px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px;
-  background: #e5484d; color: #fff; font-size: 12px; font-weight: 600; display: grid; place-items: center; line-height: 1;
+  background: #c62f35; color: #fff; font-size: 12px; font-weight: 600; display: grid; place-items: center; line-height: 1;
 }
 .badge.inline { position: static; flex: none; }
 
@@ -189,7 +190,7 @@ li:last-child > .row.slim { box-shadow: none; }
   font-size: 12.5px; font-weight: 500; white-space: nowrap; vertical-align: middle;
   background: var(--pending-bg); color: #3d2fb3; border: 1px solid rgba(91, 79, 214, 0.25);
 }
-.tag-solid { background: #8b7cf0; color: #fff; border-color: transparent; }
+.tag-solid { background: #6f5fe0; color: #fff; border-color: transparent; }
 .tag-human { background: rgba(255, 255, 255, 0.7); color: var(--ink-2); border-color: var(--line-strong); }
 .tag-ok { background: var(--ok-bg); color: var(--ok); border-color: rgba(31, 122, 77, 0.25); }
 .tag-warn { background: var(--warn-bg); color: var(--warn); border-color: rgba(168, 67, 28, 0.25); }
@@ -967,7 +968,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 
 /* ───────── modal & toast */
 .modal-backdrop {
-  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; place-items: center;
+  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; place-items: center; overflow: hidden; overscroll-behavior: contain;
   padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .modal {
@@ -977,7 +978,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .modal-head { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; padding: 14px 14px 8px 22px; }
 .modal-head .icon-btn { flex: none; }
 .modal-head h2 { font-size: 19px; font-weight: 700; }
-.modal-body { min-height: 0; padding: 4px 22px 14px; overflow-y: auto; font-size: 15px; }
+.modal-body { min-height: 0; padding: 4px 22px 14px; overflow-y: auto; overscroll-behavior: contain; font-size: 15px; }
 /* A second list in a dialog (添加成员: 我的 Agent under the friends). */
 .modal-body h3 { font-size: 15px; font-weight: 600; margin: 16px 0 2px; }
 .modal-foot { display: flex; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 12px 22px 18px; }
@@ -997,9 +998,14 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .sync-added { font-size: 13px; }
 .sync-others { margin-top: 10px; }
 .sync-failed { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+/* The toast stands at the top, inside the safe areas, centred between them: clear of the end of every page (the newest message, the
+   composer, a form's last line), above every dialog and the viewer, and it takes no tap (ui/Toast.jsx: its region is always there). */
+.toast-region {
+  position: fixed; z-index: 90; top: calc(12px + env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right));
+  display: flex; justify-content: center; pointer-events: none;
+}
 .toast {
-  position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 80; max-width: min(560px, calc(100vw - 32px));
-  padding: 10px 18px; border-radius: 12px; background: #2a2540; color: #fff; font-size: 14px; box-shadow: 0 10px 30px rgba(30, 24, 60, 0.35);
+  max-width: 560px; margin: 0; padding: 10px 18px; border-radius: 12px; background: #2a2540; color: #fff; font-size: 14px; box-shadow: 0 10px 30px rgba(30, 24, 60, 0.35);
 }
 
 /* ───────── narrower desktop: details panel overlays instead of squeezing */
@@ -1082,7 +1088,6 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   .rail-item.active { background: none; color: var(--purple-dark); }
   .rail-icon { height: 26px; }
   .badge { right: -10px; }
-  .app[data-tabbar="on"] .toast { bottom: calc(var(--tabbar) + 16px + env(safe-area-inset-bottom)); }
   .side-col { left: 0; }
 }
 

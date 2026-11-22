@@ -4,6 +4,7 @@ import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { convTitle, convSubtitle, drawnTextOf, isAgent, nameOf, publishBlock } from "../state/selectors.js";
 import { ConvAvatar, Btn, IconBtn, Notice, Tag } from "../ui/primitives.jsx";
+import { isEscape } from "../ui/keys.js";
 import { AgentModelSwitch } from "./ModelPicker.jsx";
 import { MarkdownView, NEWEST_NEAR } from "../ui/markdownView.jsx";
 import { withoutBidiControls } from "../ui/markdownRules.js";
@@ -512,7 +513,7 @@ export function ChatView({ conv }) {
       {searching && (
         <div className="chat-search">
           <Search size={16} aria-hidden="true" />
-          <input autoFocus value={query} maxLength={100} onChange={(e) => setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Escape"){setQuery("");setSearching(false);}}} placeholder="在本会话中搜索" aria-label="在本会话中搜索" />
+          <input autoFocus value={query} maxLength={100} onChange={(e) => setQuery(e.target.value)} onKeyDown={e=>{if(isEscape(e)){setQuery("");setSearching(false);}}} placeholder="在本会话中搜索" aria-label="在本会话中搜索" />
           <span className="muted">{showHits && search.status === "ready" ? `${hits.length}${search.more ? "+" : ""} 条结果` : ""}</span>
           <IconBtn label="关闭会话搜索" onClick={()=>{setQuery("");setSearching(false);}}><X size={16}/></IconBtn>
         </div>
