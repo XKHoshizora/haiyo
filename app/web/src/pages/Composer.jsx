@@ -8,6 +8,7 @@ import { useSendFiles } from "./useSendFiles.js";
 import { hasVisibleText, messageText } from "../auth/validation.js";
 import { MENTION_LIMIT, afterEdit, capped, caretOutside, mentionName, mentionSegments, mentionsIn, settleEdits, tagEndingAt, tagStartingAt, withoutAddressed, withoutStale } from "../data/mentions.js";
 import { Smile, Image, Paperclip, AtSign, X } from "../icons.js";
+import { useCoarsePointer } from "../ui/pointer.js";
 
 const EMOJI = {
   "表情": ["😀","😄","😁","😊","🥰","😍","🤩","😎","🤔","🤗","😂","🤣","🥹","😅","😉","😋","😴","😭","😮","😱","😤","🥳","🫡","🤖"],
@@ -57,6 +58,7 @@ const draftOf = (kept) => ({
  */
 export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThrough = null, note = null }) {
   const { state, actions } = useStore();
+  const touch = useCoarsePointer();
   const [draft, setDraftState] = useState(() => draftOf(state.drafts?.[conv.id]));
   const { text } = draft;
   /** The tags that are mentions (not what is left of one an IME composition cut into, `broken`). */
@@ -344,7 +346,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
           onDoubleClick={()=>setHeight(64)}
           onKeyDown={e=>{if(["ArrowUp","ArrowDown","Home","End"].includes(e.key)){e.preventDefault();setHeight(e.key==="Home"?56:e.key==="End"?maxHeight():clampHeight(height+(e.key==="ArrowUp"?20:-20)));}}} />
         {mention && !disabled && <div className="mention-picker" id="mention-picker" role="listbox" aria-label="选择要提及的成员">
-          <div className="mention-heading">提及会话中的成员 <small>↑↓ 选择 · Enter 确认</small></div>
+          <div className="mention-heading">提及会话中的成员 {!touch && <small>↑↓ 选择 · Enter 确认</small>}</div>
           {full ? <p className="mention-empty">{MENTIONS_FULL_TEXT}</p> : !matches.length && <p className="mention-empty">没有匹配的成员</p>}
           {matches.map((id,i)=><button key={id} id={`mention-${id}`} role="option" aria-selected={i===selected} type="button" onMouseDown={e=>e.preventDefault()} onClick={()=>chooseMention(id)}>
             <Avatar id={id} size={28}/><span><strong>{nameOf(state,id)}</strong><small>{isAgent(state,id)?`${entity(state,id).handle} · Agent · 主人：${nameOf(state,ownerOf(state,id))}${state.agents[id].paused?" · 已暂停":""}`:"真人 · 会话成员"}</small></span>
@@ -373,7 +375,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
       <Btn variant="primary" className="send" disabled={disabled||!body||invisible||tooLong} reason={block?.text ?? sendNote} onClick={()=>send()}>发送</Btn>
     </div>
     {staleNote && <p className="composer-hint">{staleNote}</p>}
-    <p className="composer-hint">{disabled?block.text:sendNote?<span className="failed">{sendNote}</span>:"Enter 发送 · Shift+Enter 换行"}</p>
+    {(disabled || sendNote || !touch) && <p className="composer-hint">{disabled?block.text:sendNote?<span className="failed">{sendNote}</span>:"Enter 发送 · Shift+Enter 换行"}</p>}
     {note && <p className="composer-hint" role="status">{note}</p>}
   </footer>;
 }

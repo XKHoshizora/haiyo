@@ -94,6 +94,8 @@ describe("opening", () => {
     const original = dialog.getByRole("link", { name: "在新标签页打开原图" });
     expect(original.getAttribute("target")).toBe("_blank");
     expect(original.getAttribute("rel")).toContain("noopener");
+    // The address ends in the file's name, so the tab is titled with it and a saved file is called by it (not by the id).
+    expect(original.getAttribute("href")).toBe(`/api/attachments/${idOf(3)}/${encodeURIComponent("照片3.png")}`);
     expect(dialog.getByRole("button", { name: "上一张" })).toBeTruthy();
     expect(dialog.getByRole("button", { name: "下一张" })).toBeTruthy();
   });
@@ -402,5 +404,33 @@ describe("loading and failing", () => {
     fireEvent.click(dialog.getByRole("button", { name: "下一张" }));
     expect(shownImg().dataset.phase).toBe("loading");
     expect(counter()).toBe("4 / 12");
+  });
+});
+
+describe("the viewer's layout hooks", () => {
+  it("the sender and the file name have classes that cut with an ellipsis, and the bar keeps one row", async () => {
+    await open(3);
+    const bar = document.querySelector(".viewer-bar");
+    expect(bar.querySelector(".viewer-who").textContent).toBe("小安");
+    expect(bar.querySelector(".viewer-name").textContent).toBe("照片3.png");
+  });
+
+  it("follows the visible viewport when the page is pinch-zoomed, and lets go when it is not", async () => {
+    const listeners = {};
+    const vv = { scale: 2, offsetLeft: 100, offsetTop: 200, width: 201, height: 437, addEventListener: (t, f) => (listeners[t] = f), removeEventListener() {} };
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: vv });
+    try {
+      await open(3);
+      const viewer = document.querySelector(".viewer");
+      expect(viewer.style.left).toBe("100px");
+      expect(viewer.style.width).toBe("402px");
+      expect(viewer.style.transform).toBe("scale(0.5)");
+      Object.assign(vv, { scale: 1, offsetLeft: 0, offsetTop: 0, width: 402, height: 874 });
+      await act(async () => listeners.resize());
+      expect(viewer.style.transform).toBe("");
+      expect(viewer.style.left).toBe("");
+    } finally {
+      delete window.visualViewport;
+    }
   });
 });

@@ -1,0 +1,138 @@
+// @vitest-environment jsdom
+// The phone layout in the DOM: below 641px the rail is a bottom tab bar on the top-level list pages and is gone inside a
+// conversation; wider screens are untouched. (How it looks is pinned by tests/mobile-styles.test.js and e2e/mobile.spec.mjs.)
+import React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { ANN, D1, direct, syncOf, wire } from "./fixtures.js";
+import { flush, goContacts, installBrowser, openApp } from "./harness.jsx";
+import { COARSE_QUERY, PHONE_QUERY } from "../src/ui/pointer.js";
+import { AvatarDialog } from "../src/pages/AvatarDialog.jsx";
+
+/** A window whose media queries answer from `on` (the queries that match). */
+function media(on) {
+  window.matchMedia = (query) => ({ matches: on.includes(query), media: query, addEventListener() {}, removeEventListener() {} });
+}
+
+beforeEach(() => installBrowser());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  delete window.matchMedia;
+});
+
+const sync = () => syncOf([direct(D1, ANN, { lastSeq: 3, readSeq: 1, unread: 2 })], [wire(D1, 1, ANN, "早"), wire(D1, 2, ANN, "在吗"), wire(D1, 3, ANN, "喂")]);
+const bar = () => screen.queryByRole("navigation", { name: "主导航" });
+
+describe("on a phone", () => {
+  beforeEach(() => media([PHONE_QUERY, COARSE_QUERY]));
+
+  it("the conversation list has the four entries along the bottom, the unread badge on 消息, no brand mark and no avatar entry", async () => {
+    await openApp({ sync });
+    expect(bar()).toBeTruthy();
+    expect(document.querySelector(".app").dataset.tabbar).toBe("on");
+    const names = within(bar()).getAllByRole("button").map((b) => b.textContent.replace(/\d+/g, ""));
+    expect(names).toEqual(["消息", "通讯录", "Agent", "设置"]);
+    expect(within(bar()).getByRole("button", { name: /消息$/ }).getAttribute("aria-current")).toBe("page");
+    expect(bar().querySelector(".badge").textContent).toBe("2");
+    expect(bar().querySelector(".brand-mark")).toBeNull();
+    expect(bar().querySelector(".rail-me")).toBeNull();
+    // The header already says the name.
+    expect(document.querySelector(".list-head .brand-name")).toBeTruthy();
+  });
+
+  it("is gone inside a conversation, and back with the list", async () => {
+    await openApp({ sync });
+    fireEvent.click(document.querySelector(".list-col .row"));
+    await flush();
+    expect(bar()).toBeNull();
+    expect(document.querySelector(".app").dataset.tabbar).toBe("off");
+    fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
+    await flush();
+    expect(bar()).toBeTruthy();
+  });
+
+  it("switches tabs; 设置 lands on the settings list, not on a page", async () => {
+    await openApp({ sync });
+    await goContacts();
+    expect(within(bar()).getByRole("button", { name: /^通讯录/ }).getAttribute("aria-current")).toBe("page");
+    expect(bar()).toBeTruthy();
+    fireEvent.click(within(bar()).getByRole("button", { name: /^设置/ }));
+    await flush();
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(bar()).toBeTruthy();
+    expect(document.querySelector(".list-col .settings-me")).toBeTruthy();
+    // A settings page is a pushed page: no bar, a back button.
+    fireEvent.click(screen.getByText("模型供应商", { selector: ".list-col .row-name" }));
+    await flush();
+    expect(bar()).toBeNull();
+  });
+});
+
+describe("on a tablet or a desktop", () => {
+  it("nothing changes: the rail with the brand mark and the avatar stays, also inside a conversation", async () => {
+    media([COARSE_QUERY]); // a touch tablet: wide
+    await openApp({ sync });
+    expect(bar().querySelector(".brand-mark")).toBeTruthy();
+    expect(bar().querySelector(".rail-me")).toBeTruthy();
+    expect(document.querySelector(".app").dataset.tabbar).toBe("off");
+    fireEvent.click(document.querySelector(".list-col .row"));
+    await flush();
+    expect(bar()).toBeTruthy();
+  });
+
+  it("设置 still opens the profile at once (pane main), as before", async () => {
+    await openApp({ sync });
+    fireEvent.click(within(bar()).getByRole("button", { name: /^设置/ }));
+    await flush();
+    expect(document.querySelector(".app").dataset.pane).toBe("main");
+  });
+});
+
+describe("hints for a keyboard and a mouse", () => {
+  const composerHint = () => document.querySelector(".composer-hint")?.textContent ?? "";
+
+  it("show on a mouse and are gone on a touch screen", async () => {
+    await openApp({ sync });
+    fireEvent.click(document.querySelector(".list-col .row"));
+    await flush();
+    expect(composerHint()).toBe("Enter 发送 · Shift+Enter 换行");
+    cleanup();
+    media([COARSE_QUERY]);
+    await openApp({ sync });
+    fireEvent.click(document.querySelector(".list-col .row"));
+    await flush();
+    expect(composerHint()).toBe("");
+    expect(document.body.textContent).not.toContain("Shift+Enter");
+  });
+
+  it("the avatar dialog's help says what a finger does", async () => {
+    const props = { file: new File(["x"], "me.png", { type: "image/png" }), onSave: async () => "", onCancel() {} };
+    render(<AvatarDialog {...props} />);
+    await act(async () => {});
+    expect(document.body.textContent).toContain("拖动调整位置，滑块或滚轮缩放。");
+    cleanup();
+    media([COARSE_QUERY]);
+    render(<AvatarDialog {...props} />);
+    await act(async () => {});
+    expect(document.body.textContent).toContain("拖动调整位置，双指或滑块缩放。");
+    expect(document.body.textContent).not.toContain("滚轮");
+  });
+});
+
+describe("the avatar dialog's save button", () => {
+  it("keeps its class while it says 保存中…, so its width holds", async () => {
+    let finish;
+    const props = { file: new File(["x"], "me.png", { type: "image/png" }), onSave: () => new Promise((r) => (finish = r)), onCancel() {} };
+    render(<AvatarDialog {...props} />);
+    await act(async () => {});
+    const save = () => screen.getByRole("button", { name: /^保存/ });
+    expect(save().className).toContain("btn-save");
+    fireEvent.click(save());
+    await act(async () => {});
+    expect(save().textContent).toBe("保存中…");
+    expect(save().className).toContain("btn-save");
+    await act(async () => finish(""));
+  });
+});

@@ -1,7 +1,7 @@
 // What a file card shows of a file: its kind (an icon) from the type, the extension as the fallback; its name with the
 // middle left out and the end kept.
 import { describe, expect, it } from "vitest";
-import { FILE_KINDS, fileKind, splitFileName } from "../src/ui/fileKind.js";
+import { FILE_KINDS, elideHead, fileKind, splitFileName } from "../src/ui/fileKind.js";
 
 describe("fileKind: the icon's kind", () => {
   it.each([
@@ -79,16 +79,16 @@ describe("splitFileName: the middle goes, the end stays", () => {
   it("a long name keeps its extension and a little before it", () => {
     const { head, tail } = whole("2026年第三季度销售数据汇总报告（最终修订版）.xlsx");
     expect(tail.endsWith(".xlsx")).toBe(true);
-    expect(tail).toBe("最终修订版）.xlsx".slice(-9));
-    expect([...tail]).toHaveLength(9);
+    expect(tail).toBe("最终修订版）.xlsx");
+    expect([...tail]).toHaveLength(11); // ".xlsx" and the 6 characters before it
     expect(head.startsWith("2026年")).toBe(true);
   });
 
   it("works on code points: a character outside the BMP is never cut in two", () => {
     const name = `${"😀".repeat(30)}.txt`;
     const { head, tail } = whole(name);
-    expect([...tail]).toHaveLength(8);
-    expect(head).toBe("😀".repeat(26));
+    expect([...tail]).toHaveLength(10); // ".txt" and 6 emoji
+    expect(head).toBe("😀".repeat(24));
     expect(/[\ud800-\udbff]$/.test(head)).toBe(false);
   });
 
@@ -104,11 +104,47 @@ describe("splitFileName: the middle goes, the end stays", () => {
   });
 
   it("a name with several dots keeps the last extension", () => {
-    expect(whole(`${"x".repeat(40)}.tar.gz`).tail).toBe(".tar.gz");
+    expect(whole(`${"x".repeat(40)}.tar.gz`).tail).toBe("xx.tar.gz");
+  });
+
+  it("the tail is the extension and up to 6 characters before it, not 4", () => {
+    expect(whole("quarterly_report_final_v3.pdf").tail).toBe("nal_v3.pdf");
+    expect(whole("ab.pdf")).toEqual({ head: "", tail: "ab.pdf" });
   });
 
   it("an empty or missing name gives nothing", () => {
     expect(splitFileName("")).toEqual({ head: "", tail: "" });
     expect(splitFileName(undefined)).toEqual({ head: "", tail: "" });
+  });
+});
+
+describe("elideHead: the head cut at the pixel, the ellipsis against the tail with no gap", () => {
+  // One unit wide per code point, the ellipsis too.
+  const measure = (text) => Array.from(text).length;
+
+  it("a name that fits is left whole", () => {
+    expect(elideHead({ head: "abc", tail: "def.pdf", width: 10, measure })).toBe("abc");
+  });
+
+  it("a name that does not fit gives the longest head whose text, ellipsis and tail fit exactly", () => {
+    const shown = elideHead({ head: "abcdefghijkl", tail: "nal_v3.pdf", width: 16, measure });
+    expect(shown).toBe("abcde…");
+    expect(measure(`${shown}nal_v3.pdf`)).toBe(16);
+    expect(measure("abcdef…nal_v3.pdf")).toBeGreaterThan(16);
+  });
+
+  it("a box too narrow even for the tail leaves only the ellipsis", () => {
+    expect(elideHead({ head: "abcdef", tail: "nal_v3.pdf", width: 4, measure })).toBe("…");
+  });
+
+  it("never cuts a character in two", () => {
+    const shown = elideHead({ head: "😀".repeat(30), tail: "a.txt", width: 12, measure });
+    expect(shown).toBe(`${"😀".repeat(6)}…`);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(shown)).toBe(false);
+  });
+
+  it("no head, or no room measured (width 0): the head as it is", () => {
+    expect(elideHead({ head: "", tail: "a.txt", width: 3, measure })).toBe("");
+    expect(elideHead({ head: "abcdef", tail: "a.txt", width: 0, measure })).toBe("abcdef");
   });
 });

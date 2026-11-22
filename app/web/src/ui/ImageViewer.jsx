@@ -10,6 +10,7 @@ import { senderName } from "../state/selectors.js";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, ImageOff, RotateCw, X } from "../icons.js";
 import { IconBtn, Btn } from "./primitives.jsx";
 import { useDialogFocus } from "./dialogFocus.js";
+import { useVisualViewportBox } from "./visualViewport.js";
 import { FIT, clampPan, keyZoom, swipeOf, toggleZoom, wheelFactor, zoomAt } from "./imageZoom.js";
 
 const ViewerContext = createContext(null);
@@ -55,6 +56,8 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
   const stageRef = useRef(null);
   const imgRef = useRef(null);
   const nameId = useId();
+  // Pinch-zoomed or moved by Safari's toolbar: the viewer follows what is on screen, so its bar is never off it.
+  const visible = useVisualViewportBox();
   const [view, setView] = useState(FIT);
   const [phase, setPhase] = useState("loading");
   const [attempt, setAttempt] = useState(0);
@@ -214,10 +217,10 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
 
   const who = senderName(state, msg.from);
   return (
-    <div className="viewer" role="dialog" aria-modal="true" aria-labelledby={nameId} tabIndex={-1} ref={box} onKeyDown={onKeyDown} onPointerDown={keepFocus}>
+    <div className="viewer" style={visible ?? undefined} role="dialog" aria-modal="true" aria-labelledby={nameId} tabIndex={-1} ref={box} onKeyDown={onKeyDown} onPointerDown={keepFocus}>
       <header className="viewer-bar" onClick={(e) => e.target === e.currentTarget && onClose()}>
         <div className="viewer-meta">
-          <strong>{who}</strong>
+          <strong className="viewer-who">{who}</strong>
           <time dateTime={msg.createdAt ?? undefined} title={msg.atTitle || undefined}>
             {msg.at}
           </time>
@@ -234,7 +237,7 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
           <a className="icon-btn viewer-btn" href={msg.src} download={msg.text} aria-label={`下载 ${msg.text}`} title="下载">
             <Download size={20} aria-hidden="true" />
           </a>
-          <a className="icon-btn viewer-btn" href={msg.src} target="_blank" rel="noopener noreferrer" aria-label="在新标签页打开原图" title="在新标签页打开原图">
+          <a className="icon-btn viewer-btn" href={`${msg.src}/${encodeURIComponent(msg.text)}`} target="_blank" rel="noopener noreferrer" aria-label="在新标签页打开原图" title="在新标签页打开原图">
             <ExternalLink size={20} aria-hidden="true" />
           </a>
           <IconBtn label="关闭" className="viewer-btn" data-autofocus="" onClick={onClose}>

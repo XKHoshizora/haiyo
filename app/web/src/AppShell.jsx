@@ -3,6 +3,7 @@ import { useStore } from "./data/store.jsx";
 import { unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark } from "./ui/primitives.jsx";
+import { usePhone } from "./ui/pointer.js";
 import { MessageCircle, Users, Bot, Settings } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
@@ -18,16 +19,24 @@ const NAV = [
   { id: "agents", label: "Agent", icon: Bot },
 ];
 
-function Rail() {
+/**
+ * The main navigation. On a wide screen the rail down the left edge (the brand mark, my avatar, the entries); on a phone
+ * (`phone`) the same entries as the tab bar along the bottom, where the brand mark is left out (the list header says the
+ * name) and so is my avatar (its one use is 设置, a tab of the bar; the settings list shows it).
+ */
+function Rail({ phone }) {
   const { state, dispatch } = useStore();
   const unread = unreadTotal(state);
-  const go = (section) => dispatch({ type: "nav", patch: { section, pane: section === "settings" ? "main" : "list" } });
+  // (A phone opens 设置 at its list, like the other tabs; a wide screen shows the profile beside it at once.)
+  const go = (section) => dispatch({ type: "nav", patch: { section, pane: section === "settings" && !phone ? "main" : "list" } });
   return (
     <nav className="rail" aria-label="主导航">
-      <BrandMark size={38} />
-      <button type="button" className="rail-me" onClick={() => go("settings")} aria-label="我的资料与设置">
-        <Avatar id={ME} size={48} online />
-      </button>
+      {!phone && <BrandMark size={38} />}
+      {!phone && (
+        <button type="button" className="rail-me" onClick={() => go("settings")} aria-label="我的资料与设置">
+          <Avatar id={ME} size={48} online />
+        </button>
+      )}
       <div className="rail-nav">
         {NAV.map(({ id, label, icon: Icon }) => (
           <button key={id} type="button" className={`rail-item ${state.nav.section === id ? "active" : ""}`} aria-current={state.nav.section === id ? "page" : undefined} onClick={() => go(id)}>
@@ -119,6 +128,12 @@ export default function Shell() {
   useDropStrayWindows(state, actions);
   const { nav } = state;
   const conv = state.convs[nav.convId];
+  const phone = usePhone();
+  // A phone shows one page at a time: the tab bar belongs to the top-level lists, not to a conversation or any page pushed
+  // over them (those have their back button). A conversation that is gone leaves the list, not an empty page without a way out.
+  const emptyChat = nav.section === "chat" && !conv;
+  const pane = phone && emptyChat ? "list" : nav.pane;
+  const tabbar = phone && pane === "list";
   let list = null;
   let main = null;
   let side = null;
@@ -143,8 +158,8 @@ export default function Shell() {
   }
 
   return (
-    <div className="app" data-pane={nav.pane} data-side={side ? "open" : "closed"}>
-      <Rail />
+    <div className="app" data-pane={pane} data-side={side ? "open" : "closed"} data-tabbar={tabbar ? "on" : "off"}>
+      {(!phone || tabbar) && <Rail phone={phone} />}
       <aside className="list-col">{list}</aside>
       <main className="main-col">{main}</main>
       {side && <aside className="side-col">{side}</aside>}

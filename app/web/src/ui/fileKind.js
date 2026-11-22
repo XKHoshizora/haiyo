@@ -51,7 +51,7 @@ export function fileKind({ mime, name }) {
 /** An extension longer than this is not taken for one. */
 const EXTENSION_MAX = 16;
 /** How much of the name before the extension stays beside it (code points), and how much of a name without one. */
-const BEFORE_EXTENSION = 4;
+const BEFORE_EXTENSION = 6;
 const NO_EXTENSION = 6;
 
 /**
@@ -66,4 +66,23 @@ export function splitFileName(name) {
   const keep = Math.min(chars.length, extension ? extension + BEFORE_EXTENSION : NO_EXTENSION);
   const cut = chars.length - keep;
   return { head: chars.slice(0, cut).join(""), tail: chars.slice(cut).join("") };
+}
+
+/**
+ * The head of a name as it is shown in a box `width` wide (in the unit `measure` counts): all of it when head and tail fit,
+ * else the longest start of it whose text, "…" and the tail fit — so the ellipsis stands against the tail with no gap, which
+ * a box clipped by CSS (`text-overflow`) leaves (up to a character's width). `measure(text)` is the text's width in the same
+ * unit. Counted in code points, so no character is cut in two. Nothing is elided where there is nothing to measure (`width` 0).
+ */
+export function elideHead({ head, tail, width, measure }) {
+  if (!head || !(width > 0) || measure(head + tail) <= width) return head;
+  const chars = Array.from(head);
+  let low = 0;
+  let high = chars.length - 1;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (measure(`${chars.slice(0, mid).join("")}…${tail}`) <= width) low = mid;
+    else high = mid - 1;
+  }
+  return `${chars.slice(0, low).join("")}…`;
 }
