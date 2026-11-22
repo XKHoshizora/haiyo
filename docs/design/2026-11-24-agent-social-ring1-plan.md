@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to carry out this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task is sized for one implementer and one reviewer.
 
-**Goal:** People other than the owner reach an owner's Agent in a 1:1 `agent_social` conversation. They find it by its full handle, are let in by the owner's one setting, talk to it while the owner watches and may write as 主人, and cost the owner at most two daily numbers. Every way access ends (a bar, a narrowing, a removal, a block, a delete, the operator's disable, the site switch) stops the work in flight. **Ring 1a** delivers that with no owner notes shown to anyone but the owner. **Ring 1b** adds notes for a non-owner: the batch judge, the owner's yes and no, the withheld check, the persona aid and their cards. Each ring ends deployable behind `SOCIAL.enabled`.
+**Goal:** People other than the owner reach an owner's Agent in a 1:1 `agent_social` conversation. They find it by its full handle, are let in by the owner's one setting, talk to it while the owner watches and may write as 主人, and cost the owner at most two daily numbers. Every way access ends (a bar, a narrowing, a removal, a block, a delete, the operator's disable, the site switch) stops the work in flight. **Ring 1a** delivers that, with the persona aid and its card, and with no owner notes shown to anyone but the owner. **Ring 1b** adds notes for a non-owner: the batch judge, the owner's yes and no, the withheld check and its card. Each ring ends deployable behind `SOCIAL.enabled`.
 
 **Architecture:** Access is two facts read in one order, a bar between two people and per-Agent rows, decided by one function `reach` with one SQL twin. A new conversation type `agent_social` carries the two participants as speakers and the supervising owners as observers. `placeOf` is the only test of where a run is: own, group or social. An others' reply is bounded to one real tool call, at most three over-cap notes, 800 output tokens and no reasoning. The wallet's own admission hold covers every request such a reply can make: a turn asking for more is discarded once and the reply is finished without tools. One function, `othersFits`, decides the others' caps under the account lock at admission, at a search and at a round, counting the run's own hold each time. In ring 1b a note reaches a non-owner only on an owner's yes for that note version, or on a batch judge's yes for that version, that Agent and that audience.
 
@@ -12,9 +12,9 @@
 
 **Base:** tip `d361e00` (lanes lang and mobile merged). Every `file:line` below is at that tip.
 
-**Status:** final for Step 0 and ring 1a (Controller ruling 2026-11-24 (final)). Ring 1b is written to the same rulings and is reviewed again before it starts.
+**Status:** final for Step 0 and ring 1a (Controller ruling 2026-11-24 (final)), amended by the verification (Controller ruling 2026-11-24 (verification)). Ring 1b is written to the same rulings and is reviewed again before it starts.
 
-**Not in this plan:** errands (design §6), the second plan. See "What ring 1 must not make harder". Design §8 test 3 (an errand across a restart) and test 9 (the `ask_agent` gate) move there. Migrations 076 and later are the errands'.
+**Not in this plan:** errands (design §6), the second plan. See "What ring 1 must not make harder". Design §8 test 3 (an errand across a restart) and test 9 (the `ask_agent` gate) move there. Migrations 077 and later are the errands'.
 
 ---
 
@@ -24,23 +24,23 @@ Each is reported to the controller. "Controller ruling 2026-11-24" marks a rulin
 
 | # | Design says | Merged code | This plan |
 |---|---|---|---|
-| D1 | Migrations 068 (lane A) and 069 (lane B) | 066–067 deployed; 070–072 belong to lanes storepush, storepages and invites, not yet in this branch; the runner checks order (`src/migrate.ts`, node-pg-migrate's default) | **Controller ruling 2026-11-24 (attack, C1).** **073** is lane B's schema, with an empty shared skeleton both lanes compile against, and deploys with step L. **074** is lane A's ring-1a schema with the bars-from-blocks backfill; lane A writes it and it deploys with lane A's code. **075** is lane A's ring-1b schema. Nothing is backfilled early. 068 and 069 are never used. |
+| D1 | Migrations 068 (lane A) and 069 (lane B) | 066–067 deployed; 070–072 belong to lanes storepush, storepages and invites, not yet in this branch; the runner checks order (`src/migrate.ts`, node-pg-migrate's default) | **Controller ruling 2026-11-24 (attack, C1), amended by Controller ruling 2026-11-24 (verification, E1/N1, E2).** The working branch is deployed to the acceptance site after every merge, so a migration on it is applied there at once and can never be edited again. Hence: **073** (Step 0) is completely **inert**: columns and an empty skeleton that no code reads before the lanes. **074** is lane B's (written in B4): the step-L raise 20 → 70 and the column default. **075** is lane A's ring-1a schema with the bars-from-blocks backfill and the persona aid's columns (A0). **076** is lane A's ring-1b schema (A6a). Errands start at **077**. Migrations apply in numeric order, so lanes A and B are never deployed alone: their work merges together at lane I and deploys together. The 070–072 gate starts at the Step 0 merge: the controller cuts the Step 0 lane only after the three store lanes are on the working branch. Nothing is backfilled early; 068 and 069 are never used. |
 | D2 | `reach` in `social/agent-contacts.ts` | `conversations/store.ts` must call `reach` in `permission()` (store.ts:211), and the add flow calls `ensureSocial` there: the two modules would import each other | `reach`, `reachSql`, `refusedSql`, `discoverable` live in the read-only leaf `social/reach.ts` (the pattern of `social/relations.ts`); the mutations live in `social/agent-contacts.ts`. Accepted by the controller. |
 | D3 | `reach` step 1: "`SOCIAL.enabled` off for anyone but O → `gone`" | Off by default; read literally every group @ would be refused | **Controller ruling 2026-11-24 (Q3): confirmed.** The switch off refuses only social conversations (creating one, writing in one, runs triggered in one) and hides their entry points. Group @ and everything that exists today behaves exactly as today, pinned by I1a.6. `disabled_at` still means `gone` for non-owners everywhere. |
 | D4 | `note_verdicts(…, by, verdict, judge_verdict, note_version, basis, …)` | Round 3 Minor 4: a stale owner yes must sit beside the judge's verdict | Owner and judge columns apart. **Controller ruling 2026-11-24 (attack, I1):** keyed by (note kind, note, audience, **Agent**), because the basis and the appellation are per Agent (`agent_appellations` is keyed `(agent_id, principal_id)`, migrations/024_appellations.sql:8). Use rule: a current owner yes, or no owner no and a judge yes at the current version and basis. `daysSinceAccess` is given to the judge but is not part of the basis (it would make every row stale daily). |
 | D5 | "The worker drops every tool call past the first… with no step added" | Every protocol needs a result for every call it is sent back; the gateway sends a step's assistant turn whole (gateway.ts:580) | **Controller ruling 2026-11-24 (Q1), closed by the controller's later ruling and the attack's C3 and I6.** The gateway is untouched. The reply's first usable call runs; at most `OTHERS.overCapNotes = 3` further calls are answered with the existing over-cap form (worker.ts:775–777). The tool phase ends after the first round that called tools, whatever it ran. A turn asking for more is discarded, only on the request that offered tools and at most once per reply. The reply is then finished by the worker's existing tool-less path, whose calls are ignored as today (worker.ts:743). B2b. |
-| D6 | The judge, the withheld check and the persona aid start from a reply, a post and a persona save | Those sites are lane B's files | The ring-1b worker in `memory/judge.ts` polls: queued verdict rows, runs with `withheld_notes` not checked, Agents whose `persona_version` passed `persona_checked_version`. A reply never waits for it. |
+| D6 | The judge, the withheld check and the persona aid start from a reply, a post and a persona save | Those sites are lane B's files | The worker in `memory/judge.ts` polls. In ring 1a it handles only Agents whose `persona_version` passed `persona_checked_version` (the persona aid, A8b, moved to ring 1a by Controller ruling 2026-11-24 (verification, N4)). In ring 1b it adds queued verdict rows and runs with `withheld_notes` not checked. A reply never waits for it. |
 | D7 | 「谁可以加它为好友」 in web `AgentForm` | `AgentForm.jsx` holds the per-Agent others' number, which lane B rewrites | The setting, picks, contacts, requests and 「它和别人的对话」 live in the tab 「别人」 on the Agent's page (`pages/AgentOthers.jsx`, lane A, ring 1a), mounted by Step 0 in `Agents.jsx`. |
 | D8 | A new `findAgentByHandle` and a lookup | One lookup exists: `GET /api/principals/lookup` (principals/routes.ts:105); it lower-cases the handle (:113) | The same route answers a discoverable Agent by its full handle `<owner>.<name part>`, case-insensitively as people's handles already are (attack M1). A person's answer is byte-for-byte today's. |
-| D9 | `accounts.others_answers` 50, `others_points_micro` 70 | Constants the controller tunes; `agents.others_budget_micro` defaults to 20 points for every Agent (migrations/020_others_budget.sql:9) | Account columns nullable, null reads `OTHERS.answersPerDay` / `OTHERS.pointsPerDay`. **Controller ruling 2026-11-24 (attack, I7):** 073 raises an Agent's number from 20 to 70 points where it still holds 020's default. A value an owner set to exactly 20 cannot be told from the default, so **every row at exactly 20 points is raised**. New Agents get no number of their own (null: the owner's numbers bind). **Controller ruling 2026-11-24 (final):** the cap is per owner per day, one value each (50 answers, 70 points by default), decided by `othersFits` under the account lock; it never multiplies with the number of Agents. 073 writes no owner number: null reads the config default. An Agent's own number is only a sub-limit inside its owner's, and the raise to 70 (the owner's default) cannot pass it. The design's migration table says otherwise; both sentences are set side by side under "Design conflict for the owner", and ring 1a implements the per-owner reading. Acceptance data is disposable. The 70 default is still the owner's to confirm (Rollout). |
+| D9 | `accounts.others_answers` 50, `others_points_micro` 70 | Constants the controller tunes; `agents.others_budget_micro` defaults to 20 points for every Agent (migrations/020_others_budget.sql:9) | Account columns nullable, null reads `OTHERS.answersPerDay` / `OTHERS.pointsPerDay`. **Controller ruling 2026-11-24 (attack, I7):** lane B's 074 (B4; moved out of Step 0 by Controller ruling 2026-11-24 (verification, E1)) raises an Agent's number from 20 to 70 points where it still holds 020's default. A value an owner set to exactly 20 cannot be told from the default, so **every row at exactly 20 points is raised**. New Agents get no number of their own (null: the owner's numbers bind). **Controller ruling 2026-11-24 (final):** the cap is per owner per day, one value each (50 answers, 70 points by default), decided by `othersFits` under the account lock; it never multiplies with the number of Agents. No migration writes an owner number: null reads the config default. An Agent's own number is only a sub-limit inside its owner's, and the raise to 70 (the owner's default) cannot pass it. The design's migration table says otherwise; both sentences are set side by side under "Design conflict for the owner", and ring 1a implements the per-owner reading. Acceptance data is disposable. The 70 default is still the owner's to confirm (Rollout). |
 | D10 | The points cap waits in `HeldBack` | `HeldBack.on` takes `free`, `balance`, `any` (admit.ts:56) | An others' hold-back is `HeldBack(behind, "any")`; the owner's own replies never wait behind it (`olderMarkSql`, admit.ts:130). |
-| D11 | "Tools are offered only when the advisory room covers the hold with tools" | Step 1 of `begin` has the plan, not yet the attachments' bytes | Step 1 estimates the hold with tools from the plan's texts; step 3 decides exactly under the lock. If step 3 refuses a with-tools hold for points while the plain hold fits, the run falls back to a plain call (attack M12). |
+| D11 | "Tools are offered only when the advisory room covers the hold with tools" | Step 1 of `begin` has the plan, not yet the attachments' bytes | Step 1 estimates the hold with tools from the plan's texts; step 3 decides exactly under the lock. If step 3 refuses a with-tools hold for points while the plain hold fits, the run falls back to a plain call (attack M12). This holds for both kinds of points refusal, a wait or a limit: one money invariant (Controller ruling 2026-11-24 (verification), N3; B1). |
 | D12 | Lanes share nothing after Step 0 | `README.md` headings must match served routes (`tests/readme.test.ts`); `config.ts`, `app.ts`, both `HIDDEN_KEYS` lists, web `api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx`, `.env.example`, `app/deploy/README.md`, the e2e env lists and `tests/helpers/social.ts` are needed by both | Step 0 writes them once: every route of both rings is a stub answering 404, the README carries every heading and shape, the config groups are complete, `seedSocial` is frozen. Neither lane edits them afterwards; lane I tidies the README. A lane that needs a change there stops and reports. Accepted by the controller. |
 | D13 | Agent subjects; Agent↔Agent conversations | Ring 1 creates person↔Agent conversations only | `agent_contacts`, `reach`, `reachSql`, `permission()` and `ensureSocial` take an Agent subject now. The add route takes only the caller as subject; the errands plan widens it. |
 | D14 | The judge's daily count from `MEMORY.judgeModel`'s price | The brief: 5 calls a day, a constant | `OTHERS.judgeCallsPerDay = 5`, its derivation pinned by a test (⌊10 / 1.88⌋ = 5). **Controller ruling 2026-11-24 (Q2):** withheld checks use at most `OTHERS.withheldCallsPerDay = 3`; 2 are always the batch judge's; `takeJudgeUnit` decides every unit. |
 | D15 | Tests 3 and 9 | Errands are not here | Moved to the errands plan. |
 | D16 | "for 7 days" | One note per card in the design's text | One `note_withheld` card per note the check returns, at most `OTHERS.withheldCardsMax = 3`, none while one for the same note and audience is open. |
-| D17 | "A bar is written by 停止往来 and by the owner's block, always" | Today's unblock deletes only the block (social/blocks.ts:54–63) | **Controller ruling 2026-11-24 (Q4): confirmed.** Every person-to-person block writes the bar through `setBar`, in the block's transaction; unblocking by the setter lifts only the bar that block set (`access_bars.by_block`). Existing blocks are backfilled in 074, which deploys with the code that maintains bars (C1). |
+| D17 | "A bar is written by 停止往来 and by the owner's block, always" | Today's unblock deletes only the block (social/blocks.ts:54–63) | **Controller ruling 2026-11-24 (Q4): confirmed.** Every person-to-person block writes the bar through `setBar`, in the block's transaction; unblocking by the setter lifts only the bar that block set (`access_bars.by_block`). Existing blocks are backfilled in lane A's 075, which deploys with the code that maintains bars (C1; numbering by Controller ruling 2026-11-24 (verification, E1)). |
 | D18 | "announced by a one-time owner card" (step L) | No card kind fits a site-wide change | **Controller ruling 2026-11-24 (Q5): confirmed.** A one-time web notice in system UI text, dismissed per account; never a chat event or a message from an Agent. |
 | D19 | `othersFits`: "settled + holds ≤ cap, exactly" | Today's pre-hold counts the run's own model part before its lane check (tools/web/hold.ts:176–182) | **Controller ruling 2026-11-24 (attack, C2):** `othersFits` counts every running others' run's `hold_micro`, this run's own included, at admission (where it is still 0: `admitRun` writes it after `admit`, admit.ts:247), at the search pre-hold and at each round. One formula, one function. |
 | D20 | `assemble` and `PLACES` "land with the social lane" (harness §2) | — | Deferred to the errands plan on purpose (attack M13): ring 1 introduces `Place` and threads it through each site; the errands plan replaces the threading with `assemble(run, place)` when `ask_agent` joins the own row. |
@@ -57,7 +57,7 @@ The design says two things about the owner's points number that cannot both hold
 **Ring 1a implements the per-owner reading:**
 - Every owner has one points number and one answers number per site day (default 70 and 50; null in `accounts` reads the config default).
 - `othersFits` enforces both under the account lock, whatever the number of Agents.
-- 073 writes no sum.
+- No migration writes a sum.
 - An Agent's own number (`agents.others_budget_micro`, `agents.others_answers`) is a sub-limit inside its owner's. The I7 raise (20 → 70) sets it to the owner's default, so it can never let the owner's total pass the owner's cap.
 - An owner with three Agents at the old default therefore has 70 points for all three together, not 210.
 
@@ -84,7 +84,7 @@ From `docs/dev/lane-rules.md`:
 - (P1) nobody is ever made to wait for the owner — a confirmation follows after the fact and expires by itself; (P2) the Agent never says a canned sentence — text posted as the Agent is generated by its model; system UI text is fine; (P3) good defaults over switches; seamless over confirmation. Recorded exception (plan v3 §2): a contact request waits for the owner under 需要我同意 and expires after 7 days.
 
 From the brief (binding corrections of 2026-11-24), as amended by the rulings:
-1. **Migrations:** D1. 070, 071 and 072 belong to other lanes; step L deploys only after they are applied (Rollout, I9).
+1. **Migrations:** D1. 070, 071 and 072 belong to other lanes; the Step 0 lane is cut only after they are on the working branch, so no database gets 073 before them (Rollout 1, I9, E2).
 2. **Harness:** own-conversation replay is merged (`agents/replay.ts`, `context.ts` `loadPage`, the gateway's `steps` path, `partText`). A social conversation replays nothing and keeps today's text history, as groups do. Every "not the own conversation means group" site goes through `placeOf`.
 3. **Others' cap:** decided in ONE place, `othersFits`, under the account lock, from the wallet's admission, the search pre-hold and the round, counting the run's own hold (D19). The reservation is the wallet's own hold for one real tool call (B2b).
 4. **Reports:** `agent_reports` admits a message-level report later by an additive migration (A0 says how).
@@ -124,7 +124,7 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 | `OTHERS.judgeInputBytes` | 9000 | one judge call's input |
 | `OTHERS.judgeOutputTokens` | 2200 | one judge call's output limit, reasoning included; reasoning `low` |
 | `OTHERS.judgeOwnerExamples` | 4 | owner decisions shown to one judge call |
-| `OTHERS.judgePollMs` | 5000 | how often the ring-1b worker looks for work |
+| `OTHERS.judgePollMs` | 5000 | how often the worker looks for work (the persona aid from ring 1a, A8b; judge batches and withheld checks in ring 1b) |
 | `OTHERS.judgeOwnersPerPoll` | 10 | owners one poll serves at most (attack M16) |
 | `OTHERS.withheldInputBytes` | 6000 | one withheld check's input; reasoning `none`, output 200 |
 | `OTHERS.withheldCardsMax` | 3 | cards one check posts |
@@ -141,6 +141,7 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 - `persona_fact` card: 「人格里这句话像是关于你或别人的事实：〈{sentence}〉。别人问起时可能被说出来。要移到“关于我”吗？」, buttons 「移到“关于我”」 / 「不用」.
 - Shown notes: 「以后别说」.
 - Limits: 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {70} 点」; per Agent 「以这个数，每天大约能回别人 {N} 次」; reached 「别人今天的使用已到上限」.
+- The one-time notice (B9b; Controller ruling 2026-11-24 (verification), N2): 「别人让你的 Agent 回复，现在按人算：你所有的 Agent 加起来，每天最多回别人 {answers} 次、最多花你 {points} 点。哪个 Agent 原来用的是默认的 20 点上限，它自己的上限已经提到 70 点。」, button 「知道了」.
 - Use page: 「停止往来」 / 「恢复往来」. Agent page tab: 「别人」; list 「它和别人的对话」.
 
 **Lock order** (agents/store.ts:177, plus this plan):
@@ -171,7 +172,7 @@ The input classes most likely to bite that no task's own tests would otherwise c
 6. **One visitor talking to two Agents of one owner** (→ A6a; attack class 1): live on Y1 (contacts, appellation 「小周」) and Y2 (approved, none). The shared owner notes' verdicts are per Agent and never reset each other.
 7. **A provider that sends tool calls on every request** (→ B2b; attack class 2): calls on the tool-less request, on the final request, with long ids. One discard at most; the tool-less request's calls are ignored and its text posts; spend ≤ hold; done within a few seconds.
 8. **A visitor's message that is only a file, or longer than `OTHERS.contextWeight`** (→ B7a, A8a; attack class 3). A file-only message gets a reply that reads the file's name, with the language line abstract. A message over the weight ends `failed` `context_too_small` with its notice, the same as in a group, and no retry. The withheld check skips a run whose latest question has no text.
-9. **The migrated money state of existing owners** (→ B4; attack class 4): Agents at 020's default on paid-tier models; an owner with one, and one with three, Agents at the old default; an Agent with a null budget. After 073 each owner has exactly 70 points and 50 answers for all their Agents together (Controller ruling 2026-11-24 (final)), and a paid-tier Agent at the old default answers others at least once a day.
+9. **The migrated money state of existing owners** (→ B4; attack class 4): Agents at 020's default on paid-tier models; an owner with one, and one with three, Agents at the old default; an Agent with a null budget. After 074 each owner has exactly 70 points and 50 answers for all their Agents together (Controller ruling 2026-11-24 (final)), and a paid-tier Agent at the old default answers others at least once a day. An Agent whose owner set its own number below 20 keeps it; on a paid-tier model it answers no one, and the use page shows its `perDay` as 0 (Controller ruling 2026-11-24 (verification), M-V2).
 10. **Rows past 100 on the owner's side** (→ A3b, A12a, A7; attack class 5): 105 observed social conversations in sync and in the web list (one `reachSql` query, not 105); 105 queued audiences waiting for judge units (served oldest first, at most `judgeOwnersPerPoll` owners a poll).
 
 ---
@@ -180,16 +181,23 @@ The input classes most likely to bite that no task's own tests would otherwise c
 
 | Ring | Lanes | Migration | Deploys |
 |---|---|---|---|
-| Step 0 | one small lane, merged first | writes **073** (lane B's, with the empty shared skeleton) | with step L |
-| Ring 1a | A (access, conversation, web chat, 「别人」 tab, reports and disable), B (step L money, runs), I | lane A writes **074** (its schema and the bars backfill) | step L first (B1–B4, B9a–b, after 070–072); then the rest of 1a behind the switch |
-| Ring 1b | A (notes), I | lane A writes **075** | behind the switch |
+| Step 0 | one small lane, cut by the controller only after 070–072 are on the working branch (E2), merged first | writes **073**: completely inert (Controller ruling 2026-11-24 (verification, E1/N1)) | applied on the acceptance site at its merge, changing nothing |
+| Ring 1a | A (access, conversation, web chat, 「别人」 tab, persona aid, reports and disable), B (step L money, runs), I | lane B writes **074** (B4: the 20 → 70 raise and the default); lane A writes **075** (A0: its schema, the bars backfill, the persona aid's columns) | lanes A and B merge **together** at lane I and deploy together, never one alone (numeric order) |
+| Ring 1b | A (notes), I | lane A writes **076** (A6a) | behind the switch |
 
 The order inside ring 1a follows the attack's thin slice:
-1. A0 → A1 → A3a → A4 and, beside them, B1 → B2a/b → B3 → B4 (step L), then B6 → B7a → B8;
+1. A0 → A1 → A3a → A4 and, beside them, B1 → B2a/b → B3 → B4, then B6 → B7a → B8;
 2. A11a and A12a;
 3. the I1a integration.
 
 The remaining 1a tasks fit around these.
+
+**The minimum for the first trial** (Controller ruling 2026-11-24 (verification), I15). Lane I may merge both lanes and start I1a and the trial as soon as these are in:
+- Step 0;
+- lane A: A0, A1, **A2** (the lookup), A3a, A3b, A4, **A9** (memory never reviews a social conversation), A11a, A12a;
+- lane B: B1, B2a, B2b, B3, B4 (074 must be in before any deploy that carries 075), **B5a** (the visitor sees the reply state), B6, B7a, **B7b** (until it lands a social run is offered tools under the own-conversation scope, port-impl.ts:785, reaching the Agent's own conversation), B8.
+
+The four in bold are the ones the verifier named beyond the slice. The rest of ring 1a merges at lane I after them. Every lane I merge deploys both lanes together.
 
 ---
 
@@ -199,11 +207,13 @@ The remaining 1a tasks fit around these.
 
 | File | Owner | Responsibility |
 |---|---|---|
-| `S:migrations/073_others_limits_and_social_skeleton.sql` | 0→B | the two numbers, the step-L raise and sums, `admitted_at`, the notice; the empty skeleton (`agent_social` type, `social_pairs`, `agent_contacts`, interruption values, `shown_notes`, `withheld_notes`) |
-| `S:migrations/074_agent_social_access.sql` | A (ring 1a, A0) | bars with `by_block` and the backfill from blocks, contact policy and picks, `disabled_at`, `agent_reports` |
-| `S:migrations/075_social_notes.sql` | A (ring 1b, A6a) | `note_verdicts` (per Agent), `note_judge_days`, `social_card_answers`, `persona_checked_version` |
+| `S:migrations/073_others_columns_and_social_skeleton.sql` | 0, frozen at its merge (applied on the acceptance site at once) | completely inert: the others' columns, `admitted_at`, the notice column; the empty skeleton (`agent_social` type, `social_pairs`, `agent_contacts`, interruption values, `shown_notes`, `withheld_notes`) |
+| `S:migrations/074_others_step_l.sql` | B (ring 1a, B4) | the step-L raise 20 → 70 and the column default null (Controller ruling 2026-11-24 (verification, E1)) |
+| `S:migrations/075_agent_social_access.sql` | A (ring 1a, A0) | bars with `by_block` and the backfill from blocks, contact policy and picks, `disabled_at`, `agent_reports`, `persona_checked_version`, `social_card_answers` |
+| `S:migrations/076_social_notes.sql` | A (ring 1b, A6a) | `note_verdicts` (per Agent), `note_judge_days`, `withheld_checked_at` |
+| `S:tests/schema-agents.test.ts` | B (B4) | its :109–128 default (20 points) stays true until 074, which B4 writes with the test's change (G1) |
 | `S:src/config.ts`, `S:.env.example`, `app/deploy/README.md`, `W:e2e/support/env.mjs`, `W:e2e/support/system.mjs` | 0 | `SOCIAL`, `OTHERS`, `MEMORY.judgeModel` |
-| `S:src/app.ts` | 0 | registers both route files; starts the ring-1b worker (a no-op until A7) |
+| `S:src/app.ts` | 0 | registers both route files; starts the worker (a no-op until A8b in ring 1a; A7 and A8a add to it in ring 1b) |
 | `S:README.md` | 0, then I | every heading of both rings, the shapes, config, metrics |
 | `S:src/social/place.ts` (new) | 0, frozen | `Place`, `placeOf`, `placeOfType`, `groupPlaceSql`, `socialPlaceSql` |
 | `S:src/social/reach.ts` (new) | 0→A | `reach`, `reachSql`, `refusedSql`, `discoverable`, `discoverableSql` |
@@ -212,25 +222,27 @@ The remaining 1a tasks fit around these.
 | `S:src/principals/store.ts`, `principals/routes.ts` | A | Agent lookup; discoverable avatars |
 | `S:src/conversations/store.ts` | 0→A | `ConversationType`; `ensureSocial`; the `agent_social` arm of `permission()` (Step 0 skeleton, A3a full) |
 | `S:src/conversations/system.ts`, `S:src/messages/model.ts` | 0→A | the new events and their sentences |
-| `S:src/messages/read.ts`, `messages/send.ts`, `messages/routes.ts` (0→A: Step 0 passes `interrupt` at :94), `S:src/attachments/store.ts`, `attachments/routes.ts` | A | private fields; `shownNotes` and `card` (1b); config to `assertCanSend` |
+| `S:src/messages/read.ts`, `messages/send.ts`, `messages/routes.ts` (0→A: Step 0 passes the config at :87 and `interrupt` at :94), `S:src/attachments/store.ts`, `attachments/routes.ts` | A | private fields; `card` on `persona_fact` (1a, A8b); `shownNotes` and `card` on `note_withheld` (1b); config to `assertCanSend`, `sendMessage` (Step 0 at :87 and :94, G7) |
 | `S:src/sync/read.ts` | 0→A | the `agent_social` sync shape, `canSend` |
 | `S:src/memory/passage.ts` | 0→A | `loadNotes(…, place)`: social returns no notes in 1a, the use rule in 1b |
-| `S:src/memory/store.ts`, `verdicts.ts`, `shown.ts` (0→A), `judge.ts` (0→A), `withheld.ts`, `persona-aid.ts`, `call.ts`, `apply.ts` | A (ring 1b) | candidates, verdicts, the post-time check, the worker |
+| `S:src/memory/judge.ts` (0→A), `persona-aid.ts` | A (ring 1a, A8b) | the worker with the persona aid only |
+| `S:src/memory/store.ts`, `verdicts.ts`, `shown.ts` (0→A), `withheld.ts`, `call.ts`, `apply.ts`; `judge.ts` again | A (ring 1b) | candidates, verdicts, the post-time check, the judge batches and withheld checks |
 | `S:src/memory/pipeline.ts`, `review.ts`, `hearsay.ts`, `catchup.ts`, `routes.ts` (Step 0 updates its `loadNotes`/`fitNotes` calls) | A (ring 1a, A9) | social never reviewed, caught up or switched |
 | `S:src/agents/tools/elsewhere.ts` | A | elsewhere places are groups only |
 | `S:src/cli.ts`; `S:src/push/notify.ts` once lane storepush has merged | A | disable, reports; no pushes to observers |
 | `S:src/metering/others.ts` (new) | 0→B | `keepsRoom`, `othersFits`, `othersReached`, `othersNumbers`, `othersUsedToday`, `othersHold`, `OthersLimit` |
 | `S:src/metering/admit.ts`, `S:src/agents/tools/web/hold.ts` | B | `othersFits` at admission and search; `keepsRoom` |
-| `S:src/agents/port-impl.ts`, `agents/runs.ts`, `agents/runtime/prompt.ts` | 0→B | Step 0's signature changes; then lane B |
-| `S:src/agents/conversation.ts`, `context.ts`, `run-routes.ts`, `routes.ts`, `store.ts`, `runtime/worker.ts`, `loop.ts`, `port.ts`, `tools/index.ts`, `search.ts`, `file.ts`, `web/tool.ts`, `summary/job.ts`, `proactive/candidates.ts`, `S:src/sync/hub.ts` | B | runs, places, bounds, the wire numbers |
+| `S:src/agents/port-impl.ts`, `agents/runs.ts`, `agents/runtime/prompt.ts`, `agents/runtime/port.ts` (`RunEnd`, G4) | 0→B | Step 0's signature changes; then lane B |
+| The tests Step 0 updates for `Place` (G5): `S:tests/memory-prompt.test.ts`, `reply-language`, `tool-loop-money`, `tools-capability`, `tools-clock`, `tools-refs`, `web-search`, `memory-routes` (`*.test.ts`) | 0, then the lane owning the source they test | `true` → `"group"`, `false` → `"own"` |
+| `S:src/agents/conversation.ts`, `context.ts`, `run-routes.ts`, `routes.ts`, `store.ts`, `runtime/worker.ts`, `loop.ts`, `tools/index.ts`, `search.ts`, `file.ts`, `web/tool.ts`, `summary/job.ts`, `proactive/candidates.ts`, `S:src/sync/hub.ts` | B | runs, places, bounds, the wire numbers |
 | `S:src/accounts/others-routes.ts` (new) | 0→B | lane-B routes |
-| `S:tests/helpers/social.ts` (new) | 0, frozen (attack M8) | `seedSocial`, `seedSocialAgents`, `SOCIAL_ON` |
+| `S:tests/helpers/social.ts` (new, T0.3) | 0, frozen (attack M8) | `seedSocial`, `seedSocialAgents`, `SOCIAL_ON` |
 | `S:tests/helpers/others.ts` (new) | B | lane B's money fixtures |
 | `S:tests/agents-co-members.test.ts`, `tests/proactive-decide.test.ts`, `tests/config-agents.test.ts` | 0 | hidden keys; the three old wire fields out of :252–257 (attack I5); config |
 | `W:src/api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx` | 0 | routes, thin actions, error texts, the `others` settings page id, the two stylesheets |
 | `W:src/styles/social.css` (0→A), `W:src/styles/others.css` (0→B) | | each lane's styles |
 | `W:src/data/model.js` (0→A), `data/sync.js`, `state/selectors.js`, `state/social.js` | A | `agent_social` in the model; supervised conversations out of the main list |
-| `W:src/pages/AddFriendModal.jsx`, `Contacts.jsx`, `ChatList.jsx`, `ChatView.jsx`, `Messages.jsx`, `Composer.jsx`, `BlockModal.jsx`, `DetailsPanel.jsx`, `AgentOthers.jsx` (0→A), `ReportModal.jsx`, `SocialCards.jsx`, `ShownNotes.jsx` | A | add, chat, tab, report; cards and shown notes in 1b |
+| `W:src/pages/AddFriendModal.jsx`, `Contacts.jsx`, `ChatList.jsx`, `ChatView.jsx`, `Messages.jsx`, `Composer.jsx`, `BlockModal.jsx`, `DetailsPanel.jsx`, `AgentOthers.jsx` (0→A), `ReportModal.jsx`, `SocialCards.jsx` (the `persona_fact` card in 1a, A8b; `note_withheld` in 1b), `ShownNotes.jsx` (1b) | A | add, chat, tab, report, the persona card; the withheld card and shown notes in 1b |
 | `W:src/pages/Agents.jsx` (0→B), `AgentForm.jsx`, `Settings.jsx`, `Usage.jsx`, `OthersUse.jsx`, `W:src/data/viewmodel.js` | B | numbers, use page, wire |
 | `W:e2e/social.spec.mjs` | I | the browser path of each ring |
 
@@ -292,6 +304,8 @@ export function ensureSocial(t: Tx, subjectId: string, agentId: string): Promise
 // ── S:src/agents/runs.ts (Step 0) ──────────────────────────────────────────────────────
 export type Interruption = "agent_paused" | "agent_deleted" | "agent_removed" | "halted" | "owner_spoke" | "access_ended" | "notes_changed" | "errand_ended";
 // interruptRuns' reason narrows to "agent_paused" | "agent_deleted". Triggered (runs.ts:740) gains `stopped: readonly string[]` ([] until B6).
+// G4: RunEnd's cancelled error (agents/runtime/port.ts:138) widens to the same eight values (`Interruption` cannot be imported there:
+// runtime/ imports no store), or `recorded()` and `halted()` (port-impl.ts:354–363, :539) stop compiling.
 export function actOnTriggered(triggered: Triggered, to: { announce(run: Announced): void; log: Pick<FastifyBaseLogger, "info">; realtime: Pick<Hub, "pushAgentChanged">; interrupt(runIds: readonly string[]): void }): void;
 // Step 0 updates both callers: messages/routes.ts:94 and port-impl.ts:1233.
 
@@ -316,13 +330,17 @@ export type NotesPlace = { place: "own" } | { place: "group"; conversationId: st
 export interface ShownNote { kind: NoteKind; id: string; version: string }
 export interface SocialNote extends PromptNote { ref: ShownNote }
 export interface LoadedNotes { notes: PromptNotes; shown: readonly ShownNote[]; withheld: readonly ShownNote[] }
-/** `t` is a transaction: in ring 1b the social branch writes verdict rows, in (kind, id) order (attack M9). */
+/**
+ * Own and group read only and take any `Queryable`, so memory/routes.ts:250's call on `db` stays as it is. The social branch
+ * takes a transaction: in ring 1b it writes verdict rows, in (kind, id) order (attack M9). (Controller ruling 2026-11-24 (verification), G6.)
+ */
+export function loadNotes(q: Queryable, agent: { id: string; ownerId: string; memory: boolean; sharedNotes: boolean }, where: Extract<NotesPlace, { place: "own" | "group" }>, config: Pick<Config, "others">): Promise<LoadedNotes>;
 export function loadNotes(t: Tx, agent: { id: string; ownerId: string; memory: boolean; sharedNotes: boolean }, where: NotesPlace, config: Pick<Config, "others">): Promise<LoadedNotes>;
 
 // ── S:src/memory/shown.ts (Step 0: true iff `shown` is empty; lane A, A6b) ──────────────
 export function shownNotesPass(t: Tx, agent: { id: string; ownerId: string; sharedNotes: boolean }, audienceId: string, shown: readonly ShownNote[]): Promise<boolean>;
 
-// ── S:src/memory/judge.ts (Step 0: does nothing; lane A, A7–A8b) ─────────────────────────
+// ── S:src/memory/judge.ts (Step 0: does nothing; lane A: A8b in ring 1a, A7 and A8a in ring 1b) ──
 export interface NoteJudge { runOnce(): Promise<number>; close(): Promise<void> }
 export function startNoteJudge(deps: MemoryCallDeps & { conversations: ConversationEvents; realtime?: Pick<Hub, "pushAgentChanged"> }, opts?: { timer?: false }): NoteJudge;
 
@@ -380,11 +398,16 @@ While `SOCIAL.enabled` is false, every lane-A route but the lookup answers 404 a
 
 Branch `lane/social0` from `d361e00`. One editor. Its job is the contract; behaviour stays exactly as today (every existing test stays green). Push and read the run at the end.
 
-### Task 0.1: Migration 073: lane B's schema and the empty skeleton — Step 0
+### Task 0.1: Migration 073: inert columns and the empty skeleton — Step 0
 
-**Files:** create `S:migrations/073_others_limits_and_social_skeleton.sql`, `S:tests/schema-social.test.ts`.
+**Files:** create `S:migrations/073_others_columns_and_social_skeleton.sql`, `S:tests/schema-social.test.ts`. `S:tests/schema-agents.test.ts` is **not** touched: its :109–128 assertion that `others_budget_micro` defaults to 20 points stays true until lane B's 074 (B4), which changes the test with it (G1).
 
-**Produces:** the schema lane B uses and the tables both lanes compile against, all empty and unused until lane A's code (**Controller ruling 2026-11-24 (attack, C1)**). Lane B owns 073 after Step 0 and may amend it until it is deployed. No bar, no row, no verdict exists anywhere until lane A's code runs.
+**Produces** (**Controller ruling 2026-11-24 (verification, E1/N1)**): columns and tables both lanes compile against, **completely inert**.
+- No existing row changes and no existing default changes.
+- No code before the lanes reads any of it.
+- Constraints only widen.
+
+The working branch is deployed to the acceptance site after every merge, so 073 is applied there at Step 0's merge and can never be edited again: it is frozen from then on. No bar, row or verdict exists anywhere until lane A's code runs. The step-L raise is lane B's 074.
 
 - [ ] **Failing test** `tests/schema-social.test.ts` (direct SQL, each in a rolled-back transaction):
 ```ts
@@ -404,21 +427,22 @@ it("runs take the four new interruptions and nothing else", async () => {
   for (const r of ["owner_spoke", "access_ended", "notes_changed", "errand_ended"]) await expect(setInterrupted(r)).resolves.toBeDefined();
   await expect(setInterrupted("visitor_left")).rejects.toThrow(/agent_runs_interrupted_check/);
 });
-it("numbers in range; an Agent's own number optional and null by default", async () => {
+it("numbers in range", async () => {
   await expect(db.query("update accounts set others_answers = 0 where principal_id = $1", [owner.id])).rejects.toThrow(/check/);
   await expect(db.query("update accounts set others_points_micro = 999999 where principal_id = $1", [owner.id])).rejects.toThrow(/check/);
-  expect((await newAgentRow()).others_budget_micro).toBeNull();
 });
-it("the skeleton is empty after the migration", async () => {
+it("is inert: the skeleton is empty, and no existing row or default changed", async () => {
   for (const t of ["social_pairs", "agent_contacts"]) expect(await count(t)).toBe(0);
+  expect(await columnDefault("agents", "others_budget_micro")).toBe("20000000");      // 074 (B4) changes it, not 073
 });
 ```
 - [ ] Run `npx vitest run tests/schema-social.test.ts` → fails (`agent_social` violates `conversations_type_check`).
 - [ ] Write 073 exactly:
 ```sql
 -- Up Migration
--- Others' use (design §5, step L; plan B1–B4) and the empty skeleton of Agent social both lanes compile against (plan D1). It deploys
--- with step L. Nothing here is filled from social data: the skeleton's tables stay empty until lane A's code (074) runs.
+-- Columns for others' use (design §5; plan B1–B4) and the empty skeleton of Agent social both lanes compile against (plan D1).
+-- Completely inert (Controller ruling 2026-11-24 (verification), E1/N1): no existing row or default changes, nothing reads it before
+-- the lanes. The step-L raise is lane B's 074; lane A's schema is 075.
 alter table accounts
   add column others_answers integer check (others_answers between 1 and 1000),
   add column others_points_micro bigint check (others_points_micro between 1000000 and 100000000000),
@@ -426,15 +450,6 @@ alter table accounts
 alter table agents add column others_answers integer check (others_answers between 1 and 1000);
 -- When admission admitted the run (admitRun): what one answer is counted by (claim time is reset by a hold-back; attack M2).
 alter table agent_runs add column admitted_at timestamptz;
--- step L begin
--- Controller ruling 2026-11-24 (attack, I7): an Agent's number still at migration 020's default (20 points) becomes 70. A value an
--- owner set to exactly 20 cannot be told from the default, so every row at exactly 20 points is raised. New Agents get none of their own.
--- Controller ruling 2026-11-24 (final): an Agent's number is only a sub-limit inside its owner's; 70 is the owner's default, so the raise
--- never lets an Agent pass its owner's cap. The owner's numbers are not written here: null reads OTHERS.answersPerDay (50) and
--- OTHERS.pointsPerDay (70), one value per owner however many Agents they have (plan "Design conflict for the owner").
-update agents set others_budget_micro = 70000000 where others_budget_micro = 20000000;
-alter table agents alter column others_budget_micro set default null;
--- step L end
 create index agent_runs_others_day_idx on agent_runs (owner_id, admitted_at) where purpose = 'reply' and lane <> 'own' and admitted_at is not null;
 -- The skeleton: created empty, unused until lane A's code.
 alter table conversations drop constraint conversations_type_check;
@@ -468,7 +483,7 @@ alter table agent_runs add constraint agent_runs_interrupted_check
   check (interrupted in ('agent_paused', 'agent_deleted', 'agent_removed', 'halted', 'owner_spoke', 'access_ended', 'notes_changed', 'errand_ended'));
 alter table agent_runs add column shown_notes jsonb, add column withheld_notes jsonb;
 -- Down Migration
--- (only while no agent_social conversation exists; the step-L raise is not undone)
+-- (only while no agent_social conversation exists)
 alter table agent_runs drop column withheld_notes, drop column shown_notes;
 alter table agent_runs drop constraint agent_runs_interrupted_check;
 alter table agent_runs add constraint agent_runs_interrupted_check check (interrupted in ('agent_paused', 'agent_deleted', 'agent_removed', 'halted'));
@@ -476,13 +491,12 @@ drop table agent_contacts; drop table social_pairs;
 alter table conversations drop constraint conversations_type_check;
 alter table conversations add constraint conversations_type_check check (type in ('direct', 'group', 'agent'));
 drop index agent_runs_others_day_idx;
-alter table agents alter column others_budget_micro set default 20000000;
 alter table agent_runs drop column admitted_at;
 alter table agents drop column others_answers;
 alter table accounts drop column others_notice_seen_at, drop column others_points_micro, drop column others_answers;
 ```
-- [ ] Run the test → passes; `npx vitest run tests/schema.test.ts tests/schema-agents.test.ts` still pass (a fresh `--tag` database locally).
-- [ ] Commit `feat(schema): 073, others' numbers and the empty social skeleton (step 0)`.
+- [ ] Run the test → passes; `npx vitest run tests/schema.test.ts tests/schema-agents.test.ts` still pass unchanged (a fresh `--tag` database locally). `columnDefault(table, column)` is a five-line helper local to `schema-social.test.ts` that reads `information_schema.columns.column_default`.
+- [ ] Commit `feat(schema): 073, inert columns and the empty social skeleton (step 0)`.
 
 ### Task 0.2: Config groups `SOCIAL`, `OTHERS`, `MEMORY.judgeModel` — Step 0
 
@@ -511,17 +525,23 @@ expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 20, ju
 
 **Files:**
 - Create `S:src/social/place.ts`, `social/reach.ts`, `social/agent-contacts.ts`, `S:src/metering/others.ts`, `S:src/memory/shown.ts`, `S:src/memory/judge.ts`, `S:tests/place.test.ts`, `S:tests/social-seams.test.ts`.
-- Modify the following:
+- Create `S:tests/helpers/social.ts` (frozen from Step 0's merge): `seedSocial`, `seedSocialAgents`. It is created **here**, because this task's failing test calls `seedSocial` (**Controller ruling 2026-11-24 (verification), G3**). T0.4 only tests it against the stubs.
+- Modify the following (each named site is one `tsc` error after the widening; **verification G4–G8**):
   - `S:src/conversations/store.ts`: the types; `ensureSocial` throwing; **the `agent_social` arm of `permission()` (attack I4)**; `canSend` and `assertCanSend` take the config.
   - `S:src/messages/send.ts:62`, `S:src/attachments/store.ts:47`, `S:src/attachments/routes.ts:300`: pass the config.
-  - `conversations/system.ts`: `renderNotice` cases.
+  - `S:src/messages/routes.ts:87`: `sendMessage(t, req.params.id, me.id, req.body, config)`, because `sendMessage` now needs the config (G7).
+  - `S:src/conversations/system.ts`:
+    - `renderNotice` cases.
+    - `idsIn` (:6–13) gains `if ("agentIds" in e) ids.push(...e.agentIds); if ("ownerIds" in e) ids.push(...e.ownerIds);`. Without it, `social_opened` renders 「某人」 for the owner (G8).
   - `messages/model.ts`: the events.
   - `S:src/agents/runs.ts`: `Interruption`; `interruptRuns`' reason type; `Triggered.stopped`; `actOnTriggered`'s `interrupt`.
+  - `S:src/agents/runtime/port.ts:138`: `RunEnd`'s `cancelled` error widens to the eight values of `Interruption`, written out as a literal union (runtime/ imports no store), so `recorded()` and `halted()` (port-impl.ts:354–363, :539) still compile (G4). It is the only Step 0 edit to that file, which is lane B's afterwards.
   - `S:src/messages/routes.ts:94`, `S:src/agents/port-impl.ts:1233`: pass `interrupt`.
   - `S:src/sync/read.ts`: types; `SyncView.social`.
-  - `S:src/memory/passage.ts`: the signature.
-  - `S:src/memory/routes.ts:250`, `:252` and `S:src/agents/port-impl.ts:718`: callers of `loadNotes` and `fitNotes`.
+  - `S:src/memory/passage.ts`: the signature, with the two overloads of "Step 0 interfaces".
+  - `S:src/memory/routes.ts:250`, `:252` and `S:src/agents/port-impl.ts:718`: callers of `loadNotes` and `fitNotes`. memory/routes.ts:250 stays on `db` outside a transaction: the own and group overload takes a `Queryable`; only `social` needs a `Tx` (G6).
   - `S:src/agents/runtime/prompt.ts`: `toolsPassage` (:94), `webToolsPassage` (:128), `notesPassage` (:442), `fitNotes` (:481) take `Place`; callers updated.
+  - Tests that call those four with the old boolean, changed `false` → `"own"` and `true` → `"group"` and nothing else (G5): `memory-prompt` (29 calls), `memory-routes` (3), `web-search` (6), `tools-clock` (4), `reply-language`, `tool-loop-money`, `tools-capability`, `tools-refs` (1 each).
   - `S:src/app.ts`: start the judge, `app.noteJudge`.
 
 **Produces:** every signature in "Step 0 interfaces". Bodies:
@@ -561,11 +581,11 @@ expect(await renderNotice(db, s, { event: "social_opened", actorId: agent.id, ag
 ```
 - [ ] Run → fails (modules missing).
 - [ ] Implement as stated. `tsc` must pass with the widened `ConversationType`. Every `switch` on it gets an `agent_social` arm. Where Step 0 cannot answer yet, the arm throws "ring 1: lane A" or "ring 1: lane B", and the commit message lists each one. None may be on the send path, which the skeleton covers.
-- [ ] Run `npx vitest run tests/place.test.ts tests/social-seams.test.ts tests/messages.test.ts tests/memory-routes.test.ts tests/memory-prompt.test.ts tests/runs.test.ts tests/runs-pause.test.ts tests/agents-co-members.test.ts tests/reply-history.test.ts`; typecheck; commit `feat(social): step 0 seams: placeOf, reach, the write rule's skeleton, othersFits, loadNotes(place), events`.
+- [ ] Run `npx vitest run tests/place.test.ts tests/social-seams.test.ts tests/messages.test.ts tests/memory-routes.test.ts tests/memory-prompt.test.ts tests/reply-language.test.ts tests/tool-loop-money.test.ts tests/tools-capability.test.ts tests/tools-clock.test.ts tests/tools-refs.test.ts tests/web-search.test.ts tests/runs.test.ts tests/runs-pause.test.ts tests/agents-co-members.test.ts tests/reply-history.test.ts`; typecheck; commit `feat(social): step 0 seams: placeOf, reach, the write rule's skeleton, othersFits, loadNotes(place), events`.
 
 ### Task 0.4: Route stubs, README contract, frozen helpers, hidden keys — Step 0
 
-**Files:** create `S:src/social/agent-contact-routes.ts`, `S:src/accounts/others-routes.ts` (stubs, full zod schemas), `S:tests/helpers/social.ts` (frozen), `S:tests/social-stubs.test.ts`. Modify:
+**Files:** create `S:src/social/agent-contact-routes.ts`, `S:src/accounts/others-routes.ts` (stubs, full zod schemas), `S:tests/social-stubs.test.ts`. `S:tests/helpers/social.ts` already exists from T0.3 (verification G3). Modify:
 - `S:src/app.ts`: register both route files.
 - `S:README.md`:
   - every heading of both rings, with the request and answer shapes;
@@ -578,7 +598,7 @@ expect(await renderNotice(db, s, { event: "social_opened", actorId: agent.id, ag
 - `S:tests/proactive-decide.test.ts:1152`: the same `HIDDEN_KEYS` additions.
 
 - [ ] **Failing test** `tests/social-stubs.test.ts`: every new route answers 404 `{"error":"not_found"}` to a signed-in caller and 401 to none; a malformed body is 400 before the stub; `tests/readme.test.ts` passes. `seedSocial` gives members `[visitor speaker 0, agent speaker 0, owner observer 0]`, a live row and a first message `social_opened`. Its rows are the same as A4's own add would write; a test in A4 compares them.
-- [ ] Run → fails. Implement. Run `npx vitest run tests/social-stubs.test.ts tests/readme.test.ts tests/agents-co-members.test.ts tests/proactive-decide.test.ts`; commit `feat(social): step 0 route stubs, README contract, seedSocial, hidden keys`.
+- [ ] Run → fails. Implement. Run `npx vitest run tests/social-stubs.test.ts tests/readme.test.ts tests/agents-co-members.test.ts tests/proactive-decide.test.ts`; commit `feat(social): step 0 route stubs, README contract, hidden keys`.
 
 ### Task 0.5: Web seams — Step 0
 
@@ -611,17 +631,19 @@ Create `W:src/pages/AgentOthers.jsx` (`export function AgentOthersTab({ agent })
 
 # Ring 1a: others reach my Agent, with no owner notes shown
 
-A visitor is shown **no** owner notes in ring 1a: Step 0's `loadNotes` returns none for social, so there is no judge, no verdict and no withheld check (Controller ruling 2026-11-24 (attack), I15). The ring ends deployable behind `SOCIAL.enabled`.
+A visitor is shown **no** owner notes in ring 1a: Step 0's `loadNotes` returns none for social, so there is no judge, no verdict and no withheld check (Controller ruling 2026-11-24 (attack), I15). The persona aid and its card are in ring 1a (A8b; Controller ruling 2026-11-24 (verification), N4), since a visitor's reply is shown the persona. The ring ends deployable behind `SOCIAL.enabled`.
 
 ## Ring 1a, lane A: access, conversation, the web chat
 
 Branch `lane/social-a` from the Step 0 merge.
 
-### Task A0: Migration 074: lane A's schema and the bars from existing blocks — Lane A
+### Task A0: Migration 075: lane A's schema and the bars from existing blocks — Lane A
 
-**Files:** create `S:migrations/074_agent_social_access.sql`, `S:tests/schema-social-access.test.ts`.
+**Files:** create `S:migrations/075_agent_social_access.sql`, `S:tests/schema-social-access.test.ts`.
 
-**Produces:** the tables lane A's ring-1a code maintains, and every existing person-to-person block's bar. 074 is written here and deploys with lane A's code (**Controller ruling 2026-11-24 (attack, C1)**), so bars appear only when the unblock that lifts them ships too (A5b).
+**Produces:** the tables lane A's ring-1a code maintains, every existing person-to-person block's bar, and the persona aid's two columns (A8b is in ring 1a: **Controller ruling 2026-11-24 (verification), N4**). 075 is written here and deploys with lane A's code (**Controller ruling 2026-11-24 (attack, C1)**), so bars appear only when the unblock that lifts them ships too (A5b).
+
+**Number** (**verification, E1/N1**): 075, not 074. Lane B's 074 (B4) is the step-L raise. node-pg-migrate refuses a database where a file not yet run sorts before one already run. So 075 must never be applied anywhere before 074. Lanes A and B therefore merge together at lane I and deploy together (D1, Rollout 3), and 074 and 075 are applied in order in one deploy. Lane A's own branch has no 074 file; its fresh test databases apply 073 and then 075.
 
 - [ ] **Failing test** `tests/schema-social-access.test.ts`:
 ```ts
@@ -633,7 +655,7 @@ it("a bar is one row per pair, set by one of the two", async () => {
   await bar({}); await expect(bar({})).rejects.toThrow(/access_bars_pkey/);
 });
 it("bars from blocks (Controller ruling 2026-11-24, Q4): one bar per blocked pair", async () => {
-  // The block between "-- bars from blocks begin" and "-- bars from blocks end" of 074, run in a rolled-back transaction over
+  // The block between "-- bars from blocks begin" and "-- bars from blocks end" of 075, run in a rolled-back transaction over
   // 105 seeded person-to-person block rows (81 one-way, 12 pairs blocking each other) and 3 rows naming an Agent (by SQL).
   expect(await countBars()).toBe(81 + 12);
   expect(await barOf(mutualPair)).toMatchObject({ reason: "stopped", by_block: true, set_by: earlierBlockerOf(mutualPair) });
@@ -644,11 +666,17 @@ it("a report is an Agent report until a later migration widens target_kind", asy
   await expect(report({ target_kind: "message", message_id: m })).rejects.toThrow(/agent_reports_target_kind_check/);
   await expect(report({ target_kind: "agent", agent_id: null })).rejects.toThrow(/agent_reports_agent_shape/);
 });
+it("a persona saved before the aid counts as checked (attack M11); a card has one answer", async () => {
+  expect(await agentRow(agentWithPersona)).toMatchObject({ persona_checked_version: agentWithPersona.persona_version });
+  await cardAnswer(m, "moved"); await expect(cardAnswer(m, "kept")).rejects.toThrow(/social_card_answers_pkey/);
+  await expect(cardAnswer(m2, "maybe")).rejects.toThrow(/check/);
+});
 ```
-- [ ] Run → fails. Write 074 exactly:
+- [ ] Run → fails. Write 075 exactly:
 ```sql
 -- Up Migration
--- Agent social, ring 1a, lane A (design §1.1; plan A0). Deploys with lane A's code (Controller ruling 2026-11-24 (attack), C1).
+-- Agent social, ring 1a, lane A (design §1.1, §4's persona aid; plan A0, A8b). Deploys with lane A's code (Controller ruling 2026-11-24
+-- (attack), C1), together with lane B's 074 (Controller ruling 2026-11-24 (verification), E1/N1).
 create table access_bars (
   lo_id uuid not null references principals (id) on delete cascade,
   hi_id uuid not null references principals (id) on delete cascade,
@@ -695,19 +723,30 @@ create table agent_reports (
   constraint agent_reports_agent_shape check (target_kind <> 'agent' or agent_id is not null)
 );
 create index agent_reports_open_idx on agent_reports (created_at) where handled_at is null;
+-- The persona aid (plan A8b). A persona saved before it counts as checked: no burst at deploy (attack M11).
+alter table agents add column persona_checked_version integer not null default 0;
+update agents set persona_checked_version = persona_version;
+-- One answer per owner card (persona_fact now; note_withheld in ring 1b): the card's own message (attack M7).
+create table social_card_answers (
+  message_id bigint primary key references messages (id) on delete cascade,
+  answer text not null check (answer in ('yes', 'no', 'moved', 'kept')),
+  answered_at timestamptz not null default now()
+);
 -- Down Migration
+drop table social_card_answers;
+alter table agents drop column persona_checked_version;
 drop table agent_reports; drop table agent_contact_picks;
 alter table agents drop column disabled_at, drop column contact_picked, drop column contact_policy;
 drop table access_bars;
 ```
   **A message-level report later (S4, brief item 4):** a new migration replaces only the named check `agent_reports_target_kind_check` with `target_kind in ('agent', 'message', 'person', 'group')` and adds `agent_reports_message_shape check (target_kind <> 'message' or (message_id is not null and conversation_id is not null))`. `message_id` and `conversation_id` exist now and stay null, so no column is added and no row rewritten. A report never stores message text.
-- [ ] Run; commit `feat(schema): 074, bars (with those of existing blocks), contact policy, reports, disable`.
+- [ ] Run; commit `feat(schema): 075, bars (with those of existing blocks), contact policy, reports, disable, the persona aid's columns`.
 
 ### Task A1: `reach` and its SQL twin — Lane A
 
 **Files:** modify `S:src/social/reach.ts`; create `S:tests/social-reach.test.ts`.
 
-**Consumes:** 073's `agent_contacts`, 074's `access_bars`, `agents.disabled_at`, `agents.contact_policy`; `blockedEitherWay` (social/relations.ts:13).
+**Consumes:** 073's `agent_contacts`, 075's `access_bars`, `agents.disabled_at`, `agents.contact_policy`; `blockedEitherWay` (social/relations.ts:13).
 **Produces:** `reach`, `reachSql`, `refusedSql`, `discoverable`, `discoverableSql` with Step 0's signatures and the full rule; both only read.
 
 The rule (design §1.2, D3, and **Controller ruling 2026-11-24 (attack, I8)**). P is the subject when it is a person, else the subject's owner; O is the Agent's owner. In order:
@@ -907,7 +946,7 @@ export function liftBlockBar(t: Tx, unblockerId: string, otherId: string): Promi
 - **Controller ruling 2026-11-24 (Q4):**
   - Every person-to-person block writes the bar: `blockPrincipal` calls `setBar(blocker, blocked, "stopped", "block")` after its notice (blocks.ts:46).
   - `unblockPrincipal` calls `liftBlockBar` in its transaction.
-  - 074's backfill gives existing blocks their bars, and this task's code ships with it (C1).
+  - 075's backfill gives existing blocks their bars, and this task's code ships with it (C1).
 
 - [ ] **Failing test** (design §8 test 6, R2-C1 and R3-I1; group-@ parts in I1a):
 ```ts
@@ -933,7 +972,7 @@ await unblock(o2, w); expect(await barOf(o2, w)).toBeNull();
 await block(o2, w); await block(w, o2); await unblock(o2, w); expect(await barOf(o2, w)).toMatchObject({ set_by: w.id, by_block: true });
 await stop(o2, w); await block(o2, w); await unblock(o2, w); expect(await barOf(o2, w)).toMatchObject({ by_block: false });
 await block(o4, y); expect((await api(app, o4, "DELETE", `/api/bars/${y.id}`)).status).toBe(404);
-// C1: a block that existed before 074 and is removed after it ran: its unblock lifts its backfilled bar; group @ is today's again.
+// C1: a block that existed before 075 and is removed after it ran: its unblock lifts its backfilled bar; group @ is today's again.
 await runBackfill(); await unblock(oldBlocker, oldBlocked); expect(await barOf(oldBlocker, oldBlocked)).toBeNull();
 // The stricter reason is kept: unfriended then stopped → stopped; stopped then unfriended → stopped.
 // Each of a bar and an O→V block ends V's live rows and interrupts V's runs (endGrants), after the direct chat's notice.
@@ -994,6 +1033,46 @@ await groupSearchFindsNothing(); expect(JSON.stringify(await whispersOf(owner)))
   - After `agent:disable`: `reach` is `gone` for non-owners (social and group), the lookup 404s, a running others' run is interrupted, and the owner's own reply still runs.
   - `agent:enable` restores access, rows untouched.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/agent-reports.test.ts tests/social-reach.test.ts`; commit `feat(social): reports, the operator's disable, no pushes to observers`.
+
+### Task A8b: The persona aid, its worker and its card — Lane A (ring 1a)
+
+**Controller ruling 2026-11-24 (verification), N4.** The persona aid is the design's only check (§4) on owner facts written into the persona, and ring 1a sends the persona whole to a visitor's reply. It needs nothing of the judge:
+- no judge unit or `note_judge_days`;
+- no `note_verdicts`;
+- no `memoryCall` option that A7 adds.
+
+So it is in ring 1a, and its columns are in 075 (A0).
+
+**Files:** create `S:src/memory/persona-aid.ts`, `S:tests/persona-fact.test.ts`, `W:src/pages/SocialCards.jsx`, `W:tests/social-cards.test.jsx`. Modify:
+- `S:src/memory/judge.ts`: the worker; Step 0's no-op becomes a timer that does the persona aid only.
+- `S:src/messages/read.ts`: `card` on `persona_fact`, for the owner only.
+- `agent-contact-routes.ts`: fill `POST /api/agents/:id/persona-facts/:seq`.
+- `W:src/pages/Messages.jsx`: render the `persona_fact` card through `SocialCards.jsx`.
+
+**Produces:**
+- **The worker.** `startNoteJudge` runs `runOnce()` every `OTHERS.judgePollMs`. `runOnce()` claims, in one statement, at most `OTHERS.judgeOwnersPerPoll` Agents with `persona_version > persona_checked_version`, at most one per owner: `update agents set persona_checked_version = persona_version where id in (select distinct on (owner_id) id … for update skip locked) returning …`. The claim is the stamp, so an Agent is never handled twice for one version.
+  - While the switch is off, the claimed Agents are stamped and nothing is called (attack M11).
+  - It returns the calls made. Ring 1b's A7 and A8a add the judge batch and the withheld check to the same per-owner pass.
+- **The call.** While the switch is on: one `memoryCall`, as every memory call is today (the owner's memory model, reasoning `none`, the owner's memory allowance; no judge unit). It asks which persona sentences state facts about the owner or a third person.
+- **The cards.** Only sentences found verbatim in the persona as it is now are kept, at most 3. Each gets one `persona_fact` card in the Agent's own conversation (event of "Step 0 interfaces"), and the wire `card: {answer, expired, sentence}` goes to the owner only.
+- **`POST …/persona-facts/:seq {move}`.** The card must be unexpired and unanswered, else 409 `answered` / `expired`. An answer is one `social_card_answers` row (075).
+  - `move: true`, in one transaction under `lockOwnedAgent`:
+    - remove the sentence's first occurrence by a guarded update of `persona` and `persona_version + 1` (no call into lane B's `agents/store.ts`);
+    - stamp `persona_checked_version` to the new version, so the owner's own move does not re-run the aid;
+    - write the sentence as an owner note;
+    - record `moved`; push the Agent after commit.
+  - `move: false` records `kept`.
+- **Web.** `SocialCards.jsx` renders the `persona_fact` card worded by Exact copy, with 「移到“关于我”」 / 「不用」. An answered or expired card shows its answer and offers no button. Ring 1b's A12c adds the `note_withheld` card to the same file.
+
+- [ ] **Failing tests:**
+  - a non-verbatim sentence from the model makes no card;
+  - one call per persona version, and two workers polling at once make one call;
+  - a move removes exactly that sentence, adds the owner note and makes no new call;
+  - a second move → 409;
+  - personas saved while the switch was off make no call when it is turned on;
+  - the card and its `card` field reach the owner only (`HIDDEN_KEYS`);
+  - web: the wording and both buttons; 「移到“关于我”」 sends `move: true`; an answered card shows no button.
+- [ ] Run → fails. Implement. Run `npx vitest run tests/persona-fact.test.ts tests/persona.test.ts tests/agents-co-members.test.ts`; `npm test`, `npm run build` in `app/web`; commit `feat(memory): the persona aid, its worker and its card (ring 1a)`.
 
 ### Task A11a: Web: find and add an Agent, with the disclosure; contacts — Lane A
 
@@ -1068,7 +1147,7 @@ Create `W:tests/social-chat.test.jsx`, `W:tests/social-list.test.js`.
 
 ## Ring 1a, lane B: step L money, then the social runs
 
-Branch `lane/social-b` from the Step 0 merge. B1–B4 and B9a–b are step L: limits and bounds in groups whatever the switch says. They ship first. B5–B8 are the social runs, inert while the switch is off.
+Branch `lane/social-b` from the Step 0 merge. B1–B4 and B9a–b are step L: limits and bounds in groups whatever the switch says. B5–B8 are the social runs, inert while the switch is off. **Controller ruling 2026-11-24 (verification), E1/N1:** lane B is never deployed alone. Its 074 and lane A's 075 are applied together when both lanes merge at lane I (D1, Rollout 3).
 
 ### Task B1: `othersFits` and the two numbers at admission — Lane B
 
@@ -1084,7 +1163,8 @@ export function othersUsedToday(q: Queryable, config: Pick<Config, "siteTimezone
 export function othersReached(q: Queryable, config: Pick<Config, "others" | "siteTimezone">, ownerId: string, agentId: string, lane: OthersLane, now: Date): Promise<boolean>;
 /** null: no tools (one call). Else call 1 + the last call at min(held + growth, roomCap) (B2b). */
 export function othersHold(resolved: Pick<Resolved, "price" | "call" | "source">, heldTokens: number, room: { growthTokens: number; roomCapTokens: number } | null): bigint;
-// admit.ts: admit(…, runId, others: { agentId: string; lane: OthersLane } | null = null)
+// admit.ts: admit(…, runId, others: { agentId: string; lane: OthersLane; plainMicro: bigint | null } | null = null): Promise<Admission>
+// Admission gains `plain?: true` (N3: the with-tools hold did not fit, the one-call hold did).
 ```
 - **One answer:** an admitted reply chain in lane `others` or `proactive`, counted as distinct `coalesce(retry_of, id)` over runs with `purpose = 'reply'` and `admitted_at` in the site day. `admitted_at` is written by `admitRun` and never reset; the claim time is (port-impl.ts:494, :928), hence attack M2. A chain counts whatever its end. The run being admitted adds 1 unless its chain already counts today.
 - **Points** (**Controller ruling 2026-11-24 (attack, C2)**, D19), the sum of three:
@@ -1094,10 +1174,21 @@ export function othersHold(resolved: Pick<Resolved, "price" | "call" | "source">
 
   The sum is checked against the owner's number, the Agent's own number when set, and for `proactive` the Agent's `proactive_budget_micro` (now hard).
 - `othersFits` takes the account lock first. At admission it checks answers and then points; at a search or a round, points only. A points refusal while other running others' runs hold anything in that scope → `{heldBackBy}`; else `{limit}`. Answers never wait.
-- `admit`: before the provider shortcut (admit.ts:171), for `purpose = 'reply'` and `others` not null, x is 0 for a provider model, else `maxCostMicro(resolved, inputTokensEstimate) + lastCallMicro`. `heldBackBy` → `throw new HeldBack(ids, "any")` (D10); `limit` → `throw new OthersLimit(limit)`. Admit.ts:193 becomes `purpose === "reply" && keepsRoom(cls, others?.lane ?? "own")`. `admitRun` reads `lane, agent_id` with the row it locks and passes `others` for lanes other than `own`.
+- **The admission rule, one money invariant** (**Controller ruling 2026-11-24 (verification), N3**; attack M12). "What is left" is the number minus the settled charges today minus `Σ hold_micro` of every in-flight others' run in the scope. In order:
+  1. The reply is admitted **with tools** if its with-tools hold fits what is left.
+  2. Otherwise it is admitted **plain** if its one-call hold fits what is left. The one-call hold is `holdTokens([withoutTools, …texts])` (port-impl.ts:836). The two kinds of points refusal are treated alike here: one with other runs holding (`heldBackBy`) and one without (`limit: "points"`).
+  3. Otherwise it is refused as the design says. While other runs hold, it waits (`HeldBack`). With nothing held, it ends (`OthersLimit`).
+
+  An answers refusal is never retried plain. So settled + Σ holds never passes the number, whatever order replies arrive in.
+- `admit`: before the provider shortcut (admit.ts:171), for `purpose = 'reply'` and `others` not null, x is 0 for a provider model, else `maxCostMicro(resolved, inputTokensEstimate) + lastCallMicro`.
+  - `others` is `{ agentId, lane, plainMicro }`. `plainMicro` is the one-call hold for a run offered tools, else null.
+  - A points refusal of x with `plainMicro` set asks `othersFits` again with `plainMicro`, in the same transaction under the same account lock. A fit returns `Admission.plain = true`, with the one-call hold and no `lastCallMicro`.
+  - Else the first refusal stands: `heldBackBy` → `throw new HeldBack(ids, "any")` (D10); `limit` → `throw new OthersLimit(limit)`.
+  - Admit.ts:193 becomes `purpose === "reply" && keepsRoom(cls, others?.lane ?? "own")`.
+  - `admitRun` reads `lane, agent_id` with the row it locks and passes `others` for lanes other than `own`.
 - `begin` step 3:
-  - **The plain fallback** (attack M12): a with-tools hold refused for points, where the one-call hold (`holdTokens([withoutTools, …texts])`, port-impl.ts:836) fits, is admitted plain. The call is `systemWithoutTools` with no tools; counter `others_plain_fallback`.
-  - Otherwise `OthersLimit` hands back what step 1 took on and ends `ENDED_QUIETLY`, with `agent_daily_budget_reached` once a site day in the run's conversation and its owner pushed; counter `others_limit_refused`.
+  - `Admission.plain` → the call is `systemWithoutTools` with no tools; counter `others_plain_fallback`.
+  - `OthersLimit` hands back what step 1 took on and ends `ENDED_QUIETLY`, with `agent_daily_budget_reached` once a site day in the run's conversation and its owner pushed; counter `others_limit_refused`.
   - An others' `HeldBack` counts `others_held_back`.
 - `refusedAtAdmission` keeps only the proactive switch.
 
@@ -1108,9 +1199,13 @@ expect(othersHold(free, 20_900, ROOM)).toBe(8_387_260n);  expect(othersHold(paid
 await seedChains(owner, 49);
 const [a, b] = await Promise.allSettled([admitOthers(run1), admitOthers(run2)]);   // two visitors, two connections, the last answer
 expect([a, b].filter((r) => r.status === "fulfilled")).toHaveLength(1); expect(rejectedWith([a, b])).toEqual(new OthersLimit("answers"));
-// C2: the run's own hold counts. Owner's number 30 points; five concurrent replies of 8.387 each: three admitted, two held back
-// behind them; after every admission, search and round of all five, settled + Σ holds ≤ 30 (a sum query after each step).
-// M12: with 25 points left and a with-tools hold of 8.387 refused behind three others, a plain hold of 2.534 fits → admitted plain.
+// C2 and N3, the invariant only (no count of admitted replies is asserted): owner's number 30 points; five concurrent replies offered
+// tools (8.387 with tools, 2.534 plain), on five connections, in every arrival order of a seeded shuffle. After every admission,
+// search, round and settle of all five, settled + Σ holds ≤ 30 (a sum query after each step). Every reply ends posted, waiting, or
+// ended quietly with agent_daily_budget_reached.
+// N3, the rule's order, each from scratch under a number of 30: 25.16 held by others (4.84 left) → admitted plain; 1 held by others
+// (29 left) → with tools; 28 held by others (2 left) → waits (HeldBack "any"); nothing held, 28 settled → OthersLimit("points").
+// The plain admission is the same whether the with-tools refusal was heldBackBy or limit.
 // An Agent's own lower number binds first; a proactive reply meets its proactive budget as a hard sub-cap.
 // BYOK: a provider reply holds 0 and is refused only by answers.
 // RF4: claimed 23:59:58, admitted 00:00:01 → counted on the new day, and still on the new day when read later (admitted_at);
@@ -1141,7 +1236,7 @@ Lane `own` (own conversation and groups) sets none of this and is byte-identical
 
 ### Task B2b: The hold that covers it, and the one discard — Lane B
 
-**Files:** modify `S:src/agents/port-impl.ts` (:895–919 the hold; `extend` :1091–1147, the kept room at :1122), `S:src/agents/runtime/worker.ts` (:733–750); extend `S:tests/others-bounds.test.ts`.
+**Files:** modify `S:src/agents/port-impl.ts` (:895–919 the hold; `extend` :1091–1147, the kept room at :1122), `S:src/agents/runtime/worker.ts` (:712 the refused-round retry, :733–750); extend `S:tests/others-bounds.test.ts`.
 
 **Produces** (Controller ruling 2026-11-24, closing Q1; **Controller ruling 2026-11-24 (attack, C3 and I6)**):
 - **The hold, up front**, for an others' reply offered tools, has two parts. Each request the reply can make is inside one of them:
@@ -1152,6 +1247,10 @@ Lane `own` (own conversation and groups) sets none of this and is byte-identical
 - **Which request takes the last-call part:** exactly one of these.
   - The final request carrying the step: ≤ 1 result and ≤ 3 notes, bytes ≤ `othersGrowth` by construction.
   - **The tool-less request after a discard.** Its input is at most `held`: the system text without tools and the same messages, smaller than call 1's (port-impl.ts:835).
+  - **The tool-less request after a refused final request** (**Controller ruling 2026-11-24 (verification), M-V3**). Today's worker asks once more without tools when a later round is refused 400 or 422 (worker.ts:712–720). For an others' reply that later round is the final request, which already took the last-call part.
+    - If the refused round reported **no usage** (`finished?.usage` absent, or zero input and output), it spent nothing. The tool-less request takes the last-call part in its place, as today.
+    - If it reported usage, an others' reply asks nothing more: it ends as any failed round ends today (`ending = { last: round }`, worker.ts:722). So spend stays call 1 + the refused round ≤ the hold.
+    - The guard is one condition added to worker.ts:712 for runs with `toolRun.callsCap` set. Lane `own` is unchanged.
 
   **Controller ruling 2026-11-24 (final):** the third hold part goes, and the earlier three-part ruling is withdrawn. The others' hold with tools is call 1 plus the last call, the latter with 3 over-cap notes. The tool-less finish fits the last-call part because a discard can only follow the first request (I6, C3). Hold with tools, at the design's figures: **8.39** points free tier, **194.1** paid. At 70: 50 × 0.85 + 3 × (8.39 + 0.77) = 69.98.
 - **The discard** (C3): only on the request that offered tools (request 1: neither `final` nor `plain`), at most once per reply.
@@ -1182,6 +1281,8 @@ expect(gateway.calls[1]!.system).toBe(prepared.call.systemWithoutTools); expect(
 // exactly 2 model calls, spend ≤ hold, finished within 2 s of scripted time (well inside runTimeoutMs, config.ts:353).
 // A 65-character id among 2 calls → counted as one call; its step would pass the counted bytes → over → discarded → tool-less.
 // The extend calls of an others' reply never raise the hold (raise 0 at every one).
+// M-V3: the final request refused 422 with no usage → one tool-less request, posted, spend ≤ hold; refused 422 reporting usage →
+// no further request (exactly 2 model calls), the run ends as a failed round, spend ≤ hold. An own-lane reply's 422 retry is unchanged.
 ```
 - [ ] Run → fails. Implement. Run `npx vitest run tests/others-bounds.test.ts tests/others-fits.test.ts tests/gateway-tools.test.ts tests/gateway-replay.test.ts tests/tool-loop.test.ts tests/tool-loop-money.test.ts tests/reply-history.test.ts tests/replay.test.ts`; commit `feat(agents): an others' reply's hold covers every request it can make; one discard, finished without tools`.
 
@@ -1204,34 +1305,55 @@ expect(gateway.calls[1]!.system).toBe(prepared.call.systemWithoutTools); expect(
 
 ### Task B4: The numbers on the wire, the use routes, the one-time card — Lane B
 
-**Files:** modify `S:src/agents/routes.ts` (:76–82, :130, :156, :176–177, :206–218, :249, :292, :367, :414–423), `S:src/agents/store.ts` (`AgentRow.othersAnswers`), `S:src/accounts/others-routes.ts`; create `S:tests/others-routes.test.ts`, `S:tests/others-migration.test.ts`. Fix the tests B4 turns red, all lane B's: `agents-group-reply`, `agents-others-budget`, `agents-proactive-settings`, `agents`, `fuzz`, `money-blocking`, `tool-loop-money`, `web-search-rules`, `web-search` (`*.test.ts`). `agents-co-members.test.ts` needs nothing (Step 0).
+**Files:** create `S:migrations/074_others_step_l.sql`, `S:tests/others-routes.test.ts`, `S:tests/others-migration.test.ts`. Modify `S:src/agents/routes.ts` (:76–82, :130, :156, :176–177, :206–218, :249, :292, :367, :414–423), `S:src/agents/store.ts` (`AgentRow.othersAnswers`), `S:src/accounts/others-routes.ts`, `S:tests/schema-agents.test.ts` (:109–128). Fix the tests B4 turns red, all lane B's: `agents-group-reply`, `agents-others-budget`, `agents-proactive-settings`, `agents`, `fuzz`, `money-blocking`, `tool-loop-money`, `web-search-rules`, `web-search` (`*.test.ts`). `agents-co-members.test.ts` needs nothing (Step 0).
+
+**Migration 074** (**Controller ruling 2026-11-24 (verification), E1/N1**). The step-L raise leaves Step 0's inert 073 and is lane B's own migration, written here with the code that reads it. Today's code reads `others_budget_micro` as each Agent's own soft budget with no owner cap (runs.ts:900–903, :1006–1013). So the raise may never be applied without lane B's owner cap, and 074 deploys only with lane B's code: lanes A and B merge together at lane I (D1, Rollout 3). Exactly:
+```sql
+-- Up Migration
+-- Step L (design §5; plan B4). Deploys only with lane B's code, which makes an Agent's number a sub-limit inside its owner's
+-- (Controller ruling 2026-11-24 (verification), E1/N1).
+-- Controller ruling 2026-11-24 (attack, I7): an Agent's number still at migration 020's default (20 points) becomes 70. A value an
+-- owner set to exactly 20 cannot be told from the default, so every row at exactly 20 points is raised. New Agents get none of their own.
+-- Controller ruling 2026-11-24 (final): 70 is the owner's default, so the raise never lets an Agent pass its owner's cap. The owner's
+-- numbers are not written here: null reads OTHERS.answersPerDay (50) and OTHERS.pointsPerDay (70), one value per owner however many
+-- Agents they have (plan "Design conflict for the owner").
+update agents set others_budget_micro = 70000000 where others_budget_micro = 20000000;
+alter table agents alter column others_budget_micro set default null;
+-- Down Migration
+-- (the raise is not undone: a row at 70 cannot be told from one an owner set)
+alter table agents alter column others_budget_micro set default 20000000;
+```
+- `tests/schema-agents.test.ts:109–128` changes with it (G1): its title says "null by default"; the `ob_default` row expects `budget: null`; the rest of the range checks stay.
+- The new default is tested by a SQL insert there, as the existing test does (`insert into agents (principal_id) values ($1)`). Creation through the API passes `DEFAULT_OTHERS_BUDGET` (agents/routes.ts:82, :292) until this task removes it (G2).
 
 **Produces:**
 - Agent wire:
   - `othersLimit: {answers: number | null, points: string | null}`: its own lower numbers, points from `others_budget_micro`;
   - `othersUsedToday: {answers, points}`;
   - `othersBudget`, `othersSpentToday`, `proactiveSpentToday` leave it; `proactiveBudget` stays.
-- `PATCH` takes `othersLimit` (or `null`). For one release an `othersBudget` in a body is read as `othersLimit.points`. A new Agent gets no number of its own: `DEFAULT_OTHERS_BUDGET` (:82) goes, null is the default (D9).
+- `PATCH` takes `othersLimit` (or `null`). For one release an `othersBudget` in a body is read as `othersLimit.points`. A new Agent gets no number of its own: `DEFAULT_OTHERS_BUDGET` (:82) and its use at :292 go, and an absent key writes null, the column's default after 074 (D9; G2).
 - `GET /api/me/others-use`:
   - `byPerson`: today's callers of the owner's others' runs, ordered by points, then answers, then id;
-  - `stopped`: bars this owner set with reason `stopped` that are not `by_block`. **Controller ruling 2026-11-24 (final):** the list is empty until 074 deploys. It is read only while `SOCIAL.enabled`, which cannot be on before 074 (Rollout), else `[]`, so the route never names a table step L does not have, and no control is shown that cannot work (B9a);
-  - `agents[].perDay = perDayEstimate(price, numbers)`: 0 when the owner's points do not cover one plain hold (16 500 bytes), else `min(answers, 1 + ⌊(points − plainHold) / plainCost⌋)` with `plainCost` = 5 000 input and 500 output tokens at the model's price. That is 50 for the free tier at 70 and 1 for the paid tier; a provider model gets the answers number;
+  - `stopped`: bars this owner set with reason `stopped` that are not `by_block`. **Controller ruling 2026-11-24 (final):** the list is empty until lane A's 075 is in (it creates `access_bars`). It is read only while `SOCIAL.enabled`, which is never on before 075 (Rollout), else `[]`. So the route never names a table lane B's branch lacks, and no control is shown that cannot work (B9a). Its end-to-end path is I1a.7 and I2a (M-V6);
+  - `agents[].perDay = perDayEstimate(price, numbers)`: 0 when the binding points (the owner's, or the Agent's own lower number) do not cover one plain hold (16 500 bytes), else `min(answers, 1 + ⌊(points − plainHold) / plainCost⌋)` with `plainCost` = 5 000 input and 500 output tokens at the model's price. That is 50 for the free tier at 70 and 1 for the paid tier; a provider model gets the answers number;
   - `notice`: true while `others_notice_seen_at` is null and the owner has an Agent (Controller ruling 2026-11-24, Q5).
 - `PUT /api/me/others-limits`, `POST /api/me/others-limits/seen`.
 
 - [ ] **Failing tests:**
-  - `others-migration.test.ts`: the step-L block of 073 (between its markers), in a rolled-back transaction over seeded Agents:
-    - an Agent at 20 points → 70 (I7); one at 35 stays 35; one at null stays null;
+  - `others-migration.test.ts`: 074's Up, in a rolled-back transaction over seeded Agents:
+    - an Agent at 20 points → 70 (I7); one at 35 stays 35; one at null stays null; a new row's default is null;
     - no `accounts.others_*` value is written: every owner reads 70 points and 50 answers (Controller ruling 2026-11-24 (final));
-    - an owner with three Agents at the old default: others' replies spread over the three, each settling 7 points: 10 are admitted (70 settled), the 11th is refused (70 + its hold > 70), never anywhere near 210;
-    - RF9: a paid-tier owner at the old default answers a member's @ at least once a day (61.5 ≤ 70).
+    - **M-V1, the price explicit:** an owner with three Agents at the old default, on a scripted model whose every others' reply holds exactly 7 points and settles exactly 7 (usage = hold, no tools). Replies come one after another, spread over the three. After every admission and settle, settled + Σ holds ≤ 70 (N3's invariant, not a count). The 11th reply of the day is refused because 70 settled + 7 > 70, never anywhere near 210;
+    - RF9: a paid-tier owner at the old default answers a member's @ at least once a day (61.5 ≤ 70);
+    - **M-V2:** an Agent whose owner set its own number below 20 (say 10 points) keeps that number after 074. On a paid-tier model (plain hold 61.5 > 10) it answers no one: no reply of others is admitted, and the use page shows its `perDay` as 0. It is the owner's own number, shown on the form (B9b), which the owner may raise or clear.
   - `others-routes.test.ts`:
     - the wire keys;
     - `PATCH othersLimit` round-trips; the `othersBudget` alias works;
     - 12 people with points crossing 10 and 100 come in order;
-    - `perDay` is 50 free and 1 paid;
+    - `perDay` is 50 free and 1 paid, and 0 for M-V2's Agent at 10 points on the paid tier;
+    - `stopped` is `[]` while the switch is off;
     - `notice` is true until seen.
-- [ ] Run → fail. Implement. Run `npx vitest run tests/others-routes.test.ts tests/others-migration.test.ts tests/agents.test.ts tests/readme.test.ts tests/agents-co-members.test.ts` and the nine above; commit `feat(money): others' numbers on the wire, the use routes, the step-L card`.
+- [ ] Run → fail. Implement. Run `npx vitest run tests/others-routes.test.ts tests/others-migration.test.ts tests/schema-agents.test.ts tests/agents.test.ts tests/readme.test.ts tests/agents-co-members.test.ts` and the nine above; commit `feat(money): 074, others' numbers on the wire, the use routes, the step-L card`.
 
 ### Task B5a: `placeOf` in the run code and the hub — Lane B
 
@@ -1415,7 +1537,7 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
 - today's use, with 「别人今天的使用已到上限」 when reached;
 - today by person.
 
-**Controller ruling 2026-11-24 (attack, I10):** 「停止往来」 on each person and the stopped list with 「恢复往来」 show only while `state.social.enabled`. During step L alone they are absent.
+**Controller ruling 2026-11-24 (attack, I10):** 「停止往来」 on each person and the stopped list with 「恢复往来」 show only while `state.social.enabled`. While the switch is off they are absent.
 
 The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(pointer: coarse)`.
 
@@ -1427,16 +1549,24 @@ The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(point
 **Files:** modify `W:src/pages/Agents.jsx` (`othersRows`; 「别人今天的使用已到上限」 on the card and the page; the notice), `W:src/pages/AgentForm.jsx` (:94–116, :167–197, :423–474), `W:src/data/viewmodel.js` (:723–729); fix `W:tests/agents-model.test.js`, `agents-pages.test.jsx`, `viewmodel.test.js`; create `W:tests/agent-form-others.test.jsx`.
 
 **Produces:**
-- The one-time notice at the top of 我的 Agent while `notice`: 「别人让你的 Agent 回复，现在按你的两个数算：每天最多 {answers} 次、最多 {points} 点。每个 Agent 原来的点数上限不变。」 with 「知道了」 → `seenOthersNotice`. It is web UI, dismissed per account, never a chat event (Controller ruling 2026-11-24, Q5).
-- AgentForm: 「它自己的上限（可不填）：每天最多回别人 {N} 次，最多花 {M} 点」 sends `othersLimit`.
+- **The one-time notice** at the top of 我的 Agent while `notice`, worded by Exact copy, with 「知道了」 → `seenOthersNotice`. It is web UI, dismissed per account, never a chat event (Controller ruling 2026-11-24, Q5).
+  - **Controller ruling 2026-11-24 (verification), N2:** the copy says what changed. The limit is now per person: {answers} answers and {points} points a day, shared by all of the owner's Agents. Each Agent's own number was raised where it still had the old default. No sentence says the numbers are unchanged. {answers} and {points} are the owner's numbers as `GET /api/me/others-use` gives them.
+- **AgentForm** (**verification, M-V4**): 「它自己的上限（可不填）：每天最多回别人 {N} 次，最多花 {M} 点」 sends `othersLimit`.
+  - Both fields show the Agent's own numbers as stored, so a raised 70 shows as 70.
+  - Emptying a field and saving sends `null` for it, so the Agent then has only its owner's numbers. This is how an owner who raised their own number above 70 lets an Agent with the raised 70 use it.
 
-- [ ] **Failing tests:** the notice shows while `notice` and goes after 「知道了」; AgentForm sends `othersLimit` and never `othersBudget`; the card says 「别人今天的使用已到上限」 when used ≥ limit.
+- [ ] **Failing tests:**
+  - the notice shows while `notice` and goes after 「知道了」;
+  - its text is exactly Exact copy's, with the owner's two numbers, and it contains no 「不变」;
+  - AgentForm sends `othersLimit` and never `othersBudget`;
+  - a raised 70 shows as 70; clearing both fields sends `othersLimit: null`;
+  - the card says 「别人今天的使用已到上限」 when used ≥ limit.
 - [ ] Run → fails. Implement. `npm test`, `npm run build`; commit `feat(web): an Agent's own numbers and the step-L notice`.
 - [ ] **Push `lane/social-b` and read the run.**
 
 ## Ring 1a, lane I: integration
 
-Branch `lane/social-i1a` from the merge of both lanes' ring-1a work.
+Branch `lane/social-i1a` from the merge of both lanes, made as soon as the minimum for the first trial is in (Rings table; Controller ruling 2026-11-24 (verification), I15). This first joint merge brings 074 and 075 to the working branch together, and they are applied in order in one deploy. The rest of ring 1a merges in after it. Neither lane merges to the working branch before it, and later merges of either lane carry no new migration. A test below whose task is not yet in is marked `todo` until that task merges.
 
 ### Task I1a: Tests that need both lanes — Lane I
 
@@ -1445,10 +1575,18 @@ Branch `lane/social-i1a` from the merge of both lanes' ring-1a work.
 - [ ] **Tests**, with the real add, approve, trigger, begin and post paths and a scripted gateway:
   1. **Design §8 test 1, whole.** A visitor's reply is mid-call (`gateway.hang()`). Each of a bar, a narrowing to `none`, a removal, a block O→V and a block V→Agent commits. Nothing is posted; the run ends `cancelled`/`access_ended`; no `delta` or `activity` frame of it reaches anyone afterwards.
   2. **Test 2, end to end.** 50 visitor answers across a site day are admitted; the 51st ends quietly with one `agent_daily_budget_reached`; the owner's own reply runs.
-  3. **C2.** Five concurrent visitor replies under an owner's number of 30 points. After every admission, search and round, settled + Σ holds ≤ 30 (a sum query after each step); never more than three are admitted at once.
+  3. **C2 and N3.** Five concurrent visitor replies under an owner's number of 30 points. After every admission, search, round and settle, settled + Σ holds ≤ 30 (a sum query after each step). No count of admitted replies is asserted (Controller ruling 2026-11-24 (verification), N3).
   4. **Test 6, group parts.** After 停止往来, V's @ of the Agent in a shared group is refused (no run), and so is V's Agent's relay; an O block of V's Agent refuses its relays (I8). A pair who never had access keeps group @ after an unfriend. One bar and one Agent-naming block join B5b's twin data and agree.
   5. **Test 5, ring 1a part.** A vault canary and an open-note canary of the owner appear in no request of a visitor's reply and in no response to the visitor.
   6. **Controller ruling 2026-11-24 (Q3).** The same group @ scenario, on fresh states, once with the switch off and once on: the `ModelCall` (mark replaced), the posted body and the frames to every member are byte-identical. With the switch off, creating, writing in and claiming a run in a social conversation are refused, and no entry point shows.
+  7. **The stopped list end to end** (**Controller ruling 2026-11-24 (verification), M-V6**). With the switch on, the owner's `PUT /api/bars/:v` through the real route. Then:
+     - `GET /api/me/others-use` lists V under `stopped`;
+     - V's add is refused by the cooldown;
+     - the owner's `DELETE /api/bars/:v` (恢复往来) empties `stopped`;
+     - V's next add is a request again, and V's old row stays `ended`/`barred`;
+     - a bar that stands for a block (`by_block`) is never in `stopped`.
+
+     With the switch off the same owner reads `stopped: []`.
 - [ ] Run; a red here is fixed in the owning lane's files by its rules. Commit `test(social): ring 1a across both lanes`.
 
 ### Task I2a: The browser path, the phone rules, the trial — Lane I
@@ -1460,6 +1598,8 @@ Branch `lane/social-i1a` from the merge of both lanes' ring-1a work.
   - The owner approves under 「别人」. V writes; the Agent replies (model stub).
   - The owner finds the conversation under 「它和别人的对话」, not in 消息, its unread out of the total. The owner writes and V sees 主人. The Agent's next reply is interrupted by the owner's message.
   - The owner presses 「停止往来」 on the use page, and V's composer says 「你已不能再和它聊天。」 once.
+  - The stopped list (M-V6): V is listed with 「恢复往来」. The owner presses it, V leaves the list, and V can send a new request from the add dialog.
+  - The owner opens the persona card A8b posted for a seeded persona fact and presses 「移到“关于我”」. The sentence leaves the persona and appears under 关于我. (Marked `todo` until A8b merges, as I1a's are.)
   - The narrowing and report dialogs take Esc and return focus.
 - [ ] **Phone rules**, at 375 × 812 with touch and at 360 width:
   - the chat column is never wider than the viewport (`chat-width.spec.mjs`'s measurement);
@@ -1468,7 +1608,7 @@ Branch `lane/social-i1a` from the merge of both lanes' ring-1a work.
   - the header line wraps inside the column;
   - nothing fixed to an edge sits under a safe area.
 - [ ] Run on a fresh `E2E_DATABASE` (ending `_e2e`) and a free `E2E_PORT`; commit `test(e2e): others reach my Agent, ring 1a`.
-- [ ] **Push and read the run.** Merge. Deploy to the acceptance site with the switch on for two test accounts: the trial (Rollout 3).
+- [ ] **Push and read the run.** Merge. Deploy to the acceptance site (both lanes, 074 and 075 in order) with the switch on for two test accounts: the trial (Rollout 3).
 
 ---
 
@@ -1476,14 +1616,14 @@ Branch `lane/social-i1a` from the merge of both lanes' ring-1a work.
 
 Lane A only (memory and its web), then lane I. Lane B's code already records shown and withheld notes (B7c) and checks them at the post (B8); ring 1b fills `loadNotes`' social branch and `shownNotesPass` behind the same signatures. Branch `lane/social-a1b` from the ring-1a merge.
 
-### Task A6a: Migration 075; candidates and the use rule, per Agent — Lane A
+### Task A6a: Migration 076; candidates and the use rule, per Agent — Lane A
 
-**Files:** create `S:migrations/075_social_notes.sql`; modify `S:src/memory/passage.ts` (`loadNotes` social), `S:src/memory/store.ts` (`candidatesFor`); create `S:src/memory/verdicts.ts`, `S:tests/social-notes.test.ts`.
+**Files:** create `S:migrations/076_social_notes.sql`; modify `S:src/memory/passage.ts` (`loadNotes` social), `S:src/memory/store.ts` (`candidatesFor`); create `S:src/memory/verdicts.ts`, `S:tests/social-notes.test.ts`.
 
-**Produces:** 075, exactly:
+**Produces:** 076 (Controller ruling 2026-11-24 (verification), E1/N1; the persona aid's columns and `social_card_answers` are 075's, A0), exactly:
 ```sql
 -- Up Migration
--- Notes for a non-owner audience, ring 1b, lane A (design §4; plan A6a–A8b).
+-- Notes for a non-owner audience, ring 1b, lane A (design §4; plan A6a–A8a).
 -- Controller ruling 2026-11-24 (attack, I1): a verdict is per (note, audience, Agent), because the basis and the appellation are per Agent.
 create table note_verdicts (
   note_kind text not null check (note_kind in ('owner', 'self')),
@@ -1515,21 +1655,12 @@ create table note_judge_days (
   withheld_used integer not null default 0 check (withheld_used >= 0 and withheld_used <= used),
   primary key (owner_id, day)
 );
-create table social_card_answers (
-  message_id bigint primary key references messages (id) on delete cascade,
-  answer text not null check (answer in ('yes', 'no', 'moved', 'kept')),
-  answered_at timestamptz not null default now()
-);
--- A persona saved before ring 1b counts as checked: no burst at deploy (attack M11).
-alter table agents add column persona_checked_version integer not null default 0;
-update agents set persona_checked_version = persona_version;
 alter table agent_runs add column withheld_checked_at timestamptz;
 create index agent_runs_withheld_idx on agent_runs (finished_at) where withheld_notes is not null and withheld_checked_at is null;
 -- Down Migration
 drop index agent_runs_withheld_idx;
 alter table agent_runs drop column withheld_checked_at;
-alter table agents drop column persona_checked_version;
-drop table social_card_answers; drop table note_judge_days; drop table note_verdicts;
+drop table note_judge_days; drop table note_verdicts;
 ```
 and
 ```ts
@@ -1546,7 +1677,9 @@ export function basisOf(q: Queryable, agentId: string, ownerId: string, audience
   - a current owner yes: `owner_share = true` and `owner_version` equal to the note's version (in `exactTs` form, memory/write.ts:30; attack M10);
   - no owner no, and a judge yes on **this Agent's** row at the current version and `basisKey`.
 
-  **Controller ruling 2026-11-24 (final):** an owner's yes or no on a shared owner note applies on all of that owner's Agents for that visitor (design §4: the owner's no follows the note; a yes is version-bound). The use rule reads the owner columns of any row of (note, audience) among the owner's Agents. Only the judge's verdict is per Agent, for its own Agent's basis.
+  **Controller ruling 2026-11-24 (final):** an owner's yes or no on a shared owner note applies on all of that owner's Agents for that visitor (design §4: the owner's no follows the note; a yes is version-bound). Only the judge's verdict is per Agent, for its own Agent's basis.
+
+  **Controller ruling 2026-11-24 (verification), M-V5: the rows never disagree.** `setOwnerVerdict` (A6b) writes the owner columns on **every** existing row of (note, audience) among the owner's Agents, in Agent-id order in one transaction. A row inserted later copies the owner columns of any existing row of (note, audience), and that copy is in the same statement as the insert. So one owner decision is on all the rows. If two decisions race, the second waits on the first's row locks and then overwrites every row. Should two rows still differ (a bug), **no wins**: the note is left out.
 - A missing row is inserted queued; a stale one is reset (version, basis, `judge_share` null, `judge_attempts` 0, `asked_at = now()`, lease cleared). Either way the note is left out. Writes happen in (kind, id) order in the caller's transaction (attack M9).
 - `loadNotes` social returns `SocialNote`s with refs, `shown`, and `withheld` (not shown and not under an owner no).
 
@@ -1561,10 +1694,13 @@ expect(await row(n1, v, y1)).toMatchObject({ judgeShare: true }); expect(await r
 // An owner no on Y1's message holds on Y2 too (an owner note); an owner yes is unused after an edit, kept as the judge's example.
 await ownerSays(n2, v, y1, false); expect(shownTexts(await load(v, y2))).not.toContain(n2.text);
 await ownerSays(n3, v, y1, true); await edit(n3); expect(shownTexts(await load(v, y1))).not.toContain(n3.text);
+// M-V5: a row first made on Y3 after the owner's no on Y1 carries that no; a yes and a no racing (two connections) leave every row of
+// (n4, v) with the same owner columns; rows forced to differ by SQL → n4 is not shown on either Agent.
+await ownerSays(n2, v, y1, false); await load(v, y3); expect(await row(n2, v, y3)).toMatchObject({ ownerShare: false });
 // Test 5 (part): a vault note is never a candidate, even under an owner yes; hearsay never; the vault canary appears in no result.
 // 105 notes, cut at notesWeight, strongest first. Two runs for one audience on Y1 and Y2 at once (two connections): no deadlock.
 ```
-- [ ] Run → fails. Implement. Run `npx vitest run tests/social-notes.test.ts tests/memory-store.test.ts tests/memory-prompt.test.ts`; commit `feat(memory): notes for a non-owner audience, per Agent (075)`.
+- [ ] Run → fails. Implement. Run `npx vitest run tests/social-notes.test.ts tests/memory-store.test.ts tests/memory-prompt.test.ts`; commit `feat(memory): notes for a non-owner audience, per Agent (076)`.
 
 ### Task A6b: Owner verdicts, merge and split, the post-time check, shown notes on the wire — Lane A
 
@@ -1589,7 +1725,7 @@ export function setOwnerVerdict(t: Tx, agent: AgentRow, note: { kind: NoteKind; 
 
 **Files:** modify `S:src/memory/judge.ts`, `S:src/memory/call.ts` (`MemoryCallInput` gains `reasoning?: ReasoningLevel` and `model?: "judge"`); create `S:tests/note-judge.test.ts`.
 
-**Produces:** `startNoteJudge` with a timer every `OTHERS.judgePollMs` while the switch is on. `runOnce()` serves at most `OTHERS.judgeOwnersPerPoll` owners, oldest queued first (attack M16), each with at most one judge batch, one withheld check (A8a) and one persona aid (A8b). It returns the calls made.
+**Produces:** the judge batch in A8b's worker (ring 1a). `runOnce()` now serves at most `OTHERS.judgeOwnersPerPoll` owners with queued rows, oldest queued first (attack M16), each with at most one judge batch, one withheld check (A8a) and one persona aid (A8b's claim, unchanged). Queued rows are handled only while the switch is on. It returns the calls made.
 
 `memoryCall` with `model: "judge"` uses the owner's memory model if chosen, else `MEMORY.judgeModel`, else `MEMORY.model`. `reasoning` defaults to `none`, so today's calls stay byte-identical.
 
@@ -1656,40 +1792,16 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - a file-only question is skipped with no call.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/note-withheld.test.ts tests/note-judge.test.ts`; commit `feat(memory): the withheld check and its card`.
 
-### Task A8b: The persona aid and its card — Lane A
+### Task A12c: Web: shown notes and the withheld card — Lane A
 
-**Files:** create `S:src/memory/persona-aid.ts`, `S:tests/persona-fact.test.ts`; modify `S:src/memory/judge.ts`; fill `POST /api/agents/:id/persona-facts/:seq`.
-
-**Produces:**
-- An Agent whose `persona_version > persona_checked_version` is handled only while the switch is on. While it is off, the worker stamps such Agents checked without a call (attack M11). It is stamped checked first, then one `memoryCall` (owner-caused, not counted) asks which persona sentences state facts about the owner or a third person.
-- Only sentences found verbatim in the persona as it is now are kept, at most 3; each gets one `persona_fact` card.
-- `POST …/persona-facts/:seq {move}`: the card must be unexpired and unanswered (else 409 `answered` / `expired`).
-  - `move: true`, in one transaction under `lockOwnedAgent`:
-    - remove the sentence's first occurrence by a guarded update of `persona` and `persona_version + 1` (no call into lane B's `agents/store.ts`);
-    - stamp `persona_checked_version` to the new version, so the owner's own move does not re-run the aid;
-    - write the sentence as an owner note;
-    - record `moved`; push the Agent after commit.
-  - `move: false` records `kept`.
-
-- [ ] **Failing test:**
-  - a non-verbatim sentence from the model makes no card;
-  - one call per persona version;
-  - a move removes exactly that sentence, adds the owner note and makes no new call;
-  - a second move → 409;
-  - personas saved while the switch was off make no call when it is turned on.
-- [ ] Run → fails. Implement. Run `npx vitest run tests/persona-fact.test.ts tests/persona.test.ts`; commit `feat(memory): the persona aid and its card`.
-
-### Task A12c: Web: shown notes and the cards — Lane A
-
-**Files:** create `W:src/pages/ShownNotes.jsx`, `W:src/pages/SocialCards.jsx`, `W:tests/social-cards.test.jsx`; modify `W:src/pages/Messages.jsx`.
+**Files:** create `W:src/pages/ShownNotes.jsx`; modify `W:src/pages/SocialCards.jsx` (A8b's, ring 1a), `W:src/pages/Messages.jsx`, `W:tests/social-cards.test.jsx`.
 
 **Produces:**
 - Under each Agent message in a social conversation, the owner sees the notes it was shown, each with 「以后别说」 (→ `putNoteVerdict(share: false)`), after which it reads 「以后不会再告诉他」.
-- `note_withheld` is worded by Exact copy with 「可以」 / 「不说」.
-- `persona_fact` has 「移到“关于我”」 / 「不用」.
+- `note_withheld` is worded by Exact copy with 「可以」 / 「不说」, in A8b's `SocialCards.jsx` beside `persona_fact`.
 - Answered and expired cards offer no button.
 
-- [ ] **Failing tests:** each wording and button; 「以后别说」 sends `share: false`; an answered card shows its answer and no button.
+- [ ] **Failing tests:** each wording and button; 「以后别说」 sends `share: false`; an answered withheld card shows its answer and no button.
 - [ ] Run → fails. Implement. `npm test`, `npm run build`; commit `feat(web): shown notes and the owner's cards`.
 - [ ] **Push `lane/social-a1b` and read the run.**
 
@@ -1712,7 +1824,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 **Files:** modify `S:README.md` (remove `othersBudget`, `othersSpentToday`, `proactiveSpentToday` from the Agent shape and the prose; describe the `othersBudget` alias and its end; reread every Step 0 shape against the code).
 
-- [ ] `npx vitest run tests/readme.test.ts`; typecheck. Push and read the run; merge when green. Rollout steps 4–5.
+- [ ] `npx vitest run tests/readme.test.ts`; typecheck. Push and read the run; merge when green. Rollout 5.
 
 ---
 
@@ -1736,7 +1848,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 ## What ring 1 must not make harder (for the errands plan)
 
-- **Migrations:** errands take 076 and later. 073 already allows `errand_ended`; `REFUSED` refuses it.
+- **Migrations:** errands take 077 and later (Controller ruling 2026-11-24 (verification), E1/N1: 073 Step 0, 074 lane B, 075 lane A, 076 ring 1b). 073 already allows `errand_ended`; `REFUSED` refuses it.
 - **Subjects:** `agent_contacts`, `reach`, `reachSql`, `permission()`, `ensureSocial` and the sync shape all take an Agent subject and two supervising owners. `addContact` takes any subject; only the route limits it to the caller.
 - **`endGrants`** is the only place access stops; its step 3 is the errands' one statement. The lock order stays Agents → errand → runs.
 - **Access at a run's start and post** goes through one helper each (`runAccess`, the social branch of `postAsAgent`), so `errand_id` is added in one place each.
@@ -1749,25 +1861,31 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 ## Rollout
 
-1. **Gate** (**Controller ruling 2026-11-24 (attack, I9)**). Step L deploys only after migrations 070, 071 and 072 (lanes storepush, storepages, invites) are applied to the same database, the acceptance site first and then production. The runner's order check would otherwise leave them unrunnable.
-2. **Step L.** Step 0 and lane B deploy with 073, the switch off. Lane B's social code (B5–B8) is inert. In groups, others' replies now:
-   - make one real tool call at 800 tokens without reasoning;
-   - meet two hard, hold-aware numbers per owner;
-   - meet the proactive budget as a hard sub-cap.
+1. **Gate** (**Controller ruling 2026-11-24 (attack, I9)**; **Controller ruling 2026-11-24 (verification), E2**). The gate starts at the **Step 0 merge**, because the working branch is deployed to the acceptance site after every merge and 073 is on it from then on. The controller cuts the Step 0 lane only after migrations 070, 071 and 072 (lanes storepush, storepages, invites) are on the working branch. So every database 073 reaches already has them, the acceptance site first and then production. The runner's order check would otherwise leave them unrunnable.
+2. **Step 0** merges and deploys with 073, which is **completely inert** (E1/N1): no row or default changes and nothing reads it. Nothing anyone sees changes.
+3. **Ring 1a: lanes A and B together** (**verification, E1/N1**). Lane B's 074 (the step-L raise) and lane A's 075 (bars, the backfill, the persona aid's columns) never deploy alone. Applied without lane B's owner cap, the raise would let others spend 70 points a day per Agent with no owner total (runs.ts:900–903, :1006–1013). And 075 applied before 074 would leave 074 unrunnable. Neither lane merges to the working branch on its own. Lane I's first joint merge brings both, and its deploy applies 074 then 075; every deploy from then on carries both.
+   - **The first trial** may start once the minimum set (Rings table, I15) is in: lane I merges both lanes, runs I1a and I2a's path, and deploys.
+   - **Step L**, which every deploy from then on carries whatever the switch says. In groups, others' replies now:
+     - make one real tool call at 800 tokens without reasoning;
+     - meet two hard, hold-aware numbers per owner;
+     - meet the proactive budget as a hard sub-cap.
 
-   Agents at the old default 20 points get 70 as a sub-limit (D9). Every owner has one 70-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final), "Design conflict for the owner"). Owners see the one-time notice. The use page's stopped list is empty until 074 deploys, and no 停止往来 or 恢复往来 control is shown while it cannot work (Controller ruling 2026-11-24 (final); I10). Check on test.haiyo.org: a member's @ answers within the numbers, the notice shows once, the use page lists today by person. **The default of 70 points (and 50 answers) is still the owner's to confirm** before production (I7).
-3. **Ring 1a behind the switch.** Lane A deploys with 074 (bars and those of existing blocks, with the code that maintains them, C1), then lane I.
+     Agents at the old default 20 points get 70 as a sub-limit (D9). Every owner has one 70-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final), "Design conflict for the owner"). Owners see the one-time notice, whose copy says the limit is now per person and that defaults were raised (N2).
+   - **While the switch is off**, the use page's stopped list is empty and no 停止往来 or 恢复往来 control is shown (Controller ruling 2026-11-24 (final); I10).
+   - **Check on test.haiyo.org:** a member's @ answers within the numbers; the notice shows once; the use page lists today by person.
+   - **The default of 70 points (and 50 answers) is still the owner's to confirm** before production (I7).
    - `SOCIAL` stays `{"enabled": false}` in production until the controller turns it on. The first switch-on waits until every process of the previous deploy has exited.
-   - The trial: on the acceptance site, the switch on, two test accounts run I2a's path by hand. Visitors see no owner notes in 1a.
-4. **What the owner sees while it is off** (Controller ruling 2026-11-24, Q3): nothing new about Agent social. Groups behave exactly as today (I1a.6). Specifically:
+   - **The trial:** on the acceptance site, the switch on, two test accounts run I2a's path by hand, including the stopped list (M-V6). Visitors see no owner notes in 1a.
+   - **The persona aid is in ring 1a** (N4, A8b). It runs from the first switch-on, so production's switch-on may follow ring 1a when the controller says so. A visitor's reply is shown the persona, which the aid has checked for owner facts, and no owner notes until ring 1b.
+4. **What the owner sees while the switch is off** (Controller ruling 2026-11-24, Q3): nothing new about Agent social. Groups behave exactly as today (I1a.6). Specifically:
    - no 「别人」 tab and no 停止往来 anywhere;
    - the lookup finds people only, and the add dialog says 「目前还不能添加 Agent 为好友。」;
    - every lane-A route but the lookup answers 404;
-   - no judge, withheld or persona call is made;
+   - no judge, withheld or persona call is made (the worker stamps personas checked without a call, A8b);
    - queued social runs end (`access_ended`) instead of answering later (M18).
 
    What they do see is step L: the use page, the use section, each Agent's numbers, the one-time notice.
-5. **Ring 1b** deploys with 075 (personas saved before it count as checked) behind the same switch. Then production when the controller says so.
+5. **Ring 1b** deploys with 076 (verdicts, judge days, `withheld_checked_at`) behind the same switch. Visitors' replies may then be shown owner notes the owner or the judge allowed. Then production when the controller says so.
 6. **Turning it off** is safe at any time:
    - `reach` answers `gone` in social for everyone but the owner;
    - discovery stops, and queued social runs end;
@@ -1788,7 +1906,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 - **Q4:** every person-to-person block writes the bar (D17, A5b).
 - **Q5:** the one-time web notice (D18, B4, B9b).
 - **Controller ruling 2026-11-24 (attack):**
-  - C1: migrations swapped and the backfill moved to 074 (D1, A0, A5b).
+  - C1: migrations swapped and the backfill moved to lane A's migration, now 075 after the verification (D1, A0, A5b).
   - C2: the run's own hold counted at all three points (D19, B1, B3, I1a.3).
   - C3: one discard, tool-offering request only, tool-less finish exempt (B2b).
   - I1: verdicts per Agent (D4, A6a).
@@ -1797,7 +1915,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - I4: the write rule's skeleton in Step 0 (T0.3).
   - I5: the three wire fields decided in Step 0 (T0.4).
   - I6: one tool round; the arithmetic restated (B2a, B2b).
-  - I7: 20 → 70 (D9, 073, B4).
+  - I7: 20 → 70 (D9; lane B's 074 after the verification, B4).
   - I8: O–subject block in `reach`; the sites table (A1, B5b).
   - I9: the gate (Rollout 1).
   - I10: no control whose route is off (Global Constraints 7, B9a, A12b).
@@ -1805,16 +1923,24 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - I12: `SyncSocial.agents` is `{id, ownerId}` (Step 0, A3b).
   - I13: examples from current candidates only (A7).
   - I14: the disclosure in the request dialog (A11a).
-  - I15: two rings, seven tasks split (this layout).
+  - I15: two rings, seven tasks split (this layout); the minimum for a trial added by the verification (Rings table).
 - **Accepted as proposed:** `reach` in `social/reach.ts` (D2); separate owner and judge columns (D4); shared files written once in Step 0 (D12).
 - **Controller ruling 2026-11-24 (final):**
   - the two-part hold, the three-part ruling withdrawn, spend ≤ hold proved for its four cases (B2b);
   - an owner's yes or no on a shared owner note holds on all their Agents for that visitor, and only the judge is per Agent (A6a);
-  - the others' cap is per owner, one value each, never multiplied by Agents, with the design's conflicting migration sentence recorded beside it (D9, "Design conflict for the owner", 073, B4);
+  - the others' cap is per owner, one value each, never multiplied by Agents, with the design's conflicting migration sentence recorded beside it (D9, "Design conflict for the owner", B4);
   - a call id over 64 characters counts as one call, and a turn past the counted bytes is discarded (B2b);
-  - the stopped list is empty until 074 (B4, Rollout 2).
+  - the stopped list is empty until lane A's schema (B4; 075 after the verification).
 
   With these the plan is final for Step 0 and ring 1a.
+- **Controller ruling 2026-11-24 (verification):**
+  - **E1/N1.** 073 is completely inert: no row or default changes, nothing reads it (T0.1). The step-L raise and the default change are lane B's 074 (B4). Lane A's schema, the bars backfill and the persona aid's columns are 075 (A0). Ring 1b's tables are 076 (A6a), and errands start at 077. Lanes A and B merge together at lane I and deploy together (D1, Rollout 3). `tests/schema-agents.test.ts:109–128` stays true until 074 and changes with it (G1).
+  - **E2.** The 070–072 gate starts at the Step 0 merge. The controller cuts Step 0 only after the three store lanes are on the working branch (Rollout 1).
+  - **N2.** The one-time notice says the limit is now per person, shared by all the owner's Agents, and that each Agent's own number was raised where it had the old default (Exact copy, B9b).
+  - **N3.** One money invariant: with tools if the with-tools hold fits what is left, counting every in-flight hold; else plain if the plain hold fits; else wait or end as the design says. Tests assert the sum, never a count of admitted replies (B1, I1a.3).
+  - **N4.** The persona aid (A8b) needs nothing of the judge, so it moved to ring 1a, with its columns in 075 and its card in `SocialCards.jsx` (A8b, A12c, Rollout 3).
+  - **I15.** A2, B5a, B7b and A9 are named in the minimum for a trial. Lane I starts once that set is in (Rings table, I1a).
+  - **G1–G8** are in T0.1, T0.3, T0.4 and B4. **M-V1** (B4), **M-V2** (B4), **M-V3** (B2b), **M-V4** (B9b), **M-V5** (A6a), and **M-V6** (B4, I1a.7, I2a) are in the tasks named.
 
 ---
 
@@ -1830,8 +1956,8 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 - **M8** Fixed: `tests/helpers/social.ts` is frozen (File map).
 - **M9** Fixed: `loadNotes` takes a `Tx` and writes in (kind, id) order (Step 0, A6a).
 - **M10** Fixed: versions are compared in `exactTs` form (memory/write.ts:30; the attack cited :43–54, where it is used, not defined).
-- **M11** Fixed: 075 stamps existing personas checked; the switch-off stamps without a call; the move stamps in its transaction (A8b).
-- **M12** Fixed: the plain fallback at admission (B1).
+- **M11** Fixed: 075 stamps existing personas checked (ring 1a, with A8b after the verification's N4); the switch-off stamps without a call; the move stamps in its transaction (A8b).
+- **M12** Fixed: the plain fallback at admission (B1), for a wait and a limit alike (verification N3); its tests assert the sum invariant and the rule's order, never a count of admitted replies.
 - **M13** Recorded as a deliberate deferral (D20).
 - **M14** Fixed: `setBar`/`endGrants` run after the direct chat's notice (A5b, Lock order). `postAsAgent`'s order (notes `for share`, then the run row's update) matches the stated order.
 - **M15** Fixed: tests for the stop cooldown (A4), 恢复往来 on a profile (A12b), a paused Agent's conversation taking the visitor's message (A3a), and a follow-up keeping its caller (B5a).
@@ -1855,10 +1981,10 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - §1.3 entry points: lookup and avatar (A2); send, upload and sync (Step 0 skeleton, A3a, A3b); trigger (B6); start and post (B7a, B8); group sites (B5b); judge → `reach` (A7).
   - §2 conversations: A3a, A3b, A12a; the request dialog: A11a.
   - §2.1 `placeOf` sites: A9, B5a, B7a, B7b, B8, plus lane lang's site in B7a.
-  - §3: B6, B7a–c, B8. §4: A6a, A6b, A7, A8a, A8b, A12c. §5: B1–B4, B9a–b. §6: deferred. §8: the table above.
+  - §3: B6, B7a–c, B8. §4: A8b (ring 1a); A6a, A6b, A7, A8a, A12c (ring 1b). §5: B1–B4, B9a–b. §6: deferred. §8: the table above.
   - §7 lifecycle: A5a–c, A10, B8 (switch). Deletion and pause are unchanged: `reach` reads `deleted_at`, and `interruptRuns` already ends their runs; A3a tests the visitor's message to a paused Agent.
   - §11: Decisions table.
 - **No step says "handle edge cases":** each failing test names its inputs and values.
-- **Names match across tasks:** `Place`, `placeOf`, `placeOfType`, `groupPlaceSql`, `reach`, `reachSql`, `refusedSql`, `discoverable`, `endGrants`, `GrantScope`, `applyPolicy`, `addContact`, `ensureSocial`, `setBar`, `liftBar`, `liftBlockBar`, `othersFits`, `OthersVerdict`, `OthersLimit`, `keepsRoom`, `othersHold`, `othersReached`, `othersRoomAdvisory`, `loadNotes`, `NotesPlace`, `ShownNote`, `LoadedNotes`, `shownNotesPass`, `startNoteJudge`, `takeJudgeUnit`, `giveBackJudgeUnit`, `setOwnerVerdict`, `seedSocial`, `TOOL_CALL_ID_MAX`; columns as in 073, 074, 075.
+- **Names match across tasks:** `Place`, `placeOf`, `placeOfType`, `groupPlaceSql`, `reach`, `reachSql`, `refusedSql`, `discoverable`, `endGrants`, `GrantScope`, `applyPolicy`, `addContact`, `ensureSocial`, `setBar`, `liftBar`, `liftBlockBar`, `othersFits`, `OthersVerdict`, `OthersLimit`, `keepsRoom`, `othersHold`, `othersReached`, `othersRoomAdvisory`, `loadNotes`, `NotesPlace`, `ShownNote`, `LoadedNotes`, `shownNotesPass`, `startNoteJudge`, `takeJudgeUnit`, `giveBackJudgeUnit`, `setOwnerVerdict`, `seedSocial`, `TOOL_CALL_ID_MAX`; columns as in 073, 074, 075, 076.
 - **Ownership:** no file has two owners after Step 0 (File map). Ring 1b touches only lane-A files.
-- **Size:** Step 0 has 5 tasks; ring 1a has 15 lane-A, 14 lane-B and 2 lane-I tasks; ring 1b has 6 lane-A and 2 lane-I tasks. Each is one implementer and one reviewer.
+- **Size:** Step 0 has 5 tasks; ring 1a has 16 lane-A (A8b included), 14 lane-B and 2 lane-I tasks; ring 1b has 5 lane-A and 2 lane-I tasks. Each is one implementer and one reviewer.
