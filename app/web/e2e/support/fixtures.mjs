@@ -31,8 +31,8 @@ class People {
     this.watched = [];
   }
 
-  async newContext() {
-    const context = await this.browser.newContext();
+  async newContext(options = {}) {
+    const context = await this.browser.newContext(options);
     await context.addInitScript(guardScript);
     this.contexts.push(context);
     return context;
@@ -62,9 +62,9 @@ class People {
    * A verified account made through the API, signed in (cookie in its context), its app open on `/` unless
    * `open: false`. `displayName` replaces the generated one.
    */
-  async member(label, { displayName, open = true } = {}) {
+  async member(label, { displayName, open = true, contextOptions } = {}) {
     const identity = newIdentity(label, { displayName });
-    const context = await this.newContext();
+    const context = await this.newContext(contextOptions);
     await registerVerified(context.request, identity);
     const me = await signInApi(context.request, identity);
     const person = { ...identity, id: me.id, context, request: context.request, page: null };

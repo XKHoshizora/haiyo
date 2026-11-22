@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import { Minus, Plus } from "../icons.js";
 import { Btn, IconBtn, Modal } from "../ui/primitives.jsx";
+import { useCoarsePointer } from "../ui/pointer.js";
 import {
   MAX_ZOOM,
   MIN_ZOOM,
@@ -27,6 +28,7 @@ const KEY_STEP_BIG = 40;
  * (Shift: bigger steps), `+` and `-` zoom, and the slider and its two buttons zoom.
  */
 export function AvatarDialog({ file, onCancel, onSave }) {
+  const touch = useCoarsePointer();
   const [load, setLoad] = useState({ kind: "loading" }); // | {kind: "error", text} | {kind: "ready", image}
   const [view, setView] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -179,7 +181,7 @@ export function AvatarDialog({ file, onCancel, onSave }) {
           <>
             <Btn disabled={!ready || busy} onClick={() => image && setView(initialView(image.width, image.height))}>重置</Btn>
             <Btn disabled={busy} onClick={close}>取消</Btn>
-            <Btn variant="primary" disabled={!ready || busy} onClick={save}>{busy ? "保存中…" : "保存"}</Btn>
+            <Btn variant="primary" className="btn-save" disabled={!ready || busy} onClick={save}>{busy ? "保存中…" : "保存"}</Btn>
           </>
         )
       }
@@ -188,7 +190,7 @@ export function AvatarDialog({ file, onCancel, onSave }) {
         <p className="field-msg" role="alert">{load.text}</p>
       ) : (
         <div className="avatar-adjust">
-          <p id={helpId} className="field-hint">拖动调整位置，滑块或滚轮缩放。</p>
+          <p id={helpId} className="field-hint">{touch ? "拖动调整位置，双指或滑块缩放。" : "拖动调整位置，滑块或滚轮缩放。"}</p>
           <div
             ref={stage}
             className="avatar-stage"

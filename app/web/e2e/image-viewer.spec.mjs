@@ -92,9 +92,11 @@ test("a file is a card: an icon of its kind, the name's middle elided with its e
     const head = el.querySelector(".file-name-head");
     const tail = el.querySelector(".file-name-tail");
     const box = el.getBoundingClientRect();
-    return { clipped: head.scrollWidth > head.clientWidth, tail: tail.textContent, tailInside: tail.getBoundingClientRect().right <= box.right + 1, cardInside: box.right <= window.innerWidth };
+    // (Cut at the pixel: the head ends with "…" against the tail, nothing is left to clip, and no gap is between them.)
+    return { clipped: head.scrollWidth > head.clientWidth || head.textContent.endsWith("…"), gap: tail.getBoundingClientRect().left - head.getBoundingClientRect().right, tail: tail.textContent, tailInside: tail.getBoundingClientRect().right <= box.right + 1, cardInside: box.right <= window.innerWidth };
   });
   expect(cut.clipped).toBe(true);
+  expect(Math.abs(cut.gap)).toBeLessThanOrEqual(1.5);
   expect(cut.tail.endsWith(".pdf")).toBe(true);
   expect(cut.tailInside).toBe(true);
   expect(cut.cardInside).toBe(true);

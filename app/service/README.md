@@ -2542,6 +2542,16 @@ is the same 404 `not_found`. Headers as under Attachments.
 *Session: required.* The same decision and headers as the `GET` (`Content-Length` included), no body; the
 file is not read.
 
+#### `GET /api/attachments/:id/:name`
+
+*Session: required.* The same as `GET /api/attachments/:id` (the id alone decides who may fetch it and what is
+served; `:name` is read by nothing). It exists so that a browser opening the original shows the file's name in
+the tab and saves it under that name: the web app opens `/api/attachments/<id>/<name>`.
+
+#### `HEAD /api/attachments/:id/:name`
+
+*Session: required.* The same as `HEAD /api/attachments/:id`.
+
 ### Sync and realtime routes
 
 How they work together is under Sync and realtime below.

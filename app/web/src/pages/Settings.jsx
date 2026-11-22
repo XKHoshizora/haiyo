@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { dayText, profileErrorText } from "../data/errorTexts.js";
@@ -66,9 +67,9 @@ export function SettingsList() {
 }
 
 function BackButton() {
-  const { dispatch } = useStore();
+  const up = useUp();
   return (
-    <button type="button" className="back only-mobile" onClick={() => dispatch({ type: "nav", patch: { pane: "list" } })}>
+    <button type="button" className="back only-mobile" onClick={up}>
       <ChevronLeft size={20} aria-hidden="true" /> 返回
     </button>
   );

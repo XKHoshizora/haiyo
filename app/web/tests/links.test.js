@@ -37,7 +37,8 @@ describe("text links share one style", () => {
     expect(rest).toMatch(/color:\s*var\(--purple-dark\)/);
     expect(rest).toMatch(/text-decoration:\s*none/);
     expect(rest).toMatch(/min-height:\s*32px/);
-    expect(css).toMatch(/\.text-link:hover[^{]*,\s*\.text-link:focus-visible[^{]*\{[^}]*text-decoration:\s*underline/);
+    expect(css).toMatch(/\.text-link:focus-visible[^{]*\{[^}]*text-decoration:\s*underline/);
+    expect(css).toMatch(/@media \(hover: hover\) \{ \.text-link:hover[^{]*\{[^}]*text-decoration:\s*underline/);
     expect(css).toMatch(/\.text-link:visited[^{]*\{[^}]*color:\s*var\(--purple-dark\)/);
   });
 

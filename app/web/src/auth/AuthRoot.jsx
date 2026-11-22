@@ -3,7 +3,7 @@ import * as routes from "../api/routes.js";
 import { bumpSessionEpoch, setUnauthenticatedHandler } from "../api/http.js";
 import { createDataLayer } from "../data/store.jsx";
 import { Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
-import { captureResetToken, decide, navigate, parseRoute, useLocation } from "./router.js";
+import { captureResetToken, decide, navigate, parseRoute, rememberReturn, takeReturn, useLocation } from "./router.js";
 
 const SessionContext = createContext(null);
 
@@ -93,7 +93,10 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
 
   const decision = session.status === "failed" ? { view: "failed" } : decide(route, session.status);
   useEffect(() => {
-    if (decision.redirect) navigate(decision.redirect, { replace: true });
+    if (!decision.redirect) return;
+    // A page of the app opened signed out is opened after the sign-in.
+    if (decision.redirect === "/signin" && route.name === "app") rememberReturn(globalThis.location.pathname);
+    navigate(decision.redirect === "/" ? takeReturn() ?? "/" : decision.redirect, { replace: true });
   }, [decision.redirect]);
 
   switch (decision.view) {

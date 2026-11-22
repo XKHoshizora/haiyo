@@ -134,7 +134,7 @@ export const APP_CLASSES = new Set(
   image-open file-icon file-icon-document file-icon-code file-icon-image file-icon-pdf file-icon-spreadsheet file-icon-slides file-icon-archive file-icon-audio file-icon-video file-icon-other
   file-card-text file-card-link file-name file-name-head file-name-tail
   viewer viewer-bar viewer-meta viewer-name viewer-count viewer-actions viewer-btn viewer-stage viewer-img viewer-state viewer-spinner
-  viewer-nav viewer-prev viewer-next
+  viewer-nav viewer-prev viewer-next viewer-who btn-save bubble-menu
   composer-field composer-field-off composer-mirror mention mention-agent mention-self mention-gone mention-card mention-card-body mention-card-name mention-card-handle mention-chip
   cite-web cite-link web-sources web-source-n web-source-title web-source-host md-link-plain`.split(/\s+/),
 );

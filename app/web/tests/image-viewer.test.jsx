@@ -94,6 +94,8 @@ describe("opening", () => {
     const original = dialog.getByRole("link", { name: "在新标签页打开原图" });
     expect(original.getAttribute("target")).toBe("_blank");
     expect(original.getAttribute("rel")).toContain("noopener");
+    // The address ends in the file's name, so the tab is titled with it and a saved file is called by it (not by the id).
+    expect(original.getAttribute("href")).toBe(`/api/attachments/${idOf(3)}/${encodeURIComponent("照片3.png")}`);
     expect(dialog.getByRole("button", { name: "上一张" })).toBeTruthy();
     expect(dialog.getByRole("button", { name: "下一张" })).toBeTruthy();
   });
@@ -402,5 +404,132 @@ describe("loading and failing", () => {
     fireEvent.click(dialog.getByRole("button", { name: "下一张" }));
     expect(shownImg().dataset.phase).toBe("loading");
     expect(counter()).toBe("4 / 12");
+  });
+});
+
+describe("the viewer's layout hooks", () => {
+  it("the sender and the file name have classes that cut with an ellipsis, and the bar keeps one row", async () => {
+    await open(3);
+    const bar = document.querySelector(".viewer-bar");
+    expect(bar.querySelector(".viewer-who").textContent).toBe("小安");
+    expect(bar.querySelector(".viewer-name").textContent).toBe("照片3.png");
+  });
+
+  it("follows the visible viewport when the page is pinch-zoomed, and lets go when it is not", async () => {
+    const listeners = {};
+    const vv = { scale: 2, offsetLeft: 100, offsetTop: 200, width: 201, height: 437, addEventListener: (t, f) => (listeners[t] = f), removeEventListener() {} };
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: vv });
+    try {
+      await open(3);
+      const viewer = document.querySelector(".viewer");
+      expect(viewer.style.left).toBe("100px");
+      expect(viewer.style.width).toBe("402px");
+      expect(viewer.style.transform).toBe("scale(0.5)");
+      Object.assign(vv, { scale: 1, offsetLeft: 0, offsetTop: 0, width: 402, height: 874 });
+      await act(async () => listeners.resize());
+      expect(viewer.style.transform).toBe("");
+      expect(viewer.style.left).toBe("");
+    } finally {
+      delete window.visualViewport;
+    }
+  });
+});
+
+describe("the viewer is a key of the conversation's entry (and one entry pushed with it)", () => {
+  const viewerKey = () => window.history.state?.viewer ?? null;
+  const settle = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+
+  it("opening pushes one entry on the conversation's own address; Back closes only the viewer and stays in the chat", async () => {
+    await openApp();
+    await openChat("小安");
+    const path = window.location.pathname;
+    expect(viewerKey()).toBeNull();
+    fireEvent.click(picture(3));
+    loaded();
+    expect(viewerKey()).not.toBeNull();
+    expect(window.location.pathname).toBe(path);
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(document.querySelector(".viewer")).toBeNull();
+    expect(document.querySelector("ol.messages")).toBeTruthy();
+    expect(viewerKey()).toBeNull();
+    // Forward is the viewer again (a page of its own); Back once more and then the list.
+    await act(async () => {
+      window.history.forward();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(document.querySelector(".viewer")).not.toBeNull();
+  });
+
+  it("viewer → Back → chat → Back → the list", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.click(picture(3));
+    loaded();
+    for (const [step, expected] of [["viewer", null], ["chat", "/"]]) {
+      await act(async () => {
+        window.history.back();
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      if (step === "viewer") expect(document.querySelector("ol.messages")).toBeTruthy();
+      else expect(window.location.pathname).toBe(expected);
+    }
+    expect(document.querySelector("ol.messages")).toBeNull();
+  });
+
+  it("closing it with Esc or the button goes back to the conversation's entry: nothing dangles", async () => {
+    await openApp();
+    await openChat("小安");
+    const entry = window.history.state;
+    fireEvent.click(picture(3));
+    loaded();
+    press("Escape");
+    await settle();
+    expect(document.querySelector(".viewer")).toBeNull();
+    expect(window.history.state).toEqual(entry);
+  });
+
+  it("rotating the phone (a width change across 860px) does not touch it: still open, the entry as it was", async () => {
+    let wide = false;
+    const listeners = new Set();
+    window.matchMedia = (query) => ({ matches: query.includes("max-width") ? !wide : false, media: query, addEventListener: (_t, f) => listeners.add(f), removeEventListener: (_t, f) => listeners.delete(f) });
+    try {
+      await open(3);
+      const entry = window.history.state;
+      const length = window.history.length;
+      wide = true;
+      await act(async () => {
+        for (const f of listeners) f({ matches: false });
+        window.dispatchEvent(new Event("resize"));
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(document.querySelector(".viewer")).not.toBeNull();
+      expect(window.history.state).toEqual(entry);
+      expect(window.history.length).toBe(length);
+      wide = false;
+      await act(async () => {
+        for (const f of listeners) f({ matches: true });
+        window.dispatchEvent(new Event("resize"));
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(document.querySelector(".viewer")).not.toBeNull();
+      expect(window.history.state).toEqual(entry);
+    } finally {
+      delete window.matchMedia;
+    }
+  });
+
+  it("stepping to the next picture adds no entry (the key is rewritten)", async () => {
+    await open(3);
+    const index = window.history.state.index;
+    const first = window.history.state.viewer;
+    press("ArrowRight");
+    expect(window.history.state.index).toBe(index);
+    expect(window.history.state.viewer).not.toBe(first);
   });
 });

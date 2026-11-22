@@ -93,6 +93,29 @@ const sweepHeld = (log?: { error: (details: { err: unknown; key: string }, msg: 
 
 // --- tests ------------------------------------------------------------------------------------
 
+describe("download under its own name", () => {
+  it("GET and HEAD /api/attachments/:id/:name serve the same bytes and headers; the name in the path decides nothing", async () => {
+    const [a, b, eve] = await people("alice", "bob", "eve");
+    const { conversationId: dm } = await befriend(app, a, b);
+    const up = await upload(a, dm, PNG, "海边 final.png", "image/png");
+    await sendFile(a, dm, up.json.id);
+    const plain = await download(b, up.json.id);
+    const named = await app.inject({ method: "GET", url: `/api/attachments/${up.json.id}/${encodeURIComponent("别的名字.png")}`, headers: { cookie: b.cookie } });
+    expect(named.statusCode).toBe(200);
+    expect(Buffer.compare(named.rawPayload, PNG)).toBe(0);
+    expect(named.headers["content-disposition"]).toBe(plain.headers["content-disposition"]);
+    expect(named.headers["content-disposition"]).toContain("filename*=UTF-8''%E6%B5%B7%E8%BE%B9%20final.png");
+    const head = await app.inject({ method: "HEAD", url: `/api/attachments/${up.json.id}/x.png`, headers: { cookie: b.cookie } });
+    expect(head.statusCode).toBe(200);
+    expect(head.headers["content-length"]).toBe(String(PNG.length));
+    // Who may fetch it is unchanged: a stranger and a signed-out caller get the same 404 / 401 as on the plain route.
+    const stranger = await app.inject({ method: "GET", url: `/api/attachments/${up.json.id}/x.png`, headers: { cookie: eve.cookie } });
+    expect(stranger.statusCode).toBe((await download(eve, up.json.id)).statusCode);
+    const anon = await app.inject({ method: "GET", url: `/api/attachments/${up.json.id}/x.png` });
+    expect(anon.statusCode).toBe((await download(null, up.json.id)).statusCode);
+  });
+});
+
 describe("upload, send, download", () => {
   it("member uploads, sends, another member downloads identical bytes", async () => {
     const [a, b] = await people("alice", "bob");

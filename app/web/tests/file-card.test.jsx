@@ -2,7 +2,7 @@
 // The file card (src/ui/FileCard.jsx): an icon by kind, the name with its middle elided and its end kept, the size and the
 // visibility line, one link for the whole card.
 import React from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import { FileCard, FileName } from "../src/ui/FileCard.jsx";
 
@@ -82,5 +82,44 @@ describe("the name", () => {
     const css = readFileSync("src/styles.css", "utf8");
     expect(css).toMatch(/\.file-name-head \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
     expect(css).toMatch(/\.file-name-tail \{[^}]*flex: none;/);
+  });
+});
+
+describe("FileName cut at the pixel", () => {
+  afterEach(() => {
+    delete globalThis.ResizeObserver;
+    vi.restoreAllMocks();
+  });
+
+  it("where a box can be measured, the head ends with … against the tail, the drawn parts are hidden from a screen reader and the whole name stays in the page", () => {
+    globalThis.ResizeObserver = class {
+      observe() {}
+      disconnect() {}
+    };
+    // One unit per character; the box is 20 wide.
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text) => ({ width: Array.from(text).length }) });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({ width: 21, height: 10, left: 0, right: 21, top: 0, bottom: 10 });
+    const name = "quarterly_report_final_version_v3.pdf";
+    const { container } = render(<FileName name={name} />);
+    const [head, tail, whole] = [...container.querySelector("strong").children];
+    expect(head.getAttribute("aria-hidden")).toBe("true");
+    expect(tail.textContent).toBe("ion_v3.pdf");
+    expect(Array.from(head.textContent + tail.textContent)).toHaveLength(20);
+    expect(head.textContent.endsWith("…")).toBe(true);
+    expect(whole.className).toBe("sr-only");
+    expect(whole.textContent).toBe(name);
+    expect(container.querySelector("strong").getAttribute("title")).toBe(name);
+  });
+
+  it("a name that fits is drawn whole, as before", () => {
+    globalThis.ResizeObserver = class {
+      observe() {}
+      disconnect() {}
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text) => ({ width: Array.from(text).length }) });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({ width: 200, height: 10, left: 0, right: 200, top: 0, bottom: 10 });
+    const { container } = render(<FileName name="short_name.pdf" />);
+    expect(container.querySelector("strong").children).toHaveLength(2);
+    expect(container.querySelector("strong").textContent).toBe("short_name.pdf");
   });
 });

@@ -21,6 +21,8 @@ test("my avatar is adjusted before it is saved: the dialog fits a phone, cancel 
 
   // A phone: the dialog and its stage fit the screen without scrolling the page sideways.
   await ann.page.setViewportSize({ width: 360, height: 740 });
+  // (A phone draws the settings list at /settings; the profile is a page of its own there.)
+  await ann.page.getByText("我的资料", { exact: true }).first().click();
   const dialog = await pickAvatarUi(ann.page, "更换头像", picture("wide.png", 800, 400));
   const box = await dialog.boundingBox();
   expect(box.x).toBeGreaterThanOrEqual(0);

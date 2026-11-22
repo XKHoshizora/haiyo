@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { convTitle, convSubtitle, isAgent, nameOf, publishBlock } from "../state/selectors.js";
@@ -8,7 +9,7 @@ import { MarkdownView, NEWEST_NEAR } from "../ui/markdownView.jsx";
 import { withoutBidiControls } from "../ui/markdownRules.js";
 import { REVEAL_FINISH_MS } from "../ui/reveal.js";
 import { MessageItem } from "./Messages.jsx";
-import { ImageViewerProvider } from "../ui/ImageViewer.jsx";
+import { GrowContext, ImageViewerProvider } from "../ui/ImageViewer.jsx";
 import {
   AGENT_PAUSED_TEXT,
   GroupReplying,
@@ -26,7 +27,8 @@ import { useJumpTo } from "./useJumpTo.js";
 import { useMessageSearch } from "./useMessageSearch.js";
 import { placeWhispers, searchHitView } from "../data/viewmodel.js";
 import { Whisper } from "./Whisper.jsx";
-import { Search, Menu, ChevronLeft, X } from "../icons.js";
+import { Search, Menu, ChevronLeft, X, Users } from "../icons.js";
+import { usePhone } from "../ui/pointer.js";
 
 import { Composer } from "./Composer.jsx";
 import { droppedFiles, useSendFiles } from "./useSendFiles.js";
@@ -98,6 +100,8 @@ function finishable(reply, stream) {
 
 export function ChatView({ conv }) {
   const { state, dispatch, actions } = useStore();
+  const phone = usePhone();
+  const up = useUp();
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const [replyTo, setReplyTo] = useState(null);
@@ -463,7 +467,7 @@ export function ChatView({ conv }) {
   return (
     <section className={`chat${dropping ? " dropping" : ""}`} aria-label={convTitle(state, conv)} {...dropHandlers}>
       <header className="chat-head">
-        <IconBtn label="返回列表" className="only-mobile" onClick={() => dispatch({ type: "nav", patch: { pane: "list" } })}><ChevronLeft size={22} /></IconBtn>
+        <IconBtn label="返回列表" className="only-mobile" onClick={up}><ChevronLeft size={22} /></IconBtn>
         <ConvAvatar conv={conv} size={56} />
         <div className="chat-title">
           <h2>
@@ -483,9 +487,13 @@ export function ChatView({ conv }) {
         <div className="chat-head-actions">
           <IconBtn label="搜索本会话" className="boxed" aria-pressed={searching} onClick={() => (setSearching(!searching), setQuery(""))}><Search size={22} /></IconBtn>
           {group ? (
-            <Btn className="boxed" onClick={() => dispatch({ type: "nav", patch: { view: "profile", profileTab: "members" } })}>群资料</Btn>
+            phone ? (
+              <IconBtn label="群资料" className="boxed" onClick={() => dispatch({ type: "nav", patch: { view: "profile", profileTab: "members" } })}><Users size={22} /></IconBtn>
+            ) : (
+              <Btn className="boxed" onClick={() => dispatch({ type: "nav", patch: { view: "profile", profileTab: "members" } })}>群资料</Btn>
+            )
           ) : null}
-          <IconBtn label="会话资料" className="boxed" aria-pressed={state.nav.detailsOpen} onClick={() => dispatch({ type: "nav", patch: { detailsOpen: !state.nav.detailsOpen } })}><Menu size={22} /></IconBtn>
+          <IconBtn label="会话资料" className="boxed" aria-pressed={state.nav.detailsOpen} onClick={() => (state.nav.detailsOpen ? up() : dispatch({ type: "nav", patch: { detailsOpen: true } }))}><Menu size={22} /></IconBtn>
         </div>
       </header>
 
@@ -525,6 +533,7 @@ export function ChatView({ conv }) {
         </ul>
       )}
       <ImageViewerProvider messages={messages}>
+       <GrowContext.Provider value={keepNewestInView}>
         <MarkdownView listRef={listRef} newest={newestAgentTexts} onChange={keepNewestInView}>
           <ol className="messages" data-testid="message-list" ref={listRef} onScroll={onScroll} style={showHits ? { display: "none" } : undefined}>
             {rows.map(({ msg, whisper, bubble }) =>
@@ -565,6 +574,7 @@ export function ChatView({ conv }) {
             <li aria-hidden="true" />
           </ol>
         </MarkdownView>
+       </GrowContext.Provider>
       </ImageViewerProvider>
 
       {paused && <Notice tone="pause">{AGENT_PAUSED_TEXT}</Notice>}

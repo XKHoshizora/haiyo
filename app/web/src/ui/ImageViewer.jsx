@@ -10,9 +10,13 @@ import { senderName } from "../state/selectors.js";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, ImageOff, RotateCw, X } from "../icons.js";
 import { IconBtn, Btn } from "./primitives.jsx";
 import { useDialogFocus } from "./dialogFocus.js";
+import { useVisualViewportBox } from "./visualViewport.js";
+import { closeViewerEntry, openViewerEntry, stepViewerEntry, useViewerId } from "../state/appHistory.js";
 import { FIT, clampPan, keyZoom, swipeOf, toggleZoom, wheelFactor, zoomAt } from "./imageZoom.js";
 
 const ViewerContext = createContext(null);
+/** `() => void` that the list of a conversation gives: a picture that grew (it is measured when it has loaded) asks it to keep the newest message in view. */
+export const GrowContext = createContext(null);
 const NOTHING = { open() {} };
 
 /** `{open(messageId, opener)}`: what an image in a bubble calls to open the viewer; a no-op outside a provider. */
@@ -33,17 +37,29 @@ const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
  */
 export function ImageViewerProvider({ messages, children }) {
   const images = useMemo(() => messages.filter((m) => m.kind === "image" && m.src && !m.hidden), [messages]);
-  const [shown, setShown] = useState(null);
-  const api = useMemo(() => ({ open: (id, opener) => setShown({ id, opener, openedId: id }) }), []);
-  const index = shown ? images.findIndex((m) => m.id === shown.id) : -1;
-  // The picture is no longer among the messages (another conversation, a window of messages changed): nothing to show.
+  // The open viewer is a key of the conversation's history entry (and one entry pushed with it): drawn from the entry, so Back
+  // closes it and nothing else (state/appHistory.js). The opener node is only for the focus's return.
+  const viewerId = useViewerId();
+  const opened = useRef(null);
+  const api = useMemo(
+    () => ({
+      open: (id, opener) => {
+        opened.current = { id, opener };
+        openViewerEntry(id);
+      },
+    }),
+    [],
+  );
+  const index = viewerId ? images.findIndex((m) => m.id === viewerId) : -1;
+  // The picture is not among the messages (another list, or a Forward to a viewer whose picture is gone): once the messages are
+  // there, the viewer is closed (the entry loses its key).
   useEffect(() => {
-    if (shown && index < 0) setShown(null);
-  }, [shown, index]);
+    if (viewerId && index < 0 && messages.length > 0) closeViewerEntry();
+  }, [viewerId, index, messages.length]);
   return (
     <ViewerContext.Provider value={api}>
       {children}
-      {shown && index >= 0 && createPortal(<Viewer images={images} index={index} opener={shown.opener} openedId={shown.openedId} onShow={(i) => setShown({ ...shown, id: images[i].id })} onClose={() => setShown(null)} />, document.body)}
+      {viewerId && index >= 0 && createPortal(<Viewer images={images} index={index} opener={opened.current?.opener} openedId={opened.current?.id ?? viewerId} onShow={(i) => stepViewerEntry(images[i].id)} onClose={closeViewerEntry} />, document.body)}
     </ViewerContext.Provider>
   );
 }
@@ -55,6 +71,8 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
   const stageRef = useRef(null);
   const imgRef = useRef(null);
   const nameId = useId();
+  // Pinch-zoomed or moved by Safari's toolbar: the viewer follows what is on screen, so its bar is never off it.
+  const visible = useVisualViewportBox();
   const [view, setView] = useState(FIT);
   const [phase, setPhase] = useState("loading");
   const [attempt, setAttempt] = useState(0);
@@ -214,10 +232,10 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
 
   const who = senderName(state, msg.from);
   return (
-    <div className="viewer" role="dialog" aria-modal="true" aria-labelledby={nameId} tabIndex={-1} ref={box} onKeyDown={onKeyDown} onPointerDown={keepFocus}>
+    <div className="viewer" style={visible ?? undefined} role="dialog" aria-modal="true" aria-labelledby={nameId} tabIndex={-1} ref={box} onKeyDown={onKeyDown} onPointerDown={keepFocus}>
       <header className="viewer-bar" onClick={(e) => e.target === e.currentTarget && onClose()}>
         <div className="viewer-meta">
-          <strong>{who}</strong>
+          <strong className="viewer-who">{who}</strong>
           <time dateTime={msg.createdAt ?? undefined} title={msg.atTitle || undefined}>
             {msg.at}
           </time>
@@ -234,7 +252,7 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
           <a className="icon-btn viewer-btn" href={msg.src} download={msg.text} aria-label={`下载 ${msg.text}`} title="下载">
             <Download size={20} aria-hidden="true" />
           </a>
-          <a className="icon-btn viewer-btn" href={msg.src} target="_blank" rel="noopener noreferrer" aria-label="在新标签页打开原图" title="在新标签页打开原图">
+          <a className="icon-btn viewer-btn" href={`${msg.src}/${encodeURIComponent(msg.text)}`} target="_blank" rel="noopener noreferrer" aria-label="在新标签页打开原图" title="在新标签页打开原图">
             <ExternalLink size={20} aria-hidden="true" />
           </a>
           <IconBtn label="关闭" className="viewer-btn" data-autofocus="" onClick={onClose}>

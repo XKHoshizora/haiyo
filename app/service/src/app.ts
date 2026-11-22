@@ -263,11 +263,20 @@ export function redactQuery(url: string): string {
   return q < 0 ? url : `${url.slice(0, q)}?[redacted]`;
 }
 
-/** Fastify's default request serializer, minus the query string. */
+/**
+ * A request's address for the log: without its query, and without a file name. `/api/attachments/:id/:name` carries the
+ * attachment's name (user content) in its path, so it is logged as its pattern. (Every other route with a path parameter has an
+ * id or a number there: tests/logging.test.ts.)
+ */
+export function redactUrl(url: string): string {
+  return redactQuery(url).replace(/^(\/api\/attachments\/[^/?]+)\/[^?]*/, "$1/[name]");
+}
+
+/** Fastify's default request serializer, minus the query string and a file name. */
 const logSerializers = {
   req: (req: FastifyRequest) => ({
     method: req.method,
-    url: redactQuery(req.url),
+    url: redactUrl(req.url),
     host: req.host,
     remoteAddress: clientIp(req),
     remotePort: req.socket?.remotePort,

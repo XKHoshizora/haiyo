@@ -38,7 +38,8 @@ test("the adjust dialog, its error state, and the group's avatar controls", asyn
   await ann.page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  // The error state.
+  // The error state (on a phone the profile is a page of the settings list).
+  await ann.page.getByText("我的资料", { exact: true }).first().click();
   const chooser = ann.page.waitForEvent("filechooser");
   await ann.page.getByRole("button", { name: "更换头像", exact: true }).click();
   const broken = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("not really a picture")]);

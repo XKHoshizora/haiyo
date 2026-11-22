@@ -11,6 +11,8 @@ import { Avatar, Tag } from "./primitives.jsx";
 
 /** The pointer rests this long (ms) on a mention before its card opens, and leaves it this long before it closes. */
 const OPEN_DELAY = 250;
+/** A mouseenter this soon after a touch is the browser's emulation of it, not a mouse (ms). */
+const AFTER_TOUCH_MS = 1000;
 const CLOSE_DELAY = 150;
 /** Room kept between the card and the window's edges, and between it and the mention (px). */
 const EDGE = 8;
@@ -52,6 +54,9 @@ export function MentionChip({ id, spoken, shown, agent }) {
   const chip = useRef(null);
   const card = useRef(null);
   const timer = useRef(0);
+  // iOS answers a tap with mouse events too (mouseenter first): a card that appears on that "hover" makes Safari take the tap for the
+  // hover and drop the click. A mouseenter just after a touch is not a hover.
+  const touched = useRef(0);
   const cardId = useId();
   const close = useCallback(() => {
     clearTimeout(timer.current);
@@ -130,7 +135,8 @@ export function MentionChip({ id, spoken, shown, agent }) {
         tabIndex={0}
         data-mention={id}
         aria-describedby={open ? cardId : undefined}
-        onMouseEnter={() => later(show, OPEN_DELAY)}
+        onTouchStart={() => (touched.current = Date.now())}
+        onMouseEnter={() => Date.now() - touched.current > AFTER_TOUCH_MS && later(show, OPEN_DELAY)}
         onMouseLeave={() => later(close, CLOSE_DELAY)}
         onFocus={show}
         onBlur={close}

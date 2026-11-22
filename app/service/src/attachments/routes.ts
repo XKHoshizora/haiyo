@@ -355,21 +355,26 @@ export function registerAttachmentRoutes(app: FastifyInstance): void {
 
   // Declared before the GET, so Fastify does not derive a HEAD from it (that one would open and drain the
   // whole blob). The same decision and headers; the blob is not touched.
-  app.withTypeProvider<ZodTypeProvider>().head("/api/attachments/:id", { schema: downloadSchema }, async (req, reply) => {
-    const found = await downloadable(req);
-    return reply.headers(downloadHeaders(found)).send();
-  });
+  // `/:name` is only a name for the address (a browser titles a tab and names a saved file from the last part of it):
+  // it is read by nothing, and who may fetch is decided by the id alone.
+  for (const url of ["/api/attachments/:id", "/api/attachments/:id/:name"]) {
+    const schema = url.endsWith(":name") ? { ...downloadSchema, params: downloadSchema.params.extend({ name: z.string().min(1).max(512) }) } : downloadSchema;
+    app.withTypeProvider<ZodTypeProvider>().head(url, { schema }, async (req, reply) => {
+      const found = await downloadable(req);
+      return reply.headers(downloadHeaders(found)).send();
+    });
 
-  app.withTypeProvider<ZodTypeProvider>().get("/api/attachments/:id", { schema: downloadSchema }, async (req, reply) => {
-    const found = await downloadable(req);
-    let body: Readable;
-    try {
-      body = await blobs.get(found.blobKey);
-    } catch (err) {
-      if (!isMissingBlob(err)) throw err;
-      req.log.error({ attachmentId: req.params.id }, "the blob of a sent attachment is missing");
-      throw notFound();
-    }
-    return reply.headers(downloadHeaders(found)).send(body);
-  });
+    app.withTypeProvider<ZodTypeProvider>().get(url, { schema }, async (req, reply) => {
+      const found = await downloadable(req);
+      let body: Readable;
+      try {
+        body = await blobs.get(found.blobKey);
+      } catch (err) {
+        if (!isMissingBlob(err)) throw err;
+        req.log.error({ attachmentId: req.params.id }, "the blob of a sent attachment is missing");
+        throw notFound();
+      }
+      return reply.headers(downloadHeaders(found)).send(body);
+    });
+  }
 }
