@@ -290,7 +290,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
           )}
           {mine && msg.notCalled && <span className="muted">{msg.notCalled}</span>}
           {(msg.kind === "text" || msg.kind === "image") && msg.seq !== null && msg.status !== "failed" && msg.status !== "sending" && (
-            <button type="button" className="msg-action" onClick={() => onReply(msg)}>
+            <button type="button" className="msg-action" aria-haspopup="menu" onClick={() => onReply(msg)}>
               <Reply size={15} aria-hidden="true" /> 回复
             </button>
           )}

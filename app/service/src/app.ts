@@ -260,15 +260,24 @@ export function redactQuery(url: string): string {
  * attachment's name (user content) in its path, so it is logged as its pattern. (Every other route with a path parameter has an
  * id or a number there: tests/logging.test.ts.)
  */
-export function redactUrl(url: string): string {
-  return redactQuery(url).replace(/^(\/api\/attachments\/[^/?]+)\/[^?]*/, "$1/[name]");
+export function redactUrl(url: string, route?: string): string {
+  const redacted = redactQuery(url);
+  if (route === "/api/attachments/:id/:name") {
+    // The route is known: its last segment is the name, however the rest of the path was written.
+    const q = redacted.indexOf("?");
+    const path = q < 0 ? redacted : redacted.slice(0, q);
+    const cut = path.lastIndexOf("/");
+    return `${path.slice(0, cut)}/[name]${q < 0 ? "" : redacted.slice(q)}`;
+  }
+  // (Any other path under the attachments prefix, a 404: by its pattern.)
+  return redacted.replace(/^(\/api\/attachments\/[^/?]+)\/[^?]*/, "$1/[name]");
 }
 
 /** Fastify's default request serializer, minus the query string and a file name. */
 const logSerializers = {
   req: (req: FastifyRequest) => ({
     method: req.method,
-    url: redactUrl(req.url),
+    url: redactUrl(req.url, req.routeOptions?.url),
     host: req.host,
     remoteAddress: clientIp(req),
     remotePort: req.socket?.remotePort,

@@ -28,7 +28,7 @@ const TABLE = [
   [{ section: "settings", pane: "list" }, "/settings", null, "/", null],
   ...["profile", "providers", "usage", "memory", "blocks"].map((page) => [{ section: "settings", pane: "main", settingsPage: page }, `/settings/${page}`, null, "/settings", null]),
 ];
-const BASE = { section: "chat", pane: "list", convId: null, view: "chat", contactId: null, agentId: null, agentView: "detail", settingsPage: "profile", detailsOpen: false, agentTab: "profile", profileTab: "members", opening: null };
+const BASE = { section: "chat", pane: "list", convId: null, view: "chat", contactId: null, agentId: null, agentView: "detail", settingsPage: "profile", providerId: null, detailsOpen: false, agentTab: "profile", profileTab: "members", opening: null };
 
 describe("the address of every place, and back", () => {
   it.each(TABLE)("%j is %s (overlay %s), its parent %s", (patch, path, overlay, parentPath, parentOverlay) => {
@@ -278,6 +278,27 @@ describe("a cold start draws its address and makes no entry (I3)", () => {
   });
 });
 
+describe("an entry rewritten below another is not mistaken for its parent (m2)", () => {
+  it("cold /chat/A, group info, Back, 返回列表 (replaces /chat/A with /), Forward, 返回群聊: replaces by the parent, it does not go back to the list", async () => {
+    window.history.replaceState(null, "", `/chat/${C1}`);
+    render(<Probe />);
+    await settle();
+    await go({ view: "profile" });
+    expect(window.history.state.index).toBe(1);
+    await back();
+    expect(at()).toBe(`/chat/${C1}`);
+    await up(); // nothing of ours below index 0: the entry becomes the list
+    expect(at()).toBe("/");
+    act(() => window.history.forward());
+    await settle();
+    expect(at()).toBe(`/chat/${C1}/info`);
+    await up();
+    expect(at()).toBe(`/chat/${C1}`);
+    expect(window.history.state.index).toBe(1); // replaced in place, not walked back to the entry that is now the list
+    expect(navNow()).toMatchObject({ convId: C1, view: "chat" });
+  });
+});
+
 describe("popstate only re-renders", () => {
   it("the handler never calls back, forward, push or replace by itself", async () => {
     render(<Probe />);
@@ -337,5 +358,95 @@ describe("the viewer is a key of the entry", () => {
     await settle();
     expect(window.history.state.viewer).toBeNull();
     expect(at()).toBe(`/chat/${C1}`);
+  });
+});
+
+// ───────── the invariant: the page drawn is a function of the address, at every width
+import { NAV_KEYS } from "../src/state/location.js";
+import { reducer } from "../src/state/reducer.js";
+import { emptyState } from "../src/data/store.jsx";
+import { lastPageOf, forgetSections } from "../src/state/appHistory.js";
+
+describe("the page-deciding keys equal their address after every move", () => {
+  const pick = (nav) => Object.fromEntries(PAGE_KEYS.map((key) => [key, nav[key] ?? null]));
+  const initial = () => emptyState({ id: "me" });
+
+  it("every key of the navigation is a page key (with an address), a soft key or a transient one: a new key fails here until it is placed", () => {
+    const unplaced = Object.keys(initial().nav).filter((key) => !NAV_KEYS.includes(key));
+    expect(unplaced).toEqual([]);
+    // A page key that is not in the address table cannot be added without a row in TABLE: each is the key of some row.
+    for (const key of PAGE_KEYS) expect(TABLE.some(([patch]) => key in patch) || ["detailsOpen", "providerId"].includes(key), key).toBe(true);
+  });
+
+  it("after any nav action the page keys are what the address of the result says (a stale selection cannot stay)", () => {
+    const actions = [
+      { type: "nav", patch: { section: "chat", pane: "main", convId: C1, detailsOpen: true } },
+      { type: "nav", patch: { section: "contacts", pane: "list" } },
+      { type: "nav", patch: { section: "contacts", pane: "main", contactId: C2 } },
+      { type: "nav", patch: { section: "agents", pane: "list" } },
+      { type: "nav", patch: { section: "agents", pane: "main", agentId: AG, agentView: "edit" } },
+      { type: "nav", patch: { section: "settings", pane: "main", settingsPage: "providers", providerId: "new" } },
+      { type: "nav", patch: { section: "settings", pane: "list" } },
+      { type: "nav/openConv", convId: C2 },
+      { type: "nav", patch: { section: "chat", pane: "list" } },
+      { type: "nav", patch: { pane: "main" } },
+      { type: "nav", patch: { convId: null } },
+    ];
+    let state = initial();
+    for (const action of actions) {
+      state = reducer(state, action);
+      expect(pick(state.nav), JSON.stringify(action)).toEqual(pick({ ...state.nav, ...navOfAddress(addressOf(state.nav)) }));
+    }
+  });
+
+  it("N1: a list address draws no selection: back at the list, the conversation, the contact and the Agent are gone from the page keys", () => {
+    let state = reducer(initial(), { type: "nav", patch: { section: "chat", pane: "main", convId: C1, detailsOpen: true } });
+    state = reducer(state, { type: "nav", patch: { section: "contacts", pane: "list" } });
+    expect(state.nav).toMatchObject({ convId: null, detailsOpen: false, contactId: null });
+    state = reducer(state, { type: "nav", patch: { section: "chat", pane: "list" } });
+    expect(state.nav).toMatchObject({ convId: null, pane: "list" });
+  });
+
+  it("N1: the details panel is part of one conversation's address and does not follow into the next", () => {
+    let state = reducer(initial(), { type: "nav/openConv", convId: C1 });
+    state = reducer(state, { type: "nav", patch: { detailsOpen: true } });
+    expect(addressOf(state.nav)).toEqual({ path: `/chat/${C1}`, overlay: "details" });
+    state = reducer(state, { type: "nav/openConv", convId: C2 });
+    expect(state.nav.detailsOpen).toBe(false);
+    expect(addressOf(state.nav)).toEqual({ path: `/chat/${C2}`, overlay: null });
+  });
+
+  it("N1: a section click goes to the last address seen in it (and to its list when it was left on the list)", async () => {
+    forgetSections();
+    expect(lastPageOf("chat")).toMatchObject({ pane: "list", convId: null });
+    render(<Probe />);
+    await settle();
+    await go(chatOf(C1));
+    await go({ section: "contacts", pane: "list", convId: null });
+    expect(lastPageOf("chat")).toMatchObject({ pane: "main", convId: C1, detailsOpen: false });
+    expect(lastPageOf("contacts")).toMatchObject({ pane: "list" });
+    await go(lastPageOf("chat"));
+    expect(at()).toBe(`/chat/${C1}`);
+    await go({ pane: "list", convId: null }); // back at the list: that is where the section was left
+    expect(lastPageOf("chat")).toMatchObject({ pane: "list", convId: null });
+  });
+
+  it("the providers form is an address: /settings/providers/new and /settings/providers/<id>", () => {
+    expect(addressOf({ ...BASE, section: "settings", pane: "main", settingsPage: "providers", providerId: "new" })).toEqual({ path: "/settings/providers/new", overlay: null });
+    expect(navOfAddress({ path: "/settings/providers/p1" })).toMatchObject({ section: "settings", settingsPage: "providers", providerId: "p1", pane: "main" });
+    expect(parentOf({ path: "/settings/providers/p1" })).toEqual({ path: "/settings/providers", overlay: null });
+  });
+});
+
+describe("a dialog does not outlive the page that is not drawn", () => {
+  it("one whose page the layout no longer shows closes on resize; one that is shown stays", () => {
+    const close = vi.fn();
+    const rects = vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{ top: 0 }]);
+    render(<Modal title="调整头像" onClose={close}>x</Modal>);
+    act(() => window.dispatchEvent(new Event("resize")));
+    expect(close).not.toHaveBeenCalled();
+    rects.mockReturnValue([]);
+    act(() => window.dispatchEvent(new Event("resize")));
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });

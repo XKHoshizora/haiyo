@@ -11,7 +11,7 @@ import { ChevronLeft, ChevronRight, Download, ExternalLink, ImageOff, RotateCw, 
 import { IconBtn, Btn } from "./primitives.jsx";
 import { useDialogFocus } from "./dialogFocus.js";
 import { useVisualViewportBox } from "./visualViewport.js";
-import { closeViewerEntry, openViewerEntry, stepViewerEntry, useViewerId } from "../state/appHistory.js";
+import { closeViewerEntry, dropViewerKey, openViewerEntry, stepViewerEntry, useViewerId } from "../state/appHistory.js";
 import { FIT, clampPan, keyZoom, swipeOf, toggleZoom, wheelFactor, zoomAt } from "./imageZoom.js";
 
 const ViewerContext = createContext(null);
@@ -54,7 +54,7 @@ export function ImageViewerProvider({ messages, children }) {
   // The picture is not among the messages (another list, or a Forward to a viewer whose picture is gone): once the messages are
   // there, the viewer is closed (the entry loses its key).
   useEffect(() => {
-    if (viewerId && index < 0 && messages.length > 0) closeViewerEntry();
+    if (viewerId && index < 0 && messages.length > 0) dropViewerKey();
   }, [viewerId, index, messages.length]);
   return (
     <ViewerContext.Provider value={api}>

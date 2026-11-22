@@ -105,6 +105,9 @@ describe("request logging", () => {
     expect(redactUrl("/api/attachments/abc/%E4%BD%A0.png")).toBe("/api/attachments/abc/[name]");
     expect(redactUrl("/api/attachments/abc/a%2Fb.png?x=1")).toBe("/api/attachments/abc/[name]?[redacted]");
     expect(redactUrl("/api/attachments/abc")).toBe("/api/attachments/abc");
+    // With the route known, the last segment is the name however the path before it was written.
+    expect(redactUrl("/%61pi/attachments/abc/%E4%BD%A0.png", "/api/attachments/:id/:name")).toBe("/%61pi/attachments/abc/[name]");
+    expect(redactUrl("/api/attachments/abc/n.png?x=1", "/api/attachments/:id/:name")).toBe("/api/attachments/abc/[name]?[redacted]");
     expect(redactUrl("/api/conversations/abc/messages")).toBe("/api/conversations/abc/messages");
   });
 
@@ -113,6 +116,8 @@ describe("request logging", () => {
     expect([...params].sort()).toEqual(["changeId", "decision", "hearsayId", "id", "name", "noteId", "principalId", "proposalId", "runId", "seq", "verb"].filter((p) => params.has(p)));
     // (decision and verb are fixed words, not user text; the rest are ids and a sequence number.)
     expect(params.has("handle")).toBe(false);
+    // Only the attachments route has a :name, and it is the one the log redacts.
+    expect(app.routeList.filter((r) => r.url.includes(":name")).map((r) => r.url)).toEqual(["/api/attachments/:id/:name", "/api/attachments/:id/:name"]);
   });
 
   it("redactQuery keeps the path and drops everything after the first ?", () => {

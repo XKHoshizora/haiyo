@@ -125,12 +125,13 @@ describe("long-press on touch", () => {
     render(<Item extra={<button type="button" className="attachment-image" onClick={opened}>图</button>} />);
     const picture = document.querySelector(".attachment-image");
     touch(picture, "pointerDown");
-    act(() => vi.advanceTimersByTime(HOLD_MS));
+    act(() => vi.advanceTimersByTime(HOLD_MS + 3000)); // (a long hold: the release is long after the menu opened)
     touch(picture, "pointerUp");
     fireEvent.click(picture);
     expect(opened).not.toHaveBeenCalled();
-    // A later tap works as ever.
-    act(() => vi.advanceTimersByTime(1000));
+    // The next tap (a press of its own) works as ever.
+    touch(picture, "pointerDown");
+    touch(picture, "pointerUp");
     fireEvent.click(picture);
     expect(opened).toHaveBeenCalledTimes(1);
   });
@@ -148,7 +149,10 @@ describe("long-press on touch", () => {
     expect(menu()).toBeNull();
     touch(bubble(), "pointerDown");
     act(() => vi.advanceTimersByTime(HOLD_MS));
+    // The list's own scroll (a reply streaming in, a picture growing) leaves it; the person's (a finger, the wheel) closes it.
     fireEvent.scroll(document.querySelector("[data-testid=message-list]"));
+    expect(menu()).not.toBeNull();
+    fireEvent.touchMove(document.body);
     expect(menu()).toBeNull();
     touch(bubble(), "pointerDown");
     act(() => vi.advanceTimersByTime(HOLD_MS));
@@ -220,6 +224,7 @@ describe("right-click and the keyboard", () => {
     fireEvent.keyDown(control, { key: "F10", shiftKey: true });
     fireEvent.keyDown(screen.getAllByRole("menuitem")[0], { key: "Tab" });
     expect(menu()).toBeNull();
+    expect(document.activeElement).toBe(control); // (the focus is not dropped on the page)
   });
 
   it("the menu is a role=menu with a name, its items menuitems", () => {
@@ -338,10 +343,26 @@ describe("plainText", () => {
   });
 });
 
+describe("plainText copies what is drawn", () => {
+  const agentState = { people: {}, agents: { ag: { id: "ag", name: "小助手", displayName: "小助手", kind: "agent" } } };
+  it("an Agent's text loses its marks and its bidi controls, as the bubble draws it", () => {
+    const text = "ls ‮;txt.sh‏ -a﷐ ok";
+    const copied = plainText(agentState, { kind: "text", from: "ag", text, mentions: [] });
+    expect(copied).toBe("ls ;txt.sh -a ok");
+    for (const char of ["‮", "‏", "﷐"]) expect(copied.includes(char)).toBe(false);
+  });
+
+  it("an Agent's text with a mention and no control: the mention is @name", () => {
+    const state = { ...agentState, people: { [BO]: { id: BO, name: "阿波", displayName: "阿波" } } };
+    expect(plainText(state, { kind: "text", from: "ag", text: "@阿波 好", mentions: [{ id: BO, start: 0, length: 3 }] })).toBe("@阿波 好");
+  });
+});
+
 describe("the stylesheet", () => {
   const css = readFileSync("src/styles.css", "utf8");
   it("on a touch screen the 回复 button is not drawn (the menu is the way) and a bubble has no callout or selection", () => {
-    expect(css).toMatch(/@media \(pointer: coarse\) \{\s*\.msg-action \{ display: none; \}/);
+    expect(css).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.msg-action \{ position: absolute; width: 1px; height: 1px;[^}]*opacity: 0; \}/);
+    expect(css).toMatch(/\.msg-action:focus-visible \{ position: static;[^}]*opacity: 1; \}/);
     expect(css).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.bubble, \.attachment-image, \.file-card \{ -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; \}/);
     expect(css).not.toMatch(/@media \(hover: none\) \{ \.msg-action/);
   });

@@ -401,7 +401,10 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 /* A touch screen has no hover and no always-drawn 回复: a long-press on the bubble opens its menu (ui/BubbleMenu.jsx). The press must not start the
    browser's own callout or text selection (复制 is in the menu); a mouse keeps selecting text. */
 @media (pointer: coarse) {
-  .msg-action { display: none; }
+  /* (Not drawn, but still there for a keyboard on a touch device: it shows when it has the focus.) */
+  .msg-foot { position: relative; }
+  .msg-action { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; opacity: 0; }
+  .msg-action:focus-visible { position: static; width: auto; height: 20px; padding: 0 8px; margin: 0; clip: auto; border: 1px solid var(--line); opacity: 1; }
   .bubble, .attachment-image, .file-card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 }
 /* The menu of a bubble. */

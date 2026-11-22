@@ -24,6 +24,9 @@ export function emptyState(me = null) {
       focus: null,
       /** The settings page shown: "profile" or "blocks". */
       settingsPage: "profile",
+      /** The provider form shown on the providers page: "new", a provider id, or null (the list). */
+      providerId: null,
+      providerCreated: false,
       agentId: null,
       agentView: "detail",
       agentTab: "profile",

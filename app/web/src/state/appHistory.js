@@ -4,7 +4,8 @@
 // start draws its address with no entry made up; layout width is not an input. The mapping is state/location.js.
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useStore } from "../data/store.jsx";
-import { SOFT_KEYS, addressOf, keyOf, navOfAddress, parentOf, sameAddress } from "./location.js";
+import { forgetDrafts } from "../data/drafts.js";
+import { SOFT_KEYS, addressOf, keyOf, navOfAddress, parentOf, sameAddress, sectionOfPath } from "./location.js";
 
 const CHANGED = "af-history";
 const read = () => (window.history.state?.af ? window.history.state : null);
@@ -33,6 +34,21 @@ window.addEventListener("popstate", () => {
   viewerClosing = false;
 });
 
+/** The last address seen in each section (without an overlay): a click on a section goes there, as a push. */
+const ROOTS = { chat: "/", contacts: "/contacts", agents: "/agents", settings: "/settings" };
+const lastOf = { ...ROOTS };
+const remember = (address) => {
+  lastOf[sectionOfPath(address.path)] = address.path;
+};
+/** The page keys of the last address of `section` (its list when it has not been left on a page). */
+export const lastPageOf = (section) => navOfAddress({ path: lastOf[section] ?? ROOTS[section], overlay: null });
+/** Forgets where each section was (a different account signs in). */
+export const forgetSections = () => Object.assign(lastOf, ROOTS);
+
+/** What each entry of the app is as far as this page has seen: index to address key. An entry rewritten by a replace changes it, which the entries above it (forward ones) do not know in their `prev`. */
+const seen = new Map();
+const ownParentBelow = (st, parent) => st && st.index > 0 && st.prev === keyOf(parent) && (!seen.has(st.index - 1) || seen.get(st.index - 1) === keyOf(parent));
+
 let replaceNext = false;
 /** The next move of the navigation replaces the entry it leaves (a form that ends in what it made, a page that is gone). */
 export const markReplace = () => {
@@ -43,13 +59,14 @@ export const markReplace = () => {
 export function goUp(dispatch) {
   const st = read();
   const parent = parentOf(hereNow());
-  if (st && st.index > 0 && st.prev === keyOf(parent)) {
+  if (ownParentBelow(st, parent)) {
     expecting = parent;
     window.history.back();
     dispatch({ type: "nav", patch: { ...navOfAddress(parent), ...(st.nav ?? {}) } });
     return;
   }
   window.history.replaceState(entry({ index: st?.index ?? 0, prev: st?.prev ?? null, address: parent, nav: null }), "", parent.path);
+  seen.set(st?.index ?? 0, keyOf(parent));
   dispatch({ type: "nav", patch: navOfAddress(parent) });
   notify();
 }
@@ -84,6 +101,14 @@ export function stepViewerEntry(id) {
   if (st) window.history.replaceState({ ...st, viewer: id }, "", window.location.pathname);
   notify();
 }
+/** The viewer's key goes from the entry it is on, with no traversal (its picture is not there: a Forward, a reload, a picture gone). */
+export function dropViewerKey() {
+  const st = read();
+  if (!st?.viewer) return;
+  window.history.replaceState({ ...st, viewer: null }, "", window.location.pathname);
+  notify();
+}
+
 export function closeViewerEntry() {
   const st = read();
   if (!st?.viewer) return;
@@ -110,12 +135,16 @@ export function useAppHistory({ nav, dispatch }) {
   const cold = useRef(null);
 
   useEffect(() => {
+    seen.clear();
+    forgetSections(); // (A shell is a session: where its sections were left, and what was typed in a form, are not carried over from another.)
+    forgetDrafts();
     const st = read();
     const here = hereNow();
     const patch = navOfAddress(here);
     const canonical = addressOf({ ...live.current, ...patch });
     if (!st) window.history.replaceState(entry({ index: 0, prev: null, address: canonical, nav: st?.nav ?? live.current }), "", canonical.path);
     else if (!sameAddress(here, canonical)) window.history.replaceState({ ...st, path: canonical.path, overlay: canonical.overlay }, "", canonical.path);
+    seen.set(read()?.index ?? 0, keyOf(canonical));
     if (!sameAddress(addressOf(live.current), canonical)) {
       cold.current = canonical;
       send.current({ type: "nav", patch: { ...patch, ...(st?.nav ?? {}) } });
@@ -125,6 +154,7 @@ export function useAppHistory({ nav, dispatch }) {
   // The navigation moved: say so to the history.
   useEffect(() => {
     const next = addressOf(nav);
+    remember(next);
     // (The back asked for is in flight: the page it leads to is already shown, and writing it is the browser's.)
     if (expecting) {
       const mine = sameAddress(expecting, next);
@@ -149,6 +179,7 @@ export function useAppHistory({ nav, dispatch }) {
     } else {
       window.history.pushState(entry({ index: index + 1, prev: keyOf(here), address: next, nav }), "", next.path);
     }
+    seen.set(read()?.index ?? 0, keyOf(next));
     notify();
   }, [nav]);
 
@@ -156,6 +187,7 @@ export function useAppHistory({ nav, dispatch }) {
   useEffect(() => {
     const onPop = () => {
       const st = read();
+      if (st) seen.set(st.index, keyOf(hereNow()));
       send.current({ type: "nav", patch: { ...navOfAddress(hereNow()), ...(st?.nav ?? {}) } });
     };
     window.addEventListener("popstate", onPop);

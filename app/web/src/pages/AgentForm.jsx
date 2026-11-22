@@ -489,7 +489,8 @@ export function AgentForm({ agent = null }) {
       setAvatarError(changes ? `其他修改已保存，但头像没有上传成功：${res.value}` : `头像没有上传成功：${res.value}`);
       return;
     }
-    dispatch({ type: "nav", patch: { agentView: "detail" } });
+    // Saved: the form is closed like its own back button does (the Agent page is the entry below it), so no entry points back into the form just saved.
+    up();
   };
 
   const submit = async (event) => {

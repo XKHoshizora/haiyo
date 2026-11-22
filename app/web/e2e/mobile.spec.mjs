@@ -3,7 +3,7 @@
 // What only an iPhone can show (the focus zoom itself, the safe areas, the edge swipe) is listed in the lane's report.
 import { test, expect } from "./support/fixtures.mjs";
 import { befriend, createGroupApi, sendApi, uniq } from "./support/accounts.mjs";
-import { chatPane, createAgentUi, listRow, openChat, pickAvatarUi, sendFile } from "./support/app.mjs";
+import { chatPane, createAgentUi, goTo, listRow, openChat, pickAvatarUi, sendFile } from "./support/app.mjs";
 import { png } from "./support/files.mjs";
 import { polishShot } from "./support/shots.mjs";
 
@@ -307,7 +307,8 @@ test("a long-press on a bubble opens its menu: 回复 quotes it, 复制 copies t
   const chat = await openChat(page, bo.displayName);
   const bubble = chat.locator(".bubble", { hasText: "长按我试试" });
   await expect(bubble).toBeVisible();
-  await expect(chat.locator(".msg-action").first()).toBeHidden(); // not drawn on touch
+  // Not drawn on touch (a 1px clipped box, there for a keyboard).
+  expect((await chat.locator(".msg-action").first().boundingBox()).width).toBeLessThanOrEqual(1);
 
   // A short touch is a tap: nothing opens. The browser's own selection does not start on a held bubble.
   await press(page, bubble, 150);
@@ -518,6 +519,57 @@ test("a conversation I am not in: the address shows the list with the notice, at
   const ann = await people.member("Ann");
   const page = await ann.context.newPage();
   await page.goto("/chat/00000000-0000-4000-8000-0000000000ee");
-  await expect(page.locator(".toast")).toHaveText("你已不在该会话中");
+  await expect(page.locator(".toast")).toHaveText("找不到这个会话，或你已不在其中");
   await expect(page).toHaveURL(/\/$/);
+});
+
+test("N1 at 1280: a section is its last address (消息 returns to the open chat, and says so); a plain / is the list with the empty pane; the details panel stays with its conversation", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const page = ann.page;
+  await openChat(page, bo.displayName);
+  const chatPath = new URL(page.url()).pathname;
+  await page.getByRole("button", { name: "会话资料" }).click();
+  await expect(page.locator(".side-col")).toBeVisible();
+  await goTo(page, "通讯录");
+  expect(new URL(page.url()).pathname).toBe("/contacts");
+  await expect(page.locator(".side-col")).toHaveCount(0);
+  await goTo(page, "消息");
+  expect(new URL(page.url()).pathname).toBe(chatPath);
+  await expect(chatPane(page, bo.displayName)).toBeVisible();
+  // The panel was part of the first conversation's address, not of the section: it is closed, and the next conversation does not inherit it.
+  await expect(page.locator(".side-col")).toHaveCount(0);
+  await page.getByRole("button", { name: "会话资料" }).click();
+  await listRow(page, cy.displayName).first().click();
+  await expect(chatPane(page, cy.displayName)).toBeVisible();
+  await expect(page.locator(".side-col")).toHaveCount(0);
+  // The address tells the truth: a reload of / shows the list and the empty pane, as the page was left at / only when it was.
+  const fresh = await ann.context.newPage();
+  await fresh.goto("/");
+  await expect(fresh.getByText("选择一个会话开始聊天")).toBeVisible();
+});
+
+test("N2 at 375: the add form of the providers is a page: Back is the list, Forward the typed form (the key never in the address), a fresh Add is empty", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: PHONE });
+  const page = ann.page;
+  await bar(page).getByRole("button", { name: "设置" }).click();
+  await page.getByText("模型供应商", { exact: true }).first().click();
+  await page.getByRole("button", { name: /添加供应商/ }).click();
+  await expect(page).toHaveURL(/\/settings\/providers\/new$/);
+  await page.getByLabel("名称").fill("草稿供应商");
+  await page.getByLabel("密钥").fill("sk-draft-secret-1234567890");
+  await page.goBack();
+  await expect(page).toHaveURL(/\/settings\/providers$/);
+  await expect(page.getByRole("button", { name: /添加供应商/ })).toBeVisible();
+  await page.goForward();
+  await expect(page.getByLabel("名称")).toHaveValue("草稿供应商");
+  await expect(page.getByLabel("密钥")).toHaveValue("sk-draft-secret-1234567890");
+  expect(page.url()).not.toContain("sk-draft");
+  expect(await page.evaluate(() => JSON.stringify(history.state) + JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }))).not.toContain("sk-draft");
+  await page.goBack();
+  await page.getByRole("button", { name: /添加供应商/ }).click();
+  await expect(page.getByLabel("名称")).toHaveValue("");
 });

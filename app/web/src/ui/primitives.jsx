@@ -142,8 +142,17 @@ export function Modal({ title, onClose, children, footer, wide }) {
   closing.current = onClose;
   useEffect(() => {
     const leave = () => closing.current?.();
+    // Nor does a dialog outlive the page it belongs to: when the layout no longer draws that page (a wide window narrowed to one column
+    // while a dialog of the page beside the list was open), it is not left mounted and unseen.
+    const lost = () => {
+      if (ref.current && ref.current.getClientRects().length === 0) closing.current?.();
+    };
     window.addEventListener("popstate", leave);
-    return () => window.removeEventListener("popstate", leave);
+    window.addEventListener("resize", lost);
+    return () => {
+      window.removeEventListener("popstate", leave);
+      window.removeEventListener("resize", lost);
+    };
   }, []);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>

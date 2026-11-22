@@ -524,6 +524,22 @@ describe("the viewer is a key of the conversation's entry (and one entry pushed 
     }
   });
 
+  it("a viewer entry whose picture is gone loses its key by a replace, never by a traversal", async () => {
+    await openApp();
+    await openChat("小安");
+    const back = vi.spyOn(window.history, "back");
+    const length = window.history.length;
+    window.history.replaceState({ ...window.history.state, viewer: "gone-picture" }, "");
+    await act(async () => {
+      window.dispatchEvent(new Event("af-history"));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(viewerKey()).toBeNull();
+    expect(document.querySelector(".viewer")).toBeNull();
+    expect(back).not.toHaveBeenCalled();
+    expect(window.history.length).toBe(length);
+  });
+
   it("stepping to the next picture adds no entry (the key is rewritten)", async () => {
     await open(3);
     const index = window.history.state.index;
