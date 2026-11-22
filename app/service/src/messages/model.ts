@@ -99,6 +99,14 @@ export type MessageBody = {
 };
 
 /**
+ * Body keys only the context of the same Agent's later replies may read (agents/context.ts `loadPage`; harness design
+ * §3, attack R3-m1): never rendered (`toWire` picks its keys one by one), searched, summarised or reviewed, and any new
+ * reader of raw bodies — an export, an admin view — must leave them out. `toolCalls`: an Agent's reply's calls in its own
+ * conversation (agents/replay.ts).
+ */
+export const CONTEXT_ONLY_KEYS: readonly string[] = ["toolCalls"];
+
+/**
  * One mention of a message (`messages.mentions`, migration 049; Task M): who it means — a member of the conversation when
  * the message was sent — and the range of the message's text that names it, `start` and `length` in UTF-16 code units of
  * the stored text. Decided once, when the message was sent (agents/mentions.ts `mentionsAtSend`); never read again from

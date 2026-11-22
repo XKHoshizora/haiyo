@@ -30,8 +30,12 @@ import {
 import type { AgentRow } from "./store.ts";
 import type { RunRefs } from "./tools/refs.ts";
 import { baseOf, countPlaced, readSummary, shownSummary, stayOf, type PlacedReader, type Summary } from "./summary/store.ts";
+import { hasExcerpt, mostRecent, withReplay, type ReplayFacts, type ReplayScope } from "./replay.ts";
+import { siteDateTime } from "./tools/clock.ts";
+import { hasVisibleText } from "../schemas.ts";
 import {
   attachmentLabel,
+  partText,
   ContextPlan,
   contextBudget,
   entryText,
@@ -115,6 +119,14 @@ export interface ContextRun {
    * reads them. Absent: labels carry none.
    */
   refs?: RunRefs;
+  /**
+   * A reply in the Agent's own conversation offered tools (port-impl.ts `begin`): an earlier reply of the Agent's there
+   * that kept its calls (`toolCalls`, agents/replay.ts) returns with them (`ContextEntry.replay`) when every one is to a
+   * tool in `tools` — the names this request offers — its placeholders dated in `timeZone` (the site's). Absent (a group, a
+   * reply offered none, every other reader): every reply returns as its text alone. `maxCalls`: one that kept more calls
+   * than that (the step-1 tools' per-reply caps, replay.ts `maxCallsOf`) returns as its text too.
+   */
+  replay?: ReplayScope & { timeZone: string };
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
   upTo?: number;
   /**
@@ -357,8 +369,17 @@ export type Speaker = Omit<Member, "appellation">;
 interface Loaded {
   /** Its entry: as loaded, without numbers; with a reply's numbers once what is shown is known (`build`, `loadContext`). */
   entry: ContextEntry;
-  /** Its entry with the attachment labels numbered by `refs` (its quote's file, then its own), or without numbers (null). */
-  build: (refs: RunRefs | null) => ContextEntry;
+  /**
+   * Its entry with the attachment labels numbered by `refs` (its quote's file, then its own), or without numbers (null);
+   * `real`: with its web results' stored excerpt (replay.ts `REAL_REPLIES`).
+   */
+  build: (refs: RunRefs | null, real?: boolean) => ContextEntry;
+  /**
+   * It returns with its calls (`ContextRun.replay`) and stored a web excerpt (replay.ts `hasExcerpt`);
+   * `real`: it is among the most recent such (`mostRecent`, `loadContext`), and is built showing that excerpt.
+   */
+  excerpt: boolean;
+  real: boolean;
   seq: number;
   /** The owner's message: its seq. The Agent's reply: the seq its run had covered when it began. */
   answers: number;
@@ -398,6 +419,15 @@ interface MessageRow {
   proposal_persona: string | null;
   proposal_intro: string | null;
   proposal_field: string | null;
+  /**
+   * Only for a run with `ContextRun.replay`, and only of the Agent's own messages: what its replay is built from — the
+   * message's id, when it was posted, and its body's `toolCalls`, `webSources` and `webCites` as stored. Null otherwise.
+   */
+  message_id: string | null;
+  created_at: Date | null;
+  tool_calls: unknown;
+  web_sources: unknown;
+  web_cites: unknown;
 }
 
 /** A label's number, when there is one (none past the largest a token holds: refs.ts `MAX_NUMBER`). */
@@ -440,6 +470,9 @@ const inGroupNow = (ms: string): string =>
  * one at or before `from` as its text only (no attachment: it is not read). Every text is shown as it is stored:
  * none holds a citation (README "Agents and runs", Citations), and one that looks like one is what someone wrote (or an
  * Agent's reply that was nothing else, conversation.ts `postAsAgent`: read for its numbers as any, `RunRefs.plant`).
+ * With `run.replay` (its own conversation, a reply offered tools), a reply of the Agent's that kept its calls returns
+ * with them (agents/replay.ts `replayOf`: each call and a placeholder of stored facts, never what was found) when this
+ * request offers every tool they call; anything else of a body — or a body read for anyone else — is never read here.
  * `more`: as many as `limit` (there may be older ones).
  */
 async function loadPage(
@@ -456,7 +489,12 @@ async function loadPage(
                                      where sm.conversation_id = m.conversation_id and sm.principal_id = m.sender_id and ${inGroupNow("sm")}) as sender_present,
             m.body ->> 'text' as text, case when m.seq > $3 then m.body -> 'attachment' end as attachment,
             m.body -> 'replyToSeq' as reply_to, r.covers_seq::text as answers, ${notAcknowledgement("m")} as placed,
-            pp.persona as proposal_persona, pp.intro as proposal_intro, pp.field as proposal_field
+            pp.persona as proposal_persona, pp.intro as proposal_intro, pp.field as proposal_field,
+            case when $11::boolean and m.sender_id = $1 then m.id::text end as message_id,
+            case when $11::boolean and m.sender_id = $1 then m.created_at end as created_at,
+            case when $11::boolean and m.sender_id = $1 then m.body -> 'toolCalls' end as tool_calls,
+            case when $11::boolean and m.sender_id = $1 then m.body -> 'webSources' end as web_sources,
+            case when $11::boolean and m.sender_id = $1 then m.body -> 'webCites' end as web_cites
        from messages m ${VISIBLE_JOIN}
        join principals sp on sp.id = m.sender_id
        left join agent_runs r on m.sender_id = $1 and ${postingRun("m", "r")}
@@ -468,7 +506,7 @@ async function loadPage(
         and ($10::bigint is null or m.seq <= $10::bigint)
       order by m.seq desc
       limit $7`,
-    [run.agentId, run.conversationId, from, before, run.coversSeq, run.ownerId, limit, group, run.group?.calls ?? [], run.upTo ?? null],
+    [run.agentId, run.conversationId, from, before, run.coversSeq, run.ownerId, limit, group, run.group?.calls ?? [], run.upTo ?? null, !group && run.replay !== undefined],
   );
   const quotedSeqs = [...new Set(rows.flatMap((r) => (typeof r.reply_to === "number" && Number.isSafeInteger(r.reply_to) ? [r.reply_to] : [])))];
   /** A quoted message as it is shown: its text, or (when it has none) its attachment, labelled once numbers are known. */
@@ -494,16 +532,26 @@ async function loadPage(
     const quotedFile = replyTo === null ? undefined : quotedFiles.get(replyTo);
     const seq = Number(r.seq);
     const block = role === "assistant" && r.proposal_persona !== null ? renderProposalBlock({ persona: r.proposal_persona, intro: r.proposal_intro, field: r.proposal_field }) : null;
-    const build = (refs: RunRefs | null): ContextEntry => {
+    // An earlier reply that looked something up, with visible text, in a run that replays: its calls (harness design §3),
+    // and an acknowledgement marked as one, so that it heads its answer's turn after the results (runtime/context.ts).
+    const scope = run.replay;
+    const facts: ReplayFacts | null =
+      scope !== undefined && role === "assistant" && r.message_id !== null && r.created_at !== null && hasVisibleText(r.text ?? "")
+        ? { messageId: r.message_id, day: siteDateTime(r.created_at, scope.timeZone).date, webSources: r.web_sources, webCites: r.web_cites }
+        : null;
+    const ack = scope !== undefined && role === "assistant" && !r.placed;
+    const build = (refs: RunRefs | null, real = false): ContextEntry => {
       const quote = quotedText ?? (quotedFile && replyTo !== null ? attachmentLabel(toAttachment(quotedFile, replyTo, run.conversationId, refs)) : null);
       const text = entryText(r.text ?? "", quote);
-      return {
+      const plain: ContextEntry = {
         role,
         text: block === null ? text : text === "" ? block : `${text}\n\n${block}`,
         attachment: r.attachment ? toAttachment(r.attachment, seq, run.conversationId, refs) : null,
+        ...(ack ? { ack: true as const } : {}),
       };
+      return scope === undefined || facts === null ? plain : withReplay(plain, r.tool_calls, facts, scope, real);
     };
-    const entry = build(null);
+    const excerpt = facts !== null && hasExcerpt(r.tool_calls);
     const quoted = quotedText !== undefined || quotedFile !== undefined;
     const speaker =
       group && role === "user"
@@ -516,7 +564,7 @@ async function loadPage(
             quoted,
           }
         : null;
-    return [{ entry, build, seq, answers: r.answers === null ? seq : Number(r.answers), reply: r.answers !== null, placed: r.placed, speaker }];
+    return [{ entry: build(null), build, excerpt, real: false, seq, answers: r.answers === null ? seq : Number(r.answers), reply: r.answers !== null, placed: r.placed, speaker }];
   });
   return { loaded, oldest: rows.length > 0 ? Number(rows[rows.length - 1]!.seq) : null, more: rows.length === limit };
 }
@@ -648,6 +696,12 @@ export async function loadContext(
   let text = mark === null ? unmarked : withPassage(mark, speakers);
   let budget = budgetWith(text);
   const ordered = inAnsweredOrder(kept);
+  // The most recent replies that stored a web excerpt show it (replay.ts `REAL_REPLIES`); the older, and any posted before
+  // excerpts were kept, show the placeholder.
+  for (const l of mostRecent(ordered, (l) => l.excerpt)) {
+    l.real = true;
+    l.entry = l.build(null, true);
+  }
   let entries = ordered.map((l) => shown(l, mark));
   // The summary's passage goes first when, with it, the newest message would not fit whole (the mark, drawn with it there,
   // is in no part of what is left).
@@ -670,7 +724,9 @@ export async function loadContext(
     // reading stopped. (The plan is made again with the labels as they are now: they are a little longer.)
     run.refs.plant(text.text);
     for (const l of kept) for (const said of [l.entry.text, l.entry.attachment?.name ?? "", l.speaker?.name ?? "", l.speaker?.handle ?? ""]) run.refs.plant(said);
-    for (const at of could.shownAt()) ordered[at]!.entry = ordered[at]!.build(run.refs);
+    // An earlier reply's replayed calls and results too: their inputs and sentences are text it is shown (R2-m3).
+    for (const l of kept) for (const round of l.entry.replay ?? []) for (const p of [...round.calls, ...round.results]) run.refs.plant(partText(p)!);
+    for (const at of could.shownAt()) ordered[at]!.entry = ordered[at]!.build(run.refs, ordered[at]!.real);
     entries = ordered.map((l) => shown(l, mark));
     could = new ContextPlan(entries, budget, ratio);
     could.keepOlder();

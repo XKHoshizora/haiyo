@@ -261,7 +261,9 @@ describe("what a search refuses", () => {
     const out = await searchOnce(owner, own, "查查", { query: "超时测试" }, deps({ db: failing.db }));
     expect(out).toEqual({ error: "这次查找超时了。" });
     const body = await bodyOf(own, await lastOf(own));
-    expect(body).toEqual({ text: "好。" });
+    // Nothing counted or kept of what it looked up; only that it was refused, with the tool's own sentence and no words
+    // (harness design §3: `toolCalls`, in its own conversation).
+    expect(body).toEqual({ text: "好。", toolCalls: [{ name: "search_messages", round: 1, outcome: "refused", error: "这次查找超时了。" }] });
   });
 
   it("words of fewer than two characters once cleaned, or heavier than 60, are refused without touching the database", async () => {
@@ -364,7 +366,13 @@ describe("what the reply keeps of its searches", () => {
     const b = await postAs(own, owner.id, "关键词-k1 第二条");
     await searchOnce(owner, own, "找找", { query: "关键词-k1" });
     const body = await bodyOf(own, await lastOf(own));
-    expect(body).toEqual({ text: "好。", lookups: { search: 1 }, found: [{ conversationId: own, seq: b }, { conversationId: own, seq: a }], queries: ["关键词-k1"] });
+    expect(body).toEqual({
+      text: "好。",
+      lookups: { search: 1 },
+      found: [{ conversationId: own, seq: b }, { conversationId: own, seq: a }],
+      queries: ["关键词-k1"],
+      toolCalls: [{ name: "search_messages", round: 1, outcome: "ok", input: { query: "关键词-k1" }, found: 2 }],
+    });
 
     const mia = await signUp(app, "mia");
     const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);

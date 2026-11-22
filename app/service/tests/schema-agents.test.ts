@@ -40,7 +40,8 @@ describe("agent, provider, metering and run tables", () => {
   }
 
   async function rejectedWith(code: string, sql: string, params: unknown[] = []): Promise<void> {
-    await expect(db.query(sql, params)).rejects.toMatchObject({ code });
+    // `code` may name several (a|b): Postgres 18 reports a delete refused by `on delete restrict` as 23001, earlier versions as 23503.
+    await expect(db.query(sql, params)).rejects.toMatchObject({ code: expect.stringMatching(new RegExp(`^(${code})$`)) });
   }
 
   test("an agents row for a human principal is rejected; for an agent principal it gets its defaults", async () => {
@@ -240,7 +241,7 @@ describe("agent, provider, metering and run tables", () => {
     );
     const agent = await agentPrincipal(owner, "bot_c");
     await db.query(`insert into agents (principal_id, model_source, provider_id, provider_model) values ($1, 'provider', $2, 'm')`, [agent, prov]);
-    await rejectedWith(FOREIGN_KEY_VIOLATION, `delete from providers where id = $1`, [prov]);
+    await rejectedWith(`${FOREIGN_KEY_VIOLATION}|23001`, `delete from providers where id = $1`, [prov]);
   });
 
   test("conversations.type accepts 'agent'; an agent has one conversation row", async () => {

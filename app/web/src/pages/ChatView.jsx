@@ -71,10 +71,10 @@ const topWithin = (node, list) => node.getBoundingClientRect().top - list.getBou
  * (`AgentModelSwitch`). Nothing until the Agent's record is loaded (its model is not known before then), nothing for an
  * Agent not mine; a plain label once the Agent is deleted.
  */
-function AgentModel({ agentId }) {
+function AgentModel({ agentId, deleted = false }) {
   const { state } = useStore();
   const agent = state.agents[agentId];
-  if (!agent?.loaded || !agent.mine) return null;
+  if (deleted || !agent?.loaded || !agent.mine || agent.deleted) return null;
   return (
     <>
       {" · "}
@@ -493,8 +493,8 @@ export function ChatView({ conv }) {
             )}
           </h2>
           <p>
-            {convSubtitle(state, conv)}
-            {agentChat && <AgentModel agentId={conv.agentId} />}
+            <span className="chat-sub">{convSubtitle(state, conv)}</span>
+            {agentChat && <AgentModel agentId={conv.agentId} deleted={Boolean(block)} />}
           </p>
         </div>
         <div className="chat-head-actions">

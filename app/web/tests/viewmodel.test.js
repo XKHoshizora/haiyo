@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as M from "../src/data/model.js";
-import { toView, formatAt, formatMessageAt, formatMessageTitle, expiryText, formatPoints, replyPoints, displayPoints, namesAgent, webAddress } from "../src/data/viewmodel.js";
+import { toView, formatAt, formatMessageAt, formatMessageTitle, expiryText, formatPoints, replyPoints, displayPoints, balancePoints, namesAgent, webAddress } from "../src/data/viewmodel.js";
 import { ME } from "../src/data/identities.js";
 import { convSubtitle, convTitle, entity, isAgent, lastPreview, myAgents, nameOf, ownerOf, publishBlock, senderName } from "../src/state/selectors.js";
 import {
@@ -673,6 +673,23 @@ describe("formatPoints (points are decimal strings: no float maths)", () => {
     expect(formatPoints("abc")).toBe("abc");
     expect(formatPoints(undefined)).toBe("");
     expect(formatPoints(null)).toBe("");
+  });
+});
+
+describe("balancePoints (never more spendable points than there are)", () => {
+  it("rounds DOWN at the display precision: 4.399 is 4.39, never 4.4; a trace above zero says so; a debt is rounded the other way (never less owed)", () => {
+    expect(balancePoints("4.399")).toBe("4.39");
+    expect(balancePoints("920.81075")).toBe("920.81");
+    expect(balancePoints("1234.50")).toBe("1,234.5");
+    expect(balancePoints("5")).toBe("5");
+    expect(balancePoints("0.00019")).toBe("0.0001");
+    expect(balancePoints("0.99999")).toBe("0.9999");
+    expect(balancePoints("0.00004")).toBe("<0.0001");
+    expect(balancePoints("0")).toBe("0");
+    expect(balancePoints("-4.399")).toBe("-4.4");
+    expect(balancePoints("-2.5")).toBe("-2.5");
+    expect(balancePoints("-0.00001")).toBe("-0.0001");
+    expect(balancePoints("nonsense")).toBe("nonsense");
   });
 });
 

@@ -172,6 +172,14 @@ describe("the header and the list row", () => {
     expect(document.querySelector(".rail .badge")).toBeNull();
   });
 
+  it("the chip 已删除 and the quiet row come from one source, the conversation's sync entry: a record that says deleted while the entry does not changes neither", async () => {
+    await openAgentChat({ agent: { deleted: true }, conv: { unread: 2, agent: { deleted: false }, canSend: { ok: true } } });
+    const row = screen.getByText("小助手", { selector: ".list-col .row-name" }).closest("button");
+    expect([...row.querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["Agent"]);
+    expect(row.classList.contains("quiet")).toBe(false);
+    expect(row.querySelector(".badge")).not.toBeNull();
+  });
+
   it("an Agent's message carries the Agent tag; my messages read 已读 up to the Agent's marker", async () => {
     await openAgentChat({ messages: [...BASE, wire(A1, 3, ME_ID, "还在吗")], conv: { peerReadSeq: 2 } });
     expect(within(storedLi(1)).getByText("Agent", { selector: ".tag" })).toBeTruthy();
@@ -1222,8 +1230,11 @@ describe("a paused or deleted Agent", () => {
   it("deleted: the frozen style with its sentence; nothing can be sent; the history stays", async () => {
     await openAgentChat({ agent: { deleted: true } });
     expect(document.querySelector(".chat > .notice").textContent).toContain(DELETED_TEXT);
-    expect(input().disabled).toBe(true);
-    expect(document.querySelector(".composer-hint").textContent).toBe(DELETED_TEXT);
+    // The reason is said once, by the notice; the composer offers nothing at all (no tools, no box, no send, no second sentence).
+    expect(document.querySelector(".composer")).toBeNull();
+    expect(screen.queryByLabelText("消息内容")).toBeNull();
+    expect(screen.queryByRole("button", { name: "发送文件" })).toBeNull();
+    expect(within(document.querySelector("section.chat")).getAllByText(DELETED_TEXT)).toHaveLength(1);
     expect(storedLi(1)).not.toBeNull();
     expect(mainText()).not.toContain(PAUSE_TEXT);
   });
@@ -2240,7 +2251,8 @@ describe("switching the model where I am (my Agent's own conversation)", () => {
     expect(patchAgent).toHaveBeenCalledTimes(1);
     cleanup();
     await openAgentChat({ agent: { deleted: true }, providers: [providerOf()] });
-    expect(document.querySelector(".chat-head .chat-title p").textContent).toContain("小模型");
+    // A deleted Agent's header line says what the conversation is now and holds no model (it can no longer reply).
+    expect(document.querySelector(".chat-head .chat-title p").textContent).toBe("你的 Agent · 已删除，只能查看");
     expect(headModel()).toBeNull();
   });
 

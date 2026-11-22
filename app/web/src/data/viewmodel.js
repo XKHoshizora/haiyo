@@ -257,6 +257,24 @@ export function displayPoints(value) {
 }
 
 /**
+ * A balance (what the person can still spend) at the display precision, rounded DOWN: never more spendable points than there are — 4.399 is 4.39, not
+ * 4.4. A positive trace below the finest step says so (`<0.0001`); a debt is rounded the other way (never less owed: -4.399 is -4.4). The costs and
+ * the amounts already spent (`displayPoints`) are facts and round to nearest; only what can be spent must not be overstated.
+ */
+export function balancePoints(value) {
+  const negative = typeof value === "string" && value.startsWith("-");
+  const micro = microPoints(negative ? value.slice(1) : value);
+  if (micro === null) return formatPoints(value);
+  const decimals = micro >= 1_000_000n ? 2 : 4;
+  const unit = 10n ** BigInt(6 - decimals);
+  // Down for a balance, away from zero (down again, on the number line) for a debt.
+  const rounded = negative ? (micro + unit - 1n) / unit : micro / unit;
+  if (rounded === 0n) return micro > 0n && !negative ? "<0.0001" : "0";
+  const digits = rounded.toString().padStart(decimals + 1, "0");
+  return `${negative ? "-" : ""}${formatPoints(`${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`)}`;
+}
+
+/**
  * A decimal string of points in micro-points (its first six decimals, no float maths), or null when it is not a
  * non-negative decimal string.
  */
@@ -761,7 +779,7 @@ function usageView(u) {
   if (!u) return null;
   return {
     ...u,
-    balanceText: displayPoints(u.balance),
+    balanceText: balancePoints(u.balance),
     free: u.free ? { ...u.free, allowanceText: displayPoints(u.free.allowance), usedText: displayPoints(u.free.used) } : null,
     memory: u.memory ? { ...u.memory, allowanceText: displayPoints(u.memory.allowance), usedText: displayPoints(u.memory.used) } : null,
     recent: (Array.isArray(u.recent) ? u.recent : []).map((r) => ({ ...r, pointsText: displayPoints(r.points) })),

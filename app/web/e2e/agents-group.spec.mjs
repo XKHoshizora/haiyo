@@ -626,7 +626,7 @@ async function openProviders(page) {
   await goTo(page, "设置");
   await page.getByRole("button", { name: /模型供应商/ }).click();
   const section = page.getByRole("region", { name: "模型供应商" });
-  await expect(section.getByRole("heading", { name: "我的模型供应商" })).toBeVisible();
+  await expect(section.getByRole("heading", { name: "模型供应商", exact: true })).toBeVisible();
   return section;
 }
 

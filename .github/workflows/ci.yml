@@ -1,11 +1,259 @@
 name: Verify
+
+# What runs on every pushed branch and every pull request, in parallel jobs. Plain-words guide: docs/dev/ci.md.
+# Nothing here needs a secret: the tests build their own configuration and only TEST_DATABASE_URL (a throwaway
+# Postgres started inside the job) comes from outside.
+
 on:
   push:
+    branches: ["**"]
+    paths-ignore:
+      - "docs/**"
+      - ".superpowers/**"
+      - "**/*.md"
+      - "app/ios/**"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - ".superpowers/**"
+      - "**/*.md"
+      - "app/ios/**"
+  workflow_dispatch:
+    inputs:
+      webkit:
+        description: "Also run the browser suite in WebKit (Safari's engine)"
+        type: boolean
+        default: false
+
 permissions:
   contents: read
+
+# A newer push to the same branch cancels the run that is still going.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The throwaway database every job below starts (see the "Start Postgres" steps).
+  TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/af_test
+
 jobs:
-  verify:
+  typecheck:
+    name: service typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app/service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/service/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  service:
+    name: service tests (shard ${{ matrix.shard }}/6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    defaults:
+      run:
+        working-directory: app/service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/service/package-lock.json
+      # Its own Postgres per shard, the major version the acceptance site's database runs (18; see docs/dev/ci.md).
+      # Durability is switched off and the data lives in memory: the tests empty the tables between tests, and this
+      # database is thrown away with the job. The extensions the migrations need (citext, pgcrypto, pg_trgm) ship in the image.
+      - name: Start Postgres
+        run: |
+          docker run -d --name pg -p 5432:5432 --tmpfs /var/lib/postgresql \
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=af_test \
+            postgres:18 -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 60); do docker exec pg pg_isready -h 127.0.0.1 -U postgres -d af_test && exit 0; sleep 1; done
+          docker logs pg; exit 1
+      - run: npm ci
+      # The migrations run by the suite's own global setup (tests/helpers/global-setup.ts), once per shard.
+      - name: Run this shard
+        run: npx vitest run --shard=${{ matrix.shard }}/6 --reporter=default --reporter=json --outputFile.json=vitest-shard.json
+      - name: Count passed / failed / skipped
+        if: always()
+        env:
+          SHARD: ${{ matrix.shard }}/6
+        run: |
+          node - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require("node:fs");
+          const file = "vitest-shard.json";
+          if (!fs.existsSync(file)) {
+            console.log(`### service shard ${process.env.SHARD}\n\nNo report was written (the run stopped before the tests finished: see the step log).`);
+            process.exit(0);
+          }
+          const r = JSON.parse(fs.readFileSync(file, "utf8"));
+          const failed = r.testResults.flatMap((f) => f.assertionResults.filter((t) => t.status === "failed").map((t) => `${f.name.split("/app/service/")[1] ?? f.name} > ${t.fullName}`));
+          console.log(`### service shard ${process.env.SHARD}\n`);
+          console.log("| passed | failed | skipped | total |\n| ---: | ---: | ---: | ---: |");
+          console.log(`| ${r.numPassedTests} | ${r.numFailedTests} | ${r.numPendingTests + r.numTodoTests} | ${r.numTotalTests} |`);
+          if (failed.length) console.log("\nFailed:\n\n" + failed.map((n) => `- ${n}`).join("\n"));
+          EOF
+      - name: Postgres log on failure
+        if: failure()
+        run: docker logs --tail 80 pg
+
+  calibrate:
+    name: memory calibration check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Needs no install: it only reads the sample files and the service sources.
+      - run: node scripts/calibrate-memory.mjs --check
+        working-directory: app/service
+
+  web:
+    name: web lint, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: app/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/web/package-lock.json
+      - run: npm ci
+      - name: Lint and unit tests
+        run: npm test
+      - run: npm run build
+
+  e2e:
+    name: browser suite (Chromium, part ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/service/package-lock.json
+            app/web/package-lock.json
+      - name: Start Postgres
+        run: |
+          docker run -d --name pg -p 5432:5432 --tmpfs /var/lib/postgresql \
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=af_test \
+            postgres:18 -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 60); do docker exec pg pg_isready -h 127.0.0.1 -U postgres -d af_test && exit 0; sleep 1; done
+          docker logs pg; exit 1
+      # The suite builds the web client and the service itself and starts the service (e2e/support/system.mjs),
+      # so both folders need their packages.
+      - run: npm ci
+        working-directory: app/service
+      - run: npm ci
+        working-directory: app/web
+      - name: Playwright version
+        id: pw
+        working-directory: app/web
+        run: echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      # Downloads the browser only when the cache did not hold it; always adds the system libraries it needs.
+      - run: npx playwright install --with-deps chromium
+        working-directory: app/web
+      # Each part has its own Postgres and its own service; Playwright takes every 4th share of the spec files.
+      - run: npm run e2e -- --shard=${{ matrix.shard }}/4
+        working-directory: app/web
+      - name: Keep the report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-chromium-${{ matrix.shard }}
+          path: |
+            app/web/playwright-report
+            app/web/e2e/playwright-report
+            app/web/e2e/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Opt-in: Actions tab > Verify > Run workflow > tick "webkit". Never runs on a push.
+  e2e-webkit:
+    name: browser suite (WebKit)
+    if: github.event_name == 'workflow_dispatch' && inputs.webkit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      E2E_WEBKIT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/service/package-lock.json
+            app/web/package-lock.json
+      - name: Start Postgres
+        run: |
+          docker run -d --name pg -p 5432:5432 --tmpfs /var/lib/postgresql \
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=af_test \
+            postgres:18 -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 60); do docker exec pg pg_isready -h 127.0.0.1 -U postgres -d af_test && exit 0; sleep 1; done
+          docker logs pg; exit 1
+      - run: npm ci
+        working-directory: app/service
+      - run: npm ci
+        working-directory: app/web
+      - name: Playwright version
+        id: pw
+        working-directory: app/web
+        run: echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-webkit-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - run: npx playwright install --with-deps webkit
+        working-directory: app/web
+      - run: npm run e2e
+        working-directory: app/web
+      - name: Keep the report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-webkit
+          path: |
+            app/web/playwright-report
+            app/web/e2e/playwright-report
+            app/web/e2e/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The old project at the repository root (the version still running online; README, "目录"; the root Dockerfile
+  # still builds it). Unchanged from before, so a change to it is still checked; remove with the old project.
+  legacy-root:
+    name: old root project
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
