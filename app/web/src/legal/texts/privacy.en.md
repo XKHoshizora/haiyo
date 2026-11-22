@@ -15,10 +15,10 @@ Haiyo is run by one individual developer: {{Owner to fill in: legal name}}. Ques
 - What you send: messages in chats and groups, and the pictures and files you send.
 - Your Agents: name, avatar, the persona you wrote and other settings; their memory notes, including notes about you and what they heard others say in groups (only while their memory is on).
 - Your connections: friends, friend requests, blocks, and the groups you are in.
-- Usage: for each AI reply, which model, how many tokens and how many points it used, and your points balance and its changes.
+- Usage: for each call to an AI model, which model, how many tokens and how many points it used, and your points balance and its changes.
 - Model services you connect: the service address and API key. The key is stored encrypted and opened only to call that service.
 - Server logs: each request's method, path, host and your IP address. The query part of addresses (such as search words or tokens in links) is removed, cookies are not logged, and neither is the text of messages or notes.
-- In your browser: one sign-in cookie (scripts cannot read it), and a few display preferences, such as whether to show points under replies, kept only in your browser and never sent to us.
+- In your browser: the sign-in cookie (scripts cannot read it), and a few things only your browser uses, such as whether to show points under replies, never sent to us.
 
 We use no advertising or analytics services.
 
