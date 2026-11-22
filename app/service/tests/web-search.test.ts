@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { formatPoints } from "../src/accounts/store.ts";
 import { changeSweep, webEngineOf } from "../src/app.ts";
 import { createAgentPort, type DbAgentPort } from "../src/agents/port-impl.ts";
 import { NO_TOOLS, NO_WEB_HERE, toolsPassage, WEB_RULES } from "../src/agents/runtime/prompt.ts";
@@ -6,8 +7,8 @@ import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worke
 import { createToolbox, SEARCH_WEB, toolSpecs } from "../src/agents/tools/index.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
 import type { WebEngine, WebResult, WebSearchError } from "../src/agents/tools/web/engine.ts";
-import { countSearch, holdSearch, SearchRefused, SITE_SCOPE } from "../src/agents/tools/web/hold.ts";
-import { WEB_BUSY, WEB_NO_MONEY, WEB_NO_RESULTS, WEB_OWNER_DAY, WEB_QUERY_PRIVATE, WEB_SITE_DAY, WEB_TIMEOUT, WEB_UNAVAILABLE } from "../src/agents/tools/web/tool.ts";
+import { holdSearch, SearchRefused, SITE_SCOPE, takeFuse } from "../src/agents/tools/web/hold.ts";
+import { WEB_BUSY, WEB_NO_MONEY, WEB_NO_RESULTS, WEB_QUERY_PRIVATE, WEB_SITE_DAY, WEB_TIMEOUT, WEB_UNAVAILABLE } from "../src/agents/tools/web/tool.ts";
 import { lockAgent, type AgentRow } from "../src/agents/store.ts";
 import type { Config, WebSearchConfig } from "../src/config.ts";
 import { admitRun } from "../src/metering/admit.ts";
@@ -42,6 +43,9 @@ const PAID = { source: "site", id: "meter_paid" } as const;
 const FREE = { source: "site", id: "meter_free" } as const;
 const POINT = 1_000_000n;
 const PRICE = 770_350n;
+/** The site's estimate of one search in this file, in micro-USD: the fuse's 12 searches are $0.024. */
+const COST = 2000;
+const TWELVE = { siteUsdPerDay: 0.024 };
 
 const QUERY = "北京 天气 预报";
 const RESULTS: WebResult[] = [1, 2, 3].map((i) => ({ url: `https://news${i}.example.com/a/${i}`, title: `新闻标题${i}`, snippet: `摘要内容${i}`, age: "2026-11-20T08:00:00Z" }));
@@ -60,10 +64,13 @@ function fakeEngine(answer: (query: string, signal: AbortSignal) => Promise<{ re
   return engine;
 }
 
-/** The app's configuration with the web search on (and `web`, `tools` over it). */
+/**
+ * The app's configuration with the web search on (and `web`, `tools` over it): its default engine (Exa, faked here), at
+ * this file's price (0.77035 points, the first version's, which the meter models' 3 free points a day fit) and estimate.
+ */
 const webConfig = (web: Partial<WebSearchConfig> = {}, tools: Partial<Config["tools"]> = {}): Config => ({
   ...app.deps.config,
-  tools: { ...app.deps.config.tools, ...tools, web: { ...app.deps.config.tools.web, enabled: true, ...web } },
+  tools: { ...app.deps.config.tools, ...tools, web: { ...app.deps.config.tools.web, enabled: true, pointsMicroPerSearch: Number(PRICE), costMicroUsdPerSearch: COST, ...web } },
 });
 
 /** The app's own port and worker, but with a toolbox holding `engine` (null: the site offers no web search). */
@@ -106,11 +113,12 @@ const recordOf = async (runId: string) =>
   ).rows[0]!;
 const countOf = async (scope: string) =>
   (await db.query<{ n: number | null }>("select (select searches from web_search_days where scope = $1 and day = (now() at time zone 'Asia/Shanghai')::date) as n", [scope])).rows[0]!.n ?? 0;
+/** Today's fuse row at `n` searches of `COST` each. */
 const setCount = (scope: string, n: number) =>
   db.query(
-    `insert into web_search_days (scope, day, searches) values ($1, (now() at time zone 'Asia/Shanghai')::date, $2)
-     on conflict (scope, day) do update set searches = $2`,
-    [scope, n],
+    `insert into web_search_days (scope, day, searches, spent_micro_usd) values ($1, (now() at time zone 'Asia/Shanghai')::date, $2, $3)
+     on conflict (scope, day) do update set searches = $2, spent_micro_usd = $3`,
+    [scope, n, String(n * COST)],
   );
 const outputs = (call: ModelCall): any[] => (call.steps ?? []).flatMap((s) => s.results.map((r) => r.output));
 const lastBody = async (conv: string) =>
@@ -177,6 +185,11 @@ describe("switch off: nothing changes", () => {
     const wire = (await api(app, owner, "GET", `/api/conversations/${own}/messages`)).json.messages.at(-1);
     for (const key of ["webSources", "webCites"]) expect(wire).not.toHaveProperty(key);
     expect(wire.via).not.toHaveProperty("webSearches");
+    // The usage page as before: the model's row whole, no line of searches (lane websearch2), no price on the models.
+    const usage = (await api(app, owner, "GET", "/api/usage")).json;
+    expect(usage).not.toHaveProperty("recentWeb");
+    expect(usage.recent).toEqual([{ agentId: agent.id, purpose: "reply", model: "meter_paid", source: "site", points: formatPoints(BigInt((await recordOf(run.id)).balance)), replies: 1 }]);
+    expect((await api(app, owner, "GET", "/api/models")).json).not.toHaveProperty("webSearchPoints");
   });
 
   it("the switch on but its key missing: no engine, and one start-up line naming the variable (never a value)", () => {
@@ -186,12 +199,16 @@ describe("switch off: nothing changes", () => {
     expect(webEngineOf(webConfig({ apiKeyEnv: "WEB_SEARCH_API_KEY_FOR_TEST" }), log)).toBeNull();
     expect(said).toHaveLength(1);
     expect(said[0]).toContain("WEB_SEARCH_API_KEY_FOR_TEST");
+    expect(webEngineOf(webConfig({ apiKeyEnv: "WEB_SEARCH_API_KEY_FOR_TEST", engine: "deepseek_messages" }), log)).toBeNull();
+    expect(said).toHaveLength(2);
     said.length = 0;
     expect(webEngineOf(app.deps.config, log)).toBeNull();
     expect(said).toEqual([]);
     process.env.WEB_SEARCH_API_KEY_FOR_TEST = "sk-test-value";
     try {
-      expect(webEngineOf(webConfig({ apiKeyEnv: "WEB_SEARCH_API_KEY_FOR_TEST" }), log)?.name).toBe("deepseek_messages");
+      // Exa by default; DeepSeek when the configuration says so.
+      expect(webEngineOf(webConfig({ apiKeyEnv: "WEB_SEARCH_API_KEY_FOR_TEST" }), log)?.name).toBe("exa_search");
+      expect(webEngineOf(webConfig({ apiKeyEnv: "WEB_SEARCH_API_KEY_FOR_TEST", engine: "deepseek_messages" }), log)?.name).toBe("deepseek_messages");
       expect(said.join("")).not.toContain("sk-test-value");
     } finally {
       delete process.env.WEB_SEARCH_API_KEY_FOR_TEST;
@@ -200,7 +217,7 @@ describe("switch off: nothing changes", () => {
 });
 
 describe("who is offered it", () => {
-  it("all five hold (switch, Agent's switch, site model, owner's own lane, engine): the four tools and the web's rules", async () => {
+  it("all hold (switch, Agent's switch, engine, tools offered): the four tools and the web's rules (every lane and model: web-search-rules.test.ts)", async () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine);
@@ -219,85 +236,22 @@ describe("who is offered it", () => {
     expect(JSON.stringify(gateway.calls.at(-1)!.steps)).not.toContain("example.com");
   });
 
-  it("each condition alone turns it off: the three tools, and one line saying it cannot go online", async () => {
+  it("the Agent's own switch off (the one condition left besides the site's): the three tools, and one line saying it cannot go online", async () => {
     const engine = fakeEngine();
-    // The Agent's own switch.
-    {
-      const gateway = scriptedGateway();
-      const { worker } = webWorker(gateway, engine);
-      const { owner, agent, own } = await owned("offb");
-      expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { webSearch: false })).status).toBe(200);
-      await say(owner, own, "你好");
-      gateway.reply("你好。");
-      await worker.runOnce();
-      // The same Agent with the site's web off, for the whole system text.
-      const off = scriptedGateway();
-      await say(owner, own, "你好");
-      off.reply("你好。");
-      await webWorker(off, null, app.deps.config).worker.runOnce();
-      expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ group: false }));
-      expect(gateway.calls[0]!.system).toBe(off.calls[0]!.system.replace(TODAY_OWN, `${TODAY_OWN}\n${NO_WEB_HERE}`));
-    }
-    // A provider's model.
-    {
-      const gateway = scriptedGateway();
-      const { worker } = webWorker(gateway, engine);
-      const owner = await signUp(app, "offc");
-      const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "own-1", contextTokens: 32000 }] }))).json;
-      const agent = await mustCreateAgent(app, owner, { model: { source: "provider", providerId: provider.id, model: "own-1" }, persona: "简短。" });
-      await say(owner, agent.conversationId, "你好");
-      gateway.reply("你好。");
-      await worker.runOnce();
-      expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ group: false }));
-      expect(gateway.calls[0]!.system).toContain(toolsPassage(false, "unavailable"));
-    }
-    // Someone else's call in a group; the owner's own there is offered it.
-    {
-      const gateway = scriptedGateway();
-      const { worker } = webWorker(gateway, engine);
-      const { owner, agent } = await owned("offd");
-      const mia = await signUp(app, "offd_mia");
-      const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "offd_ned")]);
-      expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
-      await say(mia, g, "@offd_bot 明天天气？");
-      gateway.reply("不知道。");
-      await worker.runOnce();
-      expect((await lastRun(agent.id)).lane).toBe("others");
-      expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ group: true }));
-      expect(gateway.calls[0]!.system).toContain(toolsPassage(true, "unavailable"));
-      await say(owner, g, "@offd_bot 明天天气？");
-      gateway.reply("我查查。");
-      await worker.runOnce();
-      expect(names(gateway.calls[1]!)).toContain(SEARCH_WEB);
-      // An Agent's relay the owner is behind (lane own, called by an Agent's message): not offered.
-      await say(owner, g, "@offd_bot 再说一次");
-      await db.query("update agent_runs set triggered_by = 'agent' where agent_id = $1 and status = 'queued'", [agent.id]);
-      gateway.reply("好。");
-      await worker.runOnce();
-      expect(gateway.calls[2]!.tools).toEqual(toolSpecs({ group: true }));
-      expect(gateway.calls[2]!.system).toContain(toolsPassage(true, "unavailable"));
-    }
-    // A reply nobody asked for (proactive).
-    {
-      const gateway = scriptedGateway();
-      const { worker } = webWorker(gateway, engine);
-      const { owner, agent } = await owned("offe");
-      const mia = await signUp(app, "offe_mia");
-      const g = await group(app, owner, "闲聊", [mia, await signUp(app, "offe_ned")]);
-      expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
-      const seq = await say(mia, g, "今天好冷");
-      await db.query("update agents set proactive = true where principal_id = $1", [agent.id]);
-      await db.query(
-        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane, asker_ids, call_seqs)
-         values ('reply', $1, $2, $3, 'queued', $4, 'human', null, 'proactive', array[$5::uuid], array[$4::bigint])`,
-        [g, agent.id, owner.id, seq, mia.id],
-      );
-      gateway.reply("是啊。");
-      await worker.runOnce();
-      expect((await lastRun(agent.id)).lane).toBe("proactive");
-      expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ group: true }));
-      expect(gateway.calls[0]!.system).toContain(toolsPassage(true, "unavailable"));
-    }
+    const gateway = scriptedGateway();
+    const { worker } = webWorker(gateway, engine);
+    const { owner, agent, own } = await owned("offb");
+    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { webSearch: false })).status).toBe(200);
+    await say(owner, own, "你好");
+    gateway.reply("你好。");
+    await worker.runOnce();
+    // The same Agent with the site's web off, for the whole system text.
+    const off = scriptedGateway();
+    await say(owner, own, "你好");
+    off.reply("你好。");
+    await webWorker(off, null, app.deps.config).worker.runOnce();
+    expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ group: false }));
+    expect(gateway.calls[0]!.system).toBe(off.calls[0]!.system.replace(TODAY_OWN, `${TODAY_OWN}\n${NO_WEB_HERE}`));
     expect(engine.queries).toEqual([]);
   });
 
@@ -315,13 +269,13 @@ describe("who is offered it", () => {
 });
 
 describe("the pre-hold: counted and held before the engine is called", () => {
-  it("the run's searches, its price and the counters are written before the call; the hold grows by the price", async () => {
+  it("the run's searches, its price and the site's fuse are written before the call; the hold grows by the price", async () => {
     const gateway = scriptedGateway();
-    let seen: { searches: number; micro: string; owner: number; site: number } | null = null;
+    let seen: { searches: number; micro: string; site: number } | null = null;
     let runId = "";
     const engine = fakeEngine(async () => {
       const row = (await db.query<{ web_searches: number; web_micro: string }>("select web_searches, web_micro::text from agent_runs where id = $1", [runId])).rows[0]!;
-      seen = { searches: row.web_searches, micro: row.web_micro, owner: await countOf(owner.id), site: await countOf(SITE_SCOPE) };
+      seen = { searches: row.web_searches, micro: row.web_micro, site: await countOf(SITE_SCOPE) };
       return { results: RESULTS };
     });
     const { worker } = webWorker(gateway, engine);
@@ -330,68 +284,40 @@ describe("the pre-hold: counted and held before the engine is called", () => {
     runId = (await lastRun(agent.id)).id;
     gateway.callTools([{ name: SEARCH_WEB, input: { query: QUERY } }], { usage: { inputTokens: 1000, outputTokens: 20 } }).reply("晴。", { usage: { inputTokens: 1500, outputTokens: 30 } });
     await worker.runOnce();
-    expect(seen).toEqual({ searches: 1, micro: PRICE.toString(), owner: 1, site: 1 });
+    expect(seen).toEqual({ searches: 1, micro: PRICE.toString(), site: 1 });
+    // No count of the owner's (the points are the bound).
+    expect(await countOf(owner.id)).toBe(0);
     const record = await recordOf(runId);
     const model = costOf({ inputTokens: 2500, outputTokens: 50 });
     expect(record).toMatchObject({ web_searches: 1, web_micro: PRICE.toString(), cost: (model + PRICE).toString(), balance: (model + PRICE).toString(), forgiven: "0" });
   });
 
-  it("per owner a day, crossing 10: the 12th of 12 runs, the 13th is refused before the engine — nothing counted, nothing charged", async () => {
-    const gateway = scriptedGateway();
-    const engine = fakeEngine();
-    const { worker } = webWorker(gateway, engine, webConfig({ perOwnerPerDay: 12 }));
-    const { owner, agent, own } = await owned("capa");
-    await setCount(owner.id, 11);
-    expect(await searchOnce(worker, gateway, owner, own, "第一次")).toMatchObject({ results: expect.any(Array) });
-    expect(await countOf(owner.id)).toBe(12);
-    expect(await searchOnce(worker, gateway, owner, own, "第二次", "上海 天气")).toEqual({ error: WEB_OWNER_DAY });
-    expect(engine.queries).toEqual([QUERY]);
-    expect(await countOf(owner.id)).toBe(12);
-    const run = await lastRun(agent.id);
-    expect([run.web_searches, run.web_micro]).toEqual([0, "0"]);
-    expect(await recordOf(run.id)).toMatchObject({ web_searches: 0, web_micro: "0" });
-  });
-
-  it("the site a day, crossing 10: another owner's search past the site's cap is refused, and the owner's count given back", async () => {
-    const gateway = scriptedGateway();
-    const engine = fakeEngine();
-    const { worker } = webWorker(gateway, engine, webConfig({ sitePerDay: 12 }));
-    const { owner, own } = await owned("capb");
-    await setCount(SITE_SCOPE, 11);
-    await searchOnce(worker, gateway, owner, own, "第一次");
-    expect(await countOf(SITE_SCOPE)).toBe(12);
-    const other = await owned("capc");
-    expect(await searchOnce(worker, gateway, other.owner, other.own, "第二次")).toEqual({ error: WEB_SITE_DAY });
-    expect(await countOf(SITE_SCOPE)).toBe(12);
-    expect(await countOf(other.owner.id)).toBe(0);
-    expect(engine.queries).toHaveLength(1);
-  });
-
-  it("two connections racing for the last search: exactly one gets it (a row there, and none yet)", async () => {
+  it("two connections racing for the fuse's last search: exactly one gets it (a row there, and none yet)", async () => {
     for (const [start, cap] of [
       [10, 11],
       [null, 1],
     ] as const) {
-      const scope = `race-${start ?? "none"}`;
-      if (start !== null) await setCount(scope, start);
+      await db.query("delete from web_search_days where scope = $1", [SITE_SCOPE]);
+      if (start !== null) await setCount(SITE_SCOPE, start);
       const day = (await db.query<{ d: string }>("select ((now() at time zone 'Asia/Shanghai')::date)::text as d")).rows[0]!.d;
+      const fuse = BigInt(cap * COST);
       let release!: () => void;
       const gate = new Promise<void>((r) => (release = r));
       let firstDone!: () => void;
       const counted = new Promise<void>((r) => (firstDone = r));
       const a = db.tx(async (t) => {
-        const got = await countSearch(t, scope, day, cap);
+        const got = (await takeFuse(t, day, BigInt(COST), fuse)) !== null;
         firstDone();
         await gate;
         return got;
       });
       await counted;
-      const b = db.tx((t) => countSearch(t, scope, day, cap));
+      const b = db.tx(async (t) => (await takeFuse(t, day, BigInt(COST), fuse)) !== null);
       // B waits on A's row; once A commits it reads A's count.
       await new Promise((r) => setTimeout(r, 100));
       release();
       expect([await a, await b]).toEqual([true, false]);
-      expect(await countOf(scope)).toBe(cap);
+      expect(await countOf(SITE_SCOPE)).toBe(cap);
     }
   });
 });
@@ -441,8 +367,8 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     const r = await admitted("lanea");
     await paidReply(db, { agentId: r.agent.agentId, ownerId: r.owner.id, conversationId: r.agent.conversationId, lane: "others", micro: 500_000n });
     const others = { lane: { lane: "others" as const, coversSeq: 0 }, agent: { othersBudgetMicro: 3n * POINT } };
-    await expect(preHold(r, webConfig(), others)).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
-    expect([await runRow(r.runId), await countOf(r.owner.id), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0, 0]);
+    await expect(preHold(r, webConfig(), others)).rejects.toMatchObject({ by: "lane_budget" });
+    expect([await runRow(r.runId), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0]);
     // Without what was settled before, 2.77 < 3: held.
     const s = await admitted("laneb");
     await preHold(s, webConfig(), others);
@@ -452,16 +378,16 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     const g = await group(app, c.owner, "链", [await signUp(app, "lanec_mia"), await signUp(app, "lanec_ned")]);
     const human = await say(c.owner, g, "大家好");
     const chain = { conversationId: g, lane: { lane: "own" as const, coversSeq: human + 1 } };
-    await expect(preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: POINT } })).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: POINT } })).rejects.toMatchObject({ by: "lane_budget" });
     await preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: 10n * POINT } });
     expect((await runRow(c.runId)).web_searches).toBe(1);
   });
 
-  it("the site's cap is counted last, after the account: refused there, the owner's count and the hold are given back; the site row is not held while the account is waited for", async () => {
+  it("the site's fuse is taken last, after the account: refused there, the hold is given back; the site row is not held while the account is waited for", async () => {
     const r = await admitted("sitea");
     await setCount(SITE_SCOPE, 12);
-    await expect(preHold(r, webConfig({ sitePerDay: 12 }))).rejects.toEqual(new SearchRefused(WEB_SITE_DAY));
-    expect([await runRow(r.runId), await countOf(r.owner.id), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0, 12]);
+    await expect(preHold(r, webConfig(TWELVE))).rejects.toMatchObject({ by: "site_fuse", why: WEB_SITE_DAY });
+    expect([await runRow(r.runId), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 12]);
     // While the pre-hold waits for the owner's account, another transaction can take the site's row at once.
     await setCount(SITE_SCOPE, 5);
     let release!: () => void;
@@ -474,7 +400,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
       await gate;
     });
     await accountTaken;
-    const waiting = preHold(r, webConfig({ sitePerDay: 12 }));
+    const waiting = preHold(r, webConfig(TWELVE));
     await new Promise((done) => setTimeout(done, 150));
     const free = await db.tx(async (t) => {
       try {
@@ -497,11 +423,10 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     expect(await runRow(r.runId)).toEqual({ hold: (2n * POINT + PRICE).toString(), web_searches: 1, web_micro: PRICE.toString() });
   });
 
-  it("past TOOLS.maxPoints: refused, the hold and the counters as they were", async () => {
+  it("past TOOLS.maxPoints: refused, the hold and the fuse as they were", async () => {
     const r = await admitted("monb");
-    await expect(preHold(r, webConfig({}, { maxPoints: 2 }))).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(r, webConfig({}, { maxPoints: 2 }))).rejects.toMatchObject({ by: "reply_cap" });
     expect(await runRow(r.runId)).toEqual({ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" });
-    expect(await countOf(r.owner.id)).toBe(0);
     expect(await countOf(SITE_SCOPE)).toBe(0);
     await preHold(r, webConfig({}, { maxPoints: 3 }));
     expect((await runRow(r.runId)).web_searches).toBe(1);
@@ -509,7 +434,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
 
   it("the balance: what is left beside the holds must cover the hold and the price", async () => {
     const r = await admitted("monc", PAID, 2_500_000n);
-    await expect(preHold(r, webConfig())).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(r, webConfig())).rejects.toMatchObject({ by: "no_points", why: WEB_NO_MONEY });
     await grant(db, r.owner.id, 500_000n);
     await preHold(r, webConfig());
     expect((await runRow(r.runId)).hold).toBe((2n * POINT + PRICE).toString());
@@ -517,7 +442,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
 
   it("the free allowance: a search is paid from it, never beyond it by forgiveness", async () => {
     const r = await admitted("mond", FREE, 0n, 300_000n);
-    await expect(preHold(r, webConfig())).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(r, webConfig())).rejects.toMatchObject({ by: "no_points", why: WEB_NO_MONEY });
     await setFreeUsed(r.owner.id, 200_000n);
     await preHold(r, webConfig());
     expect((await runRow(r.runId)).web_searches).toBe(1);
@@ -563,7 +488,7 @@ describe("the count and the charge stand however the search ends", () => {
       const run = await lastRun(agent.id);
       expect(await recordOf(run.id)).toMatchObject({ web_searches: 1, web_micro: PRICE.toString() });
       expect((await lastBody(own)).lookups?.web).toBeUndefined();
-      expect(await countOf(owner.id)).toBe(1);
+      expect(await countOf(SITE_SCOPE)).toBe(1);
     });
   }
 
@@ -614,7 +539,7 @@ describe("the count and the charge stand however the search ends", () => {
       shown: [],
       holdSearch: async () => {
         held.push(id);
-        return null;
+        return { day: "2026-11-22", estimateMicroUsd: 0n, at80: false };
       },
     });
     const call: ToolCall = { id: "c1", name: SEARCH_WEB, input: { query: QUERY } };
@@ -750,7 +675,7 @@ describe("the query guard on the real run", () => {
     await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, true)", [agent.id, "主人住在北京市海淀区中关村南大街五号"]);
     expect(await searchOnce(worker, gateway, owner, own, "附近有什么好吃的？", "海淀区中关村南大街 美食")).toEqual({ error: WEB_QUERY_PRIVATE });
     expect(engine.queries).toEqual([]);
-    expect(await countOf(owner.id)).toBe(0);
+    expect(await countOf(SITE_SCOPE)).toBe(0);
     expect(lines.filter((l) => l.includes("web_query_refused"))).toHaveLength(1);
     expect(await searchOnce(worker, gateway, owner, own, "海淀区中关村南大街附近有什么好吃的？", "海淀区中关村南大街 美食")).toMatchObject({ results: expect.any(Array) });
     expect(engine.queries).toEqual(["海淀区中关村南大街 美食"]);
@@ -784,7 +709,7 @@ describe("nothing of a query or a result is logged", () => {
 });
 
 describe("old days' counts", () => {
-  it("the change sweep deletes counter days older than a week, the owners' and the site's (crossing 10 and 100 days)", async () => {
+  it("the change sweep deletes counter days older than a week, of every scope (the first version's owners' rows too; crossing 10 and 100 days)", async () => {
     const owner = await signUp(app, "sweepa");
     for (const ago of [0, 6, 7, 8, 11, 101]) {
       for (const scope of [owner.id, SITE_SCOPE]) {

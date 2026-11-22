@@ -118,6 +118,8 @@ export function UsagePage({ back }) {
     );
   } else {
     const recent = usage.recent ?? [];
+    // Web searches: a line of their own per Agent, after the models' (lane websearch2), never in a model's points.
+    const recentWeb = usage.recentWeb ?? [];
     const resetsAt = usage.free?.resetsAt ? localTime(usage.free.resetsAt) : "";
     body = (
       <>
@@ -149,9 +151,13 @@ export function UsagePage({ back }) {
         />
 
         <h3>最近用量</h3>
-        <p className="muted">最近 7 天（含今天），按 Agent 和模型汇总。用你自己的供应商不扣点。</p>
+        <p className="muted">
+          最近 7 天（含今天），按 Agent 和模型汇总。
+          {state.webSearchAvailable === true || recentWeb.length > 0 ? "用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。" : "用你自己的供应商不扣点。"}
+          {recentWeb.length > 0 && "联网搜索单独列出。"}
+        </p>
         {usage.memory && <p className="muted">记忆今天的额度：已用 {usage.memory.usedText} / {usage.memory.allowanceText}</p>}
-        {recent.length === 0 ? (
+        {recent.length === 0 && recentWeb.length === 0 ? (
           <p className="muted">最近 7 天还没有用量。</p>
         ) : (
           <ul className="member-rows" aria-label="最近用量">
@@ -161,11 +167,16 @@ export function UsagePage({ back }) {
                   <strong>{agentName(r.agentId, r.purpose)}</strong>
                   <p>{modelName(r)}</p>
                 </div>
-                <span>
-                  {r.paidBy === "site"
-                    ? "由站点承担"
-                    : `${r.pointsText} 点${r.agentId ? ` · ${r.replies} 次回复` : ""}${r.webSearches > 0 ? ` · 含联网搜索 ${r.webSearches} 次` : ""}`}
-                </span>
+                <span>{r.paidBy === "site" ? "由站点承担" : `${r.pointsText} 点${r.agentId ? ` · ${r.replies} 次回复` : ""}`}</span>
+              </li>
+            ))}
+            {recentWeb.map((w) => (
+              <li key={`web|${w.agentId}`}>
+                <div className="member-body">
+                  <strong>{agentName(w.agentId, "reply")}</strong>
+                  <p>联网搜索</p>
+                </div>
+                <span>{`${w.pointsText} 点 · ${w.searches} 次`}</span>
               </li>
             ))}
           </ul>

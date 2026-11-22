@@ -12,6 +12,7 @@ import { fileSpec, READ_FILE, readFile } from "./file.ts";
 import type { RunRefs } from "./refs.ts";
 import { SEARCH_MESSAGES, searchMessages, searchSpec } from "./search.ts";
 import type { WebEngine } from "./web/engine.ts";
+import type { HeldSearch } from "./web/hold.ts";
 import { SEARCH_WEB, searchWebTool, webSpec } from "./web/tool.ts";
 
 export { CURRENT_TIME } from "./clock.ts";
@@ -41,11 +42,16 @@ export interface RunScope extends RunTicket {
   readonly mark: string | null;
   /**
    * A run offered the web search (web/tool.ts): the texts of the notes and hearsay it was shown (its query guard reads
-   * them), and its pre-hold — null when the search is counted and held, else why not, in plain words (port-impl.ts
-   * `holdSearch`). Absent for every other run.
+   * them), and its pre-hold — what the site's fuse held when the search is counted and held (web/hold.ts `HeldSearch`),
+   * else why not, in plain words (port-impl.ts `holdSearch`). Absent for every other run.
    */
   readonly shown?: readonly string[];
-  readonly holdSearch?: () => Promise<string | null>;
+  readonly holdSearch?: () => Promise<string | HeldSearch>;
+  /**
+   * The reply answers its owner's own call (lane `own`, called by a person's message: their own conversation, a retry,
+   * their own @ in a group): only then do the owner's own typed words exempt a query from the web search's guard.
+   */
+  readonly ownerAsked?: boolean;
   /**
    * In its Agent's own conversation, where what its call shows begins (context.ts `BuiltContext.shownFrom`): its search
    * leaves out the owner's messages it is shown, and only those (`searchRows` `answering`). Absent or null: from the
@@ -129,10 +135,10 @@ export async function runTool(deps: ToolDeps, scope: RunScope, call: ToolCall, s
 /**
  * The toolbox of the service's port (app.ts): every reply is offered the three tools (`begin` decides first whether it
  * may be offered any), each at most as often as its own `TOOLS` count allows in one reply. With a web engine (the site
- * offers web search) a run `begin` found may have it (`where.web`: a site model, its owner's own lane, the Agent's
- * `webSearch` on) is offered `search_web` too — `TOOLS.web.perReply` a reply, kind `web` — and its system text says
- * what it is for (`web` "offered"); any other run there is offered the three and told it cannot go online in this reply
- * (`web` "unavailable"). Without one, the offer is exactly the three tools, with no `web` at all.
+ * offers web search) a run `begin` found may have it (`where.web`: its Agent's `webSearch` on — in every lane, on every
+ * model, lane websearch2) is offered `search_web` too — `TOOLS.web.perReply` a reply, kind `web` — and its system text
+ * says what it is for (`web` "offered"); any other run there (its Agent's switch off) is offered the three and told it
+ * cannot go online in this reply (`web` "unavailable"). Without one, the offer is exactly the three tools, with no `web`.
  */
 export function createToolbox(deps: ToolDeps): Toolbox {
   const { searchPerReply, filePerReply, timePerReply } = deps.config.tools;

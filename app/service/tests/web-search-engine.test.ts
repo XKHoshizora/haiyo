@@ -47,7 +47,7 @@ function harness(respond: (req: Request) => Response | Promise<Response>) {
     timeZone: "Asia/Shanghai",
     now: () => new Date("2026-11-22T03:00:00Z"),
     fetch,
-    log: { info: (details, msg) => lines.push(JSON.stringify({ details, msg })) },
+    log: { info: (details, msg) => lines.push(JSON.stringify({ details, msg })), warn: (details, msg) => lines.push(JSON.stringify({ details, msg })) },
   });
   return { engine, asked, lines };
 }
@@ -135,10 +135,11 @@ describe("the DeepSeek engine", () => {
     expect(await harness(() => json(answer([], { stop_reason: "refusal" }))).engine.searchWeb(QUERY, never)).toEqual({ error: "refused" });
   });
 
-  it("anything else is an error, never a throw: a 4xx or 5xx, a 429, bad JSON, a body over 1 MB, a network failure", async () => {
-    expect(await harness(() => json({ error: { message: `bad ${QUERY}` } }, 400)).engine.searchWeb(QUERY, never)).toEqual({ error: "unavailable" });
-    expect(await harness(() => json({}, 503)).engine.searchWeb(QUERY, never)).toEqual({ error: "unavailable" });
-    expect(await harness(() => json({}, 429)).engine.searchWeb(QUERY, never)).toEqual({ error: "busy" });
+  it("anything else is an error, never a throw: a status by its kind (as Exa's), bad JSON, a body over 1 MB, a network failure", async () => {
+    expect(await harness(() => json({ error: { message: `bad ${QUERY}` } }, 400)).engine.searchWeb(QUERY, never)).toEqual({ error: "engine_failed" });
+    expect(await harness(() => json({}, 503)).engine.searchWeb(QUERY, never)).toEqual({ error: "engine_busy" });
+    expect(await harness(() => json({}, 429)).engine.searchWeb(QUERY, never)).toEqual({ error: "engine_busy" });
+    expect(await harness(() => json({}, 402)).engine.searchWeb(QUERY, never)).toEqual({ error: "engine_refused" });
     expect(await harness(() => new Response("{not json", { status: 200 })).engine.searchWeb(QUERY, never)).toEqual({ error: "unavailable" });
     expect(await harness(() => new Response("x".repeat(RESPONSE_MAX_BYTES + 1), { status: 200 })).engine.searchWeb(QUERY, never)).toEqual({ error: "unavailable" });
     expect(
@@ -186,6 +187,6 @@ function engineOptions(h: ReturnType<typeof harness>) {
       h.asked.push({ url, init: init!, body: JSON.parse(String(init!.body)) });
       return new Promise<Response>((_, reject) => init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }));
     }) as unknown as typeof globalThis.fetch,
-    log: { info: () => {} },
+    log: { info: () => {}, warn: () => {} },
   };
 }

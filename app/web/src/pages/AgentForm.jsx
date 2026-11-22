@@ -55,7 +55,30 @@ const ELSEWHERE_LABEL = "群里没找到时悄悄告诉我";
 const ELSEWHERE_HELPER = "它在别处查到了，会先悄悄问你要不要告诉大家。";
 /** 联网搜索 (`webSearch`, on unless the record says off): shown only while the site offers web search (`webSearchAvailable`). */
 const WEB_LABEL = "联网搜索";
-const WEB_HELPER = "搜索词会发给外部的搜索服务。";
+const WEB_WORDS = "搜索词会发给外部的搜索服务。";
+/** The line under 联网搜索 (the product owner's words): the price the service gives (`webSearchPoints`), then where the words go. */
+const webHelper = (points) =>
+  typeof points === "string" && /^\d{1,9}(\.\d)?$/.test(points) && points !== "0" ? `联网搜索由站点提供，每次约 ${points} 点，先用每日免费额度。${WEB_WORDS}` : WEB_WORDS;
+
+/**
+ * The money hints of the budgets (fix round 1, I2): while the site offers web search, an Agent on its owner's own provider's
+ * model still costs nothing for its model, but its web searches are charged — and these budgets bound them; while it
+ * offers none, the words as before.
+ */
+const BUDGET_HINTS = {
+  chain: {
+    off: "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
+    web: "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+  },
+  others: {
+    off: "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
+    web: "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+  },
+  proactive: {
+    off: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。",
+    web: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+  },
+};
 // A budget's amount, either of them, as the service takes it.
 const BUDGET_MIN = 1;
 const BUDGET_MAX = 100000;
@@ -629,7 +652,7 @@ export function AgentForm({ agent = null }) {
         </Field>
         <Field
           label="一次接话最多花费（点）"
-          hint="两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。"
+          hint={BUDGET_HINTS.chain[webOffered ? "web" : "off"]}
           error={shown("chainBudget")}
         >
           {budgetBox("chainBudget")}
@@ -638,7 +661,7 @@ export function AgentForm({ agent = null }) {
           <>
             <Field
               label="别人 @ 每天最多花"
-              hint="群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。"
+              hint={BUDGET_HINTS.others[webOffered ? "web" : "off"]}
             >
               <Select
                 value={f.othersChoice}
@@ -671,7 +694,7 @@ export function AgentForm({ agent = null }) {
                 </Field>
                 <Field
                   label="主动回复每天最多花"
-                  hint="每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。"
+                  hint={BUDGET_HINTS.proactive[webOffered ? "web" : "off"]}
                   error={shown("proactiveBudget")}
                 >
                   {budgetBox("proactiveBudget")}
@@ -685,7 +708,7 @@ export function AgentForm({ agent = null }) {
         </div>
         {webOffered && (
           <div className="field">
-            <Switch checked={f.webSearch} onChange={setSwitch("webSearch")} label={WEB_LABEL} hint={WEB_HELPER} hintClass="field-hint" />
+            <Switch checked={f.webSearch} onChange={setSwitch("webSearch")} label={WEB_LABEL} hint={webHelper(state.webSearchPoints)} hintClass="field-hint" />
           </div>
         )}
         <fieldset className="form-section">

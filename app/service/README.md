@@ -131,14 +131,22 @@ the file and the clock tool one reply may run, 1–1 000, default 6, 4 and 1), `
 room for two in its context plan, at most a third of the conversation's), `runTimeoutMs` (how long a
 reply that offers tools may take in all, 1 000–3 600 000, default 300 000: 5 minutes; a reply that offers none is held
 to `AGENT_RUN_TIMEOUT_MS` alone), `web` (the web search, an object, every field optional; Agents and runs, Web search:
-`enabled` (default **false**: no reply is offered it and nothing anywhere changes), `engine` (`deepseek_messages`, the
-only one), `baseUrl` (https, default `https://api.deepseek.com`), `apiKeyEnv` (the name of another variable holding the
-engine's key, default `WEB_SEARCH_API_KEY`; with `enabled` on and that variable empty the search is not offered and one
-line at start says so), `model` (default `deepseek-flash`), `pointsMicroPerSearch` (what one search costs the reply,
-fixed, in micro-points, default 770 350 — a placeholder: the measured 11 000 input tokens of one engine call and its one
-output token at 70 and 350 micro-points a token, Metering's worked example), `perReply` (1–20, default 1),
-`perOwnerPerDay` (default 20), `sitePerDay` (default 2 000), `maxAtOnce` (engine calls at once in the service, default
-4), `timeoutMs` (1 000–120 000, default 15 000), `maxResults` (1–20, default 6))),
+`enabled` (default **false**: no reply is offered it and nothing anywhere changes), `engine` (`exa_search`, the default,
+or `deepseek_messages`), `baseUrl` (https; default by engine: `https://api.exa.ai`, `https://api.deepseek.com`; another host
+is refused unless `baseUrlProxy` is true, so a switch of engine never posts one vendor's key to the other), `apiKeyEnv`
+(the name of another variable holding the engine's key, default by engine — `WEB_SEARCH_API_KEY` for Exa,
+`WEB_SEARCH_DEEPSEEK_API_KEY` for DeepSeek —; with `enabled` on and that variable empty the search is not offered and one
+line at start says so, as with `siteUsdPerDay` 0), `exaType` (Exa's search type: `auto`, the
+default, `lite` or `fast`), `model` (DeepSeek's, default `deepseek-flash`), `pointsMicroPerSearch` (what one search
+costs the owner, fixed, in micro-points — the one value to retune when the engine changes; default by engine, a
+placeholder the product owner sets: 13 000 000 for Exa, its estimate of $0.013 at one micro-USD to 1 000 micro-points,
+the owner's ruling "one point is $0.001 of the upstream's list price"; 770 350 for DeepSeek, the first version's),
+`perReply` (1–20, default 3), `costMicroUsdPerSearch` (the site's estimate of one search's cost in micro-USD, default by
+engine: 13 000 for Exa — $7 a 1 000 searches and $1 a 1 000 pages for the highlights of 6 —, 2 000 for DeepSeek),
+`siteUsdPerDay` (the site's money fuse, USD a site day, default 20; Metering, A web search's price), `maxAtOnce` (engine
+calls at once in the service, default 4), `timeoutMs` (1 000–120 000, default 15 000), `maxResults` (1–20, default
+6)); the first version's `perOwnerPerDay` and `sitePerDay` are gone and refused at start, the error naming the key and
+saying it was removed and why),
 `HOLDS` (what one owner's open holds may add up to, JSON, every field optional; Metering, Money that does not block:
 `maxOpenShare` (an admission rule: the share of what is left of a source — today's free allowance, or the balance —
 that the holds of the owner's running calls against it, a starting reply's own included, may add up to before that reply
@@ -410,7 +418,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 
 Everything else is not rate limited.
 
-**Metrics in the log.** The service writes eight kinds of line at `info`, each a JSON log object with a `metric` field,
+**Metrics in the log.** The service writes nine kinds of line at `info`, each a JSON log object with a `metric` field,
 for an operator to tune the numbers above (and the site's models) from (nothing else about them is recorded or exposed):
 
 - `{ "metric": "run_wait_ms", "lane", "ms" }`, once for each reply the worker claims (its first claim; not again when it is
@@ -437,6 +445,16 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
 - `{ "metric": "elsewhere_skipped", "runId" }`, once for each "not here, but elsewhere" lookup skipped because as many as
   may run at once (2) already did (Whispers, `found_elsewhere`): how often an owner gets no whisper for that reason alone
   (nothing of what was asked is logged).
+- The web search's (Agents and runs, Web search; Metering, A web search's price), only while the site offers it, never
+  with a query, an address or a result: `{ "metric": "web_search", "engine", "status", "ms", "results" }` once for each
+  engine call; `{ "metric": "web_engine_refused", "engine", "http" }` once for each call the engine refused for the site's
+  key or account (401, 402 — out of credits —, 403), with a WARN line of the same at most once an hour; `{ "metric":
+  "web_site_fuse", "share": 80 }` once a site day, when the day's money for searches first reaches 80 % of
+  `TOOLS.web.siteUsdPerDay`; `{ "metric": "web_cost_ignored" }` once for each cost report of the engine's outside a tenth
+  to ten times the estimate (the estimate then stands); and once for each search a bound refused before the engine, by
+  the bound — `web_refused_reply_cap` (the reply's `TOOLS.maxPoints`), `web_refused_lane_budget` (the others' daily, the
+  proactive daily or the chain budget), `web_refused_no_points` (the owner's free allowance and balance),
+  `web_site_fuse_refused` (the site's fuse), `web_query_refused` (the guard) — so the log shows which bound bites.
 
 Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_partial`, `judge_daily_limit`): Proactive
 replies, Log.
@@ -458,7 +476,7 @@ free-plus-balance figure (`via.points`, Wire shapes).
 *Session: required.* Your own account, and nothing else: the route takes no parameter (any query string is 400
 `invalid_request`). → 200 `{"tier", "agentLimit", "agentCount", "balance", "free": {"allowance", "used", "resetsAt"},
 "canStartFreeReply", "memory": {"allowance", "used", "resetsAt"}, "recent": [{"agentId", "purpose", "model", "source", "points",
-"replies", "paidBy"?, "webSearches"?}]}`.
+"replies", "paidBy"?}], "recentWeb"?: [{"agentId", "searches", "points"}]}`.
 
 - `tier` is the account's tier (`free` until the operator sets another); `agentLimit` is what `AGENT_TIERS` allows it
   (a tier the configuration no longer names gets the `free` limit); `agentCount` is your Agents that are not deleted.
@@ -476,8 +494,12 @@ free-plus-balance figure (`via.points`, Wire shapes).
   balance; what was forgiven is not in it, so it is not the true cost (`"0"` for `provider`, and for site calls that were
   forgiven in full) —, `paidBy` is `"site"` on a `memory` row of a site model (the site's memory allowance paid it, not your
   points; `points` is then what that allowance paid, and no other row has the key), `replies` how many were
-  replies, `webSearches` (only when above 0) how many web searches its `points` include (Agents and runs, Web search); `agentId` is `null` for persona drafts and memory calls. Largest first. Runs that never reached a model (no model recorded)
-  are not listed.
+  replies; `agentId` is `null` for persona drafts and memory calls. Largest first. Runs that never reached a model (no model recorded)
+  are not listed. What web searches were charged is never in a model's `points`:
+- `recentWeb` (present only when replies of these days searched the web; Agents and runs, Web search): per Agent, its
+  replies' `searches` and what they were charged for them (`points`: a record's searches are charged in full before its
+  model, so each record gives them `least(web_micro, free_micro + balance_micro)`), for site and provider models alike —
+  the client shows each as its own line 联网搜索. Largest first.
 - Limit: 60 per minute.
 - An account that has never been touched reads as tier `free`, balance `"0"`; reading creates nothing.
 - Everything in the answer is read in one snapshot (one read-only transaction on one connection): a call settled
@@ -1967,7 +1989,7 @@ Stopping a call (its abort signal) ends it at once and closes the upstream conne
 *Session: required.* What a client's model picker reads: the models the site offers and the defaults a provider model
 gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision", "pdf", "reasoning": [levels],
 "contextTokens", "tools": boolean}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true,
-"memoryCatchUp": {"days", "lines"}}`.
+"webSearchPoints"?: string, "memoryCatchUp": {"days", "lines"}}`.
 
 - `siteModels`: `SITE_MODELS` in configuration order (`[]` when none is configured). `id` is what an Agent's
   `{"source": "site", "id"}` names; `reasoning` the levels the model takes besides `none`, which every model takes (an
@@ -1976,6 +1998,7 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
   upstream model name, its key or the name of the variable holding it, or its prices.
 - `proactiveAvailable`: whether the judgement model is configured (`JUDGE`); turning an Agent's `proactive` on is refused (409 `proactive_unavailable`) when it is not.
 - `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there, and `TOOLS.enabled`; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
+- `webSearchPoints`: with it, about what one search costs in points — `TOOLS.web.pointsMicroPerSearch` rounded half up to one decimal at most, no trailing zero, never `"0"` for a price above 0 (770 350 micro-points: `"0.8"`; Exa's default: `"13"`) — what the form says under 联网搜索 (每次约 n 点).
 - `memoryCatchUp`: how far back turning an Agent's memory on again with `catchUp` may look in its groups (An Agent's
   memory): at most the last `days` days (`MEMORY.catchUpDays`), at most the latest `lines` lines of each group
   (`MEMORY.catchUpLines`) — what the client's question under 记忆 says.
@@ -3756,16 +3779,23 @@ so the next run's context starts the same up to where something new comes — un
 older message left out, a new topic, in a group its latest messages moving on), or someone typed a number among the
 labels' (they then move past it).
 
-**Web search** (`tools/web/`: `engine.ts`, `text.ts`, `hold.ts`, `tool.ts`; migration `064_web_search.sql`;
-`tests/web-search*.test.ts`). A fourth tool, `search_web {query}`, run by the service in the loop above — the site switch
+**Web search** (`tools/web/`: `engine.ts`, `text.ts`, `hold.ts`, `tool.ts`; migrations `064_web_search.sql`,
+`065_web_search_rules.sql`; `tests/web-search*.test.ts`). A fourth tool, `search_web {query}`, run by the service in the loop above — the site switch
 `TOOLS.web.enabled` is **off by default**, and while it is off (or its key is missing) nothing anywhere differs from
 before: the same three tools, the same system text to the byte, `〔w1〕` is text, and no key of it is on any wire — but
 `POST` and `PATCH /api/agents` take and store `webSearch` (a 400 before), which nothing reads until the site offers it. It is
-offered to a run only when all hold: the site switch and its key; the Agent's `webSearch` (default true); the run's
-model is a site model; and the run is its owner's own call — in their own conversation, a retry, or their own `@` in a
-group (lane `own`, called by a person's message: an Agent's relay the owner is behind, someone else's call and a reply
-nobody asked for are not). A run offered tools but not this one, while the site offers it, is told in one line that it
-cannot go online in this reply (`NO_WEB_HERE`); one offered no tools keeps `NO_TOOLS`. Kind `web` (its status
+offered to a run only when all hold: the site switch and its key; the Agent's `webSearch` (default true); and the run is
+offered tools at all (`TOOLS.enabled`, a model that can use them, never a greeting or a told reply). In every lane and on
+every model (the product owner's rules of 2026-11-22): its owner's own conversation and their own `@` in a group,
+someone else's call, a reply nobody asked for, an Agent's relay; a site model or the owner's own provider's, whose
+searches are then paid from the owner's points (Metering, A web search's price). A run offered tools but not this one
+(its Agent's switch off), while the site offers it, is told in one line that it cannot go online in this reply
+(`NO_WEB_HERE`); one offered no tools keeps `NO_TOOLS`. In every lane the guard below reads what that run was shown
+(its notes and hearsay: a group's run, a reply nobody asked for and a relay are shown the group's), and the owner's
+own words are the owner's only: someone else's call carrying text of the owner's notes is refused, whoever typed it;
+web text reaching an Agents' chain adds no mention to it (mentions are taken out of titles and snippets), though a reply
+may still mention another Agent and start a relay as any reply may, bounded by the chain limit and the chain budget,
+which sees the search. Kind `web` (its status
 正在上网查找…), `TOOLS.web.perReply` calls a reply; the loop's repeat rule reads the query's one form (NFKC, case-folded,
 one space). A call, in this order, each refusal an `{"error"}` in plain words (no lookup; the model words it):
 1. the query, cleaned as message text, 2 to 120 characters;
@@ -3774,7 +3804,9 @@ one space). A call, in this order, each refusal an `{"error"}` in plain words (n
    for everything it is compared with alike (CJK counted by Script_Extensions, so `ー` is kana): refused when the query
    shares 6 CJK characters in a row, 7 digits in a row (a phone, an ID, a card number, whatever separates them), or 3 Latin
    words in a row (read on the spaced form) with any note or hearsay text the run was shown — unless that same run is in
-   its owner's latest message in the conversation (theirs to search) — or, in a group, holds the display name or handle
+   its owner's latest message in the conversation and the reply answers the owner's own call (their own conversation,
+   their own `@` in a group: theirs to search; never someone else's call, a reply nobody asked for or a relay) — or, in a
+   group, holds the display name or handle
    (2 characters or more of that form: `李 雷`, `李，雷` and `guardb mia` are `李雷` and `guardb_mia`) of a current member or
    of the owner;
 3. one of the service's `TOOLS.web.maxAtOnce` engine places, or refused at once;
@@ -3789,12 +3821,22 @@ one space). A call, in this order, each refusal an `{"error"}` in plain words (n
    many as fit `TOOLS.resultMaxWeight`: `{"about", "results": [{"ref": "〔w1〕", "title", "date"?, "snippet"}]}` — no
    address and no site name for the model to copy. The model cites with `〔w1〕` as with `〔m1〕` (Citations: the `w`
    letter is a token for a run offered the web tool only); the reply keeps `webSources` and `webCites` (Wire shapes).
-The engine: `deepseek_messages`, `POST {baseUrl}/anthropic/v1/messages` with `max_tokens: 1` (one search round, its
-result block and no answer text, as measured on 2026-11-22), thinking off, `system` "Today is <site date>.", its own
-`deepseek_web_search` tool (never `tool_choice`), `safety_check` high; a raw `fetch` within `timeoutMs`, ended with the
-reply, reading at most 1 MB; a refusal, no result block (it answered without searching), any other status or a bad body
-are errors, never a throw. Its one log line per call names the engine, the status class, the time and the number of
-results — never the query, an address, a title, a snippet or an upstream body. The gateway never hands the loop a call
+The engines (`TOOLS.web.engine`), each a raw `fetch` within `timeoutMs`, ended with the reply, reading at most 1 MB, never
+following a redirect; every failure an error kind, never a throw — an error status by its kind (401, 402 — the site's
+account out of credits or past its spending limit — and 403: `engine_refused`, with a metric line each time and one WARN
+an hour at most naming only the status; 429 and 503: `engine_busy`; any other: `engine_failed`), a bad or too large
+body or the network `unavailable`, `timeout`:
+- `exa_search` (the default): `POST {baseUrl}/search`, its key in `x-api-key`, `{"query", "type": exaType, "numResults":
+  maxResults, "contents": {"highlights": {"maxCharacters": 400}}, "moderation": true}` and nothing else Exa takes; of at
+  most its first 100 results the first `maxResults` usable — https, each address once, never Exa's own (`exa.ai`) — the
+  title, the highlights joined with " … " as the snippet, `publishedDate` as the page's age; none: no results. Its
+  `costDollars` (a number, or an object's `total`) is what the call cost the site (Metering, the money fuse).
+- `deepseek_messages`: `POST {baseUrl}/anthropic/v1/messages` with `max_tokens: 1` (one search round, its result block
+  and no answer text, as measured on 2026-11-22), thinking off, `system` "Today is <site date>.", its own
+  `deepseek_web_search` tool (never `tool_choice`), `safety_check` high; a refusal, or no result block (it answered
+  without searching): errors. It says nothing of its cost (the estimate stands).
+Each one log line per call names the engine, the status class, the time and the number of results — never the query,
+an address, a title, a snippet or an upstream body. The gateway never hands the loop a call
 the provider ran itself (`providerExecuted`): a relay's own `web_search` neither runs ours nor counts as garbled.
 
 **An acknowledgement, then the answer** ("先应一声、再交付", the product owner's design; `runtime/worker.ts` `toolReply`,
@@ -4460,28 +4502,46 @@ hold in the transaction that moves the run out of `running` (Agents and runs, `f
 before its cost lands.
 
 **A web search's price** (Agents and runs, Web search; `agents/tools/web/hold.ts`, `port-impl.ts` `holdSearch`, `extend`,
-`settle.ts`; migration `064_web_search.sql`; `tests/web-search.test.ts`). One search costs exactly
-`TOOLS.web.pointsMicroPerSearch` (a placeholder until the product owner decides; no metering of the engine: the site
-carries any difference, bounded by `sitePerDay`), held **before** the engine is called, in one transaction in the lock
-order — the run's conversation row, its Agent's and its own (`lockRun`), then the owner's counter for today
-(`web_search_days`: counted at call time, the site day as everywhere), then the owner's account, and last the site's
-counter (the one row every pre-hold shares, never held while an account is waited for):
-1. today's searches of the owner: over `perOwnerPerDay`, refused (one statement; two connections racing for the last
-   search are put in order by the row's lock);
-2. the money by Extension's rules, "ok" only: the model part of the reply so far at its bound (its hold, less the free
-   allowance's room for a last call and less its searches) with its searches and this one within `TOOLS.maxPoints` and no
-   budget of its lane reached, and its hold raised by the price within what is left of its own source beside the other
-   holds — on the free allowance the allowance itself, so a search is never paid by forgiveness; else refused, its hold
-   as it was;
-3. today's searches of the whole site: over `sitePerDay`, refused;
-4. `agent_runs.web_searches + 1`, `web_micro + price`.
+`settle.ts`; migrations `064_web_search.sql`, `065_web_search_rules.sql`; `tests/web-search.test.ts`,
+`tests/web-search-rules.test.ts`). A search is part of the reply's cost, paid from the owner's points; there is no count
+per owner — the points are the bound. One search costs exactly `TOOLS.web.pointsMicroPerSearch` (one value, retuned when
+the engine changes; no metering of the engine: the site carries any difference, bounded by its fuse), held **before**
+the engine is called, in one transaction in the lock order — the run's conversation row, its Agent's and its own
+(`lockRun`), then the owner's account, and last the site's money fuse (the one row every pre-hold shares, never held while
+an account is waited for):
+1. the run must be admitted: on a site model (admission's source), or on a provider's model — its model costs nothing, so
+   its first search picks where its searches are paid from: today's free allowance when what is left of it beside every
+   running hold covers the price, else the balance when it does, else refused; that source is kept for the reply's next
+   searches (its `charge_to`, which migration 065 lets a provider run carry for its searches only, with its `hold_micro`
+   their prices);
+2. the money by Extension's rules, "ok" only: the model part of the reply so far at its bound (a site model's hold, less
+   the free allowance's room for a last call and less its searches; none for a provider's model) with its searches and
+   this one within `TOOLS.maxPoints` and no budget of its lane reached — the others' daily, the proactive daily, the chain
+   budget, each counting what was settled and, for the daily ones, the searches the Agent's other replies of the same lane
+   hold now, read under the Agent's row every pre-hold of it takes (two replies racing for a budget's last points are put
+   in order) — and its hold raised by the price within what is left of its source beside the other holds — on the free
+   allowance the allowance itself, so a search is never paid by forgiveness; else refused, its hold as it was. Each
+   bound refuses in its own words and metric (`TOOLS.maxPoints`, a lane budget, the owner's points). Such a hold counts
+   as any hold: a reply of the owner's on a site model may be held back at admission behind a provider model's reply
+   that holds its searches (Money that does not block), and the queue's prediction of a source counts it;
+3. the site's money fuse (`web_search_days`, scope `site`, the site day as everywhere): what the day's searches cost the
+   site, in micro-USD (`spent_micro_usd`) — each held at `costMicroUsdPerSearch` at call time and replaced, once the engine
+   answered, by what it says the call cost (Exa's `costDollars`) when that is from a tenth to ten times the estimate — the
+   estimate stands otherwise, and when it says nothing. A search that would take it past `siteUsdPerDay` is refused (one
+   statement; two connections racing for its last search are put in order by the row's lock); the metric
+   `web_site_fuse` (`share: 80`) says it once a site day when 80 % of it is first reached (`warned_80`). This is the
+   operator's cost insurance, not a rule for users: a user's bound is their points;
+4. `agent_runs.web_searches + 1`, `web_micro + price` (and a provider run's source).
 The change sweep deletes counter days more than a week old.
 Refused at any step, the transaction rolls back (a counter taken is given back), the engine is not called and the reply
 goes on. Past the pre-hold the count and the charge stand whatever happens — the engine failing, timing out, finding
 nothing, the reply stopped, the service closing, the worker dropping the call's outcome: the vendor was called. Extension
-counts the searches with what the reply has spent, outside the model's clip; settlement charges `min(model cost, model
-hold) + web_micro` (the model hold being the hold less the searches), records `cost_micro` as the model's cost and the
-searches', and the usage record keeps `web_searches` and `web_micro`. Only a settlement on our own failure (`busy`, the
+counts the searches with what the reply has spent, outside the model's clip (a provider model's reply: with its lane's
+budgets, so one whose searches reached a budget makes its next call its last); settlement charges `min(model cost, model
+hold) + web_micro` (the model hold being the hold less the searches; a provider model's: `web_micro` alone, to the
+source its first search picked), records `cost_micro` as the model's cost and the searches', and the usage record keeps
+`web_searches` and `web_micro` — so every lane budget, which sums what was charged, counts a search once it is settled,
+on site and provider models alike; `GET /api/usage` shows them as their own line (`recentWeb`). Only a settlement on our own failure (`busy`, the
 reply could not be stored) forgives the searches too, as it forgives everything; the count stands. A reply that made none
 is settled exactly as before.
 

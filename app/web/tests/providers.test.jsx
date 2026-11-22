@@ -38,7 +38,7 @@ const goSettings = async () => {
 };
 
 /** The app on Settings › 模型供应商 with `providers` held by the fake service; `api` replaces any route. */
-async function openProviders({ providers = [providerOf()], api = {} } = {}) {
+async function openProviders({ providers = [providerOf()], api = {}, models = MODELS } = {}) {
   const env = { providers: structuredClone(providers) };
   const routes = {
     listProviders: vi.fn(async () => ({ providers: structuredClone(env.providers) })),
@@ -63,11 +63,22 @@ async function openProviders({ providers = [providerOf()], api = {} } = {}) {
     listProviderModels: vi.fn(async () => ({ ok: true, listed: [] })),
     ...api,
   };
-  const app = await openApp({ sync: () => syncOf([]), api: routes, handlers: { models: () => MODELS } });
+  const app = await openApp({ sync: () => syncOf([]), api: routes, handlers: { models: () => models } });
   await goSettings();
   await click(settingsRow("模型供应商"));
   return { ...app, env };
 }
+
+describe("what the page says of points (fix round 1, I2)", () => {
+  const head = () => document.querySelector(".main-col .profile-head .muted").textContent;
+  it("while the site offers web search: the model costs no points, but web searches do; otherwise as before", async () => {
+    await openProviders({ models: { ...MODELS, webSearchAvailable: true, webSearchPoints: "13" } });
+    expect(head()).toBe("在模型服务商那里有账号的话，把它的接口地址和密钥填在这里，你的 Agent 就可以用它的模型回复。用自己的供应商时，模型本身不扣本站的点数，但联网搜索照样扣点。");
+    cleanup();
+    await openProviders();
+    expect(head()).toBe("在模型服务商那里有账号的话，把它的接口地址和密钥填在这里，你的 Agent 就可以用它的模型回复。用自己的供应商不扣本站的点数。");
+  });
+});
 
 const type = (label, value) => fireEvent.change(inMain().getByLabelText(label), { target: { value } });
 const keyBox = () => inMain().getByLabelText("密钥");

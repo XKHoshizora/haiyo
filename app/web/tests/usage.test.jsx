@@ -30,10 +30,10 @@ const recentRows = () =>
 const AGENTS = [agentOf(AG1), agentOf(AG2, { handle: "cook", name: "厨师", conversationId: A2, deleted: true })];
 
 /** The app with my two Agents (one deleted) and their conversations, on Settings › 用量与余额. */
-async function openUsage({ getUsage = vi.fn(async () => usageOf()), open = true } = {}) {
+async function openUsage({ getUsage = vi.fn(async () => usageOf()), open = true, models = MODELS } = {}) {
   const principals = [...PRINCIPALS, agentPrincipal(AG1), agentPrincipal(AG2, "cook", "厨师")];
   const sync = () => syncOf([agentConv(A1, AG1), agentConv(A2, AG2, { agent: { paused: false, deleted: true } })], [], principals);
-  const app = await openApp({ sync, api: { getUsage }, handlers: { agents: () => ({ agents: AGENTS }), models: () => MODELS } });
+  const app = await openApp({ sync, api: { getUsage }, handlers: { agents: () => ({ agents: AGENTS }), models: () => models } });
   fireEvent.click(rail(/^设置/));
   await flush();
   if (open) await click(settingsRow("用量与余额"));
@@ -62,15 +62,39 @@ describe("usage and balance", () => {
     expect(mainText()).not.toContain("余额为负");
   });
 
-  it("a row whose replies searched the web says how many searches its points include; one that searched none says nothing of it", async () => {
+  it("web searches are a line of their own, 联网搜索 with the count and the points, for site and provider models alike — never in a model's line", async () => {
     const usage = usageOf({
       recent: [
-        { agentId: AG1, model: "free-1", source: "site", points: "4.5", replies: 12, webSearches: 11 },
-        { agentId: AG1, model: "big-1", source: "site", points: "1", replies: 1 },
+        { agentId: AG1, model: "free-1", source: "site", points: "4.5", replies: 12 },
+        { agentId: AG1, model: "own-1", source: "provider", points: "0", replies: 3 },
+      ],
+      recentWeb: [
+        { agentId: AG1, searches: 11, points: "8.47385" },
+        { agentId: AG2, searches: 1, points: "13" },
       ],
     });
     await openUsage({ getUsage: vi.fn(async () => usage) });
-    expect(recentRows().map((r) => r[2])).toEqual(["4.5 点 · 12 次回复 · 含联网搜索 11 次", "1 点 · 1 次回复"]);
+    expect(recentRows()).toEqual([
+      ["小助手", "小模型（本站）", "4.5 点 · 12 次回复"],
+      ["小助手", "own-1（我的供应商）", "0 点 · 3 次回复"],
+      ["小助手", "联网搜索", "8.47385 点 · 11 次"],
+      ["已删除的 Agent", "联网搜索", "13 点 · 1 次"],
+    ]);
+    expect(mainText()).toContain("用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。联网搜索单独列出。");
+  });
+
+  it("while the site offers web search, with none in these days yet: the model costs no points, web searches do (fix round 1, I2)", async () => {
+    const usage = usageOf({ recent: [{ agentId: AG1, model: "own-1", source: "provider", points: "0", replies: 1 }] });
+    await openUsage({ getUsage: vi.fn(async () => usage), models: { ...MODELS, webSearchAvailable: true } });
+    expect(mainText()).toContain("最近 7 天（含今天），按 Agent 和模型汇总。用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。");
+    expect(mainText()).not.toContain("联网搜索单独列出");
+  });
+
+  it("with no web search in these days: no such line, and the page says nothing of it", async () => {
+    const usage = usageOf({ recent: [{ agentId: AG1, model: "free-1", source: "site", points: "1", replies: 1, webSearches: 2 }] });
+    await openUsage({ getUsage: vi.fn(async () => usage) });
+    expect(recentRows()).toEqual([["小助手", "小模型（本站）", "1 点 · 1 次回复"]]);
+    expect(mainText()).not.toContain("联网搜索");
   });
 
   it("a negative balance is shown plainly, with one sentence saying why and what happens next", async () => {

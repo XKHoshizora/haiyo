@@ -976,7 +976,10 @@ export function ProvidersPage({ back }) {
         <div className="grow">
           <p className="eyebrow">模型供应商</p>
           <h2>我的模型供应商</h2>
-          <p className="muted">在模型服务商那里有账号的话，把它的接口地址和密钥填在这里，你的 Agent 就可以用它的模型回复。用自己的供应商不扣本站的点数。</p>
+          <p className="muted">
+            在模型服务商那里有账号的话，把它的接口地址和密钥填在这里，你的 Agent 就可以用它的模型回复。
+            {state.webSearchAvailable === true ? "用自己的供应商时，模型本身不扣本站的点数，但联网搜索照样扣点。" : "用自己的供应商不扣本站的点数。"}
+          </p>
         </div>
         <div className="head-actions">
           <Btn variant="primary" disabled={full} reason="最多只能添加 10 个模型供应商" onClick={() => setView({ mode: "new" })}>

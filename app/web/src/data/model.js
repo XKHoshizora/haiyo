@@ -1578,5 +1578,7 @@ export function applyModels(state, answer) {
   const c = answer.memoryCatchUp;
   const whole = (n) => Number.isSafeInteger(n) && n > 0;
   const memoryCatchUp = c && typeof c === "object" && whole(c.days) && whole(c.lines) ? { days: c.days, lines: c.lines } : null;
-  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true, memoryCatchUp, webSearchAvailable: answer.webSearchAvailable === true };
+  // About what one web search costs (`webSearchPoints`: a number of points, one decimal at most), with the site's web search.
+  const webSearchPoints = typeof answer.webSearchPoints === "string" && /^\d{1,9}(\.\d)?$/.test(answer.webSearchPoints) ? answer.webSearchPoints : null;
+  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true, memoryCatchUp, webSearchAvailable: answer.webSearchAvailable === true, webSearchPoints };
 }

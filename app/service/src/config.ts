@@ -214,28 +214,43 @@ export interface ToolsConfig {
 
 /**
  * The web search's site settings (`TOOLS.web`; README "Agents and runs", Web search). Every field has a default, so a
- * `TOOLS` without `web` parses as before and the search stays off. The money values are placeholders until the product
- * owner decides who pays and how much.
+ * `TOOLS` without `web` parses as before and the search stays off. The product owner's rules (2026-11-22): every lane,
+ * every model; a search is part of the reply's cost, paid from the owner's points; no cap per owner — the points are the
+ * bound; the site's own money fuse is the operator's cost insurance, not a rule for users.
  */
 export interface WebSearchConfig {
   /** The site switch: false (the default), no reply is offered the web search and nothing anywhere changes. */
   enabled: boolean;
-  /** Which adapter calls the engine (src/agents/tools/web/engine.ts). */
-  engine: "deepseek_messages";
-  /** The engine's address (https) and the environment variable holding its key (missing: not offered; a start-up line says so). */
+  /** Which adapter calls the engine (src/agents/tools/web/engine.ts): Exa's search (the default) or DeepSeek's. */
+  engine: WebEngineName;
+  /**
+   * The engine's address (https; default by engine, `WEB_ENGINE_DEFAULTS`; another host only with `baseUrlProxy`, so that
+   * a switch of engine never posts one vendor's key to the other) and the environment variable holding its key (default by
+   * engine, so a switch of engine never sends the other vendor's key; missing: not offered, a start-up line says so).
+   */
   baseUrl: string;
   apiKeyEnv: string;
+  /** DeepSeek's model (`deepseek_messages` only). */
   model: string;
+  /** Exa's search type (`exa_search` only): `auto` (the default), `lite` or `fast`. */
+  exaType: "auto" | "lite" | "fast";
   /**
-   * What one search costs the reply, fixed, in micro-points (no metering of the engine; the site carries any difference,
-   * bounded by `sitePerDay`). Default 770 350: the measured 11 000 input tokens of one engine call and its one output
-   * token at the site's existing unit price of a fast model (70 and 350 micro-points a token, README "Metering" Luna).
+   * What one search costs the owner, fixed, in micro-points: the ONE value to retune when the engine changes (the Agent
+   * form's 每次约 n 点 and every charge are read from it; no metering of the engine: the site carries any difference,
+   * bounded by its fuse). The product owner sets it; its default is by engine (`WEB_ENGINE_DEFAULTS`).
    */
   pointsMicroPerSearch: number;
-  /** Searches one reply may run; one owner's searches a site day; the whole site's a site day; engine calls at once in the service. */
+  /** Searches one reply may run (default 3). */
   perReply: number;
-  perOwnerPerDay: number;
-  sitePerDay: number;
+  /**
+   * The site's money fuse (operator's cost insurance, not a user rule): what one search is estimated to cost the site, in
+   * micro-USD (default by engine), held against the day at call time and replaced by what the engine says the call cost
+   * when it says so (Exa's `costDollars`), and the most the site spends on searches a site day, in USD (default 20):
+   * a search that would pass it is refused with an error.
+   */
+  costMicroUsdPerSearch: number;
+  siteUsdPerDay: number;
+  /** Engine calls at once in the service. */
   maxAtOnce: number;
   /** How long one engine call may take, in ms. */
   timeoutMs: number;
@@ -243,23 +258,80 @@ export interface WebSearchConfig {
   maxResults: number;
 }
 
-const webSearchSchema = z.strictObject({
-  enabled: z.boolean().default(false),
-  engine: z.enum(["deepseek_messages"]).default("deepseek_messages"),
-  baseUrl: z
-    .url()
-    .refine((u) => u.startsWith("https://"), "must be an https address")
-    .default("https://api.deepseek.com"),
-  apiKeyEnv: keyVariable.default("WEB_SEARCH_API_KEY"),
-  model: z.string().min(1).max(200).default("deepseek-flash"),
-  pointsMicroPerSearch: z.number().int().min(0).max(1_000_000_000_000).default(770_350),
-  perReply: positive(1, 20),
-  perOwnerPerDay: positive(20, 100_000),
-  sitePerDay: positive(2000, 10_000_000),
-  maxAtOnce: positive(4, 100),
-  timeoutMs: z.number().int().min(1000).max(120_000).default(15_000),
-  maxResults: positive(6, 20),
-});
+/** The web search's adapters (src/agents/tools/web/engine.ts). */
+export type WebEngineName = "exa_search" | "deepseek_messages";
+
+/**
+ * What `TOOLS.web` defaults to by engine, where the engine decides it:
+ * - `baseUrl`: the vendor's API.
+ * - `costMicroUsdPerSearch`, the site's estimate of one call: Exa's pricing page of 2026-11-22 — Auto search $7 a 1 000
+ *   requests, contents $1 a 1 000 pages, highlights of the 6 results asked for — 7 000 + 6 × 1 000 = 13 000; DeepSeek's,
+ *   the first version's $0.002.
+ * - `pointsMicroPerSearch`, what the owner is charged: that estimate at the site's own conversion — the product owner's
+ *   ruling for the site's prices, "一点等于上游标价的 0.001 美元" (docs/acceptance/batch2a/rulings.md §二.1: one point is
+ *   $0.001 of the upstream's list price, so one micro-USD is 1 000 micro-points; the code itself has no such constant,
+ *   site model prices being configured in micro-points a token) — 13 000 × 1 000 = 13 000 000 (13 points) for Exa; for
+ *   DeepSeek the first version's 770 350 (the measured 11 000 input tokens and one output token at the acceptance's fast
+ *   model's 70 and 350 micro-points a token: the same conversion through that model's price). Placeholders the owner sets.
+ */
+export const WEB_ENGINE_DEFAULTS: Readonly<Record<WebEngineName, { baseUrl: string; apiKeyEnv: string; costMicroUsdPerSearch: number; pointsMicroPerSearch: number }>> = {
+  exa_search: { baseUrl: "https://api.exa.ai", apiKeyEnv: "WEB_SEARCH_API_KEY", costMicroUsdPerSearch: 13_000, pointsMicroPerSearch: 13_000_000 },
+  deepseek_messages: { baseUrl: "https://api.deepseek.com", apiKeyEnv: "WEB_SEARCH_DEEPSEEK_API_KEY", costMicroUsdPerSearch: 2_000, pointsMicroPerSearch: 770_350 },
+};
+
+/** A key of `TOOLS.web` that is gone: refused at start, saying so and why (strict, as every setting: an operator who set a limit must not believe it still holds). */
+const removedKey = (key: string, why: string) =>
+  z
+    .unknown()
+    .optional()
+    .refine((v) => v === undefined, `${key} was removed (lane websearch2): ${why}; remove it from TOOLS`);
+
+const webSearchSchema = z
+  .strictObject({
+    enabled: z.boolean().default(false),
+    engine: z.enum(["exa_search", "deepseek_messages"]).default("exa_search"),
+    baseUrl: z
+      .url()
+      .refine((u) => u.startsWith("https://"), "must be an https address")
+      .optional(),
+    baseUrlProxy: z.boolean().default(false),
+    apiKeyEnv: keyVariable.optional(),
+    model: z.string().min(1).max(200).default("deepseek-flash"),
+    exaType: z.enum(["auto", "lite", "fast"]).default("auto"),
+    pointsMicroPerSearch: z.number().int().min(0).max(1_000_000_000_000).optional(),
+    perReply: positive(3, 20),
+    costMicroUsdPerSearch: z.number().int().min(1).max(1_000_000_000).optional(),
+    siteUsdPerDay: z.number().min(0).max(1_000_000).default(20),
+    maxAtOnce: positive(4, 100),
+    timeoutMs: z.number().int().min(1000).max(120_000).default(15_000),
+    maxResults: positive(6, 20),
+    perOwnerPerDay: removedKey("perOwnerPerDay", "there is no cap per owner any more, the points are the bound"),
+    sitePerDay: removedKey("sitePerDay", "the site's cap is the money fuse siteUsdPerDay now"),
+  })
+  .superRefine((w, ctx) => {
+    // Another host than the engine's own only when the operator says it is a proxy for it.
+    if (w.baseUrl !== undefined && !w.baseUrlProxy && new URL(w.baseUrl).hostname !== new URL(WEB_ENGINE_DEFAULTS[w.engine].baseUrl).hostname) {
+      ctx.addIssue({ code: "custom", path: ["baseUrl"], message: `is not ${w.engine}'s own host (${new URL(WEB_ENGINE_DEFAULTS[w.engine].baseUrl).hostname}); set baseUrlProxy: true for a proxy` });
+    }
+  })
+  .transform((w): WebSearchConfig => {
+    const by = WEB_ENGINE_DEFAULTS[w.engine];
+    return {
+      enabled: w.enabled,
+      engine: w.engine,
+      baseUrl: w.baseUrl ?? by.baseUrl,
+      apiKeyEnv: w.apiKeyEnv ?? by.apiKeyEnv,
+      model: w.model,
+      exaType: w.exaType,
+      pointsMicroPerSearch: w.pointsMicroPerSearch ?? by.pointsMicroPerSearch,
+      perReply: w.perReply,
+      costMicroUsdPerSearch: w.costMicroUsdPerSearch ?? by.costMicroUsdPerSearch,
+      siteUsdPerDay: w.siteUsdPerDay,
+      maxAtOnce: w.maxAtOnce,
+      timeoutMs: w.timeoutMs,
+      maxResults: w.maxResults,
+    };
+  });
 
 const toolsSchema = z.strictObject({
   enabled: z.boolean().default(true),
