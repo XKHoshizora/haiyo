@@ -24,8 +24,9 @@ import { closeAllSockets } from "./helpers/ws.ts";
  *
  * The first block is the specification of what history must carry. The fix is structural — what a past reply returns as
  * — and went through a paper design (docs/design/2026-11-24-agent-harness-design.md): its step 1 returns a reply's tool
- * use in its Agent's own conversation in the provider's own form (a native call, a placeholder result naming sites, never
- * titles), so the own-conversation specifications are tests now, in that form. The group's stays `it.fails` (it fails on
+ * use in its Agent's own conversation in the provider's own form (a native call; as one of the two most recent replies, the
+ * excerpt its search kept — each page's site, title and snippet — else a placeholder naming sites, never titles; the
+ * acknowledgement after the results), so the own-conversation specifications are tests now, in that form. The group's stays `it.fails` (it fails on
  * the assertion that the earlier reply's turn shows any trace of its tool calls — and only on it: a setup that fails makes
  * the test fail, `settled`) until groups get a replay, on their own signal (design §8).
  */
@@ -94,7 +95,7 @@ async function settled<T>(setup: () => Promise<T>): Promise<T | null> {
 }
 
 describe("what an earlier reply that looked something up returns as (the false confession)", () => {
-  it("an earlier answer that searched comes back as its acknowledgement and its call, the call's result, then its text — no longer an answer citing results with nothing between", async () => {
+  it("an earlier answer that searched comes back as its call, the call's result, then its acknowledgement and its text — no longer an answer citing results with nothing between", async () => {
     const gateway = scriptedGateway();
     const worker = webWorker(gateway, fakeEngine());
     const { owner, own } = await owned("rha");
@@ -106,18 +107,19 @@ describe("what an earlier reply that looked something up returns as (the false c
     expect(await worker.runOnce()).toBe(true);
     const later = gateway.calls.at(-1)!;
     // Before step 1 the pattern a model read as a claim with no evidence: "I'll look it up", then an answer citing results,
-    // nothing between. Now the call and its result stand between, in the provider's own form (this run's rounds are `steps`).
+    // nothing between. Now the call and its result stand before them, in the provider's own form (this run's rounds are
+    // `steps`), the acknowledgement heading the answer.
     expect(turns(later)).toEqual([
       ["user", ["北京今天天气怎么样？"]],
-      ["assistant", ["我查一下。", `tool-call ${SEARCH_WEB}`]],
+      ["assistant", [`tool-call ${SEARCH_WEB}`]],
       ["tool", [`tool-result ${SEARCH_WEB}`]],
-      ["assistant", ["根据搜索结果，今天晴，有风。"]],
+      ["assistant", ["我查一下。", "根据搜索结果，今天晴，有风。"]],
       ["user", ["那明天呢？"]],
     ]);
     expect(later.steps ?? []).toEqual([]);
   });
 
-  it("its own conversation: the earlier reply's turns show that it ran the web search and what it was handed — by site (the native form: hosts, never titles)", async () => {
+  it("its own conversation: the earlier reply's turns show that it ran the web search and what it was handed — as a recent reply, each page's site, title and snippet (never its address)", async () => {
     const shown = await settled(async () => {
       const gateway = scriptedGateway();
       const worker = webWorker(gateway, fakeEngine());
@@ -134,7 +136,7 @@ describe("what an earlier reply that looked something up returns as (the false c
       return JSON.stringify(later.messages.slice(1, 4));
     });
     if (shown === null) return;
-    expect([shown.includes(SEARCH_WEB), shown.includes("news2.example.com"), shown.includes("新闻标题2")]).toEqual([true, true, false]);
+    expect([shown.includes(SEARCH_WEB), shown.includes("news2.example.com"), shown.includes("新闻标题2"), shown.includes("摘要内容2"), shown.includes(RESULTS[1]!.url)]).toEqual([true, true, true, true, false]);
   });
 
   it("a search that was refused: the reply that then said it could not search comes back with the trace that it tried, that once — its query redacted, the tool's own sentence", async () => {
