@@ -81,6 +81,10 @@ export interface Notifier {
   idle(): Promise<void>;
   /** The counters since the last flush, zeroed; written to the log as one line when anything was counted. */
   flush(): PushStats;
+  /** Deletes the phones of expired sessions now (what the timer does); how many. */
+  sweepExpired(): Promise<number>;
+  /** Whether the timer runs (not under the test harness: `everyMs` 0). */
+  readonly ticking: boolean;
   /**
    * The stop: stops listening, closes the sender (its retry waits end at once), waits at most `STOP_WAIT_MS` for what is
    * under way, and writes the last counters. Again: nothing more.
@@ -101,7 +105,11 @@ export interface NotifierDeps {
   malformed: string[];
   /** Whether the universal-links file is served (`AppleConfig.app`): the same line says when it is not. */
   links: boolean;
-  /** Tests only (no variable sets it): the timer's period, the counters' line and the expired-phone sweep; default 10 minutes. */
+  /**
+   * The timer's period — the counters' line and the expired-phone sweep —, default 10 minutes; 0: no timer at all (the test
+   * harness: no timer starts work between two tests; `sweepExpired` and `flush` are then called by hand). Tests only: no
+   * variable sets it.
+   */
   everyMs?: number;
 }
 
@@ -174,8 +182,11 @@ async function targets(db: Db, messages: StoredMessage[]): Promise<Target[]> {
 export function createNotifier(deps: NotifierDeps): Notifier {
   const { db, apns, presence, log } = deps;
   const under = new Set<Promise<void>>();
-  /** `<device id>:<conversation id>` of the pushes out. */
-  const out = new Set<string>();
+  /**
+   * The pushes out, by `<device id>:<conversation id>`: the newest seq of that conversation they now stand for — a message
+   * coalesced into one raises it, so the re-check after a probe asks about the newest one, not the first.
+   */
+  const out = new Map<string, { newestSeq: number }>();
   const said = new Set<string>();
   let stats: PushStats = { sent: 0, removed: 0, present: 0, coalesced: 0, stale: 0, failed: {} };
   let closed = false;
@@ -203,7 +214,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     }
   };
 
-  async function pushOne(client: ApnsClient, t: Target): Promise<void> {
+  async function pushOne(client: ApnsClient, t: Target, standsFor: { newestSeq: number }): Promise<void> {
     // Present only when a socket of its own session is open and answers; else (none, closing, silent, closed meanwhile) pushed.
     if (presence.hasSocketFor(t.sessionId)) {
       if (await presence.probe(t.sessionId, PRESENCE_PROBE_MS)) {
@@ -211,7 +222,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
         return;
       }
       // The probe took up to `PRESENCE_PROBE_MS`: what was read before it is asked once more.
-      if (!(await stillWanted(db, t))) {
+      if (!(await stillWanted(db, { ...t, newestSeq: standsFor.newestSeq }))) {
         stats.stale++;
         return;
       }
@@ -226,13 +237,16 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   /** `pushOne` unless that phone's push for the conversation is out already; the key is held until this one is over. */
   async function pushOnce(client: ApnsClient, t: Target): Promise<void> {
     const key = `${t.id}:${t.conversationId}`;
-    if (out.has(key)) {
+    const already = out.get(key);
+    if (already) {
+      already.newestSeq = Math.max(already.newestSeq, t.newestSeq);
       stats.coalesced++;
       return;
     }
-    out.add(key);
+    const standsFor = { newestSeq: t.newestSeq };
+    out.set(key, standsFor);
     try {
-      await pushOne(client, t);
+      await pushOne(client, t, standsFor);
     } finally {
       out.delete(key);
     }
@@ -276,27 +290,34 @@ export function createNotifier(deps: NotifierDeps): Notifier {
    * The phones of expired sessions deleted (push/devices.ts `removeExpiredDevices`), counted; on this timer, which always
    * runs — with or without APNs (phones are registered either way), whatever `MEMORY.changesSweepMs` says.
    */
-  function sweepExpired(): void {
-    if (closed) return;
+  function sweepExpired(): Promise<number> {
+    if (closed) return Promise.resolve(0);
+    let removed = 0;
     const job: Promise<void> = removeExpiredDevices(db)
-      .then((removed) => {
-        if (removed > 0) log.info({ metric: "push_devices_expired", removed }, "phones of expired sessions were removed");
+      .then((n) => {
+        removed = n;
+        if (n > 0) log.info({ metric: "push_devices_expired", removed: n }, "phones of expired sessions were removed");
       })
       .catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "push device sweep failed; trying again next interval"))
       .finally(() => under.delete(job));
     under.add(job);
+    return job.then(() => removed);
   }
 
-  const timer = setInterval(() => {
-    flush();
-    sweepExpired();
-  }, deps.everyMs ?? SUMMARY_EVERY_MS);
-  timer.unref();
+  const everyMs = deps.everyMs ?? SUMMARY_EVERY_MS;
+  const timer =
+    everyMs > 0
+      ? setInterval(() => {
+          flush();
+          void sweepExpired();
+        }, everyMs)
+      : null;
+  timer?.unref();
 
   async function stop(): Promise<void> {
     closed = true;
     off();
-    clearInterval(timer);
+    if (timer) clearInterval(timer);
     // One deadline for all of it. The sender first: its retry waits end at once and its connections — a closing one too —
     // are destroyed by its grace, so nothing here can hold the stop for a slow APNs; then what is under way, until the
     // deadline.
@@ -321,6 +342,10 @@ export function createNotifier(deps: NotifierDeps): Notifier {
       while (under.size > 0) await Promise.allSettled([...under]);
     },
     flush,
+    sweepExpired,
+    get ticking() {
+      return timer !== null && !closed;
+    },
     close() {
       closing ??= stop();
       return closing;

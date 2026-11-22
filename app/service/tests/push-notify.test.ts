@@ -257,6 +257,23 @@ describe("present: the phone's own session has a socket", () => {
     }
   });
 
+  test("the first message read elsewhere during the ask, a newer one coalesced into it: the push still goes, for the newer one", async () => {
+    const a = await signUp(app, "newer_a");
+    const b = await signUp(app, "newer_b");
+    const { conversationId } = await befriend(app, a, b);
+    const token = await phone(b);
+    const raw = await rawSocket(b);
+    const first = await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "one", clientTxn: "newer1" });
+    expect(first.status).toBe(201);
+    for (let i = 0; i < 100 && !frames(raw.received()).includes(0x9); i++) await new Promise((r) => setTimeout(r, 5));
+    // On the desktop, b reads the first; then a newer message comes, coalesced into the push that is being decided.
+    expect((await api(app, b, "POST", `/api/conversations/${conversationId}/read`, { seq: first.json.message.seq })).status).toBe(200);
+    expect((await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "two", clientTxn: "newer2" })).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([token]);
+    expect(app.push.flush()).toMatchObject({ sent: 1, coalesced: 1, stale: 0 });
+  });
+
   test("many messages during one ask: one ping for the session, one push per conversation", async () => {
     const a = await signUp(app, "burst_a");
     const b = await signUp(app, "burst_b");

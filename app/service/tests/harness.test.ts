@@ -55,6 +55,17 @@ describe("between two tests", () => {
     }
   });
 
+  it("the push's own timer (counters, expired-phone sweep) runs on no timer under the harness; an app built otherwise has it", async () => {
+    expect(app.push.ticking).toBe(false);
+    const built = await buildApp({ config: app.deps.config, db: app.deps.db }, { answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false, proactive: false, memory: false, agentWorker: false, mail: { sender: false } });
+    try {
+      await built.ready();
+      expect(built.push.ticking).toBe(true);
+    } finally {
+      await built.close();
+    }
+  });
+
   it("the hub's heartbeat runs on no timer under the harness (it beats by hand there); an app built otherwise has it", async () => {
     expect(app.realtime.beating).toBe(false);
     const built = await buildApp({ config: app.deps.config, db: app.deps.db }, { answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false, proactive: false, memory: false, agentWorker: false, mail: { sender: false } });

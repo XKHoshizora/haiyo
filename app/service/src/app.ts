@@ -208,6 +208,12 @@ export interface BuildOptions {
    * that no timer starts a statement while it empties the database between two tests.
    */
   heartbeat?: false;
+  /**
+   * The push's own timer (src/push/notify.ts: the counters' line and the expired-phone sweep; default every 10 minutes).
+   * Tests: `false` turns it off (`app.push.sweepExpired()` and `app.push.flush()` by hand), as the harness does, for the
+   * same reason as `heartbeat`.
+   */
+  pushTimer?: false;
 }
 
 /**
@@ -458,7 +464,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   // Pushes to phones (src/push/): every stored message, after commit, as the hub hears of it; the hub says whose session
   // has a socket and whether it answers. Closed before the hub and the database (hooks run last-in first-out): the stop
   // closes the sender first (its retry waits end at once), then waits a bounded time for what is under way.
-  const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed, links: config.apple.app !== null });
+  const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed, links: config.apple.app !== null, ...(options.pushTimer === false ? { everyMs: 0 } : {}) });
   app.decorate("push", push);
   app.addHook("onClose", () => push.close());
 

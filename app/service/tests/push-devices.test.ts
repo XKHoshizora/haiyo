@@ -156,6 +156,16 @@ describe("a device belongs to its session", () => {
     expect(await devices()).toEqual([]);
   });
 
+  test("under the harness the sweep runs only when a test calls it (app.push.sweepExpired): it deletes the expired session's phone and says how many", async () => {
+    const a = await signUp(app, "swept_by_hand");
+    const b = await signUp(app, "kept_by_hand");
+    await api(app, a, "POST", "/api/push/devices", { token: TOKEN_A, env: "production" });
+    await api(app, b, "POST", "/api/push/devices", { token: TOKEN_B, env: "production" });
+    await db.query(`update "session" set "expiresAt" = now() - interval '1 second' where id = $1`, [await sessionOf(a)]);
+    expect(await app.push.sweepExpired()).toBe(1);
+    expect((await devices()).map((r) => r.token)).toEqual([TOKEN_B]);
+  });
+
   test("an expired session's phone is deleted on the push's own timer — whatever MEMORY.changesSweepMs says — a live one's kept; the log has a count only", async () => {
     // The harness turns the memory changes' sweep off (changesSweepMs 0): the push sweep must not depend on it.
     expect(app.deps.config.memory.changesSweepMs).toBe(0);
