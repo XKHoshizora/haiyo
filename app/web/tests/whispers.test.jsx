@@ -175,6 +175,17 @@ describe("a whisper in the conversation", () => {
     expect(whisperLi("w2").textContent).toBe("已告诉他们");
   });
 
+  it("a hit draws the mentions of its message as the bubble does: @name from the ranges the wire carries, one the reader cannot name as typed, controls out", async () => {
+    const hits = [
+      { where: "乙群", who: "小安", when: "2026-11-19 09:30", text: "@bo 来 @zz 也来", mentions: [{ id: BO, start: 0, length: 3 }, { id: "00000000-0000-4000-8000-0000000000ee", start: 6, length: 3 }] },
+      { where: "乙群", who: "小安", when: "2026-11-19 09:31", text: "好‮的" },
+    ];
+    await openGroup({ whispers: [whisper("w1", G1, 2, { detail: { hits } })] });
+    await click(inWhisper("w1").getByRole("button", { name: SUMMARY(2) }));
+    const texts = [...whisperLi("w1").querySelectorAll(".whisper-hit-text")].map((p) => p.textContent);
+    expect(texts).toEqual(["@阿波 来 @zz 也来", "好的"]);
+  });
+
   it("only a found_elsewhere whisper shows hits: another kind carrying them shows its text alone", async () => {
     const hits = [{ where: "乙群", who: "小安", when: "2026-11-19 09:30", text: "不该出现的内容" }];
     await openGroup({ whispers: [whisper("w1", G1, 2, { kind: "memory", detail: { hits } })] });

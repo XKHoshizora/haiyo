@@ -5,7 +5,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ANN, D1, G1, apiError, deferred, direct, group, syncOf, wire } from "./fixtures.js";
-import { flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
+import { elapse, flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
 import { COARSE_QUERY, PHONE_QUERY } from "../src/ui/pointer.js";
 import { AvatarDialog } from "../src/pages/AvatarDialog.jsx";
 
@@ -269,5 +269,9 @@ describe("when the first sync fails", () => {
     expect(list()).not.toContain("正在读取…");
     expect(list()).not.toContain("还没有会话");
     expect(screen.getByRole("button", { name: "立即重试" })).toBeTruthy();
+    // It stays the failure line between attempts (the engine alternates connecting and reconnecting): never 「正在读取…」 again.
+    await elapse(20_000);
+    expect(list()).toContain("连不上服务，正在重试…");
+    expect(list()).not.toContain("正在读取…");
   });
 });

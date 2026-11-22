@@ -233,6 +233,8 @@ export const wireMessageSchema = z.object({
         kind: z.enum(["text", "file"]),
         /** For a quoted file message: its file name. */
         attachmentName: z.string().optional(),
+        /** The quoted message's mentions (as `mentions` below), those still inside the preview `text` (cut at 200 characters); absent when none. */
+        mentions: z.array(z.object({ id: z.string(), start: z.number(), length: z.number() })).optional(),
       }),
       z.object({ seq: z.number(), visible: z.literal(false) }),
     ])

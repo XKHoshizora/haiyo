@@ -628,3 +628,30 @@ test("profile-style headers at 320 and 375: the title keeps a sensible width (a 
   }
   await polishShot(page, "mobile-profile-header-320");
 });
+
+test("a quote draws the mention as @name, as the bubble does: the quoted message's mentions come with its preview", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const title = `引用${uniq(4)}`;
+  const g = await createGroupApi(ann, [bo, cy], title);
+  const call = `@${cy.handle}`;
+  await sendApi(ann, g, `${call} 你好`, [{ id: cy.id, start: 0, length: call.length }]);
+  const page = bo.page;
+  const chat = await openChat(page, title);
+  const item = chat.getByRole("listitem").filter({ hasText: "你好" });
+  await item.hover();
+  await item.locator(".msg-action").click();
+  await chat.getByRole("textbox", { name: "消息内容" }).fill("收到");
+  await chat.getByRole("textbox", { name: "消息内容" }).press("Enter");
+  const reply = chat.getByRole("listitem").filter({ hasText: "收到" });
+  const quote = reply.locator("blockquote");
+  await expect(quote).toContainText(`@${cy.displayName} 你好`);
+  expect(await quote.textContent()).not.toContain(call);
+  // A reload: the quote is drawn from the wire again (the quoted message need not be loaded for it).
+  await page.reload();
+  const again = chatPane(page, title);
+  await expect(again.locator("blockquote").first()).toContainText(`@${cy.displayName} 你好`);
+});

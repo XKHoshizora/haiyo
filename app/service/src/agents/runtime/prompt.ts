@@ -251,6 +251,8 @@ const VERTICAL_RUN = new RegExp(`[${VERTICAL_SPACE}]+`, "gu");
  * message, an intro and a field (agents/proactive/candidates.ts).
  */
 export const oneLine = (text: string): string => text.replace(VERTICAL_RUN, " ").trim();
+/** `text` with every run of vertical space a single space, not trimmed: `oneLine` before its trim (for following a position through it). */
+export const foldVertical = (text: string): string => text.replace(VERTICAL_RUN, " ");
 
 /**
  * What a field of a label or of the roster may not hold once folded (NFKC, `labelSafe`), for `replace`: every bracket

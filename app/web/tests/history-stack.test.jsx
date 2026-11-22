@@ -173,3 +173,99 @@ describe("Back from any reachable stack ends at the first entry and never grows 
     await backToTheStart();
   });
 });
+
+// ───────── a wider walk: in-app closes, the viewer, a leave chosen in the UI, and the contacts, Agents and providers pages
+import { AG1, A1, MODELS, P1, agentConv, agentOf, agentPrincipal, providerOf, PRINCIPALS } from "./fixtures.js";
+import { PEOPLE } from "./harness.jsx";
+import { navOfAddress } from "../src/state/location.js";
+
+const PIC = "00000000-0000-4000-8000-00000000f0a1";
+const world2 = (alive) => () =>
+  syncOf(
+    [
+      ...(alive.has(D1) ? [direct(D1, ANN, { lastSeq: 1, readSeq: 1 })] : []),
+      ...(alive.has(G1) ? [group(G1, { lastSeq: 2, readSeq: 2 })] : []),
+      ...(alive.has(G2) ? [group(G2, { title: "第二群", lastSeq: 1, readSeq: 1 })] : []),
+      agentConv(A1, AG1),
+    ],
+    [
+      wire(D1, 1, ANN, "早"),
+      wire(G1, 1, ANN, "你好"),
+      wire(G1, 2, BO, "", { kind: "file", attachment: { id: PIC, name: "图.png", size: 10, inline: true } }),
+      wire(G2, 1, BO, "嗨"),
+    ].filter((m) => alive.has(m.conversationId)),
+    [...PRINCIPALS, agentPrincipal(AG1, "helper", "小助手")],
+  );
+
+describe("a wider random walk keeps the same promises, and the drawn page is always the address", () => {
+  const random = (seed) => {
+    let x = seed;
+    return () => {
+      x = (x * 1664525 + 1013904223) % 4294967296;
+      return x / 4294967296;
+    };
+  };
+  const CLOSERS = [/^返回列表$/, /^返回群聊/, /^返回通讯录/, /^返回我的 Agent/, /^返回$/, /^返回模型供应商/];
+
+  it.each([11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])("seed %i", async (seed) => {
+    const rand = random(seed * 104729);
+    const alive = new Set([D1, G1, G2]);
+    installBrowser();
+    const app = await openApp({
+      sync: world2(alive),
+      social: { ...emptySocial(), friends: [PEOPLE[ANN]] },
+      api: { listProviders: vi.fn(async () => ({ providers: [providerOf(P1)] })), removeMember: vi.fn(async () => ({ ok: true })) },
+      handlers: { agents: () => ({ agents: [agentOf(AG1)] }), models: () => MODELS },
+    });
+    const rail = (name) => within(screen.getByRole("navigation", { name: "主导航" })).queryByRole("button", { name });
+    const press = async (el) => {
+      if (!el) return;
+      fireEvent.click(el);
+      await flush();
+      await step(() => {}); // (a close goes back: the browser answers a moment later)
+    };
+    /** The page drawn is the address: the pane says page or list as the path does; a conversation in the path is alive. */
+    const drawnIsTheAddress = () => {
+      const want = navOfAddress({ path: path(), overlay: null }).pane;
+      expect(document.querySelector(".app").dataset.pane, `the pane at ${path()} after ${globalThis.__trail}`).toBe(want);
+      const id = /^\/chat\/([^/]+)/.exec(path())?.[1];
+      if (id) expect(alive.has(id), `a conversation in the address is alive (${path()})`).toBe(true);
+    };
+    const trail = [];
+    globalThis.__trail = trail;
+    for (let i = 0; i < 16; i += 1) {
+      const pick = Math.floor(rand() * 14);
+      trail.push(`${pick}@${path()}`);
+      if (pick <= 1) await press(screen.queryByText(["周末小组", "第二群", "小安"][Math.floor(rand() * 3)], { selector: ".list-col .row-name" }));
+      else if (pick === 2) await press(screen.queryByRole("button", { name: "会话资料" }));
+      else if (pick === 3) await press(screen.queryByRole("button", { name: "群资料" }));
+      else if (pick === 4) await press(rail([/^消息/, /^通讯录/, /^Agent/, /^设置/][Math.floor(rand() * 4)]) ?? null);
+      else if (pick === 5 && alive.size > 1) await remove(app, alive, [...alive][Math.floor(rand() * alive.size)]);
+      else if (pick === 6) await back();
+      else if (pick === 7) await forward();
+      else if (pick === 8) await press(CLOSERS.map((re) => screen.queryByRole("button", { name: re })).find(Boolean) ?? within(document.querySelector(".side-col") ?? document.body).queryByRole("button", { name: "关闭" }));
+      else if (pick === 9) await press(document.querySelector("button[data-image]"));
+      else if (pick === 10) await press(document.querySelector(".list-col .row"));
+      else if (pick === 11) await press(screen.queryByText("模型供应商", { selector: ".list-col .row-name" }));
+      else if (pick === 12) await press(within(document.querySelector(".main-col")).queryAllByRole("button", { name: /添加供应商|编辑/ })[0]);
+      else if (screen.queryByRole("tab", { name: "群设置" })) {
+        // The leave chosen in the UI: 群设置, 退出本群, 确认退出 (the service then removes the conversation).
+        await press(screen.queryByRole("tab", { name: "群设置" }));
+        await press(screen.queryByRole("button", { name: "退出本群" }));
+        const confirm = document.querySelector('[role="dialog"]') && within(document.querySelector('[role="dialog"]')).queryByRole("button", { name: "确认退出" });
+        if (confirm) {
+          await press(confirm);
+          await remove(app, alive, G1);
+        }
+      }
+      drawnIsTheAddress();
+    }
+    // Forward never lands on a page that is gone, and Back always ends at the first entry without growing the stack.
+    for (let i = 0; i < 6; i += 1) {
+      await forward();
+      drawnIsTheAddress();
+    }
+    await backToTheStart();
+    drawnIsTheAddress();
+  });
+});

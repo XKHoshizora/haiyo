@@ -40,7 +40,7 @@ const remember = (address) => {
   lastOf[sectionOfPath(address.path)] = address.path;
 };
 /** Whether the page the keys name still resolves in `state` (a conversation, a contact, an Agent or a provider that is gone does not). */
-function alive(state, page) {
+export function alive(state, page) {
   if (page.convId && !state.convs[page.convId]) return false;
   if (page.convId && page.view === "profile" && state.convs[page.convId].type !== "group") return false;
   if (page.contactId && !entity(state, page.contactId)) return false;
@@ -138,11 +138,13 @@ export function closeViewerEntry() {
  * Keeps the address and the store's navigation together; run once in the signed-in shell. The store's navigation is moved by pages
  * and by this hook (from the address); every move of it is followed by the history operation the rule says.
  */
-export function useAppHistory({ nav, dispatch }) {
+export function useAppHistory({ nav, dispatch, resolves = null }) {
   const live = useRef(nav);
   live.current = nav;
   const send = useRef(dispatch);
   send.current = dispatch;
+  const resolvesNow = useRef(resolves);
+  resolvesNow.current = resolves;
   /** The address a cold start was drawn from, until the navigation shows it (no history call is made before that). */
   const cold = useRef(null);
 
@@ -167,8 +169,6 @@ export function useAppHistory({ nav, dispatch }) {
   useEffect(() => {
     const next = addressOf(nav);
     remember(next);
-    // The history was written by the move itself (a page's own close).
-    if (nav.navIntent === "none") return;
     if (cold.current) {
       if (!sameAddress(cold.current, next)) return;
       cold.current = null;
@@ -179,6 +179,10 @@ export function useAppHistory({ nav, dispatch }) {
       if (st && !softSame(st.nav, softOf(nav))) window.history.replaceState({ ...st, nav: softOf(nav) }, "", window.location.pathname);
       return;
     }
+    // The address was written by the move itself (a page's own close): `none` skips only this write, never the soft one above (a tab on the parent page).
+    if (nav.navIntent === "none") return;
+    // A click into a page that is not there (a search hit or a jump to a conversation that is not mine) writes no entry: the shell shows the notice and stays.
+    if (nav.navIntent === "push" && resolvesNow.current && !resolvesNow.current(nav)) return;
     const index = st?.index ?? 0;
     // The intent is on the move (state/reducer.js): a page that is gone, or a form that ended in what it made, replaces the entry it leaves.
     if (nav.navIntent === "replace") {

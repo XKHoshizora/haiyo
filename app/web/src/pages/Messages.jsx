@@ -22,13 +22,12 @@ import { CitesContext } from "../ui/cites.jsx";
 import { Reply, RotateCw, FileText, Check, CircleAlert } from "../icons.js";
 
 /** The quoted message as the reader may see it: the service says whether it is visible to them. */
-function Quote({ quote, conv = null }) {
+function Quote({ quote }) {
   const { state } = useStore();
   if (!quote) return null;
   if (!quote.visible) return <blockquote>引用的消息不在你的可见范围内</blockquote>;
-  // The quoted words as the bubble draws them (a mention is @name): the quote carries no mentions, the quoted message does when it is loaded.
-  const source = conv?.messages.find((m) => m.seq === quote.seq && m.text === quote.text);
-  const words = quote.kind === "file" ? quote.attachmentName : drawnTextOf(state, { text: quote.text, mentions: source?.mentions ?? [], from: quote.from });
+  // The quoted words as the bubble draws them (a mention is @name): the wire sends the quoted message's mentions with its preview.
+  const words = quote.kind === "file" ? quote.attachmentName : drawnTextOf(state, { text: quote.text, mentions: quote.mentions ?? [], from: quote.from });
   return (
     <blockquote>
       <strong>{quote.from ? senderName(state, quote.from) : ""}</strong>
@@ -38,11 +37,11 @@ function Quote({ quote, conv = null }) {
 }
 
 /** What a file message says besides the file: the caption (its mentions as tags), and the quote when it replies to something. */
-function Caption({ msg, conv }) {
+function Caption({ msg }) {
   if (!msg.caption && !msg.quote) return null;
   return (
     <div className="bubble">
-      <Quote quote={msg.quote} conv={conv} />
+      <Quote quote={msg.quote} />
       <MentionText text={msg.caption} mentions={msg.mentions} />
     </div>
   );
@@ -117,17 +116,17 @@ function CitingAgentText({ msg, onJump }) {
   );
 }
 
-function Body({ msg, agent, conv, onJump }) {
+function Body({ msg, agent, onJump }) {
   if (msg.kind === "image" || msg.kind === "file")
     return (
       <>
         {msg.kind === "image" ? <ImageBody msg={msg} /> : <FileBody msg={msg} />}
-        <Caption msg={msg} conv={conv} />
+        <Caption msg={msg} />
       </>
     );
   return (
     <div className="bubble">
-      <Quote quote={msg.quote} conv={conv} />
+      <Quote quote={msg.quote} />
       {agent ? <CitingAgentText msg={msg} onJump={onJump} /> : <MentionText text={msg.text} mentions={msg.mentions} />}
     </div>
   );
@@ -235,7 +234,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
         </div>
         {thinking && <Thinking text={msg.reasoning} />}
         {/* A reply that is only a persona proposal has no text: its card alone, no empty bubble. */}
-        {!(ownChat && msg.proposal && !msg.text && !msg.quote) && <Body msg={msg} agent={agent} conv={conv} onJump={onJump} />}
+        {!(ownChat && msg.proposal && !msg.text && !msg.quote) && <Body msg={msg} agent={agent} onJump={onJump} />}
         {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation). */}
         {agent && <ReplyLookups key={`${conv.id}:${msg.id}`} msg={msg} conv={conv} onJump={onJump} />}
         {agent && <WebSources sources={msg.webSources} />}

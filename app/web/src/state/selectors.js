@@ -65,6 +65,9 @@ export function publishBlock(state, conv) {
  * A message's words in the form they are drawn (ui/drawnText.js): the one function of the quote under a reply, the reply chip, the chat
  * list's line and the copied text. `msg`: `{text, mentions, from}` (a quote's own `from` is the sender too).
  */
+/** Who an id means in text the wire gives (a whisper hit: ids as the service sends them, mine included): the entity, as the page knows it. */
+export const knownByWire = (state) => (id) => entity(state, id === state.account?.id ? ME : id);
+
 export const drawnTextOf = (state, msg) =>
   drawnText({ text: msg.text, mentions: msg.mentions, fromAgent: msg.from !== ME && isAgent(state, msg.from), known: (id) => entity(state, id) });
 

@@ -216,6 +216,9 @@ function toWire(
         kind: q.kind === "file" ? "file" : "text",
       };
       if (q.kind === "file" && q.body.attachment) quote.attachmentName = q.body.attachment.name;
+      // Its mentions as the quoted message stored them, kept where they still lie inside the (cut) preview: to the same reader the preview is for.
+      const inQuote = q.kind === "system" || q.mentions === null ? [] : q.mentions.filter((m) => m.start + m.length <= quote.text.length);
+      if (inQuote.length > 0) quote.mentions = inQuote.map(({ id, start, length }) => ({ id, start, length }));
       wire.replyTo = quote;
     } else {
       wire.replyTo = { seq: replyToSeq, visible: false };

@@ -4,7 +4,7 @@ import { entity, isMyAgent, unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark } from "./ui/primitives.jsx";
 import { usePhone } from "./ui/pointer.js";
-import { lastPageOf, useAppHistory } from "./state/appHistory.js";
+import { alive, lastPageOf, useAppHistory } from "./state/appHistory.js";
 import { MessageCircle, Users, Bot, Settings } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
@@ -86,7 +86,8 @@ function useCloseWhenRemoved(state, dispatch) {
     // The page is gone: the entry it is in becomes its parent (once: a replace carried by the move itself).
     dispatch({ type: "nav", replace: true, patch: { convId: null, view: "chat", detailsOpen: false, pane: "list" } });
     // (Removed: the notice says so. An address that never was mine: it cannot say "no longer".)
-    if (section === "chat") dispatch({ type: "toast", text: was ? "你已不在该会话中" : "找不到这个会话，或你已不在其中" });
+    // (A conversation I left on purpose says nothing at all.)
+    if (section === "chat" && !state.left?.includes(convId)) dispatch({ type: "toast", text: was ? "你已不在该会话中" : "找不到这个会话，或你已不在其中" });
   }, [convId, present, section, state.loaded, state.nav.opening, dispatch]);
 }
 
@@ -163,7 +164,7 @@ export default function Shell() {
   const pane = emptyChat ? "list" : nav.pane;
   const tabbar = phone && pane === "list";
   // The address is where a person is (state/location.js); Back and the edge swipe walk its entries (state/appHistory.js).
-  useAppHistory({ nav, dispatch });
+  useAppHistory({ nav, dispatch, resolves: (page) => !state.loaded || alive(state, page) });
   // An address of a page that is not here (a conversation removed or never mine, a Forward to it, a contact nobody knows, an Agent that is not
   // mine, group info of a conversation that is not a group): the section's list or the conversation, once, with the reason; the entry is
   // made that page so that nothing shows it again.

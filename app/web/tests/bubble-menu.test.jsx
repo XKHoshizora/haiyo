@@ -358,7 +358,7 @@ describe("a mention is drawn the same everywhere: bubble, quote, reply chip, cha
       [group(G1, { lastSeq: 2, readSeq: 2 })],
       [
         wire(G1, 1, ANN, typed, { mentions }),
-        wire(G1, 2, ME_ID, "回它", { replyTo: { seq: 1, visible: true, senderId: ANN, text: typed, kind: "text", attachmentName: null } }),
+        wire(G1, 2, ME_ID, "回它", { replyTo: { seq: 1, visible: true, senderId: ANN, text: typed, kind: "text", attachmentName: null, mentions } }),
       ],
     );
 

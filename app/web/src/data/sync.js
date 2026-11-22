@@ -703,8 +703,14 @@ export function start(
      * Agents again; `agent`: one Agent and its open proposal cards (as an `agent` push does); `run`: a conversation's
      * run; `groupRuns`: a group's Agent replies (these four in the background, see the header).
      */
-    request({ sync = false, social = false, conversation = null, agents = false, agent = null, run = null, groupRuns = null } = {}) {
+    request({ sync = false, social = false, conversation = null, agents = false, agent = null, run = null, groupRuns = null, retryNow = false } = {}) {
       if (!alive) return;
+      // 立即重试: the wait before the next attempt is over now (there is no socket and an attempt is only waiting for its back-off).
+      if (retryNow && socket === null && retryTimer !== null) {
+        timers.clearTimeout(retryTimer);
+        retryTimer = null;
+        connect();
+      }
       if (sync) need.sync = true;
       if (social) need.social = true;
       if (conversation) {

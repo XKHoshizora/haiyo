@@ -5,7 +5,7 @@ import { createWhisper, expireWhispers } from "../src/whispers/store.ts";
 import { changeSweep } from "../src/app.ts";
 import { NO_TOOLS, TOLD_NO_TOOLS, TOOL_MATERIAL } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
-import { createElsewhere, ELSEWHERE_HITS_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
+import { createElsewhere, ELSEWHERE_HITS_MAX, FOUND_ELSEWHERE, TELL_HOW, TELL_THEM, toldPassage, type ElsewhereDeps, type ElsewhereHook } from "../src/agents/tools/elsewhere.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
 import { createToolbox, SEARCH_MESSAGES, type ToolDeps } from "../src/agents/tools/index.ts";
 import { excerptAt, matchAt } from "../src/agents/tools/search.ts";
@@ -90,7 +90,7 @@ const whispersOf = async (ownerId: string, conv: string) =>
     "select id, status, body from whispers where owner_id = $1 and conversation_id = $2 order by created_at",
     [ownerId, conv],
   )).rows;
-type WireHit = { where: string; who: string; when: string; text: string };
+type WireHit = { where: string; who: string; when: string; text: string; mentions: Array<{ id: string; start: number; length: number }> };
 /** A whisper as its owner reads it now (the list route). */
 const wireOf = async (owner: Actor, conv: string, id: string) =>
   (await api(app, owner, "GET", `/api/conversations/${conv}/whispers`)).json.whispers.find((x: { id: string }) => x.id === id) as
@@ -185,7 +185,8 @@ describe("a search in a group that finds nothing there", () => {
       ["你和它的专属会话", "olive", OWN_NOTE],
       ["乙群", "mia", CANARY],
     ]);
-    expect(Object.keys(wire!.detail!.hits[0]!).sort()).toEqual(["text", "when", "where", "who"]);
+    expect(Object.keys(wire!.detail!.hits[0]!).sort()).toEqual(["mentions", "text", "when", "where", "who"]);
+    expect(wire!.detail!.hits.map((h) => h.mentions)).toEqual([[], []]); // (nobody mentioned in either)
     const push = await sockets.owner.next((e) => e.type === "whisper" && e.whisper.id === made!.id);
     expect(push.whisper.detail).toEqual(wire!.detail);
     // Their frames once everything the run and the whisper pushed has reached them.
@@ -197,6 +198,49 @@ describe("a search in a group that finds nothing there", () => {
     // The model's whole call, and the reply in the group: nothing of it.
     expect(JSON.stringify(gateway.calls.at(-1))).not.toContain("CANARY-ew");
     expect(JSON.stringify((await api(app, w.mia, "GET", `/api/conversations/${w.g}/messages`)).json)).not.toContain("CANARY-ew");
+  });
+
+  it("a hit carries the mentions of its message, moved to where they are in the text she is shown; a range the cut took is left out; only its owner is given any of it", async () => {
+    const w = await world();
+    const mention = `@${w.mia.handle}`;
+    const sendWith = async (text: string, mentions: Array<{ id: string; start: number; length: number }>) => {
+      const sent = await api(app, w.ned, "POST", `/api/conversations/${w.b}/messages`, { text, clientTxn: `we${++txn}`, mentions });
+      expect(sent.status).toBe(201);
+      return sent.json.message.seq as number;
+    };
+    // A short one: the words, with a mention before them, on one line (the break is one space, so the range moves with it).
+    const shortText = `${mention}
+
+蓝鲸计划 在三楼`;
+    await sendWith(shortText, [{ id: w.mia.id, start: 0, length: mention.length }]);
+    // A long one: a mention far before the words (cut away), one near them (kept, moved), one far after them (cut away).
+    const before = `${"前".repeat(150)}`;
+    const long = `${mention} ${before}${mention} 蓝鲸计划改在周五 ${"后".repeat(300)} ${mention}`;
+    const near = long.indexOf(mention, 5);
+    await sendWith(long, [
+      { id: w.mia.id, start: 0, length: mention.length },
+      { id: w.mia.id, start: near, length: mention.length },
+      { id: w.mia.id, start: long.length - mention.length, length: mention.length },
+    ]);
+    const sockets = { owner: await connect(app, w.owner), ned: await connect(app, w.ned) };
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [made] = await whispersOf(w.owner.id, w.g);
+    const hits = (await wireOf(w.owner, w.g, made!.id))!.detail!.hits.filter((h) => h.who === "ned");
+    expect(hits).toHaveLength(2);
+    const byText = (needle: string) => hits.find((h) => h.text.includes(needle))!;
+    const one = byText("在三楼");
+    expect(one.text).toBe(`${mention} 蓝鲸计划 在三楼`);
+    expect(one.mentions).toEqual([{ id: w.mia.id, start: 0, length: mention.length }]);
+    const two = byText("改在周五");
+    expect(two.text.startsWith("…")).toBe(true); // (cut: the first mention is not in it)
+    expect(two.mentions).toHaveLength(1);
+    for (const m of two.mentions) expect(two.text.slice(m.start, m.start + m.length)).toBe(mention);
+    expect(two.mentions[0]!.start).toBeLessThan(two.text.indexOf("蓝鲸计划"));
+    // Only its owner is given a thing of it: not the others' frames, not their list, and not what the told reply is handed.
+    await sockets.ned.waitFor((e) => e.type === "message");
+    expect(sockets.ned.events.some((e) => e.type === "whisper")).toBe(false);
+    expect((await api(app, w.ned, "GET", `/api/conversations/${w.g}/whispers`)).json.whispers ?? []).toEqual([]);
+    expect(toldPassage([{ where: "x", who: "y", when: "2026-01-01 10:00", text: "hello", mentions: [{ id: w.mia.id, start: 0, length: 3 }] }])).not.toContain(w.mia.id);
   });
 
   it("a long hit: the place kept (`at`) is where the words are in the text as stored, and what she is shown is cut there — what looks like a citation before them is text, kept, and moves nothing", async () => {

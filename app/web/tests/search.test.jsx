@@ -312,6 +312,17 @@ describe("search inside a conversation", () => {
     expect(preview).not.toContain("@bo");
   });
 
+  it("r7: a hit is highlighted on the text as drawn: a query that matches only a handle (the service matched the stored text) highlights nothing and the hit is shown from its start", async () => {
+    const typed = "聚餐 @bo 来";
+    const searchConversation = vi.fn(async () => page([hit(150, typed, { mentions: [{ id: BO, start: 3, length: 3 }] })]));
+    await inChat({ searchConversation });
+    typeInChat("bo");
+    await elapse(300);
+    const row = document.querySelector(".search-hits .row-preview");
+    expect(row.textContent).toBe("聚餐 @阿波 来");
+    expect(row.querySelector("mark")).toBeNull();
+  });
+
   it("closing the search brings the list back where it was, or at the newest messages when it was there", async () => {
     await inChat({ searchConversation: vi.fn(async () => page([hit(50, "周末聚餐")])) });
     const list = tallList(2400);
