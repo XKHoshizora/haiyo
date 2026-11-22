@@ -15,6 +15,7 @@ import { useStore } from "../data/store.jsx";
 import { ChevronDown, Lock } from "../icons.js";
 import { Btn } from "../ui/primitives.jsx";
 import { drawnText } from "../ui/drawnText.js";
+import { knownByWire } from "../state/selectors.js";
 import { useDecision } from "./AgentChatBits.jsx";
 
 /** What an answered (or found_elsewhere: telling, told) whisper says. */
@@ -72,7 +73,8 @@ function rememberOpened(id, opened) {
 function Hit({ hit }) {
   const [open, setOpen] = useState(false);
   // (What a model found in a message: drawn as an Agent text is, without marks and bidi controls; the wire carries no mentions for it.)
-  const drawn = drawnText({ text: hit.text, mentions: [], fromAgent: true });
+  const { state } = useStore();
+  const drawn = drawnText({ text: hit.text, mentions: hit.mentions ?? [], fromAgent: true, known: knownByWire(state) });
   const long = [...drawn].length > HIT_FOLD_AT;
   return (
     <li className="whisper-hit">

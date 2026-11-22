@@ -3,6 +3,7 @@ import { cleanText } from "../agents/runtime/prompt.ts";
 import { DEFAULT_WHISPERS } from "../config.ts";
 import { lockConversation, visibleJoin } from "../conversations/store.ts";
 import { handleOf } from "../principals/store.ts";
+import type { Mention } from "../messages/model.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { weight } from "../metering/tokens.ts";
 
@@ -226,6 +227,8 @@ export interface HitRow {
   at: number;
   createdAt: Date;
   text: string | null;
+  /** Its mentions as stored (`Mention`: ranges of `text`), for `hitOf` to follow into the cut text. */
+  mentions: Mention[] | null;
   /** A file message's file name. */
   attachmentName: string | null;
   senderName: string;
@@ -244,13 +247,14 @@ export async function readableHits(q: Queryable, ids: readonly string[]): Promis
     at: number;
     created_at: Date;
     text: string | null;
+    mentions: Mention[] | null;
     attachment_name: string | null;
     sender_name: string;
     sender_handle: string;
     title: string | null;
     conversation_type: string;
   }>(
-    `select w.id as whisper_id, h.ord, (h.ref ->> 'at')::int as at, m.created_at, m.body ->> 'text' as text,
+    `select w.id as whisper_id, h.ord, (h.ref ->> 'at')::int as at, m.created_at, m.body ->> 'text' as text, m.mentions,
             case when m.kind = 'file' then m.body -> 'attachment' ->> 'name' end as attachment_name,
             sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, c.title, c.type as conversation_type
        from whispers w
@@ -267,6 +271,7 @@ export async function readableHits(q: Queryable, ids: readonly string[]): Promis
     at: r.at,
     createdAt: r.created_at,
     text: r.text,
+    mentions: r.mentions ?? null,
     attachmentName: r.attachment_name,
     senderName: r.sender_name,
     senderHandle: r.sender_handle,

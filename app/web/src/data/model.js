@@ -54,6 +54,7 @@
 // expired from then) and a told reply's run's `retryableUntil` (重试 is not offered from then).
 
 import { isMemoryLanguage } from "./memoryLanguages.js";
+import { mentionsIn } from "./mentions.js";
 
 /** How many of its newest messages `GET /api/sync` returns per conversation (service: SYNC_MESSAGES_PER_CONVERSATION). */
 export const SYNC_WINDOW = 30;
@@ -1093,7 +1094,8 @@ function hitsOf(w) {
   return hits
     .filter((h) => h && typeof h === "object" && HIT_KEYS.every((k) => typeof h[k] === "string"))
     .slice(0, WHISPER_HITS_MAX)
-    .map(({ where, who, when, text }) => ({ where, who, when, text }));
+    // (Its message's mentions that fit the text shown, ids as sent: drawn by the one drawn-text function.)
+    .map(({ where, who, when, text, mentions }) => ({ where, who, when, text, mentions: mentionsIn(text, mentions) }));
 }
 
 /** A moment the service sent (an ISO instant). */

@@ -1548,10 +1548,14 @@ keeps, for each of at most 5 hits (the newest first), the conversation and the m
 are in it — never the text, a title or a name — and which message of the group asked (the call the search answered).
 Whenever it is shown to you (the push, sync, catch-up, the list route, an answer) and when its told reply begins, each is
 read again **under your access then**: a hit you can no longer read (you left that group, say) is left out; with none left
-the whisper reads `expired`. You are sent `detail` `{"hits": [{"where", "who", "when", "text"}]}`, read so: `where` the
+the whisper reads `expired`. You are sent `detail` `{"hits": [{"where", "who", "when", "text", "mentions"}]}`, read so: `where` the
 group's title now (`某个群` without one) or `你和它的专属会话`, `who` the sender's name as a label shows it, `when`
 `YYYY-MM-DD HH:mm` in the site's time zone, `text` on one line around the words (cut at the place kept, in the text as
-stored), at most 200 characters. At most one a reply, and none while you have 3 `found_elsewhere` whispers in that group whose state is open or
+stored), at most 200 characters; `mentions` the mentions of that message (the same `{"id", "start", "length"}` as a
+message's `mentions`: ranges of this `text` in UTF-16 code units, ids of accounts, so a client draws each one's current display name)
+that lie whole inside the `text` you are shown — moved with the one-line folding, the cut and the ellipsis, a range the cut took
+left out — `[]` when none; given to you alone, with the hit, under the same access rule (a mention of an account you cannot see is
+only an id: show the name as typed). At most one a reply, and none while you have 3 `found_elsewhere` whispers in that group whose state is open or
 telling (a told one, or one with no hit left, takes no room); with the switch off the second query is not run at all.
 **Its state is derived, never stored**: it is `told` only because a posted message of a told reply of it exists (the
 message whose transaction id is that run's), `telling` while its latest told reply is queued or running, and otherwise
@@ -2605,8 +2609,11 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
   "text": "…",                         // the message; a file message's caption ("" when none); a notice's sentence
   "attachment": { "id": "…", "name": "报告.pdf", "size": 1234, "inline": false },   // file messages only
   "replyTo": { "seq": 40, "visible": true, "senderId": "…", "text": "<first 200 characters>",
-               "kind": "text" | "file", "attachmentName": "…" /* quoted file messages only */ },
-                                       // or { "seq": 7, "visible": false } when you cannot see the quoted message;
+               "kind": "text" | "file", "attachmentName": "…" /* quoted file messages only */,
+               "mentions": [{ "id": "…", "start": 0, "length": 7 }] /* the quoted message's mentions (as "mentions"
+               below) that still lie inside this preview "text"; absent when none — only with a visible quote */ },
+                                       // or { "seq": 7, "visible": false } when you cannot see the quoted message
+                                       // (then no text, no ids, nothing of it);
                                        // absent when not a reply. A quoted notice: kind "text", senderId null
   "system": { "event": "member_joined", "actorId": "…", "principalId": "…" },   // system notices only
   "mentions": [{ "id": "…", "start": 0, "length": 7 }],   // who its mentions mean, as decided when it was sent

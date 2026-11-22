@@ -135,9 +135,9 @@ export async function createGroupApi(creator, members, title) {
 }
 
 /** Sends a text message through the API (fast filler); returns the stored message. */
-export async function sendApi(person, conversationId, text) {
+export async function sendApi(person, conversationId, text, mentions) {
   const { message } = await ok(
-    await person.request.post(`/api/conversations/${conversationId}/messages`, { data: { clientTxn: randomUUID(), text } }),
+    await person.request.post(`/api/conversations/${conversationId}/messages`, { data: { clientTxn: randomUUID(), text, ...(mentions ? { mentions } : {}) } }),
     "send",
   );
   return message;

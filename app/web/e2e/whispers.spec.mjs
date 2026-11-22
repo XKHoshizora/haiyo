@@ -37,7 +37,7 @@ const TOOLS_OFF_TEXT = "这个模型不支持查东西，已改为普通聊天�
  * Dee said `hitText` (holding `word`, the search word) in a group that has a title of its own (`hTitle`): what is found
  * elsewhere when the Agent searches G for `word`. `canaries` are what only H's members may ever read. Pages are open on G.
  */
-async function elsewhereWorld(people) {
+async function elsewhereWorld(people, { mention = false } = {}) {
   const ann = await people.member("Ann", { open: false });
   const bo = await people.member("Bo", { open: false });
   const cy = await people.member("Cy", { open: false });
@@ -51,13 +51,17 @@ async function elsewhereWorld(people) {
   await addApi(ann, g.id, agent.id);
   await addApi(ann, h.id, agent.id);
   const word = hanTag(4);
-  const hitText = `周六的${word}聚会定在老地方，每人带一个菜 ${uniq(4)}`;
-  await sendApi(dee, h.id, hitText);
+  const base = `周六的${word}聚会定在老地方，每人带一个菜 ${uniq(4)}`;
+  // With `mention`: the message starts by mentioning Eve (a member there): the hit carries the range, and Ann's page draws her name.
+  const call = `@${eve.handle}`;
+  const hitText = mention ? `${call} ${base}` : base;
+  await sendApi(dee, h.id, hitText, mention ? [{ id: eve.id, start: 0, length: call.length }] : undefined);
   const traffic = recordTraffic(bo.context);
   for (const person of [ann, bo, cy]) person.page = await people.openApp(person);
   const annChat = await openChat(ann.page, g.title);
   const boChat = await openChat(bo.page, g.title);
-  return { ann, bo, cy, dee, agent, g, h, word, hitText, hTitle, annChat, boChat, traffic, canaries: [hTitle, dee.displayName, hitText] };
+  const drawnHit = mention ? hitText.replace(call, `@${eve.displayName}`) : hitText;
+  return { ann, bo, cy, dee, eve, agent, g, h, word, hitText, drawnHit, hTitle, annChat, boChat, traffic, canaries: [hTitle, dee.displayName, hitText] };
 }
 
 /** Bo's call on the Agent in G (the words he asks with are none of the search's: they are in no message of H). */
@@ -76,8 +80,8 @@ async function bothCaughtUp(world) {
 // --- 1. "not here, but elsewhere": the owner's, with what was found -------------------------------------------------------
 
 test("a group search that finds nothing, while the Agent has it elsewhere, leaves a whisper for its owner only: the bubble with what was found, the dot in the list; nothing of it for a member, in the page or in any frame", async ({ people }) => {
-  const world = await elsewhereWorld(people);
-  const { ann, bo, annChat, boChat, g, word, hitText, hTitle, dee, traffic, canaries } = world;
+  const world = await elsewhereWorld(people, { mention: true });
+  const { ann, bo, annChat, boChat, g, word, drawnHit, hitText, hTitle, dee, traffic, canaries } = world;
   const tag = uniq(4);
   const answer = `这个群里没有查到。${tag}`;
   await modelStub.callTools(searchFor(word));
@@ -98,7 +102,9 @@ test("a group search that finds nothing, while the Agent has it elsewhere, leave
   const hit = whisper.locator(".whisper-hit");
   await expect(hit).toHaveCount(1);
   await expect(hit.locator(".whisper-hit-meta")).toHaveText(new RegExp(`^${hTitle} · ${dee.displayName} · \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$`));
-  await expect(hit.locator(".whisper-hit-text")).toHaveText(hitText);
+  // The words as the bubble draws them: the mention of Eve is her name, not the handle typed (the wire carries the range).
+  await expect(hit.locator(".whisper-hit-text")).toHaveText(drawnHit);
+  expect(drawnHit).not.toBe(hitText);
   await expect(whisper.getByRole("button", { name: "告诉他们" })).toBeEnabled();
   await expect(whisper.getByRole("button", { name: "不用" })).toBeEnabled();
   await expect(whisperDot(ann.page, g.title)).toBeVisible();

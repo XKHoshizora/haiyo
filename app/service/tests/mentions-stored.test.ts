@@ -636,3 +636,50 @@ const latestRun = async (agentId: string, conv: string) =>
       [agentId, conv],
     )
   ).rows[0];
+
+describe("a quote carries the quoted message's mentions, under the preview's own visibility", () => {
+  const quoteOf = (message: object) => (message as { replyTo?: unknown }).replyTo as { seq: number; visible: boolean; text?: string; mentions?: Mention[] };
+  const replyTo = (who: Actor, conv: string, text: string, replyToSeq: number) =>
+    api(app, who, "POST", `/api/conversations/${conv}/messages`, { text, clientTxn: `ms${++txn}`, replyToSeq });
+
+  it("the preview has the ranges (ids of accounts) of the quoted message, to every member who may see it; none when it mentions nobody", async () => {
+    const [ann, bo, cy] = [await signUp(app, "quote_ann"), await signUp(app, "quote_bo"), await signUp(app, "quote_cy")];
+    const g = await group(app, ann, "引用群", [bo, cy]);
+    const typed = `@${bo.handle} 早`;
+    const said = await say(ann, g, typed, [{ id: bo.id, start: 0, length: `@${bo.handle}`.length }]);
+    const plain = await say(ann, g, "没有提到谁");
+    const reply = await replyTo(cy, g, "回它", said);
+    expect(quoteOf(reply.json.message)).toEqual({ seq: said, visible: true, senderId: ann.id, text: typed, kind: "text", mentions: [{ id: bo.id, start: 0, length: `@${bo.handle}`.length }] });
+    expect(quoteOf((await replyTo(cy, g, "回它", plain)).json.message).mentions).toBeUndefined();
+    // Every reader of the history gets the same preview, ranges included.
+    const seen = await read(bo, g, reply.json.message.seq);
+    expect(quoteOf(seen)).toEqual(quoteOf(reply.json.message));
+  });
+
+  it("a preview cut at 200 characters keeps only the ranges that still lie inside it", async () => {
+    const [ann, bo, extra] = [await signUp(app, "cut_ann"), await signUp(app, "cut_bo"), await signUp(app, "cut_cy")];
+    const g = await group(app, ann, "截断群", [bo, extra]);
+    const first = `@${bo.handle}`;
+    const text = `${first} ${"字".repeat(250)} ${first}`;
+    const said = await say(ann, g, text, [
+      { id: bo.id, start: 0, length: first.length },
+      { id: bo.id, start: text.length - first.length, length: first.length },
+    ]);
+    const quote = quoteOf((await replyTo(bo, g, "回", said)).json.message);
+    expect(Array.from(quote.text!).length).toBe(200);
+    expect(quote.mentions).toEqual([{ id: bo.id, start: 0, length: first.length }]); // (the second lies past the cut)
+  });
+
+  it("a late joiner gets no preview, so no ranges, of a quoted message from before they joined; an earlier member gets both; nothing is widened", async () => {
+    const [ann, bo, extra, late] = [await signUp(app, "late_ann"), await signUp(app, "late_bo"), await signUp(app, "late_cy"), await signUp(app, "late_dee")];
+    const g = await group(app, ann, "迟到群", [bo, extra]);
+    const said = await say(ann, g, `@${bo.handle} 早`, [{ id: bo.id, start: 0, length: `@${bo.handle}`.length }]);
+    await join(g, late.id);
+    const reply = await replyTo(bo, g, "回它", said); // (after they joined, quoting what was said before)
+    const seenBy = async (who: Actor) => quoteOf(await read(who, g, reply.json.message.seq));
+    expect(await seenBy(bo)).toMatchObject({ seq: said, visible: true, mentions: [{ id: bo.id, start: 0, length: `@${bo.handle}`.length }] });
+    const lateQuote = await seenBy(late);
+    expect(lateQuote).toEqual({ seq: said, visible: false }); // (no text, no ranges, no ids)
+    expect(JSON.stringify(lateQuote)).not.toContain(bo.id);
+  });
+});

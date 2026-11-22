@@ -66,6 +66,8 @@ function quoteView(replyTo, alias, proposalAt = () => false) {
     text: replyTo.text || ((replyTo.kind ?? "text") === "text" && proposalAt(replyTo.seq) ? PROPOSAL_ONLY : replyTo.text ?? ""),
     kind: replyTo.kind ?? "text",
     attachmentName: replyTo.attachmentName ?? null,
+    // The quoted message's mentions that lie inside the preview (the wire sends them, to whoever may see the quote), for the one drawn-text function.
+    mentions: mentionsIn(replyTo.text ?? "", replyTo.mentions).map((x) => ({ ...x, id: alias(x.id) })),
   };
 }
 
