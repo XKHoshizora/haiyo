@@ -635,10 +635,28 @@ describe("a malformed key", () => {
     expect(lines).toHaveLength(1);
     const line = JSON.parse(lines[0]!);
     expect(line.level).toBe(40);
-    expect(line).toMatchObject({ missing: [], malformed: ["APNS_KEY_P8"] });
+    // The Team and bundle ids are fine: the universal-links file is served.
+    expect(line).toMatchObject({ missing: [], malformed: ["APNS_KEY_P8"], links: "on" });
     expect(off.join("\n")).not.toContain("CANARYKEYMATERIAL");
     expect(plain.deps.apns).toBeNull();
     expect((await api(plain, null, "GET", "/api/health")).status).toBe(200);
+  });
+});
+
+describe("a malformed Team ID", () => {
+  const off: string[] = [];
+  const { app: plain } = useApp({
+    env: { APPLE_TEAM_ID: "not-a-team", APPLE_BUNDLE_ID: "org.haiyo.app", APNS_KEY_ID: "KEY1234567", APNS_KEY_P8: PEM },
+    logStream: { write: (l) => void off.push(l) },
+  });
+
+  test("the one WARN line says the universal links are off too, not only the pushes", async () => {
+    const lines = off.filter((l) => l.includes('"metric":"push_off"'));
+    expect(lines).toHaveLength(1);
+    const line = JSON.parse(lines[0]!);
+    expect(line).toMatchObject({ level: 40, malformed: ["APPLE_TEAM_ID"], links: "off" });
+    expect(line.msg).toMatch(/universal links/);
+    expect((await plain.inject({ method: "GET", url: "/.well-known/apple-app-site-association" })).statusCode).toBe(404);
   });
 });
 

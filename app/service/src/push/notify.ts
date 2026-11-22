@@ -95,6 +95,8 @@ export interface NotifierDeps {
   /** The push variables that are unset when some are set, and those set but malformed (config.ts `AppleConfig`): one WARN line at start names them. */
   missing: string[];
   malformed: string[];
+  /** Whether the universal-links file is served (`AppleConfig.app`): the same line says when it is not. */
+  links: boolean;
 }
 
 /** One push to make: a phone, and the conversation it is about (up to `newestSeq`, the batch's newest message there). */
@@ -174,10 +176,13 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   let closing: Promise<void> | null = null;
 
   if (apns === null && (deps.missing.length > 0 || deps.malformed.length > 0)) {
-    // Names only: never a value (the key is a secret). A malformed Team or bundle id also turns the universal-links file off.
+    // Names only: never a value (the key is a secret). Without both Team and bundle ids the universal-links file is off too,
+    // and the line says so: an operator who set up the links alone would otherwise read only "push off".
     log.warn(
-      { metric: "push_off", missing: deps.missing, malformed: deps.malformed },
-      "push notifications are off: these Apple variables are missing or malformed (a malformed one is ignored; fix it and restart)",
+      { metric: "push_off", missing: deps.missing, malformed: deps.malformed, links: deps.links ? "on" : "off" },
+      deps.links
+        ? "push notifications are off: these Apple variables are missing or malformed (a malformed one is ignored; fix it and restart)"
+        : "push notifications and universal links are off: these Apple variables are missing or malformed (a malformed one is ignored; fix it and restart)",
     );
   }
 

@@ -463,7 +463,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   // Pushes to phones (src/push/): every stored message, after commit, as the hub hears of it; the hub says whose session
   // has a socket and whether it answers. Closed before the hub and the database (hooks run last-in first-out): the stop
   // closes the sender first (its retry waits end at once), then waits a bounded time for what is under way.
-  const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed });
+  const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed, links: config.apple.app !== null });
   app.decorate("push", push);
   app.addHook("onClose", () => push.close());
 
