@@ -7,11 +7,13 @@ import {
   streamText,
   tool,
   type AssistantModelMessage,
+  type FilePart,
   type JSONSchema7,
   type JSONValue,
   type LanguageModel,
   type LanguageModelUsage,
   type ModelMessage,
+  type TextPart,
   type TextStreamPart,
   type ToolResultPart,
   type ToolSet,
@@ -36,6 +38,29 @@ export type Part =
   | { type: "text"; text: string }
   | { type: "image"; mime: string; data: Uint8Array }
   | { type: "file"; mime: "application/pdf"; name: string; data: Uint8Array };
+
+/**
+ * A tool call an earlier reply of this conversation made, returned in its history (README "Agents and runs", Earlier tool
+ * use in history): never one of this answer's rounds (those are `steps`). `id`: what pairs it with its result, 22 hex
+ * digits; on the wire it is in the protocol's style (`call_…`, `toolu_01…`: `replayWireId`). Only in an assistant turn.
+ */
+export interface ReplayCall {
+  type: "tool-call";
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+/** What stands for that call's result (its placeholder, JSON): only in a `tool` turn, right after its call's turn. */
+export interface ReplayResult {
+  type: "tool-result";
+  id: string;
+  name: string;
+  output: unknown;
+}
+
+/** One part of a turn: a user's or an assistant's (`Part`), an earlier call (assistant turns), its result (`tool` turns). */
+export type TurnPart = Part | ReplayCall | ReplayResult;
 
 /** A tool the model may call: its name, what it is for, and its input as a JSON Schema (an object's). */
 export interface ToolSpec {
@@ -84,7 +109,14 @@ export interface ModelCall {
    * no tools is never told it has some. Absent: `system` either way. Without tools it changes nothing.
    */
   systemWithoutTools?: string;
-  messages: Array<{ role: "user" | "assistant"; parts: Part[] }>;
+  /**
+   * The conversation, oldest first. An earlier reply's tool use may return in it (the replay: `ReplayCall` parts in an
+   * assistant turn, then a `tool` turn of their `ReplayResult`s, then the reply's text in the next assistant turn). The
+   * replay is sent in the protocol's own form only when the tools are sent and offer every tool it calls; otherwise it
+   * is lowered — its calls and results left out and the assistant turns they split joined again — which is exactly the
+   * request the same conversation made without a replay. A call with no replay is sent as it always was.
+   */
+  messages: Array<{ role: "user" | "assistant" | "tool"; parts: TurnPart[] }>;
   reasoning: ReasoningLevel;
   /** Sent as it is: the reply's limit and, at a level, its thinking allowance (src/models/resolve.ts `outputLimit`). */
   maxOutputTokens: number;
@@ -125,6 +157,12 @@ export type ModelEvent =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
   | { type: "tool_call"; call: ToolCall }
+  /**
+   * The upstream refused (400 or 422, before anything came back) a request that sent an earlier reply's tool use in its
+   * own form: it is asked once more with that replay lowered (`ModelCall.messages`), and that request gets every handling
+   * a call gets. Only counted (the worker's metric `replay_lowered`); nothing is remembered of it.
+   */
+  | { type: "replay_lowered" }
   | {
       type: "finish";
       usage: { inputTokens: number; outputTokens: number } | null;
@@ -443,31 +481,89 @@ function languageModel(call: ModelCall, fetch: typeof globalThis.fetch): Languag
   }
 }
 
+/** Whether the call's turns hold an earlier reply's tool use (a replay: `ReplayCall` / `ReplayResult` parts, a `tool` turn). */
+export const carriesReplay = (messages: ModelCall["messages"]): boolean =>
+  messages.some((m) => m.role === "tool" || m.parts.some((p) => p.type === "tool-call" || p.type === "tool-result"));
+
+/** Whether every tool an earlier reply's replayed call names is among the call's tools. */
+const offersReplayed = (call: ModelCall): boolean => {
+  const offered = new Set((call.tools ?? []).map((t) => t.name));
+  return call.messages.every((m) => m.parts.every((p) => (p.type !== "tool-call" && p.type !== "tool-result") || offered.has(p.name)));
+};
+
+/** A replayed call's id as the protocol writes its own (`ReplayCall.id`, 22 hex digits): `toolu_01…` on Anthropic, `call_…` elsewhere. */
+export const replayWireId = (protocol: Protocol, id: string): string => (protocol === "anthropic" ? `toolu_01${id}` : `call_${id}`);
+
+/** A text or attachment part of an assistant turn, as the protocols take it from the model's side: text only. */
+const assistantText = (p: Part): { type: "text"; text: string } => ({ type: "text", text: p.type === "text" ? p.text : p.type === "file" ? `[文件：${p.name}]` : "[图片]" });
+
+/** A tool's result as the SDK takes it: a string output as it is, anything else as JSON (the one form steps and replays share). */
+const resultPart = (toolCallId: string, toolName: string, output: unknown): ToolResultPart => ({
+  type: "tool-result",
+  toolCallId,
+  toolName,
+  output: typeof output === "string" ? { type: "text", value: output } : { type: "json", value: (output ?? null) as JSONValue },
+});
+
 /**
  * The call's turns as SDK messages. A user turn keeps every part: images as image files, PDFs as files with their
  * name. An assistant turn is text only (the protocols take no files from the model's side): a file in one is sent as
- * `[文件：{name}]`, an image as `[图片]`.
+ * `[文件：{name}]`, an image as `[图片]`. An earlier reply's tool use (`ModelCall.messages`): with `native` (the protocol of a
+ * request that sends the tools, which offer every tool it calls) its calls go in their assistant turn and each `tool`
+ * turn as the protocol's tool results, ids in the protocol's style (`replayWireId`) — what `stepMessages` builds for a
+ * round; without, it is lowered: calls and `tool` turns left out, an assistant turn left with nothing dropped, and an
+ * assistant turn after a `tool` turn joined to the one before it — the turns as they were before any replay. A call
+ * whose turns hold no replay is converted exactly as it always was.
  */
-function toModelMessages(messages: ModelCall["messages"]): ModelMessage[] {
-  return messages.map((m): ModelMessage => {
-    if (m.role === "assistant") {
-      return {
-        role: "assistant",
-        content: m.parts.map((p) => ({ type: "text" as const, text: p.type === "text" ? p.text : p.type === "file" ? `[文件：${p.name}]` : "[图片]" })),
-      };
-    }
-    return {
-      role: "user",
-      content: m.parts.map((p) =>
-        p.type === "text"
-          ? { type: "text" as const, text: p.text }
-          : p.type === "image"
-            ? { type: "file" as const, mediaType: p.mime, data: p.data }
-            : { type: "file" as const, mediaType: p.mime, data: p.data, filename: p.name },
-      ),
-    };
+function toModelMessages(messages: ModelCall["messages"], native: Protocol | null = null): ModelMessage[] {
+  const userTurn = (parts: TurnPart[]): ModelMessage => ({
+    role: "user",
+    content: parts.flatMap((p): Array<TextPart | FilePart> =>
+      p.type === "text"
+        ? [{ type: "text" as const, text: p.text }]
+        : p.type === "image"
+          ? [{ type: "file" as const, mediaType: p.mime, data: p.data }]
+          : p.type === "file"
+            ? [{ type: "file" as const, mediaType: p.mime, data: p.data, filename: p.name }]
+            : [],
+    ),
   });
+  if (!carriesReplay(messages)) {
+    return messages.map((m): ModelMessage => (m.role === "assistant" ? { role: "assistant", content: m.parts.flatMap((p) => (p.type === "tool-call" || p.type === "tool-result" ? [] : [assistantText(p)])) } : userTurn(m.parts)));
+  }
+  const out: ModelMessage[] = [];
+  /** Lowering: a `tool` turn was just left out, so the next assistant turn goes on the one before it. */
+  let joined = false;
+  for (const m of messages) {
+    if (m.role === "tool") {
+      if (native !== null) out.push({ role: "tool", content: m.parts.flatMap((p) => (p.type === "tool-result" ? [resultPart(replayWireId(native, p.id), p.name, p.output)] : [])) });
+      else joined = true;
+      continue;
+    }
+    if (m.role === "user") {
+      joined = false;
+      out.push(userTurn(m.parts));
+      continue;
+    }
+    const content: AssistantContent = m.parts.flatMap((p): AssistantContent =>
+      p.type === "tool-call"
+        ? native === null
+          ? []
+          : [{ type: "tool-call", toolCallId: replayWireId(native, p.id), toolName: p.name, input: p.input }]
+        : p.type === "tool-result"
+          ? []
+          : [assistantText(p)],
+    );
+    const last = out[out.length - 1];
+    if (native === null && joined && last?.role === "assistant" && Array.isArray(last.content)) last.content.push(...content);
+    else if (native !== null || content.length > 0 || !m.parts.some((p) => p.type === "tool-call")) out.push({ role: "assistant", content });
+    joined = false;
+  }
+  return out;
 }
+
+/** An SDK assistant message's parts (text and tool calls: all a replay or a conversation's turn holds). */
+type AssistantContent = Array<Extract<AssistantModelMessage["content"], unknown[]>[number]>;
 
 /** The tools as the SDK takes them: a description and an input schema each, and no `execute` (the caller runs them). */
 function toolSet(specs: ToolSpec[]): ToolSet {
@@ -484,21 +580,7 @@ const turnOf = (step: { assistant: unknown }): ModelMessage[] => step.assistant 
 function stepMessages(steps: NonNullable<ModelCall["steps"]>): ModelMessage[] {
   return steps.flatMap((step): ModelMessage[] => [
     ...turnOf(step),
-    ...(step.results.length === 0
-      ? []
-      : [
-          {
-            role: "tool" as const,
-            content: step.results.map(
-              (r): ToolResultPart => ({
-                type: "tool-result",
-                toolCallId: r.id,
-                toolName: r.name,
-                output: typeof r.output === "string" ? { type: "text", value: r.output } : { type: "json", value: (r.output ?? null) as JSONValue },
-              }),
-            ),
-          },
-        ]),
+    ...(step.results.length === 0 ? [] : [{ role: "tool" as const, content: step.results.map((r) => resultPart(r.id, r.name, r.output)) }]),
   ]);
 }
 
@@ -578,9 +660,10 @@ function chatFetch(
   tap: ChatReasoningTap,
   thinking: { type: "enabled" | "disabled" } | null,
   rounds: readonly ChatRound[],
+  replayed: ReadonlySet<string>,
 ): typeof globalThis.fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
-    const res = await fetch(input, withChatFields(init, thinking, rounds));
+    const res = await fetch(input, withChatFields(init, thinking, rounds, replayed));
     if (!res.ok || res.body === null) return res;
     return new Response(res.body.pipeThrough(tap.transform()), { status: res.status, statusText: res.statusText, headers: res.headers });
   }) as typeof globalThis.fetch;
@@ -588,13 +671,16 @@ function chatFetch(
 
 /**
  * `chatFetch`'s request: the thinking switch and the earlier rounds' reasoning added to its body, or as it was. The
- * body's assistant messages with `tool_calls` are the rounds, in order: the n-th gets the n-th round's reasoning when
- * there is some and its first call's id is that round's (ids alone may repeat from round to round).
+ * body's assistant messages with `tool_calls` are the rounds, in order — but those of an earlier reply returned in the
+ * history (their first call's id among `replayed`, the wire ids of the call's `ReplayCall`s), which are none of this
+ * answer's and read no reasoning: the n-th of the rest gets the n-th round's reasoning when there is some and its first
+ * call's id is that round's (ids alone may repeat from round to round).
  */
 function withChatFields(
   init: RequestInit | undefined,
   thinking: { type: "enabled" | "disabled" } | null,
   rounds: readonly ChatRound[],
+  replayed: ReadonlySet<string> = new Set(),
 ): RequestInit | undefined {
   if ((thinking === null && !rounds.some((r) => r.reasoning !== "")) || typeof init?.body !== "string") return init;
   const body = JSON.parse(init.body) as { messages?: unknown; thinking?: unknown };
@@ -603,6 +689,7 @@ function withChatFields(
   for (const message of Array.isArray(body.messages) ? (body.messages as Array<Record<string, unknown>>) : []) {
     const calls = message?.role === "assistant" && Array.isArray(message.tool_calls) ? (message.tool_calls as Array<{ id?: unknown }>) : [];
     if (calls.length === 0) continue;
+    if (typeof calls[0]?.id === "string" && replayed.has(calls[0].id)) continue;
     const round = rounds[n++];
     if (round === undefined || round.reasoning === "" || calls[0]?.id !== round.firstCall) continue;
     message.reasoning_content = round.reasoning;
@@ -617,8 +704,25 @@ function withChatFields(
 
 /** `attempt`'s events: its finish also says how many reasoning tokens the upstream reported (0: none). */
 type AttemptEvent =
-  | Exclude<ModelEvent, { type: "finish" }>
+  | Exclude<ModelEvent, { type: "finish" } | { type: "replay_lowered" }>
   | (Omit<Extract<ModelEvent, { type: "finish" }>, "toolsRefused"> & { reasoningTokens: number });
+
+/** Whether `err` is the upstream answering 400 or 422 (looking through causes): a request it will not take as it is. */
+function rejected(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let e: unknown = err; e != null && !seen.has(e); e = (e as { cause?: unknown }).cause) {
+    seen.add(e);
+    if (APICallError.isInstance(e)) return e.statusCode === 400 || e.statusCode === 422;
+  }
+  return false;
+}
+
+/**
+ * Whether a request of `call` that sends `sent` sends an earlier reply's tool use in the protocol's own form: it carries a
+ * replay, sends the tools, they offer every tool it calls, and it was not lowered already.
+ */
+const sendsReplay = (call: ModelCall, sent: readonly OptionalField[], lowered: boolean): boolean =>
+  !lowered && sent.includes("tools") && carriesReplay(call.messages) && offersReplayed(call);
 
 /**
  * The call as events: one attempt (`attempt`), and when the upstream refused an optional field it sent
@@ -628,6 +732,11 @@ type AttemptEvent =
  * them finishes `toolsRefused`. A model that stopped for length with no answer (no text that shows anything, no tool
  * call with an input), having reasoned — reasoning came, or the upstream reported reasoning tokens — ends
  * `thinking_exhausted`, with the usage it reported, instead of finishing.
+ *
+ * First of all, a request that sent an earlier reply's tool use in its own form (`sendsReplay`) and was answered 400 or
+ * 422 before anything came back is made once more with that replay lowered (`replay_lowered`, counted by the caller):
+ * that is the request the conversation makes with no replay, and it gets all of the above as any call does — its own
+ * refusal of a field included. Nothing is remembered of the first one, nor is any field taken for refused by it.
  */
 async function* streamCall(call: ModelCall, fetch: typeof globalThis.fetch, refusals: Refusals): AsyncGenerator<ModelEvent> {
   try {
@@ -637,14 +746,18 @@ async function* streamCall(call: ModelCall, fetch: typeof globalThis.fetch, refu
     const droppable = (field: OptionalField) => field !== "tools" || !laterRound(call);
     /** The field the first attempt was refused, left out of the retry. */
     let refused: OptionalField | undefined;
-    for (let retry = false; ; retry = true) {
+    /** The replay was lowered after the upstream refused the request carrying it. */
+    let lowered = false;
+    let retry = false;
+    for (;;) {
       const sent = optionalFields(call, left);
       const toolsRefused = offersTools(call) && !sent.includes("tools");
+      const native = sendsReplay(call, sent, lowered);
       let started = false;
       let answered = false;
       let thought = false;
       try {
-        for await (const event of attempt(call, fetch, left)) {
+        for await (const event of attempt(call, fetch, left, native)) {
           if (!started && refused !== undefined) refusals.add(call.upstreamId, refused);
           started = true;
           if (event.type === "finish") {
@@ -660,9 +773,15 @@ async function* streamCall(call: ModelCall, fetch: typeof globalThis.fetch, refu
         }
         return;
       } catch (err) {
+        if (native && !started && !call.signal.aborted && rejected(err)) {
+          lowered = true;
+          yield { type: "replay_lowered" };
+          continue;
+        }
         refused = started || retry || call.signal.aborted ? undefined : sent.find((field) => droppable(field) && refuses(err, field));
         if (refused === undefined) throw err;
         left.add(refused);
+        retry = true;
       }
     }
   } catch (err) {
@@ -679,9 +798,9 @@ async function* streamCall(call: ModelCall, fetch: typeof globalThis.fetch, refu
  * never becomes text. One round only (the SDK's default: one step): a tool call is reported (`tool_call`; its input
  * null when the SDK found it invalid — not JSON, or a tool the call did not offer) and never run; the finish names the
  * calls and carries the round's assistant turn (`assistantTurn`), which the SDK hands over (`onStepEnd`) before it
- * gives the finish.
+ * gives the finish. `native`: an earlier reply's tool use goes in the protocol's own form (`sendsReplay`); else lowered.
  */
-async function* attempt(call: ModelCall, fetch: typeof globalThis.fetch, left: ReadonlySet<OptionalField>): AsyncGenerator<AttemptEvent> {
+async function* attempt(call: ModelCall, fetch: typeof globalThis.fetch, left: ReadonlySet<OptionalField>, native = false): AsyncGenerator<AttemptEvent> {
   // Ends the upstream request however this iterator ends: finished, failed, stopped, or left early by its reader.
   const own = new AbortController();
   const tap = call.protocol === "openai_chat" ? new ChatReasoningTap() : null;
@@ -707,10 +826,12 @@ async function* attempt(call: ModelCall, fetch: typeof globalThis.fetch, left: R
   let responded: ModelMessage[] | undefined;
   let parts: AsyncIterator<StreamPart> | undefined;
   try {
+    // An earlier reply's calls, as the wire names them: none of this answer's rounds (`withChatFields`).
+    const replayed = new Set(native ? call.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool-call" ? [replayWireId(call.protocol, p.id)] : []))) : []);
     const result = streamText({
-      model: languageModel(call, tap ? chatFetch(fetch, tap, thinking, chatRounds(call.steps)) : fetch),
+      model: languageModel(call, tap ? chatFetch(fetch, tap, thinking, chatRounds(call.steps), replayed) : fetch),
       ...(system === "" ? {} : { instructions: system }),
-      messages: [...toModelMessages(call.messages), ...stepMessages(call.steps ?? [])],
+      messages: [...toModelMessages(call.messages, native && tools !== undefined ? call.protocol : null), ...stepMessages(call.steps ?? [])],
       // A choice only with tools, and `none` only: `auto` is what the SDK sends when none is given.
       ...(tools === undefined ? {} : { tools, ...(call.toolChoice === "none" ? { toolChoice: "none" as const } : {}) }),
       maxOutputTokens: call.maxOutputTokens,

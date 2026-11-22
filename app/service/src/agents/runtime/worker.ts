@@ -318,6 +318,12 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
           }
           // Acted on at the finish, which alone says whether the round was cut (a call offering no tools gets none).
           if (event.type === "tool_call") continue;
+          // The upstream refused the request carrying an earlier reply's tool use; it was made again with that lowered
+          // (gateway.ts `replay_lowered`). Counted only, by protocol: a broken builder shows as a rising count.
+          if (event.type === "replay_lowered") {
+            log.info({ metric: "replay_lowered", protocol: request.protocol }, "agent run: a request carrying earlier tool calls was refused; it was made again without them");
+            continue;
+          }
           if (event.delta !== "") spoke = true;
           say(event.type, event.delta);
           // The reply's first piece: its run records that it has produced something (once per reply, before more is read).

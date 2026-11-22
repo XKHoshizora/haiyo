@@ -235,7 +235,7 @@ const streaming = (body: string) => (_req: unknown, res: import("node:http").Ser
 function runs(events: ModelEvent[]): Array<[string, string]> {
   const out: Array<[string, string]> = [];
   for (const e of events) {
-    if (e.type === "finish" || e.type === "tool_call") continue;
+    if (e.type === "finish" || e.type === "tool_call" || e.type === "replay_lowered") continue;
     const last = out.at(-1);
     if (last && last[0] === e.type) last[1] += e.delta;
     else out.push([e.type, e.delta]);
