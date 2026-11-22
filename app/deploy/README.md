@@ -65,6 +65,8 @@ start-up with a message naming the variable. Values in the right column are for 
 | `HOST` | The address the server listens on (default `0.0.0.0`, every interface). | default |
 | `PORT` | Listening port. Image default `3000`. | what the platform routes to (often injected) |
 | `WEB_DIST` | Directory of the web build. Image default `/app/web`; leave it. Unset serves only the API. | `/app/web` |
+| `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID` | The iOS app at Apple: the Team ID (10 capitals and digits) and the bundle id (e.g. `org.haiyo.app`). Both set: `/.well-known/apple-app-site-association` is served (universal links), and they are the push token's issuer and topic. Unset: that path is a JSON 404. See `app/service/README.md`, Deployment, Universal links. | the owner's Team ID and the app's bundle id, once the app exists |
+| `APNS_KEY_ID`, `APNS_KEY_P8` | Pushes to the iOS app (APNs): the key's Key ID, and a **secret**, the `.p8` key file's text (paste it with its line breaks, or on one line with `\n`); never logged, never named as a site model key. With the two above, all four set: pushes are sent; any missing: none are, everything else works and one start-up line names what is missing. The owner sets these; nobody else sees the key. See `app/service/README.md`, Push notifications. | the owner's APNs key |
 | `CLIENT_IP_HEADER` | Header your proxy sets to the real client address, replacing any client value. Rate limits count per address; without it every request looks like the proxy. | `x-real-ip` |
 | `TRUST_PROXY` | Alternative to the above: the proxies' addresses/CIDRs whose `X-Forwarded-For` is read. Never `true` or a number (refused). | unset |
 | `REGISTRATION_MODE` | `invite` (an invite code is required) or `open`. | `invite` |
