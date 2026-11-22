@@ -12,12 +12,12 @@ import { useApp } from "./helpers/harness.ts";
  */
 
 const engine: WebEngine = { name: "fake", searchWeb: async () => ({ error: "no_results" }) };
-const { app } = useApp({ env: { ...SITE_ENV, TOOLS: JSON.stringify({ web: { enabled: true } }) }, webEngine: engine, agentWorker: false });
+const { app } = useApp({ env: { ...SITE_ENV, TOOLS: JSON.stringify({ web: { enabled: true, pointsMicroPerSearch: 770_350 } }) }, webEngine: engine, agentWorker: false });
 
 describe("while the site offers web search", () => {
-  it("GET /api/models says so", async () => {
+  it("GET /api/models says so, with about what one search costs (one decimal at most: 0.77035 points is 0.8)", async () => {
     const owner = await signUp(app, "routa");
-    expect((await api(app, owner, "GET", "/api/models")).json).toMatchObject({ webSearchAvailable: true });
+    expect((await api(app, owner, "GET", "/api/models")).json).toMatchObject({ webSearchAvailable: true, webSearchPoints: "0.8" });
   });
 
   it("an Agent's view carries its switch, on by default; create and edit set it", async () => {

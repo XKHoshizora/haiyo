@@ -62,8 +62,8 @@ import {
   type Usage,
 } from "./runtime/port.ts";
 import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, passageBudget, systemText, systemTokens, type PromptNotes, type SystemText, type ToolsPrompt, type WebPrompt } from "./runtime/prompt.ts";
-import { holdSearch as preHoldSearch, SearchRefused } from "./tools/web/hold.ts";
-import { WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
+import { holdSearch as preHoldSearch, SearchRefused, type HeldSearch } from "./tools/web/hold.ts";
+import { fuseLine, WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
 import {
   actOnTriggered,
   budgetReachedWith,
@@ -132,10 +132,10 @@ export interface AgentPortDeps {
  */
 export interface Toolbox {
   /**
-   * `where.web`: the run may have the web search (lane websearch: its model is a site model, it is its owner's own call —
-   * their own conversation, a retry, their own @ in a group; never someone else's, an unasked one or an Agent's relay —
-   * and its Agent's `webSearch` is on); the toolbox adds it only when the site offers it. `web` in the answer: what the
-   * system text says of it (prompt.ts `WebPrompt`); absent when the site offers none.
+   * `where.web`: the run may have the web search (its Agent's `webSearch` is on: in every lane — its owner's own
+   * conversation and call, someone else's call, a reply nobody asked for, an Agent's relay — and on every model, the
+   * product owner's rules, lane websearch2); the toolbox adds it only when the site offers it. `web` in the answer: what
+   * the system text says of it (prompt.ts `WebPrompt`); absent when the site offers none.
    */
   offer(
     run: RunTicket,
@@ -249,8 +249,6 @@ interface RunState {
   marked: boolean;
   /** Its owner asked it to stop while it ran (runs.ts `stopRun`). */
   stop_asked: boolean;
-  /** Whose message called for it: a person's, or an Agent's (`agent_runs.triggered_by`; the web search's offer reads it). */
-  triggered_by: "human" | "agent";
   /**
    * A reply `告诉他们` queued (`whisper_id`): it answers nobody's call — what it covers is merely the group's latest message
    * when it was queued, anyone's — so `begin` holds none of it to the block rule; the calls noted on it are its follow-up's,
@@ -269,7 +267,7 @@ interface RunState {
   progressed: boolean;
 }
 const RUN_STATE =
-  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, greets, retry_of, auto_attempt, progressed, " +
+  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, greets, retry_of, auto_attempt, progressed, " +
   "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at";
 
 /**
@@ -720,11 +718,12 @@ export class DbAgentPort implements AgentPort {
               passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare),
               planned,
             ).notes;
-      // What the web search's offer says of the reply (lane websearch): only a reply its owner called for themselves — in
-      // their own conversation, a retry, their own @ in a group (lane `own`, called by a person's message: an Agent's relay
-      // the owner is behind is not) — on a site model, of an Agent whose `webSearch` is on, may have it; the toolbox adds it
-      // only while the site offers it, and `web` (below) is what the system text says of it then.
-      const mayWeb = resolved.source === "site" && state.lane === "own" && state.triggered_by === "human" && agent.webSearch;
+      // What the web search's offer says of the reply (the product owner's rules, lane websearch2): a reply of an Agent
+      // whose `webSearch` is on may have it, in every lane and on every model (a provider model's searches are paid from
+      // its owner's points, tools/web/hold.ts); the toolbox adds it only while the site offers it, to a reply offered tools
+      // at all (below: never a greeting, a told reply, a model that cannot use them), and `web` is what its system text
+      // says of it then.
+      const mayWeb = agent.webSearch;
       let web: WebPrompt | undefined;
       // A run still proactive when it starts (its stored lane: a mention that took it over changed it) is told nobody called it.
       // The system text with the run's mark and, in a group, its roster of who is there with those who spoke: a group's
@@ -1019,21 +1018,22 @@ export class DbAgentPort implements AgentPort {
 
   /**
    * The web search's pre-hold (lane websearch; tools/web/hold.ts `holdSearch`), in one transaction under `lockRun` (the
-   * run's conversation row, its Agent's, its own), then today's counters and the account: null when the search is
-   * counted, its price held and recorded on the run — before the engine is called, so it stands whatever happens after —
-   * else why not, in plain words (the transaction rolled back, nothing counted). A run this process did not admit on a
-   * site model, or one no longer running, is refused.
+   * run's conversation row, its Agent's, its own), then the account and the site's money fuse: what the fuse held when the
+   * search is counted, its price held and recorded on the run — before the engine is called, so it stands whatever happens
+   * after — else why not, in plain words (the transaction rolled back, nothing counted). 80 % of the site's fuse crossed
+   * by it is said once it has committed (`fuseLine`). A run this process did not admit, or one no longer running, is refused.
    */
-  private async holdSearch(run: RunTicket): Promise<string | null> {
+  private async holdSearch(run: RunTicket): Promise<string | HeldSearch> {
     const money = this.flags.get(run.id)?.money;
-    if (!money || money.price === null) return WEB_NO_MONEY;
+    if (!money) return WEB_NO_MONEY;
     const { db, config } = this.deps;
     try {
-      await db.tx(async (t) => {
+      const held = await db.tx(async (t) => {
         const { agent, state } = await this.lockRun(t, run);
-        await preHoldSearch(t, config, { run, agent, lane: { lane: state.lane, coversSeq: Number(state.covers_seq ?? 0) }, reserveMicro: money.reserveMicro }, new Date());
+        return preHoldSearch(t, config, { run, agent, lane: { lane: state.lane, coversSeq: Number(state.covers_seq ?? 0) }, reserveMicro: money.reserveMicro }, new Date());
       });
-      return null;
+      if (held.at80) fuseLine(this.deps.log);
+      return held;
     } catch (err) {
       if (err instanceof SearchRefused) return err.why;
       if (err instanceof RunNotRunning) return WEB_UNAVAILABLE;
@@ -1055,7 +1055,7 @@ export class DbAgentPort implements AgentPort {
    * 3. else the hold raised to so far and the next call's most, past what is left if it must, also below zero — "final":
    *    a reply that has started is never refused for money (Task H); short of it, it only stops calling tools.
    * "stop" only for a run no longer running, or one this process did not begin. A hold is never lowered. A provider's model costs nothing: nothing is held, and the answer is "ok", or "final" once a
-   * budget of its lane is reached (its rounds and its context bound it otherwise, in the worker).
+   * budget of its lane is reached with the web searches it held (its rounds and its context bound it otherwise, in the worker).
    */
   async extend(run: RunTicket, spent: Usage | null, estimated: Estimated, nextInputTokens: number): Promise<"ok" | "final" | "stop"> {
     assertCount("extend: estimated.inputChars", estimated.inputChars);
@@ -1074,7 +1074,8 @@ export class DbAgentPort implements AgentPort {
         const row = (
           await t.query<{ charge_to: ChargeTo | null; hold: string; web: string }>("select charge_to, hold_micro::text as hold, web_micro::text as web from agent_runs where id = $1", [run.id])
         ).rows[0]!;
-        if (money.price === null || row.charge_to === null) return (await budgetReachedWith(t, lane, agent, 0n, config)) ? "final" : "ok";
+        // A provider's model costs nothing but the searches its tool held (tools/web/hold.ts): those count with its lane.
+        if (money.price === null || row.charge_to === null) return (await budgetReachedWith(t, lane, agent, BigInt(row.web), config)) ? "final" : "ok";
         const reported = spent !== null && isCount(spent.inputTokens) && isCount(spent.outputTokens);
         const cost = costMicro(money.price, reported ? spent.inputTokens : estimated.inputChars, reported ? spent.outputTokens : estimated.outputChars);
         const held = BigInt(row.hold);

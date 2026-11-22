@@ -33,7 +33,7 @@ import { createReviewer, realTimer, type Reviewer, type SetTimer } from "./memor
 import { createAgentPort, recoverRuns, startStaleRunSweep, sweepStaleRuns, type DbAgentPort } from "./agents/port-impl.ts";
 import { createElsewhere } from "./agents/tools/elsewhere.ts";
 import { createToolbox } from "./agents/tools/index.ts";
-import { deepseekEngine, type WebEngine } from "./agents/tools/web/engine.ts";
+import { deepseekEngine, exaEngine, type WebEngine } from "./agents/tools/web/engine.ts";
 import { sweepSearchDays } from "./agents/tools/web/hold.ts";
 import { decideProactive } from "./agents/proactive/decide.ts";
 import { createProactiveScheduler, type ProactiveScheduler } from "./agents/proactive/scheduler.ts";
@@ -232,7 +232,7 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
 }
 
 /**
- * The web search's engine for `config` (src/agents/tools/web/engine.ts): none while `TOOLS.web.enabled` is false (the
+ * The web search's engine for `config` (src/agents/tools/web/engine.ts; `TOOLS.web.engine`, Exa by default): none while `TOOLS.web.enabled` is false (the
  * default: nothing is logged); with it on but no key in the variable its `apiKeyEnv` names, none either, and one line at
  * start says so (the variable's name, never a value) — the search is simply not offered. The key is read once, here.
  */
@@ -247,7 +247,9 @@ export function webEngineOf(
     log.warn({ metric: "web_search_off", apiKeyEnv: web.apiKeyEnv }, "web search: TOOLS.web.enabled is on but its key variable is not set; it is not offered");
     return null;
   }
-  return deepseekEngine({ baseUrl: web.baseUrl, apiKey: apiKey.trim(), model: web.model, timeoutMs: web.timeoutMs, maxResults: web.maxResults, timeZone: config.siteTimezone, log });
+  const common = { baseUrl: web.baseUrl, apiKey: apiKey.trim(), timeoutMs: web.timeoutMs, maxResults: web.maxResults, log };
+  // `TOOLS.web.engine`: Exa's search (the default) or DeepSeek's.
+  return web.engine === "exa_search" ? exaEngine({ ...common, type: web.exaType }) : deepseekEngine({ ...common, model: web.model, timeZone: config.siteTimezone });
 }
 
 export function redactQuery(url: string): string {

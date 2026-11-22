@@ -10,12 +10,13 @@ import { cleanText, TOOL_MATERIAL } from "../../runtime/prompt.ts";
 import type { RunScope } from "../index.ts";
 import type { PlacedCite, RunRefs } from "../refs.ts";
 import type { EngineLog, WebEngine, WebResult, WebSearchError } from "./engine.ts";
+import { fuseMicroUsd, recordSiteCost, type HeldSearch } from "./hold.ts";
 import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
 
 /**
- * The web search tool, `search_web {query}` (lane websearch; README "Agents and runs", Web search): offered only to a run
- * on a site model, in its owner's own lane, of an Agent whose `webSearch` is on, while the site offers it (port-impl.ts
- * `begin`, index.ts `createToolbox`). A call runs, in this order, and stops at the first refusal — every refusal and
+ * The web search tool, `search_web {query}` (lane websearch; the product owner's rules, lane websearch2; README "Agents and
+ * runs", Web search): offered to every run offered tools, in every lane and on every model, of an Agent whose `webSearch`
+ * is on, while the site offers it (port-impl.ts `begin`, index.ts `createToolbox`). A call runs, in this order, and stops at the first refusal — every refusal and
  * failure an `{error}` in plain words, so it is no lookup and the model words it itself:
  * 1. the query cleaned and its length checked (2–120 characters);
  * 2. the structural guard (text.ts `guardQuery`): nothing the run was shown of its notes and hearsay, nothing of a group
@@ -23,7 +24,8 @@ import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
  * 3. one of the service's `maxAtOnce` engine places, or refused at once;
  * 4. the pre-hold (`RunScope.holdSearch`, port-impl.ts and hold.ts): counted and held in one transaction before anything
  *    leaves the service; the count and the charge stand whatever happens after;
- * 5. the engine (engine.ts), within its time, ended with the reply;
+ * 5. the engine (engine.ts), within its time, ended with the reply; what it says the call cost the site, when it says so,
+ *    replaces the estimate in the site's money fuse (hold.ts `recordSiteCost`);
  * 6. its results: every title and snippet read for numbers someone typed (`RunRefs.plant`) before any `w` number is
  *    minted, then as many as fit `TOOLS.resultMaxWeight`, each numbered (`〔w1〕`) — `{about, results:[{ref, title, date,
  *    snippet}]}`: no address and no site name for the model to copy.
@@ -35,7 +37,6 @@ export const SEARCH_WEB = "search_web";
 export const WEB_QUERY_LENGTH = "搜索词要 2 到 120 个字。";
 export const WEB_QUERY_PRIVATE = "这个搜索词里有不能发到外面的内容（比如笔记里的私事，或群里的人名）。只写要查的公开信息，换个说法再搜。";
 export const WEB_BUSY = "现在联网搜索的人太多了，过一会儿再试。";
-export const WEB_OWNER_DAY = "今天的联网搜索次数用完了。";
 export const WEB_SITE_DAY = "联网搜索今天暂时用不了了。";
 export const WEB_NO_MONEY = "这次回复的点数不够再联网搜索了。";
 export const WEB_UNAVAILABLE = "联网搜索暂时用不了。";
@@ -45,10 +46,13 @@ export const WEB_NO_RESULTS = "网上没搜到相关的结果。";
 
 const ENGINE_ERRORS: Readonly<Record<WebSearchError, string>> = {
   unavailable: WEB_UNAVAILABLE,
-  busy: WEB_BUSY,
   timeout: WEB_TIMEOUT,
   refused: WEB_REFUSED,
   no_results: WEB_NO_RESULTS,
+  // The site's key or account (out of credits): the operator's to mend, nothing the model can change by rewording.
+  engine_refused: WEB_UNAVAILABLE,
+  engine_busy: WEB_BUSY,
+  engine_failed: WEB_UNAVAILABLE,
 };
 
 export const webSpec: ToolSpec = {
@@ -69,7 +73,7 @@ export interface WebToolDeps {
   engine: WebEngine;
   /** The engine calls in progress (`TOOLS.web.maxAtOnce` for the whole service). */
   slots: Slots;
-  config: Pick<WebSearchConfig, "maxResults">;
+  config: Pick<WebSearchConfig, "maxResults" | "siteUsdPerDay">;
   resultMaxWeight: number;
   timeZone: string;
   db: Db;
@@ -131,6 +135,24 @@ async function guardReads(db: Db, scope: RunScope): Promise<{ ownerSaid: string 
   return { ownerSaid: said.rows[0]?.text ?? null, names: people.rows.flatMap((p) => [p.name, p.handle]) };
 }
 
+/**
+ * What the engine said the call cost the site (`actual`), in the site's money fuse in place of the estimate the pre-hold
+ * held (hold.ts `recordSiteCost`); 80 % of the day's fuse crossed by it said in a metric line. A failure to write it keeps the
+ * estimate (the fuse counts at least that) and says so with its code only.
+ */
+async function siteCost(deps: WebToolDeps, held: HeldSearch, actual: bigint | undefined): Promise<void> {
+  try {
+    if (await recordSiteCost(deps.db, held, actual, fuseMicroUsd(deps.config))) fuseLine(deps.log);
+  } catch (err) {
+    deps.log.warn({ metric: "web_site_cost_unrecorded", code: (err as { code?: string }).code }, "web search: the engine's cost could not be recorded; the estimate stands in the site's fuse");
+  }
+}
+
+/** The operator's metric line: the site's money for searches today has reached 80 % of its fuse (`TOOLS.web.siteUsdPerDay`). */
+export function fuseLine(log: Pick<EngineLog, "info">): void {
+  log.info({ metric: "web_site_fuse", share: 80 }, "web search: 80 % of the site's money for searches today is used");
+}
+
 /** Runs one `search_web` call for `scope`'s reply (see above). */
 export async function searchWebTool(deps: WebToolDeps, scope: RunScope, input: { query: string }, signal: AbortSignal): Promise<ToolOutcome> {
   const query = cleanText(input.query);
@@ -145,14 +167,17 @@ export async function searchWebTool(deps: WebToolDeps, scope: RunScope, input: {
   signal.throwIfAborted();
   if (deps.slots.take(scope.agentId) !== "taken") return { output: { error: WEB_BUSY } };
   let found: Awaited<ReturnType<WebEngine["searchWeb"]>>;
+  let held: HeldSearch;
   try {
     // Counted and held before anything leaves the service; refused, the engine is never called.
-    const refused = await scope.holdSearch();
-    if (refused !== null) return { output: { error: refused } };
+    const pre = await scope.holdSearch();
+    if (typeof pre === "string") return { output: { error: pre } };
+    held = pre;
     found = await deps.engine.searchWeb(query, { signal });
   } finally {
     deps.slots.release(scope.agentId);
   }
+  await siteCost(deps, held, found.costMicroUsd);
   if ("error" in found) return { output: { error: ENGINE_ERRORS[found.error] } };
   // Checked again here, whatever the adapter did (each rule is idempotent): an https address without credentials, each
   // once; the title and snippet cleaned; a date only from an age that parses. What is stored and shown is this.

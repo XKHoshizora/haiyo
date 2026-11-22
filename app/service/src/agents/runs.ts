@@ -989,7 +989,11 @@ export async function refusedAtAdmission(
  * - `proactive`: its proactive daily budget;
  * - in a group, a reply that covers messages after the group's latest from a person (one in an Agents' chain, counted
  *   toward the chain budget: `chargedSince`): the Agent's chain budget there.
- * A budget of null is none.
+ * A budget of null is none. `runningWebExcept` (the web search's pre-hold, its own run's id; tools/web/hold.ts): the
+ * daily budgets also count the web searches the Agent's other replies of the lane hold now (`runningWeb`) — fixed charges
+ * that stand whatever those replies become, read under the Agent's row the caller holds, which every pre-hold of the Agent
+ * takes, so two replies racing for a budget's last points are put in order. (The chain budget needs no such count: an
+ * Agent has one active run in a conversation, agent_runs_one_active_per_agent_conversation.)
  */
 export async function budgetReachedWith(
   t: Tx,
@@ -997,11 +1001,15 @@ export async function budgetReachedWith(
   agent: Pick<AgentRow, "id" | "conversationId" | "othersBudgetMicro" | "proactiveBudgetMicro" | "chainBudgetMicro">,
   extra: bigint,
   config: Pick<Config, "siteTimezone">,
+  opts: { runningWebExcept?: string } = {},
 ): Promise<boolean> {
   if (run.lane === "others" || run.lane === "proactive") {
     const budget = run.lane === "others" ? agent.othersBudgetMicro : agent.proactiveBudgetMicro;
-    const spent = (await spentTodayOf(t, [agent.id], siteToday(config))).get(agent.id)?.[run.lane] ?? 0n;
-    if (budget !== null && spent + extra >= budget) return true;
+    if (budget !== null) {
+      const spent = (await spentTodayOf(t, [agent.id], siteToday(config))).get(agent.id)?.[run.lane] ?? 0n;
+      const held = opts.runningWebExcept === undefined ? 0n : await runningWeb(t, agent.id, run.lane, opts.runningWebExcept);
+      if (spent + held + extra >= budget) return true;
+    }
   }
   if (run.conversationId === agent.conversationId) return false;
   const human = await latestHumanSeq(t, run.conversationId);
@@ -1051,6 +1059,15 @@ async function triggerInGroup(t: Tx, conversationId: string, message: StoredMess
   }
   await recordRefusedCalls(t, conversationId, message.seq, refused);
   return { ...(await reachAgents(t, conversationId, calls, message.seq, "human", config)), ...told };
+}
+
+/** What the web searches of Agent `agentId`'s replies in `lane` running now, `except` aside, hold (`agent_runs.web_micro`, not settled yet). */
+async function runningWeb(t: Tx, agentId: string, lane: BudgetedLane, except: string): Promise<bigint> {
+  const { rows } = await t.query<{ held: string }>(
+    "select coalesce(sum(web_micro), 0)::text as held from agent_runs where agent_id = $1 and lane = $2 and status = 'running' and id <> $3 and web_micro > 0",
+    [agentId, lane, except],
+  );
+  return BigInt(rows[0]!.held);
 }
 
 /** The seq of the group's latest message from a person (a notice is nobody's message), 0 when there is none. */

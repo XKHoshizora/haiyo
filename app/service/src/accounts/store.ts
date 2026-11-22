@@ -12,6 +12,15 @@ export function formatPoints(micro: bigint): string {
 }
 
 /**
+ * About `micro` (0 or more) in points, for a person to read a price by: rounded half up to one decimal at most, no
+ * trailing zero, and never "0" for a price above 0 (`770_350n` → `"0.8"`, `1_000_000n` → `"1"`, `40_000n` → `"0.1"`).
+ */
+export function aboutPoints(micro: bigint): string {
+  const tenths = micro <= 0n ? 0n : (micro + 50_000n) / 100_000n || 1n;
+  return tenths % 10n === 0n ? `${tenths / 10n}` : `${tenths / 10n}.${tenths % 10n}`;
+}
+
+/**
  * A decimal number of points (optional sign, at most 6 fraction digits, at most 12 integer digits) as exact
  * micro-points; `null` for anything else (no exponent, no spaces, no `1.` or `.5`).
  */
