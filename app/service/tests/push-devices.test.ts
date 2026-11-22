@@ -1,4 +1,6 @@
+import type { FastifyBaseLogger } from "fastify";
 import { describe, expect, test } from "vitest";
+import { changeSweep } from "../src/app.ts";
 import { api, cookieHeaderFrom, mailLink, signIn, signUp, type Actor } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
 
@@ -133,6 +135,20 @@ describe("a device belongs to its session", () => {
     const token = new URLSearchParams((await mailLink(app, a.email, "reset_password")).split("?")[1]).get("token")!;
     expect((await api(app, null, "POST", "/api/auth/reset-password", { newPassword: "a brand new password", token })).status).toBe(200);
     expect(await devices()).toEqual([]);
+  });
+
+  test("an expired session's phone is deleted by the periodic sweep (changeSweep), a live one's kept; the log has a count only", async () => {
+    const a = await signUp(app, "expired_phone");
+    const b = await signUp(app, "live_phone");
+    await api(app, a, "POST", "/api/push/devices", { token: TOKEN_A, env: "production" });
+    await api(app, b, "POST", "/api/push/devices", { token: TOKEN_B, env: "production" });
+    await db.query(`update "session" set "expiresAt" = now() - interval '1 second' where id = $1`, [await sessionOf(a)]);
+    const lines: Array<Record<string, unknown>> = [];
+    const log = { info: (o: Record<string, unknown>) => void lines.push(o), warn: (o: Record<string, unknown>) => void lines.push(o) } as unknown as FastifyBaseLogger;
+    await changeSweep(app.deps, app.deps.config, log, null);
+    expect((await devices()).map((r) => r.token)).toEqual([TOKEN_B]);
+    expect(lines.filter((l) => l.metric === "push_devices_expired")).toEqual([{ metric: "push_devices_expired", removed: 1 }]);
+    expect(JSON.stringify(lines)).not.toContain(TOKEN_A);
   });
 
   test("both references cascade: the session's end and the person's deletion take the row with them", async () => {

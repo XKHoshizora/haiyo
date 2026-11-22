@@ -38,6 +38,16 @@ export async function registerDevice(
   });
 }
 
+/**
+ * Deletes the phones of sessions that have expired (a session row goes only when its cookie is shown again, so an abandoned
+ * phone's token would otherwise stay for good; such a phone is never pushed to anyway). Run by the periodic sweep
+ * (app.ts `changeSweep`). Returns how many.
+ */
+export async function removeExpiredDevices(q: Queryable): Promise<number> {
+  const { rowCount } = await q.query(`delete from push_devices d using "session" s where s.id = d.session_id and s."expiresAt" <= now()`);
+  return rowCount ?? 0;
+}
+
 /** Unbinds the caller's session's phone (`DELETE /api/push/devices/current`); none is no error. */
 export async function removeSessionDevice(q: Queryable, sessionId: string): Promise<void> {
   await q.query("delete from push_devices where session_id = $1", [sessionId]);
