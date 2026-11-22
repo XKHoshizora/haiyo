@@ -2,7 +2,8 @@
   --field-w: 620px;
   --ink: #1d1b2e;
   --ink-2: #4a4763;
-  --ink-3: #77748f;
+  /* Muted text: 4.5:1 or more on every background it is drawn on, the page gradient's strongest stop and the purple tints included (tests/contrast.test.js). */
+  --ink-3: #585571;
   --line: rgba(120, 110, 180, 0.18);
   --line-strong: rgba(120, 110, 180, 0.32);
   --purple: #5b4fd6;
@@ -104,7 +105,7 @@ button:disabled { cursor: not-allowed; }
 .rail-icon { position: relative; display: grid; place-items: center; height: 30px; }
 .badge {
   position: absolute; top: -6px; right: -12px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px;
-  background: #e5484d; color: #fff; font-size: 12px; font-weight: 600; display: grid; place-items: center; line-height: 1;
+  background: #c62f35; color: #fff; font-size: 12px; font-weight: 600; display: grid; place-items: center; line-height: 1;
 }
 .badge.inline { position: static; flex: none; }
 
@@ -186,7 +187,7 @@ li:last-child > .row.slim { box-shadow: none; }
   font-size: 12.5px; font-weight: 500; white-space: nowrap; vertical-align: middle;
   background: var(--pending-bg); color: #3d2fb3; border: 1px solid rgba(91, 79, 214, 0.25);
 }
-.tag-solid { background: #8b7cf0; color: #fff; border-color: transparent; }
+.tag-solid { background: #6f5fe0; color: #fff; border-color: transparent; }
 .tag-human { background: rgba(255, 255, 255, 0.7); color: var(--ink-2); border-color: var(--line-strong); }
 .tag-ok { background: var(--ok-bg); color: var(--ok); border-color: rgba(31, 122, 77, 0.25); }
 .tag-warn { background: var(--warn-bg); color: var(--warn); border-color: rgba(168, 67, 28, 0.25); }
