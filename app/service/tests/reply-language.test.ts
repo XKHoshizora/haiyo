@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { detectLanguage } from "../src/agents/runtime/language.ts";
+import { MENTION } from "../src/agents/mentions.ts";
+import { detectLanguage, HANDLE_PATTERN_SOURCE } from "../src/agents/runtime/language.ts";
 import { groupSystemText, NO_NOTES, NO_TOOLS, REPLY_LANGUAGE, REPLY_LANGUAGE_FOR, systemText, toolsPassage } from "../src/agents/runtime/prompt.ts";
 import { estimateTokens } from "../src/metering/tokens.ts";
 
@@ -26,7 +27,13 @@ describe("detectLanguage — by script", () => {
     ["english short", "thanks a lot", "en"],
     ["english three letters", "yes", "en"],
     ["french with diacritics is not claimed as english", "Où est la gare ?", null],
-    ["english with a chinese name", "Please ask 小明 about the report tomorrow", "en"],
+    ["an english sentence with one chinese name is not claimed as english (any Han: null)", "Please ask 小明 about the report tomorrow", null],
+    ["chinese with english terms, 3 Han and 26 Latin", "帮我看 TypeScript satisfies operator", null],
+    ["chinese with english terms, a question", "这个 useEffect cleanup function 为啥不执行", null],
+    ["japanese kanji and english terms, no kana", "東京 release notes summary", null],
+    ["decomposed french (e + combining acute)", "Oú est la gare, je cherche", null],
+    ["decomposed vietnamese", "Tho̜i tiết hôm nay thế nào", null],
+    ["precomposed and decomposed e acute alike", "Let us meet at the café tomorrow", null],
     ["mixed: chinese with a product and a phrase", "帮我查一下 React 19 的 release notes", "zh"],
     ["mixed: chinese with one english word", "这个 bug 怎么修", "zh"],
     ["mixed: japanese with english", "React 19 の release notes を教えて", "ja"],
@@ -84,8 +91,8 @@ describe("detectLanguage — by script", () => {
     expect(detectLanguage("东京的人口是多少，请告诉我今年的数字ヮ")).toBe("ja");
   });
 
-  it("known limit: a Chinese message that is mostly English terms reads en", () => {
-    expect(detectLanguage("我想了解 Kubernetes deployment strategies")).toBe("en");
+  it("known limit: a Chinese message that is mostly English terms reads null (the abstract line), never en", () => {
+    expect(detectLanguage("我想了解 Kubernetes deployment strategies")).toBeNull();
   });
 
   it("is a function of the text alone (no state between calls)", () => {
@@ -100,6 +107,12 @@ const owner = { displayName: "主人甲" };
 const gAgent = { name: "小帮手", handle: "jia.helper", persona: "你说话简短。", bare: "helper" };
 const scene = { title: "读书会", agents: [], more: false, people: [], morePeople: false };
 const lines = { zh: REPLY_LANGUAGE_FOR.zh, ja: REPLY_LANGUAGE_FOR.ja, en: REPLY_LANGUAGE_FOR.en };
+
+describe("the handle pattern is the mention pattern", () => {
+  it("one definition: language.ts mirrors mentions.ts MENTION source for source", () => {
+    expect(HANDLE_PATTERN_SOURCE).toBe(MENTION.source);
+  });
+});
 
 describe("the concrete line in the system text", () => {
   it("names the language, in Chinese like the rest, and says the instructions' own language is no hint", () => {
