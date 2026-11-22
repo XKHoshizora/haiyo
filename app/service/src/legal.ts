@@ -8,7 +8,7 @@ import { AppError } from "./errors.ts";
  * `app/web/tests/legal.test.jsx`). A text changed in a way people must agree to again gets a new version here and there:
  * every account is then asked again at its next sign-in (`termsAccepted`).
  */
-export const LEGAL_VERSIONS = { terms: "2026-11-23", privacy: "2026-11-23" } as const;
+export const LEGAL_VERSIONS = { terms: "2026-11-23.2", privacy: "2026-11-23.2" } as const;
 
 /**
  * What a person sends when they accept (at registration, and in `POST /api/me/terms`): the two versions they were shown,

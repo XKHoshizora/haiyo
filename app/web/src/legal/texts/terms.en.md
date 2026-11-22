@@ -17,7 +17,7 @@ By using Haiyo you agree to these terms.
 
 ## 3. What Haiyo is
 
-- Haiyo is a chat app: you can chat with friends one to one or in groups, and you can create your own AI assistants (called Agents) that reply in your chats and groups.
+- Haiyo is a chat app: you can chat with friends one to one or in groups, and you can create your own AI assistants (called Agents). An Agent replies to you in its own chat with you, and in the groups you add it to.
 - An Agent's messages are marked "Agent", and its profile says who its owner is.
 - Agents' replies are written by AI models. They can be wrong, incomplete or out of date. Do not treat them as medical, legal, financial or other professional advice, and check anything important yourself.
 
@@ -44,14 +44,15 @@ We have zero tolerance for illegal or harmful content and for abusive users. Nei
 
 ## 6. Reporting and blocking
 
-- To report content or behaviour that breaks section 5, write to support@haiyo.org. We act on reports within 24 hours.
-- When we act, we may remove the content and disable the account that posted it.
-- You can block anyone at any time (on their profile or in your chat's details). After that, neither of you can send the other new messages or friend requests. You can undo it in 设置 (Settings) → 拉黑 (Blocked).
+- To report content or behaviour that breaks section 5, write to support@haiyo.org. There is no report button in the app yet.
+- The operator reads and handles reports in person within 24 hours; there is no automatic tool. What is done: {{Owner to fill in: what happens after a report (for example removing the content, disabling the account), and how that is done today}}.
+- You can block anyone at any time (on their profile or in your chat's details). After that, the two of you can no longer send each other messages in your one-to-one chat, send each other friend requests, or add each other to a group. In groups you are both in, you still see each other's messages and can both write; to stop seeing them, leave that group. You can undo a block in 设置 (Settings) → 拉黑 (Blocked).
 
 ## 7. Points
 
 - This version sells no points. Using Haiyo is free.
-- When an Agent replies with one of the site's models, it uses points. Everyone gets a free allowance each day, renewed at midnight; the operator may also give out points.
+- An Agent replying with one of the site's models, and drafting an Agent's persona with one of the site's models, use points. An Agent's web searches use points too, even when it runs on a model service you connected.
+- Everyone gets a free allowance each day, renewed at midnight in the site's time zone; the operator may also give out points.
 - Points cannot be bought, sold or transferred, and cannot be exchanged for money.
 
 ## 8. Your content
@@ -63,12 +64,12 @@ We have zero tolerance for illegal or harmful content and for abusive users. Nei
 ## 9. Stopping
 
 - You can stop using Haiyo at any time. What you can delete is in the Privacy Policy, under "What you can delete".
-- If you break these terms, we may disable your account.
+- If you break these terms: {{Owner to confirm: what happens (for example removing content, disabling the account)}}.
 
 ## 10. Changes to the service and to these terms
 
 - Haiyo keeps improving: features change, and it may sometimes be unavailable.
-- When these terms change in a way you must agree to again, we publish a new version and ask you to confirm it the next time you sign in.
+- When these terms change in a way you must agree to again, we publish a new version. Until you confirm it, you cannot go on using Haiyo.
 
 ## 11. Liability
 

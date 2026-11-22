@@ -2257,7 +2257,7 @@ cannot be opened, the model is off the provider's list or no longer on the site;
 
 **Terms** (`src/legal.ts`, migration `071_terms_and_demo.sql`, `tests/terms.test.ts`). The terms of service and the privacy
 policy are texts of the web app (`/terms`, `/privacy`, and the contact page `/contact`, all readable without signing in; the
-texts are files in `app/web/src/legal/texts/`). Each has a version (`LEGAL_VERSIONS`, a date; the web holds the same two
+texts are files in `app/web/src/legal/texts/`). Each has a version (`LEGAL_VERSIONS`, a date, with `.2`, `.3`… for a later version of the same day; the web holds the same two
 strings in `app/web/src/legal/versions.js`). A person accepts both, and declares they are 18 or older (self-declared: no
 date of birth is asked or kept), when they register (`POST /api/register`) and, when `termsAccepted` is false, at their next
 sign-in (`POST /api/me/terms`). Each acceptance is a row of `terms_acceptances`: the account, the two versions, when

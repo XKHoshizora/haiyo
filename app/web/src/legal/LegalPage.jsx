@@ -14,9 +14,9 @@ const TEXTS = import.meta.glob("./texts/*.md", { query: "?raw", import: "default
 
 /** What the page itself says around the text, in each language. */
 const CHROME = {
-  zh: { names: { terms: "服务条款", privacy: "隐私政策", contact: "联系我们" }, version: "版本", others: "其他页面", loading: "正在加载…", failed: "没能读取这一页，请刷新再试。" },
-  en: { names: { terms: "Terms of Service", privacy: "Privacy Policy", contact: "Contact" }, version: "Version", others: "Other pages", loading: "Loading…", failed: "This page could not be read. Please reload." },
-  ja: { names: { terms: "利用規約", privacy: "プライバシーポリシー", contact: "お問い合わせ" }, version: "バージョン", others: "ほかのページ", loading: "読み込み中…", failed: "このページを読み込めませんでした。再読み込みしてください。" },
+  zh: { names: { terms: "服务条款", privacy: "隐私政策", contact: "联系我们" }, version: "生效版本", others: "其他页面", loading: "正在加载…", failed: "没能读取这一页，请刷新再试。" },
+  en: { names: { terms: "Terms of Service", privacy: "Privacy Policy", contact: "Contact" }, version: "Version in effect", others: "Other pages", loading: "Loading…", failed: "This page could not be read. Please reload." },
+  ja: { names: { terms: "利用規約", privacy: "プライバシーポリシー", contact: "お問い合わせ" }, version: "適用バージョン", others: "ほかのページ", loading: "読み込み中…", failed: "このページを読み込めませんでした。再読み込みしてください。" },
 };
 const LANG_NAMES = { zh: "中文", en: "English", ja: "日本語" };
 const HTML_LANG = { zh: "zh-CN", en: "en", ja: "ja" };

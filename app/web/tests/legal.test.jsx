@@ -86,6 +86,12 @@ describe("the texts", () => {
     }
   });
 
+  it("the three languages of a document say the same, part for part: the same headings, paragraphs and list items in the same order", () => {
+    const shape = (doc, lang) =>
+      parseLegal(readFileSync(path.join(TEXTS, `${doc}.${lang}.md`), "utf8")).blocks.map((b) => (b.type === "ul" ? `ul${b.items.length}` : b.type)).join(" ");
+    for (const doc of DOCS) for (const lang of ["en", "ja"]) expect([doc, lang, shape(doc, lang)]).toEqual([doc, lang, shape(doc, "zh")]);
+  });
+
   it("parses headings, paragraphs, lists, bold, links, addresses and the owner's placeholders, and nothing else", () => {
     const parsed = parseLegal(
       [
@@ -202,7 +208,8 @@ describe("the public pages", () => {
     at("/privacy");
     mount(pending());
     await screen.findByRole("heading", { level: 1, name: "隐私政策" });
-    expect(document.body.textContent).toContain(`版本 ${LEGAL_VERSIONS.privacy}`);
+    // The version in effect (a text edited without a new version is still that version: the label says which one applies).
+    expect(document.body.textContent).toContain(`生效版本 ${LEGAL_VERSIONS.privacy}`);
     // (The title is there at once; the text comes with its file.)
     const mail = (await screen.findAllByRole("link", { name: "support@haiyo.org" }))[0];
     expect(mail.getAttribute("href")).toBe("mailto:support@haiyo.org");
@@ -215,7 +222,7 @@ describe("the public pages", () => {
     at("/contact");
     mount(pending());
     await screen.findByRole("heading", { level: 1, name: "联系我们" });
-    await screen.findByText(/24 小时内处理/);
+    await screen.findByText(/24 小时内查看和处理/);
     expect(document.body.textContent).not.toContain("版本");
   });
 
