@@ -136,7 +136,7 @@ or `deepseek_messages`), `baseUrl` (https; default by engine: `https://api.exa.a
 is refused unless `baseUrlProxy` is true, so a switch of engine never posts one vendor's key to the other), `apiKeyEnv`
 (the name of another variable holding the engine's key, default by engine — `WEB_SEARCH_API_KEY` for Exa,
 `WEB_SEARCH_DEEPSEEK_API_KEY` for DeepSeek —; with `enabled` on and that variable empty the search is not offered and one
-line at start says so, as with `siteUsdPerDay` 0), `exaType` (Exa's search type: `auto`, the
+line at start says so, as with a `siteUsdPerDay` below one search's `costMicroUsdPerSearch`, 0 among them), `exaType` (Exa's search type: `auto`, the
 default, `lite` or `fast`), `model` (DeepSeek's, default `deepseek-flash`), `pointsMicroPerSearch` (what one search
 costs the owner, fixed, in micro-points — the one value to retune when the engine changes; default by engine, a
 placeholder the product owner sets: 13 000 000 for Exa, its estimate of $0.013 at one micro-USD to 1 000 micro-points,

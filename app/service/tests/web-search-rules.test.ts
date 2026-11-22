@@ -849,7 +849,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     expect(await of(rb.runId)).toEqual({ c: "balance", n: 1 });
   });
 
-  it("a price of 0: a provider model's search runs (its source kept with no charge); a fuse of 0: web search is not offered at all (review M1)", async () => {
+  it("a price of 0: a provider model's search runs (its source kept with no charge); a fuse of 0, or of less than one search: web search is not offered at all (review M1, re-review N3)", async () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine, webConfig({ pointsMicroPerSearch: 0 }));
@@ -864,8 +864,13 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     process.env.WEB_SEARCH_API_KEY_ZERO_FUSE = "not-a-real-key";
     try {
       expect(webEngineOf(webConfig({ siteUsdPerDay: 0, apiKeyEnv: "WEB_SEARCH_API_KEY_ZERO_FUSE" }), log)).toBeNull();
-      expect(said).toEqual([JSON.stringify({ metric: "web_search_off", siteUsdPerDay: 0 })]);
-      expect(webEngineOf(webConfig({ siteUsdPerDay: 0.01, apiKeyEnv: "WEB_SEARCH_API_KEY_ZERO_FUSE" }), log)?.name).toBe("exa_search");
+      expect(said).toEqual([JSON.stringify({ metric: "web_search_off", siteMicroUsdPerDay: "0", costMicroUsdPerSearch: 13_000 })]);
+      // A fuse above 0 but below one search's estimate ($0.012 at $0.013) would refuse every search too (re-review N3).
+      expect(webEngineOf(webConfig({ siteUsdPerDay: 0.012, apiKeyEnv: "WEB_SEARCH_API_KEY_ZERO_FUSE" }), log)).toBeNull();
+      expect(said[1]).toBe(JSON.stringify({ metric: "web_search_off", siteMicroUsdPerDay: "12000", costMicroUsdPerSearch: 13_000 }));
+      // One search's worth is enough to be offered.
+      expect(webEngineOf(webConfig({ siteUsdPerDay: 0.013, apiKeyEnv: "WEB_SEARCH_API_KEY_ZERO_FUSE" }), log)?.name).toBe("exa_search");
+      expect(said).toHaveLength(2);
     } finally {
       delete process.env.WEB_SEARCH_API_KEY_ZERO_FUSE;
     }

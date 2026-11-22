@@ -34,7 +34,7 @@ import { createAgentPort, recoverRuns, startStaleRunSweep, sweepStaleRuns, type 
 import { createElsewhere } from "./agents/tools/elsewhere.ts";
 import { createToolbox } from "./agents/tools/index.ts";
 import { deepseekEngine, exaEngine, type WebEngine } from "./agents/tools/web/engine.ts";
-import { sweepSearchDays } from "./agents/tools/web/hold.ts";
+import { fuseMicroUsd, sweepSearchDays } from "./agents/tools/web/hold.ts";
 import { decideProactive } from "./agents/proactive/decide.ts";
 import { createProactiveScheduler, type ProactiveScheduler } from "./agents/proactive/scheduler.ts";
 import { actOnTriggered } from "./agents/runs.ts";
@@ -234,8 +234,8 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
 /**
  * The web search's engine for `config` (src/agents/tools/web/engine.ts; `TOOLS.web.engine`, Exa by default): none while `TOOLS.web.enabled` is false (the
  * default: nothing is logged); with it on but no key in the variable its `apiKeyEnv` names, none either, and one line at
- * start says so (the variable's name, never a value) — the search is simply not offered; nor with a fuse of 0
- * (`siteUsdPerDay`), which would refuse every search. The key is read once, here.
+ * start says so (the variable's name, never a value) — the search is simply not offered; nor with a fuse
+ * (`siteUsdPerDay`) below one search's estimate (`costMicroUsdPerSearch`; 0 among them), which would refuse every search. The key is read once, here.
  */
 export function webEngineOf(
   config: Config,
@@ -243,9 +243,14 @@ export function webEngineOf(
 ): WebEngine | null {
   const web = config.tools.web;
   if (!web.enabled) return null;
-  // A fuse of nothing would refuse every search: not offered at all, and said once (review M1).
-  if (web.siteUsdPerDay === 0) {
-    log.warn({ metric: "web_search_off", siteUsdPerDay: 0 }, "web search: TOOLS.web.siteUsdPerDay is 0, so every search would be refused; it is not offered");
+  // A fuse that cannot hold one search at its estimate — 0, or above 0 but below it — would refuse every search: not
+  // offered at all, and said once at start (review M1, re-review N3).
+  const fuse = fuseMicroUsd(web);
+  if (fuse < BigInt(web.costMicroUsdPerSearch)) {
+    log.warn(
+      { metric: "web_search_off", siteMicroUsdPerDay: fuse.toString(), costMicroUsdPerSearch: web.costMicroUsdPerSearch },
+      "web search: TOOLS.web.siteUsdPerDay is less than one search's estimate (costMicroUsdPerSearch), so every search would be refused; it is not offered",
+    );
     return null;
   }
   const apiKey = process.env[web.apiKeyEnv];
