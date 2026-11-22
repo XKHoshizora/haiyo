@@ -373,7 +373,7 @@ too — and holds the reply worker's loop until the truncate has ended; the hub'
   not exist.
 - **HEAD.** Every `GET` route also answers `HEAD` with the same status and headers and no body (Fastify
   runs the `GET` handler). `HEAD /api/attachments/:id` and `HEAD /api/principals/:id/avatar` are their own routes (below): they do not read the whole file.
-- **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) →
+- **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) → the terms accepted (403 `terms_required`) →
   rate limit (429) → the route's own rules. Registration counts its rate limit before checking the shape,
   and so do the sign-in, reset-request and verification-link limiters in front of Better Auth.
 
@@ -390,6 +390,7 @@ Every error body is `{"error": "<snake_case_code>"}`, sometimes with details nex
 | 401 | `unauthenticated` | No valid session (or a WebSocket ticket that is unknown, used or expired) |
 | 402 | `no_quota` | A site-model call cannot start: nothing is left to pay for it (see Metering). `reason` `free_and_balance` (a free-tier model: today's free allowance and the balance are both used up; `resetsAt`, the next midnight in `SITE_TIMEZONE`, ISO instant) or `balance` (a paid-tier model: no balance) |
 | 403 | `forbidden` | Cross-site request, or not allowed by the route's rule (e.g. only the creator renames) |
+| 403 | `terms_required` | Every route that needs a session, while the account has not accepted the terms and the privacy policy in force (Accounts and sessions, Terms); not `GET /api/me` and `POST /api/me/terms`, which the question needs. Nothing was done |
 | 403 | `cannot_send` | With `reason`: `blocked` or `not_friends` (a direct chat whose pair cannot write to each other), or `agent_deleted` (an Agent's conversation after the Agent was deleted: sending, uploading, starting a new topic) |
 | 403 | `agent_limit` | Creating an Agent with as many undeleted Agents as the account's tier allows |
 | 404 | `not_found` | Does not exist, or is not yours to see (identical answers) |
@@ -2231,12 +2232,20 @@ sign-in (`POST /api/me/terms`). Each acceptance is a row of `terms_acceptances`:
 acceptance of new versions is a row beside the earlier one. They go with the account (cascade). A change to a text that
 people must agree to again takes a new version in both files: every account is then asked again.
 
+Where it is enforced: registration is refused without it (400 / 409 above). After that, every route that needs a session
+answers 403 `terms_required` while the account has not accepted the versions in force (`requirePrincipal`, `src/session.ts`,
+reads it in the same query as the principal), the socket's ticket (`POST /api/ws-ticket`) included, so no socket opens
+either; only `GET /api/me` (which says `termsAccepted`) and `POST /api/me/terms` are let through, and signing out is Better
+Auth's own route. A new version comes with a new build, and the restart closes every socket: a client that reconnects or
+calls anything is told `terms_required`, and the web app then shows the question (also in a tab that was open). The pages
+themselves are the web app's (the site serves `index.html` for them): they need JavaScript.
+
 #### `POST /api/me/terms`
 
 *Session: required.* Body: `termsVersion`, `privacyVersion`, `adult` (as for `POST /api/register`). Records that the
 signed-in person accepts the documents in force (Terms, above); accepting them again changes nothing. → 200
 `{"termsAccepted": true}`. Errors: 409 `terms_outdated` (a version that is not the one in force), 400 `invalid_request`
-(`adult` not `true`, a field missing).
+(`adult` not `true`, a field missing). Limit: 10 per minute per person.
 
 ### Profiles and principals
 

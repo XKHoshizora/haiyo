@@ -1,8 +1,11 @@
-import { describe, expect, test } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "vitest";
+import { buildApp } from "../src/app.ts";
 import { createInvite, hashInviteCode } from "../src/auth/invites.ts";
 import { LEGAL_VERSIONS } from "../src/legal.ts";
 import { api, cookieHeaderFrom, mailLink, signIn, signUp } from "./helpers/actors.ts";
-import { useApp } from "./helpers/harness.ts";
+import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
+import { closeAllSockets, connect } from "./helpers/ws.ts";
 
 /**
  * The terms, the privacy policy and the 18+ declaration (README "Accounts and sessions", Terms; migration 071): the service
@@ -132,6 +135,20 @@ describe("an account asked again (GET /api/me termsAccepted, POST /api/me/terms)
     expect((await acceptances(a.id)).map((r) => r.terms)).toEqual(["2000-01-01", LEGAL_VERSIONS.terms]);
   });
 
+  test("the acceptance has a budget of its own: 10 a minute (times the scale) per person", async () => {
+    // (Rows cannot grow, `on conflict do nothing`; a budget like every other write.)
+    const a = await signUp(app, "budget");
+    // The same wiring with the real scale (the harness raises every limit); it shares the test pool.
+    const strict = await buildApp({ config: { ...app.deps.config, rateLimitScale: 1 }, db: app.deps.db }, { answerFloor: NO_ANSWER_FLOOR });
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 11; i++) statuses.push((await api(strict, a, "POST", "/api/me/terms", ACCEPTED)).status);
+      expect(statuses).toEqual([...Array(10).fill(200), 429]);
+    } finally {
+      await strict.close();
+    }
+  });
+
   test("the acceptance is refused without the 18+ declaration, with an old version, and without a session", async () => {
     const a = await signUp(app, "refused");
     await db.query("delete from terms_acceptances where principal_id = $1", [a.id]);
@@ -144,5 +161,71 @@ describe("an account asked again (GET /api/me termsAccepted, POST /api/me/terms)
     expect(await api(app, null, "POST", "/api/me/terms", ACCEPTED)).toEqual({ status: 401, json: { error: "unauthenticated" } });
     expect(await acceptances(a.id)).toEqual([]);
     expect((await api(app, a, "GET", "/api/me")).json.termsAccepted).toBe(false);
+  });
+});
+
+describe("the service refuses every signed-in call until the documents in force are accepted (403 terms_required)", () => {
+  afterEach(() => closeAllSockets());
+  const REQUIRED = { status: 403, json: { error: "terms_required" } };
+  /** An account whose acceptance is of an older version: as every account is the moment a new version is in force. */
+  async function behind(name: string) {
+    const a = await signUp(app, name);
+    await db.query("update terms_acceptances set terms_version = '2000-01-01' where principal_id = $1", [a.id]);
+    return a;
+  }
+
+  test("reads, writes and the socket's ticket are refused; GET /api/me and POST /api/me/terms are not; after accepting, all answer", async () => {
+    const a = await behind("behind");
+    const b = await signUp(app, "friend");
+    const calls: Array<[string, "GET" | "POST" | "PATCH" | "PUT", string, unknown?]> = [
+      ["sync", "GET", "/api/sync"],
+      ["social", "GET", "/api/social"],
+      ["agents", "GET", "/api/agents"],
+      ["providers", "GET", "/api/providers"],
+      ["usage", "GET", "/api/usage"],
+      ["socket ticket", "POST", "/api/ws-ticket"],
+      ["rename", "PATCH", "/api/me", { displayName: "Renamed" }],
+      ["friend request", "POST", "/api/friend-requests", { handle: b.handle }],
+      ["lookup", "GET", `/api/principals/lookup?handle=${b.handle}`],
+    ];
+    for (const [what, method, url, body] of calls) expect([what, await api(app, a, method, url, body)]).toEqual([what, REQUIRED]);
+    // Nothing was done: the name and the friend requests are as they were.
+    expect((await db.query("select display_name from principals where id = $1", [a.id])).rows[0]).toEqual({ display_name: "behind" });
+    expect(Number((await db.query<{ n: string }>("select count(*) n from friend_requests")).rows[0]!.n)).toBe(0);
+
+    // What the question itself needs.
+    expect((await api(app, a, "GET", "/api/me")).json).toMatchObject({ id: a.id, termsAccepted: false });
+    expect(await api(app, a, "POST", "/api/me/terms", ACCEPTED)).toEqual({ status: 200, json: { termsAccepted: true } });
+    for (const [what, method, url, body] of calls) expect([what, (await api(app, a, method, url, body)).status]).not.toEqual([what, 403]);
+  });
+
+  test("signing out needs no acceptance", async () => {
+    const a = await behind("leaving");
+    const out = await app.inject({ method: "POST", url: "/api/auth/sign-out", headers: { cookie: a.cookie } });
+    expect(out.statusCode).toBe(200);
+    expect((await api(app, a, "GET", "/api/me")).status).toBe(401);
+  });
+
+  test("a socket opened before a new version is in force cannot be opened again until the person accepts", async () => {
+    const a = await signUp(app, "socketed");
+    const socket = await connect(app, a);
+    // A new version comes with a new build: the restart closes every socket, and the client asks for a new ticket.
+    await db.query("update terms_acceptances set terms_version = '2000-01-01' where principal_id = $1", [a.id]);
+    socket.close();
+    await socket.closed;
+    expect(await api(app, a, "POST", "/api/ws-ticket")).toEqual(REQUIRED);
+    expect(await api(app, a, "GET", "/api/sync")).toEqual(REQUIRED);
+    expect((await api(app, a, "POST", "/api/me/terms", ACCEPTED)).status).toBe(200);
+    const again = await connect(app, a);
+    expect(again.isClosed).toBe(false);
+  });
+
+  test("only GET /api/me and POST /api/me/terms are let through without the acceptance (src/session.ts, nowhere else)", () => {
+    const files = (dir: string): string[] =>
+      readdirSync(new URL(dir, import.meta.url), { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? files(`${dir}${e.name}/`) : e.name.endsWith(".ts") ? [`${dir}${e.name}`] : [],
+      );
+    const exempt = files("../src/").flatMap((f) => [...readFileSync(new URL(f, import.meta.url), "utf8").matchAll(/requirePrincipal\(req, \{ beforeTerms: true \}\)/g)].map(() => f));
+    expect(exempt).toEqual(["../src/session.ts", "../src/session.ts"]);
   });
 });

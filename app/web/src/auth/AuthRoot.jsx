@@ -1,6 +1,6 @@
 import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import * as routes from "../api/routes.js";
-import { bumpSessionEpoch, setUnauthenticatedHandler } from "../api/http.js";
+import { bumpSessionEpoch, setTermsRequiredHandler, setUnauthenticatedHandler } from "../api/http.js";
 import { createDataLayer } from "../data/store.jsx";
 import { ChunkBoundary } from "../ui/ChunkBoundary.jsx";
 import { AcceptTerms, Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
@@ -71,6 +71,13 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     setUnauthenticatedHandler(() => end(true));
     return () => setUnauthenticatedHandler(null);
   }, [end]);
+
+  // The service refuses every signed-in request until the documents in force are accepted (403 terms_required): a tab that
+  // was open when a new version came in asks too. Its data layer stops until the question is answered.
+  useEffect(() => {
+    setTermsRequiredHandler(() => setSession((s) => (s.status === "in" ? { status: "terms", expired: false } : s)));
+    return () => setTermsRequiredHandler(null);
+  }, []);
 
   // A tab that only shows a public page (the terms, opened from Settings in a new tab) runs no data layer: no socket for it.
   const running = session.status === "in" && route.name !== "legal";

@@ -2,7 +2,7 @@
 import React from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { ApiError, request, setUnauthenticatedHandler } from "../src/api/http.js";
+import { ApiError, bumpSessionEpoch, request, setUnauthenticatedHandler } from "../src/api/http.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
 import { clearResetToken, takeReturn } from "../src/auth/router.js";
 import { LEGAL_VERSIONS } from "../src/legal/versions.js";
@@ -699,6 +699,42 @@ describe("session lifecycle", () => {
     expect(layers[0].stop).toHaveBeenCalledTimes(1);
     expect(place()).toBe("/signin");
     expect(screen.getByText(EXPIRED_NOTICE)).toBeTruthy();
+  });
+
+  it("a 403 terms_required from any request (a tab open when a new version came in) stops the app and asks; accepting brings it back", async () => {
+    const api = fakeApi({ acceptTerms: vi.fn(async () => ({ termsAccepted: true })) });
+    mount(api);
+    await screen.findByTestId("app");
+    at("/chat/00000000-0000-4000-8000-0000000000c3");
+    stubFetch(403, "terms_required");
+    await act(async () => {
+      await request("POST", "/api/ws-ticket").catch(() => {});
+    });
+    await screen.findByRole("heading", { name: "请确认条款" });
+    expect(screen.queryByTestId("app")).toBeNull();
+    expect(layers[0].stop).toHaveBeenCalledTimes(1);
+    // Still signed in, on the same page: nothing about an expired session.
+    expect(screen.queryByText(EXPIRED_NOTICE)).toBeNull();
+    expect(place()).toBe("/chat/00000000-0000-4000-8000-0000000000c3");
+    tickAcceptance();
+    submit("同意并继续");
+    await screen.findByTestId("app");
+    expect(api.acceptTerms).toHaveBeenCalledWith(ACCEPTANCE);
+    expect(layers[0].start).toHaveBeenCalledTimes(2);
+  });
+
+  it("a 403 terms_required of a session that has already ended is not a question", async () => {
+    mount(fakeApi());
+    await screen.findByTestId("app");
+    stubFetch(403, "terms_required");
+    let pending;
+    await act(async () => {
+      pending = request("GET", "/api/sync");
+      bumpSessionEpoch();
+      await pending.catch(() => {});
+    });
+    expect(screen.getByTestId("app")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "请确认条款" })).toBeNull();
   });
 
   it("a wrong password (401 from /api/auth/*) does not end anything", async () => {
