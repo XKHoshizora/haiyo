@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, screen, within } from "@testing-library/react"
 import { AG1, AG2, MODELS, P1, apiError, deferred, providerOf, syncOf } from "./fixtures.js";
 import { click, dialog, flush, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
 import { storedBaseUrl } from "../src/pages/Providers.jsx";
+import { draftKeys } from "../src/data/drafts.js";
 
 beforeEach(() => installBrowser());
 afterEach(() => {
@@ -1266,5 +1267,50 @@ describe("the add and edit forms are pages with addresses", () => {
     await flush();
     expect(toastText()).toBe("找不到这个模型供应商");
     expect(window.location.pathname).toBe("/settings/providers");
+  });
+
+  it("the page's own 取消 and 返回 forget what was typed, the key with it: 编辑 again starts from the stored provider", async () => {
+    await openProviders();
+    for (const leave of [{ name: "取消" }, { name: /返回/ }]) {
+      await click(inMain().getByRole("button", { name: /编辑/ }));
+      type("名称", "取消的名字");
+      fireEvent.change(keyBox(), { target: { value: "sk-cancelled-1234567890" } });
+      expect(draftKeys()).toContain(P1);
+      await click(inMain().getByRole("button", leave));
+      await stepHistory(() => {});
+      expect(draftKeys()).toEqual([]);
+      await click(inMain().getByRole("button", { name: /编辑/ }));
+      expect(inMain().getByLabelText("名称").value).not.toBe("取消的名字");
+      expect(keyBox().value).toBe("");
+      await click(inMain().getByRole("button", { name: "取消" }));
+      await stepHistory(() => {});
+    }
+  });
+
+  it("the browser's Back and Forward keep an edit's draft (that was the point); a save forgets it", async () => {
+    await openProviders();
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    type("名称", "改了一半");
+    await stepHistory(() => window.history.back());
+    expect(draftKeys()).toContain(P1);
+    await stepHistory(() => window.history.forward());
+    expect(inMain().getByLabelText("名称").value).toBe("改了一半");
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(draftKeys()).toEqual([]);
+  });
+
+  it("Forward into the form of a provider that was deleted meanwhile shows the list, once, and the entry is the list", async () => {
+    const app = await openProviders();
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    await stepHistory(() => window.history.back());
+    app.env.providers = [];
+    await act(async () => app.layer.actions.loadProviders());
+    await flush();
+    await stepHistory(() => window.history.forward());
+    await flush();
+    expect(window.location.pathname).toBe("/settings/providers");
+    const length = window.history.length;
+    await stepHistory(() => window.history.back());
+    expect(window.history.length).toBeLessThanOrEqual(length);
   });
 });

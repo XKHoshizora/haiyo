@@ -4,7 +4,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { ANN, D1, G1, deferred, direct, group, syncOf, wire } from "./fixtures.js";
+import { ANN, D1, G1, apiError, deferred, direct, group, syncOf, wire } from "./fixtures.js";
 import { flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
 import { COARSE_QUERY, PHONE_QUERY } from "../src/ui/pointer.js";
 import { AvatarDialog } from "../src/pages/AvatarDialog.jsx";
@@ -254,5 +254,20 @@ describe("the lists before the first sync has answered", () => {
     await act(async () => answer.resolve(syncOf([])));
     await flush();
     expect(document.querySelector(".list-col").textContent).toContain("还没有联系人");
+  });
+});
+
+describe("when the first sync fails", () => {
+  it("the lists say so, with a retry, instead of 正在读取… for ever", async () => {
+    await openApp({
+      sync: () => {
+        throw apiError(0, "network_error");
+      },
+    });
+    const list = () => document.querySelector(".list-col").textContent;
+    expect(list()).toContain("连不上服务，正在重试…");
+    expect(list()).not.toContain("正在读取…");
+    expect(list()).not.toContain("还没有会话");
+    expect(screen.getByRole("button", { name: "立即重试" })).toBeTruthy();
   });
 });

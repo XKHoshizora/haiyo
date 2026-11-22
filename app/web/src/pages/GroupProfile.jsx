@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { markReplace, useUp } from "../state/appHistory.js";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { groupErrorText } from "../data/errorTexts.js";
 import { groupTitle } from "../auth/validation.js";
@@ -96,8 +96,7 @@ function GroupSettings({ conv }) {
   const leave = async () => {
     const id = conv.id;
     setLeaving(false);
-    markReplace();
-    dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false } });
+    dispatch({ type: "nav", replace: true, patch: { convId: null, view: "chat", detailsOpen: false } });
     const res = await run("leave", () => actions.leaveGroup(id), (e) => groupErrorText("leave", e));
     if (res.ok) dispatch({ type: "toast", text: "已退出群聊" });
     else dispatch({ type: "nav/openConv", convId: id, patch: { view: "profile", profileTab: "settings" } });

@@ -7,7 +7,7 @@ export const PAGE_KEYS = ["section", "pane", "convId", "view", "contactId", "age
 /** Keys that are the state of a page, not a page: kept in the entry for Forward, never a new entry. */
 export const SOFT_KEYS = ["agentTab", "profileTab"];
 /** Keys that are neither: a one-off request or note that is not a place (a message to scroll to, a conversation waited for, a form's field to focus...). */
-export const TRANSIENT_KEYS = ["addFriend", "opening", "focus", "agentFocus", "agentNote", "providerCreated"];
+export const TRANSIENT_KEYS = ["addFriend", "opening", "focus", "agentFocus", "agentNote", "providerCreated", "navIntent"];
 /**
  * Every key of the navigation is a page key (an address says it), a soft key (state of a page, kept in its entry) or a transient one.
  * tests/app-history.test.jsx fails when the navigation has a key that is none of these: a new key that decides a page needs an address.

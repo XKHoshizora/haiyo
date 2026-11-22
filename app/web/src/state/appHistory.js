@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useStore } from "../data/store.jsx";
 import { forgetDrafts } from "../data/drafts.js";
+import { entity, isMyAgent } from "./selectors.js";
 import { SOFT_KEYS, addressOf, keyOf, navOfAddress, parentOf, sameAddress, sectionOfPath } from "./location.js";
 
 const CHANGED = "af-history";
@@ -26,11 +27,9 @@ const entry = ({ index, prev, address, nav, viewer = null }) => ({
 const softOf = (nav) => entry({ index: 0, prev: null, address: { path: "", overlay: null }, nav }).nav;
 const softSame = (a = {}, b = {}) => SOFT_KEYS.every((key) => (a[key] ?? null) === (b[key] ?? null));
 
-/** A `history.back()` this module asked for is on its way (the browser answers with a popstate a moment later): the page it leads to is shown at once, and nothing is written to the history for it. */
-let expecting = null;
+/** The viewer's own close went back and the popstate has not come yet: it is shown closed at once. */
 let viewerClosing = false;
 window.addEventListener("popstate", () => {
-  expecting = null;
   viewerClosing = false;
 });
 
@@ -40,8 +39,25 @@ const lastOf = { ...ROOTS };
 const remember = (address) => {
   lastOf[sectionOfPath(address.path)] = address.path;
 };
-/** The page keys of the last address of `section` (its list when it has not been left on a page). */
-export const lastPageOf = (section) => navOfAddress({ path: lastOf[section] ?? ROOTS[section], overlay: null });
+/** Whether the page the keys name still resolves in `state` (a conversation, a contact, an Agent or a provider that is gone does not). */
+function alive(state, page) {
+  if (page.convId && !state.convs[page.convId]) return false;
+  if (page.convId && page.view === "profile" && state.convs[page.convId].type !== "group") return false;
+  if (page.contactId && !entity(state, page.contactId)) return false;
+  if (page.agentId && page.agentView !== "create" && !isMyAgent(state, page.agentId)) return false;
+  if (page.providerId && page.providerId !== "new" && !state.providers?.[page.providerId]) return false;
+  return true;
+}
+/**
+ * The page keys of the last address of `section`, validated now: one that no longer resolves is forgotten and the section's list is
+ * the answer (a click must never push an address that is gone, nor leave an entry for one).
+ */
+export function lastPageOf(section, state) {
+  const page = navOfAddress({ path: lastOf[section] ?? ROOTS[section], overlay: null });
+  if (alive(state, page)) return page;
+  lastOf[section] = ROOTS[section];
+  return navOfAddress({ path: ROOTS[section], overlay: null });
+}
 /** Forgets where each section was (a different account signs in). */
 export const forgetSections = () => Object.assign(lastOf, ROOTS);
 
@@ -49,32 +65,28 @@ export const forgetSections = () => Object.assign(lastOf, ROOTS);
 const seen = new Map();
 const ownParentBelow = (st, parent) => st && st.index > 0 && st.prev === keyOf(parent) && (!seen.has(st.index - 1) || seen.get(st.index - 1) === keyOf(parent));
 
-let replaceNext = false;
-/** The next move of the navigation replaces the entry it leaves (a form that ends in what it made, a page that is gone). */
-export const markReplace = () => {
-  replaceNext = true;
-};
-
 /** Where this entry's page goes when a page's own button closes it: back when our own parent entry is below, else replaced by the parent. */
-export function goUp(dispatch) {
+export function goUp(dispatch, onlyAt) {
+  // (A close that runs after an await — a save — acts only if the person is still on the page that asked: else they would be moved from where they are now.)
+  if (typeof onlyAt === "string" && hereNow().path !== onlyAt) return;
   const st = read();
   const parent = parentOf(hereNow());
   if (ownParentBelow(st, parent)) {
-    expecting = parent;
     window.history.back();
-    dispatch({ type: "nav", patch: { ...navOfAddress(parent), ...(st.nav ?? {}) } });
+    // (The history is the browser's from here: the page it leads to is shown at once, and the move writes nothing.)
+    dispatch({ type: "nav", intent: "none", patch: { ...navOfAddress(parent), ...(st.nav ?? {}) } });
     return;
   }
   window.history.replaceState(entry({ index: st?.index ?? 0, prev: st?.prev ?? null, address: parent, nav: null }), "", parent.path);
   seen.set(st?.index ?? 0, keyOf(parent));
-  dispatch({ type: "nav", patch: navOfAddress(parent) });
+  dispatch({ type: "nav", intent: "none", patch: navOfAddress(parent) });
   notify();
 }
 
-/** `() => void`: a page's own back or close button. */
+/** `(onlyAt?) => void`: a page's own back or close button; `onlyAt`, the path of the page, makes it do nothing once the person is elsewhere. */
 export function useUp() {
   const { dispatch } = useStore();
-  return useCallback(() => goUp(dispatch), [dispatch]);
+  return useCallback((onlyAt) => goUp(dispatch, onlyAt), [dispatch]);
 }
 
 // ───────── the image viewer: a key on the conversation's entry, and one entry pushed with it
@@ -155,12 +167,8 @@ export function useAppHistory({ nav, dispatch }) {
   useEffect(() => {
     const next = addressOf(nav);
     remember(next);
-    // (The back asked for is in flight: the page it leads to is already shown, and writing it is the browser's.)
-    if (expecting) {
-      const mine = sameAddress(expecting, next);
-      expecting = null;
-      if (mine) return;
-    }
+    // The history was written by the move itself (a page's own close).
+    if (nav.navIntent === "none") return;
     if (cold.current) {
       if (!sameAddress(cold.current, next)) return;
       cold.current = null;
@@ -169,12 +177,11 @@ export function useAppHistory({ nav, dispatch }) {
     const here = hereNow();
     if (sameAddress(here, next)) {
       if (st && !softSame(st.nav, softOf(nav))) window.history.replaceState({ ...st, nav: softOf(nav) }, "", window.location.pathname);
-      replaceNext = false;
       return;
     }
     const index = st?.index ?? 0;
-    if (replaceNext) {
-      replaceNext = false;
+    // The intent is on the move (state/reducer.js): a page that is gone, or a form that ended in what it made, replaces the entry it leaves.
+    if (nav.navIntent === "replace") {
       window.history.replaceState(entry({ index, prev: st?.prev ?? null, address: next, nav }), "", next.path);
     } else {
       window.history.pushState(entry({ index: index + 1, prev: keyOf(here), address: next, nav }), "", next.path);

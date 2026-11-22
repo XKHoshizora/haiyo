@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
-import { convTitle, convSubtitle, isAgent, nameOf, publishBlock } from "../state/selectors.js";
+import { convTitle, convSubtitle, drawnTextOf, isAgent, nameOf, publishBlock } from "../state/selectors.js";
 import { ConvAvatar, Btn, IconBtn, Notice, Tag } from "../ui/primitives.jsx";
 import { AgentModelSwitch } from "./ModelPicker.jsx";
 import { MarkdownView, NEWEST_NEAR } from "../ui/markdownView.jsx";
@@ -250,7 +250,7 @@ export function ChatView({ conv }) {
       setAnnouncement("");
     } else if (seq > announced.current.seq) {
       announced.current.seq = seq;
-      setAnnouncement(`${nameOf(state, conv.agentId)}：${newestReply.text}`);
+      setAnnouncement(`${nameOf(state, conv.agentId)}：${drawnTextOf(state, newestReply)}`);
     }
   }, [conv.id, newestReply?.seq]);
 

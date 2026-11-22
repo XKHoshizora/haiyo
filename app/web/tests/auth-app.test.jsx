@@ -5,6 +5,7 @@ import { act, cleanup, configure, fireEvent, render, screen, waitFor } from "@te
 import { ApiError, request, setUnauthenticatedHandler } from "../src/api/http.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
 import { clearResetToken, takeReturn } from "../src/auth/router.js";
+import { draftKeys, peekDraft, saveDraft } from "../src/data/drafts.js";
 import { StoreProvider, emptyState } from "../src/data/store.jsx";
 import { SettingsMain } from "../src/pages/Settings.jsx";
 
@@ -451,6 +452,16 @@ describe("session lifecycle", () => {
     expect(layers[0].stop).toHaveBeenCalledTimes(1);
     expect(place()).toBe("/signin");
     expect(screen.queryByText(EXPIRED_NOTICE)).toBeNull();
+  });
+
+  it("sign-out forgets what was typed in a form (a provider's API key) at once: no draft, no reference, until the next shell", async () => {
+    saveDraft("new", { f: { name: "x" }, models: [], keyText: "sk-secret-1234567890" });
+    const api = fakeApi();
+    mount(api, () => <SignOutProbe />);
+    fireEvent.click(await screen.findByText("probe-sign-out"));
+    await screen.findByRole("button", { name: "登录" });
+    expect(draftKeys()).toEqual([]);
+    expect(peekDraft("new")).toBeNull();
   });
 
   it("a sign-out does not hand this account's page to whoever signs in next", async () => {

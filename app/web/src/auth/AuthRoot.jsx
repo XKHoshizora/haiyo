@@ -3,6 +3,7 @@ import * as routes from "../api/routes.js";
 import { bumpSessionEpoch, setUnauthenticatedHandler } from "../api/http.js";
 import { createDataLayer } from "../data/store.jsx";
 import { Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
+import { forgetDrafts } from "../data/drafts.js";
 import { captureResetToken, decide, navigate, parseRoute, rememberReturn, takeReturn, useLocation } from "./router.js";
 
 const SessionContext = createContext(null);
@@ -31,6 +32,7 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     // The service closes our socket with 4001 on a deliberate sign-out too; that is not an expiry.
     const wasExpired = expired && !signingOut.current;
     bumpSessionEpoch();
+    forgetDrafts(); // (What was typed in a form, an API key among it, does not outlive the session: gone at sign-out, not at the next shell.)
     setSession((s) => (s.status === "out" ? s : { status: "out", expired: wasExpired && s.status === "in" }));
   }, []);
 

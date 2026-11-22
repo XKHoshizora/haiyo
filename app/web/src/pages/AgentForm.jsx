@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
-import { markReplace, useUp } from "../state/appHistory.js";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { NAME_PART_PATTERN, agentName as agentNameProblem, appellation as appellationProblem, namePart as namePartProblem } from "../auth/validation.js";
@@ -93,13 +93,13 @@ export const othersBudgetSent = (f) =>
 const othersBudgetToSend = (f) => (f.groupMentions === "members" ? othersBudgetSent(f) : undefined);
 
 /** Opens an Agent's conversation, or waits for it to arrive when this client does not hold it yet. */
-export function openAgentChat(state, dispatch, actions, conversationId) {
+export function openAgentChat(state, dispatch, actions, conversationId, { replace = false } = {}) {
   if (!conversationId) {
     dispatch({ type: "toast", text: "会话还没有同步下来，请稍后在消息列表里查看" });
     return;
   }
   if (state.convs[conversationId]) {
-    dispatch({ type: "nav/openConv", convId: conversationId });
+    dispatch({ type: "nav/openConv", convId: conversationId, replace });
     return;
   }
   dispatch({ type: "nav", patch: { opening: { convId: conversationId } } });
@@ -426,20 +426,18 @@ export function AgentForm({ agent = null }) {
     if (!res.ok) return refused(res.error);
     const { created, avatarText } = res.value;
     if (!created?.id) {
-      markReplace();
-      dispatch({ type: "nav", patch: { agentView: "detail", agentId: null, pane: "list" } });
+      dispatch({ type: "nav", replace: true, patch: { agentView: "detail", agentId: null, pane: "list" } });
       return;
     }
     // (The form ends in what it made: its entry becomes the Agent's page or its chat, so Back does not return to an empty form.)
-    markReplace();
     const detail = { agentView: "detail", agentId: created.id, agentTab: "profile", pane: "main" };
     if (avatarText) {
       const text = `Agent 已创建，但头像没有上传成功：${avatarText}可以在「编辑」里重新上传。`;
-      dispatch({ type: "nav", patch: { ...detail, agentNote: { agentId: created.id, text } } });
+      dispatch({ type: "nav", replace: true, patch: { ...detail, agentNote: { agentId: created.id, text } } });
       return;
     }
-    dispatch({ type: "nav", patch: detail });
-    openAgentChat(state, dispatch, actions, created.conversationId);
+    dispatch({ type: "nav", replace: true, patch: detail });
+    openAgentChat(state, dispatch, actions, created.conversationId, { replace: true });
   };
 
   const save = async () => {
@@ -473,6 +471,7 @@ export function AgentForm({ agent = null }) {
       return;
     }
     setAvatarError("");
+    const formPath = window.location.pathname;
     const res = await run(
       "save",
       async () => {
@@ -489,8 +488,9 @@ export function AgentForm({ agent = null }) {
       setAvatarError(changes ? `其他修改已保存，但头像没有上传成功：${res.value}` : `头像没有上传成功：${res.value}`);
       return;
     }
-    // Saved: the form is closed like its own back button does (the Agent page is the entry below it), so no entry points back into the form just saved.
-    up();
+    // Saved: the form is closed like its own back button does (the Agent page is the entry below it), so no entry points back into the form just saved;
+    // only if the person is still on the form (they may have left while it saved).
+    up(formPath);
   };
 
   const submit = async (event) => {

@@ -8,3 +8,4 @@ export const saveDraft = (key, value) => void drafts.set(key, value);
 export const forgetDraft = (key) => void drafts.delete(key);
 /** Every draft goes (the session ended or another account signed in). */
 export const forgetDrafts = () => drafts.clear();
+export const draftKeys = () => [...drafts.keys()];

@@ -3,7 +3,7 @@ import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { MODEL_GONE } from "../data/errorTexts.js";
 import { formatPoints, pointsReached, proactiveLevelLabel } from "../data/viewmodel.js";
-import { Avatar, ConvAvatar, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
+import { Avatar, ConvAvatar, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
 import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "./AgentForm.jsx";
 import { levelLabel, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
@@ -134,7 +134,7 @@ export function AgentsList() {
             </button>
           </li>
         ))}
-        {agents.length === 0 && !state.loaded && <li className="rows-empty" role="status">正在读取…</li>}
+        {agents.length === 0 && !state.loaded && <LoadingRow />}
         {agents.length === 0 && state.loaded && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
       </ul>
     </>

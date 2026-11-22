@@ -16,7 +16,7 @@ import {
   requestWith,
   relationOf,
 } from "../state/social.js";
-import { Avatar, Tag, Btn, IconBtn, Modal, Notice, Reason, KV } from "../ui/primitives.jsx";
+import { Avatar, LoadingRow, Tag, Btn, IconBtn, Modal, Notice, Reason, KV } from "../ui/primitives.jsx";
 import { ListHeader, SearchBox } from "./ChatList.jsx";
 import { BlockModal } from "./BlockModal.jsx";
 import { AddFriendModal } from "./AddFriendModal.jsx";
@@ -119,7 +119,7 @@ export function ContactsList() {
           </li>
         ))}
         {requests.length === 0 && friends.length === 0 && agents.length === 0 && !state.loaded && !query.trim() && (
-          <li className="rows-empty" role="status">正在读取…</li>
+          <LoadingRow />
         )}
         {requests.length === 0 && friends.length === 0 && agents.length === 0 && (state.loaded || query.trim()) && (
           <li className="rows-empty">{nothing && !query.trim() ? "还没有联系人，点右上角的按钮添加好友" : "没有找到匹配的联系人"}</li>

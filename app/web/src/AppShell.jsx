@@ -4,7 +4,7 @@ import { entity, isMyAgent, unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark } from "./ui/primitives.jsx";
 import { usePhone } from "./ui/pointer.js";
-import { lastPageOf, markReplace, useAppHistory } from "./state/appHistory.js";
+import { lastPageOf, useAppHistory } from "./state/appHistory.js";
 import { MessageCircle, Users, Bot, Settings } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
@@ -29,7 +29,7 @@ function Rail({ phone }) {
   const { state, dispatch } = useStore();
   const unread = unreadTotal(state);
   // A section is the last address seen in it (its list if it was left on the list): a push like any other, and the address says what is drawn.
-  const go = (section) => dispatch({ type: "nav", patch: lastPageOf(section) });
+  const go = (section) => dispatch({ type: "nav", patch: lastPageOf(section, state) });
   return (
     <nav className="rail" aria-label="主导航">
       {!phone && <BrandMark size={38} />}
@@ -75,11 +75,16 @@ function useCloseWhenRemoved(state, dispatch) {
       shown.current = convId;
       return;
     }
-    if (!convId || !state.loaded || state.nav.opening) return;
+    // (No conversation is open: whatever was on screen before is not "removed" when a Back arrives at it later.)
+    if (!convId) {
+      shown.current = null;
+      return;
+    }
+    if (!state.loaded || state.nav.opening) return;
     const was = convId === shown.current;
     shown.current = null;
-    markReplace();
-    dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false, pane: "list" } });
+    // The page is gone: the entry it is in becomes its parent (once: a replace carried by the move itself).
+    dispatch({ type: "nav", replace: true, patch: { convId: null, view: "chat", detailsOpen: false, pane: "list" } });
     // (Removed: the notice says so. An address that never was mine: it cannot say "no longer".)
     if (section === "chat") dispatch({ type: "toast", text: was ? "你已不在该会话中" : "找不到这个会话，或你已不在其中" });
   }, [convId, present, section, state.loaded, state.nav.opening, dispatch]);
@@ -171,8 +176,7 @@ export default function Shell() {
     if (nav.section === "contacts" && entity(state, nav.contactId)) seenPages.current.add(key);
     if (nav.section === "agents" && isMyAgent(state, nav.agentId)) seenPages.current.add(key);
     const fall = (patch, text) => {
-      markReplace();
-      dispatch({ type: "nav", patch });
+      dispatch({ type: "nav", replace: true, patch });
       if (text) dispatch({ type: "toast", text });
     };
     if (nav.section === "chat" && nav.view === "profile" && conv && conv.type !== "group") fall({ view: "chat" }, null);

@@ -311,6 +311,13 @@ describe("a message's menu in a conversation", () => {
     expect(screen.getByText("回复 小安：@阿波 你们好", { exact: false })).toBeTruthy();
   });
 
+  it("n5: the 回复 button names its shortcut and does not claim to open a menu", async () => {
+    await openGroup();
+    const button = liOf("你们好").querySelector(".msg-action");
+    expect(button.getAttribute("aria-keyshortcuts")).toBe("Shift+F10");
+    expect(button.hasAttribute("aria-haspopup")).toBe(false);
+  });
+
   it("a file's menu is 下载 (its link), no 回复, no 复制", async () => {
     await openGroup();
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
