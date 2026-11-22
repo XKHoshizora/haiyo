@@ -618,13 +618,24 @@ const reasoningAllowanceSchema = z
   );
 
 /**
- * The variable `apiKeyEnv` that `what` (a site model, a judgement channel) reads its upstream key from: it is sent
- * upstream as a key, so never one of the service's own secrets (compared ignoring case, as Windows does for variable
- * names); and it must be set. Start-up refuses otherwise, naming `what` and the variable.
+ * The variable `apiKeyEnv` that `what` (a site model, a judgement channel, at `host`) reads its upstream key from: it is
+ * sent upstream as a key, so never one of the service's own secrets, and a web search engine's key only toward that
+ * engine's own host (compared ignoring case, as Windows does for variable names); and it must be set. Start-up refuses
+ * otherwise, naming `what` and the variable.
  */
-function checkKeyVariable(what: string, apiKeyEnv: string, env: Record<string, string | undefined>): void {
+function checkKeyVariable(what: string, apiKeyEnv: string, host: string, env: Record<string, string | undefined>): void {
   if ((SERVICE_SECRET_VARIABLES as readonly string[]).includes(apiKeyEnv.toUpperCase())) {
     throw new Error(`Invalid configuration: ${what} names ${apiKeyEnv} as its apiKeyEnv, one of the service's own variables; put its key in a variable of its own`);
+  }
+  // A web search engine's key goes to that engine's own host only (review M4): Exa is no model vendor, so its key never;
+  // DeepSeek's may be shared by a model on api.deepseek.com (one account, one key).
+  for (const [engine, by] of Object.entries(WEB_ENGINE_DEFAULTS)) {
+    const own = new URL(by.baseUrl).hostname;
+    if (apiKeyEnv.toUpperCase() === by.apiKeyEnv && host !== own) {
+      throw new Error(
+        `Invalid configuration: ${what} names ${apiKeyEnv}, the web search's ${engine} key; only a model on ${own} may share it — put this key in a variable of its own`,
+      );
+    }
   }
   const key = env[apiKeyEnv];
   if (key === undefined || key === "") throw new Error(`Invalid configuration: ${what} needs the environment variable ${apiKeyEnv} (its apiKeyEnv), which is not set`);
@@ -989,13 +1000,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       );
     }
   }
-  for (const m of e.SITE_MODELS) checkKeyVariable(`SITE_MODELS: model "${m.id}"`, m.apiKeyEnv, env);
+  for (const m of e.SITE_MODELS) checkKeyVariable(`SITE_MODELS: model "${m.id}"`, m.apiKeyEnv, new URL(m.baseUrl).hostname, env);
   for (const channel of e.JUDGE?.channels ?? []) {
     // A site model's address rule. The URL is the endpoint itself, not a base URL: kept exactly as given, its path too.
     if (/[?#]/.test(channel.url) || normaliseBaseUrl(channel.url, false) === null) {
       throw new Error("Invalid configuration: JUDGE: a channel has a url that is not an https URL (no credentials, query or fragment)");
     }
-    checkKeyVariable("JUDGE: a channel", channel.apiKeyEnv, env);
+    checkKeyVariable("JUDGE: a channel", channel.apiKeyEnv, new URL(channel.url).hostname, env);
   }
   const duplicate = e.SITE_MODELS.find((m, i) => e.SITE_MODELS.findIndex((o) => o.id === m.id) !== i);
   if (duplicate) throw new Error(`Invalid configuration: SITE_MODELS: id "${duplicate.id}" appears more than once`);

@@ -324,6 +324,9 @@ describe("a provider model's reply pays for its searches from the owner's points
     await setFreeUsed(owner.id, FREE_DAY - PRICE + 1n);
     await say(owner, own, "天气？");
     expect(await searchRun(worker, gateway, [QUERY], "查不了。")).toEqual([{ error: WEB_NO_MONEY }]);
+    // Owner-neutral, about this reply only: nothing of anyone's points the model could pass on to a group (review M3).
+    expect(WEB_NO_MONEY).toBe("这次回复不能再联网搜索了；之后的回复可以照常再试。");
+    expect(WEB_NO_MONEY).not.toMatch(/点|余额|额度|主人|钱/);
     expect(engine.queries).toEqual([]);
     // Counted by its bound: the owner's points (lane websearch2, fix round 1: which bound bites shows in the log).
     expect(metricLines("web_refused_no_points")).toHaveLength(1);
