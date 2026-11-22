@@ -3,10 +3,13 @@
 // Each shard i runs `npx vitest run --shard=i/n <args>` against database "<that checkout's test db>_s<i>" (created if absent).
 // --tag <letters> picks another set of databases ("<db>_<tag><i>", default tag "s") — use a new tag for a FRESH set
 // (nothing is ever dropped). At most 2 sharded runs happen at once on one machine; further runs wait for a slot.
+// The slots are folders in <OS temp dir>/haiyo-test-slots (HAIYO_TEST_SLOTS names another folder), shared by every
+// checkout on the machine.
 // Reads ./.env itself and prints nothing from it. Output of each shard goes to ./.shard-<i>.log; a summary is printed.
 import { readFileSync, createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 const args = process.argv.slice(2);
 let n = 3, tag = "s";
@@ -37,7 +40,7 @@ for (let i = 1; i <= n; i++) {
 await c.end();
 // One machine, many lanes: at most MAX_RUNS sharded runs at a time; the others wait their turn here.
 import { mkdirSync, rmdirSync, statSync } from "node:fs";
-const SLOTS = "C:/Users/hoshi/AppData/Local/Temp/claude/5ad5fe45d4b9222f/b5735b45-c8de-49ce-8ccf-3a594f06419a/scratchpad/test-slots", MAX_RUNS = 2;
+const SLOTS = process.env.HAIYO_TEST_SLOTS?.trim() || path.join(os.tmpdir(), "haiyo-test-slots"), MAX_RUNS = 2;
 mkdirSync(SLOTS, { recursive: true });
 let slot = null; const waitFrom = Date.now();
 while (!slot) {

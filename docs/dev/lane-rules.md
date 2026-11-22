@@ -43,4 +43,4 @@ Product: Haiyo (internal code name Agent Family). Service `app/service` (Fastify
 
 
 ## Running the service suite in shards
-From `app/service`: `node ../../scripts/dev/shard-tests.mjs -n 3 --tag <1-4 lowercase letters>` — splits the suite over several test databases derived from `TEST_DATABASE_URL` in `app/service/.env`; a new tag gives a fresh set (nothing is dropped). Use fresh databases whenever a migration changed.
+From `app/service`: `node ../../scripts/dev/shard-tests.mjs -n 3 --tag <1-4 lowercase letters>` — splits the suite over several test databases derived from `TEST_DATABASE_URL` in `app/service/.env`; a new tag gives a fresh set (nothing is dropped). Use fresh databases whenever a migration changed. At most two sharded runs share a machine at once; they take turns through slot folders in `<OS temp dir>/haiyo-test-slots` (Windows: `%TEMP%\haiyo-test-slots`, usually `C:\Users\<you>\AppData\Local\Temp\haiyo-test-slots`), or in the folder named by `HAIYO_TEST_SLOTS`.
