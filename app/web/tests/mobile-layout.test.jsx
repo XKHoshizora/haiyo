@@ -111,6 +111,34 @@ describe("on a phone", () => {
     expect(document.querySelector(".list-col").textContent).not.toContain("快捷入口");
   });
 
+  it("a header whose title grows after the chat is open (a rename, a late load) keeps the list at its newest message", async () => {
+    const observers = [];
+    globalThis.ResizeObserver = class {
+      constructor(callback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    try {
+      await openApp({ sync });
+      fireEvent.click(document.querySelector(".list-col .row"));
+      await flush();
+      const list = document.querySelector("ol.messages");
+      let top = 0;
+      Object.defineProperty(list, "scrollHeight", { configurable: true, value: 900 });
+      Object.defineProperty(list, "scrollTop", { configurable: true, get: () => top, set: (v) => (top = v) });
+      expect(observers.length).toBeGreaterThan(0);
+      top = 100; // (the header grew: the list shrank under a position that was the bottom)
+      act(() => observers.forEach((o) => o.callback([])));
+      expect(top).toBe(900);
+    } finally {
+      delete globalThis.ResizeObserver;
+    }
+  });
+
   it("is gone inside a conversation, and back with the list", async () => {
     await openApp({ sync });
     fireEvent.click(document.querySelector(".list-col .row"));

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as M from "../src/data/model.js";
-import { toView, formatAt, formatMessageAt, formatMessageTitle, expiryText, formatPoints, replyPoints, namesAgent, webAddress } from "../src/data/viewmodel.js";
+import { toView, formatAt, formatMessageAt, formatMessageTitle, expiryText, formatPoints, replyPoints, displayPoints, namesAgent, webAddress } from "../src/data/viewmodel.js";
 import { ME } from "../src/data/identities.js";
 import { convSubtitle, convTitle, entity, isAgent, lastPreview, myAgents, nameOf, ownerOf, publishBlock, senderName } from "../src/state/selectors.js";
 import {
@@ -673,6 +673,18 @@ describe("formatPoints (points are decimal strings: no float maths)", () => {
     expect(formatPoints("abc")).toBe("abc");
     expect(formatPoints(undefined)).toBe("");
     expect(formatPoints(null)).toBe("");
+  });
+});
+
+describe("displayPoints (a balance can be negative)", () => {
+  it("a negative amount keeps its sign; a small negative is shown as a negative step, never -<0.0001; a trace of nothing is 0", () => {
+    expect(displayPoints("-920.81075")).toBe("-920.81");
+    expect(displayPoints("-2.5")).toBe("-2.5");
+    expect(displayPoints("-0.00004")).toBe("-0.0001");
+    expect(displayPoints("-0.00001")).toBe("-0.0001");
+    expect(displayPoints("-0")).toBe("0");
+    expect(displayPoints("0.00001")).toBe("<0.0001");
+    expect(displayPoints("12")).toBe("12");
   });
 });
 

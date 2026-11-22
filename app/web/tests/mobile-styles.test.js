@@ -143,11 +143,10 @@ describe("the phone's bottom tab bar (the rail below 641px)", () => {
     expect(merged(rulesFor(rules, ":root", "(max-width: 860px)"))["--rail"]).toBe("60px");
   });
 
-  it("the shell keeps clear of the notch and the home indicator", () => {
+  it("the shell keeps clear of the notch and the sides (the home indicator's room is the containers': see C, I3 below)", () => {
     const app = plain(".app");
     expect(app.padding).toContain("env(safe-area-inset-top");
     expect(app.padding).toContain("env(safe-area-inset-left");
-    expect(plain('.app:not([data-tabbar="on"])')["padding-bottom"]).toContain("env(safe-area-inset-bottom");
   });
 });
 
@@ -215,11 +214,22 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
     expect(narrow(".list-col").background).toBe("none");
   });
 
-  it("C: the shell is not padded at the bottom (it clipped every page at a hard edge); the scroller's own bottom padding holds the home indicator's room", () => {
-    expect(rulesFor(rules, '.app:not([data-tabbar="on"])', NARROW).length).toBeGreaterThan(0);
-    expect(narrow('.app:not([data-tabbar="on"])')["padding-bottom"]).toBe("0");
-    for (const scroller of [".page-body", ".side-body"]) expect(narrow(scroller)["padding-bottom"], scroller).toContain("env(safe-area-inset-bottom)");
-    expect(narrow(".chat")["padding-bottom"]).toBe("env(safe-area-inset-bottom)");
+  it("C, I3: the home indicator's room is a property of the containers and the rail, at every width, exactly once — the shell itself is never padded at the bottom", () => {
+    // No rule pads the shell at the bottom, in any media (it clipped every page at a hard edge with a band under it).
+    for (const rule of rules.filter((r) => r.selectors.some((s) => /^\.app\b(?![-\w])/.test(s) && !s.includes(" ")))) {
+      expect(rule.decl["padding-bottom"], rule.selectors.join()).toBeUndefined();
+      if (rule.decl.padding) expect(rule.decl.padding.trim().split(/\s+/)[2], rule.selectors.join()).toBe("0");
+    }
+    // The scrolling containers and the rail carry it, with no width condition on any of these rules.
+    const plainDecl = (selector) => merged(rulesFor(rules, selector, null));
+    for (const scroller of [".page-body", ".side-body"]) expect(plainDecl(scroller)["padding-bottom"], scroller).toContain("env(safe-area-inset-bottom)");
+    expect(plainDecl(".chat")["padding-bottom"]).toBe("env(safe-area-inset-bottom)");
+    expect(plainDecl('.app:not([data-tabbar="on"]) .rows')["padding-bottom"]).toContain("env(safe-area-inset-bottom)");
+    expect(plainDecl(".rail")["padding-bottom"]).toContain("env(safe-area-inset-bottom)");
+    // Once: with the tab bar below the list, the bar has the room (the list does not add it again).
+    expect(rulesFor(rules, ".rows", null).every((r) => !String(r.decl["padding-bottom"] ?? "").includes("env("))).toBe(true);
+    // And the overlay panel sits on the screen's bottom edge: its own body carries the room.
+    expect(plainDecl(".side-col")["bottom"] ?? merged(rulesFor(rules, ".side-col", "(max-width: 1280px)")).bottom).toBe("0");
   });
 
   it("A: the sign-in page is a scrolling layer over the visible part, its card centred by auto margins (a tall card starts at the top, never centred out of reach)", () => {
@@ -229,6 +239,10 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
     expect(page["overflow-y"]).toBe("auto");
     expect(plain(".auth-card").margin).toBe("auto");
     expect(page["place-items"]).toBeUndefined();
+    // Any single child is centred (the loading line, the crash fallback), not only a card; several things go in one stack.
+    expect(plain(".auth-page > *").margin).toBe("auto");
+    expect(plain(".auth-stack")["flex-direction"]).toBe("column");
+    expect(plain(".auth-stack")["align-items"]).toBe("center");
   });
 
   it("A: the background covers whatever height is shown: a flat base colour under the gradient, no repeat", () => {
@@ -245,7 +259,7 @@ describe("M: the composite group avatar is one component whose layout depends on
       for (const selector of rule.selectors) {
         if (selector.startsWith(".group-avatar")) continue;
         // A descendant `.avatar` (with a space before it, not a child of the thing named) is any avatar below it — a composite's members too.
-        if (!/\s\.avatar(?![\w-])/.test(selector.replace(/\s*>\s*/g, ">"))) continue;
+        if (!/\s\.avatar(-[\w-]+)?(?![\w-])/.test(selector.replace(/\s*>\s*/g, ">"))) continue;
         for (const property of PLACING) expect(rule.decl[property], `${selector} { ${property} }`).toBeUndefined();
       }
     }

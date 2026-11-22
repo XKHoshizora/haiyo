@@ -249,7 +249,8 @@ export function replyPoints(value) {
 export function displayPoints(value) {
   if (typeof value === "string" && value.startsWith("-")) {
     const shown = replyPoints(value.slice(1));
-    return shown === "" ? formatPoints(value) : shown === "0" ? "0" : `-${shown}`;
+    // (A negative trace is the display's finest step with its sign — "<0.0001" with a minus in front reads as garbage.)
+    return shown === "" ? formatPoints(value) : shown === "0" ? "0" : shown === "<0.0001" ? "-0.0001" : `-${shown}`;
   }
   const shown = replyPoints(value);
   return shown === "" ? formatPoints(value) : shown;

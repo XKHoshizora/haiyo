@@ -3,6 +3,7 @@
 // What only an iPhone can show (the focus zoom itself, the safe areas, the edge swipe) is listed in the lane's report.
 import { test, expect } from "./support/fixtures.mjs";
 import { befriend, createGroupApi, sendApi, uniq } from "./support/accounts.mjs";
+import { agentApi } from "./support/tools.mjs";
 import { chatPane, createAgentUi, goTo, listRow, openChat, pickAvatarUi, sendFile } from "./support/app.mjs";
 import { png } from "./support/files.mjs";
 import { polishShot } from "./support/shots.mjs";
@@ -735,4 +736,95 @@ test("ui2 B, C, F, M: the tab pages sit on the page itself, the detail pages scr
     expect(m.y + m.height).toBeLessThanOrEqual(box.y + box.height + 2);
   }
   await polishShot(page, "ui2-group-header");
+});
+
+test("ui2 H, I, J, N, O: deleted Agents behind one entry and quiet in the list, the providers page and the usage page on a phone, a long group title on two lines", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: BIG_PHONE });
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const page = ann.page;
+  const names = [`小查${uniq(3)}`, `小搜${uniq(3)}`];
+  for (const name of names) await agentApi(ann, { name });
+  await page.reload();
+  // Delete one of them on its page.
+  await goTo(page, "Agent");
+  await page.getByRole("button").filter({ has: page.getByText(names[0], { exact: true }) }).first().click();
+  await page.getByRole("button", { name: "删除 Agent" }).click();
+  await page.getByRole("dialog", { name: `删除${names[0]}` }).getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByRole("status").filter({ hasText: `已删除${names[0]}` })).toBeVisible();
+  // H: the Agent tab lists the live one and one entry 已删除（1）; it opened itself on the deleted Agent's page and stays as it was left.
+  await page.getByRole("button", { name: /^返回/ }).first().click();
+  await expect(bar(page)).toBeVisible();
+  const entry = page.getByRole("button", { name: "已删除（1）" });
+  await expect(entry).toHaveAttribute("aria-expanded", "true");
+  await polishShot(page, "ui2-agents-expanded");
+  await entry.click();
+  await expect(entry).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".list-col .row-name", { hasText: names[0] })).toHaveCount(0);
+  await expect(page.locator(".list-col .row-name", { hasText: names[1] })).toHaveCount(1);
+  await polishShot(page, "ui2-agents-collapsed");
+  // O: the message list — the deleted Agent's conversation: one chip, muted, no badge.
+  await goTo(page, "消息");
+  const row = page.locator(".list-col .row", { hasText: names[0] });
+  await expect(row.locator(".tag")).toHaveText(["已删除"]);
+  await expect(row).toHaveClass(/quiet/);
+  await expect(row.locator(".badge")).toHaveCount(0);
+  await polishShot(page, "ui2-chats-quiet");
+  // I, J: the providers page and the usage page on a phone.
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /模型供应商/ }).click();
+  await expect(page.getByRole("heading", { name: "模型供应商", level: 2 })).toBeVisible();
+  const actions = await page.locator("section.page .head-actions").boundingBox();
+  const lead = await page.locator("section.page .profile-head p.muted").boundingBox();
+  expect(actions.y).toBeGreaterThanOrEqual(lead.y + lead.height - 1); // (the button has a row of its own, below the text)
+  expect(lead.width).toBeGreaterThan(402 * 0.8);
+  await polishShot(page, "ui2-providers");
+  await page.getByRole("button", { name: /^返回/ }).first().click();
+  await page.getByRole("button", { name: /用量与余额/ }).click();
+  await expect(page.getByRole("heading", { name: "用量与余额", level: 2 })).toBeVisible();
+  await expect(page.locator("section.page")).not.toContainText(/\d\.\d{3,}/); // (no long decimals anywhere)
+  await polishShot(page, "ui2-usage");
+  await page.getByRole("button", { name: /^返回/ }).first().click();
+  // N: a long group title takes two lines, the three controls stay.
+  const title = `一个名字特别特别长的三人群聊${uniq(3)}`;
+  await createGroupApi(ann, [bo, cy], title);
+  await page.reload();
+  const chat = await openChat(page, title);
+  const h2 = await chat.locator(".chat-head h2").boundingBox();
+  expect(h2.height).toBeGreaterThan(30); // (two lines)
+  for (const control of ["搜索本会话", "群资料", "会话资料"]) expect((await chat.getByRole("button", { name: control }).boundingBox()).height).toBeGreaterThanOrEqual(44);
+  await polishShot(page, "ui2-long-title-header");
+});
+
+test("ui2 I1: the loading line and the crash fallback are centred on the layer, at 402 and at desktop width", async ({ people }) => {
+  for (const [label, viewport, options] of [["402", { width: 402, height: 874 }, BIG_PHONE], ["desktop", { width: 1280, height: 800 }, {}]]) {
+    const ann = await people.member(`Ann${label}`, { contextOptions: { ...options, viewport }, open: false });
+    // Loading: the first answer of /api/me never comes.
+    const loading = await ann.context.newPage();
+    await loading.route("**/api/me", () => {});
+    await loading.goto("/");
+    const line = loading.getByRole("status").filter({ hasText: "正在加载" });
+    await expect(line).toBeVisible();
+    const box = await line.boundingBox();
+    expect(Math.abs(box.x + box.width / 2 - viewport.width / 2)).toBeLessThan(8);
+    expect(Math.abs(box.y + box.height / 2 - viewport.height / 2)).toBeLessThan(40);
+    await polishShot(loading, `ui2-loading-${label}`);
+    await loading.close();
+    // The crash fallback: the shell's chunk cannot be fetched (twice: the page may reload itself once for a stale chunk).
+    const broken = await ann.context.newPage();
+    await broken.addInitScript(() => sessionStorage.setItem("stale-chunk-reload", String(Date.now())));
+    await broken.route("**/assets/AppShell-*.js", (route) => route.abort());
+    await broken.goto("/");
+    const alert = broken.getByRole("alert").filter({ hasText: /请刷新/ });
+    await expect(alert).toBeVisible();
+    const stack = await broken.locator(".auth-stack").boundingBox();
+    expect(Math.abs(stack.x + stack.width / 2 - viewport.width / 2)).toBeLessThan(8);
+    expect(Math.abs(stack.y + stack.height / 2 - viewport.height / 2)).toBeLessThan(40);
+    // The message above the button, not beside it.
+    expect((await broken.getByRole("button", { name: "刷新页面" }).boundingBox()).y).toBeGreaterThan((await alert.boundingBox()).y);
+    await polishShot(broken, `ui2-crash-${label}`);
+    await broken.close();
+  }
 });

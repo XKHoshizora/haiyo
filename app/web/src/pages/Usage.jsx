@@ -86,7 +86,7 @@ function ReplyPointsSwitch() {
 
 /**
  * Settings › 用量与余额: today's free allowance and when it resets, the balance, the tier and the number of Agents,
- * and the last 7 days per Agent and model. Points are shown as the service gives them (`formatPoints`, no arithmetic).
+ * and the last 7 days per Agent and model. Points are shown at the one display precision (`displayPoints`, data/viewmodel.js: no float arithmetic, values compared on the raw strings).
  * Below them, whether my Agents' replies show their points (`ReplyPointsSwitch`), whether or not the usage was read.
  * `back`: the settings back button (to the settings list on a phone).
  */

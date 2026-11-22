@@ -298,6 +298,18 @@ export function ChatView({ conv }) {
     lastTop.current = list.scrollTop;
   };
 
+  // Whatever changes the list's own height — the header's title growing to a second line after the chat is open (a rename, a late load), the
+  // search bar — keeps a list that was at the newest message there.
+  const keepRef = useRef(keepNewestInView);
+  keepRef.current = keepNewestInView;
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return undefined;
+    const watcher = new ResizeObserver(() => keepRef.current());
+    watcher.observe(list);
+    return () => watcher.disconnect();
+  }, [conv.id]);
+
   // The results cover the list while there is a query: its scroll position is kept for when they go away.
   useLayoutEffect(() => {
     const list = listRef.current;

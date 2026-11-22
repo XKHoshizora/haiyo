@@ -1,3 +1,4 @@
+import { AuthPage } from "./AuthPage.jsx";
 import React from "react";
 import { Btn } from "./primitives.jsx";
 
@@ -31,10 +32,12 @@ export class ChunkBoundary extends React.Component {
     if (!this.state.failed) return this.props.children;
     if ("fallback" in this.props) return this.props.fallback;
     return (
-      <main className="auth-page">
-        <p role="alert">{this.state.stale ? "页面已更新，请刷新" : "出了点问题，请刷新页面"}</p>
-        <Btn variant="primary" onClick={() => (this.props.reload ?? (() => window.location.reload()))()}>刷新页面</Btn>
-      </main>
+      <AuthPage>
+        <div className="auth-stack">
+          <p role="alert">{this.state.stale ? "页面已更新，请刷新" : "出了点问题，请刷新页面"}</p>
+          <Btn variant="primary" onClick={() => (this.props.reload ?? (() => window.location.reload()))()}>刷新页面</Btn>
+        </div>
+      </AuthPage>
     );
   }
 }
