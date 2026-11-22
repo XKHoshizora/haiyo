@@ -2,37 +2,90 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Queryable } from "../db.ts";
 
 const CODE_LENGTH = 20;
+export const MAX_INVITE_USES = 1000;
+/** How much of a code's hash the operator sees and types: enough to tell codes apart, nowhere near enough to be one. */
+const PREFIX_SHOWN = 8;
+const PREFIX_MIN = 6;
 
 export function hashInviteCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
 }
 
-/** Creates a single-use invite and returns the plaintext code (only its SHA-256 is stored). */
-export async function createInvite(db: Queryable, opts: { ttlHours: number }): Promise<string> {
+/**
+ * Creates an invite for `uses` sign-ups (default 1, at most 1000) and returns the plaintext code (only its SHA-256 is
+ * stored).
+ */
+export async function createInvite(db: Queryable, opts: { ttlHours: number; uses?: number }): Promise<string> {
+  const uses = opts.uses ?? 1;
+  if (!Number.isInteger(uses) || uses < 1 || uses > MAX_INVITE_USES) {
+    throw new Error(`--uses must be a whole number from 1 to ${MAX_INVITE_USES}`);
+  }
   const code = randomBytes(CODE_LENGTH).toString("base64url").slice(0, CODE_LENGTH);
-  await db.query("insert into invites (code_hash, expires_at) values ($1, now() + make_interval(secs => $2))", [
-    hashInviteCode(code),
-    opts.ttlHours * 3600,
-  ]);
+  await db.query(
+    "insert into invites (code_hash, expires_at, max_uses) values ($1, now() + make_interval(secs => $2), $3)",
+    [hashInviteCode(code), opts.ttlHours * 3600, uses],
+  );
   return code;
 }
 
-/** Locks the invite row; true when it exists, is unused and has not expired. */
+/**
+ * Takes one use of the invite, in the caller's transaction: true when the code exists, is not revoked, has not
+ * expired and has a use left. One statement does the check and the count, and the row stays locked until the
+ * transaction ends, so two sign-ups racing for the last use cannot both get it (the loser re-checks the row once the
+ * winner commits). A transaction that rolls back gives the use back.
+ */
 export async function lockUsableInvite(q: Queryable, code: string): Promise<boolean> {
   const { rowCount } = await q.query(
-    "select 1 from invites where code_hash = $1 and used_at is null and expires_at > now() for update",
+    `update invites set uses = uses + 1
+      where code_hash = $1 and uses < max_uses and revoked_at is null and expires_at > now()`,
     [hashInviteCode(code)],
   );
   return rowCount === 1;
 }
 
 /**
- * Uses the invite up (`used_at`). `principalId` is the account it made; null when the registration made none (the
- * e-mail already had a verified account). An invite stays used up when that account is later removed.
+ * Records who came in on the use `lockUsableInvite` took: `principalId` is the account it made; null when the
+ * registration made none (the e-mail already had a verified account). An invite's use stays taken when that account is
+ * later removed.
  */
 export async function markInviteUsed(q: Queryable, code: string, principalId: string | null): Promise<void> {
-  await q.query("update invites set used_by = $2, used_at = now() where code_hash = $1", [
-    hashInviteCode(code),
-    principalId,
-  ]);
+  const hash = hashInviteCode(code);
+  await q.query("update invites set used_by = $2, used_at = now() where code_hash = $1", [hash, principalId]);
+  await q.query("insert into invite_uses (code_hash, principal_id) values ($1, $2)", [hash, principalId]);
+}
+
+export interface InviteListing {
+  hashPrefix: string;
+  uses: number;
+  maxUses: number;
+  expiresAt: Date;
+  createdAt: Date;
+  revoked: boolean;
+}
+
+/** Every code, newest first: a prefix of its hash, never the code. */
+export async function listInvites(db: Queryable): Promise<InviteListing[]> {
+  const { rows } = await db.query<InviteListing>(
+    `select left(code_hash, ${PREFIX_SHOWN}) as "hashPrefix", uses, max_uses as "maxUses", expires_at as "expiresAt",
+            created_at as "createdAt", revoked_at is not null as revoked
+       from invites order by created_at desc, code_hash`,
+  );
+  return rows;
+}
+
+export type RevokeResult =
+  | { ok: true; hashPrefix: string }
+  | { ok: false; reason: "bad_prefix" | "not_found" | "ambiguous" };
+
+/** Closes the one code whose hash starts with `prefix` to further sign-ups; accounts already made are untouched. */
+export async function revokeInvite(db: Queryable, prefix: string): Promise<RevokeResult> {
+  if (prefix.length < PREFIX_MIN || !/^[0-9a-f]+$/.test(prefix)) return { ok: false, reason: "bad_prefix" };
+  const { rows } = await db.query<{ hash: string }>(
+    "select code_hash as hash from invites where code_hash like $1 || '%' limit 2",
+    [prefix],
+  );
+  if (rows.length === 0) return { ok: false, reason: "not_found" };
+  if (rows.length > 1) return { ok: false, reason: "ambiguous" };
+  await db.query("update invites set revoked_at = coalesce(revoked_at, now()) where code_hash = $1", [rows[0]!.hash]);
+  return { ok: true, hashPrefix: prefix };
 }

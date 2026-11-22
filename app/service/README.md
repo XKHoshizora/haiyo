@@ -33,7 +33,9 @@ npm run migrate      # node-pg-migrate up against DATABASE_URL
 npm run dev          # tsx watch src/server.ts
 npm test             # vitest, against TEST_DATABASE_URL
 npm run typecheck    # tsc --noEmit (src and tests)
-npm run invite:create -- [--ttl-hours <n>]          # prints a new invite code (default 72 h)
+npm run invite:create -- [--ttl-hours <n>] [--uses <n>]   # prints a new invite code once (default 72 h, default 1 sign-up; --uses 1-1000 lets that many people sign up with the one code)
+npm run invite:list                                 # every code by the first 8 characters of its hash (never the code): sign-ups taken / allowed, expiry, created, state
+npm run invite:revoke -- --prefix <hash prefix>     # closes that code to further sign-ups (accounts already made stay); refused when the prefix matches none or several
 npm run inbox:list -- [--to <email>]                # the mail outbox
 npm run mail:status                                 # per day: mails queued, sent, failed, expired, retries (counts only)
 npm run attachments:sweep -- [--older-than <min>]   # unsent uploads and abandoned blobs (by hand; the server does it itself)
@@ -51,7 +53,7 @@ no TypeScript at run time; a production install `npm ci --omit=dev` is enough):
 npm run build                    # tsc -p tsconfig.build.json: src/ → dist/ (git-ignored), with source maps
 npm run migrate:prod             # node dist/cli.js migrate (finds migrations/ next to dist/)
 npm start                        # node dist/server.js
-npm run invite:create:prod -- [--ttl-hours <n>]
+npm run invite:create:prod -- [--ttl-hours <n>] [--uses <n>]   # likewise invite:list:prod, invite:revoke:prod
 npm run inbox:list:prod -- [--to <email>]
 npm run attachments:sweep:prod -- [--older-than <min>]
 npm run credits:grant:prod -- --handle <h> --points <n> [--note <text>]   # likewise credits:show:prod, tier:set:prod, models:list:prod
@@ -2069,7 +2071,7 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   `email` (an e-mail address, at most 254), `password` (10–128 characters), `displayName` (see
   `PATCH /api/me`: 1–40 characters after removing format characters (not joiners) and trimming, one line), `handle`
   (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`).
-- 201 `{"ok": true}` whether or not the e-mail already has an account, and the invite is used up either way: the
+- 201 `{"ok": true}` whether or not the e-mail already has an account, and one use of the invite is taken either way: the
   answer, its timing and the invite afterwards are the same. What an invite holder can still learn, accepted:
   one answer per invite. After a 201 for an address, whether the chosen handle now exists (a handle lookup, a
   second registration with that handle — 409 —, or signing in with the chosen password — 403
@@ -2098,7 +2100,7 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   callback URL-encoded), valid 24 h; opening it lands on the client's `<APP_ORIGIN>/verify` (or
   `/verify?error=CODE`). A link only ever verifies the account it was mailed for.
   The e-mail must be verified before sign-in works.
-- Errors: 400 `invalid_invite` (missing, unknown, expired or used invite; checked first, so without a usable
+- Errors: 400 `invalid_invite` (missing, unknown, expired, revoked or used-up invite — a code made with `--uses n` admits n sign-ups, then it is used up; checked first, so without a usable
   invite nothing else — not even whether the handle is taken — is revealed), 409 `handle_taken` (a person holds
   the handle, also an unverified account this registration would otherwise replace, or gave it up — Handles; an
   Agent's name part is no person's handle; the invite is not used up), 400 `invalid_request` (shape, or a value
