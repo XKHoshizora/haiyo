@@ -205,6 +205,35 @@ describe("right-click and the keyboard", () => {
     expect(menu()).not.toBeNull();
   });
 
+  it("the record of a press is spent where the gesture ends — by its click, by the contextmenu it brought — not by a clock: a context-menu with no press of its own is judged by the live selection", () => {
+    render(<Item />);
+    const range = () => {
+      const r = document.createRange();
+      r.selectNodeContents(bubble());
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(r);
+    };
+    window.getSelection().removeAllRanges();
+    fireEvent.pointerDown(bubble(), { pointerId: 1, pointerType: "mouse", button: 0 });
+    fireEvent.click(bubble()); // (the press is complete: its record is spent)
+    range();
+    const synthetic = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    act(() => void bubble().dispatchEvent(synthetic));
+    expect(synthetic.defaultPrevented).toBe(false); // (the live selection: the browser's menu)
+    expect(menu()).toBeNull();
+    // The contextmenu spends its press's record too: the next one with no press of its own is judged live.
+    window.getSelection().removeAllRanges();
+    fireEvent.pointerDown(bubble(), { pointerId: 2, pointerType: "mouse", button: 2 });
+    const first = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    act(() => void bubble().dispatchEvent(first));
+    expect(first.defaultPrevented).toBe(true);
+    fireEvent.keyDown(menu(), { key: "Escape" });
+    range();
+    const second = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    act(() => void bubble().dispatchEvent(second));
+    expect(second.defaultPrevented).toBe(false);
+  });
+
   it("a selection the person made before the press, and presses on, keeps the browser's menu (copy); a selection somewhere else does not", () => {
     render(<Item extra={<p className="elsewhere">别处的字</p>} />);
     const range = document.createRange();

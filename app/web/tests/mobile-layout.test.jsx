@@ -63,8 +63,42 @@ describe("on a phone", () => {
       </StoreProvider>,
     );
     expect(seen).toEqual([{ pane: "main", tabbar: "off", bar: false, list: false }]);
-    // Not yet synced: the page is the chat's (empty), never the "choose a chat" text of an empty main either.
+    // Not yet synced: the chat's own shell — its header with 返回列表, and the list's own loading line inside it — never the "choose a chat" text.
+    const main = within(document.querySelector(".main-col"));
+    expect(main.getByRole("button", { name: "返回列表" })).toBeTruthy();
+    expect(main.getByRole("status").textContent).toBe("正在读取…");
     expect(document.querySelector(".main-col").textContent).not.toContain("选择一个会话开始聊天");
+  });
+
+  it("a reload inside a chat whose first sync fails: the connection state shows inside the chat, and 返回列表 reaches the list with its tab bar", async () => {
+    history.replaceState(null, "", `/chat/${D1}`);
+    await openApp({
+      sync: () => {
+        throw apiError(0, "network_error");
+      },
+    });
+    const main = within(document.querySelector(".main-col"));
+    expect(main.getByRole("status").textContent).toContain("连不上服务，正在重试…");
+    expect(main.getByRole("button", { name: "立即重试" })).toBeTruthy();
+    expect(bar()).toBeNull();
+    fireEvent.click(main.getByRole("button", { name: "返回列表" }));
+    await flush();
+    expect(location.pathname).toBe("/");
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(bar()).toBeTruthy();
+  });
+
+  it("a reload at a chat the sync then shows is not mine: today's fallback — the list, the tab bar, and the notice", async () => {
+    history.replaceState(null, "", "/chat/00000000-0000-4000-8000-00000000dead");
+    const answer = deferred();
+    await openApp({ sync: () => answer.promise });
+    expect(document.querySelector(".app").dataset.pane).toBe("main");
+    await act(async () => answer.resolve(sync()));
+    await flush();
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(bar()).toBeTruthy();
+    expect(location.pathname).toBe("/");
+    expect(toastText()).toBeTruthy();
   });
 
   it("is gone inside a conversation, and back with the list", async () => {
