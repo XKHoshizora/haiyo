@@ -993,7 +993,8 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   .chat-head .icon-btn { width: 44px; height: 44px; flex: none; }
   .chat-head-actions { flex: none; justify-content: flex-end; gap: 6px; }
   .chat-title p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
-  .chat-head .avatar, .chat-head .group-avatar { transform: scale(0.8); margin: -6px; }
+  /* The whole picture is scaled as one box (direct children only: a composite's members must keep the places its own rules give them). */
+  .chat-head > .avatar, .chat-head > .group-avatar { transform: scale(0.8); margin: -6px; }
   .chat-title h2 { font-size: 18px; }
   .btn.boxed { font-size: 14px; padding: 0 10px; height: 40px; }
   .icon-btn.boxed { width: 44px; height: 44px; }

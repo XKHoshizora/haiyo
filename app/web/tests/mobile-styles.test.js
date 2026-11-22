@@ -237,3 +237,23 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
     expect(body["background-color"]).toBeTruthy();
   });
 });
+
+describe("M: the composite group avatar is one component whose layout depends only on its size", () => {
+  const PLACING = ["transform", "margin", "position", "left", "right", "top", "bottom", "width", "height", "inset", "translate", "scale"];
+  it("no rule from outside the component reaches the members it lays out (a descendant selector on .avatar or .avatar-img moves them out of their places)", () => {
+    for (const rule of rules) {
+      for (const selector of rule.selectors) {
+        if (selector.startsWith(".group-avatar")) continue;
+        // A descendant `.avatar` (with a space before it, not a child of the thing named) is any avatar below it — a composite's members too.
+        if (!/\s\.avatar(?![\w-])/.test(selector.replace(/\s*>\s*/g, ">"))) continue;
+        for (const property of PLACING) expect(rule.decl[property], `${selector} { ${property} }`).toBeUndefined();
+      }
+    }
+  });
+
+  it("the header scales the whole picture (its own box), as a direct child", () => {
+    const header = rules.filter((r) => r.selectors.some((x) => x.includes(".chat-head") && x.includes("avatar")) && r.decl.transform);
+    expect(header.length).toBeGreaterThan(0);
+    for (const r of header) for (const selector of r.selectors.filter((x) => x.includes("avatar"))) expect(selector).toMatch(/\.chat-head\s*>\s*\./);
+  });
+});
