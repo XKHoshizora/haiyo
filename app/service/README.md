@@ -2601,6 +2601,30 @@ while the session that asked for it lasts. Limit: 30 per minute.
 `unauthenticated`; another or a missing `Origin` 403 `forbidden`; a plain `GET` without an upgrade 404
 `not_found`. An upgrade request to any other path is 404 `not_found` before that route runs.
 
+### Push devices (the iOS app)
+
+What the page calls in the iOS app (the web client's shell bridge, docs/design/2026-11-24-store-app-draft.md §2): once
+signed in, `push.register` asks the phone for its APNs token and the page sends it here; on sign-out it unbinds it before
+signing out. When pushes are sent, and what they carry: Push notifications (`src/push/`). Both routes work whether or not
+pushes are configured (a token registered before the key is set takes pushes once it is). Limit: 30 per minute together.
+
+#### `POST /api/push/devices`
+
+*Session: required.* Body `{"token": "<hex>", "env": "sandbox" | "production", "appVersion"?: "<string>"}`: the APNs
+device token as the shell gives it (hex, 32 to 100 bytes, any case; stored lower-case), which APNs it is for (`sandbox`
+for a development build), and optionally the shell's version (1–32 printable ASCII characters). → 200 `{"ok": true}`.
+Binds the token to **this session**: the session has one phone at most (a new token from it replaces its old one), and a
+token one row at most — registered from another session, of yours or of another account, it moves here (the token names
+the phone, not the person). Registering again is the same 200 (it refreshes `env` and `appVersion`). The row goes when the
+session does: sign-out, a password reset (every session), an expired session is never pushed to, and deleting the person.
+Errors: 400 `invalid_request` (a field missing or malformed), 401 `unauthenticated`.
+
+#### `DELETE /api/push/devices/current`
+
+*Session: required.* Unbinds this session's phone, if it has one. → 200 `{"ok": true}` always. Signing out does the same
+by itself (the session's row is deleted, and the device with it); the page calls this first so that nothing is pushed in
+between.
+
 ## Wire shapes
 
 **Principal** (in `/api/sync`'s `principals`, and the `principals` of message reads and searches): `{"id", "handle", "displayName", "avatarVersion", "kind": "human" | "agent", "ownerId"?, "intro"?, "field"?}`.

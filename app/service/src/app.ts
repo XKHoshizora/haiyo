@@ -64,6 +64,7 @@ import type { Hub } from "./sync/hub.ts";
 import { registerSync } from "./sync/routes.ts";
 import { registerWebClient } from "./web.ts";
 import { registerAppLinks } from "./app-links.ts";
+import { registerPushRoutes } from "./push/routes.ts";
 import { pushWhispers, registerWhisperRoutes } from "./whispers/routes.ts";
 import { expireWhispers, removeOldWhispers } from "./whispers/store.ts";
 import { deliverReminders } from "./metering/reminders.ts";
@@ -625,6 +626,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     ]);
   });
   registerRunRoutes(app, { readLimit: ownReads });
+  registerPushRoutes(app);
   registerProviderRoutes(app, { allowInsecureLocal: options.allowInsecureLocal === true, readLimit: ownReads });
   registerModelRoutes(app);
 
