@@ -102,6 +102,7 @@ async function untilIdle(app: FastifyInstance, db: Db, backgroundWorker: boolean
     await memoryCountsSettled();
     let busy = !(await idleNow(app.deps.memory?.idle.bind(app.deps.memory))) || !(await idleNow(app.deps.proactive?.idle.bind(app.deps.proactive)));
     busy ||= !(await idleNow(app.hasDecorator("realtime") ? () => app.realtime.idle() : undefined));
+    busy ||= !(await idleNow(app.hasDecorator("push") ? () => app.push.idle() : undefined));
     if (backgroundWorker) {
       // What the loop has not yet claimed is run now (by this hook, in the loop's place); what it has claimed is waited for.
       if ((await app.agentWorker.drain()) > 0) busy = true;
@@ -168,7 +169,7 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * runs outside the app's statement timeout.
  */
 export function useApp(
-  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting"> & {
+  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine" | "apns">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting"> & {
       memory?: boolean;
       tools?: boolean;
       greeting?: boolean;

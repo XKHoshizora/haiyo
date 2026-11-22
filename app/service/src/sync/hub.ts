@@ -347,6 +347,15 @@ export class Hub {
     if (!live.has(conn.sessionId)) this.drop(conn, CLOSE_CODES.sessionEnded, "session_ended");
   }
 
+  /**
+   * Whether a socket opened with `sessionId` is registered here now: attached, and not yet closed, dropped (session ended,
+   * replaced, too slow) or failed by the heartbeat (no pong between two beats, so 30–60 s after a peer went silent). What
+   * a push asks (src/push/notify.ts): a phone whose own session has one is not pushed to.
+   */
+  hasSocketFor(sessionId: string): boolean {
+    return (this.bySession.get(sessionId)?.size ?? 0) > 0;
+  }
+
   /** Closes every socket opened with this session (sign-out; password reset ends each session in turn). */
   endSession(sessionId: string): void {
     for (const conn of [...(this.bySession.get(sessionId) ?? [])]) this.drop(conn, CLOSE_CODES.sessionEnded, "session_ended");

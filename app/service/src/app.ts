@@ -64,6 +64,8 @@ import type { Hub } from "./sync/hub.ts";
 import { registerSync } from "./sync/routes.ts";
 import { registerWebClient } from "./web.ts";
 import { registerAppLinks } from "./app-links.ts";
+import { createApnsClient, type ApnsClient } from "./push/apns.ts";
+import { createNotifier, type Notifier } from "./push/notify.ts";
 import { registerPushRoutes } from "./push/routes.ts";
 import { pushWhispers, registerWhisperRoutes } from "./whispers/routes.ts";
 import { expireWhispers, removeOldWhispers } from "./whispers/store.ts";
@@ -109,6 +111,12 @@ export interface Deps {
    * it (`GET /api/models` has no `webSearchAvailable`). Tests inject a fake one; none ever calls a real engine.
    */
   webEngine: WebEngine | null;
+  /**
+   * The APNs sender (src/push/apns.ts): built when `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`, `APNS_KEY_ID` and `APNS_KEY_P8` are
+   * all set; null otherwise — then nothing is pushed and one line at start names what is missing. Tests inject one pointed
+   * at a local fake; none ever reaches Apple.
+   */
+  apns: ApnsClient | null;
 }
 
 /** One registered route (a GET also yields its HEAD), as declared: method, URL pattern and schema. */
@@ -137,6 +145,8 @@ declare module "fastify" {
     staleRunSweep: { run(): Promise<number> };
     /** Delivers queued mail in `resend` mode (src/auth/mail-sender.ts); in `outbox` mode `runOnce()` does nothing. */
     mailSender: MailSender;
+    /** Who a stored message is pushed to, and the push's counters (src/push/notify.ts). */
+    push: Notifier;
   }
 }
 
@@ -327,6 +337,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     memory: null,
     // Built once the app's log is there, below (its log line, and the line saying why there is none).
     webEngine: overrides.webEngine ?? null,
+    apns: overrides.apns !== undefined ? overrides.apns : config.apple.push ? createApnsClient(config.apple.push) : null,
   };
 
   const underTest = process.env.NODE_ENV === "test" || Boolean(process.env.VITEST);
@@ -441,6 +452,15 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   // First among the routes: it registers the WebSocket plugin, whose route wrapper must see every route
   // (an upgrade request to any other route is then refused instead of answered over the raw socket).
   await registerSync(app, { heartbeat: options.heartbeat !== false });
+
+  // Pushes to phones (src/push/): every stored message, after commit, as the hub hears of it; the hub says whose session
+  // has a socket. Closed before the database (hooks run last-in first-out): what is under way ends, nothing new starts.
+  const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing });
+  app.decorate("push", push);
+  app.addHook("onClose", async () => {
+    await push.close();
+    await deps.apns?.close();
+  });
 
   // The reply worker runs in this process (one instance, like the hub). Once the app is ready, the runs the previous
   // process left running are recovered and then the worker starts. It stops when the app starts closing, before the hub
