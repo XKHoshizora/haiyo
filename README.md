@@ -54,4 +54,4 @@
 - [许可证](LICENSE)
 - [开源组件与许可](THIRD-PARTY-NOTICES.md)
 
-项目名称：Haiyo（代号 Agent Family）。仓库默认分支为 `master`，新产品在 `app/` 目录里。
+项目名称：Haiyo（代号 Agent Family）。新产品在 `app/` 目录里，目前在开发分支上，还没有合并进仓库的默认分支 `master`。
