@@ -3,9 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAgentPort } from "../src/agents/port-impl.ts";
-import { MESSAGES_NOTE, REFUSAL_NOTE, replayId, TIME_NOTE, WEB_NOTE } from "../src/agents/replay.ts";
+import { EXCERPT_NOTE, MESSAGES_NOTE, REFUSAL_NOTE, replayId, TIME_NOTE } from "../src/agents/replay.ts";
 import { partText } from "../src/agents/runtime/context.ts";
 import { isRunEnd, type AgentPort, type Prepared } from "../src/agents/runtime/port.ts";
+import { TOOL_MATERIAL } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { siteDateTime } from "../src/agents/tools/clock.ts";
 import { createToolbox, CURRENT_TIME, READ_FILE, SEARCH_MESSAGES, SEARCH_WEB } from "../src/agents/tools/index.ts";
@@ -27,10 +28,12 @@ import { closeAllSockets } from "./helpers/ws.ts";
 /**
  * Step 1 of the harness design (docs/design/2026-11-24-agent-harness-design.md §3, §7; README "Agents and runs", Earlier
  * tool use in history), end to end on the real port and database: a reply in the Agent's own conversation that answered
- * after tool rounds keeps the calls of exactly those rounds (`toolCalls`), and a later reply there that is offered those
- * tools is shown them in the provider's own form — what the request the gateway receives says (the scripted gateway's
- * record, then the real gateway's wire per protocol). Everything else is as it was: groups, tool-less requests, calls to a
- * tool not offered now; and the facts have one reader.
+ * after tool rounds keeps the calls of exactly those rounds (`toolCalls`, a web search's excerpt of its first pages
+ * included), and a later reply there that is offered those tools is shown them in the provider's own form — what the
+ * request the gateway receives says (the scripted gateway's record, then the real gateway's wire per protocol): as one of
+ * the two most recent, the excerpt it kept (tests/reply-replay-recent.test.ts: older ones, and replies from before
+ * excerpts were kept, show the placeholder), the acknowledgement after the results. Everything else is as it was:
+ * groups, tool-less requests, calls to a tool not offered now; and the facts have one reader.
  */
 
 const logLines: string[] = [];
@@ -51,6 +54,9 @@ const PAID = { source: "site", id: "meter_paid" } as const;
 const QUERY = "北京 天气 预报";
 const RESULTS: WebResult[] = [1, 2, 3].map((i) => ({ url: `https://news${i}.example.com/a/${i}`, title: `新闻标题${i}`, snippet: `摘要内容${i}`, age: "2026-11-20T08:00:00Z" }));
 const SITES = ["news1.example.com", "news2.example.com", "news3.example.com"];
+/** What a web search keeps of the fake engine's results, and how a recent reply shows them (each page's site first). */
+const EXCERPTS = RESULTS.map((r) => ({ title: r.title, snippet: r.snippet }));
+const SHOWN = RESULTS.map((r, i) => ({ site: SITES[i]!, title: r.title, snippet: r.snippet }));
 
 function fakeEngine(answer: () => { results: WebResult[] } | { error: WebSearchError } = () => ({ results: RESULTS })): WebEngine {
   return { name: "fake", searchWeb: async () => answer() };
@@ -126,19 +132,19 @@ const TODAY: ModelCall["messages"] = [
 ];
 
 describe("in the Agent's own conversation, a reply that searched returns in the provider's own form (step 1)", () => {
-  it("[acknowledgement, call] > [placeholder: its sites, cited first, and the day] > [answer]; the reply keeps the call, never on the wire", async () => {
+  it("[call] > [the excerpt it kept, under the material sentence: each page's site, title and snippet, the day] > [acknowledgement, answer]; the reply keeps the call and the excerpt, never on the wire", async () => {
     const { owner, agent, own, answer, later } = await searchedThenAsked("rpa");
-    expect(answer.body.toolCalls).toEqual([{ name: SEARCH_WEB, round: 1, outcome: "ok", input: { query: QUERY }, pages: [1, 2, 3] }]);
+    expect(answer.body.toolCalls).toEqual([{ name: SEARCH_WEB, round: 1, outcome: "ok", input: { query: QUERY }, pages: [1, 2, 3], excerpts: EXCERPTS }]);
     const id = replayId(answer.id, 0);
     expect(shape(later)).toEqual([
       ["user", ["北京今天天气怎么样？"]],
-      ["assistant", ["我查一下。", { call: SEARCH_WEB, id, input: { query: QUERY } }]],
-      ["tool", [{ result: SEARCH_WEB, id, output: { note: WEB_NOTE, sites: ["news2.example.com", "news1.example.com", "news3.example.com"], date: dayOf(answer.created_at) } }]],
-      ["assistant", ["根据搜索结果，今天晴，有风。"]],
+      ["assistant", [{ call: SEARCH_WEB, id, input: { query: QUERY } }]],
+      ["tool", [{ result: SEARCH_WEB, id, output: { about: TOOL_MATERIAL, results_returned_then: 3, excerpts: SHOWN, note: EXCERPT_NOTE, date: dayOf(answer.created_at) } }]],
+      ["assistant", ["我查一下。", "根据搜索结果，今天晴，有风。"]],
       ["user", ["那明天呢？"]],
     ]);
-    // No title, no snippet, no address: the sites and the day are all of the search that is shown.
-    for (const r of RESULTS) for (const s of [r.title, r.snippet, r.url]) expect(JSON.stringify(later.messages)).not.toContain(s);
+    // Never an address: a page is its site.
+    for (const r of RESULTS) expect(JSON.stringify(later.messages)).not.toContain(r.url);
     // The reply that was shown it keeps nothing of it (it called no tool); the wire never carries the key.
     const later2 = (await replies(own, agent.id)).at(-1)!;
     expect(later2.body).not.toHaveProperty("toolCalls");
@@ -152,6 +158,7 @@ describe("in the Agent's own conversation, a reply that searched returns in the 
   it("per wire format: that request goes in the protocol's own form when the tools go with it, and is the request made before step 1 when they do not", async () => {
     const { later } = await searchedThenAsked("rpb");
     const gateway = createModelGateway({ calls: createSlots(8), allowInsecureLocal: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const send = async (c: Omit<ModelCall, "signal">): Promise<{ raw: string; body: any }> => {
       stub.reset();
       for await (const _ of gateway.stream({ ...c, signal: AbortSignal.timeout(10_000) })) void _;
@@ -162,14 +169,27 @@ describe("in the Agent's own conversation, a reply that searched returns in the 
       const at = { ...recorded, protocol, baseUrl: stub.baseUrl, apiKey: "sk-stub", model: STUB_MODEL };
       const native = await send(at);
       const flat = JSON.stringify(native.body);
-      // The call (its input as the protocol writes it: an object, or its JSON text) and the placeholder in a tool result.
-      expect([protocol, flat.includes(SEARCH_WEB), flat.includes(WEB_NOTE), flat.includes("news2.example.com"), flat.includes(QUERY)]).toEqual([protocol, true, true, true, true]);
+      // The call (its input as the protocol writes it: an object, or its JSON text) and the excerpt in a tool result.
+      expect([protocol, flat.includes(SEARCH_WEB), flat.includes(EXCERPT_NOTE), flat.includes("摘要内容2"), flat.includes(QUERY)]).toEqual([protocol, true, true, true, true]);
+      const turns: unknown[] = native.body.messages ?? native.body.input ?? native.body.contents;
+      const items = turns.map((t) => JSON.stringify(t));
+      const indexOf = (s: string) => items.findIndex((t) => t.includes(s));
+      const asResult = (t: string) => ['"role":"tool"', '"function_call_output"', '"tool_result"', '"functionResponse"'].some((k) => t.includes(k));
+      // The excerpt only inside the tool result; the acknowledgement after it, heading the answer (its turn; the Responses
+      // API's item before it, each text part being one there), never in a turn with the call.
+      expect([protocol, items.filter((t) => t.includes("摘要内容2")).every(asResult), indexOf("我查一下。") > indexOf(EXCERPT_NOTE), indexOf("根据搜索结果") - indexOf("我查一下。"), items.some((t) => t.includes("我查一下。") && t.includes(SEARCH_WEB))]).toEqual([
+        protocol,
+        true,
+        true,
+        protocol === "openai_responses" ? 1 : 0,
+        false,
+      ]);
       const without = await send({ ...at, tools: [] });
       expect([protocol, without.raw]).toEqual([protocol, (await send({ ...at, tools: [], messages: TODAY })).raw]);
     }
   });
 
-  it("two rounds, three tools: one turn per round holding its calls, then their results — the clock's day, how many messages a search found — and the answer after the last", async () => {
+  it("two rounds, three tools: one turn per round holding its calls, then their results — the excerpt, the clock's day, how many messages a search found — and the acknowledgement and the answer after the last", async () => {
     const gateway = scriptedGateway();
     const { worker } = webWorker(gateway, fakeEngine());
     const { owner, agent, own } = await owned("rpc");
@@ -196,7 +216,6 @@ describe("in the Agent's own conversation, a reply that searched returns in the 
       [
         "assistant",
         [
-          "我查一下。",
           { call: SEARCH_WEB, id: a, input: { query: QUERY } },
           { call: CURRENT_TIME, id: b, input: {} },
         ],
@@ -204,13 +223,13 @@ describe("in the Agent's own conversation, a reply that searched returns in the 
       [
         "tool",
         [
-          { result: SEARCH_WEB, id: a, output: { note: WEB_NOTE, sites: SITES, date: day } },
+          { result: SEARCH_WEB, id: a, output: { about: TOOL_MATERIAL, results_returned_then: 3, excerpts: SHOWN, note: EXCERPT_NOTE, date: day } },
           { result: CURRENT_TIME, id: b, output: { note: TIME_NOTE, date: day } },
         ],
       ],
       ["assistant", [{ call: SEARCH_MESSAGES, id: c, input: { query: "从没说过的词" } }]],
-      ["tool", [{ result: SEARCH_MESSAGES, id: c, output: { note: MESSAGES_NOTE, found: 0, date: day } }]],
-      ["assistant", ["今天晴。"]],
+      ["tool", [{ result: SEARCH_MESSAGES, id: c, output: { messages_found_then: 0, text_kept_here: false, note: MESSAGES_NOTE, date: day } }]],
+      ["assistant", ["我查一下。", "今天晴。"]],
       ["user", ["好"]],
     ]);
   });
@@ -232,9 +251,9 @@ describe("in the Agent's own conversation, a reply that searched returns in the 
     const id = replayId(answer.id, 0);
     const expected = [
       ["user", ["附近有什么好吃的？"]],
-      ["assistant", ["我查一下。", { call: SEARCH_WEB, id, input: { query: "" } }]],
+      ["assistant", [{ call: SEARCH_WEB, id, input: { query: "" } }]],
       ["tool", [{ result: SEARCH_WEB, id, output: { error: WEB_QUERY_PRIVATE, note: REFUSAL_NOTE, date: dayOf(answer.created_at) } }]],
-      ["assistant", ["这个不能拿去搜。"]],
+      ["assistant", ["我查一下。", "这个不能拿去搜。"]],
     ];
     // A vaulted note is shown in its own conversation's notes, as always — and nowhere in the turns.
     await say(owner, own, "那算了");
@@ -389,7 +408,7 @@ describe("the money: a replay is weighed once, as the plan weighs it (partText),
 });
 
 describe("the facts have one reader", () => {
-  it("only the context reads a stored reply's toolCalls (the one SQL that names it); search never finds its words; no log line holds them", async () => {
+  it("only the context reads a stored reply's toolCalls (the one SQL that names it), the summary and the memory review only named keys of a body; search never finds its words, the excerpt's included; no log line holds them", async () => {
     // Every SQL text of the service that reads the key is the context's (agents/context.ts `loadPage`).
     const SRC = fileURLToPath(new URL("../src/", import.meta.url));
     const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []));
@@ -399,15 +418,21 @@ describe("the facts have one reader", () => {
     // post, and listed as a context-only key (review M5).
     expect(named(/["']toolCalls["']|body\??\.\s*toolCalls|body\??\[\s*["'`]toolCalls/)).toEqual(["agents/context.ts", "agents/conversation.ts", "messages/model.ts"]);
     expect(CONTEXT_ONLY_KEYS).toContain("toolCalls");
+    // The rolling summary and the memory review read a message's text (and attachment, event) by name, never its whole body:
+    // no `m.body` that is not followed by a key, and not the columns the wire's reader takes (`MESSAGE_COLUMNS`).
+    const under = (dir: string) => files(path.join(SRC, dir)).map((f) => [path.relative(SRC, f).split(path.sep).join("/"), readFileSync(f, "utf8")] as const);
+    const whole = [...under("agents/summary"), ...under("memory")].filter(([, text]) => /\bm\.body\b(?!\s*->)|MESSAGE_COLUMNS/.test(text)).map(([f]) => f);
+    expect(whole).toEqual([]);
 
     logLines.length = 0;
     const { owner, own } = await searchedThenAsked("rpk");
-    // "预报" is only in the query: no message holds it.
-    for (const url of [`/api/conversations/${own}/search?q=${encodeURIComponent("预报")}`, `/api/search?q=${encodeURIComponent("预报")}`]) {
-      const found = await api(app, owner, "GET", url);
-      expect([url, found.status, found.json.messages.length]).toEqual([url, 200, 0]);
-    }
+    // "预报" is only in the query, "摘要内容" only in the excerpt: no message holds either.
+    for (const q of ["预报", "摘要内容"])
+      for (const url of [`/api/conversations/${own}/search?q=${encodeURIComponent(q)}`, `/api/search?q=${encodeURIComponent(q)}`]) {
+        const found = await api(app, owner, "GET", url);
+        expect([url, found.status, found.json.messages.length]).toEqual([url, 200, 0]);
+      }
     const logged = logLines.join("\n");
-    for (const s of [QUERY, WEB_NOTE, "news2.example.com"]) expect([s, logged.includes(s)]).toEqual([s, false]);
+    for (const s of [QUERY, EXCERPT_NOTE, "news2.example.com", "摘要内容", "新闻标题"]) expect([s, logged.includes(s)]).toEqual([s, false]);
   });
 });

@@ -224,7 +224,7 @@ function pagesOf(output: unknown): number[] {
 
 /**
  * Each page's title and snippet as a web search's output handed them to the model (tools/web/tool.ts), page for page: what
- * its trace carries for `TOOLS.replayForm` `D` (`ToolTrace.excerpts`; agents/replay.ts keeps them only then, cut).
+ * its trace carries (`ToolTrace.excerpts`; agents/replay.ts keeps the first pages', cut).
  */
 function excerptsOf(output: unknown): Array<{ title: string; snippet: string }> {
   const results = typeof output === "object" && output !== null ? (output as { results?: unknown }).results : undefined;

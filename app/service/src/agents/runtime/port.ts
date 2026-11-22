@@ -246,7 +246,7 @@ export interface ToolTrace {
   pages?: number[];
   /**
    * "ok" `search_web`: each page's title and snippet as the model was handed them, page for page (web text: untrusted).
-   * Kept only under `TOOLS.replayForm` `D` (agents/replay.ts), cut there.
+   * Kept by agents/replay.ts `storedToolCalls`, cut there.
    */
   excerpts?: Array<{ title: string; snippet: string }>;
 }

@@ -74,13 +74,13 @@ export interface ContextEntry {
    * rounds, returned before its text (`ContextPlan.build`), kept or left out with it. Absent: none (every other entry).
    */
   replay?: ReplayRound[];
-  /** An Agent's acknowledgement (agents/context.ts `loadPage`, a plan offered tools): it may follow its answer's replay (`ackAfterResults`). */
-  ack?: true;
   /**
-   * The replay's form puts the acknowledgement after the results (agents/replay.ts, H3 and D): an `ack` entry right before
-   * this one is sent at the head of its answer's turn, after the last result, not before the first call.
+   * An Agent's acknowledgement (agents/context.ts `loadPage`, a plan that replays): right before an entry with a replay it
+   * is sent at the head of that answer's turn, after the last result, not before the first call (`ContextPlan.build`), so
+   * that no replayed turn holds text and then a call — the shape of the reply being written, which was copied (harness
+   * design §3).
    */
-  ackAfterResults?: true;
+  ack?: true;
 }
 
 /** What an attachment is shown as instead of its name: an image, a PDF, or the text of a file (cut already). */
@@ -411,10 +411,11 @@ export class ContextPlan {
    * consecutive messages of one side are one turn, their parts in order. The turns never end with the Agent's own: what
    * is shown starts at the person's newest message (the constructor: an Agent's message after it — its acknowledgement a
    * retry answers after, its own reply a told reply's group ends with — is not shown).
-   * An Agent's reply with a replay (`ContextEntry.replay`) returns as its rounds first — each round's calls in the
-   * Agent's turn (the one its acknowledgement opened, or a new one), then a `tool` turn of their results — and then its
-   * text in a turn of its own (harness design §3, the layout); a later round's text before its calls is part of that
-   * text, so it comes after the last result. Lowered (gateway.ts `ModelCall.messages`), that is the turns as they were.
+   * An Agent's reply with a replay (`ContextEntry.replay`) returns as its rounds first — each round's calls in an
+   * Agent's turn, then a `tool` turn of their results — and then its text in a turn of its own, headed by its
+   * acknowledgement (`ContextEntry.ack`, held back from before the first call) (harness design §3, the layout); a later
+   * round's text before its calls is part of that text, so it comes after the last result. Lowered (gateway.ts
+   * `ModelCall.messages`), that is the turns as they were: `[acknowledgement, answer]` in one turn.
    * `tokens`: what they are counted as at ratio 1 (`partTokens`: the estimate admission corrects and settlement learns
    * from, not the plan's count; a replayed call or result at `TOOL_TEXT_FACTOR`); `fixed`: the part of it that is images
    * and PDFs at their constants — never a replayed part, which is text (`partText`) wherever it is weighed.
@@ -435,13 +436,13 @@ export class ContextPlan {
       if (last?.role === role && role !== "tool") last.parts.push(...parts);
       else messages.push({ role, parts });
     };
-    /** An acknowledgement held back to head its answer's turn after the results (`ackAfterResults`). */
+    /** An acknowledgement held back to head its answer's turn after the results (`ContextEntry.ack`). */
     let held: Part[] = [];
     for (const [i, { entry, content }] of oldestFirst.entries()) {
       const parts: Part[] = [];
       if (entry.text !== "") parts.push({ type: "text", text: entry.text });
       if (entry.attachment) parts.push(attachmentPart(entry.attachment, content));
-      if (entry.ack && oldestFirst[i + 1]?.entry.ackAfterResults && oldestFirst[i + 1]!.entry.replay) {
+      if (entry.ack && oldestFirst[i + 1]?.entry.replay) {
         held = parts;
         continue;
       }

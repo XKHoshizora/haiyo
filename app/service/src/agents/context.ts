@@ -124,8 +124,7 @@ export interface ContextRun {
    * that kept its calls (`toolCalls`, agents/replay.ts) returns with them (`ContextEntry.replay`) when every one is to a
    * tool in `tools` — the names this request offers — its placeholders dated in `timeZone` (the site's). Absent (a group, a
    * reply offered none, every other reader): every reply returns as its text alone. `maxCalls`: one that kept more calls
-   * than that (the step-1 tools' per-reply caps, replay.ts `maxCallsOf`) returns as its text too. `form`: the form it
-   * returns in (`TOOLS.replayForm`, replay.ts `ReplayForm`).
+   * than that (the step-1 tools' per-reply caps, replay.ts `maxCallsOf`) returns as its text too.
    */
   replay?: ReplayScope & { timeZone: string };
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
@@ -372,11 +371,11 @@ interface Loaded {
   entry: ContextEntry;
   /**
    * Its entry with the attachment labels numbered by `refs` (its quote's file, then its own), or without numbers (null);
-   * `real`: replay form `D`'s, with its web results' stored excerpt.
+   * `real`: with its web results' stored excerpt (replay.ts `REAL_REPLIES`).
    */
   build: (refs: RunRefs | null, real?: boolean) => ContextEntry;
   /**
-   * Replay form `D` (`ContextRun.replay.form`): it returns with its calls and stored a web excerpt (replay.ts `hasExcerpt`);
+   * It returns with its calls (`ContextRun.replay`) and stored a web excerpt (replay.ts `hasExcerpt`);
    * `real`: it is among the most recent such (`mostRecent`, `loadContext`), and is built showing that excerpt.
    */
   excerpt: boolean;
@@ -534,13 +533,13 @@ async function loadPage(
     const seq = Number(r.seq);
     const block = role === "assistant" && r.proposal_persona !== null ? renderProposalBlock({ persona: r.proposal_persona, intro: r.proposal_intro, field: r.proposal_field }) : null;
     // An earlier reply that looked something up, with visible text, in a run that replays: its calls (harness design §3),
-    // in the run's form. In H3 and D an acknowledgement is marked as one, so that it can follow its answer's results.
+    // and an acknowledgement marked as one, so that it heads its answer's turn after the results (runtime/context.ts).
     const scope = run.replay;
     const facts: ReplayFacts | null =
       scope !== undefined && role === "assistant" && r.message_id !== null && r.created_at !== null && hasVisibleText(r.text ?? "")
         ? { messageId: r.message_id, day: siteDateTime(r.created_at, scope.timeZone).date, webSources: r.web_sources, webCites: r.web_cites }
         : null;
-    const ack = scope !== undefined && (scope.form === "H3" || scope.form === "D") && role === "assistant" && !r.placed;
+    const ack = scope !== undefined && role === "assistant" && !r.placed;
     const build = (refs: RunRefs | null, real = false): ContextEntry => {
       const quote = quotedText ?? (quotedFile && replyTo !== null ? attachmentLabel(toAttachment(quotedFile, replyTo, run.conversationId, refs)) : null);
       const text = entryText(r.text ?? "", quote);
@@ -552,7 +551,7 @@ async function loadPage(
       };
       return scope === undefined || facts === null ? plain : withReplay(plain, r.tool_calls, facts, scope, real);
     };
-    const excerpt = scope?.form === "D" && facts !== null && hasExcerpt(r.tool_calls);
+    const excerpt = facts !== null && hasExcerpt(r.tool_calls);
     const quoted = quotedText !== undefined || quotedFile !== undefined;
     const speaker =
       group && role === "user"
@@ -697,7 +696,8 @@ export async function loadContext(
   let text = mark === null ? unmarked : withPassage(mark, speakers);
   let budget = budgetWith(text);
   const ordered = inAnsweredOrder(kept);
-  // Replay form D: the most recent replies that stored a web excerpt show it (replay.ts `REAL_REPLIES`), the older as H3.
+  // The most recent replies that stored a web excerpt show it (replay.ts `REAL_REPLIES`); the older, and any posted before
+  // excerpts were kept, show the placeholder.
   for (const l of mostRecent(ordered, (l) => l.excerpt)) {
     l.real = true;
     l.entry = l.build(null, true);
