@@ -90,6 +90,12 @@ export function AgentsList() {
   const { state, dispatch, actions } = useStore();
   const { nav } = state;
   const agents = myAgents(state);
+  // A deleted Agent is not one of mine any more (the usage page counts none of it): its row waits behind one collapsed entry, because its chat history
+  // stays readable by design (the row opens its page, whose 进入查看 reaches the chat). The entry opens by itself when one of them is open.
+  const live = agents.filter((a) => !a.deleted);
+  const gone = agents.filter((a) => a.deleted);
+  const [showGone, setShowGone] = useState(false);
+  const goneOpen = showGone || gone.some((a) => a.id === nav.agentId && nav.agentView !== "create");
   const unloaded = agents.some((a) => !a.loaded);
   // An Agent known only by name (its record not loaded, e.g. the list failed on this connection): asked for once more
   // when the page opens (only then: the connection loads the list by itself).
@@ -108,11 +114,11 @@ export function AgentsList() {
       />
       <p className="list-note">这里只列出你拥有的 Agent。</p>
       <ul className="rows">
-        {agents.map((a) => (
+        {[...live, ...(goneOpen ? gone : [])].map((a) => (
           <li key={a.id}>
             <button
               type="button"
-              className={`row ${nav.agentId === a.id && nav.agentView !== "create" ? "active" : ""}`}
+              className={`row ${nav.agentId === a.id && nav.agentView !== "create" ? "active" : ""}${a.deleted ? " quiet" : ""}`}
               onClick={() => dispatch({ type: "nav", patch: { agentId: a.id, agentView: "detail", pane: "main" } })}
             >
               <Avatar id={a.id} size={48} />
@@ -135,7 +141,14 @@ export function AgentsList() {
           </li>
         ))}
         {agents.length === 0 && !state.loaded && <LoadingRow />}
-        {agents.length === 0 && state.loaded && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
+        {live.length === 0 && state.loaded && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
+        {gone.length > 0 && (
+          <li>
+            <button type="button" className="row-more" aria-expanded={goneOpen} onClick={() => setShowGone(!goneOpen)}>
+              已删除（{gone.length}）
+            </button>
+          </li>
+        )}
       </ul>
     </>
   );
