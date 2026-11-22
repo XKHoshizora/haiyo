@@ -68,6 +68,24 @@ describe("the app's dialogs keep the contract", () => {
     );
   });
 
+  it("the emoji picker (not modal): closed from inside, by Esc or its own 关闭表情, it gives the focus back to 表情, never to the page", async () => {
+    await openApp({ sync: () => syncOf([direct(D1, ANN, { lastSeq: 1, readSeq: 1 })], [wire(D1, 1, ANN, "早")]), social: friends() });
+    fireEvent.click(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await flush();
+    const smile = screen.getByRole("button", { name: "表情" });
+    for (const close of [(inside) => fireEvent.keyDown(inside, { key: "Escape" }), () => fireEvent.click(screen.getByRole("button", { name: "关闭表情" }))]) {
+      smile.focus();
+      fireEvent.click(smile);
+      await flush();
+      const first = within(screen.getByRole("dialog", { name: "选择表情" })).getAllByRole("button", { name: /插入表情/ })[0];
+      first.focus();
+      close(first);
+      await flush();
+      expect(screen.queryByRole("dialog", { name: "选择表情" })).toBeNull();
+      expect(document.activeElement).toBe(smile);
+    }
+  });
+
   it("拉黑 from a chat's 会话资料: the focus comes back to its button", async () => {
     await openApp({ sync: () => syncOf([direct(D1, ANN, { lastSeq: 1, readSeq: 1 })], [wire(D1, 1, ANN, "早")]), social: friends() });
     fireEvent.click(screen.getByText("小安", { selector: ".list-col .row-name" }));
