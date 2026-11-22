@@ -28,8 +28,8 @@ const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xd
  * so the owner's sockets get at most one delta every `intervalMs`: the first piece goes out at once, later ones wait
  * for the interval to pass. Characters a message may not hold (`stripUnsafeText`) are left out of each piece, of the
  * text and the reasoning, as it comes (a high surrogate a piece ends with waits for the next); the stored message is
- * cleaned the same way. With `holdTokens` (a reply offered tools, whose stored text keeps no token-shaped string:
- * agents/tools/refs.ts) none is pushed, of the text or the reasoning: each piece, once cleaned, goes through `TokenHold`
+ * cleaned the same way. With `holdTokens` (a reply offered tools, whose stored text keeps no token-shaped string —
+ * agents/tools/refs.ts; but one of nothing else, kept as written: agents/conversation.ts `postAsAgent`) none is pushed, of the text or the reasoning: each piece, once cleaned, goes through `TokenHold`
  * — a token goes as it completes, what may still become one waits for the next piece however deep it nests, and at every
  * end (`end`, `flushNow`: a stop, a cut, a time limit, a failure, an acknowledgement) what may have begun one is
  * dropped, never pushed. Nothing of it is secret: the stream shows what the stored message will. The text is pushed only up

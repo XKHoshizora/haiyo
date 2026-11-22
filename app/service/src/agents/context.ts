@@ -438,7 +438,8 @@ const inGroupNow = (ms: string): string =>
  * message at or before the asker's line (`ContextRun.group.after`) is left out as one the Agent cannot see is: the
  * quoting message's own text only; and the calls the run answers (`ContextRun.group.calls`) belong whatever `from` is,
  * one at or before `from` as its text only (no attachment: it is not read). Every text is shown as it is stored:
- * none holds a citation (README "Agents and runs", Citations), and one that looks like one is what someone wrote.
+ * none holds a citation (README "Agents and runs", Citations), and one that looks like one is what someone wrote (or an
+ * Agent's reply that was nothing else, conversation.ts `postAsAgent`: read for its numbers as any, `RunRefs.plant`).
  * `more`: as many as `limit` (there may be older ones).
  */
 async function loadPage(

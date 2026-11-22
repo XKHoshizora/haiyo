@@ -11,7 +11,7 @@ export { fileNumber } from "./tokens.ts";
  * an attachment id: the model names a thing only by a number this run gave it, and a number means nothing in any other
  * run. Each is shown plainly, `〔m1〕`, and the model is told to cite by copying one: nothing about them is secret. What a
  * reply offered tools says loses every token-shaped string (`takeCites`), one of a number its run gave kept beside its
- * text as a citation. A number someone typed is never one of the run's (`plant`): every token-shaped string in what the
+ * text as a citation (but a reply of nothing else keeps them as written, citing nothing: conversation.ts `postAsAgent`). A number someone typed is never one of the run's (`plant`): every token-shaped string in what the
  * run is shown that its model did not write — what anyone wrote in its context and system text, a file's text, every
  * tool result — is read for its number as it arrives, numbering skips every number so read (`〔m1〕…〔m8〕` typed: the
  * run's finds start at m9), and one minted before it was read is never cited (`citable`). Numbers go up to the largest a

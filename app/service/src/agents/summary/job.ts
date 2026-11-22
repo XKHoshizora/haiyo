@@ -245,8 +245,9 @@ function shownWeight(m: PlacedMessage, reader: PlacedReader, mark: string | null
 /** A message's text as the call is shown it: its attachment's label and its text, cleaned and cut at `maxWeight`. */
 function lineText(m: PlacedMessage, maxWeight: number): string {
   const label = m.attachment ? attachmentLabel({ name: m.attachment.name, image: m.attachment.inline === true }) : "";
-  // The text as stored: an Agent's reply never holds a citation (its cites are stored beside it, tools/refs.ts), and what a
-  // person typed is shown as typed everywhere.
+  // The text as stored: an Agent's reply never holds a citation (its cites are stored beside it, tools/refs.ts; one of nothing
+  // but token-shaped strings keeps them as text, citing nothing: conversation.ts `postAsAgent`), and what a person typed is
+  // shown as typed everywhere.
   return shown([label, m.text].filter((s) => s !== "").join(" "), maxWeight);
 }
 
