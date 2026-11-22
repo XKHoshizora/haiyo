@@ -155,7 +155,7 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
 | 项 | 事实 | 我们怎么做 |
 |---|---|---|
 | 边缘右滑返回 | `allowsBackForwardNavigationGestures` 默认关。2022 年起，WebKit 在后退 / 前进时跳过**不是用户操作时**用 `pushState` 加的历史项；在 iOS 16 上回应的 WebKit 工程师说这是有意的新行为 [T20] | 打开。我们的 `pushState` 在 `state/appHistory.js:106`，大多由点按触发；程序自己跳转（不是点按触发）的那几处，右滑会跳过，验收单上逐个试。有报告说 iOS 17.5.1 起右滑偶尔跳回第一页（**未核实**） |
-| 下拉刷新 | WebKit 自 Safari 16 支持 `overscroll-behavior`；应用自己设的 `bounces` 不会被它覆盖 [T21]。内层滚动容器和 `UIRefreshControl` 怎么配合，**未核实** | **不做下拉刷新**：外层页面本来不滚；消息靠 socket 实时到；连不上有断网页和“重试”。把外层 `scrollView.bounces` 关掉，免得整页被拉动 |
+| 下拉刷新 | WebKit 自 Safari 16 支持 `overscroll-behavior`；应用自己设的 `bounces` 不会被它覆盖 [T21]。内层滚动容器和 `UIRefreshControl` 怎么配合，**未核实** | **不做下拉刷新**：外层页面本来不滚；消息靠 socket 实时到；连不上有断网页和“重试”。外层回弹**保持系统默认**：v0 在模拟器上实测，关掉 `bounces` 以后键盘弹出时输入框被键盘挡住，Safari 和保持默认的壳都会把它推到键盘上方（2026-11-23） |
 | 安全区 | `viewport-fit=cover` 就是把 WKScrollView 的 `contentInsetAdjustmentBehavior` 设成 never [T22]。没有浏览器工具栏，底部只剩主屏指示条那一条 | 照现有 CSS 就行。已知 bug：WKWebView 里 `env()` 的值要过一会儿才有（2018 年起未修）[T22]，所以启动画面盖到 `didFinish` 之后再揭开。iOS 27.2 真机丢左右边距的报告（**未核实**）：第一版只做竖屏 |
 | 键盘 | 和 Safari 一样：布局视口不变，`visualViewport` 跟着变 [T23]。`interactive-widget` 只在 Safari 27.3 beta 里有，正式版没有 [T23]。表单上方那条“上一项 / 下一项 / 完成”没有公开接口可以去掉 [T23] | 照现有网页做法，不靠 `interactive-widget`。那条栏保留。iOS 26.0 有收起键盘后视口变小的 bug，26.1 修了 [T23] |
 | 选照片、选文件 | iOS 的菜单（WebKit 源码）[T24]：总有“照片图库”（系统的照片选择器，不用相册权限）和“选取文件”；有相机时再加一项：只收图片是“拍照”，不限类型（我们的“选择文件”）是“拍照或录像” | 要写相机和**麦克风**两条用途说明：“拍照或录像”缺了麦克风说明会崩（苹果技术支持 2020 年的回答）[T24]。不要相册读取权限 |
@@ -266,7 +266,7 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
    - `sceneWillEnterForeground` → `haiyo:resume`；
    - 只是变成非活跃（拉下控制中心）不算。
 7. **连不上**：`didFailProvisionalNavigation` 遇到网络类错误码就显示断网页；网页进程崩了就重载（1.1 的表）。页面已经打开以后网络断了，由网页自己的“重新连接中”处理（`sync.js`）。
-8. **手势与滚动**（1.4）：打开边缘右滑返回；外层 `bounces` 关掉；不做下拉刷新。
+8. **手势与滚动**（1.4）：打开边缘右滑返回；外层回弹保持默认（关掉会让键盘挡住输入框）；不做下拉刷新。
 9. **年龄信号**：iOS 26 的 Declared Age Range API，结果经桥交给网页（S9）。
 10. **用户代理**：在默认值后追加 `HaiyoApp/<版本>`（1.5）。
 
