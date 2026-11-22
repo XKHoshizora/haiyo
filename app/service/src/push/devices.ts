@@ -43,8 +43,12 @@ export async function removeSessionDevice(q: Queryable, sessionId: string): Prom
   await q.query("delete from push_devices where session_id = $1", [sessionId]);
 }
 
-/** A token APNs said is dead: its row goes, unless it was registered anew meanwhile (another row now, or another id). */
-export async function removeDeadDevice(q: Queryable, device: Pick<PushDevice, "id" | "token">): Promise<boolean> {
-  const { rowCount } = await q.query("delete from push_devices where id = $1 and token = $2", [device.id, device.token]);
+/**
+ * A token APNs said is dead: its row goes — unless the phone registered it again after the push was decided (`seenAt`,
+ * `last_seen_at` as text then, to the microsecond): Apple says a dead token may be pushed again once the app retrieves it
+ * again, and a registration is the app saying so.
+ */
+export async function removeDeadDevice(q: Queryable, device: Pick<PushDevice, "id" | "token"> & { seenAt: string }): Promise<boolean> {
+  const { rowCount } = await q.query("delete from push_devices where id = $1 and token = $2 and last_seen_at = $3::timestamptz", [device.id, device.token, device.seenAt]);
   return (rowCount ?? 0) > 0;
 }

@@ -126,7 +126,8 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
     return session;
   }
 
-  function attempt(n: ApnsNotification, jwt: string): Promise<Attempt> {
+  /** One attempt on `session` (the caller's: it decides what becomes of that connection afterwards). */
+  function attempt(session: http2.ClientHttp2Session, n: ApnsNotification, jwt: string): Promise<Attempt> {
     return new Promise((resolve) => {
       let settled = false;
       const done = (a: Attempt) => {
@@ -136,7 +137,7 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
       };
       let stream: http2.ClientHttp2Stream;
       try {
-        stream = connection(n.env).request({
+        stream = session.request({
           ":method": "POST",
           ":path": `/3/device/${n.token}`,
           authorization: `bearer ${jwt}`,
@@ -217,12 +218,21 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
     let refreshed = false;
     for (let tries = 0; ; tries++) {
       if (closed) return { outcome: "failed", why: "closed" };
-      const a = await attempt(n, providerToken());
+      let session: http2.ClientHttp2Session | null = null;
+      let a: Attempt;
+      try {
+        session = connection(n.env);
+        a = await attempt(session, n, providerToken());
+      } catch {
+        a = { error: "network" };
+      }
       let retry: ApnsFailure | null = null;
       if ("error" in a) {
         retry = a.error;
-        // A broken connection is not used again.
-        sessions.get(n.env)?.destroy();
+        // Only the connection this attempt used, never one another push opened meanwhile: broken, it is not used again;
+        // silent, it takes no new pushes (what is on it may still finish) and the retry opens another.
+        if (a.error === "network") session?.destroy();
+        else session?.close();
       } else if (a.status === 200) {
         return { outcome: "sent" };
       } else if (a.status === 410 || (a.status === 400 && (a.reason === "BadDeviceToken" || a.reason === "DeviceTokenNotForTopic"))) {
@@ -241,7 +251,7 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
       } else if (a.status >= 500) {
         retry = "server";
         // 503 is a server going away (`Shutdown`, `ServiceUnavailable`): the retry takes a new connection.
-        if (a.status === 503) sessions.get(n.env)?.close();
+        if (a.status === 503) session?.close();
       } else {
         return { outcome: "failed", why: "rejected" };
       }

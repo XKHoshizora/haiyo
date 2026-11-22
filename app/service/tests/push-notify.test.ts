@@ -284,6 +284,22 @@ describe("what APNs answers, and what is logged", () => {
     for (const secret of [token, conversationId, "CANARY", a.id, b.id]) expect([secret, all.includes(secret)]).toEqual([secret, false]);
   });
 
+  test("a phone that registers again while its push is out keeps its row, though APNs then says the token was dead", async () => {
+    const a = await signUp(app, "again_a");
+    const b = await signUp(app, "again_b");
+    const { conversationId } = await befriend(app, a, b);
+    const token = await phone(b);
+    let release!: (x: { status: number; reason: string }) => void;
+    fake.apns!.answer({ hold: new Promise((r) => (release = r)) });
+    expect((await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "x", clientTxn: "again1" })).status).toBe(201);
+    await fake.apns!.waitFor(1);
+    expect((await api(app, b, "POST", "/api/push/devices", { token, env: "production" })).status).toBe(200);
+    release({ status: 410, reason: "Unregistered" });
+    await app.push.idle();
+    expect((await db.query("select 1 from push_devices where token = $1", [token])).rowCount).toBe(1);
+    expect(app.push.flush()).toMatchObject({ sent: 0, removed: 0 });
+  });
+
   test("sent, skipped as present and failed by class are counted; a counter line only when something happened", async () => {
     const a = await signUp(app, "count_a");
     const b = await signUp(app, "count_b");

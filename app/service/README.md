@@ -3035,9 +3035,11 @@ when it does, its number goes in `aps.badge`.
 `api.sandbox.push.apple.com`), one connection per host, kept while it lasts (closed after an hour idle, opened again on
 the next push); a provider token (ES256 JWT signed with `node:crypto`: `kid` the Key ID, `iss` the Team ID, `iat`) used
 for 50 minutes and made anew after — never sooner than 20 minutes, Apple's bounds. Answers: 200 sent; 410 (any reason),
-400 `BadDeviceToken` or `DeviceTokenNotForTopic`: the token is dead and its device row is deleted (unless it was
-registered anew meanwhile); 429 `TooManyRequests`, 5xx, a broken connection or no answer within 10 s: retried after 2 s,
-then after 30 s, then given up (at most three attempts; a 503 takes a new connection) — never a loop; 403
+400 `BadDeviceToken` or `DeviceTokenNotForTopic`: the token is dead and its device row is deleted (unless the phone
+registered it again after the push was decided: Apple allows pushing a dead token again once the app retrieves it again);
+429 `TooManyRequests`, 5xx, a broken connection or no answer within 10 s: retried after 2 s, then after 30 s, then given
+up (at most three attempts) — never a loop. The connection that attempt used, and only it: broken, it is dropped; silent
+or answering 503, it takes no new pushes (what is on it may finish) and the retry opens another; 403
 `ExpiredProviderToken`: the token made anew once if it is at least 20 minutes old, else given up; 403 otherwise and 429
 `TooManyProviderTokenUpdates`: given up (`auth`); any other answer: given up (`rejected`). At most 32 pushes in flight and
 5 000 waiting; beyond, `overloaded`. A push never holds up a request or a message: it runs after the commit, on its own.

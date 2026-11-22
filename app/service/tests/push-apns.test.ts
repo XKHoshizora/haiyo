@@ -118,6 +118,23 @@ describe("the token and the connection are kept", () => {
     expect(production.requests).toHaveLength(3);
   });
 
+  test("a push that times out leaves the other pushes on its connection alone (it takes no new ones, and its retry opens another)", async () => {
+    let release!: (a: { status: number }) => void;
+    production.answer("hang", { hold: new Promise<{ status: number }>((r) => (release = r)) });
+    const c = client({ requestTimeoutMs: 300 });
+    const silent = c.send(note());
+    await production.waitFor(1);
+    // The other starts later, so its own deadline is well after the silent one's.
+    await new Promise((r) => setTimeout(r, 150));
+    const other = c.send(note());
+    await production.waitFor(2);
+    // The silent one times out and is retried on a new connection (answered 200); the other is still waiting on the first.
+    expect(await silent).toEqual({ outcome: "sent" });
+    release({ status: 200 });
+    expect(await other).toEqual({ outcome: "sent" });
+    expect(production.requests.map((r) => r.connection)).toEqual([1, 1, 2]);
+  });
+
   test("ExpiredProviderToken: a token at least 20 minutes old is made anew and the push sent once more", async () => {
     const c = client();
     await c.send(note());

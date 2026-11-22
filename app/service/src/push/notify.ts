@@ -66,7 +66,7 @@ export interface NotifierDeps {
 }
 
 /** One push to make: a phone, and the conversation it is about. */
-type Target = Pick<PushDevice, "id" | "sessionId" | "token" | "env"> & { conversationId: string };
+type Target = Pick<PushDevice, "id" | "sessionId" | "token" | "env"> & { conversationId: string; seenAt: string };
 
 /**
  * The phones the messages are pushed to, one per phone and conversation: of each current member who may see the message
@@ -74,8 +74,9 @@ type Target = Pick<PushDevice, "id" | "sessionId" | "token" | "env"> & { convers
  * session still lasts. Whether that session is present is asked afterwards, in this process (`present`).
  */
 async function targets(db: Db, messages: StoredMessage[]): Promise<Target[]> {
-  const { rows } = await db.query<{ id: string; session_id: string; token: string; env: "sandbox" | "production"; conversation_id: string }>(
-    `select distinct d.id, d.session_id, d.token, d.env, m.conversation_id
+  const { rows } = await db.query<{ id: string; session_id: string; token: string; env: "sandbox" | "production"; seen_at: string; conversation_id: string }>(
+    // `last_seen_at` as text: to the microsecond, for `removeDeadDevice`.
+    `select distinct d.id, d.session_id, d.token, d.env, d.last_seen_at::text as seen_at, m.conversation_id
        from unnest($1::uuid[], $2::bigint[], $3::uuid[]) as m (conversation_id, seq, sender_id)
        join (select conversation_id, principal_id as reader_id from memberships where left_seq is null) r
          on r.conversation_id = m.conversation_id and r.reader_id <> m.sender_id
@@ -86,7 +87,7 @@ async function targets(db: Db, messages: StoredMessage[]): Promise<Target[]> {
       order by m.conversation_id, d.id`,
     [messages.map((m) => m.conversationId), messages.map((m) => m.seq), messages.map((m) => m.senderId)],
   );
-  return rows.map((r) => ({ id: r.id, sessionId: r.session_id, token: r.token, env: r.env, conversationId: r.conversation_id }));
+  return rows.map((r) => ({ id: r.id, sessionId: r.session_id, token: r.token, env: r.env, seenAt: r.seen_at, conversationId: r.conversation_id }));
 }
 
 /**
@@ -164,14 +165,14 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 
   return {
     async idle() {
-      while (under.size > 0) await Promise.all([...under]);
+      while (under.size > 0) await Promise.allSettled([...under]);
     },
     flush,
     async close() {
       closed = true;
       off();
       clearInterval(timer);
-      while (under.size > 0) await Promise.all([...under]);
+      while (under.size > 0) await Promise.allSettled([...under]);
       flush();
     },
   };
