@@ -140,7 +140,6 @@ export function Reason({ children }) {
  * `onClose`; `locked` while it may not be left (a save under way).
  */
 export function Modal({ title, onClose, children, footer, wide, returnTo = null, locked = false }) {
-  const ref = useRef(null);
   const backdrop = useRef(null);
   const anchor = useRef(null);
   const titleId = useId();
@@ -162,7 +161,7 @@ export function Modal({ title, onClose, children, footer, wide, returnTo = null,
       <span ref={anchor} hidden />
       {createPortal(
         <div className="modal-backdrop" ref={backdrop} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-          <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref}>
+          <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
             <header className="modal-head">
               <h2 id={titleId}>{title}</h2>
               <IconBtn label="关闭" onClick={onClose}>

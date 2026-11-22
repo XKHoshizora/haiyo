@@ -623,8 +623,6 @@ describe("leaving", () => {
     await openProfile();
     await leaveFlow();
     await click(dialogButton("确认退出"));
-    // (The dialog's own history entry is left by one traversal, as a Back is: it ends before the person's first Back.)
-    await elapse(60);
     await push(transport, { type: "gone", id: G1 });
     await act(async () => answer.resolve({ ok: true }));
     await flush();

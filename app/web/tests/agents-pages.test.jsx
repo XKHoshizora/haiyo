@@ -496,6 +496,25 @@ describe("帮我起草", () => {
     expect(rule).toMatch(/align-items:\s*center/);
   });
 
+  it("替换已写的人格文档？ keeps the modal contract: the page inert, focus in, Esc closes it and the focus is back on 帮我起草", async () => {
+    await ready({ draftPersona: vi.fn(async () => ({ persona: "起草的人格" })) });
+    type("名称", "美食家");
+    await chooseModel("小模型 · 免费");
+    fireEvent.change(personaBox(), { target: { value: "我自己写的" } });
+    const draft = inMain().getByRole("button", { name: "帮我起草" });
+    draft.focus();
+    await click(draft);
+    const app = document.querySelector(".app").closest("body > *");
+    expect(app.hasAttribute("inert")).toBe(true);
+    expect(dialog().contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement, { key: "Escape" });
+    await flush();
+    expect(dialog()).toBeNull();
+    expect(app.hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(inMain().getByRole("button", { name: "帮我起草" }));
+    expect(personaBox().value).toBe("我自己写的");
+  });
+
   it("asks before replacing text I wrote; cancelling keeps it and sends nothing", async () => {
     const draftPersona = vi.fn(async () => ({ persona: "起草的人格" }));
     await ready({ draftPersona });
@@ -836,6 +855,31 @@ describe("editing an Agent", () => {
       await click(within(dialog()).getByRole("button", { name: "放弃" }));
       expect(document.querySelector(".main-col [role=tablist]")).toBeTruthy();
       expect(uploadAgentAvatar).not.toHaveBeenCalled();
+    });
+
+    it("放弃新头像？ keeps the modal contract (the page inert, focus in, Esc, focus back on 取消); its 放弃 goes to the Agent's page with the focus on its heading, never <body>", async () => {
+      await openEdit({ uploadAgentAvatar: vi.fn() });
+      await pick(png());
+      const cancel = inMain().getByRole("button", { name: "取消" });
+      cancel.focus();
+      await click(cancel);
+      const app = document.querySelector(".app").closest("body > *");
+      expect(dialog().textContent).toContain("头像还没有保存，确定放弃吗？");
+      expect(app.hasAttribute("inert")).toBe(true);
+      expect(dialog().contains(document.activeElement)).toBe(true);
+      fireEvent.keyDown(document.activeElement, { key: "Escape" });
+      await flush();
+      expect(dialog()).toBeNull();
+      expect(app.hasAttribute("inert")).toBe(false);
+      expect(document.activeElement).toBe(inMain().getByRole("button", { name: "取消" }));
+      // Its own 放弃 leaves the form for the Agent's page in the same commit as the dialog goes: the page's heading has the focus.
+      await click(inMain().getByRole("button", { name: "取消" }));
+      const drop = within(dialog()).getByRole("button", { name: "放弃" });
+      drop.focus();
+      await click(drop);
+      expect(document.querySelector(".main-col [role=tablist]")).toBeTruthy();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(document.querySelector(".main-col h2"));
     });
 
     it("holds the crop as a preview whose URL is revoked when it is dropped, replaced and when the form goes away", async () => {

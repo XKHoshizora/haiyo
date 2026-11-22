@@ -74,6 +74,8 @@ const openIt = async () => {
 
 beforeEach(() => {
   window.history.replaceState(null, "", `/chat/${C1}`);
+  // (jsdom lays nothing out: every element is drawn here, as the app's tests have it — the focus goes back only to what is shown.)
+  vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{ top: 0 }]);
 });
 afterEach(() => {
   cleanup();
@@ -250,6 +252,101 @@ describe("the primitive", () => {
     await back();
     expect(dialogs()).toEqual([]);
     expect(drawnPath()).toBe("/contacts");
+  });
+});
+
+// A layer's entry is never left without its layer (fix round 1, I3): wherever the app finds itself on an entry marked with layers
+// none of which is open — Forward onto a closed dialog, a reload or a restored tab with a dialog open — it steps back to the page's
+// own entry at once, quietly, without opening the dialog again. Back never does nothing; Forward onto a closed dialog stays on the page.
+describe("an entry of a layer that is not open", () => {
+  const forward = async () => {
+    act(() => window.history.forward());
+    await settle();
+  };
+  /** At /chat/C2 pushed over /chat/C1. */
+  const atSecond = async (props = {}) => {
+    const view = render(<Page {...props} />);
+    await settle();
+    act(() => drive.dispatch({ type: "nav", patch: chatOf(C2) }));
+    await settle();
+    return view;
+  };
+
+  it("Forward onto a dialog that was closed stays on the page, and the next Back is the page before", async () => {
+    await atSecond();
+    const page = window.history.state;
+    await openIt();
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await settle();
+    expect(window.history.state).toEqual(page);
+    await forward();
+    expect(dialogs()).toEqual([]);
+    expect(drawnPath()).toBe(`/chat/${C2}`);
+    expect(window.history.state).toEqual(page);
+    await back();
+    expect(drawnPath()).toBe(`/chat/${C1}`);
+  });
+
+  it("a reload (or a restored tab) on a dialog's entry steps back to the page's own entry without opening it; one Back is the page before", async () => {
+    const view = await atSecond();
+    const page = window.history.state;
+    await openIt();
+    expect(window.history.state.layers).toHaveLength(1);
+    // The page goes away with its dialog open (a reload, a discarded tab): the entry it was on keeps its marker.
+    view.unmount();
+    await settle();
+    expect(window.history.state.layers).toHaveLength(1);
+    render(<Page />);
+    await settle();
+    expect(dialogs()).toEqual([]);
+    expect(window.history.state).toEqual(page);
+    expect(drawnPath()).toBe(`/chat/${C2}`);
+    await back();
+    expect(drawnPath()).toBe(`/chat/${C1}`);
+  });
+
+  it("an entry marked with a layer this page never had (restored from elsewhere) is left the same way", async () => {
+    await atSecond();
+    const page = window.history.state;
+    cleanup();
+    window.history.pushState({ ...page, index: page.index + 1, prev: `/chat/${C2}#`, layers: ["layer-from-before"] }, "", `/chat/${C2}`);
+    render(<Page />);
+    await settle();
+    expect(window.history.state).toEqual(page);
+    await back();
+    expect(drawnPath()).toBe(`/chat/${C1}`);
+  });
+
+  it("a picker's sheet inside a dialog: each Back closes one, the sheet first", async () => {
+    window.matchMedia = (query) => ({ matches: query === "(max-width: 480px)", media: query, addEventListener() {}, removeEventListener() {} });
+    await atSecond({ inner: <Select aria-label="分类" value="a" options={[{ value: "a", label: "甲" }, { value: "b", label: "乙" }]} onChange={() => {}} /> });
+    await openIt();
+    fireEvent.click(screen.getByRole("combobox", { name: "分类" }));
+    await settle();
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(window.history.state.layers).toHaveLength(2);
+    await back();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(dialogs().length).toBe(1);
+    await back();
+    expect(dialogs()).toEqual([]);
+    expect(drawnPath()).toBe(`/chat/${C2}`);
+    await back();
+    expect(drawnPath()).toBe(`/chat/${C1}`);
+  });
+
+  it("a navigation from inside a dialog is written in place of the dialog's entry: the app takes no history step of its own to race a Back", async () => {
+    render(<Page onDone={(d, close) => (d.dispatch({ type: "nav", patch: chatOf(C2) }), close())} />);
+    await settle();
+    await openIt();
+    const steps = ["back", "forward", "go"].map((name) => vi.spyOn(window.history, name));
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await settle();
+    for (const step of steps) expect(step).not.toHaveBeenCalled();
+    expect(window.history.state).toMatchObject({ path: `/chat/${C2}`, prev: `/chat/${C1}#`, layers: [] });
+    for (const step of steps) step.mockRestore();
+    await back();
+    expect(drawnPath()).toBe(`/chat/${C1}`);
   });
 });
 

@@ -132,6 +132,50 @@ test("the chats', contacts' and groups' dialogs at 402 px: inert page, focus in 
   });
 });
 
+test("a dialog's own action never leaves the focus on <body>; Forward onto a closed dialog stays on the page and one Back leaves it", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: PHONE });
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const title = `动作${uniq(4)}`;
+  await createGroupApi(ann, [bo, cy], title);
+  const page = ann.page;
+  const onBody = () => page.evaluate(() => document.activeElement === document.body);
+
+  // 移除 › 确认移除: the member's row and its 移除 go; the focus stays on the page.
+  const group = await openChat(page, title);
+  await group.getByRole("button", { name: "群资料" }).click();
+  const profile = page.getByRole("region", { name: "群资料" });
+  const remove = profile.getByRole("listitem").filter({ hasText: cy.displayName }).getByRole("button", { name: "移除" });
+  await remove.focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("dialog", { name: `移除${cy.displayName}` }).getByRole("button", { name: "确认移除" }).click();
+  await expect(profile.getByRole("listitem").filter({ hasText: cy.displayName })).toHaveCount(0);
+  expect(await onBody(), "移除: the focus is not on <body>").toBe(false);
+
+  // 退出群聊 › 确认退出: the page changes to the list; the focus is on it.
+  await profile.getByRole("tab", { name: "群设置" }).click();
+  await profile.getByRole("button", { name: "退出本群" }).click();
+  await page.getByRole("dialog", { name: `退出群聊「${title}」` }).getByRole("button", { name: "确认退出" }).click();
+  await expect(listRow(page, title)).toHaveCount(0);
+  expect(await onBody(), "退出群聊: the focus is not on <body>").toBe(false);
+  expect(await page.evaluate(() => Boolean(document.activeElement.closest(".list-col")))).toBe(true);
+
+  // Forward onto a dialog closed by its own button: nothing opens, the page stays, and one Back leaves the page.
+  await goTo(page, "通讯录");
+  const at = page.url();
+  await page.getByRole("button", { name: "添加好友", exact: true }).click();
+  const add = page.getByRole("dialog", { name: "添加好友" });
+  await add.getByRole("button", { name: "完成" }).click();
+  await expect(add).toBeHidden();
+  await page.goForward();
+  await expect(add).toBeHidden();
+  expect(page.url()).toBe(at);
+  await page.goBack();
+  await expect.poll(() => page.url()).not.toBe(at);
+});
+
 test("an Agent's dialogs and the model picker's sheet at 402 px", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: PHONE });
   const page = ann.page;

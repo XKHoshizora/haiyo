@@ -7,7 +7,7 @@ import { useMediaQuery, usePhone } from "./ui/pointer.js";
 import { ONE_COLUMN_MAX } from "./ui/breakpoints.js";
 import { useRouteFocus } from "./ui/routeFocus.js";
 import { ToastRegion } from "./ui/Toast.jsx";
-import { SECTION_NAMES, pageTitle } from "./state/pageTitle.js";
+import { pageTitle } from "./state/pageTitle.js";
 import { addressOf, keyOf } from "./state/location.js";
 import { alive, lastPageOf, useAppHistory, useUp } from "./state/appHistory.js";
 import { MessageCircle, Users, Bot, Settings, ChevronLeft } from "./icons.js";
@@ -20,9 +20,9 @@ import { AgentsList, AgentMain } from "./pages/Agents.jsx";
 import { SettingsList, SettingsMain } from "./pages/Settings.jsx";
 
 const NAV = [
-  { id: "chat", label: SECTION_NAMES.chat, icon: MessageCircle },
-  { id: "contacts", label: SECTION_NAMES.contacts, icon: Users },
-  { id: "agents", label: SECTION_NAMES.agents, icon: Bot },
+  { id: "chat", label: "消息", icon: MessageCircle },
+  { id: "contacts", label: "通讯录", icon: Users },
+  { id: "agents", label: "Agent", icon: Bot },
 ];
 
 /**
@@ -59,7 +59,7 @@ function Rail({ phone }) {
           <span className="rail-icon">
             <Settings size={26} aria-hidden="true" />
           </span>
-          <span>{SECTION_NAMES.settings}</span>
+          <span>设置</span>
         </button>
       </div>
     </nav>

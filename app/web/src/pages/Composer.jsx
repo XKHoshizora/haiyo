@@ -378,7 +378,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
             onCompositionEnd={compositionEnded}
             onBlur={()=>{if(composition.current)compositionEnded();}}
             onClick={e=>settleCaret(e.currentTarget)} onKeyDown={keyDown} onPaste={paste}
-            onKeyUp={e=>{const from=keyFrom.current;keyFrom.current=null;if(!e.nativeEvent.isComposing && ["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End","PageUp","PageDown"].includes(e.key))settleCaret(e.currentTarget,from);}}/>
+            onKeyUp={e=>{const from=keyFrom.current;keyFrom.current=null;if(!composing(e) && ["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End","PageUp","PageDown"].includes(e.key))settleCaret(e.currentTarget,from);}}/>
         </div>
         <ul className="sr-only" id={tagsId}>{tags.map(t=><li key={`${t.start}:${t.id}`}>{`提到 ${mentionName(text.slice(t.start,t.start+t.length))}`}</li>)}</ul>
         <p className="sr-only" aria-live="polite">{told}</p>

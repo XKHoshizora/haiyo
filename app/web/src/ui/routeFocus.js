@@ -1,32 +1,19 @@
 // Where the focus goes when the page changes, and what is said: one rule for every width, decided by what is on screen rather
-// than by the width itself. After a change of address (state/location.js):
+// than by the width itself (the shown/focus rules are ui/focusRules.js, shared with the layers). After a change of what is drawn:
 // - the details panel opened: the focus goes to its heading (it covers the button that opened it on all but the widest screens);
 //   it closed: back to that button;
 // - a page opened over the list or in place of another: if the focus was lost with what it was on (one column hides the list,
-//   `display: none`; a page that went away takes its controls), it goes to the new page's heading;
+//   `display: none`; a page that went away takes its controls; a dialog that closed with it), it goes to the new page's heading;
 // - back at the list: if the focus was lost, to the row (or control) of the list it was last on, else the list's heading;
-// - otherwise (the row that opened a page is still on screen, beside it) the focus stays, and the page's name is announced.
-// A heading takes the focus with tabindex="-1" (no ring for a pointer; `:focus-visible` shows it for the keyboard).
+// - otherwise (the row that opened a page is still on screen, beside it) the focus stays.
+// The page is said once: by its heading taking the focus, or else by the polite announcer — never both, never neither.
+// And whenever something the focus was on is removed from under it (a row that went with an action, a list that re-sorted), the
+// focus goes to the same element if it was only moved, else to the nearest place left of where it was — never <body>.
 import { useEffect, useLayoutEffect, useRef } from "react";
-
-const shown = (el) => el instanceof HTMLElement && el.isConnected && el.getClientRects().length > 0 && !el.closest("[inert]");
-/** The focus is nowhere a person can see: on <body>, or on something hidden, removed or made inert. */
-const lost = () => !shown(document.activeElement) || document.activeElement === document.body;
-
-function focusOn(el) {
-  if (!shown(el)) return false;
-  if (!el.matches("a[href], button, input, select, textarea, [tabindex]")) el.setAttribute("tabindex", "-1");
-  el.focus({ preventScroll: true });
-  return document.activeElement === el;
-}
-/** A view's heading, else its first control, else the view itself. */
-const focusView = (view) => {
-  if (!view) return false;
-  return focusOn(view.querySelector("h1, h2")) || focusOn(view.querySelector("button, a[href], input, textarea, select")) || focusOn(view);
-};
+import { anchorsOf, focusOn, focusView, lost, restoreFocus } from "./focusRules.js";
 
 /**
- * In the signed-in shell: `where` {key, pane, overlay} is the address drawn, `label` what the page is called, `title` the tab's
+ * In the signed-in shell: `where` {key, path, pane, overlay} is what is drawn, `label` what the page is called, `title` the tab's
  * title. Returns the ref of the announcer (`<p aria-live="polite">`, drawn by the shell, written here only).
  */
 export function useRouteFocus({ where, label, title }) {
@@ -42,11 +29,28 @@ export function useRouteFocus({ where, label, title }) {
   }, [title]);
 
   useEffect(() => {
+    /** What had the focus last, and where it sat, for when it is removed from under the focus. */
+    let last = null;
+    let anchors = [];
     const note = (e) => {
-      if (e.target instanceof HTMLElement && e.target.closest(".list-col")) inList.current = e.target;
+      if (!(e.target instanceof HTMLElement)) return;
+      last = e.target;
+      anchors = anchorsOf(e.target);
+      if (e.target.closest(".list-col")) inList.current = e.target;
     };
+    const watch = new MutationObserver((records) => {
+      if (!last || document.activeElement !== document.body) return;
+      // Only when what had the focus was itself taken out (a press on nothing, which also leaves the focus on <body>, is the person's).
+      const removed = records.some((r) => [...r.removedNodes].some((n) => n === last || n.contains?.(last)));
+      if (!removed) return;
+      restoreFocus({ candidates: [last], anchors });
+    });
     document.addEventListener("focusin", note);
-    return () => document.removeEventListener("focusin", note);
+    watch.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      document.removeEventListener("focusin", note);
+      watch.disconnect();
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -56,18 +60,25 @@ export function useRouteFocus({ where, label, title }) {
     const main = document.querySelector(".main-col");
     const list = document.querySelector(".list-col");
     const side = document.querySelector(".side-col");
-    let moved = false;
+    let view = null;
     if (where.overlay && !was.overlay && where.path === was.path) {
       opener.current = document.activeElement;
-      moved = focusView(side);
+      view = side;
+      focusView(side);
     } else if (!where.overlay && was.overlay && where.path === was.path) {
-      if (lost()) moved = focusOn(opener.current) || focusView(main);
+      if (lost() && !focusOn(opener.current)) focusView(main);
     } else if (where.pane === "main") {
-      if (lost()) moved = focusView(main);
-    } else if (lost()) {
-      moved = focusOn(inList.current) || focusView(list);
+      view = main;
+      if (lost()) focusView(main);
+    } else {
+      view = list;
+      if (lost() && !focusOn(inList.current)) focusView(list);
     }
-    if (!moved && announcer.current) announcer.current.textContent = label;
+    // Said once: the new view's heading has the focus (it is read), or else the announcer says the page's name.
+    const active = document.activeElement;
+    const onHeading = Boolean(view && active?.matches?.("h1, h2") && view.contains(active));
+    const line = announcer.current;
+    if (!onHeading && line) line.textContent = line.textContent === label ? `${label} ` : label;
   }, [where.key]);
 
   return announcer;

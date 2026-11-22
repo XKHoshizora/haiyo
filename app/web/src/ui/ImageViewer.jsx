@@ -88,7 +88,7 @@ function Viewer({ images, index, opener, openedId, onShow, onClose }) {
   const go = (to) => to >= 0 && to <= last && onShow(to);
 
   // Back to the picture that opened it: the very node, or — when the list drew it again meanwhile — its new one.
-  useLayer(box, { onClose, history: false, autofocus: true, returnTo: () => (opener?.isConnected ? opener : document.querySelector(`[data-image="${CSS.escape(openedId)}"]`)) });
+  useLayer(box, { onClose, history: false, returnTo: () => (opener?.isConnected ? opener : document.querySelector(`[data-image="${CSS.escape(openedId)}"]`)) });
 
   // A button that went away (the end of the list, Retry) leaves the focus in the dialog, on an arrow or the close button.
   useEffect(() => {

@@ -5,13 +5,15 @@
 // - the focus goes in (its `[data-autofocus]`, else its first control) and Tab goes round inside it;
 // - Esc closes the top layer only — never an Esc a control inside spent (`preventDefault`, as a list or a menu does), nor one that
 //   cancels an input method's candidate (ui/keys.js); in a search box with words, Esc empties the box first;
-// - when it closes, the focus goes back to its opener (`returnTo()`, else where the focus was);
+// - when it closes (in the same commit, its inert gone first), the focus goes back to its opener (`returnTo()`, else where the focus
+//   was) if that is still shown, else to the nearest place left of where it sat, else to the page's heading — never to <body>;
 // - Back closes it and nothing else: it owns one history entry at the address of the page under it (state/appHistory.js).
 // Each layer node is drawn straight in document.body (a portal), so that everything else there can be made inert.
 // Why not `<dialog>` + showModal(): its top layer would sit over the toast and over the pickers a dialog opens (portalled lists,
 // menus), and lifting those into the top layer needs `popover` (Safari 17); `inert` gives the same inert page on our floor.
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { isEscape } from "./keys.js";
+import { anchorsOf, restoreFocus } from "./focusRules.js";
 import { closeLayerEntry, isLayerTraversal, layerLeftByBack, layerOnEntry, openLayerEntry } from "../state/appHistory.js";
 
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
@@ -21,6 +23,8 @@ const focusables = (node) => [...node.querySelectorAll(FOCUSABLE)];
 const stack = [];
 /** The elements this module made inert (it never touches an `inert` it did not set). */
 const madeInert = new Set();
+/** Ids are unique across loads of the page: an entry left by a page before a reload never names a layer of this one. */
+const LOAD = Math.random().toString(36).slice(2, 8);
 let nextId = 1;
 
 /** The child of document.body that holds `node`. */
@@ -30,11 +34,17 @@ const hostOf = (node) => {
   return el;
 };
 
-/** Everything in the body but the top layer (and what must stay live) is inert; nothing is while no layer is open. */
+/**
+ * Everything in the body before the top layer is inert (the page and the layers under it); what comes after it in the body was
+ * opened from it (a list, a menu: portals are appended as they open) and stays live, as does what must (the toast's region,
+ * `data-live`). Nothing is inert while no layer is open.
+ */
 function settleInert() {
   const top = stack.at(-1);
   const keep = top ? hostOf(top.node) : null;
-  const want = new Set(top ? [...document.body.children].filter((el) => el !== keep && !el.hasAttribute("data-live") && el.tagName !== "SCRIPT") : []);
+  const children = [...document.body.children];
+  const upTo = keep ? children.indexOf(keep) : -1;
+  const want = new Set(children.slice(0, Math.max(upTo, 0)).filter((el) => !el.hasAttribute("data-live") && el.tagName !== "SCRIPT"));
   for (const el of madeInert) {
     if (want.has(el)) continue;
     el.removeAttribute("inert");
@@ -77,7 +87,9 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
   const latest = useRef(null);
   latest.current = { onClose, returnTo, held };
   const id = useRef(null);
-  useEffect(() => {
+  // In the layout phase, opening and closing alike: the inert of a layer that goes is gone in the very commit that removes it, so no
+  // effect after it (the page's own focus, ui/routeFocus.js) ever sees a stale one.
+  useLayoutEffect(() => {
     if (!active) return undefined;
     const node = ref.current;
     if (!node) return undefined;
@@ -85,9 +97,11 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
       window.addEventListener("keydown", onEscape);
       listening = true;
     }
-    id.current ??= `layer-${nextId++}`;
+    id.current ??= `layer-${LOAD}-${nextId++}`;
     const own = id.current;
     const previous = document.activeElement;
+    // Where the opener sits (its list, its section, its column…): where the focus goes if the opener is gone when this closes.
+    const anchors = anchorsOf(previous);
     const layer = { node, close: () => latest.current.onClose?.(), held: () => Boolean(latest.current.held?.()) };
     stack.push(layer);
     settleInert();
@@ -134,9 +148,11 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
         window.removeEventListener("popstate", onPop);
         closeLayerEntry(own);
       }
-      // The element that opened it; else where the focus was — whichever is still on the page (and not inside a layer that is gone).
-      const back = [latest.current.returnTo?.(), previous].find((el) => el instanceof HTMLElement && el.isConnected && el !== document.body && !node.contains(el));
-      back?.focus();
+      // One decision, after the inert is gone (ui/focusRules.js `restoreFocus`): the element that opened it, else where the focus was,
+      // if shown; else the nearest place left of where it sat; else the page's heading — never <body>. A change of page in the same
+      // commit has its own say right after (ui/routeFocus.js moves a focus this put on something that page removed), and anything
+      // else the commit removes from under the focus is caught after it (the shell's watch, ui/routeFocus.js).
+      restoreFocus({ candidates: [latest.current.returnTo?.(), previous], anchors, away: node });
     };
   }, [active]);
 }
