@@ -152,9 +152,7 @@ function useRunClock(runId, text) {
  * `forgetRevealed`); the newest REVEALED_KEPT at most. A run id is never used twice, and its text only grows.
  */
 const revealedSoFar = new Map();
-/** The runs this page saw searching the web (`activity` `web`): what they write shows its links as plain text. */
-const searchedWeb = new Set();
-/** What a run that searched the web hands its text (ui/cites.jsx `CitesContext`): no citation, its links plain. */
+/** What a reply being written hands its text while the site offers web search (ui/cites.jsx `CitesContext`): no citation, its links plain. */
 const PLAIN_LINKS = Object.freeze({ cites: [], onJump: null, plainLinks: true });
 const REVEALED_KEPT = 20;
 function noteRevealed(runId, upTo) {
@@ -254,9 +252,9 @@ export function StreamBubble({ conv, finishing = null, onReveal = null, onFinish
   else if (thinks && clock.textAt) summary = thoughtFor(clock.textAt - clock.start);
   // What its tool looks at now, while one runs.
   const doing = finishing ? null : activityLine(run.activity);
-  // Once its run has searched the web, what it writes shows its links as plain text, as its stored reply will (WebSources.jsx).
-  if (run.activity === "web") searchedWeb.add(run.id);
-  const linksPlain = searchedWeb.has(run.id) ? PLAIN_LINKS : null;
+  // While the site offers web search, what any reply writes shows its links as plain text until it is stored (a reply that
+  // searched keeps them so, WebSources.jsx): this page may not have seen it search (a reload, another tab).
+  const linksPlain = state.webSearchAvailable === true ? PLAIN_LINKS : null;
   // (While its thinking streams, the line heads it: the bubble keeps the dots only; so it does for the frame before
   // the first characters of the text of a reply that thought.)
   const waiting = <Writing text={doing ?? (thinking ? (reasoning ? "" : line) : undefined)} />;

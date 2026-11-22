@@ -584,6 +584,44 @@ describe("what is kept beside the reply, and who reads it", () => {
     }
   });
 
+  it("a page with a title of 200 characters or more is kept and sent, its title cut by the one rule; its chip stands", async () => {
+    const gateway = scriptedGateway();
+    const long = [{ ...RESULTS[0]!, title: "长".repeat(400) }, { ...RESULTS[1]!, title: "长".repeat(200) }];
+    const { worker } = webWorker(gateway, fakeEngine(() => ({ results: long })));
+    const { owner, own } = await owned("longa");
+    await searchOnce(worker, gateway, owner, own, "天气？", QUERY, "见〔w1〕和〔w2〕。");
+    const wire = (await api(app, owner, "GET", `/api/conversations/${own}/messages`)).json.messages.at(-1);
+    expect(wire.webSources.map((s: { title: string }) => s.title)).toEqual([`${"长".repeat(199)}…`, "长".repeat(200)]);
+    expect(wire.webCites).toEqual([
+      { at: 1, n: 1 },
+      { at: 2, n: 2 },
+    ]);
+    expect(wire.plainLinks).toBe(true);
+  });
+
+  it("a reply whose run was handed web pages says so (plainLinks) even when no stored source survives the read's checks", async () => {
+    const gateway = scriptedGateway();
+    const { worker } = webWorker(gateway, fakeEngine());
+    const { owner, own } = await owned("plainb");
+    await searchOnce(worker, gateway, owner, own, "天气？", QUERY, "见[详情](https://evil.example/?d=1)。");
+    const seq = Number((await db.query<{ seq: string }>("select seq::text from conversations where id = $1", [own])).rows[0]!.seq);
+    // Every source made unreadable (an address the read refuses), as a page could never make it but a later rule might.
+    await db.query(
+      `update messages set body = jsonb_set(body, '{webSources}', '[{"n":1,"url":"http://plain.example.com/","title":"x"},{"n":2,"url":"https://u:p@a.example/","title":"y"}]'::jsonb)
+        where conversation_id = $1 and seq = $2`,
+      [own, seq],
+    );
+    const wire = (await api(app, owner, "GET", `/api/conversations/${own}/messages`)).json.messages.at(-1);
+    expect(wire).not.toHaveProperty("webSources");
+    expect(wire.plainLinks).toBe(true);
+    // A reply never handed any: no key.
+    const other = await owned("plainc");
+    await say(other.owner, other.own, "你好");
+    gateway.reply("见[详情](https://evil.example/?d=1)。");
+    await webWorker(gateway, null, app.deps.config).worker.runOnce();
+    expect((await api(app, other.owner, "GET", `/api/conversations/${other.own}/messages`)).json.messages.at(-1)).not.toHaveProperty("plainLinks");
+  });
+
   it("a model that never cites still gets its sources kept", async () => {
     const gateway = scriptedGateway();
     const { worker } = webWorker(gateway, fakeEngine());

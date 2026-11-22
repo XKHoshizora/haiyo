@@ -10,11 +10,12 @@ import { withoutBidiControls } from "../ui/markdownRules.js";
 /**
  * What an Agent's message hands its text (ui/cites.jsx `CitesContext`), or null for nothing: its message citations when
  * they can jump (`onJump`), its web chips (`msg.webCites`), in the order of their places (a message's first where both
- * stand), and `plainLinks` when its run was handed web pages (`msg.webSources`).
+ * stand), and `plainLinks` when its run was handed web pages (`msg.plainLinks`: from what is stored, not from which of its
+ * sources can be shown).
  */
 export function citingOf(msg, onJump) {
   const web = Array.isArray(msg.webCites) ? msg.webCites : [];
-  const plainLinks = Array.isArray(msg.webSources) && msg.webSources.length > 0;
+  const plainLinks = msg.plainLinks === true;
   const own = onJump && Array.isArray(msg.cites) ? msg.cites : [];
   const cites = web.length === 0 ? own : [...own, ...web].sort((a, b) => a.at - b.at);
   if (cites.length === 0 && !plainLinks) return null;

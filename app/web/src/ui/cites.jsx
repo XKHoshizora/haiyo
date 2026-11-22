@@ -32,14 +32,15 @@ export function numberedCites(cites) {
 /**
  * One citation: a `sup` that moves no line, holding a button that is a box as tall as the text line (easy to hit), the
  * number small at its top — a superscript to look at (styles.css `.cite`). A web page's chip (`kind` `w`) is a link to the
- * page instead, opening a new tab, its title and real host as its tooltip, drawn apart from a message's (`.cite-web`).
+ * page instead (`.cite-link`), opening a new tab, its title and real host as its tooltip, drawn apart from a message's (`.cite-web`)
+ * and saying so in its number (网2: two chips of one reply can both be 2, a message's and a page's).
  */
 export function Cite({ cite, onJump }) {
   if (cite.kind === "w") {
     return (
       <sup className="cite cite-web">
-        <a href={cite.url} target="_blank" rel="noopener noreferrer nofollow" title={`${cite.title}（${cite.host}）`} aria-label={`来源 ${cite.n}：${cite.title}（${cite.host}）`}>
-          <span>{cite.n}</span>
+        <a className="cite-link" href={cite.url} target="_blank" rel="noopener noreferrer nofollow" title={`${cite.title}（${cite.host}）`} aria-label={`来源 ${cite.n}：${cite.title}（${cite.host}）`}>
+          <span>网{cite.n}</span>
         </a>
       </sup>
     );

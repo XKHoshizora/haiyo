@@ -298,6 +298,11 @@ export const wireMessageSchema = z.object({
    * or not — its number, address (https) and title — to every reader of the reply alike (public pages). Absent otherwise.
    */
   webSources: z.array(z.object({ n: z.number(), url: z.string(), title: z.string() })).optional(),
+  /**
+   * Present (true) whenever its run was handed web pages, decided from what is stored (even if none of them is sent): a
+   * client shows its own links and bare addresses as plain text, so that only its sources open anything.
+   */
+  plainLinks: z.literal(true).optional(),
   /** Where its text cites one of `webSources` (`at` as a cite's, ascending; `n` its number). Absent when none. */
   webCites: z.array(z.object({ at: z.number(), n: z.number() })).optional(),
   /** Of the messages its tools found, those this reader can see now (VISIBLE_JOIN), in order; absent when none is. */

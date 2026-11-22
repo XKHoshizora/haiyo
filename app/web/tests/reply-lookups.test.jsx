@@ -32,7 +32,7 @@ const annBot = { ...agentPrincipal(OAG, "annbot", "安的助手"), ownerId: ANN,
 const groupMembers = [ME_ID, ANN, BO, AG1, OAG].map((id, i) => ({ id, role: "speaker", isCreator: i === 0 }));
 
 /** The app with my Agent 小助手, its conversation (`messages`) and the group 周末小组 (`groupMessages`); `open`: which one is open. */
-async function openChats({ messages = BASE, groupMessages = [], api = {}, open = "小助手" } = {}) {
+async function openChats({ messages = BASE, groupMessages = [], api = {}, open = "小助手", models = MODELS } = {}) {
   const lastSeq = (list) => list.reduce((max, m) => Math.max(max, m.seq), 0);
   const conversation = agentConv(A1, AG1, { lastSeq: lastSeq(messages), readSeq: lastSeq(messages) });
   const team = group(G1, { members: groupMembers, lastSeq: lastSeq(groupMessages), readSeq: lastSeq(groupMessages) });
@@ -41,7 +41,7 @@ async function openChats({ messages = BASE, groupMessages = [], api = {}, open =
   const app = await openApp({
     sync,
     api: { listProviders: vi.fn(async () => ({ providers: [] })), ...api },
-    handlers: { agents: () => ({ agents: [record] }), agent: () => record, run: () => ({ run: null }), groupRuns: () => ({ runs: [] }), models: () => MODELS },
+    handlers: { agents: () => ({ agents: [record] }), agent: () => record, run: () => ({ run: null }), groupRuns: () => ({ runs: [] }), models: () => models },
   });
   await click(screen.getByText(open, { selector: ".list-col .row-name" }));
   return app;
@@ -548,7 +548,9 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     expect(anchors.map((a) => a.getAttribute("href"))).toEqual([SOURCES[1].url]);
     const chip = anchors[0];
     expect(chip.closest("sup").classList.contains("cite-web")).toBe(true);
-    expect(chip.textContent).toBe("2");
+    expect(chip.classList.contains("cite-link")).toBe(true);
+    // Told apart from a message's citation by its visible text too.
+    expect(chip.textContent).toBe("网2");
     expect([chip.getAttribute("target"), chip.getAttribute("rel")]).toEqual(["_blank", "noopener noreferrer nofollow"]);
     expect(chip.getAttribute("aria-label")).toBe("来源 2：气象台：降温（xn--bcher-kva.example）");
     expect(bubble.textContent).toContain("详情");
@@ -562,14 +564,42 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     expect([...storedLi(3).querySelectorAll(".bubble a")].map((a) => a.getAttribute("href"))).toContain("https://evil.example/?d=1");
   });
 
-  it("while a reply that searched the web is written, its links are plain text too", async () => {
-    const { transport } = await openChats();
-    await runPush(transport, { activity: "web" });
-    await runPush(transport, { activity: null });
+  it("a reply its run was handed web pages for shows its links as plain text even when none of its sources can be shown", async () => {
+    await openChats({
+      messages: [
+        ...BASE,
+        wire(A1, 3, AG1, TEXT, { plainLinks: true }),
+        wire(A1, 4, AG1, TEXT, { webSources: [{ n: 1, url: "http://plain.example.com/", title: "x" }, { n: 2, url: "https://u:p@a.example/", title: "y" }] }),
+        wire(A1, 5, AG1, TEXT, { webSources: [{ n: 1, url: "https://news.example.com/a", title: "长".repeat(250) }] }),
+      ],
+    });
+    await elapse(2000);
+    for (const seq of [3, 4]) {
+      expect(storedLi(seq).querySelector("ol.web-sources")).toBeNull();
+      expect(storedLi(seq).querySelectorAll(".bubble a")).toHaveLength(0);
+      expect(storedLi(seq).querySelector(".bubble").textContent).toContain("evil.example");
+    }
+    // A long title is shown (cut by the service's one rule; the client never drops it), the links still plain.
+    expect(storedLi(5).querySelectorAll("ol.web-sources li")).toHaveLength(1);
+    expect(storedLi(5).querySelectorAll(".bubble a")).toHaveLength(0);
+  });
+
+  it("while the site offers web search, every reply being written shows its links as plain text, whether or not this page saw it search", async () => {
+    const { transport } = await openChats({ models: { ...MODELS, webSearchAvailable: true } });
+    await runPush(transport);
     await push(transport, { type: "delta", conversationId: A1, runId: R1, text: "见[详情](https://evil.example/?d=1)。" });
     await elapse(REVEAL_MAX_LAG_MS + 2000);
     const streaming = timeline().querySelector("li.streaming .bubble");
     expect(streaming.textContent).toContain("详情");
     expect(streaming.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  it("while the site offers none, a reply being written keeps its links as links (as before)", async () => {
+    const { transport } = await openChats();
+    await runPush(transport);
+    await push(transport, { type: "delta", conversationId: A1, runId: R1, text: "见[详情](https://evil.example/?d=1)。" });
+    await elapse(REVEAL_MAX_LAG_MS + 2000);
+    const streaming = timeline().querySelector("li.streaming .bubble");
+    expect([...streaming.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["https://evil.example/?d=1"]);
   });
 });

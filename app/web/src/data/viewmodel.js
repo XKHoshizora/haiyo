@@ -469,6 +469,9 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
     cites: m.kind === "text" ? citesView(m.cites, m.text) : [],
     // The web pages its run was handed and where its text cites them (the web search): to every reader alike.
     webSources: m.kind === "text" ? webSourcesView(m.webSources) : [],
+    // Its run was handed web pages (the service's `plainLinks`, or any stored source at all, shown or not): its links show as
+    // plain text, whatever of its sources can be shown.
+    plainLinks: m.kind === "text" && (m.plainLinks === true || (Array.isArray(m.webSources) && m.webSources.length > 0)),
     queries:
       m.kind === "text" && typeof agentId === "string" && m.senderId === agentId && Array.isArray(m.queries)
         ? m.queries.filter((q) => typeof q === "string" && q.trim() !== "")

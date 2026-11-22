@@ -89,11 +89,11 @@ function FileBody({ msg }) {
 
 /**
  * An Agent's text, with its citations (`msg.cites`, beside its text) as links that jump to their messages (`onJump`), and
- * the chips of the web pages it cites (`msg.webCites`), which open them. A reply whose run searched the web
- * (`msg.webSources`) shows its own links as plain text (`plainLinks`): only its sources open anything.
+ * the chips of the web pages it cites (`msg.webCites`), which open them. A reply whose run was handed web pages
+ * (`msg.plainLinks`) shows its own links as plain text: only its sources open anything.
  */
 function CitingAgentText({ msg, onJump }) {
-  const value = useMemo(() => citingOf(msg, onJump), [msg.cites, msg.webCites, msg.webSources, onJump]);
+  const value = useMemo(() => citingOf(msg, onJump), [msg.cites, msg.webCites, msg.plainLinks, onJump]);
   return (
     <CitesContext.Provider value={value}>
       <AgentText text={msg.text} id={msg.id} mentions={msg.mentions} />

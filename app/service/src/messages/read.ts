@@ -5,7 +5,7 @@ import { VISIBLE_JOIN, visibleJoin, type ConversationType } from "../conversatio
 import type { Queryable } from "../db.ts";
 import type { StoredOp } from "../memory/apply.ts";
 import { dreamLines, linesOf } from "../memory/lines.ts";
-import { citesOf, foundOf, lookupsOf, queriesOf, webCitesOf, webSourcesOf, type Cite, type MessageRef } from "./lookups.ts";
+import { citesOf, foundOf, handedWebPages, lookupsOf, queriesOf, webCitesOf, webSourcesOf, type Cite, type MessageRef } from "./lookups.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type StoredMessage, type WireMessage } from "./model.ts";
 import { principalsOf, type SyncPrincipal } from "./principals.ts";
 
@@ -243,6 +243,9 @@ function toWire(
     if (looked.queries.length > 0) wire.queries = looked.queries;
     if (looked.cites.length > 0) wire.cites = looked.cites;
     // The web pages its run was handed (agents/tools/web) and where its text cites them: public pages, to every reader.
+    // That it was handed any is said apart (`plainLinks`: its links show as plain text), from the stored list as it is,
+    // whatever of it the checks below keep.
+    if (handedWebPages(msg.body.webSources)) wire.plainLinks = true;
     const sources = webSourcesOf(msg.body.webSources);
     if (sources.length > 0) {
       wire.webSources = sources;
