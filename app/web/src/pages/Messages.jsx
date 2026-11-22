@@ -1,7 +1,7 @@
 import React, { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
-import { isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
+import { drawnTextOf, isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
 import { formatSize, namesAgent, replyPoints } from "../data/viewmodel.js";
 import { useShowReplyPoints } from "../data/prefs.js";
 import { failureText, retryHopeless } from "../data/uploadErrors.js";
@@ -22,24 +22,27 @@ import { CitesContext } from "../ui/cites.jsx";
 import { Reply, RotateCw, FileText, Check, CircleAlert } from "../icons.js";
 
 /** The quoted message as the reader may see it: the service says whether it is visible to them. */
-function Quote({ quote }) {
+function Quote({ quote, conv = null }) {
   const { state } = useStore();
   if (!quote) return null;
   if (!quote.visible) return <blockquote>引用的消息不在你的可见范围内</blockquote>;
+  // The quoted words as the bubble draws them (a mention is @name): the quote carries no mentions, the quoted message does when it is loaded.
+  const source = conv?.messages.find((m) => m.seq === quote.seq && m.text === quote.text);
+  const words = quote.kind === "file" ? quote.attachmentName : drawnTextOf(state, { text: quote.text, mentions: source?.mentions ?? [], from: quote.from });
   return (
     <blockquote>
       <strong>{quote.from ? senderName(state, quote.from) : ""}</strong>
-      {quote.kind === "file" ? quote.attachmentName : quote.text}
+      {words}
     </blockquote>
   );
 }
 
 /** What a file message says besides the file: the caption (its mentions as tags), and the quote when it replies to something. */
-function Caption({ msg }) {
+function Caption({ msg, conv }) {
   if (!msg.caption && !msg.quote) return null;
   return (
     <div className="bubble">
-      <Quote quote={msg.quote} />
+      <Quote quote={msg.quote} conv={conv} />
       <MentionText text={msg.caption} mentions={msg.mentions} />
     </div>
   );
@@ -114,17 +117,17 @@ function CitingAgentText({ msg, onJump }) {
   );
 }
 
-function Body({ msg, agent, onJump }) {
+function Body({ msg, agent, conv, onJump }) {
   if (msg.kind === "image" || msg.kind === "file")
     return (
       <>
         {msg.kind === "image" ? <ImageBody msg={msg} /> : <FileBody msg={msg} />}
-        <Caption msg={msg} />
+        <Caption msg={msg} conv={conv} />
       </>
     );
   return (
     <div className="bubble">
-      <Quote quote={msg.quote} />
+      <Quote quote={msg.quote} conv={conv} />
       {agent ? <CitingAgentText msg={msg} onJump={onJump} /> : <MentionText text={msg.text} mentions={msg.mentions} />}
     </div>
   );
@@ -232,7 +235,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
         </div>
         {thinking && <Thinking text={msg.reasoning} />}
         {/* A reply that is only a persona proposal has no text: its card alone, no empty bubble. */}
-        {!(ownChat && msg.proposal && !msg.text && !msg.quote) && <Body msg={msg} agent={agent} onJump={onJump} />}
+        {!(ownChat && msg.proposal && !msg.text && !msg.quote) && <Body msg={msg} agent={agent} conv={conv} onJump={onJump} />}
         {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation). */}
         {agent && <ReplyLookups key={`${conv.id}:${msg.id}`} msg={msg} conv={conv} onJump={onJump} />}
         {agent && <WebSources sources={msg.webSources} />}
@@ -290,7 +293,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
           )}
           {mine && msg.notCalled && <span className="muted">{msg.notCalled}</span>}
           {(msg.kind === "text" || msg.kind === "image") && msg.seq !== null && msg.status !== "failed" && msg.status !== "sending" && (
-            <button type="button" className="msg-action" onClick={() => onReply(msg)}>
+            <button type="button" className="msg-action" aria-haspopup="menu" onClick={() => onReply(msg)}>
               <Reply size={15} aria-hidden="true" /> 回复
             </button>
           )}

@@ -2546,7 +2546,9 @@ file is not read.
 
 *Session: required.* The same as `GET /api/attachments/:id` (the id alone decides who may fetch it and what is
 served; `:name` is read by nothing). It exists so that a browser opening the original shows the file's name in
-the tab and saves it under that name: the web app opens `/api/attachments/<id>/<name>`.
+the tab and saves it under that name (iOS Safari names the tab and a shared or saved file from the last segment of the address and ignores
+`Content-Disposition` for that): the web app opens `/api/attachments/<id>/<name>`. The service's request log records this route as
+`/api/attachments/<id>/[name]`; **the hosting platform's own access log still records the path, so the file name**.
 
 #### `HEAD /api/attachments/:id/:name`
 
@@ -4719,7 +4721,7 @@ visible to you now (the same rule as for reading the message); everything else �
 (also for the uploader), sent before you joined, after you left — is the same 404. Headers: the
 server's `Content-Type` (markup such as HTML or SVG is always `application/octet-stream`),
 `Content-Length`, `Content-Disposition: inline` only for `inline` attachments, else `attachment`, with an
-ASCII `filename` and the exact name as `filename*=UTF-8''…`; `X-Content-Type-Options: nosniff`,
+ASCII `filename` (the name with unsafe characters replaced; `file` and the real extension when nothing of it is a letter or a digit) and the exact name as `filename*=UTF-8''…`; `X-Content-Type-Options: nosniff`,
 `Content-Security-Policy: sandbox; default-src 'none'`, `Cache-Control: private, no-store`. No ranges.
 `HEAD /api/attachments/:id` answers the same status and headers without a body, and without reading the file.
 

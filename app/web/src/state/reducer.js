@@ -1,4 +1,5 @@
 // Pure UI navigation and toast. Server-backed state is applied by the data layer (Task 2).
+import { canonicalNav } from "./location.js";
 
 /**
  * A field to focus on an Agent's page (`agentFocus`, ModelPicker.jsx `openModelChoice`) belongs to the page it was asked
@@ -13,11 +14,11 @@ function keptFocus(before, after, patch) {
 export function reducer(state, action) {
   switch (action.type) {
     case "nav":
-      return { ...state, nav: keptFocus(state.nav, { ...state.nav, ...action.patch }, action.patch) };
+      return { ...state, nav: canonicalNav(keptFocus(state.nav, { ...state.nav, ...action.patch }, action.patch)) };
     case "nav/openConv":
       return {
         ...state,
-        nav: keptFocus(
+        nav: canonicalNav(keptFocus(
           state.nav,
           {
             ...state.nav,
@@ -25,12 +26,14 @@ export function reducer(state, action) {
             convId: action.convId,
             view: "chat",
             pane: "main",
+            // (The details panel belongs to the one conversation it was opened in.)
+            detailsOpen: false,
             // (A message to scroll to belongs to the conversation it was asked for.)
             focus: state.nav.focus?.convId === action.convId ? state.nav.focus : null,
             ...(action.patch || {}),
           },
           action.patch || {},
-        ),
+        )),
       };
     case "toast":
       return { ...state, seq: state.seq + 1, toast: { id: state.seq + 1, text: action.text } };

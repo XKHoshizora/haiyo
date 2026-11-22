@@ -1,10 +1,10 @@
 import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { useStore } from "./data/store.jsx";
-import { unreadTotal } from "./state/selectors.js";
+import { entity, isMyAgent, unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark } from "./ui/primitives.jsx";
 import { usePhone } from "./ui/pointer.js";
-import { markReplace, useAppHistory } from "./state/appHistory.js";
+import { lastPageOf, markReplace, useAppHistory } from "./state/appHistory.js";
 import { MessageCircle, Users, Bot, Settings } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
@@ -28,8 +28,8 @@ const NAV = [
 function Rail({ phone }) {
   const { state, dispatch } = useStore();
   const unread = unreadTotal(state);
-  // A section is its list, whatever the width (a wide screen draws the settings profile beside it by default).
-  const go = (section) => dispatch({ type: "nav", patch: { section, pane: "list" } });
+  // A section is the last address seen in it (its list if it was left on the list): a push like any other, and the address says what is drawn.
+  const go = (section) => dispatch({ type: "nav", patch: lastPageOf(section) });
   return (
     <nav className="rail" aria-label="主导航">
       {!phone && <BrandMark size={38} />}
@@ -62,8 +62,9 @@ function Rail({ phone }) {
 }
 
 /**
- * The open conversation disappeared while loaded (I left or was removed: `gone`, or missing from a sync):
- * close it, so nothing of it stays on screen, and say why once.
+ * The open conversation is not there once loaded: it disappeared (I left or was removed: `gone`, or missing from a sync), or its
+ * address was opened (a link, a reload, a Forward) for one that is not mine. The list is shown, nothing of it stays on screen, the
+ * entry is made the list (no Forward to it), and the reason is said once.
  */
 function useCloseWhenRemoved(state, dispatch) {
   const { convId, section } = state.nav;
@@ -74,12 +75,14 @@ function useCloseWhenRemoved(state, dispatch) {
       shown.current = convId;
       return;
     }
-    if (!convId || convId !== shown.current || !state.loaded) return;
+    if (!convId || !state.loaded || state.nav.opening) return;
+    const was = convId === shown.current;
     shown.current = null;
     markReplace();
-    dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false } });
-    if (section === "chat") dispatch({ type: "toast", text: "你已不在该会话中" });
-  }, [convId, present, section, state.loaded, dispatch]);
+    dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false, pane: "list" } });
+    // (Removed: the notice says so. An address that never was mine: it cannot say "no longer".)
+    if (section === "chat") dispatch({ type: "toast", text: was ? "你已不在该会话中" : "找不到这个会话，或你已不在其中" });
+  }, [convId, present, section, state.loaded, state.nav.opening, dispatch]);
 }
 
 /** How long a conversation I asked for (a new group, a friend's chat) may take to arrive before I stop waiting. */
@@ -156,14 +159,26 @@ export default function Shell() {
   const tabbar = phone && pane === "list";
   // The address is where a person is (state/location.js); Back and the edge swipe walk its entries (state/appHistory.js).
   useAppHistory({ nav, dispatch });
-  // An address of a conversation that is not here (removed, never a member, deleted; a Forward to it): the list, once, with the
-  // reason, and the entry is made the list so that nothing shows it again.
+  // An address of a page that is not here (a conversation removed or never mine, a Forward to it, a contact nobody knows, an Agent that is not
+  // mine, group info of a conversation that is not a group): the section's list or the conversation, once, with the reason; the entry is
+  // made that page so that nothing shows it again.
+  const seenPages = useRef(new Set());
   useEffect(() => {
-    if (!state.loaded || nav.section !== "chat" || nav.pane !== "main" || !nav.convId || nav.opening || state.convs[nav.convId]) return;
-    markReplace();
-    dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false, pane: "list" } });
-    dispatch({ type: "toast", text: "你已不在该会话中" });
-  }, [state.loaded, state.convs, nav.section, nav.pane, nav.convId, nav.opening, dispatch]);
+    if (!state.loaded || nav.opening || nav.pane !== "main") return;
+    // (A contact or an Agent that was on screen and went away says nothing more than its card or page already does; one never here says so.)
+    const key = nav.section === "contacts" ? `c:${nav.contactId}` : `a:${nav.agentId}`;
+    const was = seenPages.current.has(key);
+    if (nav.section === "contacts" && entity(state, nav.contactId)) seenPages.current.add(key);
+    if (nav.section === "agents" && isMyAgent(state, nav.agentId)) seenPages.current.add(key);
+    const fall = (patch, text) => {
+      markReplace();
+      dispatch({ type: "nav", patch });
+      if (text) dispatch({ type: "toast", text });
+    };
+    if (nav.section === "chat" && nav.view === "profile" && conv && conv.type !== "group") fall({ view: "chat" }, null);
+    else if (nav.section === "contacts" && nav.contactId && !entity(state, nav.contactId)) fall({ contactId: null, pane: "list" }, was ? null : "找不到这位联系人");
+    else if (nav.section === "agents" && nav.agentView !== "create" && nav.agentId && !isMyAgent(state, nav.agentId)) fall({ agentId: null, agentView: "detail", pane: "list" }, was ? null : "找不到这个 Agent");
+  }, [state.loaded, state.convs, state.agents, state.people, conv, nav.section, nav.pane, nav.convId, nav.view, nav.contactId, nav.agentId, nav.agentView, nav.opening, dispatch]);
   const noteScroll = useKeepListScroll(pane, nav.section);
   let list = null;
   let main = null;

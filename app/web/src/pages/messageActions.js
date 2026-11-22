@@ -1,18 +1,9 @@
 // What a message's menu offers (ui/BubbleMenu.jsx): only what the app already does, plus copy. Each action is `{id, label, icon, run}`.
-import { mentionSegments } from "../data/mentions.js";
-import { entity } from "../state/selectors.js";
+import { drawnTextOf } from "../state/selectors.js";
 import { Copy, Download, Reply } from "../icons.js";
 
-/** A message's text as plain text: a mention as `@` and the name it shows now (a gone one as it was sent), no hidden words. */
-export function plainText(state, msg) {
-  return mentionSegments(msg.text ?? "", msg.mentions)
-    .map((part) => {
-      if (!part.mention) return part.text;
-      const known = entity(state, part.mention.id);
-      return known ? `@${known.displayName || known.name}` : part.text;
-    })
-    .join("");
-}
+/** A message's text as drawn, as plain text (the one function: state/selectors.js `drawnTextOf`, ui/drawnText.js). */
+export const plainText = drawnTextOf;
 
 /** Puts `text` on the clipboard (the async API, else a hidden field and `execCommand`); resolves with whether it worked. */
 export async function copyText(text) {

@@ -142,7 +142,9 @@ export function ChatList() {
             </button>
           </li>
         ))}
-        {rows.length === 0 && <li className="rows-empty">{state.order.length === 0 && !q ? "还没有会话，点右上角的“+”添加好友或发起群聊" : "没有符合条件的会话"}</li>}
+        {/* (The empty state is for an answer that is really empty: until the first sync has answered the list is loading.) */}
+        {rows.length === 0 && !state.loaded && !q && <li className="rows-empty" role="status">正在读取…</li>}
+        {rows.length === 0 && (state.loaded || q) && <li className="rows-empty">{state.order.length === 0 && !q ? "还没有会话，点右上角的“+”添加好友或发起群聊" : "没有符合条件的会话"}</li>}
         {q && (
           <>
             <li className="rows-label">聊天记录</li>

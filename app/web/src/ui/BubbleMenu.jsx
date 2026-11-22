@@ -9,8 +9,6 @@ export const HOLD_MS = 450;
 export const SLOP = 10;
 /** What a press may start on: the bubble of a text, a picture, a file card. */
 const TARGETS = ".bubble, .attachment-image, .file-card";
-/** The click that follows a long-press's release is swallowed for this long (ms). */
-const SWALLOW_MS = 600;
 const GAP = 6;
 const MARGIN = 8;
 
@@ -60,12 +58,14 @@ export function BubbleMenu({ anchor, bounds, actions, onClose, label = "消息�
     const away = (e) => !box.current?.contains(e.target) && onClose({ restore: false });
     const leave = () => onClose({ restore: false });
     document.addEventListener("pointerdown", away, true);
-    document.addEventListener("scroll", leave, true);
+    // The person's own scroll (a finger moving the page, the wheel) closes it; the list's own scrolling (a reply streaming in, a picture
+    // growing) does not.
+    document.addEventListener("touchmove", leave, { passive: true, capture: true });
     document.addEventListener("wheel", leave, { passive: true, capture: true });
     window.addEventListener("resize", leave);
     return () => {
       document.removeEventListener("pointerdown", away, true);
-      document.removeEventListener("scroll", leave, true);
+      document.removeEventListener("touchmove", leave, { capture: true });
       document.removeEventListener("wheel", leave, { capture: true });
       window.removeEventListener("resize", leave);
     };
@@ -85,7 +85,7 @@ export function BubbleMenu({ anchor, bounds, actions, onClose, label = "消息�
       e.preventDefault();
       e.stopPropagation();
       onClose({ restore: true });
-    } else if (e.key === "Tab") onClose({ restore: false });
+    } else if (e.key === "Tab") onClose({ restore: true });
   };
   return createPortal(
     <div
@@ -134,6 +134,8 @@ export function useBubbleMenu(getActions) {
   const timer = useRef(0);
   const press = useRef(null);
   const heldAt = useRef(0);
+  /** A long-press opened the menu: the click of its release (however long the hold) is not a tap, until the next press. */
+  const swallow = useRef(false);
   const openRef = useRef(null);
   const container = useRef(null);
 
@@ -179,13 +181,17 @@ export function useBubbleMenu(getActions) {
   const bind = {
     ref: container,
     onPointerDown(e) {
+      swallow.current = false;
       if (e.pointerType === "mouse" || !hit(e)) return;
       const target = hit(e);
       press.current = { x: e.clientX, y: e.clientY };
       clearTimeout(timer.current);
       timer.current = setTimeout(() => {
         press.current = null;
-        if (open(target, null, target)) heldAt.current = Date.now();
+        if (open(target, null, target)) {
+          heldAt.current = Date.now();
+          swallow.current = true;
+        }
       }, HOLD_MS);
     },
     onPointerMove(e) {
@@ -197,7 +203,7 @@ export function useBubbleMenu(getActions) {
     onPointerLeave: cancel,
     // The release of a long-press is followed by a click: not for the picture's viewer, not for a mention's card.
     onClickCapture(e) {
-      if (Date.now() - heldAt.current < SWALLOW_MS && hit(e)) {
+      if (swallow.current && hit(e)) {
         e.preventDefault();
         e.stopPropagation();
       }

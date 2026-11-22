@@ -194,3 +194,15 @@ describe("the touch floor cannot shrink a field", () => {
     for (const r of fields) if (px(r.decl["font-size"]) !== null) expect(px(r.decl["font-size"]), r.selectors.join(", ")).toBeLessThanOrEqual(16);
   });
 });
+
+describe("the title of a profile-style page keeps a minimum and the actions wrap", () => {
+  it("a header column that is not the actions has a 12em basis and a 12em (or row) minimum, at every width", () => {
+    const rule = plain(".profile-head > div:not(.head-actions)");
+    expect(rule.flex).toBe("1 1 12em");
+    expect(rule["min-width"]).toBe("min(12em, 100%)");
+    // No narrow rule takes the minimum away again, and a long word is not broken per letter.
+    expect(rules.filter((r) => r.selectors.some((x) => /\.profile-head > div(?!:not)/.test(x)) && r.decl["min-width"] === "0")).toEqual([]);
+    for (const r of rules.filter((x) => x.selectors.includes(".profile-head h2"))) expect(r.decl["overflow-wrap"] ?? "normal").not.toBe("anywhere");
+    expect(plain(".profile-head")["flex-wrap"]).toBe("wrap");
+  });
+});

@@ -493,3 +493,18 @@ describe("the application chunk", () => {
     expect(html).not.toMatch(/<script[^>]*>\s*[^<\s]/);
   });
 });
+
+describe("the adjust dialog and the page it belongs to", () => {
+  it("is closed when the layout stops drawing the page (a wide window narrowed while it was open)", async () => {
+    await openApp({ sync: baseSync });
+    await goSettings();
+    await choose(png());
+    expect(dialog()).not.toBeNull();
+    const rects = vi.spyOn(Element.prototype, "getClientRects");
+    rects.mockReturnValue([]); // the page beside the list is no longer drawn
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(dialog()).toBeNull();
+  });
+});

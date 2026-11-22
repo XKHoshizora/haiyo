@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act, cleanup, configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ApiError, request, setUnauthenticatedHandler } from "../src/api/http.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
-import { clearResetToken } from "../src/auth/router.js";
+import { clearResetToken, takeReturn } from "../src/auth/router.js";
 import { StoreProvider, emptyState } from "../src/data/store.jsx";
 import { SettingsMain } from "../src/pages/Settings.jsx";
 
@@ -451,6 +451,15 @@ describe("session lifecycle", () => {
     expect(layers[0].stop).toHaveBeenCalledTimes(1);
     expect(place()).toBe("/signin");
     expect(screen.queryByText(EXPIRED_NOTICE)).toBeNull();
+  });
+
+  it("a sign-out does not hand this account's page to whoever signs in next", async () => {
+    at("/chat/00000000-0000-4000-8000-0000000000c1");
+    const api = fakeApi();
+    mount(api, () => <SignOutProbe />);
+    fireEvent.click(await screen.findByText("probe-sign-out"));
+    await screen.findByRole("button", { name: "登录" });
+    expect(takeReturn()).toBeNull();
   });
 
   it("the 4001 close the service sends on sign-out, arriving before the answer, is not an expiry", async () => {

@@ -64,6 +64,10 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   }, [end]);
 
   const running = session.status === "in";
+  // Only a visit that was signed out from the start keeps the page it came for: a sign-out or an expiry must not hand the page of this
+  // account to whoever signs in next.
+  const wasIn = useRef(false);
+  if (running) wasIn.current = true;
   useEffect(() => {
     if (!running) return undefined;
     const { layer } = box;
@@ -95,7 +99,7 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   useEffect(() => {
     if (!decision.redirect) return;
     // A page of the app opened signed out is opened after the sign-in.
-    if (decision.redirect === "/signin" && route.name === "app") rememberReturn(globalThis.location.pathname);
+    if (decision.redirect === "/signin" && route.name === "app" && !wasIn.current) rememberReturn(globalThis.location.pathname);
     navigate(decision.redirect === "/" ? takeReturn() ?? "/" : decision.redirect, { replace: true });
   }, [decision.redirect]);
 
