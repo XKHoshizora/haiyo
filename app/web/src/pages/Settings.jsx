@@ -19,6 +19,14 @@ import { PROVIDERS_PAGE, choiceList, modelKey, pickerGroups, staleRows, useModel
 import { ModelSelect } from "./ModelSelect.jsx";
 import { Select } from "../ui/Select.jsx";
 import { refusalText, settled, useAction } from "./useAction.js";
+import { LEGAL_LINK_NAMES, LEGAL_PATHS } from "../legal/docs.js";
+
+/** The rows under 关于: each public page and what it is about. */
+const LEGAL_ROWS = [
+  ["terms", "使用规则、18 岁以上"],
+  ["privacy", "保存什么、交给谁、保存多久"],
+  ["contact", "support@haiyo.org、举报"],
+];
 
 export function SettingsList() {
   const { state, dispatch } = useStore();
@@ -61,6 +69,15 @@ export function SettingsList() {
             <span className="row-body"><span className="row-name">拉黑</span><span className="row-preview">你拉黑的人，可在这里解除</span></span>
           </button>
         </li>
+        {/* The public pages (src/legal/), in a new tab: the app stays where it was. */}
+        <li className="rows-label">关于</li>
+        {LEGAL_ROWS.map(([doc, preview]) => (
+          <li key={doc}>
+            <a className="row slim" href={LEGAL_PATHS[doc]} target="_blank" rel="noopener">
+              <span className="row-body"><span className="row-name">{LEGAL_LINK_NAMES[doc]}</span><span className="row-preview">{preview}</span></span>
+            </a>
+          </li>
+        ))}
       </ul>
     </>
   );

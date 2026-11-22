@@ -13,8 +13,11 @@ function* files(dir) {
   }
 }
 
-/** Anchors that are deliberately not text links: a file card that is one link that downloads, and the links of rendered Markdown (styled by `.md a`). */
-const OWN_STYLE = new Set(["ui/FileCard.jsx", "ui/Markdown.jsx"]);
+/**
+ * Anchors that are deliberately not text links: a file card that is one link that downloads, the links of rendered Markdown
+ * (styled by `.md a`), and the public pages' own text (their links styled by `.legal-doc a`, and their name at the top).
+ */
+const OWN_STYLE = new Set(["ui/FileCard.jsx", "ui/Markdown.jsx", "legal/LegalPage.jsx"]);
 
 describe("text links share one style", () => {
   it("every anchor in the app is the shared text link or a button, or is on the short list of own-style ones", () => {
@@ -24,8 +27,9 @@ describe("text links share one style", () => {
       const text = readFileSync(file, "utf8");
       for (const m of text.matchAll(/<a\b[^>]*>/g)) {
         const tag = m[0];
-        // (`cite-link`: a web page's citation chip, a superscript number, ui/cites.jsx.)
-        if (/className=["{`][^>]*\b(text-link|btn|cite-link)\b/.test(tag) || OWN_STYLE.has(rel)) continue;
+        // (`cite-link`: a web page's citation chip, a superscript number, ui/cites.jsx; `row`: a row of a list that opens a page,
+        // Settings › 关于.)
+        if (/className=["{`][^>]*\b(text-link|btn|cite-link|row)\b/.test(tag) || OWN_STYLE.has(rel)) continue;
         raw.push(`${rel}: ${tag.slice(0, 60)}`);
       }
     }

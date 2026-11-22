@@ -44,10 +44,23 @@ describe("settings list", () => {
   it("offers the profile, model providers, usage, the memory palace, blocked people; no Agent, device or demo entries", async () => {
     await openApp({ sync: baseSync });
     await goSettings();
-    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑"]);
+    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑", "服务条款", "隐私政策", "联系我们"]);
     const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll(PRODUCT_NAME, "");
     for (const word of ["Agent", "设备", "演示", "重置", "示例数据"]) expect(text).not.toContain(word);
     expect(document.querySelector(".list-col .settings-me").textContent).toContain("Mei");
+  });
+});
+
+describe("settings list: the terms, the privacy policy and the contact page", () => {
+  it("are rows of the list under 关于, each opening its public page in a new tab", async () => {
+    await openApp({ sync: baseSync });
+    await goSettings();
+    const about = [...document.querySelectorAll(".list-col .rows-label")].find((x) => x.textContent === "关于");
+    expect(about).toBeTruthy();
+    for (const [name, href] of [["服务条款", "/terms"], ["隐私政策", "/privacy"], ["联系我们", "/contact"]]) {
+      const row = settingsRow(name).closest("a");
+      expect([name, row?.getAttribute("href"), row?.getAttribute("target"), row?.getAttribute("rel"), row?.classList.contains("row")]).toEqual([name, href, "_blank", "noopener", true]);
+    }
   });
 });
 

@@ -136,5 +136,6 @@ export const APP_CLASSES = new Set(
   viewer viewer-bar viewer-meta viewer-name viewer-count viewer-actions viewer-btn viewer-stage viewer-img viewer-state viewer-spinner
   viewer-nav viewer-prev viewer-next viewer-who btn-save bubble-menu
   composer-field composer-field-off composer-mirror mention mention-agent mention-self mention-gone mention-card mention-card-body mention-card-name mention-card-handle mention-chip
-  cite-web cite-link web-sources web-source-n web-source-title web-source-host md-link-plain`.split(/\s+/),
+  cite-web cite-link web-sources web-source-n web-source-title web-source-host md-link-plain
+  auth-legal check-field legal-page legal-top legal-brand legal-lang legal-doc legal-version legal-todo legal-nav`.split(/\s+/),
 );
