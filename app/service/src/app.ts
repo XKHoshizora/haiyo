@@ -63,6 +63,7 @@ import { createSlots, type Slots } from "./slots.ts";
 import type { Hub } from "./sync/hub.ts";
 import { registerSync } from "./sync/routes.ts";
 import { registerWebClient } from "./web.ts";
+import { registerAppLinks } from "./app-links.ts";
 import { pushWhispers, registerWhisperRoutes } from "./whispers/routes.ts";
 import { expireWhispers, removeOldWhispers } from "./whispers/store.ts";
 import { deliverReminders } from "./metering/reminders.ts";
@@ -659,6 +660,8 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     async () => ({ mailDelivered: config.mailMode === "resend" }),
   );
 
+  // Apple's universal-links file: its own route, so the web client's wildcard never answers it with the page.
+  registerAppLinks(app);
   // Last: the wildcard must never get ahead of an API route (a more specific route always wins, but be explicit).
   await registerWebClient(app);
 

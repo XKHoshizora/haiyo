@@ -823,7 +823,29 @@ const envSchema = z.object({
     .pipe(z.number().max(1440, "SWEEP_INTERVAL_MINUTES must be at most 1440 (one day)")),
   /** A search's statements are cancelled after this long (503 busy). */
   SEARCH_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
+  /** The iOS app's Team ID at Apple (10 capitals and digits): the universal-links file and the push token's issuer. */
+  APPLE_TEAM_ID: optionalString.pipe(z.string().regex(/^[A-Z0-9]{10}$/, "must be the 10-character Team ID (capitals and digits)").optional()),
+  /** The iOS app's bundle id (reverse DNS, e.g. `org.haiyo.app`): the universal-links file and the push topic. */
+  APPLE_BUNDLE_ID: optionalString.pipe(
+    z.string().max(155).regex(/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/, "must be a bundle id such as org.haiyo.app").optional(),
+  ),
 });
+
+/** The iOS app at Apple (README "Push notifications", Deployment "Universal links"). */
+export interface AppleConfig {
+  /** `APPLE_TEAM_ID` and `APPLE_BUNDLE_ID` both set: the app, and `/.well-known/apple-app-site-association` is served; else null. */
+  app: { teamId: string; bundleId: string } | null;
+  /** Which of Apple's variables are unset when at least one of them is set (one line at start says so); empty when none is set. */
+  missing: string[];
+}
+
+/** The app at Apple from its variables: only both identifiers make one; one alone names the other as missing. */
+function appleSettings(e: { APPLE_TEAM_ID?: string | undefined; APPLE_BUNDLE_ID?: string | undefined }): AppleConfig {
+  const given = { APPLE_TEAM_ID: e.APPLE_TEAM_ID, APPLE_BUNDLE_ID: e.APPLE_BUNDLE_ID };
+  const unset = Object.entries(given).filter(([, v]) => v === undefined).map(([k]) => k);
+  const app = e.APPLE_TEAM_ID !== undefined && e.APPLE_BUNDLE_ID !== undefined ? { teamId: e.APPLE_TEAM_ID, bundleId: e.APPLE_BUNDLE_ID } : null;
+  return { app, missing: unset.length === Object.keys(given).length ? [] : unset };
+}
 
 export interface Config {
   databaseUrl: string;
@@ -936,6 +958,8 @@ export interface Config {
   searchStatementTimeoutMs: number;
   /** Minutes between the in-process attachment sweeps; 0: none (run `attachments:sweep` by hand). */
   sweepIntervalMinutes: number;
+  /** The iOS app at Apple: its universal-links file and its pushes. */
+  apple: AppleConfig;
 }
 
 /** How long before the server closes an idle connection a persona draft must have answered on it. */
@@ -1098,5 +1122,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     dbAcquireTimeoutMs: e.DB_ACQUIRE_TIMEOUT_MS,
     searchStatementTimeoutMs: e.SEARCH_STATEMENT_TIMEOUT_MS,
     sweepIntervalMinutes: e.SWEEP_INTERVAL_MINUTES,
+    apple: appleSettings(e),
   };
 }
