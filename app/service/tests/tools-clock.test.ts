@@ -51,7 +51,8 @@ describe("the clock", () => {
     gateway.callTools([{ name: CURRENT_TIME, input: {} }]).reply("两点零五分。");
     expect(await toolWorker(deps({ now: () => new Date("2026-11-20T06:05:00Z") })).runOnce()).toBe(true);
     expect(outputs(gateway.calls.at(-1)!)).toEqual([{ date: "2026-11-20", weekday: "周五", time: "14:05", zone: "Asia/Shanghai" }]);
-    expect(await lastBody(own)).toEqual({ text: "两点零五分。", lookups: { time: 1 } });
+    // And, in its own conversation, the call itself, for its later replies there (harness design §3: never what it said).
+    expect(await lastBody(own)).toEqual({ text: "两点零五分。", lookups: { time: 1 }, toolCalls: [{ name: CURRENT_TIME, round: 1, outcome: "ok", input: {} }] });
   });
 
   it("takes no argument: a call with one is not run", async () => {

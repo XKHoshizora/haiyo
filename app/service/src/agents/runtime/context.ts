@@ -1,6 +1,6 @@
 import { IMAGE_TOKENS, pdfTokens } from "../../metering/prices.ts";
-import { CONTEXT_HEADROOM, estimateTokens, lastToWeight, weight, weightWithin } from "../../metering/tokens.ts";
-import type { ModelCall, Part } from "../../models/gateway.ts";
+import { CONTEXT_HEADROOM, estimateTokens, lastToWeight, TOOL_TEXT_FACTOR, weight, weightWithin } from "../../metering/tokens.ts";
+import type { ModelCall, Part, ReplayCall, ReplayResult, TurnPart } from "../../models/gateway.ts";
 import { characters as countCharacters, stripUnsafeText } from "../../schemas.ts";
 import { systemTokens, type SystemText } from "./prompt.ts";
 
@@ -54,12 +54,33 @@ export interface ContextAttachment {
   ref?: string;
 }
 
+/**
+ * One round of an earlier reply's tool use as it returns in history (agents/replay.ts `replayOf`; harness design §3): its
+ * calls, then their placeholder results.
+ */
+export interface ReplayRound {
+  calls: ReplayCall[];
+  results: ReplayResult[];
+}
+
 /** One message as it may be shown: the owner's as `user`, the Agent's as `assistant`. */
 export interface ContextEntry {
   role: "user" | "assistant";
   /** The quote (`> ` lines) and the message's own text or caption; may be empty when there is an attachment. */
   text: string;
   attachment: ContextAttachment | null;
+  /**
+   * An Agent's reply that looked something up, in a plan offered the tools it called (agents/context.ts `loadPage`): its
+   * rounds, returned before its text (`ContextPlan.build`), kept or left out with it. Absent: none (every other entry).
+   */
+  replay?: ReplayRound[];
+  /**
+   * An Agent's acknowledgement (agents/context.ts `loadPage`, a plan that replays): right before an entry with a replay it
+   * is sent at the head of that answer's turn, after the last result, not before the first call (`ContextPlan.build`), so
+   * that no replayed turn holds text and then a call — the shape of the reply being written, which was copied (harness
+   * design §3).
+   */
+  ack?: true;
 }
 
 /** What an attachment is shown as instead of its name: an image, a PDF, or the text of a file (cut already). */
@@ -103,12 +124,46 @@ export function entryText(own: string, quoted: string | null): string {
 }
 
 /**
- * Tokens a part is counted as (metering/tokens.ts, prices.ts): a text its weight times `ratio` (the plan's), an image
+ * THE text a part is weighed as (harness design §3, Holds): a text part its text; an earlier reply's call
+ * `{"id","name","input"}` and its result `{"id","name","output"}` as JSON — what the wire carries of them, and more; null
+ * for an image or a PDF, which are counted at their constants instead. The plan (`partTokens`), admission (port-impl.ts
+ * `begin`) and the worker's holds (worker.ts `toolReply`) all weigh a call's turns by it, so a replay is held as it is
+ * planned, once.
+ */
+export function partText(p: TurnPart): string | null {
+  switch (p.type) {
+    case "text":
+      return p.text;
+    case "tool-call":
+      return JSON.stringify({ id: p.id, name: p.name, input: p.input });
+    case "tool-result":
+      return JSON.stringify({ id: p.id, name: p.name, output: p.output });
+    default:
+      return null;
+  }
+}
+
+/**
+ * Tokens a part is counted as (metering/tokens.ts, prices.ts): a text its weight times `ratio` (the plan's); a replayed
+ * call or result its `partText` at `ratio` times `TOOL_TEXT_FACTOR`, as every tool text is planned; an image
  * `IMAGE_TOKENS`, a PDF `pdfTokens` — constants, at any ratio.
  */
-export function partTokens(p: Part, ratio = 1): number {
-  return p.type === "text" ? estimateTokens(p.text, ratio) : p.type === "image" ? IMAGE_TOKENS : pdfTokens(p.data.length);
+export function partTokens(p: TurnPart, ratio = 1): number {
+  switch (p.type) {
+    case "text":
+      return estimateTokens(p.text, ratio);
+    case "tool-call":
+    case "tool-result":
+      return estimateTokens(partText(p)!, ratio * TOOL_TEXT_FACTOR);
+    case "image":
+      return IMAGE_TOKENS;
+    case "file":
+      return pdfTokens(p.data.length);
+  }
 }
+
+/** The parts of an entry's replay, in the order they are sent. */
+const replayParts = (e: ContextEntry): TurnPart[] => (e.replay ?? []).flatMap((r) => [...r.calls, ...r.results]);
 
 /** The attachment's part: its content when there is some, else its name. */
 function attachmentPart(a: ContextAttachment, content: AttachmentContent | null): Part {
@@ -123,9 +178,13 @@ function attachmentPart(a: ContextAttachment, content: AttachmentContent | null)
   }
 }
 
-/** Tokens the message takes at least, planned at `ratio`: its text and its attachment's name. */
+/** Tokens the message takes at least, planned at `ratio`: its text, its attachment's name, and its replay (one unit with it). */
 export function minimalTokens(e: ContextEntry, ratio = 1): number {
-  return estimateTokens(e.text, ratio) + (e.attachment ? estimateTokens(attachmentLabel(e.attachment), ratio) : 0);
+  return (
+    estimateTokens(e.text, ratio) +
+    (e.attachment ? estimateTokens(attachmentLabel(e.attachment), ratio) : 0) +
+    replayParts(e).reduce((n, p) => n + partTokens(p, ratio), 0)
+  );
 }
 
 /**
@@ -352,8 +411,14 @@ export class ContextPlan {
    * consecutive messages of one side are one turn, their parts in order. The turns never end with the Agent's own: what
    * is shown starts at the person's newest message (the constructor: an Agent's message after it — its acknowledgement a
    * retry answers after, its own reply a told reply's group ends with — is not shown).
+   * An Agent's reply with a replay (`ContextEntry.replay`) returns as its rounds first — each round's calls in an
+   * Agent's turn, then a `tool` turn of their results — and then its text in a turn of its own, headed by its
+   * acknowledgement (`ContextEntry.ack`, held back from before the first call) (harness design §3, the layout); a later
+   * round's text before its calls is part of that text, so it comes after the last result. Lowered (gateway.ts
+   * `ModelCall.messages`), that is the turns as they were: `[acknowledgement, answer]` in one turn.
    * `tokens`: what they are counted as at ratio 1 (`partTokens`: the estimate admission corrects and settlement learns
-   * from, not the plan's count); `fixed`: the part of it that is images and PDFs at their constants.
+   * from, not the plan's count; a replayed call or result at `TOOL_TEXT_FACTOR`); `fixed`: the part of it that is images
+   * and PDFs at their constants — never a replayed part, which is text (`partText`) wherever it is weighed.
    */
   build(): { messages: ModelCall["messages"]; tokens: number; fixed: number } {
     const oldestFirst = [...this.kept].reverse();
@@ -361,18 +426,32 @@ export class ContextPlan {
     const messages: ModelCall["messages"] = [];
     let tokens = 0;
     let fixed = 0;
-    for (const { entry, content } of oldestFirst) {
-      const parts: Part[] = [];
-      if (entry.text !== "") parts.push({ type: "text", text: entry.text });
-      if (entry.attachment) parts.push(attachmentPart(entry.attachment, content));
+    const add = (role: ModelCall["messages"][number]["role"], parts: TurnPart[]): void => {
       for (const p of parts) {
         const n = partTokens(p);
         tokens += n;
-        if (p.type !== "text") fixed += n;
+        if (p.type === "image" || p.type === "file") fixed += n;
       }
       const last = messages[messages.length - 1];
-      if (last?.role === entry.role) last.parts.push(...parts);
-      else messages.push({ role: entry.role, parts });
+      if (last?.role === role && role !== "tool") last.parts.push(...parts);
+      else messages.push({ role, parts });
+    };
+    /** An acknowledgement held back to head its answer's turn after the results (`ContextEntry.ack`). */
+    let held: Part[] = [];
+    for (const [i, { entry, content }] of oldestFirst.entries()) {
+      const parts: Part[] = [];
+      if (entry.text !== "") parts.push({ type: "text", text: entry.text });
+      if (entry.attachment) parts.push(attachmentPart(entry.attachment, content));
+      if (entry.ack && oldestFirst[i + 1]?.entry.replay) {
+        held = parts;
+        continue;
+      }
+      for (const round of entry.replay ?? []) {
+        add("assistant", round.calls);
+        add("tool", round.results);
+      }
+      add(entry.role, [...held, ...parts]);
+      held = [];
     }
     return { messages, tokens, fixed };
   }

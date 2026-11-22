@@ -226,6 +226,32 @@ export interface Delta {
 }
 
 /**
+ * One tool call of the rounds a reply's answer was written with (worker.ts `toolReply`; harness design §3), as the worker
+ * saw it answered — what agents/replay.ts `storedToolCalls` keeps of it beside the reply in its own conversation.
+ */
+export interface ToolTrace {
+  /** The tool it called (any name: the store keeps none but those it replays). */
+  name: string;
+  /** Its round, the first 1. */
+  round: number;
+  /** "ok": the tool ran and answered with something usable; "refused": anything else (the tool's refusal, the loop's note). */
+  outcome: "ok" | "refused";
+  /** "ok" only: its input as the model wrote it. A refused call's is never handed over. */
+  input?: unknown;
+  /** "refused" only: the fixed sentence the model was answered with (`{error}` or the loop's `{note}`). */
+  said?: string;
+  /** "ok" `search_messages`: how many messages it handed over. */
+  found?: number;
+  /** "ok" `search_web`: the numbers of the pages it handed out (`〔w3〕` is 3), in order. */
+  pages?: number[];
+  /**
+   * "ok" `search_web`: each page's title and snippet as the model was handed them, page for page (web text: untrusted).
+   * Kept by agents/replay.ts `storedToolCalls`, cut there.
+   */
+  excerpts?: Array<{ title: string; snippet: string }>;
+}
+
+/**
  * What the worker posts as the Agent's message; a reply whose tools ran also what they looked up (`LookupFields`: a key
  * only for what there is, so a reply that ran none is posted as one offered none).
  */
@@ -234,6 +260,12 @@ export interface Reply extends LookupFields {
   reasoning: string;
   stopped: boolean;
   truncated: boolean;
+  /**
+   * A reply that ended as an answer after tool rounds: the calls of exactly the rounds its answering request carried
+   * (worker.ts `toolReply`), for its own conversation's later replies (agents/replay.ts). Absent: none — the plain call, a
+   * stop, a time-out, `extend` ending it, a reply offered no tools.
+   */
+  toolCalls?: readonly ToolTrace[];
 }
 
 export interface Usage {

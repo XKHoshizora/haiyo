@@ -315,6 +315,7 @@ Otherwise it creates the errand and X's question run in S (lane own, caller A), 
 **Result.**
 - A separate transaction (X's own conversation → X → errand row, guarded by `card_message_id is null`) inserts one `errand_result` card into A's own conversation. It shows the target by handle, plus the question and the answer by reference to S.
 - No run is ever shown the answer: X's later runs see only the handle, the state and the reason.
+- X's later runs see an errand only as the replay of X's own `ask_agent` call in its own conversation (harness design §3): a native call whose result is built from the `errands` row's columns only — the target's handle, `state` and `end_reason` — never from the answer message or the question.
 - If A quotes or retypes the answer, that is A's own message.
 
 **Owners in S.** An owner's message is a plain interjection, and the errand ends at the sweep (`owner_spoke`). Either owner ends an open errand with 结束 in S.

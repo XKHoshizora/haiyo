@@ -8,6 +8,9 @@ import type { ToolOutcome } from "../runtime/port.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, oneLine, speakerRole, TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
 import { siteDateTime, siteWeekday } from "./clock.ts";
 import type { ElsewhereAsk, RunScope, ToolDeps } from "./index.ts";
+import { BAD_DATE, QUERY_TOO_LONG, QUERY_TOO_SHORT, SEARCH_BUSY, SEARCH_MESSAGES, SEARCH_TIMEOUT } from "./search-words.ts";
+
+export * from "./search-words.ts";
 
 /**
  * The search tool (README "Agents and runs", Tools in a reply; design rules 1–4): the messages a reply's Agent can find
@@ -18,8 +21,6 @@ import type { ElsewhereAsk, RunScope, ToolDeps } from "./index.ts";
  * Agent's own principal (VISIBLE_JOIN): nothing from before it joined, nothing of a conversation it has left. Its text and
  * its file's name are all that is read of a message — never its reasoning, never what an earlier reply looked up.
  */
-
-export const SEARCH_MESSAGES = "search_messages";
 
 /** At most this many results come back, the newest. */
 export const SEARCH_RESULTS_MAX = 8;
@@ -32,12 +33,7 @@ export const QUERY_MAX_WEIGHT = 60;
 /** What marks where an excerpt was cut. */
 export const ELLIPSIS = "…";
 
-// The fixed sentences the model is answered with.
-export const SEARCH_TIMEOUT = "这次查找超时了。";
-export const SEARCH_BUSY = "现在查找的人太多了，过一会儿再查。";
-export const QUERY_TOO_SHORT = "要查的词至少要两个字。";
-export const QUERY_TOO_LONG = "要查的词太长了，换几个关键的字再查。";
-export const BAD_DATE = "日期要写成 YYYY-MM-DD，比如 2026-11-20。";
+// The fixed sentences the model is answered with (its refusals in search-words.ts).
 export const NOT_FOUND = "没找到。";
 export const NOT_FOUND_IN_GROUP = "这个群的记录里没找到。";
 /**

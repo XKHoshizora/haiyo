@@ -141,7 +141,7 @@ const peopleAfter = async (conv: string, line: number): Promise<number[]> =>
 function expectNoSecret(call: ModelCall): void {
   const sent = JSON.stringify(call);
   for (const secret of [...Object.values(SECRET), FILE_NAME]) expect([secret, sent.includes(secret)]).toEqual([secret, false]);
-  for (const m of call.messages) for (const p of m.parts) if (p.type !== "text") expect(Buffer.from(p.data).toString("utf8")).not.toContain("SECRET");
+  for (const m of call.messages) for (const p of m.parts) if (p.type === "image" || p.type === "file") expect(Buffer.from(p.data).toString("utf8")).not.toContain("SECRET");
 }
 
 const runsOf = async (agentId: string, conv: string) =>
