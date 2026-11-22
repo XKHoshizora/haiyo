@@ -483,12 +483,44 @@ describe("plainText copies what is drawn", () => {
   });
 });
 
+describe("a media bubble: only its name line starts a hold (the player's controls are the player's)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    calls.length = 0;
+  });
+
+  it("a long press on the video or its scrubber opens nothing; on the name line under it, the menu", () => {
+    render(
+      <Item
+        extra={
+          <figure className="attachment-media">
+            <div className="media-frame">
+              <video />
+            </div>
+            <p className="media-meta">
+              <span className="media-name">clip.mp4</span>
+            </p>
+          </figure>
+        }
+      />,
+    );
+    const video = document.querySelector(".attachment-media video");
+    touch(video, "pointerDown");
+    act(() => void vi.advanceTimersByTime(HOLD_MS + 50));
+    expect(menu()).toBeNull();
+    touch(video, "pointerUp");
+    touch(document.querySelector(".media-name"), "pointerDown");
+    act(() => void vi.advanceTimersByTime(HOLD_MS + 50));
+    expect(menu()).not.toBeNull();
+  });
+});
+
 describe("the stylesheet", () => {
   const css = readFileSync("src/styles.css", "utf8");
   it("on a touch screen the 回复 button is not drawn (the menu is the way) and a bubble has no callout or selection", () => {
     expect(css).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.msg-action \{ position: absolute; width: 1px; height: 1px;[^}]*opacity: 0; \}/);
     expect(css).toMatch(/\.msg-action:focus-visible \{ position: static;[^}]*opacity: 1; \}/);
-    expect(css).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.bubble, \.attachment-image, \.file-card \{ -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; \}/);
+    expect(css).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.bubble, \.attachment-image, \.attachment-media, \.file-card \{ -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; \}/);
     expect(css).not.toMatch(/@media \(hover: none\) \{ \.msg-action/);
   });
 

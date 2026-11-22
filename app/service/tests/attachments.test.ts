@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { newBlobKey } from "../src/attachments/blob.ts";
 import { abandonedAfterMs, holdBlob, sweepPendingBlobs } from "../src/attachments/pending.ts";
-import { contentDisposition, sanitizeFileName } from "../src/attachments/routes.ts";
+import { contentDisposition, parseRange, sanitizeFileName } from "../src/attachments/routes.ts";
 import { MAX_CONCURRENT_UPLOADS } from "../src/attachments/slots.ts";
 import { sweepOrphans } from "../src/attachments/store.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
@@ -116,6 +116,152 @@ describe("download under its own name", () => {
   });
 });
 
+describe("byte ranges (a video plays and seeks in a browser only through them)", () => {
+  /** A file of 1000 bytes whose byte n is n mod 251: any slice can be told by its first byte. */
+  const BYTES = Buffer.from(Array.from({ length: 1000 }, (_, n) => n % 251));
+  // The head of an MP4 (an `ftyp` box with the brand isom) so the server's sniffing says video/mp4, then the bytes above.
+  const MP4 = Buffer.concat([Buffer.from("0000001c667479706973 6f6d0000020069736f6d69736f32".replace(/ /g, ""), "hex"), BYTES]);
+  const slice = (res: { rawPayload: Buffer }, from: number, to: number) => Buffer.compare(res.rawPayload, MP4.subarray(from, to + 1)) === 0;
+
+  async function sentVideo() {
+    const [a, b, eve] = await people("alice", "bob", "eve");
+    const { conversationId: dm } = await befriend(app, a, b);
+    const up = await upload(a, dm, MP4, "clip.mp4", "video/mp4");
+    await sendFile(a, dm, up.json.id);
+    const get = (who: Actor | null, range?: string, url = `/api/attachments/${up.json.id}`) =>
+      app.inject({ method: "GET", url, headers: { ...(who ? { cookie: who.cookie } : {}), ...(range ? { range } : {}) } });
+    return { a, b, eve, dm, id: up.json.id as string, get, size: MP4.length };
+  }
+
+  it("the type is the sniffed one, on the wire and in the header; a full answer says it accepts ranges", async () => {
+    const { b, get, size, id, dm } = await sentVideo();
+    const full = await get(b);
+    expect(full.statusCode).toBe(200);
+    expect(full.headers["content-type"]).toBe("video/mp4");
+    expect(full.headers["accept-ranges"]).toBe("bytes");
+    expect(full.headers["content-length"]).toBe(String(size));
+    expect(full.headers["x-content-type-options"]).toBe("nosniff");
+    expect(Buffer.compare(full.rawPayload, MP4)).toBe(0);
+    const history = await api(app, b, "GET", `/api/conversations/${dm}/messages`);
+    expect(history.json.messages[0].attachment).toEqual({ id, name: "clip.mp4", size, inline: false, mime: "video/mp4" });
+  });
+
+  it("a single range: 206 with Content-Range, only those bytes, and the blob store was asked for just that slice", async () => {
+    const { b, get, size } = await sentVideo();
+    const res = await get(b, "bytes=10-99");
+    expect(res.statusCode).toBe(206);
+    expect(res.headers["content-range"]).toBe(`bytes 10-99/${size}`);
+    expect(res.headers["content-length"]).toBe("90");
+    expect(res.headers["content-type"]).toBe("video/mp4");
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-disposition"]).toContain("clip.mp4");
+    expect(slice(res, 10, 99)).toBe(true);
+    expect(probe.ranges.at(-1)).toEqual({ start: 10, end: 99 }); // (streamed from the store, never the whole file read and cut)
+  });
+
+  it("an open-ended range, a suffix range, a first byte, and an end past the file's end (clipped)", async () => {
+    const { b, get, size } = await sentVideo();
+    const open = await get(b, "bytes=900-");
+    expect([open.statusCode, open.headers["content-range"]]).toEqual([206, `bytes 900-${size - 1}/${size}`]);
+    expect(slice(open, 900, size - 1)).toBe(true);
+    const suffix = await get(b, "bytes=-50");
+    expect([suffix.statusCode, suffix.headers["content-range"]]).toEqual([206, `bytes ${size - 50}-${size - 1}/${size}`]);
+    expect(slice(suffix, size - 50, size - 1)).toBe(true);
+    const first = await get(b, "bytes=0-0");
+    expect([first.statusCode, first.headers["content-length"]]).toEqual([206, "1"]);
+    const past = await get(b, `bytes=${size - 10}-${size + 5000}`);
+    expect([past.statusCode, past.headers["content-range"]]).toEqual([206, `bytes ${size - 10}-${size - 1}/${size}`]);
+    const longer = await get(b, `bytes=-${size + 100}`); // (a suffix longer than the file is the whole file)
+    expect([longer.statusCode, longer.headers["content-range"]]).toEqual([206, `bytes 0-${size - 1}/${size}`]);
+  });
+
+  it("an unsatisfiable range is 416 with the file's size and nothing else", async () => {
+    const { b, get, size } = await sentVideo();
+    for (const range of [`bytes=${size}-`, `bytes=${size + 10}-${size + 20}`, "bytes=-0"]) {
+      const res = await get(b, range);
+      expect([range, res.statusCode, res.headers["content-range"], res.rawPayload.length]).toEqual([range, 416, `bytes */${size}`, 0]);
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    }
+  });
+
+  it("what is not a range this server serves is the whole file: a malformed header, another unit, several ranges, a range with If-Range (no validator to match)", async () => {
+    const { b, size, id } = await sentVideo();
+    for (const header of [{ range: "bytes=abc" }, { range: "bytes=5-2" }, { range: "items=0-5" }, { range: "bytes=0-5,10-20" }, { range: "bytes=0-5", "if-range": '"x"' }]) {
+      const res = await app.inject({ method: "GET", url: `/api/attachments/${id}`, headers: { cookie: b.cookie, ...header } });
+      expect([JSON.stringify(header), res.statusCode, res.rawPayload.length]).toEqual([JSON.stringify(header), 200, size]);
+    }
+  });
+
+  it("HEAD says the same without touching the blob: the type, the length, and that ranges are accepted; the alias route with a name answers ranges too", async () => {
+    const { b, id, size } = await sentVideo();
+    const reads = probe.gets.length;
+    const head = await app.inject({ method: "HEAD", url: `/api/attachments/${id}`, headers: { cookie: b.cookie, range: "bytes=0-9" } });
+    expect([head.statusCode, head.headers["accept-ranges"], head.headers["content-length"], head.headers["content-type"]]).toEqual([200, "bytes", String(size), "video/mp4"]);
+    expect(probe.gets.length).toBe(reads);
+    const alias = await app.inject({ method: "GET", url: `/api/attachments/${id}/${encodeURIComponent("别的名字.mp4")}`, headers: { cookie: b.cookie, range: "bytes=0-9" } });
+    expect([alias.statusCode, alias.headers["content-range"]]).toEqual([206, `bytes 0-9/${size}`]);
+    expect(alias.headers["content-disposition"]).toBe((await app.inject({ method: "GET", url: `/api/attachments/${id}`, headers: { cookie: b.cookie } })).headers["content-disposition"]);
+  });
+
+  it("who may read is unchanged: a stranger gets the same 404 and a signed-out caller the same 401 with a Range as without, and nothing is read from the store for them", async () => {
+    const { eve, get } = await sentVideo();
+    const reads = probe.gets.length;
+    expect((await get(eve, "bytes=0-9")).statusCode).toBe((await get(eve)).statusCode);
+    expect((await get(eve, "bytes=0-9")).statusCode).toBe(404);
+    expect((await get(null, "bytes=0-9")).statusCode).toBe((await get(null)).statusCode);
+    expect((await get(null, "bytes=0-9")).statusCode).toBe(401);
+    expect(probe.gets.length).toBe(reads);
+  });
+});
+
+describe("parseRange (a table: a range, 'unsatisfiable' (416), or null — the whole file)", () => {
+  const SIZE = 1000;
+  const table: Array<[string | undefined, unknown]> = [
+    ["bytes=0-99", { start: 0, end: 99 }],
+    ["bytes=0-0", { start: 0, end: 0 }],
+    ["bytes=999-999", { start: 999, end: 999 }],
+    ["bytes=500-", { start: 500, end: 999 }],
+    ["bytes=500-5000", { start: 500, end: 999 }],
+    ["bytes=-50", { start: 950, end: 999 }],
+    ["bytes=-1000", { start: 0, end: 999 }],
+    ["bytes=-5000", { start: 0, end: 999 }],
+    ["bytes=-99999999999999999999", { start: 0, end: 999 }], // (a suffix longer than the file is the whole file, however long)
+    [" bytes=0-9 ", { start: 0, end: 9 }],
+    ["bytes=1000-", "unsatisfiable"],
+    ["bytes=1000-2000", "unsatisfiable"],
+    ["bytes=9007199254740991-", "unsatisfiable"],
+    ["bytes=9007199254740992-", "unsatisfiable"], // (starts past the end, however many digits: the same answer as the one just above)
+    ["bytes=99999999999999999999999-", "unsatisfiable"],
+    ["bytes=-0", "unsatisfiable"],
+    ["bytes=5-2", null],
+    ["bytes=", null],
+    ["bytes=-", null],
+    ["bytes=abc", null],
+    ["bytes=1e3-2e3", null],
+    ["bytes=0x10-0x20", null],
+    ["bytes= 10-20", null],
+    ["Bytes=0-9", null],
+    ["items=0-9", null],
+    ["bytes=0-9,20-29", null],
+    ["bytes=١٠-٢٠", null],
+    ["bytes=0-9\r\nX-Evil: 1", null],
+    [undefined, null],
+    ["", null],
+  ];
+  it.each(table)("%s", (header, want) => expect(parseRange(header, SIZE)).toEqual(want));
+  it("a suffix on an empty file is the whole (empty) file, not a 416; a start is past its end", () => {
+    expect(parseRange("bytes=-5", 0)).toBeNull();
+    expect(parseRange("bytes=0-", 0)).toBe("unsatisfiable");
+  });
+  it("whatever it returns, the slice lies inside the file", () => {
+    for (const [header] of table) {
+      const got = parseRange(header, SIZE);
+      if (got && got !== "unsatisfiable") expect([got.start >= 0, got.start <= got.end, got.end <= SIZE - 1]).toEqual([true, true, true]);
+    }
+  });
+});
+
 describe("upload, send, download", () => {
   it("member uploads, sends, another member downloads identical bytes", async () => {
     const [a, b] = await people("alice", "bob");
@@ -135,7 +281,7 @@ describe("upload, send, download", () => {
       senderId: a.id,
       kind: "file",
       text: "see attached",
-      attachment: { id, name: "notes.bin", size: data.length, inline: false },
+      attachment: { id, name: "notes.bin", size: data.length, inline: false, mime: "application/octet-stream" },
       createdAt: expect.any(String),
     });
     const history = await api(app, b, "GET", `/api/conversations/${dm}/messages`);
@@ -908,13 +1054,13 @@ describe("realtime", () => {
     const preMsg = (await sendFile(a, g, pre.id, { text: "before dave" })).json.message;
     const forB = await sb.next(isMessage(g, preMsg.seq));
     expect(forB.message).toEqual(preMsg);
-    expect(forB.message.attachment).toEqual({ id: pre.id, name: "pre.bin", size: 32, inline: false });
+    expect(forB.message.attachment).toEqual({ id: pre.id, name: "pre.bin", size: 32, inline: false, mime: "application/octet-stream" });
 
     expect((await add(a, g, d)).status).toBe(201);
     const postUp = (await upload(c, g, PNG, "after.png")).json;
     const postMsg = (await sendFile(c, g, postUp.id)).json.message;
     const forD = await sd.next(isMessage(g, postMsg.seq));
-    expect(forD.message.attachment).toEqual({ id: postUp.id, name: "after.png", size: PNG.length, inline: true });
+    expect(forD.message.attachment).toEqual({ id: postUp.id, name: "after.png", size: PNG.length, inline: true, mime: "image/png" });
     expect((await sb.next(isMessage(g, postMsg.seq))).message.attachment.id).toBe(postUp.id);
 
     // Nothing of the pre-join file reaches the late joiner: not pushed, not in sync, not downloadable.

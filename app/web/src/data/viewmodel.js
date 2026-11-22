@@ -72,7 +72,7 @@ function quoteView(replyTo, alias, proposalAt = () => false) {
 }
 
 function attachmentView(a) {
-  return a ? { id: a.id, name: a.name, size: a.size, inline: Boolean(a.inline), url: attachmentUrl(a.id) } : null;
+  return a ? { id: a.id, name: a.name, size: a.size, inline: Boolean(a.inline), url: attachmentUrl(a.id), mime: typeof a.mime === "string" ? a.mime : null } : null;
 }
 
 function systemView(system, alias) {

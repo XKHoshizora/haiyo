@@ -1,17 +1,26 @@
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import type { Config } from "../config.ts";
 
+/** An inclusive byte range of a blob (the HTTP kind: both ends are bytes of the file). */
+export interface ByteRange {
+  start: number;
+  end: number;
+}
+
 export interface BlobStore {
   put(key: string, body: Readable | Buffer): Promise<{ size: number }>;
-  /** Rejects with an error whose `code` is `ENOENT` (fs) or `NoSuchKey` (S3) when the key is absent. */
-  get(key: string): Promise<Readable>;
+  /**
+   * Rejects with an error whose `code` is `ENOENT` (fs) or `NoSuchKey` (S3) when the key is absent. With `range`, only those bytes are read from the store
+   * (a file read from `start`, an S3 ranged GET) — a video seeks without the whole file being fetched or buffered.
+   */
+  get(key: string, range?: ByteRange): Promise<Readable>;
   /**
    * Deletes the blob and anything a `put` of it left behind (a partial file after a crash). Deleting a
    * missing key is not an error.
@@ -59,8 +68,8 @@ export function fsBlobStore(dir: string): BlobStore {
       }
       return { size: size() };
     },
-    async get(key) {
-      const stream = createReadStream(file(key));
+    async get(key, range) {
+      const stream = createReadStream(file(key), range ? { start: range.start, end: range.end } : undefined);
       // Surface a missing file as a rejection of get() rather than a later stream error.
       await new Promise<void>((resolve, reject) => {
         stream.once("open", () => resolve());
@@ -73,6 +82,42 @@ export function fsBlobStore(dir: string): BlobStore {
       await rm(`${file(key)}.part`, { force: true });
     },
   };
+}
+
+/**
+ * The bytes `range` of `source` (a whole object's stream), and nothing else. The upstream is destroyed as soon as the slice is complete, when the
+ * consumer goes away (a client that aborted) and the consumer gets the upstream's error if it fails — no unhandled event either way.
+ */
+function sliced(source: Readable, range: ByteRange): Readable {
+  const length = range.end - range.start + 1;
+  let seen = 0;
+  let sent = 0;
+  const out: Transform = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      const from = Math.max(0, range.start - seen);
+      seen += chunk.length;
+      if (sent < length && from < chunk.length) {
+        const piece = chunk.subarray(from, from + (length - sent));
+        sent += piece.length;
+        this.push(piece);
+      }
+      if (sent >= length) {
+        this.push(null);
+        source.destroy();
+      }
+      done();
+      // The slice is complete: the writable side ends too, so the stream closes by itself (it does not wait for its consumer to destroy it).
+      if (sent >= length) out.end();
+    },
+  });
+  source.on("error", (err) => out.destroy(err));
+  // An object shorter than the slice asked for (replaced, truncated): an error, never a short stream under the length the route declared.
+  source.on("end", () => {
+    if (sent < length) out.destroy(new Error("S3 sent fewer bytes than the range asked for"));
+  });
+  out.on("close", () => source.destroy());
+  source.pipe(out);
+  return out;
 }
 
 type S3Config = NonNullable<Config["s3"]>;
@@ -96,10 +141,23 @@ export function s3BlobStore(cfg: S3Config, client?: S3Client): BlobStore {
       await new Upload({ client: s3, params: { Bucket: cfg.bucket, Key: checkKey(key), Body: stream }, queueSize: 1 }).done();
       return { size: size() };
     },
-    async get(key) {
-      const out = await s3.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: checkKey(key) }));
+    async get(key, range) {
+      const out = await s3.send(
+        new GetObjectCommand({ Bucket: cfg.bucket, Key: checkKey(key), ...(range ? { Range: `bytes=${range.start}-${range.end}` } : {}) }),
+      );
       if (!(out.Body instanceof Readable)) throw new Error("unexpected S3 body type");
-      return out.Body;
+      if (!range) return out.Body;
+      if (out.ContentRange !== undefined) {
+        // A 206: it must be the slice asked for — a body of another length would go out under the length the route declared.
+        const got = /^bytes (\d+)-(\d+)\//.exec(out.ContentRange);
+        if (!got || Number(got[1]) !== range.start || Number(got[2]) !== range.end) {
+          out.Body.destroy();
+          throw new Error("S3 answered another byte range than the one asked for");
+        }
+        return out.Body;
+      }
+      // No Content-Range: the service sent the whole object (some S3-compatible services ignore Range). Only the slice is passed on.
+      return sliced(out.Body, range);
     },
     async delete(key) {
       await s3.send(new DeleteObjectCommand({ Bucket: cfg.bucket, Key: checkKey(key) }));

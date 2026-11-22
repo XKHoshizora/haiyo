@@ -79,6 +79,8 @@ export interface AttachmentRef {
   size: number;
   /** The server's sniffing verdict: safe to show in the browser (PNG, JPEG, WebP, GIF). */
   inline: boolean;
+  /** The content type the server decided from the bytes (`Content-Type` of the download); absent on a message sent before it was kept. */
+  mime?: string;
 }
 
 /**
@@ -228,7 +230,7 @@ export const wireMessageSchema = z.object({
   kind: z.enum(["text", "file", "system"]),
   /** Message text; for system notices the server-rendered sentence. */
   text: z.string(),
-  attachment: z.object({ id: z.string(), name: z.string(), size: z.number(), inline: z.boolean() }).optional(),
+  attachment: z.object({ id: z.string(), name: z.string(), size: z.number(), inline: z.boolean(), mime: z.string().optional() }).optional(),
   /** Present when quoting. Text and sender only when this reader can see the quoted message. */
   replyTo: z
     .union([

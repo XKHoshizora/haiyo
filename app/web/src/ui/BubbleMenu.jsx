@@ -8,7 +8,8 @@ import { createPortal } from "react-dom";
 export const HOLD_MS = 450;
 export const SLOP = 10;
 /** What a press may start on: the bubble of a text, a picture, a file card. */
-const TARGETS = ".bubble, .attachment-image, .file-card";
+/** (A media bubble starts a hold only on its name line: the player's own controls — scrubber, volume — are the player's.) */
+const TARGETS = ".bubble, .attachment-image, .attachment-media .media-meta, .file-card";
 const GAP = 6;
 const MARGIN = 8;
 

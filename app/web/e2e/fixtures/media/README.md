@@ -1,0 +1,1 @@
+These four files (`clip.webm`, `portrait.webm`, `memo.mp3`, `clip.mov`) are ffmpeg-generated test patterns (`testsrc`, `sine`) made for this repository: no third-party content, no recognisable people or voices. The commands are in the header of `../../chat-media.spec.mjs`.

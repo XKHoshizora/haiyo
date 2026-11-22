@@ -67,7 +67,7 @@ export function FileName({ name }) {
  * A file that is not a picture, as a card: an icon of its kind, its name, its size and who can see it, and — once it can
  * be fetched (`url`) — the whole card is the one link that downloads it (one tab stop; the download button is its look,
  * not a second stop). While it is being sent (`upload`) the card shows the progress and is not a link. `mime`: its
- * type, when it is known (the wire carries none; the extension decides then).
+ * type, when it is known (the wire carries it for a message sent since it was kept; the extension decides first for the icon).
  */
 export function FileCard({ name, size, mime = null, url = null, upload = null }) {
   const kind = fileKind({ mime, name });
@@ -77,7 +77,9 @@ export function FileCard({ name, size, mime = null, url = null, upload = null })
       <Icon size={28} aria-hidden="true" className={`file-icon file-icon-${kind}`} />
       <div className="file-card-text">
         <FileName name={name} />
-        <p className="muted">{formatSize(size)} · 仅本会话可见</p>
+        <p className="muted file-card-meta">
+          <span>{formatSize(size)} ·</span> <span>仅本会话可见</span>
+        </p>
         {upload && <progress className="upload-progress" max={100} value={Math.round(upload.progress * 100)} aria-label="上传进度" />}
       </div>
       {url && (
