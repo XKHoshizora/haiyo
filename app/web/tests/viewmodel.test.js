@@ -512,7 +512,7 @@ describe("Agents (batch 2A)", () => {
     m = M.applyModels(m, { siteModels: [{ id: "free-1", label: "免费模型", tier: "free", vision: true, pdf: false, reasoning: [], contextTokens: 32000 }], providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 } });
     const v = toView(m, { now: NOW });
     expect(v.providers).toEqual({ p1: { id: "p1", name: "我的", protocol: "anthropic", baseUrl: "https://a.example", keyLast4: "abcd", models: [] } });
-    expect(v.usage).toMatchObject({ balance: "1234.50", balanceText: "1,234.5", free: { allowanceText: "10", usedText: "2.25" }, recent: [{ pointsText: "0.000001" }] });
+    expect(v.usage).toMatchObject({ balance: "1234.50", balanceText: "1,234.5", free: { allowanceText: "10", usedText: "2.25" }, recent: [{ pointsText: "<0.0001" }] });
     expect(v.siteModels).toEqual([{ id: "free-1", label: "免费模型", tier: "free", vision: true, pdf: false, reasoning: [], contextTokens: 32000 }]);
     expect(v.providerDefaults).toEqual({ contextTokens: 16000, maxOutputTokens: 2048 });
     expect(toView(M.initial(), { now: NOW })).toMatchObject({ providers: {}, usage: null, siteModels: [], providerDefaults: null });
@@ -676,14 +676,16 @@ describe("formatPoints (points are decimal strings: no float maths)", () => {
   });
 });
 
-describe("replyPoints (what one reply cost, under it: at most 4 decimals)", () => {
+describe("replyPoints (points as shown anywhere: two decimals from 1 up, four below it)", () => {
   it("keeps up to 4 decimals, rounding half up on the string's digits, trailing zeros trimmed, digits grouped", () => {
     expect(replyPoints("6.9")).toBe("6.9");
     expect(replyPoints("6.90")).toBe("6.9");
     expect(replyPoints("12")).toBe("12");
     expect(replyPoints("0.1234")).toBe("0.1234");
     expect(replyPoints("0.00073")).toBe("0.0007");
-    expect(replyPoints("1.23456")).toBe("1.2346");
+    expect(replyPoints("1.23456")).toBe("1.23");
+    expect(replyPoints("0.000001")).toBe("<0.0001");
+    expect(replyPoints("920.81075")).toBe("920.81");
     expect(replyPoints("0.99995")).toBe("1");
     expect(replyPoints("9999.99999")).toBe("10,000");
     expect(replyPoints("0.00005")).toBe("0.0001");
