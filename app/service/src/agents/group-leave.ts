@@ -34,6 +34,7 @@ export interface EndedRuns {
  */
 export async function endRunsInGroup(t: Tx, conversationId: string, agentIds: readonly string[]): Promise<EndedRuns> {
   if (agentIds.length === 0) return { cancelled: [], running: [] };
+  // No follow-up for a queued one either (runs.ts `followUpOnEnd`: `agent_removed` drops what was noted).
   const queued = await t.query<RunRow & { owner_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = 'agent_removed', finished_at = now()
       where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.status = 'queued'

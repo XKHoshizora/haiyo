@@ -65,9 +65,11 @@ import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, pass
 import {
   actOnTriggered,
   budgetReachedWith,
+  droppedOnEnd,
   dropBlockedCalls,
   followUp,
   followUpOf,
+  followUpOnEnd,
   hearFrom,
   noneTold,
   pushBudgetReached,
@@ -272,24 +274,6 @@ function countRetry(log: Partial<Pick<FastifyBaseLogger, "info">>, retried: Auto
 }
 
 /**
- * The one rule for a follow-up (README "Agents and runs", Coalescing): a run that has ended is followed by a reply to
- * what its owner wrote meanwhile when something was noted on it (`pending_seq` beyond what it covered) and its Agent
- * can still answer (not paused, not deleted, has a model) — however the run itself ended. A pause or delete drops what
- * was noted (runs.ts `interruptRuns`), and so does the Agent's leaving the run's group (group-leave.ts
- * `endRunsInGroup`); nothing is noted while the Agent is paused or out of that group, so what is noted on an
- * interrupted run came after the resume, and is answered. A run that ended `agent_removed` (its Agent is no longer a
- * member of the run's group, however that was found) is followed by nothing: what was noted on it is dropped
- * (`droppedOnEnd`). Whether it is queued, as whose, and how it meets the owner's replies a minute is runs.ts
- * `followUp`'s.
- */
-function followUpSeq(state: RunState, agent: AgentRow, end: RunEnd): number | null {
-  if (droppedOnEnd(end)) return null;
-  const covers = Number(state.covers_seq ?? 0);
-  const pending = Number(state.pending_seq ?? 0);
-  return pending > covers && !agent.paused && !agent.deleted && agent.model !== null ? pending : null;
-}
-
-/**
  * How a run that ended `end` is recorded: as it ended — but a new Agent's greeting (`greets`) that failed is `cancelled`
  * with no error, so no failure and no 重试 is shown in a conversation where nothing was said yet: there is simply no Agent
  * message, and the client's hint invites its owner to write (principle P2: never a fixed line in its place). Settlement
@@ -297,23 +281,6 @@ function followUpSeq(state: RunState, agent: AgentRow, end: RunEnd): number | nu
  */
 const quietGreeting = (end: RunEnd, state: Pick<RunState, "greets">): RunEnd => (state.greets && end.status === "failed" ? { status: "cancelled" } : end);
 
-/**
- * THE one place that decides, for every way a run ends — `finish` (an answer, a failure, a stop) and `recoverRun` (start-up
- * recovery, the release at a stop or shutdown, the stale-run sweep) — whether a follow-up answers what was noted on it:
- * never when the system scheduled its automatic retry (that covers what was noted: `retried`); a failed run the service
- * lost (`recovered`) is not followed up, its owner's 重试 answers everything (spec 6.5) — except a told reply and a new
- * Agent's greeting, which answer no message of the owner's, so what was noted on them always gets its own reply (a
- * greeting's quiet end never hides a question; README "Replies", Automatic retry, table 2); otherwise the one rule,
- * `followUpSeq`.
- */
-function followUpOnEnd(state: RunState, agent: AgentRow, end: RunEnd, how: { recovered: boolean; retried: boolean }): number | null {
-  if (how.retried) return null;
-  if (how.recovered && end.status === "failed" && !state.told && !state.greets) return null;
-  return followUpSeq(state, agent, end);
-}
-
-/** A run that ends so is followed by nothing, and what was noted on it (`pending_seq`) is cleared as it ends. */
-const droppedOnEnd = (end: RunEnd): boolean => end.status === "cancelled" && end.error === "agent_removed";
 
 /*
  * `keepsNothingNoted` (round 2, N-3): the members' calls noted on a told reply (`告诉他们`) are never held to its owner. However

@@ -984,7 +984,9 @@ is a group you are a current member of: a direct chat and an Agent's own convers
 *Session: required.* Body: none or `{}`. Stops the reply: a queued one at once (it never reaches the model; `run`
 `stopped` is pushed) — also one that was running when you asked and that its admission held back to queued meanwhile
 (Metering, Money that does not block); a running one as soon as the worker notices (within 50 ms): what it had said so far is posted
-with `stopped: true` and the run ends `stopped` (nothing said: no message). A running one that no worker of this
+with `stopped: true` and the run ends `stopped` (nothing said: no message). Either way what was noted on it — written
+after it started — gets its own reply by the one follow-up rule (`followUpOnEnd`): for a queued one, what its admission
+handed back as it held it back, and a told reply's members' calls. A running one that no worker of this
 instance is working on — another instance's during a deploy, or one left by a process that is gone — is released at
 once, exactly as recovery releases one (Agents and runs, Recovery): `failed`, `provider_unavailable`, retryable, its
 hold released at no charge (or, when its reply had been posted, `done` / `stopped` as its message says; `cancelled`
@@ -1472,7 +1474,8 @@ group is told), then — unless the mention folds into a reply under way, which 
 Agent, and no Agent replies unasked to a message sent before it. Replies that Agents' messages called for end at once,
 and so do replies an Agent was to give unasked that nobody has called for since: a queued one is `cancelled` with error `halted` (`run`
 pushed to its owner), a running one is never posted and ends `cancelled`, `halted` (what it had said is discarded; what
-it used is settled; a reply already posted stays); what a person asked of such a reply meanwhile is still answered. Replies
+it used is settled; a reply already posted stays); what a person asked of such a reply meanwhile is still answered (of a
+queued one — noted on it before its admission held it back — at once, by the same rule as a running one's). Replies
 a person called for are left alone, but what Agents' messages asked of one before the halt (noted while it ran) gets no
 follow-up when it ends, even if a person has written since. An `agents_halted` notice from you is appended (and pushed). Idempotent: while the
 group is still halted (nobody has written since the last halt) it changes nothing and appends nothing. → 200

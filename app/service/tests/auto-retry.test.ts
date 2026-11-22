@@ -273,6 +273,51 @@ describe("a greeting never hides its owner's message, however it ends (round 2 R
   });
 });
 
+describe("a queued run that ends holds what was handed back to it to the one follow-up rule (round 3 S-4)", () => {
+  /**
+   * A queued run of `agentId` in `conv` with `noted` written after its claim and handed back to it, as an admission that
+   * held it back leaves it (port-impl.ts `HELD_BACK`): written while it ran (noted, `pending_seq`), then queued again.
+   */
+  async function heldBackWith(conv: string, write: () => Promise<number>) {
+    const [queued] = (await db.query<{ id: string; covers: string }>("select id, covers_seq::text as covers from agent_runs where conversation_id = $1 and status = 'queued'", [conv])).rows;
+    await db.query("update agent_runs set status = 'running', started_at = now() where id = $1", [queued!.id]);
+    const noted = await write();
+    await db.query("update agent_runs set status = 'queued', started_at = null where id = $1", [queued!.id]);
+    const row = (await db.query<{ covers: string; pending: string }>("select covers_seq::text as covers, pending_seq::text as pending from agent_runs where id = $1", [queued!.id])).rows[0]!;
+    expect([row.covers, row.pending]).toEqual([queued!.covers, String(noted)]);
+    return { id: queued!.id, noted };
+  }
+
+  it("its owner stops it: what was handed back gets its own reply, as for a run stopped while it ran", async () => {
+    const { owner, conv } = await own("ar_stop_held");
+    await say(owner, conv, "帮我想个名字");
+    const { id, noted } = await heldBackWith(conv, () => say(owner, conv, "要两个字的"));
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/${id}/stop`)).status).toBe(200);
+    expect((await runsOf(conv)).map((r) => [r.status, r.covers, r.lane])).toEqual([
+      ["stopped", String(noted - 1), "own"],
+      ["queued", String(noted), "own"],
+    ]);
+    gateway.reply("叫小满。");
+    expect(await instance().worker.runOnce()).toBe(true);
+  });
+
+  it("a halt ends it (it was called by an Agent): a person's call handed back to it still gets its follow-up", async () => {
+    const w = await scene("ar_halt_held");
+    const relay = await say(w.owner, w.g, "大家好");
+    await db.tx((t) => queueRun(t, { id: w.agent.id, ownerId: w.owner.id }, w.g, relay, "agent", { id: w.owner.id, lane: "own" }, [w.owner.id]));
+    const { noted } = await heldBackWith(w.g, () => say(w.mia, w.g, `${w.call} 打印机怎么连？`));
+    expect((await api(app, w.mia, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
+    const runs = await runsOf(w.g);
+    expect(runs.map((r) => [r.status, r.error])).toEqual([
+      ["cancelled", "halted"],
+      ["queued", null],
+    ]);
+    expect([runs[1]!.covers, runs[1]!.lane, runs[1]!.calls]).toEqual([String(noted), "others", [String(noted)]]);
+    gateway.reply("用USB线。");
+    expect(await instance().worker.runOnce()).toBe(true);
+  });
+});
+
 describe("in the Agent's own conversation", () => {
   it("a 503: no failure is shown; the retry, queued, is claimed only once its 20 s are up (fake clock), answers, and each attempt is charged", async () => {
     const { owner, agent, conv } = await own("ar_own");
