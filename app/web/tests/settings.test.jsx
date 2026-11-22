@@ -88,7 +88,7 @@ describe("display name", () => {
     await saveName("  新昵称 ");
     expect(updateMe).toHaveBeenCalledWith("新昵称");
     expect(toastText()).toBe("昵称已更新");
-    expect(document.querySelector(".profile-head h2").textContent).toContain("新昵称");
+    expect(document.querySelector(".profile-head .muted").textContent).toContain("新昵称");
     expect(document.querySelector(".settings-me").textContent).toContain("新昵称");
     expect(button("保存").disabled).toBe(true);
   });
@@ -117,7 +117,7 @@ describe("display name", () => {
     await flush();
     expect(toastText()).toBe("昵称需要 1–40 个字，且只能一行。");
     expect(nameBox().value).toBe("新昵称");
-    expect(document.querySelector(".profile-head h2").textContent).toContain("Mei");
+    expect(document.querySelector(".profile-head .muted").textContent).toContain("Mei");
     updateMe.mockImplementation(async () => {
       throw apiError(429, "rate_limited");
     });

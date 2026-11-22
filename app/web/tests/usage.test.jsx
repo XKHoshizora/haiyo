@@ -44,7 +44,7 @@ describe("usage and balance", () => {
   it("shows today's free allowance (used / allowance) and when it resets, in local time", async () => {
     const resetsAt = new Date(2026, 10, 17, 0, 0).toISOString();
     await openUsage({ getUsage: vi.fn(async () => usageOf({ free: { allowance: "10", used: "2.5", resetsAt } })) });
-    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("我的用量");
+    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("用量与余额");
     expect(kv("已用 / 每日额度")).toBe("2.5 / 10 点");
     expect(kv("下次重置")).toBe("11月17日 00:00（本地时间）");
   });

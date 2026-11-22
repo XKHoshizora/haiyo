@@ -1022,6 +1022,10 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   .notice { flex-wrap: wrap; }
   .notice-body { flex-basis: 150px; min-width: 0; }
   .notice-actions { max-width: 100%; flex-wrap: wrap; }
+  /* A title and the actions beside it: the actions have a row of their own (a long description is not squeezed into half a screen by a button). */
+  .profile-head > .head-actions { flex: 1 1 100%; }
+  /* The product's name over every tab page's own title says nothing on a phone (the tab bar is the place). */
+  .list-head .brand-name { display: none; }
   .kv-row { flex-direction: column; gap: 2px; }
   .kv-row dt { width: auto; }
   .radio-cards { grid-template-columns: 1fr; }

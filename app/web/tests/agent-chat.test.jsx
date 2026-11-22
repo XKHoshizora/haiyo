@@ -2234,7 +2234,7 @@ describe("switching the model where I am (my Agent's own conversation)", () => {
     await click(headModel());
     await click(within(document.querySelector(".model-foot")).getByRole("button", { name: "管理供应商" }));
     expect(listbox()).toBeNull();
-    expect(screen.getByRole("heading", { name: "我的模型供应商" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "模型供应商" })).toBeTruthy();
   });
 
   it("the details panel has a 模型 row above 操作 with the same picker, which saves the same way", async () => {

@@ -190,8 +190,7 @@ export function UsagePage({ back }) {
       {back}
       <header className="profile-head">
         <div>
-          <p className="eyebrow">用量与余额</p>
-          <h2>我的用量</h2>
+          <h2>用量与余额</h2>
         </div>
       </header>
       <div className="page-body">

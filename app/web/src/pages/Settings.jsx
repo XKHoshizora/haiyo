@@ -187,17 +187,14 @@ function ProfilePage() {
       <BackButton />
       <header className="profile-head">
         <div>
-          <p className="eyebrow">我的资料</p>
-          <h2>{account.displayName} <Tag tone="human">真人</Tag></h2>
-          <p className="muted">@{account.handle}</p>
+          <h2>我的资料</h2>
+          <p className="muted">{account.displayName} <Tag tone="human">真人</Tag> @{account.handle}</p>
         </div>
       </header>
       <div className="page-body">
         <h3>头像</h3>
         <AvatarEditor upload={actions.uploadAvatar} errorText={(e) => profileErrorText("avatar", e)} />
-        <h3>昵称</h3>
         <NameForm account={account} />
-        <h3>账号名</h3>
         <HandleForm account={account} />
         <h3>账户</h3>
         <KV rows={[["邮箱", account.email ?? ""]]} />
@@ -222,8 +219,8 @@ function BlockedPage() {
       <BackButton />
       <header className="profile-head">
         <div>
-          <p className="eyebrow">拉黑</p>
-          <h2>我的拉黑</h2>
+
+          <h2>拉黑</h2>
           <p className="muted">拉黑后，你们之间不能发送新消息，也不能互相申请好友；只有你可以解除自己的拉黑。</p>
         </div>
       </header>
