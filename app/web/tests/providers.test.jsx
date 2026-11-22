@@ -153,11 +153,11 @@ describe("the settings entries", () => {
     await goSettings();
     expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑"]);
     await click(settingsRow("模型供应商"));
-    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("我的模型供应商");
+    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("模型供应商");
     await click(settingsRow("用量与余额"));
-    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("我的用量");
+    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("用量与余额");
     await click(settingsRow("我的资料"));
-    expect(document.querySelector(".main-col .profile-head .eyebrow").textContent).toBe("我的资料");
+    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("我的资料");
   });
 
   it("the Agent form's 添加模型供应商 lands on this section", async () => {
@@ -171,7 +171,7 @@ describe("the settings entries", () => {
     await flush();
     await click(within(document.querySelector(".list-col")).getByRole("button", { name: "创建 Agent" }));
     await click(inMain().getByRole("button", { name: "添加模型供应商" }));
-    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("我的模型供应商");
+    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("模型供应商");
     expect(mainText()).toContain("还没有添加模型供应商");
   });
 });

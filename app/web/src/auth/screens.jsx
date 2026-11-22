@@ -4,6 +4,7 @@ import { BrandMark, Btn, Field, Notice, TextLink, focusInvalid } from "../ui/pri
 import { fieldOf, messageFor, verifyMessage } from "./errors.js";
 import { clearResetToken, navigate, takeResetToken, takeReturn } from "./router.js";
 import * as rules from "./validation.js";
+import { AuthPage } from "../ui/AuthPage.jsx";
 
 function Link({ to, children, primary = false }) {
   const onClick = (e) => {
@@ -26,7 +27,7 @@ function Link({ to, children, primary = false }) {
 function AuthCard({ title, lead, children, footer }) {
   const titleId = useId();
   return (
-    <main className="auth-page">
+    <AuthPage>
       <section className="auth-card" aria-labelledby={titleId}>
         <header className="auth-head">
           <BrandMark size={44} />
@@ -36,7 +37,7 @@ function AuthCard({ title, lead, children, footer }) {
         {children}
         {footer && <footer className="auth-foot">{footer}</footer>}
       </section>
-    </main>
+    </AuthPage>
   );
 }
 
@@ -328,9 +329,9 @@ export function ResetPassword({ api }) {
 
 export function Loading() {
   return (
-    <main className="auth-page">
+    <AuthPage>
       <p className="muted" role="status">正在加载…</p>
-    </main>
+    </AuthPage>
   );
 }
 

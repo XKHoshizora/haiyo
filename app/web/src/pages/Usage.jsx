@@ -86,7 +86,7 @@ function ReplyPointsSwitch() {
 
 /**
  * Settings › 用量与余额: today's free allowance and when it resets, the balance, the tier and the number of Agents,
- * and the last 7 days per Agent and model. Points are shown as the service gives them (`formatPoints`, no arithmetic).
+ * and the last 7 days per Agent and model. Points are shown at the one display precision (`displayPoints`, data/viewmodel.js: no float arithmetic, values compared on the raw strings).
  * Below them, whether my Agents' replies show their points (`ReplyPointsSwitch`), whether or not the usage was read.
  * `back`: the settings back button (to the settings list on a phone).
  */
@@ -133,6 +133,7 @@ export function UsagePage({ back }) {
           rows={[
             ["已用 / 每日额度", `${usage.free?.usedText ?? ""} / ${usage.free?.allowanceText ?? ""} 点`],
             ["下次重置", resetsAt ? `${resetsAt}（本地时间）` : "—"],
+            ...(usage.memory ? [["记忆今天的额度", `已用 ${usage.memory.usedText} / ${usage.memory.allowanceText} 点`]] : []),
           ]}
         />
         <p className="muted">免费模型先用今日免费额度，用完后从余额扣点；需余额的模型只从余额扣点。</p>
@@ -156,7 +157,6 @@ export function UsagePage({ back }) {
           {state.webSearchAvailable === true || recentWeb.length > 0 ? "用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。" : "用你自己的供应商不扣点。"}
           {recentWeb.length > 0 && "联网搜索单独列出。"}
         </p>
-        {usage.memory && <p className="muted">记忆今天的额度：已用 {usage.memory.usedText} / {usage.memory.allowanceText}</p>}
         {recent.length === 0 && recentWeb.length === 0 ? (
           <p className="muted">最近 7 天还没有用量。</p>
         ) : (
@@ -190,8 +190,7 @@ export function UsagePage({ back }) {
       {back}
       <header className="profile-head">
         <div>
-          <p className="eyebrow">用量与余额</p>
-          <h2>我的用量</h2>
+          <h2>用量与余额</h2>
         </div>
       </header>
       <div className="page-body">

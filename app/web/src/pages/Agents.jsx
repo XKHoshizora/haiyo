@@ -17,6 +17,8 @@ import { Plus, ChevronLeft, Pencil, Pause, Play, Trash2 } from "../icons.js";
 const groupMentionsLabel = (agent) => (GROUP_MENTIONS.find(([id]) => id === agent.groupMentions) ?? GROUP_MENTIONS[0])[1];
 
 /**
+ * (Every digit is kept here, `formatPoints`, on purpose: spend and budget are compared as numbers, and a rounded line — 20.5 of 20.5 for 20.499999 —
+ * would say "used up" in the digits while the rule says it is not.)
  * Today's spend against a daily budget, by what spent it (`what`: 别人 @, 主动回复): how much of it, or — `reached` —
  * that it is used up.
  */
@@ -90,6 +92,17 @@ export function AgentsList() {
   const { state, dispatch, actions } = useStore();
   const { nav } = state;
   const agents = myAgents(state);
+  // A deleted Agent is not one of mine any more (the usage page counts none of it): its row waits behind one collapsed entry, because its chat history
+  // stays readable by design (the row opens its page, whose 进入查看 reaches the chat). The entry opens by itself when one of them is open.
+  const live = agents.filter((a) => !a.deleted);
+  const gone = agents.filter((a) => a.deleted);
+  const [showGone, setShowGone] = useState(false);
+  const goneOpen = showGone;
+  // The entry opens by itself when one of those Agents becomes the open page (a reload on its address, a click from elsewhere), and can be closed again after.
+  const openGone = nav.pane === "main" && gone.some((a) => a.id === nav.agentId && nav.agentView !== "create");
+  useEffect(() => {
+    if (openGone) setShowGone(true);
+  }, [openGone, nav.agentId]);
   const unloaded = agents.some((a) => !a.loaded);
   // An Agent known only by name (its record not loaded, e.g. the list failed on this connection): asked for once more
   // when the page opens (only then: the connection loads the list by itself).
@@ -108,11 +121,11 @@ export function AgentsList() {
       />
       <p className="list-note">这里只列出你拥有的 Agent。</p>
       <ul className="rows">
-        {agents.map((a) => (
+        {[...live, ...(goneOpen ? gone : [])].map((a) => (
           <li key={a.id}>
             <button
               type="button"
-              className={`row ${nav.agentId === a.id && nav.agentView !== "create" ? "active" : ""}`}
+              className={`row ${nav.agentId === a.id && nav.agentView !== "create" ? "active" : ""}${a.deleted ? " quiet" : ""}`}
               onClick={() => dispatch({ type: "nav", patch: { agentId: a.id, agentView: "detail", pane: "main" } })}
             >
               <Avatar id={a.id} size={48} />
@@ -135,7 +148,14 @@ export function AgentsList() {
           </li>
         ))}
         {agents.length === 0 && !state.loaded && <LoadingRow />}
-        {agents.length === 0 && state.loaded && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
+        {live.length === 0 && state.loaded && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
+        {gone.length > 0 && (
+          <li>
+            <button type="button" className="row-more" aria-expanded={goneOpen} onClick={() => setShowGone(!goneOpen)}>
+              已删除（{gone.length}）
+            </button>
+          </li>
+        )}
       </ul>
     </>
   );

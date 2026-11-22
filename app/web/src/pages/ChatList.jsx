@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
-import { agentDeleted, convTitle, entity, lastPreview, TYPE_LABEL, otherMember } from "../state/selectors.js";
+import { agentDeleted, quiet, convTitle, entity, lastPreview, TYPE_LABEL, otherMember } from "../state/selectors.js";
 import { ConvAvatar, IconBtn, LoadingRow, Tag } from "../ui/primitives.jsx";
 import { Plus, Search, UserPlus, Users } from "../icons.js";
 import { NewGroupModal } from "./GroupModals.jsx";
@@ -88,7 +88,7 @@ export function ChatList() {
   const rows = state.order
     .map((id) => state.convs[id])
     .filter(Boolean)
-    .filter((c) => (filter === "unread" ? c.unread > 0 : filter === "group" ? c.type === "group" : true))
+    .filter((c) => (filter === "unread" ? c.unread > 0 && !quiet(state, c) : filter === "group" ? c.type === "group" : true))
     .filter((c) => matches(state, c, q));
 
   return (
@@ -120,7 +120,7 @@ export function ChatList() {
           <li key={c.id}>
             <button
               type="button"
-              className={`row ${state.nav.convId === c.id ? "active" : ""}`}
+              className={`row ${state.nav.convId === c.id ? "active" : ""}${quiet(state, c) ? " quiet" : ""}`}
               aria-current={state.nav.convId === c.id ? "true" : undefined}
               onClick={() => dispatch({ type: "nav/openConv", convId: c.id })}
             >
@@ -128,13 +128,13 @@ export function ChatList() {
               <span className="row-body">
                 <span className="row-top">
                   <span className="row-name">{convTitle(state, c)}</span>
-                  {c.type === "agent" && <Tag>Agent</Tag>}
+                  {c.type === "agent" && !agentDeleted(state, c) && <Tag>Agent</Tag>}
                   {c.type === "agent" && agentDeleted(state, c) && <Tag tone="muted">已删除</Tag>}
                   <time>{c.at}</time>
                 </span>
                 <span className="row-sub">
                   <span className="row-preview">{lastPreview(state, c)}</span>
-                  {c.unread > 0 && <span className="badge inline">{c.unread}</span>}
+                  {c.unread > 0 && !quiet(state, c) && <span className="badge inline">{c.unread}</span>}
                   {/* My whispers there that wait for me (悄悄话): a small dot, gone once none is open and offering a button. */}
                   {c.openWhispers > 0 && <span className="whisper-dot" role="img" aria-label="有只给你的悄悄话" title="有只给你的悄悄话" />}
                 </span>

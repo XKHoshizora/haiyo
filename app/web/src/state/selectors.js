@@ -95,6 +95,15 @@ export function lastPreview(state, conv) {
   return body;
 }
 
+/**
+ * A conversation that asks for no attention: one that can no longer receive messages — a deleted Agent's (its history stays readable). Read from
+ * the conversation's own sync entry (`agent.deleted`, or the hold the service sends), never from the Agent's record, which arrives later: the display and the
+ * tab bar's number are the same at first paint and after the Agents load. (A reply that arrived just before the deletion is no longer signalled in the list
+ * or the number; it still reads as new inside the chat. Said to the owner in the lane report.)
+ */
+export const quiet = (state, conv) => conv.type === "agent" && (conv.hold?.kind === "agentDeleted" || conv.agent?.deleted === true);
+
+/** What waits for me in the tab bar's number: every conversation but the quiet ones. */
 export function unreadTotal(state) {
-  return state.order.reduce((n, id) => n + (state.convs[id]?.unread || 0), 0);
+  return state.order.reduce((n, id) => n + (state.convs[id] && !quiet(state, state.convs[id]) ? state.convs[id].unread || 0 : 0), 0);
 }

@@ -11,7 +11,8 @@ import { BlockModal } from "./BlockModal.jsx";
 import { AvatarEditor } from "./AvatarEditor.jsx";
 import { ProvidersPage } from "./Providers.jsx";
 import { UsagePage } from "./Usage.jsx";
-import { ChevronLeft } from "../icons.js";
+import { ChevronLeft, ChevronRight } from "../icons.js";
+import { usePhone } from "../ui/pointer.js";
 import { useSession } from "../auth/AuthRoot.jsx";
 import { MemoryRoom, useMemoryRoom } from "./MemoryRoom.jsx";
 import { MEMORY_LANGUAGES, languageName } from "../data/memoryLanguages.js";
@@ -20,8 +21,36 @@ import { ModelSelect } from "./ModelSelect.jsx";
 import { Select } from "../ui/Select.jsx";
 import { refusalText, settled, useAction } from "./useAction.js";
 
+/** What signs the account out (the profile page's button, and the 设置 list on a phone): null outside the sign-in gate. */
+function useSignOut() {
+  const { dispatch } = useStore();
+  const session = useSession();
+  if (!session) return null;
+  return async () => {
+    const result = await session.signOut();
+    if (!result.ok) dispatch({ type: "toast", text: "退出登录失败，请检查网络后重试" });
+  };
+}
+
+/** A settings entry: a row of the list's own style, its chevron saying that it opens. */
+function SettingsRow({ name, note, onOpen }) {
+  return (
+    <li>
+      <button type="button" className="row slim" onClick={onOpen}>
+        <span className="row-body">
+          <span className="row-name">{name}</span>
+          <span className="row-preview">{note}</span>
+        </span>
+        <ChevronRight className="row-chevron" size={18} aria-hidden="true" />
+      </button>
+    </li>
+  );
+}
+
 export function SettingsList() {
   const { state, dispatch } = useStore();
+  const phone = usePhone();
+  const signOut = useSignOut();
   const self = entity(state, ME) || { name: "", handle: "" };
   const open = (patch) => dispatch({ type: "nav", patch: { pane: "main", ...patch } });
   return (
@@ -35,32 +64,21 @@ export function SettingsList() {
         </div>
       </div>
       <ul className="rows">
-        <li className="rows-label">快捷入口</li>
-        <li>
-          <button type="button" className="row slim" onClick={() => open({ settingsPage: "profile" })}>
-            <span className="row-body"><span className="row-name">我的资料</span><span className="row-preview">昵称、头像与账户</span></span>
-          </button>
-        </li>
-        <li>
-          <button type="button" className="row slim" onClick={() => open({ settingsPage: "providers" })}>
-            <span className="row-body"><span className="row-name">模型供应商</span><span className="row-preview">你自己的模型服务账号与密钥</span></span>
-          </button>
-        </li>
-        <li>
-          <button type="button" className="row slim" onClick={() => open({ settingsPage: "usage" })}>
-            <span className="row-body"><span className="row-name">用量与余额</span><span className="row-preview">今日免费额度、余额与最近用量</span></span>
-          </button>
-        </li>
-        <li>
-          <button type="button" className="row slim" onClick={() => open({ settingsPage: "memory" })}>
-            <span className="row-body"><span className="row-name">记忆宫殿</span><span className="row-preview">记住的关于你的事，可以在这里整理</span></span>
-          </button>
-        </li>
-        <li>
-          <button type="button" className="row slim" onClick={() => open({ settingsPage: "blocks" })}>
-            <span className="row-body"><span className="row-name">拉黑</span><span className="row-preview">你拉黑的人，可在这里解除</span></span>
-          </button>
-        </li>
+        <SettingsRow name="我的资料" note="昵称、头像与账户" onOpen={() => open({ settingsPage: "profile" })} />
+        <SettingsRow name="模型供应商" note="你自己的模型服务账号与密钥" onOpen={() => open({ settingsPage: "providers" })} />
+        <SettingsRow name="用量与余额" note="今日免费额度、余额与最近用量" onOpen={() => open({ settingsPage: "usage" })} />
+        <SettingsRow name="记忆宫殿" note="记住的关于你的事，可以在这里整理" onOpen={() => open({ settingsPage: "memory" })} />
+        <SettingsRow name="拉黑" note="你拉黑的人，可在这里解除" onOpen={() => open({ settingsPage: "blocks" })} />
+        {/* (A phone has no profile page open beside this list: the way out of the account is here.) */}
+        {phone && signOut && (
+          <li>
+            <button type="button" className="row slim danger-row" onClick={signOut}>
+              <span className="row-body">
+                <span className="row-name">退出登录</span>
+              </span>
+            </button>
+          </li>
+        )}
       </ul>
     </>
   );
@@ -174,35 +192,28 @@ function HandleForm({ account }) {
 
 function ProfilePage() {
   const { state, dispatch, actions } = useStore();
-  const session = useSession();
+  const signOut = useSignOut();
   // (Before the first load there is no account yet: the page shows what the people table knows.)
   const self = entity(state, ME);
   const account = state.account ?? { displayName: self?.displayName ?? "", handle: String(self?.handle ?? "").replace(/^@/, ""), email: "" };
-  const signOut = async () => {
-    const result = await session.signOut();
-    if (!result.ok) dispatch({ type: "toast", text: "退出登录失败，请检查网络后重试" });
-  };
   return (
     <section className="page" aria-label="设置">
       <BackButton />
       <header className="profile-head">
         <div>
-          <p className="eyebrow">我的资料</p>
-          <h2>{account.displayName} <Tag tone="human">真人</Tag></h2>
-          <p className="muted">@{account.handle}</p>
+          <h2>我的资料</h2>
+          <p className="muted">{account.displayName} <Tag tone="human">真人</Tag> @{account.handle}</p>
         </div>
       </header>
       <div className="page-body">
         <h3>头像</h3>
         <AvatarEditor upload={actions.uploadAvatar} errorText={(e) => profileErrorText("avatar", e)} />
-        <h3>昵称</h3>
         <NameForm account={account} />
-        <h3>账号名</h3>
         <HandleForm account={account} />
         <h3>账户</h3>
         <KV rows={[["邮箱", account.email ?? ""]]} />
         <p className="muted">邮箱不能修改。</p>
-        {session && (
+        {signOut && (
           <div className="stack-actions row-actions">
             <Btn variant="danger" onClick={signOut}>退出登录</Btn>
           </div>
@@ -222,8 +233,8 @@ function BlockedPage() {
       <BackButton />
       <header className="profile-head">
         <div>
-          <p className="eyebrow">拉黑</p>
-          <h2>我的拉黑</h2>
+
+          <h2>拉黑</h2>
           <p className="muted">拉黑后，你们之间不能发送新消息，也不能互相申请好友；只有你可以解除自己的拉黑。</p>
         </div>
       </header>
@@ -394,7 +405,7 @@ function MemorySettings() {
       <section aria-label="作息">
         <h3>作息</h3>
         <p>
-          <strong>小憩</strong>
+          <strong>小憩</strong> <Tag tone="muted">一直开着</Tag>
         </p>
         <p className="field-hint">聊完一段后，它会回想刚才的对话，记下值得留的事。</p>
         <fieldset className="memory-switches" disabled={off}>

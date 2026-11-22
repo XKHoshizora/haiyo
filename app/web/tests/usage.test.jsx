@@ -44,21 +44,21 @@ describe("usage and balance", () => {
   it("shows today's free allowance (used / allowance) and when it resets, in local time", async () => {
     const resetsAt = new Date(2026, 10, 17, 0, 0).toISOString();
     await openUsage({ getUsage: vi.fn(async () => usageOf({ free: { allowance: "10", used: "2.5", resetsAt } })) });
-    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("我的用量");
+    expect(document.querySelector(".main-col .profile-head h2").textContent).toBe("用量与余额");
     expect(kv("已用 / 每日额度")).toBe("2.5 / 10 点");
     expect(kv("下次重置")).toBe("11月17日 00:00（本地时间）");
   });
 
-  it("shows points exactly as the service gives them: the same digits, grouped", async () => {
+  it("shows points at a sensible precision, one rule everywhere: two decimals from 1 up, four below it, a trace as <0.0001; digits grouped", async () => {
     const usage = usageOf({
       balance: "1234567.000001",
       free: { allowance: "100", used: "0.000001", resetsAt: new Date(2026, 10, 17).toISOString() },
       recent: [{ agentId: AG1, model: "free-1", source: "site", points: "3.000001", replies: 4 }],
     });
     await openUsage({ getUsage: vi.fn(async () => usage) });
-    expect(kv("当前余额")).toBe("1,234,567.000001 点");
-    expect(kv("已用 / 每日额度")).toBe("0.000001 / 100 点");
-    expect(recentRows()[0][2]).toBe("3.000001 点 · 4 次回复");
+    expect(kv("当前余额")).toBe("1,234,567 点");
+    expect(kv("已用 / 每日额度")).toBe("<0.0001 / 100 点");
+    expect(recentRows()[0][2]).toBe("3 点 · 4 次回复");
     expect(mainText()).not.toContain("余额为负");
   });
 
@@ -77,7 +77,7 @@ describe("usage and balance", () => {
     expect(recentRows()).toEqual([
       ["小助手", "小模型（本站）", "4.5 点 · 12 次回复"],
       ["小助手", "own-1（我的供应商）", "0 点 · 3 次回复"],
-      ["小助手", "联网搜索", "8.47385 点 · 11 次"],
+      ["小助手", "联网搜索", "8.47 点 · 11 次"],
       ["已删除的 Agent", "联网搜索", "13 点 · 1 次"],
     ]);
     expect(mainText()).toContain("用你自己的供应商时，模型本身不扣点，联网搜索照样扣点。联网搜索单独列出。");
@@ -149,7 +149,9 @@ describe("usage and balance", () => {
       ["记忆", "小模型（本站）", "由站点承担"],
       ["小助手", "大模型（本站）", "3 点 · 2 次回复"],
     ]);
-    expect(mainText()).toContain("记忆今天的额度：已用 1.5 / 20");
+    // The memory's allowance is a row of today's free allowance, not a clause glued to the paragraph above the recent list.
+    expect(kv("记忆今天的额度")).toBe("已用 1.5 / 20 点");
+    expect(document.querySelector('[aria-label="最近用量"]').previousElementSibling.textContent).not.toContain("记忆今天的额度");
     expect(mainText()).not.toContain("0.05 点");
   });
 

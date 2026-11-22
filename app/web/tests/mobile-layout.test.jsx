@@ -101,6 +101,44 @@ describe("on a phone", () => {
     expect(toastText()).toBeTruthy();
   });
 
+  it("the 设置 list reads as a list: a row for each entry with a chevron, no 「快捷入口」 label", async () => {
+    await openApp({ sync });
+    fireEvent.click(within(bar()).getByRole("button", { name: "设置" }));
+    await flush();
+    const rows = [...document.querySelectorAll(".list-col .row.slim")].filter((r) => !r.classList.contains("danger-row"));
+    expect(rows.map((r) => r.querySelector(".row-name").textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑"]);
+    for (const row of rows) expect(row.querySelector("svg.row-chevron")).toBeTruthy();
+    expect(document.querySelector(".list-col").textContent).not.toContain("快捷入口");
+  });
+
+  it("a header whose title grows after the chat is open (a rename, a late load) keeps the list at its newest message", async () => {
+    const observers = [];
+    globalThis.ResizeObserver = class {
+      constructor(callback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    try {
+      await openApp({ sync });
+      fireEvent.click(document.querySelector(".list-col .row"));
+      await flush();
+      const list = document.querySelector("ol.messages");
+      let top = 0;
+      Object.defineProperty(list, "scrollHeight", { configurable: true, value: 900 });
+      Object.defineProperty(list, "scrollTop", { configurable: true, get: () => top, set: (v) => (top = v) });
+      expect(observers.length).toBeGreaterThan(0);
+      top = 100; // (the header grew: the list shrank under a position that was the bottom)
+      act(() => observers.forEach((o) => o.callback([])));
+      expect(top).toBe(900);
+    } finally {
+      delete globalThis.ResizeObserver;
+    }
+  });
+
   it("is gone inside a conversation, and back with the list", async () => {
     await openApp({ sync });
     fireEvent.click(document.querySelector(".list-col .row"));

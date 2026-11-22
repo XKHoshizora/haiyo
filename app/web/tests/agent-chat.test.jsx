@@ -162,10 +162,14 @@ describe("the header and the list row", () => {
     expect(within(subtitle()).getByRole("button", { name: "模型：gpt-x，点击更改" }).textContent).toBe("gpt-x");
   });
 
-  it("a deleted Agent's row reads 已删除 after its tag", async () => {
-    await openAgentChat({ agent: { deleted: true } });
+  it("a deleted Agent's row is quiet: one chip 已删除 (not Agent too), muted, no unread badge competing with live chats; the history stays reachable", async () => {
+    await openAgentChat({ agent: { deleted: true }, conv: { unread: 4 } });
     const row = screen.getByText("小助手", { selector: ".list-col .row-name" }).closest("button");
-    expect([...row.querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["Agent", "已删除"]);
+    expect([...row.querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["已删除"]);
+    expect(row.classList.contains("quiet")).toBe(true);
+    expect(row.querySelector(".badge")).toBeNull();
+    // ...nor is it counted in the tab bar's number.
+    expect(document.querySelector(".rail .badge")).toBeNull();
   });
 
   it("an Agent's message carries the Agent tag; my messages read 已读 up to the Agent's marker", async () => {
@@ -2230,7 +2234,7 @@ describe("switching the model where I am (my Agent's own conversation)", () => {
     await click(headModel());
     await click(within(document.querySelector(".model-foot")).getByRole("button", { name: "管理供应商" }));
     expect(listbox()).toBeNull();
-    expect(screen.getByRole("heading", { name: "我的模型供应商" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "模型供应商" })).toBeTruthy();
   });
 
   it("the details panel has a 模型 row above 操作 with the same picker, which saves the same way", async () => {

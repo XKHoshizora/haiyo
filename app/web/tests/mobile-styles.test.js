@@ -143,11 +143,10 @@ describe("the phone's bottom tab bar (the rail below 641px)", () => {
     expect(merged(rulesFor(rules, ":root", "(max-width: 860px)"))["--rail"]).toBe("60px");
   });
 
-  it("the shell keeps clear of the notch and the home indicator", () => {
+  it("the shell keeps clear of the notch and the sides (the home indicator's room is the containers': see C, I3 below)", () => {
     const app = plain(".app");
     expect(app.padding).toContain("env(safe-area-inset-top");
     expect(app.padding).toContain("env(safe-area-inset-left");
-    expect(plain('.app:not([data-tabbar="on"])')["padding-bottom"]).toContain("env(safe-area-inset-bottom");
   });
 });
 
@@ -204,5 +203,110 @@ describe("the title of a profile-style page keeps a minimum and the actions wrap
     expect(rules.filter((r) => r.selectors.some((x) => /\.profile-head > div(?!:not)/.test(x)) && r.decl["min-width"] === "0")).toEqual([]);
     for (const r of rules.filter((x) => x.selectors.includes(".profile-head h2"))) expect(r.decl["overflow-wrap"] ?? "normal").not.toBe("anywhere");
     expect(plain(".profile-head")["flex-wrap"]).toBe("wrap");
+  });
+});
+
+describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", () => {
+  const NARROW = "(max-width: 860px)";
+  const narrow = (selector) => merged(rulesFor(rules, selector, NARROW));
+
+  it("B: the list is drawn straight on the page — no panel behind it, so no edge under the status bar", () => {
+    expect(narrow(".list-col").background).toBe("none");
+  });
+
+  it("C, I3: the home indicator's room is a property of the containers and the rail, at every width, exactly once — the shell itself is never padded at the bottom", () => {
+    // No rule pads the shell at the bottom, in any media (it clipped every page at a hard edge with a band under it).
+    for (const rule of rules.filter((r) => r.selectors.some((s) => /^\.app\b(?![-\w])/.test(s) && !s.includes(" ")))) {
+      expect(rule.decl["padding-bottom"], rule.selectors.join()).toBeUndefined();
+      if (rule.decl.padding) expect(rule.decl.padding.trim().split(/\s+/)[2], rule.selectors.join()).toBe("0");
+    }
+    // The scrolling containers and the rail carry it, with no width condition on any of these rules.
+    const plainDecl = (selector) => merged(rulesFor(rules, selector, null));
+    for (const scroller of [".page-body", ".side-body"]) expect(plainDecl(scroller)["padding-bottom"], scroller).toContain("env(safe-area-inset-bottom)");
+    expect(plainDecl(".chat")["padding-bottom"]).toBe("env(safe-area-inset-bottom)");
+    expect(plainDecl('.app:not([data-tabbar="on"]) .rows')["padding-bottom"]).toContain("env(safe-area-inset-bottom)");
+    expect(plainDecl(".rail")["padding-bottom"]).toContain("env(safe-area-inset-bottom)");
+    // Once: with the tab bar below the list, the bar has the room (the list does not add it again).
+    expect(rulesFor(rules, ".rows", null).every((r) => !String(r.decl["padding-bottom"] ?? "").includes("env("))).toBe(true);
+    // And the overlay panel sits on the screen's bottom edge: its own body carries the room.
+    expect(plainDecl(".side-col")["bottom"] ?? merged(rulesFor(rules, ".side-col", "(max-width: 1280px)")).bottom).toBe("0");
+  });
+
+  it("A: the sign-in page is a scrolling layer over the visible part, its card centred by auto margins (a tall card starts at the top, never centred out of reach)", () => {
+    const page = plain(".auth-page");
+    expect(page.position).toBe("fixed");
+    expect(page.inset).toBe("0");
+    expect(page["overflow-y"]).toBe("auto");
+    expect(plain(".auth-card").margin).toBe("auto");
+    expect(page["place-items"]).toBeUndefined();
+    // Any single child is centred (the loading line, the crash fallback), not only a card; several things go in one stack.
+    expect(plain(".auth-page > *").margin).toBe("auto");
+    expect(plain(".auth-stack")["flex-direction"]).toBe("column");
+    expect(plain(".auth-stack")["align-items"]).toBe("center");
+  });
+
+  it("A: the background covers whatever height is shown: a flat base colour under the gradient, no repeat", () => {
+    const body = plain("body");
+    expect(body["background-repeat"]).toBe("no-repeat");
+    expect(body["background-color"]).toBeTruthy();
+  });
+});
+
+describe("M: the composite group avatar is one component whose layout depends only on its size", () => {
+  const PLACING = ["transform", "margin", "position", "left", "right", "top", "bottom", "width", "height", "inset", "translate", "scale"];
+  it("no rule from outside the component reaches the members it lays out (a descendant selector on .avatar or .avatar-img moves them out of their places)", () => {
+    for (const rule of rules) {
+      for (const selector of rule.selectors) {
+        if (selector.startsWith(".group-avatar")) continue;
+        // A descendant `.avatar` (with a space before it, not a child of the thing named) is any avatar below it — a composite's members too.
+        if (!/\s\.avatar(-[\w-]+)?(?![\w-])/.test(selector.replace(/\s*>\s*/g, ">"))) continue;
+        for (const property of PLACING) expect(rule.decl[property], `${selector} { ${property} }`).toBeUndefined();
+      }
+    }
+  });
+
+  it("the header scales the whole picture (its own box), as a direct child", () => {
+    const header = rules.filter((r) => r.selectors.some((x) => x.includes(".chat-head") && x.includes("avatar")) && r.decl.transform);
+    expect(header.length).toBeGreaterThan(0);
+    for (const r of header) for (const selector of r.selectors.filter((x) => x.includes("avatar"))) expect(selector).toMatch(/\.chat-head\s*>\s*\./);
+  });
+});
+
+describe("N: the chat header gives the title the room (the three controls stay 44px targets, drawn without boxes and with no gap; the title may take two lines)", () => {
+  const narrow = (selector) => merged(rulesFor(rules, selector, "(max-width: 860px)"));
+  it("the controls beside the title: no gap between 44px targets, no box around each", () => {
+    expect(narrow(".chat-head-actions").gap).toBe("0");
+    const bare = narrow(".chat-head-actions .icon-btn.boxed");
+    expect(bare.background).toBe("none");
+    expect(bare["box-shadow"]).toBe("none");
+    expect(bare["border-color"]).toBe("transparent");
+    expect(px(narrow(".chat-head .icon-btn").width)).toBeGreaterThanOrEqual(44);
+  });
+
+  it("the title wraps to two lines before it is cut with an ellipsis", () => {
+    const title = narrow(".chat-title h2");
+    expect(title["white-space"]).toBe("normal");
+    expect(title["-webkit-line-clamp"]).toBe("2");
+  });
+});
+
+describe("F, D: one gutter, a tab bar of the usual height", () => {
+  const horizontal = (padding) => {
+    const parts = padding.trim().split(/\s+/);
+    return [parts[1] ?? parts[0], parts[3] ?? parts[1] ?? parts[0]];
+  };
+  it("F: a detail page on a phone has the same left and right gutter as the lists and their headers", () => {
+    const list = horizontal(plain(".list-head").padding);
+    const page = horizontal(merged(rulesFor(rules, ".page", "(max-width: 860px)")).padding);
+    expect(page).toEqual(list);
+    expect(horizontal(plain(".list-note").padding)).toEqual(list);
+    expect(plain(".rows-label").padding).toContain(list[0]);
+  });
+
+  it("D: the tab bar is the usual 50px of controls (its home-indicator room is its own bottom padding), and its items keep 44px targets", () => {
+    expect(merged(rulesFor(rules, ":root", PHONE))["--tabbar"]).toBe("50px");
+    expect(phone(".rail").padding).toBe("0");
+    expect(phone(".rail")["padding-bottom"]).toBe("env(safe-area-inset-bottom)");
+    expect(phone(".rail-item")["min-height"]).toBe("44px");
   });
 });

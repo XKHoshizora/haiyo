@@ -137,6 +137,19 @@ describe("the Agent list", () => {
     ];
     await openAgents({ agents });
     expect(document.querySelector(".list-col h1").textContent).toBe("我的 Agent");
+    // The deleted one is not in the list: one collapsed entry holds it (its chat history stays readable there).
+    expect(rowNames()).toEqual(["小助手"]);
+    expect(inList().getByRole("button", { name: "已删除（1）" }).getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(inList().getByRole("button", { name: "已删除（1）" }));
+    expect(rowNames()).toEqual(["小助手", "厨师"]);
+    // It can be closed again, also while one of those Agents is the page that is open.
+    fireEvent.click(rowOf("厨师"));
+    await flush();
+    expect(inList().getByRole("button", { name: "已删除（1）" }).getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(inList().getByRole("button", { name: "已删除（1）" }));
+    expect(rowNames()).toEqual(["小助手"]);
+    expect(inList().getByRole("button", { name: "已删除（1）" }).getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(inList().getByRole("button", { name: "已删除（1）" }));
     expect(rowNames()).toEqual(["小助手", "厨师"]);
     expect(rowOf("小助手").querySelector(".tag").textContent).toBe("可回复");
     expect(rowOf("小助手").querySelector(".row-preview").textContent).toBe("旅行规划 · 小模型");

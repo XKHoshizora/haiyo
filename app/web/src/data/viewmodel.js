@@ -236,9 +236,24 @@ export function formatPoints(value) {
 export function replyPoints(value) {
   const micro = microPoints(value);
   if (micro === null) return "";
-  // In ten-thousandths, rounded half up on the fifth decimal.
-  const digits = ((micro + 50n) / 100n).toString().padStart(5, "0");
-  return formatPoints(`${digits.slice(0, -4)}.${digits.slice(-4)}`);
+  // From 1 up: hundredths (rounded half up on the third decimal); below 1 the small amounts matter: ten-thousandths. A trace that rounds to nothing says so.
+  const decimals = micro >= 1_000_000n ? 2 : 4;
+  const unit = 10n ** BigInt(6 - decimals);
+  const rounded = (micro + unit / 2n) / unit;
+  if (rounded === 0n && micro > 0n) return "<0.0001";
+  const digits = rounded.toString().padStart(decimals + 1, "0");
+  return formatPoints(`${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`);
+}
+
+/** Points for any display (a balance, an allowance, a usage line, the line under a reply): `replyPoints`, a negative balance with its sign. */
+export function displayPoints(value) {
+  if (typeof value === "string" && value.startsWith("-")) {
+    const shown = replyPoints(value.slice(1));
+    // (A negative trace is the display's finest step with its sign — "<0.0001" with a minus in front reads as garbage.)
+    return shown === "" ? formatPoints(value) : shown === "0" ? "0" : shown === "<0.0001" ? "-0.0001" : `-${shown}`;
+  }
+  const shown = replyPoints(value);
+  return shown === "" ? formatPoints(value) : shown;
 }
 
 /**
@@ -746,14 +761,14 @@ function usageView(u) {
   if (!u) return null;
   return {
     ...u,
-    balanceText: formatPoints(u.balance),
-    free: u.free ? { ...u.free, allowanceText: formatPoints(u.free.allowance), usedText: formatPoints(u.free.used) } : null,
-    memory: u.memory ? { ...u.memory, allowanceText: formatPoints(u.memory.allowance), usedText: formatPoints(u.memory.used) } : null,
-    recent: (Array.isArray(u.recent) ? u.recent : []).map((r) => ({ ...r, pointsText: formatPoints(r.points) })),
+    balanceText: displayPoints(u.balance),
+    free: u.free ? { ...u.free, allowanceText: displayPoints(u.free.allowance), usedText: displayPoints(u.free.used) } : null,
+    memory: u.memory ? { ...u.memory, allowanceText: displayPoints(u.memory.allowance), usedText: displayPoints(u.memory.used) } : null,
+    recent: (Array.isArray(u.recent) ? u.recent : []).map((r) => ({ ...r, pointsText: displayPoints(r.points) })),
     // Web searches, a line of their own per Agent (lane websearch2): only entries with a count above 0.
     recentWeb: (Array.isArray(u.recentWeb) ? u.recentWeb : [])
       .filter((w) => w && typeof w === "object" && isCountAbove0(w.searches) && typeof w.points === "string")
-      .map((w) => ({ agentId: typeof w.agentId === "string" ? w.agentId : null, searches: w.searches, pointsText: formatPoints(w.points) })),
+      .map((w) => ({ agentId: typeof w.agentId === "string" ? w.agentId : null, searches: w.searches, pointsText: displayPoints(w.points) })),
   };
 }
 
