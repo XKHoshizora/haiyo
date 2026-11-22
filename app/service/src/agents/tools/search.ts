@@ -3,7 +3,7 @@ import type { MessageRef } from "../../messages/lookups.ts";
 import { inSearchBudget, searchRows, type SearchRow } from "../../messages/search.ts";
 import { cutToWeight, lastToWeight, weight } from "../../metering/tokens.ts";
 import type { ToolSpec } from "../../models/gateway.ts";
-import { askerLine, callsSeen } from "../context.ts";
+import { askerLine } from "../context.ts";
 import type { ToolOutcome } from "../runtime/port.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, oneLine, speakerRole, TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
 import { siteDateTime, siteWeekday } from "./clock.ts";
@@ -138,8 +138,6 @@ interface Result {
 /** What the search read in its transaction. */
 interface Found {
   rows: SearchRow[];
-  /** A group reply's asker's line (0 elsewhere): a call at or before it is shown as its text only. */
-  line: number;
   /** In a group: whether everyone the reply answers is the Agent's owner (rule 3's hint). */
   ownerAsked: boolean;
 }
@@ -212,7 +210,7 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
   if (scope.group) {
     conversationIds = [scope.conversationId];
     line = await askerLine(t, scope.id);
-    window = { conversationId: scope.conversationId, after: line, upTo: scope.heardTo, calls: await callsSeen(t, scope.agentId, scope.id, line) };
+    window = { conversationId: scope.conversationId, after: line, upTo: scope.heardTo };
   } else {
     const { rows } = await t.query<{ id: string }>("select conversation_id as id from memberships where principal_id = $1 and left_seq is null order by conversation_id", [scope.agentId]);
     conversationIds = rows.map((r) => r.id);
@@ -226,7 +224,7 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
     const asked = await t.query<{ only: boolean | null }>("select coalesce(asker_ids, '{}') = array[$2::uuid] as only from agent_runs where id = $1", [scope.id, scope.ownerId]);
     ownerAsked = asked.rows[0]?.only === true;
   }
-  return { rows, line, ownerAsked };
+  return { rows, ownerAsked };
 }
 
 /** The longest numbers a reply's search can mint (`refs.ts`: six digits), whose tokens results are measured with. */
@@ -238,8 +236,8 @@ const WIDEST_FILE = "f999999";
  * whole (measured with the widest numbers, then numbered); `more` when any found were left out. Who wrote each (`name｜
  * role`, as a group's labels name people: by account, never by what anyone wrote; `你自己` for the Agent), when (the
  * site's time, `YYYY-MM-DD HH:mm 周X`), what (`excerpt`), where (in the Agent's own conversation, a group's title for
- * what was said there), and a file's number and name — not for a call at or before a group reply's line, which is shown
- * as its text only. In a group the run's mark is taken out of whatever someone else wrote; the rest is shown as it is
+ * what was said there), and a file's number and name (a call the run answers, which its model is shown as its text only
+ * when it is at or before a group reply's line, is never among them: item E). In a group the run's mark is taken out of whatever someone else wrote; the rest is shown as it is
  * stored (no stored text holds a citation: what looks like one is what someone wrote). Each message and file is named
  * by its number as the model is shown it, `〔m1〕` (`ref`, refs.ts): the only numbers it can cite.
  */
@@ -251,7 +249,7 @@ function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { res
     const role = row.sender_id === scope.agentId ? null : speakerRole(row.sender_id, row.sender_kind, scope.ownerId);
     const { date, time } = siteDateTime(row.created_at, deps.config.siteTimezone);
     const elsewhere = !scope.group && row.conversation_id !== scope.conversationId;
-    const file = row.attachment && !(scope.group && seq <= found.line) ? { id: row.attachment.id, name: clean(row.attachment.name) } : null;
+    const file = row.attachment ? { id: row.attachment.id, name: clean(row.attachment.name) } : null;
     const result: Result = {
       ref: scope.refs.token(WIDEST_MESSAGE),
       ...(elsewhere ? { where: oneLine(clean(cleanText(row.title ?? ""))) || NO_GROUP_TITLE } : {}),

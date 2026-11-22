@@ -568,6 +568,36 @@ describe("a search never returns the messages its run answers (item E): they are
     expect(repeat).toBeGreaterThan(seqs[1]!);
   });
 
+  it("in the Agent's own conversation the whole turn it answers is left out: three messages folded into one reply, the middle one matching", async () => {
+    const { owner, agent, own } = await owned("quinn");
+    const earlier = await postAs(own, owner.id, "上周说过：钥匙在门口的鞋柜里");
+    await say(owner, own, "我找不到东西了");
+    await say(owner, own, "钥匙在哪来着？");
+    await say(owner, own, "快帮我想想");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "钥匙在" } }]).reply("在鞋柜里。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    const out = outputs(gateway.calls.at(-1)!)[0];
+    expect(out.results.map((r: any) => r.text)).toEqual(["上周说过：钥匙在门口的鞋柜里"]);
+    expect((await bodyOf(own, await lastOf(own))).found).toEqual([{ conversationId: own, seq: earlier }]);
+    expect(agent.id).toBeTruthy();
+  });
+
+  it("a follow-up's turn too: what its owner wrote while the reply before it ran (two messages) is left out; what that reply answered is found", async () => {
+    const { owner, own } = await owned("rita");
+    const answered = await say(owner, own, "雨伞放在车里了");
+    const hold = gateway.hang();
+    const first = toolWorker().runOnce();
+    await hold.reached;
+    await say(owner, own, "雨伞是哪把？");
+    await say(owner, own, "雨伞是蓝色的那把吗");
+    hold.release("记住了。");
+    expect(await first).toBe(true);
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "雨伞" } }]).reply("蓝色那把在车里。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["雨伞放在车里了"]);
+    expect(answered).toBeGreaterThan(0);
+  });
+
   it("in the Agent's own conversation too; and `more` is decided after the exclusion — 8 earlier matches (crossing seq 10) are the whole page, 10 are not", async () => {
     const { owner, own } = await owned("paula");
     for (let i = 3; i <= 10; i++) await postAs(own, owner.id, `第${i}回：洗衣机的保修卡在抽屉里`, `2026-10-${String(i).padStart(2, "0")}T04:00:00Z`);

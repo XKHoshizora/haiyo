@@ -245,14 +245,15 @@ describe("a group reply never sees past its asker's line", () => {
 
   it("nothing written after the reply began is found (heardTo), however well it matches", async () => {
     const w = await world();
+    await say(w.ned, w.a, "之前说过：蓝鲸计划在三楼");
     await say(w.mia, w.a, "@scope_bot 蓝鲸计划在哪？");
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     const heardTo = await conversationSeq(w.a);
     await say(w.ned, w.a, "后来才说：蓝鲸计划在五楼");
     const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo, mark: null };
     const out = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }, new AbortController().signal);
-    // Not the later message (past heardTo), nor the question the reply answers (item E).
-    expect(out.output).toEqual({ results: [], note: "这个群的记录里没找到。" });
+    // The earlier message only: not the later one (past heardTo), nor the question the reply answers (item E).
+    expect((out.output as { results: Array<{ text: string }> }).results.map((r) => r.text)).toEqual(["之前说过：蓝鲸计划在三楼"]);
   });
 
   it("an Agent taken out of a group and added back finds there only what came after it came back, from its own conversation or in the group", async () => {

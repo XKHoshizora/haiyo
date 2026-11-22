@@ -3,7 +3,7 @@ import type { Config } from "../../config.ts";
 import type { Db, Queryable, Tx } from "../../db.ts";
 import { inSearchBudget, searchRows, type SearchRow } from "../../messages/search.ts";
 import type { Hub } from "../../sync/hub.ts";
-import { createWhisper, mayTell, readableHits, roomForFoundElsewhere, whisperOfRun, type HitRow, type Whisper } from "../../whispers/store.ts";
+import { createWhisper, foundElsewhereAbout, mayTell, readableHits, roomForFoundElsewhere, whisperOfRun, type HitRow, type Whisper } from "../../whispers/store.ts";
 import { QUOTE_MAX_CHARS } from "../runtime/context.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/prompt.ts";
 import { lockAgent } from "../store.ts";
@@ -41,7 +41,7 @@ export const TELL_HOW = "不要说是在哪里看到的，也不要说是谁说�
 /** At most this many second queries run at once in the whole service (one hook per service); more are skipped. */
 export const ELSEWHERE_AT_ONCE = 2;
 /** Where a hit said in the Agent's own conversation was said, as the hit names it. */
-export const OWN_PLACE = "我们的专属会话";
+export const OWN_PLACE = "你和它的专属会话";
 /** At most this many hits. */
 export const ELSEWHERE_HITS_MAX = 5;
 /** No new `found_elsewhere` whisper while its owner has this many there whose state is open or telling. */
@@ -157,8 +157,10 @@ function refOf(row: SearchRow, term: string): HitRef {
  * The whisper, in the group's transaction: the Agent's row first (`lockAgent`: the group's row, then the Agent's, for
  * update — before `createWhisper` takes them again), then the two caps: none when this reply already whispered (a
  * `found_elsewhere` whisper of the Agent there made since the run began: the Agent has one active reply there at most)
- * or when the owner has `ELSEWHERE_OPEN_MAX` open or telling there. It keeps the references and the message that asked:
- * the latest of the calls the run answers (those up to what it covers), else what it covers. Null: none made.
+ * or when the owner has `ELSEWHERE_OPEN_MAX` open or telling there; nor when a whisper of the Agent there keeps the same
+ * message as the one that asked (a retry of the reply — the system's, after a failure — asks no second time about one
+ * question). It keeps the references and the message that asked: the latest of the calls the run answers (those up to
+ * what it covers), else what it covers. Null: none made.
  */
 async function whisperHits(t: Tx, scope: RunScope, hits: HitRef[], ttlHours: number, log: Pick<FastifyBaseLogger, "warn">): Promise<Whisper | null> {
   await lockAgent(t, scope.agentId, scope.conversationId);
@@ -169,6 +171,7 @@ async function whisperHits(t: Tx, scope: RunScope, hits: HitRef[], ttlHours: num
     [scope.id],
   );
   const askedSeq = asked.rows[0]?.seq == null ? null : Number(asked.rows[0].seq);
+  if (askedSeq !== null && (await foundElsewhereAbout(t, { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId }, askedSeq))) return null;
   return createWhisper(
     t,
     {
@@ -190,7 +193,7 @@ export function askedOf(detail: unknown): number | null {
 
 /**
  * A hit as its owner is shown it, from what whispers/store.ts `readableHits` read of its message (under her access now,
- * the one rule): where (a group's title, `某个群` when it has none; `我们的专属会话` for the Agent's own), who (the sender's name
+ * the one rule): where (a group's title, `某个群` when it has none; `你和它的专属会话` for the Agent's own), who (the sender's name
  * as a label shows it), when (in `timeZone`, the site's), and what — on one line, cut around the words as the search cut
  * it (`excerptAt` at the kept `at`, from the same `hitLine` the place was found in), at most `QUOTE_MAX_CHARS` characters
  * (a file message without text: its name).

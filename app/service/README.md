@@ -139,8 +139,8 @@ waits, queued; a reply's later rounds are held against all that is left; 0.01–
 `warnAt` (the share of it used at which they are told, once a day; above 0 and below 1, default 0.8)),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
 whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
-`AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional; Agents
-and runs, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic retry of one original call, in ms; at
+`AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional;
+Replies, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic retry of one original call, in ms; at
 most 2, each 0–600 000; default `[20000, 120000]`; `[]` turns automatic retries off)),
 `HOST` (the address to listen on: an IPv4/IPv6 address or `localhost`, default `0.0.0.0`, every interface; `127.0.0.1` for local-only),
 `WEB_DIST` (optional: directory of the built web client to serve, see Deployment; unset serves none),
@@ -884,23 +884,35 @@ other current member learns only whether it is replying. Failures are never mess
 owner learns from the `run` push and from `GET /api/conversations/:id/run` (in a group, `GET …/runs`).
 
 **Automatic retry** (`src/agents/runs.ts` `scheduleAutoRetry`, migration `063_greeting_and_auto_retry.sql`;
-`tests/auto-retry.test.ts`): a reply that failed for a reason that clears by itself — the model service unavailable
-(`provider_unavailable` with its 5xx, 408 or 429, or no status: a network failure, a timeout, a stream cut short; the
-rule `passingFailure`, `src/models/gateway.ts`, the rolling summary's too) or the service losing it mid-call (start-up
-recovery, the release at a stop, the stale-run sweep) — is tried again by the system, nobody pressing anything: at most
-once per wait of `AGENTS.autoRetryDelaysMs` (default `[20000, 120000]`: 20 s, then 2 min after the failure; `[]` turns it
-off), never starting later than 10 minutes after the original call. Not after anything else (no money, a model gone, a
-key or request refused, a context too small, a stop, a pause, a delete), not for a reply nobody asked for (lane
-`proactive`), not for a told reply whose whisper no longer reads open. The retry is an ordinary queued run
-(`agent_runs.retry_of`, `auto_attempt`, `not_before`): the worker claims it once due (`for update skip locked`: one
-instance only), so it survives a restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held
-back or refused, it is not forced), charged as any, held to the owner's replies a minute in its lane, and answers the
-same calls in the same lane by the same caller (a member's call stays the member's). Whatever calls the Agent while it
-waits is folded into it; it ends quietly (`cancelled`) when the Agent answered meanwhile. While it waits the run slot
-reads `queued`: its owner is pushed the queued retry and its claim alone, never the failure; the other members of a
-group, told `replying`, are told nothing more until the answer — the same frames as an answer at the first try. Only
-when the system has given up is the failure shown, with 重试 as ever; `POST …/runs/retry` while a retry waits is 409
-`busy_run` (no second run).
+`tests/auto-retry.test.ts`): a reply that failed for a reason that clears by itself is tried again by the system, nobody
+pressing anything. Passing means only an explicit signal (`src/agents/runtime/port.ts` `passingEnding`, THE classifier,
+which tags the failed end `transient`): the model service answered 5xx, 408 or 429; a call error with no status, a
+stream cut short or the reply's own time out, each before any text or thinking came; or the service lost the run
+mid-call (start-up recovery, the release at a stop, the stale-run sweep). An answer that finished with nothing in it (a
+content refusal, only thinking, a persona block cut at the limit, a group reply that was only its mark) is the
+provider's answer and is not retried; nor is anything else (no money, a model gone, a key or request refused, a context
+too small, a stop, a pause, a delete). Which runs (the table): an ordinary reply in the Agent's own conversation or in a
+group, whoever called it (an Agent's relayed call included) — never a reply nobody asked for (lane `proactive`), a
+told reply (`告诉他们`: its owner has just pressed it; its whisper reads open again and offers 重试, and the members'
+calls noted on it get their follow-up at once), a new Agent's greeting, or a run queued by the owner's own 重试
+(`owner_retry`: the owner is there). At most once per wait of `AGENTS.autoRetryDelaysMs` per original call (default
+`[20000, 120000]`: 20 s, then 2 min after the failure; `[]` turns it off; counted on the chain, `retry_of` /
+`auto_attempt`, also across restarts), and only when it can START within 10 minutes of the original call: one held back
+past that (by admission, by the owner's other running replies, or queued while the service was down) is not started
+— it ends as the ordinary failure, with 重试 for its owner and 暂时无法回复 for the others. The retry is an ordinary queued
+run (`not_before`): the worker claims it once due (`for update skip locked`: one instance only), so it survives a
+restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held back or refused, it is not
+forced), charged as any, held to the owner's replies a minute in its lane, and answers the same calls in the same lane
+by the same caller (a member's call stays the member's). Whatever calls the Agent while it waits is folded into it and
+waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. It posts no second
+acknowledgement within one chain, and makes no second found-elsewhere whisper about the same asking message. While it
+waits the run slot reads `queued` (there is no separate "trying again" state: everyone sees 正在回复…, up to about
+2.5 minutes): its owner is pushed the queued retry and its claim alone, never the failure; the other members of a group,
+told `replying`, are told nothing more until the answer — the same frames as an answer at the first try (for a reply
+that ran tools before it failed, the tool-activity frames come again with the retry's tools: kinds only, nothing of
+them). Only when the system has given up is the failure shown, with 重试 as ever; `POST …/runs/retry` while a retry
+waits is 409 `busy_run` (no second run). A 429 is passing whatever its cause, also a provider's lasting quota refusal on
+an owner's own key: that owner learns why after the retries (about 2.3 minutes).
 
 **Run**: `{"id", "status": "queued" | "running" | "done" | "failed" | "stopped" | "cancelled", "error"?, "retryable",
 "retryableUntil"?, "resetsAt"?}`. `error`: for `failed` why (`provider_rejected`, `provider_unavailable`, `address_not_allowed`, `no_quota`,
@@ -1505,7 +1517,7 @@ the Agent's `whisperElsewhere` is on; the same words with the same filters (`fro
 more — on their own, after the search has answered the model, never awaited: what is found, how long it takes or how it
 fails changes nothing the model is told, nor when — in the Agent's other conversations (each it is a current member of but
 this group, as the Agent sees it, and there only what you can read now: a conversation you are a current member of, a
-message after your joining; its own conversation with you included, `我们的专属会话`: you see each hit before you answer),
+message after your joining; its own conversation with you included, `你和它的专属会话`: you see each hit before you answer),
 found something. The caps below are read before that query (none runs without room for a whisper), and at most 2 such
 queries run at once in the whole service (`ELSEWHERE_AT_ONCE`, apart from the search slots, which are the models'): one
 more is skipped, and counted (`elsewhere_skipped`, Metrics in the log).
@@ -1515,7 +1527,7 @@ are in it — never the text, a title or a name — and which message of the gro
 Whenever it is shown to you (the push, sync, catch-up, the list route, an answer) and when its told reply begins, each is
 read again **under your access then**: a hit you can no longer read (you left that group, say) is left out; with none left
 the whisper reads `expired`. You are sent `detail` `{"hits": [{"where", "who", "when", "text"}]}`, read so: `where` the
-group's title now (`某个群` without one) or `我们的专属会话`, `who` the sender's name as a label shows it, `when`
+group's title now (`某个群` without one) or `你和它的专属会话`, `who` the sender's name as a label shows it, `when`
 `YYYY-MM-DD HH:mm` in the site's time zone, `text` on one line around the words (cut at the place kept, in the text as
 stored), at most 200 characters. At most one a reply, and none while you have 3 `found_elsewhere` whispers in that group whose state is open or
 telling (a told one, or one with no hit left, takes no room); with the switch off the second query is not run at all.
@@ -3559,9 +3571,12 @@ what looks like one is what someone wrote.
 - `search_messages` `{query, from?, before?, after?}`: where it looks — in a group, that group only, and there only what
   the reply may see: after its asker's line (`askerLine`, read for each call: a newcomer's question finds nothing from
   before they joined, not even a count) and up to what the reply had heard when it began (the conversation's seq read in
-  `begin`), with the calls it answers wherever they are (one at or before the line as its text only: found by its text,
-  never by its file's name); in the Agent's own
+  `begin`); in the Agent's own
   conversation, every conversation the Agent is a current member of (its own and its groups, each as the Agent sees it).
+  Never the messages the reply answers (its model is shown them already; a question would match itself): in a group the
+  calls it answers and the latest it covers (other people's messages between them are found as any), in the Agent's own
+  conversation the whole turn it answers (every message of the owner's after what the Agent's last answered reply
+  covered); "nothing found", its note and the elsewhere lookup are decided without them, and so is `more`.
   A new topic changes nothing here: search is history, not context. Matched as the search routes match (Search: a
   substring of the text or the file's name, any case); `query` is cleaned as a stored text is (`cleanText`), then refused
   under two characters (`要查的词至少要两个字。`) or over a weight of 60 (`要查的词太长了，换几个关键的字再查。`) without touching the
@@ -3578,7 +3593,7 @@ what looks like one is what someone wrote.
   `TOOLS.resultMaxWeight` whole (`more` when any were left out); `where` only in the Agent's own conversation, for what
   was said in a group (its title, `某个群` when it has none); `who` is the sender's name as a group's label shows it and
   who they are to the Agent by account (`你的主人`, `群成员`, `Agent`), `你自己` for the Agent; `text` at most a weight of
-  200 around what matched, `…` where it was cut; `file` for a file message (not for a call shown as its text only). Its
+  200 around what matched, `…` where it was cut; `file` for a file message. Its
   text and its file's name are all that is read of a message: never its reasoning, never what an earlier reply looked
   up. In a group the run's mark is taken out of whatever someone else wrote. Nothing found: `{"results": [], "note":
   "没找到。"}`, in a group `这个群的记录里没找到。`, followed by `只有在你和主人的专属会话里才能查所有地方。` only when everyone the

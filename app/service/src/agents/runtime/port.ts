@@ -140,11 +140,14 @@ export type RunEnd =
       readonly status: "failed";
       readonly error: RunErrorCode;
       readonly resetsAt?: string;
-      /**
-       * The upstream's HTTP status, when the call failed with one (the gateway's `ModelError.upstreamStatus`): what decides
-       * whether the system tries the reply again by itself (agents/runs.ts `transientFailure`). Never on the wire.
-       */
+      /** The upstream's HTTP status, when the call failed with one (the gateway's `ModelError.upstreamStatus`). Never on the wire. */
       readonly upstreamStatus?: number;
+      /**
+       * It failed for a reason that clears by itself (`passingEnding`, THE classifier; set by the worker, and by recovery for
+       * a run the service lost mid-call): the system may try the reply again (agents/runs.ts `scheduleAutoRetry`). Absent:
+       * not. Never on the wire.
+       */
+      readonly transient?: true;
     };
 
 /**
@@ -152,6 +155,49 @@ export type RunEnd =
  * how a persona draft fails then). Its literal type is kept: a draft's failure must stay a `ModelErrorCode`.
  */
 export const UNAVAILABLE = { status: "failed", error: "provider_unavailable" } as const satisfies RunEnd;
+
+/**
+ * How a reply's model call ended badly, as the worker (and recovery) knows it: what `passingEnding` classifies.
+ * - `upstream`: the call failed with an error of the gateway's (`code`), with the upstream's HTTP status when it answered
+ *   one, and whether any text or thinking had come before (`said`);
+ * - `cut`: the stream ended without its finish; `timeout`: the reply's own time ran out — each with `said`;
+ * - `nothing`: the answer finished and nothing visible was left (a content refusal, only thinking, a persona block cut at
+ *   the limit, a group reply that was only the mark and labels);
+ * - `lost`: the service lost the run mid-call (start-up recovery, the release at a stop, the stale-run sweep).
+ */
+export type Ending =
+  | { kind: "upstream"; code: RunErrorCode; status?: number; said: boolean }
+  | { kind: "cut"; said: boolean }
+  | { kind: "timeout"; said: boolean }
+  | { kind: "nothing" }
+  | { kind: "lost" };
+
+/**
+ * THE classifier of a passing (transient) ending — only an explicit signal: the upstream's 5xx, 408 or 429; a call error
+ * with no status, the stream cut, or the reply's time out, each before any text or thinking came; or the service lost the
+ * run mid-call. Never an answer that finished with nothing in it (the provider did answer: trying again gives the same),
+ * never another status, never an error of another kind (a refused key, a refused address, thinking exhausted).
+ */
+export function passingEnding(e: Ending): boolean {
+  switch (e.kind) {
+    case "upstream":
+      if (e.code !== "provider_unavailable") return false;
+      if (e.status !== undefined) return e.status >= 500 || e.status === 408 || e.status === 429;
+      return !e.said;
+    case "cut":
+    case "timeout":
+      return !e.said;
+    case "nothing":
+      return false;
+    case "lost":
+      return true;
+  }
+}
+
+/** A failed end of `error` for `ending`: tagged `transient` when it is passing (`passingEnding`). */
+export function failedEnd(error: RunErrorCode, ending: Ending, extra: { upstreamStatus?: number; resetsAt?: string } = {}): RunEnd {
+  return { status: "failed", error, ...extra, ...(passingEnding(ending) ? { transient: true as const } : {}) };
+}
 /** The service's own trouble: the reply could not be started or stored, or had nothing to answer. Charged nothing. */
 export const BUSY = { status: "failed", error: "busy" } as const satisfies RunEnd;
 /** No tokens at all: what a run that never called a model, or one recovered at start-up, is settled on. */

@@ -7,6 +7,7 @@ import { cleanModelText, hasVisibleText } from "../../schemas.ts";
 import { cutResult, FINAL_LINE, fitsSchema, isRefusal, LoopGuard, OVER_CAP, REPEATED, UNUSABLE, withFinalLine } from "./loop.ts";
 import {
   BUSY,
+  failedEnd,
   isRunEnd,
   NOTHING,
   RunNotRunning,
@@ -138,6 +139,8 @@ interface Round {
   why: Interruption | null;
   /** Whether the model was called at all: a stop, pause or close before it means no call was made. */
   opened: boolean;
+  /** Whether any text or thinking came in this round (what decides whether a failure without a status is passing). */
+  said: boolean;
 }
 
 /** A reply that can make no further call: what it wrote stands, as cut. */
@@ -282,6 +285,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     let failure: RunErrorCode | null = null;
     let status: number | undefined;
     let opened = false;
+    let spoke = false;
     try {
       if (why === null) {
         opened = true;
@@ -293,6 +297,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
           }
           // Acted on at the finish, which alone says whether the round was cut (a call offering no tools gets none).
           if (event.type === "tool_call") continue;
+          if (event.delta !== "") spoke = true;
           say(event.type, event.delta);
           if (port.shouldStop(run)) {
             interrupt("stop");
@@ -315,7 +320,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       clearTimeout(deadline);
       shutdown.removeEventListener("abort", onShutdown);
     }
-    return { finished, failure, ...(status === undefined ? {} : { status }), why: why as Interruption | null, opened };
+    return { finished, failure, ...(status === undefined ? {} : { status }), why: why as Interruption | null, opened, said: spoke };
   }
 
   /**
@@ -397,7 +402,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
   async function conclude(
     run: RunTicket,
     out: ReplyStream,
-    last: Pick<Round, "finished" | "failure" | "why" | "status">,
+    last: Pick<Round, "finished" | "failure" | "why" | "status"> & { said?: boolean },
     usage: Usage | null,
     fallback: Estimated,
     failedFallback: Estimated,
@@ -412,10 +417,13 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
     out.end();
     const failed = (end: RunEnd) => finish(run, end, usage, failedFallback);
-    // With the upstream's status, when it answered with one: whether the system tries again by itself reads it.
-    if (failure !== null) return failed({ status: "failed", error: failure, ...(last.status === undefined ? {} : { upstreamStatus: last.status }) });
+    // Tagged passing or not by THE classifier (port.ts `passingEnding`), with the upstream's status when it answered one.
+    if (failure !== null) {
+      const ending = { kind: "upstream" as const, code: failure, ...(last.status === undefined ? {} : { status: last.status }), said: last.said === true };
+      return failed(failedEnd(failure, ending, last.status === undefined ? {} : { upstreamStatus: last.status }));
+    }
     // The upstream ended the stream without its finish (cut off midway).
-    if (finished === null && why === null) return failed(UNAVAILABLE);
+    if (finished === null && why === null) return failed(failedEnd("provider_unavailable", { kind: "cut", said: last.said === true }));
 
     const text = cleanModelText(out.text);
     const reasoning = cleanModelText(out.reasoning);
@@ -432,8 +440,9 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (posted === "empty") return finish(run, { status: "stopped" }, usage, fallback);
       return finish(run, ended(posted, { status: "stopped" }), usage, fallback);
     }
-    // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed.
-    if (!said) return failed(noAnswer);
+    // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — passing only when the
+    // reply's time ran out before anything came; an answer that finished with nothing in it is the provider's answer.
+    if (!said) return failed(noAnswer === UNAVAILABLE ? failedEnd("provider_unavailable", finished === null ? { kind: "timeout", said: false } : { kind: "nothing" }) : noAnswer);
     const posted = await post(run, { text, reasoning, stopped: false, truncated: finished === null || finished.truncated, ...looked });
     // All it said was inside a persona block that a limit cut off (in a group, also: it only thought, or said only the
     // mark and labels): as an answer that said nothing.
@@ -570,7 +579,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         return "busy";
       }
     };
-    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status">; noAnswer?: RunEnd };
+    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status"> & { said?: boolean }; noAnswer?: RunEnd };
 
     for (;;) {
       const now = interrupted();

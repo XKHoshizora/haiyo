@@ -105,11 +105,10 @@ export interface SearchRowsOptions {
   timeZone: string;
   /**
    * In `conversationId` only what a group reply may be shown (agents/context.ts `askerLine`): messages after `after` and
-   * at most `upTo` (what the reply had heard when it began), and the calls it answers (`calls`, whatever their seq) — one
-   * at or before `after` by its text only, never by its file's name (the reply is shown such a call as its text only).
-   * Null: the whole of every conversation searched.
+   * at most `upTo` (what the reply had heard when it began). (The calls it answers, which it is shown whatever their seq,
+   * are never found: `answering`.) Null: the whole of every conversation searched.
    */
-  window: { conversationId: string; after: number; upTo: number; calls: readonly number[] } | null;
+  window: { conversationId: string; after: number; upTo: number } | null;
   /**
    * Besides the reader, only what this principal can read now too (a current member, the message after their joining:
    * the visibility rule with them as reader) — the owner shown what an Agent found elsewhere (agents/tools/elsewhere.ts).
@@ -117,11 +116,12 @@ export interface SearchRowsOptions {
    */
   alsoVisibleTo?: string | null;
   /**
-   * A reply's own search (agents/tools/search.ts): never the messages reply run `runId` answers in `conversationId` — the
-   * calls it answers (`call_seqs`; its `covers_seq` when not known) and the latest message it covers (`covers_seq`) —
-   * which its model is shown already (item E: a question would otherwise match itself, and nothing would ever be "not
-   * found" there). Read in this same statement, so `limit` (and the paging flag made of it) counts what is left. Absent
-   * or null: nothing is left out.
+   * A reply's own search (agents/tools/search.ts): never the messages reply run `runId` answers in `conversationId`, which
+   * its model is shown already (item E: a question would otherwise match itself, and nothing would ever be "not found"
+   * there): the calls it answers (`call_seqs`, which in its Agent's own conversation hold every message of the turn it
+   * answers, agents/runs.ts `maybeTrigger`, `followUp`; its `covers_seq` when not known) and the latest it covers
+   * (`covers_seq`) — in a group other people's messages between them stay findable. Read in this same statement, so
+   * `limit` (and the paging flag made of it) counts what is left. Absent or null: nothing is left out.
    */
   answering?: { runId: string; conversationId: string } | null;
   limit: number;
@@ -187,17 +187,16 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
         and ($4::text is null or ${senderNamed("sp", "m", "$4::text")})
         and ($5::date is null or m.created_at < ($5::date)::timestamp at time zone $7::text)
         and ($6::date is null or m.created_at >= ($6::date + 1)::timestamp at time zone $7::text)
-        and ($8::uuid is null or m.conversation_id <> $8::uuid or (m.seq > $9::bigint and m.seq <= $10::bigint)
-             or (m.seq = any($11::bigint[]) and (m.seq > $9::bigint or (m.body ->> 'text') ilike $3 escape '\\')))
-        and ($13::uuid is null or exists (select 1 from memberships ov
-                                           where ov.conversation_id = m.conversation_id and ov.principal_id = $13::uuid
+        and ($8::uuid is null or m.conversation_id <> $8::uuid or (m.seq > $9::bigint and m.seq <= $10::bigint))
+        and ($12::uuid is null or exists (select 1 from memberships ov
+                                           where ov.conversation_id = m.conversation_id and ov.principal_id = $12::uuid
                                              and ov.left_seq is null and ov.joined_seq < m.seq))
-        and ($14::uuid is null or m.conversation_id <> $15::uuid
+        and ($13::uuid is null or m.conversation_id <> $14::uuid
              or not exists (select 1 from agent_runs ar
-                             where ar.id = $14::uuid
+                             where ar.id = $13::uuid
                                and (m.seq = ar.covers_seq or m.seq = any(coalesce(ar.call_seqs, array[ar.covers_seq])))))
       order by m.created_at desc, m.conversation_id desc, m.seq desc
-      limit $12`,
+      limit $11`,
     [
       readerId,
       o.conversationIds,
@@ -209,7 +208,6 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
       o.window?.conversationId ?? null,
       o.window?.after ?? 0,
       o.window?.upTo ?? 0,
-      o.window?.calls ?? [],
       o.limit,
       o.alsoVisibleTo ?? null,
       o.answering?.runId ?? null,

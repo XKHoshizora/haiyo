@@ -459,7 +459,9 @@ export async function standingAcknowledgement(q: Queryable, conversationId: stri
        join agent_runs r on ${postingRun("a", "r")}
       where me.id = $3 and me.agent_id = $2 and me.conversation_id = $1
         and (r.id = me.id
-             or ((r.covers_seq = me.covers_seq or r.covers_seq = any(coalesce(me.call_seqs, '{}')))
+             or ((r.covers_seq = me.covers_seq or r.covers_seq = any(coalesce(me.call_seqs, '{}'))
+                  -- an earlier attempt of the same automatic chain (runs.ts scheduleAutoRetry), whatever it covered
+                  or (me.retry_of is not null and (r.id = me.retry_of or r.retry_of = me.retry_of)))
                  and not exists (select 1 from messages x where x.conversation_id = r.conversation_id and x.sender_id = r.agent_id and x.client_txn = r.id::text)))
       order by a.seq desc
       limit 1`,

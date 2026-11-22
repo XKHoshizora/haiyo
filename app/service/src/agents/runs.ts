@@ -10,7 +10,6 @@ import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../mes
 import { postingRun } from "../messages/read.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
-import { passingFailure } from "../models/gateway.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
 import { agentModelOf, lockAgent, type AgentRow } from "./store.ts";
 import { mayTell, tellableRuns } from "../whispers/store.ts";
@@ -1319,7 +1318,12 @@ export async function followUp(
   config: RunLimits,
 ): Promise<FollowUp> {
   const owners = callerOf(agent.ownerId, agent.ownerId);
-  if (conversationId === agent.conversationId) return followUpOf(await queueRun(t, agent, conversationId, pending, "human", owners, [agent.ownerId]));
+  if (conversationId === agent.conversationId) {
+    // It answers every message its owner wrote meanwhile: those noted on the run that ended are its calls.
+    const queued = await queueRun(t, agent, conversationId, pending, "human", owners, [agent.ownerId]);
+    await answersCalls(t, queued.run.id, (callSeqs ?? []).map(Number).filter((s) => s > covers && s <= pending));
+    return followUpOf(queued);
+  }
   // The person behind each message (`behindMessageSql`): its sender; for an Agent's message, the caller of the run that
   // posted it (`postingRun`) unless that run is its owner's own (or there is none: the owner). A message does not count
   // when it was refused for this Agent when it was posted (`refused_agent_calls`), nor when there is a block, either way,
@@ -1445,11 +1449,22 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
   if (agent.replyMode === "mention" && !mentionedIds(message).includes(agent.id)) return noneTriggered();
   // Its owner's message: every reply here is the owner's own.
   const caller = callerOf(agent.ownerId, message.senderId);
+  // A new Agent's greeting still queued gives way: it answers no message, so the owner's gets an ordinary reply (whose
+  // failure is shown, with 重试) — never folded into a greeting that ends quietly.
+  const greeting = await t.query<RunRow>(
+    `update agent_runs as r set status = 'cancelled', finished_at = now()
+      where r.agent_id = $1 and r.conversation_id = $2 and r.status = 'queued' and r.greets returning ${RUN_COLUMNS}`,
+    [agent.id, conversationId],
+  );
+  const gaveWay: Announced[] = greeting.rows.map((r) => ({ ownerId: agent.ownerId, conversationId, run: toWireRun(r) }));
 
+  // Each of the owner's messages a reply answers is one of its calls (`call_seqs`): the whole turn, which its search never
+  // finds (item E); one noted on a running reply is its follow-up's (`followUp`).
   const folded = await t.query(
     `update agent_runs
         set covers_seq = case when status = 'queued' then greatest(covers_seq, $3) else covers_seq end,
-            pending_seq = case when status = 'running' then greatest(pending_seq, $3) else pending_seq end
+            pending_seq = case when status = 'running' then greatest(pending_seq, $3) else pending_seq end,
+            call_seqs = array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || $3::bigint) as x (s) order by s)
       where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')`,
     [agent.id, conversationId, message.seq],
   );
@@ -1459,7 +1474,7 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
   const run = over
     ? await recordRateLimited(t, agent, conversationId, message.seq, "human", caller, askers)
     : await queueRun(t, agent, conversationId, message.seq, "human", caller, askers);
-  return { ...noneTriggered(), runs: [run] };
+  return { ...noneTriggered(), runs: [...gaveWay, run] };
 }
 
 /**
@@ -1516,20 +1531,18 @@ const isGroup = async (q: Queryable, conversationId: string): Promise<boolean> =
 export const AUTO_RETRY_WINDOW_MS = 600_000;
 
 /**
- * Whether a run that ended `end` failed for a reason that clears by itself (models/gateway.ts `passingFailure`, THE rule:
- * the model service unavailable — its 5xx, 408, 429, no status: a network failure, a timeout, a stream cut short —, which
- * is also how a run the service lost mid-call ends, port-impl.ts `recoverRun`): the system may try it again by itself.
+ * Whether a run that ended `end` failed for a reason that clears by itself: tagged so by THE classifier
+ * (runtime/port.ts `passingEnding`, through `failedEnd`) — only an explicit signal (the upstream's 5xx, 408, 429; a call
+ * error, a cut stream or the reply's time out before anything was said; the service losing the run mid-call). The system
+ * may then try it again by itself (`scheduleAutoRetry`).
  */
-export const transientFailure = (end: { status: string; error?: string; upstreamStatus?: number }): boolean =>
-  end.status === "failed" && end.error !== undefined && passingFailure(end.error, end.upstreamStatus);
+export const transientFailure = (end: { status: string; transient?: true }): boolean => end.status === "failed" && end.transient === true;
 
 /** What a run that just ended had covered and had noted, read before its own row was rewritten: what its retry answers. */
 export interface EndedRun {
   covers_seq: string | null;
   pending_seq: string | null;
   call_seqs: string[] | null;
-  /** A told reply (`告诉他们`, `whisper_id`). */
-  told: boolean;
 }
 
 /**
@@ -1543,18 +1556,19 @@ export type AutoRetry = { retry: Announced; attempt: number } | { gaveUp: "attem
  * The automatic retry of reply run `runId` of `agent` in `conversationId`, which has just failed for a reason that clears
  * by itself (`transientFailure`; the caller checks it), in the transaction that recorded that — `finish` or recovery
  * (port-impl.ts), holding the run's conversation row, the Agent's and the run's, its owner's `accounts` row taken last
- * (the lock order). Not for: a reply nobody asked for (lane `proactive`: the moment for an unasked remark has passed); an
- * Agent paused, deleted or without a model; a told reply whose whisper no longer reads open (whispers/store.ts
- * `mayTell`); none at all while `AGENTS.autoRetryDelaysMs` is empty. Each original call is tried again at most once per
- * wait in that list (`auto_attempt`), the n-th retry `delays[n-1]` after this end (by the port's clock, `now`), and never
- * one that would start more than `AUTO_RETRY_WINDOW_MS` after the original call was made; the owner's replies a minute in
- * the run's lane are met as for any reply queued (`overLaneLimit`). The retry is an ordinary queued reply that is not
- * claimed before its `not_before` (port-impl.ts `claimNext`) and is admitted as any (`begin`: pause, membership, blocks,
- * budgets, money) — and it answers the same calls: what the failed run covered and what was noted on it (the greater of
- * the two; a told reply keeps what it covered, and what was noted on it stays noted for its follow-up, as `retryInGroup`
- * keeps it), its calls, askers, whose message called and in which lane by whom (a member's call stays the member's), its
- * whisper and whether it greets. Being queued, it holds the Agent's one active run there: whatever calls it meanwhile is
- * folded into it, and the owner's 重试 is `busy_run`.
+ * (the lock order). Not for (README "Replies", Automatic retry, the table): a reply nobody asked for (lane `proactive`:
+ * the moment for an unasked remark has passed); a told reply (`告诉他们`: its owner has just pressed it, and its whisper's
+ * own rule offers 重试 — what was noted on it goes to its ordinary follow-up at once, round 2 N-3); a new Agent's greeting;
+ * the owner's own 重试 (`owner_retry`: the owner is there); an Agent paused, deleted or without a model; none at all while
+ * `AGENTS.autoRetryDelaysMs` is empty. Each original call is tried again at most once per wait in that list
+ * (`auto_attempt`, carried on the chain, `retry_of`), the n-th retry `delays[n-1]` after this end (by the port's clock,
+ * `now`), and never one scheduled to start more than `AUTO_RETRY_WINDOW_MS` after the original call was made (nor started
+ * later: port-impl.ts `begin`); the owner's replies a minute in the run's lane are met as for any reply queued
+ * (`overLaneLimit`). The retry is an ordinary queued reply that is not claimed before its `not_before` (port-impl.ts
+ * `claimNext`) and is admitted as any (`begin`: pause, membership, blocks, budgets, money) — and it answers the same calls:
+ * what the failed run covered and what was noted on it (the greater of the two), its calls, askers, whose message called
+ * and in which lane by whom (a member's call stays the member's). Being queued, it holds the Agent's one active run there:
+ * whatever calls it meanwhile is folded into it, and the owner's 重试 is `busy_run`.
  */
 export async function scheduleAutoRetry(
   t: Tx,
@@ -1575,19 +1589,19 @@ export async function scheduleAutoRetry(
     asker_ids: string[] | null;
     whisper_id: string | null;
     greets: boolean;
+    owner_retry: boolean;
     auto_attempt: number;
     original: string;
     original_at: Date;
   }>(
-    `select r.purpose, r.lane, r.caller_id, r.triggered_by, r.asker_ids, r.whisper_id, r.greets, r.auto_attempt,
+    `select r.purpose, r.lane, r.caller_id, r.triggered_by, r.asker_ids, r.whisper_id, r.greets, r.owner_retry, r.auto_attempt,
             coalesce(r.retry_of, r.id) as original, coalesce(o.created_at, r.created_at) as original_at
        from agent_runs r left join agent_runs o on o.id = r.retry_of
       where r.id = $1 and r.agent_id = $2 and r.conversation_id = $3`,
     [runId, agent.id, conversationId],
   );
   const run = rows[0];
-  if (!run || run.purpose !== "reply" || run.lane === "proactive") return null;
-  if (run.whisper_id !== null && !(await mayTell(t, { id: run.whisper_id, ownerId: agent.ownerId }, { ttlHours: config.whispers.elsewhereTtlHours })).may) return null;
+  if (!run || run.purpose !== "reply" || run.lane === "proactive" || run.whisper_id !== null || run.greets || run.owner_retry) return null;
   const attempt = run.auto_attempt + 1;
   if (attempt > delays.length) return { gaveUp: "attempts" };
   const notBefore = new Date(now.getTime() + delays[attempt - 1]!);
@@ -1601,20 +1615,17 @@ export async function scheduleAutoRetry(
   const queued = await t.query<RunRow>(
     `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, caller_id, lane,
                                   asker_ids, call_seqs, whisper_id, greets, retry_of, auto_attempt, not_before)
-     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10::bigint[], $11, $12, $13, $14, $15) returning ${RUN_COLUMNS}`,
+     values ('reply', $1, $2, $3, 'queued', $4, null, $5, $6, $7, $8, $9::bigint[], null, false, $10, $11, $12) returning ${RUN_COLUMNS}`,
     [
       conversationId,
       agent.id,
       agent.ownerId,
-      ended.told ? covers : Math.max(covers, pending),
-      ended.told && pending > covers ? pending : null,
+      Math.max(covers, pending),
       run.triggered_by,
       run.caller_id,
       run.lane,
       run.asker_ids,
       ended.call_seqs === null ? null : ended.call_seqs.map(Number),
-      run.whisper_id,
-      run.greets,
       run.original,
       attempt,
       notBefore,
@@ -1687,6 +1698,7 @@ export async function retryRun(
   const latest = await latestRun(t, conversationId);
   if (latest?.status === "queued" || latest?.status === "running") throw new AppError(409, "busy_run");
   if (latest?.status !== "failed" || agent.model === null) throw new AppError(400, "invalid_request");
+  const failedCalls = await t.query<{ calls: string[] | null }>("select coalesce(call_seqs, array[covers_seq])::text[] as calls from agent_runs where id = $1", [latest.id]);
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
   const last = await t.query<{ seq: string | null }>(
@@ -1694,7 +1706,11 @@ export async function retryRun(
     [conversationId, ownerId],
   );
   if (last.rows[0]?.seq == null) throw new AppError(400, "invalid_request");
-  return queueRun(t, agent, conversationId, Number(last.rows[0].seq), "human", callerOf(ownerId, ownerId), [ownerId]);
+  const queued = await queueRun(t, agent, conversationId, Number(last.rows[0].seq), "human", callerOf(ownerId, ownerId), [ownerId]);
+  // It answers what the failed one was to answer: its calls.
+  await answersCalls(t, queued.run.id, (failedCalls.rows[0]?.calls ?? []).map(Number));
+  await ownersRetry(t, queued.run.id);
+  return queued;
 }
 
 /**
@@ -1738,6 +1754,7 @@ async function retryInGroup(
   if (latest.whisper_id === null) {
     const queued = await queueRun(t, agent, conversationId, Number(latest.answers), latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids);
     await answersCalls(t, queued.run.id, (latest.calls ?? [latest.covers]).map(Number));
+    await ownersRetry(t, queued.run.id);
     return queued;
   }
   // A told reply (`告诉他们`, Task 8) is told again: the retry keeps its whisper, so it is shown the hits and offered no tools,
@@ -1746,13 +1763,21 @@ async function retryInGroup(
   // (up to its `pending_seq`, in its `call_seqs`) stay noted, for the retry's follow-up to answer.
   const queued = await queueRun(t, agent, conversationId, covers, latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids);
   const answers = Number(latest.answers);
-  await t.query("update agent_runs set whisper_id = $2, call_seqs = $3::bigint[], pending_seq = $4 where id = $1", [
+  await t.query("update agent_runs set whisper_id = $2, call_seqs = $3::bigint[], pending_seq = $4, owner_retry = true where id = $1", [
     queued.run.id,
     latest.whisper_id,
     (latest.calls ?? []).map(Number),
     answers > covers ? answers : null,
   ]);
   return queued;
+}
+
+/**
+ * That run `runId` is its owner's own 重试 (`owner_retry`): the owner is there, so the system never tries it again by
+ * itself (`scheduleAutoRetry`) — what bounds the attempts of one call across a manual 重试.
+ */
+async function ownersRetry(t: Tx, runId: string): Promise<void> {
+  await t.query("update agent_runs set owner_retry = true where id = $1", [runId]);
 }
 
 /**

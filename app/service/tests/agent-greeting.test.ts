@@ -14,7 +14,7 @@ import { scriptedGateway } from "./helpers/models.ts";
  */
 
 const gateway = scriptedGateway();
-const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false, greeting: true });
+const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false, greeting: true, tools: true });
 const FAST = { source: "site", id: "fast" } as const;
 
 afterEach(() => expect(gateway.pending()).toBe(0));
@@ -67,16 +67,50 @@ describe("a new Agent's greeting", () => {
     expect(shown).not.toHaveProperty("error");
   });
 
-  it("its owner writes before it runs: the one reply answers them (greeting them too), with no made-up turn", async () => {
+  it("its owner writes while it is still queued: it gives way — cancelled, quietly — and the message gets an ordinary reply (no greeting line), whose failure shows with 重试", async () => {
     const owner = await signUp(app, "greet_d");
     const agent = await mustCreateAgent(app, owner, { model: FAST });
     expect((await api(app, owner, "POST", `/api/conversations/${agent.conversationId}/messages`, { text: "你好", clientTxn: "g-d-1" })).status).toBe(201);
-    gateway.reply("你好！");
+    expect((await runsOf(agent.conversationId)).map((r) => [r.status, r.greets])).toEqual([
+      ["cancelled", true],
+      ["queued", false],
+    ]);
+    gateway.fail("provider_rejected", { status: 401 });
     expect(await app.agentWorker.runOnce()).toBe(true);
     const call = gateway.calls.at(-1)!;
-    expect(call.system.endsWith(GREETING_LINE)).toBe(true);
+    expect(call.system).not.toContain(GREETING_LINE);
     expect(call.messages.map((m) => m.parts.map((p) => (p.type === "text" ? p.text : "")).join(""))).toEqual(["你好"]);
+    expect((await api(app, owner, "GET", `/api/conversations/${agent.conversationId}/run`)).json.run).toMatchObject({ status: "failed", error: "provider_rejected" });
     expect(await app.agentWorker.runOnce()).toBe(false);
-    expect((await messagesOf(owner, agent.conversationId)).map((m: { text: string }) => m.text)).toEqual(["你好", "你好！"]);
+  });
+
+  it("its owner writes while it runs: the greeting answers nothing of theirs (it is shown no message), and an ordinary follow-up answers them", async () => {
+    const owner = await signUp(app, "greet_e");
+    const agent = await mustCreateAgent(app, owner, { model: FAST });
+    const hold = gateway.hang();
+    const greeting = app.agentWorker.runOnce();
+    await hold.reached;
+    expect((await api(app, owner, "POST", `/api/conversations/${agent.conversationId}/messages`, { text: "在吗", clientTxn: "g-e-1" })).status).toBe(201);
+    hold.release("你好，我是新来的。");
+    expect(await greeting).toBe(true);
+    const greetingCall = gateway.calls.at(-1)!;
+    expect(greetingCall.messages.map((m) => m.parts.map((p) => (p.type === "text" ? p.text : "")).join(""))).toEqual([GREETING_TURN]);
+    gateway.reply("在的。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect(gateway.calls.at(-1)!.system).not.toContain(GREETING_LINE);
+    expect((await messagesOf(owner, agent.conversationId)).map((m: { text: string }) => m.text)).toEqual(["在吗", "你好，我是新来的。", "在的。"]);
+    expect((await runsOf(agent.conversationId)).map((r) => [r.status, r.greets])).toEqual([
+      ["done", true],
+      ["done", false],
+    ]);
+  });
+
+  it("offers a greeting no tools", async () => {
+    const owner = await signUp(app, "greet_f");
+    const agent = await mustCreateAgent(app, owner, { model: FAST });
+    gateway.reply("你好。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect(gateway.calls.at(-1)!.tools ?? []).toEqual([]);
+    expect(agent.id).toBeTruthy();
   });
 });

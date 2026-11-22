@@ -46,6 +46,7 @@ import type { Reviewer } from "../memory/reviewer.ts";
 import type { ProactiveScheduler } from "./proactive/scheduler.ts";
 import {
   BUSY,
+  failedEnd,
   NOTHING,
   RunNotRunning,
   UNAVAILABLE,
@@ -71,6 +72,7 @@ import {
   noneTold,
   pushBudgetReached,
   refusedAtAdmission,
+  AUTO_RETRY_WINDOW_MS,
   RUN_COLUMNS,
   scheduleAutoRetry,
   transientFailure,
@@ -244,9 +246,21 @@ interface RunState {
   greets: boolean;
   /** An automatic retry (runs.ts `scheduleAutoRetry`): the run of its original call; null for an original. */
   retry_of: string | null;
+  /** How many automatic attempts came before it (0: none, an original or the owner's own 重试). */
+  auto_attempt: number;
+  /** An automatic retry: when its original call was made (the start bound, `AUTO_RETRY_WINDOW_MS`); else null. */
+  original_at: Date | null;
 }
 const RUN_STATE =
-  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, greets, retry_of";
+  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, greets, retry_of, auto_attempt, " +
+  "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at";
+
+/**
+ * An automatic retry that would START more than `AUTO_RETRY_WINDOW_MS` after its original call was made (held back by
+ * admission, or queued while the service was down): it is not started — it ends as the ordinary failure, which the owner
+ * may retry and the members see as 暂时无法回复; never passing, so nothing tries it again.
+ */
+const RETRY_TOO_LATE: RunEnd = UNAVAILABLE;
 
 /** One line per automatic retry made, run, or given up (README "Metrics in the log"): counts only, never what was said. */
 function countRetry(log: Partial<Pick<FastifyBaseLogger, "info">>, retried: AutoRetry): void {
@@ -530,6 +544,14 @@ export class DbAgentPort implements AgentPort {
     return null;
   }
 
+  /** Whether `state` is an automatic retry past its start bound (`RETRY_TOO_LATE`); counted once it is found so. */
+  private tooLate(state: RunState): boolean {
+    if (state.auto_attempt === 0 || state.original_at === null) return false;
+    if (this.now().getTime() - state.original_at.getTime() <= AUTO_RETRY_WINDOW_MS) return false;
+    this.deps.log.info({ metric: "auto_retry_gave_up", why: "window" }, "agent run: an automatic retry came too late to start; it ends as the failure");
+    return true;
+  }
+
   /**
    * Three steps, so that no transaction is open while attachments are read:
    *
@@ -649,6 +671,8 @@ export class DbAgentPort implements AgentPort {
       // An automatic retry whose question was answered meanwhile — a reply of this Agent's there from another run, posted
       // after the original call was made — has nothing left to answer: it ends quietly, with no call.
       if (state.retry_of !== null && (await answeredSince(t, run, state.retry_of))) return { end: ENDED_QUIETLY };
+      // An automatic retry starts within ten minutes of its original call, or not at all (the bound is on starting).
+      if (this.tooLate(state)) return { end: RETRY_TOO_LATE };
 
       let resolved;
       try {
@@ -673,8 +697,11 @@ export class DbAgentPort implements AgentPort {
       // What it covered before taking on what was noted on it since its claim (kept: step 3 may hand that back). A told
       // reply takes on nothing noted on it: that stays noted, for its follow-up to answer as an ordinary reply.
       const coveredBefore = Number(state.covers_seq ?? 0);
-      const covers = told !== null ? coveredBefore : Math.max(coveredBefore, Number(state.pending_seq ?? 0));
-      if (told === null) await t.query("update agent_runs set covers_seq = $2, pending_seq = null where id = $1", [run.id, covers]);
+      // Nor does a new Agent's greeting: it answers no message of its owner's — one written meanwhile is answered by the
+      // ordinary follow-up after it (so a greeting's quiet end never hides a question).
+      const keepsNoted = told !== null || state.greets;
+      const covers = keepsNoted ? coveredBefore : Math.max(coveredBefore, Number(state.pending_seq ?? 0));
+      if (!keepsNoted) await t.query("update agent_runs set covers_seq = $2, pending_seq = null where id = $1", [run.id, covers]);
       const owner = await t.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
       const displayName = owner.rows[0]!.display_name;
       // What its Agent may be shown of its memory here (`notesFor`'s rules), read once with the rest, under the same locks.
@@ -731,7 +758,7 @@ export class DbAgentPort implements AgentPort {
         planRatio: planned,
         summary,
         // A told reply is shown the group up to what it covers: a call noted on it since is its follow-up's.
-        ...(told !== null ? { upTo: covers } : {}),
+        ...(keepsNoted ? { upTo: covers } : {}),
       };
       // The tools the reply is offered, decided in this order: none for a reply `告诉他们` queued (`told`); none while
       // `TOOLS.enabled` is false; none for a model that
@@ -739,7 +766,7 @@ export class DbAgentPort implements AgentPort {
       // offers none; then what they take of the context — their definitions at the plan's ratio, as tools' text is planned
       // (`TOOL_TEXT_FACTOR`), and what providers add around them, reserved as the system text is — and room for what they
       // bring back (below).
-      let offer: Offer | null = told === null && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, { group }) : null;
+      let offer: Offer | null = told === null && !state.greets && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, { group }) : null;
       if (offer !== null && offer.tools.length === 0) offer = null;
       // A reply offered tools numbers the files its context labels (`[文件 〔f1〕：name]`), so that its file tool can name
       // them and its text cite them (tools/refs.ts) — afresh for each plan, and in a plan only those of the messages it can
@@ -803,6 +830,7 @@ export class DbAgentPort implements AgentPort {
       const { agent, state } = await this.lockRun(t, run);
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
+      if (this.tooLate(state)) return { end: RETRY_TOO_LATE };
       // The service may have started closing while this waited for the locks: then nothing is admitted (thrown, so the
       // transaction rolls back) and the run is left running, unadmitted, for the caller to end (the worker: `release`).
       if (closing?.aborted) throw closing.reason;
@@ -1423,7 +1451,7 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
     ? { status: posted.stopped === true ? "stopped" : "done" }
     : state.interrupted
       ? { status: "cancelled", error: state.interrupted }
-      : UNAVAILABLE;
+      : failedEnd("provider_unavailable", { kind: "lost" });
   // A run settled already had its hold released with its record.
   const settled = (await t.query("select 1 from usage_records where run_id = $1", [runId])).rowCount !== 0;
   if (!settled) await settle(t, config, runId, null, NOTHING, end.status, new Date(), { forgiveAll: true, log });
