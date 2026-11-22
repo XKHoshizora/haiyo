@@ -18,11 +18,16 @@ import { orderedPair } from "./social/pair.ts";
 /** The reviewer's account unless the operator names others (`--handle`, `--name`). */
 export const DEMO_DEFAULTS = { handle: "app_review", name: "Reviewer" } as const;
 
-/** The two people the reviewer is seated with. They have no password: nobody can sign in as them. */
-const MEMBERS = [
-  { handle: "demo_mika", name: "Mika", email: "demo-mika@demo.invalid" },
-  { handle: "demo_ren", name: "Ren", email: "demo-ren@demo.invalid" },
-] as const;
+/**
+ * The two people the reviewer is seated with, named after the reviewer's handle (`<handle>_mika`, `<handle>_ren`; the handle
+ * cut to 19 characters first), so an operator who picks an unguessable `--handle` gets unguessable ones too. Their addresses
+ * are under `.invalid` (no mail can reach them), and they have no password: nobody can sign in as them.
+ */
+const membersOf = (handle: string) =>
+  [
+    { part: "mika", name: "Mika" },
+    { part: "ren", name: "Ren" },
+  ].map(({ part, name }) => ({ handle: `${handle.slice(0, 19)}_${part}`, name, email: `${handle}-${part}@demo.invalid` }));
 
 const GROUP_TITLE = "Weekend plans";
 
@@ -88,6 +93,12 @@ async function personByHandle(t: Tx, handle: string): Promise<{ id: string; role
   return rows[0] ?? null;
 }
 
+/** The e-mail of `principalId`'s account. */
+async function emailOf(t: Tx, principalId: string): Promise<string | null> {
+  const { rows } = await t.query<{ email: string }>(`select u.email from principals p join "user" u on u.id = p.auth_user_id where p.id = $1`, [principalId]);
+  return rows[0]?.email ?? null;
+}
+
 async function reservedByOther(t: Tx, handle: string, principalId: string | null): Promise<boolean> {
   const { rows } = await t.query<{ principal_id: string }>("select principal_id from reserved_handles where handle = $1", [handle]);
   return rows.some((r) => r.principal_id !== principalId);
@@ -123,7 +134,15 @@ export async function seedDemo(db: Db, config: Config, auth: Auth, input: DemoIn
       throw new DemoRefused(`${email} belongs to an account that is not the demo account; nothing was changed`);
     }
     const holder = await personByHandle(t, handle);
-    if (holder && holder.id !== known?.principalId) throw new DemoRefused(`the handle ${handle} belongs to someone else; nothing was changed`);
+    if (holder && holder.id !== known?.principalId) {
+      // An earlier demo account under another address: say which, so the operator can run it with that one.
+      const theirs = holder.role === "reviewer" ? await emailOf(t, holder.id) : null;
+      throw new DemoRefused(
+        theirs === null
+          ? `the handle ${handle} belongs to someone else; nothing was changed`
+          : `the handle ${handle} is the demo account of ${theirs}: run with --email ${theirs}, or choose another --handle; nothing was changed`,
+      );
+    }
     if (await reservedByOther(t, handle, known?.principalId ?? null)) throw new DemoRefused(`the handle ${handle} was given up by someone; choose another`);
 
     const hash = await ctx.password.hash(input.password);
@@ -134,7 +153,8 @@ export async function seedDemo(db: Db, config: Config, auth: Auth, input: DemoIn
       await t.query(`update "user" set "emailVerified" = true where id = $1`, [known.userId]);
       // Whoever signed in with it before (an earlier review) is signed out.
       await t.query(`delete from "session" where "userId" = $1`, [known.userId]);
-      await t.query("update principals set display_name = $2 where id = $1", [reviewerId, name]);
+      // Its name, and its handle if a review changed it (the handle it gave up is its own: `reserved_handles`).
+      await t.query("update principals set display_name = $2, handle = $3 where id = $1", [reviewerId, name, handle]);
     } else {
       const user = await runInTransaction(t, () => ctx.internalAdapter.createUser({ email, name, emailVerified: true }, { method: "admin" }));
       await runInTransaction(t, () => ctx.internalAdapter.linkAccount({ userId: user.id, providerId: "credential", accountId: user.id, password: hash }));
@@ -149,14 +169,17 @@ export async function seedDemo(db: Db, config: Config, auth: Auth, input: DemoIn
 
     // The two people: ours, or made now (a user without a password: nobody signs in as them).
     const memberIds: string[] = [];
-    for (const m of MEMBERS) {
+    for (const m of membersOf(handle)) {
       const found = await personByHandle(t, m.handle);
-      if (found && found.role !== "member") throw new DemoRefused(`the handle ${m.handle} belongs to someone else; nothing was changed`);
+      if (found && found.role !== "member") throw new DemoRefused(`the handle ${m.handle} belongs to someone else; choose another --handle; nothing was changed`);
       if (found) {
         memberIds.push(found.id);
         continue;
       }
-      if (await reservedByOther(t, m.handle, null)) throw new DemoRefused(`the handle ${m.handle} was given up by someone; nothing was changed`);
+      if (await reservedByOther(t, m.handle, null)) throw new DemoRefused(`the handle ${m.handle} was given up by someone; choose another --handle; nothing was changed`);
+      if ((await t.query(`select 1 from "user" where email = $1`, [m.email])).rowCount) {
+        throw new DemoRefused(`the address ${m.email} belongs to another account; choose another --handle; nothing was changed`);
+      }
       const user = await runInTransaction(t, () => ctx.internalAdapter.createUser({ email: m.email, name: m.name, emailVerified: true }, { method: "admin" }));
       const { rows } = await t.query<{ id: string }>(
         "insert into principals (kind, handle, display_name, auth_user_id) values ('human', $1, $2, $3) returning id",

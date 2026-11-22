@@ -41,7 +41,7 @@ npm run credits:grant -- --handle <h> --points <n> [--note <text>]   # n: decima
 npm run credits:show -- --handle <h>                # a person's tier and points balance (an Agent's handle is refused)
 npm run tier:set -- --handle <h> --tier <name>      # a tier named in AGENT_TIERS
 npm run models:list                                 # the site models: id, label, tier, protocol, prices (never the key)
-npm run demo:seed -- --email <address> [--handle <h>] [--name <text>]   # the App Review account, made or put back (Demo account, below)
+npm run demo:seed -- --email <address> [--handle <h>] [--name <text>]   # the App Review account, made or put back; asks for its password (Demo account, below)
 npm run catalog:update [-- <models.json> <api.json>] # downloads models.dev (or reads saved copies) into src/providers/model-catalog.json; commit it
 ```
 
@@ -56,43 +56,76 @@ npm run invite:create:prod -- [--ttl-hours <n>]
 npm run inbox:list:prod -- [--to <email>]
 npm run attachments:sweep:prod -- [--older-than <min>]
 npm run credits:grant:prod -- --handle <h> --points <n> [--note <text>]   # likewise credits:show:prod, tier:set:prod, models:list:prod
-npm run demo:seed:prod -- --email <address>      # password from DEMO_PASSWORD, or asked (Demo account, below)
+npm run demo:seed:prod -- --email <address>      # asks for the password, not shown (Demo account, below)
 ```
-
-### Demo account (for App Review)
-
-The App Store needs an account the reviewer can sign in with. `demo:seed` makes it on the site it runs against (the
-deployment's own environment, as the other `:prod` commands), or puts it back before each submission
-(`src/demo.ts`, `tests/demo.test.ts`):
-
-```
-DEMO_PASSWORD='<a password of 10 to 128 characters>' npm run demo:seed:prod -- --email <the reviewer's address>
-```
-
-- **The password is yours to choose.** Give it in `DEMO_PASSWORD`, or leave that unset and run the command in a
-  terminal: it asks, and what you type is not shown. It is never printed, logged or stored (only Better Auth's hash).
-  Put the same password, with the address, in App Store Connect's review information. Without either, the command
-  stops and says so.
-- **What it makes** the first time: the account (`--handle`, default `app_review`; `--name`, default `Reviewer`), its
-  address already verified, the terms and the privacy policy in force accepted with the 18+ declaration; two made-up
-  people, Mika and Ren (`demo_mika`, `demo_ren`: no password, nobody can sign in as them), its friends; its Agent Mochi
-  (`app_review.mochi`), on the site's free model (the first site model when none is free; with no site models it
-  says so: the Agent then cannot reply); and a group, Weekend plans, of the four, with five lines Mika and Ren said.
-  Nothing is posted as the Agent: it says what its model writes when the reviewer talks to it.
-- **Run it again** (before each submission, or after changing the password): the password is set to the one given,
-  every session of the account ends (an earlier reviewer is signed out), the documents in force are accepted again,
-  the Agent is there and not paused (a new one when a review deleted it), the friendships are back (a block undone), and
-  the group of the four is there with its five lines (a new group when the reviewer left the old one). Nothing else
-  changes; what a reviewer added (messages, other groups or Agents) stays. Running it twice in a row changes nothing
-  but the password's hash and the sessions.
-- **It only ever touches its own.** Every principal it made is listed in `demo_principals` (migration 071). If the
-  address belongs to any other account, or one of the three handles to anyone else, it stops with
-  `demo:seed refused: …` and changes nothing (one transaction).
-- The account does not expire. Its sessions last 7 days, like everyone's: a reviewer who comes back later signs in again.
 
 Deploy `dist/`, `migrations/`, `package.json` and `package-lock.json` together: the build looks for
 `../migrations` from `dist/`. `tests/build.test.ts` keeps `npm start` and the `:prod` scripts on `node dist/…`
 and every run-time import of `src/` a production dependency.
+
+### Demo account (for App Review)
+
+The App Store needs an account the reviewer can sign in with. `demo:seed` makes it on the site it runs against (the
+deployment's own environment, as the other `:prod` commands), or puts it back (`src/demo.ts`, `tests/demo.test.ts`).
+
+**Run it in a terminal and type the password when it asks.** Nothing is shown as you type, and the password never
+reaches the shell's history (`src/prompt.ts`; also through `railway run` from a terminal):
+
+```
+npm run demo:seed:prod -- --email <the reviewer's address>
+Password for the demo account (not shown):
+```
+
+Where no terminal can ask (a script, a scheduled job), the password may come from the environment variable
+`DEMO_PASSWORD` instead. Never write it on the command line (`DEMO_PASSWORD=… npm run …` stays in the shell's history)
+or in a `.env` file (the command reads `.env`, and the file stays on disk): read it into the variable without showing it,
+run the command, and remove the variable. bash or zsh:
+
+```
+read -rs DEMO_PASSWORD && export DEMO_PASSWORD
+npm run demo:seed:prod -- --email <the reviewer's address>
+unset DEMO_PASSWORD
+```
+
+PowerShell:
+
+```
+$env:DEMO_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Password')).Password
+npm run demo:seed:prod -- --email <the reviewer's address>
+Remove-Item Env:DEMO_PASSWORD
+```
+
+Or the hosting platform's own secret variable for that one run. Without a terminal and without `DEMO_PASSWORD` the
+command stops and says so.
+
+- **The password** is 10 to 128 characters, yours to choose. It is never printed, logged or stored (only Better Auth's
+  hash). Put the same password, with the address, in App Store Connect's review information.
+- **What it makes** the first time: the account (`--handle`, default `app_review`; `--name`, default `Reviewer`), its
+  address already verified, the terms and the privacy policy in force accepted with the 18+ declaration; two made-up
+  people, Mika and Ren, named after the handle (`<handle>_mika`, `<handle>_ren`, the handle cut to 19 characters; by
+  default `app_review_mika`, `app_review_ren`), with addresses under `.invalid` and no password (nobody can sign in as
+  them), its friends; its Agent Mochi (`<handle>.mochi`), on the site's free model (the first site model when none is
+  free; with no site models it says so: the Agent then cannot reply); and a group, Weekend plans, of the four, with five
+  lines Mika and Ren said. Nothing is posted as the Agent: it says what its model writes when the reviewer talks to it.
+  An unguessable `--handle` keeps anyone from taking the three handles before the first run.
+- **Run it again before each submission and after each review.** The password is set to the one given; every session
+  of the account ends (an earlier reviewer is signed out); its name and its handle are put back (a review may change
+  the handle); the documents in force are accepted again; the Agent is there and not paused (a new one when a review
+  deleted it); the friendships are back (a block undone); and the group of the four is there with its five lines (a new
+  group when the reviewer left the old one). Nothing else changes: what a reviewer added (messages, other groups or
+  Agents, the avatar) stays. Running it twice in a row changes nothing but the password's hash and the sessions.
+- **It only ever touches its own.** Every principal it made is listed in `demo_principals` (migration 071). If the
+  address belongs to any other account, or a handle or an address it needs to anyone else, it stops with
+  `demo:seed refused: …` and changes nothing (one transaction). A handle held by an earlier demo account under another
+  address names that address: run with it, or choose another `--handle`.
+- **Points.** The Agent replies on the site's daily free allowance, and its web searches cost points too. A busy review
+  can use the allowance up: give the account points before submitting, for example
+  `npm run credits:grant:prod -- --handle app_review --points 50 --note "App Review"`.
+- **For the review notes.** Mika and Ren are made-up people this command seeds; they never reply (the app shows them as
+  真人, people). Their five lines are in English; the app's interface is Chinese. Mochi replies when the reviewer
+  writes to it or mentions it in the group.
+- The account does not expire. Its sessions end after 7 days without use, like everyone's: a reviewer who comes back
+  later signs in again.
 
 ## Configuration (`src/config.ts`)
 

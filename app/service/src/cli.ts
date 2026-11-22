@@ -10,6 +10,7 @@ import { configureStats, formatStats, readStats } from "./memory/stats.ts";
 import { CHANGE_KEEP_DAYS, sweepMemoryChanges } from "./memory/sweep.ts";
 import { expireWhispers, removeOldWhispers, WHISPER_KEEP_DAYS, WHISPER_OPEN_DAYS } from "./whispers/store.ts";
 import { deliverReminders } from "./metering/reminders.ts";
+import { askHidden } from "./prompt.ts";
 import { runMigrations } from "./migrate.ts";
 
 loadDotenv({ quiet: true });
@@ -50,37 +51,6 @@ async function humanByHandle(db: Db, handle: string): Promise<{ id: string; hand
   if (!row) throw new Error(`no such handle: ${handle}`);
   if (row.kind !== "human") throw new Error(`${row.handle} is an Agent; accounts belong to people`);
   return row;
-}
-
-/** Reads a line from the terminal without showing it (the demo account's password). Ctrl-C stops the command. */
-function askHidden(question: string): Promise<string> {
-  return new Promise((resolve) => {
-    const stdin = process.stdin;
-    process.stdout.write(question);
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    let typed = "";
-    const done = (value: string) => {
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdin.off("data", onData);
-      process.stdout.write("\n");
-      resolve(value);
-    };
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === "\r" || ch === "\n") return done(typed);
-        if (ch === "\u0003") {
-          process.stdout.write("\n");
-          process.exit(130);
-        }
-        if (ch === "\u007f" || ch === "\b") typed = typed.slice(0, -1);
-        else if (ch >= " ") typed += ch;
-      }
-    };
-    stdin.on("data", onData);
-  });
 }
 
 function requiredFlag(args: string[], name: string): string {

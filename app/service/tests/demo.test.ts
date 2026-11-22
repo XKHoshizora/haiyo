@@ -66,16 +66,16 @@ describe("demo:seed", () => {
     expect(me.json).toMatchObject({ handle: "app_review", displayName: "Reviewer", termsAccepted: true });
     const group = await demoGroup(reviewer);
     expect(group.status).toBe(200);
-    expect(group.members).toEqual(["app_review", "app_review.mochi", "demo_mika", "demo_ren"].sort());
+    expect(group.members).toEqual(["app_review", "app_review.mochi", "app_review_mika", "app_review_ren"].sort());
     // Five lines by the two people, none by the Agent (it says only what its model writes).
     expect(group.said).toHaveLength(5);
-    expect(new Set(group.said.map(([by]) => by))).toEqual(new Set(["demo_mika", "demo_ren"]));
+    expect(new Set(group.said.map(([by]) => by))).toEqual(new Set(["app_review_mika", "app_review_ren"]));
     expect(await count("select count(*) n from messages m join agents a on a.principal_id = m.sender_id")).toBe(0);
     // Its Agent replies with the site's free model and is its owner's to talk to.
     const agents = await api<{ agents: Array<{ handle: string; model: unknown; paused: boolean }> }>(app, reviewer, "GET", "/api/agents");
     expect(agents.json.agents.map((a) => [a.handle, a.model, a.paused])).toEqual([["app_review.mochi", { source: "site", id: "fast" }, false]]);
     // Nobody can sign in as the two people.
-    expect(await count(`select count(*) n from account a join principals p on p.auth_user_id = a."userId" where p.handle in ('demo_mika', 'demo_ren')`)).toBe(0);
+    expect(await count(`select count(*) n from account a join principals p on p.auth_user_id = a."userId" where p.handle in ('app_review_mika', 'app_review_ren')`)).toBe(0);
   });
 
   test("a second run changes nothing but the password, and ends the sessions of the first", async () => {
@@ -96,7 +96,7 @@ describe("demo:seed", () => {
     const reviewer = await signedIn(EMAIL, PASSWORD);
     const first = await demoGroup(reviewer);
     const agent = (await api<{ agents: Array<{ id: string }> }>(app, reviewer, "GET", "/api/agents")).json.agents[0]!;
-    const mika = (await db.query<{ id: string }>("select id from principals where handle = 'demo_mika'")).rows[0]!.id;
+    const mika = (await db.query<{ id: string }>("select id from principals where handle = 'app_review_mika'")).rows[0]!.id;
     expect((await api(app, reviewer, "DELETE", `/api/agents/${agent.id}`)).status).toBe(200);
     expect((await api(app, reviewer, "PUT", `/api/blocks/${mika}`)).status).toBe(200);
     expect((await api(app, reviewer, "DELETE", `/api/conversations/${first.id}/members/${(await api(app, reviewer, "GET", "/api/me")).json.id}`)).status).toBe(200);
@@ -105,7 +105,7 @@ describe("demo:seed", () => {
     const back = await signedIn(EMAIL, PASSWORD);
     const group = await demoGroup(back);
     expect(group.id).not.toBe(first.id);
-    expect(group.members).toEqual(["app_review", "app_review.mochi", "demo_mika", "demo_ren"].sort());
+    expect(group.members).toEqual(["app_review", "app_review.mochi", "app_review_mika", "app_review_ren"].sort());
     expect(group.said).toHaveLength(5);
     expect(await count("select count(*) n from blocks")).toBe(0);
     const agents = (await api<{ agents: Array<{ id: string; deleted: boolean; paused: boolean }> }>(app, back, "GET", "/api/agents")).json.agents.filter((a) => !a.deleted);
@@ -125,13 +125,40 @@ describe("demo:seed", () => {
     expect(await totals()).toEqual(before);
     expect((await signIn(app, someone.email, someone.password)).statusCode).toBe(200);
 
-    const mika = await signUp(app, "demo_mika");
+    const mika = await signUp(app, "app_review_mika");
     const withMika = await totals();
-    await expect(seed()).rejects.toThrow(/demo_mika belongs to someone else/);
+    await expect(seed()).rejects.toThrow(/app_review_mika belongs to someone else/);
     // One transaction: not even the reviewer's account is left behind.
     expect(await totals()).toEqual(withMika);
     expect(await count(`select count(*) n from "user" where email = $1`, [EMAIL])).toBe(0);
     expect((await signIn(app, mika.email, mika.password)).statusCode).toBe(200);
+  });
+
+  test("puts back a handle the reviewer changed, and says the handle it has", async () => {
+    await seed();
+    const reviewer = await signedIn(EMAIL, PASSWORD);
+    expect((await api(app, reviewer, "PATCH", "/api/me", { handle: "renamed_review" })).status).toBe(200);
+    const again = await seed();
+    expect([again.handle, again.agentHandle]).toEqual(["app_review", "app_review.mochi"]);
+    expect((await api(app, await signedIn(EMAIL, PASSWORD), "GET", "/api/me")).json.handle).toBe("app_review");
+  });
+
+  test("another e-mail for the same handle is told which demo account holds it", async () => {
+    await seed();
+    await expect(seed({ email: "someone-else@example.test" })).rejects.toThrow(/app_review is the demo account of review@example\.test/);
+  });
+
+  test("the two people's handles follow the reviewer's (a chosen --handle keeps them unguessable)", async () => {
+    const r = await seed({ handle: "rev_x7q" });
+    expect(r.handle).toBe("rev_x7q");
+    const people = (await db.query<{ handle: string }>("select p.handle::text from principals p join demo_principals d on d.principal_id = p.id where d.role = 'member' order by 1")).rows.map((x) => x.handle);
+    expect(people).toEqual(["rev_x7q_mika", "rev_x7q_ren"]);
+  });
+
+  test("an address of the two people already held by another account is a refusal, not a database error", async () => {
+    await db.query(`insert into "user" (id, name, email, "emailVerified") values ('squatter', 'Squatter', 'app_review-mika@demo.invalid', false)`);
+    await expect(seed()).rejects.toThrow(DemoRefused);
+    expect(await count(`select count(*) n from "user" where email = $1`, [EMAIL])).toBe(0);
   });
 
   test("refuses a password shorter than 10 or longer than 128 characters, and a handle that is not one", async () => {
