@@ -23,14 +23,17 @@ test.beforeEach(async () => {
 
 const FREE = { source: "site", id: "e2e-free" };
 
-/** Ann (who owns the Agent), Bo and Cy (Cy's display name `cyName` when given), a group of the three and Ann's Agent. */
-async function world(people, { cyName, namePart = `ag_${uniq(8)}` } = {}) {
+/**
+ * Ann (who owns the Agent), Bo and Cy, a group of the three and Ann's Agent. Bo's and Cy's display names and the
+ * Agent's name are fixed when `boName`, `cyName`, `agentName` are given (random otherwise).
+ */
+async function world(people, { boName, cyName, agentName = `答答${uniq(4)}`, namePart = `ag_${uniq(8)}` } = {}) {
   const ann = await people.member("Ann");
-  const bo = await people.member("Bo");
+  const bo = await people.member("Bo", boName ? { displayName: boName } : {});
   const cy = await people.member("Cy", cyName ? { displayName: cyName } : {});
   await befriend(ann, bo);
   await befriend(ann, cy);
-  const res = await ann.request.post("/api/agents", { data: { namePart, name: `答答${uniq(4)}`, model: FREE, persona: "简短地回答。" } });
+  const res = await ann.request.post("/api/agents", { data: { namePart, name: agentName, model: FREE, persona: "简短地回答。" } });
   expect(res.status(), await res.text()).toBe(201);
   const agent = await res.json();
   const title = `提到${uniq(6)}`;
@@ -101,13 +104,15 @@ function measureTags() {
   const area = probe("textarea");
   const flat = probe("div");
   const linesOf = (el) => Math.round((el.scrollHeight - pads) / lineHeight);
+  // (The textarea keeps a line for its caret after a final line break; so does the layer, with a zero-width character
+  // put after a final line break only, as the layer puts it.)
+  const tail = box.value.endsWith("\n") ? "\u200b" : "";
   area.value = box.value;
-  flat.textContent = `${box.value}\u200b`;
+  flat.textContent = `${box.value}${tail}`;
   const lines = { textarea: linesOf(area), div: linesOf(flat) };
   const contentTop = at.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - box.scrollTop;
   Object.assign(clone.style, { position: "fixed", left: `${at.left}px`, top: `${at.top}px`, margin: "0", visibility: "hidden", zIndex: "-1" });
-  // (The textarea keeps a line for its caret after a final line break; so does the layer, with the same character.)
-  clone.textContent = `${box.value}\u200b`;
+  clone.textContent = `${box.value}${tail}`;
   document.body.append(clone);
   clone.scrollTop = box.scrollTop;
   const textNode = clone.firstChild;
@@ -146,7 +151,7 @@ function measureTags() {
   clone.remove();
   area.remove();
   flat.remove();
-  return { tags, lines, scrollTop: box.scrollTop, mirrorScrollTop: mirror.scrollTop, boxTop: at.top, lineHeight };
+  return { tags, lines, scrollTop: box.scrollTop, mirrorScrollTop: mirror.scrollTop, boxTop: at.top, lineHeight, heights: { box: box.scrollHeight, layer: mirror.scrollHeight } };
 }
 
 /**
@@ -164,6 +169,7 @@ async function expectTagsAligned(page, label) {
   const m = await page.evaluate(measureTags);
   expect(m.tags.length, `${label}: tags drawn`).toBeGreaterThan(0);
   expect(m.lines.textarea, `${label}: lines in the textarea's own layout and in the div's`).toBe(m.lines.div);
+  expect(Math.abs(m.heights.box - m.heights.layer), `${label}: the layer itself is as tall as the box's text (box ${m.heights.box}, layer ${m.heights.layer})`).toBeLessThanOrEqual(1);
   for (const tag of m.tags) {
     if (tag.textareaEndLine !== null) expect(tag.drawnEndLine, `${label}: ${tag.text} ends on the textarea's line`).toBe(tag.textareaEndLine);
     expect(tag.same, `${label}: ${tag.text} is drawn over the same characters`).toBe(true);
@@ -265,6 +271,29 @@ test("each tag is drawn exactly over its characters: one line, wrapped, split ac
   await pick(page, "Jarvis Lee");
   await pick(page, agent.name);
   await expectTagsAligned(page, "phone width");
+  await page.setViewportSize({ width: 1280, height: 860 });
+});
+
+// The phone-width step above with its names fixed, so the line it lays out is always the same one.
+test("at phone width the fixed line 「手机上 @Bo68d9 ，然后很长…一段话， @Jarvis Lee @答答f3e4 」 takes the same lines in the box and in the layer", async ({ people }) => {
+  const { ann, title } = await world(people, { boName: "Bo68d9", cyName: "Jarvis Lee", agentName: "答答f3e4" });
+  const page = ann.page;
+  await openChat(page, title);
+  const box = boxOf(page, title);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(box).toBeVisible();
+  await box.click();
+  await page.keyboard.type("手机上 ");
+  await pick(page, "Bo68d9");
+  await page.keyboard.insertText("，然后很长很长很长很长很长很长的一段话，");
+  await pick(page, "Jarvis Lee");
+  await pick(page, "答答f3e4");
+  await expect(box).toHaveValue("手机上 @Bo68d9 ，然后很长很长很长很长很长很长的一段话， @Jarvis Lee @答答f3e4 ");
+  await expectTagsAligned(page, "fixed line at phone width");
+  // A final line break: the textarea keeps a line for the caret, and so must the layer.
+  await page.keyboard.press("Shift+Enter");
+  await expect(box).toHaveValue(/\n$/);
+  await expectTagsAligned(page, "fixed line and a final line break at phone width");
   await page.setViewportSize({ width: 1280, height: 860 });
 });
 
