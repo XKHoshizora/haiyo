@@ -43,6 +43,8 @@ function fakeApi(over = {}) {
     register: vi.fn(async () => ({ ok: true })),
     requestPasswordReset: vi.fn(async () => ({ status: true })),
     resetPassword: vi.fn(async () => ({ status: true })),
+    // A site that sends mail and requires the terms (`GET /api/site`), unless a test says otherwise.
+    getSite: vi.fn(async () => ({ mailDelivered: true, termsRequired: true })),
     ...over,
   };
 }
@@ -248,6 +250,7 @@ describe("register", () => {
     at("/register");
     mount(api);
     await screen.findByRole("button", { name: "注册" });
+    await act(async () => {}); // the site's answer (GET /api/site) is in
     return api;
   }
 
@@ -361,7 +364,7 @@ describe("register", () => {
   });
 
   it("on a site that sends no mail (GET /api/site), the page after registering says so instead of a mail sent", async () => {
-    const api = await open(outApi({ getSite: vi.fn(async () => ({ mailDelivered: false })) }));
+    const api = await open(outApi({ getSite: vi.fn(async () => ({ mailDelivered: false, termsRequired: true })) }));
     fill();
     submit("注册");
     await screen.findByText("这个站点不发送邮件。请向管理员索取验证链接。");
@@ -371,7 +374,7 @@ describe("register", () => {
   });
 
   it("on a site that sends mail the page is as it was", async () => {
-    await open(outApi({ getSite: vi.fn(async () => ({ mailDelivered: true })) }));
+    await open(outApi({ getSite: vi.fn(async () => ({ mailDelivered: true, termsRequired: true })) }));
     fill();
     submit("注册");
     await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
@@ -397,6 +400,42 @@ describe("a site that does not require the terms yet (LEGAL off: GET /api/site a
     expect(api.register).toHaveBeenCalledWith({ inviteCode: "inv-1", email: "ann@x.com", password: "0123456789", displayName: "小安", handle: "ann_1" });
     // The three pages are still linked.
     expectLegalLinks();
+  });
+
+  it("when GET /api/site fails, shows no boxes and the sign-up goes through (the service decides)", async () => {
+    const api = outApi({ getSite: vi.fn(async () => Promise.reject(new ApiError(0, "network_error"))) });
+    at("/register");
+    mount(api);
+    await screen.findByRole("button", { name: "注册" });
+    await act(async () => {});
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    for (const [label, value] of Object.entries({ 邀请码: "inv-1", 邮箱: "ann@x.com", 密码: "0123456789", 昵称: "小安", 账号名: "ann_1" })) typeInto(label, value);
+    submit("注册");
+    await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
+    expect(api.register).toHaveBeenCalledWith({ inviteCode: "inv-1", email: "ann@x.com", password: "0123456789", displayName: "小安", handle: "ann_1" });
+  });
+
+  it("on a site that requires them but has not said so yet, the refusal (400 terms_required) shows the boxes and keeps what was typed", async () => {
+    const register = vi.fn().mockRejectedValueOnce(new ApiError(400, "terms_required")).mockResolvedValue({ ok: true });
+    const api = outApi({ getSite: vi.fn(() => new Promise(() => {})), register });
+    at("/register");
+    mount(api);
+    await screen.findByRole("button", { name: "注册" });
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    for (const [label, value] of Object.entries({ 邀请码: "inv-1", 邮箱: "ann@x.com", 密码: "0123456789", 昵称: "小安", 账号名: "ann_1" })) typeInto(label, value);
+    submit("注册");
+    await screen.findByText("请先勾选下面两项，再注册。");
+    expect(screen.getByRole("checkbox", { name: ADULT_LABEL })).toBeTruthy();
+    expect(screen.getByLabelText("邮箱").value).toBe("ann@x.com");
+    expect(screen.getByLabelText("账号名").value).toBe("ann_1");
+    // Sent again without them: the boxes say what they need, and nothing is sent.
+    submit("注册");
+    await screen.findByText(ADULT_MISSING);
+    expect(register).toHaveBeenCalledTimes(1);
+    tickAcceptance();
+    submit("注册");
+    await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
+    expect(register).toHaveBeenLastCalledWith({ inviteCode: "inv-1", email: "ann@x.com", password: "0123456789", displayName: "小安", handle: "ann_1", ...ACCEPTANCE });
   });
 
   it("shows no boxes while it is not yet known whether the site requires them", async () => {

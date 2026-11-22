@@ -230,7 +230,10 @@ waits, queued; a reply's later rounds and tools are held against all that is lef
 `LEGAL` (whether the site requires its terms of service and privacy policy, JSON; Accounts and sessions, Terms: `required`
 (boolean, default `false`: registration asks for nothing and records nothing, no route answers `terms_required`, the web
 shows neither the boxes nor the question; the three pages stay public with their draft notice; `true`: everything the
-Terms paragraph describes). **Turn it on only after the owner has filled the placeholders and approved the texts.**),
+Terms paragraph describes). **Turn it on only after the owner has filled the placeholders and approved the texts, and
+after the testers have loaded this version once** (a tab still open from an earlier version has no acceptance screen: it is
+refused with 403 `terms_required` until it is reloaded). Accounts made while it was off have no acceptance on record (nor
+an 18+ declaration); they are asked once, at their next request.),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
 whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
 `AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional;
@@ -455,7 +458,7 @@ Every error body is `{"error": "<snake_case_code>"}`, sometimes with details nex
 | 401 | `unauthenticated` | No valid session (or a WebSocket ticket that is unknown, used or expired) |
 | 402 | `no_quota` | A site-model call cannot start: nothing is left to pay for it (see Metering). `reason` `free_and_balance` (a free-tier model: today's free allowance and the balance are both used up; `resetsAt`, the next midnight in `SITE_TIMEZONE`, ISO instant) or `balance` (a paid-tier model: no balance) |
 | 403 | `forbidden` | Cross-site request, or not allowed by the route's rule (e.g. only the creator renames) |
-| 403 | `terms_required` | While the site requires the terms (`LEGAL.required`): every route that needs a session, while the account has not accepted the terms and the privacy policy in force (Accounts and sessions, Terms); not `GET /api/me` and `POST /api/me/terms`, which the question needs. Nothing was done |
+| 403 | `terms_required` | While the site requires the terms (`LEGAL.required`; at registration, 400 `terms_required` for an acceptance missing): every route that needs a session, while the account has not accepted the terms and the privacy policy in force (Accounts and sessions, Terms); not `GET /api/me` and `POST /api/me/terms`, which the question needs. Nothing was done |
 | 403 | `cannot_send` | With `reason`: `blocked` or `not_friends` (a direct chat whose pair cannot write to each other), or `agent_deleted` (an Agent's conversation after the Agent was deleted: sending, uploading, starting a new topic) |
 | 403 | `agent_limit` | Creating an Agent with as many undeleted Agents as the account's tier allows |
 | 404 | `not_found` | Does not exist, or is not yours to see (identical answers) |
@@ -2149,7 +2152,8 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
 
 *Session: none.* → 200 `{"mailDelivered": boolean, "termsRequired": boolean}`. `termsRequired`: whether registration asks
 for the terms, the privacy policy and the 18+ declaration (`LEGAL.required`; Accounts and sessions, Terms): the registration
-page shows its two boxes only when it is true (or when this answer could not be read). `mailDelivered`: whether this site really delivers mail (`MAIL_MODE=resend`;
+page shows its two boxes only when it is true; when this answer has not come or could not be read it shows none and lets
+the service decide (`POST /api/register` answers 400 `terms_required` when they were needed, and the page then shows them). `mailDelivered`: whether this site really delivers mail (`MAIL_MODE=resend`;
 false in `outbox` mode, where mail is only written to `mail_outbox`). The page after registering and the
 forgot-password page read it, so that a site that sends no mail says so (这个站点不发送邮件。请向管理员索取验证链接。)
 instead of saying a mail was sent. The same answer for every caller, signed in or not; nothing else about the mail
@@ -2188,9 +2192,11 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   `PATCH /api/me`: 1–40 characters after removing format characters (not joiners) and trimming, one line), `handle`
   (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`), and the acceptance (Terms, below): `termsVersion` and
   `privacyVersion` (strings, 1–40: the versions of the terms of service and the privacy policy the person was shown) and
-  `adult` (`true`: they declare they are 18 or older; anything else, or a missing one, is 400 `invalid_request`). These
-  three are required only while the site requires the terms (`LEGAL.required`); with it off they may be sent (strings and
-  a boolean) or left out, and are not read: no version is checked and nothing is recorded.
+  `adult` (`true`: they declare they are 18 or older). These three are required only while the site requires the terms
+  (`LEGAL.required`): one missing, or `adult` not `true`, is 400 `terms_required` (a code of its own: the registration page,
+  which shows the two boxes only once it knows the site asks for them, shows them on this answer, keeping what was typed);
+  a value of the wrong type is 400 `invalid_request`. With it off they may be sent or left out, and are not read: no
+  version is checked and nothing is recorded.
 - 201 `{"ok": true}` whether or not the e-mail already has an account, and the invite is untouched either way: a use of
   it is taken when the account becomes real, at e-mail verification (in the same transaction; a code that has run out
   or been revoked since the sign-up refuses that verification — the link redirects to `/verify?error=INVITE_USED_UP`
@@ -2228,7 +2234,8 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   The e-mail must be verified before sign-in works.
 - While the site requires the terms, the account made records the acceptance with it (Terms, below), in the same
   transaction; an address that already had a verified account gets nothing recorded (nothing was made).
-- Errors: 409 `terms_outdated` (`termsVersion` or `privacyVersion` is not the version in force: the page is older than
+- Errors: 400 `terms_required` (while the site requires the terms: the acceptance missing, or `adult` not `true`; checked
+  before anything else, nothing is used up), 409 `terms_outdated` (`termsVersion` or `privacyVersion` is not the version in force: the page is older than
   the documents; checked before anything else, nothing is used up), 400 `invalid_invite` (missing, unknown, expired, revoked or used-up invite — a code made with `--uses n` admits n sign-ups, then it is used up; checked first, so without a usable
   invite nothing else — not even whether the handle is taken — is revealed), 409 `handle_taken` (a person holds
   the handle, also an unverified account this registration would otherwise replace, or gave it up — Handles; an
@@ -2330,8 +2337,10 @@ people must agree to again takes a new version in both files: every account is t
 while the texts are drafts with the owner's placeholders, registration asks for nothing and records nothing, no route
 answers `terms_required`, `GET /api/me` and `GET /api/site` say `termsRequired: false`, and the web shows neither the
 boxes nor the question; the three pages stay public with their draft notice, and `POST /api/me/terms` still records an
-acceptance. **Turn it on only after the owner has filled the placeholders and approved the texts.** Turned on, every
-account without an acceptance of the versions in force (all those made while it was off) is asked at its next request.
+acceptance. **Turn it on only after the owner has filled the placeholders and approved the texts, and after the testers
+have loaded this version once** (a tab open from an earlier version has no acceptance screen and must be reloaded). Turned
+on, every account without an acceptance of the versions in force (all those made while it was off, which have no proof of
+acceptance or 18+ declaration before that) is asked at its next request.
 What follows is the behaviour with it on.
 
 Where it is enforced: registration is refused without it (400 / 409 above). After that, every route that needs a session

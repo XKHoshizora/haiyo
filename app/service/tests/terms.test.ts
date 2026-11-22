@@ -53,17 +53,19 @@ async function verifiedSignIn(body: { email: string; password: string }) {
 }
 
 describe("registration needs the terms, the privacy policy and the 18+ declaration", () => {
+  // A refusal of its own (`terms_required`): the page that did not show the two boxes (it could not learn the site asks for
+  // them) shows them now and sends again. A value of the wrong type is malformed, as anywhere (`invalid_request`).
   test.each([
-    ["nothing of it", { termsVersion: undefined, privacyVersion: undefined, adult: undefined }],
-    ["no 18+ declaration", { adult: undefined }],
-    ["18+ declared false", { adult: false }],
-    ["18+ as a string", { adult: "true" }],
-    ["no terms version", { termsVersion: undefined }],
-    ["no privacy version", { privacyVersion: undefined }],
-  ])("refused with %s: 400, nothing made, the invite still usable", async (_label, over) => {
+    ["nothing of it", { termsVersion: undefined, privacyVersion: undefined, adult: undefined }, "terms_required"],
+    ["no 18+ declaration", { adult: undefined }, "terms_required"],
+    ["18+ declared false", { adult: false }, "terms_required"],
+    ["no terms version", { termsVersion: undefined }, "terms_required"],
+    ["no privacy version", { privacyVersion: undefined }, "terms_required"],
+    ["18+ as a string", { adult: "true" }, "invalid_request"],
+  ])("refused with %s: 400, nothing made, the invite still usable", async (_label, over, code) => {
     const body = await registerBody(over);
     for (const key of Object.keys(over)) if ((over as Record<string, unknown>)[key] === undefined) delete (body as Record<string, unknown>)[key];
-    expect(await api(app, null, "POST", "/api/register", body)).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect(await api(app, null, "POST", "/api/register", body)).toEqual({ status: 400, json: { error: code } });
     expect(await users()).toBe(0);
     expect(await inviteUsed(body.inviteCode)).toBe(false);
   });

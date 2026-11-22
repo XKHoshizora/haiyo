@@ -24,11 +24,12 @@ const accountFields = {
   handle: z.string().regex(HANDLE_PATTERN),
 };
 
-/** While the site requires the terms (`LEGAL.required`): the terms and the privacy policy shown, and the 18+ declaration. */
-export const registerBody = z.object({ ...accountFields, ...acceptanceFields });
-
-/** While it does not: the same fields may come (a page that asks them), and are not read. */
-const registerBodyUnasked = z.object({
+/**
+ * The account, and the acceptance: the terms and the privacy policy shown, and the 18+ declaration. Optional in the shape:
+ * while the site requires the terms (`LEGAL.required`) a registration without them is refused with a code of its own
+ * (400 `terms_required`, so a page that did not ask can ask and send again); while it does not, they are not read.
+ */
+export const registerBody = z.object({
   ...accountFields,
   termsVersion: acceptanceFields.termsVersion.optional(),
   privacyVersion: acceptanceFields.privacyVersion.optional(),
@@ -70,7 +71,7 @@ export function registerRegistrationRoutes(
       schema: {
         params: z.object({}),
         querystring: z.object({}),
-        body: config.legal.required ? registerBody : registerBodyUnasked,
+        body: registerBody,
         response: { 201: z.object({ ok: z.literal(true) }) },
       },
     },
@@ -79,7 +80,11 @@ export function registerRegistrationRoutes(
       const needsInvite = config.registrationMode === "invite";
       // Before anything is locked or used up: a page older than the documents in force is told to reload (409).
       const asksTerms = config.legal.required;
-      if (asksTerms) assertCurrentVersions(req.body as z.infer<typeof registerBody>);
+      if (asksTerms) {
+        const { termsVersion, privacyVersion, adult } = req.body;
+        if (adult !== true || termsVersion === undefined || privacyVersion === undefined) throw new AppError(400, "terms_required");
+        assertCurrentVersions({ termsVersion, privacyVersion });
+      }
 
       let told: string[];
       try {

@@ -154,21 +154,20 @@ function AcceptanceChecks({ form }) {
 export const NO_MAIL = { verify: "这个站点不发送邮件。请向管理员索取验证链接。", reset: "这个站点不发送邮件。请向管理员索取重置链接。" };
 
 /**
- * What a page shown before sign-in needs of the site's setup (`GET /api/site`, asked once per page): `known` once it answered
- * or could not be asked; `mailDelivered` (false on a site that only keeps mail in its outbox) and `termsRequired` (false
- * while the site does not ask for the terms, `LEGAL.required`), each null when not said (the page then does what it always
- * did).
+ * What a page shown before sign-in needs of the site's setup (`GET /api/site`, asked once per page): `mailDelivered` (false on
+ * a site that only keeps mail in its outbox) and `termsRequired` (whether registration asks for the terms, `LEGAL.required`),
+ * each null while not known, or when it could not be asked (the page then does what it does without it).
  */
 function useSite(api) {
   const asks = typeof api?.getSite === "function";
-  const [site, setSite] = useState(() => ({ known: !asks, mailDelivered: null, termsRequired: null }));
+  const [site, setSite] = useState({ mailDelivered: null, termsRequired: null });
   useEffect(() => {
     let alive = true;
     if (!asks) return undefined;
     const said = (value) => (typeof value === "boolean" ? value : null);
     api.getSite().then(
-      (s) => alive && setSite({ known: true, mailDelivered: said(s?.mailDelivered), termsRequired: said(s?.termsRequired) }),
-      () => alive && setSite({ known: true, mailDelivered: null, termsRequired: null }),
+      (s) => alive && setSite({ mailDelivered: said(s?.mailDelivered), termsRequired: said(s?.termsRequired) }),
+      () => {},
     );
     return () => {
       alive = false;
@@ -233,15 +232,22 @@ export function Register({ api }) {
   const [sentTo, setSentTo] = useState(null);
   const site = useSite(api);
   const mailDelivered = site.mailDelivered;
-  // The two boxes once it is known that the site asks for them (`termsRequired`), and when that could not be learned (the
-  // service then decides); none while the site says it does not (the texts are drafts: `LEGAL` off), and none for the moment
-  // the answer takes.
-  const asksTerms = site.known && site.termsRequired !== false;
+  // The service decides whether the two boxes are asked (`LEGAL.required`). The page shows them once it knows: the site said
+  // so (`GET /api/site` `termsRequired`), or a registration sent without them was refused for it (400 `terms_required`: what
+  // was typed stays, the boxes appear, the person sends again). Until then none: not while the answer takes, nor when it
+  // cannot be had (a site that does not ask then asks nobody).
+  const [refusedWithout, setRefusedWithout] = useState(false);
+  const asksTerms = site.termsRequired === true || refusedWithout;
   const form = useAuthForm({
     initial: { inviteCode: "", email: "", password: "", displayName: "", handle: "", ...ACCEPTANCE_INITIAL },
     rules: { inviteCode: rules.inviteCode, email: rules.email, password: rules.newPassword, displayName: rules.displayName, handle: rules.handle, ...(asksTerms ? ACCEPTANCE_RULES : {}) },
     submit: async (v) => {
-      await api.register({ inviteCode: v.inviteCode.trim(), email: v.email.trim(), password: v.password, displayName: v.displayName.trim(), handle: v.handle, ...(asksTerms ? acceptance() : {}) });
+      try {
+        await api.register({ inviteCode: v.inviteCode.trim(), email: v.email.trim(), password: v.password, displayName: v.displayName.trim(), handle: v.handle, ...(asksTerms ? acceptance() : {}) });
+      } catch (err) {
+        if (err?.code === "terms_required") setRefusedWithout(true);
+        throw err;
+      }
       setSentTo(v.email.trim());
     },
   });

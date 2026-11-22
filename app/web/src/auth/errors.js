@@ -7,6 +7,8 @@ const MESSAGES = {
   handle_taken: "这个账号名已被占用，换一个试试。",
   // The page is older than the terms or the privacy policy in force (POST /api/register, POST /api/me/terms).
   terms_outdated: "条款刚刚更新了，请刷新页面后再试。",
+  // A registration sent without the two boxes, on a site that asks for them (POST /api/register): the page shows them now.
+  terms_required: "请先勾选下面两项，再注册。",
   rate_limited: "操作太频繁了，请稍等一分钟再试。",
   invalid_token: "链接无效或已过期，请重新申请。",
   invalid_email: "邮箱格式不正确",
