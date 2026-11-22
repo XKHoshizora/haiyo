@@ -141,6 +141,8 @@ export class Hub {
   /** Open connections per principal, oldest first. */
   private readonly byPrincipal = new Map<string, Connection[]>();
   private readonly bySession = new Map<string, Set<Connection>>();
+  /** The probes under way (`probe`), by session: one at a time each. */
+  private readonly probes = new Map<string, Promise<boolean>>();
   private readonly queues = new Map<string, Queue>();
   /** The last seq fanned out per conversation. */
   private readonly fanned = new Map<string, number>();
@@ -356,6 +358,61 @@ export class Hub {
   async confirmSession(conn: Connection): Promise<void> {
     const live = await liveSessions(this.deps.db, [conn.sessionId]);
     if (!live.has(conn.sessionId)) this.drop(conn, CLOSE_CODES.sessionEnded, "session_ended");
+  }
+
+  /**
+   * Whether a socket opened with `sessionId` is open here now: attached, `OPEN` (one whose close has begun delivers nothing:
+   * `sendRaw`), and not yet dropped (session ended, replaced, too slow) or failed by the heartbeat. What a push asks first
+   * (src/push/notify.ts); a socket that is open may still be a dead one, which `probe` tells.
+   */
+  hasSocketFor(sessionId: string): boolean {
+    for (const conn of this.bySession.get(sessionId) ?? []) if (conn.ws.readyState === conn.ws.OPEN) return true;
+    return false;
+  }
+
+  /**
+   * Whether an open socket of `sessionId` answers a ping within `timeoutMs`: true at the first pong, false at the timeout,
+   * or as soon as every one of them has closed (or there is none). A page in front answers within a round trip (the pong
+   * is the networking layer's, no script of the page's); a suspended app's socket, still open here, cannot (src/push/
+   * notify.ts: then the phone is pushed). One probe per session at a time: asking again while one runs shares its answer.
+   * The heartbeat is left alone (a socket that does not answer is still dropped only by it).
+   */
+  probe(sessionId: string, timeoutMs: number): Promise<boolean> {
+    const running = this.probes.get(sessionId);
+    if (running) return running;
+    const conns = [...(this.bySession.get(sessionId) ?? [])].filter((c) => c.ws.readyState === c.ws.OPEN);
+    if (conns.length === 0) return Promise.resolve(false);
+    const answer = new Promise<boolean>((resolve) => {
+      let open = conns.length;
+      let settled = false;
+      const onPong = () => finish(true);
+      const onClose = () => {
+        if (--open === 0) finish(false);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      timer.unref();
+      function finish(answered: boolean): void {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        for (const c of conns) {
+          c.ws.off("pong", onPong);
+          c.ws.off("close", onClose);
+        }
+        resolve(answered);
+      }
+      for (const c of conns) {
+        c.ws.on("pong", onPong);
+        c.ws.on("close", onClose);
+        try {
+          c.ws.ping();
+        } catch {
+          onClose();
+        }
+      }
+    }).finally(() => this.probes.delete(sessionId));
+    this.probes.set(sessionId, answer);
+    return answer;
   }
 
   /** Closes every socket opened with this session (sign-out; password reset ends each session in turn). */

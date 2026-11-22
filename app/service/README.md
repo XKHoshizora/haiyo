@@ -74,7 +74,7 @@ credentials, a plain host name or address, and no query or fragment, else start-
 provider's is stored: lower-case host, no default port, no trailing slash; its address is checked at every call),
 `apiKeyEnv` (the name of another variable that holds the upstream key, so the JSON carries
 no secret; start-up fails naming it if unset, and naming the model if it is one of the service's own `DATABASE_URL`,
-`AUTH_SECRET`, `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID`, `RESEND_API_KEY` — case ignored —, or a web
+`AUTH_SECRET`, `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID`, `RESEND_API_KEY`, `APNS_KEY_P8` — case ignored —, or a web
 search engine's key toward another host than that engine's (`WEB_SEARCH_API_KEY` never, as Exa is no model vendor;
 `WEB_SEARCH_DEEPSEEK_API_KEY` only for a model on `api.deepseek.com`, so one DeepSeek account can share its key; a
 DeepSeek model reached through a proxy host needs the key in a variable of its own; the same for a judge channel); two models may share
@@ -166,6 +166,15 @@ Replies, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic r
 most 2, each 0–600 000; default `[20000, 120000]`; `[]` turns automatic retries off)),
 `HOST` (the address to listen on: an IPv4/IPv6 address or `localhost`, default `0.0.0.0`, every interface; `127.0.0.1` for local-only),
 `WEB_DIST` (optional: directory of the built web client to serve, see Deployment; unset serves none),
+the iOS app's four, all optional and set only in the deployment's environment: `APPLE_TEAM_ID` (the Team ID, 10 capitals
+and digits) and `APPLE_BUNDLE_ID` (the bundle id, e.g. `org.haiyo.app`) — both set, the universal-links file is served
+(Deployment, Universal links) and they are the push token's issuer and topic —, `APNS_KEY_ID` (the APNs key's Key ID, 10
+capitals and digits) and `APNS_KEY_P8` (a **secret**: the `.p8` key file's text, a P-256 private key in PEM; real line
+breaks or `\n` on one line; never logged, never in an error, never named as a site model key). All four set: pushes are
+sent (Push notifications); any of them missing **or malformed** (a key that is no P-256 private key, an id of the wrong
+shape): none are, everything else works as ever, and one WARN line at start names the missing and the malformed ones
+(`push_off`, names only, never a value) — never a refused start, unlike every other variable: a chat service must not fail
+to boot because of a push key (a malformed Team or bundle id also turns the universal-links file off),
 `S3_*` (optional, all-or-none), `REGISTRATION_MODE` (`invite` | `open`, default `invite`),
 `MAIL_MODE` (`outbox` | `resend`, default `outbox`; `resend` needs `RESEND_API_KEY` — a secret — and `MAIL_FROM`, optional `MAIL_REPLY_TO`; `MAIL_PER_ADDRESS_HOUR`, default 5; see Mail delivery below), `RATE_LIMIT_SCALE` (multiplier for every rate limit, default 1),
 `CLIENT_IP_HEADER` / `TRUST_PROXY` (where the client's address comes from; see Deployment),
@@ -213,6 +222,8 @@ oldest queued reply and runs it to its end; false when none is queued) or `drain
 it; `app.staleRunSweep.run()` sweeps at once either way (see Agents and runs, Recovery).
 `Deps.judge` is the judgement model (`src/judge/client.ts`; null without `JUDGE`); tests inject a scripted one
 (`scriptedJudge()` in `tests/helpers/judge.ts`).
+`Deps.apns` is the APNs sender (`src/push/apns.ts`; null unless the four push variables are set); tests inject one
+pointed at a scripted local HTTP/2 server (`fakeApns()` in `tests/helpers/apns.ts`): no test reaches Apple.
 `Deps.proactive` is the proactive scheduler (`src/agents/proactive/scheduler.ts`): after a person's message in a group
 that called no Agent, it waits until nobody has written there for `PROACTIVE.debounceMs`, then has the latest message
 judged once and acts on the outcome as on a mention's (notices published, runs announced). A message that called an
@@ -259,6 +270,20 @@ fails naming `WEB_DIST` if the directory has no `index.html`), the service serve
   (and of `app.routeList`, which lists API routes only); the Origin check, rate limits and the WebSocket
   upgrade are unaffected.
 
+**Universal links (`APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`).** `GET /.well-known/apple-app-site-association` (and its
+`HEAD`) is Apple's file of which links open in the iOS app (`src/app-links.ts`). With both variables set it answers 200
+`Content-Type: application/json` (exactly that, no charset), `Cache-Control: public, max-age=3600` (it changes only with a
+deploy; Apple's CDN fetches it about daily), with
+`{"applinks": {"details": [{"appIDs": ["<APPLE_TEAM_ID>.<APPLE_BUNDLE_ID>"], "components": [{"/": "/api/*", "exclude": true}, {"/": "/chat/*"}, {"/": "/reset-password*"}]}]}}`:
+a conversation (`/chat/<id>`) and a password reset link open in the app; nothing under `/api/` does (an e-mail
+verification link goes there and stays in the browser), and the exclusion comes first because the first matching pattern
+wins. Unset or malformed (either of them): `404 {"error":"not_found"}`. Never a redirect and never the web client's page (before, the
+wildcard sent `index.html` for this extensionless path); served whether or not `WEB_DIST` is set. Apple's documentation
+names this `.well-known` URL only, and since iOS 14 devices fetch it through Apple's CDN, not from the site
+(developer.apple.com/documentation/xcode/supporting-associated-domains, read 2026-11-23), so the root
+`/apple-app-site-association` is not served. Like the web client's files it is kept out of the route reference and of
+`app.routeList`. The CDN must be able to reach the site over https with a valid certificate.
+
 **One instance.** Run exactly one instance of the service (one replica, no cluster mode); see Sync and
 realtime for why and what scaling out would take.
 
@@ -301,7 +326,8 @@ stale-run sweep timer unless asked (`staleRunSweep`); tests sweep with `app.stal
 proactive scheduler unless asked (`proactive`, with a judgement model configured: `tests/proactive-scheduler.test.ts`);
 other files that judge call `decideProactive` themselves. Between two tests (`betweenTests`) it empties the database only
 once the app is quiet — its queues and jobs, and every other transaction of the database, one between two statements
-too — and holds the reply worker's loop until the truncate has ended; the hub's heartbeat runs on no timer under it
+too — and holds the reply worker's loop until the truncate has ended; the hub's heartbeat and the push's own timer
+(`BuildOptions.pushTimer`: its counters and expired-phone sweep, `app.push.sweepExpired()` by hand) run on no timer under it
 (`app.realtime.tick()` beats by hand). So no work of the app's takes table locks against the truncate's
 (`tests/harness.test.ts`).
 
@@ -420,6 +446,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `GET /api/conversations/:id` | 120 | principal |
 | `POST /api/sync/catchup` | 60 | principal |
 | `POST /api/ws-ticket` | 30 | principal |
+| `POST /api/push/devices` + `DELETE /api/push/devices/current` | 30 together | principal |
 | WebSockets | at most 5 open; a 6th closes the oldest (code 4002) | principal |
 
 Everything else is not rate limited.
@@ -468,7 +495,8 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   badly (or the form is built wrong), and the acceptance smoke test is to check it.
 
 Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_partial`, `judge_daily_limit`): Proactive
-replies, Log.
+replies, Log. Pushes write theirs (`push`, `push_off`, `push_config_refused`, `push_devices_expired`, `push_targets_failed`,
+`push_failed`): Push notifications, Counters in the log.
 
 ### Usage and points
 
@@ -2624,6 +2652,30 @@ while the session that asked for it lasts. Limit: 30 per minute.
 `unauthenticated`; another or a missing `Origin` 403 `forbidden`; a plain `GET` without an upgrade 404
 `not_found`. An upgrade request to any other path is 404 `not_found` before that route runs.
 
+### Push devices (the iOS app)
+
+What the page calls in the iOS app (the web client's shell bridge, docs/design/2026-11-24-store-app-draft.md §2): once
+signed in, `push.register` asks the phone for its APNs token and the page sends it here; on sign-out it unbinds it before
+signing out. When pushes are sent, and what they carry: Push notifications (`src/push/`). Both routes work whether or not
+pushes are configured (a token registered before the key is set takes pushes once it is). Limit: 30 per minute together.
+
+#### `POST /api/push/devices`
+
+*Session: required.* Body `{"token": "<hex>", "env": "sandbox" | "production", "appVersion"?: "<string>"}`: the APNs
+device token as the shell gives it (hex, 32 to 100 bytes, any case; stored lower-case), which APNs it is for (`sandbox`
+for a development build), and optionally the shell's version (1–32 printable ASCII characters). → 200 `{"ok": true}`.
+Binds the token to **this session**: the session has one phone at most (a new token from it replaces its old one), and a
+token one row at most — registered from another session, of yours or of another account, it moves here (the token names
+the phone, not the person). Registering again is the same 200 (it refreshes `env` and `appVersion`). The row goes when the
+session does: sign-out, a password reset (every session), an expired session is never pushed to, and deleting the person.
+Errors: 400 `invalid_request` (a field missing or malformed), 401 `unauthenticated`.
+
+#### `DELETE /api/push/devices/current`
+
+*Session: required.* Unbinds this session's phone, if it has one. → 200 `{"ok": true}` always. Signing out does the same
+by itself (the session's row is deleted, and the device with it); the page calls this first so that nothing is pushed in
+between.
+
 ## Wire shapes
 
 **Principal** (in `/api/sync`'s `principals`, and the `principals` of message reads and searches): `{"id", "handle", "displayName", "avatarVersion", "kind": "human" | "agent", "ownerId"?, "intro"?, "field"?}`.
@@ -2965,6 +3017,115 @@ conversations you were added to — `conversation`, `social`, `read`, `run` and 
 offline are not replayed; for an Agent's conversation you show, `GET /api/conversations/:id/run`, and for a group,
 `GET /api/conversations/:id/runs`. 4. Apply the
 buffered pushes by the rules above.
+
+## Push notifications (`src/push/`)
+
+Pushes to the iOS app's phones through APNs (Apple's push service), for messages that arrive while the app is not in
+front. Configured by the four variables in Configuration (`APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`, `APNS_KEY_ID`,
+`APNS_KEY_P8`); without all of them nothing is pushed and nothing else changes. Phones are registered with Push devices
+(the HTTP API above), one row of `push_devices` per signed-in session of the app.
+
+**Which messages.** Every stored message (`ConversationEvents.onMessages`, after commit — where the hub hears of it)
+that counts as unread does (`countsForPush`; the same rule as the sync's `unread` and the web client's
+`countsAsUnread`): a person's message and an Agent's reply — in its owner's own conversation and in a group — and not a
+system notice (joins, leaves, renames, memory notices …) nor an Agent's acknowledgement. Whispers are no messages and are
+never pushed. Conversations cannot be muted today; when they can, a muted one is skipped here.
+
+**To whom.** Each phone of each current member who may see the message (THE visibility rule, `visibleJoin`), except: the
+sender; anyone with a block either way between them and the sender — an Agent's message by its owner's blocks (an Agent is
+blocked as its owner is, `coalesce(owner_id, id)`, as the reply rules do); a phone whose session has ended or expired (an
+expired session's row is never pushed to, and the periodic sweep deletes it: below). One push per phone and conversation
+at a time: a message while that phone's push for the same conversation is still out (being asked, queued, sent or
+retried) adds none (`coalesced`) — it would carry the same content and collapse id.
+
+**Present.** A phone is not pushed to while **its own session** is present: it has an `OPEN` socket at the hub
+(`Hub.hasSocketFor`, `src/sync/hub.ts`; a socket whose close has begun delivers nothing and does not count) **and** that
+socket answers a ping within `PRESENCE_PROBE_MS` (3 s; `Hub.probe`: one probe per session at a time, a second ask shares
+its answer). The page in the app closes its socket when the app goes to the background (the shell's `haiyo:pause`) and
+opens it again in front (`haiyo:resume`), so:
+- the app in front: its socket answers within a round trip (the pong is the networking layer's, not the page's script) and
+  brings the message — no push;
+- the app in the background: no socket, pushed at once — also while the same person has the web open on a desktop
+  (another session, another socket) or a second phone in front (its own session);
+- the app suspended before its close got out (or killed, or its network gone): its socket is still open here but cannot
+  answer, so the phone is pushed when the probe ends (3 s late, never lost: a message coalesced during the probe counts in its re-check); a socket that closes during the probe, at
+  once. The heartbeat still drops such a socket on its own (30–60 s, `HEARTBEAT_MS`);
+- the web in a browser registers no phone, so a browser is never pushed to.
+The probe needs no client change. It costs one ping per probe, and one probe per session runs at a time (a second ask
+while one runs shares its answer); a present phone answers within a round trip, so the next message pings again — about
+one ping per message, or one per round trip in a burst. No answer is cached (a cached "present" could go stale). After a
+probe that ran and had no answer, the push is asked once more before it is sent (one indexed query): not when the
+phone's row changed meanwhile (signed out, moved to another account, registered again), its session ended, or its person
+read up to the message on another device (counted `stale`). "Present" is decided when the push is decided (after the
+recipients are read), in this process: the hub and the pushes are one instance (Sync and realtime, Single instance only).
+
+**What a push carries.** Content-free, always:
+`{"aps": {"alert": {"title": "Haiyo", "body": "你有新消息"}, "sound": "default", "thread-id": "<conversation id>"}, "c": "<conversation id>"}`
+— the product's name and fixed system wording, never a sender, a group's name or any text of a message. `c` is what the
+app opens (`/chat/<c>`); `thread-id` groups a conversation's pushes on the phone. Headers: `apns-topic` (the bundle id),
+`apns-push-type: alert`, `apns-priority: 10`, `apns-collapse-id` (the conversation's id: a later push of the same
+conversation replaces the earlier on the phone), `apns-expiration` (a day: an older push is no news). No badge yet: the
+service has no unread total (the per-conversation `unread` of `GET /api/sync` exists, a total for a person does not);
+when it does, its number goes in `aps.badge`.
+
+**The sender** (`src/push/apns.ts`). `node:http2` to `api.push.apple.com` (a `sandbox` token to
+`api.sandbox.push.apple.com`), one connection per host, kept while it lasts (closed after an hour idle, opened again on
+the next push); a provider token (ES256 JWT signed with `node:crypto`: `kid` the Key ID, `iss` the Team ID, `iat`) used
+for 50 minutes and made anew after — never sooner than 20 minutes, Apple's bounds. Answers:
+- 200: sent.
+- 410 (`Unregistered`, `ExpiredToken`) and 400 `BadDeviceToken`: the token is dead and its device row is deleted (unless
+  the phone registered it again after the push was decided: Apple allows pushing a dead token again once the app
+  retrieves it again). Nothing else deletes a phone.
+- **The rule of a pause: a pause is never wider than what the failing request proves**, so nothing a signed-in person can
+  choose — the token they register, the `env` (so the APNs host) they register it for — can pause a push that would have
+  got through. A refusal of the key or the topic proves only that that host refuses it (an APNs key can be limited to one
+  environment), so it pauses **that host**: 403 (`InvalidProviderToken`, `MissingProviderToken`, …: the key, its id or
+  the Team ID; `auth`), 403 `BadEnvironmentKeyIdInToken` (the key does not cover this environment; `key_env`: create the key as
+  **Sandbox & Production**), 400 `TopicDisallowed` / `BadTopic` / `MissingTopic` (the topic, `APPLE_BUNDLE_ID`; `topic`),
+  429 `TooManyProviderTokenUpdates` (`token_rate`: renewed too often, restarts in a row — no person can provoke it,
+  renewals being at most one per 20 minutes whatever is pushed). A refusal of a token pauses **that token**: 400
+  `DeviceTokenNotForTopic` (a token of another app; `topic`) — and so do 403 `Forbidden` and any 403 reason Apple does
+  not document (`auth`): Apple gives them no cause, so nothing proves more than this one request (a host is paused only for
+  a reason whose cause is the configuration alone). Each pause lasts `CONFIGURATION_PAUSE_MS` (15 minutes; a
+  push there is `paused` without being sent), then pushes are tried again. Nothing pauses every push: a person's sandbox
+  phone can pause only the sandbox host, which no TestFlight or App Store phone uses, and only for a refusal every push
+  there would get anyway. No phone is deleted for any of these; one WARN line per class and host says so (below). The
+  table of every reason Apple documents — what it is here, what it pauses, whether a person can provoke it — is at the top
+  of `src/push/apns.ts`; `tests/push-apns.test.ts` walks it row by row.
+- 403 `ExpiredProviderToken`: retried once — with the token another push has renewed since, or with one made anew if it
+  is at least 20 minutes old; else `auth` (a clock that is off), on that host.
+- 429 `TooManyRequests`, 5xx, a broken connection or no answer within 10 s: retried after 2 s, then after 30 s, then given
+  up (at most three attempts) — never a loop; the wait gives its place back. Only the connection that attempt used is
+  touched: one stream reset leaves it up (for this retry and everyone else's), a broken one forgets itself, a silent one
+  or one answering 503, `IdleTimeout` or `UnrelatedKeyIdInToken` takes no new pushes (what is on it may finish) and the
+  retry opens another.
+- Any other answer: given up (`rejected`).
+
+At most 32 pushes in flight and 5 000 waiting; beyond, `overloaded`. A push never holds up a request or a message: it runs
+after the commit, on its own. **The stop** takes at most `STOP_WAIT_MS` (5 s) in all: it closes the sender first (its retry
+waits end at once, `closed`; every connection it opened — one already closing gracefully too — is closed, and destroyed
+after `CLOSE_GRACE_MS`, 2 s), then waits for what is under way until the deadline, and writes the last counters.
+
+**Expired sessions.** The push's own timer (every 10 minutes, with the counters; it always runs, with or without APNs and
+whatever `MEMORY.changesSweepMs` says) deletes the phones of expired sessions — a session row goes only when its cookie is
+shown again, so an abandoned phone's token would otherwise stay — counted as `push_devices_expired`. Sessions last 7 days
+from their last use, so a phone whose app was not opened for a week gets no more pushes.
+
+**Counters in the log.** Never a token, a conversation's id, a person or any text. `{"metric": "push", "sent", "removed",
+"present", "coalesced", "stale", "failed": {"<class>": n}}` every 10 minutes when anything was counted, and at the stop:
+pushes APNs took, devices deleted for a dead token, phones skipped as present, pushes not made because one was out, pushes
+no longer wanted after a probe, and pushes given up by class (`throttled`, `server`, `network`, `timeout`, `auth`,
+`key_env`, `topic`, `token_rate`, `rejected`, `overloaded`, `closed`, `paused`). `{"metric": "push_off", "missing": [...],
+"malformed": [...], "links": "on" | "off"}` (WARN, variable names only) once at start when some of the four variables are
+set but not all, or one is malformed; `links: "off"` (and the message) when the universal-links file is off too (no valid
+Team and bundle id). `{"metric": "push_config_refused", "class": "auth" | "key_env" | "topic" | "token_rate", "host":
+"sandbox" | "production"}` (WARN) once per class, host and process, the first time that host refuses the configuration,
+with what to check. `{"metric": "push_devices_expired", "removed"}` from the sweep. `push_targets_failed` /
+`push_failed` with a database error's code only, when the recipients could not be read or a dead device not deleted.
+
+**What only a real device shows** (the tests talk to a local stand-in): that Apple accepts the token's signature with the
+real key; the real hosts' TLS and HTTP/2 settings; the sandbox/production pairing of a real build's token; how often the
+real APNs answers 429; and how a suspended WKWebView's socket behaves (the probe covers it either way).
 
 ## Agents and runs (`src/agents/`)
 

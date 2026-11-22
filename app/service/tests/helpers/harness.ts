@@ -102,6 +102,7 @@ async function untilIdle(app: FastifyInstance, db: Db, backgroundWorker: boolean
     await memoryCountsSettled();
     let busy = !(await idleNow(app.deps.memory?.idle.bind(app.deps.memory))) || !(await idleNow(app.deps.proactive?.idle.bind(app.deps.proactive)));
     busy ||= !(await idleNow(app.hasDecorator("realtime") ? () => app.realtime.idle() : undefined));
+    busy ||= !(await idleNow(app.hasDecorator("push") ? () => app.push.idle() : undefined));
     if (backgroundWorker) {
       // What the loop has not yet claimed is run now (by this hook, in the loop's place); what it has claimed is waited for.
       if ((await app.agentWorker.drain()) > 0) busy = true;
@@ -126,8 +127,9 @@ async function untilIdle(app: FastifyInstance, db: Db, backgroundWorker: boolean
 /**
  * What runs between two tests: the database emptied once the app is quiet (`untilIdle`), with nothing started by a timer
  * meanwhile — the reply worker's loop is held from before the first look until the truncate has ended (its poll and its
- * wake-ups wait; what they asked for is claimed once released), the hub's heartbeat has no timer under the harness
- * (`BuildOptions.heartbeat`), and the sweeps none unless a file asks for one (`useApp`); the proactive scheduler's and the
+ * wake-ups wait; what they asked for is claimed once released), the hub's heartbeat and the push's own timer (its counters
+ * and its expired-phone sweep, src/push/notify.ts) have no timer under the harness
+ * (`BuildOptions.heartbeat`, `BuildOptions.pushTimer`), and the sweeps none unless a file asks for one (`useApp`); the proactive scheduler's and the
  * memory reviewer's timers are part of their `idle()`.
  */
 export async function betweenTests(app: FastifyInstance, db: Db, backgroundWorker: boolean): Promise<void> {
@@ -168,7 +170,7 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * runs outside the app's statement timeout.
  */
 export function useApp(
-  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting"> & {
+  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine" | "apns">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting" | "pushTimer"> & {
       memory?: boolean;
       tools?: boolean;
       greeting?: boolean;
@@ -193,6 +195,8 @@ export function useApp(
     mail: { sender: false, ...mail },
     // Nor does the hub's heartbeat run on a timer (`app.realtime.tick()` beats by hand): see `betweenTests`.
     heartbeat: false,
+    // Nor the push's own timer (`app.push.sweepExpired()` / `flush()` by hand): see `betweenTests`.
+    pushTimer: false,
   };
   let instance: FastifyInstance | undefined;
   let database: Db | undefined;
