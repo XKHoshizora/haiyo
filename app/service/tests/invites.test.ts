@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { createInvite, hashInviteCode, listInvites, revokeInvite } from "../src/auth/invites.ts";
+import { createInvite, hashInviteCode, listInvites, revokeInvite, sweepExpiredSignups } from "../src/auth/invites.ts";
 import { api, mailLink, signUp } from "./helpers/actors.ts";
 import { testDatabaseUrl } from "./helpers/env.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -136,8 +136,10 @@ describe("invite codes good for several sign-ups", () => {
   });
 
   test("a burst of 20 verifications on a pool of 10 connections for a code with 5 uses: exactly 5 succeed, all answer, none times out", async () => {
-    const code = await createInvite(db, { ttlHours: 1, uses: 5 });
+    // Twenty sign-ups would not fit under the cap of a 5-use code: made on a 20-use one, narrowed to 5 before the links.
+    const code = await createInvite(db, { ttlHours: 1, uses: 20 });
     for (let i = 0; i < 20; i++) expect(await register(code, `b${i}`)).toEqual(CREATED);
+    await db.query("update invites set max_uses = 5 where code_hash = $1", [hashInviteCode(code)]);
     const started = Date.now();
     const results = await Promise.all(Array.from({ length: 20 }, (_, i) => verify(`b${i}`)));
     expect(results.map((r) => r.status)).toEqual(Array(20).fill(302));
@@ -251,6 +253,96 @@ describe("invite codes good for several sign-ups", () => {
     expect(await register(code, "k3")).toEqual(REFUSED);
   });
 
+
+  /** How many sign-ups of this code are waiting for their link. */
+  const waiting = async (code: string) =>
+    Number((await db.query<{ n: string }>("select count(*) n from pending_invites where code_hash = $1", [hashInviteCode(code)])).rows[0]!.n);
+
+  test("pending sign-ups per code are capped at 2 x the uses left + 5: a single-use code takes 7, the 8th gets the usual refusal", async () => {
+    const code = await createInvite(db, { ttlHours: 1 });
+    for (let i = 0; i < 7; i++) expect(await register(code, `c${i}`)).toEqual(CREATED);
+    expect(await register(code, "c7")).toEqual(REFUSED);
+    expect(await accounts("c7")).toBe(0);
+    expect(await waiting(code)).toBe(7);
+    expect((await db.query("select 1 from mail_outbox where recipient = $1", ["iv" + "c7@example.test"])).rowCount).toBe(0);
+  });
+
+  test("the cap follows the uses left: a verification shrinks it", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 2 });
+    for (let i = 0; i < 9; i++) expect(await register(code, `s${i}`)).toEqual(CREATED);
+    expect(await register(code, "s9")).toEqual(REFUSED);
+    expect(OK((await verify("s0")).to)).toBe(true);
+    // One use left: the cap is 2 x 1 + 5 = 7, and 8 are waiting.
+    expect(await waiting(code)).toBe(8);
+    expect(await register(code, "s10")).toEqual(REFUSED);
+    // Verifications and removals bring the waiting below the cap again.
+    expect(await db.query("delete from pending_invites where principal_id in (select principal_id from pending_invites where code_hash = $1 limit 2)", [hashInviteCode(code)])).toBeTruthy();
+    expect(await register(code, "s11")).toEqual(CREATED);
+  });
+
+  test("a sign-up whose link has expired no longer holds a slot; the cap is not a second lifetime", async () => {
+    const code = await createInvite(db, { ttlHours: 1 });
+    for (let i = 0; i < 7; i++) expect(await register(code, `x${i}`)).toEqual(CREATED);
+    expect(await register(code, "x7")).toEqual(REFUSED);
+    await db.query("update pending_invites set created_at = now() - interval '25 hours' where principal_id in (select principal_id from pending_invites where code_hash = $1 limit 3)", [hashInviteCode(code)]);
+    expect(await register(code, "x8")).toEqual(CREATED);
+    expect(await register(code, "x9")).toEqual(CREATED);
+    expect(await register(code, "x10")).toEqual(CREATED);
+    expect(await register(code, "x11")).toEqual(REFUSED);
+  });
+
+  test("a verified sign-up on an address with an account takes no slot and mails at most one notice an hour", async () => {
+    const owner = await signUp(app, "iv_slot");
+    const code = await createInvite(db, { ttlHours: 1 });
+    for (let i = 0; i < 12; i++) {
+      const body = { inviteCode: code, email: owner.email, password: PASSWORD, displayName: "X", handle: `slot_${i}` };
+      expect(await api(app, null, "POST", "/api/register", body)).toEqual(CREATED);
+    }
+    expect(await waiting(code)).toBe(0);
+    const notices = await db.query("select 1 from mail_outbox where kind = 'registration_attempt' and recipient = $1", [owner.email]);
+    expect(notices.rowCount).toBe(1);
+  });
+
+  test("the sweep removes unverified accounts whose link has expired, with their notes, and nothing else", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 20 });
+    // Old and unverified, with a note: removed.  Young and unverified: kept.  Verified: kept.
+    // Unverified with no note (made before this feature): kept.  Old but with something a signed-in person makes: kept.
+    for (const n of ["w_old1", "w_old2", "w_young", "w_traced"]) expect(await register(code, n)).toEqual(CREATED);
+    expect(OK((await join(code, "w_verified")).to)).toBe(true);
+    const keeper = await signUp(app, "iv_sweep_friend");
+    const idOf = async (n: string) =>
+      (await db.query<{ id: string }>(`select p.id from principals p join "user" u on u.id = p.auth_user_id where u.email = $1`, [`iv${n}@example.test`])).rows[0]!.id;
+    expect(await register(code, "w_nonote")).toEqual(CREATED);
+    await db.query("delete from pending_invites where principal_id = $1", [await idOf("w_nonote")]);
+    await db.query("insert into friendships (a_id, b_id) values (least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid))", [await idOf("w_traced"), keeper.id]);
+    for (const n of ["w_old1", "w_old2", "w_traced", "w_nonote", "w_verified"]) {
+      // An old note; the verified account has none left, so this does nothing to it (nor must the sweep).
+      await db.query("update pending_invites set created_at = now() - interval '25 hours' where principal_id = $1", [await idOf(n)]);
+    }
+    await db.query(`update "user" set "createdAt" = now() - interval '25 hours' where email = $1`, ["iv" + "w_nonote@example.test"]);
+    const removed = await sweepExpiredSignups(db, { limit: 100 });
+    expect(removed).toBe(2);
+    expect(await accounts("w_old1")).toBe(0);
+    expect(await accounts("w_old2")).toBe(0);
+    for (const n of ["w_young", "w_traced", "w_nonote", "w_verified"]) expect([n, await accounts(n)]).toEqual([n, 1]);
+    expect(await verified("w_verified")).toBe(true);
+    // Their handles are free again, and the code's notes of the removed are gone.
+    expect(await register(code, "w_new", { handle: "iv_w_old1" })).toEqual(CREATED);
+    expect(await waiting(code)).toBe(3);
+    // Nothing more to remove; a bound stops a run early.
+    expect(await sweepExpiredSignups(db, { limit: 100 })).toBe(0);
+  });
+
+  test("the sweep is bounded per run", async () => {
+    const code = await createInvite(db, { ttlHours: 1, uses: 20 });
+    for (let i = 0; i < 5; i++) expect(await register(code, `z${i}`)).toEqual(CREATED);
+    await db.query("update pending_invites set created_at = now() - interval '25 hours'");
+    expect(await sweepExpiredSignups(db, { limit: 2 })).toBe(2);
+    expect(await waiting(code)).toBe(3);
+    expect(await sweepExpiredSignups(db, { limit: 2 })).toBe(2);
+    expect(await sweepExpiredSignups(db, { limit: 2 })).toBe(1);
+    expect(await waiting(code)).toBe(0);
+  });
 
   test("revoke refuses an ambiguous, an unknown and a too-short prefix, and touches nothing", async () => {
     const a = await createInvite(db, { ttlHours: 1 });

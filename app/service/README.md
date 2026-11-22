@@ -2076,7 +2076,10 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   or been revoked since the sign-up refuses that verification — the link redirects to `/verify?error=INVITE_USED_UP`
   and the account stays unverified). So the answer, its timing and the invite afterwards are the same for every
   address, an abandoned or replaced sign-up costs the code nothing, and a code made with `--uses n` admits n
-  verified accounts. What an invite holder can still learn, accepted: after a 201 for an address, whether the chosen
+  verified accounts. At most 2 x (uses left) + 5 sign-ups per code may wait for their link at once (a sign-up waits
+  for as long as its 24 h link works); over that the answer is the usual `invalid_invite`. The periodic sweep removes
+  unverified accounts whose link has expired, with their invite note (100 a run; never a verified account, one without
+  an invite note, or one that holds anything a signed-in person makes). What an invite holder can still learn, accepted: after a 201 for an address, whether the chosen
   handle now exists (a handle lookup, a second registration with that handle — 409 —, or signing in with the chosen
   password — 403 `email_not_verified` against 401) tells whether the address already had a verified account (then
   nothing was created). Each such probe, for a verified account, mails its owner a

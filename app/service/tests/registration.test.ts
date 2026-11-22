@@ -190,6 +190,9 @@ describe("registering an e-mail that already has an account", () => {
       expect([what, res]).toEqual([what, { status: 500, json: { error: "internal" } }]);
       expect([what, await accountOf(email)]).toEqual([what, [old]]);
       expect([what, (await inviteState(code))!.used]).toEqual([what, false]);
+      // Nothing of the refused registration is left: the old account keeps its note, the new code has none.
+      expect([what, await count("select count(*) n from pending_invites where principal_id = $1", [old.principalId])]).toEqual([what, 1]);
+      expect([what, await count("select count(*) n from pending_invites where code_hash = $1", [hashInviteCode(code)])]).toEqual([what, 0]);
     }
   });
 
@@ -197,7 +200,7 @@ describe("registering an e-mail that already has an account", () => {
     const owner = await signUp(app, "race_owner");
     await pending("race_pending@example.test", "race_pending");
     for (let round = 0; round < 4; round++) {
-      const code = await invite();
+      const code = await createInvite(db, { ttlHours: 1, uses: 8 });
       const emails = [owner.email, "race_pending@example.test", ...Array.from({ length: 6 }, (_, i) => `race${round}_${i}@example.test`)];
       const handles = emails.map((_, i) => `race${round}_${i}`);
       const results = await Promise.all(emails.map((email, i) => register({ inviteCode: code, email, handle: handles[i] })));

@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { Queryable } from "../db.ts";
+import type { Db, Queryable } from "../db.ts";
+import { findAccountByEmail, lockAccountEmail, removeUnverifiedAccount } from "./accounts.ts";
+import { VERIFY_EMAIL_TTL_SECONDS } from "./mail-copy.ts";
 
 const CODE_LENGTH = 20;
 export const MAX_INVITE_USES = 1000;
@@ -29,14 +31,29 @@ export async function createInvite(db: Queryable, opts: { ttlHours: number; uses
 }
 
 /**
- * Whether a sign-up may start with this code: it exists, is not revoked, has not expired and has a use left. Takes and
- * holds nothing: a use is taken when the account becomes real, at e-mail verification (`takeInviteUse`), so a
- * sign-up that creates nothing, is replaced or is never verified costs the code nothing.
+ * How many sign-ups waiting for their link a code may have: PENDING_PER_USE_LEFT for each use it has left, plus
+ * PENDING_SLACK. Every one costs a mail and a held handle, so this bounds them by what the code can still admit (a
+ * single-use code: 2 x 1 + 5 = 7 waiting, the 8th is refused). A sign-up waits only as long as its verification link
+ * works (VERIFY_EMAIL_TTL_SECONDS, auth.ts `emailVerification.expiresIn`); after that it holds no slot, and the sweep
+ * removes it. Not locked: sign-ups racing each other may overshoot the cap by a few, which still bounds them.
+ */
+export const PENDING_PER_USE_LEFT = 2;
+export const PENDING_SLACK = 5;
+
+/**
+ * Whether a sign-up may start with this code: it exists, is not revoked, has not expired, has a use left, and not too
+ * many sign-ups are already waiting for their links (the cap above; refused exactly like an unusable code). Takes and
+ * holds nothing: a use is taken when the account becomes real, at e-mail verification (`takeInviteUse`), so a sign-up
+ * that creates nothing, is replaced or is never verified costs the code nothing.
  */
 export async function inviteUsable(q: Queryable, code: string): Promise<boolean> {
   const { rowCount } = await q.query(
-    "select 1 from invites where code_hash = $1 and uses < max_uses and revoked_at is null and expires_at > now()",
-    [hashInviteCode(code)],
+    `select 1 from invites i
+      where i.code_hash = $1 and i.uses < i.max_uses and i.revoked_at is null and i.expires_at > now()
+        and (select count(*) from pending_invites pi
+              where pi.code_hash = i.code_hash and pi.created_at > now() - make_interval(secs => $2))
+            < $3 * (i.max_uses - i.uses) + $4`,
+    [hashInviteCode(code), VERIFY_EMAIL_TTL_SECONDS, PENDING_PER_USE_LEFT, PENDING_SLACK],
   );
   return rowCount === 1;
 }
@@ -122,4 +139,39 @@ export async function revokeInvite(db: Queryable, prefix: string): Promise<Revok
   if (rows.length > 1) return { ok: false, reason: "ambiguous" };
   await db.query("update invites set revoked_at = coalesce(revoked_at, now()) where code_hash = $1", [rows[0]!.hash]);
   return { ok: true, hashPrefix: prefix };
+}
+
+/**
+ * Removes (at most `limit`, oldest first) unverified accounts whose verification link has expired, each with its
+ * pending note (it goes with the principal), so their handles and rows are freed; returns how many. Only an account
+ * that is still unverified and has a pending note from this feature is touched: a verified account, an unverified
+ * one made before pending notes existed, and one that holds anything a signed-in person makes (it is left, as
+ * `removeUnverifiedAccount` refuses) are never removed. Each account is its own transaction under its address's lock.
+ */
+export async function sweepExpiredSignups(db: Db, opts: { limit: number }): Promise<number> {
+  const { rows } = await db.query<{ email: string }>(
+    `select u.email from pending_invites pi join principals p on p.id = pi.principal_id join public."user" u on u.id = p.auth_user_id
+      where pi.created_at <= now() - make_interval(secs => $1) and not u."emailVerified"
+      order by pi.created_at limit $2`,
+    [VERIFY_EMAIL_TTL_SECONDS, opts.limit],
+  );
+  let removed = 0;
+  for (const { email } of rows) {
+    const done = await db
+      .tx(async (t) => {
+        await lockAccountEmail(t, email);
+        const account = await findAccountByEmail(t, email);
+        if (!account || account.verified || account.principalId === null) return false;
+        const { rowCount } = await t.query(
+          "select 1 from pending_invites where principal_id = $1 and created_at <= now() - make_interval(secs => $2)",
+          [account.principalId, VERIFY_EMAIL_TTL_SECONDS],
+        );
+        if (rowCount !== 1) return false;
+        await removeUnverifiedAccount(t, account);
+        return true;
+      })
+      .catch(() => false); // one it refuses to remove (signed-in traces) is left; the rest go on
+    if (done) removed++;
+  }
+  return removed;
 }

@@ -155,26 +155,28 @@ describe("accounts", () => {
     expect(await register({ inviteCode: code, email: "fresh@example.test", handle: "fresh_one" })).toEqual({ status: 201, json: { ok: true } });
   });
 
-  test("registration is atomic: a failure after the auth user is written leaves no user, account, mail or used invite", async () => {
+  test("registration is atomic: a failure after the principal is written leaves no user, account, principal, mail or pending note", async () => {
     await db.query(
       "create function test_fail_principal() returns trigger language plpgsql as 'begin raise exception ''boom''; end'",
     );
+    // The last write of a registration (the note of the code), after the user, account and principal are in.
     await db.query(
-      "create trigger test_fail before insert on principals for each row execute function test_fail_principal()",
+      "create trigger test_fail before insert on pending_invites for each row execute function test_fail_principal()",
     );
     try {
       const code = await invite();
       const res = await register({ inviteCode: code });
       expect(res.status).toBe(500);
     } finally {
-      await db.query("drop trigger test_fail on principals");
+      await db.query("drop trigger test_fail on pending_invites");
       await db.query("drop function test_fail_principal()");
     }
     expect(await count(`select count(*) n from "user"`)).toBe(0);
     expect(await count(`select count(*) n from "account"`)).toBe(0);
     expect(await count("select count(*) n from mail_outbox")).toBe(0);
     expect(await count("select count(*) n from principals")).toBe(0);
-    expect(await count("select count(*) n from invites where used_at is null")).toBe(1);
+    expect(await count("select count(*) n from pending_invites")).toBe(0);
+    expect(await count("select count(*) n from invites where used_at is null and uses = 0")).toBe(1);
   });
 
   test("Better Auth's own sign-up endpoint is not reachable (it would bypass invites)", async () => {

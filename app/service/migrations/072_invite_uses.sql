@@ -29,9 +29,12 @@ create index invite_uses_principal_idx on invite_uses (principal_id) where princ
 
 create table pending_invites (
   principal_id uuid primary key references principals (id) on delete cascade,
-  code_hash text not null references invites (code_hash) on delete cascade
+  code_hash text not null references invites (code_hash) on delete cascade,
+  -- A sign-up is live for as long as its verification link works (24 h, auth.ts); then the sweep removes it.
+  created_at timestamptz not null default now()
 );
-create index pending_invites_code_idx on pending_invites (code_hash);
+create index pending_invites_code_idx on pending_invites (code_hash, created_at);
+create index pending_invites_old_idx on pending_invites (created_at);
 
 -- Down Migration
 drop table pending_invites;

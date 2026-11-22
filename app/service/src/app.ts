@@ -18,6 +18,7 @@ import { registerBodyDeadline } from "./body-deadline.ts";
 import { runSweep, startSweeper } from "./attachments/sweeper.ts";
 import { configureStats } from "./memory/stats.ts";
 import { sweepMemoryChanges } from "./memory/sweep.ts";
+import { sweepExpiredSignups } from "./auth/invites.ts";
 import { registerAttachmentRoutes } from "./attachments/routes.ts";
 import { createUploadSlots, type UploadSlots } from "./attachments/slots.ts";
 import { registerAccountRoutes } from "./accounts/routes.ts";
@@ -211,7 +212,9 @@ export interface BuildOptions {
  *   expired ones made 30 days ago are deleted;
  * - reminders about money recorded by a settlement whose whisper was never made (the service stopped between the two) are
  *   made, pushed and counted (metering/reminders.ts `deliverReminders`);
- * - the web search's counts of site days more than a week old are deleted (agents/tools/web/hold.ts `sweepSearchDays`).
+ * - the web search's counts of site days more than a week old are deleted (agents/tools/web/hold.ts `sweepSearchDays`);
+ * - unverified accounts whose verification link has expired are removed with their invite note, at most 100 a run
+ *   (auth/invites.ts `sweepExpiredSignups`; the count is logged, nothing else).
  * `hub` null: nobody to tell yet.
  */
 export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: FastifyBaseLogger, hub: Pick<Hub, "pushWhisper"> | null): Promise<{ unsent: number; abandoned: number }> {
@@ -227,6 +230,11 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
   });
   for (const r of reminded) log.info({ metric: r.metric }, "a reminder about money was made for its owner");
   await sweepSearchDays(deps.db, new Date(), config.siteTimezone).catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "web search count sweep failed; trying again next interval"));
+  const signups = await sweepExpiredSignups(deps.db, { limit: 100 }).catch((err: unknown) => {
+    log.warn({ code: (err as { code?: string }).code }, "expired sign-up sweep failed; trying again next interval");
+    return 0;
+  });
+  if (signups > 0) log.info({ metric: "expired_signups_removed", count: signups }, "unverified sign-ups with an expired link were removed");
   if (hub) pushWhispers(hub, [...expired, ...reminded.flatMap((r) => (r.whisper ? [r.whisper] : []))]);
   return { unsent: 0, abandoned: 0 };
 }
