@@ -3,19 +3,27 @@
 // CSP header, no CSP violation anywhere (the fixture), the WebSocket, and a signed-out deep link.
 import { test, expect } from "./support/fixtures.mjs";
 import { mailLink, mintInvite, newIdentity, newPassword, uniq } from "./support/accounts.mjs";
+import { REMOTE } from "./support/env.mjs";
 import { chatPane, expectOnce, expectStored, goTo, listRow, openChat, rail, sendText, signInUi } from "./support/app.mjs";
 
 /**
- * What the page after a mail is asked for says: 请查收邮箱 on a site that delivers mail; on one that does not (`GET /api/site`
- * `mailDelivered` false — the local suite's outbox) the page says so instead, under `noMailTitle`.
+ * What the page after a mail is asked for says. The local suite starts its service with MAIL_MODE outbox (system.mjs), so
+ * its site must say it delivers no mail (`GET /api/site` `mailDelivered` false), and the page then says so under
+ * `noMailTitle`: the administrator gives the link `link` names (验证链接 after registering, 重置链接 after a reset request),
+ * never the other one. A remote environment's mode is its own (the acceptance site delivers mail); there the page must
+ * agree with what that site says.
  */
-async function expectMailPage(page, noMailTitle) {
+async function expectMailPage(page, noMailTitle, link) {
   const { mailDelivered } = await (await page.request.get("/api/site")).json();
-  if (mailDelivered) await expect(page.getByRole("heading", { name: "请查收邮箱" })).toBeVisible();
-  else {
-    await expect(page.getByRole("heading", { name: noMailTitle })).toBeVisible();
-    await expect(page.getByText("这个站点不发送邮件。请向管理员索取验证链接。")).toBeVisible();
+  if (!REMOTE) expect(mailDelivered, "the local suite's site keeps mail in its outbox").toBe(false);
+  if (mailDelivered) {
+    await expect(page.getByRole("heading", { name: "请查收邮箱" })).toBeVisible();
+    return;
   }
+  await expect(page.getByRole("heading", { name: noMailTitle })).toBeVisible();
+  await expect(page.getByText(`这个站点不发送邮件。请向管理员索取${link}。`)).toBeVisible();
+  const other = link === "验证链接" ? "重置链接" : "验证链接";
+  await expect(page.getByText(other)).toHaveCount(0);
 }
 
 /** /register → the inbox's verification link → /verify → sign in. Resolves with the page's WebSocket. */
@@ -27,7 +35,7 @@ async function signUp(page, identity) {
   await page.getByLabel("昵称").fill(identity.displayName);
   await page.getByLabel("账号名").fill(identity.handle);
   await page.getByRole("button", { name: "注册", exact: true }).click();
-  await expectMailPage(page, "验证邮箱");
+  await expectMailPage(page, "验证邮箱", "验证链接");
 
   await page.goto(await mailLink(identity.email, "verify_email"));
   await expect(page.getByRole("heading", { name: "邮箱已验证" })).toBeVisible();
@@ -64,7 +72,7 @@ test("spec §7.1: sign up, verify, reset, befriend, chat both ways; history surv
   await elsewhere.page.getByRole("link", { name: "忘记密码" }).click();
   await elsewhere.page.getByLabel("邮箱", { exact: true }).fill(boId.email);
   await elsewhere.page.getByRole("button", { name: "发送重置邮件" }).click();
-  await expectMailPage(elsewhere.page, "重置密码");
+  await expectMailPage(elsewhere.page, "重置密码", "重置链接");
   await elsewhere.page.goto(await mailLink(boId.email, "reset_password"));
   await expect(elsewhere.page).toHaveURL(/\/reset-password$/); // the token left the address bar
   const oldPassword = boId.password;

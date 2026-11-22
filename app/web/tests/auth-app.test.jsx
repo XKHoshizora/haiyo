@@ -273,7 +273,7 @@ describe("register", () => {
     fill();
     submit("注册");
     await screen.findByText("这个站点不发送邮件。请向管理员索取验证链接。");
-    expect(document.body.textContent).not.toMatch(/发送了一封|查收|垃圾邮件/);
+    expect(document.body.textContent).not.toMatch(/发送了一封|查收|垃圾邮件|重置链接/);
     expect(screen.getByRole("link", { name: "去登录" }).classList.contains("text-link")).toBe(true);
     expect(api.getSite).toHaveBeenCalledTimes(1);
   });
@@ -342,8 +342,9 @@ describe("forgot and reset password", () => {
     await screen.findByRole("button", { name: "发送重置邮件" });
     typeInto("邮箱", "nobody@x.com");
     submit("发送重置邮件");
-    await screen.findByText("这个站点不发送邮件。请向管理员索取验证链接。");
-    expect(document.body.textContent).not.toMatch(/我们会发送|查收/);
+    // A reset asks the administrator for a reset link, not a verification link (the forgot form's lead says the same).
+    await screen.findByText("这个站点不发送邮件。请向管理员索取重置链接。");
+    expect(document.body.textContent).not.toMatch(/我们会发送|查收|验证链接/);
     expect(api.requestPasswordReset).toHaveBeenCalledWith({ email: "nobody@x.com" });
   });
 

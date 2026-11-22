@@ -67,9 +67,11 @@ import { WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
 import {
   actOnTriggered,
   budgetReachedWith,
+  droppedOnEnd,
   dropBlockedCalls,
   followUp,
   followUpOf,
+  followUpOnEnd,
   hearFrom,
   noneTold,
   pushBudgetReached,
@@ -285,24 +287,6 @@ function countRetry(log: Partial<Pick<FastifyBaseLogger, "info">>, retried: Auto
 }
 
 /**
- * The one rule for a follow-up (README "Agents and runs", Coalescing): a run that has ended is followed by a reply to
- * what its owner wrote meanwhile when something was noted on it (`pending_seq` beyond what it covered) and its Agent
- * can still answer (not paused, not deleted, has a model) — however the run itself ended. A pause or delete drops what
- * was noted (runs.ts `interruptRuns`), and so does the Agent's leaving the run's group (group-leave.ts
- * `endRunsInGroup`); nothing is noted while the Agent is paused or out of that group, so what is noted on an
- * interrupted run came after the resume, and is answered. A run that ended `agent_removed` (its Agent is no longer a
- * member of the run's group, however that was found) is followed by nothing: what was noted on it is dropped
- * (`droppedOnEnd`). Whether it is queued, as whose, and how it meets the owner's replies a minute is runs.ts
- * `followUp`'s.
- */
-function followUpSeq(state: RunState, agent: AgentRow, end: RunEnd): number | null {
-  if (droppedOnEnd(end)) return null;
-  const covers = Number(state.covers_seq ?? 0);
-  const pending = Number(state.pending_seq ?? 0);
-  return pending > covers && !agent.paused && !agent.deleted && agent.model !== null ? pending : null;
-}
-
-/**
  * How a run that ended `end` is recorded: as it ended — but a new Agent's greeting (`greets`) that failed is `cancelled`
  * with no error, so no failure and no 重试 is shown in a conversation where nothing was said yet: there is simply no Agent
  * message, and the client's hint invites its owner to write (principle P2: never a fixed line in its place). Settlement
@@ -310,23 +294,6 @@ function followUpSeq(state: RunState, agent: AgentRow, end: RunEnd): number | nu
  */
 const quietGreeting = (end: RunEnd, state: Pick<RunState, "greets">): RunEnd => (state.greets && end.status === "failed" ? { status: "cancelled" } : end);
 
-/**
- * THE one place that decides, for every way a run ends — `finish` (an answer, a failure, a stop) and `recoverRun` (start-up
- * recovery, the release at a stop or shutdown, the stale-run sweep) — whether a follow-up answers what was noted on it:
- * never when the system scheduled its automatic retry (that covers what was noted: `retried`); a failed run the service
- * lost (`recovered`) is not followed up, its owner's 重试 answers everything (spec 6.5) — except a told reply and a new
- * Agent's greeting, which answer no message of the owner's, so what was noted on them always gets its own reply (a
- * greeting's quiet end never hides a question; README "Replies", Automatic retry, table 2); otherwise the one rule,
- * `followUpSeq`.
- */
-function followUpOnEnd(state: RunState, agent: AgentRow, end: RunEnd, how: { recovered: boolean; retried: boolean }): number | null {
-  if (how.retried) return null;
-  if (how.recovered && end.status === "failed" && !state.told && !state.greets) return null;
-  return followUpSeq(state, agent, end);
-}
-
-/** A run that ends so is followed by nothing, and what was noted on it (`pending_seq`) is cleared as it ends. */
-const droppedOnEnd = (end: RunEnd): boolean => end.status === "cancelled" && end.error === "agent_removed";
 
 /*
  * `keepsNothingNoted` (round 2, N-3): the members' calls noted on a told reply (`告诉他们`) are never held to its owner. However
@@ -371,7 +338,7 @@ interface RunFlags {
    * Null for one offered none. Forgotten with the run's flags: no number outlives its reply. A reply offered the web
    * search also keeps the texts of the notes and hearsay it was shown (`shown`: its query guard's, never stored or logged).
    */
-  tools: { refs: RunRefs; heardTo: number; shown?: readonly string[] } | null;
+  tools: { refs: RunRefs; heardTo: number; shown?: readonly string[]; shownFrom: number | null } | null;
 }
 
 /**
@@ -1021,7 +988,8 @@ export class DbAgentPort implements AgentPort {
     flags.leftOut = first.loaded.leftOut;
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name };
-    flags.tools = result.prepared.tools.length > 0 ? first.tools : null;
+    // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
+    flags.tools = result.prepared.tools.length > 0 && first.tools !== null ? { ...first.tools, shownFrom: flags.group ? null : context.shownFrom } : null;
     return result.prepared;
   }
 
@@ -1045,7 +1013,7 @@ export class DbAgentPort implements AgentPort {
     const { shown } = flags.tools;
     // A reply offered the web search: what it was shown (its query guard) and its pre-hold (`holdSearch`).
     const web = shown === undefined ? {} : { shown, holdSearch: () => this.holdSearch(run) };
-    const scope: RunScope = { ...run, group: flags.group, refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, ...web };
+    const scope: RunScope = { ...run, group: flags.group, refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, shownFrom: flags.tools.shownFrom, ...web };
     return box.run(scope, call, signal);
   }
 
@@ -1374,9 +1342,14 @@ export class DbAgentPort implements AgentPort {
     });
   }
 
-  /** `AgentPort.release`: the worker's run, ended as recovery ends one (`releaseRun`). */
-  async release(run: RunTicket): Promise<void> {
-    await this.releaseRun(run.id);
+  /** `AgentPort.release`: the worker's run, ended as recovery ends one (`releaseRun`), with what the worker knew. */
+  async release(run: RunTicket, progress = false): Promise<void> {
+    await this.releaseRun(run.id, progress);
+  }
+
+  /** `AgentPort.progressed`: one write of the run's row alone (no lock beyond it), only while it is running. */
+  async progressed(run: RunTicket): Promise<void> {
+    await this.deps.db.query("update agent_runs set progressed = true where id = $1 and status = 'running' and not progressed", [run.id]);
   }
 
   /**
@@ -1386,13 +1359,14 @@ export class DbAgentPort implements AgentPort {
    * by the one rule wakes the worker), publishes the notices its follow-up appended (pushing the Agent to its owner when
    * its others' daily budget refused the follow-up), and forgets its flags; a run whose
    * reply had been posted pushes that reply once more to its owner, first (`Hub.pushChargedReply`, as `finish` does).
-   * False when it was no longer running. Rejects, changing nothing, when it cannot be written.
+   * False when it was no longer running. Rejects, changing nothing, when it cannot be written. `progress`: the worker
+   * knew its reply had produced something (`AgentPort.release`); then it is no passing failure, whatever its row says.
    */
-  async releaseRun(runId: string): Promise<boolean> {
+  async releaseRun(runId: string, progress = false): Promise<boolean> {
     const { db, config, log } = this.deps;
     let recovered: Recovered | null;
     try {
-      recovered = await db.tx((t) => recoverRun(t, config, runId, log, this.now()));
+      recovered = await db.tx((t) => recoverRun(t, config, runId, log, this.now(), progress));
     } finally {
       this.flags.delete(runId);
     }
@@ -1510,9 +1484,10 @@ export async function recoverRuns(
  * replies a minute the reusable `rate_limited` run), if any, both in the run's own conversation (a draft has no
  * conversation: nothing) — and the notices the follow-up appended there. The run's Agent and conversation are read from
  * its row first (they never change), so that the locks are taken in their order: that conversation's row and the
- * `agents` row, then the run's, then (`settle`, the follow-up) the owner's `accounts` row.
+ * `agents` row, then the run's, then (`settle`, the follow-up) the owner's `accounts` row. `progress`: a release's
+ * knowledge that the reply had produced something, beside its row's `progressed` (a lost run is passing only without both).
  */
-async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<FastifyBaseLogger, "warn">, now: Date): Promise<Recovered | null> {
+async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<FastifyBaseLogger, "warn">, now: Date, progress = false): Promise<Recovered | null> {
   const of = (
     await t.query<{ agent_id: string | null; conversation_id: string | null }>("select agent_id, conversation_id from agent_runs where id = $1", [runId])
   ).rows[0];
@@ -1537,7 +1512,7 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
     ? { status: posted.stopped === true ? "stopped" : "done" }
     : state.interrupted
       ? { status: "cancelled", error: state.interrupted }
-      : failedEnd("provider_unavailable", { kind: "lost", progress: state.progressed });
+      : failedEnd("provider_unavailable", { kind: "lost", progress: state.progressed || progress });
   // A run settled already had its hold released with its record.
   const settled = (await t.query("select 1 from usage_records where run_id = $1", [runId])).rowCount !== 0;
   if (!settled) await settle(t, config, runId, null, NOTHING, end.status, new Date(), { forgiveAll: true, log });

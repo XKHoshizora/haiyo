@@ -105,8 +105,11 @@ function useAuthForm({ initial, rules: fieldRules, submit, noMail = false }) {
   return { values, errors, formError, busy, bind, onSubmit, formRef };
 }
 
-/** What the pages that would say "we sent you a mail" say on a site that sends none (`GET /api/site`). */
-export const NO_MAIL = "这个站点不发送邮件。请向管理员索取验证链接。";
+/**
+ * What the pages that would say "we sent you a mail" say on a site that sends none (`GET /api/site`): after registering the
+ * administrator gives a verification link, after a reset request a reset link.
+ */
+export const NO_MAIL = { verify: "这个站点不发送邮件。请向管理员索取验证链接。", reset: "这个站点不发送邮件。请向管理员索取重置链接。" };
 
 /**
  * Whether this site really sends mail (`GET /api/site`, asked once per page): false on a site that only keeps mail in its
@@ -193,7 +196,7 @@ export function Register({ api }) {
     // The same page whether or not the address had an account (the service's answer is the same).
     return (
       <AuthCard title="验证邮箱" footer={<Link to="/signin">去登录</Link>}>
-        <Notice>{NO_MAIL}</Notice>
+        <Notice>{NO_MAIL.verify}</Notice>
       </AuthCard>
     );
   }
@@ -258,7 +261,7 @@ export function Forgot({ api }) {
   if (sent && mailDelivered === false) {
     return (
       <AuthCard title="重置密码" footer={<Link to="/signin">回到登录</Link>}>
-        <Notice>{NO_MAIL}</Notice>
+        <Notice>{NO_MAIL.reset}</Notice>
       </AuthCard>
     );
   }

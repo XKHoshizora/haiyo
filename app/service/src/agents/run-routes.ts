@@ -67,7 +67,7 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
       const { stopped, running, followed } = await db.tx((t) => stopRun(t, me.id, req.params.id, req.params.runId, config));
       // (A told reply's announcement brings its owner its whisper as it is now: open again — sync/hub.ts.)
       if (stopped) app.agentPort.announce(stopped);
-      // A told reply stopped while queued: the members' calls noted on it are followed up.
+      // A queued run stopped: what was noted on it is followed up (a told reply's members' calls; what an admission handed back).
       if (followed.run) app.agentPort.announce(followed.run);
       if (followed.notices.length > 0) app.deps.conversations.publish({ messages: followed.notices, conversations: [] }, req.log);
       pushBudgetReached(app.realtime, followed.budgetReached);
@@ -102,11 +102,14 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
     async (req) => {
       const me = await requirePrincipal(req);
       await haltLimit(req, me.id);
-      const halted = await db.tx((t) => haltAgents(t, req.params.id, me.id));
+      const halted = await db.tx((t) => haltAgents(t, req.params.id, me.id, config));
       // Before answering: the interrupted calls are abandoned, and nothing more of them reaches their owners.
       app.agentPort.interruptRuns(halted.running);
       for (const cancelled of halted.cancelled) app.agentPort.announce(cancelled);
       if (halted.notice) conversations.publish({ messages: [halted.notice], conversations: [] }, req.log);
+      // A person's call noted on a queued run it ended gets its follow-up (announced above): what deciding it appended.
+      if (halted.followed.notices.length > 0) conversations.publish({ messages: halted.followed.notices, conversations: [] }, req.log);
+      pushBudgetReached(app.realtime, halted.followed.budgetReached);
       return { ok: true as const };
     },
   );

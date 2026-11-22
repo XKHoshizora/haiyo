@@ -898,7 +898,9 @@ owner learns from the `run` push and from `GET /api/conversations/:id/run` (in a
 pressing anything. Passing means only an explicit signal while THE REPLY AS A WHOLE has produced nothing yet
 (`src/agents/runtime/port.ts` `passingEnding`, THE classifier, which tags the failed end `transient`; one reply-wide
 fact, set once: any text or thinking received in any round, an acknowledgement posted, a tool round completed — for a run
-the service lost, `agent_runs.progressed`, set by the acknowledgement and by every step between tool rounds): the model
+the service lost, `agent_runs.progressed`, set at the reply's first piece of text or thinking (one write of the run's row,
+once per reply, before the next piece is read), by the acknowledgement and by every step between tool rounds, and at a
+release at shutdown what the worker knew): the model
 service answered 5xx, 408 or 429; a call error with no status, a stream cut short or the reply's own time out; or the
 service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep). After anything
 was produced none of these is passing (the reply already spent and did things; repeating them unattended is not
@@ -920,8 +922,9 @@ run (`not_before`): the worker claims it once due (`for update skip locked`: one
 restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held back or refused, it is not
 forced), charged as any, held to the owner's replies a minute in its lane, and answers the same calls in the same lane
 by the same caller (a member's call stays the member's). Whatever calls the Agent while it waits is folded into it and
-waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. It posts no second
-acknowledgement within one chain, and makes no second found-elsewhere whisper about the same asking message. While it
+waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. A chain never holds an
+acknowledgement (one posted makes the failure not passing), and it makes no second found-elsewhere whisper about the same
+asking message (a run lost between its whisper and its round's record is tried again). While it
 waits the run slot reads `queued` (there is no separate "trying again" state: everyone sees 正在回复…, up to about
 2.5 minutes): its owner is pushed the queued retry and its claim alone, never the failure; the other members of a group,
 told `replying`, are told nothing more until the answer — the same frames as an answer at the first try (for a reply
@@ -991,7 +994,9 @@ is a group you are a current member of: a direct chat and an Agent's own convers
 *Session: required.* Body: none or `{}`. Stops the reply: a queued one at once (it never reaches the model; `run`
 `stopped` is pushed) — also one that was running when you asked and that its admission held back to queued meanwhile
 (Metering, Money that does not block); a running one as soon as the worker notices (within 50 ms): what it had said so far is posted
-with `stopped: true` and the run ends `stopped` (nothing said: no message). A running one that no worker of this
+with `stopped: true` and the run ends `stopped` (nothing said: no message). Either way what was noted on it — written
+after it started — gets its own reply by the one follow-up rule (`followUpOnEnd`): for a queued one, what its admission
+handed back as it held it back, and a told reply's members' calls. A running one that no worker of this
 instance is working on — another instance's during a deploy, or one left by a process that is gone — is released at
 once, exactly as recovery releases one (Agents and runs, Recovery): `failed`, `provider_unavailable`, retryable, its
 hold released at no charge (or, when its reply had been posted, `done` / `stopped` as its message says; `cancelled`
@@ -1479,7 +1484,8 @@ group is told), then — unless the mention folds into a reply under way, which 
 Agent, and no Agent replies unasked to a message sent before it. Replies that Agents' messages called for end at once,
 and so do replies an Agent was to give unasked that nobody has called for since: a queued one is `cancelled` with error `halted` (`run`
 pushed to its owner), a running one is never posted and ends `cancelled`, `halted` (what it had said is discarded; what
-it used is settled; a reply already posted stays); what a person asked of such a reply meanwhile is still answered. Replies
+it used is settled; a reply already posted stays); what a person asked of such a reply meanwhile is still answered (of a
+queued one — noted on it before its admission held it back — at once, by the same rule as a running one's). Replies
 a person called for are left alone, but what Agents' messages asked of one before the halt (noted while it ran) gets no
 follow-up when it ends, even if a person has written since. An `agents_halted` notice from you is appended (and pushed). Idempotent: while the
 group is still halted (nobody has written since the last halt) it changes nothing and appends nothing. → 200
@@ -3637,11 +3643,13 @@ what looks like one is what someone wrote.
   conversation, every conversation the Agent is a current member of (its own and its groups, each as the Agent sees it).
   Never the messages the reply answers (its model is shown them already; a question would match itself): in a group the
   calls it answers and the latest it covers (other people's messages between them are found as any); in the Agent's own
-  conversation, by position, every message of the owner's after what the Agent's last posted reply there covered (its
-  posting run's `covers_seq`), up to what this reply covers — so also a question re-asked after a failure nobody retried,
-  and what was written while the Agent was paused, had no model or was not named; "nothing found", its note and the
-  elsewhere lookup are decided without them, and so is `more`.
-  A new topic changes nothing here: search is history, not context. Matched as the search routes match (Search: a
+  conversation, by position, the owner's messages its call shows: after what the Agent's last posted reply there covered
+  (its posting run's `covers_seq`) and from where its call's context begins (context.ts `BuiltContext.shownFrom`), up to
+  what this reply covers — so also a question re-asked after a failure nobody retried, and what was written while the
+  Agent was paused, had no model or was not named, as far as its context shows them; "nothing found", its note and the
+  elsewhere lookup are decided without them, and so is `more`. What its context does not show — past the budget, folded
+  into the rolling summary, before a new topic — is found as any: search is history, not context. The bound is read once
+  per search, whatever the number of matches (`messages/search.ts` `searchRows`: a materialized CTE). Matched as the search routes match (Search: a
   substring of the text or the file's name, any case); `query` is cleaned as a stored text is (`cleanText`), then refused
   under two characters (`要查的词至少要两个字。`) or over a weight of 60 (`要查的词太长了，换几个关键的字再查。`) without touching the
   database; `from` is a sender's account name as everyone is shown it (any case, with or without `@`: a person's handle,

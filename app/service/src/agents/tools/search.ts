@@ -215,9 +215,10 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
     const { rows } = await t.query<{ id: string }>("select conversation_id as id from memberships where principal_id = $1 and left_seq is null order by conversation_id", [scope.agentId]);
     conversationIds = rows.map((r) => r.id);
   }
-  // Never what this run answers (its calls, the latest message it covers): its model is shown them already, and a question
-  // would match itself (item E). Left out in the same statement, so the page and `more` count what is left.
-  const answering = { runId: scope.id, conversationId: scope.conversationId };
+  // Never what this run answers and is shown (in a group its calls and the latest message it covers; in its own
+  // conversation the owner's messages its call shows, from `shownFrom`): its model has them already, and a question would
+  // match itself (item E). Left out in the same statement, so the page and `more` count what is left.
+  const answering = { runId: scope.id, conversationId: scope.conversationId, shownFrom: scope.shownFrom ?? null };
   const rows = await searchRows(t, scope.agentId, { conversationIds, ...o, timeZone: deps.config.siteTimezone, window, answering, limit: SEARCH_RESULTS_MAX + 1 });
   let ownerAsked = false;
   if (scope.group && rows.length === 0) {

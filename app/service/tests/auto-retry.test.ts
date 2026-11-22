@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentPort, recoverRuns, sweepStaleRuns, type DbAgentPort } from "../src/agents/port-impl.ts";
 import { AUTO_RETRY_WINDOW_MS, queueRun, transientFailure } from "../src/agents/runs.ts";
-import { failedEnd, passingEnding, type Ending } from "../src/agents/runtime/port.ts";
+import { failedEnd, NOTHING, passingEnding, UNAVAILABLE, type Ending } from "../src/agents/runtime/port.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { createToolbox, SEARCH_MESSAGES } from "../src/agents/tools/index.ts";
 import type { Config } from "../src/config.ts";
@@ -10,6 +10,7 @@ import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
+import { MULTIPART, multipart } from "./helpers/multipart.ts";
 import { closeAllSockets, connect, type Push } from "./helpers/ws.ts";
 
 /**
@@ -24,7 +25,8 @@ import { closeAllSockets, connect, type Push } from "./helpers/ws.ts";
 
 const gateway = scriptedGateway();
 const lines: string[] = [];
-const { blobs } = useProbeBlobs("af-auto-retry-");
+const store = useProbeBlobs("af-auto-retry-");
+const { blobs } = store;
 const { app, db } = useApp({
   env: { ...SITE_ENV, AGENTS: JSON.stringify({ autoRetryDelaysMs: [20_000, 120_000] }) },
   models: gateway,
@@ -69,6 +71,17 @@ const runsOf = async (conv: string) =>
       [conv],
     )
   ).rows;
+/** A text file sent by `who` into `conv` as a message of its own (so a reply's context has an attachment to read). */
+const sendFile = async (who: Actor, conv: string, filename: string, data: string) => {
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${conv}/attachments`,
+    headers: { cookie: who.cookie, "content-type": MULTIPART },
+    payload: multipart([{ name: "file", filename, type: "text/plain", data }]),
+  });
+  expect(res.statusCode).toBe(201);
+  expect((await api(app, who, "POST", `/api/conversations/${conv}/messages`, { attachmentId: res.json().id, clientTxn: `ar${++txn}` })).status).toBe(201);
+};
 const slot = async (owner: Actor, conv: string) => (await api(app, owner, "GET", `/api/conversations/${conv}/run`)).json.run;
 const agentSaid = async (owner: Actor, conv: string, agentId: string) =>
   (await api(app, owner, "GET", `/api/conversations/${conv}/messages`)).json.messages.filter((m: { senderId: string }) => m.senderId === agentId).map((m: { text: string }) => m.text);
@@ -149,6 +162,71 @@ describe("after the reply produced something, nothing is passing (round 2 R-2)",
   });
 });
 
+describe("a run lost after its reply produced something is not passing: the row records it, and a release passes on what the worker knows (round 3 S-1)", () => {
+  const progressedOf = async (conv: string) => (await db.query<{ progressed: boolean }>("select progressed from agent_runs where conversation_id = $1 order by created_at", [conv])).rows.map((r) => r.progressed);
+
+  it("its first text streamed: the run records it before more is asked for, so a crash then is no passing failure; one lost before anything is tried again", async () => {
+    const { owner, conv } = await own("ar_lost_spoke");
+    const { worker } = instance();
+    await say(owner, conv, "讲个故事");
+    const hold = gateway.hangAfter("从前有座山，");
+    const running = worker.runOnce();
+    await hold.reached;
+    expect(await progressedOf(conv)).toEqual([true]);
+    // The process is gone (as at a crash): the next start recovers the run as lost.
+    expect(await recoverRuns(db, app.deps.config, app.log, now)).toBe(1);
+    await worker.stop();
+    await running;
+    expect((await runsOf(conv)).map((r) => [r.status, r.error])).toEqual([["failed", "provider_unavailable"]]);
+    expect(await slot(owner, conv)).toMatchObject({ status: "failed", retryable: true });
+
+    // The same, lost before the first piece came: tried again.
+    const quiet = await own("ar_lost_quiet");
+    const next = instance();
+    await say(quiet.owner, quiet.conv, "讲个故事");
+    const silent = gateway.hang();
+    const waiting = next.worker.runOnce();
+    await silent.reached;
+    expect(await progressedOf(quiet.conv)).toEqual([false]);
+    expect(await recoverRuns(db, app.deps.config, app.log, now)).toBe(1);
+    await next.worker.stop();
+    await waiting;
+    expect((await runsOf(quiet.conv)).map((r) => [r.status, r.auto_attempt])).toEqual([
+      ["failed", 0],
+      ["queued", 1],
+    ]);
+    await db.query("update agent_runs set status = 'cancelled' where conversation_id = $1 and status = 'queued'", [quiet.conv]);
+  });
+
+  it("thinking received is recorded the same", async () => {
+    const { owner, conv } = await own("ar_thought");
+    const { worker } = instance();
+    await say(owner, conv, "想一想");
+    gateway.fail("provider_unavailable", { afterReasoning: "我想想。" });
+    expect(await worker.runOnce()).toBe(true);
+    expect(await progressedOf(conv)).toEqual([true]);
+    expect((await runsOf(conv)).map((r) => r.status)).toEqual(["failed"]);
+  });
+
+  it("release at shutdown passes on what the worker knows: told the reply produced something, the run is not tried again, though its row says nothing", async () => {
+    const { port } = instance();
+    const a = await own("ar_release_a");
+    await say(a.owner, a.conv, "在吗");
+    const known = (await port.claimNext())!;
+    await port.release(known, true);
+    expect((await runsOf(a.conv)).map((r) => [r.status, r.auto_attempt])).toEqual([["failed", 0]]);
+    const b = await own("ar_release_b");
+    await say(b.owner, b.conv, "在吗");
+    const unknown = (await port.claimNext())!;
+    await port.release(unknown, false);
+    expect((await runsOf(b.conv)).map((r) => [r.status, r.auto_attempt])).toEqual([
+      ["failed", 0],
+      ["queued", 1],
+    ]);
+    await db.query("update agent_runs set status = 'cancelled' where conversation_id = $1 and status = 'queued'", [b.conv]);
+  });
+});
+
 describe("a greeting never hides its owner's message, however it ends (round 2 R-1)", () => {
   /** A new Agent whose greeting is running (claimed here), and its owner's message written meanwhile. */
   async function greetingRunning(name: string) {
@@ -192,6 +270,51 @@ describe("a greeting never hides its owner's message, however it ends (round 2 R
     await db.query("update agent_runs set started_at = now() - interval '1 day' where id = $1", [greeting.id]);
     expect(await sweepStaleRuns(p.port, db, app.deps.config, app.log, () => false)).toBe(1);
     await expectAnswered(owner, conv, asked);
+  });
+});
+
+describe("a queued run that ends holds what was handed back to it to the one follow-up rule (round 3 S-4)", () => {
+  /**
+   * A queued run of `agentId` in `conv` with `noted` written after its claim and handed back to it, as an admission that
+   * held it back leaves it (port-impl.ts `HELD_BACK`): written while it ran (noted, `pending_seq`), then queued again.
+   */
+  async function heldBackWith(conv: string, write: () => Promise<number>) {
+    const [queued] = (await db.query<{ id: string; covers: string }>("select id, covers_seq::text as covers from agent_runs where conversation_id = $1 and status = 'queued'", [conv])).rows;
+    await db.query("update agent_runs set status = 'running', started_at = now() where id = $1", [queued!.id]);
+    const noted = await write();
+    await db.query("update agent_runs set status = 'queued', started_at = null where id = $1", [queued!.id]);
+    const row = (await db.query<{ covers: string; pending: string }>("select covers_seq::text as covers, pending_seq::text as pending from agent_runs where id = $1", [queued!.id])).rows[0]!;
+    expect([row.covers, row.pending]).toEqual([queued!.covers, String(noted)]);
+    return { id: queued!.id, noted };
+  }
+
+  it("its owner stops it: what was handed back gets its own reply, as for a run stopped while it ran", async () => {
+    const { owner, conv } = await own("ar_stop_held");
+    await say(owner, conv, "帮我想个名字");
+    const { id, noted } = await heldBackWith(conv, () => say(owner, conv, "要两个字的"));
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/${id}/stop`)).status).toBe(200);
+    expect((await runsOf(conv)).map((r) => [r.status, r.covers, r.lane])).toEqual([
+      ["stopped", String(noted - 1), "own"],
+      ["queued", String(noted), "own"],
+    ]);
+    gateway.reply("叫小满。");
+    expect(await instance().worker.runOnce()).toBe(true);
+  });
+
+  it("a halt ends it (it was called by an Agent): a person's call handed back to it still gets its follow-up", async () => {
+    const w = await scene("ar_halt_held");
+    const relay = await say(w.owner, w.g, "大家好");
+    await db.tx((t) => queueRun(t, { id: w.agent.id, ownerId: w.owner.id }, w.g, relay, "agent", { id: w.owner.id, lane: "own" }, [w.owner.id]));
+    const { noted } = await heldBackWith(w.g, () => say(w.mia, w.g, `${w.call} 打印机怎么连？`));
+    expect((await api(app, w.mia, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
+    const runs = await runsOf(w.g);
+    expect(runs.map((r) => [r.status, r.error])).toEqual([
+      ["cancelled", "halted"],
+      ["queued", null],
+    ]);
+    expect([runs[1]!.covers, runs[1]!.lane, runs[1]!.calls]).toEqual([String(noted), "others", [String(noted)]]);
+    gateway.reply("用USB线。");
+    expect(await instance().worker.runOnce()).toBe(true);
   });
 });
 
@@ -306,6 +429,34 @@ describe("in the Agent's own conversation", () => {
     // Counted as run only once admitted: this one never was.
     expect(metrics("auto_retry_ran")).toBe(0);
     expect(await instance().worker.runOnce()).toBe(false);
+  });
+
+  it("crossing 10 minutes while its attachments are read: what it took on at its start is handed back, and gets its own reply (round 2 R-4)", async () => {
+    const { owner, conv } = await own("ar_handback");
+    const { port } = instance();
+    await sendFile(owner, conv, "清单.txt", "牛奶、鸡蛋");
+    await say(owner, conv, "看看这个清单");
+    gateway.fail("provider_unavailable", { status: 503 });
+    expect(await instance().worker.runOnce()).toBe(true);
+    advance(20_000);
+    const retry = await port.claimNext();
+    expect(retry).not.toBeNull();
+    // Written after the retry's claim: noted on it, and taken on by its start (step 1, still inside the window).
+    const asked = await say(owner, conv, "再加一样：面包");
+    // The file is read (step 2) as the bound passes.
+    store.probe.beforeGet = () => advance(10 * 60_000);
+    const end = await port.begin(retry!);
+    expect(end).toEqual(UNAVAILABLE);
+    await port.finish(retry!, end as typeof UNAVAILABLE, null, NOTHING);
+    expect((await runsOf(conv)).map((r) => [r.status, r.auto_attempt, r.covers])).toEqual([
+      ["failed", 0, String(asked - 1)],
+      ["failed", 1, String(asked - 1)],
+      ["queued", 0, String(asked)],
+    ]);
+    expect(metrics("auto_retry_gave_up", '"why":"window"')).toBe(1);
+    store.probe.beforeGet = undefined;
+    gateway.fail("provider_unavailable", { status: 400 });
+    expect(await instance().worker.runOnce()).toBe(true);
   });
 
   it("nor when kept waiting past 10 minutes by its owner's other running reply (one place at a time)", async () => {

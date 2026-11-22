@@ -120,12 +120,15 @@ export interface SearchRowsOptions {
    * its model is shown already (item E: a question would otherwise match itself, and nothing would ever be "not found"
    * there). In a group: the calls it answers (`call_seqs`; its `covers_seq` when not known) and the latest it covers
    * (`covers_seq`) — other people's messages between them stay findable. In its Agent's own conversation, by position:
-   * every message of the owner's after what the Agent's last posted reply there covered (its posting run's `covers_seq`),
-   * up to what this run covers — a question re-asked after a failure nobody retried, what was written while the Agent was
-   * paused or had no model or was not named, a follow-up's turn. Read in this same statement, so `limit` (and the paging
-   * flag made of it) counts what is left. Absent or null: nothing is left out.
+   * the owner's messages its call shows — after what the Agent's last posted reply there covered (its posting run's
+   * `covers_seq`) and from where its call's context begins (`shownFrom`, context.ts `BuiltContext.shownFrom`; null: no
+   * such bound), up to what this run covers: a question re-asked after a failure nobody retried, what was written while
+   * the Agent was paused or had no model or was not named, a follow-up's turn. What its context does not show — past the
+   * budget, folded into the rolling summary, before a new topic — stays findable. The bound is read once per statement
+   * (a materialized CTE, whatever the number of candidates) in this same statement, so `limit` (and the paging flag made
+   * of it) counts what is left. Absent or null: nothing is left out.
    */
-  answering?: { runId: string; conversationId: string } | null;
+  answering?: { runId: string; conversationId: string; shownFrom: number | null } | null;
   limit: number;
 }
 
@@ -176,7 +179,26 @@ export const senderNamed = (sp: string, m: string, from: string): string =>
  */
 export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOptions): Promise<SearchRow[]> {
   const { rows } = await q.query<SearchRow>(
-    `select m.conversation_id, m.seq::text as seq, m.created_at, m.sender_id, m.body ->> 'text' as text,
+    // What reply run $13 answers in its conversation $14, read once (none without $13): what it covers and the calls it
+    // answers, and in its Agent's own conversation (`above`, else null) the place after which the owner's messages are
+    // shown to it — the later of what the Agent's latest posted reply there covered (an acknowledgement is no reply; the
+    // latest by seq, so the walk stops at the first) and the place before where its call's context begins ($15).
+    `with answering as materialized (
+       select ar.agent_id, ar.covers_seq, coalesce(ar.call_seqs, array[ar.covers_seq]) as calls,
+              case when exists (select 1 from agent_conversations ac where ac.conversation_id = ar.conversation_id and ac.agent_id = ar.agent_id)
+                   then greatest(coalesce((select pr.covers_seq
+                                             from messages pm
+                                             join agent_runs pr on ${postingRun("pm", "pr")}
+                                            where pm.conversation_id = ar.conversation_id and pm.sender_id = ar.agent_id
+                                              and pm.client_txn not like 'ack:%' and pr.id <> ar.id
+                                            order by pm.seq desc
+                                            limit 1), 0),
+                                 $15::bigint - 1)
+              end as above
+         from agent_runs ar
+        where ar.id = $13::uuid and ar.conversation_id = $14::uuid
+     )
+     select m.conversation_id, m.seq::text as seq, m.created_at, m.sender_id, m.body ->> 'text' as text,
             case when m.kind = 'file' then m.body -> 'attachment' end as attachment,
             sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, sp.kind as sender_kind,
             c.title, c.type as conversation_type
@@ -194,16 +216,12 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
                                            where ov.conversation_id = m.conversation_id and ov.principal_id = $12::uuid
                                              and ov.left_seq is null and ov.joined_seq < m.seq))
         and ($13::uuid is null or m.conversation_id <> $14::uuid
-             or not exists (select 1 from agent_runs ar
-                             where ar.id = $13::uuid
-                               and (m.seq = ar.covers_seq or m.seq = any(coalesce(ar.call_seqs, array[ar.covers_seq]))
-                                    or (m.sender_id <> ar.agent_id and m.seq <= ar.covers_seq
-                                        and exists (select 1 from agent_conversations ac where ac.conversation_id = ar.conversation_id and ac.agent_id = ar.agent_id)
-                                        and m.seq > coalesce((select max(pr.covers_seq)
-                                                                from messages pm
-                                                                join agent_runs pr on ${postingRun("pm", "pr")}
-                                                               where pm.conversation_id = ar.conversation_id and pm.sender_id = ar.agent_id
-                                                                 and pm.client_txn not like 'ack:%' and pr.id <> ar.id), 0)))))
+             or not exists (select 1 from answering a
+                             where m.seq = a.covers_seq
+                                -- a group: the calls it answers; its own conversation: by position alone (a call there
+                                -- that its context no longer shows stays findable)
+                                or (a.above is null and m.seq = any(a.calls))
+                                or (a.above is not null and m.sender_id <> a.agent_id and m.seq > a.above and m.seq <= a.covers_seq)))
       order by m.created_at desc, m.conversation_id desc, m.seq desc
       limit $11`,
     [
@@ -221,6 +239,7 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
       o.alsoVisibleTo ?? null,
       o.answering?.runId ?? null,
       o.answering?.conversationId ?? null,
+      o.answering?.shownFrom ?? null,
     ],
   );
   return rows;

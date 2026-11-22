@@ -11,6 +11,7 @@ import { postingRun } from "../messages/read.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
+import type { RunEnd } from "./runtime/port.ts";
 import { agentModelOf, lockAgent, type AgentRow } from "./store.ts";
 import { mayTell, tellableRuns } from "../whispers/store.ts";
 
@@ -423,6 +424,8 @@ export async function interruptRuns(
   agent: AgentRow,
   reason: Exclude<Interruption, "agent_removed" | "halted">,
 ): Promise<{ cancelled: Announced[]; running: string[] }> {
+  // No follow-up for these (`followUpOnEnd`): an Agent paused or deleted answers nothing, and what was noted on them —
+  // handed back by an admission that held one back — is dropped, as on its running runs below.
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = $2, finished_at = now()
       where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
@@ -450,6 +453,8 @@ export async function interruptRuns(
  * `interruptRuns` does, the cancelled runs to announce and the newly marked ones to stop.
  */
 export async function endWhatPauseMissed(t: Tx, agent: AgentRow): Promise<{ cancelled: Announced[]; running: string[] }> {
+  // None of these queued ones has started (a start finds the pause and ends it), so nothing was noted on one: no
+  // follow-up (`followUpOnEnd`).
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = 'agent_paused', finished_at = now()
       where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
@@ -1378,8 +1383,10 @@ export async function followUp(
 export interface Halted {
   /** The `agents_halted` notice, or null when the group was halted already. */
   notice: StoredMessage | null;
-  /** Queued runs it cancelled, each to announce to its owner. */
+  /** Queued runs it cancelled, each to announce to its owner — and the follow-ups queued for what was noted on them. */
   cancelled: Announced[];
+  /** What those follow-ups appended and whom to push (`followUp`'s notices and budget-reached owners), to act on after commit. */
+  followed: Told;
   /** Running runs it interrupted, whose calls this process abandons (`DbAgentPort.interruptRuns`). */
   running: string[];
 }
@@ -1392,18 +1399,33 @@ export interface Halted {
  * replies nobody called for (lane `proactive`; one a call was folded into is that call's, `takesOnCall`): a queued one is
  * `cancelled`, `halted` (it never reached a model); a running one is marked `interrupted` `halted` — never posted, it
  * ends `cancelled` with that reason and is settled as any; what a person asked of it meanwhile still gets its follow-up
- * (`followUp`). Runs a person called for are left alone. The
- * `agents_halted` notice is appended unless the group was halted already (no person has written since the last halt):
- * then nothing changes. Lock order: the group's row, then run rows; no `agents` or `accounts` row.
+ * (`followUp`) — of a running one when it ends (port-impl.ts `finish`), of a queued one here, by the same rule
+ * (`followUpOnEnd`: what an admission that held it back handed back to it; round 3 S-4). Runs a person called for are
+ * left alone. The `agents_halted` notice is appended unless the group was halted already (no person has written since
+ * the last halt): then nothing changes. Lock order: the group's row, the `agents` rows of the queued runs with something
+ * noted (in id order), then run rows, then (`followUp`) their owners' `accounts` rows.
  */
-export async function haltAgents(t: Tx, conversationId: string, actorId: string): Promise<Halted> {
+export async function haltAgents(t: Tx, conversationId: string, actorId: string, config: RunLimits): Promise<Halted> {
   if ((await peekConversation(t, conversationId))?.type !== "group") throw notFound();
   const lock = await lockForWrite(t, conversationId, actorId);
   const already = await isHalted(t, conversationId, await latestHumanSeq(t, conversationId));
   await t.query("update conversations set agents_halted_seq = greatest(coalesce(agents_halted_seq, 0), $2) where id = $1", [conversationId, lock.conversation.seq]);
-  const queued = await t.query<RunRow & { owner_id: string }>(
+  // The Agents of the queued runs it ends that hold something noted, before any run row (nothing changes that while the
+  // group's row is held: an admission takes it first).
+  const noting = await t.query<{ agent_id: string }>(
+    `select distinct agent_id from agent_runs
+      where conversation_id = $1 and status = 'queued' and (triggered_by = 'agent' or lane = 'proactive') and pending_seq > covers_seq
+      order by agent_id`,
+    [conversationId],
+  );
+  const agents = new Map<string, AgentRow>();
+  for (const { agent_id } of noting.rows) agents.set(agent_id, await lockAgent(t, agent_id, conversationId));
+  const queued = await t.query<RunRow & { owner_id: string; agent_id: string; covers: string | null; pending: string | null; calls: string[] | null; told: boolean; greets: boolean }>(
     `update agent_runs as r set status = 'cancelled', error = 'halted', finished_at = now()
-      where r.conversation_id = $1 and r.status = 'queued' and (r.triggered_by = 'agent' or r.lane = 'proactive') returning ${RUN_COLUMNS}, r.owner_id`,
+      from (select id, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls from agent_runs
+             where conversation_id = $1 and status = 'queued' and (triggered_by = 'agent' or lane = 'proactive')) before
+      where r.id = before.id
+      returning ${RUN_COLUMNS}, r.owner_id, r.agent_id, before.covers, before.pending, before.calls, r.whisper_id is not null as told, r.greets`,
     [conversationId],
   );
   const running = await t.query<{ id: string }>(
@@ -1411,9 +1433,24 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string)
       where conversation_id = $1 and status = 'running' and (triggered_by = 'agent' or lane = 'proactive') and interrupted is null returning id`,
     [conversationId],
   );
+  const notice = already ? null : await appendSystem(t, conversationId, { event: "agents_halted", actorId });
+  // Then the follow-ups, after the notice (what an Agent asked before it is not answered after it: `followUp`).
+  const cancelled: Announced[] = [];
+  const followed = noneTold();
+  for (const r of queued.rows) {
+    cancelled.push({ ownerId: r.owner_id, conversationId, run: toWireRun(r) });
+    const agent = agents.get(r.agent_id);
+    const next = agent ? followUpOnEnd({ covers_seq: r.covers, pending_seq: r.pending, told: r.told, greets: r.greets }, agent, { status: "cancelled", error: "halted" }, { recovered: false, retried: false }) : null;
+    if (agent === undefined || next === null) continue;
+    const { run, ...told } = await followUp(t, agent, conversationId, Number(r.covers ?? 0), next, r.calls, config);
+    if (run) cancelled.push(run);
+    followed.notices.push(...told.notices);
+    followed.budgetReached.push(...told.budgetReached);
+  }
   return {
-    notice: already ? null : await appendSystem(t, conversationId, { event: "agents_halted", actorId }),
-    cancelled: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId, run: toWireRun(r) })),
+    notice,
+    cancelled,
+    followed,
     running: running.rows.map((r) => r.id),
   };
 }
@@ -1445,7 +1482,8 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
   // Its owner's message: every reply here is the owner's own.
   const caller = callerOf(agent.ownerId, message.senderId);
   // A new Agent's greeting still queued gives way: it answers no message, so the owner's gets an ordinary reply (whose
-  // failure is shown, with 重试) — never folded into a greeting that ends quietly.
+  // failure is shown, with 重试) — never folded into a greeting that ends quietly. Whatever was noted on it needs no
+  // follow-up of its own (`followUpOnEnd`): the reply queued below covers this message, so all written before it too.
   const greeting = await t.query<RunRow>(
     `update agent_runs as r set status = 'cancelled', finished_at = now()
       where r.agent_id = $1 and r.conversation_id = $2 and r.status = 'queued' and r.greets returning ${RUN_COLUMNS}`,
@@ -1518,6 +1556,56 @@ async function latestRunOf(
 }
 
 const isGroup = async (q: Queryable, conversationId: string): Promise<boolean> => (await peekConversation(q, conversationId))?.type === "group";
+
+/**
+ * The one rule for a follow-up (README "Agents and runs", Coalescing): a run that has ended is followed by a reply to
+ * what its owner wrote meanwhile when something was noted on it (`pending_seq` beyond what it covered) and its Agent
+ * can still answer (not paused, not deleted, has a model) — however the run itself ended. A pause or delete drops what
+ * was noted (`interruptRuns`), and so does the Agent's leaving the run's group (group-leave.ts `endRunsInGroup`);
+ * nothing is noted while the Agent is paused or out of that group, so what is noted on an interrupted run came after the
+ * resume, and is answered. A run that ended `agent_removed` (its Agent is no longer a member of the run's group, however
+ * that was found) is followed by nothing: what was noted on it is dropped (`droppedOnEnd`). Whether it is queued, as
+ * whose, and how it meets the owner's replies a minute is `followUp`'s.
+ */
+function followUpSeq(state: EndingRun, agent: AgentRow, end: RunEnd): number | null {
+  if (droppedOnEnd(end)) return null;
+  const covers = Number(state.covers_seq ?? 0);
+  const pending = Number(state.pending_seq ?? 0);
+  return pending > covers && !agent.paused && !agent.deleted && agent.model !== null ? pending : null;
+}
+
+/** What `followUpOnEnd` reads of a run that ends, as its row was before it was rewritten. */
+export interface EndingRun {
+  covers_seq: string | null;
+  pending_seq: string | null;
+  /** A reply `告诉他们` queued (`whisper_id` set). */
+  told: boolean;
+  greets: boolean;
+}
+
+/**
+ * THE one place that decides, for every way a run ends, whether a follow-up answers what was noted on it — a running run:
+ * `finish` (an answer, a failure, a stop) and `recoverRun` (start-up recovery, the release at a stop or shutdown, the
+ * stale-run sweep), both port-impl.ts; a queued one: its owner's stop (`stopRun`) and a halt (`haltAgents`). A queued run
+ * holds something noted only when an admission held it back (port-impl.ts `HELD_BACK`: what it took on at its start is
+ * handed back as noted, and what was noted while it ran stays so) or when it is a told reply. The queued run's other
+ * endings need no follow-up: a pause or delete (`interruptRuns`) drops what was noted, as on its running runs, for an
+ * Agent that can answer nothing; what the resume ends (`endWhatPauseMissed`) never ran, so nothing was noted on it; a
+ * greeting that gives way (`maybeTrigger`) gives way to the owner's newer message, whose own run covers everything noted
+ * on it; leaving a group (group-leave.ts) drops it (`droppedOnEnd`). Never when the system scheduled its automatic
+ * retry (that covers what was noted: `retried`); a failed run the service lost (`recovered`) is not followed up, its
+ * owner's 重试 answers everything (spec 6.5) — except a told reply and a new Agent's greeting, which answer no message of
+ * the owner's, so what was noted on them always gets its own reply (a greeting's quiet end never hides a question;
+ * README "Replies", Automatic retry, table 2); otherwise the one rule, `followUpSeq`.
+ */
+export function followUpOnEnd(state: EndingRun, agent: AgentRow, end: RunEnd, how: { recovered: boolean; retried: boolean }): number | null {
+  if (how.retried) return null;
+  if (how.recovered && end.status === "failed" && !state.told && !state.greets) return null;
+  return followUpSeq(state, agent, end);
+}
+
+/** A run that ends so is followed by nothing, and what was noted on it (`pending_seq`) is cleared as it ends. */
+export const droppedOnEnd = (end: RunEnd): boolean => end.status === "cancelled" && end.error === "agent_removed";
 
 /** The latest an automatic retry may start after its original call was made (README "Agents and runs", Automatic retry). */
 export const AUTO_RETRY_WINDOW_MS = 600_000;
@@ -1786,13 +1874,12 @@ export async function stopRun(
   const group = await isGroup(t, conversationId);
   if (group) await lockForWrite(t, conversationId, ownerId);
   else if (!(await ownedAgentOf(t, ownerId, conversationId))) throw notFound();
-  // A told reply's Agent row before the run's (the lock order): its stop may follow up what was noted on it.
-  const peek = group
-    ? (await t.query<{ agent_id: string }>("select agent_id from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and whisper_id is not null", [runId, conversationId, ownerId])).rows[0]
-    : undefined;
-  const agent = peek ? await lockAgent(t, peek.agent_id, conversationId) : null;
-  const { rows } = await t.query<{ status: RunStatus; covers: string | null; pending: string | null; calls: string[] | null }>(
-    "select status, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply' for update",
+  // The run's Agent row before the run's (the lock order): the stop of a queued run may follow up what was noted on it.
+  const peek = (await t.query<{ agent_id: string }>("select agent_id from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply'", [runId, conversationId, ownerId])).rows[0];
+  if (!peek) throw notFound();
+  const agent = await lockAgent(t, peek.agent_id, conversationId);
+  const { rows } = await t.query<{ status: RunStatus; covers: string | null; pending: string | null; calls: string[] | null; told: boolean; greets: boolean }>(
+    "select status, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls, whisper_id is not null as told, greets from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply' for update",
     [runId, conversationId, ownerId],
   );
   const status = rows[0]?.status;
@@ -1811,15 +1898,13 @@ export async function stopRun(
     [runId],
   );
   const ended = { ownerId, conversationId, run: toWireRun(stopped.rows[0]!) };
-  if (agent === null) return { stopped: ended, running: false, followed: followUpOf(null) };
-  // A told reply (`告诉他们`) its owner stops while queued: the stop ends the tell — its whisper reads open again, nothing
-  // written to it (whispers/store.ts) — but not the members' questions noted on it, which get their ordinary follow-up at
-  // once, by the rule every other ending of a told reply follows (port-impl.ts `keepsNothingNoted`; round 3).
-  const [covers, pending] = [Number(rows[0]!.covers ?? 0), Number(rows[0]!.pending ?? 0)];
-  const followed =
-    pending > covers && !agent.paused && !agent.deleted && agent.model !== null
-      ? await followUp(t, agent, conversationId, covers, pending, rows[0]!.calls, config)
-      : followUpOf(null);
+  // What was noted on it gets its follow-up by the one rule, as for a run stopped while it ran (`followUpOnEnd`): what
+  // an admission that held it back handed back to it (round 3 S-4) — or, for a told reply (`告诉他们`), the members'
+  // questions noted on it: the stop ends the tell — its whisper reads open again, nothing written to it
+  // (whispers/store.ts) — but not those, which get their ordinary follow-up at once (port-impl.ts `keepsNothingNoted`).
+  const row = rows[0]!;
+  const next = followUpOnEnd({ covers_seq: row.covers, pending_seq: row.pending, told: row.told, greets: row.greets }, agent, { status: "stopped" }, { recovered: false, retried: false });
+  const followed = next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(row.covers ?? 0), next, row.calls, config);
   return { stopped: ended, running: false, followed };
 }
 

@@ -46,7 +46,7 @@ type Step =
   | { kind: "tools"; calls: Array<{ name: string; input: unknown }>; options: CallToolsOptions }
   | { kind: "fail"; code: ModelErrorCode; afterText: string; afterReasoning: string; status?: number; usage?: { inputTokens: number; outputTokens: number } }
   | { kind: "cut"; text: string; reasoning: string }
-  | { kind: "hang"; before: string; gate: Promise<Answer>; reached: (call: ModelCall) => void };
+  | { kind: "hang"; before: string; thought: string; gate: Promise<Answer>; reached: (call: ModelCall) => void };
 
 export interface ScriptedGateway extends ModelGateway {
   /**
@@ -82,10 +82,11 @@ export interface ScriptedGateway extends ModelGateway {
   /** The next call hangs until released (or until its signal aborts). */
   hang(): Hold;
   /**
-   * The next call streams `text`, then hangs until released (or until its signal aborts). `reached` resolves once the
-   * caller has taken all of `text` and asked for more; `release(rest, options)` then streams `rest` and finishes.
+   * The next call streams `reasoning` (none by default), then `text`, then hangs until released (or until its signal
+   * aborts). `reached` resolves once the caller has taken all of it and asked for more; `release(rest, options)` then
+   * streams `rest` and finishes.
    */
-  hangAfter(text: string): Hold;
+  hangAfter(text: string, reasoning?: string): Hold;
   /** The next call finishes at once with no text and no usage. */
   empty(): ScriptedGateway;
   /** Steps queued and not yet taken by a call. */
@@ -238,6 +239,7 @@ export function scriptedGateway(): ScriptedGateway {
     }
     let step: Exclude<Step, { kind: "hang" } | { kind: "cut" }>;
     if (scripted.kind === "hang") {
+      yield* emit("reasoning", scripted.thought);
       yield* emit("text", scripted.before);
       scripted.reached(call);
       step = await abortable(scripted.gate, signal);
@@ -318,12 +320,12 @@ export function scriptedGateway(): ScriptedGateway {
     hang() {
       return gateway.hangAfter("");
     },
-    hangAfter(before) {
+    hangAfter(before, thought = "") {
       let open!: (answer: Answer) => void;
       let reached!: (call: ModelCall) => void;
       const gate = new Promise<Answer>((resolve) => (open = resolve));
       const reachedPromise = new Promise<ModelCall>((resolve) => (reached = resolve));
-      queue.push({ kind: "hang", before, gate, reached });
+      queue.push({ kind: "hang", before, thought, gate, reached });
       return {
         reached: reachedPromise,
         release(text, options = {}) {

@@ -52,6 +52,10 @@ interface Fake {
   activities: Array<Activity | null>;
   unusable: Array<"refused" | "garbled">;
   released: number;
+  /** What each release said the worker knew: whether the reply had produced anything (`AgentPort.release`). */
+  releasedWith: boolean[];
+  /** How often the worker told the port the reply had produced something (`AgentPort.progressed`). */
+  progressed: number;
   stop(): void;
 }
 
@@ -121,6 +125,8 @@ function fakePort(options: FakeOptions = {}): Fake {
     activities: [],
     unusable: [],
     released: 0,
+    releasedWith: [],
+    progressed: 0,
     stop: () => void (stopped = true),
     port: {
       claimNext: async () => (claimed ? null : ((claimed = true), ticket)),
@@ -138,7 +144,11 @@ function fakePort(options: FakeOptions = {}): Fake {
         return "posted";
       },
       finish: async (_run, end, usage, fallback) => void fake.finished.push({ end, usage, fallback }),
-      release: async () => void fake.released++,
+      release: async (_run, progress) => {
+        fake.released++;
+        fake.releasedWith.push(progress === true);
+      },
+      progressed: async () => void fake.progressed++,
       shouldStop: () => stopped,
       tool: async (_run, call, signal) => {
         fake.order.push("tool");
@@ -1070,5 +1080,34 @@ describe("whether a failed reply is passing is decided by the reply as a whole (
         expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
       }
     }
+  });
+});
+
+describe("the service closing mid-call: the release passes on whether the reply had produced anything (round 3 S-1)", () => {
+  type State = "nothing yet" | "thought only" | "text streamed" | "acknowledged" | "one tool round done";
+  const states: State[] = ["nothing yet", "thought only", "text streamed", "acknowledged", "one tool round done"];
+  it.each(states)("%s", async (state) => {
+    const gateway = scriptedGateway();
+    if (state === "acknowledged") gateway.callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" });
+    if (state === "one tool round done") gateway.callTools([{ name: "search", input: { query: "a" } }]);
+    // Streamed in pieces of at most 8 (two here); an acknowledged reply streams again in its next round before it hangs:
+    // two rounds that streamed, one reply.
+    const hold =
+      state === "thought only"
+        ? gateway.hangAfter("", "我想想……再想一想……")
+        : state === "text streamed" || state === "acknowledged"
+          ? gateway.hangAfter("说到一半，后面还有很多")
+          : gateway.hang();
+    const fake = fakePort();
+    const worker = createAgentWorker({ port: fake.port, models: gateway, runTimeoutMs: 120_000, maxRunsInFlight: 1, background: false, log: recordingLog(), tools: LIMITS });
+    const running = worker.runOnce();
+    await hold.reached;
+    await worker.stop();
+    expect(await running).toBe(true);
+    expect([state, fake.releasedWith, fake.finished]).toEqual([state, [state !== "nothing yet"], []]);
+    // That the reply produced something is told the port at its first piece (for the run to record): once per reply, not
+    // per piece and not per round.
+    expect([state, fake.progressed]).toEqual([state, state === "thought only" || state === "text streamed" || state === "acknowledged" ? 1 : 0]);
+    expect(gateway.pending()).toBe(0);
   });
 });
