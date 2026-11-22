@@ -74,9 +74,15 @@ export function somethingLeft(pots: Pots, cls: PayClass): boolean {
   return pots.A > 0n;
 }
 
+/** The other runs than `run` that hold anything (promised or over) on a class sharing a pot with `cls`, in id order: what a reply that waits waits behind. */
+export function holders(parts: readonly Part[], run: string, cls: PayClass): string[] {
+  const ids = new Set(parts.filter((p) => p.run !== run && sharesPot(p.cls, cls) && p.promised + p.over > 0n).map((p) => p.run));
+  return [...ids].sort();
+}
+
 /** Whether no other run than `run` holds anything (promised or over) on a class that shares a pot with `cls`. */
 export function alone(parts: readonly Part[], run: string, cls: PayClass): boolean {
-  return !parts.some((p) => p.run !== run && sharesPot(p.cls, cls) && p.promised + p.over > 0n);
+  return holders(parts, run, cls).length === 0;
 }
 
 /** What a hold asks for, and what the rule answered: the part to add (promised, over) or why not. */
