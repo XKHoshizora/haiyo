@@ -202,7 +202,7 @@ function toWire(
   };
   const attachment = msg.body.attachment;
   if (msg.kind === "file" && attachment) {
-    wire.attachment = { id: attachment.id, name: attachment.name, size: attachment.size, inline: attachment.inline };
+    wire.attachment = { id: attachment.id, name: attachment.name, size: attachment.size, inline: attachment.inline, ...(attachment.mime ? { mime: attachment.mime } : {}) };
   }
   const replyToSeq = msg.body.replyToSeq;
   if (typeof replyToSeq === "number") {

@@ -101,14 +101,14 @@ export async function claimAttachment(
   conversationId: string,
   senderId: string,
 ): Promise<AttachmentRef | null> {
-  const { rows } = await t.query<{ id: string; name: string; size: string; inline: boolean }>(
-    `select id, name, size, inline from attachments
+  const { rows } = await t.query<{ id: string; name: string; size: string; inline: boolean; mime: string }>(
+    `select id, name, size, inline, mime from attachments
       where id = $1 and conversation_id = $2 and uploader_id = $3 and message_id is null
       for update`,
     [attachmentId, conversationId, senderId],
   );
   const r = rows[0];
-  return r ? { id: r.id, name: r.name, size: Number(r.size), inline: r.inline } : null;
+  return r ? { id: r.id, name: r.name, size: Number(r.size), inline: r.inline, mime: r.mime } : null;
 }
 
 /** Links a claimed attachment to its message. False if it was linked already (the send must fail). */

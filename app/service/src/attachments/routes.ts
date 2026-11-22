@@ -10,7 +10,7 @@ import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
-import { isMissingBlob, newBlobKey, type BlobStore } from "./blob.ts";
+import { isMissingBlob, newBlobKey, type BlobStore, type ByteRange } from "./blob.ts";
 import { sniff, type Sniffed } from "./sniff.ts";
 import { discardBlob, holdBlob } from "./pending.ts";
 import type { UploadSlots } from "./slots.ts";
@@ -26,10 +26,37 @@ export const FILE_FIELD = "file";
 const SNIFF_BYTES = 4100;
 const OPAQUE = "application/octet-stream";
 
+/**
+ * What a `Range` request header asks of a file of `size` bytes: one range (an inclusive byte range), `unsatisfiable` (416), or null — no range
+ * this server answers, so the whole file is sent (a malformed header, another unit, several ranges: all allowed to be ignored). Suffix (`-n`) and
+ * open-ended (`n-`) forms; an end past the file's end is clipped.
+ */
+export function parseRange(header: string | undefined, size: number): ByteRange | "unsatisfiable" | null {
+  const m = typeof header === "string" ? /^bytes=([0-9]*)-([0-9]*)$/.exec(header.trim()) : null;
+  const first = m?.[1] ?? "";
+  const last = m?.[2] ?? "";
+  if (!m || (first === "" && last === "")) return null;
+  // (BigInt: a number of any length compares exactly; past what a number holds it is no different from any other start past the end.)
+  const length = BigInt(size);
+  if (first === "") {
+    const n = BigInt(last);
+    if (n === 0n) return "unsatisfiable";
+    if (size === 0) return null; // a suffix of an empty file is the whole (empty) file
+    return { start: n >= length ? 0 : size - Number(n), end: size - 1 };
+  }
+  const start = BigInt(first);
+  if (last !== "" && BigInt(last) < start) return null;
+  if (start >= length) return "unsatisfiable";
+  const end = last === "" ? length - 1n : BigInt(last) < length - 1n ? BigInt(last) : length - 1n;
+  return { start: Number(start), end: Number(end) };
+}
+
 const DOWNLOAD_HEADERS = {
   "x-content-type-options": "nosniff",
   "content-security-policy": "sandbox; default-src 'none'",
   "cache-control": "private, no-store",
+  // A browser plays and seeks a video or an audio file only through byte ranges.
+  "accept-ranges": "bytes",
 } as const;
 
 // --- names ------------------------------------------------------------------------------------
@@ -370,13 +397,27 @@ export function registerAttachmentRoutes(app: FastifyInstance): void {
 
     app.withTypeProvider<ZodTypeProvider>().get(url, { schema }, async (req, reply) => {
       const found = await downloadable(req);
+      // A range is honoured only when the request carries no validator it would have to match (`If-Range`: this server keeps none).
+      const asked = req.headers["if-range"] === undefined ? parseRange(req.headers.range, found.size) : null;
+      if (asked === "unsatisfiable") {
+        return reply
+          .code(416)
+          .headers({ ...DOWNLOAD_HEADERS, "content-range": `bytes */${found.size}`, "content-length": "0" })
+          .send();
+      }
       let body: Readable;
       try {
-        body = await blobs.get(found.blobKey);
+        body = await blobs.get(found.blobKey, asked ?? undefined);
       } catch (err) {
         if (!isMissingBlob(err)) throw err;
         req.log.error({ attachmentId: req.params.id }, "the blob of a sent attachment is missing");
         throw notFound();
+      }
+      if (asked) {
+        return reply
+          .code(206)
+          .headers({ ...downloadHeaders(found), "content-length": String(asked.end - asked.start + 1), "content-range": `bytes ${asked.start}-${asked.end}/${found.size}` })
+          .send(body);
       }
       return reply.headers(downloadHeaders(found)).send(body);
     });

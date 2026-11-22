@@ -2568,6 +2568,14 @@ again after it is stored), 400 `invalid_request` (any other shape, a broken or s
 *Session: required.* The bytes, iff a message carrying the attachment is visible to you now; everything else
 is the same 404 `not_found`. Headers as under Attachments.
 
+**Byte ranges.** Every answer says `Accept-Ranges: bytes`: a video or an audio file plays and seeks in a browser only through them. A `Range:
+bytes=…` header with one range (`a-b`, `a-`, or the suffix `-n`; an end past the file's end is clipped) is answered `206` with `Content-Range:
+bytes a-b/size`, `Content-Length` of the slice, and the same `Content-Type`, `X-Content-Type-Options` and `Content-Disposition` as the whole; only that
+slice is read from the blob store (a file read from `a`, an S3 ranged GET) — never the whole file buffered and cut. A range that starts past the end
+(or `-0`) is `416` with `Content-Range: bytes */size` and no body. What is not a range this server answers is the whole file (`200`): a malformed
+header, another unit, several ranges, or a `Range` with an `If-Range` (the service keeps no validator to match). Who may read is decided first and is
+unchanged: a `Range` makes no difference to a 404 or a 401. `HEAD` ignores `Range` (the same headers as the whole, `Accept-Ranges` included).
+
 #### `HEAD /api/attachments/:id`
 
 *Session: required.* The same decision and headers as the `GET` (`Content-Length` included), no body; the
@@ -2657,7 +2665,9 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
   "senderId": "…",                     // null for system notices
   "kind": "text" | "file" | "system",
   "text": "…",                         // the message; a file message's caption ("" when none); a notice's sentence
-  "attachment": { "id": "…", "name": "报告.pdf", "size": 1234, "inline": false },   // file messages only
+  "attachment": { "id": "…", "name": "报告.pdf", "size": 1234, "inline": false,
+                  "mime": "application/pdf" /* what the server decided from the bytes (the download's Content-Type); absent on a message
+                                               sent before it was kept — a client decides what it can play from it, never from the name */ },   // file messages only
   "replyTo": { "seq": 40, "visible": true, "senderId": "…", "text": "<first 200 characters>",
                "kind": "text" | "file", "attachmentName": "…" /* quoted file messages only */,
                "mentions": [{ "id": "…", "start": 0, "length": 7 }] /* the quoted message's mentions (as "mentions"

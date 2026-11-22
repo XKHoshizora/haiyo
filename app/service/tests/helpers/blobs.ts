@@ -28,6 +28,8 @@ export function useProbeBlobs(prefix = "af-blobs-") {
     puts: [] as PutRecord[],
     /** Keys of every blob opened for reading, in order. */
     gets: [] as string[],
+    /** The byte range each read asked for (null: the whole blob), in the order of `gets`. */
+    ranges: [] as Array<{ start: number; end: number } | null>,
     /** Called when the server starts writing a blob, i.e. it is reading an upload's file part. */
     onPut: undefined as ((key: string) => void) | undefined,
     /** Deletes of these keys throw. */
@@ -41,6 +43,7 @@ export function useProbeBlobs(prefix = "af-blobs-") {
     for (const f of readdirSync(dir)) rmSync(path.join(dir, f), { force: true });
     probe.puts = [];
     probe.gets = [];
+    probe.ranges = [];
     probe.onPut = undefined;
     probe.failDelete.clear();
     probe.failNextDeletes = 0;
@@ -77,10 +80,11 @@ export function useProbeBlobs(prefix = "af-blobs-") {
         throw err;
       }
     },
-    get: async (key) => {
+    get: async (key, range) => {
       probe.gets.push(key);
+      probe.ranges.push(range ?? null);
       await probe.beforeGet?.(key);
-      return disk.get(key);
+      return disk.get(key, range);
     },
     async delete(key) {
       if (probe.failNextDeletes > 0 || probe.failDelete.has(key)) {

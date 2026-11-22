@@ -304,6 +304,18 @@ describe("P: nothing makes the chat column wider than the screen", () => {
   });
 });
 
+describe("Q: a media bubble", () => {
+  it("is capped at the column like a picture, a highlight and a visible focus like a picture, a 44px download on touch", () => {
+    expect(plain(".attachment-media")["max-width"]).toBe("100%");
+    expect(plain(".attachment-media")["overflow"]).toBe("hidden");
+    expect(rules.some((r) => r.selectors.some((x) => x.includes(".msg.flash") && x.includes(".attachment-media")))).toBe(true);
+    expect(merged(rulesFor(rules, ".attachment-media :focus-visible", null))["outline-offset"]).toBe("-2px");
+    const touchSave = rules.filter((r) => r.selectors.includes(".attachment-media .media-save") && r.conditions.some((c) => c.includes("pointer: coarse")));
+    expect(touchSave.length).toBeGreaterThan(0);
+    expect(touchSave[0].decl["min-height"]).toBe("44px");
+  });
+});
+
 describe("N: the chat header gives the title the room (the three controls stay 44px targets, drawn without boxes and with no gap; the title may take two lines)", () => {
   const narrow = (selector) => merged(rulesFor(rules, selector, "(max-width: 860px)"));
   it("the controls beside the title: no gap between 44px targets, no box around each", () => {
