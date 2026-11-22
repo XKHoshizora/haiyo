@@ -55,10 +55,14 @@ function listen() {
       pressOf.set(e, record);
       record = null;
     }),
-    // The keyboard, a change of focus, a scroll, and the window's own blur end what was begun (the fallback's structural ends; also no click comes of them).
+    // Ends kept for the FALLBACK path only (a click with no pointer id, which only the order can tie to a press): the keyboard, a scroll, the window's own blur.
+    // None is the end of a press that has an identity: that one ends at the click carrying its id, or at the next pointerdown of the same id, which replaces it.
+    // (No `focusin`: a browser that focuses a tapped button does it after pointerup and before the click, and the record must survive until that click.)
     on("keydown", end),
-    on("focusin", end),
     on("scroll", end),
+    // A right press makes no click for a picture: its own events (contextmenu, auxclick) end the record, so a later click of no pointer is not judged by it.
+    on("contextmenu", () => (record = null)),
+    on("auxclick", () => (record = null)),
     on("blur", (e) => e.target === window && (record = null)), // (the window's own, not a control's: the capture sees those too)
   ];
   return () => {
