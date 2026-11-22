@@ -664,3 +664,75 @@ test("a quote draws the mention as @name, as the bubble does: the quoted message
   const again = chatPane(page, title);
   await expect(again.locator("blockquote").first()).toContainText(`@${cy.displayName} 你好`);
 });
+
+test("ui2 A: sign-in with the keyboard up (the window cut to 402×420): the focused field and 登录 are both on screen, the page stays put under the status bar", async ({ people }) => {
+  const visitor = await people.stranger("Visitor");
+  const context = await visitor.page.context().browser().newContext({ ...BIG_PHONE, locale: "zh-CN" });
+  const page = await context.newPage();
+  await page.goto("/signin");
+  await expect(page.getByRole("heading", { name: "登录 Haiyo" })).toBeVisible();
+  await polishShot(page, "ui2-signin-rest");
+  await page.setViewportSize({ width: 402, height: 420 }); // (the keyboard takes the rest: the page is what is left)
+  await page.getByLabel("密码").focus();
+  const inside = async (locator) => {
+    const box = await locator.boundingBox();
+    return box.y >= 0 && box.y + box.height <= 420;
+  };
+  expect(await inside(page.getByLabel("密码"))).toBe(true);
+  expect(await inside(page.getByRole("button", { name: "登录", exact: true }))).toBe(true);
+  // The document itself does not scroll (nothing slides under the status bar); the page layer does.
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await polishShot(page, "ui2-signin-keyboard");
+  await context.close();
+});
+
+test("ui2 B, C, F, M: the tab pages sit on the page itself, the detail pages scroll to their very bottom, one gutter, the group picture whole", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: BIG_PHONE });
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const page = ann.page;
+  const title = `三人群${uniq(3)}`;
+  await createGroupApi(ann, [bo, cy], title);
+  await page.reload();
+  // B: the list is not a panel of its own (no edge under the status bar).
+  await expect(bar(page)).toBeVisible();
+  expect(await page.locator(".list-col").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  await polishShot(page, "ui2-list");
+  await goTo(page, "设置");
+  await polishShot(page, "ui2-settings");
+  const rows = page.locator(".list-col .row.slim");
+  await expect(rows.first().locator("svg.row-chevron")).toBeVisible();
+  // F: the list's text and a detail page's text start at the same x.
+  const listX = await page.locator(".list-col .row.slim .row-name").first().evaluate((el) => el.getBoundingClientRect().left);
+  await page.getByRole("button", { name: /记忆宫殿/ }).click();
+  await expect(page.getByRole("region", { name: "记忆宫殿" })).toBeVisible();
+  const pageX = await page.locator("section.page h2").first().evaluate((el) => el.getBoundingClientRect().left);
+  expect(Math.abs(pageX - (await page.locator("section.page .back").evaluate((el) => el.getBoundingClientRect().left)))).toBeLessThanOrEqual(1);
+  expect(pageX).toBeGreaterThanOrEqual(19);
+  expect(listX - 20).toBeLessThanOrEqual(20); // (the row's own inner padding sits on the same 20px gutter plus its 17px: both start on the grid)
+  // C: scrolled to the end, the last thing on the page is above the bottom edge and nothing is cut by a band under it.
+  const scroller = page.locator("section.page .page-body");
+  await scroller.evaluate((el) => (el.scrollTop = el.scrollHeight));
+  const metrics = await scroller.evaluate((el) => {
+    const last = el.lastElementChild.getBoundingClientRect();
+    return { bottomOfScroller: el.getBoundingClientRect().bottom, lastBottom: last.bottom, viewport: window.innerHeight, pad: parseFloat(getComputedStyle(el).paddingBottom) };
+  });
+  expect(metrics.bottomOfScroller).toBeGreaterThanOrEqual(metrics.viewport - 1); // (the scroller runs to the screen's bottom: no band under it)
+  expect(metrics.lastBottom).toBeLessThanOrEqual(metrics.bottomOfScroller);
+  expect(metrics.pad).toBeGreaterThanOrEqual(28);
+  await polishShot(page, "ui2-memory-bottom");
+  await page.getByRole("button", { name: /^返回/ }).first().click();
+  // M: the composite picture in the header has its three members inside its own box.
+  const chat = await openChat(page, title);
+  const box = await chat.locator(".chat-head .group-avatar").boundingBox();
+  for (const member of await chat.locator(".chat-head .group-avatar > .avatar").all()) {
+    const m = await member.boundingBox();
+    expect(m.x).toBeGreaterThanOrEqual(box.x - 2);
+    expect(m.y).toBeGreaterThanOrEqual(box.y - 2);
+    expect(m.x + m.width).toBeLessThanOrEqual(box.x + box.width + 2);
+    expect(m.y + m.height).toBeLessThanOrEqual(box.y + box.height + 2);
+  }
+  await polishShot(page, "ui2-group-header");
+});

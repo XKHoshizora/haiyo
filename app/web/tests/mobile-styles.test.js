@@ -258,6 +258,24 @@ describe("M: the composite group avatar is one component whose layout depends on
   });
 });
 
+describe("N: the chat header gives the title the room (the three controls stay 44px targets, drawn without boxes and with no gap; the title may take two lines)", () => {
+  const narrow = (selector) => merged(rulesFor(rules, selector, "(max-width: 860px)"));
+  it("the controls beside the title: no gap between 44px targets, no box around each", () => {
+    expect(narrow(".chat-head-actions").gap).toBe("0");
+    const bare = narrow(".chat-head-actions .icon-btn.boxed");
+    expect(bare.background).toBe("none");
+    expect(bare["box-shadow"]).toBe("none");
+    expect(bare["border-color"]).toBe("transparent");
+    expect(px(narrow(".chat-head .icon-btn").width)).toBeGreaterThanOrEqual(44);
+  });
+
+  it("the title wraps to two lines before it is cut with an ellipsis", () => {
+    const title = narrow(".chat-title h2");
+    expect(title["white-space"]).toBe("normal");
+    expect(title["-webkit-line-clamp"]).toBe("2");
+  });
+});
+
 describe("F, D: one gutter, a tab bar of the usual height", () => {
   const horizontal = (padding) => {
     const parts = padding.trim().split(/\s+/);

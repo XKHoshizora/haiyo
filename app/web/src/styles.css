@@ -1001,11 +1001,14 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   /* One row: back, picture, title (cut with an ellipsis), then search and menu at the right; every control a 44px target. */
   .chat-head { padding: 10px 12px; gap: 8px; flex-wrap: nowrap; }
   .chat-head .icon-btn { width: 44px; height: 44px; flex: none; }
-  .chat-head-actions { flex: none; justify-content: flex-end; gap: 6px; }
+  /* The three controls keep their 44px targets but are drawn bare and touching, so the title gets the room (and two lines before an ellipsis). */
+  .chat-head-actions { flex: none; justify-content: flex-end; gap: 0; }
+  .chat-head-actions .icon-btn.boxed { background: none; border-color: transparent; box-shadow: none; }
+  .chat-head-actions .icon-btn.boxed[aria-pressed="true"] { background: var(--purple-soft); }
   .chat-title p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
   /* The whole picture is scaled as one box (direct children only: a composite's members must keep the places its own rules give them). */
   .chat-head > .avatar, .chat-head > .group-avatar { transform: scale(0.8); margin: -6px; }
-  .chat-title h2 { font-size: 18px; }
+  .chat-title h2 { font-size: 18px; white-space: normal; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; }
   .btn.boxed { font-size: 14px; padding: 0 10px; height: 40px; }
   .icon-btn.boxed { width: 44px; height: 44px; }
   .messages { padding: 8px 12px; }
