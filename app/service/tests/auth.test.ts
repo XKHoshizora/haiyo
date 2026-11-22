@@ -3,7 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { buildApp } from "../src/app.ts";
 import { onSessionEnded, runInTransaction, switchablePool } from "../src/auth/auth.ts";
 import { createInvite, hashInviteCode } from "../src/auth/invites.ts";
-import { api, cookieHeaderFrom, mailLink, signIn, signUp } from "./helpers/actors.ts";
+import { api, cookieHeaderFrom, mailLink, signIn, signUp, TERMS } from "./helpers/actors.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
 
 const PASSWORD = "correct horse battery";
@@ -17,6 +17,7 @@ describe("accounts", () => {
       password: PASSWORD,
       displayName: "New Person",
       handle: "new_person",
+      ...TERMS,
       ...body,
     });
   }
@@ -464,7 +465,7 @@ describe("accounts", () => {
 
     // Registration and verification of a new account.
     const code = await invite();
-    keep("register", await app.inject({ method: "POST", url: "/api/register", payload: { inviteCode: code, email: "tok@example.test", password: PASSWORD, displayName: "Tok", handle: "tok_en" } }));
+    keep("register", await app.inject({ method: "POST", url: "/api/register", payload: { inviteCode: code, email: "tok@example.test", password: PASSWORD, displayName: "Tok", handle: "tok_en", ...TERMS } }));
     keep("verify-email", await app.inject({ method: "GET", url: await mailLink(app, "tok@example.test", "verify_email") }));
     // Sign-in, twice (two sessions), the second also with a remembered session.
     const first = await signIn(app, "tok@example.test", PASSWORD);

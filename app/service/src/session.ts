@@ -5,6 +5,7 @@ import { z } from "zod";
 import { authCall } from "./auth/auth.ts";
 import type { Queryable } from "./db.ts";
 import { AppError } from "./errors.ts";
+import { acceptanceFields, assertCurrentVersions, recordAcceptance, termsAccepted } from "./legal.ts";
 import { memoryChoice, memoryModelUsable } from "./memory/call.ts";
 import { MEMORY_LANGUAGE_CODES } from "./memory/language.ts";
 import { getDream, getMemoryLanguage, getMemoryModel, getNewNotes } from "./memory/store.ts";
@@ -82,6 +83,7 @@ export function registerSessionRoutes(app: FastifyInstance): void {
             dream: z.boolean(),
             memoryLanguage: z.enum(MEMORY_LANGUAGE_CODES).nullable(),
             handleChangeAvailableAt: z.string().nullable(),
+            termsAccepted: z.boolean(),
           }),
         },
       },
@@ -89,6 +91,8 @@ export function registerSessionRoutes(app: FastifyInstance): void {
     async (req) => {
       const p = await requirePrincipal(req);
       const { db, config } = app.deps;
+      // False: the terms or the privacy policy has a version this account has not accepted (or it was made before them).
+      const accepted = await termsAccepted(db, p.id);
       const newNotes = await getNewNotes(db, p.id);
       // A paid site model stored before such a choice was refused is no choice, here as in the calls (`memoryChoice`); the row is left as it is.
       const memoryModel = memoryChoice(config, await getMemoryModel(db, p.id));
@@ -109,7 +113,27 @@ export function registerSessionRoutes(app: FastifyInstance): void {
         dream,
         memoryLanguage,
         handleChangeAvailableAt: handleChangeAt === null ? null : handleChangeAt.toISOString(),
+        termsAccepted: accepted,
       };
+    },
+  );
+
+  // The signed-in person accepts the documents in force (asked at sign-in when `termsAccepted` is false): src/legal.ts.
+  api.post(
+    "/api/me/terms",
+    {
+      schema: {
+        params: z.object({}),
+        querystring: z.object({}),
+        body: z.object(acceptanceFields),
+        response: { 200: z.object({ termsAccepted: z.literal(true) }) },
+      },
+    },
+    async (req) => {
+      const p = await requirePrincipal(req);
+      assertCurrentVersions(req.body);
+      await recordAcceptance(app.deps.db, p.id);
+      return { termsAccepted: true as const };
     },
   );
 }

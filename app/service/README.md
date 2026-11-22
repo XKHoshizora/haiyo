@@ -2068,7 +2068,9 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
 - Body: `inviteCode` (string, at most 100; required when `REGISTRATION_MODE=invite`, ignored when `open`),
   `email` (an e-mail address, at most 254), `password` (10–128 characters), `displayName` (see
   `PATCH /api/me`: 1–40 characters after removing format characters (not joiners) and trimming, one line), `handle`
-  (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`).
+  (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`), and the acceptance (Terms, below): `termsVersion` and
+  `privacyVersion` (strings, 1–40: the versions of the terms of service and the privacy policy the person was shown) and
+  `adult` (`true`: they declare they are 18 or older; anything else, or a missing one, is 400 `invalid_request`).
 - 201 `{"ok": true}` whether or not the e-mail already has an account, and the invite is used up either way: the
   answer, its timing and the invite afterwards are the same. What an invite holder can still learn, accepted:
   one answer per invite. After a 201 for an address, whether the chosen handle now exists (a handle lookup, a
@@ -2098,7 +2100,10 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   callback URL-encoded), valid 24 h; opening it lands on the client's `<APP_ORIGIN>/verify` (or
   `/verify?error=CODE`). A link only ever verifies the account it was mailed for.
   The e-mail must be verified before sign-in works.
-- Errors: 400 `invalid_invite` (missing, unknown, expired or used invite; checked first, so without a usable
+- The account made records the acceptance with it (Terms, below), in the same transaction; an address that already had a
+  verified account gets nothing recorded (nothing was made).
+- Errors: 409 `terms_outdated` (`termsVersion` or `privacyVersion` is not the version in force: the page is older than
+  the documents; checked before anything else, nothing is used up), 400 `invalid_invite` (missing, unknown, expired or used invite; checked first, so without a usable
   invite nothing else — not even whether the handle is taken — is revealed), 409 `handle_taken` (a person holds
   the handle, also an unverified account this registration would otherwise replace, or gave it up — Handles; an
   Agent's name part is no person's handle; the invite is not used up), 400 `invalid_request` (shape, or a value
@@ -2169,7 +2174,9 @@ accepted but not used: the mail links to the web app).
 
 #### `GET /api/me`
 
-*Session: required.* → 200 `{"id", "handle", "displayName", "avatarVersion", "email", "newNotes", "memoryModel", "memoryModelUsable", "dream", "memoryLanguage", "handleChangeAvailableAt"}`: the signed-in principal.
+*Session: required.* → 200 `{"id", "handle", "displayName", "avatarVersion", "email", "newNotes", "memoryModel", "memoryModelUsable", "dream", "memoryLanguage", "handleChangeAvailableAt", "termsAccepted"}`: the signed-in principal.
+`termsAccepted` is `false` when the account has not accepted the terms and the privacy policy in force (made before
+them, or a document has a new version since): the web app then asks once, before anything else (Terms, below).
 `handleChangeAvailableAt` is when they may change their handle again (an ISO time, 365 days after their last change), or
 `null` when they may now (they never changed it, or the year has passed).
 `newNotes` (`"auto"`, `"vault"` or `"open"`; `"auto"` until chosen) is what newly written notes of their Agents' memory do
@@ -2180,6 +2187,23 @@ and `memoryModelUsable` (`false` when that model cannot be called now: its provi
 cannot be opened, the model is off the provider's list or no longer on the site; always `true` while `memoryModel` is `null`).
 `dream` (a boolean, `true` until chosen) says whether their notes are consolidated while they are away (An Agent's memory, 入梦).
 `memoryLanguage` (`null`, the default: automatic; else one of `zh-Hans`, `zh-Hant`, `ja`, `en`, `ko`, `fr`, `de`, `es`, `pt`, `ru`, `it`, `vi`, `th`, `id`) is the one language their notes are written in (An Agent's memory, *One language*).
+
+**Terms** (`src/legal.ts`, migration `071_terms_and_demo.sql`, `tests/terms.test.ts`). The terms of service and the privacy
+policy are texts of the web app (`/terms`, `/privacy`, and the contact page `/contact`, all readable without signing in; the
+texts are files in `app/web/src/legal/texts/`). Each has a version (`LEGAL_VERSIONS`, a date; the web holds the same two
+strings in `app/web/src/legal/versions.js`). A person accepts both, and declares they are 18 or older (self-declared: no
+date of birth is asked or kept), when they register (`POST /api/register`) and, when `termsAccepted` is false, at their next
+sign-in (`POST /api/me/terms`). Each acceptance is a row of `terms_acceptances`: the account, the two versions, when
+(`accepted_at`) and when the 18+ declaration was made with it (`adult_declared_at`). Rows are never changed; a later
+acceptance of new versions is a row beside the earlier one. They go with the account (cascade). A change to a text that
+people must agree to again takes a new version in both files: every account is then asked again.
+
+#### `POST /api/me/terms`
+
+*Session: required.* Body: `termsVersion`, `privacyVersion`, `adult` (as for `POST /api/register`). Records that the
+signed-in person accepts the documents in force (Terms, above); accepting them again changes nothing. → 200
+`{"termsAccepted": true}`. Errors: 409 `terms_outdated` (a version that is not the one in force), 400 `invalid_request`
+(`adult` not `true`, a field missing).
 
 ### Profiles and principals
 

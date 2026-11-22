@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { fsBlobStore, newBlobKey } from "../src/attachments/blob.ts";
 import { abandonedAfterMs, sweepPendingBlobs } from "../src/attachments/pending.ts";
-import { api, signUp } from "./helpers/actors.ts";
+import { api, signUp, TERMS } from "./helpers/actors.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 
@@ -141,6 +141,7 @@ describe("display name", () => {
         password: "a good password",
         displayName,
         handle: `reg_${n}`,
+        ...TERMS,
       });
     for (const displayName of REFUSED) {
       expect([displayName, await register(displayName)]).toEqual([displayName, { status: 400, json: { error: "invalid_request" } }]);

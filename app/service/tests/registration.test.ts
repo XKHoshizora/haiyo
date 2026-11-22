@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { signJWT } from "better-auth/crypto";
 import { lockAccountEmail } from "../src/auth/accounts.ts";
 import { createInvite, hashInviteCode } from "../src/auth/invites.ts";
-import { api, mailLink, signIn, signUp } from "./helpers/actors.ts";
+import { api, mailLink, signIn, signUp, TERMS } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
 
 const PASSWORD = "correct horse battery";
@@ -14,7 +14,7 @@ describe("registering an e-mail that already has an account", () => {
 
   const invite = () => createInvite(db, { ttlHours: 1 });
   const register = (body: Record<string, unknown>) =>
-    api(app, null, "POST", "/api/register", { password: PASSWORD, displayName: "Probe", ...body });
+    api(app, null, "POST", "/api/register", { password: PASSWORD, displayName: "Probe", ...TERMS, ...body });
   const count = async (sql: string, params: unknown[] = []) => Number((await db.query<{ n: string }>(sql, params)).rows[0]!.n);
   /** `used`: consumed; `usedBy`: the principal it made, if one exists. */
   const inviteState = async (code: string) =>
