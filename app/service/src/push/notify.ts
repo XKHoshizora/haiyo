@@ -66,6 +66,8 @@ export interface PushStats {
   present: number;
   /** Pushes not made because that phone's push for the same conversation was still out (asked, queued, sent or retried). */
   coalesced: number;
+  /** Pushes not made because, after a probe without an answer, they were no longer wanted (`stillWanted`). */
+  stale: number;
   /** Pushes not delivered, by class (src/push/apns.ts `ApnsFailure`; only the classes that happened). */
   failed: Partial<Record<ApnsFailure, number>>;
 }
@@ -95,8 +97,25 @@ export interface NotifierDeps {
   malformed: string[];
 }
 
-/** One push to make: a phone, and the conversation it is about. */
-type Target = Pick<PushDevice, "id" | "sessionId" | "token" | "env"> & { conversationId: string; seenAt: string };
+/** One push to make: a phone, and the conversation it is about (up to `newestSeq`, the batch's newest message there). */
+type Target = Pick<PushDevice, "id" | "principalId" | "sessionId" | "token" | "env"> & { conversationId: string; seenAt: string; newestSeq: number };
+
+/**
+ * Whether a push decided before a probe is still wanted after it (the probe can take `PRESENCE_PROBE_MS`): the phone's row
+ * as it was then (same id, session and registration — not signed out, not moved to another account, not registered again),
+ * its session still lasting, and its person a member who has not read up to the message meanwhile (on another device).
+ * One indexed query; asked only when a probe ran and had no answer.
+ */
+async function stillWanted(db: Db, t: Target): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `select 1 from push_devices d
+       join "session" s on s.id = d.session_id and s."expiresAt" > now()
+       join memberships ms on ms.conversation_id = $4 and ms.principal_id = d.principal_id and ms.left_seq is null
+      where d.id = $1 and d.session_id = $2 and d.principal_id = $3 and d.last_seen_at = $5::timestamptz and ms.read_seq < $6`,
+    [t.id, t.sessionId, t.principalId, t.conversationId, t.seenAt, t.newestSeq],
+  );
+  return (rowCount ?? 0) > 0;
+}
 
 /**
  * The phones the messages are pushed to, one per phone and conversation: of each current member who may see the message
@@ -105,9 +124,9 @@ type Target = Pick<PushDevice, "id" | "sessionId" | "token" | "env"> & { convers
  * whose session still lasts. Whether that session is present is asked afterwards, in this process.
  */
 async function targets(db: Db, messages: StoredMessage[]): Promise<Target[]> {
-  const { rows } = await db.query<{ id: string; session_id: string; token: string; env: "sandbox" | "production"; seen_at: string; conversation_id: string }>(
-    // `last_seen_at` as text: to the microsecond, for `removeDeadDevice`.
-    `select distinct d.id, d.session_id, d.token, d.env, d.last_seen_at::text as seen_at, m.conversation_id
+  const { rows } = await db.query<{ id: string; principal_id: string; session_id: string; token: string; env: "sandbox" | "production"; seen_at: string; conversation_id: string }>(
+    // `last_seen_at` as text: to the microsecond, for `removeDeadDevice` and `stillWanted`.
+    `select distinct d.id, d.principal_id, d.session_id, d.token, d.env, d.last_seen_at::text as seen_at, m.conversation_id
        from unnest($1::uuid[], $2::bigint[], $3::uuid[]) as m (conversation_id, seq, sender_id)
        join principals snd on snd.id = m.sender_id
        join (select conversation_id, principal_id as reader_id from memberships where left_seq is null) r
@@ -119,7 +138,18 @@ async function targets(db: Db, messages: StoredMessage[]): Promise<Target[]> {
       order by m.conversation_id, d.id`,
     [messages.map((m) => m.conversationId), messages.map((m) => m.seq), messages.map((m) => m.senderId)],
   );
-  return rows.map((r) => ({ id: r.id, sessionId: r.session_id, token: r.token, env: r.env, seenAt: r.seen_at, conversationId: r.conversation_id }));
+  const newest = new Map<string, number>();
+  for (const m of messages) newest.set(m.conversationId, Math.max(newest.get(m.conversationId) ?? 0, m.seq));
+  return rows.map((r) => ({
+    id: r.id,
+    principalId: r.principal_id,
+    sessionId: r.session_id,
+    token: r.token,
+    env: r.env,
+    seenAt: r.seen_at,
+    conversationId: r.conversation_id,
+    newestSeq: newest.get(r.conversation_id) ?? 0,
+  }));
 }
 
 /**
@@ -139,7 +169,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   /** `<device id>:<conversation id>` of the pushes out. */
   const out = new Set<string>();
   const said = new Set<string>();
-  let stats: PushStats = { sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} };
+  let stats: PushStats = { sent: 0, removed: 0, present: 0, coalesced: 0, stale: 0, failed: {} };
   let closed = false;
   let closing: Promise<void> | null = null;
 
@@ -164,9 +194,16 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 
   async function pushOne(client: ApnsClient, t: Target): Promise<void> {
     // Present only when a socket of its own session is open and answers; else (none, closing, silent, closed meanwhile) pushed.
-    if (presence.hasSocketFor(t.sessionId) && (await presence.probe(t.sessionId, PRESENCE_PROBE_MS))) {
-      stats.present++;
-      return;
+    if (presence.hasSocketFor(t.sessionId)) {
+      if (await presence.probe(t.sessionId, PRESENCE_PROBE_MS)) {
+        stats.present++;
+        return;
+      }
+      // The probe took up to `PRESENCE_PROBE_MS`: what was read before it is asked once more.
+      if (!(await stillWanted(db, t))) {
+        stats.stale++;
+        return;
+      }
     }
     const result = await client.send({ token: t.token, env: t.env, collapseId: t.conversationId, payload: pushPayload(t.conversationId) });
     if (result.outcome === "sent") stats.sent++;
@@ -218,9 +255,9 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 
   function flush(): PushStats {
     const counted = stats;
-    stats = { sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} };
+    stats = { sent: 0, removed: 0, present: 0, coalesced: 0, stale: 0, failed: {} };
     const failed = Object.values(counted.failed).reduce((n, k) => n + (k ?? 0), 0);
-    if (counted.sent + counted.removed + counted.present + counted.coalesced + failed > 0) log.info({ metric: "push", ...counted }, "push: counters since the last line");
+    if (counted.sent + counted.removed + counted.present + counted.coalesced + counted.stale + failed > 0) log.info({ metric: "push", ...counted }, "push: counters since the last line");
     return counted;
   }
 

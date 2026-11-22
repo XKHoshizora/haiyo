@@ -234,6 +234,29 @@ describe("present: the phone's own session has a socket", () => {
     expect(Date.now() - t0).toBeLessThan(PRESENCE_PROBE_MS - 500);
   });
 
+  test("asked and silent, but meanwhile the message was read elsewhere, the phone signed out, or its token moved: no push", async () => {
+    for (const meanwhile of ["read", "signed out", "moved"] as const) {
+      requests().length = 0;
+      app.push.flush();
+      const a = await signUp(app, `mean_a_${meanwhile.replace(" ", "_")}`);
+      const b = await signUp(app, `mean_b_${meanwhile.replace(" ", "_")}`);
+      const other = await signUp(app, `mean_c_${meanwhile.replace(" ", "_")}`);
+      const { conversationId } = await befriend(app, a, b);
+      const token = await phone(b);
+      const raw = await rawSocket(b);
+      const sent = await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "x", clientTxn: `mean-${meanwhile.replace(" ", "-")}` });
+      expect(sent.status).toBe(201);
+      for (let i = 0; i < 100 && !frames(raw.received()).includes(0x9); i++) await new Promise((r) => setTimeout(r, 5));
+      // During the 3 s the phone's socket is asked:
+      if (meanwhile === "read") expect((await api(app, b, "POST", `/api/conversations/${conversationId}/read`, { seq: sent.json.message.seq })).status).toBe(200);
+      if (meanwhile === "signed out") expect((await api(app, b, "POST", "/api/auth/sign-out", {})).status).toBe(200);
+      if (meanwhile === "moved") expect((await api(app, other, "POST", "/api/push/devices", { token, env: "production" })).status).toBe(200);
+      await app.push.idle();
+      expect([meanwhile, requests().length]).toEqual([meanwhile, 0]);
+      expect([meanwhile, app.push.flush()]).toMatchObject([meanwhile, { sent: 0, stale: 1 }]);
+    }
+  });
+
   test("many messages during one ask: one ping for the session, one push per conversation", async () => {
     const a = await signUp(app, "burst_a");
     const b = await signUp(app, "burst_b");
@@ -429,7 +452,7 @@ describe("what APNs answers, and what is logged", () => {
     await say(a, conversationId, "again");
     expect(requests()).toHaveLength(1);
     const stats = app.push.flush();
-    expect(stats).toEqual({ sent: 0, removed: 1, present: 0, coalesced: 0, failed: {} });
+    expect(stats).toEqual({ sent: 0, removed: 1, present: 0, coalesced: 0, stale: 0, failed: {} });
     const pushLines = lines.filter((l) => l.includes('"metric":"push"'));
     expect(pushLines).toHaveLength(1);
     expect(JSON.parse(pushLines[0]!)).toMatchObject({ metric: "push", sent: 0, removed: 1, present: 0 });
@@ -566,9 +589,9 @@ describe("what APNs answers, and what is logged", () => {
     await say(a, conv, "one");
     await say(a, conv, "two");
     s.close();
-    expect(app.push.flush()).toEqual({ sent: 1, removed: 0, present: 2, coalesced: 0, failed: { rejected: 1 } });
+    expect(app.push.flush()).toEqual({ sent: 1, removed: 0, present: 2, coalesced: 0, stale: 0, failed: { rejected: 1 } });
     lines.length = 0;
-    expect(app.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} });
+    expect(app.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, stale: 0, failed: {} });
     expect(lines.filter((l) => l.includes('"metric":"push"'))).toEqual([]);
   });
 });
@@ -594,7 +617,7 @@ describe("the stop", () => {
     const t0 = Date.now();
     await own.push.close();
     expect(Date.now() - t0).toBeLessThan(3_000);
-    expect(own.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} }); // the stop wrote them
+    expect(own.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, stale: 0, failed: {} }); // the stop wrote them
     expect(fake.apns!.requests).toHaveLength(1);
   });
 });
@@ -634,6 +657,6 @@ describe("push not configured", () => {
     expect((await api(plain, b, "POST", "/api/push/devices", { token: "cd".repeat(32), env: "production" })).status).toBe(200);
     expect((await api(plain, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "hi", clientTxn: "off1" })).status).toBe(201);
     await plain.push.idle();
-    expect(plain.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, failed: {} });
+    expect(plain.push.flush()).toEqual({ sent: 0, removed: 0, present: 0, coalesced: 0, stale: 0, failed: {} });
   });
 });
