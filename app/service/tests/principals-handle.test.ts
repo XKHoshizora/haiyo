@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInvite } from "../src/auth/invites.ts";
-import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
+import { api, befriend, group, signUp, TERMS, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { holdThen, someoneWaits } from "./helpers/locks.ts";
@@ -32,7 +32,7 @@ const changedDaysAgo = (who: Actor, days: number) => db.query("update principals
 
 async function register(handle: string) {
   const inviteCode = await createInvite(db, { ttlHours: 1 });
-  return api(app, null, "POST", "/api/register", { inviteCode, email: `${handle}-${Date.now()}@example.test`, password: "a-long-password-1", displayName: handle, handle });
+  return api(app, null, "POST", "/api/register", { inviteCode, email: `${handle}-${Date.now()}@example.test`, password: "a-long-password-1", displayName: handle, handle, ...TERMS });
 }
 
 let txn = 0;

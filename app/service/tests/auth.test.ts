@@ -3,7 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { buildApp } from "../src/app.ts";
 import { onSessionEnded, runInTransaction, switchablePool } from "../src/auth/auth.ts";
 import { createInvite, hashInviteCode } from "../src/auth/invites.ts";
-import { api, cookieHeaderFrom, mailLink, signIn, signUp } from "./helpers/actors.ts";
+import { api, cookieHeaderFrom, mailLink, signIn, signUp, TERMS } from "./helpers/actors.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
 
 const PASSWORD = "correct horse battery";
@@ -17,6 +17,7 @@ describe("accounts", () => {
       password: PASSWORD,
       displayName: "New Person",
       handle: "new_person",
+      ...TERMS,
       ...body,
     });
   }
@@ -52,8 +53,10 @@ describe("accounts", () => {
     const me = await api(app, { cookie: cookieHeaderFrom(ok.headers["set-cookie"]) }, "GET", "/api/me");
     expect(me.status).toBe(200);
     expect(me.json).toMatchObject({ handle: "new_person", displayName: "New Person", email: "new@example.test" });
-    expect(Object.keys(me.json).sort()).toEqual(["avatarVersion", "displayName", "dream", "email", "handle", "handleChangeAvailableAt", "id", "memoryLanguage", "memoryModel", "memoryModelUsable", "newNotes"]);
+    expect(Object.keys(me.json).sort()).toEqual(["avatarVersion", "displayName", "dream", "email", "handle", "handleChangeAvailableAt", "id", "memoryLanguage", "memoryModel", "memoryModelUsable", "newNotes", "termsAccepted"]);
     expect(me.json.handleChangeAvailableAt).toBeNull();
+    // Registered with the documents in force accepted (tests/terms.test.ts): nothing more to ask.
+    expect(me.json.termsAccepted).toBe(true);
   });
 
   test("the verification link lands on the client's /verify page: success plain, failure with ?error=CODE", async () => {
@@ -464,7 +467,7 @@ describe("accounts", () => {
 
     // Registration and verification of a new account.
     const code = await invite();
-    keep("register", await app.inject({ method: "POST", url: "/api/register", payload: { inviteCode: code, email: "tok@example.test", password: PASSWORD, displayName: "Tok", handle: "tok_en" } }));
+    keep("register", await app.inject({ method: "POST", url: "/api/register", payload: { inviteCode: code, email: "tok@example.test", password: PASSWORD, displayName: "Tok", handle: "tok_en", ...TERMS } }));
     keep("verify-email", await app.inject({ method: "GET", url: await mailLink(app, "tok@example.test", "verify_email") }));
     // Sign-in, twice (two sessions), the second also with a remembered session.
     const first = await signIn(app, "tok@example.test", PASSWORD);

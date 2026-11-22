@@ -41,6 +41,7 @@ npm run credits:grant -- --handle <h> --points <n> [--note <text>]   # n: decima
 npm run credits:show -- --handle <h>                # a person's tier and points balance (an Agent's handle is refused)
 npm run tier:set -- --handle <h> --tier <name>      # a tier named in AGENT_TIERS
 npm run models:list                                 # the site models: id, label, tier, protocol, prices (never the key)
+npm run demo:seed -- --email <address> [--handle <h>] [--name <text>]   # the App Review account, made or put back; asks for its password (Demo account, below)
 npm run catalog:update [-- <models.json> <api.json>] # downloads models.dev (or reads saved copies) into src/providers/model-catalog.json; commit it
 ```
 
@@ -55,11 +56,76 @@ npm run invite:create:prod -- [--ttl-hours <n>]
 npm run inbox:list:prod -- [--to <email>]
 npm run attachments:sweep:prod -- [--older-than <min>]
 npm run credits:grant:prod -- --handle <h> --points <n> [--note <text>]   # likewise credits:show:prod, tier:set:prod, models:list:prod
+npm run demo:seed:prod -- --email <address>      # asks for the password, not shown (Demo account, below)
 ```
 
 Deploy `dist/`, `migrations/`, `package.json` and `package-lock.json` together: the build looks for
 `../migrations` from `dist/`. `tests/build.test.ts` keeps `npm start` and the `:prod` scripts on `node dist/…`
 and every run-time import of `src/` a production dependency.
+
+### Demo account (for App Review)
+
+The App Store needs an account the reviewer can sign in with. `demo:seed` makes it on the site it runs against (the
+deployment's own environment, as the other `:prod` commands), or puts it back (`src/demo.ts`, `tests/demo.test.ts`).
+
+**Run it in a terminal and type the password when it asks.** Nothing is shown as you type, and the password never
+reaches the shell's history (`src/prompt.ts`; also through `railway run` from a terminal):
+
+```
+npm run demo:seed:prod -- --email <the reviewer's address>
+Password for the demo account (not shown):
+```
+
+Where no terminal can ask (a script, a scheduled job), the password may come from the environment variable
+`DEMO_PASSWORD` instead. Never write it on the command line (`DEMO_PASSWORD=… npm run …` stays in the shell's history)
+or in a `.env` file (the command reads `.env`, and the file stays on disk): read it into the variable without showing it,
+run the command, and remove the variable. bash or zsh:
+
+```
+read -rs DEMO_PASSWORD && export DEMO_PASSWORD
+npm run demo:seed:prod -- --email <the reviewer's address>
+unset DEMO_PASSWORD
+```
+
+PowerShell:
+
+```
+$env:DEMO_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Password')).Password
+npm run demo:seed:prod -- --email <the reviewer's address>
+Remove-Item Env:DEMO_PASSWORD
+```
+
+Or the hosting platform's own secret variable for that one run. Without a terminal and without `DEMO_PASSWORD` the
+command stops and says so.
+
+- **The password** is 10 to 128 characters, yours to choose. It is never printed, logged or stored (only Better Auth's
+  hash). Put the same password, with the address, in App Store Connect's review information.
+- **What it makes** the first time: the account (`--handle`, default `app_review`; `--name`, default `Reviewer`), its
+  address already verified, the terms and the privacy policy in force accepted with the 18+ declaration; two made-up
+  people, Mika and Ren, named after the handle (`<handle>_mika`, `<handle>_ren`, the handle cut to 19 characters; by
+  default `app_review_mika`, `app_review_ren`), with addresses under `.invalid` and no password (nobody can sign in as
+  them), its friends; its Agent Mochi (`<handle>.mochi`), on the site's free model (the first site model when none is
+  free; with no site models it says so: the Agent then cannot reply); and a group, Weekend plans, of the four, with five
+  lines Mika and Ren said. Nothing is posted as the Agent: it says what its model writes when the reviewer talks to it.
+  An unguessable `--handle` keeps anyone from taking the three handles before the first run.
+- **Run it again before each submission and after each review.** The password is set to the one given; every session
+  of the account ends (an earlier reviewer is signed out); its name and its handle are put back (a review may change
+  the handle); the documents in force are accepted again; the Agent is there and not paused (a new one when a review
+  deleted it); the friendships are back (a block undone); and the group of the four is there with its five lines (a new
+  group when the reviewer left the old one). Nothing else changes: what a reviewer added (messages, other groups or
+  Agents, the avatar) stays. Running it twice in a row changes nothing but the password's hash and the sessions.
+- **It only ever touches its own.** Every principal it made is listed in `demo_principals` (migration 071). If the
+  address belongs to any other account, or a handle or an address it needs to anyone else, it stops with
+  `demo:seed refused: …` and changes nothing (one transaction). A handle held by an earlier demo account under another
+  address names that address: run with it, or choose another `--handle`.
+- **Points.** The Agent replies on the site's daily free allowance, and its web searches cost points too. A busy review
+  can use the allowance up: give the account points before submitting, for example
+  `npm run credits:grant:prod -- --handle app_review --points 50 --note "App Review"`.
+- **For the review notes.** Mika and Ren are made-up people this command seeds; they never reply (the app shows them as
+  真人, people). Their five lines are in English; the app's interface is Chinese. Mochi replies when the reviewer
+  writes to it or mentions it in the group.
+- The account does not expire. Its sessions end after 7 days without use, like everyone's: a reviewer who comes back
+  later signs in again.
 
 ## Configuration (`src/config.ts`)
 
@@ -366,7 +432,7 @@ too — and holds the reply worker's loop until the truncate has ended; the hub'
   not exist.
 - **HEAD.** Every `GET` route also answers `HEAD` with the same status and headers and no body (Fastify
   runs the `GET` handler). `HEAD /api/attachments/:id` and `HEAD /api/principals/:id/avatar` are their own routes (below): they do not read the whole file.
-- **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) →
+- **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) → the terms accepted (403 `terms_required`) →
   rate limit (429) → the route's own rules. Registration counts its rate limit before checking the shape,
   and so do the sign-in, reset-request and verification-link limiters in front of Better Auth.
 
@@ -383,6 +449,7 @@ Every error body is `{"error": "<snake_case_code>"}`, sometimes with details nex
 | 401 | `unauthenticated` | No valid session (or a WebSocket ticket that is unknown, used or expired) |
 | 402 | `no_quota` | A site-model call cannot start: nothing is left to pay for it (see Metering). `reason` `free_and_balance` (a free-tier model: today's free allowance and the balance are both used up; `resetsAt`, the next midnight in `SITE_TIMEZONE`, ISO instant) or `balance` (a paid-tier model: no balance) |
 | 403 | `forbidden` | Cross-site request, or not allowed by the route's rule (e.g. only the creator renames) |
+| 403 | `terms_required` | Every route that needs a session, while the account has not accepted the terms and the privacy policy in force (Accounts and sessions, Terms); not `GET /api/me` and `POST /api/me/terms`, which the question needs. Nothing was done |
 | 403 | `cannot_send` | With `reason`: `blocked` or `not_friends` (a direct chat whose pair cannot write to each other), or `agent_deleted` (an Agent's conversation after the Agent was deleted: sending, uploading, starting a new topic) |
 | 403 | `agent_limit` | Creating an Agent with as many undeleted Agents as the account's tier allows |
 | 404 | `not_found` | Does not exist, or is not yours to see (identical answers) |
@@ -2111,7 +2178,9 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
 - Body: `inviteCode` (string, at most 100; required when `REGISTRATION_MODE=invite`, ignored when `open`),
   `email` (an e-mail address, at most 254), `password` (10–128 characters), `displayName` (see
   `PATCH /api/me`: 1–40 characters after removing format characters (not joiners) and trimming, one line), `handle`
-  (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`).
+  (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`), and the acceptance (Terms, below): `termsVersion` and
+  `privacyVersion` (strings, 1–40: the versions of the terms of service and the privacy policy the person was shown) and
+  `adult` (`true`: they declare they are 18 or older; anything else, or a missing one, is 400 `invalid_request`).
 - 201 `{"ok": true}` whether or not the e-mail already has an account, and the invite is used up either way: the
   answer, its timing and the invite afterwards are the same. What an invite holder can still learn, accepted:
   one answer per invite. After a 201 for an address, whether the chosen handle now exists (a handle lookup, a
@@ -2141,7 +2210,10 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   callback URL-encoded), valid 24 h; opening it lands on the client's `<APP_ORIGIN>/verify` (or
   `/verify?error=CODE`). A link only ever verifies the account it was mailed for.
   The e-mail must be verified before sign-in works.
-- Errors: 400 `invalid_invite` (missing, unknown, expired or used invite; checked first, so without a usable
+- The account made records the acceptance with it (Terms, below), in the same transaction; an address that already had a
+  verified account gets nothing recorded (nothing was made).
+- Errors: 409 `terms_outdated` (`termsVersion` or `privacyVersion` is not the version in force: the page is older than
+  the documents; checked before anything else, nothing is used up), 400 `invalid_invite` (missing, unknown, expired or used invite; checked first, so without a usable
   invite nothing else — not even whether the handle is taken — is revealed), 409 `handle_taken` (a person holds
   the handle, also an unverified account this registration would otherwise replace, or gave it up — Handles; an
   Agent's name part is no person's handle; the invite is not used up), 400 `invalid_request` (shape, or a value
@@ -2212,7 +2284,9 @@ accepted but not used: the mail links to the web app).
 
 #### `GET /api/me`
 
-*Session: required.* → 200 `{"id", "handle", "displayName", "avatarVersion", "email", "newNotes", "memoryModel", "memoryModelUsable", "dream", "memoryLanguage", "handleChangeAvailableAt"}`: the signed-in principal.
+*Session: required.* → 200 `{"id", "handle", "displayName", "avatarVersion", "email", "newNotes", "memoryModel", "memoryModelUsable", "dream", "memoryLanguage", "handleChangeAvailableAt", "termsAccepted"}`: the signed-in principal.
+`termsAccepted` is `false` when the account has not accepted the terms and the privacy policy in force (made before
+them, or a document has a new version since): the web app then asks once, before anything else (Terms, below).
 `handleChangeAvailableAt` is when they may change their handle again (an ISO time, 365 days after their last change), or
 `null` when they may now (they never changed it, or the year has passed).
 `newNotes` (`"auto"`, `"vault"` or `"open"`; `"auto"` until chosen) is what newly written notes of their Agents' memory do
@@ -2223,6 +2297,31 @@ and `memoryModelUsable` (`false` when that model cannot be called now: its provi
 cannot be opened, the model is off the provider's list or no longer on the site; always `true` while `memoryModel` is `null`).
 `dream` (a boolean, `true` until chosen) says whether their notes are consolidated while they are away (An Agent's memory, 入梦).
 `memoryLanguage` (`null`, the default: automatic; else one of `zh-Hans`, `zh-Hant`, `ja`, `en`, `ko`, `fr`, `de`, `es`, `pt`, `ru`, `it`, `vi`, `th`, `id`) is the one language their notes are written in (An Agent's memory, *One language*).
+
+**Terms** (`src/legal.ts`, migration `071_terms_and_demo.sql`, `tests/terms.test.ts`). The terms of service and the privacy
+policy are texts of the web app (`/terms`, `/privacy`, and the contact page `/contact`, all readable without signing in; the
+texts are files in `app/web/src/legal/texts/`). Each has a version (`LEGAL_VERSIONS`, a date, with `.2`, `.3`… for a later version of the same day; the web holds the same two
+strings in `app/web/src/legal/versions.js`). A person accepts both, and declares they are 18 or older (self-declared: no
+date of birth is asked or kept), when they register (`POST /api/register`) and, when `termsAccepted` is false, at their next
+sign-in (`POST /api/me/terms`). Each acceptance is a row of `terms_acceptances`: the account, the two versions, when
+(`accepted_at`) and when the 18+ declaration was made with it (`adult_declared_at`). Rows are never changed; a later
+acceptance of new versions is a row beside the earlier one. They go with the account (cascade). A change to a text that
+people must agree to again takes a new version in both files: every account is then asked again.
+
+Where it is enforced: registration is refused without it (400 / 409 above). After that, every route that needs a session
+answers 403 `terms_required` while the account has not accepted the versions in force (`requirePrincipal`, `src/session.ts`,
+reads it in the same query as the principal), the socket's ticket (`POST /api/ws-ticket`) included, so no socket opens
+either; only `GET /api/me` (which says `termsAccepted`) and `POST /api/me/terms` are let through, and signing out is Better
+Auth's own route. A new version comes with a new build, and the restart closes every socket: a client that reconnects or
+calls anything is told `terms_required`, and the web app then shows the question (also in a tab that was open). The pages
+themselves are the web app's (the site serves `index.html` for them): they need JavaScript.
+
+#### `POST /api/me/terms`
+
+*Session: required.* Body: `termsVersion`, `privacyVersion`, `adult` (as for `POST /api/register`). Records that the
+signed-in person accepts the documents in force (Terms, above); accepting them again changes nothing. → 200
+`{"termsAccepted": true}`. Errors: 409 `terms_outdated` (a version that is not the one in force), 400 `invalid_request`
+(`adult` not `true`, a field missing). Limit: 10 per minute per person.
 
 ### Profiles and principals
 

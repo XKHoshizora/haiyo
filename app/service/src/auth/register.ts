@@ -4,6 +4,7 @@ import { APIError } from "better-auth/api";
 import { z } from "zod";
 import type { Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
+import { acceptanceFields, assertCurrentVersions, recordAcceptance } from "../legal.ts";
 import { handleFree, HANDLE_PATTERN } from "../principals/store.ts";
 import { displayName } from "../schemas.ts";
 import { findAccountByEmail, lockAccountEmail, removeUnverifiedAccount, type ExistingAccount } from "./accounts.ts";
@@ -21,6 +22,8 @@ export const registerBody = z.object({
   password: z.string().min(10).max(128),
   displayName,
   handle: z.string().regex(HANDLE_PATTERN),
+  // The terms and the privacy policy the person was shown, and their 18+ declaration (src/legal.ts): required.
+  ...acceptanceFields,
 });
 
 /** How often, at most, the owner of an address hears that someone tried to register it again. */
@@ -65,6 +68,8 @@ export function registerRegistrationRoutes(
     async (req, reply) => {
       const { inviteCode, email, password, displayName, handle } = req.body;
       const needsInvite = config.registrationMode === "invite";
+      // Before anything is locked or used up: a page older than the documents in force is told to reload (409).
+      assertCurrentVersions(req.body);
 
       let told: string[];
       try {
@@ -115,6 +120,8 @@ export function registerRegistrationRoutes(
             if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new AppError(409, "handle_taken");
             throw err;
           }
+          // What the new account accepted, with it (an account whose address was taken gets nothing: nothing was made).
+          await recordAcceptance(client, principalId);
           if (needsInvite) await markInviteUsed(client, inviteCode!, principalId);
           return affected;
         });

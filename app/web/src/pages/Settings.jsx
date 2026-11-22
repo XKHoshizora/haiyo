@@ -20,6 +20,14 @@ import { PROVIDERS_PAGE, choiceList, modelKey, pickerGroups, staleRows, useModel
 import { ModelSelect } from "./ModelSelect.jsx";
 import { Select } from "../ui/Select.jsx";
 import { refusalText, settled, useAction } from "./useAction.js";
+import { LEGAL_LINK_NAMES, LEGAL_PATHS } from "../legal/docs.js";
+
+/** The rows under 关于: each public page and what it is about. */
+const LEGAL_ROWS = [
+  ["terms", "使用规则、18 岁以上"],
+  ["privacy", "保存什么、交给谁、保存多久"],
+  ["contact", "support@haiyo.org、举报"],
+];
 
 /** What signs the account out (the profile page's button, and the 设置 list on a phone): null outside the sign-in gate. */
 function useSignOut() {
@@ -32,17 +40,24 @@ function useSignOut() {
   };
 }
 
-/** A settings entry: a row of the list's own style, its chevron saying that it opens. */
-function SettingsRow({ name, note, onOpen }) {
+/** A settings entry: a row of the list's own style, its chevron saying that it opens. With `href` it is a link to a public page, in a new tab. */
+function SettingsRow({ name, note, onOpen, href }) {
+  const body = (
+    <>
+      <span className="row-body">
+        <span className="row-name">{name}</span>
+        <span className="row-preview">{note}</span>
+      </span>
+      <ChevronRight className="row-chevron" size={18} aria-hidden="true" />
+    </>
+  );
   return (
     <li>
-      <button type="button" className="row slim" onClick={onOpen}>
-        <span className="row-body">
-          <span className="row-name">{name}</span>
-          <span className="row-preview">{note}</span>
-        </span>
-        <ChevronRight className="row-chevron" size={18} aria-hidden="true" />
-      </button>
+      {href ? (
+        <a className="row slim" href={href} target="_blank" rel="noopener">{body}</a>
+      ) : (
+        <button type="button" className="row slim" onClick={onOpen}>{body}</button>
+      )}
     </li>
   );
 }
@@ -79,6 +94,11 @@ export function SettingsList() {
             </button>
           </li>
         )}
+        {/* The public pages (src/legal/), in a new tab: the app stays where it was. */}
+        <li className="rows-label">关于</li>
+        {LEGAL_ROWS.map(([doc, preview]) => (
+          <SettingsRow key={doc} name={LEGAL_LINK_NAMES[doc]} note={preview} href={LEGAL_PATHS[doc]} />
+        ))}
       </ul>
     </>
   );

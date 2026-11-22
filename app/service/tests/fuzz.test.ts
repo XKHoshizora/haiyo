@@ -6,7 +6,7 @@ import type { RouteEntry } from "../src/app.ts";
 import { createInvite } from "../src/auth/invites.ts";
 import type { ModelEvent, ModelGateway } from "../src/models/gateway.ts";
 import type { ProviderProbe } from "../src/providers/probe.ts";
-import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
+import { api, befriend, group, signUp, TERMS, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, PNG, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -438,11 +438,13 @@ function plausibleBody(route: RouteEntry, fx: Fixture): Record<string, unknown> 
   const n = ++unique;
   switch (`${route.method} ${route.url}`) {
     case "POST /api/register":
-      return { inviteCode: fx.invite, email: `fz${n}@example.test`, password: "fuzz-password-1", displayName: "Fuzz", handle: `fz${n}` };
+      return { inviteCode: fx.invite, email: `fz${n}@example.test`, password: "fuzz-password-1", displayName: "Fuzz", handle: `fz${n}`, ...TERMS };
     case "POST /api/friend-requests":
       return { handle: fx.peer.handle };
     case "PATCH /api/me":
       return { displayName: "Fuzz" };
+    case "POST /api/me/terms":
+      return { ...TERMS };
     case "POST /api/conversations":
       return { title: "t", memberIds: [fx.peer.id, fx.victim.id] };
     case "PATCH /api/conversations/:id":

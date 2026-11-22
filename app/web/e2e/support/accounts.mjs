@@ -7,6 +7,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { expect } from "@playwright/test";
 import { REMOTE, SERVICE_DIR, cliEnv } from "./env.mjs";
+import { LEGAL_VERSIONS } from "../../src/legal/versions.js";
+
+/** What a registration carries: the terms and the privacy policy in force accepted, 18 or older declared (app/web/src/legal). */
+export const ACCEPTANCE = { termsVersion: LEGAL_VERSIONS.terms, privacyVersion: LEGAL_VERSIONS.privacy, adult: true };
 
 const execFileP = promisify(execFile);
 const execP = promisify(exec);
@@ -105,7 +109,7 @@ const ok = async (res, what) => {
 export async function registerVerified(request, identity) {
   const inviteCode = await mintInvite();
   const { email, password, displayName, handle } = identity;
-  await ok(await request.post("/api/register", { data: { inviteCode, email, password, displayName, handle } }), "register");
+  await ok(await request.post("/api/register", { data: { inviteCode, email, password, displayName, handle, ...ACCEPTANCE } }), "register");
   const link = await mailLink(email, "verify_email");
   const res = await request.get(link, { maxRedirects: 0 });
   expect(res.status(), "the verification link redirects to the client").toBe(302);

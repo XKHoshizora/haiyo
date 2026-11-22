@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ApiError, request, setUnauthenticatedHandler } from "../src/api/http.js";
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { ApiError, bumpSessionEpoch, request, setUnauthenticatedHandler } from "../src/api/http.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
 import { clearResetToken, takeReturn } from "../src/auth/router.js";
+import { LEGAL_VERSIONS } from "../src/legal/versions.js";
 import { draftKeys, peekDraft, saveDraft } from "../src/data/drafts.js";
 import { StoreProvider, emptyState } from "../src/data/store.jsx";
 import { SettingsList, SettingsMain } from "../src/pages/Settings.jsx";
@@ -75,6 +76,25 @@ function mount(api, children) {
 
 const typeInto = (label, value) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const submit = (name) => fireEvent.click(screen.getByRole("button", { name }));
+
+// The acceptance (src/legal/; the service records it, app/service/src/legal.ts): the two boxes and what is sent.
+const ADULT_LABEL = "我已年满 18 岁";
+const AGREE_LABEL = "我已阅读并同意《服务条款》和《隐私政策》";
+const ADULT_MISSING = "请确认你已年满 18 岁";
+const AGREE_MISSING = "请先阅读并同意服务条款和隐私政策";
+const ACCEPTANCE = { termsVersion: LEGAL_VERSIONS.terms, privacyVersion: LEGAL_VERSIONS.privacy, adult: true };
+const tickAcceptance = () => {
+  fireEvent.click(screen.getByRole("checkbox", { name: ADULT_LABEL }));
+  fireEvent.click(screen.getByRole("checkbox", { name: AGREE_LABEL }));
+};
+/** The three public pages, linked from a screen: each the shared text link, opening in a new tab (a form keeps what was typed). */
+function expectLegalLinks() {
+  const nav = screen.getByRole("navigation", { name: "条款与联系" });
+  for (const [name, href] of [["服务条款", "/terms"], ["隐私政策", "/privacy"], ["联系我们", "/contact"]]) {
+    const link = within(nav).getByRole("link", { name });
+    expect([name, link.getAttribute("href"), link.getAttribute("target"), link.getAttribute("rel"), link.classList.contains("text-link")]).toEqual([name, href, "_blank", "noopener", true]);
+  }
+}
 const me = { id: "me", kind: "person", name: "你", handle: "@ann", cell: [0, 0] };
 
 beforeAll(() => {
@@ -154,6 +174,11 @@ describe("sign-in", () => {
     }
   });
 
+  it("links the terms, the privacy policy and the contact page", async () => {
+    await signedOutAt(signInApi());
+    expectLegalLinks();
+  });
+
   it("sets the right autocomplete attributes", async () => {
     await signedOutAt(signInApi());
     expect(screen.getByLabelText("邮箱").getAttribute("autocomplete")).toBe("username");
@@ -213,9 +238,11 @@ describe("sign-in", () => {
 });
 
 describe("register", () => {
-  const fill = (over = {}) => {
+  /** Fills the form; ticks the 18+ declaration and the agreement unless `ticked` says otherwise. */
+  const fill = (over = {}, ticked = true) => {
     const values = { 邀请码: "inv-1", 邮箱: "ann@x.com", 密码: "0123456789", 昵称: "小安", 账号名: "ann_1", ...over };
     for (const [label, value] of Object.entries(values)) typeInto(label, value);
+    if (ticked) tickAcceptance();
   };
   async function open(api = outApi()) {
     at("/register");
@@ -231,6 +258,11 @@ describe("register", () => {
     submit("注册");
     await screen.findByText("邀请码无效或已过期，请向邀请你的人确认。");
     expect(screen.getAllByText("已经注册过？直接登录就行。")).toHaveLength(1);
+  });
+
+  it("links the terms, the privacy policy and the contact page", async () => {
+    await open();
+    expectLegalLinks();
   });
 
   it("the check-your-mailbox page tells what to do when nothing arrives", async () => {
@@ -270,7 +302,44 @@ describe("register", () => {
     fill({ 邀请码: " inv-1 ", 昵称: " 小安 " });
     submit("注册");
     await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
-    expect(api.register).toHaveBeenCalledWith({ inviteCode: "inv-1", email: "ann@x.com", password: "0123456789", displayName: "小安", handle: "ann_1" });
+    expect(api.register).toHaveBeenCalledWith({ inviteCode: "inv-1", email: "ann@x.com", password: "0123456789", displayName: "小安", handle: "ann_1", ...ACCEPTANCE });
+  });
+
+  it("without the 18+ declaration and the agreement nothing is sent; each box says what it needs and the first is focused", async () => {
+    const api = await open();
+    fill({}, false);
+    submit("注册");
+    await screen.findByText(ADULT_MISSING);
+    expect(screen.getByText(AGREE_MISSING)).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("checkbox", { name: ADULT_LABEL })));
+    expect(api.register).not.toHaveBeenCalled();
+    // One of the two is not enough.
+    fireEvent.click(screen.getByRole("checkbox", { name: ADULT_LABEL }));
+    submit("注册");
+    await screen.findByText(AGREE_MISSING);
+    expect(screen.queryByText(ADULT_MISSING)).toBeNull();
+    expect(api.register).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("checkbox", { name: AGREE_LABEL }));
+    submit("注册");
+    await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
+    expect(api.register).toHaveBeenCalledTimes(1);
+  });
+
+  it("says Haiyo is for people 18 and older, and links the terms and the policy from the agreement, in a new tab", async () => {
+    await open();
+    expect(screen.getByText("Haiyo 只给 18 岁以上的人使用。")).toBeTruthy();
+    const agree = screen.getByRole("checkbox", { name: AGREE_LABEL }).closest("label");
+    for (const [name, href] of [["服务条款", "/terms"], ["隐私政策", "/privacy"]]) {
+      const link = within(agree).getByRole("link", { name });
+      expect([name, link.getAttribute("href"), link.getAttribute("target"), link.getAttribute("rel"), link.classList.contains("text-link")]).toEqual([name, href, "_blank", "noopener", true]);
+    }
+  });
+
+  it("terms_outdated (the page is older than the documents) asks for a reload", async () => {
+    await open(outApi({ register: vi.fn(async () => Promise.reject(new ApiError(409, "terms_outdated"))) }));
+    fill();
+    submit("注册");
+    await screen.findByText("条款刚刚更新了，请刷新页面后再试。");
   });
 
   it.each([
@@ -307,6 +376,76 @@ describe("register", () => {
     submit("注册");
     await screen.findByText(/已向 ann@x.com 发送了一封验证邮件/);
     expect(screen.queryByText("这个站点不发送邮件。请向管理员索取验证链接。")).toBeNull();
+  });
+});
+
+describe("an account asked to accept again (GET /api/me termsAccepted false)", () => {
+  const NOT_ACCEPTED = { ...ANN, termsAccepted: false };
+  const GATE = "请确认条款";
+  async function gate(over = {}) {
+    const api = fakeApi({ getMe: vi.fn(async () => NOT_ACCEPTED), acceptTerms: vi.fn(async () => ({ termsAccepted: true })), ...over });
+    mount(api);
+    await screen.findByRole("heading", { name: GATE });
+    return api;
+  }
+
+  it("is asked before anything else: no app, no data layer, with the same two boxes and the three links", async () => {
+    at("/chat/00000000-0000-4000-8000-0000000000c1");
+    await gate();
+    expect(screen.queryByTestId("app")).toBeNull();
+    expect(layers[0].start).not.toHaveBeenCalled();
+    expect(screen.getByRole("checkbox", { name: ADULT_LABEL })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: AGREE_LABEL })).toBeTruthy();
+    expectLegalLinks();
+    // The page asked for stays the address, to open once accepted.
+    expect(place()).toBe("/chat/00000000-0000-4000-8000-0000000000c1");
+  });
+
+  it("sends nothing until both are ticked; then records them and opens the app", async () => {
+    const api = await gate();
+    submit("同意并继续");
+    await screen.findByText(ADULT_MISSING);
+    expect(screen.getByText(AGREE_MISSING)).toBeTruthy();
+    expect(api.acceptTerms).not.toHaveBeenCalled();
+    tickAcceptance();
+    submit("同意并继续");
+    await screen.findByTestId("app");
+    expect(api.acceptTerms).toHaveBeenCalledWith(ACCEPTANCE);
+    expect(layers[0].start).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refusal is shown on the form and the app stays closed", async () => {
+    await gate({ acceptTerms: vi.fn(async () => Promise.reject(new ApiError(409, "terms_outdated"))) });
+    tickAcceptance();
+    submit("同意并继续");
+    await screen.findByText("条款刚刚更新了，请刷新页面后再试。");
+    expect(screen.queryByTestId("app")).toBeNull();
+  });
+
+  it("whoever does not want to accept can sign out from there", async () => {
+    const api = await gate();
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    await screen.findByRole("button", { name: "登录" });
+    expect(api.signOut).toHaveBeenCalledTimes(1);
+    expect(place()).toBe("/signin");
+  });
+
+  it("signing in to such an account asks first, then opens the page that was asked for", async () => {
+    const api = fakeApi({
+      getMe: vi.fn().mockRejectedValueOnce(SIGNED_OUT()).mockResolvedValue(NOT_ACCEPTED),
+      acceptTerms: vi.fn(async () => ({ termsAccepted: true })),
+    });
+    at("/chat/00000000-0000-4000-8000-0000000000c2");
+    mount(api);
+    await screen.findByRole("button", { name: "登录" });
+    typeInto("邮箱", "ann@x.com");
+    typeInto("密码", "correct horse");
+    submit("登录");
+    await screen.findByRole("heading", { name: GATE });
+    tickAcceptance();
+    submit("同意并继续");
+    await screen.findByTestId("app");
+    expect(place()).toBe("/chat/00000000-0000-4000-8000-0000000000c2");
   });
 });
 
@@ -594,6 +733,42 @@ describe("session lifecycle", () => {
     expect(layers[0].stop).toHaveBeenCalledTimes(1);
     expect(place()).toBe("/signin");
     expect(screen.getByText(EXPIRED_NOTICE)).toBeTruthy();
+  });
+
+  it("a 403 terms_required from any request (a tab open when a new version came in) stops the app and asks; accepting brings it back", async () => {
+    const api = fakeApi({ acceptTerms: vi.fn(async () => ({ termsAccepted: true })) });
+    mount(api);
+    await screen.findByTestId("app");
+    at("/chat/00000000-0000-4000-8000-0000000000c3");
+    stubFetch(403, "terms_required");
+    await act(async () => {
+      await request("POST", "/api/ws-ticket").catch(() => {});
+    });
+    await screen.findByRole("heading", { name: "请确认条款" });
+    expect(screen.queryByTestId("app")).toBeNull();
+    expect(layers[0].stop).toHaveBeenCalledTimes(1);
+    // Still signed in, on the same page: nothing about an expired session.
+    expect(screen.queryByText(EXPIRED_NOTICE)).toBeNull();
+    expect(place()).toBe("/chat/00000000-0000-4000-8000-0000000000c3");
+    tickAcceptance();
+    submit("同意并继续");
+    await screen.findByTestId("app");
+    expect(api.acceptTerms).toHaveBeenCalledWith(ACCEPTANCE);
+    expect(layers[0].start).toHaveBeenCalledTimes(2);
+  });
+
+  it("a 403 terms_required of a session that has already ended is not a question", async () => {
+    mount(fakeApi());
+    await screen.findByTestId("app");
+    stubFetch(403, "terms_required");
+    let pending;
+    await act(async () => {
+      pending = request("GET", "/api/sync");
+      bumpSessionEpoch();
+      await pending.catch(() => {});
+    });
+    expect(screen.getByTestId("app")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "请确认条款" })).toBeNull();
   });
 
   it("a wrong password (401 from /api/auth/*) does not end anything", async () => {

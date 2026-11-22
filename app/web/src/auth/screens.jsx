@@ -5,6 +5,8 @@ import { fieldOf, messageFor, verifyMessage } from "./errors.js";
 import { clearResetToken, navigate, takeResetToken, takeReturn } from "./router.js";
 import * as rules from "./validation.js";
 import { AuthPage } from "../ui/AuthPage.jsx";
+import { LegalLink, LegalLinks } from "../legal/LegalLinks.jsx";
+import { LEGAL_VERSIONS } from "../legal/versions.js";
 
 function Link({ to, children, primary = false }) {
   const onClick = (e) => {
@@ -36,6 +38,7 @@ function AuthCard({ title, lead, children, footer }) {
         </header>
         {children}
         {footer && <footer className="auth-foot">{footer}</footer>}
+        <LegalLinks />
       </section>
     </AuthPage>
   );
@@ -65,15 +68,13 @@ function useAuthForm({ initial, rules: fieldRules, submit, noMail = false }) {
     if (focusRequest) focusInvalid(formRef.current);
   }, [focusRequest]);
 
-  const bind = (name) => ({
-    name,
-    value: values[name],
-    onChange: (e) => {
-      const value = e.target.value;
-      setValues((v) => ({ ...v, [name]: value }));
-      setErrors((current) => (current[name] ? { ...current, [name]: undefined } : current));
-    },
-  });
+  const set = (name, value) => {
+    setValues((v) => ({ ...v, [name]: value }));
+    setErrors((current) => (current[name] ? { ...current, [name]: undefined } : current));
+  };
+  const bind = (name) => ({ name, value: values[name], onChange: (e) => set(name, e.target.value) });
+  /** A checkbox's props (its value is true or false). */
+  const bindCheck = (name) => ({ name, checked: values[name] === true, onChange: (e) => set(name, e.target.checked) });
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -103,7 +104,47 @@ function useAuthForm({ initial, rules: fieldRules, submit, noMail = false }) {
     }
   };
 
-  return { values, errors, formError, busy, bind, onSubmit, formRef };
+  return { values, errors, formError, busy, bind, bindCheck, onSubmit, formRef };
+}
+
+/** A checkbox with its sentence, and under it what is wrong (or a hint), as `Field` does for a text box. */
+function CheckField({ error, hint, children, ...input }) {
+  const id = useId();
+  return (
+    <div className={`field check-field ${error ? "field-error" : ""}`}>
+      <label className="check" htmlFor={id}>
+        <input id={id} type="checkbox" aria-invalid={error ? true : undefined} aria-describedby={error || hint ? `${id}-help` : undefined} {...input} />
+        <span>{children}</span>
+      </label>
+      {error ? <p id={`${id}-help`} className="field-msg" role="alert">{error}</p> : hint ? <p id={`${id}-help`} className="field-hint">{hint}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * What a person confirms before using the app, at registration and when the documents get a new version (the same words
+ * both times): that they are 18 or older (self-declared; no date of birth), and that they accept the terms and the privacy
+ * policy. The service records it with the versions shown (app/service/src/legal.ts).
+ */
+const ACCEPTANCE_RULES = {
+  adult: (v) => (v === true ? "" : "请确认你已年满 18 岁"),
+  agree: (v) => (v === true ? "" : "请先阅读并同意服务条款和隐私政策"),
+};
+const ACCEPTANCE_INITIAL = { adult: false, agree: false };
+/** What is sent once both are ticked. */
+const acceptance = () => ({ termsVersion: LEGAL_VERSIONS.terms, privacyVersion: LEGAL_VERSIONS.privacy, adult: true });
+
+function AcceptanceChecks({ form }) {
+  return (
+    <>
+      <CheckField error={form.errors.adult} hint={`${PRODUCT_NAME} 只给 18 岁以上的人使用。`} {...form.bindCheck("adult")}>
+        我已年满 18 岁
+      </CheckField>
+      <CheckField error={form.errors.agree} {...form.bindCheck("agree")}>
+        我已阅读并同意《<LegalLink doc="terms" />》和《<LegalLink doc="privacy" />》
+      </CheckField>
+    </>
+  );
 }
 
 /**
@@ -185,10 +226,10 @@ export function Register({ api }) {
   const [sentTo, setSentTo] = useState(null);
   const mailDelivered = useMailDelivered(api);
   const form = useAuthForm({
-    initial: { inviteCode: "", email: "", password: "", displayName: "", handle: "" },
-    rules: { inviteCode: rules.inviteCode, email: rules.email, password: rules.newPassword, displayName: rules.displayName, handle: rules.handle },
+    initial: { inviteCode: "", email: "", password: "", displayName: "", handle: "", ...ACCEPTANCE_INITIAL },
+    rules: { inviteCode: rules.inviteCode, email: rules.email, password: rules.newPassword, displayName: rules.displayName, handle: rules.handle, ...ACCEPTANCE_RULES },
     submit: async (v) => {
-      await api.register({ inviteCode: v.inviteCode.trim(), email: v.email.trim(), password: v.password, displayName: v.displayName.trim(), handle: v.handle });
+      await api.register({ inviteCode: v.inviteCode.trim(), email: v.email.trim(), password: v.password, displayName: v.displayName.trim(), handle: v.handle, ...acceptance() });
       setSentTo(v.email.trim());
     },
   });
@@ -227,6 +268,7 @@ export function Register({ api }) {
         <Field label="账号名" hint="3 到 24 位小写字母、数字或下划线，别人用它找到你" error={form.errors.handle}>
           <input type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} {...form.bind("handle")} />
         </Field>
+        <AcceptanceChecks form={form} />
       </FormBody>
       <p className="muted">已经注册过？直接登录就行。</p>
     </AuthCard>
@@ -322,6 +364,29 @@ export function ResetPassword({ api }) {
         <Field label="新密码" hint="至少 10 位" error={form.errors.password}>
           <input type="password" autoComplete="new-password" {...form.bind("password")} />
         </Field>
+      </FormBody>
+    </AuthCard>
+  );
+}
+
+/**
+ * A signed-in account that has not accepted the documents in force (made before them, or they have a new version): asked once,
+ * with the words of the registration, before the app opens. `onAccepted` opens it; `onSignOut` is the way out for whoever does
+ * not accept.
+ */
+export function AcceptTerms({ api, onAccepted, onSignOut }) {
+  const form = useAuthForm({
+    initial: ACCEPTANCE_INITIAL,
+    rules: ACCEPTANCE_RULES,
+    submit: async () => {
+      await api.acceptTerms(acceptance());
+      onAccepted();
+    },
+  });
+  return (
+    <AuthCard title="请确认条款" lead={`继续使用 ${PRODUCT_NAME} 之前，请确认下面两项。`} footer={<Btn variant="text" onClick={onSignOut}>退出登录</Btn>}>
+      <FormBody form={form} submitLabel="同意并继续">
+        <AcceptanceChecks form={form} />
       </FormBody>
     </AuthCard>
   );

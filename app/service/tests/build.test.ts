@@ -35,6 +35,7 @@ describe("production build", () => {
       "attachments:sweep:prod",
       "credits:grant:prod",
       "credits:show:prod",
+      "demo:seed:prod",
       "inbox:list:prod",
       "invite:create:prod",
       "mail:status:prod",

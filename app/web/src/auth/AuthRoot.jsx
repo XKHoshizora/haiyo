@@ -1,10 +1,14 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import * as routes from "../api/routes.js";
-import { bumpSessionEpoch, setUnauthenticatedHandler } from "../api/http.js";
+import { bumpSessionEpoch, setTermsRequiredHandler, setUnauthenticatedHandler } from "../api/http.js";
 import { createDataLayer } from "../data/store.jsx";
-import { Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
+import { ChunkBoundary } from "../ui/ChunkBoundary.jsx";
+import { AcceptTerms, Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
 import { forgetDrafts } from "../data/drafts.js";
 import { captureResetToken, decide, navigate, parseRoute, rememberReturn, takeReturn, useLocation } from "./router.js";
+
+// The terms, the privacy policy and the contact page (src/legal/): a chunk of their own, loaded only when one is opened.
+const LegalPage = lazy(() => import("../legal/LegalPage.jsx"));
 
 const SessionContext = createContext(null);
 
@@ -45,10 +49,13 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
         setBox((b) => ({ layer, id: b.id + 1 }));
       }
       bumpSessionEpoch();
-      setSession({ status: "in", expired: false });
+      // An account that has not accepted the documents in force (GET /api/me `termsAccepted`) is asked first; until then the
+      // app is not shown and its data layer does not run.
+      setSession({ status: me?.termsAccepted === false ? "terms" : "in", expired: false });
     },
     [createLayer],
   );
+  const accepted = useCallback(() => setSession((s) => (s.status === "terms" ? { status: "in", expired: false } : s)), []);
 
   const loadMe = useCallback(() => {
     api.getMe().then(confirm, (err) => (err?.status === 401 ? end(false) : setSession({ status: "failed", expired: false })));
@@ -65,11 +72,19 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     return () => setUnauthenticatedHandler(null);
   }, [end]);
 
-  const running = session.status === "in";
+  // The service refuses every signed-in request until the documents in force are accepted (403 terms_required): a tab that
+  // was open when a new version came in asks too. Its data layer stops until the question is answered.
+  useEffect(() => {
+    setTermsRequiredHandler(() => setSession((s) => (s.status === "in" ? { status: "terms", expired: false } : s)));
+    return () => setTermsRequiredHandler(null);
+  }, []);
+
+  // A tab that only shows a public page (the terms, opened from Settings in a new tab) runs no data layer: no socket for it.
+  const running = session.status === "in" && route.name !== "legal";
   // Only a visit that was signed out from the start keeps the page it came for: a sign-out or an expiry must not hand the page of this
   // account to whoever signs in next.
   const wasIn = useRef(false);
-  if (running) wasIn.current = true;
+  if (session.status === "in" || session.status === "terms") wasIn.current = true;
   useEffect(() => {
     if (!running) return undefined;
     const { layer } = box;
@@ -97,7 +112,8 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   }, [api, end]);
   const sessionApi = useMemo(() => ({ signOut }), [signOut]);
 
-  const decision = session.status === "failed" ? { view: "failed" } : decide(route, session.status);
+  // A public page opens whatever the session is doing, also when the service cannot be reached.
+  const decision = session.status === "failed" && route.name !== "legal" ? { view: "failed" } : decide(route, session.status);
   useEffect(() => {
     if (!decision.redirect) return;
     // A page of the app opened signed out is opened after the sign-in.
@@ -108,12 +124,22 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   switch (decision.view) {
     case "app":
       return <SessionContext.Provider value={sessionApi}>{children(box.layer, box.id)}</SessionContext.Provider>;
+    case "legal":
+      return (
+        <ChunkBoundary>
+          <Suspense fallback={<Loading />}>
+            <LegalPage doc={route.doc} />
+          </Suspense>
+        </ChunkBoundary>
+      );
+    case "accept":
+      return <AcceptTerms api={api} onAccepted={accepted} onSignOut={signOut} />;
     case "signin":
       return <SignIn api={api} expired={session.expired} onSignedIn={confirm} />;
     case "register":
       return <Register api={api} />;
     case "verify":
-      return <Verify api={api} error={route.error} signedIn={running} />;
+      return <Verify api={api} error={route.error} signedIn={session.status === "in" || session.status === "terms"} />;
     case "forgot":
       return <Forgot api={api} />;
     case "reset":

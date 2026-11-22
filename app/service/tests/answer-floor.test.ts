@@ -4,7 +4,7 @@ import net from "node:net";
 import { describe, expect, test, vi } from "vitest";
 import { ANSWER_FLOOR, holdUntilFloor, startAnswerClock } from "../src/auth/answer-floor.ts";
 import { createInvite } from "../src/auth/invites.ts";
-import { api, signUp } from "./helpers/actors.ts";
+import { api, signUp, TERMS } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
 import { listen } from "./helpers/ws.ts";
 
@@ -99,7 +99,7 @@ describe("answer floor", () => {
       const i = n++;
       const inviteCode = await createInvite(db, { ttlHours: 1 });
       const t0 = performance.now();
-      const res = await api(app, null, "POST", "/api/register", { inviteCode, email, password: "a good long password", displayName: "Floor", handle: `floor_${i}` });
+      const res = await api(app, null, "POST", "/api/register", { inviteCode, email, password: "a good long password", displayName: "Floor", handle: `floor_${i}`, ...TERMS });
       const dt = performance.now() - t0;
       expect(res).toEqual({ status: 201, json: { ok: true } });
       return dt;
@@ -158,7 +158,7 @@ describe("answer floor", () => {
     let n = 0;
     const register = (email: string) => async () => {
       const inviteCode = await createInvite(db, { ttlHours: 1 });
-      const body = { inviteCode, email, password: "a good long password", displayName: "Late", handle: `late_${n++}` };
+      const body = { inviteCode, email, password: "a good long password", displayName: "Late", handle: `late_${n++}`, ...TERMS };
       const { status, ms } = await lateBody("/api/register", body);
       expect(status).toBe(201);
       return ms;

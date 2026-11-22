@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
 import { createInvite } from "../../src/auth/invites.ts";
+import { LEGAL_VERSIONS } from "../../src/legal.ts";
+
+/** What every registration carries: the documents in force accepted, 18+ declared (src/legal.ts). */
+export const TERMS = { termsVersion: LEGAL_VERSIONS.terms, privacyVersion: LEGAL_VERSIONS.privacy, adult: true } as const;
 
 export interface Actor {
   id: string;
@@ -71,7 +75,7 @@ export async function signUp(app: FastifyInstance, name: string): Promise<Actor>
   const password = `pw-${randomBytes(9).toString("hex")}`;
 
   const inviteCode = await createInvite(app.deps.db, { ttlHours: 1 });
-  const reg = await api(app, null, "POST", "/api/register", { inviteCode, email, password, displayName: name, handle });
+  const reg = await api(app, null, "POST", "/api/register", { inviteCode, email, password, displayName: name, handle, ...TERMS });
   if (reg.status !== 201) throw new Error(`signUp: register failed ${reg.status} ${JSON.stringify(reg.json)}`);
 
   const verify = await app.inject({ method: "GET", url: await mailLink(app, email, "verify_email") });
