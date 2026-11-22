@@ -26,6 +26,37 @@ export function boxFor(vv) {
   };
 }
 
+/**
+ * The style of a fixed layer that is exactly the visible part's size and place when the visible part is smaller than the window — the keyboard is
+ * up (the layout viewport keeps its height, the visual one shrinks) or the browser panned it. `null` while it is the whole window. Not for a zoomed page.
+ */
+export function frameFor(vv, windowHeight) {
+  if (!vv) return null;
+  const { offsetLeft, offsetTop, width, height } = vv;
+  if (Math.abs(height - windowHeight) < 1 && Math.abs(offsetLeft) < 0.5 && Math.abs(offsetTop) < 0.5) return null;
+  const round = (n) => Math.round(n * 100) / 100;
+  return { position: "fixed", inset: "auto", left: round(offsetLeft), top: round(offsetTop), width: round(width), height: round(height) };
+}
+
+/** `frameFor` of the window's visual viewport, kept current while the keyboard comes and goes. */
+export function useVisibleFrame() {
+  const read = () => (typeof window === "undefined" ? null : frameFor(window.visualViewport, window.innerHeight));
+  const [frame, setFrame] = useState(read);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return undefined;
+    const update = () => setFrame(read());
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+  return frame;
+}
+
 /** `boxFor` of the window's visual viewport, kept current while the person pinches or scrolls it. */
 export function useVisualViewportBox() {
   const [box, setBox] = useState(() => boxFor(typeof window === "undefined" ? null : window.visualViewport));

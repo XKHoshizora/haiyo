@@ -41,7 +41,10 @@ body {
   margin: 0;
   min-width: 320px;
   -webkit-font-smoothing: antialiased;
-  background:
+  /* The gradient is one screen; below it (a scrolled or keyboard-lifted page) the same flat tone, never a lighter strip. */
+  background-color: #f1effd;
+  background-repeat: no-repeat;
+  background-image:
     radial-gradient(60% 50% at 8% 0%, rgba(255, 214, 236, 0.75), transparent 70%),
     radial-gradient(50% 45% at 100% 8%, rgba(206, 214, 255, 0.85), transparent 70%),
     radial-gradient(55% 50% at 85% 100%, rgba(255, 222, 240, 0.7), transparent 70%),
@@ -973,7 +976,14 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   .only-mobile { display: inline-flex !important; }
   .rail { padding-top: 12px; gap: 10px; }
   .rail-item { font-size: 11px; }
-  .list-col { flex: 1; width: auto; border-right: 0; }
+  /* One column on a phone, no panel of its own: the list is drawn straight on the page, so nothing makes an edge under the status bar (the shell's top
+     padding is the page background all the way). */
+  .list-col { flex: 1; width: auto; border-right: 0; background: none; }
+  /* The home indicator's room is the scrollers' own bottom padding (below), not a band of the shell under them: a shell padded at the bottom cut every
+     page at a hard edge with an empty strip beneath. The tab bar pads itself; a chat pads its composer. */
+  .app:not([data-tabbar="on"]) { padding-bottom: 0; }
+  .chat { padding-bottom: env(safe-area-inset-bottom); }
+  .page-body, .side-body { padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
   .main-col { display: none; }
   .app[data-pane="main"] .list-col { display: none; }
   .app[data-pane="main"] .main-col { display: flex; }
@@ -1037,12 +1047,14 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 }
 
 /* ───────── account screens (sign in, register, verify, reset): a centred card on the page background */
+/* The page is a scrolling layer over exactly what is visible (AuthPage in auth/screens.jsx sets its box from the visual viewport: the keyboard shrinks
+   it), the card centred by auto margins — a card taller than the room starts at the top and scrolls, never centred past the edges. */
 .auth-page {
-  min-height: 100dvh; display: grid; place-items: center;
+  position: fixed; inset: 0; display: flex; overflow-y: auto; overscroll-behavior: contain;
   padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .auth-card {
-  width: min(440px, 100%); padding: 28px 28px 20px; border-radius: 16px;
+  margin: auto; width: min(440px, 100%); padding: 28px 28px 20px; border-radius: 16px;
   background: #fff; box-shadow: 0 24px 64px rgba(40, 32, 80, 0.18);
 }
 .auth-head { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; margin-bottom: 14px; }

@@ -206,3 +206,34 @@ describe("the title of a profile-style page keeps a minimum and the actions wrap
     expect(plain(".profile-head")["flex-wrap"]).toBe("wrap");
   });
 });
+
+describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", () => {
+  const NARROW = "(max-width: 860px)";
+  const narrow = (selector) => merged(rulesFor(rules, selector, NARROW));
+
+  it("B: the list is drawn straight on the page — no panel behind it, so no edge under the status bar", () => {
+    expect(narrow(".list-col").background).toBe("none");
+  });
+
+  it("C: the shell is not padded at the bottom (it clipped every page at a hard edge); the scroller's own bottom padding holds the home indicator's room", () => {
+    expect(rulesFor(rules, '.app:not([data-tabbar="on"])', NARROW).length).toBeGreaterThan(0);
+    expect(narrow('.app:not([data-tabbar="on"])')["padding-bottom"]).toBe("0");
+    for (const scroller of [".page-body", ".side-body"]) expect(narrow(scroller)["padding-bottom"], scroller).toContain("env(safe-area-inset-bottom)");
+    expect(narrow(".chat")["padding-bottom"]).toBe("env(safe-area-inset-bottom)");
+  });
+
+  it("A: the sign-in page is a scrolling layer over the visible part, its card centred by auto margins (a tall card starts at the top, never centred out of reach)", () => {
+    const page = plain(".auth-page");
+    expect(page.position).toBe("fixed");
+    expect(page.inset).toBe("0");
+    expect(page["overflow-y"]).toBe("auto");
+    expect(plain(".auth-card").margin).toBe("auto");
+    expect(page["place-items"]).toBeUndefined();
+  });
+
+  it("A: the background covers whatever height is shown: a flat base colour under the gradient, no repeat", () => {
+    const body = plain("body");
+    expect(body["background-repeat"]).toBe("no-repeat");
+    expect(body["background-color"]).toBeTruthy();
+  });
+});

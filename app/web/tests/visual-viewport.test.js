@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boxFor } from "../src/ui/visualViewport.js";
+import { boxFor, frameFor } from "../src/ui/visualViewport.js";
 
 describe("boxFor: the box a fixed layer takes to cover exactly what the person sees", () => {
   it("is nothing while the page is not zoomed and not moved (inset: 0 already does)", () => {
@@ -23,5 +23,18 @@ describe("boxFor: the box a fixed layer takes to cover exactly what the person s
 
   it("a scale a hair off 1 (rounding) counts as 1", () => {
     expect(boxFor({ scale: 1.004, offsetLeft: 0, offsetTop: 0, width: 400.4, height: 870 })).toBeNull();
+  });
+});
+
+describe("frameFor: the layer that is exactly the visible part, the keyboard's shrinking of it included", () => {
+  it("is nothing while the visible part is the whole window (the stylesheet's inset: 0 does it)", () => {
+    expect(frameFor({ scale: 1, offsetLeft: 0, offsetTop: 0, width: 402, height: 874 }, 874)).toBeNull();
+    expect(frameFor(null, 874)).toBeNull();
+  });
+
+  it("with the keyboard up the layer is as high as what is left of the screen, where the visible part starts", () => {
+    expect(frameFor({ scale: 1, offsetLeft: 0, offsetTop: 0, width: 402, height: 520 }, 874)).toEqual({ position: "fixed", inset: "auto", left: 0, top: 0, width: 402, height: 520 });
+    // Panned down by the browser to show the focused field.
+    expect(frameFor({ scale: 1, offsetLeft: 0, offsetTop: 120, width: 402, height: 520 }, 874)).toMatchObject({ top: 120, height: 520 });
   });
 });

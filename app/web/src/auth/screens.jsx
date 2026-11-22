@@ -4,6 +4,7 @@ import { BrandMark, Btn, Field, Notice, TextLink, focusInvalid } from "../ui/pri
 import { fieldOf, messageFor, verifyMessage } from "./errors.js";
 import { clearResetToken, navigate, takeResetToken, takeReturn } from "./router.js";
 import * as rules from "./validation.js";
+import { useVisibleFrame } from "../ui/visualViewport.js";
 
 function Link({ to, children, primary = false }) {
   const onClick = (e) => {
@@ -25,8 +26,9 @@ function Link({ to, children, primary = false }) {
 
 function AuthCard({ title, lead, children, footer }) {
   const titleId = useId();
+  const frame = useVisibleFrame(); // (the keyboard shrinks what is visible: the page is only as high as that, and scrolls inside it)
   return (
-    <main className="auth-page">
+    <main className="auth-page" style={frame ?? undefined}>
       <section className="auth-card" aria-labelledby={titleId}>
         <header className="auth-head">
           <BrandMark size={44} />
