@@ -888,7 +888,9 @@ owner learns from the `run` push and from `GET /api/conversations/:id/run` (in a
 pressing anything. Passing means only an explicit signal while THE REPLY AS A WHOLE has produced nothing yet
 (`src/agents/runtime/port.ts` `passingEnding`, THE classifier, which tags the failed end `transient`; one reply-wide
 fact, set once: any text or thinking received in any round, an acknowledgement posted, a tool round completed — for a run
-the service lost, `agent_runs.progressed`, set by the acknowledgement and by every step between tool rounds): the model
+the service lost, `agent_runs.progressed`, set at the reply's first piece of text or thinking (one write of the run's row,
+once per reply, before the next piece is read), by the acknowledgement and by every step between tool rounds, and at a
+release at shutdown what the worker knew): the model
 service answered 5xx, 408 or 429; a call error with no status, a stream cut short or the reply's own time out; or the
 service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep). After anything
 was produced none of these is passing (the reply already spent and did things; repeating them unattended is not

@@ -232,12 +232,32 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
   }
 
-  /** The service is closing: the run is ended here, as recovery would end it, instead of being left for the next start. */
-  async function release(run: RunTicket): Promise<void> {
+  /**
+   * The service is closing: the run is ended here, as recovery would end it, instead of being left for the next start —
+   * with what is known here of its reply (`progress`: it had produced something; `AgentPort.release`).
+   */
+  async function release(run: RunTicket, progress = false): Promise<void> {
     try {
-      await port.release(run);
+      await port.release(run, progress);
     } catch (err) {
       log.error({ err, runId: run.id }, "agent run: could not be ended as the service closed; it stays running until the stale-run sweep or the next start releases it");
+    }
+  }
+
+  /** The replies (this attempt's ticket) whose run has been told they produced something. */
+  const producing = new WeakSet<RunTicket>();
+  /**
+   * The reply has produced something — its first piece of text or thinking, in any round: told the port once per reply,
+   * for its run to record (`AgentPort.progressed`), so that the run lost after it is no passing failure either. A failure
+   * to record it is logged and the reply goes on (only a crash after it would then be taken as passing).
+   */
+  async function produced(run: RunTicket): Promise<void> {
+    if (producing.has(run)) return;
+    producing.add(run);
+    try {
+      await port.progressed(run);
+    } catch (err) {
+      log.warn({ err, runId: run.id }, "agent run: could not record that its reply had produced something");
     }
   }
 
@@ -299,6 +319,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
           if (event.type === "tool_call") continue;
           if (event.delta !== "") spoke = true;
           say(event.type, event.delta);
+          // The reply's first piece: its run records that it has produced something (once per reply, before more is read).
+          if (spoke && !producing.has(run)) await produced(run);
           if (port.shouldStop(run)) {
             interrupt("stop");
             break;
@@ -413,7 +435,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     // The service is closing: nothing is posted, and the run is ended here as recovery would end it (no charge).
     if (finished === null && why === "shutdown") {
       out.discard();
-      return release(run);
+      return release(run, last.progress === true);
     }
     out.end();
     const failed = (end: RunEnd) => finish(run, end, usage, failedFallback);

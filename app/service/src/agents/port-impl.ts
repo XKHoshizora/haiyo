@@ -1315,9 +1315,14 @@ export class DbAgentPort implements AgentPort {
     });
   }
 
-  /** `AgentPort.release`: the worker's run, ended as recovery ends one (`releaseRun`). */
-  async release(run: RunTicket): Promise<void> {
-    await this.releaseRun(run.id);
+  /** `AgentPort.release`: the worker's run, ended as recovery ends one (`releaseRun`), with what the worker knew. */
+  async release(run: RunTicket, progress = false): Promise<void> {
+    await this.releaseRun(run.id, progress);
+  }
+
+  /** `AgentPort.progressed`: one write of the run's row alone (no lock beyond it), only while it is running. */
+  async progressed(run: RunTicket): Promise<void> {
+    await this.deps.db.query("update agent_runs set progressed = true where id = $1 and status = 'running' and not progressed", [run.id]);
   }
 
   /**
@@ -1327,13 +1332,14 @@ export class DbAgentPort implements AgentPort {
    * by the one rule wakes the worker), publishes the notices its follow-up appended (pushing the Agent to its owner when
    * its others' daily budget refused the follow-up), and forgets its flags; a run whose
    * reply had been posted pushes that reply once more to its owner, first (`Hub.pushChargedReply`, as `finish` does).
-   * False when it was no longer running. Rejects, changing nothing, when it cannot be written.
+   * False when it was no longer running. Rejects, changing nothing, when it cannot be written. `progress`: the worker
+   * knew its reply had produced something (`AgentPort.release`); then it is no passing failure, whatever its row says.
    */
-  async releaseRun(runId: string): Promise<boolean> {
+  async releaseRun(runId: string, progress = false): Promise<boolean> {
     const { db, config, log } = this.deps;
     let recovered: Recovered | null;
     try {
-      recovered = await db.tx((t) => recoverRun(t, config, runId, log, this.now()));
+      recovered = await db.tx((t) => recoverRun(t, config, runId, log, this.now(), progress));
     } finally {
       this.flags.delete(runId);
     }
@@ -1448,9 +1454,10 @@ export async function recoverRuns(
  * replies a minute the reusable `rate_limited` run), if any, both in the run's own conversation (a draft has no
  * conversation: nothing) — and the notices the follow-up appended there. The run's Agent and conversation are read from
  * its row first (they never change), so that the locks are taken in their order: that conversation's row and the
- * `agents` row, then the run's, then (`settle`, the follow-up) the owner's `accounts` row.
+ * `agents` row, then the run's, then (`settle`, the follow-up) the owner's `accounts` row. `progress`: a release's
+ * knowledge that the reply had produced something, beside its row's `progressed` (a lost run is passing only without both).
  */
-async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<FastifyBaseLogger, "warn">, now: Date): Promise<Recovered | null> {
+async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<FastifyBaseLogger, "warn">, now: Date, progress = false): Promise<Recovered | null> {
   const of = (
     await t.query<{ agent_id: string | null; conversation_id: string | null }>("select agent_id, conversation_id from agent_runs where id = $1", [runId])
   ).rows[0];
@@ -1475,7 +1482,7 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
     ? { status: posted.stopped === true ? "stopped" : "done" }
     : state.interrupted
       ? { status: "cancelled", error: state.interrupted }
-      : failedEnd("provider_unavailable", { kind: "lost", progress: state.progressed });
+      : failedEnd("provider_unavailable", { kind: "lost", progress: state.progressed || progress });
   // A run settled already had its hold released with its record.
   const settled = (await t.query("select 1 from usage_records where run_id = $1", [runId])).rowCount !== 0;
   if (!settled) await settle(t, config, runId, null, NOTHING, end.status, new Date(), { forgiveAll: true, log });

@@ -160,7 +160,7 @@ export const UNAVAILABLE = { status: "failed", error: "provider_unavailable" } a
  * How a reply's model call ended badly, as the worker (and recovery) knows it: what `passingEnding` classifies. Each
  * carries `progress`, ONE fact about the reply as a whole, set once and never reset: whether it had produced anything yet
  * — any text or thinking received in any round, an acknowledgement posted, a tool round completed (for a run the service
- * lost, what its row recorded: `agent_runs.progressed`).
+ * lost, what its row recorded, `agent_runs.progressed`, and at a release what the worker knew: `AgentPort.release`).
  * - `upstream`: the call failed with an error of the gateway's (`code`), with the upstream's HTTP status when it answered one;
  * - `cut`: the stream ended without its finish; `timeout`: the reply's own time ran out;
  * - `nothing`: the answer finished and nothing visible was left (a content refusal, only thinking, a persona block cut at
@@ -327,8 +327,17 @@ export interface AgentPort {
    * settlement on no tokens, which
    * costs nothing, and the follow-up queued by the one rule. Its owner is told. Nothing when it had ended already.
    * Rejects when that cannot be written: the run then stays `running`, for the stale-run sweep or the next start.
+   * `progress`: what the worker knows of the reply as a whole — it had produced something (`Ending.progress`) — beside what
+   * its row recorded (`progressed`), so that such a reply released is no passing failure either. Absent: false.
    */
-  release(run: RunTicket): Promise<void>;
+  release(run: RunTicket, progress?: boolean): Promise<void>;
+  /**
+   * The reply has produced something: its first piece of text or thinking has come (the worker tells this once per reply,
+   * as it comes). Recorded on its run (`agent_runs.progressed`, one write of that row alone, nothing for a run no longer
+   * running), so that the run lost after it — a crash, the stale-run sweep — is no passing failure either (`Ending`
+   * `lost`). Rejects when it cannot be written; the reply goes on.
+   */
+  progressed(run: RunTicket): Promise<void>;
   /** Whether the run should stop now: its owner asked, or the Agent was paused, deleted or taken out of the run's conversation. */
   shouldStop(run: RunTicket): boolean;
 }

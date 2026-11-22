@@ -162,6 +162,71 @@ describe("after the reply produced something, nothing is passing (round 2 R-2)",
   });
 });
 
+describe("a run lost after its reply produced something is not passing: the row records it, and a release passes on what the worker knows (round 3 S-1)", () => {
+  const progressedOf = async (conv: string) => (await db.query<{ progressed: boolean }>("select progressed from agent_runs where conversation_id = $1 order by created_at", [conv])).rows.map((r) => r.progressed);
+
+  it("its first text streamed: the run records it before more is asked for, so a crash then is no passing failure; one lost before anything is tried again", async () => {
+    const { owner, conv } = await own("ar_lost_spoke");
+    const { worker } = instance();
+    await say(owner, conv, "讲个故事");
+    const hold = gateway.hangAfter("从前有座山，");
+    const running = worker.runOnce();
+    await hold.reached;
+    expect(await progressedOf(conv)).toEqual([true]);
+    // The process is gone (as at a crash): the next start recovers the run as lost.
+    expect(await recoverRuns(db, app.deps.config, app.log, now)).toBe(1);
+    await worker.stop();
+    await running;
+    expect((await runsOf(conv)).map((r) => [r.status, r.error])).toEqual([["failed", "provider_unavailable"]]);
+    expect(await slot(owner, conv)).toMatchObject({ status: "failed", retryable: true });
+
+    // The same, lost before the first piece came: tried again.
+    const quiet = await own("ar_lost_quiet");
+    const next = instance();
+    await say(quiet.owner, quiet.conv, "讲个故事");
+    const silent = gateway.hang();
+    const waiting = next.worker.runOnce();
+    await silent.reached;
+    expect(await progressedOf(quiet.conv)).toEqual([false]);
+    expect(await recoverRuns(db, app.deps.config, app.log, now)).toBe(1);
+    await next.worker.stop();
+    await waiting;
+    expect((await runsOf(quiet.conv)).map((r) => [r.status, r.auto_attempt])).toEqual([
+      ["failed", 0],
+      ["queued", 1],
+    ]);
+    await db.query("update agent_runs set status = 'cancelled' where conversation_id = $1 and status = 'queued'", [quiet.conv]);
+  });
+
+  it("thinking received is recorded the same", async () => {
+    const { owner, conv } = await own("ar_thought");
+    const { worker } = instance();
+    await say(owner, conv, "想一想");
+    gateway.fail("provider_unavailable", { afterReasoning: "我想想。" });
+    expect(await worker.runOnce()).toBe(true);
+    expect(await progressedOf(conv)).toEqual([true]);
+    expect((await runsOf(conv)).map((r) => r.status)).toEqual(["failed"]);
+  });
+
+  it("release at shutdown passes on what the worker knows: told the reply produced something, the run is not tried again, though its row says nothing", async () => {
+    const { port } = instance();
+    const a = await own("ar_release_a");
+    await say(a.owner, a.conv, "在吗");
+    const known = (await port.claimNext())!;
+    await port.release(known, true);
+    expect((await runsOf(a.conv)).map((r) => [r.status, r.auto_attempt])).toEqual([["failed", 0]]);
+    const b = await own("ar_release_b");
+    await say(b.owner, b.conv, "在吗");
+    const unknown = (await port.claimNext())!;
+    await port.release(unknown, false);
+    expect((await runsOf(b.conv)).map((r) => [r.status, r.auto_attempt])).toEqual([
+      ["failed", 0],
+      ["queued", 1],
+    ]);
+    await db.query("update agent_runs set status = 'cancelled' where conversation_id = $1 and status = 'queued'", [b.conv]);
+  });
+});
+
 describe("a greeting never hides its owner's message, however it ends (round 2 R-1)", () => {
   /** A new Agent whose greeting is running (claimed here), and its owner's message written meanwhile. */
   async function greetingRunning(name: string) {
