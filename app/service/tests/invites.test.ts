@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { createInvite, hashInviteCode, listInvites, revokeInvite, sweepExpiredSignups } from "../src/auth/invites.ts";
-import { api, mailLink, signUp } from "./helpers/actors.ts";
+import { api, mailLink, signUp, TERMS } from "./helpers/actors.ts";
 import { testDatabaseUrl } from "./helpers/env.ts";
 import { useApp } from "./helpers/harness.ts";
 
@@ -38,7 +38,7 @@ describe("invite codes good for several sign-ups", () => {
 
   const register = (inviteCode: string, n: number | string, extra: Record<string, unknown> = {}) =>
     api(app, null, "POST", "/api/register", {
-      inviteCode, email: `iv${n}@example.test`, password: PASSWORD, displayName: "Guest", handle: `iv_${n}`, ...extra,
+      inviteCode, email: `iv${n}@example.test`, password: PASSWORD, displayName: "Guest", handle: `iv_${n}`, ...TERMS, ...extra,
     });
   const row = async (code: string) =>
     (
@@ -167,7 +167,7 @@ describe("invite codes good for several sign-ups", () => {
     const owner = await signUp(app, "iv_dup");
     const code = await createInvite(db, { ttlHours: 1, uses: 3 });
     for (let i = 0; i < 4; i++) {
-      const body = { inviteCode: code, email: owner.email, password: PASSWORD, displayName: "X", handle: `dup_${i}` };
+      const body = { inviteCode: code, email: owner.email, password: PASSWORD, displayName: "X", handle: `dup_${i}`, ...TERMS };
       expect(await api(app, null, "POST", "/api/register", body)).toEqual(CREATED);
     }
     expect(await row(code)).toMatchObject({ uses: 0, usedBy: null });
@@ -295,7 +295,7 @@ describe("invite codes good for several sign-ups", () => {
     const owner = await signUp(app, "iv_slot");
     const code = await createInvite(db, { ttlHours: 1 });
     for (let i = 0; i < 12; i++) {
-      const body = { inviteCode: code, email: owner.email, password: PASSWORD, displayName: "X", handle: `slot_${i}` };
+      const body = { inviteCode: code, email: owner.email, password: PASSWORD, displayName: "X", handle: `slot_${i}`, ...TERMS };
       expect(await api(app, null, "POST", "/api/register", body)).toEqual(CREATED);
     }
     expect(await waiting(code)).toBe(0);
