@@ -45,6 +45,7 @@ describe("configured, with the web client served", () => {
     expect(r.statusCode).toBe(200);
     expect(r.headers.location).toBeUndefined();
     expect(r.headers["content-type"]).toBe("application/json");
+    expect(r.headers["cache-control"]).toBe("public, max-age=3600");
     expect(r.body).not.toContain("<html");
     expect(JSON.parse(r.body)).toEqual(EXPECTED);
   });

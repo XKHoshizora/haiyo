@@ -1,6 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import { describe, expect, test } from "vitest";
 import { changeSweep } from "../src/app.ts";
+import { registerDevice } from "../src/push/devices.ts";
 import { api, cookieHeaderFrom, mailLink, signIn, signUp, type Actor } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
 
@@ -99,6 +100,23 @@ describe("POST /api/push/devices", () => {
       [a.id, TOKEN_B],
     ]);
     expect(new Set(rows.map((r) => r.session_id)).size).toBe(2);
+  });
+});
+
+describe("registerDevice's failures", () => {
+  test("a database refusal is rethrown with its code only: nothing of the row (the token) can reach the error log", async () => {
+    const a = await signUp(app, "refused_row");
+    const token = "CANARYTOKEN";
+    let caught: unknown;
+    try {
+      // Past the route's schema on purpose: the table's own check refuses it, and Postgres's `detail` would quote the row.
+      await registerDevice(db, { principalId: a.id, sessionId: await sessionOf(a), token, env: "production", appVersion: null });
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { code?: string }).code).toBe("23514");
+    expect((caught as { detail?: string }).detail).toBeUndefined();
+    expect(JSON.stringify(caught, Object.getOwnPropertyNames(caught))).not.toContain(token);
   });
 });
 

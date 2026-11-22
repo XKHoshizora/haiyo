@@ -1,5 +1,5 @@
 import type { Db, Queryable } from "../db.ts";
-import { AppError } from "../errors.ts";
+import { AppError, isBusy } from "../errors.ts";
 
 /** Which APNs a token is for: a development build's is the sandbox's. */
 export type PushEnv = "sandbox" | "production";
@@ -24,18 +24,25 @@ export async function registerDevice(
   db: Db,
   d: { principalId: string; sessionId: string; token: string; env: PushEnv; appVersion: string | null },
 ): Promise<void> {
-  await db.tx(async (t) => {
-    const live = await t.query(`select 1 from "session" where id = $1 and "expiresAt" > now() for no key update`, [d.sessionId]);
-    if (live.rowCount === 0) throw new AppError(401, "unauthenticated");
-    await t.query("delete from push_devices where session_id = $1 and token <> $2", [d.sessionId, d.token]);
-    await t.query(
-      `insert into push_devices (principal_id, session_id, token, env, app_version) values ($1, $2, $3, $4, $5)
-       on conflict (token) do update
-         set principal_id = excluded.principal_id, session_id = excluded.session_id, env = excluded.env,
-             app_version = excluded.app_version, last_seen_at = now()`,
-      [d.principalId, d.sessionId, d.token, d.env, d.appVersion],
-    );
-  });
+  try {
+    await db.tx(async (t) => {
+      const live = await t.query(`select 1 from "session" where id = $1 and "expiresAt" > now() for no key update`, [d.sessionId]);
+      if (live.rowCount === 0) throw new AppError(401, "unauthenticated");
+      await t.query("delete from push_devices where session_id = $1 and token <> $2", [d.sessionId, d.token]);
+      await t.query(
+        `insert into push_devices (principal_id, session_id, token, env, app_version) values ($1, $2, $3, $4, $5)
+         on conflict (token) do update
+           set principal_id = excluded.principal_id, session_id = excluded.session_id, env = excluded.env,
+               app_version = excluded.app_version, last_seen_at = now()`,
+        [d.principalId, d.sessionId, d.token, d.env, d.appVersion],
+      );
+    });
+  } catch (err) {
+    // A busy database (errors.ts `isBusy`: 503) and our own refusals pass as they are. Any other database error would be
+    // logged whole as a 500, and Postgres's `detail` of a refused row quotes it — the token: only its code goes on.
+    if (err instanceof AppError || isBusy(err)) throw err;
+    throw Object.assign(new Error("push device registration failed"), { code: (err as { code?: string }).code });
+  }
 }
 
 /**

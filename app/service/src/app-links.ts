@@ -46,7 +46,8 @@ export function registerAppLinks(app: FastifyInstance): void {
     config: { webClient: true },
     handler: async (_req, reply) => {
       if (body === null) throw notFound();
-      return reply.header("content-type", "application/json").send(body);
+      // Chosen, not the API's `no-store`: the file changes only with a deploy, and Apple's CDN fetches it about daily anyway.
+      return reply.headers({ "content-type": "application/json", "cache-control": "public, max-age=3600" }).send(body);
     },
   });
 }
