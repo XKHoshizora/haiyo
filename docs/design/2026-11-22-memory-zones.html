@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记忆分区</title>
+<style>
+:root{
+  color-scheme: light;
+  --bg:#f6f5f1; --card:#ffffff; --sunk:#f0efec; --ink:#151514; --ink2:#52514e; --muted:#76746e; --line:#e1e0d9;
+  --blue:#2a78d6; --orange:#eb6834;
+  --ok:#0f7a52; --ok-soft:#e0f3ea; --no:#5f5e5a; --no-soft:#ecebe7; --lock:#6a45c4; --lock-soft:#eee8fa;
+  --rec:#9a4a0c; --rec-soft:#fff2e3; --rec-line:#f1c48f; --bad:#b03a2e; --bad-soft:#fbe9e6; --good-soft:#e7f1fb;
+  --bubble:#eef3fb; --bubble2:#f3f1ec; --sys:#f7f3ea;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    color-scheme: dark;
+    --bg:#0f0f0e; --card:#1a1a19; --sunk:#242422; --ink:#f0efec; --ink2:#c3c2b7; --muted:#9a988f; --line:#33332f;
+    --blue:#5598e7; --orange:#e2703f;
+    --ok:#46c99a; --ok-soft:#14291f; --no:#b2b0a7; --no-soft:#2a2a27; --lock:#ad95f2; --lock-soft:#251e38;
+    --rec:#f2a964; --rec-soft:#2c2014; --rec-line:#6b4a24; --bad:#f08a7c; --bad-soft:#341c18; --good-soft:#17263a;
+    --bubble:#1d2636; --bubble2:#262522; --sys:#262217;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+.wrap{max-width:920px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:1.65rem;line-height:1.3;margin:.2em 0 .3em}
+h2{font-size:1.3rem;line-height:1.35;margin:2.4em 0 .6em;padding-top:.4em;border-top:1px solid var(--line)}
+h3{font-size:1.05rem;margin:1.2em 0 .4em}
+p{margin:.5em 0}
+small,.small{font-size:.86rem;color:var(--muted)}
+.lead{color:var(--ink2)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.sunk{background:var(--sunk);border-radius:10px;padding:10px 12px}
+.toc{display:flex;flex-wrap:wrap;gap:6px 14px;margin:12px 0 0;padding:0;list-style:none;font-size:.92rem}
+.toc a{color:var(--blue);text-decoration:none}
+.toc a:hover{text-decoration:underline}
+.rec{background:var(--rec-soft);border:1px solid var(--rec-line);border-radius:14px;padding:14px 16px}
+.rec .tag{display:inline-block;font-size:.8rem;font-weight:700;color:var(--rec);border:1px solid var(--rec-line);border-radius:999px;padding:0 10px;margin-bottom:4px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(262px,1fr));gap:14px}
+/* chips */
+.chip{display:inline-flex;align-items:center;gap:3px;font-size:.8rem;line-height:1.5;border-radius:999px;padding:1px 8px;white-space:nowrap;font-weight:600}
+.chip svg{width:12px;height:12px;flex:none}
+.ok{background:var(--ok-soft);color:var(--ok)}
+.no{background:var(--no-soft);color:var(--no)}
+.lk{background:var(--lock-soft);color:var(--lock)}
+.ic{width:14px;height:14px;vertical-align:-2px}
+/* flow */
+.flow{display:flex;flex-direction:column;align-items:center;gap:0}
+.node{background:var(--card);border:1.5px solid var(--line);border-radius:12px;padding:8px 12px;text-align:center;max-width:100%}
+.node.q{border-style:dashed}
+.down{width:2px;height:18px;background:var(--muted);position:relative;margin:0 auto}
+.down::after{content:"";position:absolute;left:-5px;bottom:-2px;border:6px solid transparent;border-top-color:var(--muted);border-bottom:0}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%}
+.branch{display:flex;flex-direction:column;align-items:center}
+.blabel{font-size:.82rem;color:var(--muted);margin:2px 0}
+.bucket{width:100%;border-radius:12px;padding:10px;text-align:center}
+.bucket.open{background:var(--ok-soft)}
+.bucket.vault{background:var(--lock-soft)}
+.bucket.band{background:var(--good-soft)}
+.bucket b{display:block}
+.reach{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-top:6px}
+/* stories */
+.story h3{margin-top:0}
+.steps{list-style:none;margin:0;padding:0;counter-reset:s}
+.steps li{position:relative;padding:6px 0 6px 30px;border-left:2px solid var(--line);margin-left:10px}
+.steps li::before{counter-increment:s;content:counter(s);position:absolute;left:-12px;top:6px;width:22px;height:22px;border-radius:50%;background:var(--card);border:2px solid var(--line);font-size:.78rem;font-weight:700;display:flex;align-items:center;justify-content:center;color:var(--ink2)}
+.steps li.bad::before{border-color:var(--bad);color:var(--bad)}
+.bubble{display:inline-block;background:var(--bubble);border-radius:12px 12px 12px 4px;padding:3px 10px;margin:2px 0;font-size:.94rem}
+.bubble.me{background:var(--bubble2);border-radius:12px 12px 4px 12px}
+.who{font-size:.78rem;color:var(--muted);margin-right:4px}
+.badge{display:inline-block;font-size:.78rem;font-weight:700;border-radius:6px;padding:0 8px}
+.badge.leak{background:var(--bad-soft);color:var(--bad)}
+.badge.mute{background:var(--no-soft);color:var(--no)}
+/* directions */
+.dir{display:flex;flex-direction:column;gap:10px}
+.dir h3{margin:0;font-size:1.1rem}
+.dir .letter{display:inline-flex;width:28px;height:28px;border-radius:8px;background:var(--ink);color:var(--card);align-items:center;justify-content:center;font-weight:800;margin-right:8px;vertical-align:-1px}
+.dir.recd{border:2px solid var(--rec-line)}
+.minitag{font-size:.75rem;font-weight:700;color:var(--rec);margin-left:6px}
+table{border-collapse:collapse;width:100%}
+.trace th,.trace td{padding:5px 3px;text-align:center;font-size:.82rem;border-bottom:1px solid var(--line);vertical-align:middle}
+.trace th{font-weight:600;color:var(--ink2);font-size:.76rem;line-height:1.3}
+.trace td:first-child,.trace th:first-child{text-align:left;padding-left:0}
+.trace td:first-child{font-weight:600;font-size:.84rem;line-height:1.35}
+.trace .chip{padding:1px 6px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:.9rem;margin:0}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0}
+.risk{font-size:.9rem;margin:0;padding-left:1.1em}
+.risk li{margin:2px 0}
+/* charts */
+.chart{margin:6px 0 4px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:.85rem;color:var(--ink2);margin:4px 0 10px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.row{display:grid;grid-template-columns:8.2em 1fr;gap:2px 10px;align-items:center;margin:8px 0}
+.row .lab{font-size:.88rem;line-height:1.3;color:var(--ink)}
+.row .lab small{display:block}
+.bars{display:flex;flex-direction:column;gap:3px}
+.bar{display:grid;grid-template-columns:minmax(0,1fr) 7.4em;align-items:center;gap:6px;font-size:.82rem;color:var(--ink2);min-height:16px}
+.trk{display:block;height:14px;background:linear-gradient(to right,var(--line) 1px,transparent 1px)}
+.fill{display:block;height:14px;border-radius:0 4px 4px 0;min-width:2px}
+.val{white-space:nowrap}
+.fill.o{background:var(--orange)}
+.fill.b{background:var(--blue)}
+.track{flex:1;display:flex;align-items:center;gap:6px;position:relative}
+.axis{display:grid;grid-template-columns:8.2em 1fr;gap:10px;font-size:.75rem;color:var(--muted)}
+.ticks{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding-top:2px;margin-right:calc(7.4em + 6px)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.tile .big{font-size:1.5rem;font-weight:700;line-height:1.2}
+.tile .cap{font-size:.84rem;color:var(--ink2)}
+details{margin:8px 0}
+summary{cursor:pointer;color:var(--blue);font-size:.9rem}
+.data th,.data td{border-bottom:1px solid var(--line);padding:4px 6px;font-size:.84rem;text-align:right}
+.data th:first-child,.data td:first-child{text-align:left}
+.read{border-left:3px solid var(--blue);padding:4px 0 4px 12px;margin:10px 0}
+.read.o{border-left-color:var(--orange)}
+/* mock */
+.phone{max-width:390px;margin:0 auto;background:var(--card);border:1px solid var(--line);border-radius:22px;padding:14px 14px 18px;box-shadow:0 1px 0 var(--line)}
+.ph-head{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:6px}
+.ph-head b{font-size:1.05rem}
+.sec{font-size:.82rem;color:var(--muted);margin:12px 0 4px;font-weight:600}
+.note{border-bottom:1px solid var(--line);padding:8px 0}
+.note:last-child{border-bottom:0}
+.note .t{font-size:.95rem}
+.note .where{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.note .learned{font-size:.8rem;color:var(--ink2);background:var(--sunk);border-radius:8px;padding:4px 8px;margin-top:6px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.undo{color:var(--blue);font-weight:600;white-space:nowrap;font-size:.8rem}
+.conly{outline:2px dashed var(--rec-line);outline-offset:2px;border-radius:8px}
+.chat{display:flex;flex-direction:column;gap:8px}
+.sysline{background:var(--sys);border-radius:10px;padding:8px 10px;font-size:.84rem}
+.sysline .hd{font-weight:700;font-size:.8rem;color:var(--ink2);margin-bottom:2px}
+.sysline .l{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:2px 0}
+/* decisions */
+.dec{counter-reset:d;list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:12px}
+.dec>li{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.dec>li>b{display:block;margin-bottom:6px}
+.dec>li>b::before{counter-increment:d;content:counter(d) "．";color:var(--muted)}
+.opts{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px}
+.opts li{border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:.93rem}
+.opts li.pick{border:2px solid var(--rec-line);background:var(--rec-soft)}
+.opts li.pick::before{content:"建议";font-size:.72rem;font-weight:700;color:var(--rec);border:1px solid var(--rec-line);border-radius:999px;padding:0 7px;margin-right:6px}
+.why{font-size:.84rem;color:var(--muted);margin-top:4px}
+.open-list li{margin:4px 0}
+svg text{font-family:inherit}
+@media (max-width:420px){
+  body{font-size:15px}
+  h1{font-size:1.4rem}
+  .row,.axis{grid-template-columns:6.6em 1fr}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-ok" viewBox="0 0 16 16"><path d="M3 8.5l3.2 3L13 4.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-no" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7" rx="1.6" fill="currentColor"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="i-wait" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 5v3.3l2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+</svg>
+
+<div class="wrap">
+
+<header>
+  <small>Haiyo · 产品设计 · 2026-11-22 · 给你定方向用</small>
+  <h1>记忆分区：助手在哪个群，能用哪几条“关于我”</h1>
+  <p class="lead">你的助手记了很多关于你的事，它也在你的家庭群、工作群、朋友群里替你说话。问题是：<b>哪条笔记，能在哪个群里用？</b>这一页把今天的做法、三个可选方向、实验结果和你要拍板的事放在一起，尽量用图说话。</p>
+  <div class="rec" style="margin-top:12px">
+    <span class="tag">我的建议</span>
+    <p style="margin:.2em 0 0">选 <b>C</b>：每个群单独判断能用哪几条，再从你自己在群里的言行里学（放开要你亲口说过，收紧一句“别说”就够）。分两步上：先上 B，紧接着加学习。你要定的 5 件事在<a href="#decide">第 5 节</a>。</p>
+  </div>
+  <ul class="toc">
+    <li><a href="#today">1 今天怎么做</a></li>
+    <li><a href="#dirs">2 三个方向并排比</a></li>
+    <li><a href="#data">3 实验结果</a></li>
+    <li><a href="#see">4 你会看到什么</a></li>
+    <li><a href="#decide">5 建议和你要定的事</a></li>
+  </ul>
+  <p class="small">所有数字我都按原始实验文件重新算了一遍，和之前的总结一致，没有出入。</p>
+</header>
+
+<!-- ============ 1 ============ -->
+<h2 id="today">1　今天怎么做</h2>
+<p>每条新笔记只分一次：是“谁知道都无妨”的小习惯，就到处都能用；其余的（行程、健康、钱、工作变动、感情、计划……拿不准也算）一律进保险箱，只在你和助手的私聊里用。</p>
+
+<div class="card" role="img" aria-label="今天的做法：一条新笔记先分拣，小习惯到处可用，其余进保险箱只在私聊用">
+  <div class="flow">
+    <div class="node">一条新笔记</div>
+    <div class="down"></div>
+    <div class="node q">分拣：这是“谁知道都无妨”的小习惯吗？</div>
+    <div class="down"></div>
+    <div class="split">
+      <div class="branch">
+        <span class="blabel">是</span>
+        <div class="bucket open"><b>到处都能用</b>
+          <div class="reach"><span class="chip ok"><svg><use href="#i-ok"/></svg>私聊</span><span class="chip ok"><svg><use href="#i-ok"/></svg>所有群</span></div>
+        </div>
+      </div>
+      <div class="branch">
+        <span class="blabel">不是 / 拿不准（大多数）</span>
+        <div class="bucket vault"><b>保险箱</b>
+          <div class="reach"><span class="chip ok"><svg><use href="#i-ok"/></svg>私聊</span><span class="chip no"><svg><use href="#i-no"/></svg>群里</span></div>
+          <small>例外：在哪个群里说过，那个群能用</small>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p style="margin-top:14px">它会在两个方向上出错：</p>
+<div class="grid2">
+  <div class="card story">
+    <h3><span class="badge leak">说漏了</span>　少见，但会发生</h3>
+    <ol class="steps">
+      <li>保险箱里有一条：“在偷偷申请澳洲的学校，还没跟领导说”</li>
+      <li>你在「大学室友群」里随口说：<br><span class="bubble me"><span class="who">你</span>明年可能去澳洲</span></li>
+      <li class="bad">助手整理时把这句记成一条<b>新</b>笔记。它只和这个群里的笔记比过，没和保险箱比；分拣觉得像普通打算 → <b>到处都能用</b></li>
+      <li class="bad">「部门群」里同事问明年谁带项目：<br><span class="bubble"><span class="who">助手</span>他明年可能去澳洲哦</span></li>
+    </ol>
+    <p class="small">第 3 步要分拣看走眼才会漏；多常见，没量过。这是个结构上的口子，三个方向都会补上。</p>
+  </div>
+  <div class="card story">
+    <h3><span class="badge mute">白白不说</span>　天天发生</h3>
+    <ol class="steps">
+      <li>笔记：“下周三到周五去大阪出差” → 分拣：这是行程，不算小习惯 → <b>保险箱</b></li>
+      <li class="bad">「部门群」：<br><span class="bubble"><span class="who">同事</span>周四下午开个会？</span><br>助手不知道你不在，帮你应了下来</li>
+      <li class="bad">「家庭群」：<br><span class="bubble"><span class="who">妈妈</span>这周末回来吃饭吗？</span><br>助手也说不上来</li>
+    </ol>
+    <p class="small">实验里有一条几乎一样的笔记（“下周三到周五去苏州工厂出差”），三位标注员在这个人的 6 个群里<b>全都</b>认为可以说。今天的做法一个群都不让用。</p>
+  </div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="dirs">2　三个方向，并排比</h2>
+<p>同样三条笔记、同样三个群，走一遍每个方向。<span class="chip ok"><svg><use href="#i-ok"/></svg>能用</span> <span class="chip no"><svg><use href="#i-no"/></svg>不用</span> <span class="chip lk"><svg><use href="#i-lock"/></svg>保险箱</span></p>
+<p class="small">群：家庭群（爸妈在）· 部门群（领导在）· 好友群（大学室友）。“工资两万三”的结果借用实验里最像的一条（“每月工资加夜班费一万二左右”）的真实打分：家人 62 分、工作群 32 分、闺蜜 66 分，过 50 分才用。</p>
+
+<div class="grid3">
+
+  <!-- A -->
+  <div class="card dir">
+    <h3><span class="letter">A</span>两个格子，只补漏洞</h3>
+    <p class="small" style="margin:0">今天的做法不变，只把“说漏了”那个口子堵上：你在群里说的话，先和保险箱里每一条比一比，说的是同一件事就不另记。</p>
+    <div class="sunk">
+      <div class="flow" style="font-size:.86rem">
+        <div class="node">笔记 → 分拣</div>
+        <div class="down"></div>
+        <div class="split">
+          <div class="bucket open"><b>到处都能用</b></div>
+          <div class="bucket vault"><b>保险箱</b><small>只在私聊</small></div>
+        </div>
+      </div>
+    </div>
+    <table class="trace">
+      <thead><tr><th>笔记</th><th>家庭群</th><th>部门群</th><th>好友群</th></tr></thead>
+      <tbody>
+        <tr><td>不吃香菜</td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td></tr>
+        <tr><td>下周去大阪出差</td><td><span class="chip lk"><svg><use href="#i-lock"/></svg></span></td><td><span class="chip lk"><svg><use href="#i-lock"/></svg></span></td><td><span class="chip lk"><svg><use href="#i-lock"/></svg></span></td></tr>
+        <tr><td>工资两万三</td><td><span class="chip lk"><svg><use href="#i-lock"/></svg></span></td><td><span class="chip lk"><svg><use href="#i-lock"/></svg></span></td><td><span class="chip lk"><svg><use href="#i-lock"/></svg></span></td></tr>
+      </tbody>
+    </table>
+    <dl class="kv">
+      <dt>每次回复多等</dt><dd>0 秒</dd>
+      <dt>花费</dt><dd>你在群里说到自己的事时，和保险箱每条比一次（几十道判断题），在后台做</dd>
+      <dt>钱</dt><dd>判断模型的单价代码里没有，只能按题数算，钱数未知</dd>
+    </dl>
+    <div><b style="font-size:.9rem">可能出什么错</b>
+      <ul class="risk"><li>助手在群里还是很少能体贴你：能用的有一半以上用不上</li><li>保险箱越来越满，你会觉得它“什么都不记得”</li></ul>
+    </div>
+  </div>
+
+  <!-- B -->
+  <div class="card dir">
+    <h3><span class="letter">B</span>每个群单独判断</h3>
+    <p class="small" style="margin:0">中间这层不再一律锁住：对每条笔记、每个群，问判断模型一句“他会愿意助手在这群里用这条吗？”。两头由规则定死，只有中间这层才问：</p>
+    <div class="sunk">
+      <div class="flow" style="font-size:.86rem">
+        <div class="node">笔记 → 分拣</div>
+        <div class="down"></div>
+        <div style="display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:6px;width:100%">
+          <div class="bucket open" style="padding:6px"><b>到处都能用</b><small>小习惯，不用问</small></div>
+          <div class="bucket band" style="padding:6px"><b>看群决定</b><small>每个群问一次，答案存起来</small></div>
+          <div class="bucket vault" style="padding:6px"><b>保险箱</b><small>你亲手锁的，只在私聊</small></div>
+        </div>
+      </div>
+    </div>
+    <table class="trace">
+      <thead><tr><th>笔记</th><th>家庭群</th><th>部门群</th><th>好友群</th></tr></thead>
+      <tbody>
+        <tr><td>不吃香菜</td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td></tr>
+        <tr><td>下周去大阪出差</td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td></tr>
+        <tr><td>工资两万三</td><td><span class="chip ok" title="借用实验打分 62，过 50 分"><svg><use href="#i-ok"/></svg>62</span></td><td><span class="chip no" title="借用实验打分 32，不到 50 分"><svg><use href="#i-no"/></svg>32</span></td><td><span class="chip ok" title="借用实验打分 66，过 50 分"><svg><use href="#i-ok"/></svg>66</span></td></tr>
+      </tbody>
+    </table>
+    <dl class="kv">
+      <dt>每次回复多等</dt><dd>0 秒：判断提前在后台做好，回复时直接查</dd>
+      <dt>花费</dt><dd>每条“看群决定”的笔记 × 每个群，问 2 道题（带群名问一次、不带群名问一次，取更谨慎的）。只在笔记或群变了时才重问。40 条、6 个群的人，第一次约 480 题，分 6 批，每批 0.2–0.35 秒；之后每天几十题</dd>
+      <dt>钱</dt><dd>同 A，按题数算，钱数未知</dd>
+    </dl>
+    <div><b style="font-size:.9rem">可能出什么错</b>
+      <ul class="risk"><li>该藏的约 2–3% 会被放行（多是钱的事，分数刚过线）</li><li>能用的仍有约四分之一没用上</li><li>系统自己写的“群里都有谁”比实验里人写的粗，上线前要重测</li><li>新笔记要过几秒到几分钟才在群里可用</li></ul>
+    </div>
+  </div>
+
+  <!-- C -->
+  <div class="card dir recd">
+    <h3><span class="letter">C</span>B ＋ 从你身上学<span class="minitag">建议</span></h3>
+    <p class="small" style="margin:0">起点和 B 一样；然后看你自己在群里怎么做，越用越懂你：</p>
+    <div class="sunk" role="img" aria-label="学习的两个方向：你在群里亲口说过就在这个群放开；你说别说就收紧，而且别的群也更谨慎">
+      <svg viewBox="0 0 300 150" width="100%" style="display:block;max-width:330px;margin:0 auto">
+        <rect x="95" y="55" width="110" height="40" rx="10" fill="var(--good-soft)" stroke="var(--blue)" stroke-width="1.5"/>
+        <text x="150" y="80" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)">看群决定</text>
+        <rect x="4" y="6" width="128" height="40" rx="10" fill="var(--ok-soft)"/>
+        <text x="68" y="23" text-anchor="middle" font-size="11.5" fill="var(--ok)" font-weight="700">你在这个群亲口说了</text>
+        <text x="68" y="39" text-anchor="middle" font-size="11" fill="var(--ink2)">→ 只这个群放开</text>
+        <rect x="168" y="6" width="128" height="40" rx="10" fill="var(--bad-soft)"/>
+        <text x="232" y="23" text-anchor="middle" font-size="11.5" fill="var(--bad)" font-weight="700">你说“别说”</text>
+        <text x="232" y="39" text-anchor="middle" font-size="11" fill="var(--ink2)">→ 这群不再用，别处更严</text>
+        <path d="M68 46 C68 60 80 70 95 72" fill="none" stroke="var(--ok)" stroke-width="1.6"/>
+        <path d="M232 46 C232 60 220 70 205 72" fill="none" stroke="var(--bad)" stroke-width="1.6"/>
+        <text x="150" y="118" text-anchor="middle" font-size="11.5" fill="var(--ink2)">放开要你亲口说过、标准高；进了新人就失效</text>
+        <text x="150" y="137" text-anchor="middle" font-size="11.5" fill="var(--ink2)">收紧一句就够、标准低；每一次都看得见、能撤销</text>
+      </svg>
+    </div>
+    <table class="trace">
+      <thead><tr><th>工资两万三</th><th>家庭群</th><th>部门群</th><th>好友群</th></tr></thead>
+      <tbody>
+        <tr><td>起点（同 B）</td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip no"><svg><use href="#i-no"/></svg></span></td><td><span class="chip ok"><svg><use href="#i-ok"/></svg></span></td></tr>
+        <tr><td style="font-weight:400">助手在好友群提了，你说<br>“这个别在群里说”</td><td><span class="chip no" title="62 分不到收紧后的 70 分"><svg><use href="#i-no"/></svg></span></td><td><span class="chip no"><svg><use href="#i-no"/></svg></span></td><td><span class="chip no"><svg><use href="#i-no"/></svg></span></td></tr>
+        <tr><td style="font-weight:400">后来你在家庭群<br>自己说“我现在一个月两万三”</td><td><span class="chip ok" title="你亲口说过；群里进了新人就失效"><svg><use href="#i-ok"/></svg></span></td><td><span class="chip no"><svg><use href="#i-no"/></svg></span></td><td><span class="chip no"><svg><use href="#i-no"/></svg></span></td></tr>
+      </tbody>
+    </table>
+    <p class="small" style="margin:0">另外两条和 B 一样。</p>
+    <dl class="kv">
+      <dt>每次回复多等</dt><dd>0 秒</dd>
+      <dt>花费</dt><dd>B ＋ 你在群里接着助手说话时，偶尔多问 1 题“你是不是在叫它别说”</dd>
+      <dt>钱</dt><dd>同上，钱数未知</dd>
+    </dl>
+    <div><b style="font-size:.9rem">可能出什么错</b>
+      <ul class="risk"><li>学错：把你打断玩笑的“别说了”当成不许说 → 会少说一条，你一点撤销就回来</li><li>你一句含糊或事后（比如一小时后在私聊里）的抱怨，可能学不到</li><li>要做的东西最多</li></ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="data">3　实验结果</h2>
+<p>12 个虚构的人，每人 12–16 条笔记、5–7 个群，一共 <b>993 对</b>“笔记 × 群”。三位标注员各自判断“这条在这个群里能不能用”，以多数为准；判断模型对每一对打一个 0–100 的把握分。你自己也标了其中 48 对。</p>
+
+<h3>两种错，放在同一把尺上</h3>
+<div class="legend"><span><span class="sw" style="background:var(--orange)"></span>该藏的被放出来（危险的那种错）</span><span><span class="sw" style="background:var(--blue)"></span>能用的没用上（白白不说）</span></div>
+<div class="chart" role="img" aria-label="条形图：今天约 0.8% 该藏的被放出、53% 能用的没用上；只靠判断模型 2.4% 和 31%；B 约 2.9% 和 25%">
+  <div class="row"><div class="lab">今天的做法<small>估算</small></div>
+    <div class="bars">
+      <div class="bar" title="375 对该藏的里放出 3 对"><span class="trk"><span class="fill o" style="width:calc(0.8% / 70 * 100)"></span></span><span class="val">0.8%（3/375）</span></div>
+      <div class="bar" title="538 对能用的里没用上 287 对"><span class="trk"><span class="fill b" style="width:calc(53.3% / 70 * 100)"></span></span><span class="val">53%（287/538）</span></div>
+    </div></div>
+  <div class="row"><div class="lab">只靠判断模型<small>过 50 分才用</small></div>
+    <div class="bars">
+      <div class="bar" title="375 对里放出 9 对"><span class="trk"><span class="fill o" style="width:calc(2.4% / 70 * 100)"></span></span><span class="val">2.4%（9/375）</span></div>
+      <div class="bar" title="538 对里没用上 168 对"><span class="trk"><span class="fill b" style="width:calc(31.2% / 70 * 100)"></span></span><span class="val">31%（168/538）</span></div>
+    </div></div>
+  <div class="row"><div class="lab">B（和 C 的起点）<small>估算</small></div>
+    <div class="bars">
+      <div class="bar" title="375 对里放出 11 对"><span class="trk"><span class="fill o" style="width:calc(2.9% / 70 * 100)"></span></span><span class="val">2.9%（11/375）</span></div>
+      <div class="bar" title="538 对里没用上 133 对"><span class="trk"><span class="fill b" style="width:calc(24.7% / 70 * 100)"></span></span><span class="val">25%（133/538）</span></div>
+    </div></div>
+  <div class="axis"><span></span><div class="ticks"><span>0</span><span>35%</span><span>70%</span></div></div>
+</div>
+<p class="small">“估算”：实验里没有跑真正的分拣，我用出题人标的“到处无妨”代替。真正的分拣更严（行程也不算无妨），所以今天的“没用上”其实比 53% 还高；B 的真实数字落在“B 估算”和“只靠判断”之间。C 的学习部分没法事先量，上线后才有数。</p>
+
+<div class="read o"><b>“375 对里放出 9 对”对一个真实用户意味着什么？</b><br>
+实验里每人大约有 31 对“该藏”。这 9 次放行落在 12 个人里的 4 个人身上，其中 1 个人占了 5 次。<b>放行不等于说出口</b>：只有群里正好聊到相关的事，助手才可能用上。这 9 对的分数都在 50–65 分，刚过线；有 5 对是钱的事，比如“这个月只进账三千，收入很不稳定”被允许在家庭群用。</div>
+<div class="tiles">
+  <div class="tile"><div class="big">0 / 35</div><div class="cap">“瞒着群里某个人”的事，一次都没放行（比如“还没告诉爸妈”放在有爸妈的群）</div></div>
+  <div class="tile"><div class="big">0 / 36</div><div class="cap">“说的是群里某个人”的事，一次都没放行（比如吐槽室友，室友就在群里）</div></div>
+  <div class="tile"><div class="big">0 秒</div><div class="cap">回复多等的时间。一个群的 13–14 条同时判断，一般 0.16 秒、最慢 0.33 秒，但都在后台</div></div>
+</div>
+<p class="small">注意：这两个 0 是在“群里都有谁”由人写得很清楚的情况下量的（写明了“小敏也在”“爸妈在”）。系统自己写的会粗一些，所以设计里加了一条：凡是“瞒着某人”的笔记，只在你说清楚了每个人是谁的群里用。</p>
+
+<div class="read"><b>更大的毛病是“能用的没用上”。</b><br>
+判断模型宁可不说：能用的三对里有一对它没用。差一点过线（30–50 分）的就有 85 对。它比你更胆小——看你自己标的：</div>
+
+<div class="chart" role="img" aria-label="条形图：你标的 23 对该藏的里放出 1 对；16 对能用的里没用上 10 对">
+  <div class="row"><div class="lab">你自己标的 48 对<small>过 50 分才用</small></div>
+    <div class="bars">
+      <div class="bar" title="你说该藏的 23 对里放出 1 对"><span class="trk"><span class="fill o" style="width:calc(4.3% / 70 * 100)"></span></span><span class="val">4%（1/23）</span></div>
+      <div class="bar" title="你说能用的 16 对里没用上 10 对"><span class="trk"><span class="fill b" style="width:calc(62.5% / 70 * 100)"></span></span><span class="val">63%（10/16）</span></div>
+    </div></div>
+  <div class="axis"><span></span><div class="ticks"><span>0</span><span>35%</span><span>70%</span></div></div>
+</div>
+<p class="small">那 1 对是“工作日下午五点半要去幼儿园接老大”放在两百人的小区团购群——三位标注员里两位觉得可以，你觉得不行。你说“看情况”的 9 对，它全按“不用”处理。</p>
+
+<h3>为什么要从你本人身上学</h3>
+<div class="tiles">
+  <div class="tile"><div class="big">74%</div><div class="cap">三位标注员完全一致的比例，其余各有分歧</div></div>
+  <div class="tile"><div class="big">60%</div><div class="cap">你和他们多数意见一致的比例（48 对里 29 对）；你有的地方比他们严，有的地方比他们松</div></div>
+  <div class="tile"><div class="big">8 / 12</div><div class="cap">至少 8 个人最敢说的是朋友群，不是家人群；只有 1 个人是家人排最前</div></div>
+</div>
+<p>所以“家人最亲”这条线不行，但每个人自己心里确实有一个顺序。下面两根柱子都是<b>拿答案倒推出来的最好成绩</b>（每条笔记在哪儿划线也是倒推的），只用来比较两种排法：</p>
+<div class="chart" role="img" aria-label="条形图：913 对里，规定家人群排最前，最好也要错 57 对；每人按自己的顺序排，最好只错 13 对">
+  <div class="legend"><span><span class="sw" style="background:var(--blue)"></span>913 对（标注员意见明确的）里，最好也要错的对数</span></div>
+  <div class="row"><div class="lab">规定家人群排最前<small>其余怎么排都行</small></div><div class="bars"><div class="bar"><span class="trk"><span class="fill b" style="width:calc(57 / 70 * 100%)"></span></span><span class="val">57</span></div></div></div>
+  <div class="row"><div class="lab">每人按自己的顺序</div><div class="bars"><div class="bar"><span class="trk"><span class="fill b" style="width:calc(13 / 70 * 100%)"></span></span><span class="val">13</span></div></div></div>
+  <div class="axis"><span></span><div class="ticks"><span>0</span><span>35</span><span>70</span></div></div>
+</div>
+<p class="small">规定家人最亲，错误多出 4 倍多——这就是你说的“能告诉朋友的反而不告诉家人”。而“每人按自己的顺序”现实里没人能事先写出来，但它说明你的分寸有规律，可以一点点学出来，这正是 C 要做的。（判断模型手里没有答案，同样这 913 对它错 177 对，其中 168 对是没用上。）</p>
+
+<h3>松一点还是严一点</h3>
+<div class="chart" role="img" aria-label="条形图：40 分 放出 5.6% 没用上 22%；50 分 2.4% 和 31%；60 分 0.5% 和 46%">
+  <div class="legend"><span><span class="sw" style="background:var(--orange)"></span>该藏的被放出来</span><span><span class="sw" style="background:var(--blue)"></span>能用的没用上</span></div>
+  <div class="row"><div class="lab">过 40 分就用</div><div class="bars">
+    <div class="bar" title="21/375"><span class="trk"><span class="fill o" style="width:calc(5.6% / 70 * 100)"></span></span><span class="val">5.6%（21）</span></div>
+    <div class="bar" title="119/538"><span class="trk"><span class="fill b" style="width:calc(22.1% / 70 * 100)"></span></span><span class="val">22%（119）</span></div></div></div>
+  <div class="row"><div class="lab">过 50 分<small>建议</small></div><div class="bars">
+    <div class="bar" title="9/375"><span class="trk"><span class="fill o" style="width:calc(2.4% / 70 * 100)"></span></span><span class="val">2.4%（9）</span></div>
+    <div class="bar" title="168/538"><span class="trk"><span class="fill b" style="width:calc(31.2% / 70 * 100)"></span></span><span class="val">31%（168）</span></div></div></div>
+  <div class="row"><div class="lab">过 60 分</div><div class="bars">
+    <div class="bar" title="2/375"><span class="trk"><span class="fill o" style="width:calc(0.5% / 70 * 100)"></span></span><span class="val">0.5%（2）</span></div>
+    <div class="bar" title="246/538"><span class="trk"><span class="fill b" style="width:calc(45.7% / 70 * 100)"></span></span><span class="val">46%（246）</span></div></div></div>
+  <div class="axis"><span></span><div class="ticks"><span>0</span><span>35%</span><span>70%</span></div></div>
+</div>
+
+<details>
+  <summary>看数字表格</summary>
+  <table class="data">
+    <thead><tr><th>情况</th><th>该藏的被放出来</th><th>能用的没用上</th></tr></thead>
+    <tbody>
+      <tr><td>今天的做法（估）</td><td>3 / 375</td><td>287 / 538</td></tr>
+      <tr><td>只靠判断模型，40 分</td><td>21 / 375</td><td>119 / 538</td></tr>
+      <tr><td>只靠判断模型，50 分</td><td>9 / 375</td><td>168 / 538</td></tr>
+      <tr><td>只靠判断模型，60 分</td><td>2 / 375</td><td>246 / 538</td></tr>
+      <tr><td>B（估），50 分</td><td>11 / 375</td><td>133 / 538</td></tr>
+      <tr><td>你标的 48 对，50 分</td><td>1 / 23</td><td>10 / 16</td></tr>
+      <tr><td>之前那个“更严的两道关”方案（已否决）</td><td>—</td><td>本来 91% 能在群里用的事，只剩 35%</td></tr>
+    </tbody>
+  </table>
+</details>
+
+<!-- ============ 4 ============ -->
+<h2 id="see">4　你会看到什么</h2>
+<p>B 和 C 都会把“关于我”分成三块。每条“看群决定”的笔记下面列出你的群，点一下就改，改了就听你的。<span class="conly" style="padding:0 4px">虚线框</span>里的只有 C 才有。</p>
+
+<div class="grid2">
+  <div class="phone" role="img" aria-label="关于我页面的示意">
+    <div class="ph-head"><b>关于我</b><small>我的所有助手共用</small></div>
+
+    <div class="sec">到处都能用</div>
+    <div class="note"><div class="t">不吃香菜</div><div class="where"><span class="chip ok"><svg><use href="#i-ok"/></svg>所有群</span></div></div>
+
+    <div class="sec">看群决定 · 每个群单独判断</div>
+    <div class="note"><div class="t">下周三到周五去大阪出差</div>
+      <div class="where"><span class="chip ok"><svg><use href="#i-ok"/></svg>家庭群</span><span class="chip ok"><svg><use href="#i-ok"/></svg>部门群</span><span class="chip ok"><svg><use href="#i-ok"/></svg>大学室友群</span></div>
+    </div>
+    <div class="note"><div class="t">工资两万三</div>
+      <div class="where"><span class="chip ok"><svg><use href="#i-ok"/></svg>家庭群</span><span class="chip no"><svg><use href="#i-no"/></svg>部门群</span><span class="chip no"><svg><use href="#i-no"/></svg>大学室友群</span><span class="chip no" style="opacity:.8"><svg><use href="#i-wait"/></svg>新群 判断中</span></div>
+      <div class="learned conly"><span>你在「大学室友群」说“这个别在群里说” · 那个群不再提，别的群更谨慎</span><span class="undo">撤销</span></div>
+      <div class="learned conly"><span>你在「家庭群」自己说过 · 那个群可以提（群里进了新人就不算）</span><span class="undo">撤销</span></div>
+    </div>
+
+    <div class="sec">保险箱 · 只在私聊用</div>
+    <div class="note"><div class="t">在偷偷申请澳洲的学校，还没跟领导说</div><div class="where"><span class="chip lk"><svg><use href="#i-lock"/></svg>你锁上的</span></div></div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div class="phone conly" role="img" aria-label="私聊里的记忆提示示意">
+      <div class="ph-head"><b>和助手的私聊</b><small>只有你看得到</small></div>
+      <div class="chat">
+        <div class="sysline"><div class="hd">记忆有变化</div>
+          <div class="l"><span>以后在「大学室友群」不提：工资两万三</span><span class="undo">撤销</span></div>
+          <div class="l"><span>以后在「家庭群」可以提：工资两万三（你自己在群里说过）</span><span class="undo">撤销</span></div>
+        </div>
+        <p class="small" style="margin:0">这是系统提示条，不是助手说的话；一小时最多一条，攒在一起。</p>
+      </div>
+    </div>
+    <div class="phone" role="img" aria-label="群设置示意">
+      <div class="ph-head"><b>部门群 · 设置</b></div>
+      <div class="sec" style="margin-top:4px">Haiyo 眼中的这个群</div>
+      <div class="sunk" style="font-size:.9rem">十来个人；你叫“老板”的 1 个人在里面；4 个是你的联系人，其余你没加过。</div>
+      <div class="sec">这个群是……（可不填，只有你和你的助手看得到）</div>
+      <div class="sunk" style="font-size:.9rem;color:var(--muted)">比如：公司部门群，领导在，别聊私事</div>
+      <p class="small" style="margin:.6em 0 0">群名和群友的昵称别人能改，所以它们只能让助手更谨慎，不能让它更放开。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="decide">5　建议和你要定的事</h2>
+<div class="rec">
+  <span class="tag">我的建议</span>
+  <p style="margin:.2em 0"><b>选 C，分两步上：先上 B（每个群单独判断，同时补上“说漏了”的口子），紧接着加学习。</b></p>
+  <ul style="margin:.3em 0;padding-left:1.2em">
+    <li>A 安全，但助手在群里基本没法体贴你，等于放弃了主要价值。</li>
+    <li>B 把“白白不说”从一半以上降到大约四分之一，代价是该藏的约 2–3% 被放行，而且多在分数刚过线、话题恰好相关时才可能说出口；最要紧的两类（瞒着群里某人的、说群里某人的）实验里一次没漏。</li>
+    <li>每个人分寸不一样（你和标注员只有六成一致），只有 C 能慢慢贴近你；它学到的每一点你都看得见、一点就撤销，不用你回答任何问题、也不让群里任何人等你。</li>
+  </ul>
+  <p class="small" style="margin:.4em 0 0">动手之前我还要先做 4 个测量：用系统自己写的“群里都有谁”重跑那 993 对；量真正的分拣；试“别说”和“亲口说过”这两道新题；再请你多标一些，尤其是大群和行程类。</p>
+</div>
+
+<h3>你要定的 5 件事</h3>
+<ol class="dec">
+  <li><b>走哪个方向？</b>
+    <ul class="opts">
+      <li class="pick">C：每个群单独判断，再从你身上学（先 B 后学习）</li>
+      <li>B：只做每个群单独判断，不学</li>
+      <li>A：保持两个格子，只补漏洞</li>
+    </ul></li>
+  <li><b>判断模型多有把握才让助手在群里用？</b>
+    <ul class="opts">
+      <li class="pick">过 50 分：该藏的放出 2.4%，能用的没用上 31%</li>
+      <li>过 60 分：放出 0.5%，没用上 46%（更稳，但助手更常白白不说）</li>
+      <li>过 40 分：放出 5.6%，没用上 22%</li>
+    </ul>
+    <p class="why">以后能按实际数据再调。</p></li>
+  <li><b>你在某个群里说了“别说这个”之后？</b>
+    <ul class="opts">
+      <li class="pick">这个群不再用；别的群对这一条更严（要 70 分以上才用）</li>
+      <li>只这个群不再用，别的群照旧</li>
+      <li>这一条直接进保险箱，哪个群都不用</li>
+    </ul>
+    <p class="why">收紧要比放开更快、更宽：错了的代价只是少说一句，而且你一点就能撤销。</p></li>
+  <li><b>你亲手锁上的笔记，如果最早是在某个群里说的？</b>
+    <ul class="opts">
+      <li class="pick">锁了就是只在私聊用，那个群也不用</li>
+      <li>那个群还能用（今天的做法）</li>
+    </ul>
+    <p class="why">没锁、只是系统觉得要小心的笔记，在说过的那个群照样能用，直到群里进了新人。</p></li>
+  <li><b>助手学到了东西，怎么让你知道？</b>
+    <ul class="opts">
+      <li class="pick">私聊里出一条“记忆有变化”的提示（带撤销），“关于我”里那条笔记下面也写着</li>
+      <li>只在“关于我”里写着，不提示</li>
+    </ul>
+    <p class="why">潜在用户问的第一个问题就是“它会不会自我进化”，让进步看得见是卖点；提示条是系统发的，不是助手说的固定句子。</p></li>
+</ol>
+
+<h3>还没解决、先说清楚的</h3>
+<ul class="open-list">
+  <li>两条各自无妨的笔记合起来会露馅（比如“每周三下午请假”加上“常去某家专科医院”）。一条一条判断看不出来，先量一量有多常见。</li>
+  <li>笔记里叫“小敏”，群里她的昵称是“敏敏”，系统可能认不出是同一个人。你在群设置里给她起个称呼就能解决。</li>
+  <li>你和某人关系变了（比如分手了），称呼还没改，系统还按旧关系判断。</li>
+  <li>你在大群里比标注员更在意行程（比如接孩子的时间）。目前只有你一个标注，先多收集再决定要不要专门处理。</li>
+  <li>含糊的、事后的、在私聊里补的抱怨，可能学不到。</li>
+  <li>新人进群后，助手以前在这个群里说过的话还在它的记忆里，可能被再提起。这是今天就有的问题，不是这次新加的，另外处理。</li>
+</ul>
+
+<p class="small" style="margin-top:2em">设计细节和一份专门挑刺的检查（28 种攻击：改群名带节奏、新人进群、两个人的助手在同一群、缓存过期、群友诱导、主人 8 小时不在……）另有两份内部文档；其中 4 个能补的口子已经补进设计，6 个还开着的就是上面这几条。</p>
+
+</div>
+</body>
+</html>
