@@ -170,6 +170,26 @@ export function Modal({ title, onClose, children, footer, wide }) {
   );
 }
 
+/**
+ * The line of a list that is not loaded yet: loading until the first sync has answered; once the connection has failed (it retries by itself,
+ * with a back-off), the failure and a retry, never 「正在读取…」 for ever.
+ */
+export function LoadingRow() {
+  const { state, actions } = useStore();
+  const failing = state.connection === "reconnecting";
+  return (
+    <li className="rows-empty" role="status">
+      {failing ? (
+        <>
+          连不上服务，正在重试… <Btn small onClick={() => actions.syncNow()}>立即重试</Btn>
+        </>
+      ) : (
+        "正在读取…"
+      )}
+    </li>
+  );
+}
+
 export function Field({ label, hint, error, children }) {
   const id = useId();
   return (

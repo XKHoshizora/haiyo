@@ -5,7 +5,7 @@ import { Btn, Field, Modal, Notice, Reason, Tag, focusInvalid } from "../ui/prim
 import { ChevronDown, ChevronLeft, Lock, Plus, Search } from "../icons.js";
 import { refusalText, settled, useAction } from "./useAction.js";
 import { forgetDraft, peekDraft, saveDraft } from "../data/drafts.js";
-import { markReplace, useUp } from "../state/appHistory.js";
+import { useUp } from "../state/appHistory.js";
 import { levelLabel } from "./ModelPicker.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 
@@ -598,6 +598,8 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
   const keyRef = useRef(null);
   // What was typed here before (an accidental Back, a way out and in again): in memory only, keyed by the page's address.
   const draft = useRef(peekDraft(draftKey)).current;
+  /** The page's address (from the page, not from the browser: the form is drawn before the address is written): a close or a move after an await is made only if the person is still here. */
+  const at = `/settings/providers/${draftKey}`;
   const [f, setF] = useState(() => draft?.f ?? { name: provider?.name ?? "", protocol: provider?.protocol ?? PROTOCOLS[0][0], baseUrl: provider?.baseUrl ?? "" });
   const [models, setModels] = useState(() => draft?.models ?? (provider?.models ?? []).map(formModel));
   const latestModels = useRef(models);
@@ -677,6 +679,11 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
     if (field === "name" && refusal?.code === "name_taken") setRefusal(null);
     if (field === "baseUrl") clearTest();
   };
+  /** The page's own 返回 and 取消: what was typed (a key among it) is forgotten at once; only the browser's Back and Forward keep it. */
+  const cancel = () => {
+    forgetDraft(draftKey);
+    onBack(at);
+  };
   const remember = (keyText) => saveDraft(draftKey, { f: latestForm.current, models: latestModels.current, keyText });
   useEffect(() => {
     remember(keyRef.current?.value ?? "");
@@ -742,8 +749,8 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
     const res = await pending;
     if (!res.ok) return refused(res.error, true);
     forgetDraft(draftKey);
-    if (res.value?.id) onCreated(res.value.id);
-    else onBack();
+    if (res.value?.id) onCreated(res.value.id, at);
+    else onBack(at);
   };
 
   const save = async () => {
@@ -759,7 +766,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
       // (After 保留原密钥 the owner made a choice: it is confirmed, quietly, rather than met with nothing.)
       if (keptKey.current) dispatch({ type: "toast", text: KEY_KEPT });
       forgetDraft(draftKey);
-      onBack();
+      onBack(at);
       return;
     }
     const pending = run("save", () => settled(actions.patchProvider(provider.id, patch)), () => "");
@@ -769,7 +776,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
     if (!res.ok) return refused(res.error, Boolean(apiKey));
     dispatch({ type: "toast", text: "供应商已保存" });
     forgetDraft(draftKey);
-    onBack();
+    onBack(at);
   };
 
   const submit = async (event) => {
@@ -834,7 +841,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
 
   return (
     <section className="page" aria-label={editing ? "编辑模型供应商" : "添加模型供应商"}>
-      <button type="button" className="back" onClick={onBack}>
+      <button type="button" className="back" onClick={cancel}>
         <ChevronLeft size={20} aria-hidden="true" /> 返回
       </button>
       <header className="profile-head">
@@ -933,7 +940,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
         <Notice tone="info">{PRIVACY_TEXT}</Notice>
         {refusal && refusal.code !== "name_taken" && <Notice tone="warn">{refusal.text}</Notice>}
         <div className="form-actions">
-          <Btn onClick={onBack}>取消</Btn>
+          <Btn onClick={cancel}>取消</Btn>
           <Btn variant="primary" type="submit" disabled={busy !== null}>
             {busy === "save" ? "保存中…" : editing ? "保存" : "保存并选择模型"}
           </Btn>
@@ -964,7 +971,7 @@ export function ProvidersPage({ back }) {
   const up = useUp();
   // The form is a page of its own, and an address (/settings/providers/new, /settings/providers/<id>): Back is the list.
   const { providerId } = state.nav;
-  const open = (id, created = false) => dispatch({ type: "nav", patch: { providerId: id, providerCreated: created } });
+  const open = (id, created = false, replace = false) => dispatch({ type: "nav", replace, patch: { providerId: id, providerCreated: created } });
   const [load, setLoad] = useState("loading");
   const [removing, setRemoving] = useState(null);
   const reload = useCallback(async () => {
@@ -987,8 +994,7 @@ export function ProvidersPage({ back }) {
   const gone = load === "ok" && providerId && providerId !== "new" && !state.providers[providerId];
   useEffect(() => {
     if (!gone) return;
-    markReplace();
-    dispatch({ type: "nav", patch: { providerId: null, providerCreated: false } });
+    dispatch({ type: "nav", replace: true, patch: { providerId: null, providerCreated: false } });
     dispatch({ type: "toast", text: "找不到这个模型供应商" });
   }, [gone, dispatch]);
 
@@ -998,10 +1004,9 @@ export function ProvidersPage({ back }) {
         key="new"
         draftKey="new"
         onBack={up}
-        onCreated={(id) => {
-          // (The form ends in what it made: its entry becomes the new provider's page.)
-          markReplace();
-          open(id, true);
+        onCreated={(id, at) => {
+          // (The form ends in what it made: its entry becomes the new provider's page, if the person is still on the form.)
+          if (window.location.pathname === at) open(id, true, true);
         }}
       />
     );
@@ -1040,7 +1045,10 @@ export function ProvidersPage({ back }) {
         {providers.length > 0 ? (
           <ul className="member-rows" aria-label="我的模型供应商">
             {providers.map((p) => (
-              <ProviderRow key={p.id} provider={p} onEdit={() => open(p.id)} onDelete={() => setRemoving(p)} />
+              <ProviderRow key={p.id} provider={p} onEdit={() => {
+                forgetDraft(p.id); // (An edit starts from the stored provider, never from a draft of an edit that was cancelled.)
+                open(p.id);
+              }} onDelete={() => setRemoving(p)} />
             ))}
           </ul>
         ) : load === "loading" ? (

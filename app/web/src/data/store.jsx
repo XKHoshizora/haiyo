@@ -27,6 +27,8 @@ export function emptyState(me = null) {
       /** The provider form shown on the providers page: "new", a provider id, or null (the list). */
       providerId: null,
       providerCreated: false,
+      /** How the last move of the navigation enters the history: "push" or "replace" (state/reducer.js). */
+      navIntent: "push",
       agentId: null,
       agentView: "detail",
       agentTab: "profile",

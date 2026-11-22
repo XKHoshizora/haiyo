@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { ANN, BO, D1, G1, ME_ID, apiError, at, deferred, direct, group, range, syncOf, wire } from "./fixtures.js";
 import { button, click, elapse, flush, installBrowser, openApp, push, toastText } from "./harness.jsx";
 import { Highlight, excerpt } from "../src/pages/SearchHits.jsx";
+import { searchHitView } from "../src/data/viewmodel.js";
 import { READ_DELAY_MS } from "../src/pages/ChatView.jsx";
 
 beforeAll(() => {
@@ -66,6 +67,13 @@ function tallList(scrollTop, { scrollHeight = 3000, clientHeight = 600 } = {}) {
   Object.defineProperty(list, "clientHeight", { configurable: true, get: () => clientHeight });
   return list;
 }
+
+describe("the view of a hit keeps its mentions for the list to draw", () => {
+  it("ids are mapped (mine is me) and a file hit has none", () => {
+    const view = searchHitView(wire(G1, 5, ANN, "@bo 好", { mentions: [{ id: ME_ID, start: 0, length: 3 }] }), { meId: ME_ID, now: Date.now() });
+    expect(view.mentions).toEqual([{ id: "me", start: 0, length: 3 }]);
+  });
+});
 
 describe("text of a hit", () => {
   it("marks every match, ignoring case, from text nodes only", () => {
@@ -291,6 +299,17 @@ describe("search inside a conversation", () => {
     expect(screen.getByText("2+ 条结果")).toBeTruthy();
     expect(listEl().style.display).toBe("none");
     expect(getComputedStyle(listEl()).display).toBe("none");
+  });
+
+  it("a hit is drawn as the bubble draws it: a mention is @name (not the handle typed), and an Agent's hit has no bidi control or mark", async () => {
+    const typed = "聚餐 @bo 来";
+    const searchConversation = vi.fn(async () => page([hit(150, typed, { mentions: [{ id: BO, start: 3, length: 3 }] })]));
+    await inChat({ searchConversation });
+    typeInChat("聚餐");
+    await elapse(300);
+    const preview = document.querySelector(".search-hits .row-preview").textContent;
+    expect(preview).toBe("聚餐 @阿波 来");
+    expect(preview).not.toContain("@bo");
   });
 
   it("closing the search brings the list back where it was, or at the newest messages when it was there", async () => {

@@ -6,7 +6,7 @@ import React, { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 import { PAGE_KEYS, addressOf, keyOf, navOfAddress, parentOf } from "../src/state/location.js";
-import { goUp, markReplace, useAppHistory } from "../src/state/appHistory.js";
+import { goUp, useAppHistory } from "../src/state/appHistory.js";
 import { Modal } from "../src/ui/primitives.jsx";
 
 const C1 = "00000000-0000-4000-8000-0000000000c1";
@@ -58,17 +58,19 @@ function Probe({ initial = {} }) {
   const [nav, set] = useState({ ...BASE, ...initial });
   const dispatch = (action) => {
     moves.push(action);
-    if (action.patch) set((n) => ({ ...n, ...action.patch }));
+    // (As the reducer records it: the intent of a move is data on the navigation.)
+    const navIntent = action.intent === "none" ? "none" : action.replace === true ? "replace" : "push";
+    if (action.patch) set((n) => ({ ...n, ...action.patch, navIntent }));
   };
-  drive = { set: (patch) => set((n) => ({ ...n, ...patch })), dispatch, nav };
+  drive = { set: (patch, replace = false) => set((n) => ({ ...n, ...patch, navIntent: replace ? "replace" : "push" })), dispatch, nav };
   drive.nav = nav;
   useAppHistory({ nav, dispatch });
   return <output data-nav={JSON.stringify(nav)} />;
 }
 const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
 const at = () => window.location.pathname + (window.history.state?.overlay ? `#${window.history.state.overlay}` : "");
-const go = async (patch) => {
-  act(() => drive.set(patch));
+const go = async (patch, replace = false) => {
+  act(() => drive.set(patch, replace));
   await settle();
 };
 const back = async () => {
@@ -155,8 +157,7 @@ describe("navigating pushes, always, when the address differs", () => {
     await go({ section: "agents", pane: "list" });
     await go({ pane: "main", agentView: "create" });
     expect(at()).toBe("/agents/new");
-    markReplace();
-    await go(chatOf(C1, { section: "chat", agentView: "detail" }));
+    await go(chatOf(C1, { section: "chat", agentView: "detail" }), true);
     expect(at()).toBe(`/chat/${C1}`);
     expect(navNow()).toMatchObject({ convId: C1, pane: "main" });
     await back();
@@ -187,6 +188,18 @@ describe("closing a page with its own button", () => {
     act(() => window.history.forward());
     await settle();
     expect(at()).toBe(`/chat/${C1}`);
+  });
+
+  it("n6: a close that runs after an await (a save) does nothing once the person is on another page", async () => {
+    render(<Probe />);
+    await settle();
+    await go(chatOf(C1));
+    act(() => goUp(drive.dispatch, "/settings/providers/new")); // the form that asked is not where the person is
+    await settle();
+    expect(at()).toBe(`/chat/${C1}`);
+    act(() => goUp(drive.dispatch, `/chat/${C1}`)); // the page that asked is still here
+    await settle();
+    expect(at()).toBe("/");
   });
 
   it("replaces by the parent when the parent is not the entry below, and nothing is pushed", async () => {
@@ -367,6 +380,8 @@ import { reducer } from "../src/state/reducer.js";
 import { emptyState } from "../src/data/store.jsx";
 import { lastPageOf, forgetSections } from "../src/state/appHistory.js";
 
+const ALIVE = { convs: { [C1]: { type: "group" }, [C2]: { type: "group" } }, people: {}, agents: {}, providers: {} };
+
 describe("the page-deciding keys equal their address after every move", () => {
   const pick = (nav) => Object.fromEntries(PAGE_KEYS.map((key) => [key, nav[key] ?? null]));
   const initial = () => emptyState({ id: "me" });
@@ -399,6 +414,36 @@ describe("the page-deciding keys equal their address after every move", () => {
     }
   });
 
+  it("n1: a key that is not placed throws in the reducer, whether or not it was ever in the initial navigation (a page key cannot arrive by dispatch alone)", () => {
+    expect(() => reducer(initial(), { type: "nav", patch: { sidePage: "x" } })).toThrow(/not placed/);
+    expect(() => reducer(initial(), { type: "nav/openConv", convId: C1, patch: { sidePage: "x" } })).toThrow(/not placed/);
+    expect(() => reducer(initial(), { type: "nav", patch: { agentNote: { text: "x" } } })).not.toThrow();
+  });
+
+  it("every move records its own intent as data: push by default, replace when asked, none for a close the browser already made", () => {
+    const state = initial();
+    expect(reducer(state, { type: "nav", patch: { section: "contacts" } }).nav.navIntent).toBe("push");
+    expect(reducer(state, { type: "nav", replace: true, patch: { section: "contacts" } }).nav.navIntent).toBe("replace");
+    expect(reducer(state, { type: "nav", intent: "none", patch: { section: "contacts" } }).nav.navIntent).toBe("none");
+    expect(reducer(state, { type: "nav/openConv", convId: C1, replace: true }).nav.navIntent).toBe("replace");
+  });
+
+  it("a move that changes no address keeps the intent of the one before it, so two moves in one commit cannot turn a replace into a push", () => {
+    let state = reducer(initial(), { type: "nav", patch: { section: "agents", pane: "list" } });
+    state = reducer(state, { type: "nav", replace: true, patch: { section: "agents", pane: "main", agentId: AG, agentView: "detail" } });
+    state = reducer(state, { type: "nav", patch: { opening: { convId: C1 } } }); // (a conversation waited for: no address of its own)
+    expect(state.nav.navIntent).toBe("replace");
+    state = reducer(state, { type: "nav/openConv", convId: C1 });
+    expect(state.nav.navIntent).toBe("push"); // (a move to another address is its own: a push)
+  });
+
+  it("n2: providerCreated belongs to the page it was set for: another provider page clears it", () => {
+    let state = reducer(initial(), { type: "nav", patch: { section: "settings", pane: "main", settingsPage: "providers", providerId: "p1", providerCreated: true } });
+    expect(state.nav.providerCreated).toBe(true);
+    state = reducer(state, { type: "nav", patch: { providerId: "p2" } });
+    expect(state.nav.providerCreated).toBe(false);
+  });
+
   it("N1: a list address draws no selection: back at the list, the conversation, the contact and the Agent are gone from the page keys", () => {
     let state = reducer(initial(), { type: "nav", patch: { section: "chat", pane: "main", convId: C1, detailsOpen: true } });
     state = reducer(state, { type: "nav", patch: { section: "contacts", pane: "list" } });
@@ -418,17 +463,17 @@ describe("the page-deciding keys equal their address after every move", () => {
 
   it("N1: a section click goes to the last address seen in it (and to its list when it was left on the list)", async () => {
     forgetSections();
-    expect(lastPageOf("chat")).toMatchObject({ pane: "list", convId: null });
+    expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "list", convId: null });
     render(<Probe />);
     await settle();
     await go(chatOf(C1));
     await go({ section: "contacts", pane: "list", convId: null });
-    expect(lastPageOf("chat")).toMatchObject({ pane: "main", convId: C1, detailsOpen: false });
-    expect(lastPageOf("contacts")).toMatchObject({ pane: "list" });
-    await go(lastPageOf("chat"));
+    expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "main", convId: C1, detailsOpen: false });
+    expect(lastPageOf("contacts", ALIVE)).toMatchObject({ pane: "list" });
+    await go(lastPageOf("chat", ALIVE));
     expect(at()).toBe(`/chat/${C1}`);
     await go({ pane: "list", convId: null }); // back at the list: that is where the section was left
-    expect(lastPageOf("chat")).toMatchObject({ pane: "list", convId: null });
+    expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "list", convId: null });
   });
 
   it("the providers form is an address: /settings/providers/new and /settings/providers/<id>", () => {
