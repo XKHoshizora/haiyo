@@ -286,3 +286,122 @@ test("Back: a conversation, the viewer over it, and a reload inside it", async (
   await page.goBack();
   await expect(bar(page)).toBeVisible();
 });
+
+/** A finger resting on `locator` for `ms` (the DevTools touch events: a real touch, so pointerType is "touch"), then lifted. */
+async function press(page, locator, ms) {
+  const box = await locator.boundingBox();
+  const x = box.x + Math.min(box.width / 2, 40);
+  const y = box.y + box.height / 2;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+  await page.waitForTimeout(ms);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await cdp.detach();
+}
+
+test("a long-press on a bubble opens its menu: 回复 quotes it, 复制 copies the text; no 回复 is drawn under a bubble on touch", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { ...PHONE, permissions: ["clipboard-read", "clipboard-write"] } });
+  const bo = await people.member("Bo");
+  const dm = await befriend(ann, bo);
+  await sendApi(bo, dm, "长按我试试");
+  const page = ann.page;
+  const chat = await openChat(page, bo.displayName);
+  const bubble = chat.locator(".bubble", { hasText: "长按我试试" });
+  await expect(bubble).toBeVisible();
+  await expect(chat.locator(".msg-action").first()).toBeHidden(); // not drawn on touch
+
+  // A short touch is a tap: nothing opens. The browser's own selection does not start on a held bubble.
+  await press(page, bubble, 150);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await press(page, bubble, 700);
+  const menu = page.getByRole("menu", { name: "消息操作" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem")).toHaveText(["回复", "复制"]);
+  expect(await page.evaluate(() => window.getSelection().toString())).toBe("");
+  const frame = await menu.boundingBox();
+  expect(frame.x).toBeGreaterThanOrEqual(0);
+  expect(frame.x + frame.width).toBeLessThanOrEqual(375);
+  const composerTop = (await chat.locator(".composer").boundingBox()).y;
+  expect(frame.y + frame.height).toBeLessThanOrEqual(composerTop);
+  await polishShot(page, "mobile-bubble-menu");
+
+  await menu.getByRole("menuitem", { name: "复制" }).click();
+  await expect(page.locator(".toast")).toHaveText("已复制");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("长按我试试");
+
+  await press(page, bubble, 700);
+  await page.getByRole("menuitem", { name: "回复" }).click();
+  await expect(chat.locator(".reply-chip")).toContainText("长按我试试");
+
+  // A tap elsewhere closes an open menu.
+  await press(page, bubble, 700);
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.mouse.click(10, 300);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+});
+
+test("the chat header is one row at 375 and at 320: back, picture, title, then search and menu, 44px each, nothing overlapping", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: PHONE });
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const title = `一行${uniq(4)}`;
+  await createGroupApi(ann, [bo, cy], title);
+  const page = ann.page;
+  await page.reload();
+  for (const width of [375, 320]) {
+    await page.setViewportSize({ width, height: 800 });
+    const chat = await openChat(page, title);
+    const head = chat.locator(".chat-head");
+    const parts = [
+      head.getByRole("button", { name: "返回列表" }),
+      head.locator(".chat-title"),
+      head.getByRole("button", { name: "搜索本会话" }),
+      head.getByRole("button", { name: "群资料" }),
+      head.getByRole("button", { name: "会话资料" }),
+    ];
+    const boxes = [];
+    for (const part of parts) boxes.push(await part.boundingBox());
+    const middle = boxes[0].y + boxes[0].height / 2;
+    for (const box of boxes) expect(Math.abs(box.y + box.height / 2 - middle), `${width}px: one row`).toBeLessThanOrEqual(30);
+    for (const box of [boxes[0], boxes[2], boxes[3], boxes[4]]) expect(box.width).toBeGreaterThanOrEqual(43.5);
+    // Left to right, no overlap (the picture's box is not counted: it is drawn smaller than its place).
+    expect(boxes[1].x + boxes[1].width).toBeLessThanOrEqual(boxes[2].x + 0.5);
+    expect(boxes[2].x + boxes[2].width).toBeLessThanOrEqual(boxes[3].x + 0.5);
+    expect(boxes[3].x + boxes[3].width).toBeLessThanOrEqual(boxes[4].x + 0.5);
+    expect(boxes[4].x + boxes[4].width).toBeLessThanOrEqual(width);
+    expect(await noSideways(page)).toBe(true);
+    if (width === 375) await polishShot(page, "mobile-chat-header-375");
+    await chat.getByRole("button", { name: "返回列表" }).click();
+  }
+});
+
+test("desktop: the 回复 button shows on hover and the right-click menu opens (a link keeps the browser's own menu: unit-tested, a person's text has no links)", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const bo = await people.member("Bo");
+  const dm = await befriend(ann, bo);
+  await sendApi(bo, dm, "右键我");
+  const page = ann.page;
+  const chat = await openChat(page, bo.displayName);
+  const item = chat.getByRole("listitem").filter({ hasText: "右键我" });
+  const button = item.locator(".msg-action");
+  await expect(button).toHaveCSS("opacity", "0");
+  await item.hover();
+  await expect(button).toHaveCSS("opacity", "1");
+
+  await item.locator(".bubble").click({ button: "right" });
+  const menu = page.getByRole("menu", { name: "消息操作" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem")).toHaveText(["回复", "复制"]);
+  await page.keyboard.press("ArrowDown");
+  await expect(menu.getByRole("menuitem", { name: "复制" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  // The keyboard's own way to it, from the 回复 button of the message.
+  await button.focus();
+  await page.keyboard.press("Shift+F10");
+  await expect(menu).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(button).toBeFocused();
+});

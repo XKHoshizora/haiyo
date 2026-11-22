@@ -4,7 +4,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { ANN, D1, direct, syncOf, wire } from "./fixtures.js";
+import { ANN, D1, G1, direct, group, syncOf, wire } from "./fixtures.js";
 import { flush, goContacts, installBrowser, openApp } from "./harness.jsx";
 import { COARSE_QUERY, PHONE_QUERY } from "../src/ui/pointer.js";
 import { AvatarDialog } from "../src/pages/AvatarDialog.jsx";
@@ -134,5 +134,29 @@ describe("the avatar dialog's save button", () => {
     expect(save().textContent).toBe("保存中…");
     expect(save().className).toContain("btn-save");
     await act(async () => finish(""));
+  });
+});
+
+describe("the chat header of a group", () => {
+  const groupSync = () => syncOf([group(G1, { lastSeq: 1, readSeq: 1 })], [wire(G1, 1, ANN, "早")]);
+  const open = async () => {
+    await openApp({ sync: groupSync });
+    fireEvent.click(document.querySelector(".list-col .row"));
+    await flush();
+  };
+
+  it("on a phone 群资料 is an icon button with its name (the row has room for it beside the search and the menu)", async () => {
+    media([PHONE_QUERY, COARSE_QUERY]);
+    await open();
+    const head = document.querySelector(".chat-head");
+    const button = within(head).getByRole("button", { name: "群资料" });
+    expect(button.textContent).toBe("");
+    expect(button.querySelector("svg")).toBeTruthy();
+    expect(within(head).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["返回列表", "搜索本会话", "群资料", "会话资料"]);
+  });
+
+  it("on a wide screen it is the text button, as before", async () => {
+    await open();
+    expect(within(document.querySelector(".chat-head")).getByRole("button", { name: "群资料" }).textContent).toBe("群资料");
   });
 });

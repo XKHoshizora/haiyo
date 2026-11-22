@@ -26,7 +26,8 @@ import { useJumpTo } from "./useJumpTo.js";
 import { useMessageSearch } from "./useMessageSearch.js";
 import { placeWhispers, searchHitView } from "../data/viewmodel.js";
 import { Whisper } from "./Whisper.jsx";
-import { Search, Menu, ChevronLeft, X } from "../icons.js";
+import { Search, Menu, ChevronLeft, X, Users } from "../icons.js";
+import { usePhone } from "../ui/pointer.js";
 
 import { Composer } from "./Composer.jsx";
 import { droppedFiles, useSendFiles } from "./useSendFiles.js";
@@ -98,6 +99,7 @@ function finishable(reply, stream) {
 
 export function ChatView({ conv }) {
   const { state, dispatch, actions } = useStore();
+  const phone = usePhone();
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const [replyTo, setReplyTo] = useState(null);
@@ -483,7 +485,11 @@ export function ChatView({ conv }) {
         <div className="chat-head-actions">
           <IconBtn label="搜索本会话" className="boxed" aria-pressed={searching} onClick={() => (setSearching(!searching), setQuery(""))}><Search size={22} /></IconBtn>
           {group ? (
-            <Btn className="boxed" onClick={() => dispatch({ type: "nav", patch: { view: "profile", profileTab: "members" } })}>群资料</Btn>
+            phone ? (
+              <IconBtn label="群资料" className="boxed" onClick={() => dispatch({ type: "nav", patch: { view: "profile", profileTab: "members" } })}><Users size={22} /></IconBtn>
+            ) : (
+              <Btn className="boxed" onClick={() => dispatch({ type: "nav", patch: { view: "profile", profileTab: "members" } })}>群资料</Btn>
+            )
           ) : null}
           <IconBtn label="会话资料" className="boxed" aria-pressed={state.nav.detailsOpen} onClick={() => dispatch({ type: "nav", patch: { detailsOpen: !state.nav.detailsOpen } })}><Menu size={22} /></IconBtn>
         </div>

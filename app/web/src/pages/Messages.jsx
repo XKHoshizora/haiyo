@@ -9,6 +9,8 @@ import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
 import { FileCard } from "../ui/FileCard.jsx";
 import { thumbMaxWidth, thumbSize } from "../ui/thumbSize.js";
+import { useBubbleMenu } from "../ui/BubbleMenu.jsx";
+import { messageActions } from "./messageActions.js";
 import { useImageViewer } from "../ui/ImageViewer.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
@@ -168,6 +170,8 @@ function ReplyVia({ via, agentId = null }) {
 /** One message of `conv`; `onJump(conversationId, seq)`: the chat's jump (to a message an Agent's reply found). */
 export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
   const { state, dispatch, actions } = useStore();
+  // The menu of a bubble (long-press, right-click, the context-menu key): ui/BubbleMenu.jsx.
+  const bubbleMenu = useBubbleMenu(() => messageActions({ state, dispatch, msg, onReply }));
   // A notice of an event this client does not know shows nothing.
   if (msg.hidden) return null;
   if (msg.kind === "system") {
@@ -212,7 +216,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
   return (
     <li className={`msg ${mine ? "mine" : "theirs"}${flash ? " flash" : ""}`} data-msg={msg.id}>
       <Avatar id={msg.from} size={40} />
-      <div className="msg-main">
+      <div className="msg-main" {...bubbleMenu.bind}>
         <div className="msg-meta">
           {/* My own (right-aligned) messages read time then name, so the name stays next to the avatar. */}
           {mine && stamp}
@@ -287,6 +291,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
           )}
         </div>
       </div>
+      {bubbleMenu.element}
     </li>
   );
 }

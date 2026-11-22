@@ -156,3 +156,23 @@ describe("a button's width does not change while it saves", () => {
     expect(plain(".btn-save")["min-width"]).toMatch(/4em/);
   });
 });
+
+describe("the chat header on a phone is one row", () => {
+  const narrow = (selector, condition = "(max-width: 860px)") => merged(rulesFor(rules, selector, condition));
+  it("does not wrap: the actions keep their size at the right of the same row, the title gives way", () => {
+    expect(narrow(".chat-head")["flex-wrap"]).toBe("nowrap");
+    expect(narrow(".chat-head-actions").flex).toBe("none");
+    expect(narrow(".chat-head-actions")["flex-basis"]).toBeUndefined();
+    expect(plain(".chat-title")["min-width"]).toBe("0");
+  });
+
+  it("every control of it is a 44px target", () => {
+    expect(px(narrow(".chat-head .icon-btn")["min-width"] ?? narrow(".chat-head .icon-btn").width)).toBeGreaterThanOrEqual(44);
+    expect(px(narrow(".chat-head .icon-btn").height)).toBeGreaterThanOrEqual(44);
+    expect(px(narrow(".icon-btn.boxed").width)).toBeGreaterThanOrEqual(44);
+  });
+
+  it("the subtitle hides below 340px so nothing overlaps at 320", () => {
+    expect(narrow(".chat-title p", "(max-width: 339px)").display).toBe("none");
+  });
+});
