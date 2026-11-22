@@ -739,12 +739,11 @@ describe("the money of a reply that offers tools", () => {
 describe("the tools' definitions, and room for what they bring back, in the context plan", () => {
   /**
    * The system text's line saying the reply has no tools, with the line break before it: a reply offered tools is told
-   * the tools' passage in its place (agents/runtime/prompt.ts `toolsPassage`), so its plan is made with that text.
+   * the tools' passage in its place (agents/runtime/prompt.ts `toolsPassage`), and before it the line of the language it
+   * replies in (`REPLY_LANGUAGE`, lane prompt2: a reply offered tools only), so its plan is made with that text.
    */
   const NO_TOOLS_LINE = `\n${NO_TOOLS}`;
-  const PASSAGE_LINES = `\n${toolsPassage(false)}`;
-  /** The preamble's line of the reply's language (lane prompt2), with its line break: a persona sized to a plan is this much shorter. */
-  const LANGUAGE_LINE = `\n${REPLY_LANGUAGE}`;
+  const PASSAGE_LINES = `\n${REPLY_LANGUAGE}\n${toolsPassage(false)}`;
   /** `system` as a reply offered tools would have it. */
   const offered = (system: string) => {
     expect(system).toContain(NO_TOOLS_LINE);
@@ -830,7 +829,8 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // A system text of about 5 000 tokens, the search tool's definition, a context of 100 000; older messages of 3 000
     // weight fill what the definitions alone left the conversation to within about 200 tokens (the review's case: the
     // conversation filling its plan).
-    const { owner, conv } = await owned("fullplan", PAID, { persona: "简".repeat(4480 - estimateTokens(LANGUAGE_LINE)) });
+    // (The persona is as much shorter as the language line a reply offered tools has: lane prompt2.)
+    const { owner, conv } = await owned("fullplan", PAID, { persona: "简".repeat(4480 - estimateTokens(`\n${REPLY_LANGUAGE}`)) });
     await grant(db, owner.id, 100n * POINT);
     // 32 older messages of 3 000 weight each, then the question: more than either plan holds.
     const older = Array.from({ length: 32 }, (_, i) => `${String(i).padStart(2, "0")}${"字".repeat(2999)}`);
@@ -928,7 +928,7 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // A persona that leaves the conversation about 260 tokens beside the search tool's definitions: enough for the
     // newest message's 200 alone, not once the line and a third of it for results are kept too. (Planned with the
     // system text a reply offered tools has: the tools' passage in place of its line saying there are none.)
-    const agent = await mustCreateAgent(app, owner, { name: "小", model, persona: "简".repeat(4892 + estimateTokens(NO_TOOLS_LINE) - estimateTokens(PASSAGE_LINES) - estimateTokens(LANGUAGE_LINE)) });
+    const agent = await mustCreateAgent(app, owner, { name: "小", model, persona: "简".repeat(4892 + estimateTokens(NO_TOOLS_LINE) - estimateTokens(PASSAGE_LINES)) });
     const question = `附近有什么好吃的？${"我想吃辣的。".repeat(40)}`;
     const gateway = scriptedGateway().reply("去吃川菜。", { usage: U(6000, 10) });
     await say(owner, agent.conversationId, question);
