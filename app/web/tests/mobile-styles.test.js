@@ -257,3 +257,24 @@ describe("M: the composite group avatar is one component whose layout depends on
     for (const r of header) for (const selector of r.selectors.filter((x) => x.includes("avatar"))) expect(selector).toMatch(/\.chat-head\s*>\s*\./);
   });
 });
+
+describe("F, D: one gutter, a tab bar of the usual height", () => {
+  const horizontal = (padding) => {
+    const parts = padding.trim().split(/\s+/);
+    return [parts[1] ?? parts[0], parts[3] ?? parts[1] ?? parts[0]];
+  };
+  it("F: a detail page on a phone has the same left and right gutter as the lists and their headers", () => {
+    const list = horizontal(plain(".list-head").padding);
+    const page = horizontal(merged(rulesFor(rules, ".page", "(max-width: 860px)")).padding);
+    expect(page).toEqual(list);
+    expect(horizontal(plain(".list-note").padding)).toEqual(list);
+    expect(plain(".rows-label").padding).toContain(list[0]);
+  });
+
+  it("D: the tab bar is the usual 50px of controls (its home-indicator room is its own bottom padding), and its items keep 44px targets", () => {
+    expect(merged(rulesFor(rules, ":root", PHONE))["--tabbar"]).toBe("50px");
+    expect(phone(".rail").padding).toBe("0");
+    expect(phone(".rail")["padding-bottom"]).toBe("env(safe-area-inset-bottom)");
+    expect(phone(".rail-item")["min-height"]).toBe("44px");
+  });
+});

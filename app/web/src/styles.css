@@ -1015,7 +1015,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   .composer textarea, .composer-mirror { font-size: 14px; padding: 12px; }
   .composer textarea { min-height: 64px; }
   .btn.send { min-width: 68px; font-size: 16px; }
-  .page { padding: 10px 14px 0; }
+  .page { padding: 10px 20px 0; }
   .page > .profile-head, .page > .back { flex-shrink: 0; }
   .page .pills button { padding: 0 12px; font-size: 13px; }
   .profile-head { gap: 12px; }
@@ -1043,7 +1043,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 
 /* ───────── a phone: the rail becomes the tab bar along the bottom (AppShell.jsx shows it on the top-level lists only) */
 @media (max-width: 640px) {
-  :root { --rail: 0px; --tabbar: 56px; }
+  :root { --rail: 0px; --tabbar: 50px; }
   .app { flex-direction: column; }
   .rail {
     display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; width: 100%; flex: none; align-items: stretch;

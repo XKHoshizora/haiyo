@@ -405,7 +405,7 @@ function MemorySettings() {
       <section aria-label="作息">
         <h3>作息</h3>
         <p>
-          <strong>小憩</strong>
+          <strong>小憩</strong> <Tag tone="muted">一直开着</Tag>
         </p>
         <p className="field-hint">聊完一段后，它会回想刚才的对话，记下值得留的事。</p>
         <fieldset className="memory-switches" disabled={off}>

@@ -467,6 +467,8 @@ describe("作息", () => {
     expect(within(section).getByRole("heading", { name: "作息" })).toBeTruthy();
     expect(section.compareDocumentPosition(inMain().getByLabelText("新记下的内容")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(section).getByText("小憩")).toBeTruthy();
+    // No control, and the row says why: it is always on (a gap beside 入梦's switch would read as a missing one).
+    expect(within(section).getByText("一直开着")).toBeTruthy();
     expect(within(section).getByText("聊完一段后，它会回想刚才的对话，记下值得留的事。")).toBeTruthy();
     expect(within(section).getAllByRole("switch")).toHaveLength(1);
     // The switch, and the language's select below it: no control for 小憩.
