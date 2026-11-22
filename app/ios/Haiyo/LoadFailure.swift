@@ -43,15 +43,23 @@ enum LoadFailure: Equatable {
 
 /// A file name that is safe as the last path component of a temporary file.
 enum DownloadName {
+    /// Bytes of UTF-8, not characters (a CJK character takes 3). APFS itself takes 255 characters, but where a saved
+    /// file goes next (a file provider, an SMB share, an exFAT drive) the limit can be 255 bytes; keep a margin.
+    static let maxBytes = 240
+
     static func safe(_ suggested: String) -> String {
         var name = suggested.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
         name = String(name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
         name = name.trimmingCharacters(in: .whitespaces)
         while name.hasPrefix(".") { name.removeFirst() }
-        if name.count > 200 {
-            let ext = (name as NSString).pathExtension
-            let keep = 200 - (ext.isEmpty ? 0 : ext.count + 1)
-            name = String(name.prefix(keep)) + (ext.isEmpty ? "" : ".\(ext)")
+        if name.utf8.count > maxBytes {
+            var ext = (name as NSString).pathExtension
+            if ext.utf8.count > 16 { ext = "" }
+            let suffix = ext.isEmpty ? "" : ".\(ext)"
+            var stem = ext.isEmpty ? name : String(name.dropLast(suffix.count))
+            // Cut whole characters (never inside a UTF-8 sequence) until the name fits.
+            while stem.utf8.count + suffix.utf8.count > maxBytes { stem.removeLast() }
+            name = stem + suffix
         }
         return name.isEmpty ? "download" : name
     }

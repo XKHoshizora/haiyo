@@ -2,14 +2,17 @@ import XCTest
 @testable import Haiyo
 
 final class NavigationPolicyTests: XCTestCase {
-    private enum Kind { case main, sub, newWindow, download }
+    /// How the URL is asked for: a tap in the main frame, script in the main frame, a sub-frame, a new window (tapped
+    /// or by script), or a download.
+    private enum Kind { case main, mainScript, sub, newWindow, newWindowScript, download }
 
     private func route(_ string: String, _ kind: Kind) -> NavigationRoute {
         let request = NavigationRequest(
             url: URL(string: string)!,
             isMainFrame: kind != .sub,
-            opensNewWindow: kind == .newWindow,
-            shouldDownload: kind == .download
+            opensNewWindow: kind == .newWindow || kind == .newWindowScript,
+            shouldDownload: kind == .download,
+            userActivated: kind != .mainScript && kind != .newWindowScript
         )
         return NavigationPolicy.route(request, config: testConfig)
     }
@@ -18,22 +21,31 @@ final class NavigationPolicyTests: XCTestCase {
 
     /// The whole table: which URL, asked for how, goes where.
     func testTheTable() {
+        let chat = "https://test.haiyo.org/chat/1d6b0b8e-7f0e-4a44-9b44-0a4b3c2d1e0f"
         let rows: [(String, Kind, NavigationRoute)] = [
             // The site's own pages load in place.
             ("https://test.haiyo.org/", .main, .load),
-            ("https://test.haiyo.org/chat/1d6b0b8e-7f0e-4a44-9b44-0a4b3c2d1e0f", .main, .load),
+            (chat, .main, .load),
+            (chat, .mainScript, .load),
             ("https://TEST.haiyo.org:443/reset-password?token=x", .main, .load),
             ("https://test.haiyo.org/api/files/a", .sub, .load),
             ("about:blank", .sub, .load),
             ("about:srcdoc", .sub, .load),
+            // A tapped link to one of the site's files does not replace the app: it opens in the sheet.
+            ("https://test.haiyo.org/api/attachments/a1", .main, .sheet(u("https://test.haiyo.org/api/attachments/a1"))),
+            ("https://test.haiyo.org/api/attachments/a1", .mainScript, .load),
             // Another site, or the own host on another scheme or port, opens in the Safari view.
             ("https://example.com/page", .main, .safari(u("https://example.com/page"))),
             ("http://test.haiyo.org/", .main, .safari(u("http://test.haiyo.org/"))),
             ("https://test.haiyo.org:8443/", .main, .safari(u("https://test.haiyo.org:8443/"))),
             ("https://evil.test.haiyo.org/", .main, .safari(u("https://evil.test.haiyo.org/"))),
             ("https://test.haiyo.org.evil.com/", .main, .safari(u("https://test.haiyo.org.evil.com/"))),
-            // New windows: the own origin in the sheet, other sites in the Safari view.
-            ("https://test.haiyo.org/api/files/p/%E5%9B%BE.png", .newWindow, .sheet(u("https://test.haiyo.org/api/files/p/%E5%9B%BE.png"))),
+            // New windows: the site's files in the sheet; the app's own pages in the main view; other sites in Safari.
+            ("https://test.haiyo.org/api/attachments/p/%E5%9B%BE.png", .newWindow, .sheet(u("https://test.haiyo.org/api/attachments/p/%E5%9B%BE.png"))),
+            (chat, .newWindow, .openInApp(path: "/chat/1d6b0b8e-7f0e-4a44-9b44-0a4b3c2d1e0f")),
+            ("https://test.haiyo.org/invite?code=X1#top", .newWindow, .openInApp(path: "/invite?code=X1#top")),
+            ("https://test.haiyo.org", .newWindowScript, .openInApp(path: "/")),
+            ("https://test.haiyo.org/apiary", .newWindow, .openInApp(path: "/apiary")),
             ("https://example.com/source", .newWindow, .safari(u("https://example.com/source"))),
             // Downloads: own files, own blobs and data URLs are downloaded; other sites' links open in the Safari view.
             ("https://test.haiyo.org/api/files/f/report.pdf", .download, .download),
@@ -41,10 +53,12 @@ final class NavigationPolicyTests: XCTestCase {
             ("data:text/plain;base64,aGk=", .download, .download),
             ("https://example.com/file.zip", .download, .safari(u("https://example.com/file.zip"))),
             ("blob:https://example.com/3c1f6c9e-0000-4000-8000-000000000000", .download, .refuse),
-            // Mail, phone and SMS go to the system, from any frame.
+            // Mail, phone and SMS go to the system only from a tapped link, never from script.
             ("mailto:support@haiyo.org", .main, .system(u("mailto:support@haiyo.org"))),
             ("tel:+81000000000", .newWindow, .system(u("tel:+81000000000"))),
             ("sms:+81000000000", .sub, .system(u("sms:+81000000000"))),
+            ("mailto:support@haiyo.org", .mainScript, .refuse),
+            ("tel:+81000000000", .newWindowScript, .refuse),
             // Everything else is refused.
             ("javascript:alert(1)", .main, .refuse),
             ("file:///etc/hosts", .main, .refuse),
@@ -57,5 +71,31 @@ final class NavigationPolicyTests: XCTestCase {
         for (url, kind, expected) in rows {
             XCTAssertEqual(route(url, kind), expected, "\(url) as \(kind)")
         }
+    }
+}
+
+final class ResponsePolicyTests: XCTestCase {
+    private func route(_ url: String, main: Bool = true, status: Int? = 200, renders: Bool = true, disposition: String? = nil) -> ResponseRoute {
+        ResponsePolicy.route(
+            NavigationResponseInfo(url: URL(string: url)!, isMainFrame: main, statusCode: status, canShowMIMEType: renders, contentDisposition: disposition),
+            config: testConfig
+        )
+    }
+
+    func testTheTable() {
+        // A server error on the app's own page shows the cannot-connect screen (I3).
+        XCTAssertEqual(route("https://test.haiyo.org/", status: 502), .fail)
+        XCTAssertEqual(route("https://test.haiyo.org/chat/x", status: 500), .fail)
+        XCTAssertEqual(route("https://test.haiyo.org/", status: 503, renders: false), .fail)
+        // Not the main frame, not the own origin, or not a server error: shown as it is.
+        XCTAssertEqual(route("https://test.haiyo.org/", main: false, status: 502), .allow)
+        XCTAssertEqual(route("https://example.com/", status: 502), .allow)
+        XCTAssertEqual(route("https://test.haiyo.org/", status: 404), .allow)
+        XCTAssertEqual(route("https://test.haiyo.org/", status: nil), .allow)
+        // Attachments are downloaded even when WebKit could render them (M12); what it cannot render is downloaded.
+        XCTAssertEqual(route("https://test.haiyo.org/api/attachments/a", disposition: "attachment; filename=\"a.pdf\""), .download)
+        XCTAssertEqual(route("https://test.haiyo.org/api/attachments/a", disposition: " Attachment"), .download)
+        XCTAssertEqual(route("https://test.haiyo.org/api/attachments/a", disposition: "inline; filename=\"a.png\""), .allow)
+        XCTAssertEqual(route("https://test.haiyo.org/api/attachments/a.zip", renders: false), .download)
     }
 }

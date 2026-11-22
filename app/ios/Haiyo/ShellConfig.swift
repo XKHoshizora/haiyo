@@ -10,6 +10,8 @@ struct ShellConfig: Equatable {
     let build: String
     /// The APNs environment a token from this build belongs to: "development" or "production".
     let apnsEnvironment: String
+    /// "acceptance" (Debug, Acceptance: the test site, internal TestFlight only) or "store".
+    var channel: String = "acceptance"
 
     var origin: URL { URL(string: "https://\(host)")! }
 
@@ -23,16 +25,18 @@ struct ShellConfig: Equatable {
             host: host,
             version: info["CFBundleShortVersionString"] as? String ?? "0",
             build: info["CFBundleVersion"] as? String ?? "0",
-            apnsEnvironment: env
+            apnsEnvironment: env,
+            channel: (info["HaiyoChannel"] as? String) == "store" ? "store" : "acceptance"
         )
     }
 
-    /// A DNS host name with at least one dot: letters, digits, `-` and `.` only (no scheme, port, path or spaces).
+    /// The host rule, also used by the "Check origin" build phase (keep the two identical): lower-case DNS labels of
+    /// letters, digits and inner hyphens, at least two of them; no scheme, port, path, spaces, `_` or non-ASCII.
+    static let hostPattern = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?([.][a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
+
     static func isBareHost(_ s: String) -> Bool {
-        guard !s.isEmpty, s.count <= 253, s.contains("."), !s.contains(".."),
-              !s.hasPrefix("."), !s.hasSuffix("."), !s.hasPrefix("-") else { return false }
-        let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789.-")
-        return s.allSatisfy { allowed.contains($0) }
+        guard s.utf8.count <= 253, let regex = try? NSRegularExpression(pattern: hostPattern) else { return false }
+        return regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
     }
 
     /// The configuration of the running app. A build whose configuration does not set `HAIYO_HOST` stops at the
@@ -48,6 +52,23 @@ struct ShellConfig: Equatable {
     func isOwnOrigin(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "https", url.host?.lowercased() == host, url.user == nil else { return false }
         return url.port == nil || url.port == 443
+    }
+
+    /// A file the site serves (`/api/…`: attachments, original images, avatars), as opposed to a page of the app.
+    func isOwnFile(_ url: URL) -> Bool {
+        isOwnOrigin(url) && (url.path == "/api" || url.path.hasPrefix("/api/"))
+    }
+
+    /// The path, query and fragment of a URL ("/chat/abc?x=1#y"), for `url(forPath:)` and `haiyo:open`.
+    func sitePath(of url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "/" }
+        components.scheme = nil
+        components.host = nil
+        components.port = nil
+        components.user = nil
+        components.password = nil
+        let path = components.string ?? ""
+        return path.isEmpty ? "/" : path
     }
 
     /// True for a `blob:` URL created by a page on the shell's own origin (`blob:https://<host>/<uuid>`).

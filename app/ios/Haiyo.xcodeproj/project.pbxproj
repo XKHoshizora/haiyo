@@ -17,6 +17,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		4A1100000000000000000401 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
+		4A1100000000000000000402 /* Acceptance.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Acceptance.xcconfig; sourceTree = "<group>"; };
+		4A1100000000000000000403 /* Store.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Store.xcconfig; sourceTree = "<group>"; };
 		4A1100000000000000000101 /* Haiyo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Haiyo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A1100000000000000000201 /* HaiyoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HaiyoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -63,8 +66,19 @@
 				4A1100000000000000000010 /* Haiyo */,
 				4A1100000000000000000011 /* HaiyoTests */,
 				4A1100000000000000000012 /* Support */,
+				4A1100000000000000000400 /* Config */,
 				4A1100000000000000000003 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		4A1100000000000000000400 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				4A1100000000000000000401 /* Shared.xcconfig */,
+				4A1100000000000000000402 /* Acceptance.xcconfig */,
+				4A1100000000000000000403 /* Store.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 		4A1100000000000000000003 /* Products */ = {
@@ -199,7 +213,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# The site is set by the build configuration (HAIYO_HOST) and nowhere else: a bare host name, served over https.\ncase \"$HAIYO_HOST\" in\n  \"\"|*/*|*:*|*\" \"*|*..*|.*|*.)\n    echo \"error: HAIYO_HOST must be a bare host name for the $CONFIGURATION configuration (now: '$HAIYO_HOST')\"\n    exit 1 ;;\nesac\ncase \"$HAIYO_APNS_ENV\" in\n  development|production) ;;\n  *) echo \"error: HAIYO_APNS_ENV must be development or production for the $CONFIGURATION configuration\"; exit 1 ;;\nesac\n";
+			shellScript = "# The site comes from the build configuration (Config/*.xcconfig) and nowhere else.\n# The host rule is ShellConfig.hostPattern: keep the two identical.\nif ! printf '%s' \"$HAIYO_HOST\" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?([.][a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'; then\n  echo \"error: HAIYO_HOST must be a bare host name for the $CONFIGURATION configuration (now: '$HAIYO_HOST'); set it in Config/*.xcconfig\"\n  exit 1\nfi\ncase \"$HAIYO_APNS_ENV\" in development|production) ;; *) echo \"error: HAIYO_APNS_ENV must be development or production for $CONFIGURATION\"; exit 1 ;; esac\ncase \"$HAIYO_CHANNEL\" in acceptance|store) ;; *) echo \"error: HAIYO_CHANNEL must be acceptance or store for $CONFIGURATION\"; exit 1 ;; esac\necho \"note: $CONFIGURATION builds for https://$HAIYO_HOST (channel $HAIYO_CHANNEL)\"\n# An acceptance build must never become the App Store build: archiving it needs an explicit opt-in, and it is\n# uploaded with ExportOptions-acceptance.plist (internal TestFlight only).\nif [ \"$ACTION\" = install ] && [ \"$HAIYO_CHANNEL\" = acceptance ] && [ \"$HAIYO_ACCEPTANCE_UPLOAD\" != 1 ]; then\n  echo \"error: $CONFIGURATION points at the acceptance site ($HAIYO_HOST). Archive it only for internal TestFlight: add HAIYO_ACCEPTANCE_UPLOAD=1 and export with ExportOptions-acceptance.plist. The App Store build is the Store configuration.\"\n  exit 1\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -249,7 +263,7 @@
 			};
 			name = Debug;
 		};
-		4A1100000000000000000022 /* Release */ = {
+		4A1100000000000000000022 /* Acceptance */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -264,7 +278,7 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
-			name = Release;
+			name = Acceptance;
 		};
 		4A1100000000000000000023 /* Store */ = {
 			isa = XCBuildConfiguration;
@@ -285,23 +299,20 @@
 		};
 		4A1100000000000000000111 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 4A1100000000000000000402 /* Acceptance.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Support/Haiyo.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				HAIYO_APNS_ENV = development;
-				HAIYO_HOST = test.haiyo.org;
 				INFOPLIST_FILE = Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.haiyo.app;
 				PRODUCT_NAME = Haiyo;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -314,25 +325,22 @@
 			};
 			name = Debug;
 		};
-		4A1100000000000000000112 /* Release */ = {
+		4A1100000000000000000112 /* Acceptance */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 4A1100000000000000000402 /* Acceptance.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Support/Haiyo.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				HAIYO_APNS_ENV = production;
-				HAIYO_HOST = test.haiyo.org;
 				INFOPLIST_FILE = Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.haiyo.app;
 				PRODUCT_NAME = Haiyo;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -343,27 +351,24 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
-			name = Release;
+			name = Acceptance;
 		};
 		4A1100000000000000000113 /* Store */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 4A1100000000000000000403 /* Store.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Support/Haiyo.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				HAIYO_APNS_ENV = production;
-				HAIYO_HOST = "";
 				INFOPLIST_FILE = Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.haiyo.app;
 				PRODUCT_NAME = Haiyo;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -381,10 +386,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.haiyo.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -394,15 +396,12 @@
 			};
 			name = Debug;
 		};
-		4A1100000000000000000212 /* Release */ = {
+		4A1100000000000000000212 /* Acceptance */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.haiyo.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -410,17 +409,14 @@
 				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Haiyo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Haiyo";
 			};
-			name = Release;
+			name = Acceptance;
 		};
 		4A1100000000000000000213 /* Store */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.haiyo.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -437,31 +433,31 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4A1100000000000000000021 /* Debug */,
-				4A1100000000000000000022 /* Release */,
+				4A1100000000000000000022 /* Acceptance */,
 				4A1100000000000000000023 /* Store */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Acceptance;
 		};
 		4A1100000000000000000110 /* Build configuration list for PBXNativeTarget "Haiyo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4A1100000000000000000111 /* Debug */,
-				4A1100000000000000000112 /* Release */,
+				4A1100000000000000000112 /* Acceptance */,
 				4A1100000000000000000113 /* Store */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Acceptance;
 		};
 		4A1100000000000000000210 /* Build configuration list for PBXNativeTarget "HaiyoTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4A1100000000000000000211 /* Debug */,
-				4A1100000000000000000212 /* Release */,
+				4A1100000000000000000212 /* Acceptance */,
 				4A1100000000000000000213 /* Store */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Acceptance;
 		};
 /* End XCConfigurationList section */
 	};

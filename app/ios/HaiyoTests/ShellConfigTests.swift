@@ -8,6 +8,9 @@ final class ShellConfigTests: XCTestCase {
         XCTAssertEqual(config?.host, "test.haiyo.org")
         XCTAssertEqual(config?.origin.absoluteString, "https://test.haiyo.org")
         XCTAssertEqual(config?.apnsEnvironment, "development")
+        XCTAssertEqual(config?.channel, "acceptance")
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String, "0.1.0")
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String, "2")
         XCTAssertEqual(Bundle.main.bundleIdentifier, "org.haiyo.app")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String, "Haiyo")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "ITSAppUsesNonExemptEncryption") as? Bool, false)
@@ -19,13 +22,28 @@ final class ShellConfigTests: XCTestCase {
 
     func testOnlyBareHostNamesAreAccepted() {
         XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "Test.Haiyo.org"])?.host, "test.haiyo.org")
+        // The same rule as the "Check origin" build phase (M6): `_`, non-ASCII, single labels and edge hyphens fail too.
         for bad in ["", "https://test.haiyo.org", "test.haiyo.org/", "test.haiyo.org:443", " test.haiyo.org", "localhost",
-                    "test..haiyo.org", ".haiyo.org", "haiyo.org.", "-x.org", "测试.org", "a b.org"] {
+                    "test..haiyo.org", ".haiyo.org", "haiyo.org.", "-x.org", "x-.org", "测试.org", "a b.org", "a_b.org",
+                    String(repeating: "a", count: 64) + ".org"] {
             XCTAssertNil(ShellConfig.parse(info: ["HaiyoHost": bad]), bad)
         }
         XCTAssertNil(ShellConfig.parse(info: [:]))
         XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org", "HaiyoApnsEnvironment": "production"])?.apnsEnvironment, "production")
         XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org", "HaiyoApnsEnvironment": "other"])?.apnsEnvironment, "development")
+        XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org", "HaiyoChannel": "store"])?.channel, "store")
+        XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org"])?.channel, "acceptance")
+        for good in ["test.haiyo.org", "haiyo.org", "a-b.c-d.example", "x1.y2"] {
+            XCTAssertNotNil(ShellConfig.parse(info: ["HaiyoHost": good]), good)
+        }
+    }
+
+    func testFilesAndSitePathsOfURLs() {
+        XCTAssertTrue(testConfig.isOwnFile(URL(string: "https://test.haiyo.org/api/attachments/a")!))
+        XCTAssertFalse(testConfig.isOwnFile(URL(string: "https://test.haiyo.org/apiary")!))
+        XCTAssertFalse(testConfig.isOwnFile(URL(string: "https://example.com/api/attachments/a")!))
+        XCTAssertEqual(testConfig.sitePath(of: URL(string: "https://test.haiyo.org/chat/a?b=1#c")!), "/chat/a?b=1#c")
+        XCTAssertEqual(testConfig.sitePath(of: URL(string: "https://test.haiyo.org")!), "/")
     }
 
     func testSitePaths() {
@@ -86,8 +104,26 @@ final class LinksAndFailuresTests: XCTestCase {
         XCTAssertEqual(DownloadName.safe(".hidden"), "hidden")
         XCTAssertEqual(DownloadName.safe("a:b\u{0}c.txt"), "a_bc.txt")
         XCTAssertEqual(DownloadName.safe("   "), "download")
-        let long = String(repeating: "长", count: 300) + ".png"
-        XCTAssertEqual(DownloadName.safe(long).count, 200)
-        XCTAssertTrue(DownloadName.safe(long).hasSuffix(".png"))
+        // APFS counts bytes: 200 CJK characters are 600 bytes of UTF-8 (review item 8).
+        let long = String(repeating: "长", count: 200) + ".pdf"
+        let safe = DownloadName.safe(long)
+        XCTAssertLessThanOrEqual(safe.utf8.count, DownloadName.maxBytes)
+        XCTAssertTrue(safe.hasSuffix(".pdf"))
+        XCTAssertTrue(safe.hasPrefix("长长长"))
+        let noExtension = String(repeating: "😀", count: 100)
+        XCTAssertLessThanOrEqual(DownloadName.safe(noExtension).utf8.count, DownloadName.maxBytes)
+        XCTAssertTrue(DownloadName.safe(noExtension).allSatisfy { $0 == "😀" }, "never cut inside a character")
+    }
+
+    /// Review item 8 on a real file system. APFS itself takes the 604-byte name (it counts characters, not bytes); the
+    /// byte cap is for where a saved file goes next. The shortened name must be writable.
+    func testALongChineseNameCanBeWritten() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let long = String(repeating: "长", count: 200) + ".pdf"
+        let safe = folder.appendingPathComponent(DownloadName.safe(long))
+        XCTAssertNoThrow(try Data("x".utf8).write(to: safe))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: safe.path))
     }
 }

@@ -1,0 +1,7 @@
+// Debug and Acceptance: the acceptance site. Acceptance archives are for internal TestFlight only
+// (see README "Signing and upload"); the "Check origin" build phase refuses to archive them unless
+// HAIYO_ACCEPTANCE_UPLOAD=1 is given on purpose.
+#include "Shared.xcconfig"
+
+HAIYO_HOST = test.haiyo.org
+HAIYO_CHANNEL = acceptance

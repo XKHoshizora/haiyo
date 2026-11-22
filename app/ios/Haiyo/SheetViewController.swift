@@ -1,8 +1,8 @@
 import UIKit
 import WebKit
 
-/// A same-origin page that asked for a new window (the image viewer's 原图): shown in a sheet over the shell, with the
-/// same cookies (the default data store) and no bridge.
+/// A file of the site that asked for a new window (an attachment, the image viewer's 原图): shown in a sheet over the
+/// shell, with the same cookies (the default data store) and no bridge. App pages never open here (`openInApp`).
 final class SheetViewController: UIViewController {
     let config: ShellConfig
     let url: URL
@@ -10,8 +10,9 @@ final class SheetViewController: UIViewController {
     private var webView: WKWebView!
     private var titleObservation: NSKeyValueObservation?
 
-    static func present(url: URL, config: ShellConfig, from presenter: UIViewController) {
+    static func present(url: URL, config: ShellConfig, from presenter: UIViewController, onOpenPath: ((String) -> Void)?) {
         let sheet = SheetViewController(config: config, url: url)
+        sheet.navigator.onOpenPath = onOpenPath
         let navigation = UINavigationController(rootViewController: sheet)
         navigation.modalPresentationStyle = .pageSheet
         presenter.present(navigation, animated: true)
@@ -50,6 +51,9 @@ final class SheetViewController: UIViewController {
             systemItem: .done,
             primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
         )
+        #if DEBUG
+        navigator.onFinish = { [weak self] in if let webView = self?.webView { DebugProbe.checkSheet(webView) } }
+        #endif
         titleObservation = webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
             self?.navigationItem.title = webView.title
         }

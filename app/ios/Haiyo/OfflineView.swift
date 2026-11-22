@@ -43,13 +43,31 @@ final class OfflineView: UIView {
         stack.spacing = 12
         stack.setCustomSpacing(24, after: messageLabel)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+
+        // Centred when it fits; scrolls at the largest text sizes so the title and 重试 stay reachable.
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.alwaysBounceVertical = false
+        addSubview(scroll)
+        scroll.addSubview(stack)
+        let content = scroll.contentLayoutGuide
+        let frame = scroll.frameLayoutGuide
+        let fill = content.heightAnchor.constraint(greaterThanOrEqualTo: frame.heightAnchor)
         NSLayoutConstraint.activate([
-            stack.centerYAnchor.constraint(equalTo: safeAreaLayoutGuide.centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: layoutMarginsGuide.leadingAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: layoutMarginsGuide.trailingAnchor),
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            scroll.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            content.widthAnchor.constraint(equalTo: frame.widthAnchor),
+            fill,
+            stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: content.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
+            stack.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
             stack.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
+            retryButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
 

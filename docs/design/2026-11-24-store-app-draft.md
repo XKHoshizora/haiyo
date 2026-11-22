@@ -220,7 +220,7 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
 | 文件 | 做什么 |
 |---|---|
 | `Haiyo.xcodeproj` | 工程文件，手写，用 `xcodebuild … -sdk iphonesimulator build` 验证 |
-| `Haiyo/Config.swift` | 站点源：Debug 构建用测试站点，Release 构建用生产站点；壳的版本号 |
+| `Haiyo/Config.swift` | 站点源：Debug 和 Acceptance 构建用测试站点（只做内部 TestFlight），Store 构建用生产站点；壳的版本号（v0 实际做法见 `app/ios/README.md`“Configurations”） |
 | `Haiyo/AppDelegate.swift` | 推送令牌回调、通知代理 |
 | `Haiyo/SceneDelegate.swift` | 窗口；通用链接（冷启动和运行中）；进后台、回前台 |
 | `Haiyo/ShellViewController.swift` | WKWebView 本体：导航规则、新窗口、下载 → 分享面板 |
@@ -235,7 +235,7 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
 ### 桥（第 1 版；以后只加不改）
 
 网页调原生（有回复）：
-- `hello` → `{ shell, build, os, push }`（`push` 是 granted / denied / notDetermined）
+- `hello` → `{ bridge, shell, build, os, push, events }`（`push` 是 granted / denied / notDetermined）
 - `push.register` → 必要时请求权限 → `{ token, env }` 或 `{ denied: true }`
 - `badge.set { n }`
 - `age.range` → `{ range: "adult" | "minor" | "declined" | "unavailable" }`
@@ -529,7 +529,7 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
 10. **店面**：勾选日本、美国和其他非欧盟地区；去掉中国大陆和全部欧盟国家。
 11. **内部 TestFlight**：在自己的 iPhone 上装，照第 7 节的验收单试一遍（推送、链接、保存、断网、年龄）。
     - 内部测试员最多 100 人，苹果的说明里没写要审核；外部测试最多 10,000 人，第一个构建要过 TestFlight 审核；构建 90 天后失效 [R14]。
-12. **提交审核**；通过后手动发布。
+12. **提交审核**；通过后手动发布。提交前核对归档：`plutil -extract HaiyoHost raw <归档>/Products/Applications/Haiyo.app/Info.plist` 必须是生产域名，`HaiyoChannel` 必须是 `store`（测试站的构建只做内部 TestFlight，见 `app/ios/README.md`）。
 13. （以后）上欧盟：照第 6 节改成交易者并通过核验。
 
 ## 6. 欧盟：个人开发者要公开什么

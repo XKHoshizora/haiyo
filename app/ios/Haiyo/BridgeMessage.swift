@@ -71,15 +71,24 @@ enum BridgeEvent: Equatable {
         }
     }
 
-    /// The script that dispatches it. The detail is JSON, so nothing in a path can become code.
-    var script: String {
+    /// The script that dispatches it, only in a document on `origin`; it evaluates to `true` when dispatched. The
+    /// origin and the detail are JSON, so nothing in a path can become code.
+    func script(origin: URL) -> String {
         var detail = "null"
         if case let .open(path) = self,
            let data = try? JSONSerialization.data(withJSONObject: ["path": path]),
            let json = String(data: data, encoding: .utf8) {
             detail = json
         }
-        return "window.dispatchEvent(new CustomEvent(\"haiyo:\(name)\", { detail: \(detail) }));"
+        let expected = Self.json(origin.absoluteString)
+        return "(function () { if (location.origin !== \(expected)) return false; "
+            + "window.dispatchEvent(new CustomEvent(\"haiyo:\(name)\", { detail: \(detail) })); return true; })()"
+    }
+
+    private static func json(_ string: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [string]),
+              let array = String(data: data, encoding: .utf8) else { return "\"\"" }
+        return String(array.dropFirst().dropLast())
     }
 }
 

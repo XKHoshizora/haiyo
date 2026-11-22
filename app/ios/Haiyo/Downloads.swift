@@ -1,15 +1,13 @@
-import OSLog
 import UIKit
 import WebKit
 
 /// Downloads (`<a download>`, attachments) go to a fresh temporary folder, then to the share sheet (保存到“文件”,
-/// 存储图像, 隔空投送…). The folder is removed when the sheet closes.
+/// 存储图像, 隔空投送…). The folder is removed when the sheet closes, and swept at launch.
 final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     weak var presenter: UIViewController?
     private var destinations: [ObjectIdentifier: URL] = [:]
 
     static let root = FileManager.default.temporaryDirectory.appendingPathComponent("downloads", isDirectory: true)
-    private static let log = Logger(subsystem: "org.haiyo.app", category: "downloads")
 
     func start(_ download: WKDownload) {
         download.delegate = self
@@ -55,13 +53,34 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
             return
         }
         let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
-        sheet.completionWithItemsHandler = { activity, completed, _, error in
-            Self.log.debug("share sheet closed: activity=\(activity?.rawValue ?? "none", privacy: .public) completed=\(completed) error=\(String(describing: error), privacy: .public)")
-            try? FileManager.default.removeItem(at: folder)
+        sheet.completionWithItemsHandler = { [weak sheet] activity, completed, _, error in
+            // Never the activity (which app received the file) or the error's description (it can hold the path).
+            ShellLog.note("share-sheet", ("completed", .flag(completed)), ("error", .error(error)))
+            if Self.sheetIsClosing(activityChosen: activity != nil, completed: completed) {
+                try? FileManager.default.removeItem(at: folder)
+                return
+            }
+            // The chosen activity did not complete: cancelled, the sheet stays open; failed (存储图像 without Photos
+            // access), the sheet closes. Look again once it has settled.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak sheet] in
+                if Self.sheetIsGone(sheet) { try? FileManager.default.removeItem(at: folder) }
+            }
         }
         sheet.popoverPresentationController?.sourceView = presenter.view
-        Self.log.debug("presenting share sheet from \(String(describing: type(of: presenter)), privacy: .public)")
         presenter.present(sheet, animated: true)
+    }
+
+    /// The share sheet calls back also when a chosen activity is cancelled and the sheet stays open (保存到“文件” →
+    /// 取消): the file must stay for the next choice. It is removed when an activity completed or the sheet itself was
+    /// dismissed (no activity); anything left over is swept at the next launch.
+    static func sheetIsClosing(activityChosen: Bool, completed: Bool) -> Bool {
+        completed || !activityChosen
+    }
+
+    /// After a chosen activity ended without completing: the sheet is no longer on screen (released, or out of its
+    /// window), so nobody can choose again.
+    static func sheetIsGone(_ sheet: UIViewController?) -> Bool {
+        sheet?.viewIfLoaded?.window == nil
     }
 }
 

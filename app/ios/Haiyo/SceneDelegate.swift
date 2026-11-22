@@ -12,21 +12,30 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: windowScene)
-        if isRunningTests {
-            window.rootViewController = UIViewController()
-        } else {
-            let config = ShellConfig.current
-            let linked = connectionOptions.userActivities
-                .first { $0.activityType == NSUserActivityTypeBrowsingWeb }?
-                .webpageURL
-                .flatMap { LaunchLinks.path(forUniversalLink: $0, config: config) }
-            let shell = ShellViewController(config: config, initialPath: linked ?? "/")
-            self.shell = shell
-            window.rootViewController = shell
-            PushCenter.shared.onOpenPath = { [weak shell] path in shell?.open(path: path) }
-        }
         self.window = window
+        guard !isRunningTests else {
+            window.rootViewController = UIViewController()
+            window.makeKeyAndVisible()
+            return
+        }
+        let config = ShellConfig.current
+        // The first page: a universal link, else a tapped notification (one load, not "/" and then the chat).
+        let linked = connectionOptions.userActivities
+            .first { $0.activityType == NSUserActivityTypeBrowsingWeb }?
+            .webpageURL
+            .flatMap { LaunchLinks.path(forUniversalLink: $0, config: config) }
+        let notified = connectionOptions.notificationResponse.flatMap { response -> String? in
+            PushCenter.shared.handledAtLaunch(response.notification.request.identifier)
+            return LaunchLinks.path(forNotification: response.notification.request.content.userInfo)
+        }
+        let shell = ShellViewController(
+            config: config,
+            initialPath: linked ?? notified ?? PushCenter.shared.takePendingPath() ?? "/"
+        )
+        self.shell = shell
+        window.rootViewController = shell
         window.makeKeyAndVisible()
+        PushCenter.shared.onOpenPath = { [weak shell] path in shell?.open(path: path) }
     }
 
     func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
@@ -38,10 +47,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
-        shell?.send(.pause)
+        shell?.appDidEnterBackground()
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
-        shell?.send(.resume)
+        shell?.appWillEnterForeground()
     }
 }

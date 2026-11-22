@@ -1,0 +1,6 @@
+// The App Store build. The scheme archives this configuration by default; it does not build until the production
+// host is set here (one line), and it is the only configuration that may go to App Review.
+#include "Shared.xcconfig"
+
+HAIYO_HOST =
+HAIYO_CHANNEL = store

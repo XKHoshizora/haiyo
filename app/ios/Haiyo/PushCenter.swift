@@ -16,7 +16,20 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
         }
     }
     private var pendingPath: String?
-    private var waiting: [([String: Any]) -> Void] = []
+    /// The notification a cold start already opened (from the scene's connection options): its delegate call is
+    /// not opened a second time.
+    private var launchNotification: String?
+    private var waiting: [(id: UUID, callback: ([String: Any]) -> Void)] = []
+
+    func handledAtLaunch(_ identifier: String) {
+        launchNotification = identifier
+    }
+
+    /// A tap that arrived before the shell existed, taken once.
+    func takePendingPath() -> String? {
+        defer { pendingPath = nil }
+        return pendingPath
+    }
 
     /// "granted", "denied" or "notDetermined".
     func status(completion: @escaping (String) -> Void) {
@@ -31,7 +44,13 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// At most this many `push.register` calls wait for APNs at once; more get `{ error: "busy" }`.
+    static let maxWaiting = 4
+    /// A token that has not come after this long is answered with `{ error: "timeout" }` (simulator, no network).
+    static let tokenTimeout: TimeInterval = 30
+
     /// Asks for permission when needed, then for a token: `{ token, env }`, `{ denied: true }` or `{ error }`.
+    /// Always answers exactly once.
     func register(environment: String, completion: @escaping ([String: Any]) -> Void) {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
             DispatchQueue.main.async {
@@ -39,11 +58,17 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
                     completion(["denied": true])
                     return
                 }
-                self.waiting.append { result in
+                guard self.waiting.count < Self.maxWaiting else {
+                    completion(["error": "busy"])
+                    return
+                }
+                let id = UUID()
+                self.waiting.append((id, { result in
                     var result = result
                     if result["token"] != nil { result["env"] = environment }
                     completion(result)
-                }
+                }))
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.tokenTimeout) { self.finish(["error": "timeout"], only: id) }
                 UIApplication.shared.registerForRemoteNotifications()
             }
         }
@@ -57,14 +82,18 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
         finish(["error": "registration_failed"])
     }
 
-    private func finish(_ result: [String: Any]) {
-        let callbacks = waiting
-        waiting.removeAll()
-        callbacks.forEach { $0(result) }
+    /// Answers every waiting call, or only the one with `id`.
+    private func finish(_ result: [String: Any], only id: UUID? = nil) {
+        let done = waiting.filter { id == nil || $0.id == id }
+        waiting.removeAll { id == nil || $0.id == id }
+        done.forEach { $0.callback(result) }
     }
 
-    func setBadge(_ n: Int) {
-        UNUserNotificationCenter.current().setBadgeCount(n) { _ in }
+    /// Sets the badge; answers `{ ok: false }` when the system refuses (no badge permission yet).
+    func setBadge(_ n: Int, completion: @escaping ([String: Any]) -> Void) {
+        UNUserNotificationCenter.current().setBadgeCount(n) { error in
+            DispatchQueue.main.async { completion(["ok": error == nil]) }
+        }
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -83,8 +112,13 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        let identifier = response.notification.request.identifier
         if let path = LaunchLinks.path(forNotification: response.notification.request.content.userInfo) {
             DispatchQueue.main.async {
+                if self.launchNotification == identifier {
+                    self.launchNotification = nil
+                    return
+                }
                 if let onOpenPath = self.onOpenPath { onOpenPath(path) } else { self.pendingPath = path }
             }
         }
