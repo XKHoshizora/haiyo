@@ -151,9 +151,9 @@ calls at once in the service, default 4), `timeoutMs` (1 000–120 000, default 
 6)); the first version's `perOwnerPerDay` and `sitePerDay` are gone and refused at start, the error naming the key and
 saying it was removed and why),
 `HOLDS` (what one owner's open holds may add up to, JSON, every field optional; Metering, Money that does not block:
-`maxOpenShare` (an admission rule: the share of what is left of a source — today's free allowance, or the balance —
-that the holds of the owner's running calls against it, a starting reply's own included, may add up to before that reply
-waits, queued; a reply's later rounds are held against all that is left; 0.01–1, default 1)),
+`maxOpenShare` (an admission rule: the share of what is left of the pots a starting reply's class may use — today's
+free allowance and the balance — that every promise on them, the reply's own included, may add up to before that reply
+waits, queued; a reply's later rounds and tools are held against all that is left; 0.01–1, default 1)),
 `ALLOWANCE` (when an owner is reminded of the day's free allowance, JSON, every field optional; Metering, Reminders:
 `warnAt` (the share of it used at which they are told, once a day; above 0 and below 1, default 0.8)),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
@@ -3092,13 +3092,14 @@ draft and a reply that start at the same moment may briefly run one over the lim
 run at a time, and drafts wait for each other on the lock). A reply held back at its admission (Metering, Money that
 does not block) keeps its mark (`held_back_by`, `held_back_on`) until it is admitted: it is passed over while every call it
 waits for is still running, and until it is admitted — queued, or claimed again and not admitted yet — the owner's younger
-replies that would be paid from the same source are passed over too (first come, first served per payer and source, so a
-reply with a large hold is not passed for ever by smaller ones; which source a queued reply would be paid from is
-admission's own rule on what its owner has now; a free-tier reply held back with today's allowance not left at all and nothing left of the balance after the
-holds waits on both, `held_back_on` `any`, and holds back the younger replies either would pay); a reply on the owner's own
-provider key, or one the other source would pay, never waits behind it, nor does the owner's own reply (lane `own`)
+replies whose class shares a pot with its class are passed over too (first come, first served per payer and pot, so a
+reply with a large hold is not passed for ever by smaller ones; a queued reply's class is admission's own rule on what
+its owner has now, `classSql`: a free-tier reply's mark is `any`, a paid one's `balance`, and as both classes use the
+balance every younger site reply waits behind either; an old code's `free` mark holds back free-tier replies only; a
+reply admission would refuse is not kept waiting); a reply on the owner's own
+provider key never waits behind it, nor does the owner's own reply (lane `own`)
 behind a reply someone else called for, which the others' lanes may keep queued. What first come, first served promises,
-exactly: among one payer's replies paid from one source, a reply once held back is admitted before any younger one; two
+exactly: among one payer's replies sharing a pot, a reply once held back is admitted before any younger one; two
 replies that reach admission together — claimed in one go, their first steps run side by side — are admitted in whichever
 order their transactions take the owner's account lock, the younger possibly first (the other is then held back, and marked).
 Claimed again, its owner is told it is running (the other members of a group, who were told it
@@ -4373,31 +4374,62 @@ carries more input (`holdTokens`; whatever the model's ratio: Token estimates), 
 PDF, plus the call's whole output limit (at a reasoning level, its thinking allowance included: Calling a
 model), at the model's prices. So text an upstream counts at up to a token a byte never costs more than was held. A hold larger than
 the call's cost takes nothing from the owner: the call is charged what it cost, and a larger hold only makes other
-replies wait at the edge of what is left (below). A free-tier model is charged to today's free allowance while any of it
-is left (holds aside), and to the balance only once the allowance is used up: a free-tier reply that finds the allowance
-not used up but all held by your other running calls waits for them (held back, as below) instead of going on to the
-balance, while a persona draft, which cannot wait, takes the allowance; a paid-tier model is charged only to the
-balance. One definition decides it, for admission and for the queue's prediction of where a queued reply would be paid from alike (`metering/admit.ts` `chosenSourceSql`). Only when nothing at all is left of a source the model may use — the allowance used up, the balance at
-or below zero, holds aside — is the call refused: `no_quota` (402) with `reason` `free_and_balance` and `resetsAt`, or
-`reason` `balance` (a reply's run fails so; a draft answers so).
+replies wait at the edge of what is left (below). The call's *class* (its run's `charge_to`) is its model's tier: a
+free-tier model's calls are `free` — today's free allowance first, then the balance, mid-reply too (the product owner's
+ruling Q1) —, a paid-tier model's `balance` — the balance only: the allowance never pays a paid-tier model round. Its hold
+is checked against your two pots together (The pool, below) and split between them only when it is settled. One
+definition decides the class, for admission, for the queue's prediction of a queued reply's class and for the usage
+page's `canStartFreeReply` alike (`metering/admit.ts` `classSql`). Only when nothing at all is left of what the model may
+use — the allowance used up and the balance at or below zero for a free-tier model, the balance at or below zero for a
+paid one, holds aside — is the call refused: `no_quota` (402) with `reason` `free_and_balance` and `resetsAt`, or
+`reason` `balance` (a reply's run fails so; a draft answers so). An owner in debt keeps the use of the day's allowance.
 
-*Money that does not block* (Task H; `tests/money-blocking.test.ts`). A call starts while something is left of its
-source, however large its hold — a reply whose hold is 5 points starts on a balance of 3. What your other running calls
-hold only makes a reply wait: when it starts, the holds against its source, its own included, may add up to at most
-`HOLDS.maxOpenShare` (default 1, so all of) what is left of it, unless the reply would be the only call holding against
-that source — then it starts whatever its hold. A reply that would pass that is *held back*: it is not refused; its run
+*The pool* (wallet v3, `.superpowers/sdd/2026-11-22-polish/design-wallet-v3.md`; `metering/pool.ts`, `wallet.ts`;
+migration `066_wallet_pool.sql`; `tests/money-pool.test.ts`, `tests/money-wallet.test.ts`). The pots are A, what is left
+of today's allowance (never below 0), and B, the balance (B⁺ its part above 0). A running run's hold is *parts*, each of a
+class — `AB` (free-tier model rounds, and every priced tool call such as a web search, whatever the model's tier: the
+allowance may pay our site tool's search inside a paid reply), `B` (paid-tier model rounds), `A` (only the old code's
+rows during a deploy) —, each split into what the checks *promised* (the pots are guaranteed to cover it) and what it
+took beyond them, *over* (promised to nobody): on the run row `hold_micro` is the whole, `web_micro` the searches' part,
+`hold_over_micro` the model part's over, and the model's promise is the rest (`wallet.ts` `partsOf`, the one place a
+row becomes parts; checks keep the three in bounds). A new part is promised at most what keeps every promise covered:
+an `AB` part needs A + B⁺ to cover every promise, a `B` part B⁺ the `B` ones too (`pool.ts` `room`; the single-pot sums
+capped at their pot). *At settlement*, per class within the run, what the run used up to its promise of that class is
+charged — `B` from the balance, `AB` the allowance first (what of A the old code's open rows do not hold), then the
+balance — and what passed its promise is the tier's: a free-tier over is forgiven — *what could not be reserved at the
+time is the site's*, even when the pots have points again by the time it settles (Q2) —, a paid-tier over is the paid
+reply's own debt on the balance, in every lane while Q4 ("others' calls never below zero") is open. A debt is the paid
+reply's, and a later charge of a promise may land below zero because of it (`tests/money-pool.test.ts` has the case). The
+outcome never depends on which run settles first. *A known wait* (liveness, not money): a paid reply whose hold does not
+fit a small balance waits while a free-tier reply of yours holds anything, even all within the allowance, as the two
+classes share the balance (the paid one starts at once when it is alone). *A deploy* runs old and new code side by side
+for a while: a run admitted by the old code keeps `money_rule` 0 and is settled by the old rule, unchanged; new code
+counts its whole hold on its `charge_to` (`A` or `B`), the old code counts a new run's whole hold on its `charge_to` too
+(`free` as its allowance: conservative there, optimistic on the balance, by at most the overlap's own holds). Before the
+old rule's code is removed, an operator runs, **after the old container has exited** (a run it is admitting at that
+moment is not yet visible), `select count(*) from agent_runs where status = 'running' and source is not null and
+money_rule = 0` on each database: it must be 0.
+
+*Money that does not block* (Task H; `tests/money-blocking.test.ts`). A call starts while something is left of what its
+class may use, however large its hold — a reply whose hold is 5 points starts on a balance of 3. What your other running
+calls hold only makes a reply wait: when it starts, its hold must fit beside every promise with the pots counted at
+`HOLDS.maxOpenShare` (default 1, so all of) what is left of them, unless the reply would be the only run holding anything
+on a pot it uses (a paid reply is alone beside the old code's allowance rows) — then it starts whatever its hold, promised
+what fits and over the rest. A reply that would pass that is *held back*: it is not refused; its run
 goes back to `queued` — its owner is told it is queued, the other members of its group are told nothing (they keep seeing
-it replying: nothing about money reaches anyone else) — with the calls it waits for and the source it waits on
-(`agent_runs.held_back_by`, `held_back_on`, migration 054), and the worker claims it again as soon as one of
-them has ended; until it is admitted, your younger replies paid from the same source wait behind it, first come first
-served (Agents and runs, The worker; a reply on your own provider key, or one the other source pays, does not wait). That
+it replying: nothing about money reaches anyone else) — with the calls it waits for and its class (`agent_runs.held_back_by`,
+`held_back_on`: `any` a free-tier reply, `balance` a paid one; `free` only on the old code's rows; migration 054), and the
+worker claims it again as soon as one of them has ended; until it is admitted, your younger replies whose class shares a
+pot with it wait behind it, first come first served — every site reply, since both classes use the balance (Agents and
+runs, The worker; a reply on your own provider key does not wait). That
 is decided under your account's lock, which every settlement takes before its run leaves `running`, so a reply is never
 left waiting for a call that has already ended. It stays an ordinary queued reply meanwhile: your stop (also one you
 asked while it was still running: it is kept in the run's row, `agent_runs.stop_asked`, and its next attempt ends
 `stopped`), a pause, a delete, the Agent's leaving end it as any; what it had taken on (your mention noted while it ran) is handed back as noted, so it is answered whatever becomes of
 its next attempt; its next `begin` reads everything again (what it was asked, its asker's line, the model). A persona
-draft never waits (you are waiting for it on the page): it starts while something is left of its source, whatever your
-replies hold, and its hold counts against them like any. *On the free allowance* (the site pays what passes it) a reply
+draft never waits (you are waiting for it on the page): it starts while something is left of what it may use, whatever
+your replies hold, promised what fits and over the rest, and its hold counts against them like any. *On class `AB`* (the
+site forgives a free-tier over) a reply
 offered tools holds, from its admission, room for a last call beside its first — **the free allowance's room** — and that
 is the hold the rule above counts, renewed a round at a time (Extension): the room is what a last call made after one
 more round can cost,
@@ -4463,14 +4495,15 @@ it reported none (Agents and runs, Tools in a reply) — at the model's price; *
 call can send — its text, the tools' definitions, every round so far and the last call's line at their bytes, at most what
 the context leaves beside the output limit (as Admission bounds a call), 400 for what providers add around tool
 definitions, images and PDFs at their constants — and its whole output limit, whichever call it is (the worker may make
-it the last for reasons of its own: the rounds' cap, a repeat, the context). *Left* is what is left of the run's own
-source — today's free allowance or the balance, by admission's rule, less what the owner's other running calls hold —
-with this run's own hold added back; never another source than admission chose. In this order: a budget of its lane
+it the last for reasons of its own: the rounds' cap, a repeat, the context). *Left* is what the pots its class may use
+leave beside every promise (The pool), this run's own included; the model's part is what is raised (its searches hold
+apart, at their charge). In this order (`pool.ts` `extendRound`): a budget of its lane
 reached by so far counted with what is settled (the Agent's others' daily budget for someone else's call, its proactive
 budget for a reply nobody asked for, and in a group, for a reply in an Agents' chain, its chain budget) allows the last
-call at most; else, while so far and the next call's most stay within `TOOLS.maxPoints` and within *left* — on the free
-allowance with the room for a last call after it besides, renewed from the next call's input bound (Admission, the free
-allowance's room) — the hold becomes that and another round may call tools; else the hold becomes so far and the next
+call at most; else, while so far and the next call's most stay within `TOOLS.maxPoints` and the raise fits *left* — on
+`AB` with the room for a last call after it besides, renewed from the next call's input bound (Admission, the free
+allowance's room) — and the reply holds nothing over (one that started alone past the pots, or went last once, stays
+last: third attack V3-I1), the hold becomes that, all of it promised, and another round may call tools; else the hold becomes so far and the next
 call's most — past *left* if it must be, even below zero (on the free allowance the room kept covers it, so the hold does
 not grow, unless the round passed `G` in bytes: Admission, the free allowance's room) — and the next call is the last: short of the renewed room on the free allowance a reply is never cut or
 queued, its next call is the last. *So far* is never more than the reply has held for its calls (less, on the free
@@ -4497,53 +4530,56 @@ before it failed is discarded and not counted, so with no usage reported it cost
 once for all its rounds: one that fails, or answers nothing, after rounds that completed is charged what those rounds
 used — Agents and runs, Tools in a reply). A run that never reached
 admission costs nothing either, and nor does one admitted whose model was never called (a stop, pause or delete that
-landed between its admission and the call: settled on no tokens at all, not on its input estimate; `tests/runs.test.ts`). The charge goes to the source admission chose, never more than the call held: a call on
-the allowance uses the allowance of the site day it ends in (one that starts before midnight and ends after it uses
-the new day's); a call on the balance is charged in full (up to its hold) and may take the balance below zero; at or
-below zero nothing more starts on the balance until the operator's grants bring it above zero. Settlement releases the
+landed between its admission and the call: settled on no tokens at all, not on its input estimate; `tests/runs.test.ts`). The charge is split between the pots its class may use by the pool's rule (The pool), never more than the call held: the
+allowance is the site day's it ends in (one that starts before midnight and ends after it uses the new day's, its promise
+made the day before counted on it); the balance may go below zero, by a paid reply's own over or by the old code's rows
+during a deploy; at or below zero nothing more starts on the balance until the operator's grants bring it above zero. A
+run the old code admitted (`money_rule` 0) is settled as the old code settles it, to its one `charge_to`. Settlement releases the
 hold in the transaction that moves the run out of `running` (Agents and runs, `finish`), so a hold never stops counting
 before its cost lands.
 
 **A web search's price** (Agents and runs, Web search; `agents/tools/web/hold.ts`, `port-impl.ts` `holdSearch`, `extend`,
-`settle.ts`; migrations `064_web_search.sql`, `065_web_search_rules.sql`; `tests/web-search.test.ts`,
-`tests/web-search-rules.test.ts`). A search is part of the reply's cost, paid from the owner's points; there is no count
-per owner — the points are the bound. One search costs exactly `TOOLS.web.pointsMicroPerSearch` (one value, retuned when
-the engine changes; no metering of the engine: the site carries any difference, bounded by its fuse), held **before**
-the engine is called, in one transaction in the lock order — the run's conversation row, its Agent's and its own
-(`lockRun`), then the owner's account, and last the site's money fuse (the one row every pre-hold shares, never held while
-an account is waited for):
-1. the run must be admitted: on a site model (admission's source), or on a provider's model — its model costs nothing, so
-   its first search picks where its searches are paid from: today's free allowance when what is left of it beside every
-   running hold covers the price, else the balance when it does, else refused; that source is kept for the reply's next
-   searches (its `charge_to`, which migration 065 lets a provider run carry for its searches only, with its `hold_micro`
-   their prices);
-2. the money by Extension's rules, "ok" only: the model part of the reply so far at its bound (a site model's hold, less
-   the free allowance's room for a last call and less its searches; none for a provider's model) with its searches and
-   this one within `TOOLS.maxPoints` and no budget of its lane reached — the others' daily, the proactive daily, the chain
-   budget, each counting what was settled and, for the daily ones, the searches the Agent's other replies of the same lane
-   hold now, read under the Agent's row every pre-hold of it takes (two replies racing for a budget's last points are put
-   in order) — and its hold raised by the price within what is left of its source beside the other holds — on the free
-   allowance the allowance itself, so a search is never paid by forgiveness; else refused, its hold as it was. Each
-   bound refuses in its own words and metric (`TOOLS.maxPoints`, a lane budget, the owner's points). Such a hold counts
-   as any hold: a reply of the owner's on a site model may be held back at admission behind a provider model's reply
-   that holds its searches (Money that does not block), and the queue's prediction of a source counts it;
+`settle.ts`; migrations `064_web_search.sql`, `065_web_search_rules.sql`, `066_wallet_pool.sql`; `tests/web-search.test.ts`,
+`tests/web-search-rules.test.ts`, `tests/money-wallet.test.ts`). A search is part of the reply's cost, paid from the
+owner's points; there is no count per owner — the points are the bound. A search is held at
+`TOOLS.web.pointsMicroPerSearch` (one value, retuned when the engine changes) **before** the engine is called, and charged
+its actual once the engine says what the call cost (below), in one transaction in the lock order — the run's
+conversation row, its Agent's and its own (`lockRun`), then the owner's account, and last the site's money fuse (the one
+row every pre-hold shares, never held while an account is waited for):
+1. the run must be admitted by this code (`money_rule` 1): on a site model, or on a provider's model — whose model costs
+   nothing and which carries no class; else refused;
+2. the money, each bound its own words and metric: the model part of the reply so far at its bound (a site model's hold,
+   less the room kept on `AB` for a last call and less its searches; none for a provider's model) with what its searches
+   are charged so far and this one's price within `TOOLS.maxPoints`; no budget of its lane reached — the others' daily,
+   the proactive daily, the chain budget, each counting what was settled and, for the daily ones, what the searches the
+   Agent's other replies of the same lane hold now are charged (an old code's row at its price), read under the Agent's
+   row every pre-hold of it takes (two replies racing for a budget's last points are put in order); and the price held
+   whole on the pool, class `AB` whatever the model's tier, beside every promise (`pool.ts` `tool`) — so a search is
+   never paid by forgiveness —; else refused, its hold as it was. Such a hold counts as any hold: a reply of the owner's
+   may be held back at admission behind a provider model's reply that holds its searches (Money that does not block),
+   and settles under the account lock, so the reply is claimed once it ends;
 3. the site's money fuse (`web_search_days`, scope `site`, the site day as everywhere): what the day's searches cost the
-   site, in micro-USD (`spent_micro_usd`) — each held at `costMicroUsdPerSearch` at call time and replaced, once the engine
-   answered, by what it says the call cost (Exa's `costDollars`) when that is from a tenth to ten times the estimate — the
-   estimate stands otherwise, and when it says nothing. A search that would take it past `siteUsdPerDay` is refused (one
-   statement; two connections racing for its last search are put in order by the row's lock); the metric
-   `web_site_fuse` (`share: 80`) says it once a site day when 80 % of it is first reached (`warned_80`). This is the
-   operator's cost insurance, not a rule for users: a user's bound is their points;
-4. `agent_runs.web_searches + 1`, `web_micro + price` (and a provider run's source).
+   site, in micro-USD (`spent_micro_usd`), each held at `costMicroUsdPerSearch` at call time. A search that would take it
+   past `siteUsdPerDay` is refused (one statement; two connections racing for its last search are put in order by the
+   row's lock); the metric `web_site_fuse` (`share: 80`) says it once a site day when 80 % of it is first reached
+   (`warned_80`). This is the operator's cost insurance, not a rule for users: a user's bound is their points;
+4. `agent_runs.web_searches + 1`, and `web_micro`, `web_charge_micro` and `hold_micro` each `+ price`, in one statement.
+*The actual* (`hold.ts` `recordSearchCost`; design-wallet-v3.md §5): when the engine says what the call cost (Exa's
+`costDollars`, rounded up to a micro-USD) and that is inside the trusted band — from a tenth of the estimate (rounded up)
+to ten times it —, the owner's charge for the search is lowered to the price scaled by it, rounded up and never above
+the price (`web_charge_micro`, only while the run's hold stands), and the fuse takes it in place of the estimate; outside
+the band, or with no figure, the price and the estimate stand (a bogus low figure neither undercharges the owner nor
+weakens the fuse; the metric `web_cost_ignored` says so). The run's row is taken first, the fuse's last.
 The change sweep deletes counter days more than a week old.
 Refused at any step, the transaction rolls back (a counter taken is given back), the engine is not called and the reply
 goes on. Past the pre-hold the count and the charge stand whatever happens — the engine failing, timing out, finding
 nothing, the reply stopped, the service closing, the worker dropping the call's outcome: the vendor was called. Extension
-counts the searches with what the reply has spent, outside the model's clip (a provider model's reply: with its lane's
-budgets, so one whose searches reached a budget makes its next call its last); settlement charges `min(model cost, model
-hold) + web_micro` (the model hold being the hold less the searches; a provider model's: `web_micro` alone, to the
-source its first search picked), records `cost_micro` as the model's cost and the searches', and the usage record keeps
-`web_searches` and `web_micro` — so every lane budget, which sums what was charged, counts a search once it is settled,
+counts the searches at their charge with what the reply has spent, outside the model's clip (a provider model's reply:
+with its lane's budgets, so one whose searches reached a budget makes its next call its last); settlement charges the
+model's cost up to its part of the hold and the searches at `web_charge_micro` by the pool's rule (The pool: on `AB`,
+the allowance first; a provider model's searches alone), records `cost_micro` as the model's cost and the searches'
+charge, and the usage record keeps `web_searches` and `web_micro` — the searches' charge — so every lane budget, which
+sums what was charged, counts a search once it is settled,
 on site and provider models alike; `GET /api/usage` shows them as their own line (`recentWeb`). Only a settlement on our own failure (`busy`, the
 reply could not be stored) forgives the searches too, as it forgives everything; the count stands. A reply that made none
 is settled exactly as before.
@@ -4614,15 +4650,18 @@ allowance — and recorded as such (`forgiven_micro`):
 
 - whatever is above the call's hold (not its text, counted at up to a token a byte, which the hold bounds; an image or a
   PDF the upstream counted above its constant, or an upstream that reported more input than a request can carry);
-- whatever of an allowance charge exceeds what is left of that day's allowance (not moved to the balance, nor to the
-  next day);
+- what a free-tier call used beyond what was promised it (its over: a reply that started alone past the pots, a last
+  round, a draft) — what could not be reserved at the time is the site's, even when the pots have points again by the
+  time it settles (The pool); by the old rule (a run the old code admitted), whatever of an allowance charge exceeds what
+  is left of that day's allowance (not moved to the balance, nor to the next day);
 - all of it when the reply could not be stored for the service's own reasons (run error `busy`: the record keeps the
   true cost), and for a run recovered at start-up (settled on no tokens at all: whatever the upstream reported died with
   the process).
 
 **The debt bound.** However many replies and drafts you start at once — and whatever an upstream reports, since nothing
-is charged above what was held for it (Extension, Forgiveness) — what your calls take a source below zero is bounded, by a
-rule of its own per source:
+is charged above what was held for it (Extension, Forgiveness) — what your calls take a pot below zero is bounded, by a
+rule of its own per pot (the pool keeps every promise covered, so what passes a pot is only what was over: The pool; the
+balance's floor is `min(B₀ + grants, 0)` less the paid replies' debts and the operator's adjustments down):
 
 - *The balance* (concurrency first; the debt is yours, repaid by the next grant before anything else — the ledger sums
   to the balance): at most what one reply costs, plus one call for each other reply or draft of yours open beside it —
@@ -4675,8 +4714,8 @@ in the log (Metrics in the log), never with an owner, an Agent or an amount.
 
 **Records.** Every call appends one usage record (who, which Agent, which source and model, tokens, whether
 `estimated`, the true cost, and how much of it the allowance, the balance and forgiveness took — the three always add up
-to the cost —, outcome; a run that ended before it was admitted leaves a record with neither source nor model, costing
-nothing); the database holds at most one per run. Every change of a balance is one ledger entry: `grant` and `adjust`
+to the cost —, outcome, and `money_rule`, the rule it was settled by; a run that ended before it was admitted leaves a
+record with neither source nor model, costing nothing); the database holds at most one per run. Every change of a balance is one ledger entry: `grant` and `adjust`
 (the operator giving points, or taking them back with a negative `credits:grant`) and `usage` (a call, linked to its
 record). A balance always equals the sum of its ledger. `GET /api/usage` shows what you were charged, not the true cost.
 
