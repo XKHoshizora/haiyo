@@ -410,7 +410,8 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
   - `node:http2` 连 `api.push.apple.com`（开发构建用 sandbox）；ES256 JWT 用 `node:crypto` 签，用 50 分钟换一次，不早于 20 分钟 [T15]。**不加依赖。**
   - 头：`apns-topic`（bundle id）、`apns-push-type: alert`、`apns-collapse-id`（会话 id）、`apns-priority: 10`、`apns-expiration`（一天）。
   - 回 410 或 400 `BadDeviceToken`：删掉那台设备。
-  - 回 403（密钥、Key ID、Team ID 不对）、`TopicDisallowed` 等（bundle id 不对）、`TooManyProviderTokenUpdates`：是配置的问题，不删设备，所有推送暂停 15 分钟，给运维写一行警告（每类一次）；`DeviceTokenNotForTopic`（别的 app 的令牌）只暂停那一个令牌。
+  - 回 403（密钥、Key ID、Team ID 不对；`BadEnvironmentKeyIdInToken`：密钥不包括这个环境）、`TopicDisallowed` 等（bundle id 不对）、`TooManyProviderTokenUpdates`：是配置的问题，不删设备，**只暂停这个 APNs 环境（sandbox 或 production）的推送** 15 分钟，给运维写一行警告（每类每个环境一次）；`DeviceTokenNotForTopic`（别的 app 的令牌）只暂停那一个令牌。
+  - 规矩：暂停的范围不超过这次失败能证明的范围。用户能选的（令牌、`env`）因此永远停不掉本来能送到的推送（苹果全部拒绝原因逐条的表在 `src/push/apns.ts` 开头）。
   - 429 / 5xx / 断线 / 超时：2 秒、30 秒各重试一次，然后放弃。
 - 内容（不带正文，不带发送人）。**S6 之前不带角标数**：
   ```json
@@ -526,6 +527,7 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
    - 定下来的 bundle ID 就是 `APPLE_BUNDLE_ID` 的值，测试站点和生产站点都要设。
 3. **在这台 Mac 的 Xcode 里登录 Apple ID**（Xcode → Settings → Accounts）。真机运行、归档、上传都要；我不登录。
 4. **APNs 密钥**：在开发者网站的 Keys 里建一个 .p8 密钥，记下 Key ID 和 Team ID。
+   - 建的时候环境选 **Sandbox & Production**（团队范围）：只选一个环境的密钥，另一个环境的 APNs 会拒绝（`BadEnvironmentKeyIdInToken`），发往那个环境的推送就会暂停，日志里有一行警告说明。
    - 主人自己在生产和测试站点的部署环境里设这四个变量：`APPLE_TEAM_ID`（Team ID）、`APNS_KEY_ID`（Key ID）、`APNS_KEY_P8`（.p8 密钥文件的全文）、`APPLE_BUNDLE_ID`（第 2 步的 bundle ID）；
    - 贴错了（格式不对）或少一个：那个站点不发推送，别的照常，启动日志里有一行警告点名是哪个变量（不写值）；服务照样启动；
    - 我不看、不建、不传。

@@ -3025,9 +3025,13 @@ opens it again in front (`haiyo:resume`), so:
   answer, so the phone is pushed when the probe ends (3 s late, never lost); a socket that closes during the probe, at
   once. The heartbeat still drops such a socket on its own (30–60 s, `HEARTBEAT_MS`);
 - the web in a browser registers no phone, so a browser is never pushed to.
-The probe costs one ping per present phone per 3 s at most, and no client change. "Present" is decided when the push is
-decided (after the recipients are read), in this process: the hub and the pushes are one instance (Sync and realtime,
-Single instance only).
+The probe needs no client change. It costs one ping per probe, and one probe per session runs at a time (a second ask
+while one runs shares its answer); a present phone answers within a round trip, so the next message pings again — about
+one ping per message, or one per round trip in a burst. No answer is cached (a cached "present" could go stale). After a
+probe that ran and had no answer, the push is asked once more before it is sent (one indexed query): not when the
+phone's row changed meanwhile (signed out, moved to another account, registered again), its session ended, or its person
+read up to the message on another device (counted `stale`). "Present" is decided when the push is decided (after the
+recipients are read), in this process: the hub and the pushes are one instance (Sync and realtime, Single instance only).
 
 **What a push carries.** Content-free, always:
 `{"aps": {"alert": {"title": "Haiyo", "body": "你有新消息"}, "sound": "default", "thread-id": "<conversation id>"}, "c": "<conversation id>"}`
@@ -3046,38 +3050,49 @@ for 50 minutes and made anew after — never sooner than 20 minutes, Apple's bou
 - 410 (`Unregistered`, `ExpiredToken`) and 400 `BadDeviceToken`: the token is dead and its device row is deleted (unless
   the phone registered it again after the push was decided: Apple allows pushing a dead token again once the app
   retrieves it again). Nothing else deletes a phone.
-- The configuration's refusals — 403 (`InvalidProviderToken`, `Forbidden`, …: the key, its id or the Team ID), 400
-  `TopicDisallowed` / `BadTopic` / `MissingTopic` (the topic: `APPLE_BUNDLE_ID`), 429 `TooManyProviderTokenUpdates`
-  (`token_rate`: renewed too often, restarts in a row) — fail that push (`auth`, `topic`, `token_rate`) and **pause every
-  push** for `CONFIGURATION_PAUSE_MS` (15 minutes; `paused` without being sent), then try again. 400
-  `DeviceTokenNotForTopic` (a token of another app, another bundle id) is `topic` too but pauses **that token** alone: one
-  phone of another build must not pause everyone's pushes. No phone is deleted for any of these; one WARN line per class
-  says so (below).
+- **The rule of a pause: a pause is never wider than what the failing request proves**, so nothing a signed-in person can
+  choose — the token they register, the `env` (so the APNs host) they register it for — can pause a push that would have
+  got through. A refusal of the key or the topic proves only that that host refuses it (an APNs key can be limited to one
+  environment), so it pauses **that host**: 403 (`InvalidProviderToken`, `Forbidden`, …: the key, its id or the Team ID;
+  `auth`), 403 `BadEnvironmentKeyIdInToken` (the key does not cover this environment; `key_env`: create the key as
+  **Sandbox & Production**), 400 `TopicDisallowed` / `BadTopic` / `MissingTopic` (the topic, `APPLE_BUNDLE_ID`; `topic`),
+  429 `TooManyProviderTokenUpdates` (`token_rate`: renewed too often, restarts in a row — no person can provoke it,
+  renewals being at most one per 20 minutes whatever is pushed). A refusal of a token pauses **that token**: 400
+  `DeviceTokenNotForTopic` (a token of another app; `topic`). Each pause lasts `CONFIGURATION_PAUSE_MS` (15 minutes; a
+  push there is `paused` without being sent), then pushes are tried again. Nothing pauses every push: a person's sandbox
+  phone can pause only the sandbox host, which no TestFlight or App Store phone uses, and only for a refusal every push
+  there would get anyway. No phone is deleted for any of these; one WARN line per class and host says so (below). The
+  table of every reason Apple documents — what it is here, what it pauses, whether a person can provoke it — is at the top
+  of `src/push/apns.ts`; `tests/push-apns.test.ts` walks it row by row.
 - 403 `ExpiredProviderToken`: retried once — with the token another push has renewed since, or with one made anew if it
-  is at least 20 minutes old; else `auth` (a clock that is off).
+  is at least 20 minutes old; else `auth` (a clock that is off), on that host.
 - 429 `TooManyRequests`, 5xx, a broken connection or no answer within 10 s: retried after 2 s, then after 30 s, then given
   up (at most three attempts) — never a loop; the wait gives its place back. Only the connection that attempt used is
   touched: one stream reset leaves it up (for this retry and everyone else's), a broken one forgets itself, a silent one
-  or one answering 503 takes no new pushes (what is on it may finish) and the retry opens another.
+  or one answering 503, `IdleTimeout` or `UnrelatedKeyIdInToken` takes no new pushes (what is on it may finish) and the
+  retry opens another.
 - Any other answer: given up (`rejected`).
 
 At most 32 pushes in flight and 5 000 waiting; beyond, `overloaded`. A push never holds up a request or a message: it runs
-after the commit, on its own. **The stop** closes the sender first (its retry waits end at once, `closed`), then waits at
-most `STOP_WAIT_MS` (5 s) for what is under way, and writes the last counters.
+after the commit, on its own. **The stop** takes at most `STOP_WAIT_MS` (5 s) in all: it closes the sender first (its retry
+waits end at once, `closed`; every connection it opened — one already closing gracefully too — is closed, and destroyed
+after `CLOSE_GRACE_MS`, 2 s), then waits for what is under way until the deadline, and writes the last counters.
 
-**Expired sessions.** The periodic sweep on the memory changes' timer (`MEMORY.changesSweepMs`, hourly; app.ts
-`changeSweep`) deletes the phones of expired sessions — a session row goes only when its cookie is shown again, so an
-abandoned phone's token would otherwise stay — counted as `push_devices_expired`. Sessions last 7 days from their last use,
-so a phone whose app was not opened for a week gets no more pushes.
+**Expired sessions.** The push's own timer (every 10 minutes, with the counters; it always runs, with or without APNs and
+whatever `MEMORY.changesSweepMs` says) deletes the phones of expired sessions — a session row goes only when its cookie is
+shown again, so an abandoned phone's token would otherwise stay — counted as `push_devices_expired`. Sessions last 7 days
+from their last use, so a phone whose app was not opened for a week gets no more pushes.
 
 **Counters in the log.** Never a token, a conversation's id, a person or any text. `{"metric": "push", "sent", "removed",
-"present", "coalesced", "failed": {"<class>": n}}` every 10 minutes when anything was counted, and at the stop: pushes APNs
-took, devices deleted for a dead token, phones skipped as present, pushes not made because one was out, and pushes given
-up by class (`throttled`, `server`, `network`, `timeout`, `auth`, `topic`, `token_rate`, `rejected`, `overloaded`,
-`closed`, `paused`). `{"metric": "push_off", "missing": [...], "malformed": [...]}` (WARN, variable names only) once at
-start when some of the four variables are set but not all, or one is malformed. `{"metric": "push_config_refused",
-"class": "auth" | "topic" | "token_rate"}` (WARN) once per class and process, the first time APNs refuses the
-configuration, with what to check. `{"metric": "push_devices_expired", "removed"}` from the sweep. `push_targets_failed` /
+"present", "coalesced", "stale", "failed": {"<class>": n}}` every 10 minutes when anything was counted, and at the stop:
+pushes APNs took, devices deleted for a dead token, phones skipped as present, pushes not made because one was out, pushes
+no longer wanted after a probe, and pushes given up by class (`throttled`, `server`, `network`, `timeout`, `auth`,
+`key_env`, `topic`, `token_rate`, `rejected`, `overloaded`, `closed`, `paused`). `{"metric": "push_off", "missing": [...],
+"malformed": [...], "links": "on" | "off"}` (WARN, variable names only) once at start when some of the four variables are
+set but not all, or one is malformed; `links: "off"` (and the message) when the universal-links file is off too (no valid
+Team and bundle id). `{"metric": "push_config_refused", "class": "auth" | "key_env" | "topic" | "token_rate", "host":
+"sandbox" | "production"}` (WARN) once per class, host and process, the first time that host refuses the configuration,
+with what to check. `{"metric": "push_devices_expired", "removed"}` from the sweep. `push_targets_failed` /
 `push_failed` with a database error's code only, when the recipients could not be read or a dead device not deleted.
 
 **What only a real device shows** (the tests talk to a local stand-in): that Apple accepts the token's signature with the
