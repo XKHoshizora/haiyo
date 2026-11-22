@@ -354,7 +354,9 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
           {/* The tags, drawn behind the box's own text: the same text, transparent, with each tag's range as a tag. */}
           <div className="composer-mirror" ref={mirrorRef} aria-hidden="true">
             {tags.length > 0 && mentionSegments(text, tags).map((part, i) => part.mention ? <span key={i} className="mention-chip">{part.text}</span> : <React.Fragment key={i}>{part.text}</React.Fragment>)}
-            {"\u200b"}
+            {/* A textarea keeps a line for its caret after a final line break and a div does not: that line, and only then
+                (after a final space that hangs past the edge, the character would start a line the textarea does not have). */}
+            {text.endsWith("\n") && "\u200b"}
           </div>
           <textarea ref={inputRef} rows={1} value={text} style={{height}} disabled={disabled} placeholder={disabled?"当前无法发送新消息":"发送消息，或 @ 会话成员"} aria-label="消息内容" aria-autocomplete="list" aria-controls={mention?"mention-picker":undefined} aria-expanded={Boolean(mention)} aria-activedescendant={mention&&matches[selected]?`mention-${matches[selected]}`:undefined} aria-describedby={tags.length>0?tagsId:undefined}
             onChange={e=>{const kept=changed(e.target.value,e.nativeEvent?.inputType);const caret=kept===e.target.value?e.target.selectionStart:caretAfter.current;const end=kept===e.target.value?e.target.selectionEnd:caret;detect(kept,caret,end,current.current.tags);}}
