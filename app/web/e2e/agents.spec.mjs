@@ -234,7 +234,7 @@ test("used-up free allowance: the reply says so with its reset time; after a gra
   const usage = ann.page.getByRole("region", { name: "用量与余额" });
   const row = (label) => usage.locator(".kv-row").filter({ hasText: label });
   await expect(row("已用 / 每日额度")).toContainText("1 / 1 点");
-  await expect(row("当前余额")).toContainText("4.399 点");
+  await expect(row("当前余额")).toContainText("4.4 点");
   const recent = usage.getByRole("list", { name: "最近用量" }).getByRole("listitem");
   await expect(recent.filter({ hasText: "演示高级模型（本站）" })).toContainText("0.601 点 · 1 次回复");
   await expect(recent.filter({ hasText: "演示快速模型（本站）" })).toContainText("1 点 · 2 次回复");

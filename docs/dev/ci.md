@@ -10,18 +10,18 @@ a throwaway Postgres that each job starts for itself.
 | Job | What it does | Expected time |
 | --- | --- | --- |
 | service typecheck | `npm ci`, `npx tsc --noEmit` in `app/service` | about 1.5 min |
-| service tests (shard 1/4 .. 4/4) | each shard has its own Postgres 18 and runs a quarter of the test files: `npx vitest run --shard=i/4` | see the first run's timings below |
+| service tests (shard 1/6 .. 6/6) | each shard has its own Postgres 18 and runs a sixth of the test files: `npx vitest run --shard=i/6` | 4 to 7 min each |
 | memory calibration check | `node scripts/calibrate-memory.mjs --check` | under 1 min |
 | web lint, tests, build | `npm test` (lint, then unit tests) and `npm run build` in `app/web` | about 3 min |
-| browser suite (Chromium) | the Playwright suite in `app/web/e2e`, against a service the suite starts itself | to be measured |
+| browser suite (Chromium, parts 1/4 .. 4/4) | a quarter of the Playwright spec files in `app/web/e2e` per part (`--shard=i/4`), each against its own Postgres and a service the suite starts itself | 4 to 6 min each |
 | browser suite (WebKit) | same suite in WebKit; only when started by hand | not on a push |
 | old root project | the old project at the repository root, unchanged | about 2.5 min |
 
-Why 4 shards: the service suite is about 3,500 tests that run one file after another against one database, 13 to 36
-minutes on one machine. Four shards bring that to a quarter plus about a minute and a half of set-up each. More shards
-would only add set-up. Shards are split by test file, not by how long a file takes, so one shard can run longer than
-another. Raise the number in two places (`matrix.shard` and `--shard=${{ matrix.shard }}/4`) if one shard stays the
-slowest by far.
+Why 6 service shards: the service suite is about 3,500 tests that run one file after another against one database, 13 to 36
+minutes on one machine. The first run with 4 shards took 4 to 9 minutes per shard (shards are split by test file, not by
+how long a file takes, so they are uneven); 6 keeps the slowest near 6 minutes. More shards only add about a minute and a
+half of set-up each. To change the number, edit `matrix.shard` and `--shard=${{ matrix.shard }}/6` in the `service` job.
+The browser suite is split the same way in 4 parts.
 
 The Postgres of each job is started with `docker run` (not a service container) so it can run without waiting for the
 disk: the tests empty the tables after every test and this database is thrown away with the job. The version is 18,
@@ -33,7 +33,7 @@ the one the acceptance database runs (`docs/acceptance/batch1/README.md` says a 
 2. At the top of the run page, the Summary shows one table per service shard: passed, failed, skipped, total, and the
    names of the failed tests with their file.
 3. Open the job and its failing step for the full log. A skipped count above a handful is worth a look.
-4. A failed browser run keeps its report: at the bottom of the run page, download `playwright-report-chromium`
+4. A failed browser run keeps its report: at the bottom of the run page, download `playwright-report-chromium-<part>`
    (open `index.html` in it; traces of failed tests are inside).
 
 ## Run the WebKit browser suite
@@ -45,9 +45,9 @@ file is on the default branch.)
 
 From `app/service`, with your usual `.env`:
 
-    npx vitest run --shard=2/4
+    npx vitest run --shard=2/6
 
-To run exactly what CI runs for a shard, use the same numbers (`i/4`). A shard run on its own needs a fresh test
+To run exactly what CI runs for a shard, use the same numbers (`i/6`). A shard run on its own needs a fresh test
 database if a migration changed (see `lane-rules.md`, "Running the service suite in shards"). The whole suite split
 over local databases: `node ../../scripts/dev/shard-tests.mjs -n 4 --tag <letters>`.
 Web: `npm test` and `npm run build` in `app/web`. Browser suite: `npm run e2e` in `app/web`.

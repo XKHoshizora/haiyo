@@ -56,13 +56,13 @@ jobs:
       - run: npx tsc --noEmit
 
   service:
-    name: service tests (shard ${{ matrix.shard }}/4)
+    name: service tests (shard ${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     defaults:
       run:
         working-directory: app/service
@@ -86,11 +86,11 @@ jobs:
       - run: npm ci
       # The migrations run by the suite's own global setup (tests/helpers/global-setup.ts), once per shard.
       - name: Run this shard
-        run: npx vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json=vitest-shard.json
+        run: npx vitest run --shard=${{ matrix.shard }}/6 --reporter=default --reporter=json --outputFile.json=vitest-shard.json
       - name: Count passed / failed / skipped
         if: always()
         env:
-          SHARD: ${{ matrix.shard }}/4
+          SHARD: ${{ matrix.shard }}/6
         run: |
           node - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           const fs = require("node:fs");
@@ -143,9 +143,13 @@ jobs:
       - run: npm run build
 
   e2e:
-    name: browser suite (Chromium)
+    name: browser suite (Chromium, part ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -179,13 +183,14 @@ jobs:
       # Downloads the browser only when the cache did not hold it; always adds the system libraries it needs.
       - run: npx playwright install --with-deps chromium
         working-directory: app/web
-      - run: npm run e2e
+      # Each part has its own Postgres and its own service; Playwright takes every 4th share of the spec files.
+      - run: npm run e2e -- --shard=${{ matrix.shard }}/4
         working-directory: app/web
       - name: Keep the report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report-chromium
+          name: playwright-report-chromium-${{ matrix.shard }}
           path: |
             app/web/playwright-report
             app/web/e2e/playwright-report
