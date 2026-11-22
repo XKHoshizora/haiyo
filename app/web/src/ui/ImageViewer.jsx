@@ -45,6 +45,8 @@ export function ImageViewerProvider({ messages, children }) {
     let pushed = true;
     window.history.pushState({ ...(window.history.state ?? {}), layer: "viewer" }, "");
     const onPop = () => {
+      // (Another entry came and went above this one, e.g. a window resized across the one-column width: still in the viewer.)
+      if (window.history.state?.layer === "viewer") return;
       pushed = false;
       setShown(null);
     };

@@ -467,6 +467,17 @@ describe("the viewer is one history entry", () => {
     expect(window.history.state).toEqual(entry);
   });
 
+  it("an entry the app pushes and pops above the viewer's does not close it", async () => {
+    await open(3);
+    window.history.pushState({ af: 1, depth: 1 }, "");
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(document.querySelector(".viewer")).not.toBeNull();
+    expect(window.history.state.layer).toBe("viewer");
+  });
+
   it("stepping to the next picture adds nothing", async () => {
     await open(3);
     const state = window.history.state;

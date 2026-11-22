@@ -49,10 +49,13 @@ export function FileName({ name }) {
     watch.observe(node);
     return () => watch.disconnect();
   }, [head, tail]);
+  // Cut short on screen: the drawn parts are for the eye, and the whole name stays in the page for a screen reader, a search and a copy.
+  const cut = shown !== null && shown !== head;
   return (
     <strong className="file-name" title={name} ref={box}>
-      <span className="file-name-head">{shown ?? head}</span>
-      <span className="file-name-tail">{tail}</span>
+      <span className="file-name-head" aria-hidden={cut || undefined}>{cut ? shown : head}</span>
+      <span className="file-name-tail" aria-hidden={cut || undefined}>{tail}</span>
+      {cut && <span className="sr-only">{name}</span>}
     </strong>
   );
 }
