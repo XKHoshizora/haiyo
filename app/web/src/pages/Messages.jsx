@@ -8,6 +8,7 @@ import { failureText, retryHopeless } from "../data/uploadErrors.js";
 import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
 import { MediaBody } from "../ui/MediaBody.jsx";
+import { useGrowOnSize } from "../ui/useGrowOnSize.js";
 import { thumbMaxWidth, thumbSize } from "../ui/thumbSize.js";
 import { useTapToOpen } from "../ui/tapOpen.js";
 import { useBubbleMenu } from "../ui/BubbleMenu.jsx";
@@ -73,15 +74,12 @@ function ImageBody({ msg }) {
   const img = useRef(null);
   const viewer = useImageViewer();
   const tap = useTapToOpen((node) => viewer.open(msg.id, node));
-  const grew = useContext(GrowContext);
   const measure = (node) => setBox(thumbSize({ width: node.naturalWidth, height: node.naturalHeight }, { maxWidth: thumbMaxWidth(window.innerWidth) }));
   useLayoutEffect(() => {
     if (img.current?.complete && img.current.naturalWidth) measure(img.current);
   }, [msg.src]);
   // (The box is its final size now: a list that was at its newest message stays there; scrolled up, nothing moves.)
-  useLayoutEffect(() => {
-    if (box) grew?.();
-  }, [box?.width, box?.height]);
+  useGrowOnSize(box?.width, box?.height);
   if (broken) return <UnavailableCard name={msg.text} />;
   return (
     <figure className="attachment-image" data-sized={box ? "" : undefined} style={box ? { width: box.width } : undefined}>
@@ -97,11 +95,6 @@ function ImageBody({ msg }) {
       </button>
     </figure>
   );
-}
-
-/** A file: a video or an audio file that this browser can play is a player (ui/MediaBody.jsx, which falls back to the card), any other the card. */
-function FileBody({ msg }) {
-  return <MediaBody msg={msg} />;
 }
 
 /**
@@ -122,7 +115,7 @@ function Body({ msg, agent, onJump }) {
   if (msg.kind === "image" || msg.kind === "file")
     return (
       <>
-        {msg.kind === "image" ? <ImageBody msg={msg} /> : <FileBody msg={msg} />}
+        {msg.kind === "image" ? <ImageBody msg={msg} /> : <MediaBody msg={msg} />}
         <Caption msg={msg} />
       </>
     );

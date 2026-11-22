@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { newBlobKey } from "../src/attachments/blob.ts";
 import { abandonedAfterMs, holdBlob, sweepPendingBlobs } from "../src/attachments/pending.ts";
-import { contentDisposition, sanitizeFileName } from "../src/attachments/routes.ts";
+import { contentDisposition, parseRange, sanitizeFileName } from "../src/attachments/routes.ts";
 import { MAX_CONCURRENT_UPLOADS } from "../src/attachments/slots.ts";
 import { sweepOrphans } from "../src/attachments/store.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
@@ -130,11 +130,11 @@ describe("byte ranges (a video plays and seeks in a browser only through them)",
     await sendFile(a, dm, up.json.id);
     const get = (who: Actor | null, range?: string, url = `/api/attachments/${up.json.id}`) =>
       app.inject({ method: "GET", url, headers: { ...(who ? { cookie: who.cookie } : {}), ...(range ? { range } : {}) } });
-    return { a, b, eve, id: up.json.id as string, get, size: MP4.length };
+    return { a, b, eve, dm, id: up.json.id as string, get, size: MP4.length };
   }
 
   it("the type is the sniffed one, on the wire and in the header; a full answer says it accepts ranges", async () => {
-    const { b, get, size, id } = await sentVideo();
+    const { b, get, size, id, dm } = await sentVideo();
     const full = await get(b);
     expect(full.statusCode).toBe(200);
     expect(full.headers["content-type"]).toBe("video/mp4");
@@ -142,7 +142,7 @@ describe("byte ranges (a video plays and seeks in a browser only through them)",
     expect(full.headers["content-length"]).toBe(String(size));
     expect(full.headers["x-content-type-options"]).toBe("nosniff");
     expect(Buffer.compare(full.rawPayload, MP4)).toBe(0);
-    const history = await api(app, b, "GET", `/api/conversations/${(await db.query<{ conversation_id: string }>("select conversation_id from attachments where id = $1", [id])).rows[0]!.conversation_id}/messages`);
+    const history = await api(app, b, "GET", `/api/conversations/${dm}/messages`);
     expect(history.json.messages[0].attachment).toEqual({ id, name: "clip.mp4", size, inline: false, mime: "video/mp4" });
   });
 
@@ -212,6 +212,53 @@ describe("byte ranges (a video plays and seeks in a browser only through them)",
     expect((await get(null, "bytes=0-9")).statusCode).toBe((await get(null)).statusCode);
     expect((await get(null, "bytes=0-9")).statusCode).toBe(401);
     expect(probe.gets.length).toBe(reads);
+  });
+});
+
+describe("parseRange (a table: a range, 'unsatisfiable' (416), or null — the whole file)", () => {
+  const SIZE = 1000;
+  const table: Array<[string | undefined, unknown]> = [
+    ["bytes=0-99", { start: 0, end: 99 }],
+    ["bytes=0-0", { start: 0, end: 0 }],
+    ["bytes=999-999", { start: 999, end: 999 }],
+    ["bytes=500-", { start: 500, end: 999 }],
+    ["bytes=500-5000", { start: 500, end: 999 }],
+    ["bytes=-50", { start: 950, end: 999 }],
+    ["bytes=-1000", { start: 0, end: 999 }],
+    ["bytes=-5000", { start: 0, end: 999 }],
+    ["bytes=-99999999999999999999", { start: 0, end: 999 }], // (a suffix longer than the file is the whole file, however long)
+    [" bytes=0-9 ", { start: 0, end: 9 }],
+    ["bytes=1000-", "unsatisfiable"],
+    ["bytes=1000-2000", "unsatisfiable"],
+    ["bytes=9007199254740991-", "unsatisfiable"],
+    ["bytes=9007199254740992-", "unsatisfiable"], // (starts past the end, however many digits: the same answer as the one just above)
+    ["bytes=99999999999999999999999-", "unsatisfiable"],
+    ["bytes=-0", "unsatisfiable"],
+    ["bytes=5-2", null],
+    ["bytes=", null],
+    ["bytes=-", null],
+    ["bytes=abc", null],
+    ["bytes=1e3-2e3", null],
+    ["bytes=0x10-0x20", null],
+    ["bytes= 10-20", null],
+    ["Bytes=0-9", null],
+    ["items=0-9", null],
+    ["bytes=0-9,20-29", null],
+    ["bytes=١٠-٢٠", null],
+    ["bytes=0-9\r\nX-Evil: 1", null],
+    [undefined, null],
+    ["", null],
+  ];
+  it.each(table)("%s", (header, want) => expect(parseRange(header, SIZE)).toEqual(want));
+  it("a suffix on an empty file is the whole (empty) file, not a 416; a start is past its end", () => {
+    expect(parseRange("bytes=-5", 0)).toBeNull();
+    expect(parseRange("bytes=0-", 0)).toBe("unsatisfiable");
+  });
+  it("whatever it returns, the slice lies inside the file", () => {
+    for (const [header] of table) {
+      const got = parseRange(header, SIZE);
+      if (got && got !== "unsatisfiable") expect([got.start >= 0, got.start <= got.end, got.end <= SIZE - 1]).toEqual([true, true, true]);
+    }
   });
 });
 

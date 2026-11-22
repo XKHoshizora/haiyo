@@ -7,7 +7,7 @@ import { sniff } from "../src/attachments/sniff.ts";
 
 // A real S3Client whose requests are intercepted before serialisation, so nothing leaves the process.
 // This checks key handling and config wiring only. It is NOT a test against a real bucket.
-function fakeClient() {
+function fakeClient(answer?: (name: string, input: any) => Record<string, unknown>) {
   const commands: { name: string; input: any }[] = [];
   const client = new S3Client({
     region: "r",
@@ -18,6 +18,7 @@ function fakeClient() {
     (_next, context) => async (args) => {
       const name = String(context.commandName);
       commands.push({ name, input: args.input });
+      if (answer) return { output: answer(name, args.input) } as any;
       return { output: name === "GetObjectCommand" ? { Body: Readable.from([Buffer.from("hi")]) } : {} } as any;
     },
     { step: "initialize", name: "captureOnly" },
@@ -47,6 +48,95 @@ describe("s3BlobStore (fake client)", () => {
     await expect(store.get("../x")).rejects.toThrow("invalid blob key");
     await expect(store.delete("a/b")).rejects.toThrow("invalid blob key");
     expect(commands).toHaveLength(0);
+  });
+});
+
+/** The bytes of a stored object: byte n is n mod 251. */
+const OBJECT = Buffer.from(Array.from({ length: 100 }, (_, n) => n % 251));
+const read = async (stream: Readable) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+};
+
+describe("s3BlobStore ranged reads (fake client)", () => {
+  /** What S3 answers a ranged GET with: a 206 body of just the slice (ContentRange and ContentLength say which). */
+  const honest = (name: string, input: any) => {
+    if (name !== "GetObjectCommand") return {};
+    const m = /^bytes=(\d+)-(\d+)$/.exec(input.Range ?? "");
+    if (!m) return { Body: Readable.from([OBJECT]), ContentLength: OBJECT.length };
+    const [start, end] = [Number(m[1]), Number(m[2])];
+    return { Body: Readable.from([OBJECT.subarray(start, end + 1)]), ContentLength: end - start + 1, ContentRange: `bytes ${start}-${end}/${OBJECT.length}` };
+  };
+
+  it("sends Range: bytes=start-end for a range, and no Range for a plain read; the 206 body is the slice, streamed", async () => {
+    const { client, commands } = fakeClient(honest);
+    const store = s3BlobStore(cfg, client);
+    const slice = await store.get("att-x", { start: 10, end: 99 });
+    expect(commands.at(-1)!.input.Range).toBe("bytes=10-99");
+    expect(Buffer.compare(await read(slice), OBJECT.subarray(10, 100))).toBe(0);
+    await store.get("att-x", { start: 0, end: 0 });
+    expect(commands.at(-1)!.input.Range).toBe("bytes=0-0");
+    const whole = await store.get("att-x");
+    expect(commands.at(-1)!.input.Range).toBeUndefined();
+    expect(Buffer.compare(await read(whole), OBJECT)).toBe(0);
+  });
+
+  it("the route's open-ended and suffix ranges arrive as the byte range they mean (the route resolves them against the size first)", async () => {
+    const { client, commands } = fakeClient(honest);
+    const store = s3BlobStore(cfg, client);
+    await store.get("att-x", { start: 90, end: 99 }); // bytes=90-  of 100
+    await store.get("att-x", { start: 50, end: 99 }); // bytes=-50  of 100
+    expect(commands.map((c) => c.input.Range)).toEqual(["bytes=90-99", "bytes=50-99"]);
+  });
+
+  it("an S3-compatible service that answers a ranged GET with the WHOLE object (200, no ContentRange) never leaks the wrong bytes: only the slice is passed on", async () => {
+    const { client } = fakeClient((name) => (name === "GetObjectCommand" ? { Body: Readable.from([OBJECT.subarray(0, 40), OBJECT.subarray(40)]), ContentLength: OBJECT.length } : {}));
+    const store = s3BlobStore(cfg, client);
+    const slice = await store.get("att-x", { start: 10, end: 59 });
+    const bytes = await read(slice);
+    expect(bytes.length).toBe(50);
+    expect(Buffer.compare(bytes, OBJECT.subarray(10, 60))).toBe(0);
+  });
+
+  it("an answer whose Content-Range or length is not the slice asked for is refused, not served under a length it does not have", async () => {
+    const wrong = fakeClient((name) => (name === "GetObjectCommand" ? { Body: Readable.from([OBJECT.subarray(0, 30)]), ContentLength: 30, ContentRange: `bytes 0-29/${OBJECT.length}` } : {}));
+    await expect(s3BlobStore(cfg, wrong.client).get("att-x", { start: 10, end: 59 })).rejects.toThrow(/range/i);
+  });
+
+  it("the consumer going away mid-stream (the client aborted) destroys the upstream body, whole object or slice", async () => {
+    for (const whole of [false, true]) {
+      const upstream = new Readable({ read() {} });
+      upstream.push(OBJECT.subarray(0, 20));
+      const { client } = fakeClient((name) => (name === "GetObjectCommand" ? { Body: upstream, ...(whole ? { ContentLength: 100 } : { ContentLength: 50, ContentRange: "bytes 10-59/100" }) } : {}));
+      const out = await s3BlobStore(cfg, client).get("att-x", { start: 10, end: 59 });
+      await new Promise((resolve) => out.once("data", resolve));
+      out.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect([whole, upstream.destroyed]).toEqual([whole, true]);
+    }
+  });
+
+  it("an S3 error in the middle of the stream ends the consumer's stream with that error — and nothing is left unhandled", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      for (const whole of [false, true]) {
+        const upstream = new Readable({ read() {} });
+        upstream.push(OBJECT.subarray(0, 20));
+        const { client } = fakeClient((name) => (name === "GetObjectCommand" ? { Body: upstream, ...(whole ? { ContentLength: 100 } : { ContentLength: 50, ContentRange: "bytes 10-59/100" }) } : {}));
+        const out = await s3BlobStore(cfg, client).get("att-x", { start: 10, end: 59 });
+        const ended = new Promise<unknown>((resolve) => out.once("error", resolve));
+        out.resume();
+        upstream.destroy(new Error("connection reset"));
+        expect(String(await ended)).toContain("connection reset");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
   });
 });
 

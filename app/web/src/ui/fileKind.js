@@ -37,8 +37,8 @@ function extensionOf(name) {
 
 /**
  * The kind of a file: from its extension when that is a known one, else from its type (`mime`), else "other". The
- * extension goes first because a browser's type can be wrong (a .ts file is video/mp2t on Windows) and because the wire
- * carries no type for a stored attachment: the same file shows the same icon while it is being sent and after.
+ * extension goes first because a browser's type can be wrong (a .ts file is video/mp2t on Windows) and because an older message
+ * has no type on the wire: the same file shows the same icon while it is being sent and after.
  */
 export function fileKind({ mime, name }) {
   const byName = BY_EXTENSION.get(extensionOf(name));

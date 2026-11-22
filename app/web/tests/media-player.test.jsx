@@ -4,8 +4,9 @@
 // play (or fails to) is the card, and the card stays reachable for download.
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MediaBody, playableKind } from "../src/ui/MediaBody.jsx";
+import { GrowContext } from "../src/ui/ImageViewer.jsx";
 import { FileCard } from "../src/ui/FileCard.jsx";
 
 afterEach(() => {
@@ -109,6 +110,81 @@ describe("MediaBody", () => {
     Object.defineProperty(video, "videoHeight", { configurable: true, value: 1920 });
     fireEvent.loadedMetadata(video);
     expect(frame.style.aspectRatio.replace(/\s/g, "")).toBe("180/320");
+  });
+});
+
+describe("MediaBody keeps the chat at its newest message (item I1: the same grow path as pictures)", () => {
+  beforeEach(() => canPlay({ "video/mp4": "maybe" }));
+  const metadata = (video, width, height) => {
+    Object.defineProperty(video, "videoWidth", { configurable: true, value: width });
+    Object.defineProperty(video, "videoHeight", { configurable: true, value: height });
+    fireEvent.loadedMetadata(video);
+  };
+
+  it("once the box grows from the placeholder to the video's own shape the list is asked to keep the newest message in view — once per change of box", () => {
+    const grew = vi.fn();
+    const { container } = render(
+      <GrowContext.Provider value={grew}>
+        <MediaBody msg={msg({ name: "clip.mp4", mime: "video/mp4" })} />
+      </GrowContext.Provider>,
+    );
+    expect(grew).not.toHaveBeenCalled(); // (the placeholder is what is laid out first)
+    const video = container.querySelector("video");
+    metadata(video, 1080, 1920); // a portrait phone recording: ~198px taller than the 16:9 placeholder at 402 wide
+    expect(grew).toHaveBeenCalledTimes(1);
+    metadata(video, 1080, 1920); // the same box again: nothing new to follow
+    expect(grew).toHaveBeenCalledTimes(1);
+    metadata(video, 1920, 1080);
+    expect(grew).toHaveBeenCalledTimes(2);
+  });
+
+  it("pictures and media share one hook for it", async () => {
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync("src/ui/useGrowOnSize.js", "utf8")).toContain("GrowContext");
+    expect(readFileSync("src/ui/MediaBody.jsx", "utf8")).toContain("useGrowOnSize");
+    expect(readFileSync("src/pages/Messages.jsx", "utf8")).toContain("useGrowOnSize");
+  });
+});
+
+describe("MediaBody errors and cost", () => {
+  beforeEach(() => canPlay({ "video/mp4": "maybe" }));
+
+  it("an error after something was loaded (a network drop while watching) keeps the player; only an error before anything loaded is the card", () => {
+    const loaded = render(<MediaBody msg={msg({ name: "a.mp4", mime: "video/mp4" })} />);
+    const video = loaded.container.querySelector("video");
+    Object.defineProperty(video, "readyState", { configurable: true, value: 3 });
+    fireEvent.error(video);
+    expect(loaded.container.querySelector("video")).not.toBeNull();
+    cleanup();
+    const never = render(<MediaBody msg={msg({ name: "b.mp4", mime: "video/mp4" })} />);
+    fireEvent.error(never.container.querySelector("video"));
+    expect(never.container.querySelector("video")).toBeNull();
+  });
+
+  it("a player far from the screen loads nothing (preload none) and starts its metadata when it comes near", () => {
+    let callback;
+    const observed = [];
+    globalThis.IntersectionObserver = class {
+      constructor(fn) {
+        callback = fn;
+      }
+      observe(node) {
+        observed.push(node);
+      }
+      disconnect() {}
+    };
+    try {
+      const { container } = render(<MediaBody msg={msg({ name: "clip.mp4", mime: "video/mp4" })} />);
+      const video = container.querySelector("video");
+      expect(video.getAttribute("preload")).toBe("none");
+      expect(observed.length).toBe(1);
+      act(() => callback([{ isIntersecting: false }]));
+      expect(video.getAttribute("preload")).toBe("none");
+      act(() => callback([{ isIntersecting: true }]));
+      expect(video.getAttribute("preload")).toBe("metadata");
+    } finally {
+      delete globalThis.IntersectionObserver;
+    }
   });
 });
 

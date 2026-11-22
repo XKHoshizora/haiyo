@@ -1,7 +1,7 @@
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -84,6 +84,36 @@ export function fsBlobStore(dir: string): BlobStore {
   };
 }
 
+/**
+ * The bytes `range` of `source` (a whole object's stream), and nothing else. The upstream is destroyed as soon as the slice is complete, when the
+ * consumer goes away (a client that aborted) and the consumer gets the upstream's error if it fails — no unhandled event either way.
+ */
+function sliced(source: Readable, range: ByteRange): Readable {
+  const length = range.end - range.start + 1;
+  let seen = 0;
+  let sent = 0;
+  const out = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      const from = Math.max(0, range.start - seen);
+      seen += chunk.length;
+      if (sent < length && from < chunk.length) {
+        const piece = chunk.subarray(from, from + (length - sent));
+        sent += piece.length;
+        this.push(piece);
+      }
+      if (sent >= length) {
+        this.push(null);
+        source.destroy();
+      }
+      done();
+    },
+  });
+  source.on("error", (err) => out.destroy(err));
+  out.on("close", () => source.destroy());
+  source.pipe(out);
+  return out;
+}
+
 type S3Config = NonNullable<Config["s3"]>;
 
 /** `client` is injectable for tests; production builds one from the config. */
@@ -110,7 +140,18 @@ export function s3BlobStore(cfg: S3Config, client?: S3Client): BlobStore {
         new GetObjectCommand({ Bucket: cfg.bucket, Key: checkKey(key), ...(range ? { Range: `bytes=${range.start}-${range.end}` } : {}) }),
       );
       if (!(out.Body instanceof Readable)) throw new Error("unexpected S3 body type");
-      return out.Body;
+      if (!range) return out.Body;
+      if (out.ContentRange !== undefined) {
+        // A 206: it must be the slice asked for — a body of another length would go out under the length the route declared.
+        const got = /^bytes (\d+)-(\d+)\//.exec(out.ContentRange);
+        if (!got || Number(got[1]) !== range.start || Number(got[2]) !== range.end) {
+          out.Body.destroy();
+          throw new Error("S3 answered another byte range than the one asked for");
+        }
+        return out.Body;
+      }
+      // No Content-Range: the service sent the whole object (some S3-compatible services ignore Range). Only the slice is passed on.
+      return sliced(out.Body, range);
     },
     async delete(key) {
       await s3.send(new DeleteObjectCommand({ Bucket: cfg.bucket, Key: checkKey(key) }));

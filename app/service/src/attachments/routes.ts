@@ -32,19 +32,23 @@ const OPAQUE = "application/octet-stream";
  * open-ended (`n-`) forms; an end past the file's end is clipped.
  */
 export function parseRange(header: string | undefined, size: number): ByteRange | "unsatisfiable" | null {
-  const m = typeof header === "string" ? /^bytes=(\d*)-(\d*)$/.exec(header.trim()) : null;
-  if (!m || (m[1] === "" && m[2] === "")) return null;
-  if (m[1] === "") {
-    const n = Number(m[2]);
-    if (!Number.isSafeInteger(n) || n === 0 || size === 0) return "unsatisfiable";
-    return { start: Math.max(0, size - n), end: size - 1 };
+  const m = typeof header === "string" ? /^bytes=([0-9]*)-([0-9]*)$/.exec(header.trim()) : null;
+  const first = m?.[1] ?? "";
+  const last = m?.[2] ?? "";
+  if (!m || (first === "" && last === "")) return null;
+  // (BigInt: a number of any length compares exactly; past what a number holds it is no different from any other start past the end.)
+  const length = BigInt(size);
+  if (first === "") {
+    const n = BigInt(last);
+    if (n === 0n) return "unsatisfiable";
+    if (size === 0) return null; // a suffix of an empty file is the whole (empty) file
+    return { start: n >= length ? 0 : size - Number(n), end: size - 1 };
   }
-  const start = Number(m[1]);
-  if (!Number.isSafeInteger(start)) return null;
-  if (m[2] !== "" && Number(m[2]) < start) return null;
-  if (start >= size) return "unsatisfiable";
-  const end = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
-  return { start, end };
+  const start = BigInt(first);
+  if (last !== "" && BigInt(last) < start) return null;
+  if (start >= length) return "unsatisfiable";
+  const end = last === "" ? length - 1n : BigInt(last) < length - 1n ? BigInt(last) : length - 1n;
+  return { start: Number(start), end: Number(end) };
 }
 
 const DOWNLOAD_HEADERS = {
