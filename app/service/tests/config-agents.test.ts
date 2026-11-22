@@ -458,6 +458,42 @@ describe("the tools configuration", () => {
     }
   });
 
+  test("the engine's key variable is fixed: a TOOLS.web.apiKeyEnv naming any other variable — a service secret, the database's address, another vendor's key, with or without a proxy — refuses to start, naming the setting and printing nothing it was given", () => {
+    const secrets = { ...base, PROVIDER_KEY_SECRET: "provider-secret-value-0123456789", WEB_SEARCH_DEEPSEEK_API_KEY: "deepseek-key-value" };
+    for (const [web, engine] of [
+      ['"apiKeyEnv":"DATABASE_URL"', "exa_search"],
+      ['"apiKeyEnv":"PROVIDER_KEY_SECRET"', "exa_search"],
+      ['"apiKeyEnv":"database_url","baseUrl":"https://proxy.example.com","baseUrlProxy":true', "exa_search"],
+      ['"apiKeyEnv":"PROVIDER_KEY_SECRET","baseUrl":"https://proxy.example.com","baseUrlProxy":true', "exa_search"],
+      ['"apiKeyEnv":"WEB_SEARCH_DEEPSEEK_API_KEY"', "exa_search"],
+      ['"engine":"deepseek_messages","apiKeyEnv":"WEB_SEARCH_API_KEY"', "deepseek_messages"],
+      // A key pasted where the variable's name goes: refused, and not repeated in the error.
+      ['"apiKeyEnv":"sk_live_0123456789abcdef"', "exa_search"],
+    ] as const) {
+      let message = "";
+      try {
+        loadConfig({ ...secrets, TOOLS: `{"web":{"enabled":true,${web}}}` });
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect([web, message]).toEqual([web, expect.stringMatching(new RegExp(`TOOLS: web\\.apiKeyEnv: is fixed for ${engine}: its key is read from WEB_SEARCH_`))]);
+      for (const leaked of ["postgres://x/y", "provider-secret-value", "deepseek-key-value", "sk_live_", "DATABASE_URL", "database_url", "PROVIDER_KEY_SECRET"]) {
+        expect([web, message.includes(leaked)]).toEqual([web, false]);
+      }
+    }
+    // Repeating the engine's own variable is accepted, proxy or not: only that variable is ever sent.
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"apiKeyEnv":"WEB_SEARCH_API_KEY","baseUrl":"https://proxy.example.com","baseUrlProxy":true}}' }).tools.web).toMatchObject({
+      apiKeyEnv: "WEB_SEARCH_API_KEY",
+      baseUrl: "https://proxy.example.com",
+    });
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"engine":"deepseek_messages","apiKeyEnv":"WEB_SEARCH_DEEPSEEK_API_KEY"}}' }).tools.web.apiKeyEnv).toBe("WEB_SEARCH_DEEPSEEK_API_KEY");
+  });
+
+  test("PORT: unset or empty is 3000, not port 0; a number is taken; anything else refuses", () => {
+    expect([loadConfig(base).port, loadConfig({ ...base, PORT: "" }).port, loadConfig({ ...base, PORT: "8080" }).port]).toEqual([3000, 3000, 8080]);
+    for (const bad of ["abc", "-1", "65536", "80.5"]) expect(() => loadConfig({ ...base, PORT: bad }), bad).toThrow(/PORT/);
+  });
+
   test("the first version's counts are refused at start, the error naming the key and saying it was removed and why", () => {
     expect(() => loadConfig({ ...base, TOOLS: '{"web":{"perOwnerPerDay":20}}' })).toThrow(
       /TOOLS: web\.perOwnerPerDay: perOwnerPerDay was removed \(lane websearch2\): there is no cap per owner any more, the points are the bound; remove it from TOOLS/,

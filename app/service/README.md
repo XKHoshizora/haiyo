@@ -63,7 +63,8 @@ and every run-time import of `src/` a production dependency.
 
 ## Configuration (`src/config.ts`)
 
-`DATABASE_URL`, `APP_ORIGIN`, `AUTH_SECRET` (>= 32 chars), `BLOB_DIR`, `PORT`,
+`DATABASE_URL`, `APP_ORIGIN`, `AUTH_SECRET` (>= 32 chars), `BLOB_DIR`, `PORT` (default 3000, also when set empty: an empty
+value is never port 0),
 `PROVIDER_KEY_SECRET` (**required**, >= 32 chars: encrypts users' provider API keys at rest; the service refuses to start without it, and changing it makes stored keys unreadable:
 every call with such a key — a reply, a persona draft, a provider's test, model list and refresh — is then `provider_rejected`, as a key
 the provider refused, and the log says why, until its owner saves the key again with `PATCH`; keep the secret with the database backups),
@@ -73,7 +74,7 @@ credentials, a plain host name or address, and no query or fragment, else start-
 provider's is stored: lower-case host, no default port, no trailing slash; its address is checked at every call),
 `apiKeyEnv` (the name of another variable that holds the upstream key, so the JSON carries
 no secret; start-up fails naming it if unset, and naming the model if it is one of the service's own `DATABASE_URL`,
-`AUTH_SECRET`, `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID` — case ignored; two models may share
+`AUTH_SECRET`, `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID`, `RESEND_API_KEY` — case ignored; two models may share
 one), `model`, `inputMicroPerToken`, `outputMicroPerToken` (whole micro-points), `maxOutputTokens`, `contextTokens` (larger than
 `maxOutputTokens`, else start-up fails naming the model),
 `vision`, `pdf`, `reasoning` (levels from `low`..`max`), and optionally `thinkingSwitch` (`true` for an `openai_chat`
@@ -134,8 +135,10 @@ to `AGENT_RUN_TIMEOUT_MS` alone), `web` (the web search, an object, every field 
 `enabled` (default **false**: no reply is offered it and nothing anywhere changes), `engine` (`exa_search`, the default,
 or `deepseek_messages`), `baseUrl` (https; default by engine: `https://api.exa.ai`, `https://api.deepseek.com`; another host
 is refused unless `baseUrlProxy` is true, so a switch of engine never posts one vendor's key to the other), `apiKeyEnv`
-(the name of another variable holding the engine's key, default by engine — `WEB_SEARCH_API_KEY` for Exa,
-`WEB_SEARCH_DEEPSEEK_API_KEY` for DeepSeek —; with `enabled` on and that variable empty the search is not offered and one
+(the variable holding the engine's key, **fixed by engine** — `WEB_SEARCH_API_KEY` for Exa, `WEB_SEARCH_DEEPSEEK_API_KEY`
+for DeepSeek —: it may only repeat that name, and any other is refused at start, naming the setting and repeating nothing
+it was given, so no setting can send another variable — a service secret, the database's address, another vendor's key —
+to the engine or to a proxy; with `enabled` on and that variable empty the search is not offered and one
 line at start says so, as with a `siteUsdPerDay` below one search's `costMicroUsdPerSearch`, 0 among them), `exaType` (Exa's search type: `auto`, the
 default, `lite` or `fast`), `model` (DeepSeek's, default `deepseek-flash`), `pointsMicroPerSearch` (what one search
 costs the owner, fixed, in micro-points — the one value to retune when the engine changes; default by engine, a
@@ -4027,7 +4030,7 @@ In a group), and an Agent's message is never answered unasked (Agents do not tal
   slash included.
   `apiKeyEnv`: the name of another variable that holds the channel's key, so the JSON carries no secret; start-up fails
   naming it when it is unset or empty, or when it is one of the service's own (`DATABASE_URL`, `AUTH_SECRET`,
-  `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID`, case ignored). The key is read at each call.
+  `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID`, `RESEND_API_KEY`, case ignored). The key is read at each call.
 - `timeoutMs` (500–30 000, default 4 000): how long one channel may take; a decision waits for the judgement at most this
   times the number of channels.
 - `dailyLimit` (1–10 000 000, default 20 000): judgements the site asks for in a site day (`judge_usage`, below).

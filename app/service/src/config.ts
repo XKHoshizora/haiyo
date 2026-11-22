@@ -225,8 +225,10 @@ export interface WebSearchConfig {
   engine: WebEngineName;
   /**
    * The engine's address (https; default by engine, `WEB_ENGINE_DEFAULTS`; another host only with `baseUrlProxy`, so that
-   * a switch of engine never posts one vendor's key to the other) and the environment variable holding its key (default by
-   * engine, so a switch of engine never sends the other vendor's key; missing: not offered, a start-up line says so).
+   * a switch of engine never posts one vendor's key to the other) and the environment variable holding its key — fixed
+   * by engine (`WEB_SEARCH_API_KEY` for Exa, `WEB_SEARCH_DEEPSEEK_API_KEY` for DeepSeek): `TOOLS.web.apiKeyEnv` may only
+   * repeat it, so no setting sends another variable (a service secret, the database's address) to the engine or a proxy;
+   * missing: not offered, a start-up line says so.
    */
   baseUrl: string;
   apiKeyEnv: string;
@@ -312,6 +314,13 @@ const webSearchSchema = z
     // Another host than the engine's own only when the operator says it is a proxy for it.
     if (w.baseUrl !== undefined && !w.baseUrlProxy && new URL(w.baseUrl).hostname !== new URL(WEB_ENGINE_DEFAULTS[w.engine].baseUrl).hostname) {
       ctx.addIssue({ code: "custom", path: ["baseUrl"], message: `is not ${w.engine}'s own host (${new URL(WEB_ENGINE_DEFAULTS[w.engine].baseUrl).hostname}); set baseUrlProxy: true for a proxy` });
+    }
+    // The key's variable is the engine's own, fixed: no setting can name another variable (the database's address, a
+    // service secret, another vendor's key) and have it sent as the key — to the engine, or to a proxy. What was written
+    // is not repeated (a key pasted here by mistake would be printed).
+    const fixed = WEB_ENGINE_DEFAULTS[w.engine].apiKeyEnv;
+    if (w.apiKeyEnv !== undefined && w.apiKeyEnv !== fixed) {
+      ctx.addIssue({ code: "custom", path: ["apiKeyEnv"], message: `is fixed for ${w.engine}: its key is read from ${fixed} only; remove apiKeyEnv from TOOLS (or set it to ${fixed})` });
     }
   })
   .transform((w): WebSearchConfig => {
@@ -730,7 +739,10 @@ const envSchema = z.object({
   BLOB_DIR: z.string().min(1).default("./data/blobs"),
   /** Directory with the built web client (index.html and /assets); unset: the service serves no web files. */
   WEB_DIST: optionalString,
-  PORT: z.coerce.number().int().min(0).max(65535).default(3000),
+  /** Unset or empty: 3000 (an empty value is not port 0). */
+  PORT: optionalString
+    .transform((v) => v ?? "3000")
+    .pipe(z.string().regex(/^[0-9]{1,5}$/, "must be a port number").transform(Number).pipe(z.number().int().min(0).max(65535))),
   /** The address the server binds: an IPv4/IPv6 address or `localhost`. Default `0.0.0.0` (every interface). */
   HOST: optionalString
     .transform((v) => (v === undefined ? "0.0.0.0" : v))
