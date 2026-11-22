@@ -24,6 +24,8 @@ export interface FakeApns {
   requests: ApnsRequest[];
   /** Connections opened so far. */
   connections(): number;
+  /** Connections open now. */
+  openConnections(): number;
   /** The next answers, in order; once used up, every request is answered 200. */
   answer(...answers: ApnsAnswer[]): void;
   /** Resolves once `n` requests have arrived (or rejects after `timeoutMs`). */
@@ -75,6 +77,7 @@ export async function fakeApns(): Promise<FakeApns> {
     url: `http://127.0.0.1:${port}`,
     requests,
     connections: () => connections,
+    openConnections: () => open.size,
     answer: (...answers) => void script.push(...answers),
     waitFor(n, timeoutMs = 5000) {
       return new Promise((resolve, reject) => {

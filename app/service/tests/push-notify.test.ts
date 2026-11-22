@@ -27,7 +27,7 @@ import { APP_ORIGIN, closeAllSockets, connect, issueTicket, listen, type TestSoc
 const fake: { apns?: FakeApns } = {};
 let real: ApnsClient | null = null;
 // The app is built before the fake listens: the client it is given forwards to one made for the fake's address.
-const apns: ApnsClient = { send: (n) => real!.send(n), close: async () => real?.close() };
+const apns: ApnsClient = { send: (n) => real!.send(n), close: async (grace) => real?.close(grace) };
 const lines: string[] = [];
 const gateway = scriptedGateway();
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false, apns, logStream: { write: (l) => void lines.push(l) } });
@@ -575,7 +575,7 @@ describe("what APNs answers, and what is logged", () => {
 
 describe("the stop", () => {
   let slow: ApnsClient | null = null;
-  const forward: ApnsClient = { send: (n) => slow!.send(n), close: async () => slow?.close() };
+  const forward: ApnsClient = { send: (n) => slow!.send(n), close: async (grace) => slow?.close(grace) };
   const { app: own } = useApp({ apns: forward });
   beforeAll(() => {
     slow = createApnsClient({ teamId: "ABCDE12345", keyId: "KEY1234567", keyPem: PEM, topic: "org.haiyo.app", origins: { production: fake.apns!.url, sandbox: fake.apns!.url }, retryDelaysMs: [60_000] });

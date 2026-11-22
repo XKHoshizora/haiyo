@@ -163,9 +163,16 @@ export interface ApnsNotification {
 export interface ApnsClient {
   /** Never throws: the outcome after at most `retryDelaysMs.length` retries. */
   send(n: ApnsNotification): Promise<ApnsOutcome>;
-  /** Ends every connection; a push waiting for a retry ends `closed`, and so does every later one. */
-  close(): Promise<void>;
+  /**
+   * Ends every connection it opened — also one already closing gracefully (after a timeout or a 503) — gracefully, and
+   * destroys what is still open after `graceMs` (default `CLOSE_GRACE_MS`); resolves by then at the latest. A push waiting
+   * for a retry ends `closed`, and so does every later one.
+   */
+  close(graceMs?: number): Promise<void>;
 }
+
+/** How long `close` lets the connections end by themselves before it destroys them. */
+export const CLOSE_GRACE_MS = 2_000;
 
 export interface ApnsOptions {
   teamId: string;
@@ -213,6 +220,8 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
   let closed = false;
   let current: { jwt: string; issuedAt: number } | null = null;
   const sessions = new Map<PushEnv, http2.ClientHttp2Session>();
+  /** Every connection opened and not yet closed — the current ones and those closing gracefully — for `close`. */
+  const live = new Set<http2.ClientHttp2Session>();
   const waits = new Set<{ timer: NodeJS.Timeout; resolve: () => void }>();
   let inFlight = 0;
   const queue: Array<() => void> = [];
@@ -267,9 +276,13 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
     // A failure reaches the streams on it; the session itself is only forgotten (nothing is logged here).
     session.on("error", forget);
     session.on("goaway", forget);
-    session.on("close", forget);
+    session.on("close", () => {
+      forget();
+      live.delete(session);
+    });
     session.setTimeout(IDLE_CLOSE_MS, () => session.close());
     sessions.set(env, session);
+    live.add(session);
     return session;
   }
 
@@ -448,7 +461,7 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
         if (holding) release();
       }
     },
-    async close() {
+    async close(graceMs = CLOSE_GRACE_MS) {
       closed = true;
       for (const w of waits) {
         clearTimeout(w.timer);
@@ -459,21 +472,28 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
       const waiting = queue.splice(0);
       inFlight += waiting.length;
       for (const resolve of waiting) resolve();
+      sessions.clear();
+      // Every connection ever opened that is not closed yet — a current one, and one already closing gracefully whose last
+      // stream would otherwise keep it (and the process) alive until that stream's own timeout.
       await Promise.all(
-        [...sessions.values()].map(
+        [...live].map(
           (s) =>
             new Promise<void>((resolve) => {
-              if (s.closed || s.destroyed) return resolve();
-              s.close(() => resolve());
-              // A stream that never ends must not hold the stop.
-              setTimeout(() => {
+              if (s.destroyed) return resolve();
+              const timer = setTimeout(() => {
                 s.destroy();
                 resolve();
-              }, 2_000).unref();
+              }, graceMs);
+              timer.unref();
+              s.once("close", () => {
+                clearTimeout(timer);
+                resolve();
+              });
+              if (!s.closed) s.close();
             }),
         ),
       );
-      sessions.clear();
+      live.clear();
     },
   };
 }

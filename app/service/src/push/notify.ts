@@ -5,7 +5,7 @@ import { visibleJoin } from "../conversations/store.ts";
 import type { Db } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
 import { blockedEitherWay } from "../social/relations.ts";
-import { CONFIGURATION_FAILURES, type ApnsClient, type ApnsFailure } from "./apns.ts";
+import { CLOSE_GRACE_MS, CONFIGURATION_FAILURES, type ApnsClient, type ApnsFailure } from "./apns.ts";
 import { removeDeadDevice, type PushDevice, type PushEnv } from "./devices.ts";
 
 /** The one thing a push says (system wording, never a sender, a group's name or a message's text). */
@@ -22,8 +22,9 @@ export const PRESENCE_PROBE_MS = 3_000;
 const SUMMARY_EVERY_MS = 10 * 60_000;
 
 /**
- * The most the stop waits for pushes under way once the sender is closed (its retry waits end at once; an attempt under way
- * ends within its own timeout): what is still out then is abandoned — nothing of it is written anywhere.
+ * The most the whole stop takes: the sender's close (its retry waits end at once; its connections, a closing one too, are
+ * destroyed after its grace) and then the pushes under way, within one deadline. What is still out then is abandoned —
+ * nothing of it is written anywhere.
  */
 export const STOP_WAIT_MS = 5_000;
 
@@ -230,15 +231,18 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     closed = true;
     off();
     clearInterval(timer);
-    // The sender first: its retry waits end at once, so nothing here can hold the stop for a slow APNs.
-    await apns?.close();
+    // One deadline for all of it. The sender first: its retry waits end at once and its connections — a closing one too —
+    // are destroyed by its grace, so nothing here can hold the stop for a slow APNs; then what is under way, until the
+    // deadline.
+    const deadline = Date.now() + STOP_WAIT_MS;
+    await apns?.close(Math.min(CLOSE_GRACE_MS, STOP_WAIT_MS));
     let waited: NodeJS.Timeout | undefined;
     await Promise.race([
       (async () => {
         while (under.size > 0) await Promise.allSettled([...under]);
       })(),
       new Promise<void>((resolve) => {
-        waited = setTimeout(resolve, STOP_WAIT_MS);
+        waited = setTimeout(resolve, Math.max(0, deadline - Date.now()));
         waited.unref();
       }),
     ]);

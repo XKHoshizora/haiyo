@@ -359,6 +359,22 @@ describe("bounds", () => {
     expect(await waiting).toEqual({ outcome: "failed", why: "closed" });
   });
 
+  test("closed: a connection already closing gracefully (a 503 on it) with a stream that never ends is destroyed too, within the grace", async () => {
+    const c = client({ requestTimeoutMs: 60_000 });
+    production.answer("hang", { status: 503, reason: "ServiceUnavailable" });
+    const hung = c.send(note());
+    await production.waitFor(1);
+    // The 503 closes the first connection gracefully; the retry goes on a second, answered 200.
+    expect(await c.send({ ...note(), token: "cd".repeat(32) })).toEqual({ outcome: "sent" });
+    expect(production.openConnections()).toBe(2);
+    const t0 = Date.now();
+    await c.close();
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    for (let i = 0; i < 100 && production.openConnections() > 0; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(production.openConnections()).toBe(0);
+    expect(await hung).toEqual({ outcome: "failed", why: "closed" });
+  });
+
   test("closed: a push waiting for its retry ends at once, and a new one is refused", async () => {
     const c = client({ retryDelaysMs: [60_000] });
     production.answer({ status: 503, reason: "ServiceUnavailable" });
