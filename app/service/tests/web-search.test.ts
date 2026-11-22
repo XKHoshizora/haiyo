@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { formatPoints } from "../src/accounts/store.ts";
 import { changeSweep, webEngineOf } from "../src/app.ts";
 import { createAgentPort, type DbAgentPort } from "../src/agents/port-impl.ts";
 import { NO_TOOLS, NO_WEB_HERE, toolsPassage, WEB_RULES } from "../src/agents/runtime/prompt.ts";
@@ -184,6 +185,11 @@ describe("switch off: nothing changes", () => {
     const wire = (await api(app, owner, "GET", `/api/conversations/${own}/messages`)).json.messages.at(-1);
     for (const key of ["webSources", "webCites"]) expect(wire).not.toHaveProperty(key);
     expect(wire.via).not.toHaveProperty("webSearches");
+    // The usage page as before: the model's row whole, no line of searches (lane websearch2), no price on the models.
+    const usage = (await api(app, owner, "GET", "/api/usage")).json;
+    expect(usage).not.toHaveProperty("recentWeb");
+    expect(usage.recent).toEqual([{ agentId: agent.id, purpose: "reply", model: "meter_paid", source: "site", points: formatPoints(BigInt((await recordOf(run.id)).balance)), replies: 1 }]);
+    expect((await api(app, owner, "GET", "/api/models")).json).not.toHaveProperty("webSearchPoints");
   });
 
   it("the switch on but its key missing: no engine, and one start-up line naming the variable (never a value)", () => {
