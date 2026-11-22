@@ -430,7 +430,7 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
   .msg-foot { position: relative; }
   .msg-action { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; opacity: 0; }
   .msg-action:focus-visible { position: static; width: auto; height: 20px; padding: 0 8px; margin: 0; clip: auto; border: 1px solid var(--line); opacity: 1; }
-  .bubble, .attachment-image, .file-card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  .bubble, .attachment-image, .attachment-media, .file-card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 }
 /* The menu of a bubble. */
 .bubble-menu {
@@ -694,6 +694,19 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .file-name-head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-name-tail { flex: none; white-space: pre; }
 .file-card .btn { flex: none; }
+/* The size and 「仅本会话可见」 are two units: when the line is too narrow the second goes whole to the next line, never one character of it. */
+.file-card-meta span { white-space: nowrap; }
+/* A video or an audio file in a bubble (ui/MediaBody.jsx): the player's box follows the thumbnail rule (its own ratio inside 280×320) and never widens the column. */
+.attachment-media { width: 280px; max-width: 100%; border-radius: 12px; overflow: hidden; background: var(--surface-solid); }
+.attachment-media.attachment-audio { width: 280px; }
+.attachment-media .media-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #14121f; }
+.attachment-media.attachment-audio .media-frame { aspect-ratio: auto; background: none; }
+.attachment-media video { display: block; position: absolute; inset: 0; width: 100%; height: 100%; max-width: 100%; object-fit: contain; }
+.attachment-media audio { display: block; width: 100%; min-width: 0; max-width: 100%; }
+.attachment-media .media-meta { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; font-size: 13px; }
+.attachment-media .media-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-media .media-save { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--purple-dark); text-decoration: none; min-height: 32px; }
+@media (max-width: 860px) { .attachment-media { max-width: min(280px, calc(0.574 * (100vw - 24px))); } }
 /* On a phone the download button goes under the name rather than squeezing it. */
 @media (max-width: 480px) { .file-card { flex-wrap: wrap; } .file-card > div { flex: 1 1 140px; } .file-card .btn { margin-left: 40px; } }
 /* A file ready to download: the whole card is the one link. */

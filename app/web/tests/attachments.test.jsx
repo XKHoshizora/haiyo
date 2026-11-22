@@ -114,7 +114,7 @@ describe("picking files", () => {
     await openChat("小安");
     await pickFiles([fakeFile("报告.pdf", 3 * 1024 * 1024)]);
     const card = () => mine()[0];
-    expect(within(card()).getByText("3 MB · 仅本会话可见")).toBeTruthy();
+    expect(card().querySelector(".file-card-meta").textContent).toBe("3 MB · 仅本会话可见");
     act(() => uploads.progress(0, 0.37));
     expect(within(card()).getByText("上传中 37%")).toBeTruthy();
     expect(card().querySelector("progress").value).toBe(37);

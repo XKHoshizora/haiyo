@@ -8,7 +8,7 @@ import { createPortal } from "react-dom";
 export const HOLD_MS = 450;
 export const SLOP = 10;
 /** What a press may start on: the bubble of a text, a picture, a file card. */
-const TARGETS = ".bubble, .attachment-image, .file-card";
+const TARGETS = ".bubble, .attachment-image, .attachment-media, .file-card";
 const GAP = 6;
 const MARGIN = 8;
 

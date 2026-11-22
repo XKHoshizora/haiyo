@@ -77,7 +77,9 @@ export function FileCard({ name, size, mime = null, url = null, upload = null })
       <Icon size={28} aria-hidden="true" className={`file-icon file-icon-${kind}`} />
       <div className="file-card-text">
         <FileName name={name} />
-        <p className="muted">{formatSize(size)} · 仅本会话可见</p>
+        <p className="muted file-card-meta">
+          <span>{formatSize(size)} ·</span> <span>仅本会话可见</span>
+        </p>
         {upload && <progress className="upload-progress" max={100} value={Math.round(upload.progress * 100)} aria-label="上传进度" />}
       </div>
       {url && (

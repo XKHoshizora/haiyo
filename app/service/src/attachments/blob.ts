@@ -8,10 +8,19 @@ import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client
 import { Upload } from "@aws-sdk/lib-storage";
 import type { Config } from "../config.ts";
 
+/** An inclusive byte range of a blob (the HTTP kind: both ends are bytes of the file). */
+export interface ByteRange {
+  start: number;
+  end: number;
+}
+
 export interface BlobStore {
   put(key: string, body: Readable | Buffer): Promise<{ size: number }>;
-  /** Rejects with an error whose `code` is `ENOENT` (fs) or `NoSuchKey` (S3) when the key is absent. */
-  get(key: string): Promise<Readable>;
+  /**
+   * Rejects with an error whose `code` is `ENOENT` (fs) or `NoSuchKey` (S3) when the key is absent. With `range`, only those bytes are read from the store
+   * (a file read from `start`, an S3 ranged GET) — a video seeks without the whole file being fetched or buffered.
+   */
+  get(key: string, range?: ByteRange): Promise<Readable>;
   /**
    * Deletes the blob and anything a `put` of it left behind (a partial file after a crash). Deleting a
    * missing key is not an error.
@@ -59,8 +68,8 @@ export function fsBlobStore(dir: string): BlobStore {
       }
       return { size: size() };
     },
-    async get(key) {
-      const stream = createReadStream(file(key));
+    async get(key, range) {
+      const stream = createReadStream(file(key), range ? { start: range.start, end: range.end } : undefined);
       // Surface a missing file as a rejection of get() rather than a later stream error.
       await new Promise<void>((resolve, reject) => {
         stream.once("open", () => resolve());
@@ -96,8 +105,10 @@ export function s3BlobStore(cfg: S3Config, client?: S3Client): BlobStore {
       await new Upload({ client: s3, params: { Bucket: cfg.bucket, Key: checkKey(key), Body: stream }, queueSize: 1 }).done();
       return { size: size() };
     },
-    async get(key) {
-      const out = await s3.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: checkKey(key) }));
+    async get(key, range) {
+      const out = await s3.send(
+        new GetObjectCommand({ Bucket: cfg.bucket, Key: checkKey(key), ...(range ? { Range: `bytes=${range.start}-${range.end}` } : {}) }),
+      );
       if (!(out.Body instanceof Readable)) throw new Error("unexpected S3 body type");
       return out.Body;
     },

@@ -7,7 +7,7 @@ import { useShowReplyPoints } from "../data/prefs.js";
 import { failureText, retryHopeless } from "../data/uploadErrors.js";
 import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
-import { FileCard } from "../ui/FileCard.jsx";
+import { MediaBody } from "../ui/MediaBody.jsx";
 import { thumbMaxWidth, thumbSize } from "../ui/thumbSize.js";
 import { useTapToOpen } from "../ui/tapOpen.js";
 import { useBubbleMenu } from "../ui/BubbleMenu.jsx";
@@ -99,9 +99,9 @@ function ImageBody({ msg }) {
   );
 }
 
+/** A file: a video or an audio file that this browser can play is a player (ui/MediaBody.jsx, which falls back to the card), any other the card. */
 function FileBody({ msg }) {
-  const { upload, attachment } = msg;
-  return <FileCard name={msg.text} size={attachment.size} mime={attachment.mime} url={attachment.url} upload={upload} />;
+  return <MediaBody msg={msg} />;
 }
 
 /**
