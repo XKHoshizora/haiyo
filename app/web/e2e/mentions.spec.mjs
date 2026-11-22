@@ -229,7 +229,8 @@ test("each tag is drawn exactly over its characters: one line, wrapped, split ac
   await pick(page, "Jarvis Lee");
   let split = false;
   for (let i = 0; i < 200 && !split; i += 1) {
-    await box.press("ControlOrMeta+Home");
+    // The caret to the very start by the selection itself: Cmd+Home does not move it on macOS.
+    await box.evaluate((el) => { el.focus(); el.setSelectionRange(0, 0); });
     await page.keyboard.insertText(i % 2 ? "字" : "a");
     split = (await page.evaluate(() => document.querySelector(".composer-mirror .mention-chip").getClientRects().length)) > 1;
   }
