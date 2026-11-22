@@ -27,3 +27,18 @@ Run by `.claude/search/bakeoff.mjs` (controller tool, untracked; raw answers in 
 - The three tools have three different shapes (blocks, citations, usage). The gateway already speaks per-provider dialects, so the tool can be offered as "the model's own search" where the Agent's model has one, behind one internal interface (`searchWeb`) that returns text + sources + count of searches for charging.
 - An Agent whose model has no built-in search (or is reached through a relay that drops server tools) needs a fallback: either a self-run tool (Firecrawl / another vendor) or "no search for this model". That is the open product question, not a blocker for the first version.
 - Sources must be stored beside the message like citations are today (vendor terms: OpenAI and Anthropic both require visible source links).
+
+## Addendum (same day): Exa vs DeepSeek used as a pure search call
+
+Run by `.claude/search/exa.mjs` (raw output `.claude/search/exa-out.json`). Same 15 questions. Exa through its public keyless MCP endpoint (`web_search_exa`, the one Cherry Studio uses; used here only for this test). DeepSeek in the "results only" mode the first version of our tool uses (`max_tokens: 1`, one search round, no answer text).
+
+| | Exa | DeepSeek results-only |
+|---|---|---|
+| Time | 0.3–1.0 s (median 0.5) | 1.1–2.6 s (median 1.7) |
+| Results per query | 10, each with page text (6k–27k characters in total) | 0–15, snippets only (0.6k–4k characters in total) |
+| Queries with no result | 0/15 | 1/15 (Kyoto autumn leaves, asked in Japanese) |
+| Top results clearly on target (my reading of the top 4) | 15/15 | about 9/15 |
+
+Where DeepSeek's result list was weak: restaurants near West Lake (government overview pages, no restaurant), Osaka weather asked in Japanese (mostly Chinese weather sites), London weather (long-term forecast pages only), latest F1 race (calendar pages, not the result), Node.js version (older release pages first), this week's AI news (mixed-language, older items). Exa's top results for the same questions were the Met Office and BBC, the AP race report, nodejs.org's 26.13.1 page, Trip.com restaurant pages, weekly news round-ups dated this week.
+
+Reading: DeepSeek's good ANSWERS in the first table came from its own model reading more than the snippets it hands back; as a bare result list for another model it is noticeably weaker than Exa. This weakens the choice of DeepSeek as the engine behind our own tool. Not measured: Exa's paid API (the keyless endpoint may differ in limits), its current price (earlier reading: about $5–7 per 1,000 searches with contents; re-check), its terms for a hosted product.
