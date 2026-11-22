@@ -10,7 +10,7 @@ import type { Mention } from "../../messages/model.ts";
 import { lockAgent } from "../store.ts";
 import { siteDateTime } from "./clock.ts";
 import type { ElsewhereAsk, RunScope } from "./index.ts";
-import { excerptWindow, matchAt } from "./search.ts";
+import { ELLIPSIS, excerptWindow, matchAt, shownOf } from "./search.ts";
 
 /**
  * "Not in this group, but I have it elsewhere" (Task 8; design rules 17, 18, decision 9). A search of a reply in a group
@@ -209,7 +209,7 @@ export function hitOf(row: HitRow, timeZone: string): ElsewhereHit {
   const { date, time } = siteDateTime(row.createdAt, timeZone);
   const source = hitLine(row.text);
   const window = excerptWindow(source, row.at);
-  const said = Array.from((window.head ? "…" : "") + window.line.slice(window.start, window.end) + (window.tail ? "…" : "")).slice(0, QUOTE_MAX_CHARS).join("");
+  const said = Array.from(shownOf(window)).slice(0, QUOTE_MAX_CHARS).join("");
   return {
     where: row.conversationType === "agent" ? OWN_PLACE : cleanText(row.title ?? "") || NO_GROUP_TITLE,
     who: labelName(row.senderName, row.senderHandle),
@@ -227,8 +227,9 @@ export function hitOf(row: HitRow, timeZone: string): ElsewhereHit {
  */
 function mentionsInHit(source: string, window: { line: string; start: number; end: number; head: boolean }, said: string, mentions: Mention[] | null): Mention[] {
   if (!mentions || mentions.length === 0) return [];
-  const lead = foldVertical(source).length - foldVertical(source).trimStart().length;
-  const offset = window.head ? 1 : 0;
+  const folded = foldVertical(source);
+  const lead = folded.length - folded.trimStart().length;
+  const offset = window.head ? ELLIPSIS.length : 0;
   const out: Mention[] = [];
   for (const m of mentions) {
     if (!Number.isSafeInteger(m.start) || !Number.isSafeInteger(m.length) || m.start < 0 || m.length < 1 || m.start + m.length > source.length) continue;

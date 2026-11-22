@@ -61,15 +61,16 @@ export function publishBlock(state, conv) {
   return conv.hold ?? null;
 }
 
+/** Who an id means in text the wire gives (a message, a quote, a whisper hit: ids as the service sends them, mine included): the entity, as the page knows it. */
+const knownByWire = (state) => (id) => entity(state, id === state.account?.id ? ME : id);
+
 /**
  * A message's words in the form they are drawn (ui/drawnText.js): the one function of the quote under a reply, the reply chip, the chat
- * list's line and the copied text. `msg`: `{text, mentions, from}` (a quote's own `from` is the sender too).
+ * list's line, the copied text and a whisper's hit. `msg`: `{text, mentions, from}` (a quote's own `from` is the sender too); a text
+ * that is not a message (a hit, what a model found) has no `from` and sets `agentText: true` to be drawn as an Agent's is.
  */
-/** Who an id means in text the wire gives (a whisper hit: ids as the service sends them, mine included): the entity, as the page knows it. */
-export const knownByWire = (state) => (id) => entity(state, id === state.account?.id ? ME : id);
-
 export const drawnTextOf = (state, msg) =>
-  drawnText({ text: msg.text, mentions: msg.mentions, fromAgent: msg.from !== ME && isAgent(state, msg.from), known: (id) => entity(state, id) });
+  drawnText({ text: msg.text, mentions: msg.mentions, fromAgent: msg.agentText === true || (msg.from !== ME && isAgent(state, msg.from)), known: knownByWire(state) });
 
 /**
  * The chat list's one line for a conversation: its newest message — never an Agent's acknowledgement (`ack`: the answer
