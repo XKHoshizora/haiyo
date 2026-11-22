@@ -84,11 +84,14 @@ export function deepseekResults(body: unknown, maxResults: number): { results: W
   if (!isRecord(block)) return { error: "no_results" };
   if (!Array.isArray(block.content)) return { error: "unavailable" };
   const results: WebResult[] = [];
+  const seen = new Set<string>();
   for (const r of block.content) {
     if (results.length >= maxResults) break;
     if (!isRecord(r) || r.type !== "web_search_result") continue;
+    // Each address once (its parsed form: a host's case is no new page), the first of it kept.
     const url = webUrlOf(r.url);
-    if (url === null) continue;
+    if (url === null || seen.has(url)) continue;
+    seen.add(url);
     const title = typeof r.title === "string" ? cleanTitle(r.title) : "";
     const snippet = typeof r.snippet === "string" ? cleanSnippet(r.snippet) : "";
     const age = typeof r.page_age === "string" && r.page_age.length <= 40 && !Number.isNaN(Date.parse(r.page_age)) ? r.page_age : undefined;

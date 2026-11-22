@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deepseekEngine, RESPONSE_MAX_BYTES } from "../src/agents/tools/web/engine.ts";
+import { checked } from "../src/agents/tools/web/tool.ts";
 
 /**
  * The web search's first engine (agents/tools/web/engine.ts; lane websearch): DeepSeek's Anthropic-shaped messages
@@ -77,7 +78,7 @@ describe("the DeepSeek engine", () => {
   it("the results: the first six with an https address, titles and snippets cleaned, the page's age kept; the vendor's queries and site names dropped", async () => {
     const results = [
       result(1, { url: "http://plain.example.com/1" }),
-      result(2, { title: "标题\u202e见 https://evil.example/x @alice" }),
+      result(2, { title: `标题${String.fromCodePoint(0x202e)}见 https://evil.example/x @alice` }),
       result(3, { url: "https://u:p@creds.example.com/" }),
       result(4, { snippet: "字".repeat(400) }),
       result(5, { page_age: "not a date" }),
@@ -96,6 +97,35 @@ describe("the DeepSeek engine", () => {
     expect(got.results[0]!.age).toBe("2026-11-20T08:00:00Z");
     expect(got.results[2]!.age).toBeUndefined();
     expect(JSON.stringify(got)).not.toContain("网站");
+  });
+
+  it("the same address twice is one result (the first), whatever its spelling of the host", async () => {
+    const results = [result(1), result(2), result(1, { title: "另一个标题" }), result(4, { url: "https://NEWS.example.com/2" }), result(3)];
+    const got = await harness(() => json(searched(results))).engine.searchWeb(QUERY, never);
+    if (!("results" in got)) throw new Error("expected results");
+    expect(got.results.map((r) => [r.url, r.title])).toEqual([
+      ["https://news.example.com/1", "标题 1"],
+      ["https://news.example.com/2", "标题 2"],
+      ["https://news.example.com/3", "标题 3"],
+    ]);
+  });
+
+  it("the tool checks any adapter's results again: https only, each address once, titles and snippets cleaned, a bad age dropped (never a throw)", () => {
+    const raw = [
+      { url: "http://plain.example.com/", title: "不安全", snippet: "x" },
+      { url: "https://news.example.com/a", title: `原始标题 见 https://evil.example/x @alice ${"长".repeat(300)}`, snippet: "摘要 www.evil.example/x", age: "not a date" },
+      { url: "https://NEWS.example.com/a", title: "重复", snippet: "y" },
+      { url: "https://news.example.com/b", title: "好", snippet: "z", age: "2026-11-20T08:00:00Z" },
+    ];
+    const kept = checked(raw);
+    expect(kept.map((r) => r.url)).toEqual(["https://news.example.com/a", "https://news.example.com/b"]);
+    expect(kept[0]!.title.startsWith("原始标题 ")).toBe(true);
+    expect(kept[0]!.title).not.toMatch(/evil|@|https/);
+    expect(Array.from(kept[0]!.title)).toHaveLength(200);
+    expect(kept[0]!.snippet).toBe("摘要");
+    expect(kept[0]).not.toHaveProperty("age");
+    expect(kept[1]!.age).toBe("2026-11-20T08:00:00Z");
+    expect(checked(kept)).toEqual(kept);
   });
 
   it("no result block (the engine answered without searching): no results; a refusal: refused", async () => {

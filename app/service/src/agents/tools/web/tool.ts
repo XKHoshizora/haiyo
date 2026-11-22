@@ -1,6 +1,6 @@
 import type { WebSearchConfig } from "../../../config.ts";
 import type { Db } from "../../../db.ts";
-import { WEB_SOURCES_MAX, type WebCite, type WebSource } from "../../../messages/lookups.ts";
+import { WEB_SOURCES_MAX, webUrlOf, type WebCite, type WebSource } from "../../../messages/lookups.ts";
 import { cutToWeight, weight } from "../../../metering/tokens.ts";
 import type { ToolSpec } from "../../../models/gateway.ts";
 import { handleOf } from "../../../principals/store.ts";
@@ -9,8 +9,8 @@ import type { ToolOutcome } from "../../runtime/port.ts";
 import { cleanText, TOOL_MATERIAL } from "../../runtime/prompt.ts";
 import type { RunScope } from "../index.ts";
 import type { PlacedCite, RunRefs } from "../refs.ts";
-import type { EngineLog, WebEngine, WebSearchError } from "./engine.ts";
-import { guardQuery } from "./text.ts";
+import type { EngineLog, WebEngine, WebResult, WebSearchError } from "./engine.ts";
+import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
 
 /**
  * The web search tool, `search_web {query}` (lane websearch; README "Agents and runs", Web search): offered only to a run
@@ -87,9 +87,25 @@ interface Shown {
 /** The widest number a search can mint, which results are measured with before they are numbered. */
 const WIDEST = "〔w999999〕";
 
-/** `iso` (a page's age) as a date in `timeZone`, `YYYY-MM-DD`. */
+/** `iso` (a page's age, one that parses: `checked`) as a date in `timeZone`, `YYYY-MM-DD`. */
 const dateOf = (iso: string, timeZone: string): string =>
   new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+
+/**
+ * An engine's results as the tool keeps them, whatever adapter gave them: each an https address without credentials
+ * (`webUrlOf`), each address once (the first), its title and snippet cleaned (text.ts, idempotent), its age only when it
+ * parses as a date.
+ */
+export function checked(results: readonly WebResult[]): WebResult[] {
+  const seen = new Set<string>();
+  return results.flatMap((r) => {
+    const url = webUrlOf(r.url);
+    if (url === null || seen.has(url)) return [];
+    seen.add(url);
+    const age = typeof r.age === "string" && r.age.length <= 40 && !Number.isNaN(Date.parse(r.age)) ? r.age : undefined;
+    return [{ url, title: cleanTitle(typeof r.title === "string" ? r.title : ""), snippet: cleanSnippet(typeof r.snippet === "string" ? r.snippet : ""), ...(age ? { age } : {}) }];
+  });
+}
 
 /**
  * What the guard reads of the run, as it may read it now: what its owner last typed in its conversation (no later than
@@ -138,7 +154,10 @@ export async function searchWebTool(deps: WebToolDeps, scope: RunScope, input: {
     deps.slots.release(scope.agentId);
   }
   if ("error" in found) return { output: { error: ENGINE_ERRORS[found.error] } };
-  const drafts: Shown[] = found.results.slice(0, deps.config.maxResults).map((r) => ({
+  // Checked again here, whatever the adapter did (each rule is idempotent): an https address without credentials, each
+  // once; the title and snippet cleaned; a date only from an age that parses. What is stored and shown is this.
+  const pages = checked(found.results).slice(0, deps.config.maxResults);
+  const drafts: Shown[] = pages.map((r) => ({
     ref: WIDEST,
     title: r.title,
     ...(r.age === undefined ? {} : { date: dateOf(r.age, deps.timeZone) }),
@@ -160,7 +179,7 @@ export async function searchWebTool(deps: WebToolDeps, scope: RunScope, input: {
   }
   const results: Shown[] = [];
   for (let i = 0; i < shown.length; i++) {
-    const ref = scope.refs.web({ url: found.results[i]!.url, title: shown[i]!.title });
+    const ref = scope.refs.web({ url: pages[i]!.url, title: shown[i]!.title });
     if (ref === null) break;
     results.push({ ...shown[i]!, ref });
   }

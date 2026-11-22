@@ -116,8 +116,21 @@ export const WEB_SOURCES_MAX = 20;
 export const WEB_CITES_MAX = 20;
 /** The longest address a web source may have. */
 export const WEB_URL_MAX = 2048;
-/** The longest title a web source keeps (characters). */
+/** The longest title a web source keeps (characters, an ellipsis after a cut counted among them). */
 export const WEB_TITLE_MAX = 200;
+
+/**
+ * `text` at most `max` characters (code points: a surrogate pair is never split), an ellipsis among them when it is cut:
+ * the one length rule of a web title and snippet, where they are written (agents/tools/web/text.ts) and where they are
+ * read (`webTitleOf`). Cutting what it already cut changes nothing.
+ */
+export function cutChars(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length <= max ? text : `${chars.slice(0, Math.max(0, max - 1)).join("").trimEnd()}…`;
+}
+
+/** A web source's title as stored and sent (`cutChars` at `WEB_TITLE_MAX`): a longer one is cut, never dropped. */
+export const webTitleOf = (title: string): string => cutChars(title, WEB_TITLE_MAX);
 
 /**
  * A web page's address as it may be stored and shown (the existing `safeHref` rule, stricter): no white space or control
@@ -137,7 +150,11 @@ export function webUrlOf(value: unknown): string | null {
   return url.href.length <= WEB_URL_MAX ? url.href : null;
 }
 
-/** The web sources `value` holds (a stored body's `webSources`): well-formed ones, each number once, at most `WEB_SOURCES_MAX`. */
+/**
+ * The web sources `value` holds (a stored body's `webSources`): well-formed ones — a number, a safe address, a title (cut
+ * to `WEB_TITLE_MAX` by the write rule, `webTitleOf`, never dropped for its length) —, each number once, at most
+ * `WEB_SOURCES_MAX`.
+ */
 export function webSourcesOf(value: unknown): WebSource[] {
   if (!Array.isArray(value)) return [];
   const out: WebSource[] = [];
@@ -146,12 +163,19 @@ export function webSourcesOf(value: unknown): WebSource[] {
     if (out.length >= WEB_SOURCES_MAX) break;
     const { n, url, title } = (typeof s === "object" && s !== null ? s : {}) as Partial<WebSource>;
     const href = webUrlOf(url);
-    if (!Number.isSafeInteger(n) || n! < 1 || seen.has(n!) || href === null || typeof title !== "string" || Array.from(title).length > WEB_TITLE_MAX) continue;
+    if (!Number.isSafeInteger(n) || n! < 1 || seen.has(n!) || href === null || typeof title !== "string") continue;
     seen.add(n!);
-    out.push({ n: n!, url: href, title });
+    out.push({ n: n!, url: href, title: webTitleOf(title) });
   }
   return out;
 }
+
+/**
+ * Whether a stored body says its run was handed web pages (`webSources`, as stored: any entry, before any of them is
+ * checked) — the fact a reader's links-as-plain-text rule goes by (`plainLinks` on the wire), so that no page's own data
+ * can turn it off.
+ */
+export const handedWebPages = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
 
 /**
  * The web citations `value` holds (a stored body's `webCites`): the first `WEB_CITES_MAX`, each a place no further than

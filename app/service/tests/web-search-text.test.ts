@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { cleanSnippet, cleanTitle, guardQuery, queryForm, withoutAddresses } from "../src/agents/tools/web/text.ts";
-import { webUrlOf } from "../src/messages/lookups.ts";
+import { webSourcesOf, webTitleOf, webUrlOf } from "../src/messages/lookups.ts";
+
+/** A right-to-left override, written as a code point (the source holds no bidi control: source-bidi.test.ts). */
+const RLO = String.fromCodePoint(0x202e);
 
 /**
  * What the web search lets out and lets in (agents/tools/web/text.ts; lane websearch): the query's one normal form and
@@ -61,6 +64,41 @@ describe("the query guard (before anything leaves the service)", () => {
     expect(refused("北京天气", group)).toBe(false);
   });
 
+  it("one comparison form for every rule: white space, punctuation, symbols, zero-width and bidi characters do not split a run or a name", () => {
+    const ZWJ = String.fromCodePoint(0x200d);
+    const ZWSP = String.fromCodePoint(0x200b);
+    const LRI = String.fromCodePoint(0x2066);
+    const people = ctx({ names: ["李雷", "guardb_mia", `韩${ZWJ}梅梅`] });
+    const table: Array<[string, string, Parameters<typeof guardQuery>[1], boolean]> = [
+      ["a spaced name", "李 雷 公司", people, true],
+      ["a name with a comma", "李，雷 公司", people, true],
+      ["a name with a middle dot", "李·雷", people, true],
+      ["a handle spaced instead of its underscore", "guardb mia instagram", people, true],
+      ["a zero-width joiner inside the stored name", "韩梅梅 电话", people, true],
+      ["a zero-width space inside the query's name", `李${ZWSP}雷`, people, true],
+      ["a bidi isolate inside the query's name", `李${LRI}雷`, people, true],
+      ["a note with ，、· between its characters", "北京四中读初二", ctx({ shown: ["孩子在北，京、四·中读初二"] }), true],
+      ["a query with punctuation the note has not", "北京，四中、读·初二", ctx({ shown: ["孩子在北京四中读初二"] }), true],
+      ["a katakana word whose long vowels are Common (Script_Extensions)", "スーパーマーケット", ctx({ shown: ["近くのスーパーマーケットで買った"] }), true],
+      ["5 CJK characters across punctuation stay too few", "北，京四中读", ctx({ shown: ["在北京四中读书"] }), false],
+    ];
+    for (const [label, query, c, want] of table) expect([label, refused(query, c)]).toEqual([label, want]);
+  });
+
+  it("7 digits in a row shared with a note (a phone, an ID, a card number) are a match, whatever separates them; 6 are not; the owner's own number is theirs", () => {
+    const phone = ctx({ shown: ["主人的电话是 138-1234-5678"] });
+    const bare = ctx({ shown: ["主人的电话是13812345678"] });
+    const table: Array<[string, string, Parameters<typeof guardQuery>[1], boolean]> = [
+      ["no separators in the query", "13812345678 归属地", phone, true],
+      ["separators in the query, none in the note", "138 1234 5678", bare, true],
+      ["full-width digits", "１３８１２３４５６７８", bare, true],
+      ["7 of them", "电话 2345678", bare, true],
+      ["6 of them", "电话 234567", bare, false],
+      ["the owner typed it", "13812345678 归属地", ctx({ shown: ["主人的电话是13812345678"], ownerSaid: "查查13812345678是哪里的号码" }), false],
+    ];
+    for (const [label, query, c, want] of table) expect([label, refused(query, c)]).toEqual([label, want]);
+  });
+
   it("the query must be 2 to 120 characters once cleaned", () => {
     expect(guardQuery("a", ctx())).toBe("length");
     expect(guardQuery(" a ", ctx())).toBe("length");
@@ -83,16 +121,36 @@ describe("what a result shows the model", () => {
     expect(withoutAddresses("Node.js 3.5 发布")).toBe("Node.js 3.5 发布");
   });
 
-  it("a title: one line, no bidirectional control, at most 200 characters (then an ellipsis)", () => {
-    expect(cleanTitle("新闻\u202e标题\n第二行")).toBe("新闻标题 第二行");
-    const long = cleanTitle("长".repeat(250));
-    expect(Array.from(long)).toHaveLength(201);
-    expect(long.endsWith("…")).toBe(true);
+  it("a title: one line, no bidirectional control, at most 200 characters, the ellipsis among them (one length rule, write and read)", () => {
+    expect(cleanTitle(`新闻${RLO}标题\n第二行`)).toBe("新闻标题 第二行");
+    for (const n of [199, 200]) expect(cleanTitle("长".repeat(n))).toBe("长".repeat(n));
+    for (const n of [201, 400]) {
+      const long = cleanTitle("长".repeat(n));
+      expect(Array.from(long)).toHaveLength(200);
+      expect(long).toBe(`${"长".repeat(199)}…`);
+    }
+    // A surrogate pair where the cut falls is kept whole, never split.
+    const astral = cleanTitle(`${"长".repeat(198)}😀😀${"长".repeat(10)}`);
+    expect(Array.from(astral)).toHaveLength(200);
+    expect(astral).toBe(`${"长".repeat(198)}😀…`);
+    // The read path cuts by the same rule: what was written is read back as it is, a longer stored title is cut, never dropped.
+    expect(webTitleOf(astral)).toBe(astral);
+    expect(webTitleOf("长".repeat(250))).toBe(cleanTitle("长".repeat(250)));
+    const read = webSourcesOf([{ n: 1, url: "https://news.example.com/a", title: "长".repeat(400) }]);
+    expect(read).toEqual([{ n: 1, url: "https://news.example.com/a", title: `${"长".repeat(199)}…` }]);
   });
 
-  it("a snippet: cut to 300 characters", () => {
-    expect(Array.from(cleanSnippet("字".repeat(400))).length).toBeLessThanOrEqual(301);
+  it("a snippet: at most 300 characters, the ellipsis among them", () => {
+    expect(Array.from(cleanSnippet("字".repeat(400)))).toHaveLength(300);
+    expect(cleanSnippet("字".repeat(300))).toBe("字".repeat(300));
     expect(cleanSnippet("见 https://a.example/x 的说明")).toBe("见 的说明");
+  });
+
+  it("full-width and look-alike dots do not hide an address; more top-level domains are read as one", () => {
+    for (const said of ["见 ｅｖｉｌ．ｃｏｍ 吧", "见 https：//evil.example/x 吧", "见 evil。com 吧", "见 evil[.]com 吧", "见 evil.click 吧", "见 evil.lol/x 吧"]) {
+      expect([said, withoutAddresses(said)]).toEqual([said, "见 吧"]);
+    }
+    expect(withoutAddresses("Node.js 3.5 发布。下一句")).toBe("Node.js 3.5 发布。下一句");
   });
 });
 
