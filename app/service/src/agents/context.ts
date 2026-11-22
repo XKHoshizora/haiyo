@@ -161,6 +161,12 @@ export interface LoadedContext {
   planRatio: number;
   /** The messages that may be shown, in the order they were answered, oldest first. */
   entries: ContextEntry[];
+  /**
+   * Where each of `entries` belongs (index for index): a message's seq, an Agent's reply the seq its run covered — what
+   * `buildContext` says where what it shows begins by (`BuiltContext.shownFrom`). An entry added after (a greeting's turn)
+   * has none.
+   */
+  places: number[];
   /** The records of the attachments that may be shown, by id, as the download's permission gave them to the Agent. */
   attachments: Map<string, Downloadable>;
   /** The seq of the latest `topic_reset` notice the Agent can see; 0 when there is none. */
@@ -199,6 +205,13 @@ export interface BuiltContext {
   inputTokensEstimate: number;
   /** Of `inputTokensEstimate`, what images and PDFs are counted as: their constants, never corrected by a ratio. */
   fixedTokens: number;
+  /**
+   * Where what the call shows begins: the place (`LoadedContext.places`) of the oldest message it shows — always one of the
+   * owner's (in a group, anyone else's): a call never starts with the Agent's. Everything of theirs from there up to what the
+   * run covers is shown; nothing before it is (left out by the budget, folded into the rolling summary, before a new topic,
+   * at or before a group's asker's line). Null when it shows no message that has a place.
+   */
+  shownFrom: number | null;
 }
 
 /**
@@ -679,7 +692,8 @@ export async function loadContext(
     const found = await findDownloadable(q, run.agentId, a.id);
     if (found) attachments.set(a.id, found);
   }
-  return { system: text, speakers, mark, budget, planRatio: ratio, entries, attachments, topicStart: start, leftOut, summary: carried, refs: run.refs ?? null };
+  const places = ordered.map((l) => l.answers);
+  return { system: text, speakers, mark, budget, planRatio: ratio, entries, places, attachments, topicStart: start, leftOut, summary: carried, refs: run.refs ?? null };
 }
 
 /**
@@ -868,5 +882,7 @@ export async function buildContext(
   plan.keepOlder();
   for (const [slot, attachment] of plan.attachments(true)) await show(slot, attachment);
   const { messages, tokens, fixed } = plan.build();
-  return { messages, inputTokensEstimate: systemTokens(loaded.system) + tokens, fixedTokens: fixed };
+  const oldest = plan.shownAt()[0];
+  const shownFrom = oldest === undefined ? null : (loaded.places[oldest] ?? null);
+  return { messages, inputTokensEstimate: systemTokens(loaded.system) + tokens, fixedTokens: fixed, shownFrom };
 }

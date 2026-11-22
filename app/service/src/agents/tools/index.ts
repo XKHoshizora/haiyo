@@ -28,13 +28,20 @@ export { SEARCH_MESSAGES } from "./search.ts";
  * The reply run a tool call is for, as the port holds it from `begin` (port-impl.ts): the run, whether it is in a group
  * (anywhere but its Agent's own conversation), the numbers it gave the model (`refs`), how far its conversation had come
  * when it began (`heardTo`: the conversation's seq then — a group reply heard everyone who wrote up to it, runs.ts
- * `hearFrom`, so its tools may show it nothing later), and in a group its mark (taken out of whatever someone else wrote).
+ * `hearFrom`, so its tools may show it nothing later), in a group its mark (taken out of whatever someone else wrote), and
+ * in its own conversation where what its call shows begins (`shownFrom`).
  */
 export interface RunScope extends RunTicket {
   readonly group: boolean;
   readonly refs: RunRefs;
   readonly heardTo: number;
   readonly mark: string | null;
+  /**
+   * In its Agent's own conversation, where what its call shows begins (context.ts `BuiltContext.shownFrom`): its search
+   * leaves out the owner's messages it is shown, and only those (`searchRows` `answering`). Absent or null: from the
+   * Agent's last posted reply on.
+   */
+  readonly shownFrom?: number | null;
 }
 
 export interface ToolDeps {

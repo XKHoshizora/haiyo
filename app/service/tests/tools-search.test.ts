@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort } from "../src/agents/port-impl.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { createToolbox, SEARCH_MESSAGES, type ToolDeps } from "../src/agents/tools/index.ts";
-import type { Db } from "../src/db.ts";
+import type { Db, Queryable } from "../src/db.ts";
+import { searchRows } from "../src/messages/search.ts";
 import { weight } from "../src/metering/tokens.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { TOOL_MATERIAL } from "../src/agents/runtime/prompt.ts";
@@ -647,6 +648,98 @@ describe("a search never returns the messages its run answers (item E): they are
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "雨衣" } }]).reply("门后。");
     expect(await toolWorker().runOnce()).toBe(true);
     expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["之前说过：雨衣挂在门后"]);
+  });
+
+  /** One message of the owner's in `conv`, written straight in (no reply is triggered), far longer than any reply's context holds. */
+  const pastTheContext = (conv: string, ownerId: string) => postAs(conv, ownerId, "今天的流水账：起床，洗漱，出门，上班，开会，下班。".repeat(12_000));
+
+  it("the real boundary, with nothing answered yet (round 3 S-8): the first reply leaves out what it is shown; what lies past its context is found; after it is posted, its whole turn is found", async () => {
+    const { owner, own } = await owned("wendy");
+    // A long stretch before the Agent first replies (the reply waits queued while the owner writes on).
+    await say(owner, own, "车子停在B2层，C12柱子旁边");
+    await pastTheContext(own, owner.id);
+    await say(owner, own, "车子是白色的那辆");
+    await say(owner, own, "我的车子停在哪了？");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "车子" } }]).reply("B2层。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    // Its call showed the last two of the owner's (the long one did not fit): those are left out; the first is found.
+    const shown = JSON.stringify(gateway.calls.at(-2)!.messages);
+    expect([shown.includes("车子是白色的那辆"), shown.includes("C12柱子")]).toEqual([true, false]);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["车子停在B2层，C12柱子旁边"]);
+    // The next reply: everything its predecessor answered is found; only its own question is not.
+    await say(owner, own, "车子是什么颜色的？");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "车子" } }]).reply("白色。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["我的车子停在哪了？", "车子是白色的那辆", "车子停在B2层，C12柱子旁边"]);
+  });
+
+  it("own conversation, written while paused (round 3 S-2): what falls outside the reply's context is found; what it is shown is not", async () => {
+    const { owner, agent, own } = await owned("xena");
+    await postAs(own, owner.id, "之前说过：雨衣挂在门后");
+    await answeredSoFar(own);
+    expect((await api(app, owner, "POST", `/api/agents/${agent.id}/pause`)).status).toBe(200);
+    await say(owner, own, "雨衣也可能在车里");
+    await pastTheContext(own, owner.id);
+    await say(owner, own, "雨衣是蓝色那件");
+    expect((await api(app, owner, "POST", `/api/agents/${agent.id}/resume`)).status).toBe(200);
+    await say(owner, own, "雨衣到底在哪？");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "雨衣" } }]).reply("门后。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["雨衣也可能在车里", "之前说过：雨衣挂在门后"]);
+  });
+
+  it("own conversation: the bound is read once per search, however many of the owner's messages match (round 3 S-3) — by the statement's plan", async () => {
+    const { owner, agent, own } = await owned("yuri");
+    const many = async (n: number) =>
+      db.query(
+        `with c as (update conversations set seq = seq + $3 where id = $1 returning seq)
+         insert into messages (conversation_id, seq, sender_id, kind, body)
+         select $1, c.seq - $3 + g, $2, 'text', jsonb_build_object('text', '第' || g || '次：钥匙在鞋柜里') from c, generate_series(1, $3::int) g`,
+        [own, owner.id, n],
+      );
+    await many(120);
+    await answeredSoFar(own);
+    await many(15);
+    const covers = await lastOf(own);
+    const run = await db.query<{ id: string }>(
+      "insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, caller_id, triggered_by) values ('reply', $1, $2, $3, 'running', $4, 'own', $3, 'human') returning id",
+      [own, agent.id, owner.id, covers],
+    );
+    interface PlanNode {
+      "Node Type": string;
+      "Relation Name"?: string;
+      "Subplan Name"?: string;
+      "CTE Name"?: string;
+      "Actual Loops": number;
+      Plans?: PlanNode[];
+    }
+    // The statement as the search sends it, explained as it runs.
+    const explained = { query: (text: string, params?: unknown[]) => db.query(`explain (analyze, format json) ${text}`, params) } as unknown as Queryable;
+    const out = (await searchRows(explained, agent.id, {
+      conversationIds: [own],
+      term: "钥匙",
+      from: null,
+      before: null,
+      after: null,
+      timeZone: "UTC",
+      window: null,
+      answering: { runId: run.rows[0]!.id, conversationId: own, shownFrom: covers - 14 },
+      limit: 9,
+    })) as unknown as Array<{ "QUERY PLAN": Array<{ Plan: PlanNode }> }>;
+    const walk = (n: PlanNode, inside: string | null): Array<{ node: PlanNode; inside: string | null }> => {
+      const here = n["Subplan Name"]?.startsWith("CTE ") ? n["Subplan Name"] : inside;
+      return [{ node: n, inside: here }, ...(n.Plans ?? []).flatMap((c) => walk(c, here))];
+    };
+    const all = walk(out[0]!["QUERY PLAN"][0]!.Plan, null);
+    // The run's row and everything the bound reads (the Agent's latest posted reply, its run, its conversation) are read
+    // inside one CTE, computed once…
+    expect(all.find((x) => x.node["Subplan Name"] === "CTE answering")?.node["Actual Loops"]).toBe(1);
+    const readers = all.filter((x) => ["agent_runs", "agent_conversations"].includes(x.node["Relation Name"] ?? ""));
+    expect(readers.length).toBeGreaterThan(0);
+    expect(readers.map((x) => x.inside)).toEqual(readers.map(() => "CTE answering"));
+    // …while each of the 135 matching messages is held to its one row.
+    const scans = all.filter((x) => x.node["Node Type"] === "CTE Scan" && x.node["CTE Name"] === "answering");
+    expect(scans.reduce((n, x) => n + x.node["Actual Loops"], 0)).toBeGreaterThanOrEqual(120);
   });
 
   it("own conversation: `more` counts what is left after the turn is left out — 8 answered matches and 2 of the turn's (10 in all) are one whole page", async () => {

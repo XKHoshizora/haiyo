@@ -357,7 +357,7 @@ interface RunFlags {
    * file labels, then what its tools hand over) and how far its conversation had come when it began (`RunScope.heardTo`).
    * Null for one offered none. Forgotten with the run's flags: no number outlives its reply.
    */
-  tools: { refs: RunRefs; heardTo: number } | null;
+  tools: { refs: RunRefs; heardTo: number; shownFrom: number | null } | null;
 }
 
 /**
@@ -996,7 +996,8 @@ export class DbAgentPort implements AgentPort {
     flags.leftOut = first.loaded.leftOut;
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name };
-    flags.tools = result.prepared.tools.length > 0 ? first.tools : null;
+    // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
+    flags.tools = result.prepared.tools.length > 0 && first.tools !== null ? { ...first.tools, shownFrom: flags.group ? null : context.shownFrom } : null;
     return result.prepared;
   }
 
@@ -1017,7 +1018,7 @@ export class DbAgentPort implements AgentPort {
     const box = this.deps.toolbox;
     const flags = this.flags.get(run.id);
     if (!box || !flags?.tools) return Promise.reject(new Error("no tool is offered to this run"));
-    const scope: RunScope = { ...run, group: flags.group, refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark };
+    const scope: RunScope = { ...run, group: flags.group, refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, shownFrom: flags.tools.shownFrom };
     return box.run(scope, call, signal);
   }
 

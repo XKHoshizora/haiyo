@@ -3584,11 +3584,13 @@ what looks like one is what someone wrote.
   conversation, every conversation the Agent is a current member of (its own and its groups, each as the Agent sees it).
   Never the messages the reply answers (its model is shown them already; a question would match itself): in a group the
   calls it answers and the latest it covers (other people's messages between them are found as any); in the Agent's own
-  conversation, by position, every message of the owner's after what the Agent's last posted reply there covered (its
-  posting run's `covers_seq`), up to what this reply covers — so also a question re-asked after a failure nobody retried,
-  and what was written while the Agent was paused, had no model or was not named; "nothing found", its note and the
-  elsewhere lookup are decided without them, and so is `more`.
-  A new topic changes nothing here: search is history, not context. Matched as the search routes match (Search: a
+  conversation, by position, the owner's messages its call shows: after what the Agent's last posted reply there covered
+  (its posting run's `covers_seq`) and from where its call's context begins (context.ts `BuiltContext.shownFrom`), up to
+  what this reply covers — so also a question re-asked after a failure nobody retried, and what was written while the
+  Agent was paused, had no model or was not named, as far as its context shows them; "nothing found", its note and the
+  elsewhere lookup are decided without them, and so is `more`. What its context does not show — past the budget, folded
+  into the rolling summary, before a new topic — is found as any: search is history, not context. The bound is read once
+  per search, whatever the number of matches (`messages/search.ts` `searchRows`: a materialized CTE). Matched as the search routes match (Search: a
   substring of the text or the file's name, any case); `query` is cleaned as a stored text is (`cleanText`), then refused
   under two characters (`要查的词至少要两个字。`) or over a weight of 60 (`要查的词太长了，换几个关键的字再查。`) without touching the
   database; `from` is a sender's account name as everyone is shown it (any case, with or without `@`: a person's handle,
