@@ -1,10 +1,10 @@
 import { freeUsedToday, lockAccount, MICRO_PER_POINT, siteDay } from "../../../accounts/store.ts";
 import type { Config } from "../../../config.ts";
-import type { Queryable, Tx } from "../../../db.ts";
+import type { Db, Tx } from "../../../db.ts";
 import { headroom, raiseHold, readHolds, type ChargeTo } from "../../../metering/admit.ts";
 import { budgetReachedWith, type Lane } from "../../runs.ts";
 import type { AgentRow } from "../../store.ts";
-import { WEB_NO_MONEY, WEB_SITE_DAY, WEB_UNAVAILABLE } from "./tool.ts";
+import { WEB_LANE_BUDGET, WEB_NO_MONEY, WEB_REPLY_CAP, WEB_SITE_DAY, WEB_UNAVAILABLE } from "./words.ts";
 
 /**
  * The web search's pre-hold (lane websearch; the product owner's rules, lane websearch2; README "Metering", A web search's
@@ -16,11 +16,30 @@ import { WEB_NO_MONEY, WEB_SITE_DAY, WEB_UNAVAILABLE } from "./tool.ts";
  * not called; the reply goes on. No count per owner: the points are the bound.
  */
 
-/** A refusal of the pre-hold: its plain words for the model (`{error}`). Thrown inside the transaction, so it rolls back. */
+/**
+ * Which bound refused a search at the pre-hold — each its own words for the model and its own metric (port-impl.ts
+ * `holdSearch`), so what bites after go-live can be read off the log: the reply's `TOOLS.maxPoints` (`reply_cap`), a
+ * budget of its lane (`lane_budget`: the others' daily, the proactive daily, the chain budget), the owner's points
+ * (`no_points`: the source cannot cover the price), the site's money fuse (`site_fuse`); `unavailable`: the run is not one
+ * a search can be held for.
+ */
+export type RefusedBy = "reply_cap" | "lane_budget" | "no_points" | "site_fuse" | "unavailable";
+
+const REFUSED_WORDS: Readonly<Record<RefusedBy, string>> = {
+  reply_cap: WEB_REPLY_CAP,
+  lane_budget: WEB_LANE_BUDGET,
+  no_points: WEB_NO_MONEY,
+  site_fuse: WEB_SITE_DAY,
+  unavailable: WEB_UNAVAILABLE,
+};
+
+/** A refusal of the pre-hold: by which bound, and its plain words for the model (`{error}`). Thrown inside the transaction, so it rolls back. */
 export class SearchRefused extends Error {
-  constructor(readonly why: string) {
+  readonly why: string;
+  constructor(readonly by: RefusedBy) {
     super("web search refused before the engine was called");
     this.name = "SearchRefused";
+    this.why = REFUSED_WORDS[by];
   }
 }
 
@@ -31,7 +50,7 @@ export const SITE_SCOPE = "site";
 export interface HeldSearch {
   day: string;
   estimateMicroUsd: bigint;
-  /** This search took the day's money to 80 % of the fuse or past it (`at80`): the operator's metric line is due. */
+  /** This search took the day's money to 80 % of the fuse first today (`mark80`): the operator's metric line is due. */
   at80: boolean;
 }
 
@@ -39,17 +58,25 @@ export interface HeldSearch {
 export const fuseMicroUsd = (web: Pick<Config["tools"]["web"], "siteUsdPerDay">): bigint => BigInt(Math.round(web.siteUsdPerDay * 1_000_000));
 
 /**
- * Whether moving the day's money from `before` to `after` crossed 80 % of the fuse `fuse`: once a day as the money grows
- * (a correction downwards, `recordSiteCost`, can make it be crossed again).
+ * Marks today's fuse row (`day`) as having reached 80 % of `fuse`, the first time its money is there: whether this call
+ * marked it (`warned_80`, migration 065) — once a site day, whatever corrections come after. Under the row's lock the
+ * caller's statement before took, in its transaction.
  */
-export const crossed80 = (before: bigint, after: bigint, fuse: bigint): boolean => 5n * before < 4n * fuse && 4n * fuse <= 5n * after;
+async function mark80(t: Tx, day: string, fuse: bigint): Promise<boolean> {
+  const { rowCount } = await t.query(
+    "update web_search_days set warned_80 = true where scope = $1 and day = $2::date and not warned_80 and 5 * spent_micro_usd >= 4 * $3::bigint",
+    [SITE_SCOPE, day, fuse.toString()],
+  );
+  return rowCount === 1;
+}
 
 /**
  * Takes `estimate` micro-USD of today's fuse (the site day `day`) for one search, unless the day's money would pass
- * `fuse`: the day's money before and after, or null when it would pass. One statement: two connections racing for the
- * fuse's last search are put in order by the row's lock, and the one that comes second reads the first one's money.
+ * `fuse`: the day's money before and after and whether this search marked 80 % of it first today, or null when it would
+ * pass. One statement: two connections racing for the fuse's last search are put in order by the row's lock, and the one
+ * that comes second reads the first one's money.
  */
-export async function takeFuse(t: Tx, day: string, estimate: bigint, fuse: bigint): Promise<{ before: bigint; after: bigint } | null> {
+export async function takeFuse(t: Tx, day: string, estimate: bigint, fuse: bigint): Promise<{ before: bigint; after: bigint; at80: boolean } | null> {
   if (estimate > fuse) return null;
   const { rows } = await t.query<{ spent: string }>(
     `insert into web_search_days as d (scope, day, searches, spent_micro_usd) values ($1, $2::date, 1, $3)
@@ -60,25 +87,32 @@ export async function takeFuse(t: Tx, day: string, estimate: bigint, fuse: bigin
   );
   if (!rows[0]) return null;
   const after = BigInt(rows[0].spent);
-  return { before: after - estimate, after };
+  return { before: after - estimate, after, at80: await mark80(t, day, fuse) };
 }
+
+/** The widest an engine's own report of a call's cost is believed: from a tenth of the estimate to ten times it (beyond, the estimate stands). */
+export const COST_TRUST_FACTOR = 10n;
 
 /**
  * After the engine answered a search the pre-hold held (`held`): what the engine said the call cost the site (`actual`,
- * Exa's `costDollars`) replaces the estimate in the day's money — never below 0; nothing changes when it said nothing.
- * Whether the correction crossed 80 % of the fuse (an upward one only can).
+ * Exa's `costDollars`) replaces the estimate in the day's money — never below 0 — when it is believable: from a tenth of
+ * the estimate to ten times it (`COST_TRUST_FACTOR`); nothing changes when it said nothing. In one transaction, the row's
+ * lock held for both statements. `ignored`: it said something outside that, and the estimate stands; `at80`: the
+ * correction marked 80 % of the fuse first today (an upward one only can).
  */
-export async function recordSiteCost(db: Queryable, held: Pick<HeldSearch, "day" | "estimateMicroUsd">, actual: bigint | undefined, fuse: bigint): Promise<boolean> {
-  if (actual === undefined || actual === held.estimateMicroUsd) return false;
-  const delta = actual - held.estimateMicroUsd;
-  const { rows } = await db.query<{ after: string }>(
-    `update web_search_days set spent_micro_usd = greatest(0, spent_micro_usd + $3) where scope = $1 and day = $2::date
-     returning spent_micro_usd::text as after`,
-    [SITE_SCOPE, held.day, delta.toString()],
-  );
-  if (!rows[0]) return false;
-  const after = BigInt(rows[0].after);
-  return crossed80(after - delta > 0n ? after - delta : 0n, after, fuse);
+export async function recordSiteCost(db: Db, held: Pick<HeldSearch, "day" | "estimateMicroUsd">, actual: bigint | undefined, fuse: bigint): Promise<{ ignored: boolean; at80: boolean }> {
+  if (actual === undefined || actual === held.estimateMicroUsd) return { ignored: false, at80: false };
+  const estimate = held.estimateMicroUsd;
+  if (actual * COST_TRUST_FACTOR < estimate || actual > estimate * COST_TRUST_FACTOR) return { ignored: true, at80: false };
+  const delta = actual - estimate;
+  return db.tx(async (t) => {
+    const { rowCount } = await t.query("update web_search_days set spent_micro_usd = greatest(0, spent_micro_usd + $3) where scope = $1 and day = $2::date", [
+      SITE_SCOPE,
+      held.day,
+      delta.toString(),
+    ]);
+    return { ignored: false, at80: rowCount === 1 && delta > 0n && (await mark80(t, held.day, fuse)) };
+  });
 }
 
 /**
@@ -104,16 +138,16 @@ async function webSource(t: Tx, config: Pick<Config, "freeDailyMicro" | "siteTim
  * 1. the run must be admitted: on a site model (its source, `charge_to`, admission's), or on a provider's model — whose
  *    first search picks the source its searches are paid from (`webSource`: the free allowance first, then the balance;
  *    none covering the price: refused), kept for its next ones (migration 065: a provider run's `charge_to` is its
- *    searches' alone) — else refused;
- * 2. the money, by `extend`'s rules but "ok only": the model part of the reply so far at its bound (a site model's hold,
- *    less the free allowance's room for a last call, `reserveMicro`, and less its searches; 0 for a provider's model),
- *    with its searches and this one, within `TOOLS.maxPoints` and no budget of its lane reached (runs.ts
- *    `budgetReachedWith`, counting the searches its Agent's other replies in the same daily lane hold now: `runningWeb`),
- *    and its hold raised by the price within what is left of its own source beside the other holds (admit.ts `raiseHold`
- *    "ok": on the free allowance the allowance itself, so a search is never paid by forgiveness) — else refused, its hold
- *    as it was;
- * 3. today's money fuse of the whole site (`takeFuse`, at the configured estimate) — past it, refused (and all of the
- *    above given back);
+ *    searches' alone) — else refused (`unavailable`);
+ * 2. the money, by `extend`'s rules but "ok only", each bound its own refusal (`RefusedBy`): the model part of the reply
+ *    so far at its bound (a site model's hold, less the free allowance's room for a last call, `reserveMicro`, and less its
+ *    searches; 0 for a provider's model), with its searches and this one, within `TOOLS.maxPoints` (`reply_cap`); no
+ *    budget of its lane reached (runs.ts `budgetReachedWith`, counting the searches its Agent's other replies in the same
+ *    daily lane hold now: `runningWeb`; `lane_budget`); and its hold raised by the price within what is left of its own
+ *    source beside the other holds (admit.ts `raiseHold` "ok": on the free allowance the allowance itself, so a search is
+ *    never paid by forgiveness; `no_points`) — refused, its hold as it was;
+ * 3. today's money fuse of the whole site (`takeFuse`, at the configured estimate) — past it, refused (`site_fuse`, and
+ *    all of the above given back);
  * 4. `web_searches + 1`, `web_micro + price` on the run (and a provider run's source).
  * Throws `SearchRefused` for a refusal (the caller's transaction then rolls back); else what the fuse held (`HeldSearch`).
  */
@@ -137,31 +171,32 @@ export async function holdSearch(
   const row = rows[0];
   const site = row?.source === "site";
   const paid = row?.charge_to === "free" || row?.charge_to === "balance";
-  if (!row || !(site ? paid : row.source === "provider" && (paid || row.charge_to === null))) throw new SearchRefused(WEB_UNAVAILABLE);
+  if (!row || !(site ? paid : row.source === "provider" && (paid || row.charge_to === null))) throw new SearchRefused("unavailable");
   const price = BigInt(web.pointsMicroPerSearch);
   const hold = BigInt(row.hold);
   const searched = BigInt(row.web);
   const reserve = site && row.charge_to === "free" ? o.reserveMicro : 0n;
   const model = site && hold - reserve - searched > 0n ? hold - reserve - searched : 0n;
   const spent = model + searched + price;
-  const allowed =
-    spent <= BigInt(config.tools.maxPoints) * MICRO_PER_POINT &&
-    !(await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent, config, { runningWebExcept: o.run.id }));
-  const chargeTo = (row.charge_to as "free" | "balance" | null) ?? (allowed ? await webSource(t, config, o.run.ownerId, price, now) : null);
-  if (chargeTo === null) throw new SearchRefused(WEB_NO_MONEY);
-  const answer = await raiseHold(t, config, { id: o.run.id, ownerId: o.run.ownerId, chargeTo, holdMicro: hold }, { ok: hold + price, final: hold }, allowed, now);
-  if (answer !== "ok") throw new SearchRefused(WEB_NO_MONEY);
+  if (spent > BigInt(config.tools.maxPoints) * MICRO_PER_POINT) throw new SearchRefused("reply_cap");
+  if (await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent, config, { runningWebExcept: o.run.id })) {
+    throw new SearchRefused("lane_budget");
+  }
+  const chargeTo = (row.charge_to as "free" | "balance" | null) ?? (await webSource(t, config, o.run.ownerId, price, now));
+  if (chargeTo === null) throw new SearchRefused("no_points");
+  const answer = await raiseHold(t, config, { id: o.run.id, ownerId: o.run.ownerId, chargeTo, holdMicro: hold }, { ok: hold + price, final: hold }, true, now);
+  if (answer !== "ok") throw new SearchRefused("no_points");
   // Last of the rows it takes: the site's (see above).
   const day = siteDay(now, config.siteTimezone);
   const estimate = BigInt(web.costMicroUsdPerSearch);
   const fuse = fuseMicroUsd(web);
   const taken = await takeFuse(t, day, estimate, fuse);
-  if (taken === null) throw new SearchRefused(WEB_SITE_DAY);
+  if (taken === null) throw new SearchRefused("site_fuse");
   await t.query(
     "update agent_runs set web_searches = web_searches + 1, web_micro = web_micro + $2::bigint, charge_to = coalesce(charge_to, $3) where id = $1",
     [o.run.id, price.toString(), chargeTo],
   );
-  return { day, estimateMicroUsd: estimate, at80: crossed80(taken.before, taken.after, fuse) };
+  return { day, estimateMicroUsd: estimate, at80: taken.at80 };
 }
 
 /** How many site days of counts are kept: today and the 7 before it. */

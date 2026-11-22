@@ -11,6 +11,9 @@ import type { RunScope } from "../index.ts";
 import type { PlacedCite, RunRefs } from "../refs.ts";
 import type { EngineLog, WebEngine, WebResult, WebSearchError } from "./engine.ts";
 import { fuseMicroUsd, recordSiteCost, type HeldSearch } from "./hold.ts";
+import { WEB_BUSY, WEB_NO_RESULTS, WEB_QUERY_LENGTH, WEB_QUERY_PRIVATE, WEB_REFUSED, WEB_TIMEOUT, WEB_UNAVAILABLE } from "./words.ts";
+
+export * from "./words.ts";
 import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
 
 /**
@@ -33,16 +36,7 @@ import { cleanSnippet, cleanTitle, guardQuery } from "./text.ts";
 
 export const SEARCH_WEB = "search_web";
 
-// The fixed sentences the model is answered with (tool results, never the Agent's words).
-export const WEB_QUERY_LENGTH = "搜索词要 2 到 120 个字。";
-export const WEB_QUERY_PRIVATE = "这个搜索词里有不能发到外面的内容（比如笔记里的私事，或群里的人名）。只写要查的公开信息，换个说法再搜。";
-export const WEB_BUSY = "现在联网搜索的人太多了，过一会儿再试。";
-export const WEB_SITE_DAY = "联网搜索今天暂时用不了了。";
-export const WEB_NO_MONEY = "这次回复的点数不够再联网搜索了。";
-export const WEB_UNAVAILABLE = "联网搜索暂时用不了。";
-export const WEB_TIMEOUT = "这次联网搜索超时了。";
-export const WEB_REFUSED = "搜索服务拒绝了这个搜索。";
-export const WEB_NO_RESULTS = "网上没搜到相关的结果。";
+// The fixed sentences the model is answered with (tool results, never the Agent's words): words.ts.
 
 const ENGINE_ERRORS: Readonly<Record<WebSearchError, string>> = {
   unavailable: WEB_UNAVAILABLE,
@@ -113,16 +107,21 @@ export function checked(results: readonly WebResult[]): WebResult[] {
 
 /**
  * What the guard reads of the run, as it may read it now: what its owner last typed in its conversation (no later than
- * the run had heard, `RunScope.heardTo`) and, in a group, the display name and handle of every current member and of the
- * owner. Read-only; nothing of it is kept or logged.
+ * the run had heard, `RunScope.heardTo`) — only for a reply the owner asked for themselves (`RunScope.ownerAsked`: their
+ * own conversation, their own call in a group; never someone else's call, a reply nobody asked for or a relay, review M6)
+ * — and, in a group, the display name and handle of every current member and of the owner. Read-only; nothing of it is
+ * kept or logged.
  */
 async function guardReads(db: Db, scope: RunScope): Promise<{ ownerSaid: string | null; names: string[] }> {
-  const said = await db.query<{ text: string | null }>(
-    `select m.body->>'text' as text from messages m
-      where m.conversation_id = $1 and m.sender_id = $2 and m.seq <= $3 and m.kind in ('text', 'file')
-      order by m.seq desc limit 1`,
-    [scope.conversationId, scope.ownerId, scope.heardTo],
-  );
+  const said =
+    scope.ownerAsked === true
+      ? await db.query<{ text: string | null }>(
+          `select m.body->>'text' as text from messages m
+            where m.conversation_id = $1 and m.sender_id = $2 and m.seq <= $3 and m.kind in ('text', 'file')
+            order by m.seq desc limit 1`,
+          [scope.conversationId, scope.ownerId, scope.heardTo],
+        )
+      : { rows: [] };
   if (!scope.group) return { ownerSaid: said.rows[0]?.text ?? null, names: [] };
   const people = await db.query<{ name: string; handle: string }>(
     `select p.display_name as name, ${handleOf("p")} as handle
@@ -137,12 +136,15 @@ async function guardReads(db: Db, scope: RunScope): Promise<{ ownerSaid: string 
 
 /**
  * What the engine said the call cost the site (`actual`), in the site's money fuse in place of the estimate the pre-hold
- * held (hold.ts `recordSiteCost`); 80 % of the day's fuse crossed by it said in a metric line. A failure to write it keeps the
+ * held (hold.ts `recordSiteCost`); 80 % of the day's fuse first reached by it said in a metric line, and an unbelievable
+ * report (outside a tenth to ten times the estimate: the estimate stands) in another. A failure to write it keeps the
  * estimate (the fuse counts at least that) and says so with its code only.
  */
 async function siteCost(deps: WebToolDeps, held: HeldSearch, actual: bigint | undefined): Promise<void> {
   try {
-    if (await recordSiteCost(deps.db, held, actual, fuseMicroUsd(deps.config))) fuseLine(deps.log);
+    const recorded = await recordSiteCost(deps.db, held, actual, fuseMicroUsd(deps.config));
+    if (recorded.ignored) deps.log.info({ metric: "web_cost_ignored" }, "web search: the engine's cost report was outside what is believed; the estimate stands");
+    if (recorded.at80) fuseLine(deps.log);
   } catch (err) {
     deps.log.warn({ metric: "web_site_cost_unrecorded", code: (err as { code?: string }).code }, "web search: the engine's cost could not be recorded; the estimate stands in the site's fuse");
   }
@@ -171,7 +173,8 @@ export async function searchWebTool(deps: WebToolDeps, scope: RunScope, input: {
   try {
     // Counted and held before anything leaves the service; refused, the engine is never called.
     const pre = await scope.holdSearch();
-    if (typeof pre === "string") return { output: { error: pre } };
+    // Anything but what the fuse held is a refusal (its words, or none known): the engine is never called then.
+    if (typeof pre !== "object" || pre === null || typeof pre.day !== "string") return { output: { error: typeof pre === "string" ? pre : WEB_UNAVAILABLE } };
     held = pre;
     found = await deps.engine.searchWeb(query, { signal });
   } finally {

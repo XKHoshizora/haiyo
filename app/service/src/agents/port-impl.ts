@@ -62,8 +62,8 @@ import {
   type Usage,
 } from "./runtime/port.ts";
 import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, passageBudget, systemText, systemTokens, type PromptNotes, type SystemText, type ToolsPrompt, type WebPrompt } from "./runtime/prompt.ts";
-import { holdSearch as preHoldSearch, SearchRefused, type HeldSearch } from "./tools/web/hold.ts";
-import { fuseLine, WEB_NO_MONEY, WEB_SITE_DAY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
+import { holdSearch as preHoldSearch, SearchRefused, type HeldSearch, type RefusedBy } from "./tools/web/hold.ts";
+import { fuseLine, WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
 import {
   actOnTriggered,
   budgetReachedWith,
@@ -249,6 +249,8 @@ interface RunState {
   marked: boolean;
   /** Its owner asked it to stop while it ran (runs.ts `stopRun`). */
   stop_asked: boolean;
+  /** Whose message called for it: a person's, or an Agent's (`agent_runs.triggered_by`; the web search's guard reads it). */
+  triggered_by: "human" | "agent";
   /**
    * A reply `告诉他们` queued (`whisper_id`): it answers nobody's call — what it covers is merely the group's latest message
    * when it was queued, anyone's — so `begin` holds none of it to the block rule; the calls noted on it are its follow-up's,
@@ -267,7 +269,7 @@ interface RunState {
   progressed: boolean;
 }
 const RUN_STATE =
-  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, greets, retry_of, auto_attempt, progressed, " +
+  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, greets, retry_of, auto_attempt, progressed, " +
   "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at";
 
 /**
@@ -336,7 +338,7 @@ interface RunFlags {
    * Null for one offered none. Forgotten with the run's flags: no number outlives its reply. A reply offered the web
    * search also keeps the texts of the notes and hearsay it was shown (`shown`: its query guard's, never stored or logged).
    */
-  tools: { refs: RunRefs; heardTo: number; shown?: readonly string[]; shownFrom: number | null } | null;
+  tools: { refs: RunRefs; heardTo: number; shown?: readonly string[]; ownerAsked?: boolean; shownFrom: number | null } | null;
 }
 
 /**
@@ -634,7 +636,7 @@ export class DbAgentPort implements AgentPort {
           offer: Offer | null;
           reserved: number;
           withoutTools: string | null;
-          tools: { refs: RunRefs; heardTo: number; shown?: readonly string[] } | null;
+          tools: { refs: RunRefs; heardTo: number; shown?: readonly string[]; ownerAsked?: boolean } | null;
           told: boolean;
         }
     > => {
@@ -815,7 +817,8 @@ export class DbAgentPort implements AgentPort {
       // above), and its tools show it nothing later (`RunScope.heardTo`).
       const heard = offer === null ? null : await t.query<{ seq: string }>("select seq::text from conversations where id = $1", [run.conversationId]);
       // A reply offered the web search keeps what it was shown of its notes and hearsay for its query guard (tools/web).
-      const shown = offer?.web === "offered" ? { shown: shownTexts(notes) } : {};
+      // And whether it answers its owner's own call: only then do the owner's typed words exempt a query (review M6).
+      const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: state.lane === "own" && state.triggered_by === "human" } : {};
       const tools = heard === null || refs === null ? null : { refs, heardTo: Number(heard.rows[0]?.seq ?? 0), ...shown };
       return { resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null };
     });
@@ -1009,9 +1012,9 @@ export class DbAgentPort implements AgentPort {
     const box = this.deps.toolbox;
     const flags = this.flags.get(run.id);
     if (!box || !flags?.tools) return Promise.reject(new Error("no tool is offered to this run"));
-    const { shown } = flags.tools;
-    // A reply offered the web search: what it was shown (its query guard) and its pre-hold (`holdSearch`).
-    const web = shown === undefined ? {} : { shown, holdSearch: () => this.holdSearch(run) };
+    const { shown, ownerAsked } = flags.tools;
+    // A reply offered the web search: what it was shown and whose call it answers (its query guard), its pre-hold (`holdSearch`).
+    const web = shown === undefined ? {} : { shown, ownerAsked: ownerAsked === true, holdSearch: () => this.holdSearch(run) };
     const scope: RunScope = { ...run, group: flags.group, refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, shownFrom: flags.tools.shownFrom, ...web };
     return box.run(scope, call, signal);
   }
@@ -1036,8 +1039,9 @@ export class DbAgentPort implements AgentPort {
       return held;
     } catch (err) {
       if (err instanceof SearchRefused) {
-        // The site's money fuse refusing a search: the operator's metric (a count, nothing of the search).
-        if (err.why === WEB_SITE_DAY) this.deps.log.info({ metric: "web_site_fuse_refused" }, "web search: refused by the site's money fuse for today");
+        // Which bound refused it: the operator's metric (a count, nothing of the search), so what bites shows in the log.
+        const metric = REFUSED_METRIC[err.by];
+        if (metric !== null) this.deps.log.info({ metric }, "web search: refused before the engine was called");
         return err.why;
       }
       if (err instanceof RunNotRunning) return WEB_UNAVAILABLE;
@@ -1434,6 +1438,15 @@ async function answeredSince(t: Tx, run: RunTicket, original: string): Promise<b
 
 /** The texts of the notes and hearsay a run was shown (what its web search's query guard compares a query with). */
 const shownTexts = (notes: PromptNotes): string[] => [...notes.owner, ...notes.self, ...notes.hearsay].map((n) => n.text);
+
+/** The metric of each bound that refuses a web search at its pre-hold (README "Metrics in the log"); none for a run no search can be held for. */
+const REFUSED_METRIC: Readonly<Record<RefusedBy, string | null>> = {
+  reply_cap: "web_refused_reply_cap",
+  lane_budget: "web_refused_lane_budget",
+  no_points: "web_refused_no_points",
+  site_fuse: "web_site_fuse_refused",
+  unavailable: null,
+};
 
 /** A run's flags as an attempt starts. */
 const freshFlags = (): RunFlags => ({ stop: false, silenced: false, group: false, mark: null, money: null, model: null, leftOut: null, tools: null });

@@ -48,6 +48,11 @@ export interface RunScope extends RunTicket {
   readonly shown?: readonly string[];
   readonly holdSearch?: () => Promise<string | HeldSearch>;
   /**
+   * The reply answers its owner's own call (lane `own`, called by a person's message: their own conversation, a retry,
+   * their own @ in a group): only then do the owner's own typed words exempt a query from the web search's guard.
+   */
+  readonly ownerAsked?: boolean;
+  /**
    * In its Agent's own conversation, where what its call shows begins (context.ts `BuiltContext.shownFrom`): its search
    * leaves out the owner's messages it is shown, and only those (`searchRows` `answering`). Absent or null: from the
    * Agent's last posted reply on.

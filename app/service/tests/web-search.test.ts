@@ -367,7 +367,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     const r = await admitted("lanea");
     await paidReply(db, { agentId: r.agent.agentId, ownerId: r.owner.id, conversationId: r.agent.conversationId, lane: "others", micro: 500_000n });
     const others = { lane: { lane: "others" as const, coversSeq: 0 }, agent: { othersBudgetMicro: 3n * POINT } };
-    await expect(preHold(r, webConfig(), others)).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(r, webConfig(), others)).rejects.toMatchObject({ by: "lane_budget" });
     expect([await runRow(r.runId), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0]);
     // Without what was settled before, 2.77 < 3: held.
     const s = await admitted("laneb");
@@ -378,7 +378,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     const g = await group(app, c.owner, "链", [await signUp(app, "lanec_mia"), await signUp(app, "lanec_ned")]);
     const human = await say(c.owner, g, "大家好");
     const chain = { conversationId: g, lane: { lane: "own" as const, coversSeq: human + 1 } };
-    await expect(preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: POINT } })).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: POINT } })).rejects.toMatchObject({ by: "lane_budget" });
     await preHold(c, webConfig(), { ...chain, agent: { chainBudgetMicro: 10n * POINT } });
     expect((await runRow(c.runId)).web_searches).toBe(1);
   });
@@ -386,7 +386,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
   it("the site's fuse is taken last, after the account: refused there, the hold is given back; the site row is not held while the account is waited for", async () => {
     const r = await admitted("sitea");
     await setCount(SITE_SCOPE, 12);
-    await expect(preHold(r, webConfig(TWELVE))).rejects.toEqual(new SearchRefused(WEB_SITE_DAY));
+    await expect(preHold(r, webConfig(TWELVE))).rejects.toMatchObject({ by: "site_fuse", why: WEB_SITE_DAY });
     expect([await runRow(r.runId), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 12]);
     // While the pre-hold waits for the owner's account, another transaction can take the site's row at once.
     await setCount(SITE_SCOPE, 5);
@@ -425,7 +425,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
 
   it("past TOOLS.maxPoints: refused, the hold and the fuse as they were", async () => {
     const r = await admitted("monb");
-    await expect(preHold(r, webConfig({}, { maxPoints: 2 }))).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(r, webConfig({}, { maxPoints: 2 }))).rejects.toMatchObject({ by: "reply_cap" });
     expect(await runRow(r.runId)).toEqual({ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" });
     expect(await countOf(SITE_SCOPE)).toBe(0);
     await preHold(r, webConfig({}, { maxPoints: 3 }));
@@ -434,7 +434,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
 
   it("the balance: what is left beside the holds must cover the hold and the price", async () => {
     const r = await admitted("monc", PAID, 2_500_000n);
-    await expect(preHold(r, webConfig())).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(r, webConfig())).rejects.toMatchObject({ by: "no_points", why: WEB_NO_MONEY });
     await grant(db, r.owner.id, 500_000n);
     await preHold(r, webConfig());
     expect((await runRow(r.runId)).hold).toBe((2n * POINT + PRICE).toString());
@@ -442,7 +442,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
 
   it("the free allowance: a search is paid from it, never beyond it by forgiveness", async () => {
     const r = await admitted("mond", FREE, 0n, 300_000n);
-    await expect(preHold(r, webConfig())).rejects.toEqual(new SearchRefused(WEB_NO_MONEY));
+    await expect(preHold(r, webConfig())).rejects.toMatchObject({ by: "no_points", why: WEB_NO_MONEY });
     await setFreeUsed(r.owner.id, 200_000n);
     await preHold(r, webConfig());
     expect((await runRow(r.runId)).web_searches).toBe(1);

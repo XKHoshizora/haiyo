@@ -234,7 +234,8 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
 /**
  * The web search's engine for `config` (src/agents/tools/web/engine.ts; `TOOLS.web.engine`, Exa by default): none while `TOOLS.web.enabled` is false (the
  * default: nothing is logged); with it on but no key in the variable its `apiKeyEnv` names, none either, and one line at
- * start says so (the variable's name, never a value) — the search is simply not offered. The key is read once, here.
+ * start says so (the variable's name, never a value) — the search is simply not offered; nor with a fuse of 0
+ * (`siteUsdPerDay`), which would refuse every search. The key is read once, here.
  */
 export function webEngineOf(
   config: Config,
@@ -242,6 +243,11 @@ export function webEngineOf(
 ): WebEngine | null {
   const web = config.tools.web;
   if (!web.enabled) return null;
+  // A fuse of nothing would refuse every search: not offered at all, and said once (review M1).
+  if (web.siteUsdPerDay === 0) {
+    log.warn({ metric: "web_search_off", siteUsdPerDay: 0 }, "web search: TOOLS.web.siteUsdPerDay is 0, so every search would be refused; it is not offered");
+    return null;
+  }
   const apiKey = process.env[web.apiKeyEnv];
   if (apiKey === undefined || apiKey.trim() === "") {
     log.warn({ metric: "web_search_off", apiKeyEnv: web.apiKeyEnv }, "web search: TOOLS.web.enabled is on but its key variable is not set; it is not offered");
