@@ -326,7 +326,8 @@ stale-run sweep timer unless asked (`staleRunSweep`); tests sweep with `app.stal
 proactive scheduler unless asked (`proactive`, with a judgement model configured: `tests/proactive-scheduler.test.ts`);
 other files that judge call `decideProactive` themselves. Between two tests (`betweenTests`) it empties the database only
 once the app is quiet — its queues and jobs, and every other transaction of the database, one between two statements
-too — and holds the reply worker's loop until the truncate has ended; the hub's heartbeat runs on no timer under it
+too — and holds the reply worker's loop until the truncate has ended; the hub's heartbeat and the push's own timer
+(`BuildOptions.pushTimer`: its counters and expired-phone sweep, `app.push.sweepExpired()` by hand) run on no timer under it
 (`app.realtime.tick()` beats by hand). So no work of the app's takes table locks against the truncate's
 (`tests/harness.test.ts`).
 
@@ -3022,7 +3023,7 @@ opens it again in front (`haiyo:resume`), so:
 - the app in the background: no socket, pushed at once — also while the same person has the web open on a desktop
   (another session, another socket) or a second phone in front (its own session);
 - the app suspended before its close got out (or killed, or its network gone): its socket is still open here but cannot
-  answer, so the phone is pushed when the probe ends (3 s late, never lost); a socket that closes during the probe, at
+  answer, so the phone is pushed when the probe ends (3 s late, never lost: a message coalesced during the probe counts in its re-check); a socket that closes during the probe, at
   once. The heartbeat still drops such a socket on its own (30–60 s, `HEARTBEAT_MS`);
 - the web in a browser registers no phone, so a browser is never pushed to.
 The probe needs no client change. It costs one ping per probe, and one probe per session runs at a time (a second ask
@@ -3053,12 +3054,14 @@ for 50 minutes and made anew after — never sooner than 20 minutes, Apple's bou
 - **The rule of a pause: a pause is never wider than what the failing request proves**, so nothing a signed-in person can
   choose — the token they register, the `env` (so the APNs host) they register it for — can pause a push that would have
   got through. A refusal of the key or the topic proves only that that host refuses it (an APNs key can be limited to one
-  environment), so it pauses **that host**: 403 (`InvalidProviderToken`, `Forbidden`, …: the key, its id or the Team ID;
-  `auth`), 403 `BadEnvironmentKeyIdInToken` (the key does not cover this environment; `key_env`: create the key as
+  environment), so it pauses **that host**: 403 (`InvalidProviderToken`, `MissingProviderToken`, …: the key, its id or
+  the Team ID; `auth`), 403 `BadEnvironmentKeyIdInToken` (the key does not cover this environment; `key_env`: create the key as
   **Sandbox & Production**), 400 `TopicDisallowed` / `BadTopic` / `MissingTopic` (the topic, `APPLE_BUNDLE_ID`; `topic`),
   429 `TooManyProviderTokenUpdates` (`token_rate`: renewed too often, restarts in a row — no person can provoke it,
   renewals being at most one per 20 minutes whatever is pushed). A refusal of a token pauses **that token**: 400
-  `DeviceTokenNotForTopic` (a token of another app; `topic`). Each pause lasts `CONFIGURATION_PAUSE_MS` (15 minutes; a
+  `DeviceTokenNotForTopic` (a token of another app; `topic`) — and so do 403 `Forbidden` and any 403 reason Apple does
+  not document (`auth`): Apple gives them no cause, so nothing proves more than this one request (a host is paused only for
+  a reason whose cause is the configuration alone). Each pause lasts `CONFIGURATION_PAUSE_MS` (15 minutes; a
   push there is `paused` without being sent), then pushes are tried again. Nothing pauses every push: a person's sandbox
   phone can pause only the sandbox host, which no TestFlight or App Store phone uses, and only for a refusal every push
   there would get anyway. No phone is deleted for any of these; one WARN line per class and host says so (below). The
