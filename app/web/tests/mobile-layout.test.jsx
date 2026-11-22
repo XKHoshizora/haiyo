@@ -101,6 +101,16 @@ describe("on a phone", () => {
     expect(toastText()).toBeTruthy();
   });
 
+  it("the 设置 list reads as a list: a row for each entry with a chevron, no 「快捷入口」 label", async () => {
+    await openApp({ sync });
+    fireEvent.click(within(bar()).getByRole("button", { name: "设置" }));
+    await flush();
+    const rows = [...document.querySelectorAll(".list-col .row.slim")].filter((r) => !r.classList.contains("danger-row"));
+    expect(rows.map((r) => r.querySelector(".row-name").textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑"]);
+    for (const row of rows) expect(row.querySelector("svg.row-chevron")).toBeTruthy();
+    expect(document.querySelector(".list-col").textContent).not.toContain("快捷入口");
+  });
+
   it("is gone inside a conversation, and back with the list", async () => {
     await openApp({ sync });
     fireEvent.click(document.querySelector(".list-col .row"));

@@ -7,7 +7,8 @@ import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
 import { clearResetToken, takeReturn } from "../src/auth/router.js";
 import { draftKeys, peekDraft, saveDraft } from "../src/data/drafts.js";
 import { StoreProvider, emptyState } from "../src/data/store.jsx";
-import { SettingsMain } from "../src/pages/Settings.jsx";
+import { SettingsList, SettingsMain } from "../src/pages/Settings.jsx";
+import { PHONE_QUERY } from "../src/ui/pointer.js";
 
 // The screens here load lazily (the app's chunk, the account screens): on a busy machine that takes longer than
 // Testing Library's default 1 s wait for findBy… / waitFor, which then failed for nothing. Each wait may now take 5 s
@@ -529,6 +530,31 @@ describe("session lifecycle", () => {
     await screen.findByRole("button", { name: "登录" });
     expect(api.signOut).toHaveBeenCalledTimes(1);
     expect(layers[0].stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("on a phone the Settings list itself has 退出登录 (the profile page is not where one looks); a wide screen has it on the profile page only", async () => {
+    const api = fakeApi();
+    window.matchMedia = (query) => ({ matches: query === PHONE_QUERY, media: query, addEventListener() {}, removeEventListener() {} });
+    try {
+      mount(api, () => (
+        <StoreProvider initialState={emptyState(me)}>
+          <SettingsList />
+        </StoreProvider>
+      ));
+      fireEvent.click(await screen.findByRole("button", { name: "退出登录" }));
+      await screen.findByRole("button", { name: "登录" });
+      expect(api.signOut).toHaveBeenCalledTimes(1);
+    } finally {
+      delete window.matchMedia;
+    }
+    cleanup();
+    mount(fakeApi(), () => (
+      <StoreProvider initialState={emptyState(me)}>
+        <SettingsList />
+      </StoreProvider>
+    ));
+    await screen.findByText("设置");
+    expect(screen.queryByRole("button", { name: "退出登录" })).toBeNull();
   });
 
   it("Settings shows no sign-out button outside the sign-in gate", () => {

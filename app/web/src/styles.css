@@ -148,6 +148,11 @@ button:disabled { cursor: not-allowed; }
   border-left: 3px solid transparent; background: none; text-align: left;
 }
 .row.slim { min-height: 58px; }
+/* An entry of the settings list: separated from the next, a chevron at its end (it opens something); the last one carries no line. */
+.row.slim { box-shadow: inset 0 -1px 0 var(--line); }
+li:last-child > .row.slim { box-shadow: none; }
+.row-chevron { flex: none; color: var(--ink-3); }
+.row.danger-row .row-name { color: #c62f35; }
 @media (hover: hover) { .row:hover { background: rgba(255, 255, 255, 0.45); } }
 .row.active { background: var(--purple-tint); border-left-color: var(--purple); }
 .row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
