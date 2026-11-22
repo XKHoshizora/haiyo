@@ -9,6 +9,15 @@ import { polishShot } from "./support/shots.mjs";
 import { forgetTermsAcceptance } from "./support/db.mjs";
 import { REMOTE } from "./support/env.mjs";
 import { rail } from "./support/app.mjs";
+import { canControlService, restartService } from "./support/control.mjs";
+
+// This file runs with the terms required (`LEGAL={"required":true}`); the suite's site has the default (off) again after it.
+test.beforeAll(async () => {
+  if (canControlService) await restartService({ LEGAL: JSON.stringify({ required: true }) });
+});
+test.afterAll(async () => {
+  if (canControlService) await restartService({});
+});
 
 const PHONES = [
   [375, 812],
@@ -69,6 +78,7 @@ test("the terms, the privacy policy and the contact page open signed out, in thr
 });
 
 test("registration needs both boxes: the form says so, and the service refuses a registration without them", async ({ people }) => {
+  test.skip(!canControlService, "needs the terms required (LEGAL), which only the local suite's service can be restarted with");
   const visitor = await phonePage(people, "Newcomer");
   const page = visitor.page;
   const identity = newIdentity("Newcomer");
@@ -96,7 +106,7 @@ test("registration needs both boxes: the form says so, and the service refuses a
 });
 
 test("an account without a record of the terms is asked before the app opens, and then the app opens", async ({ people }) => {
-  test.skip(REMOTE, "needs the local suite's database");
+  test.skip(REMOTE || !canControlService, "needs the local suite's database and the terms required (LEGAL)");
   const ann = await people.member("Ann", { open: false, contextOptions: PHONE });
   expect(await forgetTermsAcceptance(ann.id)).toBe(1);
   const page = await people.watchedPage(ann.context, "Ann (asked)");

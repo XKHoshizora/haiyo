@@ -22,7 +22,10 @@ export const signOut = () => request("POST", "/api/auth/sign-out");
 export const verifyEmail = (token) => request("GET", withQuery("/api/auth/verify-email", { token }));
 export const requestPasswordReset = (body) => request("POST", "/api/auth/request-password-reset", body); // {email, redirectTo?}
 export const resetPassword = (body) => request("POST", "/api/auth/reset-password", body); // {newPassword, token}
-/** No session needed. → {mailDelivered}: whether this site really sends mail (false: mail is only kept in its outbox). */
+/**
+ * No session needed. → {mailDelivered, termsRequired}: whether this site really sends mail (false: mail is only kept in its
+ * outbox), and whether registration asks for the terms (false while they are drafts: `LEGAL` off).
+ */
 export const getSite = () => request("GET", "/api/site");
 
 // ───────── me and principals

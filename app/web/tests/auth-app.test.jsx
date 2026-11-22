@@ -379,6 +379,47 @@ describe("register", () => {
   });
 });
 
+describe("a site that does not require the terms yet (LEGAL off: GET /api/site and GET /api/me say termsRequired false)", () => {
+  const OFF_SITE = { mailDelivered: false, termsRequired: false };
+
+  it("registration shows no boxes and sends no acceptance", async () => {
+    const api = outApi({ getSite: vi.fn(async () => OFF_SITE) });
+    at("/register");
+    mount(api);
+    await screen.findByRole("button", { name: "注册" });
+    await waitFor(() => expect(api.getSite).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByText("Haiyo 只给 18 岁以上的人使用。")).toBeNull();
+    for (const [label, value] of Object.entries({ 邀请码: "inv-1", 邮箱: "ann@x.com", 密码: "0123456789", 昵称: "小安", 账号名: "ann_1" })) typeInto(label, value);
+    submit("注册");
+    await screen.findByText("这个站点不发送邮件。请向管理员索取验证链接。");
+    expect(api.register).toHaveBeenCalledWith({ inviteCode: "inv-1", email: "ann@x.com", password: "0123456789", displayName: "小安", handle: "ann_1" });
+    // The three pages are still linked.
+    expectLegalLinks();
+  });
+
+  it("shows no boxes while it is not yet known whether the site requires them", async () => {
+    at("/register");
+    mount(outApi({ getSite: vi.fn(() => new Promise(() => {})) }));
+    await screen.findByRole("button", { name: "注册" });
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("an account that has accepted nothing goes straight to the app: no question", async () => {
+    mount(fakeApi({ getMe: vi.fn(async () => ({ ...ANN, termsRequired: false, termsAccepted: false })) }));
+    await screen.findByTestId("app");
+    expect(screen.queryByRole("heading", { name: "请确认条款" })).toBeNull();
+    expect(layers[0].start).toHaveBeenCalledTimes(1);
+  });
+
+  it("a site that requires them says so, and the boxes are there", async () => {
+    at("/register");
+    mount(outApi({ getSite: vi.fn(async () => ({ mailDelivered: false, termsRequired: true })) }));
+    expect(await screen.findByRole("checkbox", { name: ADULT_LABEL })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: AGREE_LABEL })).toBeTruthy();
+  });
+});
 describe("an account asked to accept again (GET /api/me termsAccepted false)", () => {
   const NOT_ACCEPTED = { ...ANN, termsAccepted: false };
   const GATE = "请确认条款";

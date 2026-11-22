@@ -51,7 +51,8 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
       bumpSessionEpoch();
       // An account that has not accepted the documents in force (GET /api/me `termsAccepted`) is asked first; until then the
       // app is not shown and its data layer does not run.
-      setSession({ status: me?.termsAccepted === false ? "terms" : "in", expired: false });
+      // Only while the site requires them (`termsRequired`; false while the texts are drafts: nobody is asked).
+      setSession({ status: me?.termsAccepted === false && me?.termsRequired !== false ? "terms" : "in", expired: false });
     },
     [createLayer],
   );

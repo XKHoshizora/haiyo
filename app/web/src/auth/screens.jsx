@@ -154,24 +154,31 @@ function AcceptanceChecks({ form }) {
 export const NO_MAIL = { verify: "这个站点不发送邮件。请向管理员索取验证链接。", reset: "这个站点不发送邮件。请向管理员索取重置链接。" };
 
 /**
- * Whether this site really sends mail (`GET /api/site`, asked once per page): false on a site that only keeps mail in its
- * outbox; null while not known, or when it could not be asked (the page then says what it always said).
+ * What a page shown before sign-in needs of the site's setup (`GET /api/site`, asked once per page): `known` once it answered
+ * or could not be asked; `mailDelivered` (false on a site that only keeps mail in its outbox) and `termsRequired` (false
+ * while the site does not ask for the terms, `LEGAL.required`), each null when not said (the page then does what it always
+ * did).
  */
-function useMailDelivered(api) {
-  const [delivered, setDelivered] = useState(null);
+function useSite(api) {
+  const asks = typeof api?.getSite === "function";
+  const [site, setSite] = useState(() => ({ known: !asks, mailDelivered: null, termsRequired: null }));
   useEffect(() => {
     let alive = true;
-    if (typeof api?.getSite !== "function") return undefined;
+    if (!asks) return undefined;
+    const said = (value) => (typeof value === "boolean" ? value : null);
     api.getSite().then(
-      (site) => alive && typeof site?.mailDelivered === "boolean" && setDelivered(site.mailDelivered),
-      () => {},
+      (s) => alive && setSite({ known: true, mailDelivered: said(s?.mailDelivered), termsRequired: said(s?.termsRequired) }),
+      () => alive && setSite({ known: true, mailDelivered: null, termsRequired: null }),
     );
     return () => {
       alive = false;
     };
-  }, [api]);
-  return delivered;
+  }, [api, asks]);
+  return site;
 }
+
+/** Whether this site really sends mail (`useSite`): null while not known, or when it could not be asked. */
+const useMailDelivered = (api) => useSite(api).mailDelivered;
 
 function FormBody({ form, submitLabel, children }) {
   return (
@@ -224,12 +231,17 @@ export function SignIn({ api, onSignedIn, expired }) {
 
 export function Register({ api }) {
   const [sentTo, setSentTo] = useState(null);
-  const mailDelivered = useMailDelivered(api);
+  const site = useSite(api);
+  const mailDelivered = site.mailDelivered;
+  // The two boxes once it is known that the site asks for them (`termsRequired`), and when that could not be learned (the
+  // service then decides); none while the site says it does not (the texts are drafts: `LEGAL` off), and none for the moment
+  // the answer takes.
+  const asksTerms = site.known && site.termsRequired !== false;
   const form = useAuthForm({
     initial: { inviteCode: "", email: "", password: "", displayName: "", handle: "", ...ACCEPTANCE_INITIAL },
-    rules: { inviteCode: rules.inviteCode, email: rules.email, password: rules.newPassword, displayName: rules.displayName, handle: rules.handle, ...ACCEPTANCE_RULES },
+    rules: { inviteCode: rules.inviteCode, email: rules.email, password: rules.newPassword, displayName: rules.displayName, handle: rules.handle, ...(asksTerms ? ACCEPTANCE_RULES : {}) },
     submit: async (v) => {
-      await api.register({ inviteCode: v.inviteCode.trim(), email: v.email.trim(), password: v.password, displayName: v.displayName.trim(), handle: v.handle, ...acceptance() });
+      await api.register({ inviteCode: v.inviteCode.trim(), email: v.email.trim(), password: v.password, displayName: v.displayName.trim(), handle: v.handle, ...(asksTerms ? acceptance() : {}) });
       setSentTo(v.email.trim());
     },
   });
@@ -268,7 +280,7 @@ export function Register({ api }) {
         <Field label="账号名" hint="3 到 24 位小写字母、数字或下划线，别人用它找到你" error={form.errors.handle}>
           <input type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} {...form.bind("handle")} />
         </Field>
-        <AcceptanceChecks form={form} />
+        {asksTerms && <AcceptanceChecks form={form} />}
       </FormBody>
       <p className="muted">已经注册过？直接登录就行。</p>
     </AuthCard>
