@@ -68,6 +68,16 @@ export function navOfAddress({ path, overlay = null }) {
   return base;
 }
 
+/** Our history entry (the one the app wrote), or null: a page the browser opened by itself has none. */
+export const readEntry = () => (window.history.state?.af ? window.history.state : null);
+/** The address the browser is at: the path and the overlay of our entry. */
+export const hereNow = () => ({ path: window.location.pathname, overlay: readEntry()?.overlay ?? null });
+/**
+ * The navigation a cold start begins with: the address the browser is at (and the soft state its entry kept). The store starts from it, so the
+ * very first render is the page the address says — never the list first and the page after an effect has read the address.
+ */
+export const navAtStart = () => ({ ...navOfAddress(hereNow()), ...(readEntry()?.nav ?? {}) });
+
 /** The key of an address (what an entry's `prev` holds). */
 export const keyOf = ({ path, overlay = null }) => `${path}#${overlay ?? ""}`;
 

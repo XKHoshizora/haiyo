@@ -1,4 +1,4 @@
-import React, { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { drawnTextOf, isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
@@ -66,11 +66,63 @@ function UnavailableCard({ name }) {
  * width and height, so the box is reserved from the picture's natural size as soon as it is known (at once for a cached one);
  * until then the placeholder (3:2, styles.css) holds the place.
  */
+
+/**
+ * What opens a picture: a genuine single-finger tap — its press began on the picture, no other finger came down meanwhile (a pinch), and the browser did not
+ * take the touch for something else (`pointercancel`). A click whose press began somewhere else (on the viewer that was closing under the finger) or
+ * that came out of a pinch's first touch opens nothing. A click with no pointer at all (the keyboard: `detail` 0) opens it as ever.
+ * The rule is the gesture's own, never a time after the viewer closed.
+ */
+function useTapToOpen(open) {
+  const press = useRef(null);
+  const stop = () => {
+    const p = press.current;
+    if (p) for (const [type, fn] of p.listeners) window.removeEventListener(type, fn, true);
+    press.current = null;
+  };
+  useEffect(() => stop, []);
+  const start = (e) => {
+    const p = press.current;
+    if (p && p.active.size > 0) {
+      p.multi = true; // (a second finger on it: the first one's press is now a pinch's)
+      p.active.add(e.pointerId);
+      return;
+    }
+    stop();
+    const fresh = { armed: true, multi: false, active: new Set([e.pointerId]), listeners: [] };
+    const on = (type, fn) => {
+      fresh.listeners.push([type, fn]);
+      window.addEventListener(type, fn, true);
+    };
+    // Anywhere on the page: another finger down is a pinch, and a finger up or taken away ends that finger's press.
+    on("pointerdown", (ev) => {
+      fresh.active.add(ev.pointerId);
+      if (fresh.active.size > 1) fresh.multi = true;
+    });
+    on("pointerup", (ev) => fresh.active.delete(ev.pointerId));
+    on("pointercancel", (ev) => {
+      fresh.active.delete(ev.pointerId);
+      fresh.armed = false;
+    });
+    press.current = fresh;
+  };
+  return {
+    onPointerDown: start,
+    onClick(e) {
+      const p = press.current;
+      const genuine = e.detail === 0 || (p && p.armed && !p.multi);
+      stop();
+      if (genuine) open(e.currentTarget);
+    },
+  };
+}
+
 function ImageBody({ msg }) {
   const [broken, setBroken] = useState(false);
   const [box, setBox] = useState(null);
   const img = useRef(null);
   const viewer = useImageViewer();
+  const tap = useTapToOpen((node) => viewer.open(msg.id, node));
   const grew = useContext(GrowContext);
   const measure = (node) => setBox(thumbSize({ width: node.naturalWidth, height: node.naturalHeight }, { maxWidth: thumbMaxWidth(window.innerWidth) }));
   useLayoutEffect(() => {
@@ -89,7 +141,7 @@ function ImageBody({ msg }) {
         aria-haspopup="dialog"
         data-image={msg.id}
         style={box ? { aspectRatio: `${box.width} / ${box.height}` } : undefined}
-        onClick={(e) => viewer.open(msg.id, e.currentTarget)}
+        {...tap}
       >
         <img ref={img} src={msg.src} alt={msg.text} loading="lazy" onLoad={(e) => measure(e.currentTarget)} onError={() => setBroken(true)} />
       </button>

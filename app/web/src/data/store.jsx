@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useReducer, useState, useSyncExternalStore } from "react";
 import * as routes from "../api/routes.js";
+import { navAtStart } from "../state/location.js";
 import { reducer } from "../state/reducer.js";
 import { createActions } from "./actions.js";
 import { initial, resetKeepingDrafts } from "./model.js";
@@ -45,6 +46,12 @@ export function emptyState(me = null) {
     seq: 0,
     toast: null,
   };
+}
+
+/** The state a signed-in shell starts from: the empty one, its navigation already where the address is (state/location.js `navAtStart`). */
+function startingState() {
+  const empty = emptyState();
+  return { ...empty, nav: { ...empty.nav, ...navAtStart() } };
 }
 
 const defaultTimers = {
@@ -162,7 +169,7 @@ export function createDataLayer({
 export function StoreProvider({ children, initialState, dataLayer }) {
   const [layer] = useState(() => dataLayer ?? createDataLayer());
   const snapshot = useSyncExternalStore(layer.subscribe, layer.getSnapshot, layer.getSnapshot);
-  const [ui, dispatch] = useReducer(reducer, initialState, (s) => s || emptyState());
+  const [ui, dispatch] = useReducer(reducer, initialState, (s) => s || startingState());
   // Moments the service sent at which an offer ends on screen (viewmodel.js `deadlinesOf`), on the wall clock (as the
   // service's are; `layer.now` is the clock the view's times are written with): the view is read again when one has
   // come — checked at every render (a tab woken from sleep is right at once), at the nearest one ahead (one
