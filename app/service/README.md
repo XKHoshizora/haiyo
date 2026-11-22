@@ -1917,7 +1917,7 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
   the operator said false). Nothing else of a site model is shown: never where it is called (`baseUrl`, `protocol`), the
   upstream model name, its key or the name of the variable holding it, or its prices.
 - `proactiveAvailable`: whether the judgement model is configured (`JUDGE`); turning an Agent's `proactive` on is refused (409 `proactive_unavailable`) when it is not.
-- `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
+- `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there, and `TOOLS.enabled`; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
 - `providerDefaults`: `PROVIDER_DEFAULT_CONTEXT_TOKENS` (a provider model's context when its owner gives none) and
   `PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS` (the output limit of every call to a provider model at reasoning `none`, to which
   a level adds its thinking allowance, Calling a model; a provider model's context must be larger).
@@ -2557,10 +2557,12 @@ whose run was handed web pages keeps every one of them beside its text, cited or
 "title"}]`: the number its model was shown (`〔w2〕` is 2), the page's address (https, no credentials, at most 2 048
 characters, its host in ASCII) and its title as cleaned; no snippet is kept — and where its text cites them, `webCites:
 [{"at", "n"}]` (`at` as a cite's, ascending; only numbers the run handed out). Both go to every reader of the reply (they
-are public pages). `lookups.web` counts the searches that brought results back. A client shows the sources as a list
+are public pages). `plainLinks: true` whenever the stored reply has any web source at all, decided from what is stored
+(even when none of them passes the read's checks). `lookups.web` counts the searches that brought results back. A client shows the sources as a list
 under the lookup line, each row the title and the address's real host (`new URL(url).hostname`, never a site name), and
-a chip at each of `webCites`; in such a reply it shows the text's own links and bare addresses as plain text, so that
-only the sources open anything. `via.webSearches` (owner only, only when above 0): how many searches its `points`
+a chip at each of `webCites` (`网2`); in a reply with `plainLinks` it shows the text's own links and bare addresses as plain
+text, so that only the sources open anything (the web client also shows every reply being written so while the site
+offers web search). `via.webSearches` (owner only, only when above 0): how many searches its `points`
 include. None of these keys exists while the site offers no web search.
 
 **`via`** (the product owner's decision of 2026-11-18): which model and reasoning level an Agent's reply used, and what it
@@ -3649,7 +3651,8 @@ labels' (they then move past it).
 **Web search** (`tools/web/`: `engine.ts`, `text.ts`, `hold.ts`, `tool.ts`; migration `064_web_search.sql`;
 `tests/web-search*.test.ts`). A fourth tool, `search_web {query}`, run by the service in the loop above — the site switch
 `TOOLS.web.enabled` is **off by default**, and while it is off (or its key is missing) nothing anywhere differs from
-before: the same three tools, the same system text to the byte, `〔w1〕` is text, and no key of it is on any wire. It is
+before: the same three tools, the same system text to the byte, `〔w1〕` is text, and no key of it is on any wire — but
+`POST` and `PATCH /api/agents` take and store `webSearch` (a 400 before), which nothing reads until the site offers it. It is
 offered to a run only when all hold: the site switch and its key; the Agent's `webSearch` (default true); the run's
 model is a site model; and the run is its owner's own call — in their own conversation, a retry, or their own `@` in a
 group (lane `own`, called by a person's message: an Agent's relay the owner is behind, someone else's call and a reply
@@ -3658,17 +3661,22 @@ cannot go online in this reply (`NO_WEB_HERE`); one offered no tools keeps `NO_T
 正在上网查找…), `TOOLS.web.perReply` calls a reply; the loop's repeat rule reads the query's one form (NFKC, case-folded,
 one space). A call, in this order, each refusal an `{"error"}` in plain words (no lookup; the model words it):
 1. the query, cleaned as message text, 2 to 120 characters;
-2. the structural guard (`text.ts` `guardQuery`), nothing logged but the metric `web_query_refused`: refused when the
-   query shares 6 CJK characters in a row (spaces between them ignored), or 3 Latin words in a row, with any note or
-   hearsay text the run was shown — unless that same run is in its owner's latest message in the conversation (theirs
-   to search) — or, in a group, holds the display name or handle (2 characters or more) of a current member or of the
-   owner;
+2. the structural guard (`text.ts` `guardQuery`), nothing logged but the metric `web_query_refused`, on one comparison
+   form — NFKC, case-folded, without white space, punctuation, symbols, zero-width and bidi characters, for the query and
+   for everything it is compared with alike (CJK counted by Script_Extensions, so `ー` is kana): refused when the query
+   shares 6 CJK characters in a row, 7 digits in a row (a phone, an ID, a card number, whatever separates them), or 3 Latin
+   words in a row (read on the spaced form) with any note or hearsay text the run was shown — unless that same run is in
+   its owner's latest message in the conversation (theirs to search) — or, in a group, holds the display name or handle
+   (2 characters or more of that form: `李 雷`, `李，雷` and `guardb mia` are `李雷` and `guardb_mia`) of a current member or
+   of the owner;
 3. one of the service's `TOOLS.web.maxAtOnce` engine places, or refused at once;
 4. **the pre-hold** (`hold.ts`, port-impl.ts `holdSearch`; Metering, A web search's price): counted and held in one
    transaction before anything leaves the service;
-5. the engine (`engine.ts`, injected: `Deps.webEngine`), its result kept to the first `maxResults` with an https address
-   without credentials, titles (one line, no bidi control, at most 200 characters) and snippets (at most 300) with every
-   address-looking string and every `@` mention taken out;
+5. the engine (`engine.ts`, injected: `Deps.webEngine`), its result checked again by the tool whatever the adapter did:
+   the first `maxResults` with an https address without credentials, each address once, titles (one line, no bidi control,
+   at most 200 characters, an ellipsis after a cut counted among them — the same rule on read, which cuts and never drops)
+   and snippets (at most 300) with every address-looking string (NFKC first; `。` and `[.]` read as dots) and every `@`
+   mention taken out, a page's age only when it parses;
 6. every title and snippet read for numbers someone typed (`RunRefs.plant`) **before** any `w` number is minted, then as
    many as fit `TOOLS.resultMaxWeight`: `{"about", "results": [{"ref": "〔w1〕", "title", "date"?, "snippet"}]}` — no
    address and no site name for the model to copy. The model cites with `〔w1〕` as with `〔m1〕` (Citations: the `w`
@@ -4347,16 +4355,19 @@ before its cost lands.
 `settle.ts`; migration `064_web_search.sql`; `tests/web-search.test.ts`). One search costs exactly
 `TOOLS.web.pointsMicroPerSearch` (a placeholder until the product owner decides; no metering of the engine: the site
 carries any difference, bounded by `sitePerDay`), held **before** the engine is called, in one transaction in the lock
-order — the run's conversation row, its Agent's and its own (`lockRun`), then today's counters (`web_search_days`, the
-owner's row, then the site's: counted at call time, the site day as everywhere), then the owner's account:
-1. today's searches: over `perOwnerPerDay`, or the site's over `sitePerDay`, refused (one statement each; two connections
-   racing for the last search are put in order by the row's lock);
+order — the run's conversation row, its Agent's and its own (`lockRun`), then the owner's counter for today
+(`web_search_days`: counted at call time, the site day as everywhere), then the owner's account, and last the site's
+counter (the one row every pre-hold shares, never held while an account is waited for):
+1. today's searches of the owner: over `perOwnerPerDay`, refused (one statement; two connections racing for the last
+   search are put in order by the row's lock);
 2. the money by Extension's rules, "ok" only: the model part of the reply so far at its bound (its hold, less the free
    allowance's room for a last call and less its searches) with its searches and this one within `TOOLS.maxPoints` and no
    budget of its lane reached, and its hold raised by the price within what is left of its own source beside the other
    holds — on the free allowance the allowance itself, so a search is never paid by forgiveness; else refused, its hold
    as it was;
-3. `agent_runs.web_searches + 1`, `web_micro + price`.
+3. today's searches of the whole site: over `sitePerDay`, refused;
+4. `agent_runs.web_searches + 1`, `web_micro + price`.
+The change sweep deletes counter days more than a week old.
 Refused at any step, the transaction rolls back (a counter taken is given back), the engine is not called and the reply
 goes on. Past the pre-hold the count and the charge stand whatever happens — the engine failing, timing out, finding
 nothing, the reply stopped, the service closing, the worker dropping the call's outcome: the vendor was called. Extension
