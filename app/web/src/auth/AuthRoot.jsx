@@ -3,7 +3,8 @@ import * as routes from "../api/routes.js";
 import { bumpSessionEpoch, setUnauthenticatedHandler } from "../api/http.js";
 import { createDataLayer } from "../data/store.jsx";
 import { Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
-import { captureResetToken, decide, navigate, parseRoute, useLocation } from "./router.js";
+import { forgetDrafts } from "../data/drafts.js";
+import { captureResetToken, decide, navigate, parseRoute, rememberReturn, takeReturn, useLocation } from "./router.js";
 
 const SessionContext = createContext(null);
 
@@ -31,6 +32,7 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     // The service closes our socket with 4001 on a deliberate sign-out too; that is not an expiry.
     const wasExpired = expired && !signingOut.current;
     bumpSessionEpoch();
+    forgetDrafts(); // (What was typed in a form, an API key among it, does not outlive the session: gone at sign-out, not at the next shell.)
     setSession((s) => (s.status === "out" ? s : { status: "out", expired: wasExpired && s.status === "in" }));
   }, []);
 
@@ -64,6 +66,10 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   }, [end]);
 
   const running = session.status === "in";
+  // Only a visit that was signed out from the start keeps the page it came for: a sign-out or an expiry must not hand the page of this
+  // account to whoever signs in next.
+  const wasIn = useRef(false);
+  if (running) wasIn.current = true;
   useEffect(() => {
     if (!running) return undefined;
     const { layer } = box;
@@ -93,7 +99,10 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
 
   const decision = session.status === "failed" ? { view: "failed" } : decide(route, session.status);
   useEffect(() => {
-    if (decision.redirect) navigate(decision.redirect, { replace: true });
+    if (!decision.redirect) return;
+    // A page of the app opened signed out is opened after the sign-in.
+    if (decision.redirect === "/signin" && route.name === "app" && !wasIn.current) rememberReturn(globalThis.location.pathname);
+    navigate(decision.redirect === "/" ? takeReturn() ?? "/" : decision.redirect, { replace: true });
   }, [decision.redirect]);
 
   switch (decision.view) {

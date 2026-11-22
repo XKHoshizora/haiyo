@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, screen, within } from "@testing-library/react"
 import { AG1, AG2, MODELS, P1, apiError, deferred, providerOf, syncOf } from "./fixtures.js";
 import { click, dialog, flush, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
 import { storedBaseUrl } from "../src/pages/Providers.jsx";
+import { draftKeys } from "../src/data/drafts.js";
 
 beforeEach(() => installBrowser());
 afterEach(() => {
@@ -1221,5 +1222,106 @@ describe("deleting a provider", () => {
     expect(dialog()).toBeNull();
     expect(inMain().queryByText("我的 OpenAI", { selector: ".member-body strong" })).toBeNull();
     expect(mainText()).toContain("还没有添加模型供应商");
+  });
+});
+
+describe("the add and edit forms are pages with addresses", () => {
+  const stepHistory = (move) =>
+    act(async () => {
+      move();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+
+  it("添加供应商 is /settings/providers/new: Back is the list; Forward brings the typed form back, key included; none of it in the address or a storage", async () => {
+    await openProviders({ providers: [] });
+    await click(inMain().getByRole("button", { name: /添加供应商/ }));
+    expect(window.location.pathname).toBe("/settings/providers/new");
+    type("名称", "草稿供应商");
+    fireEvent.change(keyBox(), { target: { value: "sk-draft-1234567890" } });
+    await stepHistory(() => window.history.back());
+    expect(window.location.pathname).toBe("/settings/providers");
+    expect(inMain().queryByLabelText("名称")).toBeNull();
+    await stepHistory(() => window.history.forward());
+    expect(window.location.pathname).toBe("/settings/providers/new");
+    expect(inMain().getByLabelText("名称").value).toBe("草稿供应商");
+    expect(keyBox().value).toBe("sk-draft-1234567890");
+    expect(window.location.href).not.toContain("sk-draft");
+    expect(JSON.stringify(window.history.state)).not.toContain("sk-draft");
+    expect(JSON.stringify({ ...localStorage })).not.toContain("sk-draft");
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain("sk-draft");
+  });
+
+  it("a fresh 添加供应商 starts empty (a typed draft comes back only through Back and Forward)", async () => {
+    await openProviders({ providers: [] });
+    await click(inMain().getByRole("button", { name: /添加供应商/ }));
+    type("名称", "旧草稿");
+    await stepHistory(() => window.history.back());
+    await click(inMain().getByRole("button", { name: /添加供应商/ }));
+    expect(inMain().getByLabelText("名称").value).toBe("");
+  });
+
+  it("the form's own 返回 and 取消 go back to the list; 编辑 is /settings/providers/<id>", async () => {
+    await openProviders();
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    expect(window.location.pathname).toBe(`/settings/providers/${P1}`);
+    await click(inMain().getByRole("button", { name: "取消" }));
+    await stepHistory(() => {});
+    expect(window.location.pathname).toBe("/settings/providers");
+  });
+
+  it("an address of a provider that is not mine shows the list with a notice, at once", async () => {
+    window.history.replaceState(null, "", "/settings/providers/00000000-0000-4000-8000-0000000000ee");
+    installBrowser();
+    window.history.replaceState(null, "", "/settings/providers/00000000-0000-4000-8000-0000000000ee");
+    const env = { providers: [providerOf()] };
+    await openApp({ sync: () => syncOf([]), api: { listProviders: vi.fn(async () => ({ providers: structuredClone(env.providers) })) }, handlers: { models: () => MODELS } });
+    await flush();
+    expect(toastText()).toBe("找不到这个模型供应商");
+    expect(window.location.pathname).toBe("/settings/providers");
+  });
+
+  it("the page's own 取消 and 返回 forget what was typed, the key with it: 编辑 again starts from the stored provider", async () => {
+    await openProviders();
+    for (const leave of [{ name: "取消" }, { name: /返回/ }]) {
+      await click(inMain().getByRole("button", { name: /编辑/ }));
+      type("名称", "取消的名字");
+      fireEvent.change(keyBox(), { target: { value: "sk-cancelled-1234567890" } });
+      expect(draftKeys()).toContain(P1);
+      await click(inMain().getByRole("button", leave));
+      await stepHistory(() => {});
+      expect(draftKeys()).toEqual([]);
+      await click(inMain().getByRole("button", { name: /编辑/ }));
+      expect(inMain().getByLabelText("名称").value).not.toBe("取消的名字");
+      expect(keyBox().value).toBe("");
+      await click(inMain().getByRole("button", { name: "取消" }));
+      await stepHistory(() => {});
+    }
+  });
+
+  it("the browser's Back and Forward keep an edit's draft (that was the point); a save forgets it", async () => {
+    await openProviders();
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    type("名称", "改了一半");
+    await stepHistory(() => window.history.back());
+    expect(draftKeys()).toContain(P1);
+    await stepHistory(() => window.history.forward());
+    expect(inMain().getByLabelText("名称").value).toBe("改了一半");
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(draftKeys()).toEqual([]);
+  });
+
+  it("Forward into the form of a provider that was deleted meanwhile shows the list, once, and the entry is the list", async () => {
+    const app = await openProviders();
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    await stepHistory(() => window.history.back());
+    app.env.providers = [];
+    await act(async () => app.layer.actions.loadProviders());
+    await flush();
+    await stepHistory(() => window.history.forward());
+    await flush();
+    expect(window.location.pathname).toBe("/settings/providers");
+    const length = window.history.length;
+    await stepHistory(() => window.history.back());
+    expect(window.history.length).toBeLessThanOrEqual(length);
   });
 });

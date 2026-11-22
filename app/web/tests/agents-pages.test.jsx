@@ -645,6 +645,28 @@ describe("editing an Agent", () => {
     expect(document.querySelector(".main-col .lead").textContent).toBe("新简介");
   });
 
+  it("saving closes the form like its own back: the entry under the Agent page is the one Back reaches, no entry points into the saved form", async () => {
+    const patchAgent = vi.fn(async (_id, patch) => ({ ...agent(), ...patch }));
+    await openAgents({ agents: [agent()], api: { patchAgent } });
+    await openRow("小助手");
+    const pageIndex = window.history.state.index;
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    expect(window.history.state.index).toBe(pageIndex + 1);
+    type("简介", "新简介");
+    await click(inMain().getByRole("button", { name: "保存" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(window.location.pathname).toBe(`/agents/${AG1}`);
+    expect(window.history.state.index).toBe(pageIndex);
+    // Back from the Agent page is the list, never the form.
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(window.location.pathname).toBe("/agents");
+  });
+
   it("a changed model is sent with its reasoning level", async () => {
     const patchAgent = vi.fn(async (_id, patch) => ({ ...agent(), ...patch }));
     await openAgents({ agents: [agent()], api: { patchAgent } });

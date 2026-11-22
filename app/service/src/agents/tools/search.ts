@@ -30,7 +30,7 @@ const EXCERPT_BEFORE_WEIGHT = 60;
 /** The words searched for weigh at most this much, once cleaned. */
 export const QUERY_MAX_WEIGHT = 60;
 /** What marks where an excerpt was cut. */
-const ELLIPSIS = "…";
+export const ELLIPSIS = "…";
 
 // The fixed sentences the model is answered with.
 export const SEARCH_TIMEOUT = "这次查找超时了。";
@@ -116,13 +116,28 @@ export function matchAt(text: string, term: string): number {
  * (agents/tools/elsewhere.ts): its excerpt is cut so again when it is read.
  */
 export function excerptAt(text: string, at: number): string {
+  return shownOf(excerptWindow(text, at));
+}
+
+/** What a window shows: its part of the line with an ellipsis where it was cut — the one assembly of `excerptAt` and of a whisper hit (agents/tools/elsewhere.ts). */
+export function shownOf(w: { line: string; start: number; end: number; head: boolean; tail: boolean }): string {
+  return (w.head ? ELLIPSIS : "") + w.line.slice(w.start, w.end) + (w.tail ? ELLIPSIS : "");
+}
+
+/**
+ * Where `excerptAt` cuts: the line, the part of it shown (`start` to `end`, UTF-16 indexes into `line`) and whether an ellipsis
+ * stands before and after it. The one place the cut is decided: `excerptAt` is made of it, and whoever has to follow the cut with
+ * ranges (a hit's mentions, agents/tools/elsewhere.ts) reads the same numbers.
+ */
+export function excerptWindow(text: string, at: number): { line: string; start: number; end: number; head: boolean; tail: boolean } {
   const line = oneLine(text);
-  if (weight(line) <= EXCERPT_MAX_WEIGHT) return line;
-  if (at <= 0 || at >= line.length) return cutToWeight(line, EXCERPT_MAX_WEIGHT - weight(ELLIPSIS)) + ELLIPSIS;
+  if (weight(line) <= EXCERPT_MAX_WEIGHT) return { line, start: 0, end: line.length, head: false, tail: false };
+  if (at <= 0 || at >= line.length) return { line, start: 0, end: cutToWeight(line, EXCERPT_MAX_WEIGHT - weight(ELLIPSIS)).length, head: false, tail: true };
   const before = lastToWeight(line.slice(0, at), EXCERPT_BEFORE_WEIGHT);
-  const head = before.length < at ? ELLIPSIS + before : before;
-  const rest = cutToWeight(line.slice(at), EXCERPT_MAX_WEIGHT - weight(head) - weight(ELLIPSIS));
-  return head + rest + (at + rest.length < line.length ? ELLIPSIS : "");
+  const head = before.length < at;
+  const shownHead = head ? ELLIPSIS + before : before;
+  const rest = cutToWeight(line.slice(at), EXCERPT_MAX_WEIGHT - weight(shownHead) - weight(ELLIPSIS));
+  return { line, start: at - before.length, end: at + rest.length, head, tail: at + rest.length < line.length };
 }
 
 /** A result as the model is handed it. */

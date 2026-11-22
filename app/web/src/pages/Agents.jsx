@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { MODEL_GONE } from "../data/errorTexts.js";
 import { formatPoints, pointsReached, proactiveLevelLabel } from "../data/viewmodel.js";
-import { Avatar, ConvAvatar, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
+import { Avatar, ConvAvatar, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
 import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "./AgentForm.jsx";
 import { levelLabel, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
@@ -133,7 +134,8 @@ export function AgentsList() {
             </button>
           </li>
         ))}
-        {agents.length === 0 && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
+        {agents.length === 0 && !state.loaded && <LoadingRow />}
+        {agents.length === 0 && state.loaded && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
       </ul>
     </>
   );
@@ -235,6 +237,7 @@ function DeleteModal({ agent, onClose }) {
 
 function AgentDetail({ agent }) {
   const { state, dispatch, actions } = useStore();
+  const up = useUp();
   const { busy, run } = useAction();
   const [deleting, setDeleting] = useState(false);
   const { nav } = state;
@@ -246,7 +249,7 @@ function AgentDetail({ agent }) {
 
   return (
     <section className="page" aria-label="Agent 管理">
-      <button type="button" className="back only-mobile" onClick={() => dispatch({ type: "nav", patch: { pane: "list" } })}>
+      <button type="button" className="back only-mobile" onClick={up}>
         <ChevronLeft size={20} aria-hidden="true" /> 返回我的 Agent
       </button>
       <header className="profile-head">

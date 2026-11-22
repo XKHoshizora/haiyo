@@ -1,4 +1,5 @@
 // Pure UI navigation and toast. Server-backed state is applied by the data layer (Task 2).
+import { NAV_KEYS, addressOf, canonicalNav, keyOf } from "./location.js";
 
 /**
  * A field to focus on an Agent's page (`agentFocus`, ModelPicker.jsx `openModelChoice`) belongs to the page it was asked
@@ -10,14 +11,36 @@ function keptFocus(before, after, patch) {
   return moved ? { ...after, agentFocus: null } : after;
 }
 
+/**
+ * Every move of the navigation carries its own intent as data: `replace: true` on the action makes the history entry it leaves the page it
+ * goes to (a form that ends in what it made, a page that turned out to be gone); otherwise it is a new entry. The intent is recorded with the
+ * navigation (`navIntent`) and read by the one history effect (state/appHistory.js): nothing is shared between effects.
+ */
+const intentOf = (action, before, after) =>
+  action.intent === "none" ? "none" : action.replace === true ? "replace" : keyOf(addressOf(before)) === keyOf(addressOf(after)) ? before.navIntent ?? "push" : "push";
+
+/** A page key that does not exist is a mistake in the code: in development and tests it throws, so a key that decides a page cannot slip in without an address. */
+function checkKeys(patch) {
+  if (import.meta.env?.PROD) return;
+  for (const key of Object.keys(patch ?? {})) if (!NAV_KEYS.includes(key)) throw new Error(`nav key "${key}" is not placed (state/location.js NAV_KEYS): a key that decides a page needs an address`);
+}
+
+/** `providerCreated` (the sync dialog of a provider just made) belongs to the page it was set for: a move to another provider page clears it. */
+const keptCreated = (after, patch) => ("providerId" in patch && !("providerCreated" in patch) ? { ...after, providerCreated: false } : after);
+
 export function reducer(state, action) {
   switch (action.type) {
-    case "nav":
-      return { ...state, nav: keptFocus(state.nav, { ...state.nav, ...action.patch }, action.patch) };
-    case "nav/openConv":
-      return {
-        ...state,
-        nav: keptFocus(
+    case "nav": {
+      checkKeys(action.patch);
+      // (A move that changes no address — a note, a field to focus, a conversation waited for — keeps the intent of the move before it that has not been written yet:
+      // the two can fall in one commit, and the second must not turn the first one's replace into a push.)
+      const next = canonicalNav(keptCreated(keptFocus(state.nav, { ...state.nav, ...action.patch }, action.patch), action.patch));
+      return { ...state, nav: { ...next, navIntent: intentOf(action, state.nav, next) } };
+    }
+    case "nav/openConv": {
+      checkKeys(action.patch);
+      const next = canonicalNav(
+        keptFocus(
           state.nav,
           {
             ...state.nav,
@@ -25,13 +48,20 @@ export function reducer(state, action) {
             convId: action.convId,
             view: "chat",
             pane: "main",
+            // (The details panel belongs to the one conversation it was opened in.)
+            detailsOpen: false,
             // (A message to scroll to belongs to the conversation it was asked for.)
             focus: state.nav.focus?.convId === action.convId ? state.nav.focus : null,
             ...(action.patch || {}),
           },
           action.patch || {},
         ),
-      };
+      );
+      return { ...state, nav: { ...next, navIntent: intentOf(action, state.nav, next) } };
+    }
+    // A conversation I left on purpose: a Back onto its entry later says nothing (it is not a removal, and I know).
+    case "left":
+      return state.left?.includes(action.convId) ? state : { ...state, left: [...(state.left ?? []), action.convId] };
     case "toast":
       return { ...state, seq: state.seq + 1, toast: { id: state.seq + 1, text: action.text } };
     case "toast/clear":

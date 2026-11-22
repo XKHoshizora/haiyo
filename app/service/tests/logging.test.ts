@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { redactQuery } from "../src/app.ts";
+import { redactQuery, redactUrl } from "../src/app.ts";
 import { api, befriend, signUp } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -85,6 +85,39 @@ describe("request logging", () => {
     }
     // Nor anything of them in another encoding a log line could carry them in.
     for (const secret of [PERSONA, MESSAGE, REPLY]) expect(log).not.toContain(JSON.stringify(secret).slice(1, -1).slice(0, 20));
+  });
+
+  it("never writes a file name: the named download address is logged as its pattern", async () => {
+    const [a] = [await signUp(app, "carol")];
+    const id = "00000000-0000-4000-8000-0000000000aa";
+    const NAME = "体检报告-张三.pdf";
+    lines.length = 0;
+    await app.inject({ method: "GET", url: `/api/attachments/${id}/${encodeURIComponent(NAME)}`, headers: { cookie: a.cookie } });
+    await app.inject({ method: "HEAD", url: `/api/attachments/${id}/${encodeURIComponent(NAME)}?x=1`, headers: { cookie: a.cookie } });
+    const log = lines.join("");
+    for (const text of [NAME, encodeURIComponent(NAME), "体检报告", encodeURIComponent("体检报告")]) expect(log).not.toContain(text);
+    const urls = lines.map((l) => JSON.parse(l) as { req?: { url: string } }).flatMap((e) => (e.req ? [e.req.url] : []));
+    expect(urls).toContain(`/api/attachments/${id}/[name]`);
+    expect(urls).toContain(`/api/attachments/${id}/[name]?[redacted]`);
+  });
+
+  it("redactUrl: a name segment of the attachments route goes, everything else is as redactQuery leaves it", () => {
+    expect(redactUrl("/api/attachments/abc/%E4%BD%A0.png")).toBe("/api/attachments/abc/[name]");
+    expect(redactUrl("/api/attachments/abc/a%2Fb.png?x=1")).toBe("/api/attachments/abc/[name]?[redacted]");
+    expect(redactUrl("/api/attachments/abc")).toBe("/api/attachments/abc");
+    // With the route known, the last segment is the name however the path before it was written.
+    expect(redactUrl("/%61pi/attachments/abc/%E4%BD%A0.png", "/api/attachments/:id/:name")).toBe("/%61pi/attachments/abc/[name]");
+    expect(redactUrl("/api/attachments/abc/n.png?x=1", "/api/attachments/:id/:name")).toBe("/api/attachments/abc/[name]?[redacted]");
+    expect(redactUrl("/api/conversations/abc/messages")).toBe("/api/conversations/abc/messages");
+  });
+
+  it("every route with a path parameter takes an id or a number, except the attachment's name (the log redacts that one)", () => {
+    const params = new Set(app.routeList.flatMap((r) => [...r.url.matchAll(/:([A-Za-z]+)/g)].map((m) => m[1]!)));
+    expect([...params].sort()).toEqual(["changeId", "decision", "hearsayId", "id", "name", "noteId", "principalId", "proposalId", "runId", "seq", "verb"].filter((p) => params.has(p)));
+    // (decision and verb are fixed words, not user text; the rest are ids and a sequence number.)
+    expect(params.has("handle")).toBe(false);
+    // Only the attachments route has a :name, and it is the one the log redacts.
+    expect(app.routeList.filter((r) => r.url.includes(":name")).map((r) => r.url)).toEqual(["/api/attachments/:id/:name", "/api/attachments/:id/:name"]);
   });
 
   it("redactQuery keeps the path and drops everything after the first ?", () => {

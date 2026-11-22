@@ -2,7 +2,7 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { PRODUCT_NAME } from "../brand.js";
 import { BrandMark, Btn, Field, Notice, TextLink, focusInvalid } from "../ui/primitives.jsx";
 import { fieldOf, messageFor, verifyMessage } from "./errors.js";
-import { clearResetToken, navigate, takeResetToken } from "./router.js";
+import { clearResetToken, navigate, takeResetToken, takeReturn } from "./router.js";
 import * as rules from "./validation.js";
 
 function Link({ to, children, primary = false }) {
@@ -154,7 +154,7 @@ export function SignIn({ api, onSignedIn, expired }) {
       await api.signIn({ email: email.trim(), password, callbackURL: "/verify" });
       const me = await api.getMe();
       onSignedIn(me);
-      navigate("/", { replace: true });
+      navigate(takeReturn() ?? "/", { replace: true }); // (a page of the app that was asked for signed out comes first)
     },
   });
   return (

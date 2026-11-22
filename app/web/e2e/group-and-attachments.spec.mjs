@@ -47,11 +47,13 @@ test("spec §7.2: a group of three exchanges messages, an image and a file; host
     await chat.getByRole("button", { name: image.name, exact: true }).click();
     const viewer = who.page.getByRole("dialog", { name: image.name });
     await expect(viewer).toBeVisible();
-    const response = who.context.waitForEvent("response", (r) => /\/api\/attachments\/[0-9a-f-]+$/.test(r.url()));
+    const response = who.context.waitForEvent("response", (r) => /\/api\/attachments\/[0-9a-f-]+\/[^/]+$/.test(r.url()));
     const popup = who.page.waitForEvent("popup");
     await viewer.getByRole("link", { name: "在新标签页打开原图" }).click();
     const opened = await response;
     expect(opened.status()).toBe(200);
+    // (The address ends in the file's name: the tab is titled with it and saving gives it.)
+    expect(decodeURIComponent(opened.url().split("/").pop())).toBe(image.name);
     expect(opened.headers()["content-type"]).toBe("image/png");
     expect(Buffer.compare(await opened.body(), image.buffer), `${who.label} opened the same image bytes`).toBe(0);
     await (await popup).close();

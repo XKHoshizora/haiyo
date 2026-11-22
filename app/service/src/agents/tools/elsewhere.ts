@@ -5,11 +5,12 @@ import { inSearchBudget, searchRows, type SearchRow } from "../../messages/searc
 import type { Hub } from "../../sync/hub.ts";
 import { createWhisper, foundElsewhereAbout, mayTell, readableHits, roomForFoundElsewhere, whisperOfRun, type HitRow, type Whisper } from "../../whispers/store.ts";
 import { QUOTE_MAX_CHARS } from "../runtime/context.ts";
-import { cleanText, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/prompt.ts";
+import { cleanText, foldVertical, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/prompt.ts";
+import type { Mention } from "../../messages/model.ts";
 import { lockAgent } from "../store.ts";
 import { siteDateTime } from "./clock.ts";
 import type { ElsewhereAsk, RunScope } from "./index.ts";
-import { excerptAt, matchAt } from "./search.ts";
+import { ELLIPSIS, excerptWindow, matchAt, shownOf } from "./search.ts";
 
 /**
  * "Not in this group, but I have it elsewhere" (Task 8; design rules 17, 18, decision 9). A search of a reply in a group
@@ -53,6 +54,12 @@ export interface ElsewhereHit {
   who: string;
   when: string;
   text: string;
+  /**
+   * The message's mentions (as `WireMessage.mentions`: ranges of `text`, UTF-16 code units, ids of accounts), those that lie whole inside
+   * the cut `text`; the owner's web draws the current display name for each. To its owner only, like the hit itself; never in the told
+   * passage (`toldPassage` reads `when` and `text`). `[]` when none.
+   */
+  mentions: Mention[];
 }
 
 /**
@@ -200,13 +207,40 @@ export function askedOf(detail: unknown): number | null {
  */
 export function hitOf(row: HitRow, timeZone: string): ElsewhereHit {
   const { date, time } = siteDateTime(row.createdAt, timeZone);
-  const said = Array.from(excerptAt(hitLine(row.text), row.at)).slice(0, QUOTE_MAX_CHARS).join("");
+  const source = hitLine(row.text);
+  const window = excerptWindow(source, row.at);
+  const said = Array.from(shownOf(window)).slice(0, QUOTE_MAX_CHARS).join("");
   return {
     where: row.conversationType === "agent" ? OWN_PLACE : cleanText(row.title ?? "") || NO_GROUP_TITLE,
     who: labelName(row.senderName, row.senderHandle),
     when: `${date} ${time}`,
     text: said !== "" ? said : row.attachmentName ? cleanText(row.attachmentName) : "",
+    mentions: said === "" ? [] : mentionsInHit(source, window, said, row.mentions),
   };
+}
+
+/**
+ * The mentions of a hit's message that lie whole inside what the hit shows, moved to where they are in its `said`: through the one-line
+ * folding (a run of vertical space is one space, the ends trimmed), the window the excerpt cut (`excerptWindow`: the same numbers the
+ * text was cut by) and the ellipsis before it, then clipped to the characters kept (`QUOTE_MAX_CHARS`). A range cut by any of them is left out
+ * (that name shows as typed, as a mention of someone who cannot be named does).
+ */
+function mentionsInHit(source: string, window: { line: string; start: number; end: number; head: boolean }, said: string, mentions: Mention[] | null): Mention[] {
+  if (!mentions || mentions.length === 0) return [];
+  const folded = foldVertical(source);
+  const lead = folded.length - folded.trimStart().length;
+  const offset = window.head ? ELLIPSIS.length : 0;
+  const out: Mention[] = [];
+  for (const m of mentions) {
+    if (!Number.isSafeInteger(m.start) || !Number.isSafeInteger(m.length) || m.start < 0 || m.length < 1 || m.start + m.length > source.length) continue;
+    const from = foldVertical(source.slice(0, m.start)).length - lead;
+    const length = foldVertical(source.slice(m.start, m.start + m.length)).length;
+    if (from < window.start || from + length > window.end) continue;
+    const start = from - window.start + offset;
+    if (start + length > said.length) continue;
+    out.push({ id: m.id, start, length });
+  }
+  return out;
 }
 
 /** `text` with no `@` that would call someone (agents/mentions.ts's rule): `@mia_bot` → `mia_bot`. */

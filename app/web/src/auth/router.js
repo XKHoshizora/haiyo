@@ -77,6 +77,19 @@ export function navigate(path, { replace = false } = {}) {
   notify();
 }
 
+// ───────── where a signed-out visit was going
+let returnTo = null;
+/** A signed-out visit to a page of the app: its path is kept (in memory only) for after the sign-in. */
+export const rememberReturn = (path) => {
+  returnTo = path && path !== "/" ? path : null;
+};
+/** The path remembered by `rememberReturn`, once. */
+export function takeReturn() {
+  const path = returnTo;
+  returnTo = null;
+  return path;
+}
+
 // ───────── the reset token
 let captured = null;
 

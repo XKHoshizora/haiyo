@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
-import { entity, isAgent, nameOf, ownerOf, senderName } from "../state/selectors.js";
+import { drawnTextOf, entity, isAgent, nameOf, ownerOf, senderName } from "../state/selectors.js";
 import { PROPOSAL_ONLY } from "../data/viewmodel.js";
 import { Avatar, Btn, IconBtn, composing } from "../ui/primitives.jsx";
 import { useSendFiles } from "./useSendFiles.js";
 import { hasVisibleText, messageText } from "../auth/validation.js";
 import { MENTION_LIMIT, afterEdit, capped, caretOutside, mentionName, mentionSegments, mentionsIn, settleEdits, tagEndingAt, tagStartingAt, withoutAddressed, withoutStale } from "../data/mentions.js";
 import { Smile, Image, Paperclip, AtSign, X } from "../icons.js";
+import { useCoarsePointer } from "../ui/pointer.js";
 
 const EMOJI = {
   "表情": ["😀","😄","😁","😊","🥰","😍","🤩","😎","🤔","🤗","😂","🤣","🥹","😅","😉","😋","😴","😭","😮","😱","😤","🥳","🫡","🤖"],
@@ -57,6 +58,7 @@ const draftOf = (kept) => ({
  */
 export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThrough = null, note = null }) {
   const { state, actions } = useStore();
+  const touch = useCoarsePointer();
   const [draft, setDraftState] = useState(() => draftOf(state.drafts?.[conv.id]));
   const { text } = draft;
   /** The tags that are mentions (not what is left of one an IME composition cut into, `broken`). */
@@ -318,7 +320,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
   };
   const sendNote = tooLong ? `消息最多 ${TEXT_LIMIT} 字，当前 ${length} 字，请删减后再发送` : invisible ? "消息里没有看得见的文字，无法发送" : null;
   return <footer className="composer" ref={rootRef} onKeyDown={e=>{if(e.key==="Escape"){setEmojiOpen(false);setMention(null);}}}>
-    {replyTo && <div className="reply-chip"><span>回复 {senderName(state,replyTo.from)}：{replyTo.kind==="image"?"[图片]":replyTo.proposal&&!replyTo.text?PROPOSAL_ONLY:replyTo.text}</span><IconBtn label="取消回复" onClick={()=>setReplyTo(null)}><X size={14}/></IconBtn></div>}
+    {replyTo && <div className="reply-chip"><span>回复 {senderName(state,replyTo.from)}：{replyTo.kind==="image"?"[图片]":replyTo.proposal&&!replyTo.text?PROPOSAL_ONLY:drawnTextOf(state,replyTo)}</span><IconBtn label="取消回复" onClick={()=>setReplyTo(null)}><X size={14}/></IconBtn></div>}
     <div className="composer-tools">
       <div className="menu-anchor">
         <IconBtn label="表情" disabled={disabled} aria-expanded={emojiOpen} aria-controls="emoji-picker" onClick={()=>{setEmojiOpen(!emojiOpen);setMention(null);}}><Smile size={22}/></IconBtn>
@@ -344,7 +346,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
           onDoubleClick={()=>setHeight(64)}
           onKeyDown={e=>{if(["ArrowUp","ArrowDown","Home","End"].includes(e.key)){e.preventDefault();setHeight(e.key==="Home"?56:e.key==="End"?maxHeight():clampHeight(height+(e.key==="ArrowUp"?20:-20)));}}} />
         {mention && !disabled && <div className="mention-picker" id="mention-picker" role="listbox" aria-label="选择要提及的成员">
-          <div className="mention-heading">提及会话中的成员 <small>↑↓ 选择 · Enter 确认</small></div>
+          <div className="mention-heading">提及会话中的成员 {!touch && <small>↑↓ 选择 · Enter 确认</small>}</div>
           {full ? <p className="mention-empty">{MENTIONS_FULL_TEXT}</p> : !matches.length && <p className="mention-empty">没有匹配的成员</p>}
           {matches.map((id,i)=><button key={id} id={`mention-${id}`} role="option" aria-selected={i===selected} type="button" onMouseDown={e=>e.preventDefault()} onClick={()=>chooseMention(id)}>
             <Avatar id={id} size={28}/><span><strong>{nameOf(state,id)}</strong><small>{isAgent(state,id)?`${entity(state,id).handle} · Agent · 主人：${nameOf(state,ownerOf(state,id))}${state.agents[id].paused?" · 已暂停":""}`:"真人 · 会话成员"}</small></span>
@@ -354,7 +356,9 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
           {/* The tags, drawn behind the box's own text: the same text, transparent, with each tag's range as a tag. */}
           <div className="composer-mirror" ref={mirrorRef} aria-hidden="true">
             {tags.length > 0 && mentionSegments(text, tags).map((part, i) => part.mention ? <span key={i} className="mention-chip">{part.text}</span> : <React.Fragment key={i}>{part.text}</React.Fragment>)}
-            {"\u200b"}
+            {/* A textarea keeps a line for its caret after a final line break and a div does not: that line, and only then
+                (after a final space that hangs past the edge, the character would start a line the textarea does not have). */}
+            {text.endsWith("\n") && "\u200b"}
           </div>
           <textarea ref={inputRef} rows={1} value={text} style={{height}} disabled={disabled} placeholder={disabled?"当前无法发送新消息":"发送消息，或 @ 会话成员"} aria-label="消息内容" aria-autocomplete="list" aria-controls={mention?"mention-picker":undefined} aria-expanded={Boolean(mention)} aria-activedescendant={mention&&matches[selected]?`mention-${matches[selected]}`:undefined} aria-describedby={tags.length>0?tagsId:undefined}
             onChange={e=>{const kept=changed(e.target.value,e.nativeEvent?.inputType);const caret=kept===e.target.value?e.target.selectionStart:caretAfter.current;const end=kept===e.target.value?e.target.selectionEnd:caret;detect(kept,caret,end,current.current.tags);}}
@@ -373,7 +377,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
       <Btn variant="primary" className="send" disabled={disabled||!body||invisible||tooLong} reason={block?.text ?? sendNote} onClick={()=>send()}>发送</Btn>
     </div>
     {staleNote && <p className="composer-hint">{staleNote}</p>}
-    <p className="composer-hint">{disabled?block.text:sendNote?<span className="failed">{sendNote}</span>:"Enter 发送 · Shift+Enter 换行"}</p>
+    {(disabled || sendNote || !touch) && <p className="composer-hint">{disabled?block.text:sendNote?<span className="failed">{sendNote}</span>:"Enter 发送 · Shift+Enter 换行"}</p>}
     {note && <p className="composer-hint" role="status">{note}</p>}
   </footer>;
 }

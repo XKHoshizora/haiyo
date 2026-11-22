@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { groupErrorText } from "../data/errorTexts.js";
 import { groupTitle } from "../auth/validation.js";
@@ -95,7 +96,8 @@ function GroupSettings({ conv }) {
   const leave = async () => {
     const id = conv.id;
     setLeaving(false);
-    dispatch({ type: "nav", patch: { convId: null, view: "chat", detailsOpen: false } });
+    dispatch({ type: "left", convId: id });
+    dispatch({ type: "nav", replace: true, patch: { convId: null, view: "chat", detailsOpen: false } });
     const res = await run("leave", () => actions.leaveGroup(id), (e) => groupErrorText("leave", e));
     if (res.ok) dispatch({ type: "toast", text: "已退出群聊" });
     else dispatch({ type: "nav/openConv", convId: id, patch: { view: "profile", profileTab: "settings" } });
@@ -137,10 +139,11 @@ function GroupSettings({ conv }) {
 
 export function GroupProfile({ conv }) {
   const { state, dispatch } = useStore();
+  const up = useUp();
   const tab = state.nav.profileTab;
   return (
     <section className="page profile" aria-label="群资料">
-      <button type="button" className="back" onClick={() => dispatch({ type: "nav", patch: { view: "chat" } })}>
+      <button type="button" className="back" onClick={up}>
         <ChevronLeft size={20} aria-hidden="true" /> 返回群聊
       </button>
       <header className="profile-head">

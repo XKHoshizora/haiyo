@@ -1076,6 +1076,8 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     unblockPrincipal: (principalId) => call(() => api.unblockPrincipal(realId(principalId)), socialChanged(realId(principalId)), staleSocial),
     /** Asks for a full refresh (a conversation the screen expects is not held yet). */
     syncNow: () => request({ sync: true }),
+    /** 立即重试: the connection is tried again now instead of after its back-off. */
+    retryNow: () => request({ retryNow: true, sync: true }),
     // groups
     createGroup: (title, memberIds) =>
       call(() => api.createGroup({ title, memberIds: memberIds.map(realId) }), () => request({ sync: true })),

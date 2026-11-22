@@ -616,6 +616,34 @@ describe("leaving", () => {
     expect(toasts.seen).toEqual(["已退出群聊"]);
   });
 
+  it("after 退出群聊, Back three times: never a trap, the stack never grows, and no 「你已不在该会话中」 for a leave I chose", async () => {
+    const answer = deferred();
+    const removeMember = vi.fn(() => answer.promise);
+    const { transport } = await openApp({ sync: othersGroup, social: social(), api: { removeMember } });
+    await openProfile();
+    await leaveFlow();
+    await click(dialogButton("确认退出"));
+    await push(transport, { type: "gone", id: G1 });
+    await act(async () => answer.resolve({ ok: true }));
+    await flush();
+    const length = window.history.length;
+    let index = window.history.state.index;
+    const toasts = watchToasts();
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => {
+        window.history.back();
+        await vi.advanceTimersByTimeAsync(60);
+      });
+      expect(window.history.length).toBeLessThanOrEqual(length);
+      expect(window.history.state.index).toBeLessThanOrEqual(index);
+      index = window.history.state.index;
+    }
+    toasts.stop();
+    expect(index).toBe(0);
+    // (A leave I chose says nothing at all afterwards.)
+    expect(toasts.seen).toEqual([]);
+  });
+
   it("the creator is told who takes over: the earliest remaining member", async () => {
     await openApp({ sync: baseSync, social: social() });
     await openProfile();

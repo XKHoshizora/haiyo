@@ -1,14 +1,17 @@
-import React, { useMemo, useState } from "react";
+import React, { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
-import { isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
+import { drawnTextOf, isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
 import { formatSize, namesAgent, replyPoints } from "../data/viewmodel.js";
 import { useShowReplyPoints } from "../data/prefs.js";
 import { failureText, retryHopeless } from "../data/uploadErrors.js";
 import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
 import { FileCard } from "../ui/FileCard.jsx";
-import { useImageViewer } from "../ui/ImageViewer.jsx";
+import { thumbMaxWidth, thumbSize } from "../ui/thumbSize.js";
+import { useBubbleMenu } from "../ui/BubbleMenu.jsx";
+import { messageActions } from "./messageActions.js";
+import { GrowContext, useImageViewer } from "../ui/ImageViewer.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
 import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits.jsx";
@@ -23,10 +26,12 @@ function Quote({ quote }) {
   const { state } = useStore();
   if (!quote) return null;
   if (!quote.visible) return <blockquote>引用的消息不在你的可见范围内</blockquote>;
+  // The quoted words as the bubble draws them (a mention is @name): the wire sends the quoted message's mentions with its preview.
+  const words = quote.kind === "file" ? quote.attachmentName : drawnTextOf(state, { text: quote.text, mentions: quote.mentions ?? [], from: quote.from });
   return (
     <blockquote>
       <strong>{quote.from ? senderName(state, quote.from) : ""}</strong>
-      {quote.kind === "file" ? quote.attachmentName : quote.text}
+      {words}
     </blockquote>
   );
 }
@@ -55,15 +60,38 @@ function UnavailableCard({ name }) {
   );
 }
 
-/** A picture: only the picture (its file name is its accessible name); pressing it opens the viewer (ui/ImageViewer.jsx). */
+/**
+ * A picture: only the picture (its file name is its accessible name); pressing it opens the viewer (ui/ImageViewer.jsx). It is
+ * drawn in its own shape inside a box (ui/thumbSize.js; only an extreme shape is cut, from the middle). The wire carries no
+ * width and height, so the box is reserved from the picture's natural size as soon as it is known (at once for a cached one);
+ * until then the placeholder (3:2, styles.css) holds the place.
+ */
 function ImageBody({ msg }) {
   const [broken, setBroken] = useState(false);
+  const [box, setBox] = useState(null);
+  const img = useRef(null);
   const viewer = useImageViewer();
+  const grew = useContext(GrowContext);
+  const measure = (node) => setBox(thumbSize({ width: node.naturalWidth, height: node.naturalHeight }, { maxWidth: thumbMaxWidth(window.innerWidth) }));
+  useLayoutEffect(() => {
+    if (img.current?.complete && img.current.naturalWidth) measure(img.current);
+  }, [msg.src]);
+  // (The box is its final size now: a list that was at its newest message stays there; scrolled up, nothing moves.)
+  useLayoutEffect(() => {
+    if (box) grew?.();
+  }, [box?.width, box?.height]);
   if (broken) return <UnavailableCard name={msg.text} />;
   return (
-    <figure className="attachment-image">
-      <button type="button" className="image-open" aria-haspopup="dialog" data-image={msg.id} onClick={(e) => viewer.open(msg.id, e.currentTarget)}>
-        <img src={msg.src} alt={msg.text} loading="lazy" onError={() => setBroken(true)} />
+    <figure className="attachment-image" data-sized={box ? "" : undefined} style={box ? { width: box.width } : undefined}>
+      <button
+        type="button"
+        className="image-open"
+        aria-haspopup="dialog"
+        data-image={msg.id}
+        style={box ? { aspectRatio: `${box.width} / ${box.height}` } : undefined}
+        onClick={(e) => viewer.open(msg.id, e.currentTarget)}
+      >
+        <img ref={img} src={msg.src} alt={msg.text} loading="lazy" onLoad={(e) => measure(e.currentTarget)} onError={() => setBroken(true)} />
       </button>
     </figure>
   );
@@ -149,6 +177,8 @@ function ReplyVia({ via, agentId = null }) {
 /** One message of `conv`; `onJump(conversationId, seq)`: the chat's jump (to a message an Agent's reply found). */
 export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
   const { state, dispatch, actions } = useStore();
+  // The menu of a bubble (long-press, right-click, the context-menu key): ui/BubbleMenu.jsx.
+  const bubbleMenu = useBubbleMenu(() => messageActions({ state, dispatch, msg, onReply }));
   // A notice of an event this client does not know shows nothing.
   if (msg.hidden) return null;
   if (msg.kind === "system") {
@@ -193,7 +223,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
   return (
     <li className={`msg ${mine ? "mine" : "theirs"}${flash ? " flash" : ""}`} data-msg={msg.id}>
       <Avatar id={msg.from} size={40} />
-      <div className="msg-main">
+      <div className="msg-main" {...bubbleMenu.bind}>
         <div className="msg-meta">
           {/* My own (right-aligned) messages read time then name, so the name stays next to the avatar. */}
           {mine && stamp}
@@ -262,12 +292,13 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
           )}
           {mine && msg.notCalled && <span className="muted">{msg.notCalled}</span>}
           {(msg.kind === "text" || msg.kind === "image") && msg.seq !== null && msg.status !== "failed" && msg.status !== "sending" && (
-            <button type="button" className="msg-action" onClick={() => onReply(msg)}>
+            <button type="button" className="msg-action" aria-keyshortcuts="Shift+F10" onClick={() => onReply(msg)}>
               <Reply size={15} aria-hidden="true" /> 回复
             </button>
           )}
         </div>
       </div>
+      {bubbleMenu.element}
     </li>
   );
 }

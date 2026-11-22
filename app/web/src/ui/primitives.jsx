@@ -1,4 +1,4 @@
-import React, { useId, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { X, Info, CircleAlert, CircleCheck, CirclePause } from "../icons.js";
 import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
@@ -137,6 +137,23 @@ export function Modal({ title, onClose, children, footer, wide }) {
   const ref = useRef(null);
   const titleId = useId();
   useDialogFocus(ref, { onClose });
+  // A dialog is not an address: when Back or Forward arrives (a popstate) it closes, and leaves no entry behind.
+  const closing = useRef(onClose);
+  closing.current = onClose;
+  useEffect(() => {
+    const leave = () => closing.current?.();
+    // Nor does a dialog outlive the page it belongs to: when the layout no longer draws that page (a wide window narrowed to one column
+    // while a dialog of the page beside the list was open), it is not left mounted and unseen.
+    const lost = () => {
+      if (ref.current && ref.current.getClientRects().length === 0) closing.current?.();
+    };
+    window.addEventListener("popstate", leave);
+    window.addEventListener("resize", lost);
+    return () => {
+      window.removeEventListener("popstate", leave);
+      window.removeEventListener("resize", lost);
+    };
+  }, []);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref}>
@@ -150,6 +167,26 @@ export function Modal({ title, onClose, children, footer, wide }) {
         {footer && <footer className="modal-foot">{footer}</footer>}
       </div>
     </div>
+  );
+}
+
+/**
+ * The line of a list that is not loaded yet: loading until the first sync has answered; once the connection has failed (it retries by itself,
+ * with a back-off), the failure and a retry, never 「正在读取…」 for ever.
+ */
+export function LoadingRow() {
+  const { state, actions } = useStore();
+  const failing = state.connectionFailed === true;
+  return (
+    <li className="rows-empty" role="status">
+      {failing ? (
+        <>
+          连不上服务，正在重试… <Btn small onClick={() => actions.retryNow()}>立即重试</Btn>
+        </>
+      ) : (
+        "正在读取…"
+      )}
+    </li>
   );
 }
 

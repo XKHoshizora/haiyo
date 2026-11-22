@@ -1,5 +1,6 @@
 import { ME } from "../data/identities.js";
 import { previewOfMarkdown } from "../ui/markdownPreview.js";
+import { drawnText } from "../ui/drawnText.js";
 import { PROPOSAL_ONLY } from "../data/viewmodel.js";
 
 export const entity = (state, id) => state.people[id] || state.agents[id] || null;
@@ -60,6 +61,17 @@ export function publishBlock(state, conv) {
   return conv.hold ?? null;
 }
 
+/** Who an id means in text the wire gives (a message, a quote, a whisper hit: ids as the service sends them, mine included): the entity, as the page knows it. */
+const knownByWire = (state) => (id) => entity(state, id === state.account?.id ? ME : id);
+
+/**
+ * A message's words in the form they are drawn (ui/drawnText.js): the one function of the quote under a reply, the reply chip, the chat
+ * list's line, the copied text and a whisper's hit. `msg`: `{text, mentions, from}` (a quote's own `from` is the sender too); a text
+ * that is not a message (a hit, what a model found) has no `from` and sets `agentText: true` to be drawn as an Agent's is.
+ */
+export const drawnTextOf = (state, msg) =>
+  drawnText({ text: msg.text, mentions: msg.mentions, fromAgent: msg.agentText === true || (msg.from !== ME && isAgent(state, msg.from)), known: knownByWire(state) });
+
 /**
  * The chat list's one line for a conversation: its newest message — never an Agent's acknowledgement (`ack`: the answer
  * after it is). An Agent's text is Markdown: its markers are taken out (ui/markdownPreview.js); a person's text is shown
@@ -70,7 +82,9 @@ export function lastPreview(state, conv) {
   const shown = conv.messages.filter((x) => !x.hidden && !x.ack);
   const last = [...shown].reverse().find((x) => x.kind !== "system") || shown[shown.length - 1];
   if (!last) return "暂无消息";
-  let body = last.kind !== "system" && isAgent(state, last.from) && typeof last.text === "string" ? previewOfMarkdown(last.text) : last.text;
+  // (Its words as drawn, a mention as @name; an Agent's text is Markdown: its markers are taken out too.)
+  const drawn = last.kind !== "system" && typeof last.text === "string" ? drawnTextOf(state, last) : last.text;
+  let body = last.kind !== "system" && isAgent(state, last.from) && typeof drawn === "string" ? previewOfMarkdown(drawn) : drawn;
   if (last.kind === "image") body = "[图片]";
   if (last.kind === "file") body = "[文件]";
   // A reply that is only a persona proposal has no text of its own.

@@ -66,6 +66,8 @@ function quoteView(replyTo, alias, proposalAt = () => false) {
     text: replyTo.text || ((replyTo.kind ?? "text") === "text" && proposalAt(replyTo.seq) ? PROPOSAL_ONLY : replyTo.text ?? ""),
     kind: replyTo.kind ?? "text",
     attachmentName: replyTo.attachmentName ?? null,
+    // The quoted message's mentions that lie inside the preview (the wire sends them, to whoever may see the quote), for the one drawn-text function.
+    mentions: mentionsIn(replyTo.text ?? "", replyTo.mentions).map((x) => ({ ...x, id: alias(x.id) })),
   };
 }
 
@@ -1012,6 +1014,8 @@ export function searchHitView(m, { meId, now }) {
     from: m.senderId === null || m.senderId === undefined ? null : m.senderId === meId ? ME : m.senderId,
     file: Boolean(attachment),
     text,
+    // (Its stored mentions, so that the list can draw the words as the bubble does: a mention is @name, not the handle typed.)
+    mentions: attachment ? [] : mentionsIn(m.text ?? "", m.mentions).map((x) => ({ ...x, id: x.id === meId ? ME : x.id })),
     at: formatAt(timeOf(m.createdAt), now),
   };
 }

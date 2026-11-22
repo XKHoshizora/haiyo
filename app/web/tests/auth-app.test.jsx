@@ -4,7 +4,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act, cleanup, configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ApiError, request, setUnauthenticatedHandler } from "../src/api/http.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
-import { clearResetToken } from "../src/auth/router.js";
+import { clearResetToken, takeReturn } from "../src/auth/router.js";
+import { draftKeys, peekDraft, saveDraft } from "../src/data/drafts.js";
 import { StoreProvider, emptyState } from "../src/data/store.jsx";
 import { SettingsMain } from "../src/pages/Settings.jsx";
 
@@ -170,6 +171,19 @@ describe("sign-in", () => {
     expect(api.signIn).toHaveBeenCalledWith({ email: "ann@x.com", password: "correct horse", callbackURL: "/verify" });
     expect(place()).toBe("/");
     expect(layers[0].start).toHaveBeenCalledTimes(1);
+  });
+
+  it("a link to a page of the app, opened signed out, is that page after signing in (not the list)", async () => {
+    const api = signInApi();
+    at("/chat/00000000-0000-4000-8000-0000000000c1");
+    mount(api);
+    await screen.findByRole("button", { name: "登录" });
+    expect(place()).toBe("/signin");
+    typeInto("邮箱", "ann@x.com");
+    typeInto("密码", "correct horse");
+    submit("登录");
+    await screen.findByTestId("app");
+    expect(place()).toBe("/chat/00000000-0000-4000-8000-0000000000c1");
   });
 
   it.each([
@@ -438,6 +452,25 @@ describe("session lifecycle", () => {
     expect(layers[0].stop).toHaveBeenCalledTimes(1);
     expect(place()).toBe("/signin");
     expect(screen.queryByText(EXPIRED_NOTICE)).toBeNull();
+  });
+
+  it("sign-out forgets what was typed in a form (a provider's API key) at once: no draft, no reference, until the next shell", async () => {
+    saveDraft("new", { f: { name: "x" }, models: [], keyText: "sk-secret-1234567890" });
+    const api = fakeApi();
+    mount(api, () => <SignOutProbe />);
+    fireEvent.click(await screen.findByText("probe-sign-out"));
+    await screen.findByRole("button", { name: "登录" });
+    expect(draftKeys()).toEqual([]);
+    expect(peekDraft("new")).toBeNull();
+  });
+
+  it("a sign-out does not hand this account's page to whoever signs in next", async () => {
+    at("/chat/00000000-0000-4000-8000-0000000000c1");
+    const api = fakeApi();
+    mount(api, () => <SignOutProbe />);
+    fireEvent.click(await screen.findByText("probe-sign-out"));
+    await screen.findByRole("button", { name: "登录" });
+    expect(takeReturn()).toBeNull();
   });
 
   it("the 4001 close the service sends on sign-out, arriving before the answer, is not an expiry", async () => {

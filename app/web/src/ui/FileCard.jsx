@@ -1,7 +1,7 @@
-import React from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import { formatSize } from "../data/viewmodel.js";
 import { Download, File, FileArchive, FileAudio, FileCode, FileImage, FileSpreadsheet, FileText, FileVideo, Presentation } from "../icons.js";
-import { fileKind, splitFileName } from "./fileKind.js";
+import { elideHead, fileKind, splitFileName } from "./fileKind.js";
 
 /** The icon of each kind of file (ui/fileKind.js), each in its own colour from the app's variables (styles.css `.file-icon-*`). */
 const ICONS = {
@@ -17,16 +17,48 @@ const ICONS = {
   other: File,
 };
 
+/** The width of `text` in the font of `node`, by a canvas (null where there is none, so nothing is measured). */
+let measuring;
+function textMeter(node) {
+  // (One canvas for every card and every resize.)
+  measuring ??= document.createElement("canvas").getContext?.("2d") ?? false;
+  const context = measuring;
+  if (!context) return null;
+  const style = getComputedStyle(node);
+  context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  return (text) => context.measureText(text).width;
+}
+
 /**
  * A file's name with its middle left out when the card is too narrow for it: the head gives way with "…", the tail —
- * the extension and a little before it — stays. The two parts read as one name (`title` has all of it).
+ * the extension and a few characters before it — stays. The head is cut where the box ends (measured, `elideHead`), so the
+ * "…" stands against the tail with no gap; the stylesheet's own cut is what remains where nothing can be measured. The two
+ * parts read as one name (`title` has all of it).
  */
 export function FileName({ name }) {
   const { head, tail } = splitFileName(name);
+  const box = useRef(null);
+  const [shown, setShown] = useState(null);
+  useLayoutEffect(() => {
+    const node = box.current;
+    if (!node || typeof ResizeObserver !== "function") return undefined;
+    const fit = () => {
+      const measure = textMeter(node);
+      const width = node.getBoundingClientRect().width;
+      setShown(measure && width > 0 ? elideHead({ head, tail, width: width - 1, measure }) : null);
+    };
+    fit();
+    const watch = new ResizeObserver(fit);
+    watch.observe(node);
+    return () => watch.disconnect();
+  }, [head, tail]);
+  // Cut short on screen: the drawn parts are for the eye, and the whole name stays in the page for a screen reader, a search and a copy.
+  const cut = shown !== null && shown !== head;
   return (
-    <strong className="file-name" title={name}>
-      <span className="file-name-head">{head}</span>
-      <span className="file-name-tail">{tail}</span>
+    <strong className="file-name" title={name} ref={box}>
+      <span className="file-name-head" aria-hidden={cut || undefined}>{cut ? shown : head}</span>
+      <span className="file-name-tail" aria-hidden={cut || undefined}>{tail}</span>
+      {cut && <span className="sr-only">{name}</span>}
     </strong>
   );
 }

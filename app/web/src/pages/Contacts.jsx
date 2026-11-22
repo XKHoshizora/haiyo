@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { friendErrorText } from "../data/errorTexts.js";
 import { expiryText } from "../data/viewmodel.js";
@@ -15,7 +16,7 @@ import {
   requestWith,
   relationOf,
 } from "../state/social.js";
-import { Avatar, Tag, Btn, IconBtn, Modal, Notice, Reason, KV } from "../ui/primitives.jsx";
+import { Avatar, LoadingRow, Tag, Btn, IconBtn, Modal, Notice, Reason, KV } from "../ui/primitives.jsx";
 import { ListHeader, SearchBox } from "./ChatList.jsx";
 import { BlockModal } from "./BlockModal.jsx";
 import { AddFriendModal } from "./AddFriendModal.jsx";
@@ -117,7 +118,10 @@ export function ContactsList() {
             </button>
           </li>
         ))}
-        {requests.length === 0 && friends.length === 0 && agents.length === 0 && (
+        {requests.length === 0 && friends.length === 0 && agents.length === 0 && !state.loaded && !query.trim() && (
+          <LoadingRow />
+        )}
+        {requests.length === 0 && friends.length === 0 && agents.length === 0 && (state.loaded || query.trim()) && (
           <li className="rows-empty">{nothing && !query.trim() ? "还没有联系人，点右上角的按钮添加好友" : "没有找到匹配的联系人"}</li>
         )}
       </ul>
@@ -128,6 +132,7 @@ export function ContactsList() {
 
 export function ContactCard() {
   const { state, dispatch, actions } = useStore();
+  const up = useUp();
   const id = state.nav.contactId;
   const who = entity(state, id);
   const { busy, run } = useAction();
@@ -159,7 +164,7 @@ export function ContactCard() {
 
   return (
     <section className="page" aria-label="联系人卡片">
-      <button type="button" className="back only-mobile" onClick={() => dispatch({ type: "nav", patch: { pane: "list" } })}>
+      <button type="button" className="back only-mobile" onClick={up}>
         <ChevronLeft size={20} aria-hidden="true" /> 返回通讯录
       </button>
       <header className="profile-head">

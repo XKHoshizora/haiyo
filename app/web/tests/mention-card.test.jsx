@@ -140,6 +140,17 @@ describe("what a mention shows", () => {
 });
 
 describe("the card", () => {
+  it("a touch is not a hover: the mouse events a phone emulates after a finger go (the first tap is the tap's own)", async () => {
+    await openApp();
+    const bo = tags()[0];
+    fireEvent.touchStart(bo);
+    fireEvent.mouseEnter(bo); // what iOS fires after a touch
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(card()).toBeNull();
+    fireEvent.click(bo); // the tap itself opens it at once
+    expect(card()).not.toBeNull();
+  });
+
   it("hovering a person opens it after a moment: avatar, display name, kind, account name — and it leaves with the pointer", async () => {
     await openApp();
     const bo = tags()[0];
