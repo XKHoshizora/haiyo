@@ -55,7 +55,9 @@ const ELSEWHERE_LABEL = "群里没找到时悄悄告诉我";
 const ELSEWHERE_HELPER = "它在别处查到了，会先悄悄问你要不要告诉大家。";
 /** 联网搜索 (`webSearch`, on unless the record says off): shown only while the site offers web search (`webSearchAvailable`). */
 const WEB_LABEL = "联网搜索";
-const WEB_HELPER = "搜索词会发给外部的搜索服务。";
+const WEB_WORDS = "搜索词会发给外部的搜索服务。";
+/** The line under 联网搜索 (the product owner's words): the price the service gives (`webSearchPoints`), then where the words go. */
+const webHelper = (points) => (typeof points === "string" && /^\d{1,9}(\.\d)?$/.test(points) ? `联网搜索由站点提供，每次约 ${points} 点，先用每日免费额度。${WEB_WORDS}` : WEB_WORDS);
 // A budget's amount, either of them, as the service takes it.
 const BUDGET_MIN = 1;
 const BUDGET_MAX = 100000;
@@ -685,7 +687,7 @@ export function AgentForm({ agent = null }) {
         </div>
         {webOffered && (
           <div className="field">
-            <Switch checked={f.webSearch} onChange={setSwitch("webSearch")} label={WEB_LABEL} hint={WEB_HELPER} hintClass="field-hint" />
+            <Switch checked={f.webSearch} onChange={setSwitch("webSearch")} label={WEB_LABEL} hint={webHelper(state.webSearchPoints)} hintClass="field-hint" />
           </div>
         )}
         <fieldset className="form-section">

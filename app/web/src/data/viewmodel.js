@@ -748,6 +748,10 @@ function usageView(u) {
     free: u.free ? { ...u.free, allowanceText: formatPoints(u.free.allowance), usedText: formatPoints(u.free.used) } : null,
     memory: u.memory ? { ...u.memory, allowanceText: formatPoints(u.memory.allowance), usedText: formatPoints(u.memory.used) } : null,
     recent: (Array.isArray(u.recent) ? u.recent : []).map((r) => ({ ...r, pointsText: formatPoints(r.points) })),
+    // Web searches, a line of their own per Agent (lane websearch2): only entries with a count above 0.
+    recentWeb: (Array.isArray(u.recentWeb) ? u.recentWeb : [])
+      .filter((w) => w && typeof w === "object" && isCountAbove0(w.searches) && typeof w.points === "string")
+      .map((w) => ({ agentId: typeof w.agentId === "string" ? w.agentId : null, searches: w.searches, pointsText: formatPoints(w.points) })),
   };
 }
 
@@ -943,6 +947,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     proactiveAvailable: typeof model.proactiveAvailable === "boolean" ? model.proactiveAvailable : null,
     // Whether the site offers web search (`GET /api/models` `webSearchAvailable`): the Agent form shows 联网搜索 only then.
     webSearchAvailable: model.webSearchAvailable === true,
+    // About what one search costs, in points (`GET /api/models` `webSearchPoints`), for the form's line; null: not said.
+    webSearchPoints: typeof model.webSearchPoints === "string" ? model.webSearchPoints : null,
     /** {days, lines}: how far back turning an Agent's memory on again looks, as the site says; null when not said. */
     memoryCatchUp: model.memoryCatchUp ?? null,
     /** principal id (the real one, mine too) → the version in its avatar URL; for an avatar of someone nobody names. */

@@ -2340,8 +2340,9 @@ describe("群里没找到时悄悄告诉我", () => {
 
 describe("联网搜索 (only while the site offers web search)", () => {
   const LABEL = "联网搜索";
-  const HELPER = "搜索词会发给外部的搜索服务。";
-  const ON_SITE = { ...MODELS, webSearchAvailable: true };
+  // The product owner's line (lane websearch2), its price from the service's `webSearchPoints`.
+  const HELPER = "联网搜索由站点提供，每次约 0.8 点，先用每日免费额度。搜索词会发给外部的搜索服务。";
+  const ON_SITE = { ...MODELS, webSearchAvailable: true, webSearchPoints: "0.8" };
   const sw = () => inMain().queryByLabelText(LABEL);
   const save = () => click(inMain().getByRole("button", { name: "保存" }));
   const openEditOf = async (fields = {}, models = ON_SITE) => {
@@ -2390,5 +2391,13 @@ describe("联网搜索 (only while the site offers web search)", () => {
     expect((await createOn(ON_SITE)).mock.calls[0][0]).not.toHaveProperty("webSearch");
     cleanup();
     expect((await createOn(ON_SITE, () => fireEvent.click(sw()))).mock.calls[0][0]).toMatchObject({ webSearch: false });
+  });
+
+  it("its line says the price the service gives (13 for Exa's default), and without one says only where the words go", async () => {
+    await openEditOf({ webSearch: true }, { ...MODELS, webSearchAvailable: true, webSearchPoints: "13" });
+    expect(inMain().getByText("联网搜索由站点提供，每次约 13 点，先用每日免费额度。搜索词会发给外部的搜索服务。").id).toBe(sw().getAttribute("aria-describedby"));
+    cleanup();
+    await openEditOf({ webSearch: true }, { ...MODELS, webSearchAvailable: true, webSearchPoints: "<b>1</b>" });
+    expect(inMain().getByText("搜索词会发给外部的搜索服务。").id).toBe(sw().getAttribute("aria-describedby"));
   });
 });
