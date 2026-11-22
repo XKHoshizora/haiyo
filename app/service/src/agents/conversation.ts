@@ -218,7 +218,10 @@ export interface AgentReply extends LookupFields {
  * before anything reads it (agents/tools/refs.ts `takeCites`), whatever the run handed out, so the text is the same
  * whatever it found: those of its text of a number the run gave become its citations, places in its text carried through
  * every step below (refs.ts `Placed`: a cut takes the ones past it, a block the ones in it), so that no proposal, block or
- * cut ever holds one. An acknowledgement cites nothing.
+ * cut ever holds one. An acknowledgement cites nothing. One exception, read from the text alone: a reply (not an
+ * acknowledgement, no proposal) that would be left with no visible text once its token-shaped strings are out — it wrote
+ * nothing else: a number someone typed, copied as they asked — keeps what it wrote, through the same steps but with its
+ * tokens, as plain text citing nothing; else it would not be posted at all.
  *
  * In the Agent's own conversation: the text follows the rules of message text (`cleanModelText`: what a send would
  * refuse is removed); a persona proposal in it (`parseProposalBlock`: the reply's text only, never its reasoning) is
@@ -313,33 +316,47 @@ export async function postAsAgent(
   // `Placed`).
   const refs = reply.refs ?? null;
   const here = (r: MessageRef): boolean => own || r.conversationId === conversationId;
-  let placed: Placed = refs ? takeCites(cleanModelText(reply.text), refs, { cite: !ack, keep: here }) : { text: cleanModelText(reply.text), cites: [] };
+  const said: Placed = refs ? takeCites(cleanModelText(reply.text), refs, { cite: !ack, keep: here }) : { text: cleanModelText(reply.text), cites: [] };
   let reasoning = refs ? takeCites(cleanModelText(reply.reasoning), refs, { cite: false }).text : cleanModelText(reply.reasoning);
   const searched = refs && Array.isArray(reply.queries) ? reply.queries.map((q) => (typeof q === "string" ? takeCites(q, refs, { cite: false }).text : q)) : reply.queries;
   // In a group nothing is a proposal, and no block of one is shown; nor in an acknowledgement.
-  const proposal = own && !ack ? parseProposalBlock(placed.text) : null;
-  if (!own || ack) placed = withoutUnfinishedBlockPlaced(placed);
+  const proposal = own && !ack ? parseProposalBlock(said.text) : null;
   const proposalId = proposal ? randomUUID() : null;
-  if (proposal) placed = hasVisibleText(proposal.visible) ? withoutProposalPlaced(placed, proposal.visible) : { text: "", cites: [] };
-  let truncated = reply.truncated;
-  const characters = Array.from(placed.text);
-  if (characters.length > MESSAGE_TEXT_MAX) {
-    placed = trimPlaced(cutPlaced(placed, characters.slice(0, MESSAGE_TEXT_MAX).join("").length));
-    truncated = true;
+  /**
+   * What is kept of the text `p`, step by step: in a group and in an acknowledgement no block; its proposal's block taken
+   * out; cut at `MESSAGE_TEXT_MAX` (which makes it `truncated`); a stopped or cut reply without its unfinished block; then,
+   * in a group, the run's mark last, from no more than is kept — from the end of what was cut for length also what the
+   * cut left of the mark or of a label — and, with `tokens` (a reply offered tools), every token shape in the same one
+   * pass, so that neither taking out puts the other together (N-2, N-4); then a block that it put together.
+   */
+  const kept = (p: Placed, tokens: boolean): { placed: Placed; truncated: boolean } => {
+    let out = !own || ack ? withoutUnfinishedBlockPlaced(p) : p;
+    if (proposal) out = hasVisibleText(proposal.visible) ? withoutProposalPlaced(out, proposal.visible) : { text: "", cites: [] };
+    let cut = reply.truncated;
+    const characters = Array.from(out.text);
+    if (characters.length > MESSAGE_TEXT_MAX) {
+      out = trimPlaced(cutPlaced(out, characters.slice(0, MESSAGE_TEXT_MAX).join("").length));
+      cut = true;
+    }
+    if (!proposal && (reply.stopped || cut)) out = withoutUnfinishedBlockPlaced(out);
+    if (mark !== null) out = withoutUnfinishedBlockPlaced(trimPlaced(withoutMarkFrom(out, mark, cut, tokens, refs?.webOffered === true)));
+    return { placed: out, truncated: cut };
+  };
+  let { placed, truncated } = kept(said, refs !== null);
+  // A reply offered tools that wrote nothing but token-shaped strings — a number someone typed, copied as they asked; its
+  // numbers alone — would be left with nothing to show, and nothing would be posted (lane prompt2: the third ask with no
+  // reply). It keeps what it wrote instead, as plain text citing nothing. Whether it does is read from its text alone,
+  // never from what the run handed out, so the text is still the same whatever it found.
+  if (refs !== null && !ack && proposalId === null && !hasVisibleText(placed.text)) {
+    const asWritten = kept(trimPlaced({ text: cleanModelText(reply.text), cites: [] }), false);
+    if (hasVisibleText(asWritten.placed.text)) ({ placed, truncated } = asWritten);
   }
-  if (!proposal && (reply.stopped || truncated)) placed = withoutUnfinishedBlockPlaced(placed);
   // Kept as in its own conversation; in a group only its owner is ever sent it (messages/read.ts).
   const thought = Array.from(reasoning);
   if (thought.length > REASONING_MAX) reasoning = thought.slice(0, REASONING_MAX).join("").trimEnd();
-  // In a group the run's mark goes last, from no more than is kept — from the end of what was cut for length also what
-  // the cut left of the mark or of a label — and, from a reply offered tools, every token shape in the same one pass, so
-  // that neither taking out puts the other together (N-2, N-4); then a block that it put together.
+  // In a group the run's mark goes from it too, as from the text (`kept`).
   const thoughtCut = reply.truncated || thought.length > REASONING_MAX;
-  if (mark !== null) {
-    placed = trimPlaced(withoutMarkFrom(placed, mark, truncated, refs !== null, refs?.webOffered === true));
-    placed = withoutUnfinishedBlockPlaced(placed);
-    reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut, refs !== null, refs?.webOffered === true).text.trim();
-  }
+  if (mark !== null) reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut, refs !== null, refs?.webOffered === true).text.trim();
   const text = placed.text;
   // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted. In its own
   // conversation a proposal is something to show (its card), with no text.
