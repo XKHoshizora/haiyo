@@ -34,6 +34,8 @@ async function signUp(page, identity) {
   await page.getByLabel("密码", { exact: true }).fill(identity.password);
   await page.getByLabel("昵称").fill(identity.displayName);
   await page.getByLabel("账号名").fill(identity.handle);
+  await page.getByRole("checkbox", { name: "我已年满 18 岁" }).check();
+  await page.getByRole("checkbox", { name: "我已阅读并同意《服务条款》和《隐私政策》" }).check();
   await page.getByRole("button", { name: "注册", exact: true }).click();
   await expectMailPage(page, "验证邮箱", "验证链接");
 

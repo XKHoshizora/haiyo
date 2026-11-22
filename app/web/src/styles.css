@@ -1066,8 +1066,10 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 }
 /* Settings › 关于: rows that are links (a new tab), looking like the buttons around them. */
 .rows a.row { color: inherit; text-decoration: none; }
-.check-field .check { align-items: flex-start; font-size: 14px; line-height: 1.5; cursor: pointer; }
-.check-field .check input { margin-top: 1px; }
+.check-field .check { align-items: flex-start; font-size: 15px; font-weight: 400; line-height: 1.5; cursor: pointer; }
+.check-field .check input { margin-top: 2px; }
+/* What a box needs, or what it means, under its sentence (past the box and its gap). */
+.check-field > .field-hint, .check-field > .field-msg { padding-left: 28px; }
 /* A link inside the sentence of a box reads as part of it (an inline link: its line is its target). */
 .check-field .text-link { display: inline; min-height: 0; padding: 0; margin: 0; font-size: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .legal-page {
@@ -1095,6 +1097,8 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 /* The owner's blanks ({{…}} in the text files) stand out until they are filled in. */
 .legal-todo { padding: 1px 4px; border-radius: 4px; background: #fff1c2; color: #5f4500; }
 .legal-nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px 20px; padding: 14px 0 4px; }
+/* Japanese in Japanese letterforms: the app's own stack starts with Chinese fonts. */
+.legal-page :lang(ja) { font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Yu Gothic", Meiryo, "Noto Sans JP", system-ui, sans-serif; }
 @media (max-width: 480px) {
   .legal-doc { padding: 20px 16px 24px; border-radius: 14px; }
   .legal-doc h1 { font-size: 23px; }
