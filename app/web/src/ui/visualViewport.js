@@ -66,9 +66,14 @@ export function useVisibleLayer(ref) {
     apply();
     vv.addEventListener("resize", apply);
     vv.addEventListener("scroll", apply);
+    // A rotation changes the window itself: its own events recompute too (the visual viewport's may come after, or not at all).
+    window.addEventListener("resize", apply);
+    window.addEventListener("orientationchange", apply);
     return () => {
       vv.removeEventListener("resize", apply);
       vv.removeEventListener("scroll", apply);
+      window.removeEventListener("resize", apply);
+      window.removeEventListener("orientationchange", apply);
     };
   }, [ref]);
 }

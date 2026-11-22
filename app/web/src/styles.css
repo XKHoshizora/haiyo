@@ -82,7 +82,7 @@ button:disabled { cursor: not-allowed; }
 }
 /* The home indicator's room is the containers' own — the scrollers' bottom padding, a chat's composer, the rail's foot — at every width, once (never the
    shell's: a shell padded at the bottom cuts every page at a hard edge over an empty band). With the tab bar below the list, the bar has it. */
-.app:not([data-tabbar="on"]) .rows { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+.app:not([data-tabbar="on"]) .list-col > .rows { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 .rail {
   width: var(--rail); flex: none; display: flex; flex-direction: column; align-items: center; gap: 14px;
   padding: 18px 0 14px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); border-right: 1px solid var(--line); background: rgba(255, 255, 255, 0.28);

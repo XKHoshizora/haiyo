@@ -172,6 +172,14 @@ describe("the header and the list row", () => {
     expect(document.querySelector(".rail .badge")).toBeNull();
   });
 
+  it("the chip 已删除 and the quiet row come from one source, the conversation's sync entry: a record that says deleted while the entry does not changes neither", async () => {
+    await openAgentChat({ agent: { deleted: true }, conv: { unread: 2, agent: { deleted: false }, canSend: { ok: true } } });
+    const row = screen.getByText("小助手", { selector: ".list-col .row-name" }).closest("button");
+    expect([...row.querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["Agent"]);
+    expect(row.classList.contains("quiet")).toBe(false);
+    expect(row.querySelector(".badge")).not.toBeNull();
+  });
+
   it("an Agent's message carries the Agent tag; my messages read 已读 up to the Agent's marker", async () => {
     await openAgentChat({ messages: [...BASE, wire(A1, 3, ME_ID, "还在吗")], conv: { peerReadSeq: 2 } });
     expect(within(storedLi(1)).getByText("Agent", { selector: ".tag" })).toBeTruthy();

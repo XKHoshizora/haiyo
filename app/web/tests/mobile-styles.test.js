@@ -224,7 +224,11 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
     const plainDecl = (selector) => merged(rulesFor(rules, selector, null));
     for (const scroller of [".page-body", ".side-body"]) expect(plainDecl(scroller)["padding-bottom"], scroller).toContain("env(safe-area-inset-bottom)");
     expect(plainDecl(".chat")["padding-bottom"]).toBe("env(safe-area-inset-bottom)");
-    expect(plainDecl('.app:not([data-tabbar="on"]) .rows')["padding-bottom"]).toContain("env(safe-area-inset-bottom)");
+    expect(plainDecl('.app:not([data-tabbar="on"]) .list-col > .rows')["padding-bottom"]).toContain("env(safe-area-inset-bottom)");
+    // The room belongs to the page's own list, not to every `.rows` below the shell (a modal's list has its own padding).
+    for (const rule of rules.filter((r) => r.selectors.some((x) => /\.rows\b/.test(x)) && String(r.decl["padding-bottom"] ?? "").includes("env("))) {
+      for (const selector of rule.selectors.filter((x) => /\.rows\b/.test(x))) expect(selector, selector).toMatch(/\.list-col\s*>\s*\.rows/);
+    }
     expect(plainDecl(".rail")["padding-bottom"]).toContain("env(safe-area-inset-bottom)");
     // Once: with the tab bar below the list, the bar has the room (the list does not add it again).
     expect(rulesFor(rules, ".rows", null).every((r) => !String(r.decl["padding-bottom"] ?? "").includes("env("))).toBe(true);
