@@ -197,9 +197,9 @@ describe("a group reply never sees past its asker's line", () => {
     await say(sam, w.a, "@scope_bot 蓝鲸计划在哪？");
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("没查到。");
     expect(await toolWorker().runOnce()).toBe(true);
-    const fromNewcomer = outputs(gateway.calls.at(-1)!)[0] as { results: Array<{ text: string }> };
-    // Only the newcomer's own question (it asked after joining) is there to find.
-    expect(fromNewcomer.results.map((r) => r.text)).toEqual(["@scope_bot 蓝鲸计划在哪？"]);
+    const fromNewcomer = outputs(gateway.calls.at(-1)!)[0];
+    // Nothing: what is before their joining is not theirs to find, and their own question is what the reply answers (item E).
+    expect(fromNewcomer).toEqual({ results: [], note: "这个群的记录里没找到。" });
     expect(JSON.stringify(gateway.calls.at(-1)!.steps)).not.toContain("三楼");
 
     await say(w.mia, w.a, "@scope_bot 蓝鲸计划在哪？我问的");
@@ -210,7 +210,7 @@ describe("a group reply never sees past its asker's line", () => {
     expect(early).toBeGreaterThan(0);
   });
 
-  it("a call at or before the line is found by its text only, never by its file's name (it is shown as its text only)", async () => {
+  it("a call at or before the line is never found — the reply answers it (item E) — not by its text, nor by its file's name", async () => {
     const w = await world();
     const uploaded = await app.inject({
       method: "POST",
@@ -230,7 +230,7 @@ describe("a group reply never sees past its asker's line", () => {
     const byName = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "预算表-m3" } }, signal);
     expect(byName.output).toEqual({ results: [], note: "这个群的记录里没找到。" });
     const byText = await runTool(deps(), scope, { id: "c2", name: SEARCH_MESSAGES, input: { query: "看看这个" } }, signal);
-    expect((byText.output as { results: unknown[] }).results).toEqual([{ ref: "〔m1〕", who: "mia｜群成员", when: expect.any(String), text: "@scope_bot 看看这个" }]);
+    expect(byText.output).toEqual({ results: [], note: "这个群的记录里没找到。" });
   });
 
   it("N-6: numbering stops at 999999, the largest number a token holds: past it no result is handed out, and the search says more were left out", async () => {
@@ -245,13 +245,15 @@ describe("a group reply never sees past its asker's line", () => {
 
   it("nothing written after the reply began is found (heardTo), however well it matches", async () => {
     const w = await world();
+    await say(w.ned, w.a, "之前说过：蓝鲸计划在三楼");
     await say(w.mia, w.a, "@scope_bot 蓝鲸计划在哪？");
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     const heardTo = await conversationSeq(w.a);
     await say(w.ned, w.a, "后来才说：蓝鲸计划在五楼");
     const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo, mark: null };
     const out = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }, new AbortController().signal);
-    expect((out.output as { results: Array<{ text: string }> }).results.map((r) => r.text)).toEqual(["@scope_bot 蓝鲸计划在哪？"]);
+    // The earlier message only: not the later one (past heardTo), nor the question the reply answers (item E).
+    expect((out.output as { results: Array<{ text: string }> }).results.map((r) => r.text)).toEqual(["之前说过：蓝鲸计划在三楼"]);
   });
 
   it("an Agent taken out of a group and added back finds there only what came after it came back, from its own conversation or in the group", async () => {
@@ -270,7 +272,7 @@ describe("a group reply never sees past its asker's line", () => {
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("好。");
     expect(await toolWorker().runOnce()).toBe(true);
     const [inGroup] = outputs(gateway.calls.at(-1)!) as [{ results: Array<{ text: string }> }];
-    expect(inGroup.results.map((r) => r.text)).toEqual(["@scope_bot 蓝鲸计划呢？", "回来后：蓝鲸计划丙"]);
+    expect(inGroup.results.map((r) => r.text)).toEqual(["回来后：蓝鲸计划丙"]);
   });
 });
 

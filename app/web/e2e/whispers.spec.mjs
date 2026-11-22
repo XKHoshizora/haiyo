@@ -21,7 +21,7 @@ const searchFor = (word) => [{ name: "search_messages", input: { query: word } }
 const whispers = (chat) => messageList(chat).locator("li.msg-whisper");
 const whisperDot = (page, title) => listRow(page, title).first().getByRole("img", { name: "有只给你的悄悄话" });
 
-const ELSEWHERE_TEXT = "群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？";
+const ELSEWHERE_TEXT = "在别处查到了相关内容，要告诉他们吗？";
 /** The one line a found_elsewhere whisper is folded to, which opens it. */
 const FOLDED = (n) => `在别处查到了 ${n} 条，要告诉他们吗？`;
 const TELL_FAILED = "刚才没发出去，可以再试一次。";
@@ -199,7 +199,8 @@ test("告诉他们 whose call fails: the whisper is open again for its owner —
   await expect(whisper).not.toContainText(TELL_FAILED);
 
   // The telling's model call fails: nothing is posted, and the whisper is open again — saying so —, hits and buttons as before.
-  await modelStub.script({ status: 500, message: "upstream down" }, { status: 500, message: "upstream down" });
+  // (A 400: a failure the system does not try again by itself — a 5xx it retries automatically while the whisper reads open.)
+  await modelStub.script({ status: 400, message: "upstream refused" }, { status: 400, message: "upstream refused" });
   await whisper.getByRole("button", { name: "告诉他们" }).click();
   await expect.poll(async () => (await modelStub.calls()).length, { message: "the telling's call was made" }).toBeGreaterThanOrEqual(3);
   await expect(whisper).toHaveCount(1);

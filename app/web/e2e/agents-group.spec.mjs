@@ -477,7 +477,8 @@ test("a reply that fails: its owner sees why and 重试, another member only tha
   await expect(notices(boChat, `邀请${agent.name}加入了群聊`)).toHaveCount(1);
 
   const tag = uniq(4);
-  await modelStub.script({ status: 503 }, { text: `重试后的回答 ${tag}` });
+  // (A 400: a failure the system does not try again by itself — a 5xx it retries automatically — so the owner presses 重试.)
+  await modelStub.script({ status: 400 }, { text: `重试后的回答 ${tag}` });
   await sendText(bo.page, title, `@${agent.handle} 帮个忙 ${tag}`);
   const line = runStatusLine(annChat);
   await expect(line).toContainText(`${agent.name}：站点提供的这个模型暂时用不了，请稍后重试，或换一个模型。`);

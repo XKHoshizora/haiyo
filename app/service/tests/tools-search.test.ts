@@ -77,8 +77,29 @@ async function owned(name = "olive") {
   const agent = await mustCreateAgent(app, owner, { handle: `${name}_bot`, name: "小助手", model: FAST, persona: "简短地回答。" });
   return { owner, agent, own: agent.conversationId as string };
 }
+/**
+ * In an Agent's own conversation: everything written so far counts as answered — a reply of the Agent's, from a run that
+ * covered it, is put after it — so that the next question's search finds it (item E leaves out, by position, every
+ * message of the owner's after what the Agent's last reply covered). Nothing in a group.
+ */
+async function answeredSoFar(conv: string): Promise<void> {
+  const own = (await db.query<{ agent_id: string; owner_id: string }>("select agent_id, owner_id from agent_conversations where conversation_id = $1", [conv])).rows[0];
+  const seq = await lastOf(conv);
+  if (!own || seq === 0) return;
+  const run = await db.query<{ id: string }>(
+    "insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, caller_id, triggered_by) values ('reply', $1, $2, $3, 'done', $4, 'own', $3, 'human') returning id",
+    [conv, own.agent_id, own.owner_id, seq],
+  );
+  await db.query(
+    `with c as (update conversations set seq = seq + 1 where id = $1 returning seq)
+     insert into messages (conversation_id, seq, sender_id, kind, body, client_txn) select $1, c.seq, $2, 'text', '{"text":"收到。"}'::jsonb, $3 from c`,
+    [conv, own.agent_id, run.rows[0]!.id],
+  );
+  asWritten.add("收到。");
+}
 /** One reply in `conv` (asked by `asker` with `question`) whose first round calls the search with `input`: what it gave. */
 async function searchOnce(asker: Actor, conv: string, question: string, input: Record<string, unknown>, d?: ToolDeps, answer = "好。") {
+  await answeredSoFar(conv);
   await say(asker, conv, question);
   gateway.callTools([{ name: SEARCH_MESSAGES, input }]).reply(answer);
   expect(await toolWorker(d).runOnce()).toBe(true);
@@ -92,9 +113,10 @@ describe("what a search gives", () => {
     const out = await searchOnce(owner, own, "饺子馆在哪？", { query: "饺子馆" });
     expect(out.more).toBe(true);
     expect(out.results).toHaveLength(8);
-    expect(out.results.map((r: any) => r.text)).toEqual(["饺子馆在哪？", ...[10, 9, 8, 7, 6, 5, 4].map((i) => `第${i}次：饺子馆在河边`)]);
+    // (Never the question the reply answers: its model is shown it already — item E.)
+    expect(out.results.map((r: any) => r.text)).toEqual([10, 9, 8, 7, 6, 5, 4, 3].map((i) => `第${i}次：饺子馆在河边`));
     expect(out.results.map((r: any) => r.ref)).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map((n) => `〔m${n}〕`));
-    expect(out.results[1]).toEqual({ ref: "〔m2〕", who: "olive｜你的主人", when: "2026-11-10 12:00 周二", text: "第10次：饺子馆在河边" });
+    expect(out.results[0]).toEqual({ ref: "〔m1〕", who: "olive｜你的主人", when: "2026-11-10 12:00 周二", text: "第10次：饺子馆在河边" });
     expect(weight(JSON.stringify(out))).toBeLessThanOrEqual(app.deps.config.tools.resultMaxWeight);
     // Smaller results: as many hits as fit, and `more`.
     const small = deps({ config: { ...app.deps.config, tools: { ...app.deps.config.tools, resultMaxWeight: 200 } } });
@@ -111,7 +133,7 @@ describe("what a search gives", () => {
     for (let i = 1; i <= 105; i++) await postAs(own, owner.id, `第${i}次：馄饨店在桥边`, new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString());
     const out = await searchOnce(owner, own, "馄饨店在哪？", { query: "馄饨店" });
     expect(out.more).toBe(true);
-    expect(out.results.map((r: any) => r.text)).toEqual(["馄饨店在哪？", ...[105, 104, 103, 102, 101, 100, 99].map((i) => `第${i}次：馄饨店在桥边`)]);
+    expect(out.results.map((r: any) => r.text)).toEqual([105, 104, 103, 102, 101, 100, 99, 98].map((i) => `第${i}次：馄饨店在桥边`));
   });
 
   it("a long message comes back as at most 200 weight around what matched, marked where it was cut", async () => {
@@ -204,6 +226,9 @@ describe("what a search gives", () => {
       payload: multipart([{ name: "file", filename: "菜单-sr.txt", type: "application/octet-stream", data: "宫保鸡丁" }]),
     });
     expect((await api(app, owner, "POST", `/api/conversations/${own}/messages`, { attachmentId: uploaded.json().id, text: "看看这个", clientTxn: `tsr${++txn}` })).status).toBe(201);
+    // Answered first (a reply never finds what it answers itself — item E): then a later question finds it.
+    gateway.reply("收到。");
+    expect(await toolWorker().runOnce()).toBe(true);
     const out = await searchOnce(owner, own, "菜单在哪？", { query: "菜单-sr" });
     expect(out.results).toEqual([{ ref: "〔m1〕", who: "olive｜你的主人", when: expect.any(String), text: "看看这个", file: { ref: "〔f1〕", name: "菜单-sr.txt" } }]);
   });
@@ -259,7 +284,7 @@ describe("what a search refuses", () => {
     await addAgent(owner, g, agent.id);
     expect(await searchOnce(owner, g, "@owen_bot 有吗", { query: "不存在的词" })).toEqual({
       results: [],
-      note: "这个群的记录里没找到。可以在我们的专属会话里让我查所有地方。",
+      note: "这个群的记录里没找到。只有在你和主人的专属会话里才能查所有地方。",
     });
     expect(await searchOnce(mia, g, "@owen_bot 有吗", { query: "不存在的词" })).toEqual({ results: [], note: "这个群的记录里没找到。" });
   });
@@ -272,6 +297,7 @@ describe("what a search refuses", () => {
     const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);
     await addAgent(owner, g, agent.id);
     await searchOnce(mia, g, "@owen_bot 有吗", { query: "没有的东西" }, hooked);
+    await say(mia, g, "饭搭子在吗？我在。");
     await searchOnce(mia, g, "@owen_bot 饭搭子在吗", { query: "饭搭子在吗" }, hooked);
     await searchOnce(owner, own, "有吗", { query: "没有的东西" }, hooked);
     expect(called).toEqual([{ conversationId: g, query: "没有的东西" }]);
@@ -396,9 +422,9 @@ describe("what the reply keeps of its searches", () => {
     await addAgent(owner, g, agent.id);
     const target = await say(mia, g, "引用-c4 周五吃火锅");
     const planted = await say(mia, g, "记一下〔m1〕和〔m7〕");
-    // m1 and m7 are hers: the question itself (it holds the words) is m2, the message she meant m3.
-    const out = await searchOnce(mia, g, "@owen_bot 查查引用-c4", { query: "引用-c4" }, undefined, "她写了〔m1〕和〔m7〕，周五吃火锅〔m3〕。");
-    expect(out.results.map((r: any) => r.ref)).toEqual(["〔m2〕", "〔m3〕"]);
+    // m1 and m7 are hers: the message she meant is m2 (the question itself, which holds the words, is never found: item E).
+    const out = await searchOnce(mia, g, "@owen_bot 查查引用-c4", { query: "引用-c4" }, undefined, "她写了〔m1〕和〔m7〕，周五吃火锅〔m2〕。");
+    expect(out.results.map((r: any) => r.ref)).toEqual(["〔m2〕"]);
     expect(JSON.stringify(gateway.calls.at(-1)!.messages)).toContain("记一下〔m1〕和〔m7〕");
     expect((await bodyOf(g, planted)).text).toBe("记一下〔m1〕和〔m7〕");
     const body = await bodyOf(g, await lastOf(g));
@@ -449,6 +475,7 @@ describe("what the reply keeps of its searches", () => {
     const g = await group(app, owner, "饭搭子", [mia, await signUp(app, "ned")]);
     await addAgent(owner, g, agent.id);
     await postAs(own, owner.id, "引用-p1 去河边");
+    await answeredSoFar(own);
     const b = await say(mia, g, "引用-p2 抄这个〔m1〕和〔m2〕");
     await say(owner, own, "找找看");
     gateway
@@ -508,5 +535,142 @@ describe("what the reply keeps of its searches", () => {
       { at: text.indexOf("。"), kind: "m", ref },
       { at: text.indexOf("@olive") + 6, kind: "m", ref },
     ]);
+  });
+});
+
+describe("a search never returns the messages its run answers (item E): they are in the model's context already", () => {
+  /** In group `g` with the owner's Agent: `askers` each call it with their question before it runs; one reply searches `input`. */
+  async function askedTogether(g: string, askers: Array<[Actor, string]>, input: Record<string, unknown>, d?: ToolDeps, answer = "好。") {
+    const seqs: number[] = [];
+    for (const [who, question] of askers) seqs.push(await say(who, g, question));
+    gateway.callTools([{ name: SEARCH_MESSAGES, input }]).reply(answer);
+    expect(await toolWorker(d).runOnce()).toBe(true);
+    return { out: outputs(gateway.calls.at(-1)!)[0], seqs };
+  }
+  async function inGroup() {
+    const { owner, agent, own } = await owned("owen");
+    const [mia, ned] = [await signUp(app, "mia"), await signUp(app, "ned")];
+    const g = await group(app, owner, "饭搭子", [mia, ned]);
+    await addAgent(owner, g, agent.id);
+    return { owner, agent, own, mia, ned, g };
+  }
+
+  it("the asking message alone matches: nothing found, the group's not-found note, and the elsewhere hook starts", async () => {
+    const { mia, g } = await inGroup();
+    const called: string[] = [];
+    const hooked = deps({ elsewhere: (_scope, ask) => void called.push(ask.term) });
+    const { out } = await askedTogether(g, [[mia, "@owen_bot 查一下群里有没有人说过打印机的维修电话"]], { query: "打印机的维修电话" }, hooked);
+    expect(out).toEqual({ results: [], note: "这个群的记录里没找到。" });
+    expect(called).toEqual(["打印机的维修电话"]);
+  });
+
+  it("an earlier real match and the asking message: only the earlier one is returned, numbered, found and cited", async () => {
+    const { mia, ned, g } = await inGroup();
+    const earlier = await say(ned, g, "打印机的维修电话是 12345");
+    const called: string[] = [];
+    const hooked = deps({ elsewhere: (_scope, ask) => void called.push(ask.term) });
+    const { out } = await askedTogether(g, [[mia, "@owen_bot 打印机的维修电话是多少？"]], { query: "打印机的维修电话" }, hooked, "在这里〔m1〕。");
+    expect(out.results.map((r: any) => [r.ref, r.text])).toEqual([["〔m1〕", "打印机的维修电话是 12345"]]);
+    expect(out.more).toBe(false);
+    expect(called).toEqual([]);
+    const body = await bodyOf(g, await lastOf(g));
+    expect(body.found).toEqual([{ conversationId: g, seq: earlier }]);
+    expect(body.cites).toEqual([{ at: 3, kind: "m", ref: { conversationId: g, seq: earlier } }]);
+  });
+
+  it("a run answering two calls excludes both; a later message that only repeats the question is an ordinary result", async () => {
+    const { mia, ned, g } = await inGroup();
+    const { out, seqs } = await askedTogether(g, [[mia, "@owen_bot 打印机的维修电话？"], [ned, "@owen_bot 打印机的维修电话我也想知道"]], { query: "打印机的维修电话" });
+    expect(out).toEqual({ results: [], note: "这个群的记录里没找到。" });
+    expect((await db.query<{ calls: string[] }>("select call_seqs::text[] as calls from agent_runs where conversation_id = $1 order by created_at desc limit 1", [g])).rows[0]!.calls).toEqual(seqs.map(String));
+    // A message that only repeats the question, sent later and calling nobody, is no call of the next run: found as any.
+    const repeat = await say(ned, g, "转发：打印机的维修电话？");
+    const next = await askedTogether(g, [[mia, "@owen_bot 现在呢，打印机的维修电话"]], { query: "打印机的维修电话" });
+    expect(next.out.results.map((r: any) => r.text)).toEqual(["转发：打印机的维修电话？", "@owen_bot 打印机的维修电话我也想知道", "@owen_bot 打印机的维修电话？"]);
+    expect(repeat).toBeGreaterThan(seqs[1]!);
+  });
+
+  it("in the Agent's own conversation the whole turn it answers is left out: three messages folded into one reply, the middle one matching", async () => {
+    const { owner, agent, own } = await owned("quinn");
+    const earlier = await postAs(own, owner.id, "上周说过：钥匙在门口的鞋柜里");
+    await answeredSoFar(own);
+    await say(owner, own, "我找不到东西了");
+    await say(owner, own, "钥匙在哪来着？");
+    await say(owner, own, "快帮我想想");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "钥匙在" } }]).reply("在鞋柜里。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    const out = outputs(gateway.calls.at(-1)!)[0];
+    expect(out.results.map((r: any) => r.text)).toEqual(["上周说过：钥匙在门口的鞋柜里"]);
+    expect((await bodyOf(own, await lastOf(own))).found).toEqual([{ conversationId: own, seq: earlier }]);
+    expect(agent.id).toBeTruthy();
+  });
+
+  it("a follow-up's turn too: what its owner wrote while the reply before it ran (two messages) is left out; what that reply answered is found", async () => {
+    const { owner, own } = await owned("rita");
+    const answered = await say(owner, own, "雨伞放在车里了");
+    const hold = gateway.hang();
+    const first = toolWorker().runOnce();
+    await hold.reached;
+    await say(owner, own, "雨伞是哪把？");
+    await say(owner, own, "雨伞是蓝色的那把吗");
+    hold.release("记住了。");
+    expect(await first).toBe(true);
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "雨伞" } }]).reply("蓝色那把在车里。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["雨伞放在车里了"]);
+    expect(answered).toBeGreaterThan(0);
+  });
+
+  it("own conversation, by position: a question whose reply failed and was not retried, asked again, is not found either", async () => {
+    const { owner, own } = await owned("sara");
+    await postAs(own, owner.id, "之前说过：护照在书桌的抽屉里");
+    await answeredSoFar(own);
+    await say(owner, own, "护照放在哪了？");
+    gateway.fail("provider_rejected", { status: 401 });
+    expect(await toolWorker().runOnce()).toBe(true);
+    await say(owner, own, "护照在哪，快想想");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "护照" } }]).reply("在抽屉里。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["之前说过：护照在书桌的抽屉里"]);
+  });
+
+  it("own conversation, by position: what the owner wrote while the Agent was paused, or not naming it in mention mode, is not found", async () => {
+    const { owner, agent, own } = await owned("tess");
+    await postAs(own, owner.id, "之前说过：雨衣挂在门后");
+    await answeredSoFar(own);
+    expect((await api(app, owner, "POST", `/api/agents/${agent.id}/pause`)).status).toBe(200);
+    await say(owner, own, "雨衣是哪件来着");
+    expect((await api(app, owner, "POST", `/api/agents/${agent.id}/resume`)).status).toBe(200);
+    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { replyMode: "mention" })).status).toBe(200);
+    await say(owner, own, "雨衣会不会在车里");
+    await say(owner, own, `@${agent.handle} 雨衣在哪？`);
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "雨衣" } }]).reply("门后。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["之前说过：雨衣挂在门后"]);
+  });
+
+  it("own conversation: `more` counts what is left after the turn is left out — 8 answered matches and 2 of the turn's (10 in all) are one whole page", async () => {
+    const { owner, own } = await owned("ursula");
+    for (let i = 3; i <= 10; i++) await postAs(own, owner.id, `第${i}次：眼镜在床头柜`, `2026-10-${String(i).padStart(2, "0")}T04:00:00Z`);
+    await answeredSoFar(own);
+    await say(owner, own, "眼镜在哪？");
+    await say(owner, own, "眼镜是不是在床头柜");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "眼镜" } }]).reply("在床头柜。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    const out = outputs(gateway.calls.at(-1)!)[0];
+    expect(out.results.map((r: any) => r.text)).toEqual([10, 9, 8, 7, 6, 5, 4, 3].map((i) => `第${i}次：眼镜在床头柜`));
+    expect(out.more).toBe(false);
+  });
+
+  it("in the Agent's own conversation too; and `more` is decided after the exclusion — 8 earlier matches (crossing seq 10) are the whole page, 10 are not", async () => {
+    const { owner, own } = await owned("paula");
+    for (let i = 3; i <= 10; i++) await postAs(own, owner.id, `第${i}回：洗衣机的保修卡在抽屉里`, `2026-10-${String(i).padStart(2, "0")}T04:00:00Z`);
+    const page = await searchOnce(owner, own, "洗衣机的保修卡在哪？", { query: "洗衣机的保修卡" });
+    expect(page.results.map((r: any) => r.text)).toEqual([10, 9, 8, 7, 6, 5, 4, 3].map((i) => `第${i}回：洗衣机的保修卡在抽屉里`));
+    expect(page.more).toBe(false);
+    for (let i = 11; i <= 12; i++) await postAs(own, owner.id, `第${i}回：洗衣机的保修卡在抽屉里`, `2026-10-${i}T04:00:00Z`);
+    const more = await searchOnce(owner, own, "洗衣机的保修卡到底在哪？", { query: "洗衣机的保修卡" });
+    expect(more.results.map((r: any) => r.text)).toEqual(["洗衣机的保修卡在哪？", ...[12, 11, 10, 9, 8, 7, 6].map((i) => `第${i}回：洗衣机的保修卡在抽屉里`)]);
+    expect(more.more).toBe(true);
   });
 });

@@ -512,7 +512,9 @@ describe("a reply that offers tools", () => {
     const failed = fakePort();
     await runOn(failed, failing);
     expect(failing.calls).toHaveLength(2);
-    expect(finishedAs(failed)).toEqual([{ status: "failed", error: "provider_unavailable" }]);
+    // (With the upstream's status: whether the system tries it again by itself reads it — runs.ts `transientFailure`.)
+    // (After a tool round: the reply had done something, so not passing — runtime/port.ts `passingEnding`.)
+    expect(finishedAs(failed)).toEqual([{ status: "failed", error: "provider_unavailable", upstreamStatus: 502 }]);
 
     // The ordinary call refused as well: failed.
     const twice = scriptedGateway()
@@ -522,7 +524,7 @@ describe("a reply that offers tools", () => {
     const again = fakePort();
     await runOn(again, twice);
     expect(twice.calls).toHaveLength(3);
-    expect(finishedAs(again)).toEqual([{ status: "failed", error: "provider_unavailable" }]);
+    expect(finishedAs(again)).toEqual([{ status: "failed", error: "provider_unavailable", upstreamStatus: 400 }]);
   });
 
   it("the ordinary call after a later round refused is told it has no tools: the prepared text for going without them, when the call has one, and nothing else changes", async () => {
@@ -669,6 +671,7 @@ describe("a reply that offers tools", () => {
     // Acknowledged, it wrote nothing after: failed, as a reply that timed out having said nothing.
     const acked = fakePort({ tool: () => new Promise((resolve) => setTimeout(() => resolve({ output: "晚了", activity: "search" }), 3_000)) });
     await runOn(acked, scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" }), { tools: { runTimeoutMs: 1_000 } });
+    // (Its acknowledgement was posted: the reply had produced something, so its time out is not passing.)
     expect([acked.acks.map((a) => a.text), acked.posted, finishedAs(acked)]).toEqual([["我先查一下。"], [], [{ status: "failed", error: "provider_unavailable" }]]);
 
     // Past it between two rounds (the port took long to answer about money): no next call.
@@ -683,6 +686,7 @@ describe("a reply that offers tools", () => {
     const silent = fakePort({ extend: () => new Promise((resolve) => setTimeout(() => resolve("ok"), 1_200)) });
     await runOn(silent, mute, { tools: { runTimeoutMs: 1_000 } });
     expect(silent.posted).toEqual([]);
+    // (A tool round had completed: the reply had done something, so its time out is not passing.)
     expect(finishedAs(silent)).toEqual([{ status: "failed", error: "provider_unavailable" }]);
   });
 
@@ -919,11 +923,11 @@ describe("what a reply's tools are doing, and what it looked up", () => {
       tool: async (call) =>
         call.name === "search"
           ? { output: { error: "这次查找超时了。" }, found: [{ conversationId: A, seq: 1 }], query: "x" }
-          : { output: { error: "这种文件我读不了内容。" } },
+          : { output: { error: "这种文件不是文本，读不了内容。" } },
     });
     await runOn(fake, gateway);
     // The model is sent each refusal as it is.
-    expect(outputsOf(gateway.calls[1]!, 0)).toEqual([{ error: "这次查找超时了。" }, { error: "这种文件我读不了内容。" }]);
+    expect(outputsOf(gateway.calls[1]!, 0)).toEqual([{ error: "这次查找超时了。" }, { error: "这种文件不是文本，读不了内容。" }]);
     // The reply looked nothing up: no key about it, as a reply whose tools ran none.
     expect(fake.posted).toStrictEqual([{ text: "没查成。", reasoning: "", stopped: false, truncated: false }]);
   });
@@ -1014,5 +1018,57 @@ describe("a reply that offers no tools", () => {
       { end: { status: "done" }, usage: U(50, 5), fallback: { inputChars: 120, outputChars: estimateTokens("你好！") + estimateTokens("想一想") } },
     ]);
     expect([fake.tools, fake.extends, fake.activities, fake.unusable]).toEqual([[], [], [], []]);
+  });
+});
+
+describe("whether a failed reply is passing is decided by the reply as a whole (runtime/port.ts `passingEnding`, round 2 R-2)", () => {
+  type State = "nothing yet" | "thought only" | "acknowledged" | "one tool round done" | "text streamed";
+  type Kind = "503" | "network" | "cut" | "timeout";
+  const SLOW_TOOL = () => new Promise<never>(() => {});
+  /** The script, the port and the reply's time for one cell. */
+  function cell(kind: Kind, state: State): { gateway: ReturnType<typeof scriptedGateway>; fake: Fake; ms: number } {
+    const g = scriptedGateway();
+    const end = (gw: ReturnType<typeof scriptedGateway>, reasoning = "", text = ""): void => {
+      if (kind === "503") gw.fail("provider_unavailable", { status: 503, afterReasoning: reasoning, afterText: text });
+      else if (kind === "network") gw.fail("provider_unavailable", { afterReasoning: reasoning, afterText: text });
+      else if (kind === "cut") gw.cut(text, reasoning);
+      // Its time runs out (300 ms) after the first piece (200 ms) and before the next (400 ms).
+      else if (text !== "" || reasoning !== "") gw.reply(text || "后面的话", { reasoning, delayMsPerChunk: 200 });
+      else gw.hang();
+    };
+    if (state === "nothing yet") end(g);
+    else if (state === "thought only") end(g, "我想想……");
+    else if (state === "text streamed") end(g, "", "说到一半");
+    else {
+      g.callTools([{ name: "search", input: { query: "a" } }], state === "acknowledged" ? { text: "我先查一下。" } : {});
+      // The time out of a tool reply comes while its tool still runs (acknowledged) or as its next round hangs.
+      if (kind === "timeout" && state === "acknowledged") return { gateway: g, fake: fakePort({ tool: SLOW_TOOL }), ms: 300 };
+      end(g);
+    }
+    return { gateway: g, fake: fakePort(), ms: 300 };
+  }
+  const kinds: Kind[] = ["503", "network", "cut", "timeout"];
+  const states: State[] = ["nothing yet", "thought only", "acknowledged", "one tool round done", "text streamed"];
+  const cells = kinds.flatMap((kind) => states.map((state) => [kind, state] as const));
+  it.each(cells)("%s, %s", async (kind, state) => {
+    const { gateway, fake, ms } = cell(kind, state);
+    await runOn(fake, gateway, { tools: { runTimeoutMs: ms } });
+    const [end] = finishedAs(fake);
+    const passing = (end as { transient?: true }).transient === true;
+    expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
+    if (state === "nothing yet") expect(end).toMatchObject({ status: "failed", error: "provider_unavailable" });
+    expect(gateway.pending()).toBe(0);
+  });
+
+  it("a reply offered no tools: the same by its one call", async () => {
+    for (const kind of kinds) {
+      for (const state of ["nothing yet", "thought only", "text streamed"] as const) {
+        const { gateway } = cell(kind, state);
+        const fake = fakePort({ tools: [] });
+        await runOn(fake, gateway, { tools: { runTimeoutMs: 300 }, runTimeoutMs: 300 });
+        const passing = (finishedAs(fake)[0] as { transient?: true }).transient === true;
+        expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
+      }
+    }
   });
 });

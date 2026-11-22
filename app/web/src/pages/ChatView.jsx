@@ -546,6 +546,13 @@ export function ChatView({ conv }) {
               ),
             )}
             {failedRun && <RunStatusLine key={failedRun.id} conv={conv} run={failedRun} />}
+            {/* An Agent conversation with nothing in it yet (its greeting could not be made, or none was): the system's hint,
+                never a line as the Agent. */}
+            {agentChat && !detached && !hasOlder && messages.length === 0 && !replying && !failedRun && (
+              <li className="msg-system">
+                <span>{`和 ${convTitle(state, conv)} 说点什么吧。`}</span>
+              </li>
+            )}
             {groupRows.map((row) =>
               row.kind === "replying" ? (
                 <GroupReplying key={`${row.agentId}:replying`} conv={conv} row={row} />

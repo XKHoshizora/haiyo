@@ -203,7 +203,8 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
           {!mine && stamp}
         </div>
         {thinking && <Thinking text={msg.reasoning} />}
-        <Body msg={msg} agent={agent} onJump={onJump} />
+        {/* A reply that is only a persona proposal has no text: its card alone, no empty bubble. */}
+        {!(ownChat && msg.proposal && !msg.text && !msg.quote) && <Body msg={msg} agent={agent} onJump={onJump} />}
         {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation). */}
         {agent && <ReplyLookups key={`${conv.id}:${msg.id}`} msg={msg} conv={conv} onJump={onJump} />}
         {agent && <WebSources sources={msg.webSources} />}

@@ -168,12 +168,13 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * runs outside the app's statement timeout.
  */
 export function useApp(
-  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat"> & {
+  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting"> & {
       memory?: boolean;
       tools?: boolean;
+      greeting?: boolean;
     } = {},
 ): { app: FastifyInstance; db: Db; clock: TestClock } {
-  const { env, config: configured, logStream, sweepInitialDelayMs, answerFloor = NO_ANSWER_FLOOR, allowInsecureLocal, agentWorker, staleRunSweep = false, proactive = false, memory = false, tools = false, mail, ...overrides } =
+  const { env, config: configured, logStream, sweepInitialDelayMs, answerFloor = NO_ANSWER_FLOOR, allowInsecureLocal, agentWorker, staleRunSweep = false, proactive = false, memory = false, tools = false, greeting = false, mail, ...overrides } =
     extra;
   const clock = testClock();
   const options: BuildOptions = {
@@ -182,6 +183,8 @@ export function useApp(
     proactive,
     memory: memory ? { now: clock.now, setTimer: clock.setTimer } : false,
     ...(tools ? {} : { tools: false as const }),
+    // A new Agent's greeting reply is queued only when a file asks for it: a test's first reply is the one it scripts.
+    ...(greeting ? {} : { greeting: false as const }),
     ...(logStream ? { logStream } : {}),
     ...(sweepInitialDelayMs === undefined ? {} : { sweepInitialDelayMs }),
     ...(allowInsecureLocal ? { allowInsecureLocal } : {}),
@@ -227,7 +230,10 @@ export function useApp(
     };
     // Nor the memory-change sweep's own timer, unless the file's MEMORY names `changesSweepMs`.
     const asked = (env?.MEMORY ?? "").includes("changesSweepMs") || configured?.memory?.changesSweepMs !== undefined;
-    const config = asked ? loaded : { ...loaded, memory: { ...loaded.memory, changesSweepMs: 0 } };
+    const swept = asked ? loaded : { ...loaded, memory: { ...loaded.memory, changesSweepMs: 0 } };
+    // Nor does the system retry a failed reply by itself (src/agents/runs.ts `scheduleAutoRetry`), unless the file's env
+    // names AGENTS or its config `agents`: a test that scripts a failure sees the failure.
+    const config = env?.AGENTS !== undefined || configured?.agents !== undefined ? swept : { ...swept, agents: { autoRetryDelaysMs: [] } };
     database = createDb(config.databaseUrl, { statementTimeoutMs: config.dbStatementTimeoutMs, acquireTimeoutMs: config.dbAcquireTimeoutMs });
     instance = await buildApp({ config, db: database, ...overrides }, options);
     await instance.ready();

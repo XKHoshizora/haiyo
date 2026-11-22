@@ -24,6 +24,7 @@ describe("GET /api/models", () => {
       ],
       providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 },
       proactiveAvailable: false,
+      memoryCatchUp: { days: 30, lines: 200 },
     });
     const serialised = `${JSON.stringify(res.headers)}${res.body}`;
     for (const secret of ["api.example.test", "fast-1", "think-1", "UPSTREAM_TEST_KEY", SITE_ENV.UPSTREAM_TEST_KEY, "MicroPerToken", "maxOutputTokens\":4096", "baseUrl", "apiKeyEnv", "protocol"]) {
@@ -35,9 +36,20 @@ describe("GET /api/models", () => {
     const bare = await buildApp({ config: { ...app.deps.config, siteModels: [] }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });
     try {
       const owner = await signUp(bare, "nomodels");
-      expect(await api(bare, owner, "GET", "/api/models")).toEqual({ status: 200, json: { siteModels: [], providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 }, proactiveAvailable: false } });
+      expect(await api(bare, owner, "GET", "/api/models")).toEqual({ status: 200, json: { siteModels: [], providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 }, proactiveAvailable: false, memoryCatchUp: { days: 30, lines: 200 } } });
     } finally {
       await bare.close();
+    }
+  });
+
+  it("says how far back turning memory on again may look (MEMORY.catchUpDays, MEMORY.catchUpLines), as configured", async () => {
+    const memory = { ...app.deps.config.memory, catchUpDays: 7, catchUpLines: 150 };
+    const tuned = await buildApp({ config: { ...app.deps.config, memory }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });
+    try {
+      const owner = await signUp(tuned, "catchup_bounds");
+      expect((await api(tuned, owner, "GET", "/api/models")).json).toMatchObject({ memoryCatchUp: { days: 7, lines: 150 } });
+    } finally {
+      await tuned.close();
     }
   });
 

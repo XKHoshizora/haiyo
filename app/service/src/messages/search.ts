@@ -2,7 +2,7 @@ import { VISIBLE_JOIN } from "../conversations/store.ts";
 import type { Db, Queryable, Tx } from "../db.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type WireMessage } from "./model.ts";
 import { principalsOf, type SyncPrincipal } from "./principals.ts";
-import { toWireFor, type ReadConfig } from "./read.ts";
+import { postingRun, toWireFor, type ReadConfig } from "./read.ts";
 import { handleOf } from "../principals/store.ts";
 
 /** Searches one principal may have running at once, both routes together; one more is 429 `rate_limited`. */
@@ -105,17 +105,27 @@ export interface SearchRowsOptions {
   timeZone: string;
   /**
    * In `conversationId` only what a group reply may be shown (agents/context.ts `askerLine`): messages after `after` and
-   * at most `upTo` (what the reply had heard when it began), and the calls it answers (`calls`, whatever their seq) — one
-   * at or before `after` by its text only, never by its file's name (the reply is shown such a call as its text only).
-   * Null: the whole of every conversation searched.
+   * at most `upTo` (what the reply had heard when it began). (The calls it answers, which it is shown whatever their seq,
+   * are never found: `answering`.) Null: the whole of every conversation searched.
    */
-  window: { conversationId: string; after: number; upTo: number; calls: readonly number[] } | null;
+  window: { conversationId: string; after: number; upTo: number } | null;
   /**
    * Besides the reader, only what this principal can read now too (a current member, the message after their joining:
    * the visibility rule with them as reader) — the owner shown what an Agent found elsewhere (agents/tools/elsewhere.ts).
    * Absent or null: the reader alone decides.
    */
   alsoVisibleTo?: string | null;
+  /**
+   * A reply's own search (agents/tools/search.ts): never the messages reply run `runId` answers in `conversationId`, which
+   * its model is shown already (item E: a question would otherwise match itself, and nothing would ever be "not found"
+   * there). In a group: the calls it answers (`call_seqs`; its `covers_seq` when not known) and the latest it covers
+   * (`covers_seq`) — other people's messages between them stay findable. In its Agent's own conversation, by position:
+   * every message of the owner's after what the Agent's last posted reply there covered (its posting run's `covers_seq`),
+   * up to what this run covers — a question re-asked after a failure nobody retried, what was written while the Agent was
+   * paused or had no model or was not named, a follow-up's turn. Read in this same statement, so `limit` (and the paging
+   * flag made of it) counts what is left. Absent or null: nothing is left out.
+   */
+  answering?: { runId: string; conversationId: string } | null;
   limit: number;
 }
 
@@ -179,13 +189,23 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
         and ($4::text is null or ${senderNamed("sp", "m", "$4::text")})
         and ($5::date is null or m.created_at < ($5::date)::timestamp at time zone $7::text)
         and ($6::date is null or m.created_at >= ($6::date + 1)::timestamp at time zone $7::text)
-        and ($8::uuid is null or m.conversation_id <> $8::uuid or (m.seq > $9::bigint and m.seq <= $10::bigint)
-             or (m.seq = any($11::bigint[]) and (m.seq > $9::bigint or (m.body ->> 'text') ilike $3 escape '\\')))
-        and ($13::uuid is null or exists (select 1 from memberships ov
-                                           where ov.conversation_id = m.conversation_id and ov.principal_id = $13::uuid
+        and ($8::uuid is null or m.conversation_id <> $8::uuid or (m.seq > $9::bigint and m.seq <= $10::bigint))
+        and ($12::uuid is null or exists (select 1 from memberships ov
+                                           where ov.conversation_id = m.conversation_id and ov.principal_id = $12::uuid
                                              and ov.left_seq is null and ov.joined_seq < m.seq))
+        and ($13::uuid is null or m.conversation_id <> $14::uuid
+             or not exists (select 1 from agent_runs ar
+                             where ar.id = $13::uuid
+                               and (m.seq = ar.covers_seq or m.seq = any(coalesce(ar.call_seqs, array[ar.covers_seq]))
+                                    or (m.sender_id <> ar.agent_id and m.seq <= ar.covers_seq
+                                        and exists (select 1 from agent_conversations ac where ac.conversation_id = ar.conversation_id and ac.agent_id = ar.agent_id)
+                                        and m.seq > coalesce((select max(pr.covers_seq)
+                                                                from messages pm
+                                                                join agent_runs pr on ${postingRun("pm", "pr")}
+                                                               where pm.conversation_id = ar.conversation_id and pm.sender_id = ar.agent_id
+                                                                 and pm.client_txn not like 'ack:%' and pr.id <> ar.id), 0)))))
       order by m.created_at desc, m.conversation_id desc, m.seq desc
-      limit $12`,
+      limit $11`,
     [
       readerId,
       o.conversationIds,
@@ -197,9 +217,10 @@ export async function searchRows(q: Queryable, readerId: string, o: SearchRowsOp
       o.window?.conversationId ?? null,
       o.window?.after ?? 0,
       o.window?.upTo ?? 0,
-      o.window?.calls ?? [],
       o.limit,
       o.alsoVisibleTo ?? null,
+      o.answering?.runId ?? null,
+      o.answering?.conversationId ?? null,
     ],
   );
   return rows;

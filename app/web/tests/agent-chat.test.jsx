@@ -336,6 +336,31 @@ describe("which model and level a reply of mine used (via)", () => {
   });
 });
 
+describe("an Agent conversation with nothing in it yet", () => {
+  const HINT = "和 小助手 说点什么吧。";
+
+  it("shows the system's hint (never a line as the Agent) while nothing is said and nothing is being replied", async () => {
+    await openAgentChat({ messages: [] });
+    const hint = within(timeline()).getByText(HINT);
+    expect(hint.closest("li").className).toBe("msg-system");
+    expect(timeline().querySelectorAll("li.msg")).toHaveLength(0);
+  });
+
+  it("also after its greeting could not be made (the service records that run cancelled: no failure, no 重试)", async () => {
+    await openAgentChat({ messages: [], run: runOf(R1, "cancelled") });
+    expect(within(timeline()).getByText(HINT)).toBeTruthy();
+    expect(statusLine()).toBeNull();
+  });
+
+  it("not while its first reply is being written, nor once anything is said", async () => {
+    await openAgentChat({ messages: [], run: runOf(R1, "queued") });
+    expect(within(timeline()).queryByText(HINT)).toBeNull();
+    cleanup();
+    await openAgentChat();
+    expect(within(timeline()).queryByText(HINT)).toBeNull();
+  });
+});
+
 describe("the streaming bubble", () => {
   it("shows 正在回复… until the first piece, then the text so far, and the stored message replaces it", async () => {
     const { transport } = await openAgentChat();
@@ -1247,7 +1272,7 @@ describe("a new topic", () => {
 describe("the proposal card", () => {
   const LONG = Array.from({ length: 12 }, (_, i) => `第${i + 1}行：你是一位耐心的旅行规划师。`).join("\n");
   const proposed = (status, fields = {}) =>
-    wire(A1, 3, AG1, "我整理了一份设定，请查看并确认。", {
+    wire(A1, 3, AG1, "", {
       proposal: { id: PID, status, persona: "你是一位耐心的旅行规划师。", intro: "帮你规划旅行", field: "旅行", ...fields },
     });
   const card = () => storedLi(3).querySelector(".proposal-card");
@@ -1273,6 +1298,20 @@ describe("the proposal card", () => {
       for (const name of ["确认", "修改后确认", "放弃"]) expect(cardButton(name)).toBeNull();
     });
   }
+
+  it("a reply that is only a proposal (no text: the service puts no sentence in the Agent's mouth) shows the card alone, no empty bubble", async () => {
+    await openAgentChat({ messages: [...BASE, wire(A1, 3, AG1, "", { proposal: { id: PID, status: "open", persona: "你是一位耐心的旅行规划师。" } })] });
+    expect(card().textContent).toContain("你是一位耐心的旅行规划师。");
+    expect(storedLi(3).querySelector(".bubble")).toBeNull();
+    expect(cardButton("确认")).not.toBeNull();
+  });
+
+  it("a quote of a proposal-only reply, and the chip while replying to one, say [设定提议] instead of nothing", async () => {
+    const only = wire(A1, 3, AG1, "", { proposal: { id: PID, status: "open", persona: "你是一位耐心的旅行规划师。" } });
+    const quoting = wire(A1, 4, ME_ID, "这个好", { replyTo: { seq: 3, visible: true, senderId: AG1, text: "", kind: "text" } });
+    await openAgentChat({ messages: [...BASE, only, quoting] });
+    expect(storedLi(4).querySelector("blockquote").textContent).toContain("[设定提议]");
+  });
 
   it("a deleted Agent's open proposal can no longer be decided", async () => {
     await openAgentChat({ agent: { deleted: true }, messages: [...BASE, proposed("open")] });

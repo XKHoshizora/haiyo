@@ -34,9 +34,6 @@ export const agentPersona = userText(0, PERSONA_MAX);
 /** A persona that is proposed or confirmed: the same rule, and not empty (an empty one would start onboarding again). */
 export const proposedPersona = userText(1, PERSONA_MAX);
 
-/** What a reply that held only the block reads as. */
-export const PROPOSAL_PLACEHOLDER = "我整理了一份设定，请查看并确认。";
-
 /** What a proposal may set: the persona, and the intro and the field when it names them (null: left as they are). */
 export interface ProposedPersona {
   persona: string;

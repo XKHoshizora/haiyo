@@ -451,7 +451,7 @@ describe("Agents", () => {
 
 describe("persona proposal cards", () => {
   const P1 = "00000000-0000-4000-8000-0000000000f7";
-  const proposed = (status) => wire(A1, 3, AG1, "我整理了一份设定，请查看并确认。", { proposal: { id: P1, status, persona: "你是小助手。" } });
+  const proposed = (status) => wire(A1, 3, AG1, "", { proposal: { id: P1, status, persona: "你是小助手。" } });
 
   it("applyMessageUpdate replaces a held message, never adds one", () => {
     let s = M.applyMessage(loaded(), proposed("open")).state;
@@ -541,6 +541,15 @@ describe("providers, usage and site models", () => {
     expect(view(M.applyModels(M.initial(), answer({ proactiveAvailable: true }))).proactiveAvailable).toBe(true);
     expect(view(M.applyModels(M.initial(), answer({ proactiveAvailable: "yes" }))).proactiveAvailable).toBe(false);
     expect(view(M.applyModels(M.applyModels(M.initial(), answer({ proactiveAvailable: true })), answer())).proactiveAvailable).toBe(false);
+  });
+
+  it("applyModels keeps how far back turning memory on again looks (memoryCatchUp), only as whole numbers; null until said", () => {
+    const answer = (extra) => ({ siteModels: [], providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 }, ...extra });
+    expect(view(M.initial()).memoryCatchUp).toBeNull();
+    expect(view(M.applyModels(M.initial(), answer({ memoryCatchUp: { days: 30, lines: 200 } }))).memoryCatchUp).toEqual({ days: 30, lines: 200 });
+    for (const bad of [{ days: "30", lines: 200 }, { days: 30 }, { days: 0, lines: 200 }, { days: 1.5, lines: 200 }, null, "30/200"]) {
+      expect([bad, view(M.applyModels(M.initial(), answer({ memoryCatchUp: bad }))).memoryCatchUp]).toEqual([bad, null]);
+    }
   });
 
   it("an Agent's proactive settings come only as the service says them, and a malformed one is not kept", () => {

@@ -136,13 +136,69 @@ export type RunEnd =
   | { readonly status: "done" }
   | { readonly status: "stopped" }
   | { readonly status: "cancelled"; readonly error?: "agent_paused" | "agent_deleted" | "agent_removed" | "halted" }
-  | { readonly status: "failed"; readonly error: RunErrorCode; readonly resetsAt?: string };
+  | {
+      readonly status: "failed";
+      readonly error: RunErrorCode;
+      readonly resetsAt?: string;
+      /** The upstream's HTTP status, when the call failed with one (the gateway's `ModelError.upstreamStatus`). Never on the wire. */
+      readonly upstreamStatus?: number;
+      /**
+       * It failed for a reason that clears by itself (`passingEnding`, THE classifier; set by the worker, and by recovery for
+       * a run the service lost mid-call): the system may try the reply again (agents/runs.ts `scheduleAutoRetry`). Absent:
+       * not. Never on the wire.
+       */
+      readonly transient?: true;
+    };
 
 /**
  * The provider could not be reached or gave nothing usable (also how a run the previous process left running ends, and
  * how a persona draft fails then). Its literal type is kept: a draft's failure must stay a `ModelErrorCode`.
  */
 export const UNAVAILABLE = { status: "failed", error: "provider_unavailable" } as const satisfies RunEnd;
+
+/**
+ * How a reply's model call ended badly, as the worker (and recovery) knows it: what `passingEnding` classifies. Each
+ * carries `progress`, ONE fact about the reply as a whole, set once and never reset: whether it had produced anything yet
+ * — any text or thinking received in any round, an acknowledgement posted, a tool round completed (for a run the service
+ * lost, what its row recorded: `agent_runs.progressed`).
+ * - `upstream`: the call failed with an error of the gateway's (`code`), with the upstream's HTTP status when it answered one;
+ * - `cut`: the stream ended without its finish; `timeout`: the reply's own time ran out;
+ * - `nothing`: the answer finished and nothing visible was left (a content refusal, only thinking, a persona block cut at
+ *   the limit, a group reply that was only the mark and labels);
+ * - `lost`: the service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep).
+ */
+export type Ending =
+  | { kind: "upstream"; code: RunErrorCode; status?: number; progress: boolean }
+  | { kind: "cut"; progress: boolean }
+  | { kind: "timeout"; progress: boolean }
+  | { kind: "nothing" }
+  | { kind: "lost"; progress: boolean };
+
+/**
+ * THE classifier of a passing (transient) ending (README "Replies", Automatic retry, table 1): only an explicit signal,
+ * and only while the reply as a whole has produced nothing yet (`progress` false) — the upstream's 5xx, 408 or 429; a call
+ * error with no status, a cut stream or the reply's time out; or the service losing the run mid-call. After anything was
+ * produced nothing is passing: the reply already spent and did things, and repeating them unattended is not acceptable.
+ * Never an answer that finished with nothing in it, another status, or an error of another kind.
+ */
+export function passingEnding(e: Ending): boolean {
+  switch (e.kind) {
+    case "upstream":
+      if (e.progress || e.code !== "provider_unavailable") return false;
+      return e.status === undefined || e.status >= 500 || e.status === 408 || e.status === 429;
+    case "cut":
+    case "timeout":
+    case "lost":
+      return !e.progress;
+    case "nothing":
+      return false;
+  }
+}
+
+/** A failed end of `error` for `ending`: tagged `transient` when it is passing (`passingEnding`). */
+export function failedEnd(error: RunErrorCode, ending: Ending, extra: { upstreamStatus?: number; resetsAt?: string } = {}): RunEnd {
+  return { status: "failed", error, ...extra, ...(passingEnding(ending) ? { transient: true as const } : {}) };
+}
 /** The service's own trouble: the reply could not be started or stored, or had nothing to answer. Charged nothing. */
 export const BUSY = { status: "failed", error: "busy" } as const satisfies RunEnd;
 /** No tokens at all: what a run that never called a model, or one recovered at start-up, is settled on. */

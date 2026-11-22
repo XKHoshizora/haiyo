@@ -5,6 +5,19 @@ import { test, expect } from "./support/fixtures.mjs";
 import { mailLink, mintInvite, newIdentity, newPassword, uniq } from "./support/accounts.mjs";
 import { chatPane, expectOnce, expectStored, goTo, listRow, openChat, rail, sendText, signInUi } from "./support/app.mjs";
 
+/**
+ * What the page after a mail is asked for says: 请查收邮箱 on a site that delivers mail; on one that does not (`GET /api/site`
+ * `mailDelivered` false — the local suite's outbox) the page says so instead, under `noMailTitle`.
+ */
+async function expectMailPage(page, noMailTitle) {
+  const { mailDelivered } = await (await page.request.get("/api/site")).json();
+  if (mailDelivered) await expect(page.getByRole("heading", { name: "请查收邮箱" })).toBeVisible();
+  else {
+    await expect(page.getByRole("heading", { name: noMailTitle })).toBeVisible();
+    await expect(page.getByText("这个站点不发送邮件。请向管理员索取验证链接。")).toBeVisible();
+  }
+}
+
 /** /register → the inbox's verification link → /verify → sign in. Resolves with the page's WebSocket. */
 async function signUp(page, identity) {
   await page.goto("/register");
@@ -14,7 +27,7 @@ async function signUp(page, identity) {
   await page.getByLabel("昵称").fill(identity.displayName);
   await page.getByLabel("账号名").fill(identity.handle);
   await page.getByRole("button", { name: "注册", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "请查收邮箱" })).toBeVisible();
+  await expectMailPage(page, "验证邮箱");
 
   await page.goto(await mailLink(identity.email, "verify_email"));
   await expect(page.getByRole("heading", { name: "邮箱已验证" })).toBeVisible();
@@ -51,7 +64,7 @@ test("spec §7.1: sign up, verify, reset, befriend, chat both ways; history surv
   await elsewhere.page.getByRole("link", { name: "忘记密码" }).click();
   await elsewhere.page.getByLabel("邮箱", { exact: true }).fill(boId.email);
   await elsewhere.page.getByRole("button", { name: "发送重置邮件" }).click();
-  await expect(elsewhere.page.getByRole("heading", { name: "请查收邮箱" })).toBeVisible();
+  await expectMailPage(elsewhere.page, "重置密码");
   await elsewhere.page.goto(await mailLink(boId.email, "reset_password"));
   await expect(elsewhere.page).toHaveURL(/\/reset-password$/); // the token left the address bar
   const oldPassword = boId.password;

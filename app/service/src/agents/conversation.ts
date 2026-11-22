@@ -12,10 +12,22 @@ import { insertMessage, MESSAGE_COLUMNS, toStored, type MessageBody, type Messag
 import { MESSAGE_TEXT_MAX } from "../messages/send.ts";
 import { cleanModelText, hasVisibleText } from "../schemas.ts";
 import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
-import { parseProposalBlock, PROPOSAL_PLACEHOLDER, storeProposal } from "./persona.ts";
+import { parseProposalBlock, storeProposal } from "./persona.ts";
 import { RunNotRunning } from "./runtime/port.ts";
 import { withoutMarkPlaced } from "./runtime/prompt.ts";
-import { hearFrom, noneTriggered, ownedAgentOf, triggerFromAgent, type Lane, type RunLimits, type Triggered } from "./runs.ts";
+import {
+  callerOf,
+  hearFrom,
+  noneTriggered,
+  overLaneLimit,
+  ownedAgentOf,
+  queueRun,
+  triggerFromAgent,
+  type Announced,
+  type Lane,
+  type RunLimits,
+  type Triggered,
+} from "./runs.ts";
 import { forgetSummaries } from "./summary/store.ts";
 import { askedOf } from "./tools/elsewhere.ts";
 import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
@@ -36,9 +48,6 @@ import type { ProactiveLevel, ReasoningLevel } from "../config.ts";
 
 /** The most of a reply's reasoning that is stored; the rest is cut (it is never shown to a model again). */
 export const REASONING_MAX = 32_000;
-
-export const greetingText = (name: string): string =>
-  `你好，我是「${name}」，你刚刚创建的 Agent。我现在还没有设定。你希望我是谁、主要帮你做什么、用什么语气说话？直接告诉我就行，说完我会整理成一份设定给你确认。`;
 
 export interface NewAgent {
   /** Its name part: its handle is `<owner's handle>.<name part>` (family names). */
@@ -68,7 +77,11 @@ export interface NewAgent {
 /**
  * Creates an Agent in one transaction: its principal (kind `agent`, owned by `ownerId`), the `agents` row, the
  * dedicated conversation (type `agent`, `agent_conversations`, owner and Agent as speakers from seq 0) and, when
- * there is no persona yet, the fixed greeting from the Agent. The owner's account lock (taken first: it also
+ * there is no persona yet and it has a model (`greet`: the service's default; the test harness turns it off), its first
+ * reply, queued: an ordinary reply of its owner's own lane (charged and admitted like any) that its run is told to make
+ * a greeting of (`agent_runs.greets`, port-impl.ts `begin`) — never a fixed sentence posted as the Agent (principle P2).
+ * Over the owner's own replies a minute it is not queued; nor is anything posted in its place: the empty conversation
+ * shows its owner a hint of the client's. The owner's account lock (taken first: it also
  * serialises the count) decides the limit: 403 `agent_limit` at the tier's number of Agents that are not deleted
  * (a tier `config` no longer names gets the `free` number). 409 `handle_taken` when one of the owner's Agents that is
  * not deleted has the name part — decided under that same lock, the only place an Agent is made, so two creations take
@@ -78,8 +91,9 @@ export async function createAgent(
   t: Tx,
   ownerId: string,
   input: NewAgent,
-  config: Pick<Config, "agentTiers" | "siteModels" | "providerDefaultMaxOutputTokens">,
-): Promise<{ agent: AgentRow; change: Change }> {
+  config: Pick<Config, "agentTiers" | "siteModels" | "providerDefaultMaxOutputTokens"> & RunLimits,
+  greet = true,
+): Promise<{ agent: AgentRow; change: Change; greeting: Announced | null }> {
   const account = await lockAccount(t, ownerId);
   if ((await countLiveAgents(t, ownerId)) >= agentLimit(config, account.tier)) throw new AppError(403, "agent_limit");
   await assertModelChoice(t, ownerId, input.model, input.reasoning, config);
@@ -134,11 +148,12 @@ export async function createAgent(
      values ($1, $2, 'speaker', 0), ($1, $3, 'speaker', 0)`,
     [conversationId, ownerId, id],
   );
-  // The one message an Agent gets without a reply run: it counts as unread for the owner like any other.
+  // Its first reply, which greets its owner (no persona yet: it then asks who it is to be), is its model's own: queued.
   const greeting =
-    input.persona === ""
-      ? [await insertMessage(t, conversationId, id, "text", { text: greetingText(input.name), fixed: true }, null)]
-      : [];
+    greet && input.persona === "" && input.model !== null && !(await overLaneLimit(t, ownerId, "own", config))
+      ? await queueRun(t, { id, ownerId }, conversationId, 0, "human", callerOf(ownerId, ownerId), [ownerId])
+      : null;
+  if (greeting) await t.query("update agent_runs set greets = true, call_seqs = '{}' where id = $1", [greeting.run.id]);
 
   const agent: AgentRow = {
     id,
@@ -171,7 +186,7 @@ export async function createAgent(
     conversationId,
     createdAt: created.rows[0]!.created_at,
   };
-  return { agent, change: { messages: greeting, conversations: [{ conversationId, principalIds: [ownerId, id] }] } };
+  return { agent, change: { messages: [], conversations: [{ conversationId, principalIds: [ownerId, id] }] }, greeting };
 }
 
 /** An Agent's reply as the worker hands it over, with what its tools looked up when they ran (messages/lookups.ts). */
@@ -189,7 +204,7 @@ export interface AgentReply extends LookupFields {
 }
 
 /**
- * The one way an Agent's reply becomes a message (besides the fixed greeting at creation): under `lockAgent` on the
+ * The one way an Agent's reply becomes a message: under `lockAgent` on the
  * run's conversation — its row, then the `agents` row, which pause and delete lock too — so once a pause or delete has
  * committed, nothing more is posted: 409 `agent_paused` / `agent_deleted`, also for a run that pause or delete marked
  * `interrupted` after the Agent was resumed (and so for the other marks: `agent_removed`, `halted`). Nor is a run posted
@@ -207,7 +222,8 @@ export interface AgentReply extends LookupFields {
  *
  * In the Agent's own conversation: the text follows the rules of message text (`cleanModelText`: what a send would
  * refuse is removed); a persona proposal in it (`parseProposalBlock`: the reply's text only, never its reasoning) is
- * taken out — the fixed `PROPOSAL_PLACEHOLDER` stands in when nothing visible is left — and stored in this same
+ * taken out — when nothing visible is left the message keeps no text at all (principle P2: no fixed sentence is put in
+ * the Agent's mouth; its owner is shown the proposal's card alone) — and stored in this same
  * transaction (`storeProposal`, against the persona version read under this lock), the message's body naming it
  * (`proposalId`). The text is then cut at 8 000 characters, which marks it `truncated`. Without a proposal, a reply that
  * was stopped or cut (`truncated`) loses everything from its first `<af-` on (`withoutUnfinishedBlock`: it ended inside
@@ -241,7 +257,8 @@ export interface AgentReply extends LookupFields {
  * through the Agent stays the member's — else the Agent's owner. `triggered` is what to announce and publish after
  * commit (nothing for a repeat, or in the Agent's own conversation).
  *
- * Null, storing nothing, when there is nothing to show: no visible text and, in its own conversation, no reasoning kept;
+ * Null, storing nothing, when there is nothing to show: no visible text and, in its own conversation, no reasoning kept
+ * and no proposal;
  * in a group no visible text (its members would be shown an empty message), whatever reasoning there is.
  *
  * `as` "ack": what the reply said before it called a tool, posted at once as its acknowledgement ("先应一声、再交付"),
@@ -303,7 +320,7 @@ export async function postAsAgent(
   const proposal = own && !ack ? parseProposalBlock(placed.text) : null;
   if (!own || ack) placed = withoutUnfinishedBlockPlaced(placed);
   const proposalId = proposal ? randomUUID() : null;
-  if (proposal) placed = hasVisibleText(proposal.visible) ? withoutProposalPlaced(placed, proposal.visible) : { text: PROPOSAL_PLACEHOLDER, cites: [] };
+  if (proposal) placed = hasVisibleText(proposal.visible) ? withoutProposalPlaced(placed, proposal.visible) : { text: "", cites: [] };
   let truncated = reply.truncated;
   const characters = Array.from(placed.text);
   if (characters.length > MESSAGE_TEXT_MAX) {
@@ -324,8 +341,9 @@ export async function postAsAgent(
     reasoning = withoutMarkPlaced(reasoning, mark, [], thoughtCut, refs !== null, refs?.webOffered === true).text.trim();
   }
   const text = placed.text;
-  // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted.
-  if (!hasVisibleText(text) && (!own || !hasVisibleText(reasoning))) return null;
+  // In a group a reply with no visible text shows its members nothing, whatever it thought: nothing is posted. In its own
+  // conversation a proposal is something to show (its card), with no text.
+  if (!hasVisibleText(text) && proposalId === null && (!own || !hasVisibleText(reasoning))) return null;
 
   const body: MessageBody = { text };
   if (reasoning !== "") body.reasoning = reasoning;
@@ -334,6 +352,8 @@ export async function postAsAgent(
   if (proposalId !== null) body.proposalId = proposalId;
   if (ack) {
     body.ack = true;
+    // The reply has produced something (what recovery reads after a restart: runtime/port.ts `passingEnding`).
+    await t.query("update agent_runs set progressed = true where id = $1", [runId]);
     return { message: await insertMessage(t, conversationId, agentId, "text", body, txn), duplicate: false, triggered: noneTriggered() };
   }
   // Someone else wrote after the acknowledgement that stands for it (its own, or an earlier attempt's: a retry's): the
@@ -449,7 +469,9 @@ export async function standingAcknowledgement(q: Queryable, conversationId: stri
        join agent_runs r on ${postingRun("a", "r")}
       where me.id = $3 and me.agent_id = $2 and me.conversation_id = $1
         and (r.id = me.id
-             or ((r.covers_seq = me.covers_seq or r.covers_seq = any(coalesce(me.call_seqs, '{}')))
+             or ((r.covers_seq = me.covers_seq or r.covers_seq = any(coalesce(me.call_seqs, '{}'))
+                  -- an earlier attempt of the same automatic chain (runs.ts scheduleAutoRetry), whatever it covered
+                  or (me.retry_of is not null and (r.id = me.retry_of or r.retry_of = me.retry_of)))
                  and not exists (select 1 from messages x where x.conversation_id = r.conversation_id and x.sender_id = r.agent_id and x.client_txn = r.id::text)))
       order by a.seq desc
       limit 1`,

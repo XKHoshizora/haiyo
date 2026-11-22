@@ -3,7 +3,7 @@ import type { MessageRef } from "../../messages/lookups.ts";
 import { inSearchBudget, searchRows, type SearchRow } from "../../messages/search.ts";
 import { cutToWeight, lastToWeight, weight } from "../../metering/tokens.ts";
 import type { ToolSpec } from "../../models/gateway.ts";
-import { askerLine, callsSeen } from "../context.ts";
+import { askerLine } from "../context.ts";
 import type { ToolOutcome } from "../runtime/port.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, oneLine, speakerRole, TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
 import { siteDateTime, siteWeekday } from "./clock.ts";
@@ -40,8 +40,11 @@ export const QUERY_TOO_LONG = "要查的词太长了，换几个关键的字再�
 export const BAD_DATE = "日期要写成 YYYY-MM-DD，比如 2026-11-20。";
 export const NOT_FOUND = "没找到。";
 export const NOT_FOUND_IN_GROUP = "这个群的记录里没找到。";
-/** What nothing found in a group adds when only the Agent's owner asked (rule 3): never another place's name. */
-export const ASK_ME_AT_HOME = "可以在我们的专属会话里让我查所有地方。";
+/**
+ * What nothing found in a group adds when only the Agent's owner asked (rule 3): never another place's name. A plain
+ * description of the situation, so the model words it itself (no sentence in its first person to repeat).
+ */
+export const ASK_ME_AT_HOME = "只有在你和主人的专属会话里才能查所有地方。";
 /** Who wrote a result that the Agent itself wrote. */
 export const BY_YOU = "你自己";
 
@@ -135,8 +138,6 @@ interface Result {
 /** What the search read in its transaction. */
 interface Found {
   rows: SearchRow[];
-  /** A group reply's asker's line (0 elsewhere): a call at or before it is shown as its text only. */
-  line: number;
   /** In a group: whether everyone the reply answers is the Agent's owner (rule 3's hint). */
   ownerAsked: boolean;
 }
@@ -148,7 +149,9 @@ const timedOut = (err: unknown): boolean => (err as { code?: unknown } | null)?.
  * Runs one search for `scope`'s reply: refuses words too short or too heavy and dates not written as days without
  * touching the database; then, holding one of the Agent's search slots (as a person's search holds theirs: two at once,
  * four in the whole service; none free: `SEARCH_BUSY`), one read-only transaction under the search timeout
- * (`inSearchBudget`; past it: `SEARCH_TIMEOUT`). The output is `{about, more, results}` — `TOOL_MATERIAL`, then the
+ * (`inSearchBudget`; past it: `SEARCH_TIMEOUT`). It never finds the messages the run answers (`answering`, item E: the
+ * question is in the model's context already, and would otherwise match itself), so "nothing found" — and the elsewhere
+ * hook with it — is decided without them. The output is `{about, more, results}` — `TOOL_MATERIAL`, then the
  * paging flag before the results (so a cut of the result, runtime/loop.ts, keeps it), the newest `SEARCH_RESULTS_MAX`
  * at most, as many as fit `TOOLS.resultMaxWeight` — or, with nothing found, `{results: [], note}`. In a group nothing
  * found also starts the elsewhere hook (`ToolDeps.elsewhere`, Task 8) on its own, never awaited (`lookElsewhere`): what
@@ -207,18 +210,21 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
   if (scope.group) {
     conversationIds = [scope.conversationId];
     line = await askerLine(t, scope.id);
-    window = { conversationId: scope.conversationId, after: line, upTo: scope.heardTo, calls: await callsSeen(t, scope.agentId, scope.id, line) };
+    window = { conversationId: scope.conversationId, after: line, upTo: scope.heardTo };
   } else {
     const { rows } = await t.query<{ id: string }>("select conversation_id as id from memberships where principal_id = $1 and left_seq is null order by conversation_id", [scope.agentId]);
     conversationIds = rows.map((r) => r.id);
   }
-  const rows = await searchRows(t, scope.agentId, { conversationIds, ...o, timeZone: deps.config.siteTimezone, window, limit: SEARCH_RESULTS_MAX + 1 });
+  // Never what this run answers (its calls, the latest message it covers): its model is shown them already, and a question
+  // would match itself (item E). Left out in the same statement, so the page and `more` count what is left.
+  const answering = { runId: scope.id, conversationId: scope.conversationId };
+  const rows = await searchRows(t, scope.agentId, { conversationIds, ...o, timeZone: deps.config.siteTimezone, window, answering, limit: SEARCH_RESULTS_MAX + 1 });
   let ownerAsked = false;
   if (scope.group && rows.length === 0) {
     const asked = await t.query<{ only: boolean | null }>("select coalesce(asker_ids, '{}') = array[$2::uuid] as only from agent_runs where id = $1", [scope.id, scope.ownerId]);
     ownerAsked = asked.rows[0]?.only === true;
   }
-  return { rows, line, ownerAsked };
+  return { rows, ownerAsked };
 }
 
 /** The longest numbers a reply's search can mint (`refs.ts`: six digits), whose tokens results are measured with. */
@@ -230,8 +236,8 @@ const WIDEST_FILE = "f999999";
  * whole (measured with the widest numbers, then numbered); `more` when any found were left out. Who wrote each (`name｜
  * role`, as a group's labels name people: by account, never by what anyone wrote; `你自己` for the Agent), when (the
  * site's time, `YYYY-MM-DD HH:mm 周X`), what (`excerpt`), where (in the Agent's own conversation, a group's title for
- * what was said there), and a file's number and name — not for a call at or before a group reply's line, which is shown
- * as its text only. In a group the run's mark is taken out of whatever someone else wrote; the rest is shown as it is
+ * what was said there), and a file's number and name (a call the run answers, which its model is shown as its text only
+ * when it is at or before a group reply's line, is never among them: item E). In a group the run's mark is taken out of whatever someone else wrote; the rest is shown as it is
  * stored (no stored text holds a citation: what looks like one is what someone wrote). Each message and file is named
  * by its number as the model is shown it, `〔m1〕` (`ref`, refs.ts): the only numbers it can cite.
  */
@@ -243,7 +249,7 @@ function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { res
     const role = row.sender_id === scope.agentId ? null : speakerRole(row.sender_id, row.sender_kind, scope.ownerId);
     const { date, time } = siteDateTime(row.created_at, deps.config.siteTimezone);
     const elsewhere = !scope.group && row.conversation_id !== scope.conversationId;
-    const file = row.attachment && !(scope.group && seq <= found.line) ? { id: row.attachment.id, name: clean(row.attachment.name) } : null;
+    const file = row.attachment ? { id: row.attachment.id, name: clean(row.attachment.name) } : null;
     const result: Result = {
       ref: scope.refs.token(WIDEST_MESSAGE),
       ...(elsewhere ? { where: oneLine(clean(cleanText(row.title ?? ""))) || NO_GROUP_TITLE } : {}),

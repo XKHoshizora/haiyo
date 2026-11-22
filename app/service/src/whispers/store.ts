@@ -499,6 +499,21 @@ export async function roomForFoundElsewhere(
 }
 
 /**
+ * Whether Agent `w.agentId` has a `found_elsewhere` whisper to `w.ownerId` in `w.conversationId` about the message at
+ * `askedSeq` (its `detail.askedSeq`): a retry of a reply asks no second time about one question (agents/tools/elsewhere.ts).
+ */
+export async function foundElsewhereAbout(t: Queryable, w: { ownerId: string; conversationId: string; agentId: string }, askedSeq: number): Promise<boolean> {
+  const { rowCount } = await t.query(
+    `select 1 from whispers w
+      where w.owner_id = $1 and w.conversation_id = $2 and w.agent_id = $3 and w.kind = 'found_elsewhere'
+        and w.body -> 'detail' ->> 'askedSeq' = $4::text
+      limit 1`,
+    [w.ownerId, w.conversationId, w.agentId, askedSeq],
+  );
+  return rowCount !== 0;
+}
+
+/**
  * The whisper reply run `runId` was queued to tell (`agent_runs.whisper_id`, Task 8's `告诉他们`), read as the run's owner
  * (`owner_id = r.owner_id`): undefined when the run was queued for none; null when its whisper is gone (deleted 30 days
  * after it was made). What its told reply is shown and quotes is read from it (agents/tools/elsewhere.ts `toldHits`,

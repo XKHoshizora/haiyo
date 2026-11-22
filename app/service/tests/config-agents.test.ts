@@ -617,3 +617,23 @@ describe("the memory configuration", () => {
     }
   });
 });
+
+describe("the automatic-retry configuration (AGENTS)", () => {
+  test("unset or empty: retried after 20 seconds, then 2 minutes", () => {
+    expect(loadConfig(base).agents).toEqual({ autoRetryDelaysMs: [20_000, 120_000] });
+    expect(loadConfig({ ...base, AGENTS: "" }).agents).toEqual({ autoRetryDelaysMs: [20_000, 120_000] });
+    expect(loadConfig({ ...base, AGENTS: "{}" }).agents).toEqual({ autoRetryDelaysMs: [20_000, 120_000] });
+  });
+
+  test("an override: at most two waits, each 0 to 600 000 ms; an empty list turns it off", () => {
+    expect(loadConfig({ ...base, AGENTS: '{"autoRetryDelaysMs":[]}' }).agents).toEqual({ autoRetryDelaysMs: [] });
+    expect(loadConfig({ ...base, AGENTS: '{"autoRetryDelaysMs":[5000]}' }).agents).toEqual({ autoRetryDelaysMs: [5000] });
+    expect(loadConfig({ ...base, AGENTS: '{"autoRetryDelaysMs":[0,600000]}' }).agents).toEqual({ autoRetryDelaysMs: [0, 600_000] });
+  });
+
+  test("three waits, a wait past ten minutes, a negative or fractional one, a string, an unknown key and bad JSON refuse", () => {
+    for (const bad of ['{"autoRetryDelaysMs":[1,2,3]}', '{"autoRetryDelaysMs":[600001]}', '{"autoRetryDelaysMs":[-1]}', '{"autoRetryDelaysMs":[1.5]}', '{"autoRetryDelaysMs":"20000"}', '{"nope":1}', "[]", "nope"]) {
+      expect(() => loadConfig({ ...base, AGENTS: bad }), bad).toThrow(/AGENTS/);
+    }
+  });
+});

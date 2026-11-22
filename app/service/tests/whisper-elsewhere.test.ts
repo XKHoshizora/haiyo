@@ -148,6 +148,18 @@ const slotOf = async (w: World, who: Actor) => (await api(app, who, "GET", `/api
 const ownSlot = async (w: World) => (await slotOf(w, w.owner)).runs.find((e: { agentId: string }) => e.agentId === w.agent.id)?.run;
 
 describe("a search in a group that finds nothing there", () => {
+  it("item E: a real question holding its own search words is not its own result — nothing is found in the group, and the whisper is made", async () => {
+    const w = await world();
+    const hook = createElsewhere(elsewhereDeps());
+    await say(w.mia, w.g, "@olive_bot 查一下群里有没有人说过蓝鲸计划");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("这个群的记录里没找到。");
+    expect(await toolWorker(toolDeps(hook)).runOnce()).toBe(true);
+    await hook.idle();
+    expect(outputs(gateway.calls.at(-1)!)[0]).toEqual({ results: [], note: "这个群的记录里没找到。" });
+    const [made] = await whispersOf(w.owner.id, w.g);
+    expect(made).toMatchObject({ status: "open", body: { text: FOUND_ELSEWHERE, actions: ["tell", "dismiss"] } });
+  });
+
   it("found elsewhere: one whisper to the owner, keeping references to what it found (never its text or names); she reads the hits; the model is told the plain not-found, and nobody else is sent or shown anything", async () => {
     const w = await world();
     const sockets = { owner: await connect(app, w.owner), mia: await connect(app, w.mia), ned: await connect(app, w.ned) };
@@ -166,11 +178,11 @@ describe("a search in a group that finds nothing there", () => {
       askedSeq: asked,
     });
     const stored = JSON.stringify(made!.body.detail);
-    for (const never of ["CANARY", "蓝鲸计划", "乙群", "我们的专属会话", "olive", "mia"]) expect([never, stored.includes(never)]).toEqual([never, false]);
+    for (const never of ["CANARY", "蓝鲸计划", "乙群", "你和它的专属会话", "olive", "mia"]) expect([never, stored.includes(never)]).toEqual([never, false]);
     // What she reads (the list route, her push): each hit as it is now — where, who, when, what.
     const wire = await wireOf(w.owner, w.g, made!.id);
     expect(wire!.detail!.hits.map((h) => [h.where, h.who, h.text])).toEqual([
-      ["我们的专属会话", "olive", OWN_NOTE],
+      ["你和它的专属会话", "olive", OWN_NOTE],
       ["乙群", "mia", CANARY],
     ]);
     expect(Object.keys(wire!.detail!.hits[0]!).sort()).toEqual(["text", "when", "where", "who"]);
@@ -358,7 +370,7 @@ describe("a search in a group that finds nothing there", () => {
     const hook = createElsewhere(elsewhereDeps());
     await askInGroup(w, hook);
     const [made] = await whispersOf(w.owner.id, w.g);
-    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.map((h) => [h.where, h.text])).toEqual([["我们的专属会话", OWN_NOTE]]);
+    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.map((h) => [h.where, h.text])).toEqual([["你和它的专属会话", OWN_NOTE]]);
     expect(made!.body.detail!.hits.map((h) => h.conversationId)).toEqual([w.agent.conversationId]);
   });
 });
@@ -420,7 +432,7 @@ describe("告诉他们", () => {
     expect(call.system).not.toContain("@someone_bot");
     expect(call.system).toContain(hits[0]!.when);
     const whole = JSON.stringify(call);
-    for (const never of ["CANARY-where", "CANARY-who", "我们的专属会话", "丙群", "乙群"]) expect([never, whole.includes(never)]).toEqual([never, false]);
+    for (const never of ["CANARY-where", "CANARY-who", "你和它的专属会话", "丙群", "乙群"]) expect([never, whole.includes(never)]).toEqual([never, false]);
     // Its no-tools sentence is one that does not deny having looked (TOLD_NO_TOOLS), and its last turn is a person's.
     expect(call.system).toContain(TOLD_NO_TOOLS);
     expect(call.system).not.toContain(NO_TOOLS);
@@ -897,7 +909,7 @@ describe("hits are references, read under the owner's access when shown or told"
     expect((await api(app, w.owner, "DELETE", `/api/conversations/${w.b}/members/${w.owner.id}`)).status).toBe(200);
     const wire = (await wireOf(w.owner, w.g, made!.id))!;
     expect(wire.status).toBe("open");
-    expect(wire.detail!.hits.map((h) => [h.where, h.text])).toEqual([["我们的专属会话", OWN_NOTE]]);
+    expect(wire.detail!.hits.map((h) => [h.where, h.text])).toEqual([["你和它的专属会话", OWN_NOTE]]);
     expect(JSON.stringify((await api(app, w.owner, "GET", "/api/sync")).json)).not.toContain("CANARY-ew");
     // Told now: the passage holds what she can read now, and nothing of B.
     const accepted = await api(app, w.owner, "POST", `/api/whispers/${made!.id}/accept`);
@@ -1083,7 +1095,7 @@ describe("fix round 1", () => {
     const after = socket.events.length;
     const first = await socket.next((e) => e.type === "whisper" && e.whisper.id === both!.id, { from: after });
     expect(first.whisper.status).toBe("open");
-    expect(first.whisper.detail.hits.map((h: WireHit) => [h.where, h.text])).toEqual([["我们的专属会话", OWN_NOTE]]);
+    expect(first.whisper.detail.hits.map((h: WireHit) => [h.where, h.text])).toEqual([["你和它的专属会话", OWN_NOTE]]);
     expect(JSON.stringify(first)).not.toContain("CANARY-ew");
     const second = await socket.next((e) => e.type === "whisper" && e.whisper.id === onlyB!.id, { from: after });
     expect(second.whisper.status).toBe("expired");
@@ -1435,5 +1447,86 @@ describe("the service's own hook", () => {
     const frame = await ownerSocket.next((e) => e.type === "whisper");
     expect(frame).toMatchObject({ type: "whisper", whisper: { conversationId: w.g, kind: "found_elsewhere", text: FOUND_ELSEWHERE, status: "open" } });
     expect(frame.whisper.detail.hits.map((h: WireHit) => h.text)).toEqual([OWN_NOTE, CANARY]);
+  });
+});
+
+describe("the system's automatic retry and a found-elsewhere whisper (README Replies, Automatic retry: round 1 I-5, I-6)", () => {
+  let offset = 0;
+  const now = (): Date => new Date(Date.now() + offset);
+  /** A worker of a port whose replies the system does try again (20 s, then 2 min), on the fake clock `now`. */
+  function retrying(hook?: ElsewhereHook): { worker: AgentWorker; port: ReturnType<typeof createAgentPort> } {
+    const { db: pool, blobs, conversations, reads, config, searches } = app.deps;
+    const on = { ...config, agents: { autoRetryDelaysMs: [20_000, 120_000] } };
+    const toolbox = createToolbox({ db: pool, blobs, searches, config: on, log: app.log, ...(hook ? { elsewhere: hook } : {}) });
+    const port = createAgentPort({ db: pool, config: on, blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox, now });
+    return { port, worker: createAgentWorker({ port, models: gateway, runTimeoutMs: on.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: on.tools }) };
+  }
+
+  it("a told reply that fails for a passing reason, its whisper open, is not tried again: the whisper reads open again, and a member's call noted on it is followed up at once", async () => {
+    offset = 0;
+    const w = await world();
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [whisper] = await whispersOf(w.owner.id, w.g);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
+    // Ned calls the Agent while the told reply waits: noted on it, never taken on.
+    const nedAsked = await say(w.ned, w.g, "@olive_bot 我也有个问题");
+    const { worker } = retrying();
+    gateway.fail("provider_unavailable", { status: 503 });
+    expect(await worker.runOnce()).toBe(true);
+    const runs = await db.query<{ status: string; whisper_id: string | null; auto_attempt: number; caller_id: string | null; covers: string }>(
+      "select status, whisper_id, auto_attempt, caller_id, covers_seq::text as covers from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at",
+      [w.agent.id, w.g],
+    );
+    expect(runs.rows.map((r) => [r.status, r.whisper_id !== null, r.auto_attempt])).toEqual([
+      ["done", false, 0],
+      ["failed", true, 0],
+      ["queued", false, 0],
+    ]);
+    expect(runs.rows[2]).toMatchObject({ caller_id: w.ned.id, covers: String(nedAsked) });
+    expect((await wireOf(w.owner, w.g, whisper!.id))!.status).toBe("open");
+    offset += 200_000;
+    gateway.reply("回答 ned。");
+    expect(await worker.runOnce()).toBe(true);
+    expect(await worker.runOnce()).toBe(false);
+  });
+
+  it("a told reply lost mid-call after its whisper stopped reading open is not tried again either", async () => {
+    offset = 0;
+    const w = await world();
+    await askInGroup(w, createElsewhere(elsewhereDeps()));
+    const [whisper] = await whispersOf(w.owner.id, w.g);
+    expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
+    const { port, worker } = retrying();
+    const lost = await port.claimNext();
+    expect(lost).not.toBeNull();
+    await db.query("update whispers set created_at = created_at - interval '25 hours' where id = $1", [whisper!.id]);
+    expect(await port.releaseRun(lost!.id)).toBe(true);
+    offset += 200_000;
+    expect(await worker.runOnce()).toBe(false);
+    const runs = await runsOf(w.agent.id, w.g);
+    expect(runs.map((r) => [r.status, r.whisper_id !== null])).toEqual([
+      ["done", false],
+      ["failed", true],
+    ]);
+  });
+
+  it("a reply whose later round fails after its search found nothing here is not retried by the system (it had done a tool round); its owner's 重试 searches again and makes no second whisper about the same question", async () => {
+    offset = 0;
+    const w = await world();
+    const hook = createElsewhere(elsewhereDeps());
+    const { worker } = retrying(hook);
+    await say(w.mia, w.g, "@olive_bot 群里有人说过蓝鲸计划吗？");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).fail("provider_unavailable", { status: 503 });
+    expect(await worker.runOnce()).toBe(true);
+    await hook.idle();
+    expect(await whispersOf(w.owner.id, w.g)).toHaveLength(1);
+    offset += 200_000;
+    expect(await worker.runOnce()).toBe(false);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("这个群的记录里没找到。");
+    expect(await worker.runOnce()).toBe(true);
+    await hook.idle();
+    expect(await whispersOf(w.owner.id, w.g)).toHaveLength(1);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["failed", "done"]);
   });
 });

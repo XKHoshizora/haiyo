@@ -147,6 +147,9 @@ waits, queued; a reply's later rounds are held against all that is left; 0.01–
 `warnAt` (the share of it used at which they are told, once a day; above 0 and below 1, default 0.8)),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
 whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
+`AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional;
+Replies, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic retry of one original call, in ms; at
+most 2, each 0–600 000; default `[20000, 120000]`; `[]` turns automatic retries off)),
 `HOST` (the address to listen on: an IPv4/IPv6 address or `localhost`, default `0.0.0.0`, every interface; `127.0.0.1` for local-only),
 `WEB_DIST` (optional: directory of the built web client to serve, see Deployment; unset serves none),
 `S3_*` (optional, all-or-none), `REGISTRATION_MODE` (`invite` | `open`, default `invite`),
@@ -407,7 +410,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 
 Everything else is not rate limited.
 
-**Metrics in the log.** The service writes seven kinds of line at `info`, each a JSON log object with a `metric` field,
+**Metrics in the log.** The service writes eight kinds of line at `info`, each a JSON log object with a `metric` field,
 for an operator to tune the numbers above (and the site's models) from (nothing else about them is recorded or exposed):
 
 - `{ "metric": "run_wait_ms", "lane", "ms" }`, once for each reply the worker claims (its first claim; not again when it is
@@ -428,6 +431,9 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   "reminder_no_agent" }` once for each reminder that found its owner with no Agent at all to be told in.
 - `{ "metric": "run_held_back" }`, once each time a reply is held back at its admission (Metering, Money that does not
   block): how often replies wait for one another's holds — each time, its next claim reads its conversation again.
+- `{ "metric": "auto_retry_scheduled", "attempt" }`, `{ "metric": "auto_retry_ran", "attempt" }` (admitted: its call is made) and
+  `{ "metric": "auto_retry_gave_up", "why": "attempts" | "window" | "rate_limited" }`, once each (Replies, Automatic retry):
+  how often a model service's passing failure is tried again by the system, and how often that is not enough.
 - `{ "metric": "elsewhere_skipped", "runId" }`, once for each "not here, but elsewhere" lookup skipped because as many as
   may run at once (2) already did (Whispers, `found_elsewhere`): how often an owner gets no whisper for that reason alone
   (nothing of what was asked is logged).
@@ -681,9 +687,16 @@ string, or `null` for no limit; default `"20"`), `proactive` (default `false`), 
   output limit its calls get (`PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS`, default 2 048: nothing would be left for the conversation), or a `reasoning` the model does not
   allow (a site model: `none` and its own levels; a provider model: `none` only unless it is flagged `reasoning`, then
   `none` and its `reasoningLevels`, every level when it lists none; with no model any level).
-- The conversation is created with the Agent: without a `persona` it holds one message from the Agent, the fixed
-  greeting, which is unread for you like any message from someone else. `personaVersion` is 1 when a persona was given.
-  Such an Agent interviews you about who it should be and proposes a persona (Persona proposals, below).
+- The conversation is created with the Agent, empty: nothing is ever posted as the Agent from a fixed string. Without a
+  `persona`, and with a model, its first reply is queued at once (`agent_runs.greets`, `src/agents/conversation.ts`
+  `createAgent`; `tests/agent-greeting.test.ts`): an ordinary reply of your own lane, charged and admitted like any (the
+  free allowance's rules hold), its model told by a fixed line of its system text to greet you briefly in its own words
+  (`GREETING_LINE`) and, before you have written, shown one turn that says what is so (`GREETING_TURN`); you are pushed
+  the run, and its message is unread for you like any. When it cannot be made (no model, over your replies a minute, no
+  money, the model service down) there is simply no Agent message: the run ends `cancelled` with no error (no failure,
+  no 重试), and the client shows its own hint in the empty conversation (和 {name} 说点什么吧。). `personaVersion` is 1
+  when a persona was given. Such an Agent interviews you about who it should be and proposes a persona (Persona
+  proposals, below).
 
 #### `POST /api/agents/draft-persona`
 
@@ -824,7 +837,8 @@ proposal can carry the persona, the intro and the field, nothing else (not the m
 and no other `<af-` or `</af-` anywhere in the text (so nothing nested, repeated or unknown); the values are trimmed and
 checked by the rules of an edit (`PATCH /api/agents/:id`). Then, in the transaction that stores the reply (under the
 Agent's lock, `postAsAgent`), the block is taken out of the message — its text is what is left, trimmed, or, with
-nothing visible left, the fixed sentence `我整理了一份设定，请查看并确认。` — and the proposal is stored against the persona
+nothing visible left, no text at all (`""`: no fixed sentence is put in the Agent's mouth; the client shows the proposal's
+card alone, and the chat list says `[设定提议]`) — and the proposal is stored against the persona
 version of that moment; the Agent's earlier `open` proposals become `superseded`. Anything else (two blocks, a nested
 or unclosed one, an unknown `<af-…>` tag, a value over its limit) is no proposal: a complete reply is stored as written.
 A reply that was stopped or cut (`stopped`, or `truncated`: at the model's output limit, the time limit or 8 000
@@ -878,6 +892,43 @@ Agent's or a group, and for a run of another conversation, it answers the JSON 4
 id that does not exist. In a group (In a group, below) the Agent's owner sees and acts on its runs there, and every
 other current member learns only whether it is replying. Failures are never messages: they live on the run, which the
 owner learns from the `run` push and from `GET /api/conversations/:id/run` (in a group, `GET …/runs`).
+
+**Automatic retry** (`src/agents/runs.ts` `scheduleAutoRetry`, migration `063_greeting_and_auto_retry.sql`;
+`tests/auto-retry.test.ts`): a reply that failed for a reason that clears by itself is tried again by the system, nobody
+pressing anything. Passing means only an explicit signal while THE REPLY AS A WHOLE has produced nothing yet
+(`src/agents/runtime/port.ts` `passingEnding`, THE classifier, which tags the failed end `transient`; one reply-wide
+fact, set once: any text or thinking received in any round, an acknowledgement posted, a tool round completed — for a run
+the service lost, `agent_runs.progressed`, set by the acknowledgement and by every step between tool rounds): the model
+service answered 5xx, 408 or 429; a call error with no status, a stream cut short or the reply's own time out; or the
+service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep). After anything
+was produced none of these is passing (the reply already spent and did things; repeating them unattended is not
+acceptable): it is the ordinary failure, with 重试. An answer that finished with nothing in it (a content refusal, only
+thinking, a persona block cut at the limit, a group reply that was only its mark) is the provider's answer and is not
+retried; nor is anything else (no money, a model gone, a key or request refused, a context too small, a stop, a pause,
+a delete). Which runs (the table): an ordinary reply in the Agent's own conversation or in a
+group, whoever called it (an Agent's relayed call included) — never a reply nobody asked for (lane `proactive`), a
+told reply (`告诉他们`: its owner has just pressed it; its whisper reads open again and offers 重试, and the members'
+calls noted on it get their follow-up at once), a new Agent's greeting (what its owner wrote while it ran always gets an
+ordinary follow-up, however the greeting ends — answered, failed, stopped, lost at a restart, released at shutdown or by
+the stale-run sweep: `port-impl.ts` `followUpOnEnd`, the one place for every ending), or a run queued by the owner's own 重试
+(`owner_retry`: the owner is there). At most once per wait of `AGENTS.autoRetryDelaysMs` per original call (default
+`[20000, 120000]`: 20 s, then 2 min after the failure; `[]` turns it off; counted on the chain, `retry_of` /
+`auto_attempt`, also across restarts), and only when it can START within 10 minutes of the original call: one held back
+past that (by admission, by the owner's other running replies, or queued while the service was down) is not started
+— it ends as the ordinary failure, with 重试 for its owner and 暂时无法回复 for the others. The retry is an ordinary queued
+run (`not_before`): the worker claims it once due (`for update skip locked`: one instance only), so it survives a
+restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held back or refused, it is not
+forced), charged as any, held to the owner's replies a minute in its lane, and answers the same calls in the same lane
+by the same caller (a member's call stays the member's). Whatever calls the Agent while it waits is folded into it and
+waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. It posts no second
+acknowledgement within one chain, and makes no second found-elsewhere whisper about the same asking message. While it
+waits the run slot reads `queued` (there is no separate "trying again" state: everyone sees 正在回复…, up to about
+2.5 minutes): its owner is pushed the queued retry and its claim alone, never the failure; the other members of a group,
+told `replying`, are told nothing more until the answer — the same frames as an answer at the first try (for a reply
+that ran tools before it failed, the tool-activity frames come again with the retry's tools: kinds only, nothing of
+them). Only when the system has given up is the failure shown, with 重试 as ever; `POST …/runs/retry` while a retry
+waits is 409 `busy_run` (no second run). A 429 is passing whatever its cause, also a provider's lasting quota refusal on
+an owner's own key: that owner learns why after the retries (about 2.3 minutes).
 
 **Run**: `{"id", "status": "queued" | "running" | "done" | "failed" | "stopped" | "cancelled", "error"?, "retryable",
 "retryableUntil"?, "resetsAt"?}`. `error`: for `failed` why (`provider_rejected`, `provider_unavailable`, `address_not_allowed`, `no_quota`,
@@ -1482,17 +1533,17 @@ the Agent's `whisperElsewhere` is on; the same words with the same filters (`fro
 more — on their own, after the search has answered the model, never awaited: what is found, how long it takes or how it
 fails changes nothing the model is told, nor when — in the Agent's other conversations (each it is a current member of but
 this group, as the Agent sees it, and there only what you can read now: a conversation you are a current member of, a
-message after your joining; its own conversation with you included, `我们的专属会话`: you see each hit before you answer),
+message after your joining; its own conversation with you included, `你和它的专属会话`: you see each hit before you answer),
 found something. The caps below are read before that query (none runs without room for a whisper), and at most 2 such
 queries run at once in the whole service (`ELSEWHERE_AT_ONCE`, apart from the search slots, which are the models'): one
 more is skipped, and counted (`elsewhere_skipped`, Metrics in the log).
-`群里有人问到的事，这个群里没有，但我在别处查到了。要告诉他们吗？`, buttons `tell` and `dismiss`. **Its hits are references**: its row
+`在别处查到了相关内容，要告诉他们吗？` (the system's words to its owner, never the Agent's first person), buttons `tell` and `dismiss`. **Its hits are references**: its row
 keeps, for each of at most 5 hits (the newest first), the conversation and the message it points at and where the words
 are in it — never the text, a title or a name — and which message of the group asked (the call the search answered).
 Whenever it is shown to you (the push, sync, catch-up, the list route, an answer) and when its told reply begins, each is
 read again **under your access then**: a hit you can no longer read (you left that group, say) is left out; with none left
 the whisper reads `expired`. You are sent `detail` `{"hits": [{"where", "who", "when", "text"}]}`, read so: `where` the
-group's title now (`某个群` without one) or `我们的专属会话`, `who` the sender's name as a label shows it, `when`
+group's title now (`某个群` without one) or `你和它的专属会话`, `who` the sender's name as a label shows it, `when`
 `YYYY-MM-DD HH:mm` in the site's time zone, `text` on one line around the words (cut at the place kept, in the text as
 stored), at most 200 characters. At most one a reply, and none while you have 3 `found_elsewhere` whispers in that group whose state is open or
 telling (a told one, or one with no hit left, takes no room); with the switch off the second query is not run at all.
@@ -1909,7 +1960,8 @@ Stopping a call (its abort signal) ends it at once and closes the upstream conne
 
 *Session: required.* What a client's model picker reads: the models the site offers and the defaults a provider model
 gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision", "pdf", "reasoning": [levels],
-"contextTokens", "tools": boolean}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true}`.
+"contextTokens", "tools": boolean}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true,
+"memoryCatchUp": {"days", "lines"}}`.
 
 - `siteModels`: `SITE_MODELS` in configuration order (`[]` when none is configured). `id` is what an Agent's
   `{"source": "site", "id"}` names; `reasoning` the levels the model takes besides `none`, which every model takes (an
@@ -1918,6 +1970,9 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
   upstream model name, its key or the name of the variable holding it, or its prices.
 - `proactiveAvailable`: whether the judgement model is configured (`JUDGE`); turning an Agent's `proactive` on is refused (409 `proactive_unavailable`) when it is not.
 - `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there, and `TOOLS.enabled`; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
+- `memoryCatchUp`: how far back turning an Agent's memory on again with `catchUp` may look in its groups (An Agent's
+  memory): at most the last `days` days (`MEMORY.catchUpDays`), at most the latest `lines` lines of each group
+  (`MEMORY.catchUpLines`) — what the client's question under 记忆 says.
 - `providerDefaults`: `PROVIDER_DEFAULT_CONTEXT_TOKENS` (a provider model's context when its owner gives none) and
   `PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS` (the output limit of every call to a provider model at reasoning `none`, to which
   a level adds its thinking allowance, Calling a model; a provider model's context must be larger).
@@ -1928,6 +1983,14 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
 #### `GET /api/health`
 
 *Session: none.* → 200 `{"ok": true}` once the database answers a query; 503 `busy` when it does not in time.
+
+#### `GET /api/site`
+
+*Session: none.* → 200 `{"mailDelivered": boolean}`: whether this site really delivers mail (`MAIL_MODE=resend`;
+false in `outbox` mode, where mail is only written to `mail_outbox`). The page after registering and the
+forgot-password page read it, so that a site that sends no mail says so (这个站点不发送邮件。请向管理员索取验证链接。)
+instead of saying a mail was sent. The same answer for every caller, signed in or not; nothing else about the mail
+setup. Not rate limited (it reads no database).
 
 ### Accounts and sessions
 
@@ -3570,9 +3633,14 @@ what looks like one is what someone wrote.
 - `search_messages` `{query, from?, before?, after?}`: where it looks — in a group, that group only, and there only what
   the reply may see: after its asker's line (`askerLine`, read for each call: a newcomer's question finds nothing from
   before they joined, not even a count) and up to what the reply had heard when it began (the conversation's seq read in
-  `begin`), with the calls it answers wherever they are (one at or before the line as its text only: found by its text,
-  never by its file's name); in the Agent's own
+  `begin`); in the Agent's own
   conversation, every conversation the Agent is a current member of (its own and its groups, each as the Agent sees it).
+  Never the messages the reply answers (its model is shown them already; a question would match itself): in a group the
+  calls it answers and the latest it covers (other people's messages between them are found as any); in the Agent's own
+  conversation, by position, every message of the owner's after what the Agent's last posted reply there covered (its
+  posting run's `covers_seq`), up to what this reply covers — so also a question re-asked after a failure nobody retried,
+  and what was written while the Agent was paused, had no model or was not named; "nothing found", its note and the
+  elsewhere lookup are decided without them, and so is `more`.
   A new topic changes nothing here: search is history, not context. Matched as the search routes match (Search: a
   substring of the text or the file's name, any case); `query` is cleaned as a stored text is (`cleanText`), then refused
   under two characters (`要查的词至少要两个字。`) or over a weight of 60 (`要查的词太长了，换几个关键的字再查。`) without touching the
@@ -3589,10 +3657,10 @@ what looks like one is what someone wrote.
   `TOOLS.resultMaxWeight` whole (`more` when any were left out); `where` only in the Agent's own conversation, for what
   was said in a group (its title, `某个群` when it has none); `who` is the sender's name as a group's label shows it and
   who they are to the Agent by account (`你的主人`, `群成员`, `Agent`), `你自己` for the Agent; `text` at most a weight of
-  200 around what matched, `…` where it was cut; `file` for a file message (not for a call shown as its text only). Its
+  200 around what matched, `…` where it was cut; `file` for a file message. Its
   text and its file's name are all that is read of a message: never its reasoning, never what an earlier reply looked
   up. In a group the run's mark is taken out of whatever someone else wrote. Nothing found: `{"results": [], "note":
-  "没找到。"}`, in a group `这个群的记录里没找到。`, followed by `可以在我们的专属会话里让我查所有地方。` only when everyone the
+  "没找到。"}`, in a group `这个群的记录里没找到。`, followed by `只有在你和主人的专属会话里才能查所有地方。` only when everyone the
   reply answers is the Agent's owner — never another place's name; in a group nothing found also starts the elsewhere
   hook (`ToolDeps.elsewhere`, "not here, but elsewhere": Whispers, `found_elsewhere`), on its own once the search has answered, never awaited:
   whatever it does, how long it takes or how it fails (logged by the failure's kind only) changes nothing the model is
@@ -3611,7 +3679,7 @@ what looks like one is what someone wrote.
   as reader) and, in a group, only one of that group sent after the reply's asker's line and within what it had heard
   (else `这个文件现在看不到了。`); in the Agent's own conversation also a file a search found in one of its groups. Text only,
   decided by its bytes as the context decides (`fileText`): an image, a PDF or anything else is
-  `这种文件我读不了内容。`; a number the run never gave, `没有这个文件编号。`; a blob that is gone, `这个文件的内容找不到了。`;
+  `这种文件不是文本，读不了内容。`; a number the run never gave, `没有这个文件编号。`; a blob that is gone, `这个文件的内容找不到了。`;
   `from` at or past the end, `from 超出了文件的长度。`; a negative `from`, `from 要写 0 或更大的整数。`.
 
 A tool's own refusal (an output `{"error": …}`) is sent to the model as it is and looks nothing up (What a reply looked

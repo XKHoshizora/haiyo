@@ -425,7 +425,7 @@ describe("Agents (batch 2A)", () => {
       wire(A1, 2, AG1, "床前明月光", { reasoning: "想一想", stopped: true }),
       wire(A1, 3, ME_ID, "继续"),
       wire(A1, 4, AG1, "长长的", { truncated: true }),
-      wire(A1, 5, AG1, "我整理了一份设定，请查看并确认。", { proposal: { id: P1, status: "open", persona: "你是诗人。", intro: "写诗" } }),
+      wire(A1, 5, AG1, "", { proposal: { id: P1, status: "open", persona: "你是诗人。", intro: "写诗" } }),
     ];
     const v = toView(agentModel({ conversations: [agentConv(A1, AG1, { lastSeq: 5, readSeq: 5, peerReadSeq: 1 })], messages }), { now: NOW });
     const [mine, poem, again, long, card] = v.convs[A1].messages;
@@ -434,7 +434,8 @@ describe("Agents (batch 2A)", () => {
     expect(poem).toMatchObject({ from: AG1, text: "床前明月光", reasoning: "想一想", stopped: true, truncated: false, proposal: null });
     expect(long).toMatchObject({ truncated: true, stopped: false, reasoning: null });
     expect(card.proposal).toEqual({ id: P1, status: "open", persona: "你是诗人。", intro: "写诗" });
-    expect(lastPreview(v, v.convs[A1])).toBe("我整理了一份设定，请查看并确认。");
+    // A reply that is only a proposal has no text (no sentence is put in the Agent's mouth): the list says what it is.
+    expect(lastPreview(v, v.convs[A1])).toBe("[设定提议]");
   });
 
   it("the list's preview of an Agent's message is without its Markdown markers; a person's message is as written", () => {
