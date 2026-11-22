@@ -33,7 +33,8 @@ export const STOP_WAIT_MS = 5_000;
 
 /** What each configuration refusal tells the operator to check (said once per process, class and host). */
 const CONFIGURATION_ADVICE: Readonly<Record<string, (host: string) => string>> = {
-  auth: (host) => `APNs (${host}) refused the provider token: check APNS_KEY_ID, APNS_KEY_P8 and APPLE_TEAM_ID; pushes to ${host} pause and are tried again later`,
+  auth: (host) =>
+    `APNs (${host}) refused the provider token or the request: check APNS_KEY_ID, APNS_KEY_P8 and APPLE_TEAM_ID; the pushes it covers (that host, or for a refusal Apple gives no cause for that phone) pause and are tried again later`,
   key_env: (host) =>
     `APNs: this key does not cover the ${host} environment: create the APNs key as "Sandbox & Production" (team-scoped) and set APNS_KEY_ID and APNS_KEY_P8 to it; pushes to ${host} pause, the other environment is not affected`,
   topic: (host) =>

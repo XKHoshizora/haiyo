@@ -238,7 +238,10 @@ describe("what APNs answers", () => {
     [403, "BadCertificate", "auth", "host"],
     [403, "BadCertificateEnvironment", "key_env", "host"],
     [403, "ExpiredProviderToken", "auth", "host"],
-    [403, "Forbidden", "auth", "host"],
+    // No documented cause, grouped by Apple with the per-request errors: nothing proves the host, so the token.
+    [403, "Forbidden", "auth", "token"],
+    // A 403 reason Apple adds later: by its status, and as narrow — the token.
+    [403, "NotYetDocumented", "auth", "token"],
     [403, "InvalidProviderToken", "auth", "host"],
     [403, "MissingProviderToken", "auth", "host"],
     [403, "UnrelatedKeyIdInToken", "sent", "none"],

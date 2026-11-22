@@ -46,7 +46,7 @@ export const TOKEN_MIN_AGE_MS = 20 * 60_000;
  * | 403    | BadCertificate               | auth                         | the host       | no (no certificate is used) |
  * | 403    | BadCertificateEnvironment    | key_env                      | the host       | a picked host: own |
  * | 403    | ExpiredProviderToken         | renewed once; else auth      | the host       | no: the token's age |
- * | 403    | Forbidden                    | auth                         | the host       | a picked host: own |
+ * | 403    | Forbidden                    | auth                         | the token      | unknown: no cause documented, so the token alone |
  * | 403    | InvalidProviderToken         | auth                         | the host       | a picked host: own |
  * | 403    | MissingProviderToken         | auth                         | the host       | no: always sent |
  * | 403    | UnrelatedKeyIdInToken        | retried, new connection      | nothing        | no: one key per process |
@@ -62,7 +62,9 @@ export const TOKEN_MIN_AGE_MS = 20 * 60_000;
  * | 503    | ServiceUnavailable, Shutdown | retried, new connection      | nothing        | no |
  *
  * (`BadEnvironmentKeyInToken`, a spelling seen in the wild, is taken as `BadEnvironmentKeyIdInToken`.) A reason not in the
- * table is taken by its status: 410 gone, 403 auth (the host), 429 retried, 5xx retried, any other rejected.
+ * table is taken by its status: 410 gone, 403 auth (the token: nothing proves more), 429 retried, 5xx retried, any other
+ * rejected. A host is paused only for a reason whose cause is the configuration alone (the key, the Team ID, the topic):
+ * a refusal Apple gives no cause for could be the token's, and then a person's chosen token would pause everyone there.
  */
 /** How long a host's (or a token's) pushes pause after a refusal of the configuration (THE RULE OF A PAUSE, above). */
 export const CONFIGURATION_PAUSE_MS = 15 * 60_000;
@@ -119,7 +121,7 @@ const REASONS: Readonly<Record<string, Verdict>> = {
   BadCertificate: refusedHost("auth"),
   BadCertificateEnvironment: refusedHost("key_env"),
   ExpiredProviderToken: { kind: "renew" },
-  Forbidden: refusedHost("auth"),
+  Forbidden: { kind: "refused", why: "auth", scope: "token" },
   InvalidProviderToken: refusedHost("auth"),
   MissingProviderToken: refusedHost("auth"),
   UnrelatedKeyIdInToken: retry("network", true),
@@ -142,7 +144,7 @@ function verdictOf(status: number, reason: string | null): Verdict {
   const known = reason === null ? undefined : REASONS[reason];
   if (known) return known;
   if (status === 410) return GONE;
-  if (status === 403) return refusedHost("auth");
+  if (status === 403) return { kind: "refused", why: "auth", scope: "token" };
   if (status === 429) return retry("throttled");
   if (status >= 500) return retry("server", status === 503);
   return REJECTED;
