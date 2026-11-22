@@ -41,6 +41,7 @@ export function AvatarEditor({
   const [error, setError] = useState("");
   const urlRef = useRef(null);
   const inputRef = useRef(null);
+  const rootRef = useRef(null);
   const browseRef = useRef(null);
   const [refocus, setRefocus] = useState(false);
   const holding = typeof onPick === "function";
@@ -64,6 +65,18 @@ export function AvatarEditor({
       setRefocus(false);
     }
   }, [refocus, busy]);
+
+  // The dialog is in the body, so it would outlive this page when the layout stops drawing it (a wide window narrowed to one column while
+  // the dialog of the page beside the list was open): it closes with the page.
+  const open = picked !== null && busy === null;
+  useEffect(() => {
+    if (!open) return undefined;
+    const lost = () => {
+      if (rootRef.current && rootRef.current.getClientRects().length === 0) setPicked(null);
+    };
+    window.addEventListener("resize", lost);
+    return () => window.removeEventListener("resize", lost);
+  }, [open]);
 
   const choose = (event) => {
     const file = event.target.files?.[0];
@@ -119,7 +132,7 @@ export function AvatarEditor({
 
   const limits = "支持 PNG、JPEG、WebP，不超过 20 MB；选好后可以拖动和缩放。";
   return (
-    <div className="avatar-editor">
+    <div className="avatar-editor" ref={rootRef}>
       {held ? (
         <span className="avatar avatar-preview" style={{ width: 84, height: 84 }}>
           <span className="avatar-img avatar-fallback" style={{ width: 84, height: 84 }}>
