@@ -224,8 +224,9 @@ export interface WebSearchConfig {
   /** Which adapter calls the engine (src/agents/tools/web/engine.ts): Exa's search (the default) or DeepSeek's. */
   engine: WebEngineName;
   /**
-   * The engine's address (https; default by engine, `WEB_ENGINE_DEFAULTS`) and the environment variable holding its key
-   * (missing: not offered; a start-up line says so).
+   * The engine's address (https; default by engine, `WEB_ENGINE_DEFAULTS`; another host only with `baseUrlProxy`, so that
+   * a switch of engine never posts one vendor's key to the other) and the environment variable holding its key (default by
+   * engine, so a switch of engine never sends the other vendor's key; missing: not offered, a start-up line says so).
    */
   baseUrl: string;
   apiKeyEnv: string;
@@ -273,10 +274,17 @@ export type WebEngineName = "exa_search" | "deepseek_messages";
  *   DeepSeek the first version's 770 350 (the measured 11 000 input tokens and one output token at the acceptance's fast
  *   model's 70 and 350 micro-points a token: the same conversion through that model's price). Placeholders the owner sets.
  */
-export const WEB_ENGINE_DEFAULTS: Readonly<Record<WebEngineName, { baseUrl: string; costMicroUsdPerSearch: number; pointsMicroPerSearch: number }>> = {
-  exa_search: { baseUrl: "https://api.exa.ai", costMicroUsdPerSearch: 13_000, pointsMicroPerSearch: 13_000_000 },
-  deepseek_messages: { baseUrl: "https://api.deepseek.com", costMicroUsdPerSearch: 2_000, pointsMicroPerSearch: 770_350 },
+export const WEB_ENGINE_DEFAULTS: Readonly<Record<WebEngineName, { baseUrl: string; apiKeyEnv: string; costMicroUsdPerSearch: number; pointsMicroPerSearch: number }>> = {
+  exa_search: { baseUrl: "https://api.exa.ai", apiKeyEnv: "WEB_SEARCH_API_KEY", costMicroUsdPerSearch: 13_000, pointsMicroPerSearch: 13_000_000 },
+  deepseek_messages: { baseUrl: "https://api.deepseek.com", apiKeyEnv: "WEB_SEARCH_DEEPSEEK_API_KEY", costMicroUsdPerSearch: 2_000, pointsMicroPerSearch: 770_350 },
 };
+
+/** A key of `TOOLS.web` that is gone: refused at start, saying so and why (strict, as every setting: an operator who set a limit must not believe it still holds). */
+const removedKey = (key: string, why: string) =>
+  z
+    .unknown()
+    .optional()
+    .refine((v) => v === undefined, `${key} was removed (lane websearch2): ${why}; remove it from TOOLS`);
 
 const webSearchSchema = z
   .strictObject({
@@ -286,7 +294,8 @@ const webSearchSchema = z
       .url()
       .refine((u) => u.startsWith("https://"), "must be an https address")
       .optional(),
-    apiKeyEnv: keyVariable.default("WEB_SEARCH_API_KEY"),
+    baseUrlProxy: z.boolean().default(false),
+    apiKeyEnv: keyVariable.optional(),
     model: z.string().min(1).max(200).default("deepseek-flash"),
     exaType: z.enum(["auto", "lite", "fast"]).default("auto"),
     pointsMicroPerSearch: z.number().int().min(0).max(1_000_000_000_000).optional(),
@@ -296,6 +305,14 @@ const webSearchSchema = z
     maxAtOnce: positive(4, 100),
     timeoutMs: z.number().int().min(1000).max(120_000).default(15_000),
     maxResults: positive(6, 20),
+    perOwnerPerDay: removedKey("perOwnerPerDay", "there is no cap per owner any more, the points are the bound"),
+    sitePerDay: removedKey("sitePerDay", "the site's cap is the money fuse siteUsdPerDay now"),
+  })
+  .superRefine((w, ctx) => {
+    // Another host than the engine's own only when the operator says it is a proxy for it.
+    if (w.baseUrl !== undefined && !w.baseUrlProxy && new URL(w.baseUrl).hostname !== new URL(WEB_ENGINE_DEFAULTS[w.engine].baseUrl).hostname) {
+      ctx.addIssue({ code: "custom", path: ["baseUrl"], message: `is not ${w.engine}'s own host (${new URL(WEB_ENGINE_DEFAULTS[w.engine].baseUrl).hostname}); set baseUrlProxy: true for a proxy` });
+    }
   })
   .transform((w): WebSearchConfig => {
     const by = WEB_ENGINE_DEFAULTS[w.engine];
@@ -303,7 +320,7 @@ const webSearchSchema = z
       enabled: w.enabled,
       engine: w.engine,
       baseUrl: w.baseUrl ?? by.baseUrl,
-      apiKeyEnv: w.apiKeyEnv,
+      apiKeyEnv: w.apiKeyEnv ?? by.apiKeyEnv,
       model: w.model,
       exaType: w.exaType,
       pointsMicroPerSearch: w.pointsMicroPerSearch ?? by.pointsMicroPerSearch,

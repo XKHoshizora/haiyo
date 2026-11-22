@@ -423,18 +423,24 @@ describe("the tools configuration", () => {
       pointsMicroPerSearch: 0,
       exaType: "fast",
     });
-    // DeepSeek, chosen by configuration: its own address, estimate and price unless set.
+    // DeepSeek, chosen by configuration: its own address, key variable, estimate and price unless set — so a switch of
+    // engine never sends one vendor's key to the other (review M5).
     expect(loadConfig({ ...base, TOOLS: '{"web":{"engine":"deepseek_messages"}}' }).tools.web).toEqual({
       ...web,
       engine: "deepseek_messages",
       baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "WEB_SEARCH_DEEPSEEK_API_KEY",
       costMicroUsdPerSearch: 2000,
       pointsMicroPerSearch: 770_350,
     });
-    expect(loadConfig({ ...base, TOOLS: '{"web":{"engine":"deepseek_messages","baseUrl":"https://ds.example.com","pointsMicroPerSearch":5}}' }).tools.web).toMatchObject({
-      baseUrl: "https://ds.example.com",
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"engine":"deepseek_messages","baseUrl":"https://api.deepseek.com/v2","pointsMicroPerSearch":5}}' }).tools.web).toMatchObject({
+      baseUrl: "https://api.deepseek.com/v2",
       pointsMicroPerSearch: 5,
     });
+    // Another host than the engine's own only when said to be a proxy.
+    expect(() => loadConfig({ ...base, TOOLS: '{"web":{"engine":"deepseek_messages","baseUrl":"https://api.exa.ai"}}' })).toThrow(/TOOLS: web\.baseUrl: is not deepseek_messages's own host \(api\.deepseek\.com\); set baseUrlProxy: true for a proxy/);
+    expect(() => loadConfig({ ...base, TOOLS: '{"web":{"baseUrl":"https://proxy.example.com"}}' })).toThrow(/web\.baseUrl: is not exa_search's own host/);
+    expect(loadConfig({ ...base, TOOLS: '{"web":{"baseUrl":"https://proxy.example.com","baseUrlProxy":true}}' }).tools.web.baseUrl).toBe("https://proxy.example.com");
     for (const bad of [
       '{"web":{"baseUrl":"http://api.exa.ai"}}',
       '{"web":{"engine":"other"}}',
@@ -447,12 +453,18 @@ describe("the tools configuration", () => {
       // Only the three plain search types; Exa's deep ones are not taken.
       '{"web":{"exaType":"deep"}}',
       '{"web":{"exaType":"instant"}}',
-      // The first version's counts are gone (no cap per owner; the site's count became the money fuse).
-      '{"web":{"perOwnerPerDay":20}}',
-      '{"web":{"sitePerDay":2000}}',
     ]) {
       expect(() => loadConfig({ ...base, TOOLS: bad }), bad).toThrow(/TOOLS/);
     }
+  });
+
+  test("the first version's counts are refused at start, the error naming the key and saying it was removed and why", () => {
+    expect(() => loadConfig({ ...base, TOOLS: '{"web":{"perOwnerPerDay":20}}' })).toThrow(
+      /TOOLS: web\.perOwnerPerDay: perOwnerPerDay was removed \(lane websearch2\): there is no cap per owner any more, the points are the bound; remove it from TOOLS/,
+    );
+    expect(() => loadConfig({ ...base, TOOLS: '{"web":{"enabled":true,"sitePerDay":2000}}' })).toThrow(
+      /TOOLS: web\.sitePerDay: sitePerDay was removed \(lane websearch2\): the site's cap is the money fuse siteUsdPerDay now; remove it from TOOLS/,
+    );
   });
 
   test("unset or empty: every default", () => {
