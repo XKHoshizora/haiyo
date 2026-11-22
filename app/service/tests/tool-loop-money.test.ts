@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentPort, staleAfterMs, type DbAgentPort, type Toolbox } from "../src/agents/port-impl.ts";
 import { contextBudget } from "../src/agents/runtime/context.ts";
 import { isRunEnd, type Prepared, type ToolOutcome } from "../src/agents/runtime/port.ts";
-import { NO_TOOLS, toolsPassage } from "../src/agents/runtime/prompt.ts";
+import { NO_TOOLS, REPLY_LANGUAGE, toolsPassage } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import type { Config } from "../src/config.ts";
 import { CONTEXT_HEADROOM, estimateTokens, holdTokens, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR } from "../src/metering/tokens.ts";
@@ -743,6 +743,8 @@ describe("the tools' definitions, and room for what they bring back, in the cont
    */
   const NO_TOOLS_LINE = `\n${NO_TOOLS}`;
   const PASSAGE_LINES = `\n${toolsPassage(false)}`;
+  /** The preamble's line of the reply's language (lane prompt2), with its line break: a persona sized to a plan is this much shorter. */
+  const LANGUAGE_LINE = `\n${REPLY_LANGUAGE}`;
   /** `system` as a reply offered tools would have it. */
   const offered = (system: string) => {
     expect(system).toContain(NO_TOOLS_LINE);
@@ -809,11 +811,11 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // The newest message, then older ones, newest first, while they fit what the plan leaves them. Reserved: the
     // definitions and what providers add around them; the last call's line; and room for what the tools bring back —
     // two results of `resultMaxWeight`, but at most a third of what the plan would give the conversation beside the
-    // definitions (about 3 750 tokens here, its system text with the tools' passage: 1 249 are kept).
+    // definitions (about 3 710 tokens here, its system text with the tools' passage and the language line: 1 236 are kept).
     const definitions = estimateTokens(JSON.stringify([BIG]), TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
     const conversation = contextBudget(8192, a.maxOutputTokens, { rest: a.system, passage: "" }, 1, definitions);
     const results = Math.min(Math.ceil(2 * app.deps.config.tools.resultMaxWeight * TOOL_TEXT_FACTOR), Math.floor(conversation / 3));
-    expect(results).toBe(1249);
+    expect(results).toBe(1236);
     const reserved = definitions + estimateTokens(`\n\n${FINAL_LINE}`) + results;
     const shown = (budget: number) => 1 + Math.min(older.length, Math.floor((budget - estimateTokens("附近有什么好吃的？")) / 310));
     const plans = [contextBudget(8192, b.maxOutputTokens, { rest: b.system, passage: "" }), contextBudget(8192, a.maxOutputTokens, { rest: a.system, passage: "" }, 1, reserved)];
@@ -828,7 +830,7 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // A system text of about 5 000 tokens, the search tool's definition, a context of 100 000; older messages of 3 000
     // weight fill what the definitions alone left the conversation to within about 200 tokens (the review's case: the
     // conversation filling its plan).
-    const { owner, conv } = await owned("fullplan", PAID, { persona: "简".repeat(4480) });
+    const { owner, conv } = await owned("fullplan", PAID, { persona: "简".repeat(4480 - estimateTokens(LANGUAGE_LINE)) });
     await grant(db, owner.id, 100n * POINT);
     // 32 older messages of 3 000 weight each, then the question: more than either plan holds.
     const older = Array.from({ length: 32 }, (_, i) => `${String(i).padStart(2, "0")}${"字".repeat(2999)}`);
@@ -926,7 +928,7 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     // A persona that leaves the conversation about 260 tokens beside the search tool's definitions: enough for the
     // newest message's 200 alone, not once the line and a third of it for results are kept too. (Planned with the
     // system text a reply offered tools has: the tools' passage in place of its line saying there are none.)
-    const agent = await mustCreateAgent(app, owner, { name: "小", model, persona: "简".repeat(4892 + estimateTokens(NO_TOOLS_LINE) - estimateTokens(PASSAGE_LINES)) });
+    const agent = await mustCreateAgent(app, owner, { name: "小", model, persona: "简".repeat(4892 + estimateTokens(NO_TOOLS_LINE) - estimateTokens(PASSAGE_LINES) - estimateTokens(LANGUAGE_LINE)) });
     const question = `附近有什么好吃的？${"我想吃辣的。".repeat(40)}`;
     const gateway = scriptedGateway().reply("去吃川菜。", { usage: U(6000, 10) });
     await say(owner, agent.conversationId, question);
