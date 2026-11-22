@@ -32,6 +32,8 @@
     "models:list:prod": "node --enable-source-maps dist/cli.js models:list",
     "memory:stats": "tsx src/cli.ts memory:stats",
     "memory:stats:prod": "node --enable-source-maps dist/cli.js memory:stats",
+    "demo:seed": "tsx src/cli.ts demo:seed",
+    "demo:seed:prod": "node --enable-source-maps dist/cli.js demo:seed",
     "catalog:update": "node scripts/update-model-catalog.mjs"
   },
   "dependencies": {
