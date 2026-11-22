@@ -56,6 +56,7 @@ describe("usage and balance", () => {
       recent: [{ agentId: AG1, model: "free-1", source: "site", points: "3.000001", replies: 4 }],
     });
     await openUsage({ getUsage: vi.fn(async () => usage) });
+    // (The balance is rounded down: 1,234,567.000001 is 1,234,567; see balancePoints.)
     expect(kv("当前余额")).toBe("1,234,567 点");
     expect(kv("已用 / 每日额度")).toBe("<0.0001 / 100 点");
     expect(recentRows()[0][2]).toBe("3 点 · 4 次回复");
