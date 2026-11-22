@@ -52,19 +52,25 @@ describe("the app's dialogs keep the contract", () => {
     );
   });
 
-  it("添加好友 from the chat list's menu opens on 通讯录; it gives the focus to that list's own 添加好友", async () => {
+  it("添加好友 from the chat list's menu opens over the list, as 发起群聊 does: one click is one history entry (the dialog's), and the focus comes back to 新建", async () => {
     await openApp({ sync: () => syncOf([]), social: friends() });
+    const plus = () => screen.getByRole("button", { name: "新建" });
+    const before = window.history.state;
     await contract(
       "添加好友",
       async () => {
-        fireEvent.click(screen.getByRole("button", { name: "新建" }));
+        plus().focus();
+        fireEvent.click(plus());
         await flush();
         const item = screen.getByRole("button", { name: "添加好友" });
         item.focus();
         fireEvent.click(item);
         await flush();
+        // (Still the chat list under it, and only the dialog's own entry above the list's.)
+        expect(window.location.pathname).toBe("/");
+        expect(window.history.state).toMatchObject({ index: before.index + 1, path: "/", layers: [expect.any(String)] });
       },
-      () => within(document.querySelector(".list-col")).getByRole("button", { name: "添加好友" }),
+      plus,
     );
   });
 

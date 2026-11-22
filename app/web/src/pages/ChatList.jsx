@@ -6,6 +6,7 @@ import { ConvAvatar, IconBtn, LoadingRow, Tag } from "../ui/primitives.jsx";
 import { isEscape } from "../ui/keys.js";
 import { Plus, Search, UserPlus, Users } from "../icons.js";
 import { NewGroupModal } from "./GroupModals.jsx";
+import { AddFriendModal } from "./AddFriendModal.jsx";
 import { GlobalHitRow, SearchFooter } from "./SearchHits.jsx";
 import { useJumpTo } from "./useJumpTo.js";
 import { useMessageSearch } from "./useMessageSearch.js";
@@ -75,6 +76,7 @@ export function ChatList() {
   const jumpTo = useJumpTo();
   const [menu, setMenu] = useState(false);
   const [newGroup, setNewGroup] = useState(false);
+  const [addFriend, setAddFriend] = useState(false);
   const menuRef = useRef(null);
   useEffect(() => {
     if (!menu) return;
@@ -107,7 +109,8 @@ export function ChatList() {
                 <button type="button" onClick={() => (menuRef.current?.querySelector("button")?.focus(), setMenu(false), setNewGroup(true))}>
                   <Users size={16} aria-hidden="true" /> 发起群聊
                 </button>
-                <button type="button" onClick={() => (setMenu(false), dispatch({ type: "nav", patch: { section: "contacts", pane: "list", addFriend: true } }))}>
+                {/* (Over this list, as 发起群聊: one click is one entry — the dialog's — and Back closes it here.) */}
+                <button type="button" onClick={() => (menuRef.current?.querySelector("button")?.focus(), setMenu(false), setAddFriend(true))}>
                   <UserPlus size={16} aria-hidden="true" /> 添加好友
                 </button>
               </div>
@@ -158,6 +161,7 @@ export function ChatList() {
         )}
       </ul>
       {newGroup && <NewGroupModal onClose={() => setNewGroup(false)} />}
+      {addFriend && <AddFriendModal onClose={() => setAddFriend(false)} />}
     </>
   );
 }

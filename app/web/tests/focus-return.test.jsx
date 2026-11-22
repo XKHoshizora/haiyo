@@ -117,6 +117,9 @@ describe("a dialog's action removes the control that opened it; the page stays",
     expect(within(document.querySelector(".main-col")).queryByText("小安", { selector: ".member-rows strong" })).toBeNull();
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement.closest(".main-col")).toBeTruthy();
+    // (The neighbouring member, not some other row's 移除: the place nearest to where the removed one was.)
+    expect(document.activeElement.matches(".member-rows li")).toBe(true);
+    expect(document.activeElement.textContent).toContain("阿波");
     expect(said.toasts).toEqual(["已将小安移出群聊"]);
     expect(said.page).toEqual([]);
   });
@@ -163,6 +166,30 @@ describe("a dialog's action removes the control that opened it; the page stays",
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement.closest(".main-col")).toBeTruthy();
+    // (The list went with its last row: the page's heading, not a bare container.)
+    expect(document.activeElement.matches("h1, h2, h3")).toBe(true);
     expect(said.page).toEqual([]);
   });
+});
+
+describe("a focus the person put on nothing", () => {
+  beforeEach(() => windowOf(1280));
+
+  it("stays there when what they had pressed before is moved by an update (another row rises above it): the focus is not pulled back to the list", async () => {
+    // (Two columns: the row that opened the chat stays on screen beside it.)
+    const sync = () => syncOf([direct(D1, ANN, { lastSeq: 2, readSeq: 2 }), group(G1, { lastSeq: 1, readSeq: 1 })], [wire(D1, 1, ANN, "早"), wire(D1, 2, ANN, "在吗"), wire(G1, 1, BO, "大家好")]);
+    const { transport } = await openApp({ sync, social: social() });
+    const order = () => [...document.querySelectorAll(".list-col .row-name")].map((n) => n.textContent);
+    expect(order()[0]).toBe("小安");
+    // (React moves the rows a rising one passes: the pressed row is taken out and put back.)
+    await press(row("小安"));
+    // The person clicks the messages to read: the focus goes to nothing.
+    act(() => document.activeElement.blur());
+    expect(document.activeElement).toBe(document.body);
+    await push(transport, { type: "message", message: wire(G1, 2, BO, "新消息") });
+    await flush();
+    expect(order()[0]).toBe("周末小组");
+    expect(document.activeElement).toBe(document.body);
+  });
+
 });

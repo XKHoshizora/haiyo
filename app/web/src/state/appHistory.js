@@ -6,9 +6,12 @@
 // id (`layers`), so that Back closes it and nothing else. The marked entries follow the open layers: wherever the app finds itself
 // on a marked entry none of whose layers is open — a dialog just closed, Forward onto one closed before, a reload or a restored tab
 // with one open — it steps back off it at once to the page's own entry, quietly and without opening anything again. A navigation
-// made while one layer's entry is on top is written IN PLACE of that entry (a push lands where a push from the page would; a replace
-// takes the page's index and says which entry it supersedes, and Back steps over that one), so the app takes no history step of its
-// own that a person's Back could race.
+// written while one layer's entry is on top (that is, in the same commit as the dialog's close, before the close's settle) is written
+// IN PLACE of that entry (a push lands where a push from the page would; a replace takes the page's index and says which entry it
+// supersedes, and Back steps over that one), so the app takes no history step of its own that a person's Back could race. A replace
+// of the app's first entry is not written in place (there is nothing below to step over to): the layer's entry is left first and the
+// page's own entry replaced. A navigation written after the close has settled (a later render) takes the step-then-write path too.
+// Nothing is added to the history outside a gesture: a dialog held open by Back returns forward onto its own entry.
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useStore } from "../data/store.jsx";
 import { forgetDrafts } from "../data/drafts.js";
@@ -45,13 +48,13 @@ let lastEntry = read();
 function pushEntry(state, path) {
   window.history.pushState(state, "", path);
   lastEntry = read();
-  late = null;
 }
 function replaceEntry(state, path = window.location.pathname) {
   window.history.replaceState(state, "", path);
   lastEntry = read();
-  late = null;
 }
+/** The shell's own redraw from the address (useAppHistory), for when a step of the layers never came: the address is the truth. */
+let redrawFromAddress = null;
 
 /** The viewer's own close went back and the popstate has not come yet: it is shown closed at once. */
 let viewerClosing = false;
@@ -68,10 +71,6 @@ window.addEventListener("popstate", (event) => {
       ownTraversals.add(event);
       arrive();
     } else stopLeaving();
-  } else if (late !== null && at === late) {
-    // (A step of the layers' that came after they stopped waiting for it is still theirs.)
-    ownTraversals.add(event);
-    late = null;
   }
 });
 
@@ -80,14 +79,14 @@ window.addEventListener("popstate", (event) => {
 const layerList = [];
 /** A step the layers take themselves (off their own entries) is under way: the index it goes to, and what waits for its end. */
 let leaving = null;
-/** The index of a step the layers stopped waiting for (its popstate, if it comes, is still theirs). */
-let late = null;
 /** The popstate events of those steps: nobody redraws on them (the page under the layers is the page drawn). */
 const ownTraversals = new WeakSet();
 /** How many signed-in shells keep the history (useAppHistory): the layers write entries only while one does (the history is the app's). */
 let shells = 0;
-/** Long enough for any browser to finish a same-document traversal (ms); past it the layers stop waiting for its popstate. */
+/** Long enough for any browser to finish a same-document traversal (ms); the layers look again after each such wait. */
 const LEAVE_WAIT_MS = 2000;
+/** How many waits before the layers give their step up. */
+const LEAVE_TRIES = 3;
 
 const layersOf = (st) => st?.layers ?? [];
 /** Whether this popstate is a step the layers took (off their own entries), not the person's Back or Forward. */
@@ -107,19 +106,30 @@ function stopLeaving() {
   if (leaving) clearTimeout(leaving.timer);
   leaving = null;
 }
-/** Steps back over `steps` entries of layers, to the page's own; `after` runs once there. */
-function leave(steps, after) {
-  const expected = (read()?.index ?? steps) - steps;
-  leaving = {
-    expected,
-    after: after ? [after] : [],
-    timer: setTimeout(() => {
-      late = expected;
-      arrive();
-    }, LEAVE_WAIT_MS),
-  };
-  window.history.go(-steps);
+/**
+ * A step of the layers' own, `steps` entries (back when negative); `after` runs once there. Its popstate is recognised by the index it
+ * reaches. If none came after a wait: when the browser is there already (the popstate was lost) it counts as arrived; otherwise the
+ * layers wait again, and after LEAVE_TRIES give the step up without writing anything — the page is drawn from the address the browser
+ * is at, so a step that comes even later is the person's like any other.
+ */
+function stepOwn(steps, after) {
+  const expected = (read()?.index ?? 0) + steps;
+  let tries = 0;
+  const wait = () =>
+    setTimeout(() => {
+      if (!leaving) return;
+      if (read()?.index === expected) arrive();
+      else if ((tries += 1) < LEAVE_TRIES) leaving.timer = wait();
+      else {
+        stopLeaving();
+        redrawFromAddress?.();
+      }
+    }, LEAVE_WAIT_MS);
+  leaving = { expected, after: after ? [after] : [], timer: wait() };
+  window.history.go(steps);
 }
+/** Steps back over `steps` entries of layers, to the page's own; `after` runs once there. */
+const leave = (steps, after) => stepOwn(-steps, after);
 /** `run` once no entry of a layer is on top: now, or after those entries have been left. */
 function afterLayers(run, key = null) {
   if (leaving) {
@@ -165,6 +175,19 @@ const settleSoon = () => {
     settleLayers();
   });
 };
+let settlingLater = false;
+/**
+ * A settle caused by a popstate runs after that popstate's whole dispatch (a task, not a microtask): a browser runs microtasks between
+ * its listeners, and the layers' listeners must all have heard the Back before the entries are put in step.
+ */
+const settleAfterPopstate = () => {
+  if (settlingLater) return;
+  settlingLater = true;
+  setTimeout(() => {
+    settlingLater = false;
+    settleLayers();
+  }, 0);
+};
 
 /** A layer opened (ui/layers.js): it gets an entry on top of the page's. */
 export function openLayerEntry(id) {
@@ -179,14 +202,17 @@ export function closeLayerEntry(id) {
 }
 /**
  * Back left the entry of layer `id` (its popstate). Unless it may not be left now (`held`), it is no longer open as far as the
- * history goes (its owner is closing it); one that is held gets its entry again, so that the next Back is caught too.
+ * history goes (its owner is closing it). One that is held is taken forward onto its own entry again (still there, one ahead), so that
+ * the next Back is caught too — never a new entry, which a browser may mark as one to skip, having no gesture since the page's.
  */
 export function layerLeftByBack(id, held) {
-  if (!held) {
-    const at = layerList.indexOf(id);
-    if (at >= 0) layerList.splice(at, 1);
+  if (held && !leaving && layerList.includes(id)) {
+    stepOwn(1);
+    return;
   }
-  settleSoon();
+  const at = layerList.indexOf(id);
+  if (at >= 0) layerList.splice(at, 1);
+  settleAfterPopstate();
 }
 
 /** The last address seen in each section (without an overlay): a click on a section goes there, as a push. */
@@ -219,6 +245,8 @@ export const forgetSections = () => Object.assign(lastOf, ROOTS);
 
 /** What each entry of the app is as far as this page has seen: index to address key. An entry rewritten by a replace changes it, which the entries above it (forward ones) do not know in their `prev`. */
 const seen = new Map();
+/** The indexes at which this session wrote an entry superseding another (a replace made in place of a layer's entry). */
+const supersededAt = new Set();
 const ownParentBelow = (st, parent) => st && st.index > 0 && st.prev === keyOf(parent) && (!seen.has(st.index - 1) || seen.get(st.index - 1) === keyOf(parent));
 
 /**
@@ -227,9 +255,21 @@ const ownParentBelow = (st, parent) => st && st.index > 0 && st.prev === keyOf(p
  */
 function writeOverLayer(st, address, nav, replace) {
   const under = st.under ?? { index: Math.max(0, st.index - 1), prev: null };
+  // The app's first entry (a deep link, a cold start): nothing of the app is below it to step over to, so it is not superseded but
+  // replaced itself — the layer's entry is left first. The address and the screen then agree, and Back does what it does there.
+  if (replace && under.index === 0) {
+    leave(1, () => {
+      const page = read();
+      replaceEntry(entry({ index: page?.index ?? 0, prev: page?.prev ?? null, address, nav }), address.path);
+      seen.set(page?.index ?? 0, keyOf(address));
+      notify();
+    });
+    return;
+  }
   if (replace) {
     replaceEntry({ ...entry({ index: under.index, prev: under.prev, address, nav }), supersedes: st.prev }, address.path);
     seen.set(under.index, keyOf(address));
+    supersededAt.add(under.index);
   } else {
     replaceEntry(entry({ index: st.index, prev: st.prev, address, nav }), address.path);
     seen.set(st.index, keyOf(address));
@@ -349,6 +389,7 @@ export function useAppHistory({ nav, dispatch, resolves = null }) {
 
   useEffect(() => {
     seen.clear();
+    supersededAt.clear();
     // (Nor does it wait on a traversal the layers of another session started.)
     stopLeaving();
     shells += 1;
@@ -368,10 +409,15 @@ export function useAppHistory({ nav, dispatch, resolves = null }) {
     }
     // A reload or a restored tab on a layer's entry (a dialog that was open): that entry is left at once, back to the page's own.
     settleSoon();
+    // (When a step of the layers' never comes, what is drawn is the address the browser is at.)
+    redrawFromAddress = () => send.current({ type: "nav", patch: { ...navOfAddress(hereNow()), ...(read()?.nav ?? {}) } });
     // A layer whose dialog was open when the shell went (signing out) left no traversal behind (its closing is checked after the commit).
     return () => {
       shells -= 1;
-      if (shells === 0) stopLeaving();
+      if (shells === 0) {
+        stopLeaving();
+        redrawFromAddress = null;
+      }
     };
   }, []);
 
@@ -428,7 +474,10 @@ export function useAppHistory({ nav, dispatch, resolves = null }) {
       if (isLayerTraversal(event)) return;
       const st = read();
       const from = departed;
-      const stepOver = st && (st.superseded || (from?.supersedes === keyOf(hereNow()) && from.index === st.index));
+      // Superseded: marked once stepped over; or left from the entry that superseded it (one step); or not what this session last wrote
+      // at its index (a jump onto it, from anywhere: `seen` holds the superseding entry's address there).
+      const here = keyOf(hereNow());
+      const stepOver = st && (st.superseded || (from?.supersedes === here && from.index === st.index) || (seen.has(st.index) && seen.get(st.index) !== here && supersededAt.has(st.index)));
       if (stepOver) {
         if (!st.superseded) replaceEntry({ ...st, superseded: true });
         if (from && from.index < st.index) window.history.forward();
@@ -439,7 +488,7 @@ export function useAppHistory({ nav, dispatch, resolves = null }) {
       send.current({ type: "nav", patch: { ...navOfAddress(hereNow()), ...(st?.nav ?? {}) } });
       // Only an entry marked with a layer that is not open is settled from here. (A browser runs microtasks between the listeners of
       // one popstate: settling on every one would give a layer that Back is closing its entry again before its own listener hears it.)
-      if (layersOf(st).some((id) => !layerList.includes(id))) settleSoon();
+      if (layersOf(st).some((id) => !layerList.includes(id))) settleAfterPopstate();
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);

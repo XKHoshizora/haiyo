@@ -13,7 +13,7 @@
 // menus), and lifting those into the top layer needs `popover` (Safari 17); `inert` gives the same inert page on our floor.
 import { useLayoutEffect, useRef } from "react";
 import { isEscape } from "./keys.js";
-import { anchorsOf, restoreFocus } from "./focusRules.js";
+import { anchorsOf, neighboursOf, restoreFocus } from "./focusRules.js";
 import { closeLayerEntry, isLayerTraversal, layerLeftByBack, layerOnEntry, openLayerEntry } from "../state/appHistory.js";
 
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
@@ -102,6 +102,7 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
     const previous = document.activeElement;
     // Where the opener sits (its list, its section, its column…): where the focus goes if the opener is gone when this closes.
     const anchors = anchorsOf(previous);
+    const neighbours = neighboursOf(previous);
     const layer = { node, close: () => latest.current.onClose?.(), held: () => Boolean(latest.current.held?.()) };
     stack.push(layer);
     settleInert();
@@ -152,7 +153,7 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
       // if shown; else the nearest place left of where it sat; else the page's heading — never <body>. A change of page in the same
       // commit has its own say right after (ui/routeFocus.js moves a focus this put on something that page removed), and anything
       // else the commit removes from under the focus is caught after it (the shell's watch, ui/routeFocus.js).
-      restoreFocus({ candidates: [latest.current.returnTo?.(), previous], anchors, away: node });
+      restoreFocus({ candidates: [latest.current.returnTo?.(), previous], neighbours, anchors, away: node });
     };
   }, [active]);
 }

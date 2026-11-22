@@ -176,6 +176,34 @@ test("a dialog's own action never leaves the focus on <body>; Forward onto a clo
   await expect.poll(() => page.url()).not.toBe(at);
 });
 
+test("a tab that starts on group info: 退出群聊 makes that first entry the list — address and screen agree — and Back does what it does on a first entry", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const title = `深链${uniq(4)}`;
+  const id = await createGroupApi(ann, [bo, cy], title);
+  // A new tab opened straight on the group's info (a link, the shell): the page is the tab's first and only entry.
+  const [page] = await Promise.all([ann.context.waitForEvent("page"), ann.page.evaluate((path) => window.open(path, "_blank"), `/chat/${id}/info`)]);
+  const profile = page.getByRole("region", { name: "群资料" });
+  await expect(profile).toBeVisible();
+  expect(await page.evaluate(() => [history.length, history.state?.index])).toEqual([1, 0]);
+  await profile.getByRole("tab", { name: "群设置" }).click();
+  await profile.getByRole("button", { name: "退出本群" }).click();
+  await page.getByRole("dialog", { name: `退出群聊「${title}」` }).getByRole("button", { name: "确认退出" }).click();
+  const list = page.getByRole("heading", { name: "消息", level: 1 });
+  await expect(list).toBeVisible();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/");
+  expect(await page.evaluate(() => history.state?.index)).toBe(0);
+  // Back on the tab's first entry: the browser has nowhere to go; the address and the screen still say the same page.
+  await page.goBack();
+  await page.waitForTimeout(300);
+  expect(new URL(page.url()).pathname).toBe("/");
+  await expect(list).toBeVisible();
+  await expect(listRow(page, title)).toHaveCount(0);
+});
+
 test("an Agent's dialogs and the model picker's sheet at 402 px", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: PHONE });
   const page = ann.page;

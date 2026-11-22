@@ -10,7 +10,7 @@
 // And whenever something the focus was on is removed from under it (a row that went with an action, a list that re-sorted), the
 // focus goes to the same element if it was only moved, else to the nearest place left of where it was — never <body>.
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { anchorsOf, focusOn, focusView, lost, restoreFocus } from "./focusRules.js";
+import { anchorsOf, focusOn, focusView, lost, neighboursOf, restoreFocus } from "./focusRules.js";
 
 /**
  * In the signed-in shell: `where` {key, path, pane, overlay} is what is drawn, `label` what the page is called, `title` the tab's
@@ -32,23 +32,35 @@ export function useRouteFocus({ where, label, title }) {
     /** What had the focus last, and where it sat, for when it is removed from under the focus. */
     let last = null;
     let anchors = [];
+    let neighbours = [];
     const note = (e) => {
       if (!(e.target instanceof HTMLElement)) return;
       last = e.target;
       anchors = anchorsOf(e.target);
+      neighbours = neighboursOf(e.target);
       if (e.target.closest(".list-col")) inList.current = e.target;
+    };
+    // A focus the person put on nothing (a click on text) is theirs: what they had pressed before is not given the focus back later.
+    // (Checked after the event: an element taken out of the page is gone by then, one only blurred is still there.)
+    const blurred = (e) => {
+      const was = e.target;
+      queueMicrotask(() => {
+        if (was === last && was.isConnected && document.activeElement === document.body) last = null;
+      });
     };
     const watch = new MutationObserver((records) => {
       if (!last || document.activeElement !== document.body) return;
       // Only when what had the focus was itself taken out (a press on nothing, which also leaves the focus on <body>, is the person's).
       const removed = records.some((r) => [...r.removedNodes].some((n) => n === last || n.contains?.(last)));
       if (!removed) return;
-      restoreFocus({ candidates: [last], anchors });
+      restoreFocus({ candidates: [last], neighbours, anchors });
     });
     document.addEventListener("focusin", note);
+    document.addEventListener("focusout", blurred);
     watch.observe(document.body, { childList: true, subtree: true });
     return () => {
       document.removeEventListener("focusin", note);
+      document.removeEventListener("focusout", blurred);
       watch.disconnect();
     };
   }, []);

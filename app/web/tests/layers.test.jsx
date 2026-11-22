@@ -7,7 +7,7 @@ import React, { useState } from "react";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { addressOf, navOfAddress } from "../src/state/location.js";
 import { useAppHistory } from "../src/state/appHistory.js";
 import { Modal } from "../src/ui/primitives.jsx";
@@ -196,8 +196,16 @@ describe("the primitive", () => {
     const { rerender } = render(<Page locked />);
     await settle();
     await openIt();
+    const own = window.history.state;
     fireEvent.keyDown(screen.getByLabelText("名称"), { key: "Escape" });
+    // Back while it may not be left: the browser is taken forward onto the dialog's own entry again — no new entry is added (one
+    // added without a gesture may be skipped by a later Back in Chrome: the audit's original bug).
+    const pushed = vi.spyOn(window.history, "pushState");
     await back();
+    // (Two steps of the browser's, Back and the step forward: on a busy machine the second may come after the first wait.)
+    await waitFor(() => expect(window.history.state).toEqual(own));
+    expect(pushed).not.toHaveBeenCalled();
+    pushed.mockRestore();
     expect(dialogs().length).toBe(1);
     expect(window.location.pathname).toBe(`/chat/${C1}`);
     rerender(<Page locked={false} />);
@@ -333,6 +341,41 @@ describe("an entry of a layer that is not open", () => {
     expect(drawnPath()).toBe(`/chat/${C2}`);
     await back();
     expect(drawnPath()).toBe(`/chat/${C1}`);
+  });
+
+  it("the tab's first entry replaced from a dialog (a deep link, then 退出群聊): the address and the screen agree, and that entry is the page's own", async () => {
+    // (The app's first entry: a cold start on /chat/C1, index 0, nothing of the app below it.)
+    render(<Page onDone={(d, close) => (close(), d.dispatch({ type: "nav", replace: true, patch: { convId: null, pane: "list" } }))} />);
+    await settle();
+    expect(window.history.state).toMatchObject({ index: 0, path: `/chat/${C1}` });
+    await openIt();
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await settle();
+    expect(window.location.pathname).toBe("/");
+    expect(drawnPath()).toBe("/");
+    // The first entry itself became the list: nothing superseded is left below to step over (there is nothing below).
+    expect(window.history.state).toMatchObject({ index: 0, path: "/", layers: [] });
+    expect(window.history.state.supersedes).toBeUndefined();
+  });
+
+  it("a jump onto a page that a dialog's replace superseded (not over it step by step) is stepped over, never drawn", async () => {
+    await atSecond({ onDone: (d, close) => (close(), d.dispatch({ type: "nav", replace: true, patch: { convId: null, pane: "list" } })) });
+    await openIt();
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await settle();
+    expect(drawnPath()).toBe("/");
+    act(() => drive.dispatch({ type: "nav", patch: chatOf(C2) }));
+    await settle();
+    // Two entries back in one go: past the list onto the superseded /chat/C2 — it is stepped over to /chat/C1.
+    const drawn = [];
+    const watch = new MutationObserver(() => drawn.push(drawnPath()));
+    watch.observe(document.querySelector("output"), { attributes: true });
+    act(() => window.history.go(-2));
+    await settle();
+    await settle();
+    watch.disconnect();
+    expect(drawnPath()).toBe(`/chat/${C1}`);
+    expect(drawn).not.toContain(`/chat/${C2}`);
   });
 
   it("a navigation from inside a dialog is written in place of the dialog's entry: the app takes no history step of its own to race a Back", async () => {
