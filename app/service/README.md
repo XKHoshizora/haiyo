@@ -132,9 +132,11 @@ room for two in its context plan, at most a third of the conversation's), `runTi
 reply that offers tools may take in all, 1 000–3 600 000, default 300 000: 5 minutes; a reply that offers none is held
 to `AGENT_RUN_TIMEOUT_MS` alone), `web` (the web search, an object, every field optional; Agents and runs, Web search:
 `enabled` (default **false**: no reply is offered it and nothing anywhere changes), `engine` (`exa_search`, the default,
-or `deepseek_messages`), `baseUrl` (https; default by engine: `https://api.exa.ai`, `https://api.deepseek.com`),
-`apiKeyEnv` (the name of another variable holding the engine's key, default `WEB_SEARCH_API_KEY`; with `enabled` on and
-that variable empty the search is not offered and one line at start says so), `exaType` (Exa's search type: `auto`, the
+or `deepseek_messages`), `baseUrl` (https; default by engine: `https://api.exa.ai`, `https://api.deepseek.com`; another host
+is refused unless `baseUrlProxy` is true, so a switch of engine never posts one vendor's key to the other), `apiKeyEnv`
+(the name of another variable holding the engine's key, default by engine — `WEB_SEARCH_API_KEY` for Exa,
+`WEB_SEARCH_DEEPSEEK_API_KEY` for DeepSeek —; with `enabled` on and that variable empty the search is not offered and one
+line at start says so, as with `siteUsdPerDay` 0), `exaType` (Exa's search type: `auto`, the
 default, `lite` or `fast`), `model` (DeepSeek's, default `deepseek-flash`), `pointsMicroPerSearch` (what one search
 costs the owner, fixed, in micro-points — the one value to retune when the engine changes; default by engine, a
 placeholder the product owner sets: 13 000 000 for Exa, its estimate of $0.013 at one micro-USD to 1 000 micro-points,
@@ -143,7 +145,8 @@ the owner's ruling "one point is $0.001 of the upstream's list price"; 770 350 f
 engine: 13 000 for Exa — $7 a 1 000 searches and $1 a 1 000 pages for the highlights of 6 —, 2 000 for DeepSeek),
 `siteUsdPerDay` (the site's money fuse, USD a site day, default 20; Metering, A web search's price), `maxAtOnce` (engine
 calls at once in the service, default 4), `timeoutMs` (1 000–120 000, default 15 000), `maxResults` (1–20, default
-6)); the first version's `perOwnerPerDay` and `sitePerDay` are gone and refused),
+6)); the first version's `perOwnerPerDay` and `sitePerDay` are gone and refused at start, the error naming the key and
+saying it was removed and why),
 `HOLDS` (what one owner's open holds may add up to, JSON, every field optional; Metering, Money that does not block:
 `maxOpenShare` (an admission rule: the share of what is left of a source — today's free allowance, or the balance —
 that the holds of the owner's running calls against it, a starting reply's own included, may add up to before that reply
@@ -446,9 +449,12 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   with a query, an address or a result: `{ "metric": "web_search", "engine", "status", "ms", "results" }` once for each
   engine call; `{ "metric": "web_engine_refused", "engine", "http" }` once for each call the engine refused for the site's
   key or account (401, 402 — out of credits —, 403), with a WARN line of the same at most once an hour; `{ "metric":
-  "web_site_fuse", "share": 80 }` when the day's money for searches reaches 80 % of `TOOLS.web.siteUsdPerDay`, and
-  `{ "metric": "web_site_fuse_refused" }` once for each search that fuse refused; `{ "metric": "web_query_refused" }` once
-  for each query the guard refused.
+  "web_site_fuse", "share": 80 }` once a site day, when the day's money for searches first reaches 80 % of
+  `TOOLS.web.siteUsdPerDay`; `{ "metric": "web_cost_ignored" }` once for each cost report of the engine's outside a tenth
+  to ten times the estimate (the estimate then stands); and once for each search a bound refused before the engine, by
+  the bound — `web_refused_reply_cap` (the reply's `TOOLS.maxPoints`), `web_refused_lane_budget` (the others' daily, the
+  proactive daily or the chain budget), `web_refused_no_points` (the owner's free allowance and balance),
+  `web_site_fuse_refused` (the site's fuse), `web_query_refused` (the guard) — so the log shows which bound bites.
 
 Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_partial`, `judge_daily_limit`): Proactive
 replies, Log.
@@ -3798,7 +3804,9 @@ one space). A call, in this order, each refusal an `{"error"}` in plain words (n
    for everything it is compared with alike (CJK counted by Script_Extensions, so `ー` is kana): refused when the query
    shares 6 CJK characters in a row, 7 digits in a row (a phone, an ID, a card number, whatever separates them), or 3 Latin
    words in a row (read on the spaced form) with any note or hearsay text the run was shown — unless that same run is in
-   its owner's latest message in the conversation (theirs to search) — or, in a group, holds the display name or handle
+   its owner's latest message in the conversation and the reply answers the owner's own call (their own conversation,
+   their own `@` in a group: theirs to search; never someone else's call, a reply nobody asked for or a relay) — or, in a
+   group, holds the display name or handle
    (2 characters or more of that form: `李 雷`, `李，雷` and `guardb mia` are `李雷` and `guardb_mia`) of a current member or
    of the owner;
 3. one of the service's `TOOLS.web.maxAtOnce` engine places, or refused at once;
@@ -4512,12 +4520,16 @@ an account is waited for):
    budget, each counting what was settled and, for the daily ones, the searches the Agent's other replies of the same lane
    hold now, read under the Agent's row every pre-hold of it takes (two replies racing for a budget's last points are put
    in order) — and its hold raised by the price within what is left of its source beside the other holds — on the free
-   allowance the allowance itself, so a search is never paid by forgiveness; else refused, its hold as it was;
+   allowance the allowance itself, so a search is never paid by forgiveness; else refused, its hold as it was. Each
+   bound refuses in its own words and metric (`TOOLS.maxPoints`, a lane budget, the owner's points). Such a hold counts
+   as any hold: a reply of the owner's on a site model may be held back at admission behind a provider model's reply
+   that holds its searches (Money that does not block), and the queue's prediction of a source counts it;
 3. the site's money fuse (`web_search_days`, scope `site`, the site day as everywhere): what the day's searches cost the
    site, in micro-USD (`spent_micro_usd`) — each held at `costMicroUsdPerSearch` at call time and replaced, once the engine
-   answered, by what it says the call cost (Exa's `costDollars`; the estimate stands when it says nothing). A search that
-   would take it past `siteUsdPerDay` is refused (one statement; two connections racing for its last search are put in
-   order by the row's lock); the metric `web_site_fuse` (`share: 80`) says once when 80 % of it is reached. This is the
+   answered, by what it says the call cost (Exa's `costDollars`) when that is from a tenth to ten times the estimate — the
+   estimate stands otherwise, and when it says nothing. A search that would take it past `siteUsdPerDay` is refused (one
+   statement; two connections racing for its last search are put in order by the row's lock); the metric
+   `web_site_fuse` (`share: 80`) says it once a site day when 80 % of it is first reached (`warned_80`). This is the
    operator's cost insurance, not a rule for users: a user's bound is their points;
 4. `agent_runs.web_searches + 1`, `web_micro + price` (and a provider run's source).
 The change sweep deletes counter days more than a week old.
