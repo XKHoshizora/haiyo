@@ -640,7 +640,8 @@ describe("leaving", () => {
     }
     toasts.stop();
     expect(index).toBe(0);
-    expect(toasts.seen).not.toContain("你已不在该会话中");
+    // (A leave I chose says nothing at all afterwards.)
+    expect(toasts.seen).toEqual([]);
   });
 
   it("the creator is told who takes over: the earliest remaining member", async () => {

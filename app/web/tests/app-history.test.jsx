@@ -54,7 +54,7 @@ describe("the address of every place, and back", () => {
 // The hook on jsdom's own history. `Probe` holds a navigation the test moves; `moves` is every dispatch the hook asks for.
 let moves;
 let drive;
-function Probe({ initial = {} }) {
+function Probe({ initial = {}, resolves = null }) {
   const [nav, set] = useState({ ...BASE, ...initial });
   const dispatch = (action) => {
     moves.push(action);
@@ -64,7 +64,7 @@ function Probe({ initial = {} }) {
   };
   drive = { set: (patch, replace = false) => set((n) => ({ ...n, ...patch, navIntent: replace ? "replace" : "push" })), dispatch, nav };
   drive.nav = nav;
-  useAppHistory({ nav, dispatch });
+  useAppHistory({ nav, dispatch, resolves });
   return <output data-nav={JSON.stringify(nav)} />;
 }
 const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
@@ -225,6 +225,31 @@ describe("closing a page with its own button", () => {
     await go({ detailsOpen: true });
     await back();
     expect(navNow()).toMatchObject({ convId: C1, detailsOpen: false, pane: "main" });
+  });
+
+  it("r4: a click into a page that is not there writes no entry (the shell shows the notice and stays); one that is there is a push as ever", async () => {
+    render(<Probe resolves={(page) => page.convId !== C2} />);
+    await settle();
+    const length = window.history.length;
+    await go(chatOf(C2));
+    expect(at()).toBe("/");
+    expect(window.history.length).toBe(length);
+    await go(chatOf(C1));
+    expect(at()).toBe(`/chat/${C1}`);
+  });
+
+  it("r1: after a close, a tab switch on the parent page is written to its entry: Back and Forward restore the tab the person was on", async () => {
+    render(<Probe />);
+    await settle();
+    await go({ section: "agents", pane: "main", agentId: AG, agentView: "detail" });
+    await go({ agentView: "edit" });
+    await up(); // the Agent page again, by a close ("none" is still on the navigation)
+    expect(at()).toBe(`/agents/${AG}`);
+    await go({ agentTab: "memory" });
+    expect(window.history.state.nav.agentTab).toBe("memory");
+    await go({ section: "contacts", pane: "list", agentId: null });
+    await back();
+    expect(navNow().agentTab).toBe("memory");
   });
 
   it("group info → 返回群聊 is the conversation, then the list", async () => {

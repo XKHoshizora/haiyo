@@ -211,6 +211,24 @@ describe("reconnect", () => {
     expect(box.model.conversations[D1]).toMatchObject({ position: 6, readSeq: 4, unread: 2, peerReadSeq: 6 });
   });
 
+  it("立即重试 (request {retryNow}) ends the back-off now: a new attempt at once, not after the delay; with nothing waiting it does nothing", async () => {
+    const t = fakeTransport({ sync: twoChats });
+    const { box, timers, engine } = run(t);
+    await settle();
+    t.socket.drop(1006);
+    expect(timers.pending()).toBe(1);
+    t.log.length = 0;
+    engine.request({ retryNow: true, sync: true });
+    await settle();
+    expect(t.log[0]).toBe("connect"); // (no waiting for the delay)
+    expect(timers.pending()).toBe(0);
+    expect(box.model.synced).toBe(true);
+    t.log.length = 0;
+    engine.request({ retryNow: true });
+    await settle();
+    expect(t.log).not.toContain("connect"); // (live: nothing to retry)
+  });
+
   it("buffers pushes during the reconnect procedure and applies them after it", async () => {
     const t = fakeTransport({ sync: twoChats });
     const { box, timers } = run(t);

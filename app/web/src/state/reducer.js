@@ -59,6 +59,9 @@ export function reducer(state, action) {
       );
       return { ...state, nav: { ...next, navIntent: intentOf(action, state.nav, next) } };
     }
+    // A conversation I left on purpose: a Back onto its entry later says nothing (it is not a removal, and I know).
+    case "left":
+      return state.left?.includes(action.convId) ? state : { ...state, left: [...(state.left ?? []), action.convId] };
     case "toast":
       return { ...state, seq: state.seq + 1, toast: { id: state.seq + 1, text: action.text } };
     case "toast/clear":

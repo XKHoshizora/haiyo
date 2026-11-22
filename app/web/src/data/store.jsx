@@ -34,6 +34,8 @@ export function emptyState(me = null) {
       agentTab: "profile",
       pane: "list",
     },
+    /** Conversations I left on purpose (this session): no notice when a Back arrives at their entry. */
+    left: [],
     people: me ? { me } : {},
     agents: {},
     convs: {},
@@ -68,7 +70,9 @@ export function createDataLayer({
   const tx = transport ?? httpTransport({ timers });
   let model = initial();
   let connection = "idle";
-  let snapshot = { model, connection };
+  /** The connection failed and has not been live since: shown as one failure line until it is, whichever attempt it is at (it flickers between connecting and reconnecting). */
+  let failed = false;
+  let snapshot = { model, connection, failed };
   let engine = null;
   let epoch = 0;
   let notified = false;
@@ -76,7 +80,7 @@ export function createDataLayer({
   const signedOutListeners = new Set();
 
   const emit = () => {
-    snapshot = { model, connection };
+    snapshot = { model, connection, failed };
     for (const fn of [...listeners]) fn();
   };
   const getModel = () => model;
@@ -88,6 +92,8 @@ export function createDataLayer({
   const setConnection = (next) => {
     if (next === connection) return;
     connection = next;
+    if (next === "reconnecting") failed = true;
+    else if (next === "live" || next === "idle") failed = false;
     emit();
   };
 
@@ -184,7 +190,7 @@ export function StoreProvider({ children, initialState, dataLayer }) {
     () => (initialState ? null : toView(snapshot.model, { now: layer.now(), offersAt: Date.now() })),
     [initialState, snapshot.model, layer, come],
   );
-  const state = useMemo(() => (view ? { ...ui, ...view, connection: snapshot.connection } : ui), [ui, view, snapshot.connection]);
+  const state = useMemo(() => (view ? { ...ui, ...view, connection: snapshot.connection, connectionFailed: snapshot.failed } : ui), [ui, view, snapshot.connection, snapshot.failed]);
 
   useEffect(() => {
     if (!state.toast) return undefined;

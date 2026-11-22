@@ -176,12 +176,12 @@ export function Modal({ title, onClose, children, footer, wide }) {
  */
 export function LoadingRow() {
   const { state, actions } = useStore();
-  const failing = state.connection === "reconnecting";
+  const failing = state.connectionFailed === true;
   return (
     <li className="rows-empty" role="status">
       {failing ? (
         <>
-          连不上服务，正在重试… <Btn small onClick={() => actions.syncNow()}>立即重试</Btn>
+          连不上服务，正在重试… <Btn small onClick={() => actions.retryNow()}>立即重试</Btn>
         </>
       ) : (
         "正在读取…"

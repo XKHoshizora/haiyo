@@ -96,6 +96,7 @@ function GroupSettings({ conv }) {
   const leave = async () => {
     const id = conv.id;
     setLeaving(false);
+    dispatch({ type: "left", convId: id });
     dispatch({ type: "nav", replace: true, patch: { convId: null, view: "chat", detailsOpen: false } });
     const res = await run("leave", () => actions.leaveGroup(id), (e) => groupErrorText("leave", e));
     if (res.ok) dispatch({ type: "toast", text: "已退出群聊" });
