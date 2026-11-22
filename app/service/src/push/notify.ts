@@ -6,7 +6,7 @@ import type { Db } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import { CONFIGURATION_FAILURES, type ApnsClient, type ApnsFailure } from "./apns.ts";
-import { removeDeadDevice, type PushDevice } from "./devices.ts";
+import { removeDeadDevice, type PushDevice, type PushEnv } from "./devices.ts";
 
 /** The one thing a push says (system wording, never a sender, a group's name or a message's text). */
 export const PUSH_BODY = "你有新消息";
@@ -27,11 +27,14 @@ const SUMMARY_EVERY_MS = 10 * 60_000;
  */
 export const STOP_WAIT_MS = 5_000;
 
-/** What each configuration refusal tells the operator to check (said once per process and class). */
-const CONFIGURATION_ADVICE: Readonly<Record<string, string>> = {
-  auth: "APNs refused the provider token: check APNS_KEY_ID, APNS_KEY_P8 and APPLE_TEAM_ID; pushes pause and are tried again later",
-  topic: "APNs refused the topic: check APPLE_BUNDLE_ID (the app's bundle id is the push topic), or a phone runs another build of the app; no phone was deleted",
-  token_rate: "APNs says the provider token was renewed too often (restarts in a row?); pushes pause and are tried again later",
+/** What each configuration refusal tells the operator to check (said once per process, class and host). */
+const CONFIGURATION_ADVICE: Readonly<Record<string, (host: string) => string>> = {
+  auth: (host) => `APNs (${host}) refused the provider token: check APNS_KEY_ID, APNS_KEY_P8 and APPLE_TEAM_ID; pushes to ${host} pause and are tried again later`,
+  key_env: (host) =>
+    `APNs: this key does not cover the ${host} environment: create the APNs key as "Sandbox & Production" (team-scoped) and set APNS_KEY_ID and APNS_KEY_P8 to it; pushes to ${host} pause, the other environment is not affected`,
+  topic: (host) =>
+    `APNs (${host}) refused the topic: check APPLE_BUNDLE_ID (the app's bundle id is the push topic), or a phone runs another build of the app; no phone was deleted`,
+  token_rate: (host) => `APNs (${host}) says the provider token was renewed too often (restarts in a row?); pushes to ${host} pause and are tried again later`,
 };
 
 /**
@@ -147,12 +150,14 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     );
   }
 
-  const count = (why: ApnsFailure) => {
+  const count = (why: ApnsFailure, host: PushEnv) => {
     stats.failed[why] = (stats.failed[why] ?? 0) + 1;
-    // The configuration's refusal is the key's, the ids' or the topic's fault, not a phone's: said once, by its class alone.
-    if (CONFIGURATION_FAILURES.has(why) && !said.has(why)) {
-      said.add(why);
-      log.warn({ metric: "push_config_refused", class: why }, CONFIGURATION_ADVICE[why] ?? "APNs refused the configuration");
+    // The configuration's refusal is the key's, the ids' or the topic's fault, not a phone's: said once per class and host,
+    // by its class and the host alone (the host is a name of Apple's, not anything of a person's).
+    const key = `${why}:${host}`;
+    if (CONFIGURATION_FAILURES.has(why) && !said.has(key)) {
+      said.add(key);
+      log.warn({ metric: "push_config_refused", class: why, host }, CONFIGURATION_ADVICE[why]?.(host) ?? "APNs refused the configuration");
     }
   };
 
@@ -166,7 +171,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     if (result.outcome === "sent") stats.sent++;
     else if (result.outcome === "gone") {
       if (await removeDeadDevice(db, t)) stats.removed++;
-    } else count(result.why);
+    } else count(result.why, t.env);
   }
 
   /** `pushOne` unless that phone's push for the conversation is out already; the key is held until this one is over. */

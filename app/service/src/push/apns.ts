@@ -19,11 +19,52 @@ export const APNS_ORIGINS: Readonly<Record<PushEnv, string>> = {
 export const TOKEN_LIFETIME_MS = 50 * 60_000;
 export const TOKEN_MIN_AGE_MS = 20 * 60_000;
 /**
- * How long pushes pause after APNs refused the configuration: the provider token (403: the key, its id, the Team ID), the
- * topic (the bundle id), or the token's renewals (`TooManyProviderTokenUpdates`) — every push, which would all fail the same
- * way; after `DeviceTokenNotForTopic`, only that token's (one phone of another app's build must not pause everyone's
- * pushes). Nothing is deleted for these: the phones are not at fault.
+ * THE RULE OF A PAUSE: a pause is never wider than what the failing request proves, so nothing a signed-in person can
+ * choose — the token they register, the `env` (and so the APNs host) they register it for — can pause a push that would
+ * have got through. A refusal of the key or the topic proves only that THAT HOST refuses it (a key may be limited to one
+ * environment: `BadEnvironmentKeyIdInToken`), so it pauses that host; a refusal of a token pauses that token. Nothing
+ * pauses every push. Apple's table (developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns,
+ * read 2026-11-23), every reason: what it is here, what it pauses, and whether a person can provoke it — "own" meaning only
+ * for their own token or a host they picked, where it pauses nothing that would have succeeded.
+ *
+ * | status | reason                       | here                         | pauses         | a person can provoke it |
+ * |--------|------------------------------|------------------------------|----------------|--------------------------|
+ * | 400    | BadCollapseId                | rejected                     | nothing        | no: the conversation's uuid, 36 bytes |
+ * | 400    | BadDeviceToken               | gone (device deleted)        | nothing        | own token only |
+ * | 400    | BadExpirationDate            | rejected                     | nothing        | no: the server's clock |
+ * | 400    | BadMessageId                 | rejected                     | nothing        | no: no `apns-id` is sent |
+ * | 400    | BadPriority                  | rejected                     | nothing        | no: fixed 10 |
+ * | 400    | BadTopic                     | topic                        | the host       | no (configuration); a picked host: own |
+ * | 400    | DeviceTokenNotForTopic       | topic                        | the token      | own token only |
+ * | 400    | DuplicateHeaders             | rejected                     | nothing        | no: headers are the server's |
+ * | 400    | IdleTimeout                  | retried, new connection      | nothing        | no |
+ * | 400    | InvalidPushType              | rejected                     | nothing        | no: fixed `alert` |
+ * | 400    | MissingDeviceToken           | rejected                     | nothing        | no: a token is 32–100 hex bytes |
+ * | 400    | MissingTopic                 | topic                        | the host       | no (configuration) |
+ * | 400    | PayloadEmpty                 | rejected                     | nothing        | no: the payload is the server's |
+ * | 400    | TopicDisallowed              | topic                        | the host       | no (configuration); a picked host: own |
+ * | 403    | BadCertificate               | auth                         | the host       | no (no certificate is used) |
+ * | 403    | BadCertificateEnvironment    | key_env                      | the host       | a picked host: own |
+ * | 403    | ExpiredProviderToken         | renewed once; else auth      | the host       | no: the token's age |
+ * | 403    | Forbidden                    | auth                         | the host       | a picked host: own |
+ * | 403    | InvalidProviderToken         | auth                         | the host       | a picked host: own |
+ * | 403    | MissingProviderToken         | auth                         | the host       | no: always sent |
+ * | 403    | UnrelatedKeyIdInToken        | retried, new connection      | nothing        | no: one key per process |
+ * | 403    | BadEnvironmentKeyIdInToken   | key_env                      | the host       | a picked host: own (sandbox for a production-only key) |
+ * | 404    | BadPath                      | rejected                     | nothing        | no: the path is built from a checked token |
+ * | 405    | MethodNotAllowed             | rejected                     | nothing        | no: always POST |
+ * | 410    | ExpiredToken                 | gone (device deleted)        | nothing        | own token only |
+ * | 410    | Unregistered                 | gone (device deleted)        | nothing        | own token only |
+ * | 413    | PayloadTooLarge              | rejected                     | nothing        | no: the payload is fixed and small |
+ * | 429    | TooManyProviderTokenUpdates  | token_rate                   | the host       | no: renewals are at most one per 20 minutes whatever is pushed (`TOKEN_MIN_AGE_MS`) |
+ * | 429    | TooManyRequests              | retried                      | nothing        | own token only |
+ * | 500    | InternalServerError          | retried                      | nothing        | no |
+ * | 503    | ServiceUnavailable, Shutdown | retried, new connection      | nothing        | no |
+ *
+ * (`BadEnvironmentKeyInToken`, a spelling seen in the wild, is taken as `BadEnvironmentKeyIdInToken`.) A reason not in the
+ * table is taken by its status: 410 gone, 403 auth (the host), 429 retried, 5xx retried, any other rejected.
  */
+/** How long a host's (or a token's) pushes pause after a refusal of the configuration (THE RULE OF A PAUSE, above). */
 export const CONFIGURATION_PAUSE_MS = 15 * 60_000;
 /** At most this many tokens are remembered as paused (`DeviceTokenNotForTopic`); the oldest are forgotten first. */
 const MAX_PAUSED_TOKENS = 10_000;
@@ -36,13 +77,76 @@ const MAX_ANSWER_BYTES = 4096;
 
 /**
  * Why a push was not delivered (the counters' classes: README "Push notifications"). The configuration's refusals — `auth`
- * (403), `topic` (the bundle id, or a token of another app), `token_rate` (`TooManyProviderTokenUpdates`) — start a pause
- * (`CONFIGURATION_PAUSE_MS`), during which a push is `paused` without being sent.
+ * (403: the key, its id, the Team ID), `key_env` (a key that does not cover this host's environment), `topic` (the bundle
+ * id, or a token of another app), `token_rate` (`TooManyProviderTokenUpdates`) — start a pause of the host or the token
+ * (THE RULE OF A PAUSE), during which a push there is `paused` without being sent.
  */
-export type ApnsFailure = "throttled" | "server" | "network" | "timeout" | "auth" | "topic" | "token_rate" | "rejected" | "overloaded" | "closed" | "paused";
+export type ApnsFailure = "throttled" | "server" | "network" | "timeout" | "auth" | "key_env" | "topic" | "token_rate" | "rejected" | "overloaded" | "closed" | "paused";
 
-/** The failures that are the configuration's, not a phone's: each is said once to the operator (src/push/notify.ts). */
-export const CONFIGURATION_FAILURES: ReadonlySet<ApnsFailure> = new Set(["auth", "topic", "token_rate"]);
+/** The failures that are the configuration's, not a phone's: each is said once per host to the operator (src/push/notify.ts). */
+export const CONFIGURATION_FAILURES: ReadonlySet<ApnsFailure> = new Set(["auth", "key_env", "topic", "token_rate"]);
+
+type Refusal = "auth" | "key_env" | "topic" | "token_rate";
+/** What an answer other than 200 means (THE RULE OF A PAUSE's table). */
+type Verdict =
+  | { kind: "gone" }
+  | { kind: "refused"; why: Refusal; scope: "host" | "token" }
+  | { kind: "renew" }
+  | { kind: "retry"; why: "throttled" | "server" | "network"; newConnection: boolean }
+  | { kind: "rejected" };
+
+const REJECTED: Verdict = { kind: "rejected" };
+const GONE: Verdict = { kind: "gone" };
+const refusedHost = (why: Refusal): Verdict => ({ kind: "refused", why, scope: "host" });
+const retry = (why: "throttled" | "server" | "network", newConnection = false): Verdict => ({ kind: "retry", why, newConnection });
+
+/** Apple's reasons, every one (the table above). */
+const REASONS: Readonly<Record<string, Verdict>> = {
+  BadCollapseId: REJECTED,
+  BadDeviceToken: GONE,
+  BadExpirationDate: REJECTED,
+  BadMessageId: REJECTED,
+  BadPriority: REJECTED,
+  BadTopic: refusedHost("topic"),
+  DeviceTokenNotForTopic: { kind: "refused", why: "topic", scope: "token" },
+  DuplicateHeaders: REJECTED,
+  IdleTimeout: retry("network", true),
+  InvalidPushType: REJECTED,
+  MissingDeviceToken: REJECTED,
+  MissingTopic: refusedHost("topic"),
+  PayloadEmpty: REJECTED,
+  TopicDisallowed: refusedHost("topic"),
+  BadCertificate: refusedHost("auth"),
+  BadCertificateEnvironment: refusedHost("key_env"),
+  ExpiredProviderToken: { kind: "renew" },
+  Forbidden: refusedHost("auth"),
+  InvalidProviderToken: refusedHost("auth"),
+  MissingProviderToken: refusedHost("auth"),
+  UnrelatedKeyIdInToken: retry("network", true),
+  BadEnvironmentKeyIdInToken: refusedHost("key_env"),
+  BadEnvironmentKeyInToken: refusedHost("key_env"),
+  BadPath: REJECTED,
+  MethodNotAllowed: REJECTED,
+  ExpiredToken: GONE,
+  Unregistered: GONE,
+  PayloadTooLarge: REJECTED,
+  TooManyProviderTokenUpdates: refusedHost("token_rate"),
+  TooManyRequests: retry("throttled"),
+  InternalServerError: retry("server"),
+  ServiceUnavailable: retry("server", true),
+  Shutdown: retry("server", true),
+};
+
+/** The verdict on an answer: its reason when Apple documents it, else its status. */
+function verdictOf(status: number, reason: string | null): Verdict {
+  const known = reason === null ? undefined : REASONS[reason];
+  if (known) return known;
+  if (status === 410) return GONE;
+  if (status === 403) return refusedHost("auth");
+  if (status === 429) return retry("throttled");
+  if (status >= 500) return retry("server", status === 503);
+  return REJECTED;
+}
 
 /** `gone`: APNs says the token is dead (410, 400 `BadDeviceToken`); the caller deletes the device. Nothing else is. */
 export type ApnsOutcome = { outcome: "sent" } | { outcome: "gone" } | { outcome: "failed"; why: ApnsFailure };
@@ -112,31 +216,31 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
   const waits = new Set<{ timer: NodeJS.Timeout; resolve: () => void }>();
   let inFlight = 0;
   const queue: Array<() => void> = [];
-  /** Until when every push is paused (a configuration failure); 0: none. */
-  let pausedUntil = 0;
+  /** Until when each host's pushes are paused (a refusal of the key or the topic there: THE RULE OF A PAUSE); 0: none. */
+  const hostPausedUntil: Record<PushEnv, number> = { sandbox: 0, production: 0 };
   /** Tokens paused after `DeviceTokenNotForTopic`, until when (insertion order: the oldest first). */
   const pausedTokens = new Map<string, number>();
 
-  /** Whether a push to `token` is paused now (a configuration failure, everyone's or that token's). */
-  function paused(token: string): boolean {
+  /** Whether a push is paused now: its host's, or its token's. Never anything wider (THE RULE OF A PAUSE). */
+  function paused(n: Pick<ApnsNotification, "token" | "env">): boolean {
     const at = now();
-    if (at < pausedUntil) return true;
-    const until = pausedTokens.get(token);
+    if (at < hostPausedUntil[n.env]) return true;
+    const until = pausedTokens.get(n.token);
     if (until === undefined) return false;
     if (at < until) return true;
-    pausedTokens.delete(token);
+    pausedTokens.delete(n.token);
     return false;
   }
 
-  /** Starts a pause of `CONFIGURATION_PAUSE_MS`: of every push, or of one token's. */
-  function holdBack(scope: "all" | { token: string }): void {
+  /** Starts a pause of `CONFIGURATION_PAUSE_MS`: of the push's host, or of its token alone. */
+  function holdBack(n: Pick<ApnsNotification, "token" | "env">, scope: "host" | "token"): void {
     const until = now() + CONFIGURATION_PAUSE_MS;
-    if (scope === "all") {
-      pausedUntil = until;
+    if (scope === "host") {
+      hostPausedUntil[n.env] = until;
       return;
     }
-    pausedTokens.delete(scope.token);
-    pausedTokens.set(scope.token, until);
+    pausedTokens.delete(n.token);
+    pausedTokens.set(n.token, until);
     if (pausedTokens.size > MAX_PAUSED_TOKENS) pausedTokens.delete(pausedTokens.keys().next().value!);
   }
 
@@ -257,9 +361,9 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
     else inFlight--;
   }
 
-  /** A configuration failure: every push (or, `token`, that token's) paused for `CONFIGURATION_PAUSE_MS`; nothing gone. */
-  function refused(why: "auth" | "topic" | "token_rate", token?: string): ApnsOutcome {
-    holdBack(token === undefined ? "all" : { token });
+  /** A refusal of the configuration: the host's (or the token's) pushes paused for `CONFIGURATION_PAUSE_MS`; nothing gone. */
+  function refused(n: ApnsNotification, why: Refusal, scope: "host" | "token"): ApnsOutcome {
+    holdBack(n, scope);
     return { outcome: "failed", why };
   }
 
@@ -271,7 +375,7 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
     let renewed = false;
     for (let tries = 0; ; tries++) {
       if (closed) return { outcome: "failed", why: "closed" };
-      if (paused(n.token)) return { outcome: "failed", why: "paused" };
+      if (paused(n)) return { outcome: "failed", why: "paused" };
       let session: http2.ClientHttp2Session | null = null;
       const jwt = providerToken();
       let a: Attempt;
@@ -281,46 +385,44 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
       } catch {
         a = { error: "network" };
       }
-      let retry: ApnsFailure | null = null;
+      let again: ApnsFailure;
       if ("error" in a) {
-        retry = a.error;
+        again = a.error;
         // Only the connection this attempt used, never one another push opened meanwhile. A broken connection forgets
         // itself (its `error` / `close`); one stream reset leaves it up, for this push's retry and everyone else's. A silent
         // one takes no new pushes (what is on it may still finish) and the retry opens another.
         if (a.error === "timeout") session?.close();
       } else if (a.status === 200) {
         return { outcome: "sent" };
-      } else if (a.status === 410 || (a.status === 400 && a.reason === "BadDeviceToken")) {
-        return { outcome: "gone" };
-      } else if (a.status === 400 && a.reason === "DeviceTokenNotForTopic") {
-        // A token of another app (another bundle id): that token alone is paused, never deleted.
-        return refused("topic", n.token);
-      } else if (a.status === 400 && (a.reason === "TopicDisallowed" || a.reason === "BadTopic" || a.reason === "MissingTopic")) {
-        return refused("topic");
-      } else if (a.status === 403 && a.reason === "ExpiredProviderToken" && !renewed) {
-        // Once: with the token another push has renewed since this attempt's, or with one made anew now if this one is old
-        // enough; else the configuration's (a clock that is off).
-        renewed = true;
-        if (current?.jwt !== jwt || providerToken(true) !== jwt) {
-          tries--;
-          continue;
-        }
-        return refused("auth");
-      } else if (a.status === 403) {
-        return refused("auth");
-      } else if (a.status === 429 && a.reason === "TooManyProviderTokenUpdates") {
-        return refused("token_rate");
-      } else if (a.status === 429) {
-        retry = "throttled";
-      } else if (a.status >= 500) {
-        retry = "server";
-        // 503 is a server going away (`Shutdown`, `ServiceUnavailable`): the retry takes a new connection.
-        if (a.status === 503) session?.close();
       } else {
-        return { outcome: "failed", why: "rejected" };
+        const verdict = verdictOf(a.status, a.reason);
+        switch (verdict.kind) {
+          case "gone":
+            return { outcome: "gone" };
+          case "rejected":
+            return { outcome: "failed", why: "rejected" };
+          case "refused":
+            return refused(n, verdict.why, verdict.scope);
+          case "renew":
+            // Once: with the token another push has renewed since this attempt's, or with one made anew now if this one is
+            // old enough; else the configuration's (a clock that is off), on this host.
+            if (!renewed) {
+              renewed = true;
+              if (current?.jwt !== jwt || providerToken(true) !== jwt) {
+                tries--;
+                continue;
+              }
+            }
+            return refused(n, "auth", "host");
+          case "retry":
+            again = verdict.why;
+            // A server going away (503), an idle timeout, an unrelated key on this connection: the retry takes a new one.
+            if (verdict.newConnection) session?.close();
+            break;
+        }
       }
       const wait = retryDelays[tries];
-      if (wait === undefined) return { outcome: "failed", why: retry };
+      if (wait === undefined) return { outcome: "failed", why: again };
       const waited = await waitOutside(wait);
       if (waited !== "ok") return { outcome: "failed", why: waited };
     }
@@ -329,7 +431,7 @@ export function createApnsClient(options: ApnsOptions): ApnsClient {
   return {
     async send(n) {
       if (closed) return { outcome: "failed", why: "closed" };
-      if (paused(n.token)) return { outcome: "failed", why: "paused" };
+      if (paused(n)) return { outcome: "failed", why: "paused" };
       if (!(await slot())) return { outcome: "failed", why: "overloaded" };
       let holding = true;
       const waitOutside = async (ms: number): Promise<"ok" | "closed" | "overloaded"> => {

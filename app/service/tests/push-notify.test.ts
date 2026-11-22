@@ -491,6 +491,35 @@ describe("what APNs answers, and what is logged", () => {
     }
   });
 
+  test("a key limited to production: a person's sandbox phone pauses only sandbox; production phones are still pushed; one warning says how to make the key", async () => {
+    const a = await signUp(app, "env_a");
+    const b = await signUp(app, "env_b");
+    const c = await signUp(app, "env_c");
+    const { conversationId: withB } = await befriend(app, a, b);
+    const { conversationId: withC } = await befriend(app, a, c);
+    // b registers a phone for the sandbox host (their own choice, through the API); c's is a production phone.
+    expect((await api(app, b, "POST", "/api/push/devices", { token: newToken(), env: "sandbox" })).status).toBe(200);
+    const tc = await phone(c);
+    const shared = real;
+    real = client();
+    try {
+      fake.apns!.answer({ status: 403, reason: "BadEnvironmentKeyIdInToken" });
+      await say(a, withB, "to the sandbox phone");
+      await say(a, withC, "to the production phone");
+      await say(a, withB, "sandbox again");
+      expect(pushedTo().slice(1)).toEqual([tc]);
+      expect(app.push.flush()).toMatchObject({ sent: 1, failed: { key_env: 1, paused: 1 } });
+      const warned = lines.filter((l) => l.includes('"metric":"push_config_refused"'));
+      expect(warned).toHaveLength(1);
+      const line = JSON.parse(warned[0]!);
+      expect(line).toMatchObject({ level: 40, class: "key_env", host: "sandbox" });
+      expect(line.msg).toContain("Sandbox & Production");
+    } finally {
+      await real.close();
+      real = shared;
+    }
+  });
+
   test("DeviceTokenNotForTopic (a phone of another app's build): kept, not deleted; one warning of class topic", async () => {
     const a = await signUp(app, "topic_a");
     const b = await signUp(app, "topic_b");

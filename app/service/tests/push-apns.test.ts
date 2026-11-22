@@ -210,26 +210,83 @@ describe("what APNs answers", () => {
     expect(production.requests).toHaveLength(3);
   });
 
-  test("a refused provider token (403) or topic (TopicDisallowed, BadTopic) is the configuration's: every push is paused for the cool-down, nothing is gone", async () => {
-    for (const [answer, why] of [
-      [{ status: 403, reason: "InvalidProviderToken" }, "auth"],
-      [{ status: 403, reason: "Forbidden" }, "auth"],
-      [{ status: 400, reason: "TopicDisallowed" }, "topic"],
-      [{ status: 400, reason: "BadTopic" }, "topic"],
-      [{ status: 429, reason: "TooManyProviderTokenUpdates" }, "token_rate"],
-    ] as const) {
+  /**
+   * Every reason Apple documents (handling-notification-responses-from-apns, read 2026-11-23), answered once on the
+   * **sandbox** host — the host a signed-in person can pick for their own token with `env` —, and what that may pause:
+   * - `device`: gone (the caller deletes that phone); nothing paused.
+   * - `token`: that token paused; another token on the same host still sent.
+   * - `host`: that host paused; production, which the person did not pick, still sent.
+   * - `none`: given up (`rejected`) or retried, and nothing paused.
+   * The rule (src/push/apns.ts, top): a pause is never wider than what the failing request proves, so nothing a person
+   * chooses (the token, the `env`) can pause a push that would have got through.
+   */
+  const REFUSALS: ReadonlyArray<[number, string, string, "device" | "token" | "host" | "none"]> = [
+    [400, "BadCollapseId", "rejected", "none"],
+    [400, "BadDeviceToken", "gone", "device"],
+    [400, "BadExpirationDate", "rejected", "none"],
+    [400, "BadMessageId", "rejected", "none"],
+    [400, "BadPriority", "rejected", "none"],
+    [400, "BadTopic", "topic", "host"],
+    [400, "DeviceTokenNotForTopic", "topic", "token"],
+    [400, "DuplicateHeaders", "rejected", "none"],
+    [400, "IdleTimeout", "sent", "none"],
+    [400, "InvalidPushType", "rejected", "none"],
+    [400, "MissingDeviceToken", "rejected", "none"],
+    [400, "MissingTopic", "topic", "host"],
+    [400, "PayloadEmpty", "rejected", "none"],
+    [400, "TopicDisallowed", "topic", "host"],
+    [403, "BadCertificate", "auth", "host"],
+    [403, "BadCertificateEnvironment", "key_env", "host"],
+    [403, "ExpiredProviderToken", "auth", "host"],
+    [403, "Forbidden", "auth", "host"],
+    [403, "InvalidProviderToken", "auth", "host"],
+    [403, "MissingProviderToken", "auth", "host"],
+    [403, "UnrelatedKeyIdInToken", "sent", "none"],
+    [403, "BadEnvironmentKeyIdInToken", "key_env", "host"],
+    [403, "BadEnvironmentKeyInToken", "key_env", "host"],
+    [404, "BadPath", "rejected", "none"],
+    [405, "MethodNotAllowed", "rejected", "none"],
+    [410, "ExpiredToken", "gone", "device"],
+    [410, "Unregistered", "gone", "device"],
+    [413, "PayloadTooLarge", "rejected", "none"],
+    [429, "TooManyProviderTokenUpdates", "token_rate", "host"],
+    [429, "TooManyRequests", "sent", "none"],
+    [500, "InternalServerError", "sent", "none"],
+    [503, "ServiceUnavailable", "sent", "none"],
+    [503, "Shutdown", "sent", "none"],
+  ];
+
+  test("every refusal Apple documents: its outcome, and a pause never wider than what it proves (a sandbox refusal never pauses production)", async () => {
+    const other = "cd".repeat(32);
+    for (const [status, reason, outcome, scope] of REFUSALS) {
       production.reset();
+      sandbox.reset();
       clock = Date.parse("2026-11-23T00:00:00Z");
       const c = client();
-      production.answer(answer);
-      expect([answer, await c.send(note())]).toEqual([answer, { outcome: "failed", why }]);
-      expect([answer, await c.send({ ...note(), token: "cd".repeat(32), env: "sandbox" })]).toEqual([answer, { outcome: "failed", why: "paused" }]);
-      expect(production.requests.length + sandbox.requests.length).toBe(1);
-      clock += CONFIGURATION_PAUSE_MS - 1;
-      expect(await c.send(note())).toEqual({ outcome: "failed", why: "paused" });
-      clock += 1;
-      expect([answer, await c.send(note())]).toEqual([answer, { outcome: "sent" }]);
+      // (ExpiredProviderToken: the client's token is brand new, so not renewable — the configuration's, a clock that is off.)
+      sandbox.answer({ status, reason });
+      const first = await c.send(note("sandbox"));
+      const row = `${status} ${reason}`;
+      expect([row, first]).toEqual([row, outcome === "sent" || outcome === "gone" ? { outcome } : { outcome: "failed", why: outcome }]);
+      // The same token on the same host, another token on the same host, another token on the other host.
+      const again = await c.send(note("sandbox"));
+      const sameHost = await c.send({ ...note("sandbox"), token: other });
+      const otherHost = await c.send({ ...note("production"), token: other });
+      expect([row, "same token", again.outcome === "failed" && again.why === "paused"]).toEqual([row, "same token", scope === "token" || scope === "host"]);
+      expect([row, "same host", sameHost.outcome === "failed" && sameHost.why === "paused"]).toEqual([row, "same host", scope === "host"]);
+      expect([row, "other host", otherHost]).toEqual([row, "other host", { outcome: "sent" }]);
+      await c.close();
     }
+  });
+
+  test("a host's pause ends after the cool-down", async () => {
+    const c = client();
+    sandbox.answer({ status: 403, reason: "BadEnvironmentKeyIdInToken" });
+    expect(await c.send(note("sandbox"))).toEqual({ outcome: "failed", why: "key_env" });
+    clock += CONFIGURATION_PAUSE_MS - 1;
+    expect(await c.send(note("sandbox"))).toEqual({ outcome: "failed", why: "paused" });
+    clock += 1;
+    expect(await c.send(note("sandbox"))).toEqual({ outcome: "sent" });
   });
 
   test("429 TooManyRequests: retried after a wait, and sent", async () => {
