@@ -293,6 +293,18 @@ describe("upload, send, download", () => {
     expect(decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(header)![1]!)).toBe(name);
     expect(contentDisposition("pic.png", true)).toBe(`inline; filename="pic.png"; filename*=UTF-8''pic.png`);
   });
+
+  it("contentDisposition: a name with nothing ASCII to keep gets a meaningful fallback (file, with the real extension), filename* as it was", () => {
+    expect(contentDisposition("体检报告.png", true)).toBe(`inline; filename="file.png"; filename*=UTF-8''%E4%BD%93%E6%A3%80%E6%8A%A5%E5%91%8A.png`);
+    expect(contentDisposition("报告 (1).PDF", false)).toContain('filename="__ (1).PDF"'); // (a digit is something to keep)
+    expect(contentDisposition("报告.PDF", false)).toContain('filename="file.PDF"');
+    expect(contentDisposition("海边", false)).toContain('filename="file"');
+    // A name that has letters or digits keeps them (the unsafe characters are still replaced).
+    expect(contentDisposition("报告final.pdf", false)).toContain('filename="__final.pdf"');
+    expect(contentDisposition("2026年.xlsx", false)).toContain('filename="2026_.xlsx"');
+    // A non-ASCII extension is no extension for the fallback.
+    expect(contentDisposition("笔记.文档", false)).toContain('filename="file"');
+  });
 });
 
 describe("who can download", () => {

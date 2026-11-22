@@ -343,6 +343,54 @@ describe("plainText", () => {
   });
 });
 
+describe("a mention is drawn the same everywhere: bubble, quote, reply chip, chat list, copy", () => {
+  const typed = "@bo 早"; // the handle as typed; the bubble shows the name chip
+  const mentions = [{ id: BO, start: 0, length: 3 }];
+  const quoteSync = () =>
+    syncOf(
+      [group(G1, { lastSeq: 2, readSeq: 2 })],
+      [
+        wire(G1, 1, ANN, typed, { mentions }),
+        wire(G1, 2, ME_ID, "回它", { replyTo: { seq: 1, visible: true, senderId: ANN, text: typed, kind: "text", attachmentName: null } }),
+      ],
+    );
+
+  it("the quote under a reply and the chat list line say @阿波, not @bo", async () => {
+    installBrowser();
+    await openApp({ sync: quoteSync });
+    expect(document.querySelector(".list-col .row-preview").textContent).toBe("你：回它");
+    fireEvent.click(screen.getByText("周末小组", { selector: ".list-col .row-name" }));
+    await flush();
+    const quote = document.querySelector("li[data-msg] blockquote");
+    expect(quote.textContent).toContain("@阿波 早");
+    expect(quote.textContent).not.toContain("@bo");
+  });
+
+  it("the chat list line of a message that mentions says @阿波", async () => {
+    installBrowser();
+    await openApp({ sync: () => syncOf([group(G1, { lastSeq: 1, readSeq: 1 })], [wire(G1, 1, ANN, typed, { mentions })]) });
+    expect(document.querySelector(".list-col .row-preview").textContent).toBe("小安：@阿波 早");
+  });
+
+  it("the reply chip over the composer and the copied text are the same form", async () => {
+    installBrowser();
+    await openApp({ sync: () => syncOf([group(G1, { lastSeq: 1, readSeq: 1 })], [wire(G1, 1, ANN, typed, { mentions })]) });
+    fireEvent.click(screen.getByText("周末小组", { selector: ".list-col .row-name" }));
+    await flush();
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const bubble = document.querySelector("li[data-msg] .bubble");
+    await hold(bubble);
+    fireEvent.click(screen.getByRole("menuitem", { name: "复制" }));
+    await flush();
+    expect(writeText).toHaveBeenCalledWith("@阿波 早");
+    await hold(bubble);
+    fireEvent.click(screen.getByRole("menuitem", { name: "回复" }));
+    await flush();
+    expect(document.querySelector(".reply-chip").textContent).toContain("@阿波 早");
+  });
+});
+
 describe("plainText copies what is drawn", () => {
   const agentState = { people: {}, agents: { ag: { id: "ag", name: "小助手", displayName: "小助手", kind: "agent" } } };
   it("an Agent's text loses its marks and its bidi controls, as the bubble draws it", () => {

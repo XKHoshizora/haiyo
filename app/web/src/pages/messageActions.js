@@ -1,31 +1,9 @@
 // What a message's menu offers (ui/BubbleMenu.jsx): only what the app already does, plus copy. Each action is `{id, label, icon, run}`.
-import { mentionSegments } from "../data/mentions.js";
-import { entity, isAgent } from "../state/selectors.js";
-import { ME } from "../data/identities.js";
-import { withoutMarksKeeping } from "../ui/mentionMarks.js";
-import { withoutBidiControls } from "../ui/markdownRules.js";
+import { drawnTextOf } from "../state/selectors.js";
 import { Copy, Download, Reply } from "../icons.js";
 
-/**
- * A message's text as drawn, as plain text. An Agent's text is drawn without the marks of its own pipeline and without bidirectional
- * controls (ui/AgentText.jsx: when any control was there the mentions are not tags either): the same here, so a reply that picked
- * up a control from a page it read does not paste into a terminal differently from what was on screen. A mention is `@` and the
- * name it shows now (a gone one as it was sent), never the words a screen reader gets.
- */
-export function plainText(state, msg) {
-  const text = msg.text ?? "";
-  const fromAgent = msg.from !== ME && isAgent(state, msg.from);
-  const clean = fromAgent ? withoutMarksKeeping(text, msg.mentions, []) : { text, mentions: msg.mentions };
-  const shown = fromAgent ? withoutBidiControls(clean.text) : clean.text;
-  if (shown !== clean.text) return shown;
-  return mentionSegments(shown, clean.mentions)
-    .map((part) => {
-      if (!part.mention) return part.text;
-      const known = entity(state, part.mention.id);
-      return known ? `@${known.displayName || known.name}` : part.text;
-    })
-    .join("");
-}
+/** A message's text as drawn, as plain text (the one function: state/selectors.js `drawnTextOf`, ui/drawnText.js). */
+export const plainText = drawnTextOf;
 
 /** Puts `text` on the clipboard (the async API, else a hidden field and `execCommand`); resolves with whether it worked. */
 export async function copyText(text) {

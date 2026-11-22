@@ -134,7 +134,8 @@ export function AgentsList() {
             </button>
           </li>
         ))}
-        {agents.length === 0 && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
+        {agents.length === 0 && !state.loaded && <li className="rows-empty" role="status">正在读取…</li>}
+        {agents.length === 0 && state.loaded && <li className="rows-empty">还没有 Agent，点右上角的“+”创建一个</li>}
       </ul>
     </>
   );

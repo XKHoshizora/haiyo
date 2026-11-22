@@ -54,7 +54,11 @@ export function sanitizeFileName(raw: string | undefined): string {
  * Nothing in the name can end the header or the parameter.
  */
 export function contentDisposition(name: string, inline: boolean): string {
-  const fallback = name.replace(/[^\x20-\x7e]|["\\%]/gu, "_");
+  // The ASCII name for a client that does not read `filename*`: the name with what is unsafe replaced; when nothing of it is a letter or
+  // a digit (a Chinese name would be "___.png") it is `file` with the real extension.
+  const extension = /\.[A-Za-z0-9]{1,10}$/.exec(name)?.[0] ?? "";
+  const stem = name.slice(0, name.length - extension.length).replace(/[^\x20-\x7e]|["\\%]/gu, "_");
+  const fallback = /[A-Za-z0-9]/.test(stem) ? `${stem}${extension}` : `file${extension}`;
   const encoded = encodeURIComponent(name.replace(/\p{Cs}/gu, "\uFFFD")).replace(
     /['()*]/g,
     (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,

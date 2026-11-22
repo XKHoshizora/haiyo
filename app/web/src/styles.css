@@ -781,6 +781,9 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 @media (hover: hover) { .back:hover { color: var(--purple-dark); } }
 .profile-head { display: flex; align-items: center; gap: 22px; padding: 10px 0 14px; flex-wrap: wrap; }
 .profile-head h2 { font-size: 24px; font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* The title column keeps a sensible width (12em, or the row when that is narrower) and takes what is left; the actions wrap to a row of their own
+   when there is no room beside it (a title with no minimum was shrunk to one letter a line). */
+.profile-head > div:not(.head-actions) { flex: 1 1 12em; min-width: min(12em, 100%); }
 .eyebrow { font-size: 18px; font-weight: 700; color: var(--ink-2); }
 .head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .page .pills { padding: 0 0 10px; border-bottom: 1px solid var(--line); }
@@ -995,8 +998,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
   .page > .profile-head, .page > .back { flex-shrink: 0; }
   .page .pills button { padding: 0 12px; font-size: 13px; }
   .profile-head { gap: 12px; }
-  .profile-head > div { min-width: 0; }
-  .profile-head h2 { font-size: 20px; overflow-wrap: anywhere; }
+  .profile-head h2 { font-size: 20px; overflow-wrap: break-word; }
   .member-rows .member-body, .rel-rows .member-body { min-width: 0; flex-basis: 120px; }
   .member-actions { max-width: 100%; }
   .stack-actions .btn { max-width: 100%; height: auto; min-height: 38px; white-space: normal; padding-top: 8px; padding-bottom: 8px; }

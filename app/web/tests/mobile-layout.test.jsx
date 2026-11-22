@@ -4,7 +4,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { ANN, D1, G1, direct, group, syncOf, wire } from "./fixtures.js";
+import { ANN, D1, G1, deferred, direct, group, syncOf, wire } from "./fixtures.js";
 import { flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
 import { COARSE_QUERY, PHONE_QUERY } from "../src/ui/pointer.js";
 import { AvatarDialog } from "../src/pages/AvatarDialog.jsx";
@@ -225,5 +225,34 @@ describe("addresses of other pages that do not resolve", () => {
     await cold(`/chat/${D1}/info`);
     expect(window.location.pathname).toBe(`/chat/${D1}`);
     expect(document.querySelector('[aria-label="群资料"]')).toBeNull();
+  });
+});
+
+describe("the lists before the first sync has answered", () => {
+  it("say loading, never the empty state; the empty state only when the answer is empty", async () => {
+    const answer = deferred();
+    await openApp({ sync: () => answer.promise });
+    const list = () => document.querySelector(".list-col").textContent;
+    expect(list()).toContain("正在读取…");
+    expect(list()).not.toContain("还没有会话");
+    await act(async () => answer.resolve(syncOf([])));
+    await flush();
+    expect(list()).toContain("还没有会话");
+    expect(list()).not.toContain("正在读取…");
+  });
+
+  it("the Agents list and the contacts list the same", async () => {
+    const answer = deferred();
+    await openApp({ sync: () => answer.promise });
+    fireEvent.click(within(document.querySelector(".rail")).getByRole("button", { name: /^Agent/ }));
+    await flush();
+    expect(document.querySelector(".list-col").textContent).toContain("正在读取…");
+    expect(document.querySelector(".list-col").textContent).not.toContain("还没有 Agent");
+    fireEvent.click(within(document.querySelector(".rail")).getByRole("button", { name: /^通讯录/ }));
+    await flush();
+    expect(document.querySelector(".list-col").textContent).not.toContain("还没有联系人");
+    await act(async () => answer.resolve(syncOf([])));
+    await flush();
+    expect(document.querySelector(".list-col").textContent).toContain("还没有联系人");
   });
 });

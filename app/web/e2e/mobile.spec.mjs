@@ -573,3 +573,58 @@ test("N2 at 375: the add form of the providers is a page: Back is the list, Forw
   await page.getByRole("button", { name: /添加供应商/ }).click();
   await expect(page.getByLabel("名称")).toHaveValue("");
 });
+
+test("profile-style headers at 320 and 375: the title keeps a sensible width (a long Latin name, a long CJK name), the actions wrap to a row of their own", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: PHONE });
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy");
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const page = ann.page;
+  const latin = "Wolfeschlegelsteinha";
+  const cjk = "一个名字特别特别长的智能助手朋友";
+  await createAgentUi(page, { name: latin });
+  const groupTitle = `${cjk}${uniq(3)}`;
+  await createGroupApi(ann, [bo, cy], groupTitle);
+  await page.reload();
+
+  const check = async (header, what) => {
+    const title = await header.locator("h2").first().boundingBox();
+    expect(title.width, `${what}: the title column is not one letter wide`).toBeGreaterThanOrEqual(120);
+    const actions = header.locator(".head-actions, .grow ~ *").first();
+    if (await actions.count()) {
+      const a = await actions.boundingBox();
+      const apart = a.y >= title.y + title.height - 1 || a.x >= title.x + title.width - 1 || a.x + a.width <= title.x + 1;
+      expect(apart, `${what}: actions do not overlap the title`).toBe(true);
+    }
+  };
+  for (const width of [320, 375]) {
+    await page.setViewportSize({ width, height: 800 });
+    // An Agent's page (my own).
+    for (let i = 0; i < 4 && (await bar(page).count()) === 0; i += 1) await page.goBack(); // (back to a list: the tab bar)
+    await expect(bar(page)).toBeVisible();
+    await bar(page).getByRole("button", { name: "Agent" }).click();
+    await page.getByRole("button").filter({ hasText: latin }).first().click();
+    await check(page.locator("section.page .profile-head").first(), `Agent page at ${width}`);
+    expect(await noSideways(page)).toBe(true);
+    await page.getByRole("button", { name: /^返回/ }).first().click();
+    // Group info.
+    const chat = await openChat(page, groupTitle);
+    await chat.getByRole("button", { name: "群资料" }).click();
+    await check(page.getByRole("region", { name: "群资料" }).locator(".profile-head"), `group info at ${width}`);
+    expect(await noSideways(page)).toBe(true);
+    await page.getByRole("button", { name: /^返回群聊/ }).click();
+    await chat.getByRole("button", { name: "返回列表" }).click();
+    // A contact's card, and my profile.
+    await bar(page).getByRole("button", { name: "通讯录" }).click();
+    await page.getByRole("button").filter({ hasText: bo.displayName }).first().click();
+    await check(page.locator("section.page .profile-head").first(), `contact card at ${width}`);
+    await page.getByRole("button", { name: /^返回/ }).first().click();
+    await bar(page).getByRole("button", { name: "设置" }).click();
+    await page.getByText("我的资料", { exact: true }).first().click();
+    await check(page.locator("section.page .profile-head").first(), `my profile at ${width}`);
+    await page.getByRole("button", { name: /^返回/ }).first().click();
+    await bar(page).getByRole("button", { name: /消息$/ }).click();
+  }
+  await polishShot(page, "mobile-profile-header-320");
+});
