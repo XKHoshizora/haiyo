@@ -4,7 +4,8 @@ import { ME } from "../data/identities.js";
 import { appellation as appellationProblem } from "../auth/validation.js";
 import { entity } from "../state/selectors.js";
 import { friendIds } from "../state/social.js";
-import { Btn, Tag, composing } from "../ui/primitives.jsx";
+import { Btn, Tag } from "../ui/primitives.jsx";
+import { isEnter } from "../ui/keys.js";
 import { Select } from "../ui/Select.jsx";
 import { useRowWrite } from "./useAction.js";
 
@@ -44,7 +45,7 @@ function useWrite() {
 
 /** Enter saves a row (`save`), never the Agent's form it sits in; Enter that confirms an input method's candidate is not Enter. */
 const enterSaves = (save) => (event) => {
-  if (event.key !== "Enter" || composing(event)) return;
+  if (!isEnter(event)) return;
   event.preventDefault();
   save();
 };

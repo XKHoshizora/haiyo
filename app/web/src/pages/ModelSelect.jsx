@@ -1,7 +1,7 @@
 import React, { useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "../icons.js";
-import { composing } from "../ui/primitives.jsx";
+import { composing, isEnter, isEscape } from "../ui/keys.js";
 import { ModelBrand } from "../ui/ModelBrand.jsx";
 import { usePopover } from "../ui/popover.js";
 
@@ -122,15 +122,15 @@ export function ModelSelect({
   const onSearchKey = (event) => {
     if (composing(event)) return;
     // (While what can be chosen is still being read, no row is shown, so none is moved to or chosen.)
-    if (status && (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter")) {
+    if (status && (event.key === "ArrowDown" || event.key === "ArrowUp" || isEnter(event))) {
       event.preventDefault();
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       move(event.key === "ArrowDown" ? 1 : -1);
-    } else if (event.key === "Enter") {
+    } else if (isEnter(event)) {
       event.preventDefault();
       if (activeKey !== null) choose(activeKey);
-    } else if (event.key === "Escape") {
+    } else if (isEscape(event)) {
       event.preventDefault();
       event.stopPropagation();
       close(true);

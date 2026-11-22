@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { isEscape } from "./keys.js";
 
 // How a button's list opens, for the model picker (src/pages/ModelSelect.jsx) and the plain Select (src/ui/Select.jsx):
 // the same place, the same ways to close it, the same look (styles.css: .model-pop, .select-pop).
@@ -98,8 +99,11 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
       if (popRef.current?.contains(event.target) || triggerRef.current?.contains(event.target)) return;
       close(false);
     };
+    // (An Esc that a control inside already spent, or one that cancels an input method's candidate, is not this list's.)
     const escape = (event) => {
-      if (event.key === "Escape") close(true);
+      if (!isEscape(event) || event.defaultPrevented) return;
+      event.preventDefault();
+      close(true);
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);

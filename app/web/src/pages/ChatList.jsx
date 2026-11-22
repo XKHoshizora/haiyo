@@ -3,6 +3,7 @@ import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
 import { agentDeleted, quiet, convTitle, entity, lastPreview, TYPE_LABEL, otherMember } from "../state/selectors.js";
 import { ConvAvatar, IconBtn, LoadingRow, Tag } from "../ui/primitives.jsx";
+import { isEscape } from "../ui/keys.js";
 import { Plus, Search, UserPlus, Users } from "../icons.js";
 import { NewGroupModal } from "./GroupModals.jsx";
 import { GlobalHitRow, SearchFooter } from "./SearchHits.jsx";
@@ -78,7 +79,7 @@ export function ChatList() {
   useEffect(() => {
     if (!menu) return;
     const outside = e => { if(!menuRef.current?.contains(e.target)) setMenu(false); };
-    const escape = e => { if(e.key === "Escape") { setMenu(false); menuRef.current?.querySelector('button')?.focus(); } };
+    const escape = e => { if(isEscape(e)) { e.preventDefault(); setMenu(false); menuRef.current?.querySelector('button')?.focus(); } };
     document.addEventListener("pointerdown",outside);
     document.addEventListener("keydown",escape);
     return () => {document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape);};

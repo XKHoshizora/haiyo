@@ -215,9 +215,6 @@ export function Switch({ checked, onChange, label, hint, hintClass }) {
   );
 }
 
-/** Whether a key event belongs to an input method's composition (Enter confirming a candidate is not Enter). */
-export const composing = (event) => event.nativeEvent.isComposing || event.keyCode === 229;
-
 export function focusInvalid(container) {
   requestAnimationFrame(() => {
     const field = (container || document.querySelector('.modal') || document).querySelector('[aria-invalid="true"]');

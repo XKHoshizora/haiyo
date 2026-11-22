@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { isEscape } from "./keys.js";
 
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
 
@@ -17,7 +18,7 @@ export function useDialogFocus(ref, { onClose, returnTo = null }) {
     const focusables = () => [...node.querySelectorAll(FOCUSABLE)];
     (node.querySelector("[data-autofocus]") || focusables()[0])?.focus();
     const onKey = (e) => {
-      if (e.key === "Escape") {
+      if (isEscape(e)) {
         e.stopPropagation();
         latest.current.onClose();
       }

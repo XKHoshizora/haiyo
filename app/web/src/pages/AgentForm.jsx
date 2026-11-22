@@ -5,6 +5,7 @@ import { commonErrorText } from "../data/errorTexts.js";
 import { NAME_PART_PATTERN, agentName as agentNameProblem, appellation as appellationProblem, namePart as namePartProblem } from "../auth/validation.js";
 import { PROACTIVE_LEVELS, isProactiveLevel } from "../data/viewmodel.js";
 import { Btn, Field, Modal, Notice, Reason, Switch, focusInvalid } from "../ui/primitives.jsx";
+import { isEscape } from "../ui/keys.js";
 import { Select } from "../ui/Select.jsx";
 import { ChevronLeft, Lock } from "../icons.js";
 import { AgentAppellations } from "./AgentAppellations.jsx";
@@ -248,7 +249,7 @@ export function AgentForm({ agent = null }) {
       if (!catchUpRef.current?.contains(event.target)) setAskCatchUp(false);
     };
     const escape = (event) => {
-      if (event.key === "Escape") setAskCatchUp(false);
+      if (isEscape(event)) setAskCatchUp(false);
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);

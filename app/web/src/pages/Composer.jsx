@@ -3,7 +3,8 @@ import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { drawnTextOf, entity, isAgent, nameOf, ownerOf, senderName } from "../state/selectors.js";
 import { PROPOSAL_ONLY } from "../data/viewmodel.js";
-import { Avatar, Btn, IconBtn, composing } from "../ui/primitives.jsx";
+import { Avatar, Btn, IconBtn } from "../ui/primitives.jsx";
+import { composing, isEnter, isEscape } from "../ui/keys.js";
 import { useSendFiles } from "./useSendFiles.js";
 import { hasVisibleText, messageText } from "../auth/validation.js";
 import { MENTION_LIMIT, afterEdit, capped, caretOutside, mentionName, mentionSegments, mentionsIn, settleEdits, tagEndingAt, tagStartingAt, withoutAddressed, withoutStale } from "../data/mentions.js";
@@ -75,6 +76,14 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
   const imagePicker = useRef(null);
   const filePicker = useRef(null);
   const rootRef = useRef(null);
+  const emojiButton = useRef(null);
+  const emojiPicker = useRef(null);
+  /** The emoji picker closes; the focus that was inside it goes back to its 表情 button, never to the page. */
+  const closeEmoji = () => {
+    const inside = emojiPicker.current?.contains(document.activeElement);
+    setEmojiOpen(false);
+    if (inside) emojiButton.current?.focus();
+  };
   /** The caret or selection before the next edit: where an ambiguous edit is taken to be (`editOf`). */
   const selection = useRef({ start: 0, end: 0 });
   /** The draft as last set (the next edit is compared with it, whatever React has rendered yet). */
@@ -287,8 +296,8 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
   const keyDown = e => {
     if(composing(e)) return;
     if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End","PageUp","PageDown"].includes(e.key)) keyFrom.current = e.currentTarget.selectionStart;
-    if(e.key==="Escape") {setMention(null);setEmojiOpen(false);return;}
-    if(mention && !e.shiftKey && ["ArrowDown","ArrowUp","Enter","Tab"].includes(e.key)) {
+    if(isEscape(e)) {setMention(null);setEmojiOpen(false);return;}
+    if(mention && !e.shiftKey && (isEnter(e) || ["ArrowDown","ArrowUp","Tab"].includes(e.key))) {
       if(e.key==="Tab" && !matches.length) {setMention(null);return;}
       e.preventDefault();
       if(e.key==="ArrowDown") setActive((selected+1)%Math.max(1,matches.length));
@@ -296,7 +305,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
       else if(matches[selected]) chooseMention(matches[selected]);
       return;
     }
-    if(e.key==="Enter" && !e.shiftKey) {e.preventDefault();send();return;}
+    if(isEnter(e) && !e.shiftKey) {e.preventDefault();send();return;}
     // A tag deletes as a unit: the browser's own Backspace (Delete) takes the selection, so all of the tag is selected first.
     if((e.key==="Backspace" || e.key==="Delete") && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const el = e.currentTarget;
@@ -319,13 +328,13 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
     sendFiles(images);
   };
   const sendNote = tooLong ? `消息最多 ${TEXT_LIMIT} 字，当前 ${length} 字，请删减后再发送` : invisible ? "消息里没有看得见的文字，无法发送" : null;
-  return <footer className="composer" ref={rootRef} onKeyDown={e=>{if(e.key==="Escape"){setEmojiOpen(false);setMention(null);}}}>
+  return <footer className="composer" ref={rootRef} onKeyDown={e=>{if(isEscape(e)){closeEmoji();setMention(null);}}}>
     {replyTo && <div className="reply-chip"><span>回复 {senderName(state,replyTo.from)}：{replyTo.kind==="image"?"[图片]":replyTo.proposal&&!replyTo.text?PROPOSAL_ONLY:drawnTextOf(state,replyTo)}</span><IconBtn label="取消回复" onClick={()=>setReplyTo(null)}><X size={14}/></IconBtn></div>}
     <div className="composer-tools">
       <div className="menu-anchor">
-        <IconBtn label="表情" disabled={disabled} aria-expanded={emojiOpen} aria-controls="emoji-picker" onClick={()=>{setEmojiOpen(!emojiOpen);setMention(null);}}><Smile size={22}/></IconBtn>
-        {emojiOpen && <div className="emoji-picker" id="emoji-picker" role="dialog" aria-label="选择表情">
-          <div className="emoji-heading"><strong>表情</strong><IconBtn label="关闭表情" onClick={()=>setEmojiOpen(false)}><X size={16}/></IconBtn></div>
+        <IconBtn ref={emojiButton} label="表情" disabled={disabled} aria-expanded={emojiOpen} aria-controls="emoji-picker" onClick={()=>{setEmojiOpen(!emojiOpen);setMention(null);}}><Smile size={22}/></IconBtn>
+        {emojiOpen && <div className="emoji-picker" id="emoji-picker" role="dialog" aria-label="选择表情" ref={emojiPicker}>
+          <div className="emoji-heading"><strong>表情</strong><IconBtn label="关闭表情" onClick={closeEmoji}><X size={16}/></IconBtn></div>
           <div className="emoji-tabs" role="tablist" aria-label="表情分类">{Object.keys(EMOJI).map(c=><button key={c} type="button" role="tab" aria-selected={category===c} onClick={()=>setCategory(c)}>{c}</button>)}</div>
           <div className="emoji-grid">{EMOJI[category].map(emoji=><button key={emoji} type="button" aria-label={`插入表情 ${emoji}`} onClick={()=>replace(emoji)}>{emoji}</button>)}</div>
         </div>}

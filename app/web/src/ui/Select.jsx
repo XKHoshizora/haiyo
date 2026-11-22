@@ -1,7 +1,7 @@
 import React, { useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "../icons.js";
-import { composing } from "./primitives.jsx";
+import { composing, isEnter, isEscape } from "./keys.js";
 import { usePopover } from "./popover.js";
 
 /** Letters typed this close together make one word to jump to (ms). */
@@ -86,7 +86,7 @@ export function Select({
     const { key } = event;
     const letter = key.length === 1 && key !== " " && !event.ctrlKey && !event.metaKey && !event.altKey;
     if (!open) {
-      if (key === "ArrowDown" || key === "ArrowUp" || key === "Enter" || key === " ") {
+      if (key === "ArrowDown" || key === "ArrowUp" || isEnter(event) || key === " ") {
         event.preventDefault();
         if (key === " ") spaceChose.current = true;
         openList();
@@ -103,11 +103,11 @@ export function Select({
     } else if (key === "Home" || key === "End") {
       event.preventDefault();
       move(key === "Home" ? "first" : "last");
-    } else if (key === "Enter" || key === " ") {
+    } else if (isEnter(event) || key === " ") {
       event.preventDefault();
       if (key === " ") spaceChose.current = true;
       if (activeValue !== null) choose(activeValue);
-    } else if (key === "Escape") {
+    } else if (isEscape(event)) {
       event.preventDefault();
       event.stopPropagation();
       close(true);
