@@ -25,13 +25,13 @@ describe("detectLanguage — by script", () => {
     ["english question", "What is the weather in London today?", "en"],
     ["english short", "thanks a lot", "en"],
     ["english three letters", "yes", "en"],
-    ["english with accents", "Où est la gare ?", "en"],
+    ["french with diacritics is not claimed as english", "Où est la gare ?", null],
     ["english with a chinese name", "Please ask 小明 about the report tomorrow", "en"],
     ["mixed: chinese with a product and a phrase", "帮我查一下 React 19 的 release notes", "zh"],
     ["mixed: chinese with one english word", "这个 bug 怎么修", "zh"],
     ["mixed: japanese with english", "React 19 の release notes を教えて", "ja"],
     ["url only", "https://example.com/a/b?c=d", null],
-    ["url and handle only", "@helper https://example.com/中文/日本語", null],
+    ["url and handle only", "@helper https://example.com/a/b%E4%B8%AD", null],
     ["ok is two letters", "OK", null],
     ["emoji", "👍🙂", null],
     ["digits and punctuation", "12345 ?!", null],
@@ -39,7 +39,30 @@ describe("detectLanguage — by script", () => {
     ["whitespace", "  \n\t ", null],
     ["one han character", "好", null],
     ["a url inside a chinese sentence does not count as latin", "看看 https://example.com/some/long/path/to/the/page 这个页面讲什么", "zh"],
-    ["an english sentence with a japanese-looking url", "see https://ja.example.com/日本語のページ for details", "en"],
+    ["an english sentence with an ascii url", "see https://ja.example.com/page for details", "en"],
+    ["a url ends at the first CJK character: the text glued after it stays", "链接https://x.com这是什么", "zh"],
+    ["a url ends at a full-width comma", "https://example.com/a，帮我总结一下", "zh"],
+    ["a handle glued to chinese keeps the chinese", "@helper帮我查一下天气", "zh"],
+    ["a handle glued to japanese keeps the japanese", "@helper今日の天気", "ja"],
+    ["an agent handle with its owner part", "@jia.helper 你好吗", "zh"],
+    ["korean with english words", "React 19 의 release notes 알려줘", null],
+    ["korean only", "안녕하세요 오늘 날씨 어때요", null],
+    ["russian", "Как настроить React?", null],
+    ["french with diacritics", "Où est la gare, s'il vous plaît ?", null],
+    ["french without diacritics reads english by script", "Where is the station please", "en"],
+    ["spanish with n tilde", "¿Cuántos años tienes? Mañana vamos", null],
+    ["spanish without diacritics reads english by script", "Donde esta la estacion de tren", "en"],
+    ["german with sharp s", "Wie groß ist das Haus", null],
+    ["german with umlaut", "Können Sie mir helfen bitte", null],
+    ["vietnamese", "Thời tiết hôm nay thế nào", null],
+    ["greek", "Τι καιρό κάνει σήμερα", null],
+    ["english with one accented word", "Let us meet at the café tomorrow", null],
+    ["a chinese message quoting a korean word stays zh", "韩语的 안녕하세요 是什么意思", "zh"],
+    ["a japanese message with a french word stays ja", "「Où est la gare」はどういう意味ですか", "ja"],
+    ["a chinese message quoting a russian word stays zh", "俄语 привет 是什么意思", "zh"],
+    ["an unclosed fence strips only its own line: the text before it stays", "这个报错怎么办 ```js", "zh"],
+    ["an unclosed fence keeps the later lines", "```js\nWhat does this error mean for us today?", "en"],
+    ["a closed fence is stripped whole", "What is this?\n```\n这是中文代码注释这是中文\n```", "en"],
     ["a handle does not count as latin", "@some_long_handle_name 你好吗", "zh"],
     ["fenced code is stripped", "```js\nconst totalAmountOfThings = compute(items);\n```\n这段代码有什么问题", "zh"],
     ["inline code is stripped", "`getUserProfileByIdentifier` 是做什么的", "zh"],
@@ -54,6 +77,15 @@ describe("detectLanguage — by script", () => {
 
   it("known limit: a Japanese text with no kana at all reads as Chinese", () => {
     expect(detectLanguage("東京都人口")).toBe("zh");
+  });
+
+  it("known limit: one kana wins over any amount of Han (a quoted の or a katakana kaomoji in a Chinese message reads ja)", () => {
+    expect(detectLanguage("東京の人口")).toBe("ja");
+    expect(detectLanguage("东京的人口是多少，请告诉我今年的数字ヮ")).toBe("ja");
+  });
+
+  it("known limit: a Chinese message that is mostly English terms reads en", () => {
+    expect(detectLanguage("我想了解 Kubernetes deployment strategies")).toBe("en");
   });
 
   it("is a function of the text alone (no state between calls)", () => {
@@ -72,7 +104,9 @@ const lines = { zh: REPLY_LANGUAGE_FOR.zh, ja: REPLY_LANGUAGE_FOR.ja, en: REPLY_
 describe("the concrete line in the system text", () => {
   it("names the language, in Chinese like the rest, and says the instructions' own language is no hint", () => {
     expect(REPLY_LANGUAGE_FOR.ja).toBe("你要回答的那条消息是日语，这一次请全程用日语回答（包括搜索前后说的话）；这些说明是用中文写的，不代表你要用中文回答。");
-    expect(REPLY_LANGUAGE_FOR.en).toContain("英语");
+    expect(REPLY_LANGUAGE_FOR.en).toBe(
+      "你要回答的那条消息是英语（如果它其实是另一种用拉丁字母写的语言，就用那种语言），这一次请全程用它的语言回答，不要用中文（包括搜索前后说的话）；这些说明是用中文写的，不代表你要用中文回答。",
+    );
     expect(REPLY_LANGUAGE_FOR.zh).toContain("中文");
     for (const l of Object.values(REPLY_LANGUAGE_FOR)) expect(l).toContain("包括搜索前后说的话");
   });
@@ -119,6 +153,6 @@ describe("the concrete line in the system text", () => {
     const abstract = estimateTokens(REPLY_LANGUAGE);
     const delta = Object.fromEntries((["zh", "ja", "en"] as const).map((l) => [l, estimateTokens(lines[l]) - abstract]));
     // Reported in the lane's report (measured at the plan's default ratio); the bound here is that it stays small.
-    for (const d of Object.values(delta)) expect(Math.abs(d as number)).toBeLessThan(40);
+    for (const d of Object.values(delta)) expect(Math.abs(d as number)).toBeLessThan(60);
   });
 });

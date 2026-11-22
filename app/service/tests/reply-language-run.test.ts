@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { mentionsAtSend } from "../src/agents/mentions.ts";
 import { createAgentPort } from "../src/agents/port-impl.ts";
+import { triggerFromAgent } from "../src/agents/runs.ts";
+import { lockAgent } from "../src/agents/store.ts";
+import { insertMessage } from "../src/messages/model.ts";
+import { MULTIPART, multipart } from "./helpers/multipart.ts";
 import { REPLY_LANGUAGE, REPLY_LANGUAGE_FOR, NO_TOOLS } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { createToolbox, SEARCH_WEB } from "../src/agents/tools/index.ts";
@@ -178,5 +183,66 @@ describe("a group: the line follows the mention that called the Agent", () => {
     const system = gateway.calls.at(-1)!.system;
     expect(system).not.toContain("大阪タワー");
     expect(held(system)).toEqual(JA);
+  });
+});
+
+describe("other triggering messages", () => {
+  it("a file with a caption in the own conversation: the caption's language, never the history's", async () => {
+    const gateway = scriptedGateway();
+    const { owner, own } = await owned("rl_cap");
+    await say(owner, own, "北京今天天气怎么样？");
+    gateway.reply("晴。");
+    expect(await workerOf(gateway).runOnce()).toBe(true);
+    const uploaded = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${own}/attachments`,
+      headers: { cookie: owner.cookie, "content-type": MULTIPART },
+      payload: multipart([{ name: "file", filename: "memo.txt", type: "text/plain", data: "memo" }]),
+    });
+    expect(uploaded.statusCode).toBe(201);
+    const sent = await api(app, owner, "POST", `/api/conversations/${own}/messages`, { attachmentId: uploaded.json().id, text: "この資料を要約して", clientTxn: `rl${++txn}` });
+    expect(sent.status).toBe(201);
+    gateway.reply("はい。");
+    expect(await workerOf(gateway).runOnce()).toBe(true);
+    expect(held(gateway.calls.at(-1)!.system)).toEqual(JA);
+  });
+
+  it("a file with no caption: nothing to read, so today's abstract line — never the history's language", async () => {
+    const gateway = scriptedGateway();
+    const { owner, own } = await owned("rl_nocap");
+    await say(owner, own, "北京今天天气怎么样？");
+    gateway.reply("晴。");
+    expect(await workerOf(gateway).runOnce()).toBe(true);
+    const uploaded = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${own}/attachments`,
+      headers: { cookie: owner.cookie, "content-type": MULTIPART },
+      payload: multipart([{ name: "file", filename: "memo.txt", type: "text/plain", data: "memo" }]),
+    });
+    const sent = await api(app, owner, "POST", `/api/conversations/${own}/messages`, { attachmentId: uploaded.json().id, clientTxn: `rl${++txn}` });
+    expect(sent.status).toBe(201);
+    gateway.reply("好的。");
+    expect(await workerOf(gateway).runOnce()).toBe(true);
+    expect(held(gateway.calls.at(-1)!.system)).toEqual(ABSTRACT);
+  });
+
+  it("a group call relayed by another Agent: the relaying message's language", async () => {
+    const gateway = scriptedGateway();
+    const { owner, agent } = await owned("rl_rel");
+    const mia = await signUp(app, "rl_rel_mia");
+    const other = await mustCreateAgent(app, mia, { handle: "rl_rel_other", name: "乙", model: PAID, persona: "简短地回答。" });
+    const g = await group(app, owner, "资讯", [mia, await signUp(app, "rl_rel_ned")]);
+    for (const [who, id] of [[owner, agent.id], [mia, other.id]] as const) expect((await api(app, who, "POST", `/api/conversations/${g}/members`, { principalId: id })).status).toBe(201);
+    await say(owner, g, "大家好");
+    const relayed = await db.tx(async (t) => {
+      const poster = await lockAgent(t, other.id, g);
+      const text = "@rl_rel_bot What is the weather in London today?";
+      const message = await insertMessage(t, g, other.id, "text", { text }, null, await mentionsAtSend(t, { id: g, type: "group" }, text));
+      return triggerFromAgent(t, g, message, poster, null, app.deps.config, null);
+    });
+    expect(relayed.runs.length).toBe(1);
+    gateway.reply("Sunny.");
+    expect(await workerOf(gateway).runOnce()).toBe(true);
+    expect(held(gateway.calls.at(-1)!.system)).toEqual(EN);
   });
 });

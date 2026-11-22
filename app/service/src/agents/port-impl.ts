@@ -791,7 +791,7 @@ export class DbAgentPort implements AgentPort {
         const answered = await t.query<{ text: string | null }>(
           group
             ? "select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2"
-            : "select body ->> 'text' as text from messages where conversation_id = $1 and sender_id = $3 and kind = 'text' and seq <= $2 order by seq desc limit 1",
+            : "select body ->> 'text' as text from messages where conversation_id = $1 and sender_id = $3 and kind in ('text', 'file') and (body -> 'fixed') is distinct from 'true'::jsonb and seq <= $2 order by seq desc limit 1",
           group ? [run.conversationId, calls[calls.length - 1] ?? 0] : [run.conversationId, covers, agent.ownerId],
         );
         replyLanguage = detectLanguage(answered.rows[0]?.text ?? "") ?? undefined;

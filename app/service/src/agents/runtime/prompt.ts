@@ -47,7 +47,7 @@ export const REPLY_LANGUAGE = "你说的每一句话都用你要回答的那条�
 export const REPLY_LANGUAGE_FOR: Readonly<Record<ReplyLanguage, string>> = {
   zh: "你要回答的那条消息是中文，这一次请全程用中文回答（包括搜索前后说的话）。",
   ja: "你要回答的那条消息是日语，这一次请全程用日语回答（包括搜索前后说的话）；这些说明是用中文写的，不代表你要用中文回答。",
-  en: "你要回答的那条消息是英语，这一次请全程用英语回答（包括搜索前后说的话）；这些说明是用中文写的，不代表你要用中文回答。",
+  en: "你要回答的那条消息是英语（如果它其实是另一种用拉丁字母写的语言，就用那种语言），这一次请全程用它的语言回答，不要用中文（包括搜索前后说的话）；这些说明是用中文写的，不代表你要用中文回答。",
 };
 
 /** The line a reply offered tools is given about its language: the concrete one for a detected language, else the abstract one. */
