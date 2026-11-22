@@ -28,14 +28,16 @@ export const messagesWith = (chat, text) => {
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
- * `text` as it reads in a message whose mentions are drawn as tags: a tag shows `@name` and, for screen readers, hides
- * 「提到 名字」 right after it (a stored mention of someone gone: before it), so each `@name` in `text` is matched with those
- * words allowed on either side. A text without `@` is matched as it is.
+ * `text` as it reads in a message whose mentions are drawn as tags. A typed `@name` or `@handle` that was stored as a
+ * mention shows as a tag with the principal's current display name (`@Name`) and, for screen readers, the hidden words
+ * 「提到 Name」 right after it; so each `@word` in `text` matches either itself (plain text) or such a tag. Any tag is
+ * accepted there: the handle typed is not in the page. A text without `@` is matched as it is.
  */
 export function withTags(text) {
   if (typeof text !== "string" || !text.includes("@")) return text;
-  const parts = text.split(/(@[^\s，。,.:：;；!?！？、]+)/);
-  return new RegExp(parts.map((part, i) => (i % 2 === 1 ? `(?:提到 [^@]*?)?${escapeRegExp(part)}(?:提到 \\S+)?` : escapeRegExp(part))).join(""));
+  const parts = text.split(/(@[^\s，。,:：;；!?！？、]+)/);
+  const tag = String.raw`@[^\s@]+?提到 [^\s@]+`;
+  return new RegExp(parts.map((part, i) => (i % 2 === 1 ? `(?:${escapeRegExp(part)}|${tag})` : escapeRegExp(part))).join(""));
 }
 
 export const composer = (chat) => chat.getByRole("textbox", { name: "消息内容" });
