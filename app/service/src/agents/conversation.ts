@@ -448,6 +448,9 @@ function drawnCites(text: string, cites: readonly Cite[], mentions: ReadonlyArra
  * (no reply of that run's own) — the question an earlier run answered, its `covers_seq`, is this run's or one of the
  * calls this run answers (`call_seqs`: a retry in a group answers the failed run's) — so that a retry of a reply that
  * failed after acknowledging posts no second acknowledgement (Task 6 fix 1, m7). The latest when there are several.
+ * An automatic retry (runs.ts `scheduleAutoRetry`) never needs more: it follows only a failure before the reply did
+ * anything (runtime/port.ts `passingEnding`), and an acknowledgement posted is such a thing (its post sets `progressed` in
+ * the same transaction), so no attempt of an automatic chain has one to stand for the next.
  */
 export async function standingAcknowledgement(q: Queryable, conversationId: string, agentId: string, runId: string): Promise<number | null> {
   // Bounded by the question, not by the Agent's run history: only the Agent's acknowledgements after the earliest seq this
@@ -461,9 +464,7 @@ export async function standingAcknowledgement(q: Queryable, conversationId: stri
        join agent_runs r on ${postingRun("a", "r")}
       where me.id = $3 and me.agent_id = $2 and me.conversation_id = $1
         and (r.id = me.id
-             or ((r.covers_seq = me.covers_seq or r.covers_seq = any(coalesce(me.call_seqs, '{}'))
-                  -- an earlier attempt of the same automatic chain (runs.ts scheduleAutoRetry), whatever it covered
-                  or (me.retry_of is not null and (r.id = me.retry_of or r.retry_of = me.retry_of)))
+             or ((r.covers_seq = me.covers_seq or r.covers_seq = any(coalesce(me.call_seqs, '{}')))
                  and not exists (select 1 from messages x where x.conversation_id = r.conversation_id and x.sender_id = r.agent_id and x.client_txn = r.id::text)))
       order by a.seq desc
       limit 1`,

@@ -910,8 +910,9 @@ run (`not_before`): the worker claims it once due (`for update skip locked`: one
 restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held back or refused, it is not
 forced), charged as any, held to the owner's replies a minute in its lane, and answers the same calls in the same lane
 by the same caller (a member's call stays the member's). Whatever calls the Agent while it waits is folded into it and
-waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. It posts no second
-acknowledgement within one chain, and makes no second found-elsewhere whisper about the same asking message. While it
+waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. A chain never holds an
+acknowledgement (one posted makes the failure not passing), and it makes no second found-elsewhere whisper about the same
+asking message (a run lost between its whisper and its round's record is tried again). While it
 waits the run slot reads `queued` (there is no separate "trying again" state: everyone sees 正在回复…, up to about
 2.5 minutes): its owner is pushed the queued retry and its claim alone, never the failure; the other members of a group,
 told `replying`, are told nothing more until the answer — the same frames as an answer at the first try (for a reply
