@@ -66,7 +66,6 @@ import { registerWebClient } from "./web.ts";
 import { registerAppLinks } from "./app-links.ts";
 import { createApnsClient, type ApnsClient } from "./push/apns.ts";
 import { createNotifier, type Notifier } from "./push/notify.ts";
-import { removeExpiredDevices } from "./push/devices.ts";
 import { registerPushRoutes } from "./push/routes.ts";
 import { pushWhispers, registerWhisperRoutes } from "./whispers/routes.ts";
 import { expireWhispers, removeOldWhispers } from "./whispers/store.ts";
@@ -224,8 +223,9 @@ export interface BuildOptions {
  *   expired ones made 30 days ago are deleted;
  * - reminders about money recorded by a settlement whose whisper was never made (the service stopped between the two) are
  *   made, pushed and counted (metering/reminders.ts `deliverReminders`);
- * - the web search's counts of site days more than a week old are deleted (agents/tools/web/hold.ts `sweepSearchDays`);
- * - the phones of expired sessions are deleted (push/devices.ts `removeExpiredDevices`), counted.
+ * - the web search's counts of site days more than a week old are deleted (agents/tools/web/hold.ts `sweepSearchDays`).
+ * (The phones of expired sessions are swept on the push's own timer, src/push/notify.ts: not here, so that turning this one
+ * off never keeps them.)
  * `hub` null: nobody to tell yet.
  */
 export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: FastifyBaseLogger, hub: Pick<Hub, "pushWhisper"> | null): Promise<{ unsent: number; abandoned: number }> {
@@ -241,11 +241,6 @@ export async function changeSweep(deps: Pick<Deps, "db">, config: Config, log: F
   });
   for (const r of reminded) log.info({ metric: r.metric }, "a reminder about money was made for its owner");
   await sweepSearchDays(deps.db, new Date(), config.siteTimezone).catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "web search count sweep failed; trying again next interval"));
-  const phones = await removeExpiredDevices(deps.db).catch((err: unknown) => {
-    log.warn({ code: (err as { code?: string }).code }, "push device sweep failed; trying again next interval");
-    return 0;
-  });
-  if (phones > 0) log.info({ metric: "push_devices_expired", removed: phones }, "phones of expired sessions were removed");
   if (hub) pushWhispers(hub, [...expired, ...reminded.flatMap((r) => (r.whisper ? [r.whisper] : []))]);
   return { unsent: 0, abandoned: 0 };
 }

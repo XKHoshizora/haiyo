@@ -6,7 +6,7 @@ import type { Db } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import { CLOSE_GRACE_MS, CONFIGURATION_FAILURES, type ApnsClient, type ApnsFailure } from "./apns.ts";
-import { removeDeadDevice, type PushDevice, type PushEnv } from "./devices.ts";
+import { removeDeadDevice, removeExpiredDevices, type PushDevice, type PushEnv } from "./devices.ts";
 
 /** The one thing a push says (system wording, never a sender, a group's name or a message's text). */
 export const PUSH_BODY = "你有新消息";
@@ -18,7 +18,10 @@ export const PUSH_BODY = "你有新消息";
  */
 export const PRESENCE_PROBE_MS = 3_000;
 
-/** How often the counters are written to the log, when anything was counted (and once more at the stop). */
+/**
+ * How often the counters are written to the log, when anything was counted (and once more at the stop), and the phones of
+ * expired sessions are deleted.
+ */
 const SUMMARY_EVERY_MS = 10 * 60_000;
 
 /**
@@ -97,6 +100,8 @@ export interface NotifierDeps {
   malformed: string[];
   /** Whether the universal-links file is served (`AppleConfig.app`): the same line says when it is not. */
   links: boolean;
+  /** Tests only (no variable sets it): the timer's period, the counters' line and the expired-phone sweep; default 10 minutes. */
+  everyMs?: number;
 }
 
 /** One push to make: a phone, and the conversation it is about (up to `newestSeq`, the batch's newest message there). */
@@ -266,7 +271,25 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     return counted;
   }
 
-  const timer = setInterval(() => void flush(), SUMMARY_EVERY_MS);
+  /**
+   * The phones of expired sessions deleted (push/devices.ts `removeExpiredDevices`), counted; on this timer, which always
+   * runs — with or without APNs (phones are registered either way), whatever `MEMORY.changesSweepMs` says.
+   */
+  function sweepExpired(): void {
+    if (closed) return;
+    const job: Promise<void> = removeExpiredDevices(db)
+      .then((removed) => {
+        if (removed > 0) log.info({ metric: "push_devices_expired", removed }, "phones of expired sessions were removed");
+      })
+      .catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "push device sweep failed; trying again next interval"))
+      .finally(() => under.delete(job));
+    under.add(job);
+  }
+
+  const timer = setInterval(() => {
+    flush();
+    sweepExpired();
+  }, deps.everyMs ?? SUMMARY_EVERY_MS);
   timer.unref();
 
   async function stop(): Promise<void> {

@@ -1,7 +1,8 @@
 import type { FastifyBaseLogger } from "fastify";
 import { describe, expect, test } from "vitest";
-import { changeSweep } from "../src/app.ts";
+import { createConversationEvents } from "../src/conversations/events.ts";
 import { registerDevice } from "../src/push/devices.ts";
+import { createNotifier } from "../src/push/notify.ts";
 import { api, cookieHeaderFrom, mailLink, signIn, signUp, type Actor } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
 
@@ -155,7 +156,9 @@ describe("a device belongs to its session", () => {
     expect(await devices()).toEqual([]);
   });
 
-  test("an expired session's phone is deleted by the periodic sweep (changeSweep), a live one's kept; the log has a count only", async () => {
+  test("an expired session's phone is deleted on the push's own timer — whatever MEMORY.changesSweepMs says — a live one's kept; the log has a count only", async () => {
+    // The harness turns the memory changes' sweep off (changesSweepMs 0): the push sweep must not depend on it.
+    expect(app.deps.config.memory.changesSweepMs).toBe(0);
     const a = await signUp(app, "expired_phone");
     const b = await signUp(app, "live_phone");
     await api(app, a, "POST", "/api/push/devices", { token: TOKEN_A, env: "production" });
@@ -163,10 +166,27 @@ describe("a device belongs to its session", () => {
     await db.query(`update "session" set "expiresAt" = now() - interval '1 second' where id = $1`, [await sessionOf(a)]);
     const lines: Array<Record<string, unknown>> = [];
     const log = { info: (o: Record<string, unknown>) => void lines.push(o), warn: (o: Record<string, unknown>) => void lines.push(o) } as unknown as FastifyBaseLogger;
-    await changeSweep(app.deps, app.deps.config, log, null);
-    expect((await devices()).map((r) => r.token)).toEqual([TOKEN_B]);
-    expect(lines.filter((l) => l.metric === "push_devices_expired")).toEqual([{ metric: "push_devices_expired", removed: 1 }]);
-    expect(JSON.stringify(lines)).not.toContain(TOKEN_A);
+    // A notifier of its own, its timer shortened (tests only): no APNs, as on a site without the key — phones are still swept.
+    const notifier = createNotifier({
+      db,
+      apns: null,
+      presence: { hasSocketFor: () => false, probe: async () => false },
+      conversations: createConversationEvents(),
+      log,
+      missing: [],
+      malformed: [],
+      links: false,
+      everyMs: 50,
+    });
+    try {
+      for (let i = 0; i < 100 && (await devices()).length > 1; i++) await new Promise((r) => setTimeout(r, 20));
+      await notifier.idle();
+      expect((await devices()).map((r) => r.token)).toEqual([TOKEN_B]);
+      expect(lines.filter((l) => l.metric === "push_devices_expired")).toEqual([{ metric: "push_devices_expired", removed: 1 }]);
+      expect(JSON.stringify(lines)).not.toContain(TOKEN_A);
+    } finally {
+      await notifier.close();
+    }
   });
 
   test("both references cascade: the session's end and the person's deletion take the row with them", async () => {
