@@ -43,6 +43,9 @@ export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 /** How readily an Agent answers unprompted (`agents.proactive_level`; the keys of `ProactiveConfig.base`). */
 export const PROACTIVE_LEVELS = ["less", "normal", "more"] as const;
 export type ProactiveLevel = (typeof PROACTIVE_LEVELS)[number];
+/** The forms an earlier reply's tool use may return in (`TOOLS.replayForm`; src/agents/replay.ts `ReplayForm`). */
+export const REPLAY_FORMS = ["H", "H2", "H3", "D"] as const;
+export type ReplayForm = (typeof REPLAY_FORMS)[number];
 /** The levels that think: every level but `none`. */
 export type ThinkingLevel = Exclude<ReasoningLevel, "none">;
 /**
@@ -210,6 +213,13 @@ export interface ToolsConfig {
   runTimeoutMs: number;
   /** The web search (`search_web`, src/agents/tools/web/; `TOOLS.web`): off unless the operator turns it on. */
   web: WebSearchConfig;
+  /**
+   * How an earlier reply's tool use returns in its own conversation's history (src/agents/replay.ts `ReplayForm`; harness
+   * design step 1): `H` (the default: a placeholder of sites and the day), `H2` (a placeholder that says what the search
+   * returned then and that its text is not kept), `H3` (`H2`, the acknowledgement after the results), `D` (`H3`, with a
+   * stored excerpt of the most recent replies' web results). Read here only; a measurement chooses, the default stays `H`.
+   */
+  replayForm: ReplayForm;
 }
 
 /**
@@ -352,6 +362,7 @@ const toolsSchema = z.strictObject({
   resultMaxWeight: positive(3000, 100_000),
   runTimeoutMs: z.number().int().min(1000).max(3_600_000).default(300_000),
   web: webSearchSchema.prefault({} as never),
+  replayForm: z.enum(REPLAY_FORMS).default("H"),
 });
 
 /** `TOOLS` unset: every default. */

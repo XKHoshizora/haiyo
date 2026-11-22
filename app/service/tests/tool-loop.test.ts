@@ -1168,7 +1168,7 @@ describe("what a reply that ends as an answer hands over of its rounds (Reply.to
       toolRun: { kinds: WEB_KINDS },
       tool: async (call) => {
         const q = (call.input as { query: string }).query;
-        if (call.name === "search_web") return { output: { about: "资料", results: [{ ref: "〔w1〕", title: "a" }, { ref: "〔w2〕", title: "b" }] }, query: q };
+        if (call.name === "search_web") return { output: { about: "资料", results: [{ ref: "〔w1〕", title: "a", snippet: "甲" }, { ref: "〔w2〕", title: "b" }] }, query: q };
         if (q === "短") return { output: { error: "要查的词至少要两个字。" } };
         if (q === "boom") throw new Error("the database is down");
         return { output: { hits: [call.input] }, found: [{ conversationId: "c", seq: 1 }, { conversationId: "c", seq: 2 }], query: q };
@@ -1179,7 +1179,7 @@ describe("what a reply that ends as an answer hands over of its rounds (Reply.to
       [
         { name: "search", round: 1, outcome: "ok", input: { query: "川菜" }, found: 2 },
         { name: "search", round: 1, outcome: "refused", said: REPEATED },
-        { name: "search_web", round: 1, outcome: "ok", input: { query: "成都 川菜 推荐" }, pages: [1, 2] },
+        { name: "search_web", round: 1, outcome: "ok", input: { query: "成都 川菜 推荐" }, pages: [1, 2], excerpts: [{ title: "a", snippet: "甲" }, { title: "b", snippet: "" }] },
         { name: "search", round: 2, outcome: "refused", said: "要查的词至少要两个字。" },
         { name: "search", round: 2, outcome: "refused", said: UNUSABLE },
         { name: "search", round: 2, outcome: "refused", said: OVER_CAP },

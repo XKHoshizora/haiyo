@@ -74,6 +74,13 @@ export interface ContextEntry {
    * rounds, returned before its text (`ContextPlan.build`), kept or left out with it. Absent: none (every other entry).
    */
   replay?: ReplayRound[];
+  /** An Agent's acknowledgement (agents/context.ts `loadPage`, a plan offered tools): it may follow its answer's replay (`ackAfterResults`). */
+  ack?: true;
+  /**
+   * The replay's form puts the acknowledgement after the results (agents/replay.ts, H3 and D): an `ack` entry right before
+   * this one is sent at the head of its answer's turn, after the last result, not before the first call.
+   */
+  ackAfterResults?: true;
 }
 
 /** What an attachment is shown as instead of its name: an image, a PDF, or the text of a file (cut already). */
@@ -428,15 +435,22 @@ export class ContextPlan {
       if (last?.role === role && role !== "tool") last.parts.push(...parts);
       else messages.push({ role, parts });
     };
-    for (const { entry, content } of oldestFirst) {
+    /** An acknowledgement held back to head its answer's turn after the results (`ackAfterResults`). */
+    let held: Part[] = [];
+    for (const [i, { entry, content }] of oldestFirst.entries()) {
+      const parts: Part[] = [];
+      if (entry.text !== "") parts.push({ type: "text", text: entry.text });
+      if (entry.attachment) parts.push(attachmentPart(entry.attachment, content));
+      if (entry.ack && oldestFirst[i + 1]?.entry.ackAfterResults && oldestFirst[i + 1]!.entry.replay) {
+        held = parts;
+        continue;
+      }
       for (const round of entry.replay ?? []) {
         add("assistant", round.calls);
         add("tool", round.results);
       }
-      const parts: Part[] = [];
-      if (entry.text !== "") parts.push({ type: "text", text: entry.text });
-      if (entry.attachment) parts.push(attachmentPart(entry.attachment, content));
-      add(entry.role, parts);
+      add(entry.role, [...held, ...parts]);
+      held = [];
     }
     return { messages, tokens, fixed };
   }

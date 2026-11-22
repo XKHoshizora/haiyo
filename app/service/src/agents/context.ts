@@ -30,7 +30,7 @@ import {
 import type { AgentRow } from "./store.ts";
 import type { RunRefs } from "./tools/refs.ts";
 import { baseOf, countPlaced, readSummary, shownSummary, stayOf, type PlacedReader, type Summary } from "./summary/store.ts";
-import { replayOf } from "./replay.ts";
+import { hasExcerpt, mostRecent, withReplay, type ReplayFacts, type ReplayScope } from "./replay.ts";
 import { siteDateTime } from "./tools/clock.ts";
 import { hasVisibleText } from "../schemas.ts";
 import {
@@ -124,9 +124,10 @@ export interface ContextRun {
    * that kept its calls (`toolCalls`, agents/replay.ts) returns with them (`ContextEntry.replay`) when every one is to a
    * tool in `tools` — the names this request offers — its placeholders dated in `timeZone` (the site's). Absent (a group, a
    * reply offered none, every other reader): every reply returns as its text alone. `maxCalls`: one that kept more calls
- * than that (the step-1 tools' per-reply caps, replay.ts `maxCallsOf`) returns as its text too.
+   * than that (the step-1 tools' per-reply caps, replay.ts `maxCallsOf`) returns as its text too. `form`: the form it
+   * returns in (`TOOLS.replayForm`, replay.ts `ReplayForm`).
    */
-  replay?: { tools: ReadonlySet<string>; timeZone: string; maxCalls: number };
+  replay?: ReplayScope & { timeZone: string };
   /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
   upTo?: number;
   /**
@@ -369,8 +370,17 @@ export type Speaker = Omit<Member, "appellation">;
 interface Loaded {
   /** Its entry: as loaded, without numbers; with a reply's numbers once what is shown is known (`build`, `loadContext`). */
   entry: ContextEntry;
-  /** Its entry with the attachment labels numbered by `refs` (its quote's file, then its own), or without numbers (null). */
-  build: (refs: RunRefs | null) => ContextEntry;
+  /**
+   * Its entry with the attachment labels numbered by `refs` (its quote's file, then its own), or without numbers (null);
+   * `real`: replay form `D`'s, with its web results' stored excerpt.
+   */
+  build: (refs: RunRefs | null, real?: boolean) => ContextEntry;
+  /**
+   * Replay form `D` (`ContextRun.replay.form`): it returns with its calls and stored a web excerpt (replay.ts `hasExcerpt`);
+   * `real`: it is among the most recent such (`mostRecent`, `loadContext`), and is built showing that excerpt.
+   */
+  excerpt: boolean;
+  real: boolean;
   seq: number;
   /** The owner's message: its seq. The Agent's reply: the seq its run had covered when it began. */
   answers: number;
@@ -523,22 +533,26 @@ async function loadPage(
     const quotedFile = replyTo === null ? undefined : quotedFiles.get(replyTo);
     const seq = Number(r.seq);
     const block = role === "assistant" && r.proposal_persona !== null ? renderProposalBlock({ persona: r.proposal_persona, intro: r.proposal_intro, field: r.proposal_field }) : null;
-    // An earlier reply that looked something up, with visible text, in a run that replays: its calls (harness design §3).
-    const replay =
-      run.replay !== undefined && role === "assistant" && r.message_id !== null && r.created_at !== null && hasVisibleText(r.text ?? "")
-        ? replayOf(r.tool_calls, { messageId: r.message_id, day: siteDateTime(r.created_at, run.replay.timeZone).date, webSources: r.web_sources, webCites: r.web_cites }, run.replay.tools, run.replay.maxCalls)
+    // An earlier reply that looked something up, with visible text, in a run that replays: its calls (harness design §3),
+    // in the run's form. In H3 and D an acknowledgement is marked as one, so that it can follow its answer's results.
+    const scope = run.replay;
+    const facts: ReplayFacts | null =
+      scope !== undefined && role === "assistant" && r.message_id !== null && r.created_at !== null && hasVisibleText(r.text ?? "")
+        ? { messageId: r.message_id, day: siteDateTime(r.created_at, scope.timeZone).date, webSources: r.web_sources, webCites: r.web_cites }
         : null;
-    const build = (refs: RunRefs | null): ContextEntry => {
+    const ack = scope !== undefined && (scope.form === "H3" || scope.form === "D") && role === "assistant" && !r.placed;
+    const build = (refs: RunRefs | null, real = false): ContextEntry => {
       const quote = quotedText ?? (quotedFile && replyTo !== null ? attachmentLabel(toAttachment(quotedFile, replyTo, run.conversationId, refs)) : null);
       const text = entryText(r.text ?? "", quote);
-      return {
+      const plain: ContextEntry = {
         role,
         text: block === null ? text : text === "" ? block : `${text}\n\n${block}`,
         attachment: r.attachment ? toAttachment(r.attachment, seq, run.conversationId, refs) : null,
-        ...(replay === null ? {} : { replay }),
+        ...(ack ? { ack: true as const } : {}),
       };
+      return scope === undefined || facts === null ? plain : withReplay(plain, r.tool_calls, facts, scope, real);
     };
-    const entry = build(null);
+    const excerpt = scope?.form === "D" && facts !== null && hasExcerpt(r.tool_calls);
     const quoted = quotedText !== undefined || quotedFile !== undefined;
     const speaker =
       group && role === "user"
@@ -551,7 +565,7 @@ async function loadPage(
             quoted,
           }
         : null;
-    return [{ entry, build, seq, answers: r.answers === null ? seq : Number(r.answers), reply: r.answers !== null, placed: r.placed, speaker }];
+    return [{ entry: build(null), build, excerpt, real: false, seq, answers: r.answers === null ? seq : Number(r.answers), reply: r.answers !== null, placed: r.placed, speaker }];
   });
   return { loaded, oldest: rows.length > 0 ? Number(rows[rows.length - 1]!.seq) : null, more: rows.length === limit };
 }
@@ -683,6 +697,11 @@ export async function loadContext(
   let text = mark === null ? unmarked : withPassage(mark, speakers);
   let budget = budgetWith(text);
   const ordered = inAnsweredOrder(kept);
+  // Replay form D: the most recent replies that stored a web excerpt show it (replay.ts `REAL_REPLIES`), the older as H3.
+  for (const l of mostRecent(ordered, (l) => l.excerpt)) {
+    l.real = true;
+    l.entry = l.build(null, true);
+  }
   let entries = ordered.map((l) => shown(l, mark));
   // The summary's passage goes first when, with it, the newest message would not fit whole (the mark, drawn with it there,
   // is in no part of what is left).
@@ -707,7 +726,7 @@ export async function loadContext(
     for (const l of kept) for (const said of [l.entry.text, l.entry.attachment?.name ?? "", l.speaker?.name ?? "", l.speaker?.handle ?? ""]) run.refs.plant(said);
     // An earlier reply's replayed calls and results too: their inputs and sentences are text it is shown (R2-m3).
     for (const l of kept) for (const round of l.entry.replay ?? []) for (const p of [...round.calls, ...round.results]) run.refs.plant(partText(p)!);
-    for (const at of could.shownAt()) ordered[at]!.entry = ordered[at]!.build(run.refs);
+    for (const at of could.shownAt()) ordered[at]!.entry = ordered[at]!.build(run.refs, ordered[at]!.real);
     entries = ordered.map((l) => shown(l, mark));
     could = new ContextPlan(entries, budget, ratio);
     could.keepOlder();

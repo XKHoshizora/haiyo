@@ -158,6 +158,21 @@ The arithmetic is unchanged; only its inputs grow. Admission is still `holdToken
 - the memory review's basis rule (review.ts:89–90: the Agent's lines "绝不能当作依据") keeps a confession from becoming a note unless the owner affirms it;
 - the summary keeps today's text.
 
+**The forms (fix round 2: measured arms, not yet chosen).** The re-bench after round 1 (haiku with thinking low) showed two failures of this placeholder that the first bench's classifier did not count. Re-scored with the bench's new rule 2b, the merged form H has 38 confessions of a hosts-only kind with thinking and 16 without; A has 0 in both. The model takes "sites and a date" for all the search returned ("搜索只返回了网站名和日期，没有返回任何网页正文…"). Second, replayed Chinese acknowledgements in a turn that ends in a call act as a template for the reply being written: on ja3, H answers in Japanese 10 of 20 times, A 20 of 20. So the form is a switch, `TOOLS.replayForm`, read in config.ts alone and `H` by default. Each form is built by the service's own code (`replay.ts` `withReplay`), and the bench's arms call it:
+
+| Form | What changes from H | A web search's result | Bound |
+|---|---|---|---|
+| H | — | `{note, sites, date}` | 72 |
+| H2 | the result says, as data, how many results came back then, that their text is not kept here, and that the answer was written from them; the count and `text_kept_here` come before `sites`, so the sites are not read as the whole result | `{"results_returned_then":3,"text_kept_here":false,"note":"那次回答是根据这些结果写的；原文没有保存在这里，回答以外的细节要重新搜索","sites":[…],"date":"2026-11-22"}`; a messages search `{"messages_found_then":n,"text_kept_here":false,"note":"回答以外的细节要重新查找","date":…}` | 100 |
+| H3 | H2, and the acknowledgement goes after the results, at the head of the answer's turn: `[call] > [result] > [ack, answer]` | as H2 | 100 |
+| D | H3, and the 2 most recent replayed replies that stored an excerpt show it: per page (at most 3) the site, the title (≤ 20 weight) and the snippet (≤ 40) the tool handed the model, under `TOOL_MATERIAL`; older replies as H3 | `{"about":TOOL_MATERIAL,"results_returned_then":3,"excerpts":[{"site","title","snippet"},…],"note":"这里只留了摘录，那次回答是根据完整结果写的；回答以外的细节要重新搜索","date":…}` | 340 |
+
+- **H3 moves the acknowledgement rather than dropping it.** Dropping it loses what the Agent said. Moving it keeps the request without tools byte for byte the request before step 1 (A's turn is already `[ack, answer]`), and it removes the shape "text, then a call" from history. The live call is still asked to say so first. That shape is what the model copied.
+- **D stores** the excerpt at post time, beside `toolCalls`, in the own conversation only and only while `D` is set (`storedToolCalls`, `form`). It has the same one reader. The read side checks the caps (`toolCallsOf`).
+- **D's injection exposure is stated, not hidden.** D shows web text again: about 180 weight per call, in the 2 most recent replies, inside a tool result and under the material sentence the live result uses. It is cleaned and stripped of token-shaped strings when stored. A planted instruction in a title or snippet is therefore seen twice more than in H.
+- **Per reply**, one web call: H 102–111, H2/H3 129–139, D 214 (one page) to 295 (two pages), as `partText` weighs it (bench fixtures, 12 turns). The worst case per reply at the default caps grows with the result bound: H2 ≤ 1 600, D ≤ 2 300 for the 2 real replies (tests/replay-forms.test.ts).
+- **The bench** (`.claude/harness/bench.mts`) runs A, H, H2, H3 and D in one run, each form against A, with two new bars: wrong language on ja1, ja3, en1 and en3 (≤ A + 2 each, which is `lang ok` ≥ A − 2 when every answer has text), and hosts-only confessions (≤ A + 2). The confessions bar counts the hosts-only kind too. The form is chosen from that run, with thinking off and low, on haiku and deepseek.
+
 ## 4. Output handling, as one state description
 
 **States**: planned → round *k* → acknowledged (at most once per question) → tools → final or plain → ended.

@@ -151,8 +151,10 @@ the owner's ruling "one point is $0.001 of the upstream's list price"; 770 350 f
 engine: 13 000 for Exa — $7 a 1 000 searches and $1 a 1 000 pages for the highlights of 6 —, 2 000 for DeepSeek),
 `siteUsdPerDay` (the site's money fuse, USD a site day, default 20; Metering, A web search's price), `maxAtOnce` (engine
 calls at once in the service, default 4), `timeoutMs` (1 000–120 000, default 15 000), `maxResults` (1–20, default
-6)); the first version's `perOwnerPerDay` and `sitePerDay` are gone and refused at start, the error naming the key and
-saying it was removed and why),
+6)), `replayForm` (how an earlier reply's tool use returns in its own conversation's history: `H`, the default, `H2`,
+`H3` or `D`; Agents and runs, Earlier tool use in history, Forms — a measured choice, not a preference); the first
+version's `perOwnerPerDay` and `sitePerDay` are gone and refused at start, the error naming the key and saying it was
+removed and why),
 `HOLDS` (what one owner's open holds may add up to, JSON, every field optional; Metering, Money that does not block:
 `maxOpenShare` (an admission rule: the share of what is left of the pots a starting reply's class may use — today's
 free allowance and the balance — that every promise on them, the reply's own included, may add up to before that reply
@@ -3980,6 +3982,25 @@ live, lane prompt2). So, in the Agent's own conversation only:
   any other failure of such a request fails the call as any failure does.
 - *One reader.* `toolCalls` is read by that context alone (`messages/model.ts` `CONTEXT_ONLY_KEYS`): never sent on the
   wire, searched, summarised, reviewed or logged, and never read for a group or for anyone else.
+- *Forms* (fix round 2; `TOOLS.replayForm`, read in `config.ts` alone, default `H`: everything above; `replay.ts`
+  `ReplayForm`; `tests/replay-forms.test.ts`, `tests/reply-replay-forms.test.ts`). Measured live with thinking on, H's
+  "sites and a date" were taken for all a search had returned (and the earlier answer's details for made up), and
+  replayed Chinese acknowledgements ending in a call were copied into replies to Japanese questions. Three other forms
+  exist so that a measurement chooses (`.claude/harness/bench.mts`, arms A, H, H2, H3, D); none is on by default.
+  `H2`: a web search's result says, as data, how many results came back then and that their text is not kept here,
+  before its sites — `{"results_returned_then":n,"text_kept_here":false,"note":"那次回答是根据这些结果写的；原文没有保存在这里，回答以外的细节要重新搜索","sites":[…],"date":…}`,
+  at most 100 weight — and a messages search's `{"messages_found_then":n,"text_kept_here":false,"note":"回答以外的细节要重新查找","date":…}`.
+  `H3`: `H2`, with the acknowledgement after the results, heading the answer's turn (`ContextEntry.ack` set by `loadPage`
+  on an Agent's message that is not `placed`, `ackAfterResults` by `replay.ts` `withReplay`): no replayed turn holds
+  text and then a call; lowered, the request is still the one before step 1, byte for byte. `D`: `H3`, and the post
+  keeps, besides, of each web call an excerpt of its first 3 pages — the title (at most 20 weight) and snippet (at most
+  40) the tool handed the model, cleaned, token-shaped strings out, "…" on a cut — and the 2 most recent replies that
+  kept one (`REAL_REPLIES`, `loadContext`) show it inside their tool result under the material sentence
+  (`{"about":TOOL_MATERIAL,"results_returned_then":n,"excerpts":[{"site","title","snippet"},…],"note":"这里只留了摘录，那次回答是根据完整结果写的；回答以外的细节要重新搜索","date":…}`,
+  at most 340 weight); older ones show `H3`'s placeholder. That is web text shown again: about 180 weight of it per
+  call, twice more than the live result showed it, in the same wrapper; it is stored only where `toolCalls` is and has
+  its one reader. A form applies to what is posted while it is set (`D` stores the excerpt) and to how stored replies
+  return; a reply stored under another form returns in the present one from what it kept (no excerpt kept: `H3`'s).
 
 **Outcomes.** How a run ends — the message it leaves, its `status` and `error` code (`Run`, Replies), what it is charged
 (Metering):

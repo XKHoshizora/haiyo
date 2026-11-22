@@ -222,6 +222,19 @@ function pagesOf(output: unknown): number[] {
   });
 }
 
+/**
+ * Each page's title and snippet as a web search's output handed them to the model (tools/web/tool.ts), page for page: what
+ * its trace carries for `TOOLS.replayForm` `D` (`ToolTrace.excerpts`; agents/replay.ts keeps them only then, cut).
+ */
+function excerptsOf(output: unknown): Array<{ title: string; snippet: string }> {
+  const results = typeof output === "object" && output !== null ? (output as { results?: unknown }).results : undefined;
+  if (!Array.isArray(results)) return [];
+  return results.flatMap((r) => {
+    const { title, snippet } = (typeof r === "object" && r !== null ? r : {}) as { title?: unknown; snippet?: unknown };
+    return typeof title === "string" ? [{ title, snippet: typeof snippet === "string" ? snippet : "" }] : [];
+  });
+}
+
 /** What a call the loop or its tool did not run was answered with: the sentence of its `{error}` or `{note}`, else `UNUSABLE`. */
 function sentenceOf(output: unknown): string {
   const o = typeof output === "object" && output !== null ? (output as { error?: unknown; note?: unknown }) : {};
@@ -793,7 +806,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
                     outcome: "ok",
                     input: toolCall.input,
                     ...(kind === "search" ? { found: ran.outcome.found?.length ?? 0 } : {}),
-                    ...(kind === "web" ? { pages: pagesOf(ran.outcome.output) } : {}),
+                    ...(kind === "web" ? { pages: pagesOf(ran.outcome.output), excerpts: excerptsOf(ran.outcome.output) } : {}),
                   };
                 }
               } catch {

@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import type { ReplayForm } from "../config.ts";
 import { webCitesOf, webSourcesOf } from "../messages/lookups.ts";
 import { cutToWeight, weight } from "../metering/tokens.ts";
 import type { ReplayCall, ReplayResult } from "../models/gateway.ts";
-import type { ReplayRound } from "./runtime/context.ts";
+import type { ContextEntry, ReplayRound } from "./runtime/context.ts";
 import { UNUSABLE } from "./runtime/loop.ts";
 import type { ToolTrace } from "./runtime/port.ts";
-import { cleanText } from "./runtime/prompt.ts";
+import { cleanText, TOOL_MATERIAL } from "./runtime/prompt.ts";
 import { CURRENT_TIME } from "./tools/clock.ts";
 import { takeCites, type RunRefs } from "./tools/refs.ts";
 import { BAD_DATE, QUERY_TOO_LONG, QUERY_TOO_SHORT, SEARCH_BUSY, SEARCH_MESSAGES, SEARCH_TIMEOUT } from "./tools/search-words.ts";
@@ -36,6 +37,29 @@ import {
  * every module it imports is a leaf of the agents' code (the tools' names and sentences live in modules of their own): no
  * import cycle can leave a value here unset.
  */
+
+/**
+ * The forms an earlier reply's tool use may return in (`TOOLS.replayForm`, read in config.ts alone; fix round 2: a
+ * measurement chooses, the default stays H):
+ * - `H`: step 1's — each call, and a placeholder of its sites and the day (`WEB_NOTE`);
+ * - `H2`: the placeholder says, as data, how many results the search returned then, that their text is not kept here, and
+ *   that the earlier answer was written from them (`H2_WEB_NOTE`), so its sites are never read as the whole result (measured
+ *   live, haiku with thinking: H's "sites and a date" were taken for all the search returned, and the earlier answer's
+ *   details for made up);
+ * - `H3`: `H2`, the acknowledgement after the results, heading the answer (`ContextEntry.ackAfterResults`), so no
+ *   replayed turn holds text and then a call — the shape of the reply being written (measured: replayed Chinese
+ *   acknowledgements were copied into replies to Japanese questions);
+ * - `D`: `H3`, and for the most recent replies (`REAL_REPLIES`) the stored excerpt of each web result: title and snippet
+ *   per page, under the material sentence (`TOOL_MATERIAL`); an older reply, or one with no excerpt stored, as `H3`.
+ * The names are config.ts's (`REPLAY_FORMS`; a type, so no module is loaded for it).
+ */
+export type { ReplayForm };
+/** Of the replies that return with their calls, how many of the most recent `D` shows the stored excerpt of. */
+export const REAL_REPLIES = 2;
+/** `D`: the most pages a web call keeps an excerpt of, and how much of each (as JSON text, escapes counted). */
+export const EXCERPTS_MAX = 3;
+export const EXCERPT_TITLE_MAX_WEIGHT = 20;
+export const EXCERPT_SNIPPET_MAX_WEIGHT = 40;
 
 /** The tools whose calls return (step 1): a reply that called any other returns as its text alone. */
 export const REPLAY_TOOLS: readonly string[] = [SEARCH_WEB, SEARCH_MESSAGES, CURRENT_TIME];
@@ -70,11 +94,37 @@ export const WEB_NOTE = "那次的结果已不在这里，那次回答以外的�
 export const MESSAGES_NOTE = "那次的结果已不在这里，那次回答以外的细节要重新查找";
 export const TIME_NOTE = "当时给过你那时的时间。";
 export const REFUSAL_NOTE = "只限那次回复";
+/** `H2`, `H3`: a web search's and a messages search's (beside `results_returned_then` / `messages_found_then` and `text_kept_here: false`). */
+export const H2_WEB_NOTE = "那次回答是根据这些结果写的；原文没有保存在这里，回答以外的细节要重新搜索";
+export const H2_MESSAGES_NOTE = "回答以外的细节要重新查找";
+/** `D`: a real reply's web result, beside its excerpts. */
+export const D_NOTE = "这里只留了摘录，那次回答是根据完整结果写的；回答以外的细节要重新搜索";
+/** What a result weighs at most, as JSON text, by construction (tests/replay-forms.test.ts): `H2`/`H3`'s, and `D`'s real one. */
+export const H2_RESULT_MAX_WEIGHT = 100;
+export const D_RESULT_MAX_WEIGHT = 340;
 
 /** What a reply keeps of one call (`toolCalls`): a call that ran, with its input and what it handed out; or one refused, with no input. */
 export type StoredToolCall =
-  | { name: string; round: number; outcome: "ok"; input: Record<string, string>; found?: number; pages?: number[] }
+  | { name: string; round: number; outcome: "ok"; input: Record<string, string>; found?: number; pages?: number[]; excerpts?: Excerpt[] }
   | { name: string; round: number; outcome: "refused"; error: string };
+/** `D`: a page's title and snippet as the model was handed them, cut (web text: untrusted, shown only inside a tool result). */
+export interface Excerpt {
+  title: string;
+  snippet: string;
+}
+
+/** `text` cleaned, its token-shaped strings out (with `refs`), and cut so that its JSON text weighs at most `max`: "…" ends a cut one. */
+function keptText(text: string, refs: RunRefs | null, max: number): string {
+  const clean = refs ? takeCites(cleanText(text), refs, { cite: false }).text : cleanText(text);
+  if (weight(JSON.stringify(clean)) <= max) return clean;
+  let fit = clean;
+  while (fit !== "" && weight(JSON.stringify(`${fit}…`)) > max) fit = cutToWeight(fit, Math.max(0, weight(fit) - 1));
+  return `${fit.trimEnd()}…`;
+}
+
+/** `D`: what a web call keeps of its pages' titles and snippets, page for page, the first `EXCERPTS_MAX`. */
+const keptExcerpts = (excerpts: readonly Excerpt[], refs: RunRefs | null): Excerpt[] =>
+  excerpts.slice(0, EXCERPTS_MAX).map((e) => ({ title: keptText(String(e.title ?? ""), refs, EXCERPT_TITLE_MAX_WEIGHT), snippet: keptText(String(e.snippet ?? ""), refs, EXCERPT_SNIPPET_MAX_WEIGHT) }));
 
 /**
  * The sentences a refused call keeps (its `error`): the tools' own refusals — the web search's (web/words.ts) and the
@@ -145,14 +195,16 @@ function keptInput(name: string, input: unknown, refs: RunRefs | null): Record<s
  * its input (`keptInput`) and what it handed out (a messages search how many messages, a web search its pages' numbers);
  * one refused keeps the tool's own refusal when it is one (`REFUSAL_SENTENCES`), else `UNUSABLE` — and never an input.
  */
-export function storedToolCalls(trace: readonly ToolTrace[], refs: RunRefs | null, maxCalls: number): StoredToolCall[] | null {
+export function storedToolCalls(trace: readonly ToolTrace[], refs: RunRefs | null, maxCalls: number, form: ReplayForm = "H"): StoredToolCall[] | null {
   if (trace.length === 0 || trace.length > Math.min(maxCalls, CALLS_MAX) || !trace.every((c) => REPLAY_TOOLS.includes(c.name))) return null;
   if (!trace.every((c, i) => Number.isSafeInteger(c.round) && c.round >= 1 && c.round <= ROUNDS_MAX && (i === 0 || c.round >= trace[i - 1]!.round))) return null;
   return trace.map((c): StoredToolCall => {
     if (c.outcome !== "ok") return { name: c.name, round: c.round, outcome: "refused", error: c.said !== undefined && REFUSAL_SENTENCES.has(c.said) ? c.said : UNUSABLE };
     const found = c.name === SEARCH_MESSAGES ? { found: isCount(c.found, FOUND_MAX) ? c.found : 0 } : {};
     const pages = c.name === SEARCH_WEB ? { pages: (c.pages ?? []).filter((n) => Number.isSafeInteger(n) && n >= 1).slice(0, PAGES_MAX) } : {};
-    return { name: c.name, round: c.round, outcome: "ok", input: keptInput(c.name, c.input, refs), ...found, ...pages };
+    // Only `D` keeps what a web search found, and only its excerpt.
+    const excerpts = form === "D" && c.name === SEARCH_WEB && Array.isArray(c.excerpts) && c.excerpts.length > 0 ? { excerpts: keptExcerpts(c.excerpts, refs) } : {};
+    return { name: c.name, round: c.round, outcome: "ok", input: keptInput(c.name, c.input, refs), ...found, ...pages, ...excerpts };
   });
 }
 
@@ -176,7 +228,11 @@ function storedCall(v: unknown): StoredToolCall | null {
   if (name === SEARCH_WEB) {
     const pages = v.pages ?? [];
     if (!Array.isArray(pages) || pages.length > PAGES_MAX || !pages.every((n) => Number.isSafeInteger(n) && n >= 1)) return null;
-    return { name, round, outcome: "ok", input, pages: pages as number[] };
+    if (v.excerpts === undefined) return { name, round, outcome: "ok", input, pages: pages as number[] };
+    const excerpts = v.excerpts;
+    const fits = (x: unknown, max: number) => typeof x === "string" && weight(JSON.stringify(x)) <= max;
+    if (!Array.isArray(excerpts) || excerpts.length > EXCERPTS_MAX || !excerpts.every((e) => isRecord(e) && Object.keys(e).length === 2 && fits(e.title, EXCERPT_TITLE_MAX_WEIGHT) && fits(e.snippet, EXCERPT_SNIPPET_MAX_WEIGHT))) return null;
+    return { name, round, outcome: "ok", input, pages: pages as number[], excerpts: excerpts.map((e) => ({ title: e.title as string, snippet: e.snippet as string })) };
   }
   return { name, round, outcome: "ok", input };
 }
@@ -251,11 +307,33 @@ function sitesOf(pages: readonly number[], facts: ReplayFacts): string[] {
   return sites;
 }
 
-/** A stored call's placeholder result: stored facts only (harness design §3, Placeholders). */
-function placeholder(c: StoredToolCall, facts: ReplayFacts): unknown {
+/** `D`: a web call's excerpts with each page's site (its host as `siteOf` keeps it; none when it keeps nothing). */
+function excerptsOf(c: Extract<StoredToolCall, { outcome: "ok" }>, facts: ReplayFacts): Array<{ site?: string } & Excerpt> {
+  const sources = webSourcesOf(facts.webSources);
+  return (c.excerpts ?? []).map((e, i) => {
+    const source = sources.find((s) => s.n === c.pages?.[i]);
+    const site = source ? siteOf(source.url) : null;
+    return { ...(site === null ? {} : { site }), title: e.title, snippet: e.snippet };
+  });
+}
+
+/**
+ * A stored call's result in `form` (harness design §3, Placeholders; fix round 2): stored facts only. `real` (`D`, a reply
+ * among the most recent): a web call with a stored excerpt shows it, under the material sentence.
+ */
+function placeholder(c: StoredToolCall, facts: ReplayFacts, form: ReplayForm, real: boolean): unknown {
   if (c.outcome === "refused") return { error: c.error, note: REFUSAL_NOTE, date: facts.day };
-  if (c.name === SEARCH_WEB) return { note: WEB_NOTE, sites: sitesOf(c.pages ?? [], facts), date: facts.day };
-  if (c.name === SEARCH_MESSAGES) return { note: MESSAGES_NOTE, found: c.found ?? 0, date: facts.day };
+  if (form === "H") {
+    if (c.name === SEARCH_WEB) return { note: WEB_NOTE, sites: sitesOf(c.pages ?? [], facts), date: facts.day };
+    if (c.name === SEARCH_MESSAGES) return { note: MESSAGES_NOTE, found: c.found ?? 0, date: facts.day };
+    return { note: TIME_NOTE, date: facts.day };
+  }
+  if (c.name === SEARCH_WEB) {
+    const returned = (c.pages ?? []).length;
+    if (form === "D" && real && (c.excerpts ?? []).length > 0) return { about: TOOL_MATERIAL, results_returned_then: returned, excerpts: excerptsOf(c, facts), note: D_NOTE, date: facts.day };
+    return { results_returned_then: returned, text_kept_here: false, note: H2_WEB_NOTE, sites: sitesOf(c.pages ?? [], facts), date: facts.day };
+  }
+  if (c.name === SEARCH_MESSAGES) return { messages_found_then: c.found ?? 0, text_kept_here: false, note: H2_MESSAGES_NOTE, date: facts.day };
   return { note: TIME_NOTE, date: facts.day };
 }
 
@@ -266,7 +344,7 @@ function placeholder(c: StoredToolCall, facts: ReplayFacts): unknown {
  * well formed is stored, more than `maxCalls` are (as `storedToolCalls` would keep none), or a call is to a tool
  * `offered` (this request's tools) does not hold.
  */
-export function replayOf(toolCalls: unknown, facts: ReplayFacts, offered: ReadonlySet<string>, maxCalls: number): ReplayRound[] | null {
+export function replayOf(toolCalls: unknown, facts: ReplayFacts, offered: ReadonlySet<string>, maxCalls: number, form: ReplayForm = "H", real = false): ReplayRound[] | null {
   const calls = toolCallsOf(toolCalls);
   if (calls === null || calls.length > maxCalls || !calls.every((c) => offered.has(c.name))) return null;
   const rounds: ReplayRound[] = [];
@@ -279,9 +357,37 @@ export function replayOf(toolCalls: unknown, facts: ReplayFacts, offered: Readon
     const id = replayId(facts.messageId, index);
     const input = c.outcome === "ok" ? c.input : c.name === CURRENT_TIME ? {} : { query: "" };
     const call: ReplayCall = { type: "tool-call", id, name: c.name, input };
-    const result: ReplayResult = { type: "tool-result", id, name: c.name, output: placeholder(c, facts) };
+    const result: ReplayResult = { type: "tool-result", id, name: c.name, output: placeholder(c, facts, form, real) };
     rounds[rounds.length - 1]!.calls.push(call);
     rounds[rounds.length - 1]!.results.push(result);
   }
   return rounds;
 }
+
+/** Where a plan replays: the tools this request offers, the most calls a reply keeps, the form (agents/context.ts `ContextRun.replay`). */
+export interface ReplayScope {
+  tools: ReadonlySet<string>;
+  maxCalls: number;
+  form: ReplayForm;
+}
+
+/**
+ * An Agent's reply as a plan offered tools shows it (agents/context.ts `loadPage`; the bench builds its arms with it): with
+ * its replay (`replayOf` in `scope`'s form; `real`: one of the most recent, `mostRecent`) when it returns with one, and in
+ * `H3`/`D` marked so that its acknowledgement goes after the results (`ContextEntry.ackAfterResults`). As it was otherwise.
+ */
+export function withReplay(entry: ContextEntry, toolCalls: unknown, facts: ReplayFacts, scope: ReplayScope, real = false): ContextEntry {
+  const replay = replayOf(toolCalls, facts, scope.tools, scope.maxCalls, scope.form, real);
+  if (replay === null) return entry;
+  return { ...entry, replay, ...(scope.form === "H3" || scope.form === "D" ? { ackAfterResults: true as const } : {}) };
+}
+
+/** `D`: the `n` most recent of `items` (oldest first) that `has` holds for, newest first. */
+export function mostRecent<T>(items: readonly T[], has: (item: T) => boolean, n = REAL_REPLIES): Set<T> {
+  const out = new Set<T>();
+  for (let i = items.length - 1; i >= 0 && out.size < n; i--) if (has(items[i]!)) out.add(items[i]!);
+  return out;
+}
+
+/** `D`: whether a stored body's calls hold a web excerpt to show (`mostRecent` counts only those). */
+export const hasExcerpt = (toolCalls: unknown): boolean => (toolCallsOf(toolCalls) ?? []).some((c) => c.outcome === "ok" && (c.excerpts ?? []).length > 0);

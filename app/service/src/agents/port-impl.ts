@@ -792,7 +792,7 @@ export class DbAgentPort implements AgentPort {
        */
       const planOf = async (numbered: boolean, reserved: number): Promise<{ loaded: LoadedContext; refs: RunRefs | null }> => {
         const refs = numbered ? new RunRefs({}, web === "offered") : null;
-        const replay = refs !== null && !group && offer !== null ? { replay: { tools: new Set(offer.tools.map((tool) => tool.name)), timeZone: config.siteTimezone, maxCalls: maxCallsOf(config.tools) } } : {};
+        const replay = refs !== null && !group && offer !== null ? { replay: { tools: new Set(offer.tools.map((tool) => tool.name)), timeZone: config.siteTimezone, maxCalls: maxCallsOf(config.tools), form: config.tools.replayForm } } : {};
         return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}), ...replay }, resolved, system(refs !== null), this.deps.drawMark), refs };
       };
       const definitions = offer === null ? 0 : estimateTokens(JSON.stringify(offer.tools), planned * TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;

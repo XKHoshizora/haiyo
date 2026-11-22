@@ -244,6 +244,11 @@ export interface ToolTrace {
   found?: number;
   /** "ok" `search_web`: the numbers of the pages it handed out (`〔w3〕` is 3), in order. */
   pages?: number[];
+  /**
+   * "ok" `search_web`: each page's title and snippet as the model was handed them, page for page (web text: untrusted).
+   * Kept only under `TOOLS.replayForm` `D` (agents/replay.ts), cut there.
+   */
+  excerpts?: Array<{ title: string; snippet: string }>;
 }
 
 /**

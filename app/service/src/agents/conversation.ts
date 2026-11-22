@@ -411,9 +411,10 @@ export async function postAsAgent(
   if (queries.length > 0) body.queries = queries;
   // The calls of the rounds its answer was written with (harness design §3): in its own conversation only, where a later
   // reply offered those tools is shown them (agents/replay.ts), never in a group nor on an acknowledgement (which returned
-  // above), and none when there were more than the tools' per-reply caps allow. Read by that context alone
-  // (`CONTEXT_ONLY_KEYS`): never sent, searched or summarised.
-  const toolCalls = own && !ack && reply.toolCalls ? storedToolCalls(reply.toolCalls, refs, maxCallsOf(config.tools)) : null;
+  // above), and none when there were more than the tools' per-reply caps allow. In replay form D a web call keeps, besides,
+  // an excerpt of its pages (title and snippet, cut: web text). Read by that context alone (`CONTEXT_ONLY_KEYS`): never
+  // sent, searched, summarised or logged.
+  const toolCalls = own && !ack && reply.toolCalls ? storedToolCalls(reply.toolCalls, refs, maxCallsOf(config.tools), config.tools.replayForm) : null;
   if (toolCalls !== null) body.toolCalls = toolCalls;
   // Who its mentions mean, read once, now, from the text it stores (Task M: a model's text is typed text), and stored with
   // it: what it calls below, and everything after, reads that.

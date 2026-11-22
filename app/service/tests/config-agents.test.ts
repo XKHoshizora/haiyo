@@ -443,7 +443,7 @@ describe("the tools configuration", () => {
     timeoutMs: 15_000,
     maxResults: 6,
   };
-  const defaults = { enabled: true, maxRounds: 8, maxPoints: 20, searchPerReply: 6, filePerReply: 4, timePerReply: 1, resultMaxWeight: 3000, runTimeoutMs: 300_000, web };
+  const defaults = { enabled: true, maxRounds: 8, maxPoints: 20, searchPerReply: 6, filePerReply: 4, timePerReply: 1, resultMaxWeight: 3000, runTimeoutMs: 300_000, web, replayForm: "H" };
 
   test("the web search: off unless asked; a partial web keeps the rest; an http address, an unknown key or engine refuse", () => {
     expect(loadConfig({ ...base, TOOLS: '{"web":{"enabled":true}}' }).tools.web).toEqual({ ...web, enabled: true });
@@ -546,6 +546,12 @@ describe("the tools configuration", () => {
     expect(loadConfig({ ...base, TOOLS: '{"runTimeoutMs":1000}' }).tools.runTimeoutMs).toBe(1000);
     // Each tool has its own count: the clock's as the others'.
     expect(loadConfig({ ...base, TOOLS: '{"timePerReply":3}' }).tools).toEqual({ ...defaults, timePerReply: 3 });
+  });
+
+  test("the replay's form (fix round 2): H unless set; each of the four is taken, anything else refuses", () => {
+    expect(loadConfig(base).tools.replayForm).toBe("H");
+    for (const form of ["H", "H2", "H3", "D"]) expect(loadConfig({ ...base, TOOLS: JSON.stringify({ replayForm: form }) }).tools).toEqual({ ...defaults, replayForm: form });
+    for (const bad of ['{"replayForm":"h2"}', '{"replayForm":"C"}', '{"replayForm":""}', '{"replayForm":2}']) expect(() => loadConfig({ ...base, TOOLS: bad }), bad).toThrow(/TOOLS: replayForm/);
   });
 
   test("a count that is not a whole number of at least 1, a time out of range, an unknown key and bad JSON refuse", () => {
