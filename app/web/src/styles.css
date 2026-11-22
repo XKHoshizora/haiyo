@@ -618,9 +618,12 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .md .hljs-strong { font-weight: 700; }
 
 /* A picture in a bubble: the picture alone, rounded; pressing it opens the viewer. */
-.attachment-image { border-radius: 12px; overflow: hidden; background: var(--surface-solid); max-width: 320px; }
-.attachment-image .image-open { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
-.attachment-image img { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; max-height: 240px; object-fit: cover; }
+.attachment-image { width: 200px; max-width: 100%; border-radius: 12px; overflow: hidden; background: var(--surface-solid); }
+.attachment-image .image-open { position: relative; display: block; width: 100%; aspect-ratio: 3 / 2; padding: 0; border: 0; background: none; cursor: zoom-in; }
+/* The picture in its own shape (the button's aspect-ratio is set from its size, Messages.jsx); an extreme one is cut from the middle. */
+.attachment-image img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
+/* A phone: at most 70% of the bubble column (82% of the list, which is padded 12px a side). */
+@media (max-width: 860px) { .attachment-image { max-width: min(280px, calc(0.574 * (100vw - 24px))); } }
 .attachment-image .image-open:focus-visible { outline-offset: -2px; }
 .card {
   padding: 12px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.85); border: 1px solid var(--line-strong);

@@ -354,6 +354,27 @@ describe("showing attachments", () => {
     expect(within(img.closest("li")).getByText("看看这个", { selector: ".bubble" })).toBeTruthy();
   });
 
+  it("a picture is drawn in its own shape: the box is reserved from its natural size once it is known, and a panorama is cut to 2.5:1", async () => {
+    await openApp();
+    await openChat("小安");
+    const figure = () => timeline().querySelector("figure.attachment-image");
+    const img = figure().querySelector("img");
+    // Before it is known: the placeholder (no size set).
+    expect(figure().style.width).toBe("");
+    expect(figure().dataset.sized).toBeUndefined();
+    Object.defineProperty(img, "naturalWidth", { configurable: true, value: 3000 });
+    Object.defineProperty(img, "naturalHeight", { configurable: true, value: 4000 });
+    fireEvent.load(img);
+    expect(figure().style.width).toBe("240px");
+    expect(figure().querySelector("button").style.aspectRatio).toBe("240 / 320");
+    expect(figure().dataset.sized).toBe("");
+    Object.defineProperty(img, "naturalWidth", { configurable: true, value: 8000 });
+    Object.defineProperty(img, "naturalHeight", { configurable: true, value: 1000 });
+    fireEvent.load(img);
+    expect(figure().style.width).toBe("280px");
+    expect(figure().querySelector("button").style.aspectRatio).toBe("280 / 112");
+  });
+
   it("an image that fails to load becomes the neutral 文件不可用 card", async () => {
     await openApp();
     await openChat("小安");

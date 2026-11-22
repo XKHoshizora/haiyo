@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
@@ -8,6 +8,7 @@ import { failureText, retryHopeless } from "../data/uploadErrors.js";
 import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
 import { FileCard } from "../ui/FileCard.jsx";
+import { thumbMaxWidth, thumbSize } from "../ui/thumbSize.js";
 import { useImageViewer } from "../ui/ImageViewer.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
@@ -55,15 +56,33 @@ function UnavailableCard({ name }) {
   );
 }
 
-/** A picture: only the picture (its file name is its accessible name); pressing it opens the viewer (ui/ImageViewer.jsx). */
+/**
+ * A picture: only the picture (its file name is its accessible name); pressing it opens the viewer (ui/ImageViewer.jsx). It is
+ * drawn in its own shape inside a box (ui/thumbSize.js; only an extreme shape is cut, from the middle). The wire carries no
+ * width and height, so the box is reserved from the picture's natural size as soon as it is known (at once for a cached one);
+ * until then the placeholder (3:2, styles.css) holds the place.
+ */
 function ImageBody({ msg }) {
   const [broken, setBroken] = useState(false);
+  const [box, setBox] = useState(null);
+  const img = useRef(null);
   const viewer = useImageViewer();
+  const measure = (node) => setBox(thumbSize({ width: node.naturalWidth, height: node.naturalHeight }, { maxWidth: thumbMaxWidth(window.innerWidth) }));
+  useLayoutEffect(() => {
+    if (img.current?.complete && img.current.naturalWidth) measure(img.current);
+  }, [msg.src]);
   if (broken) return <UnavailableCard name={msg.text} />;
   return (
-    <figure className="attachment-image">
-      <button type="button" className="image-open" aria-haspopup="dialog" data-image={msg.id} onClick={(e) => viewer.open(msg.id, e.currentTarget)}>
-        <img src={msg.src} alt={msg.text} loading="lazy" onError={() => setBroken(true)} />
+    <figure className="attachment-image" data-sized={box ? "" : undefined} style={box ? { width: box.width } : undefined}>
+      <button
+        type="button"
+        className="image-open"
+        aria-haspopup="dialog"
+        data-image={msg.id}
+        style={box ? { aspectRatio: `${box.width} / ${box.height}` } : undefined}
+        onClick={(e) => viewer.open(msg.id, e.currentTarget)}
+      >
+        <img ref={img} src={msg.src} alt={msg.text} loading="lazy" onLoad={(e) => measure(e.currentTarget)} onError={() => setBroken(true)} />
       </button>
     </figure>
   );
