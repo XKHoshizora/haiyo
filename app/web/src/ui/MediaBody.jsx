@@ -30,21 +30,35 @@ export function playableKind(mime) {
   return [mime, ...(ALIASES[mime] ?? [])].some((type) => probe.canPlayType(type) !== "") ? kind : null;
 }
 
-/** The card replaces the player only when nothing was ever loaded (a format or a codec this browser cannot play); a drop in the network while it plays keeps it. */
-const unplayable = (node, setFailed) => node.readyState === 0 && setFailed(true);
+/** MEDIA_ERR_NETWORK: the media element's error state is sticky, so a network error after something loaded (a dropped connection, a session that expired on a later range) is tried once more and then the card. */
+const NETWORK = 2;
+
+/**
+ * What an `error` event does. Nothing was ever loaded (a format or codec this browser cannot play), or the file cannot be decoded or its address
+ * cannot be used (MEDIA_ERR_DECODE, MEDIA_ERR_SRC_NOT_SUPPORTED — also how some browsers report a 401 or 404): the card, with the download. A network
+ * error after it loaded: one more try (`load()`), then the card — never a dead player and never a loop.
+ */
+function onMediaError(node, retried, setFailed) {
+  if (node.readyState === 0 || node.error?.code !== NETWORK || retried.current) return setFailed(true);
+  retried.current = true;
+  node.load();
+}
 
 export function MediaBody({ msg }) {
   const { upload, attachment } = msg;
   const [failed, setFailed] = useState(false);
   const [box, setBox] = useState(null);
   const figure = useRef(null);
+  const retried = useRef(false);
   // Far from the screen a player loads nothing (a chat full of clips would start a request for each at once); it starts its metadata when it comes
   // near. Where there is no IntersectionObserver it starts at once.
   const [near, setNear] = useState(typeof IntersectionObserver === "undefined");
   const kind = useMemo(() => (attachment.url && !upload ? playableKind(attachment.mime) : null), [attachment.url, attachment.mime, upload]);
   useEffect(() => {
     if (near || !figure.current || typeof IntersectionObserver === "undefined") return undefined;
-    const watcher = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && setNear(true), { rootMargin: "400px 0px" });
+    // Measured against the message scroller (`root`): a margin on the viewport is cut by the scroller's own clipping and would do nothing.
+    const root = figure.current.closest("ol.messages") ?? null;
+    const watcher = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && setNear(true), { root, rootMargin: "400px 0px" });
     watcher.observe(figure.current);
     return () => watcher.disconnect();
   }, [near, kind, failed]);
@@ -69,10 +83,10 @@ export function MediaBody({ msg }) {
           preload={near ? "metadata" : "none"}
           aria-label={msg.text}
           onLoadedMetadata={(e) => measure(e.currentTarget)}
-          onError={(e) => unplayable(e.currentTarget, setFailed)}
+          onError={(e) => onMediaError(e.currentTarget, retried, setFailed)}
         />
       ) : (
-        <audio src={attachment.url} controls preload={near ? "metadata" : "none"} aria-label={msg.text} onError={(e) => unplayable(e.currentTarget, setFailed)} />
+        <audio src={attachment.url} controls preload={near ? "metadata" : "none"} aria-label={msg.text} onError={(e) => onMediaError(e.currentTarget, retried, setFailed)} />
       )}
       </div>
       <p className="media-meta muted">

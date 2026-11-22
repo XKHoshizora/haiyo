@@ -149,24 +149,47 @@ describe("MediaBody keeps the chat at its newest message (item I1: the same grow
 describe("MediaBody errors and cost", () => {
   beforeEach(() => canPlay({ "video/mp4": "maybe" }));
 
-  it("an error after something was loaded (a network drop while watching) keeps the player; only an error before anything loaded is the card", () => {
-    const loaded = render(<MediaBody msg={msg({ name: "a.mp4", mime: "video/mp4" })} />);
-    const video = loaded.container.querySelector("video");
-    Object.defineProperty(video, "readyState", { configurable: true, value: 3 });
-    fireEvent.error(video);
-    expect(loaded.container.querySelector("video")).not.toBeNull();
-    cleanup();
+  it("an error before anything was loaded (a format or codec this browser cannot play) is the card at once", () => {
     const never = render(<MediaBody msg={msg({ name: "b.mp4", mime: "video/mp4" })} />);
     fireEvent.error(never.container.querySelector("video"));
     expect(never.container.querySelector("video")).toBeNull();
+    expect(never.container.querySelector(".file-card")).not.toBeNull();
+  });
+
+  it("after something was loaded, an undecodable file falls back to the card at once, and a network error (an expired session on a later range) gets one more try and then the card — never a dead player, never a loop", () => {
+    const load = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const erroring = (video, code) => {
+      Object.defineProperty(video, "readyState", { configurable: true, value: 3 });
+      Object.defineProperty(video, "error", { configurable: true, value: { code } });
+      fireEvent.error(video);
+    };
+    const decode = render(<MediaBody msg={msg({ name: "a.mp4", mime: "video/mp4" })} />);
+    erroring(decode.container.querySelector("video"), 3); // MEDIA_ERR_DECODE
+    expect(decode.container.querySelector("video")).toBeNull();
+    expect(screen.getByRole("link", { name: /下载 a\.mp4/ })).toBeTruthy();
+    cleanup();
+    const net = render(<MediaBody msg={msg({ name: "b.mp4", mime: "video/mp4" })} />);
+    erroring(net.container.querySelector("video"), 2); // MEDIA_ERR_NETWORK: tried again, once
+    expect(net.container.querySelector("video")).not.toBeNull();
+    expect(load).toHaveBeenCalledTimes(1);
+    erroring(net.container.querySelector("video"), 2);
+    expect(net.container.querySelector("video")).toBeNull();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(net.container.querySelector(".file-card")).not.toBeNull();
+    cleanup();
+    const unsupported = render(<MediaBody msg={msg({ name: "c.mp4", mime: "video/mp4" })} />);
+    erroring(unsupported.container.querySelector("video"), 4); // MEDIA_ERR_SRC_NOT_SUPPORTED (what a 401 or 404 on a range reads as in some browsers)
+    expect(unsupported.container.querySelector("video")).toBeNull();
   });
 
   it("a player far from the screen loads nothing (preload none) and starts its metadata when it comes near", () => {
     let callback;
+    let options;
     const observed = [];
     globalThis.IntersectionObserver = class {
-      constructor(fn) {
+      constructor(fn, opts) {
         callback = fn;
+        options = opts;
       }
       observe(node) {
         observed.push(node);
@@ -174,10 +197,19 @@ describe("MediaBody errors and cost", () => {
       disconnect() {}
     };
     try {
-      const { container } = render(<MediaBody msg={msg({ name: "clip.mp4", mime: "video/mp4" })} />);
+      const { container } = render(
+        <ol className="messages">
+          <li>
+            <MediaBody msg={msg({ name: "clip.mp4", mime: "video/mp4" })} />
+          </li>
+        </ol>,
+      );
       const video = container.querySelector("video");
       expect(video.getAttribute("preload")).toBe("none");
       expect(observed.length).toBe(1);
+      // The margin is measured against the message scroller: without it as root it would be cut by the scroller's own clipping and do nothing.
+      expect(options.root).toBe(container.querySelector("ol.messages"));
+      expect(options.rootMargin).toBe("400px 0px");
       act(() => callback([{ isIntersecting: false }]));
       expect(video.getAttribute("preload")).toBe("none");
       act(() => callback([{ isIntersecting: true }]));

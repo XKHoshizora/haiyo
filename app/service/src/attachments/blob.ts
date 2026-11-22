@@ -92,7 +92,7 @@ function sliced(source: Readable, range: ByteRange): Readable {
   const length = range.end - range.start + 1;
   let seen = 0;
   let sent = 0;
-  const out = new Transform({
+  const out: Transform = new Transform({
     transform(chunk: Buffer, _encoding, done) {
       const from = Math.max(0, range.start - seen);
       seen += chunk.length;
@@ -106,9 +106,15 @@ function sliced(source: Readable, range: ByteRange): Readable {
         source.destroy();
       }
       done();
+      // The slice is complete: the writable side ends too, so the stream closes by itself (it does not wait for its consumer to destroy it).
+      if (sent >= length) out.end();
     },
   });
   source.on("error", (err) => out.destroy(err));
+  // An object shorter than the slice asked for (replaced, truncated): an error, never a short stream under the length the route declared.
+  source.on("end", () => {
+    if (sent < length) out.destroy(new Error("S3 sent fewer bytes than the range asked for"));
+  });
   out.on("close", () => source.destroy());
   source.pipe(out);
   return out;

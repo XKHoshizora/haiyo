@@ -104,6 +104,22 @@ describe("s3BlobStore ranged reads (fake client)", () => {
     await expect(s3BlobStore(cfg, wrong.client).get("att-x", { start: 10, end: 59 })).rejects.toThrow(/range/i);
   });
 
+  it("a complete slice ends the stream by itself (both sides): it closes without anyone destroying it, the upstream gone", async () => {
+    const upstream = Readable.from([OBJECT.subarray(0, 40), OBJECT.subarray(40)]);
+    const { client } = fakeClient((name) => (name === "GetObjectCommand" ? { Body: upstream, ContentLength: OBJECT.length } : {}));
+    const out = await s3BlobStore(cfg, client).get("att-x", { start: 10, end: 59 });
+    const closed = new Promise<void>((resolve) => out.once("close", () => resolve()));
+    expect((await read(out)).length).toBe(50);
+    await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error("the slice never closed")), 1000))]);
+    expect(upstream.destroyed).toBe(true);
+  });
+
+  it("a whole-object answer SHORTER than the slice asked for is an error, not a short stream under a declared length", async () => {
+    const { client } = fakeClient((name) => (name === "GetObjectCommand" ? { Body: Readable.from([OBJECT.subarray(0, 40)]), ContentLength: 40 } : {}));
+    const out = await s3BlobStore(cfg, client).get("att-x", { start: 10, end: 59 });
+    await expect(read(out)).rejects.toThrow(/fewer bytes|shorter/i);
+  });
+
   it("the consumer going away mid-stream (the client aborted) destroys the upstream body, whole object or slice", async () => {
     for (const whole of [false, true]) {
       const upstream = new Readable({ read() {} });
