@@ -276,6 +276,34 @@ describe("M: the composite group avatar is one component whose layout depends on
   });
 });
 
+describe("P: nothing makes the chat column wider than the screen", () => {
+  it("iOS never inflates text on its own: the root fixes the text size adjustment (both properties)", () => {
+    const html = plain("html");
+    expect(html["-webkit-text-size-adjust"]).toBe("100%");
+    expect(html["text-size-adjust"]).toBe("100%");
+  });
+
+  it("the message scroller clips sideways; everything under a bubble is capped at the column; the sources list is capped and its rows truncate", () => {
+    expect(plain(".messages")["overflow-x"]).toBe("hidden");
+    expect(plain(".msg-main > *")["max-width"]).toBe("100%");
+    expect(plain(".msg-main > *")["min-width"]).toBe("0");
+    expect(plain(".web-sources")["max-width"]).toBe("100%");
+    expect(plain(".web-sources > li")["max-width"]).toBe("100%");
+    for (const part of [".web-source-title", ".web-source-host"]) {
+      const rule = plain(part);
+      expect([rule.overflow, rule["text-overflow"], rule["white-space"]], part).toEqual(["hidden", "ellipsis", "nowrap"]);
+    }
+    expect(plain(".bubble")["overflow-wrap"]).toBe("anywhere");
+  });
+
+  it("the header's second line ends with an ellipsis, never cut by the buttons; the model's trigger gives way first", () => {
+    const line = plain(".chat-title p");
+    expect([line.overflow, line["text-overflow"], line["white-space"]]).toEqual(["hidden", "ellipsis", "nowrap"]);
+    expect(merged(rulesFor(rules, ".chat-title p:has(> .model-trigger, > .head-model)", null)).overflow).toBe("hidden");
+    expect(plain(".chat-title .chat-sub")["text-overflow"]).toBe("ellipsis");
+  });
+});
+
 describe("N: the chat header gives the title the room (the three controls stay 44px targets, drawn without boxes and with no gap; the title may take two lines)", () => {
   const narrow = (selector) => merged(rulesFor(rules, selector, "(max-width: 860px)"));
   it("the controls beside the title: no gap between 44px targets, no box around each", () => {

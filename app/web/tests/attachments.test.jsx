@@ -253,8 +253,8 @@ describe("paste and drop", () => {
     expect(uploads.uploadAttachment).not.toHaveBeenCalled();
     expect(toastText()).toContain("对方已不是你的好友");
     expect(mine()).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "发送图片" }).disabled).toBe(true);
-    expect(screen.getByRole("button", { name: "发送文件" }).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "发送图片" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "发送文件" })).toBeNull();
   });
 });
 

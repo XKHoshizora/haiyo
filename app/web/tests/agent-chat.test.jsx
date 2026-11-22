@@ -1230,8 +1230,11 @@ describe("a paused or deleted Agent", () => {
   it("deleted: the frozen style with its sentence; nothing can be sent; the history stays", async () => {
     await openAgentChat({ agent: { deleted: true } });
     expect(document.querySelector(".chat > .notice").textContent).toContain(DELETED_TEXT);
-    expect(input().disabled).toBe(true);
-    expect(document.querySelector(".composer-hint").textContent).toBe(DELETED_TEXT);
+    // The reason is said once, by the notice; the composer offers nothing at all (no tools, no box, no send, no second sentence).
+    expect(document.querySelector(".composer")).toBeNull();
+    expect(screen.queryByLabelText("消息内容")).toBeNull();
+    expect(screen.queryByRole("button", { name: "发送文件" })).toBeNull();
+    expect(within(document.querySelector("section.chat")).getAllByText(DELETED_TEXT)).toHaveLength(1);
     expect(storedLi(1)).not.toBeNull();
     expect(mainText()).not.toContain(PAUSE_TEXT);
   });
@@ -2233,7 +2236,8 @@ describe("switching the model where I am (my Agent's own conversation)", () => {
     expect(patchAgent).toHaveBeenCalledTimes(1);
     cleanup();
     await openAgentChat({ agent: { deleted: true }, providers: [providerOf()] });
-    expect(document.querySelector(".chat-head .chat-title p").textContent).toContain("小模型");
+    // A deleted Agent's header line says what the conversation is now and holds no model (it can no longer reply).
+    expect(document.querySelector(".chat-head .chat-title p").textContent).toBe("你的 Agent · 已删除，只能查看");
     expect(headModel()).toBeNull();
   });
 

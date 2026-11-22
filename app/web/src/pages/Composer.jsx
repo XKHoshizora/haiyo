@@ -319,6 +319,9 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
     sendFiles(images);
   };
   const sendNote = tooLong ? `消息最多 ${TEXT_LIMIT} 字，当前 ${length} 字，请删减后再发送` : invisible ? "消息里没有看得见的文字，无法发送" : null;
+  // Sending is impossible (a deleted Agent, a group left, a block, ...: `block`): the reason is said once, by the notice above the messages, and nothing
+  // here is offered — no tools, no box, no send button (one rule for every reason; the hooks above all ran).
+  if (disabled) return null;
   return <footer className="composer" ref={rootRef} onKeyDown={e=>{if(e.key==="Escape"){setEmojiOpen(false);setMention(null);}}}>
     {replyTo && <div className="reply-chip"><span>回复 {senderName(state,replyTo.from)}：{replyTo.kind==="image"?"[图片]":replyTo.proposal&&!replyTo.text?PROPOSAL_ONLY:drawnTextOf(state,replyTo)}</span><IconBtn label="取消回复" onClick={()=>setReplyTo(null)}><X size={14}/></IconBtn></div>}
     <div className="composer-tools">

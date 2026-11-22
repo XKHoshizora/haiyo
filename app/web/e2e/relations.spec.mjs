@@ -4,11 +4,11 @@ import { test, expect } from "./support/fixtures.mjs";
 import { uniq } from "./support/accounts.mjs";
 import { chatPane, composer, expectOnce, expectStored, openChat, openContact, sendText } from "./support/app.mjs";
 
-/** The composer is off and says why (the notice above it). */
+/** Nothing is offered (no box, no tools, no send) and the reason is said once, by the notice. */
 async function expectHeld(chat, reason) {
-  await expect(composer(chat)).toBeDisabled();
-  await expect(composer(chat)).toHaveAttribute("placeholder", "当前无法发送新消息");
-  await expect(chat.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+  await expect(composer(chat)).toHaveCount(0);
+  await expect(chat.getByRole("button", { name: "发送", exact: true })).toHaveCount(0);
+  await expect(chat.getByRole("status").filter({ hasText: reason })).toHaveCount(1); // (the notice, once: the composer says nothing more)
   await expect(chat.getByRole("status").filter({ hasText: reason })).toBeVisible();
 }
 
