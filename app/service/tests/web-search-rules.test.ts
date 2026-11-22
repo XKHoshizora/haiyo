@@ -288,7 +288,8 @@ describe("a provider model's reply pays for its searches from the owner's points
     await say(owner, own, "天气？");
     await searchRun(worker, gateway);
     const run = await lastRun(agent.id);
-    expect([run.charge_to, run.hold]).toEqual(["free", "0"]);
+    // A provider run carries no class (wallet v3): its searches hold on the pool, split at settlement.
+    expect([run.charge_to, run.hold]).toEqual([null, "0"]);
     expect(await recordOf(run.id)).toMatchObject({ source: "provider", cost: PRICE.toString(), free: PRICE.toString(), balance: "0", forgiven: "0" });
     expect(await freeUsed(owner.id)).toBe(PRICE);
     const usage = (await api(app, owner, "GET", "/api/usage")).json;
@@ -299,7 +300,7 @@ describe("a provider model's reply pays for its searches from the owner's points
     expect(wire.via).toMatchObject({ points: "0.77035", webSearches: 1 });
   });
 
-  it("then the balance, when what is left of the allowance cannot cover the price; three searches in one reply on one source", async () => {
+  it("then the balance: three searches in one reply, what is left of the allowance (less than one price) first, the balance the rest — split at settlement (wallet v3)", async () => {
     const gateway = scriptedGateway();
     const { worker } = webWorker(gateway, fakeEngine());
     const { owner, agent, own } = await owned("pvb", "provider", 10n * POINT);
@@ -308,16 +309,18 @@ describe("a provider model's reply pays for its searches from the owner's points
     const outs = await searchRun(worker, gateway, ["北京 天气", "上海 天气", "广州 天气"]);
     expect(outs.map((o) => "results" in o)).toEqual([true, true, true]);
     const run = await lastRun(agent.id);
-    expect([run.charge_to, run.web_searches]).toEqual(["balance", 3]);
-    expect(await recordOf(run.id)).toMatchObject({ balance: (3n * PRICE).toString(), free: "0", web_micro: (3n * PRICE).toString() });
-    expect(await balanceOf(owner.id)).toBe(10n * POINT - 3n * PRICE);
+    expect([run.charge_to, run.web_searches]).toEqual([null, 3]);
+    const fromFree = PRICE - 1n;
+    expect(await recordOf(run.id)).toMatchObject({ balance: (3n * PRICE - fromFree).toString(), free: fromFree.toString(), web_micro: (3n * PRICE).toString() });
+    expect(await balanceOf(owner.id)).toBe(10n * POINT - (3n * PRICE - fromFree));
+    expect(await freeUsed(owner.id)).toBe(FREE_DAY);
   });
 
-  it("neither: refused before the engine (an error the model words); the reply goes on and costs nothing", async () => {
+  it("neither: what is left of the allowance and the balance together cannot cover the price — refused before the engine (an error the model words); the reply goes on and costs nothing", async () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine);
-    const { owner, agent, own } = await owned("pvc", "provider", PRICE - 1n);
+    const { owner, agent, own } = await owned("pvc", "provider", 0n);
     await setFreeUsed(owner.id, FREE_DAY - PRICE + 1n);
     await say(owner, own, "天气？");
     expect(await searchRun(worker, gateway, [QUERY], "查不了。")).toEqual([{ error: WEB_NO_MONEY }]);
@@ -371,7 +374,8 @@ describe("no cap per owner: the points are the bound", () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine);
-    // The free allowance pays 3 (3 × 0.77035 of 3 points), the balance the other 22 (16.9477 of 17).
+    // 25 × 0.77035 = 19.25875 of the 3 + 17 the two pots hold: the free allowance pays its 3 points first, the balance
+    // the other 16.25875; the 26th finds 0.74125 left, less than its price.
     const { owner, agent, own } = await owned("capd", "provider", 17n * POINT);
     for (let n = 1; n <= 25; n++) {
       await say(owner, own, `第${n}次`);
@@ -381,8 +385,8 @@ describe("no cap per owner: the points are the bound", () => {
     await say(owner, own, "再查一次");
     expect(await searchRun(worker, gateway)).toEqual([{ error: WEB_NO_MONEY }]);
     expect(engine.queries).toHaveLength(25);
-    expect(await freeUsed(owner.id)).toBe(3n * PRICE);
-    expect(await balanceOf(owner.id)).toBe(17n * POINT - 22n * PRICE);
+    expect(await freeUsed(owner.id)).toBe(FREE_DAY);
+    expect(await balanceOf(owner.id)).toBe(17n * POINT - (25n * PRICE - FREE_DAY));
     // Nothing is counted for the owner: only the site's fuse has a row.
     expect((await db.query("select 1 from web_search_days where scope = $1", [owner.id])).rowCount).toBe(0);
     expect((await api(app, owner, "GET", "/api/usage")).json.recentWeb).toEqual([{ agentId: agent.id, searches: 25, points: "19.25875" }]);
@@ -548,8 +552,9 @@ describe("the pre-hold under the lane budgets, two connections", () => {
       release();
       await first;
       expect(await second).toBe(WEB_LANE_BUDGET);
+      // (A provider run carries no class: wallet v3.)
       expect([await webOf(a.runId), await webOf(b.runId)]).toEqual([
-        { n: 1, m: PRICE.toString(), c: "free" },
+        { n: 1, m: PRICE.toString(), c: null },
         { n: 0, m: "0", c: null },
       ]);
     });
@@ -567,18 +572,18 @@ describe("the pre-hold under the lane budgets, two connections", () => {
     expect((await webOf(r.runId)).n).toBe(1);
   });
 
-  it("a provider model's reply: refused (unavailable) only when it is not admitted; its source kept for its next search", async () => {
+  it("a provider model's reply: refused (unavailable) only when it is not admitted; its searches hold on the pool, the balance paying what the allowance cannot (wallet v3)", async () => {
     const owner = await signUp(app, "pvsrc");
     await grant(db, owner.id, 10n * POINT);
     const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "own-1", contextTokens: 32000 }] }))).json;
     const agent = await meteredAgent(app, db, owner, { source: "provider", providerId: provider.id, model: "own-1" });
     const r = { runId: await admittedIn(owner.id, agent, agent.conversationId, "own"), ownerId: owner.id, agentId: agent.agentId, conversationId: agent.conversationId, lane: "own" as const };
     await preHold(r, {}, webConfig());
-    expect(await webOf(r.runId)).toEqual({ n: 1, m: PRICE.toString(), c: "free" });
-    // The allowance now used up beside its hold: the next search stays on its source and is refused (not moved to the balance).
+    expect(await webOf(r.runId)).toEqual({ n: 1, m: PRICE.toString(), c: null });
+    // The allowance now all but used beside its hold: the next search is held all the same, the balance there for it.
     await setFreeUsed(owner.id, FREE_DAY - 2n * PRICE + 1n);
-    await expect(preHold(r, {}, webConfig())).rejects.toMatchObject({ by: "no_points" });
-    expect(await webOf(r.runId)).toEqual({ n: 1, m: PRICE.toString(), c: "free" });
+    await preHold(r, {}, webConfig());
+    expect(await webOf(r.runId)).toEqual({ n: 2, m: (2n * PRICE).toString(), c: null });
     // A run not admitted yet has no model to pay beside: unavailable.
     const { rows } = await db.query<{ id: string }>(
       `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, started_at) values ('reply', $1, $2, $3, 'running', now()) returning id`,
@@ -819,7 +824,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     }
   });
 
-  it("two provider-model replies of one owner racing for the last of the free allowance at their first search: one takes it, the other finds the balance or nothing", async () => {
+  it("two provider-model replies of one owner racing for the last of the free allowance at their first search: one takes it, the other finds the balance or nothing (neither carries a class: wallet v3)", async () => {
     const owner = await signUp(app, "pvrace");
     const a = await providerOf(owner);
     const b = await providerOf(owner);
@@ -841,15 +846,15 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     expect(await second).toBe("no_points");
     const of = async (id: string) => (await db.query<{ c: string | null; n: number }>("select charge_to as c, web_searches as n from agent_runs where id = $1", [id])).rows[0]!;
     expect([await of(ra.runId), await of(rb.runId)]).toEqual([
-      { c: "free", n: 1 },
+      { c: null, n: 1 },
       { c: null, n: 0 },
     ]);
     await grant(db, owner.id, POINT);
     await pre(rb, config);
-    expect(await of(rb.runId)).toEqual({ c: "balance", n: 1 });
+    expect(await of(rb.runId)).toEqual({ c: null, n: 1 });
   });
 
-  it("a price of 0: a provider model's search runs (its source kept with no charge); a fuse of 0, or of less than one search: web search is not offered at all (review M1, re-review N3)", async () => {
+  it("a price of 0: a provider model's search runs (held at no charge); a fuse of 0, or of less than one search: web search is not offered at all (review M1, re-review N3)", async () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine, webConfig({ pointsMicroPerSearch: 0 }));
@@ -857,7 +862,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     await say(owner, own, "天气？");
     expect((await searchRun(worker, gateway))[0]).toMatchObject({ results: expect.any(Array) });
     const run = await lastRun(agent.id);
-    expect([run.status, run.charge_to, run.web_searches, run.web_micro]).toEqual(["done", "free", 1, "0"]);
+    expect([run.status, run.charge_to, run.web_searches, run.web_micro]).toEqual(["done", null, 1, "0"]);
     expect(await recordOf(run.id)).toMatchObject({ web_searches: 1, free: "0", balance: "0", cost: "0" });
     const said: string[] = [];
     const log = { info: (d: object) => said.push(JSON.stringify(d)), warn: (d: object) => said.push(JSON.stringify(d)) };

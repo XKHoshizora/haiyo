@@ -153,7 +153,8 @@ describe("a call's hold covers its thinking allowance", () => {
     const highRun = await runningRun(db, owner.id);
     const held = costOf({ inputTokens: ESTIMATE, outputTokens: 1000 + 12_000 });
     expect(held).toBe(14_000_000n);
-    expect(await db.tx((t) => admitRun(t, cfg, highRun, owner.id, high, ESTIMATE, NOON))).toEqual({ chargeTo: "free", holdMicro: held });
+    // A draft never waits: beside the first's 2 of the 3 points, 1 of its 14 is promised, the rest held over.
+    expect(await db.tx((t) => admitRun(t, cfg, highRun, owner.id, high, ESTIMATE, NOON))).toEqual({ chargeTo: "free", holdMicro: held, overMicro: held - 1_000_000n });
     expect(maxCostMicro(high, ESTIMATE)).toBe(held);
     const { rows } = await db.query<{ id: string; hold_micro: string }>("select id, hold_micro::text from agent_runs where id = any($1)", [[noneRun, highRun]]);
     expect(Object.fromEntries(rows.map((r) => [r.id, BigInt(r.hold_micro)]))).toEqual({ [noneRun]: MAX_COST, [highRun]: held });
@@ -189,19 +190,24 @@ describe("free-tier model", () => {
     expect(await ledger(owner.id)).toEqual([]);
   });
 
-  it("the reply that crosses the allowance: the excess is forgiven, never the balance and never tomorrow's", async () => {
+  it("the reply that crosses the allowance with a balance there: the allowance first, then the balance (Q1); never tomorrow's", async () => {
     const owner = await signUp(app, "freecross");
     const fast = await meteredAgent(app, db, owner, FREE);
     await grant(db, owner.id, 5_000_000n);
     await useFree(owner.id, "2026-03-01", 2_500_000n);
     const run = await runningRun(db, owner.id, fast);
+    // Its 2 fit the half point left and the balance together: all of it promised.
     expect(await admitAt(run, owner, fast.resolved)).toEqual({ chargeTo: "free", holdMicro: MAX_COST });
 
     await settleAt(run, { inputTokens: 5_000, outputTokens: 1_000 }); // 1.5 points
-    expect(await record(run)).toMatchObject({ cost_micro: "1500000", free_micro: "500000", balance_micro: "0", forgiven_micro: "1000000" });
+    const rec = await record(run);
+    expect(rec).toMatchObject({ cost_micro: "1500000", free_micro: "500000", balance_micro: "1000000", forgiven_micro: "0" });
     expect(await freeUsage(owner.id)).toEqual([{ day: "2026-03-01", used: "3000000" }]);
-    expect(await balanceOf(owner.id)).toBe(5_000_000n);
-    expect(await ledger(owner.id)).toEqual([{ delta: "5000000", reason: "grant", usage_id: null }]);
+    expect(await balanceOf(owner.id)).toBe(4_000_000n);
+    expect(await ledger(owner.id)).toEqual([
+      { delta: "5000000", reason: "grant", usage_id: null },
+      { delta: "-1000000", reason: "usage", usage_id: rec.id },
+    ]);
 
     // The next site day begins at midnight in Shanghai, 16:00 UTC, while the UTC date is still the 1st.
     const lastMinute = new Date("2026-03-01T15:59:00Z");
@@ -209,24 +215,26 @@ describe("free-tier model", () => {
     expect(siteDay(midnight, "UTC")).toBe("2026-03-01");
     expect(await freeUsedToday(db, owner.id, lastMinute, TZ)).toBe(3_000_000n);
     expect(await freeUsedToday(db, owner.id, midnight, TZ)).toBe(0n);
+    // A free-tier model's class is `free` (the allowance, then the balance) whichever pot is left.
     const [before, after] = [await runningRun(db, owner.id), await runningRun(db, owner.id)];
-    expect(await admitAt(before, owner, fast.resolved, lastMinute)).toEqual({ chargeTo: "balance", holdMicro: MAX_COST });
+    expect(await admitAt(before, owner, fast.resolved, lastMinute)).toEqual({ chargeTo: "free", holdMicro: MAX_COST });
     expect(await admitAt(after, owner, fast.resolved, midnight)).toEqual({ chargeTo: "free", holdMicro: MAX_COST });
   });
 
-  it("a reply admitted before midnight and settled after it uses the new day's allowance", async () => {
+  it("a reply admitted before midnight and settled after it: what was reserved at the time is charged, on the new day's allowance; the rest, reserved for nobody, is the site's (Q2)", async () => {
     const owner = await signUp(app, "freemidnight");
     const fast = await meteredAgent(app, db, owner, FREE);
     await useFree(owner.id, "2026-03-01", 2_500_000n);
     const run = await runningRun(db, owner.id, fast);
-    // 23:50 on the 1st in Shanghai: half a point left today.
-    expect(await admitAt(run, owner, fast.resolved, new Date("2026-03-01T15:50:00Z"))).toMatchObject({ chargeTo: "free" });
-    // 00:10 on the 2nd: the whole cost fits the new day's allowance, nothing is forgiven.
+    // 23:50 on the 1st in Shanghai: half a point left today, no balance: alone, it starts with 0.5 promised, 1.5 over.
+    expect(await admitAt(run, owner, fast.resolved, new Date("2026-03-01T15:50:00Z"))).toEqual({ chargeTo: "free", holdMicro: MAX_COST, overMicro: 1_500_000n });
+    // 00:10 on the 2nd: the half point promised is charged to the new day's allowance; the 1 point above it is forgiven
+    // though the new day could pay it.
     await settleAt(run, { inputTokens: 5_000, outputTokens: 1_000 }, { now: new Date("2026-03-01T16:10:00Z") });
-    expect(await record(run)).toMatchObject({ cost_micro: "1500000", free_micro: "1500000", forgiven_micro: "0" });
+    expect(await record(run)).toMatchObject({ cost_micro: "1500000", free_micro: "500000", balance_micro: "0", forgiven_micro: "1000000" });
     expect(await freeUsage(owner.id)).toEqual([
       { day: "2026-03-01", used: "2500000" },
-      { day: "2026-03-02", used: "1500000" },
+      { day: "2026-03-02", used: "500000" },
     ]);
   });
 
@@ -236,8 +244,9 @@ describe("free-tier model", () => {
     await useFree(owner.id, "2026-03-01", 3_000_000n);
     await grant(db, owner.id, 5_000_000n);
     const run = await runningRun(db, owner.id, fast);
-    expect(await admitAt(run, owner, fast.resolved)).toEqual({ chargeTo: "balance", holdMicro: MAX_COST });
-    expect(await runRow(run)).toEqual({ source: "site", model: "meter_free", charge_to: "balance", hold: "2000000" });
+    // Its class stays the free tier's (the allowance first, then the balance): settlement finds the allowance used up.
+    expect(await admitAt(run, owner, fast.resolved)).toEqual({ chargeTo: "free", holdMicro: MAX_COST });
+    expect(await runRow(run)).toEqual({ source: "site", model: "meter_free", charge_to: "free", hold: "2000000" });
 
     await settleAt(run, { inputTokens: 5_000, outputTokens: 1_000 });
     const rec = await record(run);
@@ -248,7 +257,7 @@ describe("free-tier model", () => {
     ]);
     expect(await balanceOf(owner.id)).toBe(3_500_000n);
     expect(await freeUsage(owner.id)).toEqual([{ day: "2026-03-01", used: "3000000" }]);
-    expect(await runRow(run)).toMatchObject({ charge_to: "balance", hold: "0" });
+    expect(await runRow(run)).toMatchObject({ charge_to: "free", hold: "0" });
     await expectLedgerMatchesBalance(owner.id);
   });
 
@@ -283,7 +292,8 @@ describe("paid-tier model", () => {
     const thinker = await meteredAgent(app, db, owner, PAID);
     await grant(db, owner.id, 1_000_000n);
     const run = await runningRun(db, owner.id, thinker);
-    expect(await admitAt(run, owner, thinker.resolved)).toEqual({ chargeTo: "balance", holdMicro: MAX_COST });
+    // Alone on a balance of 1: 1 promised, 1 over — the paid reply's own debt at settlement.
+    expect(await admitAt(run, owner, thinker.resolved)).toEqual({ chargeTo: "balance", holdMicro: MAX_COST, overMicro: 1_000_000n });
     await settleAt(run, FULL_USAGE);
     expect(await record(run)).toMatchObject({ model: "meter_paid", cost_micro: "2000000", balance_micro: "2000000", free_micro: "0", forgiven_micro: "0" });
     expect(await balanceOf(owner.id)).toBe(-1_000_000n);
@@ -295,7 +305,7 @@ describe("paid-tier model", () => {
     await grant(db, owner.id, 1_000_000n); // back to exactly zero: still nothing to spend
     expect(await refusal(admitAt(next, owner, thinker.resolved))).toEqual(refused);
     await grant(db, owner.id, 1n);
-    expect(await admitAt(next, owner, thinker.resolved)).toEqual({ chargeTo: "balance", holdMicro: MAX_COST });
+    expect(await admitAt(next, owner, thinker.resolved)).toEqual({ chargeTo: "balance", holdMicro: MAX_COST, overMicro: MAX_COST - 1n });
     await expectLedgerMatchesBalance(owner.id);
   });
 });
@@ -585,8 +595,8 @@ describe("holds", () => {
     expect(await admitAt(d2, owner, a.resolved, now)).toMatchObject({ chargeTo: "free" });
     expect(await canStart()).toBe(true);
 
-    // A balance of 1 point does not change it: the allowance is not used up, only all held, so the waiting reply keeps
-    // waiting for it (it is not charged to the balance meanwhile) — behind the calls holding it.
+    // A balance of 1 point does not change it: of the pots together (3 + 1), 3 are promised (r1's 2, d1's 1; d2's hold is
+    // all over), 1 is left, less than its 2 — so the waiting reply keeps waiting, behind the calls holding them.
     await grant(db, owner.id, 1_000_000n);
     const stillWaiting = await admitAt(r2, owner, b.resolved, now).catch((e: unknown) => e);
     expect(stillWaiting).toBeInstanceOf(HeldBack);
@@ -598,17 +608,20 @@ describe("holds", () => {
     expect(await admitAt(d3, owner, a.resolved, now)).toMatchObject({ chargeTo: "free" });
     await settleAt(d3, { inputTokens: 0, outputTokens: 0 }, { now });
 
-    // Settled: 0.5 + 2 of the allowance, the last draft its 0.5 left (the rest forgiven). The allowance is now truly used
-    // up, so the reply goes on to the balance, as the rule always was then, and settles 2 there.
+    // Settled: r1 0.5 of the allowance; each draft what was promised it at the time — d1 its 1, d2 nothing — the rest of
+    // their 2 forgiven, reserved for nobody (Q2), though the allowance has room by now. 1.5 of the allowance is left, and
+    // the balance's 1: the waiting reply fits them together and starts, its class still the free tier's, and settles 2 —
+    // the allowance first, then the balance (Q1).
     await settleAt(r1, { inputTokens: 0, outputTokens: 500 }, { now });
     await settleAt(d1, FULL_USAGE, { now });
     expect(await canStart()).toBe(true);
     await settleAt(d2, FULL_USAGE, { now });
-    expect(await admitAt(r2, owner, b.resolved, now)).toMatchObject({ chargeTo: "balance" });
+    expect(await admitAt(r2, owner, b.resolved, now)).toEqual({ chargeTo: "free", holdMicro: MAX_COST });
     await settleAt(r2, FULL_USAGE, { now });
+    expect(await record(r2)).toMatchObject({ free_micro: "1500000", balance_micro: "500000", forgiven_micro: "0" });
     expect((await api(app, owner, "GET", "/api/usage")).json.free.used).toBe("3");
-    expect(await balanceOf(owner.id)).toBe(-1_000_000n);
-    expect(await canStart()).toBe(false);
+    expect(await balanceOf(owner.id)).toBe(500_000n);
+    expect(await canStart()).toBe(true);
     await expectLedgerMatchesBalance(owner.id);
   });
 });

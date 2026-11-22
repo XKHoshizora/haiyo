@@ -289,7 +289,8 @@ describe("the pre-hold: counted and held before the engine is called", () => {
     expect(await countOf(owner.id)).toBe(0);
     const record = await recordOf(runId);
     const model = costOf({ inputTokens: 2500, outputTokens: 50 });
-    expect(record).toMatchObject({ web_searches: 1, web_micro: PRICE.toString(), cost: (model + PRICE).toString(), balance: (model + PRICE).toString(), forgiven: "0" });
+    // A paid-tier model's rounds on the balance; its search, our site tool's, on the allowance first (Q3).
+    expect(record).toMatchObject({ web_searches: 1, web_micro: PRICE.toString(), cost: (model + PRICE).toString(), balance: model.toString(), free: PRICE.toString(), forgiven: "0" });
   });
 
   it("two connections racing for the fuse's last search: exactly one gets it (a row there, and none yet)", async () => {
@@ -322,7 +323,7 @@ describe("the pre-hold: counted and held before the engine is called", () => {
   });
 });
 
-describe("the pre-hold's money (extend's rules, ok only)", () => {
+describe("the pre-hold's money (the pool: held whole or refused)", () => {
   /** A running reply of a new Agent of `name` on `model`, admitted holding its first call (2 points: 10 000 tokens in, 1 000 out). */
   async function admitted(name: string, model: typeof PAID | typeof FREE = PAID, balance = 10n * POINT, freeUsed = 0n) {
     const owner = await signUp(app, name);
@@ -432,12 +433,17 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     expect((await runRow(r.runId)).web_searches).toBe(1);
   });
 
-  it("the balance: what is left beside the holds must cover the hold and the price", async () => {
-    const r = await admitted("monc", PAID, 2_500_000n);
+  it("the pool: what the allowance and the balance leave beside every promise must cover the price; a paid reply's search may take the allowance (Q3)", async () => {
+    // The allowance used up, a balance of 2.5 of which the reply's model is promised 2: 0.5 left, less than the price.
+    const r = await admitted("monc", PAID, 2_500_000n, 3n * POINT);
     await expect(preHold(r, webConfig())).rejects.toMatchObject({ by: "no_points", why: WEB_NO_MONEY });
     await grant(db, r.owner.id, 500_000n);
     await preHold(r, webConfig());
     expect((await runRow(r.runId)).hold).toBe((2n * POINT + PRICE).toString());
+    // The allowance untouched: the same reply's search is held on it, though the balance beside the model could not cover it.
+    const s = await admitted("moncc", PAID, 2_500_000n);
+    await preHold(s, webConfig());
+    expect((await runRow(s.runId)).web_searches).toBe(1);
   });
 
   it("the free allowance: a search is paid from it, never beyond it by forgiveness", async () => {
@@ -454,9 +460,11 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     const config = webConfig();
     await db.tx((t) => settle(t, config, r.runId, OVER_USAGE, { inputChars: 0, outputChars: 0 }, "done", new Date(), { log: app.log }));
     const over = costOf(OVER_USAGE);
+    // The paid model's part on the balance, the search on the allowance first (Q3).
     expect(await recordOf(r.runId)).toMatchObject({
       cost: (over + PRICE).toString(),
-      balance: (2n * POINT + PRICE).toString(),
+      balance: (2n * POINT).toString(),
+      free: PRICE.toString(),
       forgiven: (over - 2n * POINT).toString(),
       web_searches: 1,
       web_micro: PRICE.toString(),
@@ -465,7 +473,7 @@ describe("the pre-hold's money (extend's rules, ok only)", () => {
     const f = await admitted("monf");
     await preHold(f, config);
     await db.tx((t) => settle(t, config, f.runId, { inputTokens: 500, outputTokens: 0 }, { inputChars: 0, outputChars: 0 }, "failed", new Date(), { log: app.log }));
-    expect(await recordOf(f.runId)).toMatchObject({ cost: PRICE.toString(), balance: PRICE.toString(), forgiven: "0" });
+    expect(await recordOf(f.runId)).toMatchObject({ cost: PRICE.toString(), balance: "0", free: PRICE.toString(), forgiven: "0" });
     // Our own failure (`busy`) forgives all of it, the search too; the count stands.
     const b = await admitted("mong");
     await preHold(b, config);
@@ -513,8 +521,10 @@ describe("the count and the charge stand however the search ends", () => {
     port.requestStop(run.id);
     await running;
     expect((await lastRun(agent.id)).status).toBe("stopped");
-    expect(await recordOf(run.id)).toMatchObject({ web_searches: 1, web_micro: PRICE.toString(), balance: expect.any(String) });
-    expect(BigInt((await recordOf(run.id)).balance)).toBeGreaterThanOrEqual(PRICE);
+    const rec = await recordOf(run.id);
+    expect(rec).toMatchObject({ web_searches: 1, web_micro: PRICE.toString() });
+    // Charged (the allowance first, then the balance) at least the search.
+    expect(BigInt(rec.balance) + BigInt(rec.free)).toBeGreaterThanOrEqual(PRICE);
   });
 
   it("more than maxAtOnce engine calls at once: refused at once, nothing held", async () => {

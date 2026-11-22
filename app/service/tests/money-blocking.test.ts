@@ -431,10 +431,19 @@ describe("the holds of one owner's replies are capped together by queueing, not 
     const paid = await meteredAgent(app, db, owner, PAID);
     await grant(db, owner.id, 1n * POINT);
     const reply = await runningRun(db, owner.id, paid);
-    expect(await db.tx((t) => admitRun(t, app.deps.config, reply, owner.id, paid.resolved, ESTIMATE, new Date()))).toEqual({ chargeTo: "balance", holdMicro: MAX_COST });
-    // 1 point left, 2 held: a draft starts all the same.
+    // Alone on a balance of 1: 1 promised, 1 over.
+    expect(await db.tx((t) => admitRun(t, app.deps.config, reply, owner.id, paid.resolved, ESTIMATE, new Date()))).toEqual({
+      chargeTo: "balance",
+      holdMicro: MAX_COST,
+      overMicro: POINT,
+    });
+    // 1 point left, all of it promised: a draft starts all the same, all of its hold over.
     const draft = await runningRun(db, owner.id);
-    expect(await db.tx((t) => admitRun(t, app.deps.config, draft, owner.id, paid.resolved, ESTIMATE, new Date()))).toEqual({ chargeTo: "balance", holdMicro: MAX_COST });
+    expect(await db.tx((t) => admitRun(t, app.deps.config, draft, owner.id, paid.resolved, ESTIMATE, new Date()))).toEqual({
+      chargeTo: "balance",
+      holdMicro: MAX_COST,
+      overMicro: MAX_COST,
+    });
     // A reply now waits behind both.
     const other = await meteredAgent(app, db, owner, PAID);
     const next = await runningRun(db, owner.id, other);
@@ -782,7 +791,7 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
     expect(await runIn(s1.conv)).toMatchObject({ status: "queued", held_back_by: [large.id], held_back_on: "balance" });
   });
 
-  it("only replies that compete for the same money wait behind a held-back one: a reply on the owner's own provider key, or one the free allowance pays while the held-back one waits on the balance, goes ahead", async () => {
+  it("only replies that compete for the same money wait behind a held-back one: a reply on the owner's own provider key goes ahead; a free-tier reply waits behind a paid one held back on the balance, which they share (wallet v3)", async () => {
     const owner = await signUp(app, "samesource");
     const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "mine" }] }))).json;
     const [a, b] = [await agentOf(owner, FIVE, "Ann"), await agentOf(owner, FIVE, "Bob")];
@@ -797,17 +806,19 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
     const running = worker.runOnce();
     await annCall.reached;
     expect(await worker.runOnce()).toBe(true);
-    expect(await runIn(b.conv)).toMatchObject({ status: "queued" });
-    expect(await worker.runOnce()).toBe(true);
-    expect(await runIn(free.conv)).toMatchObject({ status: "done", charge_to: "free" });
+    expect(await runIn(b.conv)).toMatchObject({ status: "queued", held_back_on: "balance" });
+    // Fay, younger, would use the balance too once the allowance is spent: she waits behind Bob; Ole's own key passes.
     expect(await worker.runOnce()).toBe(true);
     expect(await runIn(own.conv)).toMatchObject({ status: "done", charge_to: null });
-    expect(await runIn(b.conv)).toMatchObject({ status: "queued", held_back_on: "balance" });
+    expect(await runIn(free.conv)).toMatchObject({ status: "queued" });
+    expect(await worker.runOnce()).toBe(false);
     annCall.release("一。", { usage: U(0, 100) });
     await running;
     gateway.reply("二。", { usage: U(0, 100) });
     expect(await worker.runOnce()).toBe(true);
     expect(await runIn(b.conv)).toMatchObject({ status: "done", held_back_by: null, held_back_on: null });
+    expect(await worker.runOnce()).toBe(true);
+    expect(await runIn(free.conv)).toMatchObject({ status: "done", charge_to: "free" });
     expect(gateway.pending()).toBe(0);
   });
 
@@ -827,7 +838,7 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
   it("extension is a reply's alone: a memory call (one call, the site's memory allowance) is never extended", async () => {
     const owner = await signUp(app, "memoryextend");
     await expect(
-      db.tx((t) => raiseHold(t, app.deps.config, { id: "00000000-0000-0000-0000-000000000000", ownerId: owner.id, chargeTo: "memory", holdMicro: 1n }, { ok: 2n, final: 2n }, true, new Date())),
+      db.tx((t) => raiseHold(t, app.deps.config, { id: "00000000-0000-0000-0000-000000000000", ownerId: owner.id, chargeTo: "memory", holdMicro: 1n, webMicro: 0n }, { ok: 2n, final: 2n }, true, new Date())),
     ).rejects.toThrow(/memory/);
   });
 });
@@ -1027,9 +1038,9 @@ describe("fix round 2: the free allowance's room for the last call, renewed a ro
     expect(next.conversationId).toBe(z.conv);
   });
 
-  it("a free-tier reply whose allowance is all held by an older reply, the balance funded, is predicted on the allowance: it waits behind the older one, is not claimed or told, and runs when the allowance frees", async () => {
+  it("a free-tier reply whose allowance is all held by an older reply, the balance funded, runs on the two pots together (Q1): it is not held back", async () => {
     const owner = await signUp(app, "freewaits");
-    const [a, c, d] = [await agentOf(owner, FREE, "Ann"), await agentOf(owner, FREE, "Cy"), await agentOf(owner, FREE, "Dee")];
+    const [a, c] = [await agentOf(owner, FREE, "Ann"), await agentOf(owner, FREE, "Cy")];
     // Half a point of the day's allowance left, five points of balance: Ann's hold passes the allowance.
     await setFreeUsed(owner.id, (5n * POINT) / 2n);
     await grant(db, owner.id, 5n * POINT);
@@ -1038,17 +1049,13 @@ describe("fix round 2: the free allowance's room for the last call, renewed a ro
     const ann = (await port.claimNext())!;
     expect(isRunEnd(await port.begin(ann))).toBe(false);
     expect((await runIn(a.conv)).charge_to).toBe("free");
+    // Cy's hold fits what the allowance and the balance leave together beside Ann's: admitted, not held back.
     await say(owner, c.conv, "你好");
     const cy = (await port.claimNext())!;
-    await port.finish(cy, (await port.begin(cy)) as RunEnd, null, NOTHING);
-    expect(await runIn(c.conv)).toMatchObject({ status: "queued", held_back_on: "free" });
-    // The younger reply is predicted on the allowance too, so it waits behind Cy: not claimed (so not told running).
-    await say(owner, d.conv, "你好");
-    expect(await port.claimNext()).toBeNull();
-    expect((await runIn(d.conv)).status).toBe("queued");
-    // The allowance frees: the older held-back reply runs first.
+    expect(isRunEnd(await port.begin(cy))).toBe(false);
+    expect(await runIn(c.conv)).toMatchObject({ status: "running", charge_to: "free", held_back_on: null });
     await port.finish(ann, { status: "failed", error: "busy" }, null, NOTHING);
-    expect((await port.claimNext())!.conversationId).toBe(c.conv);
+    await port.finish(cy, { status: "failed", error: "busy" }, null, NOTHING);
   });
 
   it("a free-tier reply held back with the allowance used up and nothing left of the balance after the holds waits on both: a younger reply the balance would pay waits behind it too", async () => {
@@ -1061,7 +1068,8 @@ describe("fix round 2: the free allowance's room for the last call, renewed a ro
     await say(owner, a.conv, "你好");
     const ann = (await port.claimNext())!;
     expect(isRunEnd(await port.begin(ann))).toBe(false);
-    expect((await runIn(a.conv)).charge_to).toBe("balance");
+    // Its class is the free tier's whichever pot pays (wallet v3: `charge_to` names the class).
+    expect((await runIn(a.conv)).charge_to).toBe("free");
     await say(owner, c.conv, "你好");
     const cy = (await port.claimNext())!;
     await port.finish(cy, (await port.begin(cy)) as RunEnd, null, NOTHING);

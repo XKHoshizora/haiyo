@@ -6,7 +6,7 @@ import type { ConversationEvents } from "../conversations/events.ts";
 import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
-import { admitRun, anySourceSql, chosenSourceSql, HeldBack, raiseHold, type ChargeTo } from "../metering/admit.ts";
+import { admitRun, classSql, HeldBack, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -441,12 +441,12 @@ export class DbAgentPort implements AgentPort {
   /**
    * `AgentPort.claimNext`. A reply held back at admission (`HELD_BACK`; its mark `held_back_by`, `held_back_on`, kept until
    * it is admitted) waits while every call it was held back behind is still running. Until it is admitted — queued, or
-   * claimed again and not admitted yet — the owner's younger replies that would be paid from the same source (either, for
-   * a mark of `any`) wait behind it (first come, first served per payer and source, so a reply with a large hold is not
-   * passed for ever by smaller ones); a reply on the owner's own provider key, or one the other source would pay, does
-   * not, nor does the owner's own reply (lane `own`) behind one someone else called for, which the others' lanes may keep
-   * queued. Which source a queued reply would be paid from is admission's own rule (metering/admit.ts) on what its owner
-   * has now, read here. Each claim starts the
+   * claimed again and not admitted yet — the owner's younger replies whose class shares a pot with its class wait behind
+   * it (first come, first served per payer and pot, so a reply with a large hold is not passed for ever by smaller ones):
+   * every site reply behind a free-tier or a paid one (both use the balance), a free-tier one only behind an old code's
+   * mark on the allowance; a reply on the owner's own provider key does not, nor does the owner's own reply (lane `own`)
+   * behind one someone else called for, which the others' lanes may keep queued. A queued reply's class is admission's own
+   * rule (metering/admit.ts `classSql`) on what its owner has now, read here. Each claim starts the
    * run's flags afresh. A first claim is announced (`announce`) and its wait logged (`run_wait_ms`, once per reply); a
    * reply claimed again after it was held back is told to its owner alone — the other members of a group, who were told it
    * is replying, are told nothing more.
@@ -456,20 +456,23 @@ export class DbAgentPort implements AgentPort {
     const waiting = (r: string) =>
       `(${r}.held_back_by is not null
         and (select count(*) from agent_runs b where b.id = any(${r}.held_back_by) and b.status = 'running') = cardinality(${r}.held_back_by))`;
-    // The source the queued reply q would be paid from now: admission's own rule (metering/admit.ts `chosenSourceSql`, the
-    // one definition, else `anySourceSql` when the holds leave it nothing): null on a provider's model, on a model the
+    // The class the queued reply q would be admitted on now: admission's own rule (metering/admit.ts `classSql`, the one
+    // definition) — `free` (the allowance, then the balance) or `balance` — null on a provider's model, on a model the
     // site no longer offers, or with nothing left (it will be refused).
-    const cols = { freeTier: "qa.site_model_id = any($4::text[])", freeLeft: "$5::bigint - m.used", balance: "m.balance", balanceHeld: "m.balance_held" };
-    const sourceOfQ = `(
+    const cols = { freeTier: "qa.site_model_id = any($4::text[])", freeLeft: "$5::bigint - m.used", balance: "m.balance" };
+    const classOfQ = `(
       select case
                when qa.model_source is distinct from 'site' or not (qa.site_model_id = any($3::text[])) then null
-               else coalesce(${chosenSourceSql(cols)}, ${anySourceSql(cols)})
+               else ${classSql(cols)}
              end
         from agents qa,
              (select coalesce((select u.used_micro from free_usage u where u.owner_id = q.owner_id and u.day = $6::date), 0) as used,
-                     coalesce((select a.balance_micro from accounts a where a.principal_id = q.owner_id), 0) as balance,
-                     coalesce((select sum(h.hold_micro) from agent_runs h where h.owner_id = q.owner_id and h.status = 'running' and h.charge_to = 'balance'), 0) as balance_held) m
+                     coalesce((select a.balance_micro from accounts a where a.principal_id = q.owner_id), 0) as balance) m
        where qa.principal_id = q.agent_id)`;
+    // Whether q's class shares a pot with a held-back reply's mark (pool.ts `sharesPot`): `any` (a free-tier reply, both
+    // pots) and `balance` (a paid one, the balance) share one with every class; `free`, an old code's mark on the
+    // allowance alone, with a free-tier reply only.
+    const sharesWithQ = `((o.held_back_on in ('any', 'balance') and ${classOfQ} is not null) or (o.held_back_on = 'free' and ${classOfQ} = 'free'))`;
     const { rows } = await this.deps.db.query<RunRow & { agent_id: string; owner_id: string; conversation_id: string; lane: string; wait_ms: number; again: boolean; auto_attempt: number }>(
       `with next as (
          select q.id from agent_runs q
@@ -484,7 +487,7 @@ export class DbAgentPort implements AgentPort {
                                and (o.status = 'queued' or (o.status = 'running' and o.source is null))
                                and (o.created_at, o.id) < (q.created_at, q.id)
                                and (q.lane <> 'own' or o.lane = 'own')
-                               and (o.held_back_on = ${sourceOfQ} or (o.held_back_on = 'any' and ${sourceOfQ} is not null)))
+                               and ${sharesWithQ})
           order by q.created_at, q.id
           limit 1
           for update of q skip locked
@@ -1058,9 +1061,10 @@ export class DbAgentPort implements AgentPort {
    * whichever call it is: tool round or last) and the whole output limit. In this order:
    * 1. a budget of the run's lane reached by what it has cost so far (runs.ts `budgetReachedWith`: the others' daily,
    *    the proactive daily, the chain budget) makes the answer at most "final";
-   * 2. so far and the next call's most within `TOOLS.maxPoints` and within what is left of the run's source, its own hold
-   *    added back (admit.ts `raiseHold`), and step 1 not reached: the hold raised to that — "ok";
-   * 3. else the hold raised to so far and the next call's most, past what is left if it must, also below zero — "final":
+   * 2. so far and the next call's most within `TOOLS.maxPoints` (its searches at what they are charged), step 1 not
+   *    reached, the raise fitting beside every promise on the owner's pots and the reply holding nothing over (admit.ts
+   *    `raiseHold`, the pool): the model's part of the hold raised to that — "ok";
+   * 3. else that part raised to so far and the next call's most, past what is left if it must, also below zero — "final":
    *    a reply that has started is never refused for money (Task H); short of it, it only stops calling tools.
    * "stop" only for a run no longer running, or one this process did not begin. A hold is never lowered. A provider's model costs nothing: nothing is held, and the answer is "ok", or "final" once a
    * budget of its lane is reached with the web searches it held (its rounds and its context bound it otherwise, in the worker).
@@ -1080,17 +1084,22 @@ export class DbAgentPort implements AgentPort {
         await t.query("update agent_runs set progressed = true where id = $1 and not progressed", [run.id]);
         const lane = { conversationId: run.conversationId, lane: state.lane, coversSeq: Number(state.covers_seq ?? 0) };
         const row = (
-          await t.query<{ charge_to: ChargeTo | null; hold: string; web: string }>("select charge_to, hold_micro::text as hold, web_micro::text as web from agent_runs where id = $1", [run.id])
+          await t.query<{ charge_to: ChargeTo | null; hold: string; web: string; web_charge: string }>(
+            "select charge_to, hold_micro::text as hold, web_micro::text as web, web_charge_micro::text as web_charge from agent_runs where id = $1",
+            [run.id],
+          )
         ).rows[0]!;
-        // A provider's model costs nothing but the searches its tool held (tools/web/hold.ts): those count with its lane.
-        if (money.price === null || row.charge_to === null) return (await budgetReachedWith(t, lane, agent, BigInt(row.web), config)) ? "final" : "ok";
+        // What its searches are charged so far (tools/web/hold.ts: their actual once the engine said it, else their price).
+        const searchedCharge = BigInt(row.web_charge);
+        // A provider's model costs nothing but the searches its tool held: those count with its lane.
+        if (money.price === null || row.charge_to === null) return (await budgetReachedWith(t, lane, agent, searchedCharge, config)) ? "final" : "ok";
         const reported = spent !== null && isCount(spent.inputTokens) && isCount(spent.outputTokens);
         const cost = costMicro(money.price, reported ? spent.inputTokens : estimated.inputChars, reported ? spent.outputTokens : estimated.outputChars);
         const held = BigInt(row.hold);
-        // The web searches its tool held, at their fixed price (tools/web/hold.ts): part of the hold, outside the model's
-        // clip below, and counted with so far wherever so far is (0 for a reply that made none: every number as before).
+        // The web searches its tool held, at their price (tools/web/hold.ts): a part of the hold of their own, apart from the
+        // model's, which is what is raised here (0 for a reply that made none: every number as before).
         const searched = BigInt(row.web);
-        // The room kept for a last call on the free allowance (`RunMoney.reserveMicro`): this call is within it.
+        // The room kept for a last call on `AB` (`RunMoney.reserveMicro`): this call is within it.
         const reserve = row.charge_to === "free" ? money.reserveMicro : 0n;
         // So far is at most what the reply held for its calls: each was held at its most before it was made, so a round
         // reported above that is the upstream's error — forgiven at settlement, never held for.
@@ -1098,17 +1107,17 @@ export class DbAgentPort implements AgentPort {
         const sofar = cost < modelHeld ? cost : modelHeld;
         const next = costMicro(money.price, nextInputTokens, money.maxOutputTokens);
         // Another round must keep room for a last call after it: renewed from the next call's input bound and what one
-        // round can add, at most the whole of a call (`roomGrowth`); short of it on the free allowance, the next call is
-        // the last.
+        // round can add, at most the whole of a call (`roomGrowth`); short of it on `AB`, the next call is the last.
         const renewed =
           reserve === 0n ? 0n : costMicro(money.price, Math.min(nextInputTokens + money.growthTokens, money.roomCapTokens), money.maxOutputTokens);
         const tools =
-          sofar + searched + next <= BigInt(config.tools.maxPoints) * MICRO_PER_POINT && !(await budgetReachedWith(t, lane, agent, sofar + searched, config));
+          sofar + searchedCharge + next <= BigInt(config.tools.maxPoints) * MICRO_PER_POINT &&
+          !(await budgetReachedWith(t, lane, agent, sofar + searchedCharge, config));
         const answer = await raiseHold(
           t,
           config,
-          { id: run.id, ownerId: run.ownerId, chargeTo: row.charge_to, holdMicro: held },
-          { ok: sofar + searched + next + renewed, final: sofar + searched + next },
+          { id: run.id, ownerId: run.ownerId, chargeTo: row.charge_to, holdMicro: held, webMicro: searched },
+          { ok: sofar + next + renewed, final: sofar + next },
           tools,
           new Date(),
         );
