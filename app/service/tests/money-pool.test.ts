@@ -3,6 +3,7 @@ import {
   alone,
   excessRule,
   extendRound,
+  fitsAllowance,
   fuseCost,
   inBand,
   room,
@@ -106,12 +107,12 @@ describe("the start rule, the lone reply and the rounds (v3 §3; attack V2-I2, V
     const at = pots(2, 0);
     expect(start(at, [], { run: "f", cls: "AB", x: P(13) })).toEqual({ kind: "started", part: part("f", "AB", 2, 11) });
     const other = [part("g", "AB", 1)];
-    expect(alone(other, "f", "AB")).toBe(false);
+    expect(alone(at, other, "f", "AB")).toBe(false);
     expect(start(at, other, { run: "f", cls: "AB", x: P(13) })).toEqual({ kind: "waits" });
     expect(start(at, other, { run: "d", cls: "AB", x: P(13), draft: true })).toEqual({ kind: "started", part: part("d", "AB", 1, 12) });
-    // Shared pots: a paid reply is alone beside a legacy A row (no pot in common), not beside an AB one.
-    expect(alone([part("l", "A", 5)], "p", "B")).toBe(true);
-    expect(alone([part("g", "AB", 5)], "p", "B")).toBe(false);
+    // A paid reply is alone beside a legacy A row (no pot in common), not beside an AB one that needs the balance (5 > 2).
+    expect(alone(at, [part("l", "A", 5)], "p", "B")).toBe(true);
+    expect(alone(at, [part("g", "AB", 5)], "p", "B")).toBe(false);
   });
 
   it("both pots used up after the reply started (V2-M2): its later rounds are 'final', never refused; its tools are refused, the reply goes on", () => {
@@ -121,6 +122,37 @@ describe("the start rule, the lone reply and the rounds (v3 §3; attack V2-I2, V
     const parts = [part("f", "AB", 3, 10)];
     expect(tool(at, parts, { run: "f", cls: "AB", x: P(13) })).toBeNull();
     expect(round(at, parts, { run: "f", cls: "AB", x: P(5) })).toEqual({ answer: "final", add: part("f", "AB", 0, 5) });
+  });
+
+  it("review I1 — a paid reply is alone on the balance when nobody else needs it: A 80, B 5, a free-tier reply's 13 all within the allowance, a paid hold of 8 starts (5 promised, 3 over), its over its own debt", () => {
+    const at = pots(80, 5);
+    const parts = [part("f", "AB", 13)];
+    expect(start(at, parts, { run: "p", cls: "B", x: P(8) })).toEqual({ kind: "started", part: part("p", "B", 5, 3) });
+    // Settled in either order: the paid reply's 3 over are its own debt, the free-tier reply's 13 come from the allowance.
+    const all = [...parts, part("p", "B", 5, 3)];
+    const charges = { p: [{ cls: "B" as const, cost: P(8) }], f: [{ cls: "AB" as const, cost: P(13) }] };
+    for (const order of [["p", "f"], ["f", "p"]]) {
+      const s = settleAll(at, all, order, charges, own);
+      expect([order.join(","), s.pots, s.debt, s.forgiven]).toEqual([order.join(","), pots(67, -3), P(3), 0n]);
+    }
+    // An old code's allowance row counts at most what is left of the allowance; an AB over is promised to nobody.
+    expect(start(pots(10, 5), [part("l", "A", 30), part("g", "AB", 0, 9)], { run: "p", cls: "B", x: P(8) }).kind).toBe("started");
+    // Still not alone when another run needs the balance: a B part of its own, or AB promises past the allowance.
+    expect(start(at, [part("q", "B", 1)], { run: "p", cls: "B", x: P(8) })).toEqual({ kind: "waits" });
+    expect(start(at, [part("q", "B", 0, 1)], { run: "p", cls: "B", x: P(8) })).toEqual({ kind: "waits" });
+    expect(start(pots(10, 5), [part("f", "AB", 13)], { run: "p", cls: "B", x: P(8) })).toEqual({ kind: "waits" });
+    // A free-tier reply stays strict: beside anything on its pots it waits (its over would be the site's).
+    expect(start(pots(2, 0), [part("l", "A", 1)], { run: "f", cls: "AB", x: P(13) })).toEqual({ kind: "waits" });
+  });
+
+  it("review I1, the reverse — a free-tier reply fits the allowance alone when its hold fits beside what the others' promises need of it (fitsAllowance)", () => {
+    const at = pots(80, 5);
+    const parts = [part("f", "AB", 13), part("p", "B", 5, 3), part("l", "A", 2)];
+    expect(fitsAllowance(at, parts, { run: "g", x: P(65) })).toBe(true); // 80 − 2 − 13
+    expect(fitsAllowance(at, parts, { run: "g", x: P(66) })).toBe(false);
+    // An old row beyond the allowance takes all of it; the run's own parts are not counted against it.
+    expect(fitsAllowance(pots(10, 5), [part("l", "A", 30)], { run: "g", x: 1n })).toBe(false);
+    expect(fitsAllowance(pots(10, 5), [part("g", "AB", 10)], { run: "g", x: P(10) })).toBe(true);
   });
 
   it("V3-I1 — after a lone start past its pot (A 2, B 0, hold 13 → 2 + 11) a round asking nothing more is 'final', not 'ok'", () => {
@@ -305,7 +337,7 @@ describe("the invariants, over random sequences (third attack V3.3)", () => {
     const rand = mulberry32(20261122);
     const n = (top: number): bigint => BigInt(Math.floor(rand() * top));
     const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!;
-    const seen = { lonely: 0, overStarts: 0, roundsOnOver: 0, debts: 0, deficitUp: 0, old: 0, oldRaised: 0, resets: 0, adjustments: 0, orders: 0 };
+    const seen = { lonely: 0, paidBeside: 0, overStarts: 0, roundsOnOver: 0, debts: 0, deficitUp: 0, old: 0, oldRaised: 0, resets: 0, adjustments: 0, orders: 0 };
     for (let seq = 0; seq < SEQUENCES; seq++) {
       const overlap = seq % 3 === 0; // old code still running beside the new: it admits, raises and settles rows of its own
       const A0 = n(30);
@@ -345,13 +377,24 @@ describe("the invariants, over random sequences (third attack V3.3)", () => {
             const x = 1n + n(20);
             const draft = rand() < 0.1;
             const left = cls === "AB" ? at.A + pos(at.B) > 0n : at.B > 0n;
-            const lone = aloneOn(parts, run, cls);
-            const started = start(at, parts, { run, cls, x, share: rand() < 0.3 ? SHARE_WHOLE / 2n : SHARE_WHOLE, draft });
+            const lone = aloneOn(at, parts, run, cls);
+            const share = rand() < 0.3 ? SHARE_WHOLE / 2n : SHARE_WHOLE;
+            const started = start(at, parts, { run, cls, x, share, draft });
             // Refused only with nothing left of its class; a lone reply or a draft always starts.
             expect([where, started.kind === "no_quota"]).toEqual([where, !left]);
             if (left && (lone || draft)) {
               expect([where, started.kind]).toEqual([where, "started"]);
               seen.lonely++;
+            }
+            // A run whose promise fits a pot nobody else needs is never made to wait (review I1): a paid one when no other
+            // run needs the balance; a free-tier one whose hold fits the (share-scaled) allowance beside what the others'
+            // promises need of it.
+            const needA = small(promisedOf(parts, run, "A"), at.A) + promisedOf(parts, run, "AB");
+            const nobodyNeedsB = !parts.some((p) => p.run !== run && p.cls === "B" && p.promised + p.over > 0n) && needA <= at.A;
+            const fitsA = x + needA <= (at.A * share) / SHARE_WHOLE;
+            if (left && (cls === "B" ? nobodyNeedsB : fitsA)) {
+              expect([where, started.kind]).toEqual([where, "started"]);
+              if (cls === "B" && parts.some((p) => p.run !== run && p.promised + p.over > 0n)) seen.paidBeside++;
             }
             if (started.kind === "started") {
               // Only a lone reply or a draft takes more than the pots cover.
@@ -512,6 +555,7 @@ describe("the invariants, over random sequences (third attack V3.3)", () => {
     }
     // The generator reaches the states that matter (counts of this seed's sequences).
     expect(seen.lonely).toBeGreaterThan(SEQUENCES / 2);
+    expect(seen.paidBeside).toBeGreaterThan(200);
     expect(seen.overStarts).toBeGreaterThan(500);
     expect(seen.roundsOnOver).toBeGreaterThan(500);
     expect(seen.debts).toBeGreaterThan(200);
@@ -549,10 +593,23 @@ function expectMostThatFits(where: string, at: Pots, parts: readonly Part[], add
   if (add.over > 0n) expect([where, deficit(at, [...parts, { ...add, promised: add.promised + 1n }]) > before]).toEqual([where, true]);
 }
 
-/** Whether no run but `run` holds anything on a pot of `cls`'s (the rule's statement: AB shares A and B; A and B share nothing). */
-function aloneOn(parts: readonly Part[], run: string, cls: PayClass): boolean {
+/**
+ * Whether `run` is alone on its pots (the rule's statement, review I1): a free-tier (AB) or old (A) run when no other run
+ * holds anything on a pot it shares (AB shares A and B; A and B share nothing); a paid (B) run when no other run holds
+ * anything on the balance's class and the others' promises fit within the allowance (the old rows' at most what is left).
+ */
+function aloneOn(at: Pots, parts: readonly Part[], run: string, cls: PayClass): boolean {
+  if (cls === "B") {
+    const needA = small(promisedOf(parts, run, "A"), at.A) + promisedOf(parts, run, "AB");
+    return parts.every((p) => p.run === run || p.cls !== "B" || p.promised + p.over === 0n) && needA <= at.A;
+  }
   const meets = (other: PayClass) => cls === "AB" || other === "AB" || other === cls;
   return parts.every((p) => p.run === run || !meets(p.cls) || p.promised + p.over === 0n);
+}
+
+/** What the runs other than `run` are promised of class `cls`. */
+function promisedOf(parts: readonly Part[], run: string, cls: PayClass): bigint {
+  return parts.filter((p) => p.run !== run && p.cls === cls).reduce((s, p) => s + p.promised, 0n);
 }
 
 /** What old code's `readHolds` sums by `charge_to`: a run row's whole hold (its tools' and its over too); a provider run's never. */

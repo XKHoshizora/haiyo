@@ -52,12 +52,13 @@ export function promisedLoad(pots: Pots, parts: readonly Part[]): { A: bigint; B
 /**
  * The most a new promise of class `cls` may add beside `parts` (v3 §2): with capacities A and B⁺, scaled by `share`
  * (parts of `SHARE_WHOLE`) when given, `T = A + B⁺ − P_A − P_B − P_AB`; `AB`: T; `B`: min(B⁺ − P_B, T); `A`: min(A − P_A, T);
- * never below 0. The single-pot sums are capped at the real pots, whatever the scale.
+ * never below 0. The single-pot sums are capped at their pot as scaled, so that one pot's promises past its share never
+ * eat the other pot's room (review I1); scaled or not, this is never more than the unscaled room.
  */
 export function room(pots: Pots, parts: readonly Part[], cls: PayClass, share: bigint = SHARE_WHOLE): bigint {
-  const load = promisedLoad(pots, parts);
   const capA = (pots.A * share) / SHARE_WHOLE;
   const capB = (plus(pots.B) * share) / SHARE_WHOLE;
+  const load = promisedLoad({ A: capA, B: capB }, parts);
   const total = capA + capB - load.A - load.B - load.AB;
   if (cls === "AB") return max(0n, total);
   if (cls === "B") return max(0n, min(capB - load.B, total));
@@ -80,9 +81,36 @@ export function holders(parts: readonly Part[], run: string, cls: PayClass): str
   return [...ids].sort();
 }
 
-/** Whether no other run than `run` holds anything (promised or over) on a class that shares a pot with `cls`. */
-export function alone(parts: readonly Part[], run: string, cls: PayClass): boolean {
+/** What the runs other than `run` are promised of the allowance: their `A` promises (at most A) and their `AB` ones. */
+const allowanceNeeded = (pots: Pots, parts: readonly Part[], run: string): bigint => {
+  let a = 0n;
+  let ab = 0n;
+  for (const p of parts) {
+    if (p.run === run) continue;
+    if (p.cls === "A") a += p.promised;
+    else if (p.cls === "AB") ab += p.promised;
+  }
+  return min(a, pots.A) + ab;
+};
+
+/**
+ * Whether `run` is alone on its pots, so that it may start whatever its hold (v3 §3, review I1):
+ * - a free-tier (`AB`) or old (`A`) run: no other run holds anything (promised or over) on a pot it shares — its over is
+ *   the site's, so this stays strict (one such reply a day);
+ * - a paid (`B`) run: no other run holds anything on the balance's own class, and the others' promises fit within the
+ *   allowance (`min(ΣA, A) + ΣAB ≤ A`) — nobody else needs the balance, so its over can only be its own debt.
+ */
+export function alone(pots: Pots, parts: readonly Part[], run: string, cls: PayClass): boolean {
+  if (cls === "B") return !parts.some((p) => p.run !== run && p.cls === "B" && p.promised + p.over > 0n) && allowanceNeeded(pots, parts, run) <= pots.A;
   return holders(parts, run, cls).length === 0;
+}
+
+/**
+ * Whether a free-tier hold `x` of `run` fits within the allowance alone, beside what the other runs' promises need of
+ * it (review I1): what lets it start without touching the balance a waiting paid reply is queued for.
+ */
+export function fitsAllowance(pots: Pots, parts: readonly Part[], o: { run: string; x: bigint }): boolean {
+  return o.x + allowanceNeeded(pots, parts, o.run) <= pots.A;
 }
 
 /** What a hold asks for, and what the rule answered: the part to add (promised, over) or why not. */
@@ -100,7 +128,7 @@ export function start(
 ): Started {
   if (!somethingLeft(pots, o.cls)) return { kind: "no_quota" };
   if (o.x <= room(pots, parts, o.cls, o.share ?? SHARE_WHOLE)) return { kind: "started", part: { run: o.run, cls: o.cls, promised: o.x, over: 0n } };
-  if (o.draft === true || alone(parts, o.run, o.cls)) {
+  if (o.draft === true || alone(pots, parts, o.run, o.cls)) {
     const promised = min(o.x, room(pots, parts, o.cls));
     return { kind: "started", part: { run: o.run, cls: o.cls, promised, over: o.x - promised } };
   }
