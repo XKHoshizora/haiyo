@@ -12,6 +12,7 @@ import { addressOf, navOfAddress } from "../src/state/location.js";
 import { useAppHistory } from "../src/state/appHistory.js";
 import { Modal } from "../src/ui/primitives.jsx";
 import { Select } from "../src/ui/Select.jsx";
+import { MediaBody } from "../src/ui/MediaBody.jsx";
 
 const C1 = "00000000-0000-4000-8000-0000000000c1";
 const C2 = "00000000-0000-4000-8000-0000000000c2";
@@ -394,6 +395,26 @@ describe("an entry of a layer that is not open", () => {
 });
 
 describe("the other modal surfaces are the same primitive", () => {
+  it("a video playing in a bubble is part of the page, not a layer: under a dialog it is inert with the page, and the focus goes back to the dialog's opener", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("probably");
+    const clip = { id: "m1", text: "clip.mp4", upload: null, attachment: { id: "a1", name: "clip.mp4", mime: "video/mp4", size: 1000, url: "/api/attachments/a1", inline: false } };
+    render(<Page inner={null} />);
+    // (The bubble's player sits on the page, beside the button that opens the dialog.)
+    const { container } = render(<MediaBody msg={clip} />);
+    await settle();
+    const video = container.querySelector("video");
+    expect(video).not.toBeNull();
+    const before = window.history.state;
+    const opener = await openIt();
+    expect(video.closest("[inert]")).not.toBeNull();
+    fireEvent.keyDown(screen.getByLabelText("名称"), { key: "Escape" });
+    await settle();
+    expect(video.closest("[inert]")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    // The player itself made no entry of its own: the history is the page's again.
+    expect(window.history.state).toEqual(before);
+  });
+
   const SRC = path.join(import.meta.dirname, "..", "src");
   const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]));
   const sources = walk(SRC).filter((f) => /\.jsx?$/.test(f));
