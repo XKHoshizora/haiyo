@@ -4,8 +4,11 @@
 --    search picks the source — today's free allowance, else the balance — and its `charge_to` is that source, its
 --    `hold_micro` the searches' prices; settlement then charges exactly `web_micro` there. So a provider run may now carry
 --    a `charge_to`, only with searches (`web_searches > 0`; a price of 0 is a search too): the run's model still costs
---    nothing. Added `not valid` and validated after, so the exclusive lock is not held through the table's scan (the old
---    check implies the new one: it cannot fail).
+--    nothing. Added `not valid` and validated in this same migration, which node-pg-migrate runs in one transaction:
+--    the ACCESS EXCLUSIVE lock that dropping and adding the constraint take is held until it commits, through the
+--    validation's scan of agent_runs too — so this is no shorter a lock than a plain `add constraint` (a short one at
+--    this table's size; only a migration of its own run outside a transaction would avoid it). The old check implies the
+--    new one, so the validation cannot fail.
 -- 2. No count per owner any more (the points are the bound): the owners' counter rows of the first version go.
 -- 3. The site's money fuse counts money: `spent_micro_usd`, what the day's searches cost the site in micro-USD — the
 --    estimate held at call time, replaced by what the engine said the call cost when it says so — and `warned_80`, set
