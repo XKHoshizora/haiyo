@@ -785,6 +785,7 @@ test("ui2 H, I, J, N, O: deleted Agents behind one entry and quiet in the list, 
   await page.getByRole("button", { name: /用量与余额/ }).click();
   await expect(page.getByRole("heading", { name: "用量与余额", level: 2 })).toBeVisible();
   await expect(page.locator("section.page")).not.toContainText(/\d\.\d{3,}/); // (no long decimals anywhere)
+  await expect(page.locator(".toast")).toHaveCount(0); // (an earlier notice is gone: nothing covers the last paragraph)
   await polishShot(page, "ui2-usage");
   await page.getByRole("button", { name: /^返回/ }).first().click();
   // N: a long group title takes two lines, the three controls stay.

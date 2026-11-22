@@ -43,8 +43,32 @@ export function setUnauthenticatedHandler(fn) {
 }
 
 async function readJson(res) {
-  return parseJson(await res.text());
+  try {
+    return parseJson(await res.text());
+  } catch {
+    // The body was cut while it was read (a reload mid-answer, a dropped connection): a network failure like a failed fetch, as an ApiError.
+    return cut();
+  }
 }
+
+/**
+ * Once the page is going away (`pagehide`: a reload, a close, leaving for another page) the browser aborts what is in flight, and an answer
+ * nobody will read is no failure: such a request stays pending (the page that asked is gone with it). A page restored from the back/forward cache
+ * (`pageshow`) is alive again. Outside that, a failed request is a failure — never swallowed.
+ */
+let leaving = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    leaving = true;
+  });
+  window.addEventListener("pageshow", () => {
+    leaving = false;
+  });
+}
+const cut = () => {
+  if (leaving) return new Promise(() => {});
+  throw new ApiError(0, "network_error");
+};
 
 /**
  * @param {string} method
@@ -64,7 +88,7 @@ export async function request(method, path, body) {
   try {
     res = await fetch(path, init);
   } catch {
-    throw new ApiError(0, "network_error");
+    return cut();
   }
 
   const data = await readJson(res);
@@ -87,7 +111,7 @@ export async function requestBytes(method, path, body, contentType) {
   try {
     res = await fetch(path, { method, credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": contentType }, body });
   } catch {
-    throw new ApiError(0, "network_error");
+    return cut();
   }
   const data = await readJson(res);
   if (res.ok) return data;

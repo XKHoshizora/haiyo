@@ -557,8 +557,10 @@ describe("composer", () => {
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
     const notice = document.querySelector(".chat > .notice");
     expect(notice.textContent).toContain("小安拉黑了你，只能由对方解除");
-    expect(input().disabled).toBe(true);
-    expect(document.querySelector(".composer-hint").textContent).toContain("小安拉黑了你，只能由对方解除");
+    // Said once (the notice); the composer offers nothing.
+    expect(screen.queryByLabelText("消息内容")).toBeNull();
+    expect(document.querySelector(".composer")).toBeNull();
+    expect(within(document.querySelector("section.chat")).getAllByText(/小安拉黑了你，只能由对方解除/)).toHaveLength(1);
     expect(within(screen.getByText("还能发吗", { selector: ".bubble" }).closest("li")).getByText(/发送失败，未发布/)).toBeTruthy();
   });
 
@@ -567,7 +569,7 @@ describe("composer", () => {
     await openApp({ sync });
     await openChat("小安");
     expect(document.querySelector(".chat > .notice").textContent).toContain("对方已不是你的好友");
-    expect(input().disabled).toBe(true);
+    expect(screen.queryByLabelText("消息内容")).toBeNull();
   });
 
   it("a reply is sent with replyToSeq and shows the quote meanwhile", async () => {

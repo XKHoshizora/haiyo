@@ -80,6 +80,22 @@ describe("AuthPage on a faked visualViewport", () => {
     expect(renders).toBe(before);
   });
 
+  it("a rotation (window resize, orientationchange) recomputes it: a stale frame cannot survive it", () => {
+    render(<AuthPage>x</AuthPage>);
+    vv.height = 300;
+    fire("resize");
+    expect(layer().style.height).toBe("300px");
+    // Rotated: the window's own size changes and the visual viewport is the whole window again — its events may not come before the window's.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 402 });
+    Object.assign(vv, { width: 874, height: 402 });
+    act(() => void window.dispatchEvent(new Event("orientationchange")));
+    expect(layer().style.height).toBe("");
+    expect(layer().hasAttribute("data-frame")).toBe(false);
+    vv.height = 200;
+    act(() => void window.dispatchEvent(new Event("resize")));
+    expect(layer().style.height).toBe("200px");
+  });
+
   it("a pinch-zoomed page gets the zoom-aware box; the listeners go with the page", () => {
     render(<AuthPage>x</AuthPage>);
     Object.assign(vv, { scale: 2, offsetLeft: 100, offsetTop: 200, width: 201, height: 437 });
@@ -89,6 +105,10 @@ describe("AuthPage on a faked visualViewport", () => {
     cleanup();
     expect(listeners.resize?.size ?? 0).toBe(0);
     expect(listeners.scroll?.size ?? 0).toBe(0);
+    const removed = vi.spyOn(window, "removeEventListener");
+    render(<AuthPage>y</AuthPage>);
+    cleanup();
+    expect(removed.mock.calls.map((c) => c[0])).toEqual(expect.arrayContaining(["resize", "orientationchange"]));
   });
 });
 

@@ -40,7 +40,8 @@ export function convTitle(state, conv) {
 
 /** The chat header's line: a group counts its people, and its Agents when it has any. */
 export function convSubtitle(state, conv) {
-  if (conv.type === "agent") return "你的 Agent · 专属会话";
+  // (A deleted Agent's line says what the conversation is now — read only — and no model: it can no longer reply, so its model is of no use there.)
+  if (conv.type === "agent") return agentDeleted(state, conv) ? "你的 Agent · 已删除，只能查看" : "你的 Agent · 专属会话";
   if (conv.type !== "group") return "真人私聊";
   const agents = conv.members.filter((id) => isAgent(state, id)).length;
   const people = `${conv.members.length - agents} 位真人`;
