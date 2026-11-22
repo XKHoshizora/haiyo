@@ -2,10 +2,10 @@ import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { useStore } from "./data/store.jsx";
 import { entity, isMyAgent, unreadTotal } from "./state/selectors.js";
 import { ME } from "./data/identities.js";
-import { Avatar, BrandMark } from "./ui/primitives.jsx";
+import { Avatar, BrandMark, IconBtn, LoadingRow } from "./ui/primitives.jsx";
 import { usePhone } from "./ui/pointer.js";
-import { alive, lastPageOf, useAppHistory } from "./state/appHistory.js";
-import { MessageCircle, Users, Bot, Settings } from "./icons.js";
+import { alive, lastPageOf, useAppHistory, useUp } from "./state/appHistory.js";
+import { MessageCircle, Users, Bot, Settings, ChevronLeft } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
 import { GroupProfile } from "./pages/GroupProfile.jsx";
@@ -149,6 +149,26 @@ function useKeepListScroll(pane, section) {
   return note;
 }
 
+/**
+ * The chat an address names, before the first sync has said what there is: its own shell — the header with 返回列表 and, inside, the same
+ * loading and cannot-connect states the lists have (ui/primitives.jsx `LoadingRow`) — so a page that never syncs is still one a person can leave.
+ */
+function PendingChat() {
+  const up = useUp();
+  return (
+    <section className="chat" aria-label="会话">
+      <header className="chat-head">
+        <IconBtn label="返回列表" className="only-mobile" onClick={up}>
+          <ChevronLeft size={22} />
+        </IconBtn>
+      </header>
+      <ul className="rows">
+        <LoadingRow />
+      </ul>
+    </section>
+  );
+}
+
 /** The signed-in application: rail, list, chat and side panel. Loaded on demand (see App.jsx). */
 export default function Shell() {
   const { state, dispatch, actions } = useStore();
@@ -192,7 +212,7 @@ export default function Shell() {
 
   if (nav.section === "chat") {
     list = <ChatList />;
-    if (!conv) main = nav.convId && !state.loaded ? <div className="empty-main" /> : <div className="empty-main">选择一个会话开始聊天</div>;
+    if (!conv) main = nav.convId && !state.loaded ? <PendingChat /> : <div className="empty-main">选择一个会话开始聊天</div>;
     else if (nav.view === "profile") main = <GroupProfile conv={conv} />;
     else {
       main = <ChatView conv={conv} />;

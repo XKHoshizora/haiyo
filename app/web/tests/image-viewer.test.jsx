@@ -170,6 +170,34 @@ describe("a picture opens only on a genuine single-finger tap that began and end
     expect(viewerOpen()).toBe(true);
   });
 
+  it("a click with no pointer press at all opens it whatever `detail` says: assistive technology (VoiceOver) sends click with detail 1 and no pointerdown", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("a mouse press whose release never reached the window (let go outside it) does not cost the next click", async () => {
+    await openApp();
+    await openChat("小安");
+    fireEvent.pointerDown(picture(3), { pointerId: 7, pointerType: "mouse", isPrimary: true, button: 0 });
+    // (no pointerup, no click: gone)
+    fireEvent.pointerDown(picture(3), { pointerId: 7, pointerType: "mouse", isPrimary: true, button: 0 });
+    fireEvent.pointerUp(picture(3), { pointerId: 7, pointerType: "mouse", isPrimary: true });
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
+  it("a press elsewhere on the page that ended with no click does not refuse the later pointer-less click: a press is spent by the click, a scroll ends it", async () => {
+    await openApp();
+    await openChat("小安");
+    down(document.querySelector(".main-col"), 1);
+    up(document.querySelector(".main-col"), 1);
+    fireEvent.scroll(document.querySelector("ol.messages"));
+    fireEvent.click(picture(3), { detail: 1 });
+    expect(viewerOpen()).toBe(true);
+  });
+
   it("the keyboard (Enter or Space is a click with no pointer) still opens it", async () => {
     await openApp();
     await openChat("小安");

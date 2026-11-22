@@ -12,12 +12,9 @@ const TARGETS = ".bubble, .attachment-image, .file-card";
 const GAP = 6;
 const MARGIN = 8;
 
-/** A press and the contextmenu it brings are one gesture: the selection recorded at the press is good for this long (ms). */
-const GESTURE_MS = 1500;
-
 /**
- * Whether the person had words selected, in `target`, when they pressed: what a browser's own menu (copy) is for. Judged at the press, never
- * at `contextmenu`: WebKit selects the word under the pointer BEFORE it fires `contextmenu`, so a selection found then is the browser's, not theirs.
+ * Whether the person had words selected, in `target`, when they pressed (any press, any button: a Ctrl+click is button 0): what a browser's own
+ * menu (copy) is for. Judged at the press, never at `contextmenu`: WebKit selects the word under the pointer BEFORE it fires `contextmenu`, so a selection found then is the browser's, not theirs.
  */
 function selectedIn(target) {
   const sel = window.getSelection?.();
@@ -152,7 +149,10 @@ export function useBubbleMenu(getActions) {
   const timer = useRef(0);
   const press = useRef(null);
   const heldAt = useRef(0);
-  /** The selection the person had at their latest press, for `onContextMenu` to judge by (null: none lately; the live one then). */
+  /**
+   * The selection the person had at their latest press, for `onContextMenu` to judge by. Spent where the gesture ends: by the contextmenu it brought, by the click
+   * (or auxclick) that completes a press, and replaced by the next press; null when there is none (the live selection then).
+   */
   const pressed = useRef(null);
   /** A long-press opened the menu: the click of its release (however long the hold) is not a tap, until the next press. */
   const swallow = useRef(false);
@@ -203,7 +203,7 @@ export function useBubbleMenu(getActions) {
     onPointerDown(e) {
       swallow.current = false;
       const at = hit(e);
-      pressed.current = at ? { selected: selectedIn(at), when: Date.now() } : null;
+      pressed.current = at ? { selected: selectedIn(at) } : null;
       if (e.pointerType === "mouse" || !at) return;
       const target = hit(e);
       press.current = { x: e.clientX, y: e.clientY };
@@ -225,19 +225,23 @@ export function useBubbleMenu(getActions) {
     onPointerLeave: cancel,
     // The release of a long-press is followed by a click: not for the picture's viewer, not for a mention's card.
     onClickCapture(e) {
+      pressed.current = null;
       if (swallow.current && hit(e)) {
         e.preventDefault();
         e.stopPropagation();
       }
+    },
+    onAuxClick() {
+      pressed.current = null;
     },
     onContextMenu(e) {
       const target = hit(e);
       if (!target) return;
       // A link keeps its own menu (open, copy address), and so does text the person had selected before this press (copy) — judged at the
       // press (`pressed`), as WebKit selects the word under the pointer before it fires this event. With no press lately (a key), the live selection.
-      const press = pressed.current && Date.now() - pressed.current.when < GESTURE_MS ? pressed.current : null;
+      const before = pressed.current;
       pressed.current = null;
-      if (e.target.closest("a[href]") || (press ? press.selected : selectedIn(target))) return;
+      if (e.target.closest("a[href]") || (before ? before.selected : selectedIn(target))) return;
       if (openRef.current || Date.now() - heldAt.current < 1000) {
         e.preventDefault();
         return;
