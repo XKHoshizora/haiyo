@@ -3,7 +3,7 @@ import { createBlobStore } from "./attachments/blob.ts";
 import { DEFAULT_UNSENT_AFTER_MINUTES, runSweep } from "./attachments/sweeper.ts";
 import { applyLedger, ensureAccount, formatPoints, lockAccount, parsePoints } from "./accounts/store.ts";
 import { mailCounts } from "./auth/mail-sender.ts";
-import { createInvite } from "./auth/invites.ts";
+import { MAX_INVITE_USES, createInvite, listInvites, revokeInvite } from "./auth/invites.ts";
 import { loadConfig } from "./config.ts";
 import { createDb, type Db } from "./db.ts";
 import { configureStats, formatStats, readStats } from "./memory/stats.ts";
@@ -16,7 +16,7 @@ import { runMigrations } from "./migrate.ts";
 loadDotenv({ quiet: true });
 
 const USAGE =
-  "usage: cli.ts migrate | invite:create [--ttl-hours <n>] | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
+  "usage: cli.ts migrate | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
   "credits:grant --handle <h> --points <n> [--note <text>] | credits:show --handle <h> | tier:set --handle <h> --tier <name> | models:list | memory:stats [--days <n>] | " +
   "demo:seed --email <address> [--handle <h>] [--name <text>] (password from DEMO_PASSWORD or asked)";
 
@@ -66,9 +66,44 @@ if (command === "migrate") {
 } else if (command === "invite:create") {
   const ttlHours = Number(flag(args, "--ttl-hours") ?? 72);
   if (!Number.isFinite(ttlHours) || ttlHours <= 0) throw new Error("--ttl-hours must be a positive number");
+  const usesText = flag(args, "--uses") ?? "1";
+  const uses = /^[0-9]+$/.test(usesText) ? Number(usesText) : Number.NaN;
+  if (!Number.isInteger(uses) || uses < 1 || uses > MAX_INVITE_USES) {
+    throw new Error(`--uses must be a whole number from 1 to ${MAX_INVITE_USES}`);
+  }
   const db = createDb(databaseUrl());
   try {
-    console.log(await createInvite(db, { ttlHours }));
+    console.log(await createInvite(db, { ttlHours, uses }));
+  } finally {
+    await db.close();
+  }
+} else if (command === "invite:list") {
+  const db = createDb(databaseUrl());
+  try {
+    // Hash prefixes only, never a code (a code is shown once, when it is made).
+    const rows = await listInvites(db);
+    console.log("hash\tuses\texpires\tcreated\tstate");
+    const now = Date.now();
+    for (const r of rows) {
+      const state = r.revoked ? "revoked" : r.expiresAt.getTime() <= now ? "expired" : r.uses >= r.maxUses ? "used up" : "open";
+      console.log([r.hashPrefix, `${r.uses}/${r.maxUses}`, r.expiresAt.toISOString(), r.createdAt.toISOString(), state].join("\t"));
+    }
+  } finally {
+    await db.close();
+  }
+} else if (command === "invite:revoke") {
+  const prefix = requiredFlag(args, "--prefix").toLowerCase();
+  const db = createDb(databaseUrl());
+  try {
+    const result = await revokeInvite(db, prefix);
+    if (!result.ok) {
+      throw new Error(
+        result.reason === "ambiguous" ? "more than one code starts with that prefix; give more of it"
+        : result.reason === "not_found" ? "no code starts with that prefix"
+        : "--prefix must be at least 6 hex characters (see invite:list)",
+      );
+    }
+    console.log(`revoked ${result.hashPrefix}: no more sign-ups; accounts already made are untouched`);
   } finally {
     await db.close();
   }

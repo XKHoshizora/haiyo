@@ -256,7 +256,7 @@ describe("register", () => {
     expect(screen.getByText("已经注册过？直接登录就行。")).toBeTruthy();
     fill();
     submit("注册");
-    await screen.findByText("邀请码无效或已过期，请向邀请你的人确认。");
+    await screen.findByText("邀请码无效、已过期或已用完，请向邀请你的人确认。");
     expect(screen.getAllByText("已经注册过？直接登录就行。")).toHaveLength(1);
   });
 
@@ -343,7 +343,7 @@ describe("register", () => {
   });
 
   it.each([
-    ["invalid_invite", 400, "邀请码", "邀请码无效或已过期，请向邀请你的人确认。"],
+    ["invalid_invite", 400, "邀请码", "邀请码无效、已过期或已用完，请向邀请你的人确认。"],
     ["handle_taken", 409, "账号名", "这个账号名已被占用，换一个试试。"],
   ])("%s lands on its own field, focused", async (code, status, label, text) => {
     await open(outApi({ register: vi.fn(async () => Promise.reject(new ApiError(status, code))) }));
