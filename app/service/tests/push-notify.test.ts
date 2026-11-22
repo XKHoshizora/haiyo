@@ -1,4 +1,5 @@
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
+import net from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { StoredMessage } from "../src/messages/model.ts";
 import { createApnsClient, type ApnsClient } from "../src/push/apns.ts";
@@ -8,7 +9,7 @@ import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { fakeApns, type FakeApns } from "./helpers/apns.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
-import { closeAllSockets, connect, type TestSocket } from "./helpers/ws.ts";
+import { APP_ORIGIN, closeAllSockets, connect, issueTicket, listen, type TestSocket } from "./helpers/ws.ts";
 
 /**
  * When a push goes, to whom, and what it carries (src/push/notify.ts; README "Push notifications").
@@ -74,6 +75,45 @@ async function sessionIdOf(who: Actor): Promise<string> {
   const token = decodeURIComponent(who.cookie.split("=")[1]!.split(";")[0]!).split(".")[0]!;
   return (await db.query<{ id: string }>(`select id from "session" where token = $1`, [token])).rows[0]!.id;
 }
+/**
+ * A WebSocket of `who`'s, upgraded by hand on a raw TCP connection that never answers anything (no pong, no close) and,
+ * with `allowHalfOpen`, keeps its side open when the server ends its own: a suspended phone's socket.
+ */
+async function rawSocket(who: Actor): Promise<{ socket: net.Socket; received: () => Buffer }> {
+  const { port } = await listen(app);
+  const ticket = await issueTicket(app, who);
+  const socket = net.connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+  socket.on("error", () => {});
+  let buffer = Buffer.alloc(0);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", () =>
+      socket.write(
+        [`GET /api/ws?ticket=${encodeURIComponent(ticket)} HTTP/1.1`, `Host: 127.0.0.1:${port}`, "Upgrade: websocket", "Connection: Upgrade",
+          `Sec-WebSocket-Key: ${randomBytes(16).toString("base64")}`, "Sec-WebSocket-Version: 13", `Origin: ${APP_ORIGIN}`, "", ""].join("\r\n"),
+      ),
+    );
+    let upgraded = false;
+    socket.on("data", (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (upgraded) return;
+      const end = buffer.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const head = buffer.subarray(0, end).toString();
+      buffer = buffer.subarray(end + 4);
+      if (!head.startsWith("HTTP/1.1 101")) return reject(new Error(head.split("\r\n")[0]));
+      upgraded = true;
+      resolve();
+    });
+  });
+  raws.add(socket);
+  return { socket, received: () => buffer };
+}
+const raws = new Set<net.Socket>();
+afterEach(() => {
+  for (const s of raws) s.destroy();
+  raws.clear();
+});
+
 /** Waits until the hub no longer holds a socket of `who`'s session (its close has been seen). */
 async function untilGone(who: Actor): Promise<void> {
   const id = await sessionIdOf(who);
@@ -179,6 +219,24 @@ describe("present: the phone's own session has a socket", () => {
     await say(a, conversationId, "hello");
     expect(pushedTo()).toEqual([back]);
     s.close();
+  });
+
+  test("a socket that is closing (its close frame in, its connection not yet closed) is not present: the push goes", async () => {
+    const a = await signUp(app, "closing_a");
+    const b = await signUp(app, "closing_b");
+    const { conversationId } = await befriend(app, a, b);
+    const token = await phone(b);
+    const id = await sessionIdOf(b);
+    const raw = await rawSocket(b);
+    expect(app.realtime.hasSocketFor(id)).toBe(true);
+    // A client close frame (masked, code 1000), and then nothing: the TCP connection stays open, as when iOS suspends the
+    // app between its close frame and its FIN. The server's socket is CLOSING and delivers nothing from here on.
+    raw.socket.write(Buffer.from([0x88, 0x82, 0, 0, 0, 0, 0x03, 0xe8]));
+    for (let i = 0; i < 100 && raw.received().length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(raw.received()[0]).toBe(0x88); // the server answered the close: it is closing
+    expect(app.realtime.hasSocketFor(id)).toBe(false);
+    await say(a, conversationId, "while it closes");
+    expect(pushedTo()).toEqual([token]);
   });
 
   test("the hub's answer is by session: registered while a socket of it is attached, not once it is gone", async () => {

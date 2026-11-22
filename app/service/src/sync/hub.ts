@@ -348,12 +348,13 @@ export class Hub {
   }
 
   /**
-   * Whether a socket opened with `sessionId` is registered here now: attached, and not yet closed, dropped (session ended,
-   * replaced, too slow) or failed by the heartbeat (no pong between two beats, so 30–60 s after a peer went silent). What
-   * a push asks (src/push/notify.ts): a phone whose own session has one is not pushed to.
+   * Whether a socket opened with `sessionId` is open here now: attached, `OPEN` (one whose close has begun delivers nothing:
+   * `sendRaw`), and not yet dropped (session ended, replaced, too slow) or failed by the heartbeat. What a push asks first
+   * (src/push/notify.ts); a socket that is open may still be a dead one, which `probe` tells.
    */
   hasSocketFor(sessionId: string): boolean {
-    return (this.bySession.get(sessionId)?.size ?? 0) > 0;
+    for (const conn of this.bySession.get(sessionId) ?? []) if (conn.ws.readyState === conn.ws.OPEN) return true;
+    return false;
   }
 
   /** Closes every socket opened with this session (sign-out; password reset ends each session in turn). */
