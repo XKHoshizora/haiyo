@@ -3,9 +3,9 @@ import type { Config } from "../config.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Resolved } from "../models/resolve.ts";
-import { extendRound, holders, start, type PayClass } from "./pool.ts";
+import { extendRound, fitsAllowance, holders, start, type PayClass } from "./pool.ts";
 import { maxCostMicro } from "./prices.ts";
-import { classOf, lockPots, readParts, shareOf } from "./wallet.ts";
+import { classOf, lockPots, modelPartOf, poolColumns, readParts, rowOf, shareOf, type PoolColumns } from "./wallet.ts";
 
 /**
  * Admission (spec 6.4; wallet v3, .superpowers/sdd/2026-11-22-polish/design-wallet-v3.md): before a site-model call, in
@@ -123,6 +123,26 @@ export async function classOfCall(q: Queryable, f: { freeTier: boolean; freeLeft
 const waitsOn = (cls: PayClass): "any" | "balance" => (cls === "AB" ? "any" : "balance");
 
 /**
+ * THE condition that `o` is an older reply of `q`'s owner still waiting with a mark (held back, not admitted yet: queued,
+ * or claimed again and not admitted), whose turn `q` must respect — the owner's own reply (lane `own`) never behind one
+ * someone else called for. Written once, for the queue (agents/port-impl.ts `claimNext`) and admission alike.
+ */
+export const olderMarkSql = (o: string, q: string): string =>
+  `(${o}.owner_id = ${q}.owner_id and ${o}.purpose = 'reply' and ${o}.held_back_on is not null
+    and (${o}.status = 'queued' or (${o}.status = 'running' and ${o}.source is null))
+    and (${o}.created_at, ${o}.id) < (${q}.created_at, ${q}.id)
+    and (${q}.lane <> 'own' or ${o}.lane = 'own'))`;
+
+/** Whether an older reply of the run `runId`'s owner waits on the balance (a paid reply held back, `olderMarkSql`). */
+async function paidReplyWaits(t: Tx, runId: string): Promise<boolean> {
+  const { rows } = await t.query<{ waits: boolean }>(
+    `select exists (select 1 from agent_runs o, agent_runs q where q.id = $1 and ${olderMarkSql("o", "q")} and o.held_back_on = 'balance') as waits`,
+    [runId],
+  );
+  return rows[0]!.waits;
+}
+
+/**
  * Admits one call on `resolved` for `ownerId` (the run `runId`, whose own row is not counted beside it), under the account
  * lock. A provider model: `{chargeTo: null, holdMicro: 0n}`, nothing locked or read. A site model holds `maxCostMicro`
  * on the pool by its class (`classSql`):
@@ -174,6 +194,13 @@ export async function admit(
   const holdMicro = maxCostMicro(resolved, inputTokensEstimate) + reserveMicro;
   const parts = await readParts(t, ownerId, runId);
   const run = runId ?? "";
+  // An older paid reply of the owner waits for the balance (the queue lets a free-tier reply past its mark: review I1): a
+  // free-tier reply then starts only on the allowance alone — its hold beside what the others' promises need of it —
+  // so it never takes the balance the paid one waits for; else it waits too, behind the runs holding the pots.
+  if (purpose === "reply" && cls === "AB" && runId !== null && !fitsAllowance(pots, parts, { run, x: holdMicro }) && (await paidReplyWaits(t, runId))) {
+    const behind = holders(parts, run, cls);
+    if (behind.length > 0) throw new HeldBack(behind, waitsOn(cls));
+  }
   const started = start(pots, parts, { run, cls, x: holdMicro, share: shareOf(config.holds.maxOpenShare), draft: purpose === "draft" });
   // The class rule above and the pool's agree on whether anything is left; a refusal here is a bug.
   if (started.kind === "no_quota") throw new Error("admission: the pool found nothing left where the class rule found something");
@@ -253,7 +280,7 @@ export async function admitRun(
 export async function raiseHold(
   t: Tx,
   config: Pick<Config, "freeDailyMicro" | "siteTimezone">,
-  run: { id: string; ownerId: string; chargeTo: ChargeTo; holdMicro: bigint; webMicro: bigint },
+  run: { id: string; ownerId: string; chargeTo: ChargeTo },
   wanted: { ok: bigint; final: bigint },
   toolsAllowed: boolean,
   now: Date,
@@ -262,7 +289,10 @@ export async function raiseHold(
   const { pots } = await lockPots(t, config, run.ownerId, now);
   const parts = await readParts(t, run.ownerId);
   const cls = classOf(run.chargeTo);
-  const held = run.holdMicro - run.webMicro;
+  // The model part's size as the pool reads it (wallet.ts, the one mapping), from the run's row the caller has locked.
+  const { rows } = await t.query<PoolColumns>(`select ${poolColumns()} from agent_runs where id = $1`, [run.id]);
+  const model = rows[0] ? modelPartOf(rowOf(rows[0])) : null;
+  const held = model === null ? 0n : model.promised + model.over;
   const r = extendRound(pots, parts, { run: run.id, cls, held, ok: wanted.ok, final: wanted.final, allowed: toolsAllowed });
   if (r.add.promised + r.add.over > 0n) {
     await t.query("update agent_runs set hold_micro = hold_micro + $2::bigint, hold_over_micro = hold_over_micro + $3::bigint where id = $1", [

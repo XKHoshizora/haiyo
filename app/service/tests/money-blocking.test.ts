@@ -791,7 +791,7 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
     expect(await runIn(s1.conv)).toMatchObject({ status: "queued", held_back_by: [large.id], held_back_on: "balance" });
   });
 
-  it("only replies that compete for the same money wait behind a held-back one: a reply on the owner's own provider key goes ahead; a free-tier reply waits behind a paid one held back on the balance, which they share (wallet v3)", async () => {
+  it("only replies that compete for the same money wait behind a held-back one: a reply on the owner's own provider key, or a free-tier one whose hold fits the free allowance while the held-back one waits on the balance, goes ahead (review I1)", async () => {
     const owner = await signUp(app, "samesource");
     const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "mine" }] }))).json;
     const [a, b] = [await agentOf(owner, FIVE, "Ann"), await agentOf(owner, FIVE, "Bob")];
@@ -807,18 +807,20 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
     await annCall.reached;
     expect(await worker.runOnce()).toBe(true);
     expect(await runIn(b.conv)).toMatchObject({ status: "queued", held_back_on: "balance" });
-    // Fay, younger, would use the balance too once the allowance is spent: she waits behind Bob; Ole's own key passes.
+    // Fay's hold fits the day's free allowance, which nobody else needs: she goes ahead, the balance left to Bob.
+    expect(await worker.runOnce()).toBe(true);
+    expect(await runIn(free.conv)).toMatchObject({ status: "done", charge_to: "free" });
+    expect((await db.query("select balance_micro::text as b from usage_records u join agent_runs r on r.id = u.run_id where r.conversation_id = $1", [free.conv])).rows[0]).toEqual({
+      b: "0",
+    });
     expect(await worker.runOnce()).toBe(true);
     expect(await runIn(own.conv)).toMatchObject({ status: "done", charge_to: null });
-    expect(await runIn(free.conv)).toMatchObject({ status: "queued" });
-    expect(await worker.runOnce()).toBe(false);
+    expect(await runIn(b.conv)).toMatchObject({ status: "queued", held_back_on: "balance" });
     annCall.release("一。", { usage: U(0, 100) });
     await running;
     gateway.reply("二。", { usage: U(0, 100) });
     expect(await worker.runOnce()).toBe(true);
     expect(await runIn(b.conv)).toMatchObject({ status: "done", held_back_by: null, held_back_on: null });
-    expect(await worker.runOnce()).toBe(true);
-    expect(await runIn(free.conv)).toMatchObject({ status: "done", charge_to: "free" });
     expect(gateway.pending()).toBe(0);
   });
 
@@ -838,7 +840,7 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
   it("extension is a reply's alone: a memory call (one call, the site's memory allowance) is never extended", async () => {
     const owner = await signUp(app, "memoryextend");
     await expect(
-      db.tx((t) => raiseHold(t, app.deps.config, { id: "00000000-0000-0000-0000-000000000000", ownerId: owner.id, chargeTo: "memory", holdMicro: 1n, webMicro: 0n }, { ok: 2n, final: 2n }, true, new Date())),
+      db.tx((t) => raiseHold(t, app.deps.config, { id: "00000000-0000-0000-0000-000000000000", ownerId: owner.id, chargeTo: "memory" }, { ok: 2n, final: 2n }, true, new Date())),
     ).rejects.toThrow(/memory/);
   });
 });

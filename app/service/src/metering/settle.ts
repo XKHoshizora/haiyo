@@ -34,13 +34,15 @@ const min = (a: bigint, b: bigint): bigint => (a < b ? a : b);
 const OTHERS_NEVER_BELOW_ZERO = false;
 
 /**
- * What a settlement charged: the run's class (null: a run never admitted, or a provider model), and how much of it the
- * balance; and, for one that could charge the free allowance or the balance, what the day's free allowance has used and
- * the balance is once it is charged (read under the account lock it took). The reminders (reminders.ts) go by it.
+ * What a settlement charged: the run's class (`cls`, its `charge_to`: never who paid; null: a run never admitted, or a
+ * provider model), how much of it the balance, and of that what was a paid reply's own debt (`debtMicro`: its over);
+ * and, for one that could charge the free allowance or the balance, what the day's free allowance has used and the
+ * balance is once it is charged (read under the account lock it took). The reminders (reminders.ts) go by it.
  */
 export interface Settled {
-  chargeTo: ChargeTo | null;
+  cls: ChargeTo | null;
   balanceMicro: bigint;
+  debtMicro: bigint;
   after: { freeUsedMicro: bigint; balanceMicro: bigint } | null;
 }
 
@@ -65,6 +67,8 @@ interface Taken {
   freeMicro: bigint;
   balanceMicro: bigint;
   memoryMicro: bigint;
+  /** Of `balanceMicro`, a paid reply's own debt: what it used beyond its promise (rule 1; 0 by the old rule). */
+  debtMicro: bigint;
   /** The searches' part of the cost: their price (rule 0), what they are charged (rule 1). */
   webMicro: bigint;
   after: Settled["after"];
@@ -150,13 +154,13 @@ export async function settle(
 
   const inserted = await t.query<{ id: string }>(
     `insert into usage_records (owner_id, agent_id, run_id, purpose, source, model, input_tokens, output_tokens, estimated,
-                                cost_micro, free_micro, balance_micro, memory_micro, forgiven_micro, outcome, web_searches, web_micro, money_rule)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                                cost_micro, free_micro, balance_micro, memory_micro, forgiven_micro, outcome, web_searches, web_micro, money_rule, debt_micro)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      returning id::text`,
     [
       run.owner_id, run.agent_id, runId, run.purpose, run.source, run.model, input, output, !reported || !priced,
       cost.toString(), taken.freeMicro.toString(), taken.balanceMicro.toString(), taken.memoryMicro.toString(), forgivenMicro.toString(), outcome,
-      run.web_searches, taken.webMicro.toString(), Number(run.money_rule),
+      run.web_searches, taken.webMicro.toString(), Number(run.money_rule), taken.debtMicro.toString(),
     ],
   );
   if (taken.balanceMicro > 0n) await applyLedger(t, run.owner_id, -taken.balanceMicro, "usage", null, inserted.rows[0]!.id);
@@ -165,7 +169,7 @@ export async function settle(
     await learnRatio(t, run.ratio_key, run.input_estimate, usage.inputTokens, log);
   }
   const after = taken.after && { freeUsedMicro: taken.after.freeUsedMicro + taken.freeMicro, balanceMicro: taken.after.balanceMicro - taken.balanceMicro };
-  return { chargeTo: run.charge_to, balanceMicro: taken.balanceMicro, after };
+  return { cls: run.charge_to, balanceMicro: taken.balanceMicro, debtMicro: taken.debtMicro, after };
 }
 
 /** A memory call (either rule): the memory allowance of the site day it is now, up to what is left of it; the rest forgiven. */
@@ -202,7 +206,7 @@ async function useFree(t: Tx, config: Pick<Config, "siteTimezone">, ownerId: str
  */
 async function settlePooled(t: Tx, config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "memory">, run: SettleRow, modelCost: bigint, now: Date, forgiveAll: boolean): Promise<Taken> {
   const webCharge = BigInt(run.web_charge);
-  const nothing: Taken = { freeMicro: 0n, balanceMicro: 0n, memoryMicro: 0n, webMicro: webCharge, after: null };
+  const nothing: Taken = { freeMicro: 0n, balanceMicro: 0n, memoryMicro: 0n, debtMicro: 0n, webMicro: webCharge, after: null };
   if (run.charge_to === "memory") {
     const charged = forgiveAll ? 0n : min(modelCost, BigInt(run.hold_micro));
     return { ...nothing, memoryMicro: await takeMemory(t, config, run.owner_id, charged, now) };
@@ -221,7 +225,7 @@ async function settlePooled(t: Tx, config: Pick<Config, "freeDailyMicro" | "site
   const charges: Charge[] = [...byClass].map(([cls, cost]) => ({ cls, cost }));
   const s = settlePool(pots, [...others, ...mine], run.id, charges, (cls) => excessRule(cls, run.lane, OTHERS_NEVER_BELOW_ZERO));
   await useFree(t, config, run.owner_id, s.fromA, now);
-  return { freeMicro: s.fromA, balanceMicro: s.fromB, memoryMicro: 0n, webMicro: webCharge, after: { freeUsedMicro, balanceMicro: pots.B } };
+  return { freeMicro: s.fromA, balanceMicro: s.fromB, memoryMicro: 0n, debtMicro: s.debt, webMicro: webCharge, after: { freeUsedMicro, balanceMicro: pots.B } };
 }
 
 /**
@@ -233,7 +237,7 @@ async function settlePooled(t: Tx, config: Pick<Config, "freeDailyMicro" | "site
  */
 async function settleLegacy(t: Tx, config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "memory">, run: SettleRow, modelCost: bigint, now: Date, forgiveAll: boolean): Promise<Taken> {
   const web = BigInt(run.web_micro);
-  const taken: Taken = { freeMicro: 0n, balanceMicro: 0n, memoryMicro: 0n, webMicro: web, after: null };
+  const taken: Taken = { freeMicro: 0n, balanceMicro: 0n, memoryMicro: 0n, debtMicro: 0n, webMicro: web, after: null };
   if (run.charge_to === null) return taken;
   const modelHold = BigInt(run.hold_micro) - web > 0n ? BigInt(run.hold_micro) - web : 0n;
   const charged = forgiveAll ? 0n : min(modelCost, modelHold) + web;

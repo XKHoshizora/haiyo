@@ -6,7 +6,7 @@ import type { ConversationEvents } from "../conversations/events.ts";
 import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
-import { admitRun, classSql, HeldBack, raiseHold, type ChargeTo } from "../metering/admit.ts";
+import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -443,8 +443,9 @@ export class DbAgentPort implements AgentPort {
    * it is admitted) waits while every call it was held back behind is still running. Until it is admitted — queued, or
    * claimed again and not admitted yet — the owner's younger replies whose class shares a pot with its class wait behind
    * it (first come, first served per payer and pot, so a reply with a large hold is not passed for ever by smaller ones):
-   * every site reply behind a free-tier or a paid one (both use the balance), a free-tier one only behind an old code's
-   * mark on the allowance; a reply on the owner's own provider key does not, nor does the owner's own reply (lane `own`)
+   * every site reply behind a free-tier one; a paid one behind a paid one, while a free-tier one goes on to admission,
+   * which starts it only on the allowance alone (review I1); a free-tier one behind an old code's mark on the allowance;
+   * a reply on the owner's own provider key does not, nor does the owner's own reply (lane `own`)
    * behind one someone else called for, which the others' lanes may keep queued. A queued reply's class is admission's own
    * rule (metering/admit.ts `classSql`) on what its owner has now, read here. Each claim starts the
    * run's flags afresh. A first claim is announced (`announce`) and its wait logged (`run_wait_ms`, once per reply); a
@@ -469,10 +470,11 @@ export class DbAgentPort implements AgentPort {
              (select coalesce((select u.used_micro from free_usage u where u.owner_id = q.owner_id and u.day = $6::date), 0) as used,
                      coalesce((select a.balance_micro from accounts a where a.principal_id = q.owner_id), 0) as balance) m
        where qa.principal_id = q.agent_id)`;
-    // Whether q's class shares a pot with a held-back reply's mark (pool.ts `sharesPot`): `any` (a free-tier reply, both
-    // pots) and `balance` (a paid one, the balance) share one with every class; `free`, an old code's mark on the
-    // allowance alone, with a free-tier reply only.
-    const sharesWithQ = `((o.held_back_on in ('any', 'balance') and ${classOfQ} is not null) or (o.held_back_on = 'free' and ${classOfQ} = 'free'))`;
+    // Whose turn q waits for (review I1): a free-tier reply's mark (`any`, both pots) holds back every site reply; a paid
+    // one's (`balance`) holds back paid replies only — a free-tier reply goes on to admission, which starts it only on the
+    // allowance alone, so the balance stays the waiting paid reply's (metering/admit.ts); an old code's `free` mark holds
+    // back free-tier replies only.
+    const sharesWithQ = `(o.held_back_on = ${classOfQ} or (o.held_back_on = 'any' and ${classOfQ} is not null))`;
     const { rows } = await this.deps.db.query<RunRow & { agent_id: string; owner_id: string; conversation_id: string; lane: string; wait_ms: number; again: boolean; auto_attempt: number }>(
       `with next as (
          select q.id from agent_runs q
@@ -482,12 +484,7 @@ export class DbAgentPort implements AgentPort {
             and (q.lane = 'own'
               or (select count(*) from agent_runs x where x.owner_id = q.owner_id and x.status = 'running' and x.lane <> 'own') < $2)
             and not ${waiting("q")}
-            and not exists (select 1 from agent_runs o
-                             where o.owner_id = q.owner_id and o.purpose = 'reply' and o.held_back_on is not null
-                               and (o.status = 'queued' or (o.status = 'running' and o.source is null))
-                               and (o.created_at, o.id) < (q.created_at, q.id)
-                               and (q.lane <> 'own' or o.lane = 'own')
-                               and ${sharesWithQ})
+            and not exists (select 1 from agent_runs o where ${olderMarkSql("o", "q")} and ${sharesWithQ})
           order by q.created_at, q.id
           limit 1
           for update of q skip locked
@@ -1116,7 +1113,7 @@ export class DbAgentPort implements AgentPort {
         const answer = await raiseHold(
           t,
           config,
-          { id: run.id, ownerId: run.ownerId, chargeTo: row.charge_to, holdMicro: held, webMicro: searched },
+          { id: run.id, ownerId: run.ownerId, chargeTo: row.charge_to },
           { ok: sofar + next + renewed, final: sofar + next },
           tools,
           new Date(),

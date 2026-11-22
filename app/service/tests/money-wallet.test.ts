@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createAgentPort, recoverRuns, sweepStaleRuns, type DbAgentPort } from "../src/agents/port-impl.ts";
-import { NOTHING } from "../src/agents/runtime/port.ts";
+import { isRunEnd } from "../src/agents/runtime/port.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { lockAgent } from "../src/agents/store.ts";
 import { createToolbox, SEARCH_WEB } from "../src/agents/tools/index.ts";
@@ -71,6 +71,7 @@ const runOf = async (runId: string) =>
     )
   ).rows[0]!;
 const NO_LOG = { warn: () => {} };
+const debtOf = async (runId: string) => BigInt((await db.query<{ d: string }>("select debt_micro::text as d from usage_records where run_id = $1", [runId])).rows[0]!.d);
 const settleWith = (runId: string, config: Config, usage: { inputTokens: number; outputTokens: number } | null, now = new Date()) =>
   db.tx((t) => settle(t, config, runId, usage, { inputChars: 0, outputChars: 0 }, "done", now, { log: NO_LOG }));
 /** Settles `runId` and moves it out of `running` in one transaction, as `finish` does. */
@@ -81,6 +82,15 @@ const finishWith = (runId: string, config: Config, usage: { inputTokens: number;
   });
 const admitWith = (runId: string, owner: Actor, agent: MeteredAgent, config: Config, now = new Date()) =>
   db.tx((t) => admitRun(t, config, runId, owner.id, agent.resolved, ESTIMATE, now));
+/** A port of its own on `config`, no tools (its replies hold their first call only). */
+const portOf = (config: Config): DbAgentPort =>
+  createAgentPort({ db, config, blobs: app.deps.blobs, realtime: app.realtime, conversations: app.deps.conversations, reads: app.deps.reads, log: app.log, toolbox: null });
+let said = 0;
+/** `owner` writes to `agent` in its own conversation (a reply is queued). */
+async function say(owner: Actor, agent: MeteredAgent, text: string): Promise<void> {
+  const sent = await api(app, owner, "POST", `/api/conversations/${agent.conversationId}/messages`, { text, clientTxn: `wallet${++said}` });
+  if (sent.status !== 201) throw new Error(`say: ${sent.status}`);
+}
 
 /** Each owner's one provider (made at their first provider Agent). */
 const providers = new Map<string, string>();
@@ -245,23 +255,23 @@ describe("migration 066 (V3.2, V3.5)", () => {
   });
 });
 
-describe("the queue's prediction is admission's own class rule (V3.6)", () => {
-  it("for every tier and pot left: a younger reply waits behind a held-back one exactly when admission would admit it on some class; refused ones are not kept waiting", async () => {
+describe("the queue's prediction is admission's own class rule (V3.6, review M1)", () => {
+  it("for every mark, tier and pot left: a younger reply waits behind a held-back one exactly when its class must take its turn after that mark's; refused ones are not kept waiting", async () => {
     const port: DbAgentPort = createAgentPort({ db, config: app.deps.config, blobs: app.deps.blobs, realtime: app.realtime, conversations: app.deps.conversations, reads: app.deps.reads, log: app.log, toolbox: null });
     let i = 0;
-    for (const tier of ["free", "paid"] as const) {
+    for (const mark of ["any", "balance", "free"] as const) for (const tier of ["free", "paid"] as const) {
       for (const left of [0n, POINT]) {
         for (const balance of [-POINT, 0n, POINT]) {
           const owner = await signUp(app, `predict${i++}`);
           const [older, younger] = [await meteredAgent(app, db, owner, FREE), await meteredAgent(app, db, owner, tier === "free" ? FREE : PAID)];
           if (balance !== 0n) await grant(db, owner.id, balance);
           await setUsed(owner.id, 3n * POINT - left);
-          // A running draft, and an older reply held back behind it (a free-tier reply's mark: both pots).
+          // A running draft, and an older reply held back behind it with `mark`.
           const draft = await runningRun(db, owner.id);
           await db.query(
             `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, held_back_by, held_back_on, created_at)
-             values ('reply', $1, $2, $3, 'queued', 0, array[$4::uuid], 'any', now() - interval '1 minute')`,
-            [older.conversationId, older.agentId, owner.id, draft],
+             values ('reply', $1, $2, $3, 'queued', 0, array[$4::uuid], $5, now() - interval '1 minute')`,
+            [older.conversationId, older.agentId, owner.id, draft, mark],
           );
           const queued = await db.query<{ id: string }>(
             "insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq) values ('reply', $1, $2, $3, 'queued', 0) returning id",
@@ -269,13 +279,16 @@ describe("the queue's prediction is admission's own class rule (V3.6)", () => {
           );
           const cls = await classOfCall(db, { freeTier: tier === "free", freeLeft: left, balance });
           const claimed = await port.claimNext();
-          const where = `${tier} A ${left} B ${balance}`;
-          // Claimed (not kept waiting) exactly when admission finds nothing to admit it on; then admission refuses it.
-          expect([where, claimed?.id === queued.rows[0]!.id]).toEqual([where, cls === null]);
-          if (claimed) {
+          const where = `${mark} mark, ${tier} A ${left} B ${balance}`;
+          // Waits behind a free-tier reply's mark (`any`) when admission would admit it at all; behind a paid one's
+          // (`balance`) only as a paid reply (a free-tier one goes on to admission: review I1); behind an old code's
+          // allowance mark (`free`) only as a free-tier reply.
+          const waits = mark === "any" ? cls !== null : cls === mark;
+          expect([where, claimed?.id === queued.rows[0]!.id]).toEqual([where, !waits]);
+          // One claimed with nothing left of its class is refused by admission, so the queue kept nothing waiting for nothing.
+          if (claimed && cls === null) {
             const refused = await db.tx((t) => admitRun(t, app.deps.config, claimed.id, owner.id, younger.resolved, ESTIMATE, new Date())).catch((e: unknown) => e);
             expect([where, (refused as AppError).code]).toEqual([where, "no_quota"]);
-            await db.query("update agent_runs set status = 'failed' where id = $1", [claimed.id]);
           }
           await db.query("update agent_runs set status = 'failed' where owner_id = $1 and status in ('queued', 'running')", [owner.id]);
         }
@@ -321,7 +334,7 @@ describe("two connections (V3.6)", () => {
       const raise = (gate?: ReturnType<typeof gated>["gate"]) =>
         db.tx(async (t) => {
           await t.query("select 1 from agent_runs where id = $1 for update", [reply]);
-          const answer = await raiseHold(t, config, { id: reply, ownerId: owner.id, chargeTo: "free", holdMicro: 2n * POINT, webMicro: 0n }, { ok: 7n * POINT, final: 3n * POINT }, true, new Date());
+          const answer = await raiseHold(t, config, { id: reply, ownerId: owner.id, chargeTo: "free" }, { ok: 7n * POINT, final: 3n * POINT }, true, new Date());
           if (gate) {
             gate.held();
             await gate.wait;
@@ -344,6 +357,71 @@ describe("two connections (V3.6)", () => {
         expect(await second).toBe("no_points");
         expect(await runOf(reply)).toMatchObject({ hold: (7n * POINT).toString(), over: "0" });
       }
+    }
+  });
+
+  it("review I1, through the queue: a paid reply on a balance smaller than its hold starts while a free-tier reply's promise sits within the allowance; the next free-tier reply is not queued behind it", async () => {
+    const owner = await signUp(app, "i1paid");
+    const [fast, paid, fast2] = [await meteredAgent(app, db, owner, FREE), await meteredAgent(app, db, owner, PAID), await meteredAgent(app, db, owner, FREE)];
+    await grant(db, owner.id, POINT / 2n);
+    // A free-tier reply running, its 2 promised within the day's 3.
+    const free = await admittedReply(owner, fast, app.deps.config);
+    const port = portOf(app.deps.config);
+    await say(owner, paid, "你好");
+    const ticket = (await port.claimNext())!;
+    expect(ticket.conversationId).toBe(paid.conversationId);
+    // Its hold (about 1 point) is above the balance's 0.5, and nobody else needs the balance: it starts, the rest over.
+    expect(isRunEnd(await port.begin(ticket))).toBe(false);
+    const p = await runOf(ticket.id);
+    expect([p.status, p.charge_to, BigInt(p.over) > 0n]).toEqual(["running", "balance", true]);
+    await say(owner, fast2, "你好");
+    expect((await port.claimNext())?.conversationId).toBe(fast2.conversationId);
+    expect((await runOf(free)).status).toBe("running");
+    await db.query("update agent_runs set status = 'failed' where owner_id = $1 and status = 'running'", [owner.id]);
+  });
+
+  it("review I1, the reverse: behind a paid reply waiting for the balance, a free-tier reply that fits the allowance runs; one that does not waits its turn, and the paid one is admitted first", async () => {
+    for (const fits of [true, false]) {
+      const owner = await signUp(app, `i1rev${fits ? "a" : "b"}`);
+      const [paid1, paid2, fast, fast2] = [
+        await meteredAgent(app, db, owner, PAID),
+        await meteredAgent(app, db, owner, PAID),
+        await meteredAgent(app, db, owner, FREE),
+        await meteredAgent(app, db, owner, FREE),
+      ];
+      await grant(db, owner.id, 3n * POINT);
+      if (!fits) await setUsed(owner.id, 2_500_000n); // half a point of the allowance left: less than a reply's hold
+      // A paid reply running is promised 2 of the balance's 3; a second one, its hold above the 1 left, is held back on it.
+      // (A free-tier reply of about 1 point would fit the 1 + the allowance's 0.5: only the turn keeps it off the balance.)
+      const p1 = await admittedReply(owner, paid1, app.deps.config);
+      const port = portOf(app.deps.config);
+      await say(owner, paid2, "你好");
+      const p2 = (await port.claimNext())!;
+      expect(isRunEnd(await port.begin(p2))).toBe(true);
+      expect(await runOf(p2.id)).toMatchObject({ status: "queued" });
+      expect((await db.query("select held_back_on from agent_runs where id = $1", [p2.id])).rows[0]).toEqual({ held_back_on: "balance" });
+      await say(owner, fast, "你好");
+      const f = await port.claimNext();
+      expect([fits, f?.conversationId]).toEqual([fits, fast.conversationId]);
+      if (fits) {
+        // Its hold fits the allowance beside nothing else needing it: admitted, the balance untouched for the paid reply.
+        expect(isRunEnd(await port.begin(f!))).toBe(false);
+        expect(await runOf(f!.id)).toMatchObject({ status: "running", charge_to: "free", over: "0" });
+      } else {
+        // It would need the balance: it waits too, behind the run holding it, and a younger free-tier reply behind it.
+        expect(isRunEnd(await port.begin(f!))).toBe(true);
+        expect((await db.query("select status, held_back_by, held_back_on from agent_runs where id = $1", [f!.id])).rows[0]).toEqual({
+          status: "queued",
+          held_back_by: [p1],
+          held_back_on: "any",
+        });
+        await say(owner, fast2, "你好");
+        expect(await port.claimNext()).toBeNull();
+        // The balance frees: the paid reply, older, is claimed first.
+        await finishWith(p1, app.deps.config, U(0, 100));
+        expect((await port.claimNext())?.id).toBe(p2.id);
+      }
+      await db.query("update agent_runs set status = 'failed' where owner_id = $1 and status in ('queued', 'running')", [owner.id]);
     }
   });
 
@@ -502,7 +580,7 @@ describe("restart and the stale-run sweep, a run in each state (V3.6)", () => {
     expect(
       await db.tx(async (t) => {
         await t.query("select 1 from agent_runs where id = $1 for update", [withOver]);
-        return raiseHold(t, config, { id: withOver, ownerId: owner.id, chargeTo: "free", holdMicro: 2n * POINT, webMicro: 0n }, { ok: 20n * POINT, final: 20n * POINT }, true, new Date());
+        return raiseHold(t, config, { id: withOver, ownerId: owner.id, chargeTo: "free" }, { ok: 20n * POINT, final: 20n * POINT }, true, new Date());
       }),
     ).toBe("final");
     return { owner, running: [notAdmitted, rule0, withOver, unanswered, corrected, posted], queued, posted, withOver };
@@ -557,6 +635,7 @@ describe("by lane, by tier, across the day (V3.6)", () => {
       expect(await admitWith(run, owner, paid, app.deps.config)).toEqual({ chargeTo: "balance", holdMicro: 2n * POINT, overMicro: POINT });
       await finishWith(run, app.deps.config, U(10_000, 1000));
       expect([lane, (await recordOf(run))[0]]).toMatchObject([lane, { balance: (2n * POINT).toString(), forgiven: "0" }]);
+      expect([lane, await debtOf(run)]).toEqual([lane, POINT]);
       expect([lane, await balanceOf(owner.id)]).toEqual([lane, -POINT]);
     }
     const owner = await signUp(app, "lanedebtfree");
@@ -566,34 +645,72 @@ describe("by lane, by tier, across the day (V3.6)", () => {
     expect(await runOf(run)).toMatchObject({ over: POINT.toString() });
     await finishWith(run, app.deps.config, U(10_000, 1000));
     expect((await recordOf(run))[0]).toMatchObject({ free: POINT.toString(), balance: "0", forgiven: POINT.toString() });
-    expect(await balanceOf(owner.id)).toBe(0n);
+    expect([await debtOf(run), await balanceOf(owner.id)]).toEqual([0n, 0n]);
   });
 
-  it("the allowance resets during a run: a round after midnight sees the new day's allowance — the reply's own promise counted on it — and the reply settles on it", async () => {
-    const owner = await signUp(app, "midnightround");
-    const fast = await meteredAgent(app, db, owner, FREE);
+  it("the usage page explains a minus a free-tier reply's charge landed on (review M7): a paid reply's own debt settled first, an operator's adjustment down", async () => {
+    const owner = await signUp(app, "explained");
+    const [paid, fast] = [await meteredAgent(app, db, owner, PAID), await meteredAgent(app, db, owner, FREE)];
+    await setUsed(owner.id, 3n * POINT);
+    await grant(db, owner.id, POINT);
+    // Alone on 1 point: 1 promised, 1 over. A grant of 2 lands; the free-tier reply is promised 2 of the 3 then.
+    const p = await admittedReply(owner, paid, app.deps.config);
+    await grant(db, owner.id, 2n * POINT);
+    const f = await admittedReply(owner, fast, app.deps.config);
+    expect(await runOf(f)).toMatchObject({ over: "0" });
+    // The paid one settles first, 2: its 1 over a debt (the balance at 1); the free-tier one's 2 then land on 1: −1.
+    await finishWith(p, app.deps.config, U(10_000, 1000));
+    await finishWith(f, app.deps.config, U(10_000, 1000));
+    expect((await recordOf(f))[0]).toMatchObject({ free: "0", balance: (2n * POINT).toString(), forgiven: "0" });
+    expect([await debtOf(p), await debtOf(f), await balanceOf(owner.id)]).toEqual([POINT, 0n, -POINT]);
+    const usage = async () => (await api(app, owner, "GET", "/api/usage")).json.recentDebt;
+    expect(await usage()).toEqual({ overruns: "1", adjustments: "0" });
+    await grant(db, owner.id, -POINT / 2n);
+    expect(await usage()).toEqual({ overruns: "1", adjustments: "0.5" });
+    // Nothing to explain: no field.
+    const calm = await signUp(app, "calm");
+    expect((await api(app, calm, "GET", "/api/usage")).json).not.toHaveProperty("recentDebt");
+  });
+
+  it("the allowance resets during a run: a round after midnight sees the new day's allowance and the balance together — the reply's own promise counted on them — and settles on them, where the old rule would make it the last round and forgive the rest", async () => {
     const day1 = new Date("2026-03-01T15:50:00Z"); // 23:50 in Shanghai
     const day2 = new Date("2026-03-01T16:10:00Z"); // 00:10 the next day
-    await db.query("insert into free_usage (owner_id, day, used_micro) values ($1, '2026-03-01', 500000)", [owner.id]);
-    const run = await runningRun(db, owner.id, fast);
-    // 2.5 left on the 1st: the 2 fit.
-    expect(await admitWith(run, owner, fast, app.deps.config, day1)).toEqual({ chargeTo: "free", holdMicro: 2n * POINT });
-    const round = (now: Date, ok: bigint) =>
-      db.tx(async (t) => {
-        await t.query("select 1 from agent_runs where id = $1 for update", [run]);
-        const held = BigInt((await t.query<{ h: string }>("select hold_micro::text as h from agent_runs where id = $1", [run])).rows[0]!.h);
-        return raiseHold(t, app.deps.config, { id: run, ownerId: owner.id, chargeTo: "free", holdMicro: held, webMicro: 0n }, { ok, final: ok }, true, now);
-      });
-    // On the 1st only 0.5 was left beside its 2; on the 2nd the new day's 3 are there, its own 2 counted on them: a raise
-    // of 1 fits — "ok" — and the whole reply settles on the new day's allowance.
-    expect(await round(day2, 3n * POINT)).toBe("ok");
-    expect(await runOf(run)).toMatchObject({ hold: (3n * POINT).toString(), over: "0" });
-    await db.tx((t) => settle(t, app.deps.config, run, U(20_000, 1000), { inputChars: 0, outputChars: 0 }, "done", day2, { log: NO_LOG }));
-    expect((await recordOf(run))[0]).toMatchObject({ cost: (3n * POINT).toString(), free: (3n * POINT).toString(), forgiven: "0" });
-    expect((await db.query("select day::text, used_micro::text as used from free_usage where owner_id = $1 order by day", [owner.id])).rows).toEqual([
+    const results: Record<string, unknown> = {};
+    for (const rule of [1, 0] as const) {
+      const owner = await signUp(app, `midnight${rule}`);
+      const fast = await meteredAgent(app, db, owner, FREE);
+      await grant(db, owner.id, 2n * POINT);
+      await db.query("insert into free_usage (owner_id, day, used_micro) values ($1, '2026-03-01', 500000)", [owner.id]);
+      const run = await runningRun(db, owner.id, fast);
+      // 2.5 left on the 1st: the 2 fit.
+      expect(await admitWith(run, owner, fast, app.deps.config, day1)).toEqual({ chargeTo: "free", holdMicro: 2n * POINT });
+      if (rule === 1) {
+        // On the 2nd the new day's 3 and the balance's 2 are there, its own 2 counted on them: a raise of 2 to 4 fits — "ok".
+        const answer = await db.tx(async (t) => {
+          await t.query("select 1 from agent_runs where id = $1 for update", [run]);
+          return raiseHold(t, app.deps.config, { id: run, ownerId: owner.id, chargeTo: "free" }, { ok: 4n * POINT, final: 4n * POINT }, true, day2);
+        });
+        expect(answer).toBe("ok");
+      } else {
+        // The old rule (the deployed code, as its raiseHold decides it): what is left of the allowance alone, 3 with its own
+        // hold added back, is less than 4 — "final", the hold raised to 4 all the same; and it settles to the allowance.
+        await db.query("update agent_runs set money_rule = 0, hold_micro = $2 where id = $1", [run, (4n * POINT).toString()]);
+      }
+      await db.tx((t) => settle(t, app.deps.config, run, U(30_000, 1000), { inputChars: 0, outputChars: 0 }, "done", day2, { log: NO_LOG }));
+      results[`rule ${rule}`] = {
+        record: (await recordOf(run))[0],
+        balance: await balanceOf(owner.id),
+        used: (await db.query("select day::text, used_micro::text as used from free_usage where owner_id = $1 order by day", [owner.id])).rows,
+      };
+    }
+    const used = [
       { day: "2026-03-01", used: "500000" },
       { day: "2026-03-02", used: "3000000" },
-    ]);
+    ];
+    expect(results).toEqual({
+      "rule 1": { record: { cost: "4000000", free: "3000000", balance: "1000000", forgiven: "0", web: "0", rule: 1 }, balance: POINT, used },
+      "rule 0": { record: { cost: "4000000", free: "3000000", balance: "0", forgiven: "1000000", web: "0", rule: 0 }, balance: 2n * POINT, used },
+    });
   });
 
   it("V2-I1 against the database, settled in both orders: a paid reply promised 2, a free-tier one raised past what is left beside it — the same pots, its overrun never the paid one's debt", async () => {
@@ -607,7 +724,7 @@ describe("by lane, by tier, across the day (V3.6)", () => {
       const f = await admittedReply(owner, fast, app.deps.config);
       const answer = await db.tx(async (t) => {
         await t.query("select 1 from agent_runs where id = $1 for update", [f]);
-        return raiseHold(t, app.deps.config, { id: f, ownerId: owner.id, chargeTo: "free", holdMicro: 2n * POINT, webMicro: 0n }, { ok: 14n * POINT, final: 12n * POINT }, true, new Date());
+        return raiseHold(t, app.deps.config, { id: f, ownerId: owner.id, chargeTo: "free" }, { ok: 14n * POINT, final: 12n * POINT }, true, new Date());
       });
       expect(answer).toBe("final");
       expect(await runOf(f)).toMatchObject({ hold: (12n * POINT).toString(), over: (10n * POINT).toString() });
@@ -638,7 +755,7 @@ describe("by lane, by tier, across the day (V3.6)", () => {
     expect(await admitWith(f, owner, fast, config)).toEqual({ chargeTo: "free", holdMicro: 2n * POINT });
     const round = await db.tx(async (t) => {
       await t.query("select 1 from agent_runs where id = $1 for update", [f]);
-      return raiseHold(t, config, { id: f, ownerId: owner.id, chargeTo: "free", holdMicro: 2n * POINT, webMicro: 0n }, { ok: 4n * POINT, final: 3n * POINT }, true, new Date());
+      return raiseHold(t, config, { id: f, ownerId: owner.id, chargeTo: "free" }, { ok: 4n * POINT, final: 3n * POINT }, true, new Date());
     });
     expect(round).toBe("ok");
     // (4 + 13 within TOOLS.maxPoints' 20.)

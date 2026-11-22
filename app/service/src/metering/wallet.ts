@@ -49,6 +49,12 @@ export function partsOf(row: PoolRow): Part[] {
   return parts;
 }
 
+/** A rule-1 site run's model part (`partsOf`'s first), or null: none held yet, or not a pooled site run. */
+export function modelPartOf(row: PoolRow): Part | null {
+  if (row.moneyRule !== 1 || (row.chargeTo !== "free" && row.chargeTo !== "balance")) return null;
+  return partsOf(row)[0] ?? null;
+}
+
 /** The columns `rowOf` reads, of `agent_runs` (`a` its alias, or none). */
 export const poolColumns = (a = ""): string => {
   const p = a === "" ? "" : `${a}.`;

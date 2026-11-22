@@ -45,6 +45,13 @@ const usageResponse = z.object({
    * were charged — its own line, never in a model's `points`, for site and provider models alike.
    */
   recentWeb: z.array(z.object({ agentId: z.string().nullable(), searches: z.number(), points: z.string() })).optional(),
+  /**
+   * Present only when something of the same days took the balance down beyond what was reserved for it (wallet v3, review
+   * M7), so a minus on the balance can be explained — also one a free-tier reply's charge landed on: what paid replies
+   * used past what was reserved for them, each its own debt (`usage_records.debt_micro`), and what the operator took
+   * back (`adjust` entries). A deploy's overlap, the third cause, leaves no mark of its own.
+   */
+  recentDebt: z.object({ overruns: z.string(), adjustments: z.string() }).optional(),
 });
 
 /** Read-only: nothing under /api/usage changes a balance; credits are granted only by the operator's CLI. */
@@ -70,7 +77,7 @@ export function registerAccountRoutes(app: FastifyInstance): void {
       const now = new Date();
       // One connection, one read-only snapshot (taken at its first read): a settlement committing meanwhile is seen
       // whole or not at all — never a usage record without its charge.
-      const { account, agentCount, used, memoryUsed, recent, web } = await db.tx(async (t) => {
+      const { account, agentCount, used, memoryUsed, recent, web, debt } = await db.tx(async (t) => {
         await t.query("set transaction isolation level repeatable read, read only");
         const account = await t.query<{ tier: string; balance_micro: string }>("select tier, balance_micro::text from accounts where principal_id = $1", [me.id]);
         const agentCount = await countLiveAgents(t, me.id);
@@ -99,7 +106,12 @@ export function registerAccountRoutes(app: FastifyInstance): void {
             order by sum(${WEB_CHARGED}) desc, agent_id`,
           [me.id, since],
         );
-        return { account, agentCount, used, memoryUsed, recent, web };
+        const debt = await t.query<{ overruns: string; adjustments: string }>(
+          `select (select coalesce(sum(debt_micro), 0) from usage_records where owner_id = $1 and created_at >= $2)::text as overruns,
+                  (select coalesce(-sum(delta_micro), 0) from balance_ledger where owner_id = $1 and created_at >= $2 and reason = 'adjust' and delta_micro < 0)::text as adjustments`,
+          [me.id, since],
+        );
+        return { account, agentCount, used, memoryUsed, recent, web, debt: debt.rows[0]! };
       });
       // An account with no row yet is a free-tier account with nothing in it; reading never creates one.
       const tier = account.rows[0]?.tier ?? "free";
@@ -134,6 +146,9 @@ export function registerAccountRoutes(app: FastifyInstance): void {
           ...(r.purpose === "memory" && r.source === "site" && BigInt(r.charged) === 0n ? { paidBy: "site" as const } : {}),
         })),
         ...(web.rows.length > 0 ? { recentWeb: web.rows.map((w) => ({ agentId: w.agent_id, searches: w.searches, points: formatPoints(BigInt(w.points)) })) } : {}),
+        ...(BigInt(debt.overruns) > 0n || BigInt(debt.adjustments) > 0n
+          ? { recentDebt: { overruns: formatPoints(BigInt(debt.overruns)), adjustments: formatPoints(BigInt(debt.adjustments)) } }
+          : {}),
       };
     },
   );
