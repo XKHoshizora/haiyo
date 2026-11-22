@@ -990,8 +990,8 @@ export async function refusedAtAdmission(
  * - in a group, a reply that covers messages after the group's latest from a person (one in an Agents' chain, counted
  *   toward the chain budget: `chargedSince`): the Agent's chain budget there.
  * A budget of null is none. `runningWebExcept` (the web search's pre-hold, its own run's id; tools/web/hold.ts): the
- * daily budgets also count the web searches the Agent's other replies of the lane hold now (`runningWeb`) — fixed charges
- * that stand whatever those replies become, read under the Agent's row the caller holds, which every pre-hold of the Agent
+ * daily budgets also count what the web searches the Agent's other replies of the lane hold now are charged
+ * (`runningWeb`) — charges that stand whatever those replies become, read under the Agent's row the caller holds, which every pre-hold of the Agent
  * takes, so two replies racing for a budget's last points are put in order. (The chain budget needs no such count: an
  * Agent has one active run in a conversation, agent_runs_one_active_per_agent_conversation.)
  */
@@ -1061,10 +1061,15 @@ async function triggerInGroup(t: Tx, conversationId: string, message: StoredMess
   return { ...(await reachAgents(t, conversationId, calls, message.seq, "human", config)), ...told };
 }
 
-/** What the web searches of Agent `agentId`'s replies in `lane` running now, `except` aside, hold (`agent_runs.web_micro`, not settled yet). */
+/**
+ * What the web searches of Agent `agentId`'s replies in `lane` running now, `except` aside, are charged (not settled yet):
+ * `web_charge_micro` (their actual once the engine said it, else their price) — or, for a row the old code wrote during a
+ * deploy's overlap (`money_rule` 0, which has no such column of its own), `web_micro`, their price, as it charges them.
+ */
 async function runningWeb(t: Tx, agentId: string, lane: BudgetedLane, except: string): Promise<bigint> {
   const { rows } = await t.query<{ held: string }>(
-    "select coalesce(sum(web_micro), 0)::text as held from agent_runs where agent_id = $1 and lane = $2 and status = 'running' and id <> $3 and web_micro > 0",
+    `select coalesce(sum(case money_rule when 0 then web_micro else web_charge_micro end), 0)::text as held
+       from agent_runs where agent_id = $1 and lane = $2 and status = 'running' and id <> $3 and web_micro > 0`,
     [agentId, lane, except],
   );
   return BigInt(rows[0]!.held);

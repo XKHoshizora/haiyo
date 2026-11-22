@@ -2,7 +2,7 @@ import { MICRO_PER_POINT, siteDay } from "../../../accounts/store.ts";
 import type { Config } from "../../../config.ts";
 import type { Db, Tx } from "../../../db.ts";
 import type { ChargeTo } from "../../../metering/admit.ts";
-import { tool } from "../../../metering/pool.ts";
+import { fuseCost, inBand, searchCharge, tool } from "../../../metering/pool.ts";
 import { lockPots, readParts } from "../../../metering/wallet.ts";
 import { budgetReachedWith, type Lane } from "../../runs.ts";
 import type { AgentRow } from "../../store.ts";
@@ -48,12 +48,18 @@ export class SearchRefused extends Error {
 /** The fuse's row of a site day: `web_search_days` scope `site` (rows of another scope are the first version's, unused). */
 export const SITE_SCOPE = "site";
 
-/** What a pre-hold that held tells its caller: the site day its fuse counted, the estimate it held there, and whether the day's money reached 80 % of the fuse with it. */
+/**
+ * What a pre-hold that held tells its caller: the site day its fuse counted, the estimate it held there, whether the day's
+ * money reached 80 % of the fuse with it, and the run and the price it was held at (what its charge is lowered from once
+ * the engine says what the call cost: `recordSearchCost`).
+ */
 export interface HeldSearch {
   day: string;
   estimateMicroUsd: bigint;
   /** This search took the day's money to 80 % of the fuse first today (`mark80`): the operator's metric line is due. */
   at80: boolean;
+  runId: string;
+  priceMicro: bigint;
 }
 
 /** The site's money fuse a day, in micro-USD (`TOOLS.web.siteUsdPerDay`). */
@@ -92,28 +98,39 @@ export async function takeFuse(t: Tx, day: string, estimate: bigint, fuse: bigin
   return { before: after - estimate, after, at80: await mark80(t, day, fuse) };
 }
 
-/** The widest an engine's own report of a call's cost is believed: from a tenth of the estimate to ten times it (beyond, the estimate stands). */
-export const COST_TRUST_FACTOR = 10n;
-
 /**
- * After the engine answered a search the pre-hold held (`held`): what the engine said the call cost the site (`actual`,
- * Exa's `costDollars`) replaces the estimate in the day's money — never below 0 — when it is believable: from a tenth of
- * the estimate to ten times it (`COST_TRUST_FACTOR`); nothing changes when it said nothing. In one transaction, the row's
- * lock held for both statements. `ignored`: it said something outside that, and the estimate stands; `at80`: the
- * correction marked 80 % of the fuse first today (an upward one only can).
+ * After the engine answered a search the pre-hold held (`held`), by what the engine said the call cost the site
+ * (`actual`, Exa's `costDollars`; undefined: it said nothing), believed inside the trusted band — from a tenth of the
+ * estimate (rounded up) to ten times it (pool.ts `inBand`, design-wallet-v3.md §5):
+ * - the owner's charge for it (`web_charge_micro`, the price until now) is lowered to the price scaled by the actual,
+ *   rounded up, never above the price (pool.ts `searchCharge`) — only while its hold stands (`running`, not settled: a
+ *   settled run keeps what it was charged, its `hold_micro` zeroed), under its row's lock;
+ * - the day's money in the site's fuse takes the actual in place of the estimate, never below 0 (pool.ts `fuseCost`).
+ * Outside the band, or with no figure, the price and the estimate stand: a bogus low figure neither undercharges the
+ * owner nor weakens the fuse. In one transaction, the run's row first and the fuse's last (the pre-hold's order).
+ * `ignored`: a figure outside the band; `at80`: the correction marked 80 % of the fuse first today (an upward one only can).
  */
-export async function recordSiteCost(db: Db, held: Pick<HeldSearch, "day" | "estimateMicroUsd">, actual: bigint | undefined, fuse: bigint): Promise<{ ignored: boolean; at80: boolean }> {
-  if (actual === undefined || actual === held.estimateMicroUsd) return { ignored: false, at80: false };
-  const estimate = held.estimateMicroUsd;
-  if (actual * COST_TRUST_FACTOR < estimate || actual > estimate * COST_TRUST_FACTOR) return { ignored: true, at80: false };
-  const delta = actual - estimate;
+export async function recordSearchCost(db: Db, held: HeldSearch, actual: bigint | undefined, fuse: bigint): Promise<{ ignored: boolean; at80: boolean }> {
+  const figure = actual ?? null;
+  const ignored = figure !== null && !inBand(held.estimateMicroUsd, figure);
+  const lower = held.priceMicro - searchCharge(held.priceMicro, held.estimateMicroUsd, figure);
+  const delta = fuseCost(held.estimateMicroUsd, figure) - held.estimateMicroUsd;
+  if (lower === 0n && delta === 0n) return { ignored, at80: false };
   return db.tx(async (t) => {
+    if (lower > 0n) {
+      await t.query(
+        `update agent_runs set web_charge_micro = web_charge_micro - $2::bigint
+          where id = $1 and status = 'running' and hold_micro > 0 and money_rule = 1 and web_charge_micro >= $2::bigint`,
+        [held.runId, lower.toString()],
+      );
+    }
+    if (delta === 0n) return { ignored, at80: false };
     const { rowCount } = await t.query("update web_search_days set spent_micro_usd = greatest(0, spent_micro_usd + $3) where scope = $1 and day = $2::date", [
       SITE_SCOPE,
       held.day,
       delta.toString(),
     ]);
-    return { ignored: false, at80: rowCount === 1 && delta > 0n && (await mark80(t, held.day, fuse)) };
+    return { ignored, at80: rowCount === 1 && delta > 0n && (await mark80(t, held.day, fuse)) };
   });
 }
 
@@ -179,7 +196,7 @@ export async function holdSearch(
       where id = $1`,
     [o.run.id, price.toString()],
   );
-  return { day, estimateMicroUsd: estimate, at80: taken.at80 };
+  return { day, estimateMicroUsd: estimate, at80: taken.at80, runId: o.run.id, priceMicro: price };
 }
 
 /** How many site days of counts are kept: today and the 7 before it. */

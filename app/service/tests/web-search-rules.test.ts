@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { aboutPoints } from "../src/accounts/store.ts";
+import { aboutPoints, formatPoints } from "../src/accounts/store.ts";
 import { mentionsAtSend } from "../src/agents/mentions.ts";
 import { createAgentPort, type DbAgentPort } from "../src/agents/port-impl.ts";
 import { FINAL_LINE } from "../src/agents/runtime/loop.ts";
@@ -9,7 +9,7 @@ import { budgetReachedWith, spentTodayOf, siteToday, triggerFromAgent } from "..
 import { lockAgent, type AgentRow } from "../src/agents/store.ts";
 import { createToolbox, SEARCH_WEB } from "../src/agents/tools/index.ts";
 import type { WebEngine, WebResult, WebSearchError } from "../src/agents/tools/web/engine.ts";
-import { holdSearch, SearchRefused, SITE_SCOPE } from "../src/agents/tools/web/hold.ts";
+import { holdSearch, recordSearchCost, SearchRefused, SITE_SCOPE } from "../src/agents/tools/web/hold.ts";
 import { WEB_LANE_BUDGET, WEB_NO_MONEY, WEB_QUERY_PRIVATE, WEB_REPLY_CAP, WEB_SITE_DAY } from "../src/agents/tools/web/tool.ts";
 import type { Config, WebSearchConfig } from "../src/config.ts";
 import { admitRun } from "../src/metering/admit.ts";
@@ -572,6 +572,31 @@ describe("the pre-hold under the lane budgets, two connections", () => {
     expect((await webOf(r.runId)).n).toBe(1);
   });
 
+  it("the lane budgets count another running reply's search at what it is charged: an old code's row (rule 0) at its price, a corrected one at its actual (third attack V3.5)", async () => {
+    const owner = await signUp(app, "overlapweb");
+    await grant(db, owner.id, 10n * POINT);
+    const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "own-1", contextTokens: 32000 }] }))).json;
+    const agent = await meteredAgent(app, db, owner, { source: "provider", providerId: provider.id, model: "own-1" });
+    const g1 = await group(app, owner, "旧", [await signUp(app, "overlapweb_a"), await signUp(app, "overlapweb_b")]);
+    const g2 = await group(app, owner, "新", [await signUp(app, "overlapweb_c"), await signUp(app, "overlapweb_d")]);
+    const budget = { othersBudgetMicro: (3n * PRICE) / 2n };
+    // A reply of the Agent in lane others the old code admitted during the overlap, its search held as it writes one.
+    const old = (
+      await db.query<{ id: string }>(
+        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, started_at, lane, source, model, charge_to, hold_micro, web_searches, web_micro)
+         values ('reply', $1, $2, $3, 'running', now(), 'others', 'provider', 'own-1', 'free', $4, 1, $4) returning id`,
+        [g1, agent.agentId, owner.id, PRICE.toString()],
+      )
+    ).rows[0]!.id;
+    const b = { runId: await admittedIn(owner.id, agent, g2, "others"), ownerId: owner.id, agentId: agent.agentId, conversationId: g2, lane: "others" as const };
+    // Its price and this one's: 2 × 0.77035 ≥ 1.155525 — refused.
+    await expect(preHold(b, budget, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
+    // The same row by the pool's rule, its search corrected to a quarter of the price: 1.25 × 0.77035 — held.
+    await db.query("update agent_runs set money_rule = 1, charge_to = null, web_charge_micro = $2 where id = $1", [old, (PRICE / 4n).toString()]);
+    await preHold(b, budget, webConfig());
+    expect((await webOf(b.runId)).n).toBe(1);
+  });
+
   it("a provider model's reply: refused (unavailable) only when it is not admitted; its searches hold on the pool, the balance paying what the allowance cannot (wallet v3)", async () => {
     const owner = await signUp(app, "pvsrc");
     await grant(db, owner.id, 10n * POINT);
@@ -907,6 +932,70 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     }
   });
 
+  it("the owner is charged a search's actual inside the trusted band — the price scaled by it, rounded up, never above the price; outside the band, or with no figure, the price (wallet v3 §5)", async () => {
+    const gateway = scriptedGateway();
+    let cost: bigint | undefined;
+    const engine: WebEngine = {
+      name: "fake",
+      async searchWeb() {
+        return cost === undefined ? { results: RESULTS } : { results: RESULTS, costMicroUsd: cost };
+      },
+    };
+    const { worker } = webWorker(gateway, engine, webConfig({ costMicroUsdPerSearch: 13_000 }));
+    const a = await owned("actual", "provider", 100n * POINT);
+    let total = 0n;
+    for (const [n, report, charge] of [
+      [1, 7_000n, 414_804n], // 770 350 × 7 000 / 13 000 = 414 803.85 → up
+      [2, 1_299n, PRICE], // below a tenth: the price
+      [3, 1_300n, 77_035n], // the band's edge, exact
+      [4, 130_001n, PRICE], // above ten times: the price
+      [5, 20_000n, PRICE], // inside, above the estimate: never above the price
+      [6, undefined, PRICE], // no figure
+    ] as const) {
+      cost = report;
+      await say(a.owner, a.own, `第${n}次`);
+      await searchRun(worker, gateway);
+      const run = await lastRun(a.agent.id);
+      const row = (await db.query<{ web: string; charge: string }>("select web_micro::text as web, web_charge_micro::text as charge from agent_runs where id = $1", [run.id])).rows[0]!;
+      const record = await recordOf(run.id);
+      // Held at the price; charged at its actual, the allowance first, then the balance; the record says what it was charged.
+      expect([n, row, record.cost, BigInt(record.free) + BigInt(record.balance), record.web_micro]).toEqual([
+        n,
+        { web: PRICE.toString(), charge: charge.toString() },
+        charge.toString(),
+        charge,
+        charge.toString(),
+      ]);
+      total += charge;
+    }
+    expect((await api(app, a.owner, "GET", "/api/usage")).json.recentWeb).toEqual([{ agentId: a.agent.id, searches: 6, points: formatPoints(total) }]);
+  });
+
+  it("a settled run keeps what it was charged (here settled, not yet moved out of running): a correction that comes after changes the site's fuse only", async () => {
+    const owner = await signUp(app, "latefix");
+    await grant(db, owner.id, 10n * POINT);
+    const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "own-1", contextTokens: 32000 }] }))).json;
+    const agent = await meteredAgent(app, db, owner, { source: "provider", providerId: provider.id, model: "own-1" });
+    const { rows } = await db.query<{ id: string }>(
+      "insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, started_at) values ('reply', $1, $2, $3, 'running', now()) returning id",
+      [agent.conversationId, agent.agentId, owner.id],
+    );
+    const runId = rows[0]!.id;
+    const config = webConfig({ costMicroUsdPerSearch: 13_000 });
+    await db.tx((t) => admitRun(t, config, runId, owner.id, agent.resolved, 10_000, new Date()));
+    const held = await db.tx(async (t) => {
+      const locked = await lockAgent(t, agent.agentId, agent.conversationId);
+      await t.query("select 1 from agent_runs where id = $1 for update", [runId]);
+      return holdSearch(t, config, { run: { id: runId, ownerId: owner.id, conversationId: agent.conversationId }, agent: locked, lane: { lane: "own", coversSeq: 0 }, reserveMicro: 0n }, new Date());
+    });
+    await db.tx((t) => settle(t, config, runId, null, { inputChars: 0, outputChars: 0 }, "done", new Date(), { log: app.log }));
+    const before = await siteSpent();
+    expect(await recordSearchCost(db, held, 7_000n, 20_000_000n)).toEqual({ ignored: false, at80: false });
+    expect(await siteSpent()).toBe(before - 6_000n);
+    expect((await db.query<{ c: string }>("select web_charge_micro::text as c from agent_runs where id = $1", [runId])).rows[0]!.c).toBe(PRICE.toString());
+    expect(await recordOf(runId)).toMatchObject({ cost: PRICE.toString(), web_micro: PRICE.toString() });
+  });
+
   it("the 80 % line comes once a site day, whatever corrections come after (review M3)", async () => {
     // A fuse of $0.05 (80 %: $0.04) at an estimate of $0.013: 0 → 30 000; then 43 000 (crossed: said), corrected down to
     // 35 000; then 48 000 (crossed again: not said again).
@@ -971,7 +1060,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     const engine = fakeEngine(() => ({ results: RESULTS, costMicroUsd: 5000n }) as never);
     const out = await searchWebTool(
       { engine, slots: createSlots(4, 4), config: { maxResults: 6, siteUsdPerDay: 20 }, resultMaxWeight: 3000, timeZone: "Asia/Shanghai", db: failing, log },
-      { id: "run-x", agentId: agent.id, ownerId: owner.id, conversationId: own, group: false, refs: new RunRefs({}, true), heardTo: 0, mark: null, shown: [], ownerAsked: true, holdSearch: async () => ({ day: "2026-11-22", estimateMicroUsd: 13_000n, at80: false }) },
+      { id: "run-x", agentId: agent.id, ownerId: owner.id, conversationId: own, group: false, refs: new RunRefs({}, true), heardTo: 0, mark: null, shown: [], ownerAsked: true, holdSearch: async () => ({ day: "2026-11-22", estimateMicroUsd: 13_000n, at80: false, runId: "run-x", priceMicro: 13_000_000n }) },
       { query: QUERY },
       new AbortController().signal,
     );

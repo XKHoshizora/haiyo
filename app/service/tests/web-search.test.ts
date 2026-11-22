@@ -549,7 +549,7 @@ describe("the count and the charge stand however the search ends", () => {
       shown: [],
       holdSearch: async () => {
         held.push(id);
-        return { day: "2026-11-22", estimateMicroUsd: 0n, at80: false };
+        return { day: "2026-11-22", estimateMicroUsd: 0n, at80: false, runId: id, priceMicro: 0n };
       },
     });
     const call: ToolCall = { id: "c1", name: SEARCH_WEB, input: { query: QUERY } };
