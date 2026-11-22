@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort } from "../src/agents/port-impl.ts";
-import { CITE_HOW, groupSystemText, NO_NOTES, NO_TOOLS, systemText, toolsPassage } from "../src/agents/runtime/prompt.ts";
+import { CITE_HOW, groupSystemText, HOW_TOLD, NO_NOTES, NO_TOOLS, REPLY_LANGUAGE, systemText, toolsPassage } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import { createToolbox, CURRENT_TIME, READ_FILE, SEARCH_MESSAGES, toolSpecs, type ToolDeps } from "../src/agents/tools/index.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
@@ -114,13 +114,19 @@ describe("what a reply offered tools is told", () => {
     for (const mode of ["normal", "onboarding"] as const) {
       const offered = systemText(agent, owner, now, mode, "Asia/Shanghai", NO_NOTES, true).text;
       const plain = systemText(agent, owner, now, mode, "Asia/Shanghai", NO_NOTES, false).text;
-      expect(offered).toBe(plain.replace(NO_TOOLS, own));
+      // With the line of the language it replies in before the passage (lane prompt2: a reply offered tools only).
+      expect(offered).toBe(plain.replace(NO_TOOLS, `${REPLY_LANGUAGE}\n${own}`));
       expect(offered).not.toContain(NO_TOOLS);
       expect(plain).not.toContain(own);
     }
     const g = { ...agent, handle: "helper" };
     const offered = groupSystemText(g, owner, scene, now, "Asia/Shanghai", "q7mark", false, NO_NOTES, true).text;
-    expect(offered).toBe(groupSystemText(g, owner, scene, now, "Asia/Shanghai", "q7mark", false, NO_NOTES, false).text.replace(NO_TOOLS, inGroup));
+    // And in a group, at the end of what it must never reveal, that it does not explain how it tells who is who.
+    expect(offered).toBe(
+      groupSystemText(g, owner, scene, now, "Asia/Shanghai", "q7mark", false, NO_NOTES, false)
+        .text.replace(NO_TOOLS, `${REPLY_LANGUAGE}\n${inGroup}`)
+        .replace("就说这些不能透露。", `就说这些不能透露。${HOW_TOLD}`),
+    );
   });
 
   it("on the real port: a reply offered the tools is sent the passage; one offered none the sentence that it has none", async () => {

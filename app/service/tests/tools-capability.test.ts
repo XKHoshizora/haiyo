@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentPort, type DbAgentPort, type Toolbox } from "../src/agents/port-impl.ts";
 import { isRunEnd, type RunTicket } from "../src/agents/runtime/port.ts";
-import { groupSystemText, NO_NOTES, NO_TOOLS, systemText, toolsPassage } from "../src/agents/runtime/prompt.ts";
+import { groupSystemText, HOW_TOLD, NO_NOTES, NO_TOOLS, REPLY_LANGUAGE, systemText, toolsPassage } from "../src/agents/runtime/prompt.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import type { Config } from "../src/config.ts";
 import type { ModelCall, ToolSpec } from "../src/models/gateway.ts";
@@ -438,10 +438,15 @@ describe("the system text says the reply has no tools only when it is offered no
   const owner = { displayName: "Ada" };
   const now = new Date("2026-11-20T08:00:00Z");
   const scene = { title: "饭搭子", agents: [], more: false, people: [], morePeople: false };
-  /** `text` with the tools' passage (`toolsPassage`) in place of the line holding the sentence. */
+  /**
+   * `text` with the tools' passage (`toolsPassage`) in place of the line holding the sentence, and what only a reply
+   * offered tools is told besides (lane prompt2): the language it replies in before the passage, and in a group, at the
+   * end of what it must never reveal, that it does not explain how it tells who is who.
+   */
   const withPassage = (text: string, group: boolean) => {
     expect(text.split("\n")).toContain(NO_TOOLS);
-    return text.replace(NO_TOOLS, toolsPassage(group));
+    const passage = text.replace(NO_TOOLS, `${REPLY_LANGUAGE}\n${toolsPassage(group)}`);
+    return group ? passage.replace("就说这些不能透露。", `就说这些不能透露。${HOW_TOLD}`) : passage;
   };
 
   it("in the Agent's own conversation, onboarding too, and in a group: as it always was without tools; with tools, the same with the tools' passage in place of that sentence", () => {
