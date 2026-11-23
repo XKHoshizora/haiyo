@@ -41,6 +41,19 @@ the one the acceptance database runs (`docs/acceptance/batch1/README.md` says a 
 Actions tab, "Verify", "Run workflow", tick "Also run the browser suite in WebKit". (The button exists once this
 file is on the default branch.)
 
+## The daily model catalogue update
+
+A second workflow, `.github/workflows/catalog-update.yml` ("Model catalogue update"), runs once a day and by hand
+(Actions tab, "Model catalogue update", "Run workflow"; or `gh workflow run catalog-update.yml`). It checks out the
+development branch (named once at the top of the file, `DEV_BRANCH` — change it there when the development branch
+changes), downloads the public models.dev catalogue and rewrites `app/service/src/providers/model-catalog.json`. If
+the file changed, it runs the service type check and the tests that read the catalogue, and only when they pass commits
+the new file to that branch with a message saying which models were added, removed or changed. If the download looks
+broken (the catalogue shrank by more than 20 %, or more than 5 % of the models lost what they could do), it refuses
+and the run fails; nothing is committed. Like the WebKit button, the schedule and the button exist once the file is on
+the default branch. A commit it pushes does not start "Verify" (GitHub does not start workflows from a workflow's own
+push); the next ordinary push does. Details: `app/service/README.md`, "Model providers", The daily catalogue update.
+
 ## Re-run one shard on your own machine
 
 From `app/service`, with your usual `.env`:
