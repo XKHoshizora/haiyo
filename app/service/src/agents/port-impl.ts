@@ -9,13 +9,13 @@ import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { placeOf, type Place } from "../social/place.ts";
 import { reach } from "../social/reach.ts";
-import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit } from "../metering/others.ts";
+import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit, othersRoomAdvisory, type OthersLane } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
 import { classOf } from "../metering/wallet.ts";
 import { correctedEstimate, estimateTokens, holdTokens, planRatio, ratioKey, readRatio, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR } from "../metering/tokens.ts";
-import { loadNotes } from "../memory/passage.ts";
+import { loadNotes, type ShownNote } from "../memory/passage.ts";
 import { markRead, type ReadEvents } from "../messages/read.ts";
 import type { ToolCall, ToolSpec } from "../models/gateway.ts";
 import { resolveModel, type Resolved } from "../models/resolve.ts";
@@ -669,6 +669,8 @@ export class DbAgentPort implements AgentPort {
           told: boolean;
           /** Bounded as another person's reply is (`boundedForOthers`, one real tool call, the two-part hold, the others' numbers). */
           bounded: boolean;
+          /** A social run: the notes it was shown and the ones left out, to be written to the run with its admission (B7c). */
+          social: { shown: readonly ShownNote[]; withheld: readonly ShownNote[] } | null;
         }
     > => {
       const { agent, state } = await this.lockRun(t, run);
@@ -756,24 +758,19 @@ export class DbAgentPort implements AgentPort {
       // At most `MEMORY.passageShare` of the model's context goes to it: over that entries are left out (`fitNotes`).
       // A social run reads its place's notes (`loadNotes`, social: in ring 1a none at all, whatever the owner wrote; ring 1b decides what
       // this one person may be shown), never a group's.
-      const notes =
+      const found =
         place === "own" && agent.persona === ""
-          ? NO_NOTES
-          : fitNotes(
-              (
-                await loadNotes(
-                  t,
-                  agent,
-                  place === "own" ? { place: "own" } : group ? { place: "group", conversationId: run.conversationId } : { place: "social", conversationId: run.conversationId, audienceId: state.caller_id! },
-                  config,
-                )
-              ).notes,
-              place,
-              config.siteTimezone,
-              displayName,
-              passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare),
-              planned,
-            ).notes;
+          ? null
+          : await loadNotes(
+              t,
+              agent,
+              place === "own" ? { place: "own" } : group ? { place: "group", conversationId: run.conversationId } : { place: "social", conversationId: run.conversationId, audienceId: state.caller_id! },
+              config,
+            );
+      const notes = found === null ? NO_NOTES : fitNotes(found.notes, place, config.siteTimezone, displayName, passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare), planned).notes;
+      // A social run records what it was shown: the refs of the notes `fitNotes` kept (each note a visitor may be shown carries its ref),
+      // and what was left out for want of a yes (`withheld`); written with the admission (step 3). Ring 1a: both always empty.
+      const socialNotes = social && found !== null ? { shown: [...notes.owner, ...notes.self].flatMap((n) => ("ref" in n ? [(n as { ref: ShownNote }).ref] : [])), withheld: found.withheld } : null;
       // What the web search's offer says of the reply (the product owner's rules, lane websearch2): a reply of an Agent
       // whose `webSearch` is on may have it, in every lane and on every model (a provider model's searches are paid from
       // its owner's points, tools/web/hold.ts); the toolbox adds it only while the site offers it, to a reply offered tools
@@ -888,6 +885,22 @@ export class DbAgentPort implements AgentPort {
         reserved = 0;
         ({ loaded, refs } = await planOf(false, 0));
       }
+      // An others' reply is offered tools only when the room its owner's numbers leave covers the hold with them (plan B7c, D11): the
+      // plan's own texts and the tools' definitions through `othersHold` with B2b's room, read without a lock — step 3 decides exactly. Else
+      // it is planned, and made, as one that offers none (one call).
+      if (offer !== null && bounded && resolved.price !== undefined && resolved.price !== null) {
+        const texts = [loaded.system.text, ...loaded.entries.map((e) => e.text), JSON.stringify(offer.tools)];
+        const heldTokens = holdTokens(texts, resolved.contextTokens, resolved.call.maxOutputTokens) + TOOL_PREAMBLE_TOKENS;
+        const roomCap = Math.max(0, resolved.contextTokens - resolved.call.maxOutputTokens) + TOOL_PREAMBLE_TOKENS;
+        const growth = roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens) + config.others.overCapNotes * noteBytes(longestToolName(offer.tools));
+        const needed = othersHold(resolved, heldTokens, { growthTokens: growth, roomCapTokens: roomCap });
+        if ((await othersRoomAdvisory(t, config, run.ownerId, agent.id, state.lane as OthersLane, now)) < needed) {
+          log.info({ metric: "others_plain_fallback" }, "agent run: an others' reply made without tools: the room its owner's number leaves does not cover the hold with them");
+          offer = null;
+          reserved = 0;
+          ({ loaded, refs } = await planOf(false, 0));
+        }
+      }
       // A new Agent's greeting before its owner has written: the one turn it is shown is what is so (`GREETING_TURN`).
       if (state.greets && place === "own" && !hasOwnerTurn(loaded)) loaded.entries.push({ role: "user", text: GREETING_TURN, attachment: null });
       if (!hasOwnerTurn(loaded)) return { end: loaded.topicStart > 0 && covers <= loaded.topicStart ? STARTED_OVER : BUSY };
@@ -903,7 +916,7 @@ export class DbAgentPort implements AgentPort {
       // And whether it answers its owner's own call: only then do the owner's typed words exempt a query (review M6).
       const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: state.lane === "own" && state.triggered_by === "human" } : {};
       const tools = heard === null || refs === null ? null : { refs, heardTo: Number(heard.rows[0]?.seq ?? 0), ...shown };
-      return { resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, bounded };
+      return { resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, bounded, social: socialNotes };
     });
     if ("end" in first) return first.end;
 
@@ -1042,6 +1055,15 @@ export class DbAgentPort implements AgentPort {
       if (admission.plain) {
         log.info({ metric: "others_plain_fallback" }, "agent run: an others' reply made without tools: only its one-call hold fit its owner's number");
         tools = [];
+      }
+      // What a social reply was shown of its owner's notes, and what was left out for want of a yes: written with the admission, in this
+      // transaction (null when empty, also over an earlier attempt's). Ring 1a: both always empty.
+      if (first.social !== null) {
+        await t.query("update agent_runs set shown_notes = $2::jsonb, withheld_notes = $3::jsonb where id = $1", [
+          run.id,
+          first.social.shown.length > 0 ? JSON.stringify(first.social.shown) : null,
+          first.social.withheld.length > 0 ? JSON.stringify(first.social.withheld) : null,
+        ]);
       }
       // What settlement learns the ratio from: the estimate at ratio 1 of a call that showed text only (an image's or a
       // PDF's real tokens are not text's), and the ratio's key. A reply that offers tools teaches nothing: its rounds send

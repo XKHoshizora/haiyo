@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUN_COLUMNS, type RunRow } from "../src/agents/runs.ts";
 import { NO_NOTES, NOTES_SECRET_CLAUSE, SOCIAL_NO_COMMIT, socialSystemText, speakerLabel } from "../src/agents/runtime/prompt.ts";
-import { othersFloorHold, othersPlainCeiling, othersPlainFloor } from "../src/metering/others.ts";
+import { othersFloorHold, othersPlainCeiling, othersPlainFloor, othersUsedToday } from "../src/metering/others.ts";
 import { readOwnedAgent } from "../src/agents/store.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
@@ -245,6 +245,33 @@ describe("access, scene, context", () => {
   });
 });
 
+
+describe("the money bounds apply to a social run as to another person's group reply (hand-off 5)", () => {
+  it("it is an answer of its owner's (othersUsedToday), charged to the owner under lane others, and its calls are bounded (800 tokens, no reasoning)", async () => {
+    const w = await world("访客癸");
+    await say(w.v, w.conv, "你好");
+    gateway.reply("好。", { usage: { inputTokens: 900, outputTokens: 20 } });
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const run = await lastRun(w);
+    expect(run).toMatchObject({ status: "done", lane: "others" });
+    const used = await othersUsedToday(db, app.deps.config, w.owner.id, new Date());
+    expect(used.answers).toBe(1);
+    const usage = await db.query<{ owner_id: string }>("select owner_id from usage_records where run_id = $1", [run.id]);
+    expect(usage.rows.map((r) => r.owner_id)).toEqual([w.owner.id]);
+    expect(callsHere()[0]!.maxOutputTokens).toBe(800);
+    expect(callsHere()[0]!.reasoning).toBe("none");
+  });
+
+  it("the owner's answers number binds it: one answer a day and the next visitor message is not called (the notice, once)", async () => {
+    const w = await world("访客子");
+    await db.query("insert into accounts (principal_id, others_answers) values ($1, 1) on conflict (principal_id) do update set others_answers = 1", [w.owner.id]);
+    await say(w.v, w.conv, "你好");
+    gateway.reply("好。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    await say(w.v, w.conv, "再问一次");
+    expect((await db.query("select 1 from agent_runs where agent_id = $1 and status = 'queued'", [w.agent.id])).rowCount).toBe(0);
+  });
+});
 
 describe("the page facts stay true of a social reply (hand-off 6)", () => {
   it("the hold admission takes for a social reply is at least othersPlainFloor and at most othersPlainCeiling", async () => {

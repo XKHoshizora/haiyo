@@ -247,6 +247,25 @@ export async function othersCheck(
 }
 
 /**
+ * Advisory (no lock; plan B7c, D11): the least room an others' reply of `agentId` has left under the numbers that bind it — the owner's
+ * (`OTHERS.pointsPerDay` or their own) and the Agent's own where lower, or for a proactive reply its proactive budget — as `othersCheck`
+ * reads them: the number less what is settled today and what every running reply of those lanes holds. Never below 0. `begin` offers an
+ * others' reply tools only when this covers the hold with them (it plans one call otherwise); `othersFits` decides for good at admission.
+ */
+export async function othersRoomAdvisory(q: Queryable, config: Pick<Config, "others" | "siteTimezone">, ownerId: string, agentId: string, lane: OthersLane, now: Date): Promise<bigint> {
+  const numbers = await othersNumbers(q, config, ownerId, agentId);
+  const owner = await pointsToday(q, config, ownerId, now, {}, null);
+  let room = numbers.owner.pointsMicro - owner.settledMicro - owner.heldMicro;
+  const own = lane === "others" ? numbers.agent.pointsMicro : numbers.proactiveMicro;
+  if (own !== null) {
+    const agent = await pointsToday(q, config, ownerId, now, { agentId, lane }, null);
+    const left = own - agent.settledMicro - agent.heldMicro;
+    if (left < room) room = left;
+  }
+  return room < 0n ? 0n : room;
+}
+
+/**
  * Advisory (no lock), at a trigger: whether a call of an Agent is already refused by the numbers: `othersCheck` at the least a
  * call can cost (one micro-point, so that "settled plus held plus 1 over the number" is "reached"; nothing for an Agent whose model
  * costs nothing, `points: false`, which only the answers refuse, as at admission). One rule with admission and the proactive
