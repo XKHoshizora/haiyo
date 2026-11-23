@@ -804,7 +804,6 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
               tally.failed++;
               output = { error: UNUSABLE };
             } else {
-              tally.ran++;
               const framing = estimateTokens(JSON.stringify({ id: toolCall.id, name: toolCall.name, output: "" }), toolRatio);
               try {
                 output = cutResult(ran.outcome.output, Math.min(limits.resultMaxWeight, weightWithin(Math.max(0, left - framing), toolRatio)));
@@ -820,6 +819,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
                     ...(kind === "web" ? { pages: pagesOf(ran.outcome.output), excerpts: excerptsOf(ran.outcome.output) } : {}),
                   };
                 }
+                // Counted as run only once its answer is the model's: a call is run or failed, never both.
+                tally.ran++;
               } catch {
                 // Not JSON (a port's bug): nothing of it goes to the model.
                 tally.failed++;

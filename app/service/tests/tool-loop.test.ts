@@ -441,6 +441,20 @@ describe("a reply that offers tools", () => {
     expect(fake.posted[0]!.lookups).toEqual({ search: 2, file: 1 });
   });
 
+  it("a tool whose answer cannot be handed to the model (not JSON) counts as failed, not as run: the model is not called able for it", async () => {
+    const loop: Record<string, unknown> = {};
+    loop.self = loop;
+    const fake = fakePort({ tool: async () => ({ output: loop }) });
+    const log = recordingLog();
+    const gateway = scriptedGateway().callTools([{ name: "search", input: { query: "川菜" } }]).reply("好。");
+    await runOn(fake, gateway, { log });
+    expect(fake.tools).toHaveLength(1);
+    expect(outputsOf(gateway.calls[1]!, 0)).toEqual([{ error: UNUSABLE }]);
+    const tally = log.lines.map((l) => (l as { details: Record<string, unknown> }).details).find((d) => d.metric === "tool_rounds")!;
+    expect([tally.ran, tally.failed]).toEqual([0, 1]);
+    expect(fake.worked).toBe(0);
+  });
+
   it("two garbled calls (an unknown tool, an input its schema refuses) are never run: the fixed error each, the tools marked unusable, then the last call", async () => {
     const gateway = scriptedGateway()
       .callTools([{ name: "web_search", input: { query: "川菜" } }])
