@@ -461,6 +461,15 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
   }
 
+  /** `AgentPort.toolsWorked`, whose failure only the log hears of: the reply goes on either way. */
+  async function toolsWorked(run: RunTicket): Promise<void> {
+    try {
+      await port.toolsWorked(run);
+    } catch (err) {
+      log.error({ err, runId: run.id }, "agent run: could not record that its model can use the tools");
+    }
+  }
+
   /**
    * The end of a reply once its model has stopped — after its one call, or the last round of several (`last`): what it
    * said is posted, with what its tools looked up (`looked`; nothing for a reply offered none), or the run fails, and it
@@ -637,6 +646,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     /** The upstream refused a later round: the reply is asked for once more as one without tools (`prepared.call`). */
     let plain = false;
     let unusable = false;
+    /** `toolsWorked` was told of this reply. */
+    let worked = false;
     /** The reply's acknowledgement was posted, or an earlier attempt's stands (`ToolRun.acknowledged`): no later round's text is. */
     let acknowledged = bounds.acknowledged === true;
     /** What the tools that ran looked up, for the reply's message. */
@@ -836,6 +847,11 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (tally.garbled >= 2 && !unusable) {
         unusable = true;
         await toolsUnusable(run, "garbled");
+      }
+      // A call ran, and nothing says the model cannot use them: the port hears of it, once a reply.
+      if (tally.ran > 0 && !worked && !unusable) {
+        worked = true;
+        await toolsWorked(run);
       }
 
       // What the next call can cost, held before it is made: its text, the tools and every step at their bytes, what

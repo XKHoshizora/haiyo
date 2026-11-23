@@ -32,6 +32,8 @@ export interface Resolved {
    * finds it unable, `markToolsOff`).
    */
   tools: boolean;
+  /** Provider models only: its entry says nothing of tools yet — what a reply whose tool call ran may store (`markToolsOn`). */
+  toolsUnknown?: boolean;
 }
 
 /**
@@ -167,5 +169,6 @@ export async function resolveModel(
     reasoning,
     providerId: choice.providerId,
     tools: listed.tools !== false,
+    toolsUnknown: listed.tools === undefined,
   };
 }

@@ -19,7 +19,7 @@ import { toldHits, toldPassage } from "./tools/elsewhere.ts";
 import { RunRefs } from "./tools/refs.ts";
 import type { RunScope } from "./tools/index.ts";
 import { KeyUnreadableError } from "../providers/crypto.ts";
-import { markToolsOff } from "../providers/store.ts";
+import { markToolsOff, markToolsOn } from "../providers/store.ts";
 import type { Hub } from "../sync/hub.ts";
 import { createWhisper, type WhisperBody } from "../whispers/store.ts";
 import {
@@ -164,8 +164,11 @@ const resultReserve = (resultMaxWeight: number, ratio: number, conversation: num
  */
 export const TOOLS_OFF: WhisperBody = { text: "这个模型不支持查东西，已改为普通聊天。可以在模型设置里重新打开再试。", actions: [] };
 
-/** The model a run's call went to, kept from `begin` in this process (`RunFlags.model`): what `toolsUnusable` marks. */
-type RunModel = { source: "site"; id: string } | { source: "provider"; providerId: string; name: string };
+/**
+ * The model a run's call went to, kept from `begin` in this process (`RunFlags.model`): what `toolsUnusable` and
+ * `toolsWorked` mark. `toolsUnknown`: its entry said nothing of tools when the reply began (`Resolved.toolsUnknown`).
+ */
+type RunModel = { source: "site"; id: string } | { source: "provider"; providerId: string; name: string; toolsUnknown: boolean };
 
 /** What `extend` prices a reply's later calls by, kept from `begin` in this process (`RunFlags.money`). */
 interface RunMoney {
@@ -1011,7 +1014,7 @@ export class DbAgentPort implements AgentPort {
     flags.money = result.money;
     flags.leftOut = first.loaded.leftOut;
     const { resolved } = first;
-    flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name };
+    flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name, toolsUnknown: resolved.toolsUnknown === true };
     // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
     flags.tools = result.prepared.tools.length > 0 && first.tools !== null ? { ...first.tools, shownFrom: flags.group ? null : context.shownFrom } : null;
     return result.prepared;
@@ -1186,6 +1189,20 @@ export class DbAgentPort implements AgentPort {
       return createWhisper(t, { conversationId: run.conversationId, ownerId: run.ownerId, agentId: run.agentId, kind: "tools_off", body: TOOLS_OFF }, log);
     });
     if (told) realtime.pushWhisper(told);
+  }
+
+  /**
+   * `AgentPort.toolsWorked`: a tool call of the reply ran. Only for a provider's model whose entry said nothing of tools
+   * when the reply began is anything done — then, once per reply, `tools: true` is stored on it (`markToolsOn`: only over
+   * nothing, so its owner's word and a failure found meanwhile stay). Every other reply — a site model's, a model whose
+   * entry says either — reads and writes nothing here. Nobody is told: its owner sees it on the model. Nothing of the
+   * call is logged.
+   */
+  async toolsWorked(run: RunTicket): Promise<void> {
+    const model = this.flags.get(run.id)?.model;
+    if (!model || model.source !== "provider" || !model.toolsUnknown) return;
+    model.toolsUnknown = false;
+    await this.deps.db.tx((t) => markToolsOn(t, run.ownerId, model.providerId, model.name));
   }
 
   /**
