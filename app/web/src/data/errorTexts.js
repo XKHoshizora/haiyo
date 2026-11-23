@@ -336,7 +336,7 @@ const REPLY = {
   // 让 Agent 停下 in a group (batch 2C)
   halt: {
     not_found: "你已不在这个群聊中。",
-    forbidden: "只有群里的真人成员可以让 Agent 停下。",
+    forbidden: "只有群里的人可以让 Agent 停下。",
     rate_limited: "叫停太频繁了，请稍等一会儿再试。",
   },
 };

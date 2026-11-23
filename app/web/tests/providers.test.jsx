@@ -762,7 +762,7 @@ describe("the models of a provider", () => {
     });
   });
 
-  it("a model's listed thinking levels show beside 支持思考; 改为全部档位 clears them, and so does unticking 支持思考", async () => {
+  it("a model that lists thinking levels offers a choice: the levels it reports, or every level; both ways are open before saving; unticking 支持思考 clears them", async () => {
     const levels = providerOf(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] },
@@ -771,13 +771,30 @@ describe("the models of a provider", () => {
     });
     const app = await openProviders({ providers: [levels] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    // The summary line says which levels are in use; the choice is in 高级.
     expect(modelRow("gpt-x").textContent).toContain("支持思考（低、高）");
-    await click(within(modelRow("gpt-x")).getByRole("button", { name: "改为全部档位：gpt-x" }));
-    expect(modelRow("gpt-x").textContent).not.toContain("（低、高）");
-    expect(within(modelRow("gpt-x")).queryByRole("button", { name: "改为全部档位：gpt-x" })).toBeNull();
+    expect(within(modelRow("gpt-x")).queryByRole("radiogroup")).toBeNull();
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
+    const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
+    const reported = () => within(group()).getByRole("radio", { name: "这个模型支持的档位（低、高）" });
+    const every = () => within(group()).getByRole("radio", { name: "全部档位" });
+    expect(reported().checked).toBe(true);
+    expect(every().checked).toBe(false);
+    // What each means, in one line, and when to want every level.
+    expect(group().textContent).toContain("档位不对或不全时，选全部档位");
+    // No bare button that only goes one way.
+    expect(within(modelRow("gpt-x")).queryByRole("button", { name: /全部档位/ })).toBeNull();
+    await click(every());
+    expect(every().checked).toBe(true);
+    // And back, before anything is saved.
+    await click(reported());
+    expect(reported().checked).toBe(true);
+    await click(every());
+    expect(modelRow("gpt-x").textContent).toContain("支持思考（全部档位）");
     await click(within(modelRow("deep")).getByRole("button", { name: /高级/ }));
     fireEvent.click(within(modelRow("deep")).getByLabelText(/支持思考/));
     await flush();
+    expect(within(modelRow("deep")).queryByRole("radiogroup")).toBeNull();
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
       models: [
@@ -785,6 +802,55 @@ describe("the models of a provider", () => {
         { name: "deep", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
       ],
     });
+  });
+
+  it("a model saved with every level still offers the way back: the service reports its levels beside (reportedLevels)", async () => {
+    const saved = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reportedLevels: ["low", "high"] }] });
+    const app = await openProviders({ providers: [saved] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    expect(modelRow("gpt-x").textContent).toContain("支持思考（全部档位）");
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
+    const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
+    expect(within(group).getByRole("radio", { name: "全部档位" }).checked).toBe(true);
+    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+  });
+
+  it("levels in use that differ from the catalogue's can be adopted with one tap on the first option; unticking and ticking 支持思考 again keeps the choice", async () => {
+    const stale = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"], reportedLevels: ["low", "medium", "high"] }] });
+    const app = await openProviders({ providers: [stale] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
+    const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
+    // The list in use is not the catalogue's: neither option claims to be the choice until one is tapped.
+    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(false);
+    expect(within(group()).getByRole("radio", { name: "全部档位" }).checked).toBe(false);
+    await click(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }));
+    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(true);
+    expect(modelRow("gpt-x").textContent).toContain("支持思考（低、中、高）");
+    fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
+    fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
+    await flush();
+    // (Unticked and ticked again: the levels in use were dropped with it, so every level; the way back to the catalogue's list is still offered.)
+    expect(within(group()).getByRole("radio", { name: "全部档位" }).checked).toBe(true);
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 }] });
+  });
+
+  it("the reported levels are sent again when the choice is put back to them", async () => {
+    const levels = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+    const app = await openProviders({ providers: [levels] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
+    const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
+    await click(within(group).getByRole("radio", { name: "全部档位" }));
+    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
+    // (Something else changed too, so that there is something to save.)
+    fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/能看图片/));
+    await flush();
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: true, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
   });
 });
 
@@ -996,15 +1062,6 @@ describe("同步模型", () => {
     const id = toggle.getAttribute("aria-controls");
     expect(id).toBeTruthy();
     expect(document.getElementById(id).getAttribute("aria-label")).toBe("可能不是对话模型");
-  });
-
-  it("the 改为全部档位 button names its model", async () => {
-    const levels = providerOf(P1, {
-      models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }],
-    });
-    await openProviders({ providers: [levels] });
-    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
-    expect(within(modelRow("gpt-x")).getByRole("button", { name: "改为全部档位：gpt-x" })).toBeTruthy();
   });
 
   it("shows at most 200 rows at a time; past them it asks to narrow down by searching", async () => {

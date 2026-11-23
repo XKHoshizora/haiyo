@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Info, CircleAlert, CircleCheck, CirclePause } from "../icons.js";
+import { X, Info, CircleAlert, CircleCheck, CirclePause, Users, Bot } from "../icons.js";
 import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
 import { avatarUrl } from "../api/routes.js";
@@ -74,13 +74,37 @@ export function Tag({ tone = "agent", children }) {
   return <span className={`tag tag-${tone}`}>{children}</span>;
 }
 
+/**
+ * A group's header line: its people and, when it has any, its Agents, each a small icon and a number (the icons of the sidebar: Users, Bot) with a thin divider
+ * between: the real numbers (a group has at most 500 members; three digits fit at 360 px). Each count has its own accessible name and a title (「3 人」「1 个 Agent」); no Agent, no second count (never "0"). One line, never wrapped.
+ */
+export function HeadCounts({ people, agents }) {
+  const count = (label, Icon, n) => (
+    <span className="head-count" role="img" aria-label={label} title={label}>
+      <Icon size={14} aria-hidden="true" />
+      <span aria-hidden="true">{n}</span>
+    </span>
+  );
+  return (
+    <span className="head-counts">
+      {count(`${people} 人`, Users, people)}
+      {agents > 0 && (
+        <>
+          <span className="head-counts-sep" aria-hidden="true" />
+          {count(`${agents} 个 Agent`, Bot, agents)}
+        </>
+      )}
+    </span>
+  );
+}
+
 export function IdentityLine({ id, showOwner = true, extra }) {
   const { state } = useStore();
   const agent = isAgent(state, id);
   return (
     <span className="identity-line">
       <strong>{nameOf(state, id)}</strong>
-      {agent ? <Tag>Agent</Tag> : <Tag tone="human">真人</Tag>}
+      {agent && <Tag>Agent</Tag>}
       {agent && showOwner && <span className="owner">主人：{nameOf(state, ownerOf(state, id))}</span>}
       {extra}
     </span>

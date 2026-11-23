@@ -37,7 +37,7 @@ test("spec §7.2: a group of three exchanges messages, an image and a file; host
   // An image: shown inline to the others at its real size, the picture alone (no caption); pressing it opens the viewer in
   // the same window, whose "open the original" gives the same bytes in a new tab.
   const image = { name: `照片-${tag}.png`, mimeType: "image/png", buffer: png(48, 32) };
-  await sendFile(ann.page, title, image, "选择图片");
+  await sendFile(ann.page, title, image, "选择图片或视频");
   for (const who of [bo, cy]) {
     const chat = chats[who.label.toLowerCase()];
     const shown = chat.locator(`figure.attachment-image img[alt="${image.name}"]`);

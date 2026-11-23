@@ -254,6 +254,29 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
     expect(body["background-repeat"]).toBe("no-repeat");
     expect(body["background-color"]).toBeTruthy();
   });
+
+  it("the page gradient is not `background-attachment: fixed` (not needed: the shell never scrolls the document; iOS paints it as scroll anyway. This does NOT claim to fix the blank band on the long forms)", () => {
+    for (const rule of rules) expect(rule.decl["background-attachment"], rule.selectors.join(",")).not.toBe("fixed");
+    expect(plain("body")["background-attachment"] ?? "scroll").toBe("scroll");
+  });
+});
+
+describe("the phone's model sheet: the list is the one scroller, sized by the sheet", () => {
+  it("under 480px the sheet's height and place come from the visible part (custom properties the popover sets), not from dvh alone", () => {
+    const sheet = merged(rulesFor(rules, ".model-pop", "(max-width: 480px)"));
+    expect(sheet.height).toContain("--sheet-h");
+    expect(sheet.bottom).toContain("--sheet-bottom");
+    expect(sheet["padding"]).toContain("--sheet-inset");
+  });
+
+  it("the list takes what is left of a sheet of a set height (flex-basis 0, may shrink to nothing) and scrolls; the footer never shrinks", () => {
+    const list = merged(rulesFor(rules, ".model-list", "(max-width: 480px)"));
+    expect(list.flex).toBe("1 1 0");
+    const plainList = plain(".model-list");
+    expect(plainList["min-height"]).toBe("0");
+    expect(plainList["overflow-y"]).toBe("auto");
+    expect(plain(".model-foot").flex).toBe("none");
+  });
 });
 
 describe("M: the composite group avatar is one component whose layout depends only on its size", () => {

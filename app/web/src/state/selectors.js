@@ -38,14 +38,19 @@ export function convTitle(state, conv) {
   return nameOf(state, otherMember(conv));
 }
 
-/** The chat header's line: a group counts its people, and its Agents when it has any. */
+/** The chat header's line: an Agent conversation says what it is; any other has none (null). */
 export function convSubtitle(state, conv) {
   // (A deleted Agent's line says what the conversation is now — read only — and no model: it can no longer reply, so its model is of no use there.)
   if (conv.type === "agent") return agentDeleted(state, conv) ? "你的 Agent · 已删除，只能查看" : "你的 Agent · 专属会话";
-  if (conv.type !== "group") return "真人私聊";
+  // (Nobody is labelled a person: a direct chat has no line, a group has its counts, `groupCounts`.)
+  return null;
+}
+
+/** A group's people and Agents, counted for the header (`HeadCounts`): `{people, agents}`; null for any other conversation. */
+export function groupCounts(state, conv) {
+  if (conv.type !== "group") return null;
   const agents = conv.members.filter((id) => isAgent(state, id)).length;
-  const people = `${conv.members.length - agents} 位真人`;
-  return agents > 0 ? `${people} · ${agents} 个 Agent` : people;
+  return { people: conv.members.length - agents, agents };
 }
 
 /** A deleted Agent's conversation: read only, said in the frozen-conversation style. */

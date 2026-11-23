@@ -422,7 +422,9 @@ describe("Agents in a group (batch 2C)", () => {
   it("an Agent's row carries the Agent tag, its owner, and its intro · field; 共 N 位成员 counts everyone, the chat header people and Agents", async () => {
     await openApp({ sync: withAgents(CREATED), social: social(), handlers });
     await openChat("周末小组");
-    expect(document.querySelector(".main-col .chat-title p").textContent).toBe("3 位真人 · 2 个 Agent");
+    const counts = document.querySelector(".main-col .chat-title .head-counts");
+    expect([...counts.querySelectorAll("[aria-label]")].map((el) => [el.getAttribute("aria-label"), el.getAttribute("title"), el.textContent.trim()])).toEqual([["3 人", "3 人", "3"], ["2 个 Agent", "2 个 Agent", "2"]]);
+    expect(counts.textContent).not.toMatch(/真人/);
     await openProfile();
     expect(inMain().getByText("共 5 位成员")).toBeTruthy();
     const theirs = memberRow("安的助手");
@@ -433,6 +435,9 @@ describe("Agents in a group (batch 2C)", () => {
     expect(memberRow("书记员").textContent).toContain("主人：你");
     expect(memberRow("书记员").textContent).toContain("记下要点");
     expect(memberRow("小安").textContent).not.toMatch(/主人|Agent/);
+    // 群资料 > 群成员: nobody is labelled a person (the creator's tag and the Agent's stay).
+    expect(document.body.textContent).not.toContain("真人");
+    expect(inMain().getAllByText("创建者").length).toBeGreaterThan(0);
   });
 
   it("移除: the creator sees it on everyone else, Agents included", async () => {
@@ -470,7 +475,7 @@ describe("Agents in a group (batch 2C)", () => {
     await openApp({ sync: withAgents([MEMBER(ME_ID, true), MEMBER(AG3)]), social: social(), handlers });
     await openProfile("周末小组", "群设置");
     await click(button("退出本群"));
-    expect(dialog().textContent).toContain("你是群里的最后一位真人，退出后这个群会关闭。你的 Agent 会一起离开。");
+    expect(dialog().textContent).toContain("群里除了 Agent 只剩你了，退出后这个群会关闭。你的 Agent 会一起离开。");
     expect(dialog().textContent).not.toContain("最后一位成员");
   });
 

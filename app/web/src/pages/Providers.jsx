@@ -157,7 +157,8 @@ const contextProblem = (text) => {
 
 /**
  * A model of the provider as the form holds it: the context as text ("" means the service's default), `levels` the
- * thinking levels it lists (null: every level), and `tools` whether its replies may be offered tools as its entry says it
+ * thinking levels it is offered with (null: every level), `reported` the levels the catalogue lists for it (what `levels` goes back to: the service
+ * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too), and `tools` whether its replies may be offered tools as its entry says it
  * (undefined: it says nothing — not known yet, so they are; the service may set it false when the model turns out unable).
  */
 const formModel = (m) => ({
@@ -167,6 +168,7 @@ const formModel = (m) => ({
   reasoning: Boolean(m.reasoning),
   context: Number.isFinite(m.contextTokens) ? String(m.contextTokens) : "",
   levels: m.reasoning ? modelLevels(m.reasoningLevels) : null,
+  reported: m.reasoning ? (modelLevels(m.reportedLevels) ?? modelLevels(m.reasoningLevels)) : null,
   ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
 });
 /**
@@ -196,6 +198,7 @@ const syncedModel = (m) => ({
   // The catalogue's context, within what the form accepts for it.
   context: Number.isInteger(m.contextTokens) ? String(Math.min(CONTEXT_MAX, Math.max(CONTEXT_MIN, m.contextTokens))) : "",
   levels: m.reasoning ? (m.reasoningLevels ?? null) : null,
+  reported: m.reasoning ? (m.reasoningLevels ?? null) : null,
 });
 
 /**
@@ -343,6 +346,9 @@ function DeleteModal({ provider, onClose }) {
   );
 }
 
+/** Whether the levels in use are the reported ones (the first option is checked only then; otherwise neither is, and a tap on either decides). */
+const sameLevels = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((level, i) => level === b[i]);
+
 /** One model of the form: what it can do, its context, and the 高级 disclosure to change them. */
 function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }) {
   const panelId = useId();
@@ -352,18 +358,23 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   const tooSmall = shownContext !== null && limit !== null && shownContext <= limit;
   const summary = [model.vision && "能看图片", model.pdf && "能直接读 PDF"].filter(Boolean);
   const after = shownContext !== null ? [`上下文 ${grouped(shownContext)}${context === null ? "（默认）" : ""}`] : [];
-  // A model that reasons and lists its levels: the levels, small, beside 支持思考, and the way back to every level.
-  const thinking = model.reasoning ? (
-    <>
-      支持思考
-      {model.levels && (
-        <>
-          <small className="muted">（{model.levels.map(levelLabel).join("、")}）</small>{" "}
-          <Btn small variant="text" aria-label={`改为全部档位：${model.name}`} onClick={() => onChange({ ...model, levels: null })}>改为全部档位</Btn>
-        </>
-      )}
-    </>
-  ) : null;
+  const thinking = model.reasoning ? (model.reported ? `支持思考（${model.levels ? model.levels.map(levelLabel).join("、") : "全部档位"}）` : "支持思考") : null;
+  // A model the catalogue lists thinking levels for: the choice between those and every level, both ways open until it is saved.
+  const levelChoice =
+    model.reasoning && model.reported ? (
+      <fieldset className="checks" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
+        <legend>思考档位</legend>
+        <label>
+          <input type="radio" name={`levels-${panelId}`} checked={sameLevels(model.levels, model.reported)} onChange={() => onChange({ ...model, levels: model.reported })} onClick={() => !sameLevels(model.levels, model.reported) && onChange({ ...model, levels: model.reported })} />
+          <span>这个模型支持的档位（{model.reported.map(levelLabel).join("、")}）</span>
+        </label>
+        <label>
+          <input type="radio" name={`levels-${panelId}`} checked={model.levels === null} onChange={() => onChange({ ...model, levels: null })} />
+          <span>全部档位</span>
+        </label>
+        <small id={`${panelId}-levels-hint`} className="muted">档位不对或不全时，选全部档位。</small>
+      </fieldset>
+    ) : null;
   const parts = [...summary, thinking, ...after].filter(Boolean);
   const contextHint = [
     `模型一次能读的内容，以 token 计，${grouped(CONTEXT_MIN)} 到 ${grouped(CONTEXT_MAX)}。`,
@@ -407,6 +418,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
             </fieldset>
+            {levelChoice}
             <Field label="上下文容量" hint={contextHint} error={error}>
               <input
                 value={model.context}

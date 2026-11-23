@@ -177,7 +177,7 @@ test("pictures keep their own shape; the viewer fits the screen with its bar and
   const chat = await openChat(page, bo.displayName);
   const long = `一张名字特别特别长的照片${"很长".repeat(25)}.png`;
   const pictures = [picture("竖.png", 300, 600), picture("横.png", 600, 300), picture("全景.png", 1000, 100), picture("长截图.png", 100, 1000), picture(long, 400, 300)];
-  for (const item of pictures) await sendFile(page, bo.displayName, item, "选择图片");
+  for (const item of pictures) await sendFile(page, bo.displayName, item, "选择图片或视频");
 
   const figureOf = (name) => chat.locator("figure.attachment-image").filter({ has: page.locator(`img[alt=${JSON.stringify(name)}]`) });
   const ratio = async (name) => {
@@ -263,7 +263,7 @@ test("Back: a conversation, the viewer over it, and a reload inside it", async (
 
   // A picture, the viewer: Back closes the viewer and stays in the chat, Back again returns to the list.
   await listRow(page, last).first().click();
-  await sendFile(page, last, picture("图.png", 80, 60), "选择图片");
+  await sendFile(page, last, picture("图.png", 80, 60), "选择图片或视频");
   await chat.getByRole("button", { name: "图.png" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.goBack();
@@ -418,7 +418,7 @@ test("history at 375: group info and the details panel are pages; the viewer sur
   const page = ann.page;
   await page.reload();
   const chat = await openChat(page, title);
-  await sendFile(page, title, picture("轮转.png", 120, 80), "选择图片");
+  await sendFile(page, title, picture("轮转.png", 120, 80), "选择图片或视频");
 
   // The details panel is a page of its own: Back closes it and shows the chat.
   await chat.getByRole("button", { name: "会话资料" }).click();

@@ -1489,7 +1489,7 @@ describe("the proposal card", () => {
 
 describe("the image hint", () => {
   const pick = async (files) => {
-    fireEvent.change(screen.getByLabelText("选择图片"), { target: { files } });
+    fireEvent.change(screen.getByLabelText("选择图片或视频"), { target: { files } });
     await flush();
   };
   const hint = () => screen.queryByText(IMAGE_HINT);
@@ -1880,7 +1880,8 @@ describe("Agents in a group (batch 2C)", () => {
       expect(storedLi(1).querySelector(".msg-via").textContent).toBe("GPT-6 Sol · 思考：高 · 6.9 点");
       for (const seq of [2, 3]) expect(storedLi(seq).querySelector(".msg-via")).toBeNull();
       expect(mainText()).not.toMatch(/secret-claude|思考：最高|12 点|主动回复/);
-      expect(document.querySelector(".chat-head .chat-title p").textContent).toBe("3 位真人 · 2 个 Agent");
+      const counts = document.querySelector(".chat-head .chat-title .head-counts");
+      expect([...counts.querySelectorAll("[aria-label]")].map((el) => el.getAttribute("aria-label"))).toEqual(["3 人", "2 个 Agent"]);
     } finally {
       act(() => setShowReplyPoints(false));
     }

@@ -6,7 +6,7 @@ import React from "react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { AG1, MODELS, P1, PRINCIPALS, SITE_MODELS, agentConv, agentOf, agentPrincipal, apiError, deferred, providerOf, syncOf, usageOf } from "./fixtures.js";
 import { modelLab } from "../src/pages/ModelPicker.jsx";
 import { click, flush, inMain, installBrowser, mainText, openApp } from "./harness.jsx";
@@ -239,6 +239,21 @@ describe("the model picker", () => {
 });
 
 describe("opening, closing and the keyboard", () => {
+  it("on a touch screen the sheet opens without the keyboard: the search field is not focused (the focus is in the sheet), a tap on it focuses it; a desktop pointer keeps the autofocus", async () => {
+    window.matchMedia = (query) => ({ matches: query === "(pointer: coarse)" || query === "(max-width: 480px)", media: query, addEventListener() {}, removeEventListener() {} });
+    try {
+      await openForm();
+      await click(modelBox());
+      const pop = document.querySelector(".model-pop");
+      expect(document.activeElement).not.toBe(search());
+      expect(pop.contains(document.activeElement), "the focus is in the sheet").toBe(true);
+      act(() => search().focus());
+      expect(document.activeElement).toBe(search());
+    } finally {
+      delete window.matchMedia;
+    }
+  });
+
   it("the button says it opens a list; opening focuses the search field, Esc closes it and gives the focus back", async () => {
     await openForm();
     expect(modelBox().tagName).toBe("BUTTON");

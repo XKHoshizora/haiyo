@@ -121,7 +121,7 @@ export const APP_CLASSES = new Set(
   row-name row-preview row-sub row-top rows rows-empty rows-label rows-note screen screen-bar screen-body screen-human search send
   settings-me share-items side side-body side-col side-head side-hero side-list slim spacer sr-only stack-actions steps
   sync-added sync-failed sync-name sync-others sync-rows sync-tags sync-tools
-  tag tag-human tag-muted tag-ok tag-pending tag-row tag-solid tag-warn task-controls task-list-item text-link theirs thinking
+  tag tag-muted tag-ok tag-pending tag-row tag-solid tag-warn task-controls task-list-item text-link theirs thinking
   thinking-text toast toast-region typed up upload-progress vis-banner
   memory-card memory-chip memory-detail memory-foot memory-hint memory-lines memory-merged msg-memory
   msg-whisper whisper whisper-head whisper-text whisper-actions whisper-done whisper-dot whisper-hits whisper-hit whisper-hit-meta whisper-hit-text whisper-hit-more folded
@@ -136,6 +136,6 @@ export const APP_CLASSES = new Set(
   viewer viewer-bar viewer-meta viewer-name viewer-count viewer-actions viewer-btn viewer-stage viewer-img viewer-state viewer-spinner
   viewer-nav viewer-prev viewer-next viewer-who btn-save bubble-menu
   composer-field composer-field-off composer-mirror mention mention-agent mention-self mention-gone mention-card mention-card-body mention-card-name mention-card-handle mention-chip
-  cite-web cite-link web-sources web-source-n web-source-title web-source-host md-link-plain quiet row-chevron row-more danger-row auth-stack chat-sub attachment-media attachment-audio attachment-video media-frame media-meta media-name media-save file-card-meta
+  cite-web cite-link web-sources web-source-n web-source-title web-source-host md-link-plain quiet row-chevron row-more danger-row auth-stack chat-sub head-counts head-count head-counts-sep attachment-media attachment-audio attachment-video media-frame media-meta media-name media-save file-card-meta
   auth-legal check-field legal-page legal-top legal-brand legal-lang legal-doc legal-version legal-todo legal-nav`.split(/\s+/),
 );

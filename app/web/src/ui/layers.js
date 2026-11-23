@@ -57,6 +57,24 @@ function settleInert() {
   }
 }
 
+// ───────── the page behind does not scroll
+// `inert` stops focus and taps, not scrolling: iOS latches a touch onto whatever scroller lies under the finger, even beneath a fixed overlay whose own content
+// cannot scroll. So the scrollers are taken away instead of the gesture being judged (no touchmove or wheel handler anywhere: text fields, sliders, pinch, the
+// edge-swipe Back and selection behave natively): while a layer is open the document is locked (`html[data-layer-open]`, styles.css) and, on a touch screen,
+// every scroller behind it (`body > [inert]`: the page and the layers under the top one) is `overflow: hidden` (styles.css: the list of them, pinned by a
+// test); hiding overflow keeps every scrollTop where it is. On a mouse nothing is hidden: the layers' backdrops cover the whole window, so a wheel lands on them (an e2e checks it in Chromium).
+let documentAt = null;
+function lockDocument() {
+  documentAt = { x: window.scrollX, y: window.scrollY, path: window.location.pathname };
+  document.documentElement.setAttribute("data-layer-open", "");
+}
+function unlockDocument() {
+  document.documentElement.removeAttribute("data-layer-open");
+  // Exactly where it was (only on the page it was taken on: a layer that closes with a change of page puts nothing back on the new one).
+  if (documentAt && documentAt.path === window.location.pathname && (window.scrollX !== documentAt.x || window.scrollY !== documentAt.y)) window.scrollTo(documentAt.x, documentAt.y);
+  documentAt = null;
+}
+
 /** A search box's own Esc: it empties the box, as the browsers' own search fields do, and React hears the change. */
 function emptySearch(field) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(field, "");
@@ -105,6 +123,7 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
     const neighbours = neighboursOf(previous);
     const layer = { node, close: () => latest.current.onClose?.(), held: () => Boolean(latest.current.held?.()) };
     stack.push(layer);
+    if (stack.length === 1) lockDocument();
     settleInert();
     if (autofocus && !node.contains(document.activeElement)) {
       const first = node.querySelector("[data-autofocus]") || focusables(node)[0];
@@ -144,6 +163,7 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
       node.removeEventListener("keydown", onTab);
       const at = stack.indexOf(layer);
       if (at >= 0) stack.splice(at, 1);
+      if (stack.length === 0) unlockDocument();
       settleInert();
       if (history) {
         window.removeEventListener("popstate", onPop);

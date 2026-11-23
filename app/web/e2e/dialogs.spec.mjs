@@ -101,7 +101,7 @@ test("the chats', contacts' and groups' dialogs at 402 px: inert page, focus in 
   await page.getByRole("button", { name: "关闭", exact: true }).click();
 
   // The picture viewer.
-  await sendFile(page, bo.displayName, { name: "风景.png", mimeType: "image/png", buffer: png(640, 480) }, "选择图片");
+  await sendFile(page, bo.displayName, { name: "风景.png", mimeType: "image/png", buffer: png(640, 480) }, "选择图片或视频");
   const picture = chatPane(page, bo.displayName).locator("button[data-image]").first();
   await contract(page, { open: () => picture.click(), dialog: page.getByRole("dialog", { name: "风景.png" }), opener: picture, shot: "dialog-viewer-402", tabs: 4 });
 
@@ -224,12 +224,14 @@ test("an Agent's dialogs and the model picker's sheet at 402 px", async ({ peopl
   const remove = detail.getByRole("button", { name: "删除 Agent" });
   await contract(page, { open: () => remove.click(), dialog: page.getByRole("dialog", { name: `删除${name}` }), opener: remove, shot: "dialog-delete-agent-402" });
 
-  // The model picker on a phone is a sheet: a modal layer too (the page inert, the focus in its search), and Back closes the sheet only.
+  // The model picker on a phone is a sheet: a modal layer too (the page inert, the focus in the sheet but not in its search: no keyboard over the list), and Back closes the sheet only.
   await detail.getByRole("button", { name: "编辑" }).click();
   const trigger = page.getByLabel("模型", { exact: true });
   await trigger.click();
   const search = page.getByRole("combobox", { name: "搜索模型" });
-  await expect(search).toBeFocused();
+  await expect(search).toBeVisible();
+  await expect(search).not.toBeFocused();
+  expect(await page.evaluate(() => document.querySelector(".model-pop").contains(document.activeElement))).toBe(true);
   await expect.poll(() => rootInert(page)).toBe(true);
   await shoot(page, "sheet-model-picker-402");
   const at = page.url();

@@ -556,7 +556,7 @@ test("a mention is a tinted name; hovering it opens a card with the kind, the ac
   const card = page.getByRole("tooltip");
   await expect(card).toBeVisible();
   await expect(card).toContainText(bo.displayName);
-  await expect(card).toContainText("真人");
+  await expect(card).not.toContainText("真人");
   await expect(card).toContainText(`@${bo.handle}`);
   // It hangs over the page, outside the message: the message did not move.
   const before = await message.boundingBox();

@@ -36,7 +36,7 @@ function Who({ id }) {
       <span className="mention-card-body">
         <span className="mention-card-name">
           <strong>{who.displayName || who.name}</strong>
-          {agent ? <Tag>Agent</Tag> : <Tag tone="human">真人</Tag>}
+          {agent && <Tag>Agent</Tag>}
         </span>
         <span className="mention-card-handle">{who.handle}</span>
         {agent && <span className="owner">主人：{nameOf(state, ownerOf(state, id))}</span>}

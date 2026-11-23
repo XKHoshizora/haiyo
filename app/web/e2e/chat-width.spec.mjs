@@ -48,7 +48,7 @@ test("hostile content in every kind of message never makes the column wider than
   await page.reload();
   const chat = await openChat(page, bo.displayName);
   await sendFile(page, bo.displayName, { name: `${"文件名".repeat(30)}.txt`, mimeType: "text/plain", buffer: Buffer.from("hello") });
-  await sendFile(page, bo.displayName, { name: "图.png", mimeType: "image/png", buffer: png(600, 80) }, "选择图片");
+  await sendFile(page, bo.displayName, { name: "图.png", mimeType: "image/png", buffer: png(600, 80) }, "选择图片或视频");
   await expect(chat.locator("ol.messages")).toContainText("zzzzzz");
   for (const width of WIDTHS) {
     await page.setViewportSize({ width, height: 800 });

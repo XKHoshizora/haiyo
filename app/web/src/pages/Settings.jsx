@@ -80,7 +80,7 @@ export function SettingsList() {
         <Avatar id={ME} size={56} online />
         <div>
           <strong>{state.account?.displayName ?? ""}</strong>
-          <p className="muted">{self.handle} · 真人账户</p>
+          <p className="muted">{self.handle}</p>
         </div>
       </div>
       <ul className="rows">
@@ -228,7 +228,7 @@ function ProfilePage() {
       <header className="profile-head">
         <div>
           <h2>我的资料</h2>
-          <p className="muted">{account.displayName} <Tag tone="human">真人</Tag> @{account.handle}</p>
+          <p className="muted">{account.displayName} @{account.handle}</p>
         </div>
       </header>
       <div className="page-body">

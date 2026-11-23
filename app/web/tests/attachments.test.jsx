@@ -80,17 +80,17 @@ const items = () => [...timeline().querySelectorAll("li.msg")];
 const mine = () => items().filter((li) => li.classList.contains("mine"));
 
 describe("picking files", () => {
-  it("the image and file buttons open their pickers (images only for the first)", async () => {
+  it("the image and file buttons open their pickers (photos and videos for the first)", async () => {
     await openApp();
     await openChat("小安");
-    const image = screen.getByLabelText("选择图片");
+    const image = screen.getByLabelText("选择图片或视频");
     const file = screen.getByLabelText("选择文件");
-    expect(image.getAttribute("accept")).toBe("image/*");
+    expect(image.getAttribute("accept")).toBe("image/*,video/*");
     expect(file.getAttribute("accept")).toBeNull();
     const clicked = [];
     image.click = () => clicked.push("image");
     file.click = () => clicked.push("file");
-    fireEvent.click(screen.getByRole("button", { name: "发送图片" }));
+    fireEvent.click(screen.getByRole("button", { name: "发送图片或视频" }));
     fireEvent.click(screen.getByRole("button", { name: "发送文件" }));
     expect(clicked).toEqual(["image", "file"]);
   });
@@ -172,7 +172,7 @@ describe("picking files", () => {
   it("a picked image goes through the same queue (the image picker)", async () => {
     await openApp();
     await openChat("小安");
-    await pickFiles([fakeFile("a.png", 5, "image/png")], "选择图片");
+    await pickFiles([fakeFile("a.png", 5, "image/png")], "选择图片或视频");
     expect(uploads.calls[0].file.name).toBe("a.png");
   });
 });
@@ -188,6 +188,15 @@ describe("paste and drop", () => {
     const notPrevented = fireEvent.paste(box, { clipboardData: { files: [fakeFile("image.png", 5, "image/png"), fakeFile("note.txt", 5, "text/plain")] } });
     expect(notPrevented).toBe(false);
     expect(uploads.calls.map((c) => c.file.name)).toEqual(["image.png"]);
+  });
+
+  it("pasting a video from the clipboard uploads it as well", async () => {
+    await openApp();
+    await openChat("小安");
+    const box = screen.getByLabelText("消息内容");
+    const notPrevented = fireEvent.paste(box, { clipboardData: { files: [fakeFile("clip.mov", 5, "video/quicktime")] } });
+    expect(notPrevented).toBe(false);
+    expect(uploads.calls.map((c) => c.file.name)).toEqual(["clip.mov"]);
   });
 
   it("dropping files on the chat uploads each, in order", async () => {
@@ -253,7 +262,7 @@ describe("paste and drop", () => {
     expect(uploads.uploadAttachment).not.toHaveBeenCalled();
     expect(toastText()).toContain("对方已不是你的好友");
     expect(mine()).toHaveLength(0);
-    expect(screen.queryByRole("button", { name: "发送图片" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "发送图片或视频" })).toBeNull();
     expect(screen.queryByRole("button", { name: "发送文件" })).toBeNull();
   });
 });

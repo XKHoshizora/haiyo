@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
-import { agentDeleted, convTitle, isMyAgent, TYPE_LABEL, nameOf, otherMember } from "../state/selectors.js";
+import { agentDeleted, convTitle, isAgent, isMyAgent, TYPE_LABEL, nameOf, otherMember } from "../state/selectors.js";
 import { blockedMe, iBlocked } from "../state/social.js";
 import { Avatar, ConvAvatar, IdentityLine, IconBtn, Btn, Tag, KV, Reason } from "../ui/primitives.jsx";
 import { BlockModal } from "./BlockModal.jsx";
@@ -58,7 +58,7 @@ export function DetailsPanel({ conv }) {
         </ul>
         <KV
           rows={[
-            ["谁能看", conv.members.map((id) => nameOf(state, id)).join("、")],
+            ["谁能看", conv.members.map((id) => (isAgent(state, id) ? `${nameOf(state, id)}（Agent）` : nameOf(state, id))).join("、")],
             ...(agentChat ? [["不随关系获得", AGENT_NOT_GRANTED]] : []),
             ...modelRow,
           ]}

@@ -16,7 +16,7 @@ test("a picture opens a viewer in the same window: next, Esc, and the focus come
   const title = `看图${tag}`;
   await createGroupUi(ann.page, title, [bo.displayName, cy.displayName]);
   const pictures = [1, 2, 3].map((n) => ({ name: `图${n}-${tag}.png`, mimeType: "image/png", buffer: png(40 + n, 30) }));
-  for (const picture of pictures) await sendFile(ann.page, title, picture, "选择图片");
+  for (const picture of pictures) await sendFile(ann.page, title, picture, "选择图片或视频");
 
   const chat = await openChat(bo.page, title);
   const page = bo.page;

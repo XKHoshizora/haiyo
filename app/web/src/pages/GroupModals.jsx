@@ -240,7 +240,7 @@ export function LeaveModal({ conv, onLeave, onClose }) {
       <p>退出后你不会再收到这个群的消息，也看不到群里的历史消息；需要群里的人重新邀请你才能回来。</p>
       {creator && successor === null && (
         <Notice tone="warn">
-          {mineHere ? "你是群里的最后一位真人，退出后这个群会关闭。" : "你是群里的最后一位成员，退出后这个群会关闭。"}
+          {mineHere ? "群里除了 Agent 只剩你了，退出后这个群会关闭。" : "你是群里的最后一位成员，退出后这个群会关闭。"}
           {withMine}
         </Notice>
       )}

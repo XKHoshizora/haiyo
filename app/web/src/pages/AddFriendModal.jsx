@@ -62,7 +62,7 @@ export function AddFriendModal({ onClose, returnTo }) {
           <li>
             <Avatar id={found.id} size={48} />
             <div className="member-body">
-              <strong>{state.people[found.id]?.name ?? found.displayName}</strong> <Tag tone="human">真人</Tag>
+              <strong>{state.people[found.id]?.name ?? found.displayName}</strong>
               <p className="muted">@{found.handle}</p>
             </div>
             <div className="member-actions">

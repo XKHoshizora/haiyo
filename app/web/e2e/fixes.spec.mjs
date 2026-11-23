@@ -114,7 +114,7 @@ test("已读 is aligned to the body for an image and a file, and a group message
   await ann.page.setViewportSize({ width: 1280, height: 860 });
   const tag = uniq(4);
   const image = { name: `图-${tag}.png`, mimeType: "image/png", buffer: png(48, 32) };
-  await sendFile(ann.page, bo.displayName, image, "选择图片");
+  await sendFile(ann.page, bo.displayName, image, "选择图片或视频");
   const file = { name: `文件-${tag}.bin`, mimeType: "application/octet-stream", buffer: randomFile(2048) };
   await sendFile(ann.page, bo.displayName, file);
   for (const name of [image.name, file.name]) {
