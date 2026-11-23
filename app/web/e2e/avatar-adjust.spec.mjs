@@ -130,19 +130,28 @@ test("the picture's EXIF orientation is respected: a sideways photo is saved upr
   expect(bottom[1], "more blue at the bottom than at the top").toBeGreaterThan(top[1] + 80);
 });
 
-test("a picture over 8000 px a side is refused by its header with the size message, and a large one is worked with and saved", async ({ people }) => {
+test("no side is too long: a picture 8064 px wide (an iPhone's 48 MP photo is) is worked with; only one of more pixels than any camera makes is refused by its header; a large one is saved", async ({ people }) => {
   const ann = await people.member("Ann");
   await goTo(ann.page, "设置");
   const uploads = [];
   ann.page.on("request", (r) => r.method() === "PUT" && uploads.push(r.url()));
+  // A header that claims 20000 × 20000 (nothing behind it): refused before anything is decoded.
   const chooser = ann.page.waitForEvent("filechooser");
   await ann.page.getByRole("button", { name: "更换头像", exact: true }).click();
-  await (await chooser).setFiles({ name: "huge.png", mimeType: "image/png", buffer: png(8001, 6) });
+  const claimed = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from("IHDR"), Buffer.from([0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20, 8, 2, 0, 0, 0])]);
+  await (await chooser).setFiles({ name: "huge.png", mimeType: "image/png", buffer: claimed });
   const refused = ann.page.getByRole("dialog", { name: "调整头像" });
-  await expect(refused.getByRole("alert")).toHaveText("图片的边不能超过 8000 像素。");
+  await expect(refused.getByRole("alert")).toHaveText("图片太大（超过 3 亿像素），请换一张。");
   await refused.getByRole("button", { name: "知道了" }).click();
   await expect(refused).toBeHidden();
   expect(uploads).toEqual([]);
+
+  // 8064 px wide (over the old 8000 px rule): the dialog opens with its stage, and 取消 leaves.
+  const wide = await pickAvatarUi(ann.page, "更换头像", picture("wide.png", 8064, 2600));
+  await expect(wide.getByRole("group", { name: "头像取景框" })).toBeVisible();
+  await expect(wide.getByRole("alert")).toHaveCount(0);
+  await wide.getByRole("button", { name: "取消" }).click();
+  await expect(wide).toBeHidden();
 
   // 3000 × 2700: decoded at a reduced size (short side over 2560), still adjustable, saved as a 512 square.
   const dialog = await pickAvatarUi(ann.page, "更换头像", picture("large.png", 3000, 2700));

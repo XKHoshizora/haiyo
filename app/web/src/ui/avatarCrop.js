@@ -14,15 +14,20 @@ export const OUTPUT_SIZE = 512;
 /** Encoder qualities tried one after the other until the result fits the service's limit. */
 export const QUALITY_STEPS = [0.92, 0.85, 0.78, 0.7, 0.6, 0.5, 0.4, 0.3];
 /**
- * What the client accepts to start from: any picture this browser can decode, up to 20 MB and 8000 pixels a side. The file picker is
- * offered every picture (`PICK_ACCEPT`): a phone's photos are HEIC as often as JPEG, and whether one can be read is the decoder's
- * answer (avatarImage.js), not a list's — the original never leaves the device, only the 512 × 512 crop made from it.
+ * What the client accepts to start from: any picture this browser can decode, up to 20 MB. The file picker is offered every picture
+ * (`PICK_ACCEPT`): a phone's photos are HEIC as often as JPEG, and whether one can be read is the decoder's answer (avatarImage.js),
+ * not a list's — the original never leaves the device, only the 512 × 512 crop made from it. No side is too long: a large photo is
+ * decoded at a working size (`decodeResize`). The one size refused is a picture of more pixels than any camera makes
+ * (`MAX_PICK_PIXELS`), which a 20 MB file can still claim and no device could hold.
  */
 export const PICK_ACCEPT = "image/*";
-/** The names of pictures, for a file the browser gives no type for. */
+/** The names of pictures, for a file the browser gives no type for (or types as plain bytes). */
 const PICTURE_NAME = /\.(png|jpe?g|webp|heic|heif|avif|gif|bmp|tiff?)$/i;
+/** The types that say nothing of what the file is: the name is asked then. */
+const NO_TYPE = ["", "application/octet-stream"];
 export const MAX_PICK_BYTES = 20 * 1024 * 1024;
-export const MAX_PICK_SIDE = 8000;
+/** More pixels than this are not decoded (a phone's largest photo is 200 megapixels). */
+export const MAX_PICK_PIXELS = 300_000_000;
 /** What the service accepts as an avatar (it decides by the bytes): the saved result must fit. */
 export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
@@ -30,16 +35,19 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** The reason a picked file cannot be started from, or "" when it may be tried. */
 export function pickProblem(file) {
-  const picture = /^image\//.test(file.type) || (file.type === "" && PICTURE_NAME.test(file.name));
+  const picture = /^image\//.test(file.type) || (NO_TYPE.includes(file.type) && PICTURE_NAME.test(file.name));
   if (!picture) return "这个文件不是图片，请换一张。";
   if (file.size > MAX_PICK_BYTES) return "图片不能超过 20 MB。";
   return "";
 }
 
-/** The reason a decoded picture of `width` × `height` pixels is too large to work with, or "". */
+/** Whether a file is of a kind some browsers cannot open (HEIC, HEIF, AVIF, TIFF), by its type or its name: what a failed decode says depends on it. */
+export const mayBeUnknownFormat = (file) => /^image\/(hei[cf]|avif|tiff)/i.test(file.type ?? "") || /\.(heic|heif|avif|tiff?)$/i.test(file.name ?? "");
+
+/** The reason a picture of `width` × `height` pixels cannot be worked with, or "". */
 export function sizeProblem(width, height) {
   if (!(width >= 1 && height >= 1)) return "这张图片无法读取，请换一张。";
-  if (Math.max(width, height) > MAX_PICK_SIDE) return `图片的边不能超过 ${MAX_PICK_SIDE} 像素。`;
+  if (width * height > MAX_PICK_PIXELS) return "图片太大（超过 3 亿像素），请换一张。";
   return "";
 }
 
@@ -206,8 +214,9 @@ export function cropTransform(rect, out, orientation, width, height) {
 /**
  * The size `{width, height}` of the largest picture in an ISO container (HEIC, HEIF, AVIF: what a phone's camera saves) read from its
  * first bytes, or null when the bytes are not one or say no size. It is the size BEFORE the turn the file asks for (`irot`), and
- * a grid's tiles and a thumbnail have sizes of their own there (the whole picture is the largest): good for the size rule, which
- * asks only for the longest side, and for nothing else — `imageSize`, which the decode trusts for the picture's shape, says null.
+ * a grid's tiles and a thumbnail have sizes of their own there (the whole picture is the largest): good for the pixel bound and as
+ * the two shapes to try a working-size decode with (as stated, and turned: avatarImage.js `decodeContainer`) — `imageSize`, whose
+ * answer the decode trusts as the picture's stored shape, says null.
  */
 export function containerSize(bytes) {
   const n = bytes.length;
@@ -228,7 +237,8 @@ export function containerSize(bytes) {
 /**
  * The stored size `{width, height}` of a PNG, JPEG or WebP read from its first bytes, without decoding it, or null when the
  * header is not there (a format not known, cut off, damaged, a JPEG whose frame header lies beyond the bytes given). The
- * size rule is checked on this before a picture is decoded: a 20 MB file can hold a far larger picture than a device can.
+ * decode is sized by it (`decodeResize`), and the pixel bound is checked on it before a picture is decoded: a 20 MB file can
+ * claim a far larger picture than a device can hold.
  */
 export function imageSize(bytes) {
   const n = bytes.length;
@@ -288,11 +298,19 @@ export function imageSize(bytes) {
 /** The short side a decode needs at most: 512 pixels at the highest zoom. More is never seen in the saved picture. */
 export const DECODE_SHORT_SIDE = OUTPUT_SIZE * MAX_ZOOM;
 
+/** The pixels a working picture has at most: four squares of that short side (a 4 : 1 picture at full sharpness; a longer one is kept smaller). */
+export const MAX_WORK_PIXELS = DECODE_SHORT_SIDE * DECODE_SHORT_SIDE * 4;
+
 /**
- * How to decode a picture of `width` × `height` (as it will be upright) at a size that costs little: the one resize option
- * that brings its short side to `DECODE_SHORT_SIDE` (the other follows by the aspect ratio), or null when it is small enough.
+ * How to decode a picture of `width` × `height` (as it will be upright) at a size that costs little — the working picture, which
+ * stands in for the original (the crop is still reckoned in the original's pixels): the one resize option that brings its short side
+ * to `DECODE_SHORT_SIDE`, or lower for a very long picture so that the whole stays within `MAX_WORK_PIXELS` (the other side follows
+ * by the aspect ratio), or null when it is small enough as it is.
  */
 export function decodeResize(width, height) {
-  if (Math.min(width, height) <= DECODE_SHORT_SIDE) return null;
-  return width <= height ? { resizeWidth: DECODE_SHORT_SIDE } : { resizeHeight: DECODE_SHORT_SIDE };
+  const short = Math.min(width, height);
+  const k = Math.min(1, DECODE_SHORT_SIDE / short, Math.sqrt(MAX_WORK_PIXELS / (width * height)));
+  if (!(k < 1)) return null;
+  const side = Math.max(1, Math.round(short * k));
+  return width <= height ? { resizeWidth: side } : { resizeHeight: side };
 }

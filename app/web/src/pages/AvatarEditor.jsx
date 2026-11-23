@@ -84,8 +84,9 @@ export function AvatarEditor({
     if (!file) return;
     const problem = pickProblem(file);
     setError(problem);
-    // A refusal is said twice: in the line under the buttons, which stays, and as a notice — on a phone the line is small and, coming
-    // back from the photo picker, easy to take for "nothing happened" (and to pick again).
+    // A refusal is shown twice: in the line under the buttons, which stays, and as a notice — on a phone the line is small and, coming
+    // back from the photo picker, easy to take for "nothing happened" (and to pick again). It is read out once: by the notice (the
+    // line is no alert of its own), every time, also for the same file picked again.
     if (problem) dispatch({ type: "toast", text: problem });
     else setPicked(file);
   };
@@ -149,7 +150,7 @@ export function AvatarEditor({
         <input ref={inputRef} type="file" accept={PICK_ACCEPT} hidden aria-label="选择头像图片" onChange={choose} />
         {buttons}
       </div>
-      <p className={error ? "field-msg" : "field-hint"} role={error ? "alert" : undefined}>
+      <p className={error ? "field-msg" : "field-hint"}>
         {error || hint || (holding ? `${limits}不选择则使用默认头像。` : limits)}
       </p>
       {/* In the body, not inside a form around this (Enter on the slider would submit it). */}

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ANN, BO, D1, G1, ME, ME_ID, apiError, deferred, direct, emptySocial, fakeFile, group, syncOf, wire } from "./fixtures.js";
 import { decodeAvatar, fake, resetFake } from "./avatar-fake.js";
-import { DORA, NOW, PEOPLE, button, click, dialog, flush, goContacts, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
+import { DORA, NOW, PEOPLE, button, click, dialog, elapse, flush, goContacts, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
 
 beforeEach(() => {
   resetFake();
@@ -227,8 +227,18 @@ describe("avatar", () => {
     expect(line()).toBeNull();
     await choose(fakeFile("a.pdf", 100, "application/pdf"));
     expect(line().textContent).toBe("这个文件不是图片，请换一张。");
-    expect(line().getAttribute("role")).toBe("alert");
+    // (Read out once: the notice speaks; the line that stays is not a second alert.)
+    expect(line().getAttribute("role")).toBeNull();
     expect(toastText()).toBe("这个文件不是图片，请换一张。");
+    // The same file picked again is refused again where it cannot be missed: a new notice, not the old one left standing.
+    const first = document.querySelector(".toast");
+    await elapse(60_000);
+    expect(document.querySelector(".toast")).toBeNull();
+    expect(line().textContent).toBe("这个文件不是图片，请换一张。");
+    await choose(fakeFile("a.pdf", 100, "application/pdf"));
+    expect(toastText()).toBe("这个文件不是图片，请换一张。");
+    expect(document.querySelector(".toast")).not.toBe(first);
+    expect(line().textContent).toBe("这个文件不是图片，请换一张。");
     await choose(fakeFile("notes.txt", 100, ""));
     expect(line().textContent).toBe("这个文件不是图片，请换一张。");
     await choose(fakeFile("big.png", 20 * 1024 * 1024 + 1, "image/png"));

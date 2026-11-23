@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_PICK_BYTES,
+  MAX_PICK_PIXELS,
+  MAX_WORK_PIXELS,
   MAX_ZOOM,
   MIN_ZOOM,
   OUTPUT_SIZE,
@@ -48,16 +50,17 @@ describe("what may be picked", () => {
     for (const type of ["image/jpeg", "image/webp", "image/heic", "image/heif", "image/heic-sequence", "image/avif", "image/gif", "image/bmp", "image/tiff"]) expect(pickProblem(file("IMG_0101", 5, type)), type).toBe("");
     // (A browser that does not know the type gives none: the name says it.)
     for (const name of ["a.JPEG", "a.jpg", "a.png", "a.webp", "IMG_0101.HEIC", "IMG_0102.heif", "a.avif", "a.gif", "a.bmp"]) expect(pickProblem(file(name, 5, "")), name).toBe("");
-    for (const [name, type] of [["a.txt", ""], ["a", ""], ["heic", ""], ["a.pdf", "application/pdf"], ["a.mov", "video/quicktime"], ["a.png", "text/plain"], ["a.heic.zip", ""]]) expect(pickProblem(file(name, 5, type)), `${name} ${type}`).toBe("这个文件不是图片，请换一张。");
+    // (Some pickers type a file they do not know as plain bytes: the name says it then too.)
+    for (const name of ["IMG_0101.HEIC", "a.jpg", "a.avif"]) expect(pickProblem(file(name, 5, "application/octet-stream")), name).toBe("");
+    for (const [name, type] of [["a.txt", ""], ["a", ""], ["heic", ""], ["a.pdf", "application/pdf"], ["a.mov", "video/quicktime"], ["a.png", "text/plain"], ["a.heic.zip", ""], ["a.bin", "application/octet-stream"], ["a.zip", "application/octet-stream"]]) expect(pickProblem(file(name, 5, type)), `${name} ${type}`).toBe("这个文件不是图片，请换一张。");
     expect(pickProblem(file("big.png", MAX_PICK_BYTES + 1, "image/png"))).toBe("图片不能超过 20 MB。");
     expect(pickProblem(file("IMG_0101.HEIC", MAX_PICK_BYTES + 1, "image/heic"))).toBe("图片不能超过 20 MB。");
   });
 
-  it("up to 8000 pixels a side, with a clear message beyond that or for nothing readable", () => {
-    expect(sizeProblem(8000, 8000)).toBe("");
-    expect(sizeProblem(1, 1)).toBe("");
-    expect(sizeProblem(8001, 100)).toBe("图片的边不能超过 8000 像素。");
-    expect(sizeProblem(100, 9000)).toBe("图片的边不能超过 8000 像素。");
+  it("no side is too long — a phone's 48 and 200 megapixel photos, a panorama; only a picture of more pixels than any camera makes is refused, and one with no size", () => {
+    expect(MAX_PICK_PIXELS).toBe(300_000_000);
+    for (const [w, h] of [[1, 1], [8000, 8000], [8064, 6048], [6048, 8064], [12000, 9000], [16320, 12240], [30000, 2000], [15000, 20000]]) expect(sizeProblem(w, h), `${w}x${h}`).toBe("");
+    for (const [w, h] of [[20000, 15001], [17321, 17321], [65535, 65535]]) expect(sizeProblem(w, h), `${w}x${h}`).toBe("图片太大（超过 3 亿像素），请换一张。");
     expect(sizeProblem(0, 100)).toBe("这张图片无法读取，请换一张。");
     expect(sizeProblem(NaN, 100)).toBe("这张图片无法读取，请换一张。");
   });
@@ -355,6 +358,28 @@ describe("the size, from the header bytes", () => {
     expect(decodeResize(DECODE_SHORT_SIDE, 8000)).toBeNull();
     expect(decodeResize(DECODE_SHORT_SIDE + 1, 8000)).toEqual({ resizeWidth: DECODE_SHORT_SIDE });
     expect(decodeResize(99, 100)).toBeNull();
+    // A phone's largest photos, either way up.
+    expect(decodeResize(8064, 6048)).toEqual({ resizeHeight: DECODE_SHORT_SIDE });
+    expect(decodeResize(6048, 8064)).toEqual({ resizeWidth: DECODE_SHORT_SIDE });
+    expect(decodeResize(16320, 12240)).toEqual({ resizeHeight: DECODE_SHORT_SIDE });
+  });
+
+  it("a very long picture (a panorama) is also kept to a working size: never more pixels than four squares of that short side", () => {
+    expect(MAX_WORK_PIXELS).toBe(DECODE_SHORT_SIDE * DECODE_SHORT_SIDE * 4);
+    // Up to 4 : 1 the short side alone decides.
+    expect(decodeResize(DECODE_SHORT_SIDE * 8, DECODE_SHORT_SIDE * 2)).toEqual({ resizeHeight: DECODE_SHORT_SIDE });
+    // Longer than that: the short side shrinks so that the whole stays within the bound.
+    for (const [w, h] of [[30000, 2000], [2000, 30000], [60000, 4000], [20000, 2560], [65535, 1000]]) {
+      const resize = decodeResize(w, h);
+      const short = resize.resizeWidth ?? resize.resizeHeight;
+      expect(Object.keys(resize), `${w}x${h}`).toEqual([w <= h ? "resizeWidth" : "resizeHeight"]);
+      expect(Number.isInteger(short) && short >= 1 && short <= DECODE_SHORT_SIDE, `${w}x${h}`).toBe(true);
+      const long = (short * Math.max(w, h)) / Math.min(w, h);
+      expect(short * long, `${w}x${h}`).toBeLessThanOrEqual(MAX_WORK_PIXELS * 1.01);
+      expect(short * long, `${w}x${h}`).toBeGreaterThan(MAX_WORK_PIXELS * 0.9);
+    }
+    // A long picture that is small anyway is left alone.
+    expect(decodeResize(20000, 1000)).toBeNull();
   });
 });
 
@@ -400,29 +425,133 @@ describe("decoding a picked picture (the real src/ui/avatarImage.js, with the br
   afterEach(() => vi.unstubAllGlobals());
   const bitmap = (width, height) => ({ width, height, close: vi.fn() });
 
-  it("a HEIC larger than 8000 pixels a side is refused from its header with the size sentence: nothing is decoded", async () => {
-    for (const [w, h] of [[8001, 100], [100, 8001], [12000, 9000]]) await expect(decodeAvatar(heicFile(w, h)), `${w}x${h}`).rejects.toMatchObject({ text: "图片的边不能超过 8000 像素。" });
+  const be16 = (v) => [(v >> 8) & 255, v & 255];
+  /** A JPEG's start with its frame header (no EXIF), then padding: enough for the size to be read. */
+  const jpegFile = (w, h) => new File([Uint8Array.from([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, ...be16(h), ...be16(w), 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xda, 0, 2]), new Uint8Array(64)], "IMG_0202.JPG", { type: "image/jpeg" });
+  const pngFile = (w, h) => new File([Uint8Array.from([0x89, ...chars("PNG"), 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, ...chars("IHDR"), ...be32(w), ...be32(h), 8, 2, 0, 0, 0])], "a.png", { type: "image/png" });
+  const SMALL = { resizeQuality: "high" };
+  /** A canvas that records what is drawn into it (this file runs without a DOM), put where the crop makes its own. */
+  const fakeCanvas = () => {
+    const ctx = { setTransform: vi.fn(), drawImage: vi.fn(), fillRect: vi.fn() };
+    const canvas = { width: 0, height: 0, getContext: () => ctx, toBlob: (done, type) => done(new Blob(["crop"], { type })) };
+    vi.stubGlobal("document", { createElement: () => canvas });
+    return { canvas, ctx };
+  };
+
+  it("an iPhone's 48 megapixel photo (8064 × 6048) and a 12000 × 9000 one, JPEG: decoded once at a working size, and the picture keeps the original's size", async () => {
+    for (const [w, h] of [[8064, 6048], [12000, 9000]]) {
+      decoder.mockReset();
+      const small = bitmap(Math.round((w * 2560) / h), 2560);
+      decoder.mockResolvedValue(small);
+      const file = jpegFile(w, h);
+      const image = await decodeAvatar(file);
+      expect({ width: image.width, height: image.height }, `${w}x${h}`).toEqual({ width: w, height: h });
+      expect(decoder.mock.calls).toEqual([[file, { resizeHeight: 2560, ...SMALL }]]);
+      expect(small.close).not.toHaveBeenCalled();
+    }
+  });
+
+  it("the crop of a large photo is cut from the working picture by the original's coordinates: the working bitmap is laid over the original's size, then the square is taken", async () => {
+    const small = bitmap(3413, 2560);
+    decoder.mockResolvedValue(small);
+    const image = await decodeAvatar(jpegFile(12000, 9000));
+    const { ctx, canvas } = fakeCanvas();
+    // Zoomed in twice on a point right of the centre: a square of 4500 original pixels around (7000, 4500).
+    const view = { zoom: 2, cx: 7000, cy: 4500 };
+    const saved = await image.crop(view);
+    expect(sourceRect(view, 12000, 9000)).toEqual({ x: 4750, y: 2250, size: 4500 });
+    expect(ctx.setTransform).toHaveBeenCalledWith(...cropTransform({ x: 4750, y: 2250, size: 4500 }, OUTPUT_SIZE, 1, 12000, 9000));
+    expect(ctx.drawImage).toHaveBeenCalledWith(small, 0, 0, 3413, 2560, 0, 0, 12000, 9000);
+    expect([canvas.width, canvas.height]).toEqual([OUTPUT_SIZE, OUTPUT_SIZE]);
+    expect([saved.name, saved.type]).toEqual(["avatar.webp", "image/webp"]);
+    // Where a point of the working bitmap lands: the original's (7000, 4500) is the output's centre.
+    const [a, , , d, e, f] = ctx.setTransform.mock.calls[0];
+    near(a * 7000 + e, OUTPUT_SIZE / 2);
+    near(d * 4500 + f, OUTPUT_SIZE / 2);
+  });
+
+  it("a HEIC of 8064 × 6048 and of 12000 × 9000 stored upright: decoded once at a working size (nothing is refused for its size)", async () => {
+    for (const [w, h] of [[8064, 6048], [12000, 9000]]) {
+      decoder.mockReset();
+      decoder.mockResolvedValue(bitmap(3413, 2560));
+      const file = heicFile(w, h);
+      const image = await decodeAvatar(file);
+      expect({ width: image.width, height: image.height }, `${w}x${h}`).toEqual({ width: w, height: h });
+      expect(decoder.mock.calls).toEqual([[file, { resizeHeight: 2560, ...SMALL }]]);
+    }
+  });
+
+  it("a HEIC the file turns on its side (a portrait photo: the header's size is before the turn): the first try shows the turn, the second is decoded for it, upright and at the working size", async () => {
+    // The browser applies the file's turn: the picture is 6048 × 8064 whatever the header's 8064 × 6048 says.
+    const tries = [];
+    decoder.mockImplementation(async (_file, options) => {
+      const made = options.resizeHeight ? bitmap(Math.round((6048 * options.resizeHeight) / 8064), options.resizeHeight) : bitmap(options.resizeWidth, Math.round((8064 * options.resizeWidth) / 6048));
+      tries.push(made);
+      return made;
+    });
+    const file = heicFile(8064, 6048);
+    const image = await decodeAvatar(file);
+    expect({ width: image.width, height: image.height }).toEqual({ width: 6048, height: 8064 });
+    expect(decoder.mock.calls).toEqual([[file, { resizeHeight: 2560, ...SMALL }], [file, { resizeWidth: 2560, ...SMALL }]]);
+    expect([tries[0].width, tries[0].height]).toEqual([1920, 2560]);
+    expect(tries[0].close).toHaveBeenCalledTimes(1); // the first try is released
+    expect([tries[1].width, tries[1].height]).toEqual([2560, 3413]);
+    expect(tries[1].close).not.toHaveBeenCalled();
+    const { ctx } = fakeCanvas();
+    await image.crop({ zoom: 1, cx: 3024, cy: 4032 });
+    expect(ctx.drawImage).toHaveBeenCalledWith(tries[1], 0, 0, 2560, 3413, 0, 0, 6048, 8064);
+  });
+
+  it("a small HEIC is decoded whole, and its size and shape are the decoded picture's", async () => {
+    decoder.mockResolvedValue(bitmap(900, 1200));
+    const file = heicFile(1200, 900);
+    const image = await decodeAvatar(file);
+    expect({ width: image.width, height: image.height }).toEqual({ width: 900, height: 1200 });
+    expect(decoder.mock.calls).toEqual([[file]]);
+  });
+
+  it("a browser without the resize options: the whole picture is decoded instead, JPEG and HEIC alike, and still nothing is refused for its size", async () => {
+    for (const file of [jpegFile(8064, 6048), heicFile(8064, 6048)]) {
+      decoder.mockReset();
+      const whole = bitmap(8064, 6048);
+      decoder.mockImplementation(async (_file, options) => {
+        if (options) throw new TypeError("no options here");
+        return whole;
+      });
+      const image = await decodeAvatar(file);
+      expect({ width: image.width, height: image.height }, file.name).toEqual({ width: 8064, height: 6048 });
+      expect(decoder.mock.calls.at(-1)).toEqual([file]);
+      const { ctx } = fakeCanvas();
+      await image.crop({ zoom: 1, cx: 4032, cy: 3024 });
+      expect(ctx.drawImage).toHaveBeenCalledWith(whole, 0, 0, 8064, 6048, 0, 0, 8064, 6048);
+    }
+  });
+
+  it("a picture whose header is not read (a BMP, a GIF) is decoded whole, however long a side is", async () => {
+    const wide = bitmap(9000, 100);
+    decoder.mockResolvedValue(wide);
+    const file = new File([new Uint8Array(40)], "a.bmp", { type: "image/bmp" });
+    const image = await decodeAvatar(file);
+    expect({ width: image.width, height: image.height }).toEqual({ width: 9000, height: 100 });
+    expect(decoder.mock.calls).toEqual([[file]]);
+    expect(wide.close).not.toHaveBeenCalled();
+  });
+
+  it("a picture of more pixels than any camera makes is refused from its header, PNG and HEIC: nothing is decoded", async () => {
+    for (const file of [pngFile(20000, 15001), heicFile(20000, 15001), pngFile(60000, 60000)]) await expect(decodeAvatar(file), file.name).rejects.toMatchObject({ text: "图片太大（超过 3 亿像素），请换一张。" });
     expect(decoder).not.toHaveBeenCalled();
   });
 
-  it("a HEIC within the limit is decoded whole, and its size and shape are the decoded picture's (the browser turns it; the header's size is before the turn)", async () => {
-    decoder.mockResolvedValue(bitmap(3024, 4032));
-    const file = heicFile(4032, 3024);
-    const image = await decodeAvatar(file);
-    expect({ width: image.width, height: image.height }).toEqual({ width: 3024, height: 4032 });
-    expect(decoder).toHaveBeenCalledTimes(1);
-    expect(decoder.mock.calls[0]).toEqual([file]);
-  });
-
-  it("a picture whose header says nothing and that decodes larger than the limit: the size sentence, and the decoded picture is released", async () => {
-    const big = bitmap(9000, 100);
-    decoder.mockResolvedValue(big);
-    await expect(decodeAvatar(new File([new Uint8Array(40)], "a.bmp", { type: "image/bmp" }))).rejects.toMatchObject({ text: "图片的边不能超过 8000 像素。" });
-    expect(big.close).toHaveBeenCalledTimes(1);
-  });
-
-  it("a picture this browser cannot decode (a HEIC outside Safari, a damaged file): the sentence that says so", async () => {
+  it("a picture this browser cannot decode: a format it may not know (HEIC, HEIF, AVIF, TIFF, by type or by name) says to use JPG or PNG; any other, that it cannot be read", async () => {
     decoder.mockRejectedValue(new Error("InvalidStateError"));
-    await expect(decodeAvatar(heicFile(4032, 3024))).rejects.toMatchObject({ text: "这张图片无法读取，请换一张。" });
+    const other = "这个浏览器打不开这张图片，请换成 JPG 或 PNG 格式。";
+    await expect(decodeAvatar(heicFile(4032, 3024))).rejects.toMatchObject({ text: other });
+    await expect(decodeAvatar(heicFile(1200, 900))).rejects.toMatchObject({ text: other });
+    for (const [name, type] of [["a.heif", "image/heif"], ["a.avif", "image/avif"], ["a.tiff", "image/tiff"], ["IMG_1.HEIC", ""], ["IMG_1.HEIC", "application/octet-stream"], ["scan.TIF", ""]]) {
+      await expect(decodeAvatar(new File([new Uint8Array(40)], name, { type })), `${name} ${type}`).rejects.toMatchObject({ text: other });
+    }
+    for (const file of [jpegFile(640, 480), jpegFile(8064, 6048), pngFile(640, 480), new File([new Uint8Array(40)], "a.gif", { type: "image/gif" })]) {
+      await expect(decodeAvatar(file), file.name).rejects.toMatchObject({ text: "这张图片无法读取，请换一张。" });
+    }
   });
 });
