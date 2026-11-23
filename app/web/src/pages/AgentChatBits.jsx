@@ -13,7 +13,7 @@ import { CitesContext } from "../ui/cites.jsx";
 import { REVEAL_END_MS, REVEAL_FINISH_MS } from "../ui/reveal.js";
 import { Avatar, Btn, Field, IconBtn, Modal, Notice, Reason, Tag, focusInvalid } from "../ui/primitives.jsx";
 import { refusalText, settled, useAction, useNow } from "./useAction.js";
-import { openModelChoice } from "./ModelPicker.jsx";
+import { agentLevel, openModelChoice } from "./ModelPicker.jsx";
 import { RotateCw, Sparkles, Square, X } from "../icons.js";
 
 /** The pause notice of a paused Agent (as on its detail page). */
@@ -248,7 +248,9 @@ export function StreamBubble({ conv, finishing = null, onReveal = null, onFinish
   const stream = finishing ? finishing.stream : conv.stream;
   const text = stream?.text ?? "";
   const reasoning = stream?.reasoning ?? "";
-  const thinks = (state.agents[conv.agentId]?.reasoning ?? "none") !== "none";
+  // Whether this reply thinks: by the level it runs at (what its model lists, `agentLevel`), not the saved one.
+  const agent = state.agents[conv.agentId];
+  const thinks = (agent ? agentLevel(state, agent) : "none") !== "none";
   const thinking = thinks && !text;
   const clock = useRunClock(run.id, text);
   const seconds = useThinkingSeconds(clock.start, thinking);

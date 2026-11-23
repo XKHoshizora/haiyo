@@ -671,7 +671,9 @@ describe("思考程度", () => {
     pickOption(inMain().getByLabelText("思考程度"), "max");
     await chooseModel("大模型 · 需余额");
     expect(inMain().getByLabelText("思考程度").value).toBe("high");
+    // (The level I picked is not forgotten by a model that could not take it: back on one that lists it, it is 最高 again.)
     await chooseModel("gpt-x");
+    expect(inMain().getByLabelText("思考程度").value).toBe("max");
     pickOption(inMain().getByLabelText("思考程度"), "medium");
     await chooseModel("大模型 · 需余额");
     expect(inMain().getByLabelText("思考程度").value).toBe("low");
@@ -736,6 +738,25 @@ describe("思考程度", () => {
       await click(inMain().getByRole("button", { name: "保存" }));
       expect(patchAgent).toHaveBeenCalledTimes(1);
       expect(patchAgent.mock.calls[0][1]).toEqual({ intro: "新简介" });
+    });
+
+    it("another model picked and the first picked again is no change of mine: the saved level is not sent; saved on the other model, the level goes with it", async () => {
+      const { patchAgent } = await open(onProvider("xhigh"), [narrowed(["low", "medium"])]);
+      await edit();
+      await chooseModel("大模型 · 需余额");
+      expect(inMain().getByLabelText("思考程度").value).toBe("high");
+      await chooseModel("gpt-x");
+      expect(inMain().getByLabelText("思考程度").value).toBe("medium");
+      type("简介", "新简介");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(patchAgent.mock.calls[0][1]).toEqual({ intro: "新简介" });
+      cleanup();
+      // Saved on the other model: the model and the level it will run at there go together (the service checks them together).
+      const second = await open(onProvider("xhigh"), [narrowed(["low", "medium"])]);
+      await edit();
+      await chooseModel("大模型 · 需余额");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(second.patchAgent.mock.calls[0][1]).toEqual({ model: { source: "site", id: "paid-1" }, reasoning: "high" });
     });
 
     it("the level I pick there is sent, also the one already shown", async () => {

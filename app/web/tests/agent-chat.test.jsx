@@ -843,9 +843,28 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     R1 = `00000000-0000-4000-8000-0000000002${String(runs).padStart(2, "0")}`;
   });
   const deltaPush = (transport, fields) => push(transport, { type: "delta", conversationId: A1, runId: R1, ...fields });
+  /** An Agent that thinks: a level its model lists (大模型 lists 低 and 高). */
+  const THINKS = { model: SITE_PAID, reasoning: "high" };
+
+  it("the level that counts is the one it runs at: a saved level its model no longer lists, with none below it, is a reply without thinking — 正在回复…, never 正在思考…", async () => {
+    // 小模型 lists no level: a saved 高 runs at 不思考 (the service's `callLevel`), and the bubble says so.
+    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    await runPush(transport, runOf(R1, "running"));
+    expect(bubbleText()).toContain("正在回复");
+    expect(bubbleText()).not.toContain("正在思考");
+    await elapse(2000);
+    expect(bubbleText()).not.toContain("正在思考");
+    expect(bubbleText()).not.toContain("秒");
+  });
+
+  it("a saved level above what its model lists still thinks, at the nearest level below (最高 on 大模型 runs at 高)", async () => {
+    const { transport } = await openAgentChat({ agent: { model: SITE_PAID, reasoning: "max" } });
+    await runPush(transport, runOf(R1, "running"));
+    expect(bubbleText()).toContain("正在思考…");
+  });
 
   it("正在思考… counts whole seconds until the first piece of the reply; streamed thinking takes the line as its header", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    const { transport } = await openAgentChat({ agent: THINKS });
     await runPush(transport, runOf(R1, "running"));
     expect(bubbleText()).toContain("正在思考…");
     expect(bubbleText()).not.toContain("秒");
@@ -883,7 +902,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("思考了 N 秒 is at least 1; the reader can open the folded thinking again", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    const { transport } = await openAgentChat({ agent: THINKS });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "嗯" });
     await elapse(300);
@@ -900,7 +919,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("is folded while it streams; the reader's own open or close is kept: not folded at the text, not opened by more of it", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    const { transport } = await openAgentChat({ agent: THINKS });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "第一步" });
     const details = () => bubbleLi().querySelector("details");
@@ -933,7 +952,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("what the reader did with the thinking is kept when the bubble is made again (the conversation left and opened again), while it thinks and after its text started", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" }, extra: [direct(D1, ANN)] });
+    const { transport } = await openAgentChat({ agent: THINKS, extra: [direct(D1, ANN)] });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "第一步" });
     const details = () => bubbleLi().querySelector("details");
@@ -963,7 +982,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("thinking the reader has open stays open when the stored reply takes the bubble's place; folded again once the conversation was left", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" }, extra: [direct(D1, ANN)] });
+    const { transport } = await openAgentChat({ agent: THINKS, extra: [direct(D1, ANN)] });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "第一步，第二步" });
     await click(bubbleLi().querySelector("details > summary"));
@@ -989,7 +1008,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("…also when the bubble finishes revealing before it gives way; thinking the reader left folded, or folded again, stays folded", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    const { transport } = await openAgentChat({ agent: THINKS });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "第一步" });
     await click(bubbleLi().querySelector("details > summary"));
@@ -1022,7 +1041,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("a new reply's thinking starts folded, whatever the reader did with the one before", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    const { transport } = await openAgentChat({ agent: THINKS });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "第一步" });
     await click(bubbleLi().querySelector("details > summary"));
@@ -1037,7 +1056,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("when the first piece of the text came while the conversation was not shown, the header says 思考过程", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" }, extra: [direct(D1, ANN)] });
+    const { transport } = await openAgentChat({ agent: THINKS, extra: [direct(D1, ANN)] });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "想" });
     await click(screen.getByText("小安", { selector: ".list-col .row-name" }));
@@ -1048,7 +1067,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("counts from when the reply was first seen here, also across leaving the conversation and coming back", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "low" }, extra: [direct(D1, ANN)] });
+    const { transport } = await openAgentChat({ agent: { model: SITE_PAID, reasoning: "low" }, extra: [direct(D1, ANN)] });
     await runPush(transport, runOf(R1, "queued"));
     await elapse(2000);
     await runPush(transport, runOf(R1, "running"));
@@ -1083,7 +1102,7 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
   });
 
   it("the thinking a reader opened while it streams grows by appending what came to one text node; its whole text is never set again", async () => {
-    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    const { transport } = await openAgentChat({ agent: THINKS });
     await runPush(transport, runOf(R1, "running"));
     let full = "想".repeat(5000);
     await deltaPush(transport, { reasoning: full });

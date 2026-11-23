@@ -381,12 +381,11 @@ export function AgentForm({ agent = null }) {
     if (refusal?.code === "handle_taken") setRefusal(null);
   };
   const setModel = (key) => {
-    const next = options.find((o) => o.key === key);
-    const level = next ? effectiveLevel(next.levels, f.reasoning) : "none";
     edited.current.add("model");
-    // A level the new model does not list becomes the nearest below it that it does, and that is a change of mine too.
-    if (level !== f.reasoning) edited.current.add("reasoning");
-    setF((cur) => ({ ...cur, model: key, reasoning: level }));
+    // The level is not touched by it: `f.reasoning` stays the one saved or picked, and what shows (and is sent with a new model) is
+    // the level that runs on the model chosen now (`effectiveLevel`, above). So a model picked and the first picked again changes
+    // nothing, and the level I picked comes back on a model that lists it.
+    setF((cur) => ({ ...cur, model: key }));
   };
   const setPersona = (event) => {
     const value = event.target.value;
