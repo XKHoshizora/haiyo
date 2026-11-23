@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentErrorText, dayText, friendErrorText, groupErrorText, noQuotaText, profileErrorText, providerErrorText, replyErrorText, runFailureText } from "../src/data/errorTexts.js";
+import { agentErrorText, dayText, friendErrorText, groupErrorText, noQuotaText, profileErrorText, noModelList, providerErrorText, replyErrorText, runFailureText } from "../src/data/errorTexts.js";
 
 const GENERIC = "操作没有成功，请稍后再试。";
 const err = (code, status = 400) => ({ code, status, reason: null });
@@ -155,7 +155,7 @@ describe("the sentences batch 2A names", () => {
     // A saved key that can no longer be opened is answered provider_rejected too: the sentence asks for the key again.
     expect(providerErrorText("test", err("provider_rejected"))).toBe("供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。");
     expect(providerErrorText("list", err("provider_rejected"))).toBe("供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。");
-    expect(providerErrorText("test", err("provider_unavailable"))).toBe("暂时连不上供应商，或它没有给出可用的回答，请稍后再试。");
+    expect(providerErrorText("test", err("provider_unavailable"))).toBe("没能从供应商得到回答。请检查接口地址，稍后再试。");
     expect(agentErrorText("draft", err("busy", 503))).toBe("服务现在有点忙，请稍后再试。");
     // A 404 on the reply routes is "not yours / not here", never "it has ended".
     for (const route of ["stop", "retry", "dismiss", "topic"]) expect(replyErrorText(route, err("not_found", 404))).toBe("找不到要操作的内容，它可能已经不存在了。");
@@ -180,19 +180,39 @@ describe("the sentences batch 2A names", () => {
     expect(providerErrorText("delete", { code: "provider_in_use", status: 409 })).toBe("还有 Agent 在使用这个供应商，请先给它们换一个模型。");
   });
 
-  it("测试连接: the provider's status is added when there is one; 404 or 405 means it has no model list", () => {
-    const tested = (code, upstreamStatus) => providerErrorText("test", { code, status: 200, reason: null, upstreamStatus });
-    expect(tested("provider_unavailable", "500")).toBe("暂时连不上供应商，或它没有给出可用的回答，请稍后再试。（供应商返回的状态码：500）");
-    expect(tested("provider_rejected", "403")).toBe("供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。（供应商返回的状态码：403）");
-    for (const status of ["404", "405"]) {
-      expect(tested("provider_unavailable", status)).toBe(
-        `这个供应商没有提供模型列表（状态码 ${status}），所以没能确认密钥是否可用。对话可能仍然可以使用，模型名称需要手动添加。`,
-      );
+  // One mapping from what the provider's address did to a sentence, for 测试连接 and 同步模型 alike: an answer (any HTTP status) is
+  // said to be an answer; only no answer at all is "连不上".
+  const CLASSES = [
+    ["404, not offered", "provider_unavailable", "404", "供应商有回应，但这个地址没有模型列表（404）。可以手动添加模型。"],
+    ["405, not offered", "provider_unavailable", "405", "供应商有回应，但这个地址没有模型列表（405）。可以手动添加模型。"],
+    ["401, key refused", "provider_rejected", "401", "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。（供应商返回的状态码：401）"],
+    ["403, key refused", "provider_rejected", "403", "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。（供应商返回的状态码：403）"],
+    ["key refused, no status (a saved key that cannot be opened)", "provider_rejected", undefined, "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。"],
+    ["429, too many", "provider_unavailable", "429", "供应商说请求太频繁（429），请稍后再试。"],
+    ["500, its own trouble", "provider_unavailable", "500", "供应商那边出了问题（500），请稍后再试。"],
+    ["503, its own trouble", "provider_unavailable", "503", "供应商那边出了问题（503），请稍后再试。"],
+    ["200, not a list", "provider_unavailable", "200", "供应商有回应，但回应里没有模型列表。可以手动添加模型。"],
+    ["400, any other answer", "provider_unavailable", "400", "供应商没有给出模型列表（400）。可以手动添加模型。"],
+    ["no answer (timeout, DNS, TLS, a redirect)", "provider_unavailable", undefined, "没能从供应商得到回答。请检查接口地址，稍后再试。"],
+    ["a status that is no number is never shown", "provider_unavailable", "<b>oops</b>", "没能从供应商得到回答。请检查接口地址，稍后再试。"],
+    ["address refused", "address_not_allowed", undefined, "这个接口地址不被允许：需要是 https 开头的公网地址。"],
+  ];
+
+  it("测试连接 and 同步模型: one sentence per class of what the address did, the same for both", () => {
+    for (const [label, code, upstreamStatus, sentence] of CLASSES) {
+      const error = { code, status: 200, reason: null, upstreamStatus };
+      expect([label, providerErrorText("test", error)]).toEqual([label, sentence]);
+      // In the 同步模型 dialog the "other answer" class is followed by the dialog's own add-by-hand line: said once there.
+      expect([label, providerErrorText("list", error)]).toEqual([label, label.startsWith("400") ? sentence.replace("可以手动添加模型。", "") : sentence]);
     }
-    expect(tested("provider_unavailable", undefined)).toBe("暂时连不上供应商，或它没有给出可用的回答，请稍后再试。");
-    // Only a status number is ever added: anything else the answer might carry is not shown.
-    expect(tested("provider_unavailable", "<b>oops</b>")).toBe("暂时连不上供应商，或它没有给出可用的回答，请稍后再试。");
-    expect(tested("address_not_allowed", undefined)).toBe("这个接口地址不被允许：需要是 https 开头的公网地址。");
+  });
+
+  it("noModelList: only an answer that says the address has no list (404, 405, a 200 that is none)", () => {
+    const of = (code, upstreamStatus) => noModelList({ code, status: 200, reason: null, upstreamStatus });
+    expect(["404", "405", "200"].map((s) => of("provider_unavailable", s))).toEqual([true, true, true]);
+    expect([of("provider_unavailable", "500"), of("provider_unavailable", "429"), of("provider_unavailable", undefined), of("provider_rejected", "404"), of("address_not_allowed", undefined), noModelList(undefined)]).toEqual([
+      false, false, false, false, false, false,
+    ]);
   });
 
   it("同步模型 (the model list) says what 测试连接 says, the provider's status and the missing model list included", () => {

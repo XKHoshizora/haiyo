@@ -391,14 +391,32 @@ export function providerErrorText(action, error) {
       : "还有 Agent 在使用这个供应商，请先给它们换一个模型。";
   }
   const text = pick(PROVIDER, action, error);
+  if (!WITH_STATUS.has(action)) return text;
   // The sentence only ever names a status number; what else the provider said is shown apart, as 详情 (the `detail` of the answer, Providers.jsx).
-  const status = WITH_STATUS.has(action) && /^\d{3}$/.test(error?.upstreamStatus ?? "") ? error.upstreamStatus : null;
-  if (!status) return text;
-  if (error.code === "provider_unavailable" && (status === "404" || status === "405")) {
-    return `这个供应商没有提供模型列表（状态码 ${status}），所以没能确认密钥是否可用。对话可能仍然可以使用，模型名称需要手动添加。`;
-  }
-  return `${text}（供应商返回的状态码：${status}）`;
+  const status = /^\d{3}$/.test(error?.upstreamStatus ?? "") ? error.upstreamStatus : null;
+  if (error?.code === "provider_unavailable") return unavailableText(status, action);
+  return status && error?.code === "provider_rejected" ? `${text}（供应商返回的状态码：${status}）` : text;
 }
+
+const BY_HAND = "可以手动添加模型。";
+/**
+ * 测试连接 and 同步模型 share this one mapping for `provider_unavailable`, from the provider's HTTP status (null: it gave none: a
+ * timeout, an unknown host, a TLS failure, a redirect, an answer cut off or too large): the sentence claims no more than what is known:
+ * that no answer came to hand.
+ */
+function unavailableText(status, action) {
+  if (status === null) return "没能从供应商得到回答。请检查接口地址，稍后再试。";
+  if (status === "404" || status === "405") return `供应商有回应，但这个地址没有模型列表（${status}）。${BY_HAND}`;
+  if (status === "200") return `供应商有回应，但回应里没有模型列表。${BY_HAND}`;
+  if (status === "429") return "供应商说请求太频繁（429），请稍后再试。";
+  if (status.startsWith("5")) return `供应商那边出了问题（${status}），请稍后再试。`;
+  // In the 同步模型 dialog this class is followed by its own "add by hand" line, so it is said once there.
+  return action === "list" ? `供应商没有给出模型列表（${status}）。` : `供应商没有给出模型列表（${status}）。${BY_HAND}`;
+}
+
+/** Whether a failed 测试连接 / 同步模型 says the address has no model list: it answered 404 or 405, or with something that is none (a 200). */
+export const noModelList = (error) =>
+  error?.code === "provider_unavailable" && ["404", "405", "200"].includes(error?.upstreamStatus ?? "");
 
 /**
  * The one wording of my Agent whose model is not there to call any more (the service's `modelUsable: false`; a reply then

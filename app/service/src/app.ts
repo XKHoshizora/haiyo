@@ -63,6 +63,7 @@ import { registerMessageRoutes } from "./messages/routes.ts";
 import { MAX_CONCURRENT_SEARCHES, MAX_SEARCHES_IN_FLIGHT } from "./messages/search.ts";
 import { clientIp, perPrincipalLimit } from "./limits.ts";
 import { appOriginCheck } from "./origin.ts";
+import { applyConnectTuning } from "./net-tuning.ts";
 import { createSlots, type Slots } from "./slots.ts";
 import type { Hub } from "./sync/hub.ts";
 import { registerSync } from "./sync/routes.ts";
@@ -337,6 +338,7 @@ const logSerializers = {
 };
 
 export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOptions = {}): Promise<FastifyInstance> {
+  applyConnectTuning(); // before any outbound call (net-tuning.ts)
   const config = overrides.config ?? loadConfig();
   // The longest note a model may write is a number of the configuration that a pure function (`modelNote`) reads.
   setModelEntryMax(config.memory.modelEntryMax);

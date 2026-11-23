@@ -379,7 +379,7 @@ describe("adding a provider", () => {
     await fillNew();
     await click(inMain().getByRole("button", { name: "保存并选择模型" }));
     expect(mainText()).toContain("已添加。请选择要使用的模型。");
-    expect(within(dialog()).getByRole("alert").textContent).toBe("暂时连不上供应商，或它没有给出可用的回答，请稍后再试。");
+    expect(within(dialog()).getByRole("alert").textContent).toBe("没能从供应商得到回答。请检查接口地址，稍后再试。");
     expect(dialog().textContent).toContain("有的供应商不提供模型列表。关闭这个窗口后，可以在下面手动添加模型。");
     await click(within(dialog()).getByRole("button", { name: "完成" }));
     expect(dialog()).toBeNull();
@@ -855,7 +855,7 @@ describe("the models of a provider", () => {
 });
 
 describe("同步模型", () => {
-  const NO_LIST = (status) => `这个供应商没有提供模型列表（状态码 ${status}），所以没能确认密钥是否可用。对话可能仍然可以使用，模型名称需要手动添加。`;
+  const NO_LIST = (status) => `供应商有回应，但这个地址没有模型列表（${status}）。可以手动添加模型。`;
   const entry = (name, fields = {}) => ({ name, vision: false, pdf: false, reasoning: false, chat: true, known: false, added: false, ...fields });
   const ALL = ["low", "medium", "high", "xhigh", "max"];
   const LISTING = [
@@ -1105,12 +1105,14 @@ describe("同步模型", () => {
 
   it("says why it has no list: no model list at the provider, a refused key, unreachable, too many tries, an empty list", async () => {
     const listProviderModels = vi.fn();
-    const NO_LIST_HERE = "这个接口没有模型列表，请关闭后在下面手动添加模型名称。";
+    const NO_LIST_HERE = (status) => `供应商有回应，但这个地址没有模型列表（${status}）。可以手动添加模型。`;
     const cases = [
-      [async () => ({ ok: false, error: "provider_unavailable", upstreamStatus: "404" }), NO_LIST_HERE, "status"],
-      [async () => ({ ok: false, error: "provider_unavailable", upstreamStatus: "405" }), NO_LIST_HERE, "status"],
+      [async () => ({ ok: false, error: "provider_unavailable", upstreamStatus: "404" }), NO_LIST_HERE("404"), "status"],
+      [async () => ({ ok: false, error: "provider_unavailable", upstreamStatus: "405" }), NO_LIST_HERE("405"), "status"],
+      [async () => ({ ok: false, error: "provider_unavailable", upstreamStatus: "200" }), "供应商有回应，但回应里没有模型列表。可以手动添加模型。", "status"],
+      [async () => ({ ok: false, error: "provider_unavailable", upstreamStatus: "503" }), "供应商那边出了问题（503），请稍后再试。", "alert"],
       [async () => ({ ok: false, error: "provider_rejected", upstreamStatus: "401" }), "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。（供应商返回的状态码：401）", "alert"],
-      [async () => ({ ok: false, error: "provider_unavailable" }), "暂时连不上供应商，或它没有给出可用的回答，请稍后再试。", "alert"],
+      [async () => ({ ok: false, error: "provider_unavailable" }), "没能从供应商得到回答。请检查接口地址，稍后再试。", "alert"],
       [async () => ({ ok: false, error: "address_not_allowed" }), "这个接口地址不被允许：需要是 https 开头的公网地址。", "alert"],
       [async () => Promise.reject(apiError(429, "rate_limited")), "操作太频繁了，请稍等一分钟再试。", "alert"],
       [async () => ({ ok: true, listed: [] }), "供应商没有列出任何模型，可以手动添加。", "status"],
@@ -1146,6 +1148,21 @@ describe("同步模型", () => {
     expect(sync().textContent).not.toContain("公开的模型目录");
   });
 
+  it("models from a sibling address of the provider say so (and that they may not all work on the chat address), and are added like any others", async () => {
+    const SIBLING_LINE = "这些模型是从供应商的另一个地址读到的，这个地址不一定都能用，请只添加你确实能用的模型。";
+    const listProviderModels = vi.fn(async () => ({ ok: true, listed: structuredClone(LISTING.slice(3, 5)), source: "sibling" }));
+    const app = await openSync({ api: { listProviderModels } });
+    expect(sync().querySelector("p.muted").textContent).toBe(SIBLING_LINE);
+    expect(sync().textContent).not.toContain("公开的模型目录");
+    await click(within(rowOf("house-blend")).getByRole("button", { name: "添加：house-blend" }));
+    await done();
+    expect(app.api.patchProvider.mock.calls[0][1].models.map((m) => m.name)).toContain("house-blend");
+    // The provider's own list says nothing of the kind.
+    listProviderModels.mockImplementationOnce(listOf(LISTING));
+    await click(inMain().getByRole("button", { name: "同步模型" }));
+    expect(sync().textContent).not.toContain("另一个地址");
+  });
+
   it("under a failure, 详情: the provider's status and what it said, as plain text", async () => {
     const said = '<img src=x onerror="alert(1)"> **Model** `nope` not found';
     const listProviderModels = vi.fn(async () => ({ ok: false, error: "provider_unavailable", upstreamStatus: "500", detail: { upstreamStatus: "500", message: said } }));
@@ -1156,7 +1173,7 @@ describe("同步模型", () => {
     expect(details.textContent).toContain("状态码：500");
     expect(details.textContent).toContain(`供应商的回复：${said}`);
     expect(details.querySelector("img, strong, code")).toBeNull();
-    expect(inSync().getByRole("alert").textContent).toBe("暂时连不上供应商，或它没有给出可用的回答，请稍后再试。（供应商返回的状态码：500）");
+    expect(inSync().getByRole("alert").textContent).toBe("供应商那边出了问题（500），请稍后再试。");
   });
 
   it("a refused save on 完成 is said in the dialog, which stays open with the models still in the form", async () => {
@@ -1172,16 +1189,22 @@ describe("同步模型", () => {
 });
 
 describe("测试连接", () => {
-  const NO_LIST = (status) => `这个供应商没有提供模型列表（状态码 ${status}），所以没能确认密钥是否可用。对话可能仍然可以使用，模型名称需要手动添加。`;
+  const NO_LIST = (status) => `供应商有回应，但这个地址没有模型列表（${status}）。可以手动添加模型。`;
   const REJECTED = "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。";
-  const UNAVAILABLE = "暂时连不上供应商，或它没有给出可用的回答，请稍后再试。";
+  const UNAVAILABLE = "没能从供应商得到回答。请检查接口地址，稍后再试。";
+  const SERVER = (status) => `供应商那边出了问题（${status}），请稍后再试。`;
   const common = [
     [{ ok: false, error: "provider_rejected", upstreamStatus: "401" }, `${REJECTED}（供应商返回的状态码：401）`],
     [{ ok: false, error: "provider_rejected" }, REJECTED],
-    [{ ok: false, error: "provider_unavailable", upstreamStatus: "500" }, `${UNAVAILABLE}（供应商返回的状态码：500）`],
+    [{ ok: false, error: "provider_unavailable", upstreamStatus: "500" }, SERVER(500)],
     [{ ok: false, error: "provider_unavailable" }, UNAVAILABLE],
     [{ ok: false, error: "address_not_allowed" }, "这个接口地址不被允许：需要是 https 开头的公网地址。"],
   ];
+  // With a model it is a real call through the gateway: its failures keep their own (older) sentences.
+  const CHAT_UNAVAILABLE = "暂时连不上供应商，或它没有给出可用的回答，请稍后再试。";
+  const commonChat = common.map(([answer, sentence]) =>
+    answer.error === "provider_unavailable" ? [answer, answer.upstreamStatus ? `${CHAT_UNAVAILABLE}（供应商返回的状态码：${answer.upstreamStatus}）` : CHAT_UNAVAILABLE] : [answer, sentence],
+  );
   const run = async (provider, cases, model) => {
     const testProvider = vi.fn();
     await openProviders({ providers: [provider], api: { testProvider } });
@@ -1199,9 +1222,9 @@ describe("测试连接", () => {
     await run(providerOf(), [
       [{ ok: true, mode: "chat", latencyMs: 812 }, "用 gpt-x 发了一句话，用时 0.8 秒"],
       [{ ok: true, mode: "chat", latencyMs: 12345 }, "用 gpt-x 发了一句话，用时 12.3 秒"],
-      ...common,
-      [{ ok: false, error: "provider_unavailable", upstreamStatus: "404" }, `${UNAVAILABLE}（供应商返回的状态码：404）`],
-      [{ ok: false, error: "provider_unavailable", upstreamStatus: "405" }, `${UNAVAILABLE}（供应商返回的状态码：405）`],
+      ...commonChat,
+      [{ ok: false, error: "provider_unavailable", upstreamStatus: "404" }, `${CHAT_UNAVAILABLE}（供应商返回的状态码：404）`],
+      [{ ok: false, error: "provider_unavailable", upstreamStatus: "405" }, `${CHAT_UNAVAILABLE}（供应商返回的状态码：405）`],
       [{ ok: false, error: "invalid_request" }, "这个模型已经不在供应商的模型列表里了，请刷新页面后再试。"],
     ], "gpt-x");
   });
