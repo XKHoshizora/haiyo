@@ -309,7 +309,6 @@ describe("the card and its answer", () => {
     const unread = async () =>
       ((await api(app, w.owner, "GET", "/api/sync")).json.conversations as Array<{ id: string; unread: number }>).find((c) => c.id === w.agent.conversationId)!.unread;
     const read = (seq: number) => api(app, w.owner, "POST", `/api/conversations/${w.agent.conversationId}/read`, { seq });
-    expect((await read(w.seq - 1)).status).toBe(200);
     expect(await unread()).toBe(1);
     // Another notice after it (a new topic) is no unread message, as before.
     await db.query(

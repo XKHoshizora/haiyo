@@ -7,7 +7,7 @@ import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { markOf, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
-import { committedMicro, setOwnerNumbers } from "./helpers/others.ts";
+import { committedMicro, seedRun, setOwnerNumbers } from "./helpers/others.ts";
 import { SOCIAL_ON } from "./helpers/social.ts";
 import { closeAllSockets, connect, type TestSocket } from "./helpers/ws.ts";
 
@@ -37,6 +37,9 @@ const say = async (who: Actor, conv: string, text: string): Promise<number> => {
   if (sent.status !== 201) throw new Error(`say: ${sent.status} ${JSON.stringify(sent.json)}`);
   return sent.json.message.seq as number;
 };
+/** An Agent's full handle: its owner's, a dot, its name part. */
+const fullHandle = async (agentId: string) =>
+  (await db.query<{ h: string }>("select o.handle::text || '.' || p.handle::text as h from principals p join principals o on o.id = p.owner_id where p.id = $1", [agentId])).rows[0]!.h;
 const stop = (by: Actor, whom: Actor) => api(app, by, "PUT", `/api/bars/${whom.id}`);
 const resume = (by: Actor, whom: Actor) => api(app, by, "DELETE", `/api/bars/${whom.id}`);
 const add = (who: Actor, agentId: string) => api(app, who, "POST", "/api/agent-contacts", { agentId });
@@ -107,8 +110,7 @@ describe("I1a.1: access ends while a visitor's reply is mid-call", () => {
     "the owner's block of the visitor": (w) => api(app, w.owner, "PUT", `/api/blocks/${w.v.id}`),
     "the visitor's block of the Agent": (w) => api(app, w.v, "PUT", `/api/blocks/${w.agent.id}`),
     "the operator's disable": async (w) => {
-      const handle = (await db.query<{ h: string }>("select handle::text as h from principals where id = $1", [w.agent.id])).rows[0]!.h;
-      const done = await disableAgent(db, handle);
+      const done = await disableAgent(db, await fullHandle(w.agent.id));
       // (The command line has no hub: the route's own step, done here, abandons the call.)
       app.agentPort.interruptRuns(done!.ended.running);
       return { status: 200 };
@@ -218,8 +220,13 @@ describe("I1a.2 and I1a.3: the owner's two numbers with real visitors", () => {
 
     const t = tag();
     const owner = await signUp(app, `${t}o`);
-    const cap = (hold * 5n) / 2n;
+    // An owner's points number is at least one point: the bound is 2.5 holds where a hold is that large, else what one point leaves after
+    // the day's use is filled up (settled usage, written straight in, so that the same room of 2.5 holds is what is left).
+    const POINT = 1_000_000n;
+    const room = (hold * 5n) / 2n;
+    const cap = room > POINT ? room : POINT;
     await setOwnerNumbers(db, owner.id, { pointsMicro: cap });
+    const filler = cap - room;
     const visitors: Array<{ v: Actor; conv: string }> = [];
     for (let i = 0; i < 5; i++) {
       const agent = (await mustCreateAgent(app, owner, { handle: `${t}y${i}`, name: `${t}y${i}`, model: FAST, persona: "简短地回答。" })) as Made;
@@ -227,6 +234,10 @@ describe("I1a.2 and I1a.3: the owner's two numbers with real visitors", () => {
       expect((await add(v, agent.id)).status).toBe(202);
       const yes = await api(app, owner, "POST", `/api/agent-contacts/${agent.id}/${v.id}/approve`);
       visitors.push({ v, conv: yes.json.conversationId as string });
+    }
+    if (filler > 0n) {
+      const used = (await mustCreateAgent(app, owner, { handle: `${t}f`, name: `${t}f`, model: FAST })) as Made;
+      await seedRun(db, { ownerId: owner.id, agent: { agentId: used.id, conversationId: used.conversationId }, lane: "others", hold: filler, admittedAt: new Date() });
     }
     for (const x of visitors) await say(x.v, x.conv, "你好");
     const within = async (step: string) => expect([step, (await committedMicro(db, owner.id)) <= cap]).toEqual([step, true]);
@@ -357,8 +368,7 @@ describe("I1a.4: bars and blocks in a shared group (one access decision at every
 
   it("a disabled Agent answers nobody in a group: an @ is refused, it is no option for a reply nobody asked for, and its owner's own @ still goes", async () => {
     const w = await grouped();
-    const handle = (await db.query<{ h: string }>("select handle::text as h from principals where id = $1", [w.y.id])).rows[0]!.h;
-    expect(await disableAgent(db, handle)).not.toBeNull();
+    expect(await disableAgent(db, await fullHandle(w.y.id))).not.toBeNull();
     const seq = await say(w.v, w.g, `${w.at} 在吗`);
     expect((await runsOf(w.y.id, w.g)).length).toBe(0);
     const plain = await say(w.w, w.g, "今天谁有空");
@@ -406,11 +416,14 @@ describe("I1a.6: the switch off leaves groups byte for byte as they are, and ref
     return s.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>").replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, "<t>");
   };
   it("the same group @ on two fresh groups, switch off and on: the model call, the posted reply and every member's frames are identical", async () => {
-    const [owner, v] = [await signUp(app, "sw_same_o"), await signUp(app, "sw_same_v")];
+    const [owner, v, third] = [await signUp(app, "sw_same_o"), await signUp(app, "sw_same_v"), await signUp(app, "sw_same_w")];
     const y = (await mustCreateAgent(app, owner, { handle: "sw_same_y", name: "同一个", model: FAST, persona: "简短地回答。" })) as Made;
     await befriend(app, owner, v);
+    await befriend(app, owner, third);
     async function round() {
-      const g = (await api(app, owner, "POST", "/api/conversations", { title: "同一个群", memberIds: [v.id] })).json.id as string;
+      const made = await api(app, owner, "POST", "/api/conversations", { title: "同一个群", memberIds: [v.id, third.id] });
+      expect(made.status).toBe(201);
+      const g = made.json.id as string;
       expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: y.id })).status).toBe(201);
       const sockets = [await connect(app, owner), await connect(app, v)];
       const from = gateway.calls.length;
@@ -441,7 +454,7 @@ describe("I1a.6: the switch off leaves groups byte for byte as they are, and ref
   it("switch off: no Agent can be added or looked up, a social conversation takes no message, a queued reply there is never claimed, and the sync says so", async () => {
     const w = await visited();
     const stranger = await signUp(app, `${w.t}s`);
-    const handle = (await db.query<{ h: string }>("select handle::text as h from principals where id = $1", [w.agent.id])).rows[0]!.h;
+    const handle = await fullHandle(w.agent.id);
     await say(w.v, w.conv, "排着队的一问");
     await switchedOff(async () => {
       expect((await add(stranger, w.agent.id)).status).toBe(404);

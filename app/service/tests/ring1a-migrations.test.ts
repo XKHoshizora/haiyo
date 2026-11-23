@@ -24,11 +24,12 @@ afterAll(async () => {
 
 const P = 1_000_000n;
 const applied = async () => (await db.query<{ name: string }>("select name from pgmigrations where name >= '073' order by name")).rows.map((r) => r.name);
+/** Each Agent's two numbers in points, by the name part it was made with. */
 const numbers = async () =>
   Object.fromEntries(
     (
       await db.query<{ tag: string; others: string | null; proactive: string }>(
-        `select split_part(p.handle::text, '.', 2) as tag, a.others_budget_micro::text as others, a.proactive_budget_micro::text as proactive
+        `select p.handle::text as tag, a.others_budget_micro::text as others, a.proactive_budget_micro::text as proactive
            from agents a join principals p on p.id = a.principal_id order by 1`,
       )
     ).rows.map((r) => [r.tag, [r.others === null ? null : Number(BigInt(r.others) / P), Number(BigInt(r.proactive) / P)]]),

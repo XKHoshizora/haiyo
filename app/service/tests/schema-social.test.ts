@@ -165,6 +165,11 @@ describe("073: others' columns and the social skeleton", () => {
       const old = await rows();
       expect(old).toMatchObject({ principals: { n: 117 }, accounts: { n: 105 }, agents: { n: 12 }, conversations: { n: 105 }, agent_runs: { n: 105 } });
       await client.query(up!.replace("-- Up Migration", ""));
+      // What a later migration added to a table 073 makes (075: `agent_contacts.barred_by` and its check) went with the table in the Down:
+      // it is put back with 075's own statement, so that the shape compared is the live one.
+      const later = /alter table agent_contacts add column barred_by[^;]*;/.exec(readFileSync(new URL("../migrations/075_agent_social_access.sql", import.meta.url), "utf8"));
+      expect(later).not.toBeNull();
+      await client.query(later![0]);
       expect(await rows()).toEqual(old);
       expect(await shape()).toEqual(before);
       // 074 (lane B) dropped 020's default of 20 points: it is whatever the live database has, which 073 does not touch.
