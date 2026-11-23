@@ -37,7 +37,6 @@ import {
 } from "./fixtures.js";
 import { PEOPLE, click, dialog, flush, goContacts, inMain, installBrowser, mainText, openApp, push, rowNames, toastText } from "./harness.jsx";
 import { optionsOf, pickOption } from "./select-helpers.js";
-import { othersBudgetSent } from "../src/pages/AgentForm.jsx";
 import { ModelGoneTag } from "../src/pages/Agents.jsx";
 import { StoreProvider, emptyState } from "../src/data/store.jsx";
 
@@ -272,7 +271,6 @@ describe("creating an Agent", () => {
       replyMode: "always",
       groupMentions: "members",
       chainBudget: "50",
-      othersBudget: "20",
       reasoning: "none",
       model: SITE_MODEL,
     });
@@ -357,7 +355,6 @@ describe("creating an Agent", () => {
       replyMode: "mention",
       groupMentions: "members",
       chainBudget: "50",
-      othersBudget: "20",
       reasoning: "high",
       model: { source: "provider", providerId: P1, model: "gpt-x" },
     });
@@ -956,220 +953,6 @@ describe("群里谁可以叫它 (groupMentions)", () => {
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(patchAgent.mock.calls[1][1]).toEqual({ groupMentions: "members" });
     expect(document.querySelector(".main-col .kv").textContent).toContain("群里谁可以叫它所有群成员");
-  });
-});
-
-describe("别人 @ 每天最多花 (othersBudget)", () => {
-  const LABEL = "别人 @ 每天最多花";
-  const AMOUNT = "每天最多花（点）";
-  const box = () => inMain().getByLabelText(LABEL);
-  const amount = () => inMain().getByLabelText(AMOUNT);
-  const WARNING = "群里任何人都能让它回复，花的是你的点。";
-  const HINT = "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。";
-  const WRONG = "请填写 1 到 100000 之间的点数（最多 6 位小数）";
-  const kv = () => document.querySelector(".main-col .kv").textContent;
-  const mentions = (value) => pickOption(inMain().getByLabelText("群里谁可以叫它"), value);
-
-  it("the value sent: the default, the amount typed, null for 不限 — and none at all for an amount that is not one", () => {
-    expect(othersBudgetSent({ othersChoice: "default", othersAmount: "abc" })).toBe("20");
-    expect(othersBudgetSent({ othersChoice: "custom", othersAmount: " 035.50 " })).toBe("35.5");
-    expect(othersBudgetSent({ othersChoice: "unlimited", othersAmount: "abc" })).toBeNull();
-    // Never null, which the service reads as 不限: whatever lets a wrong amount through still sends nothing.
-    for (const amount of ["0", "100001", "abc", "", "1.1234567"]) expect(othersBudgetSent({ othersChoice: "custom", othersAmount: amount }), amount).toBeUndefined();
-  });
-
-  it("creating: shown only for 所有群成员, with three options, 20 点（默认）first, and what it means; nothing sent for 仅我", async () => {
-    const createAgent = vi.fn(async () => agentOf(AG1));
-    await openAgents({ api: { createAgent } });
-    await openCreate();
-    expect(optionsOf(box()).map(([, text]) => text)).toEqual(["20 点（默认）", "自己填", "不限"]);
-    expect(box().value).toBe("default");
-    expect(document.getElementById(box().getAttribute("aria-describedby"))?.textContent).toBe(HINT);
-    // The warning for 不限 comes with the hint, which stays.
-    pickOption(box(), "unlimited");
-    expect(mainText()).toContain(WARNING);
-    expect(box().closest(".field").textContent).toContain(HINT);
-    pickOption(box(), "default");
-    expect(screen.queryByLabelText(AMOUNT)).toBeNull();
-    mentions("owner");
-    expect(screen.queryByLabelText(LABEL)).toBeNull();
-    type("名称", "MyBot");
-    await chooseModel("小模型 · 免费");
-    await click(createButton());
-    expect(createAgent.mock.calls[0][0]).not.toHaveProperty("othersBudget");
-  });
-
-  const createWith = async (choose) => {
-    const createAgent = vi.fn(async () => agentOf(AG1));
-    await openAgents({ api: { createAgent } });
-    await openCreate();
-    type("名称", "MyBot");
-    await chooseModel("小模型 · 免费");
-    choose();
-    await click(createButton());
-    return createAgent.mock.calls[0][0];
-  };
-
-  it("creating: the default sends \"20\"", async () => {
-    expect(await createWith(() => {})).toMatchObject({ othersBudget: "20" });
-  });
-
-  it("creating: 自己填 sends what I typed as a decimal string", async () => {
-    const body = await createWith(() => {
-      pickOption(box(), "custom");
-      type(AMOUNT, " 035.50 ");
-      expect(mainText()).not.toContain(WARNING);
-    });
-    expect(body.othersBudget).toBe("35.5");
-  });
-
-  it("creating: 不限 shows the warning and sends null", async () => {
-    const body = await createWith(() => {
-      pickOption(box(), "unlimited");
-      expect(mainText()).toContain(WARNING);
-      expect(screen.queryByLabelText(AMOUNT)).toBeNull();
-    });
-    expect(body).toHaveProperty("othersBudget", null);
-  });
-
-  it("自己填 is refused inline like the chain budget; a wrong amount does not matter once the choice is something else", async () => {
-    const createAgent = vi.fn(async () => agentOf(AG1));
-    await openAgents({ api: { createAgent } });
-    await openCreate();
-    type("名称", "MyBot");
-    await chooseModel("小模型 · 免费");
-    pickOption(box(), "custom");
-    for (const value of ["0", "100001", "abc", "", "1.1234567"]) {
-      type(AMOUNT, value);
-      await click(createButton());
-      expect(amount().closest(".field").textContent, value).toContain(WRONG);
-      expect(amount().getAttribute("aria-invalid"), value).toBe("true");
-    }
-    expect(createAgent).not.toHaveBeenCalled();
-    type(AMOUNT, "99.999999");
-    expect(amount().closest(".field").textContent).not.toContain(WRONG);
-    type(AMOUNT, "abc");
-    mentions("owner");
-    await click(createButton());
-    expect(createAgent).toHaveBeenCalledTimes(1);
-    expect(createAgent.mock.calls[0][0]).not.toHaveProperty("othersBudget");
-  });
-
-  it("editing: \"20\" opens on the default, another number on 自己填, null on 不限", async () => {
-    const open = async (extra) => {
-      await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, ...extra })] });
-      await openRow("小助手");
-      await click(inMain().getByRole("button", { name: /编辑/ }));
-    };
-    await open({ othersBudget: "20", othersSpentToday: "0" });
-    expect(box().value).toBe("default");
-    cleanup();
-    await open({ othersBudget: "35", othersSpentToday: "0" });
-    expect(box().value).toBe("custom");
-    expect(amount().value).toBe("35");
-    cleanup();
-    await open({ othersBudget: null, othersSpentToday: "0" });
-    expect(box().value).toBe("unlimited");
-    expect(mainText()).toContain(WARNING);
-  });
-
-  it("editing: sent only when it changed, and never while the choice is 仅我", async () => {
-    const record = agentOf(AG1, { model: SITE_MODEL, othersBudget: "35", othersSpentToday: "0" });
-    const patchAgent = vi.fn(async (_id, patch) => ({ ...record, ...patch }));
-    await openAgents({ agents: [record], api: { patchAgent } });
-    await openRow("小助手");
-    await click(inMain().getByRole("button", { name: /编辑/ }));
-    type(AMOUNT, "35.0");
-    type("简介", "新简介");
-    await click(inMain().getByRole("button", { name: "保存" }));
-    expect(patchAgent.mock.calls[0][1]).toEqual({ intro: "新简介" });
-    await click(inMain().getByRole("button", { name: /编辑/ }));
-    pickOption(box(), "unlimited");
-    await click(inMain().getByRole("button", { name: "保存" }));
-    expect(patchAgent.mock.calls[1][1]).toEqual({ othersBudget: null });
-    await click(inMain().getByRole("button", { name: /编辑/ }));
-    pickOption(box(), "default");
-    mentions("owner");
-    await click(inMain().getByRole("button", { name: "保存" }));
-    expect(patchAgent.mock.calls[2][1]).toEqual({ groupMentions: "owner" });
-  });
-
-  describe("while the record changes elsewhere", () => {
-    const CHANGED_ELSEWHERE = "这个 Agent 的配置刚刚在别处有改动，保存会用你这里的内容覆盖你改过的几项。";
-    const record = (fields = {}) => agentOf(AG1, { model: SITE_MODEL, othersBudget: "35", othersSpentToday: "0", ...fields });
-    const openEdit = async () => {
-      const patchAgent = vi.fn(async (_id, patch) => ({ ...record(), ...patch }));
-      const app = await openAgents({ agents: [record()], api: { patchAgent } });
-      await openRow("小助手");
-      await click(inMain().getByRole("button", { name: /编辑/ }));
-      return { app, patchAgent };
-    };
-    const changeElsewhere = async (app, fields) => {
-      app.transport.handlers.agent = () => record(fields);
-      await push(app.transport, { type: "agent", id: AG1 });
-      await flush();
-    };
-    const save = () => click(inMain().getByRole("button", { name: "保存" }));
-
-    it("untouched, it shows the new value and is not sent back", async () => {
-      const { app, patchAgent } = await openEdit();
-      await changeElsewhere(app, { othersBudget: "50" });
-      expect([box().value, amount().value]).toEqual(["custom", "50"]);
-      await changeElsewhere(app, { othersBudget: null });
-      expect(box().value).toBe("unlimited");
-      type("简介", "新简介");
-      expect(mainText()).not.toContain(CHANGED_ELSEWHERE);
-      await save();
-      expect(patchAgent.mock.calls.map((c) => c[1])).toEqual([{ intro: "新简介" }]);
-    });
-
-    it("the choice I made stays when the amount changes elsewhere: the notice says so, and saving sends mine", async () => {
-      const { app, patchAgent } = await openEdit();
-      pickOption(box(), "unlimited");
-      await changeElsewhere(app, { othersBudget: "50" });
-      expect(box().value).toBe("unlimited");
-      expect(mainText()).toContain(CHANGED_ELSEWHERE);
-      await save();
-      expect(patchAgent.mock.calls.map((c) => c[1])).toEqual([{ othersBudget: null }]);
-    });
-
-    it("the amount I typed stays when the choice changes elsewhere: the notice says so, and saving sends mine", async () => {
-      const { app, patchAgent } = await openEdit();
-      type(AMOUNT, "40");
-      await changeElsewhere(app, { othersBudget: null });
-      expect([box().value, amount().value]).toEqual(["custom", "40"]);
-      expect(mainText()).toContain(CHANGED_ELSEWHERE);
-      await save();
-      expect(patchAgent.mock.calls.map((c) => c[1])).toEqual([{ othersBudget: "40" }]);
-    });
-
-    it("my own save coming back says nothing", async () => {
-      const { app } = await openEdit();
-      pickOption(box(), "unlimited");
-      await changeElsewhere(app, { othersBudget: null });
-      expect(mainText()).not.toContain(CHANGED_ELSEWHERE);
-    });
-  });
-
-  it("the Agent's page: today's spend against the budget, the used-up line, or unlimited; nothing for 仅我 or when the service says nothing", async () => {
-    const show = async (extra) => {
-      await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, ...extra })] });
-      await openRow("小助手");
-      return kv();
-    };
-    expect(await show({ othersBudget: "20", othersSpentToday: "3.5" })).toContain("别人 @ 每天最多花今天别人 @ 已花 3.5 / 20 点");
-    cleanup();
-    expect(await show({ othersBudget: "20", othersSpentToday: "20" })).toContain("今天别人 @ 的额度已用完，调高后立即恢复。");
-    cleanup();
-    expect(await show({ othersBudget: "0.3", othersSpentToday: "0.300000" })).toContain("今天别人 @ 的额度已用完，调高后立即恢复。");
-    cleanup();
-    expect(await show({ othersBudget: "20.5", othersSpentToday: "20.499999" })).toContain("已花 20.499999 / 20.5 点");
-    cleanup();
-    expect(await show({ othersBudget: null, othersSpentToday: "3.5" })).toContain("今天别人 @ 已花 3.5 点（不限）");
-    cleanup();
-    expect(await show({ othersBudget: "20", othersSpentToday: "3.5", groupMentions: "owner" })).not.toContain("别人 @");
-    cleanup();
-    expect(await show({})).not.toContain("别人 @");
   });
 });
 
@@ -1842,7 +1625,7 @@ describe("主动参与群聊 (proactive replies)", () => {
   const OFF_SITE = { ...MODELS, proactiveAvailable: false };
   const box = () => inMain().getByLabelText(SWITCH);
   const kv = () => document.querySelector(".main-col .kv").textContent;
-  const proactive = (fields = {}) => ({ proactive: true, proactiveLevel: "normal", proactiveBudget: "20", proactiveSpentToday: "0", ...fields });
+  const proactive = (fields = {}) => ({ proactive: true, proactiveLevel: "normal", proactiveBudget: "20", ...fields });
   const save = () => click(inMain().getByRole("button", { name: "保存" }));
 
   const createOn = async (models, choose = () => {}) => {
@@ -1935,9 +1718,9 @@ describe("主动参与群聊 (proactive replies)", () => {
       ["more", "多说"],
     ]);
     expect(inMain().getByLabelText(LEVEL).value).toBe("normal");
-    expect(inMain().getByLabelText(AMOUNT).value).toBe("20");
+    expect(inMain().getByLabelText(AMOUNT).value).toBe("70");
     expect(document.getElementById(inMain().getByLabelText(AMOUNT).getAttribute("aria-describedby"))?.textContent).toBe(
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
     );
     // A typed amount only: no 不限 choice.
     expect(inMain().getByLabelText(AMOUNT).tagName).toBe("INPUT");
@@ -1956,9 +1739,9 @@ describe("主动参与群聊 (proactive replies)", () => {
     for (const key of ["proactive", "proactiveLevel", "proactiveBudget"]) expect(createAgent.mock.calls[0][0]).not.toHaveProperty(key);
   });
 
-  it("creating: on with the defaults sends proactive, normal and 20", async () => {
+  it("creating: on with the defaults sends proactive, normal and 70", async () => {
     const createAgent = await createOn(ON_SITE, () => fireEvent.click(box()));
-    expect(createAgent.mock.calls[0][0]).toMatchObject({ proactive: true, proactiveLevel: "normal", proactiveBudget: "20" });
+    expect(createAgent.mock.calls[0][0]).toMatchObject({ proactive: true, proactiveLevel: "normal", proactiveBudget: "70" });
   });
 
   it("creating: the level and the amount typed are sent", async () => {
@@ -2099,7 +1882,7 @@ describe("主动参与群聊 (proactive replies)", () => {
     expect(patchAgent.mock.calls[0][1]).toEqual({ proactiveLevel: "less" });
   });
 
-  it("the Agent's page: no row while it is off or the service says nothing; spend and budget; the used-up line, compared as numbers", async () => {
+  it("the Agent's page: no row while it is off or the service says nothing; the level and the daily budget", async () => {
     const show = async (extra) => {
       await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, ...extra })], models: ON_SITE });
       await openRow("小助手");
@@ -2109,13 +1892,12 @@ describe("主动参与群聊 (proactive replies)", () => {
     cleanup();
     expect(await show(proactive({ proactive: false }))).not.toContain(SWITCH);
     cleanup();
-    expect(await show(proactive({ proactiveLevel: "less", proactiveSpentToday: "3.5" }))).toContain("主动参与群聊少说 · 今天主动回复已花 3.5 / 20 点");
+    expect(await show(proactive({ proactiveLevel: "less", proactiveBudget: "70" }))).toContain("主动参与群聊少说 · 每天最多花 70 点");
     cleanup();
-    expect(await show(proactive({ proactiveLevel: "more", proactiveBudget: "20.5", proactiveSpentToday: "20.499999" }))).toContain("多说 · 今天主动回复已花 20.499999 / 20.5 点");
+    expect(await show(proactive({ proactiveLevel: "more", proactiveBudget: "20.5" }))).toContain("多说 · 每天最多花 20.5 点");
     cleanup();
-    expect(await show(proactive({ proactiveSpentToday: "20" }))).toContain("主动参与群聊今天主动回复的额度已用完，调高后立即恢复。");
-    cleanup();
-    expect(await show(proactive({ proactiveBudget: "0.3", proactiveSpentToday: "0.300000" }))).toContain("今天主动回复的额度已用完，调高后立即恢复。");
+    // (There is no spend line any more: the wire has no per-Agent proactive spend.)
+    expect(await show(proactive({ proactiveSpentToday: "20" }))).not.toContain("额度已用完");
     cleanup();
     // The budget missing (the service always says it): the level alone.
     expect(await show({ proactive: true, proactiveLevel: "less" })).toContain("主动参与群聊少说");
@@ -2474,26 +2256,23 @@ describe("联网搜索 (only while the site offers web search)", () => {
 
   it("the money hints of the budgets say that a provider-model Agent's web searches are charged, and bounded by them, only while the site offers web search (fix round 1, I2)", async () => {
     const CHAIN = "一次接话最多花费（点）";
-    const OTHERS = "别人 @ 每天最多花";
     const AMOUNT = "主动回复每天最多花";
     const hintOf = (label) => document.getElementById(inMain().getByLabelText(label).getAttribute("aria-describedby"))?.textContent;
     const open = async (models) => {
       await openAgents({ models: { ...models, proactiveAvailable: true } });
       await openCreate();
       fireEvent.click(inMain().getByLabelText("主动参与群聊"));
-      return [hintOf(CHAIN) ?? inMain().getByLabelText(CHAIN).closest(".field").querySelector(".field-hint").textContent, hintOf(OTHERS), hintOf(AMOUNT)];
+      return [hintOf(CHAIN) ?? inMain().getByLabelText(CHAIN).closest(".field").querySelector(".field-hint").textContent, hintOf(AMOUNT)];
     };
     expect(await open(ON_SITE)).toEqual([
       "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
-      "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
     ]);
     cleanup();
     // The site offering none: the words as before, to the character.
     expect(await open(MODELS)).toEqual([
       "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
-      "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
     ]);
   });
 

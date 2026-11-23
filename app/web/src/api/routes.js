@@ -101,12 +101,13 @@ export function socketUrl(ticket) {
 
 // ───────── Agents (owner only; app/service/README.md "Agents")
 export const listAgents = () => request("GET", "/api/agents"); // → {agents: [Agent]}, oldest first, deleted ones included
-/** body: {namePart (its handle is `<my handle>.<namePart>`), name, intro?, field?, persona?, replyMode?, groupMentions?, chainBudget?, othersBudget?, ownerAppellation?, reasoning?, model?} → Agent */
+/** body: {namePart (its handle is `<my handle>.<namePart>`), name, intro?, field?, persona?, replyMode?, groupMentions?, chainBudget?, othersLimit?, proactiveBudget?, ownerAppellation?, reasoning?, model?} → Agent */
 export const createAgent = (body) => request("POST", "/api/agents", body);
 export const getAgent = (agentId) => request("GET", `/api/agents/${seg(agentId)}`);
 /**
- * patch: any of {name, intro, field, persona, replyMode, groupMentions, chainBudget, othersBudget, ownerAppellation, reasoning,
- * model} (`model: null` clears it; `chainBudget` is a decimal string of points; `othersBudget` too, or `null` for unlimited;
+ * patch: any of {name, intro, field, persona, replyMode, groupMentions, chainBudget, othersLimit, proactiveBudget, ownerAppellation,
+ * reasoning, model} (`model: null` clears it; `chainBudget` is a decimal string of points; `othersLimit` is the Agent's own limit on
+ * what others cause, `{answers: 1..1000 | null, points: decimal string | null}`, or `null` for none of its own (both parts at once);
  * `ownerAppellation` 1–20 characters, or `null` to clear) → Agent
  */
 export const patchAgent = (agentId, patch) => request("PATCH", `/api/agents/${seg(agentId)}`, patch);
