@@ -725,7 +725,7 @@ describe("the models of a provider", () => {
     // Unknown reads as the native mixed state (a screen reader says "mixed"), not as ticked; a model that says false is unticked.
     expect([box("gpt-x").checked, box("plain").checked]).toEqual([false, false]);
     expect([box("gpt-x").indeterminate, box("plain").indeterminate]).toEqual([true, false]);
-    const HELPER = "还不确定。勾上表示它会用工具，不勾表示不会。";
+    const HELPER = "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。";
     expect(within(modelRow("gpt-x")).getByText(HELPER)).toBeTruthy();
     expect(box("gpt-x").getAttribute("aria-describedby")).toBe(within(modelRow("gpt-x")).getByText(HELPER).id);
     expect(within(modelRow("plain")).queryByText(HELPER)).toBeNull();

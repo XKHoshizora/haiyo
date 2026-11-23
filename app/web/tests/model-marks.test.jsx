@@ -80,6 +80,24 @@ describe("ModelMarks", () => {
   });
 });
 
+describe("the price column", () => {
+  it("every price chip, and the hidden copy that keeps the column, carries the longest price word as its sizer, so the column is one width whichever word a row has", () => {
+    const { container } = render(
+      <>
+        <ModelMarks marks={["free"]} columns={["price"]} />
+        <ModelMarks marks={["paid"]} columns={["price"]} />
+        <ModelMarks marks={[]} columns={["price"]} />
+      </>,
+    );
+    expect([...container.querySelectorAll('[data-col="price"]')].map((c) => c.dataset.sizer)).toEqual(["需余额", "需余额", "需余额"]);
+    const rules = parseCss(read("src/styles.css"));
+    const decl = Object.assign({}, ...rulesFor(rules, '.model-mark[data-col="price"]::after', null).map((r) => r.decl));
+    expect(decl).toMatchObject({ content: "attr(data-sizer)", visibility: "hidden" });
+    // (And no minimum width of its own to stand in for it.)
+    expect(read("src/styles.css")).not.toMatch(/data-col="price"\][^{]*\{[^}]*min-width/);
+  });
+});
+
 describe("the table of marks", () => {
   const ALL_TRUE = { vision: true, reasoning: true, tools: true, pdf: true, audioIn: true, videoIn: true, imageOut: true, videoOut: true, audioOut: true };
 

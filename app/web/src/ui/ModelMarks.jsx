@@ -3,6 +3,8 @@ import { AudioLines, Clapperboard, Eye, FileText, ImagePlus, Lightbulb, Video, V
 
 /** Money: text at every width, first, and about money, not an ability. */
 export const PRICE_TEXT = { free: "免费", paid: "需余额" };
+/** The longest of them: every price chip (and the hidden copy that keeps its column) is as wide as this, whichever word it holds (`data-sizer`, styles.css). */
+const PRICE_SIZER = Object.values(PRICE_TEXT).reduce((a, b) => (b.length > a.length ? b : a));
 
 /**
  * The marks of a model, one vocabulary wherever a model is listed (the picker, the provider page): money first, then what
@@ -73,11 +75,11 @@ export const ModelMarks = memo(
           const kind = kinds.find((k) => (col === "price" ? k in PRICE_TEXT : k === col));
           if (col === "price") {
             return kind ? (
-              <span key={col} data-col={col} className={`model-mark model-mark-${kind}`}>
+              <span key={col} data-col={col} data-sizer={PRICE_SIZER} className={`model-mark model-mark-${kind}`}>
                 {PRICE_TEXT[kind]}
               </span>
             ) : (
-              <span key={col} data-col={col} className="model-gap" aria-hidden="true" />
+              <span key={col} data-col={col} data-sizer={PRICE_SIZER} className="model-mark model-gap" aria-hidden="true" />
             );
           }
           const { text, title, Icon } = ABILITIES.find((a) => a.kind === (kind ?? col));

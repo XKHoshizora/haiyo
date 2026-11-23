@@ -199,10 +199,10 @@ test("the provider page's rows carry the same marks, as words, at 360 and 1280 (
       await unknown.getByRole("button", { name: /高级/ }).click();
       const box = unknown.getByLabel("会用工具（查聊天记录、看文件）");
       await expect(box).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
-      await expect(unknown.getByText("还不确定。勾上表示它会用工具，不勾表示不会。")).toBeVisible();
+      await expect(unknown.getByText("还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。")).toBeVisible();
       await box.click();
       await expect(unknown.locator(".model-mark")).toHaveText(["思考", "工具"]);
-      await expect(unknown.getByText("还不确定。勾上表示它会用工具，不勾表示不会。")).toHaveCount(0);
+      await expect(unknown.getByText("还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。")).toHaveCount(0);
     }
     await seeing.scrollIntoViewIfNeeded();
     await rows.scrollIntoViewIfNeeded();
@@ -335,15 +335,19 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
     await vite.close();
   }
   await page.goto("/");
-  for (const [key, narrow] of [[620, false], [360, true], ["360-three", true]]) {
+  // "620-wide-price": the price words set wider than the font would (what a font with wider CJK glyphs does, as on the CI machines): the price column must
+  // still be one width whether a row says 免费 or 需余额 (it was not: the chip took the width of its own word).
+  const WIDE_PRICE = '.model-mark[data-col="price"] { letter-spacing: 0.15em; }';
+  for (const [key, narrow] of [[620, false], [360, true], ["360-three", true], ["620-wide-price", false]]) {
     const width = Number(String(key).slice(0, 3));
+    const stress = key === "620-wide-price" ? await page.addStyleTag({ content: WIDE_PRICE }) : null;
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.evaluate(
       ({ width: w, strip: s, long }) => {
         const row = (marks) => `<div class="model-option" role="option"><span class="model-check"></span><span style="width:16px;flex:none"></span><span class="model-name">${long}</span>${marks}</div>`;
         document.body.innerHTML = `<div class="model-pop" style="position:fixed;left:0;top:0;width:${w}px;height:auto"><div class="model-list" role="listbox">${row(s.all)}${row(s.one)}${row(s.none)}</div></div>`;
       },
-      { width, strip: strip[key], long: LONG },
+      { width, strip: strip[key] ?? strip[620], long: LONG },
     );
     const rows = page.locator(".model-option");
     const geometry = await rows.evaluateAll((els) =>
@@ -357,7 +361,7 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
           // The visible word or icon fills its chip exactly (the chip is as wide as it and its padding): able to fail on a width too wide or too narrow.
           const cs = getComputedStyle(c);
           const exact = !visible || c.classList.contains("model-gap") || Math.abs(r.width - (visible.width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight))) <= 1;
-          return { col: c.dataset.col, left: Math.round(r.left * 10) / 10, right: Math.round(r.right * 10) / 10, inside: exact && (!visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5)), shown: Boolean(visible) };
+          return { col: c.dataset.col, left: r.left, right: r.right, inside: exact && (!visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5)), shown: Boolean(visible) };
         });
         const marks = o.querySelector(".model-marks");
         const probe = document.createElement("span");
@@ -370,7 +374,7 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
       }),
     );
     const [all, one, none] = geometry;
-    expect(all.cells.map((c) => c.col)).toEqual(["price", ...strip[key].cols.slice().sort((x, y) => kinds.indexOf(x) - kinds.indexOf(y))]);
+    expect(all.cells.map((c) => c.col)).toEqual(["price", ...(strip[key] ?? strip[620]).cols.slice().sort((x, y) => kinds.indexOf(x) - kinds.indexOf(y))]);
     for (const g of geometry) {
       expect(g.height, "one line").toBeLessThanOrEqual(46);
       expect(g.marksRight <= g.rowRight + 0.5, "marks inside the row").toBe(true);
@@ -383,10 +387,15 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
     }
     // In row `all` every ability cell shows exactly its word (wide) or its icon (narrow); a row with fewer marks keeps every column where it was.
     for (const c of all.cells.slice(1)) expect(c.shown, c.col).toBe(true);
-    expect(one.cells.map((c) => [c.col, c.left, c.right])).toEqual(all.cells.map((c) => [c.col, c.left, c.right]));
-    expect(none.cells.map((c) => [c.col, c.left, c.right])).toEqual(all.cells.map((c) => [c.col, c.left, c.right]));
+    // The columns line up: every column has the same edges in every row, whichever row holds the real mark (to a sub-pixel: layout rounds to 1/64 px).
+    const edges = (g) => g.cells.flatMap((c) => [c.left, c.right]);
+    const delta = (g) => Math.max(0, ...edges(g).map((x, i) => Math.abs(x - edges(all)[i])));
+    expect(one.cells.map((c) => c.col)).toEqual(all.cells.map((c) => c.col));
+    expect(delta(one), "a row with one mark keeps every column where the row with all of them has it").toBeLessThanOrEqual(0.5);
+    expect(delta(none), "a row with none keeps every column too").toBeLessThanOrEqual(0.5);
     // No chip overlaps its neighbour.
     for (const [a, b] of all.cells.slice(1).map((c, i) => [all.cells[i], c])) expect(a.right, `${a.col} before ${b.col}`).toBeLessThanOrEqual(b.left + 0.5);
     await shot(page, `all-marks-${key}`, { clip: await page.locator(".model-pop").boundingBox() });
+    await stress?.evaluate((el) => el.remove());
   }
 });

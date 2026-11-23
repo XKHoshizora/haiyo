@@ -430,7 +430,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
                 />
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
-              {typeof model.tools !== "boolean" && <small id={`${panelId}-tools-unknown`} className="tools-unknown">还不确定。勾上表示它会用工具，不勾表示不会。</small>}
+              {typeof model.tools !== "boolean" && <small id={`${panelId}-tools-unknown`} className="tools-unknown">还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。</small>}
             </fieldset>
             {levelChoice}
             <Field label="上下文容量" hint={contextHint} error={error}>

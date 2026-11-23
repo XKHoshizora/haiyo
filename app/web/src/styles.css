@@ -351,9 +351,11 @@ svg.model-brand { color: var(--ink-3); }
   white-space: nowrap; background: rgba(120, 116, 143, 0.12); color: var(--ink-2);
 }
 .model-mark-icon { display: none; flex: none; }
-.model-mark[data-col="price"], .model-gap[data-col="price"] { min-width: calc(3em + 12px); }
+/* The price column is as wide as its longest word whichever word a row has (a hidden copy of it, overlaid: grid area 1/1), so it never depends on the row or the font. */
+.model-mark[data-col="price"] { display: inline-grid; justify-items: center; }
+.model-mark[data-col="price"]::after { content: attr(data-sizer); grid-area: 1 / 1; visibility: hidden; user-select: none; }
+.model-mark[data-col="price"] > * { grid-area: 1 / 1; }
 .model-gap { visibility: hidden; user-select: none; }
-.model-gap[data-col="price"] { display: inline-block; height: 18px; }
 .model-mark-free { background: var(--ok-bg); color: var(--ok); }
 .model-mark-paid { background: var(--warn-bg); color: var(--warn); }
 /* What the icons mean (the key: the one place an icon and its word appear together), only while the marks are icons. */
