@@ -1815,7 +1815,7 @@ A provider is a person's own account at a model service, which their Agents can 
 Agent cannot be pointed at their provider (400).
 
 **Provider** (owner only): `{"id", "name", "protocol": "openai_chat" | "openai_responses" | "anthropic" | "gemini",
-"baseUrl", "keyLast4", "models": [{"name", "vision", "pdf", "reasoning", "contextTokens", "reasoningLevels"?, "tools"?}]}`.
+"baseUrl", "keyLast4", "models": [{"name", "vision", "pdf", "reasoning", "contextTokens", "reasoningLevels"?, "reportedLevels"?, "tools"?}]}`.
 
 - **The API key** is sealed when saved (AES-256-GCM, a key derived from `PROVIDER_KEY_SECRET` with HKDF-SHA-256,
   `src/providers/crypto.ts`) and never shown again: no answer, push, error or log line carries it; `keyLast4` is its
@@ -1844,6 +1844,9 @@ Agent cannot be pointed at their provider (400).
   reasoning level other than `none` only on a model flagged `reasoning`, and one of its `reasoningLevels` when it lists
   them (checked when the Agent is created or edited; a run sends the saved level, see Replies). Removing a model from the
   list, or narrowing its levels, does not change the Agents that use it.
+  `reportedLevels` (read only, never accepted: a body that has it is 400): the levels the catalogue lists for this model (`modelHints`)
+  when it reasons and the catalogue knows it; absent otherwise. It is read when the provider is shown, not stored, so a model set to every
+  level (no `reasoningLevels`) still shows what it reports and can be put back to it, also after a reload.
   `tools` (optional, a boolean): whether its replies may be offered tools (Agents and runs, Tools in a reply). Absent: not
   known yet, so they are — every model is given them until it is found unable. The service writes `false` itself the first
   time a reply finds the model cannot use them (its upstream refused them, or it called them garbled twice), on that model

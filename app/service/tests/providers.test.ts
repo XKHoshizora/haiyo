@@ -218,6 +218,29 @@ describe("editing", () => {
     expect((await api(app, owner, "GET", "/api/providers")).json.providers[0].models).toEqual(refreshed.json.provider.models);
   });
 
+  it("reportedLevels: what the catalogue says the model supports is shown beside the levels in use, so a model set to every level can go back; absent for a model it does not know or one that does not reason", async () => {
+    const owner = await signUp(app, "rhea");
+    // "o3-mini" reasons and the catalogue lists its levels; it is saved with NO levels (every level): the choice made.
+    const created = await mustCreate(owner, {
+      baseUrl: stub.baseUrl(),
+      models: [{ name: "o3-mini", reasoning: true }, { name: "my-own-think", reasoning: true }, { name: "o3-mini-plain" }, { name: "gpt-x" }],
+    });
+    const byName = Object.fromEntries(created.models.map((m: { name: string }) => [m.name, m]));
+    expect(byName["o3-mini"].reasoningLevels).toBeUndefined();
+    expect(byName["o3-mini"].reportedLevels).toEqual(["low", "medium", "high"]);
+    // Not known to the catalogue, or not reasoning: nothing is reported.
+    expect(byName["my-own-think"]).not.toHaveProperty("reportedLevels");
+    expect(byName["gpt-x"]).not.toHaveProperty("reportedLevels");
+    // The same after a reload (GET), and after the choice is put back to the levels it reports.
+    const listed = (await api(app, owner, "GET", "/api/providers")).json.providers[0].models;
+    expect(listed.find((m: { name: string }) => m.name === "o3-mini").reportedLevels).toEqual(["low", "medium", "high"]);
+    const back = await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: [{ name: "o3-mini", reasoning: true, reasoningLevels: ["low", "medium", "high"] }] });
+    expect(back.json.models[0]).toMatchObject({ reasoningLevels: ["low", "medium", "high"], reportedLevels: ["low", "medium", "high"] });
+    // It is not stored and not accepted back: what the service reports is the catalogue's.
+    const refused = await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: [{ name: "o3-mini", reasoning: true, reportedLevels: ["low"] }] });
+    expect(refused.status).toBe(400);
+  });
+
   it("the protocol cannot change, and other keys are refused (400)", async () => {
     const owner = await signUp(app, "pete");
     const p = await mustCreate(owner);

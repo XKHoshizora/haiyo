@@ -771,13 +771,17 @@ describe("the models of a provider", () => {
     });
     const app = await openProviders({ providers: [levels] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    // The summary line says which levels are in use; the choice is in 高级.
+    expect(modelRow("gpt-x").textContent).toContain("支持思考（低、高）");
+    expect(within(modelRow("gpt-x")).queryByRole("radiogroup")).toBeNull();
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
-    const reported = () => within(group()).getByRole("radio", { name: "按模型报告的（低、高）" });
+    const reported = () => within(group()).getByRole("radio", { name: "这个模型支持的档位（低、高）" });
     const every = () => within(group()).getByRole("radio", { name: "全部档位" });
     expect(reported().checked).toBe(true);
     expect(every().checked).toBe(false);
     // What each means, in one line, and when to want every level.
-    expect(group().textContent).toContain("模型给的档位不对或不全时，选全部档位");
+    expect(group().textContent).toContain("档位不对或不全时，选全部档位");
     // No bare button that only goes one way.
     expect(within(modelRow("gpt-x")).queryByRole("button", { name: /全部档位/ })).toBeNull();
     await click(every());
@@ -786,6 +790,7 @@ describe("the models of a provider", () => {
     await click(reported());
     expect(reported().checked).toBe(true);
     await click(every());
+    expect(modelRow("gpt-x").textContent).toContain("支持思考（全部档位）");
     await click(within(modelRow("deep")).getByRole("button", { name: /高级/ }));
     fireEvent.click(within(modelRow("deep")).getByLabelText(/支持思考/));
     await flush();
@@ -799,15 +804,28 @@ describe("the models of a provider", () => {
     });
   });
 
+  it("a model saved with every level still offers the way back: the service reports its levels beside (reportedLevels)", async () => {
+    const saved = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reportedLevels: ["low", "high"] }] });
+    const app = await openProviders({ providers: [saved] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    expect(modelRow("gpt-x").textContent).toContain("支持思考（全部档位）");
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
+    const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
+    expect(within(group).getByRole("radio", { name: "全部档位" }).checked).toBe(true);
+    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+  });
+
   it("the reported levels are sent again when the choice is put back to them", async () => {
     const levels = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
     const app = await openProviders({ providers: [levels] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     await click(within(group).getByRole("radio", { name: "全部档位" }));
-    await click(within(group).getByRole("radio", { name: "按模型报告的（低、高）" }));
+    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
     // (Something else changed too, so that there is something to save.)
-    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/能看图片/));
     await flush();
     await click(inMain().getByRole("button", { name: "保存" }));
@@ -908,7 +926,7 @@ describe("同步模型", () => {
     expect(dialog()).toBeNull();
     expect(toastText()).toBe("已保存 6 个模型");
     // Still in the form, which now matches what is saved: 保存 has nothing to send.
-    expect(modelRow("claude-long").textContent).toContain("按模型报告的（低、高）");
+    expect(modelRow("claude-long").textContent).toContain("支持思考（低、高）");
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
   });

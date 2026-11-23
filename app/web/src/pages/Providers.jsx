@@ -157,8 +157,8 @@ const contextProblem = (text) => {
 
 /**
  * A model of the provider as the form holds it: the context as text ("" means the service's default), `levels` the
- * thinking levels it is offered with (null: every level), `reported` the levels the model reports (what `levels` goes back to; the form only
- * keeps them while it is open: the service stores `levels`, and null for "every level"), and `tools` whether its replies may be offered tools as its entry says it
+ * thinking levels it is offered with (null: every level), `reported` the levels the catalogue lists for it (what `levels` goes back to: the service
+ * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too), and `tools` whether its replies may be offered tools as its entry says it
  * (undefined: it says nothing — not known yet, so they are; the service may set it false when the model turns out unable).
  */
 const formModel = (m) => ({
@@ -168,7 +168,7 @@ const formModel = (m) => ({
   reasoning: Boolean(m.reasoning),
   context: Number.isFinite(m.contextTokens) ? String(m.contextTokens) : "",
   levels: m.reasoning ? modelLevels(m.reasoningLevels) : null,
-  reported: m.reasoning ? modelLevels(m.reasoningLevels) : null,
+  reported: m.reasoning ? (modelLevels(m.reportedLevels) ?? modelLevels(m.reasoningLevels)) : null,
   ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
 });
 /**
@@ -355,21 +355,21 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   const tooSmall = shownContext !== null && limit !== null && shownContext <= limit;
   const summary = [model.vision && "能看图片", model.pdf && "能直接读 PDF"].filter(Boolean);
   const after = shownContext !== null ? [`上下文 ${grouped(shownContext)}${context === null ? "（默认）" : ""}`] : [];
-  const thinking = model.reasoning ? "支持思考" : null;
+  const thinking = model.reasoning ? (model.reported ? `支持思考（${model.levels ? model.levels.map(levelLabel).join("、") : "全部档位"}）` : "支持思考") : null;
   // A model that reports which thinking levels it supports: the choice between those and every level, both ways open until it is saved.
   const levelChoice =
     model.reasoning && model.reported ? (
-      <fieldset className="checks level-choice" role="radiogroup" aria-label={`思考档位：${model.name}`}>
+      <fieldset className="checks level-choice" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
         <legend>思考档位</legend>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={model.levels !== null} onChange={() => onChange({ ...model, levels: model.reported })} />
-          <span>按模型报告的（{model.reported.map(levelLabel).join("、")}）</span>
+          <span>这个模型支持的档位（{model.reported.map(levelLabel).join("、")}）</span>
         </label>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={model.levels === null} onChange={() => onChange({ ...model, levels: null })} />
           <span>全部档位</span>
         </label>
-        <small className="muted">模型给的档位不对或不全时，选全部档位。</small>
+        <small id={`${panelId}-levels-hint`} className="muted">档位不对或不全时，选全部档位。</small>
       </fieldset>
     ) : null;
   const parts = [...summary, thinking, ...after].filter(Boolean);
@@ -393,7 +393,6 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
           ))}
           {tooSmall && " · 上下文太小，Agent 不能使用"}
         </p>
-        {levelChoice}
         {open && (
           <div id={panelId} className="model-panel">
             <fieldset className="checks">
@@ -416,6 +415,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
             </fieldset>
+            {levelChoice}
             <Field label="上下文容量" hint={contextHint} error={error}>
               <input
                 value={model.context}

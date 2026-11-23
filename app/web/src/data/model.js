@@ -1517,6 +1517,7 @@ export function publicProvider(answer) {
     keyLast4: p.keyLast4,
     models: (Array.isArray(p.models) ? p.models : []).map((m) => {
       const levels = modelLevels(m.reasoningLevels);
+      const reported = m.reasoning ? modelLevels(m.reportedLevels) : null;
       return {
         name: m.name,
         vision: Boolean(m.vision),
@@ -1524,6 +1525,8 @@ export function publicProvider(answer) {
         reasoning: Boolean(m.reasoning),
         contextTokens: m.contextTokens,
         ...(levels ? { reasoningLevels: levels } : {}),
+        // What the catalogue lists for it (the service, read only): where the choice between those levels and every level goes back to.
+        ...(reported ? { reportedLevels: reported } : {}),
         // Whether its replies may be offered tools, only when its entry says it (absent: not known yet, so they are).
         ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
       };

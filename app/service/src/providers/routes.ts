@@ -26,6 +26,7 @@ import {
   modelName,
   parseModels,
   updateProvider,
+  type ModelLevel,
   type ProviderModel,
   type ProviderRow,
 } from "./store.ts";
@@ -86,6 +87,8 @@ const modelView = z.object({
   reasoning: z.boolean(),
   contextTokens: z.number(),
   reasoningLevels: levelsView.optional(),
+  /** What the catalogue says the model supports (only on a model that reasons and is known to it): kept apart from `reasoningLevels`, the levels in use. */
+  reportedLevels: levelsView.optional(),
   tools: z.boolean().optional(),
 });
 const providerView = z.object({
@@ -150,6 +153,15 @@ const listedModel = z.object({
   added: z.boolean(),
 });
 
+/**
+ * The levels the catalogue lists for a model that reasons, read when it is shown (not stored: the choice in `reasoningLevels` — none: every level — never
+ * loses them, an old row has them too, and a catalogue update reaches the page at once), so the choice between them and every level stays open.
+ */
+const reported = (m: ProviderModel): { reportedLevels?: ModelLevel[] } => {
+  const levels = m.reasoning ? modelHints(m.name).reasoningLevels : undefined;
+  return levels === undefined ? {} : { reportedLevels: levels };
+};
+
 /** A provider as its owner sees it (a model's `tools` only when its entry says it). */
 const toView = (p: ProviderRow): z.infer<typeof providerView> => ({
   id: p.id,
@@ -164,6 +176,7 @@ const toView = (p: ProviderRow): z.infer<typeof providerView> => ({
     reasoning: m.reasoning,
     contextTokens: m.contextTokens,
     ...(m.reasoningLevels === undefined ? {} : { reasoningLevels: m.reasoningLevels }),
+    ...reported(m),
     ...(m.tools === undefined ? {} : { tools: m.tools }),
   })),
 });
