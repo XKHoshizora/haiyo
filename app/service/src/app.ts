@@ -21,6 +21,7 @@ import { sweepMemoryChanges } from "./memory/sweep.ts";
 import { sweepExpiredSignups } from "./auth/invites.ts";
 import { registerAttachmentRoutes } from "./attachments/routes.ts";
 import { createUploadSlots, type UploadSlots } from "./attachments/slots.ts";
+import { registerOthersRoutes } from "./accounts/others-routes.ts";
 import { registerAccountRoutes } from "./accounts/routes.ts";
 import { leaveGroupsOfDeleted } from "./agents/group-leave.ts";
 import { endMemoryCalls } from "./memory/call.ts";
@@ -53,6 +54,7 @@ import { guardedFetch } from "./providers/guard.ts";
 import { createProviderProbe, PROBE_GUARD, type ProviderProbe } from "./providers/probe.ts";
 import { registerProviderRoutes } from "./providers/routes.ts";
 import { createSocialEvents, type SocialEvents } from "./social/events.ts";
+import { registerAgentContactRoutes } from "./social/agent-contact-routes.ts";
 import { registerSocialRoutes } from "./social/routes.ts";
 import { createConversationEvents, type ConversationEvents } from "./conversations/events.ts";
 import { registerConversationRoutes } from "./conversations/routes.ts";
@@ -640,10 +642,12 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   registerSessionRoutes(app);
   registerPrincipalRoutes(app);
   registerSocialRoutes(app);
+  registerAgentContactRoutes(app);
   registerConversationRoutes(app);
   registerMessageRoutes(app);
   registerAttachmentRoutes(app);
   registerAccountRoutes(app);
+  registerOthersRoutes(app);
   // One budget for an owner's reads of their Agents, providers and replies (GET /api/agents, /api/agents/:id,
   // /api/providers, /api/conversations/:id/run, and a group's /api/conversations/:id/runs): 120 a minute together.
   const ownReads = perPrincipalLimit(app, 120);
