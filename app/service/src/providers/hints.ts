@@ -17,7 +17,33 @@ export interface NameHints {
   chat: boolean;
 }
 
-export interface ModelHints extends NameHints {
+/**
+ * What only the catalogue says of a model, each there only as `true` (absent: no, or not said — never guessed from a
+ * name's wording): `tools` (its replies can call tools), `audioIn` / `videoIn` (takes audio, video), `imageOut` /
+ * `videoOut` / `audioOut` (answers with images, video, audio).
+ */
+export const ABILITY_KEYS = ["tools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"] as const;
+export type Abilities = { [K in (typeof ABILITY_KEYS)[number]]?: true };
+/** The abilities among `from`'s keys (a catalogue entry's, a `ModelHints`'), and nothing else of it. */
+export function abilitiesOf(from: Abilities): Abilities {
+  const out: Abilities = {};
+  for (const key of ABILITY_KEYS) if (from[key] === true) out[key] = true;
+  return out;
+}
+
+/**
+ * What only the catalogue says a model takes and answers with (`ABILITY_KEYS` without `tools`), each only as
+ * `true`, only for a name it knows: as the routes answer it — on a saved model, on a listed one (providers/routes.ts), and on a site model (`GET /api/models`).
+ */
+export const mediaView = {
+  audioIn: z.literal(true).optional(),
+  videoIn: z.literal(true).optional(),
+  imageOut: z.literal(true).optional(),
+  videoOut: z.literal(true).optional(),
+  audioOut: z.literal(true).optional(),
+};
+
+export interface ModelHints extends NameHints, Abilities {
   /** The catalogue knows the model: the hints are its, else they are guesses from the name. */
   known: boolean;
   /** The catalogue's display name (known models only). */
@@ -38,6 +64,12 @@ const catalogEntry = z.strictObject({
   chat: z.boolean(),
   contextTokens: z.number().int().positive().optional(),
   reasoningLevels: modelLevels.optional(),
+  tools: z.literal(true).optional(),
+  audioIn: z.literal(true).optional(),
+  videoIn: z.literal(true).optional(),
+  imageOut: z.literal(true).optional(),
+  videoOut: z.literal(true).optional(),
+  audioOut: z.literal(true).optional(),
 });
 type CatalogEntry = z.infer<typeof catalogEntry>;
 
@@ -89,7 +121,8 @@ for (const entry of CATALOG) index(undated(entry.id), entry);
  * What the name says the model can do. The name is trimmed and lower-cased, and only its last `/` part counts
  * (`openai/gpt-6-sol` is `gpt-6-sol`). Found in the catalogue as it is; else without a trailing `-latest` and date; else
  * by the longest id it starts with, followed by `-` (`claude-sonnet-5-5-thinking` is `claude-sonnet-5-5`) — unless the
- * name rules call it no chat model (`gpt-4o-mini-tts` is not `gpt-4o-mini`). Not found: the name rules, `known: false`.
+ * name rules call it no chat model (`gpt-4o-mini-tts` is not `gpt-4o-mini`). Not found: the name rules, `known: false`,
+ * and none of the abilities (`ABILITY_KEYS`), which only the catalogue's entry answers.
  */
 export function modelHints(raw: string): ModelHints {
   const lower = raw.trim().toLowerCase();
@@ -111,6 +144,7 @@ export function modelHints(raw: string): ModelHints {
     label: entry.name,
     ...(entry.contextTokens === undefined ? {} : { contextTokens: entry.contextTokens }),
     ...(entry.reasoningLevels === undefined ? {} : { reasoningLevels: entry.reasoningLevels }),
+    ...abilitiesOf(entry),
   };
 }
 

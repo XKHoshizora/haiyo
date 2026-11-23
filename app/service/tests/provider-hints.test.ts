@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferModelHints, modelHints } from "../src/providers/hints.ts";
+import { ABILITY_KEYS, abilitiesOf, inferModelHints, modelHints } from "../src/providers/hints.ts";
 import { expectLinear, LOADED_TIMEOUT_MS } from "./helpers/linear.ts";
 
 /**
@@ -9,8 +9,8 @@ import { expectLinear, LOADED_TIMEOUT_MS } from "./helpers/linear.ts";
  */
 
 const ALL_LEVELS = ["low", "medium", "high", "xhigh", "max"];
-const GPT_6_SOL = { vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "GPT-6 Sol", contextTokens: 1050000, reasoningLevels: ALL_LEVELS };
-const SONNET = { vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "Claude Sonnet 5.5", contextTokens: 1000000, reasoningLevels: ALL_LEVELS };
+const GPT_6_SOL = { vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "GPT-6 Sol", contextTokens: 1050000, reasoningLevels: ALL_LEVELS, tools: true };
+const SONNET = { vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "Claude Sonnet 5.5", contextTokens: 1000000, reasoningLevels: ALL_LEVELS, tools: true };
 
 describe("modelHints: the catalogue first", () => {
   it("an exact id, also behind a vendor prefix, in any case, with spaces around it", () => {
@@ -19,7 +19,7 @@ describe("modelHints: the catalogue first", () => {
     expect(modelHints("  OpenRouter/OpenAI/GPT-6-Sol ")).toEqual(GPT_6_SOL);
     expect(modelHints("claude-sonnet-5-5")).toEqual(SONNET);
     // The lab's levels when it has them; a model whose levels are a toggle or a token budget has none listed.
-    expect(modelHints("gemini-2.5-pro")).toEqual({ vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "Gemini 2.5 Pro", contextTokens: 1048576 });
+    expect(modelHints("gemini-2.5-pro")).toEqual({ vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "Gemini 2.5 Pro", contextTokens: 1048576, tools: true, audioIn: true, videoIn: true });
     expect(modelHints("o3-mini")).toMatchObject({ known: true, reasoning: true, reasoningLevels: ["low", "medium", "high"] });
     expect(modelHints("minimax/MiniMax-M3")).toMatchObject({ known: true, label: "MiniMax-M3", reasoning: true });
     expect(modelHints("minimax/MiniMax-M3")).not.toHaveProperty("reasoningLevels");
@@ -41,6 +41,28 @@ describe("modelHints: the catalogue first", () => {
     for (const name of ["gpt-4o-mini-tts", "gpt-4o-transcribe", "gpt-4o-audio-preview"]) {
       expect([name, modelHints(name)]).toEqual([name, { vision: false, pdf: false, reasoning: false, chat: false, known: false }]);
     }
+  });
+
+  it("abilities: tools, audio and video in, image, video and audio out — only as true, only from the catalogue", () => {
+    expect(modelHints("deepseek-chat")).toMatchObject({ known: true, tools: true });
+    expect(modelHints("dashscope/Qwen-Omni-Turbo")).toMatchObject({ known: true, tools: true, audioIn: true, videoIn: true, audioOut: true });
+    expect(modelHints("gemini-2.5-flash-image")).toMatchObject({ known: true, chat: false, imageOut: true });
+    expect(modelHints("gemini-omni-1.1-flash")).toMatchObject({ known: true, videoIn: true, videoOut: true });
+    // Through the same matching as every hint: a dated name, a variant of a known model.
+    expect(modelHints("claude-sonnet-5-5-thinking").tools).toBe(true);
+    expect(modelHints("deepseek-chat-latest").tools).toBe(true);
+    // What the catalogue does not say is absent, never false: a known model without tool support …
+    const plain = modelHints("gemini-embedding-001");
+    for (const key of ABILITY_KEYS) expect([key, key in plain]).toEqual([key, false]);
+    expect(modelHints("gpt-6-sol")).not.toHaveProperty("audioIn");
+    // … and nothing is guessed from a name's wording: a name the catalogue does not know says none of them.
+    for (const name of ["my-tools-model", "acme/function-calling-audio-video-omni", "gpt-6", "o4-ultra-custom", "vision-video-in-image-out"]) {
+      const unknown = modelHints(name);
+      expect([name, unknown.known, ABILITY_KEYS.filter((key) => key in unknown)]).toEqual([name, false, []]);
+      expect([name, abilitiesOf(unknown)]).toEqual([name, {}]);
+    }
+    expect(abilitiesOf(modelHints("qwen-omni-turbo"))).toEqual({ tools: true, audioIn: true, videoIn: true, audioOut: true });
+    expect(ABILITY_KEYS).toEqual(["tools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"]);
   });
 
   it("a model the catalogue lists as no chat model is known as such", () => {
