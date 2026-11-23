@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { navOfAddress } from "../state/location.js";
-import { hello, inShell, on, takeOpen, watchOpen } from "./bridge.js";
-import { registerPush } from "./push.js";
+import { hello, inShell, on, takeOpen, watchHello, watchOpen } from "./bridge.js";
+import { pushOnResume, registerPush } from "./push.js";
 
 /** A page that loads in the background of the shell opens no socket (README, "Bridge"): it connects on `resume` or when it is shown. */
 export const startsInBackground = () => inShell() && document.visibilityState === "hidden";
@@ -19,8 +19,14 @@ export const startsInBackground = () => inShell() && document.visibilityState ==
 export function useShellSession({ running, layer, api }) {
   useEffect(() => {
     if (!running || !inShell()) return undefined;
-    const offs = [on("pause", () => layer.pause?.()), on("resume", () => layer.resume?.())];
-    const shown = () => (document.visibilityState === "visible" ? layer.resume?.() : layer.pause?.());
+    // Back from the background: the socket comes back through the data layer, and the permission is asked again (a change made in the system's
+    // Settings is learned here; a registration that failed is tried once more).
+    const back = () => {
+      layer.resume?.();
+      pushOnResume(api);
+    };
+    const offs = [on("pause", () => layer.pause?.()), on("resume", back)];
+    const shown = () => (document.visibilityState === "visible" ? back() : layer.pause?.());
     document.addEventListener("visibilitychange", shown);
     let registered = false;
     const register = () => {
@@ -76,8 +82,10 @@ export function usePushPermission() {
   useEffect(() => {
     let alive = true;
     hello().then((info) => alive && setPermission(info?.push ?? null));
+    const off = watchHello((info) => setPermission(info?.push ?? null));
     return () => {
       alive = false;
+      off();
     };
   }, []);
   return permission;

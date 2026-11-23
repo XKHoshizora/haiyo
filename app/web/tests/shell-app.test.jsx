@@ -211,7 +211,48 @@ describe("in an ordinary browser", () => {
   });
 });
 
+describe("an ordinary desktop browser", () => {
+  it("hiding the tab does not touch the socket, and a tab that mounts hidden connects as before", async () => {
+    const state = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    mount(apiOf());
+    await screen.findByTestId("app");
+    await act(async () => {});
+    expect(layers[0].start).toHaveBeenCalledWith({ paused: false });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    state.mockReturnValue("visible");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    state.mockReturnValue("hidden");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(layers[0].pause).not.toHaveBeenCalled();
+    expect(layers[0].resume).not.toHaveBeenCalled();
+  });
+});
+
 describe("pause and resume", () => {
+  it("several visibility changes register the phone once", async () => {
+    await enterShell();
+    const api = apiOf();
+    mount(api);
+    await waitFor(() => expect(api.registerPushDevice).toHaveBeenCalledTimes(1));
+    for (let i = 0; i < 3; i += 1) act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => {});
+    expect(shell.named("push.register")).toHaveLength(1);
+    expect(api.registerPushDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("a resume asks the shell again (hello) and registers a phone whose permission was turned on meanwhile", async () => {
+    await enterShell({ hello: { ...HELLO, push: "denied" } });
+    const api = apiOf();
+    mount(api);
+    await screen.findByTestId("app");
+    await act(async () => {});
+    expect(api.registerPushDevice).not.toHaveBeenCalled();
+    shell.replies.hello = { ...HELLO, push: "granted" };
+    act(() => shell.emit("resume"));
+    await waitFor(() => expect(api.registerPushDevice).toHaveBeenCalledTimes(1));
+    expect(shell.named("hello")).toHaveLength(2);
+  });
+
   it("haiyo:pause lets the socket go, haiyo:resume brings it back through the data layer", async () => {
     await enterShell();
     mount(apiOf());
@@ -238,6 +279,40 @@ describe("pause and resume", () => {
 });
 
 describe("a tapped notification, signed out", () => {
+  it("one that comes after an expiry is not kept for the next person to sign in", async () => {
+    await enterShell();
+    const api = apiOf();
+    mount(api);
+    await screen.findByTestId("app");
+    act(() => layers[0].end());
+    await screen.findByLabelText("邮箱");
+    act(() => shell.emit("open", { path: `/chat/${C1}` }));
+    expect(place()).toBe("/signin");
+    api.getMe.mockResolvedValue(ANN);
+    await signInUi();
+    expect(place()).toBe("/");
+  });
+
+  it.each(["/register", "/forgot", "/reset-password", "/verify"])("one that comes while %s is open leaves that page alone", async (page) => {
+    await enterShell();
+    at(page);
+    mount(outThenIn());
+    await act(async () => {});
+    act(() => shell.emit("open", { path: `/chat/${C1}` }));
+    await act(async () => {});
+    expect(place()).toBe(page);
+  });
+
+  it("a page that is not an app page (the terms, a reset link with its token) is loaded as it is, signed in or out", async () => {
+    await enterShell();
+    const load = vi.spyOn(bridge.loader, "assign").mockImplementation(() => {});
+    mount(outThenIn());
+    await screen.findByLabelText("邮箱");
+    act(() => shell.emit("open", { path: "/reset-password?token=abc123" }));
+    act(() => shell.emit("open", { path: "/terms" }));
+    expect(load.mock.calls).toEqual([["/reset-password?token=abc123"], ["/terms"]]);
+  });
+
   it("goes to the sign-in page and on to that page after the sign-in (the app's own return address)", async () => {
     await enterShell();
     const api = outThenIn();
@@ -348,6 +423,24 @@ describe("settings, when notifications are off for the app", () => {
     render(settings());
     await screen.findByText("设置");
     await act(async () => {});
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it("follows a resume: off in the system's Settings shows the line, on takes it away", async () => {
+    await enterShell({ hello: { ...HELLO, push: "granted" } });
+    render(settings());
+    await screen.findByText("设置");
+    await act(async () => {});
+    expect(screen.queryByText(LINE)).toBeNull();
+    shell.replies.hello = { ...HELLO, push: "denied" };
+    await act(async () => {
+      await bridge.refreshHello();
+    });
+    expect(screen.getByText(LINE)).toBeTruthy();
+    shell.replies.hello = { ...HELLO, push: "granted" };
+    await act(async () => {
+      await bridge.refreshHello();
+    });
     expect(screen.queryByText(LINE)).toBeNull();
   });
 

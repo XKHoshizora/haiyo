@@ -134,8 +134,12 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   useOpenWhileSignedOut(
     session.status === "out",
     useCallback((path) => {
+      // Someone half-way through a register, a reset or a verification is not thrown back to the sign-in: the tap is dropped (it is only a
+      // shortcut to a page; they are not signed in yet, and may be another person than the one it was meant for).
+      const where = parseRoute(globalThis.location).name;
+      if (where !== "app" && where !== "signin") return;
       if (!wasIn.current) rememberReturn(path);
-      if (globalThis.location.pathname !== "/signin") navigate("/signin", { replace: true });
+      if (where !== "signin") navigate("/signin", { replace: true });
     }, []),
   );
 

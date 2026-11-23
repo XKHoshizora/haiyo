@@ -13,8 +13,11 @@ import { navOfAddress } from "../state/location.js";
 /** The events of the shell this page handles, as `hello` lists them (README: `["pause", "resume", "open", "layout"]`). */
 export const HANDLED_EVENTS = Object.freeze(["pause", "resume", "open"]);
 
-/** How long a request waits for its answer (ms). The shell answers `push.register` itself with `{ error: "timeout" }` after 30 s. */
-export const TIMEOUT_MS = Object.freeze({ default: 8_000, hello: 8_000, "push.register": 40_000 });
+/**
+ * How long a request waits for its answer (ms); null: as long as the page lives. `push.register` has no limit of ours: the shell does not time
+ * the system's question (its own 30 s start once permission is granted), and a limit here would lose a late "Allow".
+ */
+export const TIMEOUT_MS = Object.freeze({ default: 8_000, hello: 8_000, "push.register": null });
 
 /** A request that did not succeed: `code` is `unavailable` (no shell), `timeout`, or the shell's own word (`forbidden`, `malformed`, `unknown`) or `failed`. */
 export class ShellError extends Error {
@@ -37,14 +40,15 @@ function handler() {
 /** Whether this page is inside the iOS shell (its handler is there). False in every browser. */
 export const inShell = () => handler() !== null;
 
-/** Asks the shell: resolves with its reply. Never logs what it was asked or answered (a token is among them). */
-export function request(name, args = {}) {
+/** Asks the shell: resolves with its reply. `timeoutMs` replaces the limit of the name. Never logs what it was asked or answered (a token is among them). */
+export function request(name, args = {}, { timeoutMs } = {}) {
   const h = handler();
   if (!h) return Promise.reject(new ShellError("unavailable"));
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new ShellError("timeout")), TIMEOUT_MS[name] ?? TIMEOUT_MS.default);
+    const limit = timeoutMs ?? (name in TIMEOUT_MS ? TIMEOUT_MS[name] : TIMEOUT_MS.default);
+    const timer = limit === null ? null : window.setTimeout(() => reject(new ShellError("timeout")), limit);
     const done = (fn, value) => {
-      window.clearTimeout(timer);
+      if (timer !== null) window.clearTimeout(timer);
       fn(value);
     };
     let sent;
@@ -65,18 +69,42 @@ export function request(name, args = {}) {
 }
 
 let helloReply = null;
+const helloWatchers = new Set();
+
+const askHello = () =>
+  request("hello", { events: [...HANDLED_EVENTS] }).then(
+    // (A later bridge version only adds to the first.)
+    (reply) => (reply && typeof reply === "object" && Number.isInteger(reply.bridge) && reply.bridge >= 1 && typeof reply.push === "string" ? reply : null),
+    () => null,
+  );
 
 /**
- * What the shell is (`{ bridge: 1, shell, build, os, push, events, layout }`), or null: not in a shell, or it did not answer. Asked once per
- * page load (and again after a page restored from the back/forward cache): the same promise for every caller.
+ * What the shell is (`{ bridge, shell, build, os, push, events, layout }`), or null: not in a shell, or it did not answer. Asked once per
+ * page load (and again after a page restored from the back/forward cache, or by `refreshHello`): the same promise for every caller.
  */
 export function hello() {
   if (!inShell()) return Promise.resolve(null);
-  helloReply ??= request("hello", { events: [...HANDLED_EVENTS] }).then(
-    (reply) => (reply && typeof reply === "object" && reply.bridge === 1 && typeof reply.push === "string" ? reply : null),
-    () => null,
-  );
+  helloReply ??= askHello();
   return helloReply;
+}
+
+/**
+ * Asks again (the shell answers each `hello` with the current permission): on a resume, so that a permission changed in the system's Settings is
+ * learned at once. An answer replaces what was known and is told to `watchHello`; one that fails changes nothing and gives null.
+ */
+export async function refreshHello() {
+  if (!inShell()) return null;
+  const reply = await askHello();
+  if (!reply) return null;
+  helloReply = Promise.resolve(reply);
+  for (const fn of [...helloWatchers]) call(fn, reply);
+  return reply;
+}
+
+/** Calls `fn(reply)` whenever a fresh `hello` has answered; returns the function that stops it. */
+export function watchHello(fn) {
+  helloWatchers.add(fn);
+  return () => helloWatchers.delete(fn);
 }
 
 // ───────── events
@@ -94,10 +122,13 @@ export function on(event, fn) {
 // without query or fragment, never an address of another site.
 const PLACEHOLDER_ORIGIN = "https://app.invalid";
 
+/** A plain path of this site as the shell writes it: `/…`, not `//host`, no backslash, no control character, no encoded slash. */
+const plain = (raw) =>
+  typeof raw === "string" && raw.length > 0 && raw.length <= 2048 && raw.startsWith("/") && !raw.startsWith("//") && !/[\\\u0000-\u001f\u007f]|%2f|%5c/i.test(raw);
+
 /** The path of a page of the app (`/chat/<id>`, `/contacts`, ...) that `raw` names, or null when it is anything else. Query and fragment are dropped. */
 export function appPathOf(raw) {
-  if (typeof raw !== "string" || raw.length === 0 || raw.length > 512) return null;
-  if (!raw.startsWith("/") || raw.startsWith("//") || /[\\\u0000-\u001f\u007f]/.test(raw)) return null;
+  if (!plain(raw) || raw.length > 512) return null;
   let url;
   try {
     url = new URL(raw, PLACEHOLDER_ORIGIN);
@@ -111,6 +142,26 @@ export function appPathOf(raw) {
   const page = navOfAddress({ path });
   return page.section !== "chat" || page.pane !== "list" ? path : null;
 }
+
+/**
+ * Any other page of this site the shell sends (the terms and privacy pages, the sign-in, register and reset screens, a reset or verification link
+ * with its query): the path and query to load as they are, or null for anything off this origin, the service's own `/api` paths, or a malformed
+ * address. The query may hold a token: it is never logged.
+ */
+export function pageHrefOf(raw) {
+  if (!plain(raw)) return null;
+  let url;
+  try {
+    url = new URL(raw, window.location.origin);
+  } catch {
+    return null;
+  }
+  if (url.origin !== window.location.origin || /^\/api(\/|$)/i.test(url.pathname)) return null;
+  return url.pathname + url.search;
+}
+
+/** How the page is loaded from this module (a seam for tests; `location.assign` is the only way). */
+export const loader = { assign: (href) => window.location.assign(href) };
 
 let pendingOpen = null;
 const openWatchers = new Set();
@@ -131,10 +182,18 @@ export function watchOpen(fn) {
 
 function heard(event, detail) {
   if (event === "open") {
+    // The page listed `open`, so the shell does not load the URL itself: an address of the app goes to its navigation (queued until the app is
+    // there), any other page of this site is loaded as it is, and anything else is dropped.
     const path = appPathOf(detail?.path);
-    if (path === null) return;
+    if (path === null) {
+      const href = pageHrefOf(detail?.path);
+      if (href !== null) loader.assign(href);
+      return;
+    }
     pendingOpen = path;
     for (const fn of [...openWatchers]) call(fn);
+    for (const fn of [...subscribers.open]) call(fn, { path });
+    return;
   }
   for (const fn of [...subscribers[event]]) call(fn, detail);
 }
@@ -150,8 +209,7 @@ const listeners = HANDLED_EVENTS.map((event) => [`haiyo:${event}`, (e) => heard(
 const onPageShow = (e) => {
   // A page restored from the back/forward cache sends `hello` again (README).
   if (!e.persisted) return;
-  helloReply = null;
-  hello();
+  refreshHello();
 };
 let started = false;
 
@@ -178,5 +236,6 @@ export function stopShell() {
   helloReply = null;
   pendingOpen = null;
   openWatchers.clear();
+  helloWatchers.clear();
   for (const set of Object.values(subscribers)) set.clear();
 }

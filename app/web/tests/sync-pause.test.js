@@ -143,3 +143,20 @@ describe("pause and resume", () => {
     expect(onSignedOut).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("what the person is told", () => {
+  it("a resume is never reported as a failed connection (reconnecting); a real drop still is", async () => {
+    const t = fakeTransport({ sync: twoChats });
+    const { engine, statuses, timers } = run(t);
+    await settle();
+    engine.pause();
+    statuses.length = 0;
+    engine.resume();
+    await settle();
+    expect(statuses).not.toContain("reconnecting");
+    expect(statuses).toContain("live");
+    t.socket.drop(1006);
+    expect(statuses).toContain("reconnecting");
+    void timers;
+  });
+});

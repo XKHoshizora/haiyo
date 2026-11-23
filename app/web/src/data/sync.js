@@ -189,7 +189,8 @@ export function start(
     onStatus(s);
   };
 
-  async function connect() {
+  /** `back`: a return from the background (the shell's resume), which is no failed connection and is not shown as one. */
+  async function connect(back = false) {
     retryTimer = null;
     if (!alive || paused) return;
     const my = ++conn;
@@ -214,7 +215,7 @@ export function start(
     agentNeed.models = !modelsLoaded;
     lanes = { conn: my, live: false, agents: false, runs: 0, models: false };
     setModel(clearStreams(getModel()));
-    setStatus(fresh ? "connecting" : "reconnecting");
+    setStatus(fresh || back === true ? "connecting" : "reconnecting");
     let s;
     try {
       s = await transport.connect({
@@ -711,7 +712,7 @@ export function start(
     if (!alive || !paused) return;
     paused = false;
     attempt = 0;
-    connect();
+    connect(true);
   }
 
   function signedOut() {

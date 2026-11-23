@@ -57,9 +57,27 @@ describe("hello", () => {
     expect(() => bridge.on("layout", () => {})).toThrow();
   });
 
-  it("a reply that is not the bridge's version 1 answer is no shell", async () => {
-    installShell({ hello: { bridge: 2, push: "granted" } });
+  it("a reply of a later bridge version is a shell too (later versions only add); version 0 or none is not", async () => {
+    installShell({ hello: { ...HELLO, bridge: 2 } });
+    await expect(bridge.startShell()).resolves.toMatchObject({ bridge: 2 });
+    bridge.stopShell();
+    installShell({ hello: { ...HELLO, bridge: 0 } });
     await expect(bridge.startShell()).resolves.toBeNull();
+  });
+
+  it("a fresh hello (refreshHello) asks the shell again, tells the watchers, and a failed one keeps what was known", async () => {
+    const shell = installShell();
+    await bridge.startShell();
+    const heard = vi.fn();
+    bridge.watchHello(heard);
+    shell.replies.hello = { ...HELLO, push: "denied" };
+    await expect(bridge.refreshHello()).resolves.toMatchObject({ push: "denied" });
+    expect(heard).toHaveBeenCalledWith(expect.objectContaining({ push: "denied" }));
+    await expect(bridge.hello()).resolves.toMatchObject({ push: "denied" });
+    shell.replies.hello = () => Promise.reject("forbidden");
+    await expect(bridge.refreshHello()).resolves.toBeNull();
+    await expect(bridge.hello()).resolves.toMatchObject({ push: "denied" });
+    expect(shell.named("hello")).toHaveLength(3);
   });
 
   it("a hello the shell refuses ends as null, once, and is not asked again", async () => {
@@ -92,20 +110,24 @@ describe("request", () => {
     await expect(bridge.request("badge.set", { n: 1 })).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it("an answer that does not come ends as timeout, after the time its name allows (push.register waits longer than the shell's own 30 s)", async () => {
+  it("push.register has no time limit while the system's question may be open, and a limit can be passed", async () => {
+    vi.useFakeTimers();
+    installShell({ register: () => new Promise(() => {}), badge: () => new Promise(() => {}) });
+    let ended = false;
+    bridge.request("push.register", {}).catch(() => (ended = true));
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(ended).toBe(false);
+    const short = bridge.request("badge.set", { n: 0 }, { timeoutMs: 1000 }).catch((e) => e.code);
+    await vi.advanceTimersByTimeAsync(1001);
+    await expect(short).resolves.toBe("timeout");
+  });
+
+  it("an answer that does not come ends as timeout", async () => {
     vi.useFakeTimers();
     installShell({ badge: () => new Promise(() => {}), register: () => new Promise(() => {}) });
     const quick = bridge.request("badge.set", { n: 1 }).catch((e) => e.code);
     await vi.advanceTimersByTimeAsync(bridge.TIMEOUT_MS.default + 1);
     await expect(quick).resolves.toBe("timeout");
-    const slow = bridge.request("push.register", {}).catch((e) => e.code);
-    await vi.advanceTimersByTimeAsync(30_000);
-    let settled = false;
-    slow.then(() => (settled = true));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(10_000);
-    await expect(slow).resolves.toBe("timeout");
   });
 });
 
@@ -163,21 +185,24 @@ describe("events from the shell", () => {
     ["a scheme", "javascript:alert(1)"],
     ["a backslash", "/\\evil.example"],
     ["a path that is no page of the app", "/api/me"],
-    ["the sign-in page", "/signin"],
+    ["an encoded slash", "/chat/a%2fb"],
+    ["an encoded backslash", "/chat/a%5Cb"],
+    ["the service's own paths, however written", "/API/me"],
     ["a control character", "/chat/a\n/b"],
     ["an empty string", ""],
     ["a number", 5],
     ["null", null],
-    ["a conversation id that is not one", "/chat/a b"],
     ["an encoded dot segment out of the app", "/chat/%2e%2e/%2e%2e/api/me"],
   ])("an open with %s does nothing", async (_name, path) => {
     const shell = installShell();
     await bridge.startShell();
     const heard = vi.fn();
     bridge.watchOpen(heard);
+    const load = vi.spyOn(bridge.loader, "assign").mockImplementation(() => {});
     shell.emit("open", { path });
     shell.emit("open", undefined);
     expect(heard).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
     expect(bridge.takeOpen()).toBeNull();
   });
 
@@ -186,6 +211,49 @@ describe("events from the shell", () => {
     await bridge.startShell();
     shell.emit("open", { path: "/chat/c-1?x=1#top" });
     expect(bridge.takeOpen()).toBe("/chat/c-1");
+  });
+
+  // The page lists `open`, so the shell no longer loads a URL itself: every same-origin path it sends is opened here.
+  it.each([
+    ["/terms", "/terms"],
+    ["/privacy", "/privacy"],
+    ["/contact", "/contact"],
+    ["/signin", "/signin"],
+    ["/register", "/register"],
+    ["/forgot", "/forgot"],
+    ["/verify?error=TOKEN_EXPIRED", "/verify?error=TOKEN_EXPIRED"],
+    ["a reset link with its token", "/reset-password?token=Zx9_secret-token", "/reset-password?token=Zx9_secret-token"],
+    ["a page the app does not know", "/nothing-here?a=1", "/nothing-here?a=1"],
+  ])("a same-origin page that is not a signed-in app page (%s) is loaded as it is, query and all, and not queued", async (name, path, expected = path) => {
+    const shell = installShell();
+    await bridge.startShell();
+    const load = vi.spyOn(bridge.loader, "assign").mockImplementation(() => {});
+    const logs = ["log", "info", "warn", "error", "debug"].map((k) => vi.spyOn(console, k).mockImplementation(() => {}));
+    shell.emit("open", { path });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith(expected);
+    expect(bridge.takeOpen()).toBeNull();
+    expect(JSON.stringify(logs.map((l) => l.mock.calls))).not.toContain("token");
+    void name;
+  });
+
+  it("an in-app address keeps going to the app's navigation, not to a load", async () => {
+    const shell = installShell();
+    await bridge.startShell();
+    const load = vi.spyOn(bridge.loader, "assign").mockImplementation(() => {});
+    shell.emit("open", { path: "/chat/c-9" });
+    expect(load).not.toHaveBeenCalled();
+    expect(bridge.takeOpen()).toBe("/chat/c-9");
+  });
+
+  it("subscribers hear the validated path, never the raw detail", async () => {
+    const shell = installShell();
+    await bridge.startShell();
+    const heard = vi.fn();
+    bridge.on("open", heard);
+    shell.emit("open", { path: "/chat/c-1?x=1#y", evil: "<img>" });
+    shell.emit("open", { path: "https://evil.example/" });
+    expect(heard.mock.calls).toEqual([[{ path: "/chat/c-1" }]]);
   });
 
   it("appPathOf accepts the pages of the app and nothing else", () => {

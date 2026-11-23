@@ -200,3 +200,110 @@ describe("signing out", () => {
     expect(shell.named("badge.set")).toHaveLength(1);
   });
 });
+
+describe("environments", () => {
+  it.each([["development", "sandbox"], ["sandbox", "sandbox"], ["production", "production"]])("the shell's %s is the service's %s", async (word, expected) => {
+    await shellOf({ register: { token: TOKEN, env: word } });
+    const api = fakePushApi();
+    await push.registerPush(api);
+    expect(api.registerPushDevice.mock.calls[0][0].env).toBe(expected);
+  });
+
+  it("an environment nobody knows registers nothing and is counted once", async () => {
+    await shellOf({ register: { token: TOKEN, env: "staging" } });
+    const api = fakePushApi();
+    await push.registerPush(api);
+    expect(api.registerPushDevice).not.toHaveBeenCalled();
+    expect(push.counters.unknownEnv).toBe(1);
+  });
+});
+
+describe("one push.register at a time, and the next resume", () => {
+  it("a question still open is not asked a second time by a resume, and a late Allow is still taken", async () => {
+    let answer;
+    const shell = await shellOf({ hello: { ...HELLO, push: "notDetermined" }, register: () => new Promise((resolve) => (answer = resolve)) });
+    const api = fakePushApi();
+    const first = push.registerPush(api);
+    await vi.waitFor(() => expect(shell.named("push.register")).toHaveLength(1));
+    shell.replies.hello = { ...HELLO, push: "granted" };
+    await push.pushOnResume(api);
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(1);
+    answer({ token: TOKEN, env: "production" });
+    await first;
+    expect(api.registerPushDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("a permission turned on in the system's Settings is learned at the resume: registered silently", async () => {
+    const shell = await shellOf({ hello: { ...HELLO, push: "denied" } });
+    const api = fakePushApi();
+    await push.registerPush(api);
+    expect(shell.named("push.register")).toHaveLength(0);
+    shell.replies.hello = { ...HELLO, push: "granted" };
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(1);
+    expect(api.registerPushDevice).toHaveBeenCalledTimes(1);
+    // Bound now: another resume asks nothing more.
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(1);
+  });
+
+  it("a permission turned off is learned too: nothing is asked, the watchers are told", async () => {
+    const shell = await shellOf();
+    const api = fakePushApi([], { registerPushDevice: vi.fn(async () => Promise.reject(new Error("offline"))) });
+    const heard = vi.fn();
+    bridge.watchHello(heard);
+    await push.registerPush(api);
+    shell.replies.hello = { ...HELLO, push: "denied" };
+    await push.pushOnResume(api);
+    expect(heard).toHaveBeenCalledWith(expect.objectContaining({ push: "denied" }));
+    expect(shell.named("push.register")).toHaveLength(1);
+  });
+
+  it("a registration that failed is tried again at each resume: once per resume, never in a loop", async () => {
+    const shell = await shellOf({ register: { error: "busy" } });
+    const api = fakePushApi();
+    await push.registerPush(api);
+    expect(shell.named("push.register")).toHaveLength(1);
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(2);
+    await Promise.all([push.pushOnResume(api), push.pushOnResume(api)]);
+    expect(shell.named("push.register")).toHaveLength(3);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(shell.named("push.register")).toHaveLength(3);
+    shell.replies["push.register"] = { token: TOKEN, env: "production" };
+    await push.pushOnResume(api);
+    expect(api.registerPushDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("a resume before the person is signed in registers nothing", async () => {
+    const shell = await shellOf();
+    await push.pushOnResume(fakePushApi());
+    expect(shell.named("push.register")).toHaveLength(0);
+  });
+});
+
+describe("a sign-out never waits long", () => {
+  it("the DELETE is handed an abort signal and aborted when it is given up", async () => {
+    vi.useFakeTimers();
+    await shellOf();
+    let signal;
+    const api = fakePushApi([], { removePushDevice: vi.fn((o) => ((signal = o.signal), new Promise(() => {}))) });
+    const done = push.unregisterPush(api);
+    expect(signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(push.UNBIND_MS + 1);
+    expect(signal.aborted).toBe(true);
+    await done;
+  });
+
+  it("a shell that never answers the badge does not hold it beyond the few seconds in all", async () => {
+    vi.useFakeTimers();
+    await shellOf({ badge: () => new Promise(() => {}) });
+    const api = fakePushApi([], { removePushDevice: vi.fn(() => new Promise(() => {})) });
+    let ended = false;
+    push.unregisterPush(api).then(() => (ended = true));
+    await vi.advanceTimersByTimeAsync(push.UNBIND_MS + push.BADGE_MS + 5);
+    expect(ended).toBe(true);
+    expect(push.UNBIND_MS + push.BADGE_MS).toBeLessThanOrEqual(5_000);
+  });
+});

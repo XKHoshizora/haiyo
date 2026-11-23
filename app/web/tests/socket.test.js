@@ -163,3 +163,14 @@ describe("a connection that never opens", () => {
     expect(FakeWebSocket.instances[0].closedWith).toBeNull();
   });
 });
+
+describe("the connect timeout and a real close", () => {
+  it("a close before the open clears the timeout (nothing left running), and the sync engine plans its back-off retry on the rejection", async () => {
+    const { timers, opening } = setup();
+    const caught = opening.catch((e) => e);
+    await settle();
+    FakeWebSocket.instances[0].serverClose(1006);
+    expect((await caught).name).toBe("SocketClosedError");
+    expect(timers.pending()).toBe(0);
+  });
+});
