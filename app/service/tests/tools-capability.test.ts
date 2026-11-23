@@ -445,7 +445,7 @@ describe("the system text says the reply has no tools only when it is offered no
    */
   const withPassage = (text: string, group: boolean) => {
     expect(text.split("\n")).toContain(NO_TOOLS);
-    const passage = text.replace(NO_TOOLS, `${REPLY_LANGUAGE}\n${toolsPassage(group)}`);
+    const passage = text.replace(NO_TOOLS, `${REPLY_LANGUAGE}\n${toolsPassage(group ? "group" : "own")}`);
     return group ? passage.replace("就说这些不能透露。", `就说这些不能透露。${HOW_TOLD}`) : passage;
   };
 

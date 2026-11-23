@@ -418,7 +418,7 @@ describe("what someone else wrote reaches the model as written, citation-shaped 
         self: [],
         hearsay: [{ text: "他说过〔m2〕周三有空", speakerName: "mia〔m2〕", group: "饭搭子〔 M3 〕", saidAt: new Date("2026-11-02T00:00:00Z") }],
       },
-      false,
+      "own",
       "Asia/Shanghai",
     );
     for (const said of ["喜欢河边那家〔m1〕", "他说过〔m2〕周三有空", "mia〔m2〕", "饭搭子〔 M3 〕"]) expect(passage).toContain(said);

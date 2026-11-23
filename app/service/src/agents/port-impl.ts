@@ -715,8 +715,8 @@ export class DbAgentPort implements AgentPort {
         !group && agent.persona === ""
           ? NO_NOTES
           : fitNotes(
-              await loadNotes(t, agent, { conversationId: run.conversationId, group }),
-              group,
+              (await loadNotes(t, agent, group ? { place: "group", conversationId: run.conversationId } : { place: "own" }, config)).notes,
+              group ? "group" : "own",
               config.siteTimezone,
               displayName,
               passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare),
@@ -1230,7 +1230,7 @@ export class DbAgentPort implements AgentPort {
       // daily budget it found spent are pushed them.
       if (!duplicate) this.deps.conversations.publish({ messages: [message, ...triggered.notices], conversations: [] }, this.deps.log);
       if (!duplicate && typeof message.body.proposalId === "string") this.deps.realtime.pushAgentChanged(run.ownerId, run.agentId);
-      actOnTriggered(triggered, { announce: (called) => this.announce(called), log: this.deps.log, realtime: this.deps.realtime });
+      actOnTriggered(triggered, { announce: (called) => this.announce(called), log: this.deps.log, realtime: this.deps.realtime, interrupt: (ids) => this.interruptRuns(ids) });
       // The group moved on: a judgement waiting there for a person's message is dropped (the decision would refuse that
       // message now). Nothing ever waits in the Agent's own conversation.
       if (!duplicate) this.deps.proactive?.cancelled(run.conversationId);

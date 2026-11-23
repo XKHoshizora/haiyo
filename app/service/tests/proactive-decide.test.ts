@@ -176,7 +176,7 @@ const judgeAfter = (meanwhile: () => Promise<unknown>): Judge => ({
 /** After commit, what the send route does with what a message triggered: its notices published, its runs announced. */
 const publish = (t: Triggered) => {
   app.deps.conversations.publish({ messages: t.notices, conversations: [] }, log);
-  actOnTriggered(t, { announce: (run) => app.agentPort.announce(run), log, realtime: app.realtime });
+  actOnTriggered(t, { announce: (run) => app.agentPort.announce(run), log, realtime: app.realtime, interrupt: (ids) => app.agentPort.interruptRuns(ids) });
 };
 
 // --- listeners (Task 8; the rest is in memory-flags.test.ts) ---
@@ -234,6 +234,7 @@ describe.each([false, true])("who replies unasked (memory %s)", (memory) => {
       callerLimited: [],
       notices: [],
       budgetReached: [],
+      stopped: [],
     });
     expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, lane: "proactive", caller: null, by: "human", covers: asked }]);
     const state = await stateOf(anna.id, w.g);

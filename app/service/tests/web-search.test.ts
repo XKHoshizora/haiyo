@@ -148,13 +148,13 @@ const TODAY_GROUP =
 
 describe("switch off: nothing changes", () => {
   it("the passages are today's bytes; with the site's web unavailable to a reply, exactly one line more", () => {
-    expect(toolsPassage(false)).toBe(TODAY_OWN);
-    expect(toolsPassage(true)).toBe(TODAY_GROUP);
-    expect(toolsPassage(false, "unavailable")).toBe(`${TODAY_OWN}\n${NO_WEB_HERE}`);
-    expect(toolsPassage(true, "unavailable")).toBe(`${TODAY_GROUP}\n${NO_WEB_HERE}`);
+    expect(toolsPassage("own")).toBe(TODAY_OWN);
+    expect(toolsPassage("group")).toBe(TODAY_GROUP);
+    expect(toolsPassage("own", "unavailable")).toBe(`${TODAY_OWN}\n${NO_WEB_HERE}`);
+    expect(toolsPassage("group", "unavailable")).toBe(`${TODAY_GROUP}\n${NO_WEB_HERE}`);
     expect(toolSpecs({ group: false }).map((t) => t.name)).toEqual(["search_messages", "current_time", "read_file"]);
     // The web's passage writes no number of its own: one in the system text would be planted and void it for the run.
-    for (const group of [false, true]) expect(toolsPassage(group, "offered")).not.toMatch(/〔\s*[mfw]\s*[0-9]/i);
+    for (const place of ["own", "group"] as const) expect(toolsPassage(place, "offered")).not.toMatch(/〔\s*[mfw]\s*[0-9]/i);
   });
 
   it("no engine (TOOLS.web off): the three tools, today's passage, 〔w1〕 stays text, no web field anywhere", async () => {
@@ -225,7 +225,7 @@ describe("who is offered it", () => {
     const out = await searchOnce(worker, gateway, owner, own, "北京今天天气怎么样？");
     const first = gateway.calls[0]!;
     expect(names(first)).toEqual(["search_messages", "current_time", "read_file", "search_web"]);
-    expect(first.system).toContain(toolsPassage(false, "offered"));
+    expect(first.system).toContain(toolsPassage("own", "offered"));
     for (const rule of WEB_RULES) expect(first.system).toContain(rule);
     expect(engine.queries).toEqual([QUERY]);
     expect(out).toEqual({

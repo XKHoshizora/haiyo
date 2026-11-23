@@ -129,7 +129,7 @@ describe("the concrete line in the system text", () => {
       const plain = systemText(agent, owner, NOW, "normal", TZ, NO_NOTES, true).text;
       const text = systemText(agent, owner, NOW, "normal", TZ, NO_NOTES, true, lang).text;
       expect(text).toBe(plain.replace(REPLY_LANGUAGE, lines[lang]));
-      expect(text).toContain(`\n${lines[lang]}\n${toolsPassage(false)}`);
+      expect(text).toContain(`\n${lines[lang]}\n${toolsPassage("own")}`);
       expect(text).not.toContain(REPLY_LANGUAGE);
     });
 

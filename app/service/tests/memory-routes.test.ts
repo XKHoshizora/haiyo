@@ -698,10 +698,10 @@ describe("a group the owner has left", () => {
 
   it("the notes passage calls it 一个已离开的群 once the owner has left — not the title it had, nor a rename made after", async () => {
     const w = await leftGroup();
-    const own = { conversationId: w.agent.conversationId, group: false };
-    expect((await loadNotes(db, await agentRow(w.agent.id), own)).hearsay.map((h) => h.group)).toEqual(["OLD-TITLE-g3"]);
+    const own = { place: "own" } as const;
+    expect((await loadNotes(db, await agentRow(w.agent.id), own, app.deps.config)).notes.hearsay.map((h) => h.group)).toEqual(["OLD-TITLE-g3"]);
     await w.leave();
-    const passage = await loadNotes(db, await agentRow(w.agent.id), own);
+    const { notes: passage } = await loadNotes(db, await agentRow(w.agent.id), own, app.deps.config);
     expect(passage.hearsay.map((h) => [h.text, h.group])).toEqual([["下周换场地", "一个已离开的群"]]);
     expect(JSON.stringify(passage)).not.toMatch(/TITLE-g3/);
   });
@@ -713,7 +713,7 @@ describe("a group the owner has left", () => {
     expect((await notes(w.owner)).json.notes.map((n: { source: unknown }) => n.source)).toEqual([{ kind: "group", title: "NEW-TITLE-g3" }]);
     const agentPage = (await api(app, w.owner, "GET", `/api/agents/${w.agent.id}/memory`)).json;
     expect(agentPage.notes.map((n: { source: unknown }) => n.source)).toEqual([{ kind: "group", title: "NEW-TITLE-g3" }]);
-    const passage = await loadNotes(db, await agentRow(w.agent.id), { conversationId: w.agent.conversationId, group: false });
+    const { notes: passage } = await loadNotes(db, await agentRow(w.agent.id), { place: "own" }, app.deps.config);
     expect(passage.hearsay.map((h) => h.group)).toEqual(["NEW-TITLE-g3"]);
     // The hearsay page goes by the Agent's own membership: until the Agent is added back it says no group.
     expect(agentPage.hearsay.map((h: { group: unknown }) => h.group)).toEqual([null]);

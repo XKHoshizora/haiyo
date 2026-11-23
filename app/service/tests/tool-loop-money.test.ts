@@ -743,7 +743,7 @@ describe("the tools' definitions, and room for what they bring back, in the cont
    * replies in (`REPLY_LANGUAGE`, lane prompt2: a reply offered tools only; lane lang: naming the language of the message answered, Chinese in these tests), so its plan is made with that text.
    */
   const NO_TOOLS_LINE = `\n${NO_TOOLS}`;
-  const PASSAGE_LINES = `\n${REPLY_LANGUAGE_FOR.zh}\n${toolsPassage(false)}`;
+  const PASSAGE_LINES = `\n${REPLY_LANGUAGE_FOR.zh}\n${toolsPassage("own")}`;
   /** `system` as a reply offered tools would have it. */
   const offered = (system: string) => {
     expect(system).toContain(NO_TOOLS_LINE);

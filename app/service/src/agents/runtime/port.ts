@@ -135,7 +135,7 @@ export type RunErrorCode =
 export type RunEnd =
   | { readonly status: "done" }
   | { readonly status: "stopped" }
-  | { readonly status: "cancelled"; readonly error?: "agent_paused" | "agent_deleted" | "agent_removed" | "halted" }
+  | { readonly status: "cancelled"; readonly error?: "agent_paused" | "agent_deleted" | "agent_removed" | "halted" | "owner_spoke" | "access_ended" | "notes_changed" | "errand_ended" }
   | {
       readonly status: "failed";
       readonly error: RunErrorCode;

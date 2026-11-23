@@ -170,7 +170,7 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * runs outside the app's statement timeout.
  */
 export function useApp(
-  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine" | "apns">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting" | "pushTimer"> & {
+  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine" | "apns">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting" | "pushTimer" | "noteJudgeTimer"> & {
       memory?: boolean;
       tools?: boolean;
       greeting?: boolean;
@@ -197,6 +197,8 @@ export function useApp(
     heartbeat: false,
     // Nor the push's own timer (`app.push.sweepExpired()` / `flush()` by hand): see `betweenTests`.
     pushTimer: false,
+    // Nor the Agent social worker's (`app.noteJudge.runOnce()` works by hand).
+    noteJudgeTimer: false,
   };
   let instance: FastifyInstance | undefined;
   let database: Db | undefined;

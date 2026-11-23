@@ -346,15 +346,15 @@ describe("canSend and change events", () => {
     const { conversationId: dm } = await befriend(app, a, b);
     const g = await group(app, a, "g", [b, c]);
 
-    expect(await canSend(db, dm, a.id)).toEqual({ ok: true });
-    expect(await canSend(db, g, c.id)).toEqual({ ok: true });
-    expect(await canSend(db, g, o.id)).toBeNull();
-    expect(await canSend(db, dm, c.id)).toBeNull();
+    expect(await canSend(db, dm, a.id, app.deps.config)).toEqual({ ok: true });
+    expect(await canSend(db, g, c.id, app.deps.config)).toEqual({ ok: true });
+    expect(await canSend(db, g, o.id, app.deps.config)).toBeNull();
+    expect(await canSend(db, dm, c.id, app.deps.config)).toBeNull();
     await api(app, a, "DELETE", `/api/friends/${b.id}`);
-    expect(await canSend(db, dm, b.id)).toEqual({ ok: false, reason: "not_friends" });
+    expect(await canSend(db, dm, b.id, app.deps.config)).toEqual({ ok: false, reason: "not_friends" });
     await api(app, b, "PUT", `/api/blocks/${a.id}`);
-    expect(await canSend(db, dm, a.id)).toEqual({ ok: false, reason: "blocked" });
-    expect(await canSend(db, g, a.id)).toEqual({ ok: true }); // a block does not touch the group
+    expect(await canSend(db, dm, a.id, app.deps.config)).toEqual({ ok: false, reason: "blocked" });
+    expect(await canSend(db, g, a.id, app.deps.config)).toEqual({ ok: true }); // a block does not touch the group
   });
 
   it("messages and membership changes are announced after commit; failing listeners are contained", async () => {

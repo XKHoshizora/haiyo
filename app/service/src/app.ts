@@ -24,6 +24,7 @@ import { createUploadSlots, type UploadSlots } from "./attachments/slots.ts";
 import { registerAccountRoutes } from "./accounts/routes.ts";
 import { leaveGroupsOfDeleted } from "./agents/group-leave.ts";
 import { endMemoryCalls } from "./memory/call.ts";
+import { startNoteJudge, type NoteJudge } from "./memory/judge.ts";
 import { runSummary } from "./agents/summary/job.ts";
 import { runDreamJob } from "./memory/dream.ts";
 import { runCatchUp } from "./memory/catchup.ts";
@@ -148,6 +149,8 @@ declare module "fastify" {
     mailSender: MailSender;
     /** Who a stored message is pushed to, and the push's counters (src/push/notify.ts). */
     push: Notifier;
+    /** The Agent social worker (src/memory/judge.ts): the persona aid, and in ring 1b the notes judge; `runOnce()` does one pass. Does nothing until lane A. */
+    noteJudge: NoteJudge;
   }
 }
 
@@ -215,6 +218,12 @@ export interface BuildOptions {
    * same reason as `heartbeat`.
    */
   pushTimer?: false;
+  /**
+   * The Agent social worker's own timer (src/memory/judge.ts `startNoteJudge`: the persona aid in ring 1a, the notes judge in ring
+   * 1b; default every `OTHERS.judgePollMs`). Tests: `false` turns it off (`app.noteJudge.runOnce()` by hand), as the harness does,
+   * for the same reason as `heartbeat`.
+   */
+  noteJudgeTimer?: false;
 }
 
 /**
@@ -502,7 +511,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
             // the port. Both exist before any message is noted, so before any debounce can end and call this.
             act: (_conversationId, triggered) => {
               if (triggered.notices.length > 0) deps.conversations.publish({ messages: triggered.notices, conversations: [] }, app.log);
-              actOnTriggered(triggered, { announce: (run) => agentPort.announce(run), log: app.log, realtime: app.realtime });
+              actOnTriggered(triggered, { announce: (run) => agentPort.announce(run), log: app.log, realtime: app.realtime, interrupt: (ids) => agentPort.interruptRuns(ids) });
             },
             delayMs: proactiveAsked.delayMs ?? config.proactive.debounceMs,
             perGroupHour: config.proactive.perGroupHour,
@@ -581,6 +590,13 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   agentPort.onQueued(() => agentWorker.wake());
   app.decorate("agentPort", agentPort);
   app.decorate("agentWorker", agentWorker);
+  // Agent social's background worker: a handle that does nothing in Step 0 (lane A fills it in, A8b in ring 1a).
+  const noteJudge = startNoteJudge(
+    { db: deps.db, config, models: deps.models, log: app.log, inFlight: memoryRuns, conversations: deps.conversations, realtime: app.realtime },
+    options.noteJudgeTimer === false ? { timer: false } : {},
+  );
+  app.decorate("noteJudge", noteJudge);
+  app.addHook("onClose", async () => noteJudge.close());
   // The persona drafts this process is working on, by run id: the stale-run sweep leaves them alone, as it does the
   // worker's runs.
   const draftRuns = new Set<string>();

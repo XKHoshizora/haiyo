@@ -358,9 +358,11 @@ async function calledLastMinute(t: Tx, callerId: string): Promise<number> {
 /**
  * Why an Agent's running reply was cut short (`agent_runs.interrupted`): by the Agent's pause or delete, because the
  * Agent left the run's conversation (`agent_removed`), or because a member of the group halted Agents calling each
- * other and an Agent's message had called for it (`halted`, `haltAgents`).
+ * other and an Agent's message had called for it (`halted`, `haltAgents`). Agent social adds four: the owner wrote in the
+ * social conversation the reply was for (`owner_spoke`), the access the reply was for ended (`access_ended`), a note the reply
+ * was shown changed (`notes_changed`), and an errand it served ended (`errand_ended`; the errands plan's).
  */
-export type Interruption = "agent_paused" | "agent_deleted" | "agent_removed" | "halted";
+export type Interruption = "agent_paused" | "agent_deleted" | "agent_removed" | "halted" | "owner_spoke" | "access_ended" | "notes_changed" | "errand_ended";
 
 /** Whose message called for a run (`agent_runs.triggered_by`): a person's, or an Agent's in a group. */
 export type TriggeredBy = "human" | "agent";
@@ -422,7 +424,7 @@ export const behindMessageSql = (sender: string, run: string): string =>
 export async function interruptRuns(
   t: Tx,
   agent: AgentRow,
-  reason: Exclude<Interruption, "agent_removed" | "halted">,
+  reason: "agent_paused" | "agent_deleted",
 ): Promise<{ cancelled: Announced[]; running: string[] }> {
   // No follow-up for these (`followUpOnEnd`): an Agent paused or deleted answers nothing, and what was noted on them —
   // handed back by an admission that held one back — is dropped, as on its running runs below.
@@ -734,14 +736,16 @@ export interface BudgetReached {
 
 /**
  * What a message called for, to act on after commit: runs to announce, calls their caller's limit refused, to log, the
- * notices it led to in its group, to publish after it, and the Agents whose others' daily budget it found spent and told
- * the group of, whose owners are pushed the Agent again.
+ * notices it led to in its group, to publish after it, the Agents whose others' daily budget it found spent and told
+ * the group of, whose owners are pushed the Agent again, and the running runs it ended, whose calls are abandoned.
  */
 export interface Triggered {
   runs: Announced[];
   callerLimited: CallerLimited[];
   notices: StoredMessage[];
   budgetReached: BudgetReached[];
+  /** Running runs the message ended (an owner's interjection in a social conversation, lane B's B6): their calls are abandoned after commit (`DbAgentPort.interruptRuns`). */
+  stopped: readonly string[];
 }
 
 /** What a brake told when it refused a call: the notices it appended, to publish, and the Agents to push their owners. */
@@ -754,7 +758,7 @@ export function noneTold(): Told {
 
 /** A message that called for nothing. */
 export function noneTriggered(): Triggered {
-  return { runs: [], callerLimited: [], ...noneTold() };
+  return { runs: [], callerLimited: [], stopped: [], ...noneTold() };
 }
 
 /** One line per call its caller's limit refused (`caller_rate_limited`): how often the limit holds someone back. */
@@ -776,9 +780,10 @@ export function pushBudgetReached(realtime: Pick<Hub, "pushAgentChanged">, reach
  */
 export function actOnTriggered(
   triggered: Triggered,
-  to: { announce(run: Announced): void; log: Pick<FastifyBaseLogger, "info">; realtime: Pick<Hub, "pushAgentChanged"> },
+  to: { announce(run: Announced): void; log: Pick<FastifyBaseLogger, "info">; realtime: Pick<Hub, "pushAgentChanged">; interrupt(runIds: readonly string[]): void },
 ): void {
   for (const run of triggered.runs) to.announce(run);
+  if (triggered.stopped.length > 0) to.interrupt(triggered.stopped);
   logCallerLimited(to.log, triggered.callerLimited);
   pushBudgetReached(to.realtime, triggered.budgetReached);
 }
@@ -1058,7 +1063,7 @@ async function triggerInGroup(t: Tx, conversationId: string, message: StoredMess
     calls.push({ agent, by, askers: [message.senderId] });
   }
   await recordRefusedCalls(t, conversationId, message.seq, refused);
-  return { ...(await reachAgents(t, conversationId, calls, message.seq, "human", config)), ...told };
+  return { ...(await reachAgents(t, conversationId, calls, message.seq, "human", config)), stopped: [], ...told };
 }
 
 /**
@@ -1268,7 +1273,7 @@ export async function triggerFromAgent(
   // Whose questions the calls carry, read only now that the message reaches a run (fix round 3, M-10).
   const carried = reached.length === 0 ? null : typeof askers === "function" ? await askers() : askers;
   const calls: Call[] = reached.map((c) => ({ ...c, askers: carried }));
-  return recorded({ ...(await reachAgents(t, conversationId, calls, message.seq, "agent", config)), ...told });
+  return recorded({ ...(await reachAgents(t, conversationId, calls, message.seq, "agent", config)), stopped: [], ...told });
 }
 
 /**

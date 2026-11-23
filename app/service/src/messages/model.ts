@@ -62,6 +62,21 @@ export type SystemEvent =
       /** The number of lines (`lines.length`); added when it is stored. */
       count?: number;
     }
+  /**
+   * In an `agent_social` conversation, its first message: a person (or Agent) reached Agent `agentIds` and was let in. `ownerIds`
+   * are the owners who watch the conversation and may write in it (the disclosure names them). Rendered for both sides alike.
+   */
+  | { event: "social_opened"; actorId: string; agentIds: string[]; ownerIds: string[] }
+  /**
+   * In the Agent's own conversation, for its owner only (ring 1b): the Agent held back the note `noteId` (of `noteKind`) from
+   * `audienceId`, who asked about it; the owner may allow it. A card that can be answered until `expiresAt`.
+   */
+  | { event: "note_withheld"; actorId: string; agentId: string; audienceId: string; noteKind: "owner" | "self"; noteId: string; expiresAt: string }
+  /**
+   * In the Agent's own conversation, for its owner only (ring 1a): a sentence of the persona `personaVersion` looks like a fact
+   * about the owner or someone else; the owner may move it to what the Agent knows about them. Answerable until `expiresAt`.
+   */
+  | { event: "persona_fact"; actorId: string; agentId: string; sentence: string; personaVersion: number; expiresAt: string }
   | PairEvent;
 
 /** Notices in a pair's direct conversation: `actorId` acted on `principalId`. */

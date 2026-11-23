@@ -146,6 +146,7 @@ describe("GET /api/sync", () => {
       status: 200,
       json: {
         me: { id: n.id, handle: n.handle, displayName: "newbie", avatarVersion: 0, email: n.email },
+        social: { enabled: false },
         conversations: [],
         principals: [{ id: n.id, handle: n.handle, displayName: "newbie", avatarVersion: 0, kind: "human" }],
         messages: [],

@@ -1,6 +1,7 @@
 import { addressRanges, checkPicked, mentionsAtSend } from "../agents/mentions.ts";
 import { claimAttachment, linkAttachment } from "../attachments/store.ts";
 import { assertCanSend, lockForWrite, VISIBLE_JOIN, type WriteLock } from "../conversations/store.ts";
+import type { Config } from "../config.ts";
 import type { Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { insertMessage, MESSAGE_COLUMNS, toStored, type Mention, type MessageBody, type MessageRow, type StoredMessage } from "./model.ts";
@@ -45,6 +46,7 @@ export async function sendMessage(
   conversationId: string,
   senderId: string,
   input: SendInput,
+  config: Pick<Config, "social">,
 ): Promise<{ message: StoredMessage; duplicate: boolean; lock: WriteLock }> {
   const lock = await lockForWrite(t, conversationId, senderId);
 
@@ -59,7 +61,7 @@ export async function sendMessage(
   }
 
   if (input.attachmentId === undefined && !input.text) throw invalid();
-  await assertCanSend(t, lock);
+  await assertCanSend(t, lock, config);
 
   if (input.replyToSeq !== undefined) {
     const quoted = await t.query(`select 1 from messages m ${VISIBLE_JOIN} where m.conversation_id = $2 and m.seq = $3`, [
