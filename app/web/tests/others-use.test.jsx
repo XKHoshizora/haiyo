@@ -482,6 +482,48 @@ describe("people on the page: links to their profile only while Agent social is 
     expect(window.location.pathname).toBe(`/contacts/${ANN}`);
   });
 
+  it("a person this client knows only from this page (no friend, in no chat of mine) opens as a profile with 停止往来; the stop is then on this page's list", async () => {
+    let stopped = [];
+    const { calls } = await openPage({ social: { enabled: true }, answer: () => useOf({ stopped }) });
+    await click(within(mainEl().querySelector(".others-people")).getByRole("link", { name: "小美" }));
+    expect(window.location.pathname).toBe(`/contacts/${MEI.id}`);
+    expect(toastText()).toBeNull();
+    expect(inMain().getByRole("heading", { level: 2 }).textContent).toContain("小美");
+    expect(mainText()).toContain("@mei");
+    await click(inMain().getByRole("button", { name: "停止往来" }));
+    stopped = [{ person: MEI, since: "2026-11-20T04:00:00.000Z" }];
+    await click(within(screen.getByRole("dialog")).getByRole("button", { name: "停止往来" }));
+    expect(calls.putBar).toHaveBeenCalledWith(MEI.id);
+    expect(inMain().getByRole("button", { name: "恢复往来" })).toBeTruthy();
+    // The profile told the shared read: the use page lists the person when it is opened again.
+    await goSettings();
+    await click(inList().getByText(NAME, { selector: ".row-name" }));
+    expect(mainEl().querySelector(".others-stopped").textContent).toContain("小美");
+  });
+
+  it("such a person's address opened directly draws the profile once the list is read; an id in nobody's list falls back to the contacts as before", async () => {
+    window.history.replaceState(null, "", `/contacts/${MEI.id}`);
+    await openWith({ social: { enabled: true } });
+    await flush();
+    expect(window.location.pathname).toBe(`/contacts/${MEI.id}`);
+    expect(inMain().getByRole("heading", { level: 2 }).textContent).toContain("小美");
+    expect(toastText()).toBeNull();
+    cleanup();
+    installBrowser();
+    window.history.replaceState(null, "", "/contacts/00000000-0000-4000-8000-00000000dead");
+    await openWith({ social: { enabled: true } });
+    await flush();
+    expect(window.location.pathname).toBe("/contacts");
+    expect(toastText()).toBe("找不到这位联系人");
+    cleanup();
+    installBrowser();
+    // The switch off: no read is made for it, and the address falls back at once.
+    window.history.replaceState(null, "", `/contacts/${MEI.id}`);
+    const off = await openWith({ social: { enabled: false } });
+    expect(window.location.pathname).toBe("/contacts");
+    expect(off.calls.getOthersUse).not.toHaveBeenCalled();
+  });
+
   it("the stopped list shows who and since when, as links, and says what the act does in both directions; nothing to press", async () => {
     await openPage({ social: { enabled: true }, answer: () => useOf({ stopped: [{ person: MEI, since: "2026-11-20T04:00:00.000Z" }] }) });
     const list = mainEl().querySelector(".others-stopped");

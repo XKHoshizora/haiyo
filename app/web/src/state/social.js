@@ -106,18 +106,6 @@ export function supervisorLabel(state, conv, id) {
   return agent ? `${nameOf(state, aliasOf(state, agent.id))}的主人` : "主人";
 }
 
-/** My Agents' contacts between me and `personId` (an Agent of theirs, or them): whether there is a social conversation or a waiting request. */
-export function haveAgentAccess(state, personId) {
-  if (!socialOn(state)) return false;
-  const convs = Object.values(state.convs).filter(isSocialConv);
-  if (
-    convs.some((c) => (c.social?.participants ?? []).some((p) => aliasOf(state, p) === personId) || (c.social?.agents ?? []).some((a) => aliasOf(state, a.ownerId) === personId))
-  ) {
-    return true;
-  }
-  return agentContactsOf(state).waiting.some((w) => w.subject?.id === personId || w.subject?.ownerId === personId);
-}
-
 /** The conversation as its picture is drawn: a social one by its Agent (the one I talk to, or my own that I watch), never a composite with an owner's face. */
 export function pictureConv(state, conv) {
   if (!isSocialConv(conv)) return conv;

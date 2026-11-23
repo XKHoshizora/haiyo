@@ -53,6 +53,17 @@ const watched = () => ({
   unread: 0,
 });
 const person = (id, handle, displayName) => ({ id, handle, displayName, avatarVersion: 0 });
+/** `GET /api/me/others-use` as the service answers it, with these people stopped (the one read the screen shares: data/othersUseCache.js). */
+const useOf = (stoppedIds) => ({
+  limits: { answers: 50, points: "300" },
+  used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 },
+  reached: false,
+  tight: false,
+  byPerson: [],
+  stopped: stoppedIds.map((id) => ({ person: { id, handle: id === BO ? "bob" : "ann", displayName: id === BO ? "阿波" : "小安", avatarVersion: 0 }, since: "2026-11-16T00:00:00Z" })),
+  agents: [],
+  notice: false,
+});
 const rail = (name) => within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name });
 const inDialog = () => within(dialog());
 
@@ -63,7 +74,7 @@ function routes(over = {}) {
     removeAgentContact: vi.fn(async () => ({ ok: true })),
     putBar: vi.fn(async () => ({ ok: true, ended: 1 })),
     deleteBar: vi.fn(async () => ({ ok: true })),
-    getOthersUse: vi.fn(async () => ({ stopped: [] })),
+    getOthersUse: vi.fn(async () => useOf([])),
     getModels: vi.fn(async () => MODELS),
     listProviders: vi.fn(async () => ({ providers: [] })),
     getUsage: vi.fn(async () => usageOf()),
@@ -194,14 +205,33 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
   });
 
+  it("a stop and a resume are writes the shared read is told of: it is read again after each (the use page then lists the person)", async () => {
+    const { api } = await openCard();
+    expect(api.getOthersUse).toHaveBeenCalledTimes(1);
+    await click(inMain().getByRole("button", { name: "停止往来" }));
+    await click(inDialog().getByRole("button", { name: "停止往来" }));
+    expect(api.getOthersUse).toHaveBeenCalledTimes(2);
+    await click(inMain().getByRole("button", { name: "恢复往来" }));
+    expect(api.getOthersUse).toHaveBeenCalledTimes(3);
+  });
+
+  it("停止往来 is offered for ANY person, also one with no Agent access between us (a group-only caller): the profile is where the act lives", async () => {
+    const { api } = await openCard({ convs: [] });
+    expect(inMain().getByRole("heading", { name: "Agent 往来" })).toBeTruthy();
+    await click(inMain().getByRole("button", { name: "停止往来" }));
+    await click(inDialog().getByRole("button", { name: "停止往来" }));
+    expect(api.putBar).toHaveBeenCalledWith(BO);
+    expect(inMain().getByRole("button", { name: "恢复往来" })).toBeTruthy();
+  });
+
   it("恢复往来 appears for a person I stopped (my numbers page lists them), not for anyone else, and not when that list is not there", async () => {
-    const stopped = routes({ getOthersUse: vi.fn(async () => ({ stopped: [{ person: BO, since: "2026-11-16T00:00:00Z" }] })) });
+    const stopped = routes({ getOthersUse: vi.fn(async () => useOf([BO])) });
     await openCard({ api: stopped, convs: [] });
     expect(inMain().getByRole("button", { name: "恢复往来" })).toBeTruthy();
     cleanup();
-    const other = routes({ getOthersUse: vi.fn(async () => ({ stopped: [{ person: ANN, since: "2026-11-16T00:00:00Z" }] })) });
+    const other = routes({ getOthersUse: vi.fn(async () => useOf([ANN])) });
     await openCard({ api: other, convs: [] });
-    expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
+    expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
     expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
     cleanup();
     const missing = routes({ getOthersUse: vi.fn(async () => { throw apiError(404, "not_found"); }) });
@@ -224,7 +254,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     const twoProfiles = async (stoppedIds, second) => {
       const held = [];
       const getOthersUse = vi.fn(() => {
-        if (getOthersUse.mock.calls.length === 1) return Promise.resolve({ stopped: stoppedIds.map((person) => ({ person, since: "2026-11-16T00:00:00Z" })) });
+        if (getOthersUse.mock.calls.length === 1) return Promise.resolve(useOf(stoppedIds));
         return new Promise((resolve, reject) => held.push({ resolve, reject }));
       });
       const app = await open({ api: routes({ getOthersUse }), social: both, convs: [visiting(), watched()] });
@@ -249,7 +279,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
       const again = await twoProfiles([BO], { first: "阿波" });
       await profile("小安");
       none();
-      await act(async () => again.held.at(-1).resolve({ stopped: [{ person: BO, since: "2026-11-16T00:00:00Z" }] }));
+      await act(async () => again.held.at(-1).resolve(useOf([BO])));
       expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
       expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
     });
@@ -263,23 +293,29 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
       none();
     });
 
-    it("an answer that comes late for the previous person is not applied to the one on screen", async () => {
+    it("the list is one read the screen shares: a read in flight for the previous profile answers the one on screen too, each person by their own entry", async () => {
       const held = [];
       const getOthersUse = vi.fn(() => new Promise((resolve) => held.push(resolve)));
       await open({ api: routes({ getOthersUse }), social: both, convs: [visiting(), watched()] });
       await goContacts();
       await profile("阿波");
       await profile("小安");
-      await act(async () => held[0]({ stopped: [{ person: BO, since: "2026-11-16T00:00:00Z" }] }));
       none();
-      await act(async () => held[1]({ stopped: [] }));
+      expect(getOthersUse).toHaveBeenCalledTimes(1);
+      await act(async () => held[0](useOf([BO])));
+      // 小安 is on screen and is not in the list: 停止往来, never 阿波's 恢复往来.
       expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
+      expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
+      await profile("阿波");
+      none();
+      await act(async () => held[1](useOf([BO])));
+      expect(inMain().getByRole("button", { name: "恢复往来" })).toBeTruthy();
     });
   });
 
   it("恢复往来 when there is nothing to lift says so plainly, and the card then offers 停止往来", async () => {
     const stale = routes({
-      getOthersUse: vi.fn(async () => ({ stopped: [{ person: BO, since: "2026-11-16T00:00:00Z" }] })),
+      getOthersUse: vi.fn(async () => useOf([BO])),
       deleteBar: vi.fn(async () => { throw apiError(404, "not_found"); }),
     });
     await openCard({ api: stale });
@@ -298,13 +334,13 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     await click(inMain().getByRole("button", { name: "停止往来" }));
     expect(inDialog().getByText("你的 Agent 不再回应阿波，阿波的 Agent 也不再回应你。")).toBeTruthy();
     expect(inDialog().getByText("恢复往来后，已经停下的对话不会自己回来。想再聊，要重新加对方的 Agent，等它的主人同意。")).toBeTruthy();
-    expect(inDialog().getByText("你可以随时在对方的资料页恢复往来。")).toBeTruthy();
+    expect(inDialog().getByText("想恢复时，到对方的资料页点“恢复往来”。已停止往来的人列在“设置 › 别人怎么用我的 Agent”里。")).toBeTruthy();
     expect(dialog().textContent).not.toContain("对方的主人");
   });
 
-  it("nothing says that the other person has stopped or blocked: with no stop of mine and no access, there is no such section at all", async () => {
+  it("nothing says that the other person has stopped or blocked: with no stop of mine the section offers my own 停止往来 and no word of theirs", async () => {
     await openCard({ convs: [] });
-    expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
+    expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
     expect(document.querySelector(".main-col").textContent).not.toMatch(/对方停止|对方已停止|他停止/);
   });
 

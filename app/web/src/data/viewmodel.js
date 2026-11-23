@@ -195,6 +195,12 @@ export function noticeText(system, fallback, nameOf, where = {}) {
     case "agent_daily_budget_reached":
       text = `「${n(system.agentId)}」今天只回复它的主人了`;
       break;
+    case "persona_fact":
+      // The persona aid's card (pages/SocialCards.jsx draws it): for its Agent's owner alone (`card`), in that Agent's own conversation, while the
+      // site's Agent social switch is on. It is activity there and previews as the service's own sentence; anywhere else it shows nothing.
+      if (!where.agentId || !where.social || !system.card) return null;
+      text = "人格里有一句话可能是事实";
+      break;
     case "agent_quieted":
       text = `「${n(system.agentId)}」暂时不主动发言，需要时可以 @ 它`;
       break;
@@ -454,7 +460,7 @@ function notCalledText(agentIds, nameOf) {
   return `你 @ 得太频繁了，${who}这次没有收到，稍后再试。`;
 }
 
-function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, keepsOwners, proposalAt }) {
+function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, keepsOwners, proposalAt, social }) {
   const attachment = m.kind === "file" ? attachmentView(m.attachment) : null;
   const kind = kindOf(m.kind, attachment);
   const system = systemView(m.system, alias);
@@ -464,7 +470,7 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
   if (attachment) text = attachment.name;
   else if (kind === "system") {
     // A notice of an event this client does not know shows nothing (it stays in the list, so seqs and reads are kept).
-    const said = noticeText(system, text, nameOf, { agentId });
+    const said = noticeText(system, text, nameOf, { agentId, social });
     hidden = said === null;
     text = said ?? "";
   }
@@ -886,7 +892,7 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     // Which held messages are replies that are only a persona proposal (what a quote of one says).
     const proposalOnly = new Set(held.filter((m) => m.proposal && !m.text).map((m) => m.seq));
     const viewOf = (m) =>
-      messageView(m, { alias, meId, pair: direct || agentChat, peerReadSeq: conv.peerReadSeq, now, nameOf, agentId: conv.agentId, keepsOwners, proposalAt: (seq) => proposalOnly.has(seq) });
+      messageView(m, { alias, meId, pair: direct || agentChat, peerReadSeq: conv.peerReadSeq, now, nameOf, agentId: conv.agentId, keepsOwners, proposalAt: (seq) => proposalOnly.has(seq), social: model.socialOn === true });
     const messages = held.map(viewOf);
     const win = model.windows?.[conv.id] ?? null;
     const claimed = new Set();

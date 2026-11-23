@@ -11,6 +11,7 @@ import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "
 import { levelLabel, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
 import { LabLogo } from "../ui/LabLogo.jsx";
 import { convTitle, groupCounts, isMyAgent, myAgents } from "../state/selectors.js";
+import { socialOn } from "../state/social.js";
 import { refusalText, settled, useAction } from "./useAction.js";
 import { MemoryRoom, useMemoryRoom } from "./MemoryRoom.jsx";
 import { MemoryHearsay } from "./MemoryHearsay.jsx";
@@ -313,7 +314,7 @@ function AgentDetail({ agent }) {
     }
   }, [usedKey, reload]);
   // The 「别人」 tab is for a live Agent, and only while the site's Agent social switch is on.
-  const othersOn = live && state.social?.enabled === true;
+  const othersOn = live && socialOn(state);
   // The memory tab is for a live Agent: one deleted while it is open falls back to the profile, as a tab not offered does (so does 「别人」).
   const tab = (nav.agentTab === "memory" && !live) || (nav.agentTab === "others" && !othersOn) ? "profile" : (nav.agentTab ?? "profile");
   const note = nav.agentNote?.agentId === agent.id ? nav.agentNote.text : null;

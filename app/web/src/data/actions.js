@@ -1090,7 +1090,21 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     reportAgent: (body) => call(() => api.reportAgent(body)),
     putNoteVerdict: (agentId, body) => call(() => api.putNoteVerdict(agentId, body)),
     answerPersonaFact: (agentId, seq, move) => call(() => api.answerPersonaFact(agentId, seq, move)),
-    getOthersUse: () => call(() => api.getOthersUse()),
+    // The people it names (who used my Agents today, whom I stopped) join the model: each is then a person the pages can draw by id,
+    // a friend or not (the use page links to their profile, where 停止往来 lives).
+    getOthersUse: () =>
+      call(
+        () => api.getOthersUse(),
+        (use) => {
+          // (Both lists hold people only; one the model already holds is left as the sync said it.)
+          const held = getModel().principals;
+          const named = [...(Array.isArray(use?.byPerson) ? use.byPerson : []), ...(Array.isArray(use?.stopped) ? use.stopped : [])]
+            .map((row) => row?.person)
+            .filter((p) => p && typeof p.id === "string" && !held[p.id])
+            .map((p) => ({ ...p, kind: "human" }));
+          if (named.length > 0) setModel(applyPrincipals(getModel(), named));
+        },
+      ),
     putOthersLimits: (body) => call(() => api.putOthersLimits(body)),
     seenOthersNotice: () => call(() => api.seenOthersNotice()),
     /** Asks for a full refresh (a conversation the screen expects is not held yet). */

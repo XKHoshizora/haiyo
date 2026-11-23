@@ -5,6 +5,7 @@ import { formatPoints } from "../data/viewmodel.js";
 import { answersOf } from "../data/othersLimits.js";
 import { othersStateOf, othersStateText } from "../data/othersCopy.js";
 import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
+import { socialOn } from "../state/social.js";
 import { Avatar, Btn, Reason, TextLink } from "../ui/primitives.jsx";
 import { isEnter } from "../ui/keys.js";
 import { budgetOf } from "./AgentForm.jsx";
@@ -193,7 +194,7 @@ export function OthersUsePage({ back }) {
     const nameOfAgent = (id) => state.agents[id]?.name ?? "Agent";
     const proactive = use.used.proactivePoints;
     const proactiveCount = use.used.proactiveAnswers;
-    const social = state.social?.enabled === true;
+    const social = socialOn(state);
     body = (
       <>
         {failed && (
@@ -252,7 +253,7 @@ export function OthersUsePage({ back }) {
           </>
         )}
 
-        {(state.social?.enabled === true || stopped.length > 0) && (
+        {(social || stopped.length > 0) && (
           <>
             <h3>已停止往来的人</h3>
             <p className="muted">停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。在对方的资料页可以恢复往来。</p>

@@ -158,7 +158,7 @@ function startNewStay(state, conversationId) {
     whispers: without(state.whispers ?? {}, conversationId),
   };
   const conv = next.conversations[conversationId];
-  if (conv) next = putConversation(next, backToConfirmedRead({ ...conv, readsInFlight: 0 }, next.messages[conversationId] ?? [], next.me?.id));
+  if (conv) next = putConversation(next, backToConfirmedRead({ ...conv, readsInFlight: 0 }, next.messages[conversationId] ?? [], next.me?.id, next.socialOn));
   const sending = Object.values(next.pending).filter((p) => p.conversationId === conversationId && p.status === "sending");
   if (sending.length === 0) return next;
   const pending = { ...next.pending };
@@ -234,13 +234,18 @@ function advance(list, seq) {
 
 /**
  * Counts towards unread: a visible message from someone else that is not a system notice, nor an Agent's acknowledgement
- * (`ack`: what its reply said before it looked something up — the answer after it counts).
+ * (`ack`: what its reply said before it looked something up — the answer after it counts). One notice counts too: the persona aid's card
+ * (`persona_fact` with the `card` only its Agent's owner is sent), a question that waits for me, while the site's Agent social switch is on
+ * (`social`; off, the card is not drawn). The service counts by the same rule (sync/read.ts).
  */
-const countsAsUnread = (m, meId) => m.kind !== "system" && m.ack !== true && m.senderId !== null && m.senderId !== meId;
+const countsAsUnread = (m, meId, social) =>
+  m.kind === "system"
+    ? social === true && m.system?.event === "persona_fact" && Boolean(m.system.card)
+    : m.ack !== true && m.senderId !== null && m.senderId !== meId;
 
-function unreadAfterReading(conv, list, meId, oldRead, newRead) {
+function unreadAfterReading(conv, list, meId, oldRead, newRead, social) {
   if (newRead >= conv.position) return 0;
-  const nowRead = list.filter((m) => m.seq > oldRead && m.seq <= newRead && countsAsUnread(m, meId)).length;
+  const nowRead = list.filter((m) => m.seq > oldRead && m.seq <= newRead && countsAsUnread(m, meId, social)).length;
   return Math.max(0, conv.unread - nowRead);
 }
 
@@ -473,7 +478,7 @@ export function applySync(state, sync) {
     if (readsInFlight > 0 && prev.readSeq > entry.readSeq) {
       // My read request is not answered yet: keep showing its marker until it is (markReadDone).
       conv.readSeq = prev.readSeq;
-      conv.unread = unreadAfterReading(conv, list, meId, entry.readSeq, prev.readSeq);
+      conv.unread = unreadAfterReading(conv, list, meId, entry.readSeq, prev.readSeq, sync.social?.enabled === true);
     }
     if (prev?.peerReadSeq != null && (conv.peerReadSeq === null || prev.peerReadSeq > conv.peerReadSeq)) conv.peerReadSeq = prev.peerReadSeq;
     conversations[entry.id] = conv;
@@ -534,7 +539,7 @@ export function applyMessage(state, wire, { pushed = true } = {}) {
   if (wire.seq > conv.position + 1) return { state, gap: { conversationId: id, from: conv.position } };
   const list = mergeBySeq(state.messages[id] ?? [], withoutOthersPrivate(state, conv.type, [wire]));
   const position = advance(list, wire.seq);
-  const unread = conv.unread + (wire.seq > conv.readSeq && countsAsUnread(wire, state.me?.id) ? 1 : 0);
+  const unread = conv.unread + (wire.seq > conv.readSeq && countsAsUnread(wire, state.me?.id, state.socialOn) ? 1 : 0);
   const next = notePosted(putConversation(state, { ...conv, position, lastSeq: Math.max(conv.lastSeq, position), unread }, list), id, [wire], pushed);
   // (Only a push is in order with the run pushes: a catch-up page may hold a leave from before the Agent came back.)
   return { state: pushed ? dropLeaver(next, id, wire) : next };
@@ -603,7 +608,7 @@ export function applyConversation(state, entry) {
     lastSeq: Math.max(prev.lastSeq, entry.lastSeq ?? 0),
     readSeq,
     serverReadSeq: Math.max(prev.serverReadSeq, entry.readSeq ?? 0),
-    unread: readSeq > prev.readSeq ? unreadAfterReading(prev, list, state.me?.id, prev.readSeq, readSeq) : prev.unread,
+    unread: readSeq > prev.readSeq ? unreadAfterReading(prev, list, state.me?.id, prev.readSeq, readSeq, state.socialOn) : prev.unread,
     peerReadSeq,
   });
   // An Agent no longer among the members has no reply here any more.
@@ -839,7 +844,7 @@ export function setCanSend(state, conversationId, canSend) {
 /** Moves the shown marker forward to `seq` (never back) and recomputes unread. */
 function showRead(state, conv, seq, fields = {}) {
   const forward = seq > conv.readSeq;
-  const unread = forward ? unreadAfterReading(conv, state.messages[conv.id] ?? [], state.me?.id, conv.readSeq, seq) : conv.unread;
+  const unread = forward ? unreadAfterReading(conv, state.messages[conv.id] ?? [], state.me?.id, conv.readSeq, seq, state.socialOn) : conv.unread;
   return putConversation(state, { ...conv, ...fields, readSeq: forward ? seq : conv.readSeq, unread });
 }
 
@@ -869,13 +874,13 @@ export function markReadDone(state, conversationId, confirmed) {
     return showRead(state, conv, confirmed, { readsInFlight, serverReadSeq: Math.max(conv.serverReadSeq, confirmed) });
   }
   if (readsInFlight > 0) return putConversation(state, { ...conv, readsInFlight });
-  return putConversation(state, backToConfirmedRead({ ...conv, readsInFlight }, state.messages[conversationId] ?? [], state.me?.id));
+  return putConversation(state, backToConfirmedRead({ ...conv, readsInFlight }, state.messages[conversationId] ?? [], state.me?.id, state.socialOn));
 }
 
 /** The shown read marker falls back to the one the service confirmed; what it covered counts as unread again. */
-function backToConfirmedRead(conv, list, meId) {
+function backToConfirmedRead(conv, list, meId, social) {
   if (conv.readSeq <= conv.serverReadSeq) return conv;
-  const unreadAgain = list.filter((m) => m.seq > conv.serverReadSeq && m.seq <= conv.readSeq && countsAsUnread(m, meId)).length;
+  const unreadAgain = list.filter((m) => m.seq > conv.serverReadSeq && m.seq <= conv.readSeq && countsAsUnread(m, meId, social)).length;
   return { ...conv, readSeq: conv.serverReadSeq, unread: conv.unread + unreadAgain };
 }
 

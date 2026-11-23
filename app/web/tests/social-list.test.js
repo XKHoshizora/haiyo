@@ -6,7 +6,7 @@ import * as M from "../src/data/model.js";
 import { ME } from "../src/data/identities.js";
 import { toView } from "../src/data/viewmodel.js";
 import { convSubtitle, convTitle, listedConvs, publishBlock, unreadTotal } from "../src/state/selectors.js";
-import { disclosureOf, haveAgentAccess, isObserved, supervisionText, supervisorLabel } from "../src/state/social.js";
+import { disclosureOf, isObserved, supervisionText, supervisorLabel } from "../src/state/social.js";
 import { ANN, AG1, BO, ME_ID, PRINCIPALS, agentPrincipal, group, syncOf, wire } from "./fixtures.js";
 
 const AGB = "00000000-0000-4000-8000-0000000000b2"; // an Agent of BO's
@@ -149,17 +149,5 @@ describe("the composer's reason, by the service's code", () => {
     const state = view([visiting(1, { canSend: { ok: false, reason: "no_access" } })]);
     const text = publishBlock(state, state.convs[sid(1)]).text;
     expect(text).not.toMatch(/停止|拉黑|对方/);
-  });
-});
-
-describe("whether we have Agent access between us", () => {
-  it("a social conversation with the person (or their Agent), or a request of theirs that waits, counts; a stranger and the switch off do not", () => {
-    const state = view([visiting(1), watched(2)]);
-    expect(haveAgentAccess(state, BO)).toBe(true);
-    expect(haveAgentAccess(state, ANN)).toBe(true);
-    expect(haveAgentAccess(state, "00000000-0000-4000-8000-0000000000ff")).toBe(false);
-    const waiting = { ...view([]), agentContacts: { mine: [], waiting: [{ agentId: AG1, subject: { id: BO, displayName: "阿波", handle: "bo", kind: "human" }, since: "x", until: "y" }] } };
-    expect(haveAgentAccess(waiting, BO)).toBe(true);
-    expect(haveAgentAccess(view([visiting(1)], [], { enabled: false }), BO)).toBe(false);
   });
 });

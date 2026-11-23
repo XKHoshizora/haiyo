@@ -5,8 +5,8 @@
 import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
-import { A1, AG1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, notice, syncOf, wire, ME_ID } from "./fixtures.js";
-import { click, installBrowser, openApp } from "./harness.jsx";
+import { A1, AG1, ANN, D1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, direct, notice, syncOf, wire, ME_ID } from "./fixtures.js";
+import { click, installBrowser, openApp, push } from "./harness.jsx";
 import { personaFactQuestion } from "../src/pages/SocialCards.jsx";
 
 beforeEach(() => installBrowser());
@@ -112,5 +112,49 @@ describe("the persona_fact card", () => {
   it("an event without the owner's `card` shows nothing (no one else is sent it)", async () => {
     await openChat([...BASE, fact(3, null)]);
     expect(li(3)?.textContent ?? "").toBe("");
+  });
+});
+
+// Lane I (Controller ruling 2026-11-25 (A-5 review), I1): the card must be noticed. For its owner, in the Agent's own conversation, it counts
+// as unread and moves the conversation up the list with a preview, as a message would; only while the site's switch is on (off, it is not drawn).
+describe("the persona_fact card as unread", () => {
+  const row = (name) => screen.getByText(name, { selector: ".list-col .row-name" }).closest(".row");
+  const names = () => [...document.querySelectorAll(".list-col .row-name")].map((n) => n.textContent);
+  const D = [wire(D1, 1, ANN, "在吗"), wire(D1, 2, ME_ID, "在")];
+  async function openList(social) {
+    const record = agentOf(AG1, { model: SITE_FREE });
+    const mine = agentConv(A1, AG1, { lastSeq: 2, readSeq: 2, agent: { paused: false, deleted: false }, canSend: { ok: true } });
+    return openApp({
+      sync: () => ({ ...syncOf([mine, direct(D1, ANN, { lastSeq: 2, readSeq: 2 })], [...BASE, ...D], [...PRINCIPALS, agentPrincipal()]), social }),
+      api: { listProviders: vi.fn(async () => ({ providers: [] })) },
+      handlers: { agents: () => ({ agents: [record] }), agent: () => record, run: () => ({ run: null }), models: () => MODELS },
+    });
+  }
+  // (Later than every message of the fixtures: `at(seq)` is minutes from one start.)
+  const late = (m) => ({ ...m, createdAt: new Date(Date.parse(wire(D1, 50, ANN).createdAt)).toISOString() });
+
+  it("a card that arrives counts 1 unread for the Agent's conversation, puts it first and previews as the service's sentence", async () => {
+    const { transport } = await openList({ enabled: true });
+    expect(names()[0]).toBe("小安");
+    expect(row("小助手").querySelector(".badge")).toBeNull();
+    await push(transport, { type: "message", message: late(fact(3)) });
+    expect(names()[0]).toBe("小助手");
+    expect(row("小助手").querySelector(".badge").textContent).toBe("1");
+    expect(row("小助手").textContent).toContain("人格里有一句话可能是事实");
+  });
+
+  it("another notice there still counts nothing; a `persona_fact` event without my `card` counts nothing", async () => {
+    const { transport } = await openList({ enabled: true });
+    await push(transport, { type: "message", message: late(fact(3, null)) });
+    expect(row("小助手").querySelector(".badge")).toBeNull();
+    expect(names()[0]).toBe("小安");
+  });
+
+  it("switch off: it is not drawn, so it counts nothing and moves nothing", async () => {
+    const { transport } = await openList({ enabled: false });
+    await push(transport, { type: "message", message: late(fact(3)) });
+    expect(row("小助手").querySelector(".badge")).toBeNull();
+    expect(names()[0]).toBe("小安");
+    expect(row("小助手").textContent).not.toContain("人格里有一句话可能是事实");
   });
 });

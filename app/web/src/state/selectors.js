@@ -96,7 +96,10 @@ export const drawnTextOf = (state, msg) =>
 export function lastPreview(state, conv) {
   // (A notice of an event this client does not know shows nothing: it is never the preview either.)
   const shown = conv.messages.filter((x) => !x.hidden && !x.ack);
-  const last = [...shown].reverse().find((x) => x.kind !== "system") || shown[shown.length - 1];
+  // (One notice is the line while it is the newest thing there: the persona aid's card still waiting for my answer, a question to me.)
+  const newest = shown[shown.length - 1];
+  const waitingCard = newest?.kind === "system" && newest.system?.event === "persona_fact" && newest.system.card?.answer == null && newest.system.card?.expired !== true;
+  const last = waitingCard ? newest : [...shown].reverse().find((x) => x.kind !== "system") || newest;
   if (!last) return "暂无消息";
   // (Its words as drawn, a mention as @name; an Agent's text is Markdown: its markers are taken out too.)
   const drawn = last.kind !== "system" && typeof last.text === "string" ? drawnTextOf(state, last) : last.text;
