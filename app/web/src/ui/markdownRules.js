@@ -105,7 +105,7 @@ export const isKatexRootClass = (name) => name === "katex" || name === "katex-di
  */
 export const APP_CLASSES = new Set(
   `active app appellation-rows apply-box approvals attachment-image auth-card auth-foot auth-form auth-head auth-page auth-submit avatar
-  avatar-adjust avatar-dot avatar-editor avatar-fallback avatar-frame avatar-img avatar-stage avatar-stage-note avatar-stage-picture avatar-zoom back badge blocker boxed brand-mark brand-name btn btn-danger cite
+  avatar-adjust avatar-dot avatar-editor avatar-fallback avatar-frame avatar-img avatar-stage avatar-stage-note avatar-stage-picture avatar-zoom back badge blocker blocks-rows boxed brand-mark brand-name btn btn-danger cite
   btn-primary btn-sm btn-text bubble card card-actions card-head card-title chat chat-head chat-head-actions chat-search
   chat-title check checks compact composer composer-hint composer-input composer-resize composer-row composer-tools
   current device-rows device-static disc-actions disc-bar disc-text document-address document-label document-preview
@@ -116,7 +116,7 @@ export const APP_CLASSES = new Set(
   member-actions member-body member-rows mention-empty mention-heading mention-picker menu menu-anchor messages mine
   mini-kv modal modal-backdrop modal-body modal-foot modal-head modal-wide model-panel msg msg-action msg-divider msg-foot msg-lookups msg-main msg-meta msg-via
   msg-system muted n2 n3 n4 notice notice-actions notice-body notice-ok notice-pause notice-sub notice-warn only-mobile
-  order-list owner pad page page-body pills plain-list profile-head proposal-persona quick-bar radio-cards rail
+  order-list owner pad page page-body persona-card pills plain-list profile-head proposal-persona quick-bar radio-cards rail
   rail-bottom rail-icon rail-item rail-me rail-nav readonly reason receipt rel-rows reply-chip reply-points row row-actions row-body
   row-name row-preview row-sub row-top rows rows-empty rows-label rows-note screen screen-bar screen-body screen-human search send
   settings-me share-items side side-body side-col side-head side-hero side-list slim social-checklist spacer sr-only stack-actions steps

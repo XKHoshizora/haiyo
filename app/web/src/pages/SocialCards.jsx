@@ -57,7 +57,7 @@ export function PersonaFactCard({ msg, conv }) {
   const note = ended === "moved" ? MOVED : ended === "kept" ? KEPT : ended === "over" || card.expired ? OVER : null;
   return (
     <li className="msg-memory" data-msg={msg.id}>
-      <div className="card memory-card">
+      <div className="card memory-card persona-card">
         <div className="card-head">
           <strong>{personaFactQuestion(card.sentence)}</strong>
         </div>

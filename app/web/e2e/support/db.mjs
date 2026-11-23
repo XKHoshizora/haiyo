@@ -65,3 +65,27 @@ export function pushDevicesOf(principalId) {
     return rows;
   });
 }
+
+/**
+ * Makes `principalId`'s account as old as one from before migration 074 and not yet told of the change: the one-time notice about others'
+ * use is then theirs to see (a new account never sees it). Resolves with how many rows changed (0: the person has no account row yet).
+ */
+export function accountFromBeforeStepL(principalId) {
+  return withDatabase(async (client) => {
+    const { rowCount } = await client.query("update accounts set created_at = '2020-01-01T00:00:00Z', others_notice_seen_at = null where principal_id = $1", [principalId]);
+    return rowCount;
+  });
+}
+
+/** Moves `setterId`'s 停止往来 of `otherId` `days` whole days into the past (a stop made then); resolves with its new time (an ISO string). */
+export function backdateStop(setterId, otherId, days) {
+  if (!Number.isSafeInteger(days) || days < 1) throw new Error("a whole number of days");
+  return withDatabase(async (client) => {
+    const { rows } = await client.query(
+      "update access_bars set since = since - make_interval(days => $3) where setter_id = $1 and other_id = $2 and kind = 'stop' returning since",
+      [setterId, otherId, days],
+    );
+    if (rows.length !== 1) throw new Error("no such stop");
+    return rows[0].since.toISOString();
+  });
+}

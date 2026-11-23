@@ -1,11 +1,12 @@
 // B9a and B9b in a real browser against the real service, at 402×874 and 360×740 (touch): the use page of others' use of my Agents
 // (its two numbers saved in place and kept over a reload, the state words, no control that needs Agent social while its switch is
 // off), the Agent form's own limit (empty for a new Agent, sent as `othersLimit`, cleared to none, the proactive default 70) and the
-// pages' measures: one h2, no sideways scroll, every control a 44px target, the document's title. Screenshots with E2E_SHOTS=1.
+// pages' measures: one h2, no sideways scroll, every control a 44px target, the document's title. Screenshots with E2E_INTEG_SHOTS=1
+// (support/shots.mjs `integShot`).
 import { test, expect } from "./support/fixtures.mjs";
 import { uniq } from "./support/accounts.mjs";
 import { createAgentUi, goTo, openAgentDetail } from "./support/app.mjs";
-import { socialbShot } from "./support/shots.mjs";
+import { integShot } from "./support/shots.mjs";
 import { agentApi } from "./support/tools.mjs";
 
 const SIZES = [
@@ -52,7 +53,7 @@ for (const [size, contextOptions] of SIZES) {
     // Agent social is off on this site: no 停止往来, no 恢复往来, no list of the stopped.
     await expect(main).not.toContainText("停止往来");
     await expect(main).not.toContainText("恢复往来");
-    await socialbShot(page, `use-page-${size}`, { fullPage: true });
+    await integShot(page, "40-use-page-switch-off", { fullPage: true });
 
     // Saved on Enter (both numbers, once) and kept over a reload.
     await answers.fill("20");
@@ -66,7 +67,7 @@ for (const [size, contextOptions] of SIZES) {
     await answers.press("Enter");
     await expect(main.getByRole("alert")).toContainText("次数请填 1 到 1000 的整数");
     expect(await limitsOf(ann)).toEqual({ answers: 20, points: "35.5" });
-    await socialbShot(page, `use-page-wrong-${size}`);
+    await integShot(page, "41-use-page-wrong-number");
     await page.reload();
     const again = page.getByRole("region", { name: NAME });
     await expect(again.getByLabel("每天最多回复的次数")).toHaveValue("20");
@@ -80,7 +81,7 @@ for (const [size, contextOptions] of SIZES) {
     await usage.getByRole("link", { name: NAME }).scrollIntoViewIfNeeded();
     await expect(usage.getByRole("heading", { name: "别人的使用" })).toBeVisible();
     await expect(usage.getByText(/今天已回别人 0 次，花了 0 点 · /)).toBeVisible();
-    await socialbShot(page, `usage-section-${size}`);
+    await integShot(page, "42-usage-page-section");
     await usage.getByRole("link", { name: NAME }).click();
     await expect(page.getByRole("region", { name: NAME })).toBeVisible();
   });
@@ -104,7 +105,7 @@ for (const [size, contextOptions] of SIZES) {
         await proactive.check();
         await expect(form.getByLabel("主动回复每天最多花", { exact: true })).toHaveValue("70");
         await answers.scrollIntoViewIfNeeded();
-        await socialbShot(page, `agent-form-${size}`);
+        await integShot(page, "43-agent-form-own-limit");
         expect(await noSideways(page)).toBe(true);
         await targetsAre44(form.locator("fieldset.others-limit"));
       },

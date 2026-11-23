@@ -1291,5 +1291,5 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .avatar-zoom .icon-btn { flex: none; width: 44px; height: 44px; }
 .group-picture .avatar-fallback img { border-radius: 50%; }
 
-/* A touch screen or a narrow one: the buttons of a dialog's foot, of a panel's action stack and of a notice, and a dialog form's own button (the add dialog's 查找), are 44px targets (shared; first asked by Agent social's screens). */
-@media (pointer: coarse), (max-width: 480px) { .modal-foot .btn, .stack-actions .btn, .notice .btn, .modal-body form > .btn { min-height: 44px; } }
+/* A touch screen or a narrow one: the buttons of a dialog's foot, of a panel's action stack, of a notice, of the persona card and of the blocks page's rows, and a dialog form's own button (the add dialog's 查找), are 44px targets (shared; first asked by Agent social's screens). */
+@media (pointer: coarse), (max-width: 480px) { .modal-foot .btn, .stack-actions .btn, .notice .btn, .modal-body form > .btn, .persona-card .card-actions .btn, .blocks-rows .member-actions .btn { min-height: 44px; } }

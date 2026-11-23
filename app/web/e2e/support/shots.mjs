@@ -61,14 +61,20 @@ export async function polishShot(page, name, { clip } = {}) {
   await page.screenshot({ path: path.join(POLISH_DIR, `${name}.png`), animations: "disabled", caret: "hide", clip });
 }
 
-/** Lane socialb's shots (the use page and the Agent form), under .superpowers/sdd/2026-11-22-polish/socialb-shots/ of the checkout's top folder. */
-const SOCIALB_DIR = path.resolve(WEB_DIR, "..", "..", "..", "..", ".superpowers", "sdd", "2026-11-22-polish", "socialb-shots");
+/**
+ * Ring 1a's screens for the product owner (Agent social and others' use, both lanes on the merged code), under
+ * .superpowers/sdd/2026-11-22-polish/integ1a-shots/ of the checkout's top folder. Their OWN switch, `E2E_INTEG_SHOTS=1`: a run that takes them
+ * rewrites no other spec's screens, and `E2E_SHOTS=1` (the acceptance record's) takes none of these.
+ */
+const INTEG_DIR = path.resolve(WEB_DIR, "..", "..", "..", "..", ".superpowers", "sdd", "2026-11-22-polish", "integ1a-shots");
+export const integShooting = process.env.E2E_INTEG_SHOTS === "1";
 
-/** One screenshot `<name>.png` of the page as it is for lane socialb's report (only with E2E_SHOTS=1). */
-export async function socialbShot(page, name, { fullPage = false } = {}) {
-  if (!shooting) return;
-  mkdirSync(SOCIALB_DIR, { recursive: true });
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(SOCIALB_DIR, `${name}.png`), animations: "disabled", caret: "hide", fullPage });
+/** One screenshot `<name>-<size>.png` (the size is the viewport's, e.g. `402x874`) of the page as it is; `show` is scrolled into view first. */
+export async function integShot(page, name, { fullPage = false, show } = {}) {
+  if (!integShooting) return;
+  mkdirSync(INTEG_DIR, { recursive: true });
+  const size = page.viewportSize();
+  if (show) await show.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: path.join(INTEG_DIR, `${name}-${size.width}x${size.height}.png`), animations: "disabled", caret: "hide", fullPage });
 }
-
