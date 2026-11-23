@@ -739,7 +739,7 @@ test("a reply in an Agent's own conversation is revealed a little at every frame
   expect(beat.max, `longest frame gap: ${beat.max} ms`).toBeLessThan(300);
 });
 
-test("an Agent that thinks: 正在思考… before anything comes, then its thinking open while it streams, then the answer", async ({ people }) => {
+test("an Agent that thinks: 正在思考… before anything comes, then its thinking folded under that line while it streams (the reader opens it), then the answer", async ({ people }) => {
   const ann = await people.member("Ann");
   const tag = uniq(4);
   // Setup: a provider of Ann's speaking Anthropic Messages (whose thinking the service passes on), a model that thinks.
@@ -766,11 +766,27 @@ test("an Agent that thinks: 正在思考… before anything comes, then its thin
   await expect(bubble.locator("details.thinking")).toHaveCount(0);
   await shot(ann.page, "agent-chat-thinking-line");
 
+  // Its thinking has come: folded under the line that goes on counting, until the reader opens it.
   await modelStub.holding(1);
   const thinking = bubble.locator("details.thinking");
+  const header = thinking.locator("summary");
+  await expect(header).toHaveText(/^正在思考…( \d+ 秒)?$/);
+  await expect(thinking).not.toHaveAttribute("open", "");
+  await expect(thinking.locator(".thinking-text")).toBeHidden();
+  await shot(ann.page, "agent-chat-thinking-folded");
+  // On a phone's width the header is a 44px target, and nothing is wider than the page.
+  await ann.page.setViewportSize({ width: 360, height: 740 });
+  await expect(header).toBeVisible();
+  const box = await header.boundingBox();
+  expect(box.height, "the header's height at 360px").toBeGreaterThanOrEqual(44);
+  expect(box.x + box.width).toBeLessThanOrEqual(360);
+  expect(await ann.page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+  await header.click();
   await expect(thinking).toHaveAttribute("open", "");
-  await expect(thinking.locator("summary")).toHaveText(/^正在思考…( \d+ 秒)?$/);
   await expect(thinking.locator(".thinking-text")).toHaveText(reasoning);
+  await expect(header).toHaveText(/^正在思考… \d+ 秒$/);
+  await ann.page.setViewportSize({ width: 1280, height: 860 });
+  await expect(thinking).toHaveAttribute("open", "");
   await shot(ann.page, "agent-chat-thinking-open");
 
   await modelStub.release(answer);

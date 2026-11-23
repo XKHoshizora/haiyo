@@ -576,6 +576,8 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .memory-vault .memory-rows:empty { display: none; }
 .thinking { font-size: 13px; color: var(--ink-2); }
 .thinking > summary { width: fit-content; cursor: pointer; }
+/* Folded until the reader opens it, its header is the only way in: a 44px target on a touch screen or a narrow one (its text keeps its size). */
+@media (pointer: coarse), (max-width: 480px) { .thinking > summary { box-sizing: border-box; min-height: 44px; padding: 12px 12px 12px 0; } }
 .thinking-text { margin-top: 4px; padding: 4px 10px; border-left: 3px solid var(--line-strong); white-space: pre-wrap; word-break: break-word; }
 .proposal-persona { white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Under a reply of my own Agent: which model and thinking level it used (and what it cost, when that is shown). */

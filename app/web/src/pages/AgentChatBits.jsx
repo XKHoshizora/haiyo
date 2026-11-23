@@ -117,14 +117,15 @@ export const thoughtFor = (ms) => `思考了 ${Math.max(1, Math.floor(ms / 1000)
  * its text: `start` (first seen, queued or thinking) and `textAt` (its first piece of text: a time, null before it, or
  * false when it came while its bubble was not shown — a time this page did not see). The service's run carries no
  * times; these survive leaving the conversation and coming back (the bubble is made again), for the newest
- * RUN_CLOCKS_KEPT replies.
+ * RUN_CLOCKS_KEPT replies. With them, `thinkingOpen`: whether the reader has that reply's thinking open (folded until
+ * the reader opens it, LiveThinking).
  */
 const runClocks = new Map();
 const RUN_CLOCKS_KEPT = 50;
 function runClock(runId) {
   let clock = runClocks.get(runId);
   if (clock === undefined) {
-    clock = { start: Date.now(), textAt: null };
+    clock = { start: Date.now(), textAt: null, thinkingOpen: false };
     runClocks.set(runId, clock);
     if (runClocks.size > RUN_CLOCKS_KEPT) runClocks.delete(runClocks.keys().next().value);
   }
@@ -165,17 +166,19 @@ export function forgetRevealed(runId) {
 }
 
 /**
- * The thinking of a reply being written, under `summary`. Open by itself while `streaming` (its thinking comes, none of
- * its text yet), folded by itself once its text starts — unless the reader opened or closed it meanwhile: from then on
- * it is as the reader left it. Each piece is appended to its text (GrowingText): work for what came, not for all of it.
+ * The thinking of a reply being written, under `summary`: folded from its first piece, like a stored reply's — also
+ * while it still thinks (its header then counts, 正在思考… N 秒). Only the reader opens it, and it stays as the reader
+ * left it for that reply: through its text starting, and through this bubble being made again (`kept`: the reply's
+ * record, `runClock`). Each piece is appended to its text (GrowingText), opened or not: work for what came, not for
+ * all of it.
  */
-function LiveThinking({ text, cut, summary, streaming }) {
-  const [mine, setMine] = useState(null);
-  const open = mine ?? streaming;
+function LiveThinking({ text, cut, summary, kept }) {
+  const [open, setOpen] = useState(kept.thinkingOpen);
   if (!text) return null;
-  // (A toggle that is not what was rendered is the reader's; the ones this sets itself match it.)
+  // (Every toggle that differs from what is rendered is the reader's; the one a bubble made again open fires matches it.)
   const toggled = (event) => {
-    if (event.currentTarget.open !== open) setMine(event.currentTarget.open);
+    kept.thinkingOpen = event.currentTarget.open;
+    setOpen(kept.thinkingOpen);
   };
   return (
     <details className="thinking" open={open} onToggle={toggled}>
@@ -220,9 +223,10 @@ function StopButton({ conversationId, agentId = null, runId, disabled = false, o
  * for a reply that was already under way when this page connected, whose text is not sent again — it says 正在回复…, or
  * for an Agent that thinks (its reasoning level is not none) 正在思考… and the whole seconds since this page first saw
  * the reply (queued or thinking). While such a reply's thinking streams, that line heads its thinking instead (the same
- * count, from the same start), open; once its text starts the thinking folds (unless the reader opened or closed it
- * meanwhile) under 思考了 N 秒 — from that start to its first piece of text; 思考过程 when this page did not see when its
- * text started. The stored reply's thinking reads 思考过程 as ever. A bubble made again while the reply is written (its
+ * count, from the same start); once its text starts the header reads 思考了 N 秒 — from that start to its first piece of
+ * text; 思考过程 when this page did not see when its text started. The thinking is folded all along, while it thinks
+ * too: only the reader opens it, and it stays as the reader left it for that reply (LiveThinking). The stored reply's
+ * thinking reads 思考过程 as ever, folded. A bubble made again while the reply is written (its
  * conversation left and opened again) shows at once what it had shown, and goes on from there. A press of
  * 停止生成 (until a stop that could not be sent) and a run that is not running any more show everything received at
  * once. A very long reply shows its first part only, and says so under it (what is left of that part is revealed
@@ -255,7 +259,7 @@ export function StreamBubble({ conv, finishing = null, onReveal = null, onFinish
   // While the site offers web search, what any reply writes shows its links as plain text until it is stored (a reply that
   // searched keeps them so, WebSources.jsx): this page may not have seen it search (a reload, another tab).
   const linksPlain = state.webSearchAvailable === true ? PLAIN_LINKS : null;
-  // (While its thinking streams, the line heads it: the bubble keeps the dots only; so it does for the frame before
+  // (While its thinking streams, the line heads it, folded: the bubble keeps the dots only; so it does for the frame before
   // the first characters of the text of a reply that thought.)
   const waiting = <Writing text={doing ?? (thinking ? (reasoning ? "" : line) : undefined)} />;
   return (
@@ -266,7 +270,7 @@ export function StreamBubble({ conv, finishing = null, onReveal = null, onFinish
           <strong>{nameOf(state, conv.agentId)}</strong>
           <Tag>Agent</Tag>
         </div>
-        <LiveThinking key={run.id} text={reasoning} cut={stream?.reasoningCut} summary={summary} streaming={thinking} />
+        <LiveThinking key={run.id} text={reasoning} cut={stream?.reasoningCut} summary={summary} kept={clock} />
         <div className="bubble">
           {text ? (
             <>
