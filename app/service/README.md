@@ -44,7 +44,7 @@ npm run credits:show -- --handle <h>                # a person's tier and points
 npm run tier:set -- --handle <h> --tier <name>      # a tier named in AGENT_TIERS
 npm run models:list                                 # the site models: id, label, tier, protocol, prices (never the key)
 npm run demo:seed -- --email <address> [--handle <h>] [--name <text>]   # the App Review account, made or put back; asks for its password (Demo account, below)
-npm run catalog:update [-- <models.json> <api.json>] # downloads models.dev (or reads saved copies) into src/providers/model-catalog.json; commit it (CI does it daily: Model providers, The daily catalogue update)
+npm run catalog:update [-- <models.json> <api.json>] # downloads models.dev (or reads saved copies) into src/providers/model-catalog.json; commit it (CI does it daily once its trigger is on master: Model providers, The daily catalogue update)
 ```
 
 Production: build once with the dev dependencies installed, then run plain Node on the build (no `tsx`,
@@ -1815,7 +1815,7 @@ A provider is a person's own account at a model service, which their Agents can 
 Agent cannot be pointed at their provider (400).
 
 **Provider** (owner only): `{"id", "name", "protocol": "openai_chat" | "openai_responses" | "anthropic" | "gemini",
-"baseUrl", "keyLast4", "models": [{"name", "vision", "pdf", "reasoning", "contextTokens", "reasoningLevels"?, "reportedLevels"?, "tools"?, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?}]}`.
+"baseUrl", "keyLast4", "models": [{"name", "vision", "pdf", "reasoning", "contextTokens", "reasoningLevels"?, "reportedLevels"?, "tools"?, "reportedTools"?, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?}]}`.
 
 - **The API key** is sealed when saved (AES-256-GCM, a key derived from `PROVIDER_KEY_SECRET` with HKDF-SHA-256,
   `src/providers/crypto.ts`) and never shown again: no answer, push, error or log line carries it; `keyLast4` is its
@@ -1858,15 +1858,22 @@ Agent cannot be pointed at their provider (400).
   The other half: after a reply in which the model made a tool call that ran, the service stores `true` on a model whose
   entry says nothing (`markToolsOn`) — once, never over a `false` or a `true` already there, never for a site model, and
   nobody is told; a reply of a model whose entry says either writes nothing.
-  **What `tools` shows, in this order**: your choice or a failure found (stored `false`, or `true`) > a success found
-  (stored `true`) > the catalogue (below: `true` when it knows the model by its name to use tools — read when the
-  provider is shown, never stored, so an old row has it too and a catalogue update reaches the page at once; the
-  catalogue never says `false`) > unknown (absent). Whether a reply is offered tools is as before: every model whose
-  entry does not say `false`.
+  `tools` on the wire is only ever what is stored. Shown only when the entry says it.
+  `reportedTools` (read only, never accepted: a body that has it is 400): `true` when the catalogue (below) knows the
+  model itself to use tools, present whatever `tools` stores, absent otherwise — the catalogue never says `false`. Like
+  `reportedLevels` it is read when the provider is shown and never stored, so an old row has it too and a catalogue
+  update reaches the page at once; and because the service never merges it into `tools`, a client that sends back what
+  it read cannot turn the catalogue's word into a stored one, nor undo a failure found since.
+  **Whoever draws the mark for "can use tools" applies this order, in one place**: stored `tools: false` → no; stored
+  `tools: true` → yes; else `reportedTools` → yes; else unknown. (Stored `false`/`true` is your choice or a failure
+  found; stored `true` may also be a success found.) A client sends `tools` only when its owner chose it, never because
+  `reportedTools` was there. Whether a reply is offered tools is as before and does not look at the catalogue: every
+  model whose entry does not say `false`.
   `audioIn`, `videoIn`, `imageOut`, `videoOut`, `audioOut` (read only, never accepted: a body that has one is 400):
   what the catalogue knows the model to take (audio, video) and answer with (images, video, audio), each present only
-  as `true` and only for a name the catalogue knows (`modelHints`; nothing is guessed from a name's wording). Read
-  when the provider is shown, not stored. Nothing is done with them yet beyond showing them.
+  as `true` and only for a model the catalogue knows itself (`modelHints`; nothing is guessed from a name's wording).
+  Read when the provider is shown, not stored — nothing of them is ever stored, which is why they need no `reported`
+  twin. Nothing is done with them yet beyond showing them.
 
 **The address guard** (`src/providers/guard.ts`), at every call to a provider, before any connection: the URL must pass
 the `baseUrl` rules; the host name is looked up once, and the call is refused with `address_not_allowed` if any address
@@ -1965,7 +1972,7 @@ nothing of an upstream's answer but its status (Calling a model), so there `deta
 test without a model, and the names in its answer read as refresh reads them (below: the first 1 000 entries; names
 that would not be accepted as a model name — trimmed first —, any containing the key, and repeats skipped). **Nothing
 is stored.** → 200 `{"ok": true, "listed": [{"name", "vision", "pdf", "reasoning", "chat", "known", "label"?,
-"contextTokens"?, "reasoningLevels"?, "tools"?, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?, "added"}], "source": "upstream" | "sibling" | "catalogue"}` in the provider's order, at most 500 entries;
+"contextTokens"?, "reasoningLevels"?, "reportedTools"?, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?, "added"}], "source": "upstream" | "sibling" | "catalogue"}` in the provider's order, at most 500 entries;
 or a failure exactly as the test answers it, `detail` included: `{"ok": false, "error", "upstreamStatus"?, "detail"?}`,
 with the code refresh would answer. `added`: the provider's saved `models` already has that name.
 
@@ -2016,10 +2023,15 @@ speech, image or video model…).
   `contextTokens` its context when it gives one (it may lie outside what a model can be saved with, 1 000–2 000 000);
   `reasoningLevels` the levels of the model's `effort` option in its lab's own entry, among ours (absent when the lab
   turns thinking on and off or sets a token budget instead: then every level is right); and six abilities, each present
-  only as `true` (absent: no, or the catalogue does not say): `tools` (the catalogue's `tool_call`: its replies can call
-  tools), `audioIn` and `videoIn` (audio, video among what it takes), `imageOut`, `videoOut` and `audioOut` (images,
-  video, audio among what it answers with). A client adding the model may save `tools: true` from it; a saved model
-  whose entry says nothing shows the catalogue's `tools` anyway (Models, above).
+  only as `true` (absent: no, or the catalogue does not say): `reportedTools` (the catalogue's `tool_call`: its replies
+  can call tools), `audioIn` and `videoIn` (audio, video among what it takes), `imageOut`, `videoOut` and `audioOut`
+  (images, video, audio among what it answers with). **These six are answered only for the model itself** — the name as
+  it is, or without its `-latest` and date — never for a name that merely starts with an id: `o1-mini` is not given
+  `o1`'s, a relay's `gpt-4-all` not `gpt-4`'s, `qwen-plus-anything` not `qwen-plus`'s (the hints above are still the
+  base model's: those are prefills its owner edits, an ability is shown as the catalogue's fact). An id two labs list
+  has an ability only when both entries say so. A client adding a listed model does not save `tools` from
+  `reportedTools`: the saved model shows `reportedTools` again by itself (Models, above), and its `tools` is learned
+  from its replies.
 - **From the name** (`known: false`, no `label`, `contextTokens`, `reasoningLevels` or any of the six abilities — those
   are never guessed from a name's wording): ignoring case, by substrings:
 
@@ -2030,18 +2042,28 @@ speech, image or video model…).
 | `pdf` | `gpt-4o`, `gpt-4.1`, `gpt-5`, `gpt-6`, `claude` or `gemini` |
 | `reasoning` | `gpt-5`, `gpt-6`, `gemini-2.5`, `gemini-3`, `thinking`, `reason`, `deepseek-r`, `qwq`, `-m2` or `-m3` (MiniMax's M series); or it starts with `o1`, `o3` or `o4` (so does its last `/` part: `openai/o3`); or `claude`, except `claude-2`, `claude-3-haiku`, `claude-3-opus`, `claude-3-sonnet`, `claude-3-5`, `claude-3.5` and `claude-instant` |
 
-**The daily catalogue update** (`.github/workflows/catalog-update.yml`, "Model catalogue update"): once a day, and by
-hand (Actions tab > Model catalogue update > Run workflow, or `gh workflow run catalog-update.yml`), the development
-branch (named once, at the top of the file: `DEV_BRANCH`) is checked out and `scripts/update-model-catalog.mjs --guard
---summary=<file>` is run. `--guard` refuses — exit 1, nothing written — a snapshot that, against the one on disk,
-shrank by more than 20 % or in which more than 5 % of the models that had an ability (`vision`, `pdf`, `reasoning`, or
-one of the six above) are gone or have none left: an outage or a change of the catalogue's format must not wipe it. When
-neither JSON file changed, nothing is committed. When one did: the service type check (`npx tsc --noEmit`) and the tests
-that read the catalogue (`tests/model-catalog.test.ts`, `tests/provider-catalog.test.ts`, `tests/provider-hints.test.ts`,
+**The daily catalogue update**: two files. The job is `.github/workflows/catalog-update.yml` on the development
+branch, a reusable workflow ("Model catalogue update (job)": `workflow_call` with the input `branch`, and
+`workflow_dispatch`); it names no branch itself. What starts it every day is a trigger on the default branch —
+`schedule` and `workflow_dispatch`, `permissions: contents: write`, one job that calls the job's file at the
+development branch and passes that branch's name — kept as `docs/dev/catalog-update-trigger.master.yml` until the
+owner puts it on `master` (`docs/dev/ci.md` says how, and how to run the update by hand meanwhile). The job checks out
+`branch` without leaving the token on disk (`persist-credentials: false`) and runs
+`scripts/update-model-catalog.mjs --guard --summary=<file>` (each download tried three times). `--guard` refuses —
+exit 1, nothing written — when, against the snapshot on disk: the new one shrank by more than 20 %; more than 5 % of
+the models that had an ability (`vision`, `pdf`, `reasoning`, or one of the six above, there named `tools`) are gone or
+have none left; one ability that at least 10 models had is gone from more than 20 % of them (a field renamed upstream);
+one ability changed, either way, on more than 20 % of the models both snapshots have (a mass gain too); or the provider
+list lost more than 20 % of its providers or of its model ids — an outage or a change of the catalogue's format must
+not wipe it. (A deliberate change of that size, such as keeping a new ability, is run by hand without `--guard`.) A lab
+or model id that is not one line of at most 100 characters is left out. When neither JSON file changed, nothing is
+committed. When one did: the service type check (`npx tsc --noEmit`) and the tests that read the catalogue
+(`tests/model-catalog.test.ts`, `tests/provider-catalog.test.ts`, `tests/provider-hints.test.ts`,
 `tests/providers.test.ts`, `tests/models-route.test.ts`, `tests/build.test.ts`) run, and only when they pass the
-snapshot is committed to that branch, the message's body saying what changed (`catalogSummary`: the counts, and up to 20
-names each of the models added, removed and with changed abilities); when they fail, nothing is committed and the run
-fails. It uses the job's own `GITHUB_TOKEN` (`contents: write`) and no other secret.
+snapshot is committed to that branch — an ordinary push, never forced: a branch that moved meanwhile refuses it and the
+next day's run tries again —, the message's body saying what changed (`catalogSummary`: the counts, and up to 20 names
+each of the models added, removed and with changed abilities); when they fail, nothing is committed and the run fails.
+It uses the run's own `GITHUB_TOKEN` (`contents: write`, handed to the push step alone) and no other secret.
 
 #### `POST /api/providers/:id/models/refresh`
 
@@ -2208,8 +2230,9 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
   empty list: `none` only); `tools` whether its replies may be offered tools (its configuration's `tools`, true unless
   the operator said false); `audioIn`, `videoIn`, `imageOut`, `videoOut`, `audioOut`: what the model catalogue (Model
   providers, From the catalogue) knows the model to take and answer with, each present only as `true` — looked up by the
-  name the model is called by when the catalogue knows it, else by its `id` when it knows that, else absent (`vision`,
-  `pdf`, `reasoning` and `tools` are always the configuration's). Nothing else of a site model is shown: never where it is called (`baseUrl`, `protocol`), the
+  name the model is called by when the catalogue knows that name, else by its `id`, in both cases only when that is a
+  catalogue model itself (never a name that merely starts with one), else absent (`vision`, `pdf`, `reasoning` and
+  `tools` are always the configuration's; a site model has no `reportedTools`). Nothing else of a site model is shown: never where it is called (`baseUrl`, `protocol`), the
   upstream model name, its key or the name of the variable holding it, or its prices.
 - `proactiveAvailable`: whether the judgement model is configured (`JUDGE`); turning an Agent's `proactive` on is refused (409 `proactive_unavailable`) when it is not.
 - `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there, and `TOOLS.enabled`; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
