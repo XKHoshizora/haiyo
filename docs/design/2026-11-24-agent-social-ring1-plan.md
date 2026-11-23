@@ -1414,6 +1414,8 @@ alter table agents alter column proactive_budget_micro set default 20000000;
   - the chain budget does not apply;
   - a follow-up keeps its caller (`callerOf(owner, run.caller_id)`).
 
+**As built:** `runSitePlace(q, conversationId)` (runs.ts) is the place of a route's `:id` where no Agent is named yet (`placeOfType` with the conversation standing for the Agent's own; 404 for a direct chat); `runAudience` returns `place` (not `type`) and lists members for a social conversation as for a group; `followUp` in a social conversation is `followUpInSocial` (the ended run's caller, `reach` again, the numbers, the minute); `RunLimits` gains `social`. `begin`'s others' bounds still read the run's lane (`lane !== "own"`): the lane is `callerOf(owner, caller)`, so the owner calling their own Agent in a group is never bounded, another member or a visitor is, and a social run's lane is always `others`; `begin` takes `placeOf` itself in B7a.
+
 - [ ] **Failing test:**
   - The owner's socket gets `{type: "run", run}` and the visitor's `{type: "run", agentId, state}` with no run, id or `error` (recursive key check).
   - `GET …/runs` answers the visitor; `POST …/runs/retry` is 404; the owner's stop and dismiss work.
@@ -1440,6 +1442,12 @@ alter table agents alter column proactive_budget_micro set default 20000000;
 
 Every removed check is a case of `reach`'s step 3, so no block that refuses today stops refusing. Bars and ended rows refuse in addition.
 
+**Controller ruling 2026-11-24 (B-3 dispatch), as built in block 3** (the four hand-offs of lane A's reviews; each is a rule of this task):
+1. **One decision, asked in one way.** Lane A's `refusedSql` is the ONE access decision (its `access_bars` rows, `reach` and `reachSql` are its own); this branch codes against its SIGNATURE only. A group site passes `socialOn: "false"` as a literal: `reachSql` with `where: "group"` never uses `socialOn`, so a bind parameter passed for it and used nowhere else is rejected by Postgres. Every group site goes through `refusedInGroup(subject, agent)` (runs.ts; candidates.ts builds the same text with `refusedSql`): the sender's calls, the person behind an Agent's message, an Agent subject, the askers, `followUp`'s noted calls, the proactive candidates. `blockedEitherWay` is no longer asked alone at any group site (a source test pins it).
+2. **One rule for every ending in groups** (block, stop, unfriend, removal, narrowing, blocking an Agent): a group run is never cancelled whole; the refused caller's calls are taken out (`dropRefusedCalls`, at `begin`: the one rule lane A's `endGroupCalls` applies at the moment of the ending; lane I makes `endGroupCalls` call it); a run left with no call ends quietly; a running run is interrupted only if the refused caller is its sole caller. Stops, removals and narrowings are enforced in groups by this, with no further code, once lane A's `refusedSql` is in.
+3. **The window after `begin`.** `postAsAgent` asks the same of the calls the run answers (`standingCalls`, under the run's conversation row and its Agent's): none left, nothing is posted (409 `access_ended`, a refusal like the interruptions: the run ends `cancelled`, settled once through `finish`); otherwise the reply goes on for the others and neither quotes (`replyToSeq`) nor mentions (`mentions`) a person refused now. `REFUSED` (port-impl.ts) gains `owner_spoke`, `access_ended`, `notes_changed`, `errand_ended` here, not in B8: lane A's interruptions already make `postAsAgent` throw those codes. B8 keeps its social part.
+4. **One function for lane I.** `dropRefusedCalls(t, runId, ownerId)` replaces `dropBlockedCalls` (same shape of answer). What a third person noted on a run left with no call is kept (`pending_seq`), as lane A keeps it; what only the refused noted is dropped. **Open: the quiet end's error.** Lane A cancels with `access_ended`; `begin`'s end for no call left is still `cancelled` with no error (`BLOCKED_SINCE`), because `tests/agents-block-recheck.test.ts` pins `error: null` at lines 151, 186 and 219 (`toMatchObject({ status: "cancelled", error: null })`) and 169 (`every(r => r.status === "cancelled" && r.error === null)`). Taking lane A's value is one line (`BLOCKED_SINCE`) and those four expectations; the controller decides (recommended: yes, one outcome).
+
 - [ ] **Failing test:**
   - Over 105 seeded group callers (Step 0's rule), the sites' `refusedSql` answers exactly as `blockedEitherWay` did.
   - The existing group tests stay green: `agents-group-*`, `agents-block-recheck`, `proactive-decide`, `proactive-runs`.
@@ -1460,6 +1468,8 @@ Every removed check is a case of `reach`'s step 3, so no block that refuses toda
    - else, over V's minute (`calledLastMinute`, :352) or the owner's others' minute (`overLaneLimit`, :338) → a `rate_limited` run;
    - else `queueRun` with caller V, lane `others`, triggered by `human`, askers `[V]`.
 3. Agent↔Agent conversations trigger nothing but interjections in ring 1.
+
+**As built:** `triggerInSocial(t, lock, message, config)` and `interjection` (runs.ts). A supervisor is told by role and ownership (an `observer` membership of the owner of a participating Agent), never by name (RF5). The fold also records the call (`call_seqs`). Over V's minute or the owner's others' minute the run is recorded with `rateLimitedInGroup` (one reusable `rate_limited` run per Agent, as in a group); an Agent whose model is gone gets `model_gone`. A running run's `interrupted` uses `coalesce`, so an earlier mark stays; its post is refused (`REFUSED`).
 
 - [ ] **Failing test:**
   - V's message queues one run (`others`, caller V); V's second folds into it.
@@ -1988,6 +1998,8 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - **N4.** The persona aid (A8b) needs nothing of the judge, so it moved to ring 1a, with its columns in 075 and its card in `SocialCards.jsx` (A8b, A12c, Rollout 3).
   - **I15.** A2, B5a, B7b and A9 are named in the minimum for a trial. Lane I starts once that set is in (Rings table, I1a).
   - **G1–G8** are in T0.1, T0.3, T0.4 and B4. **M-V1** (B4), **M-V2** (B4), **M-V3** (B2b), **M-V4** (B9b), **M-V5** (A6a), and **M-V6** (B4, I1a.7, I2a) are in the tasks named.
+
+- **Controller ruling 2026-11-24 (B-3 dispatch):** the four hand-offs of lane A's reviews are rules of B5b (see there): one decision (`refusedSql`, `socialOn` a literal in groups), one rule for every ending in groups, the window after `begin` closed at post time, one function (`dropRefusedCalls`) for lane I. Open: the quiet end's error (`access_ended` or none).
 
 ---
 
