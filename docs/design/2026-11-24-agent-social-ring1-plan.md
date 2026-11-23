@@ -231,7 +231,7 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `S:README.md` | 0, then I | every heading of both rings, the shapes, config, metrics |
 | `S:src/social/place.ts` (new) | 0, frozen | `Place`, `placeOf`, `placeOfType`, `groupPlaceSql`, `socialPlaceSql` |
 | `S:src/social/reach.ts` (new) | 0→A | `reach`, `reachSql`, `refusedSql`, `discoverable`, `discoverableSql` |
-| `S:src/social/agent-contacts.ts`, `agent-contact-routes.ts` (new) | 0→A | rows, `endGrants`, bars, `applyPolicy`; lane-A routes |
+| `S:src/social/agent-contacts.ts`, `agent-contact-routes.ts` (new) | 0→A | rows, `endGrants`, bars, `applyPolicy`; lane-A routes; `CONTACT_STUBS`, the list of routes still stubs (as built in Step 0), shrunk here by the lane that writes each route |
 | `S:src/social/friends.ts`, `blocks.ts`, `routes.ts` | A | unfriend and block write bars; a person may block an Agent |
 | `S:src/principals/store.ts`, `principals/routes.ts` | A | Agent lookup; discoverable avatars |
 | `S:src/conversations/store.ts` | 0→A | `ConversationType`; `ensureSocial`; the `agent_social` arm of `permission()` (Step 0 skeleton, A3a full) |
@@ -249,11 +249,13 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `S:src/agents/port-impl.ts`, `agents/runs.ts`, `agents/runtime/prompt.ts`, `agents/runtime/port.ts` (`RunEnd`, G4) | 0→B | Step 0's signature changes; then lane B |
 | The tests Step 0 updates for `Place` (G5): `S:tests/memory-prompt.test.ts`, `reply-language`, `tool-loop-money`, `tools-capability`, `tools-clock`, `tools-refs`, `web-search`, `memory-routes` (`*.test.ts`) | 0, then the lane owning the source they test | `true` → `"group"`, `false` → `"own"` |
 | `S:src/agents/conversation.ts`, `context.ts`, `run-routes.ts`, `routes.ts`, `store.ts`, `runtime/worker.ts`, `loop.ts`, `tools/index.ts`, `search.ts`, `file.ts`, `web/tool.ts`, `summary/job.ts`, `proactive/candidates.ts`, `S:src/sync/hub.ts` | B | runs, places, bounds, the wire numbers |
-| `S:src/accounts/others-routes.ts` (new) | 0→B | lane-B routes |
+| `S:src/accounts/others-routes.ts` (new) | 0→B | lane-B routes; `OTHERS_STUBS`, the same list for them (as built in Step 0) |
+| `S:tests/fuzz.test.ts`, `S:tests/social-stubs.test.ts` | 0, then B only for what B4 turns red | read `CONTACT_STUBS` and `OTHERS_STUBS` (as built in Step 0): no lane edits them to replace a stub |
 | `S:tests/helpers/social.ts` (new, T0.3) | 0, frozen (attack M8) | `seedSocial`, `seedSocialAgents`, `SOCIAL_ON` |
 | `S:tests/helpers/others.ts` (new) | B | lane B's money fixtures |
 | `S:tests/agents-co-members.test.ts`, `tests/proactive-decide.test.ts`, `tests/config-agents.test.ts` | 0 | hidden keys; the three old wire fields out of :252–257 (attack I5); config |
-| `W:src/api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx` | 0 | routes, thin actions, error texts, the `others` settings page id, the two stylesheets |
+| `W:src/api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `main.jsx` | 0 | routes, thin actions, error texts, the two stylesheets |
+| `W:src/state/location.js` | 0→B | untouched by Step 0 in the end (as built: `others` is not an address until the page is drawn); B9a adds `others` to `SETTINGS_PAGES` with the page |
 | `W:src/styles/social.css` (0→A), `W:src/styles/others.css` (0→B) | | each lane's styles |
 | `W:src/data/model.js` (0→A), `data/sync.js`, `state/selectors.js`, `state/social.js` | A | `agent_social` in the model; supervised conversations out of the main list |
 | `W:src/pages/AddFriendModal.jsx`, `Contacts.jsx`, `ChatList.jsx`, `ChatView.jsx`, `Messages.jsx`, `Composer.jsx`, `BlockModal.jsx`, `DetailsPanel.jsx`, `AgentOthers.jsx` (0→A), `ReportModal.jsx`, `SocialCards.jsx` (the `persona_fact` card in 1a, A8b; `note_withheld` in 1b), `ShownNotes.jsx` (1b) | A | add, chat, tab, report, the persona card; the withheld card and shown notes in 1b |
@@ -564,7 +566,7 @@ expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 20, ju
   - `S:src/memory/routes.ts:250`, `:252` and `S:src/agents/port-impl.ts:718`: callers of `loadNotes` and `fitNotes`. memory/routes.ts:250 stays on `db` outside a transaction: the own and group overload takes a `Queryable`; only `social` needs a `Tx` (G6).
   - `S:src/agents/runtime/prompt.ts`: `toolsPassage` (:94), `webToolsPassage` (:128), `notesPassage` (:442), `fitNotes` (:481) take `Place`; callers updated.
   - Tests that call those four with the old boolean, changed `false` → `"own"` and `true` → `"group"` and nothing else (G5): `memory-prompt` (29 calls), `memory-routes` (3), `web-search` (6), `tools-clock` (4), `reply-language`, `tool-loop-money`, `tools-capability`, `tools-refs` (1 each).
-  - `S:src/app.ts`: start the judge, `app.noteJudge`.
+  - `S:src/app.ts`: start the judge, `app.noteJudge` (as built in Step 0: with `closing: memoryClosing.signal`, closed in `preClose`, `BuildOptions.noteJudgeTimer`; see the judge block of "Step 0 interfaces").
 
 **Produces:** every signature in "Step 0 interfaces". Bodies:
 - Real: `placeOf`, `placeOfType`, `groupPlaceSql`, `socialPlaceSql`, `keepsRoom`.
@@ -620,6 +622,7 @@ expect(await renderNotice(db, s, { event: "social_opened", actorId: agent.id, ag
 - `S:tests/proactive-decide.test.ts:1152`: the same `HIDDEN_KEYS` additions.
 
 - [ ] **Failing test** `tests/social-stubs.test.ts`: every new route answers 404 `{"error":"not_found"}` to a signed-in caller and 401 to none; a malformed body is 400 before the stub; `tests/readme.test.ts` passes. `seedSocial` gives members `[visitor speaker 0, agent speaker 0, owner observer 0]`, a live row and a first message `social_opened`. Its rows are the same as A4's own add would write; a test in A4 compares them.
+- [ ] **As built in Step 0:** each route file exports the list of its routes that are still stubs (`CONTACT_STUBS` in `social/agent-contact-routes.ts`, `OTHERS_STUBS` in `accounts/others-routes.ts`; one `"METHOD /path"` per stub). `tests/fuzz.test.ts` holds every listed route to being a stub (no signed-in probe is answered past the checks; the unlisted `/api/agents/...` routes keep the rule that one is), and `tests/social-stubs.test.ts` tests the 404 of the listed ones only. A lane that replaces a stub removes the entry in its own route file and edits neither test.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-stubs.test.ts tests/readme.test.ts tests/agents-co-members.test.ts tests/proactive-decide.test.ts`; commit `feat(social): step 0 route stubs, README contract, hidden keys`.
 
 ### Task 0.5: Web seams — Step 0
@@ -1016,7 +1019,8 @@ Approved rows stay under `ask` and `contacts`. `dryRun` counts and writes nothin
   - 12 contacts-basis rows → `dryRun` answers `{ends: 12}` and writes nothing; 105 rows → `{ends: 105}`.
   - Narrowing to `ask` ends exactly the contacts-basis rows; approved rows stay.
   - The narrowing interrupts their runs (`access_ended`).
-- [ ] Run → fails. Implement. Run `npx vitest run tests/social-policy.test.ts tests/social-contacts.test.ts`; commit `feat(social): narrowing the policy`.
+- [ ] **As built in Step 0, the stub list:** in the same edit that replaces a stub with a real handler, remove that route's entry from `CONTACT_STUBS` in `social/agent-contact-routes.ts`. Nothing else names the route: `tests/fuzz.test.ts` and `tests/social-stubs.test.ts` read the list (a listed route must still be a stub, an unlisted one gets every rule), so this task edits neither. (Here: `GET /api/agents/:id/contacts` and `PUT /api/agents/:id/contact-policy`; A4, A5b and A10 do the same for the routes they write.)
+- [ ] Run → fails. Implement. Run `npx vitest run tests/social-policy.test.ts tests/social-contacts.test.ts tests/fuzz.test.ts tests/social-stubs.test.ts`; commit `feat(social): narrowing the policy`.
 
 ### Task A9: Memory and elsewhere never see a social conversation — Lane A
 
@@ -1094,7 +1098,8 @@ So it is in ring 1a, and its columns are in 075 (A0).
   - personas saved while the switch was off make no call when it is turned on;
   - the card and its `card` field reach the owner only (`HIDDEN_KEYS`);
   - web: the wording and both buttons; 「移到“关于我”」 sends `move: true`; an answered card shows no button.
-- [ ] Run → fails. Implement. Run `npx vitest run tests/persona-fact.test.ts tests/persona.test.ts tests/agents-co-members.test.ts`; `npm test`, `npm run build` in `app/web`; commit `feat(memory): the persona aid, its worker and its card (ring 1a)`.
+- [ ] **As built in Step 0, the stub list:** in the same edit that replaces a stub with a real handler, remove that route's entry from `CONTACT_STUBS` in `social/agent-contact-routes.ts`. Nothing else names the route: `tests/fuzz.test.ts` and `tests/social-stubs.test.ts` read the list (a listed route must still be a stub, an unlisted one gets every rule), so this task edits neither. (Here: `POST /api/agents/:id/persona-facts/:seq`.)
+- [ ] Run → fails. Implement. Run `npx vitest run tests/persona-fact.test.ts tests/persona.test.ts tests/agents-co-members.test.ts tests/fuzz.test.ts tests/social-stubs.test.ts`; `npm test`, `npm run build` in `app/web`; commit `feat(memory): the persona aid, its worker and its card (ring 1a)`.
 
 ### Task A11a: Web: find and add an Agent, with the disclosure; contacts — Lane A
 
@@ -1327,7 +1332,7 @@ expect(gateway.calls[1]!.system).toBe(prepared.call.systemWithoutTools); expect(
 
 ### Task B4: The numbers on the wire, the use routes, the one-time card — Lane B
 
-**Files:** create `S:migrations/074_others_step_l.sql`, `S:tests/others-routes.test.ts`, `S:tests/others-migration.test.ts`. Modify `S:src/agents/routes.ts` (:76–82, :130, :156, :176–177, :206–218, :249, :292, :367, :414–423), `S:src/agents/store.ts` (`AgentRow.othersAnswers`), `S:src/accounts/others-routes.ts`, `S:tests/schema-agents.test.ts` (:109–128). Fix the tests B4 turns red, all lane B's: `agents-group-reply`, `agents-others-budget`, `agents-proactive-settings`, `agents`, `fuzz`, `money-blocking`, `tool-loop-money`, `web-search-rules`, `web-search` (`*.test.ts`). `agents-co-members.test.ts` needs nothing (Step 0).
+**Files:** create `S:migrations/074_others_step_l.sql`, `S:tests/others-routes.test.ts`, `S:tests/others-migration.test.ts`. Modify `S:src/agents/routes.ts` (:76–82, :130, :156, :176–177, :206–218, :249, :292, :367, :414–423), `S:src/agents/store.ts` (`AgentRow.othersAnswers`), `S:src/accounts/others-routes.ts`, `S:tests/schema-agents.test.ts` (:109–128). B4 removes the entries of the three routes it writes from `OTHERS_STUBS` in `accounts/others-routes.ts` (as built in Step 0; the stub lists are read by `fuzz.test.ts` and `social-stubs.test.ts`, which then need no edit for them). Fix the tests B4 turns red, all lane B's: `agents-group-reply`, `agents-others-budget`, `agents-proactive-settings`, `agents`, `fuzz`, `money-blocking`, `tool-loop-money`, `web-search-rules`, `web-search` (`*.test.ts`). `agents-co-members.test.ts` needs nothing (Step 0).
 
 **Migration 074** (**Controller ruling 2026-11-24 (verification), E1/N1**). The step-L raise leaves Step 0's inert 073 and is lane B's own migration, written here with the code that reads it. Today's code reads `others_budget_micro` as each Agent's own soft budget with no owner cap (runs.ts:900–903, :1006–1013). So the raise may never be applied without lane B's owner cap, and 074 deploys only with lane B's code: lanes A and B merge together at lane I (D1, Rollout 3). Exactly:
 ```sql
@@ -1492,7 +1497,7 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
 // Ring 1a: the notes passage is absent (no note of any kind in the call; a vault canary and an open-note canary appear nowhere).
 // A run whose row was ended before it started ends cancelled/access_ended with no model call.
 ```
-- [ ] Run → fails. Implement. Run `npx vitest run tests/social-begin.test.ts tests/reply-history.test.ts tests/context.test.ts tests/context-group.test.ts tests/summary.test.ts tests/agent-port-boundary.test.ts`; `calibrate-memory.mjs --check`; commit `feat(agents): a social reply's access, scene, context and system text`.
+- [ ] Run → fails. Implement. Run `npx vitest run tests/social-begin.test.ts tests/reply-history.test.ts tests/web-search.test.ts tests/context.test.ts tests/context-group.test.ts tests/summary.test.ts tests/agent-port-boundary.test.ts`; `calibrate-memory.mjs --check`; commit `feat(agents): a social reply's access, scene, context and system text`.
 
 ### Task B7b: Tools in a social conversation; the own search without social — Lane B
 
@@ -1640,7 +1645,7 @@ Lane A only (memory and its web), then lane I. Lane B's code already records sho
 
 ### Task A6a: Migration 076; candidates and the use rule, per Agent — Lane A
 
-**Files:** create `S:migrations/076_social_notes.sql`; modify `S:src/memory/passage.ts` (`loadNotes` social), `S:src/memory/store.ts` (`candidatesFor`); create `S:src/memory/verdicts.ts`, `S:tests/social-notes.test.ts`.
+**Files:** create `S:migrations/076_social_notes.sql`; modify `S:src/memory/passage.ts` (`loadNotes` social), `S:src/memory/store.ts` (`candidatesFor`; and, as built in Step 0, `notesFor` takes the `NotesPlace` union: `loadNotes` of the own place passes it `{conversationId: "", group: false}` today, which works only because `notesFor` reads the id for a group alone); create `S:src/memory/verdicts.ts`, `S:tests/social-notes.test.ts`.
 
 **Produces:** 076 (Controller ruling 2026-11-24 (verification), E1/N1; the persona aid's columns and `social_card_answers` are 075's, A0), exactly:
 ```sql
@@ -1741,7 +1746,8 @@ export function setOwnerVerdict(t: Tx, agent: AgentRow, note: { kind: NoteKind; 
   - The owner's no survives an edit and a merge.
   - **Test 8, lane A's half.** `shownNotesPass` is false after an edit, a vaulting, a delete and an owner no. A note edit racing a post serialises: with `holdThen`, if the post's `for share` comes first the edit waits; if the edit comes first, the post check is false.
   - `shownNotes` reaches the owner only (`HIDDEN_KEYS`).
-- [ ] Run → fails. Implement. Run `npx vitest run tests/social-verdicts.test.ts tests/social-notes.test.ts tests/memory-apply.test.ts tests/agents-co-members.test.ts`; commit `feat(memory): the owner's yes and no, the post-time check, shown notes`.
+- [ ] **As built in Step 0, the stub list:** in the same edit that replaces a stub with a real handler, remove that route's entry from `CONTACT_STUBS` in `social/agent-contact-routes.ts`. Nothing else names the route: `tests/fuzz.test.ts` and `tests/social-stubs.test.ts` read the list (a listed route must still be a stub, an unlisted one gets every rule), so this task edits neither. (Here: `PUT /api/agents/:id/note-verdicts`.)
+- [ ] Run → fails. Implement. Run `npx vitest run tests/social-verdicts.test.ts tests/social-notes.test.ts tests/memory-apply.test.ts tests/agents-co-members.test.ts tests/fuzz.test.ts tests/social-stubs.test.ts`; commit `feat(memory): the owner's yes and no, the post-time check, shown notes`.
 
 ### Task A7: The batch note judge — Lane A
 
