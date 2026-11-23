@@ -774,25 +774,52 @@ test("an Agent that thinks: 正在思考… before anything comes, then its thin
   await expect(thinking).not.toHaveAttribute("open", "");
   await expect(thinking.locator(".thinking-text")).toBeHidden();
   await shot(ann.page, "agent-chat-thinking-folded");
-  // On a phone's width the header is a 44px target, and nothing is wider than the page.
+  // On a phone's width the header is a 44px target that costs no room: it takes its one line of text, and its target
+  // reaches 44px up from its lower edge, over the gap and the name line (where there is nothing to press) — never down
+  // into the bubble. Nothing is wider than the page. Returns the top of the target.
+  const targetOf = async (summary) => {
+    await expect(summary).toBeVisible();
+    const box = await summary.boundingBox();
+    expect(box.height, "the header takes one line of text").toBeLessThan(30);
+    expect(box.x + box.width).toBeLessThanOrEqual(360);
+    expect(await ann.page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+    const x = box.x + box.width / 2;
+    const bottom = box.y + box.height;
+    const hit = (y) => summary.evaluate((el, at) => document.elementFromPoint(at.x, at.y) === el, { x, y });
+    expect(await hit(bottom - 43.5), "pressed 43.5px above its lower edge").toBe(true);
+    expect(await hit(bottom - 1), "pressed on its text").toBe(true);
+    expect(await hit(bottom + 6), "pressed on the bubble under it").toBe(false);
+    return { x, y: bottom - 43.5 };
+  };
   await ann.page.setViewportSize({ width: 360, height: 740 });
-  await expect(header).toBeVisible();
-  const box = await header.boundingBox();
-  expect(box.height, "the header's height at 360px").toBeGreaterThanOrEqual(44);
-  expect(box.x + box.width).toBeLessThanOrEqual(360);
-  expect(await ann.page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
-  await header.click();
+  const top = await targetOf(header);
+  await ann.page.mouse.click(top.x, top.y);
   await expect(thinking).toHaveAttribute("open", "");
   await expect(thinking.locator(".thinking-text")).toHaveText(reasoning);
   await expect(header).toHaveText(/^正在思考… \d+ 秒$/);
   await ann.page.setViewportSize({ width: 1280, height: 860 });
-  await expect(thinking).toHaveAttribute("open", "");
   await shot(ann.page, "agent-chat-thinking-open");
 
+  // The stored reply takes the bubble's place with the thinking still open, as the reader left it: nothing closes under
+  // them. Its header is the same target; folded by the reader, it folds.
   await modelStub.release(answer);
   const reply = agentMessagesWith(chat, answer);
   await expect(reply).toHaveCount(1);
   await expect(reply).toHaveAttribute("data-msg", /^m\d+$/);
-  await expect(reply.locator("details.thinking summary")).toHaveText("思考过程");
-  await expect(reply.locator("details.thinking")).not.toHaveAttribute("open", "");
+  const stored = reply.locator("details.thinking");
+  await expect(stored.locator("summary")).toHaveText("思考过程");
+  await expect(stored).toHaveAttribute("open", "");
+  await expect(stored.locator(".thinking-text")).toHaveText(reasoning);
+  await ann.page.setViewportSize({ width: 360, height: 740 });
+  const storedTop = await targetOf(stored.locator("summary"));
+  await ann.page.mouse.click(storedTop.x, storedTop.y);
+  await expect(stored).not.toHaveAttribute("open", "");
+  await ann.page.mouse.click(storedTop.x, storedTop.y);
+  await expect(stored).toHaveAttribute("open", "");
+  await ann.page.setViewportSize({ width: 1280, height: 860 });
+  // Shown again (the page loaded anew): folded, like every stored reply's thinking.
+  await ann.page.reload();
+  const again = agentMessagesWith(await openChat(ann.page, agent.name), answer);
+  await expect(again.locator("details.thinking summary")).toHaveText("思考过程");
+  await expect(again.locator("details.thinking")).not.toHaveAttribute("open", "");
 });

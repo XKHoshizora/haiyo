@@ -908,6 +908,8 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     await deltaPush(transport, { reasoning: "第二步" });
     await elapse(1000);
     expect(details().open).toBe(false);
+    // (Folded, it has grown all the same: opened, it shows everything at once.)
+    expect(details().querySelector(".thinking-text").textContent).toBe("第一步第二步");
     // Opened by the reader while it thinks: it shows what came and what comes, under the running count; the reply's text
     // does not fold it.
     await click(details().querySelector("summary"));
@@ -958,6 +960,65 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     expect(details().open).toBe(false);
     await leaveAndReturn();
     expect(details().open).toBe(false);
+  });
+
+  it("thinking the reader has open stays open when the stored reply takes the bubble's place; folded again once the conversation was left", async () => {
+    const { transport } = await openAgentChat({ agent: { reasoning: "high" }, extra: [direct(D1, ANN)] });
+    await runPush(transport, runOf(R1, "running"));
+    await deltaPush(transport, { reasoning: "第一步，第二步" });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    await deltaPush(transport, { text: "结论" });
+    await revealed();
+    expect(bubbleLi().querySelector("details").open).toBe(true);
+    await messagePush(transport, wire(A1, 3, AG1, "结论", { reasoning: "第一步，第二步" }));
+    await runPush(transport, runOf(R1, "done"));
+    expect(bubbleLi()).toBeNull();
+    const stored = () => storedLi(3).querySelector("details");
+    expect(stored().querySelector("summary").textContent).toBe("思考过程");
+    expect(stored().open).toBe(true);
+    expect(stored().querySelector(".thinking-text").textContent).toBe("第一步，第二步");
+    // It stays so while the reader is here (a later message changes nothing), and the reader can fold it.
+    await messagePush(transport, wire(A1, 4, ME_ID, "谢谢"));
+    expect(stored().open).toBe(true);
+    // Left and opened again: folded, like every stored reply's thinking.
+    await click(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await click(screen.getByText("小助手", { selector: ".list-col .row-name" }));
+    await flush();
+    expect(stored().open).toBe(false);
+  });
+
+  it("…also when the bubble finishes revealing before it gives way; thinking the reader left folded, or folded again, stays folded", async () => {
+    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    await runPush(transport, runOf(R1, "running"));
+    await deltaPush(transport, { reasoning: "第一步" });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    // The stored message comes while some of the text is still unrevealed: the bubble finishes first.
+    const BURST = "一二三四五六七八九十".repeat(50);
+    await deltaPush(transport, { text: BURST });
+    await messagePush(transport, wire(A1, 3, AG1, BURST, { reasoning: "第一步" }));
+    await runPush(transport, runOf(R1, "done"));
+    expect(bubbleLi()).not.toBeNull();
+    expect(storedLi(3)).toBeNull();
+    await elapse(5000);
+    expect(bubbleLi()).toBeNull();
+    expect(storedLi(3).querySelector("details").open).toBe(true);
+    // The next reply: opened, then folded again by the reader — its stored thinking is folded; the first stays as it is.
+    const next = `${R1.slice(0, -4)}8${R1.slice(-3)}`;
+    await runPush(transport, runOf(next, "running"));
+    await push(transport, { type: "delta", conversationId: A1, runId: next, reasoning: "又想" });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    await push(transport, { type: "delta", conversationId: A1, runId: next, text: "好" });
+    await revealed();
+    await messagePush(transport, wire(A1, 4, AG1, "好", { reasoning: "又想" }));
+    await runPush(transport, runOf(next, "done"));
+    expect(bubbleLi()).toBeNull();
+    expect(storedLi(4).querySelector("details").open).toBe(false);
+    expect(storedLi(3).querySelector("details").open).toBe(true);
   });
 
   it("a new reply's thinking starts folded, whatever the reader did with the one before", async () => {

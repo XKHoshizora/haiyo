@@ -46,18 +46,17 @@ export const STREAM_CUT_NOTE = "（内容较长，仅显示开头部分）";
 const StreamCutNote = () => <span className="md-note">{STREAM_CUT_NOTE}</span>;
 
 /**
- * The model's thinking: folded above the answer, opened only by the reader. `cut`: more came than is shown (a stream);
- * `summary`: its header (思考过程; while a reply is still thinking, 正在思考… and its seconds).
+ * A stored reply's thinking, under 思考过程: folded above the answer, opened only by the reader. `startOpen` (read once,
+ * when it is first shown): it takes the place of a bubble whose thinking the reader had open, and stays open — the
+ * reader keeps their place; shown again later (the conversation left and opened again, a reload) it is folded.
  */
-export function Thinking({ text, cut = false, summary = "思考过程" }) {
+export function Thinking({ text, startOpen = false }) {
+  const [open] = useState(startOpen);
   if (!text) return null;
   return (
-    <details className="thinking">
-      <summary>{summary}</summary>
-      <div className="thinking-text">
-        {text}
-        {cut && <StreamCutNote />}
-      </div>
+    <details className="thinking" open={open}>
+      <summary>思考过程</summary>
+      <div className="thinking-text">{text}</div>
     </details>
   );
 }
@@ -131,6 +130,9 @@ function runClock(runId) {
   }
   return clock;
 }
+
+/** Whether the reader has (or had, when its bubble gave way) that reply's thinking open. Makes no record. */
+export const thinkingLeftOpen = (runId) => runClocks.get(runId)?.thinkingOpen === true;
 
 /**
  * Notes the first piece of a reply's text as this bubble sees it: at the moment it sees it, if it saw the reply without
@@ -226,7 +228,8 @@ function StopButton({ conversationId, agentId = null, runId, disabled = false, o
  * count, from the same start); once its text starts the header reads 思考了 N 秒 — from that start to its first piece of
  * text; 思考过程 when this page did not see when its text started. The thinking is folded all along, while it thinks
  * too: only the reader opens it, and it stays as the reader left it for that reply (LiveThinking). The stored reply's
- * thinking reads 思考过程 as ever, folded. A bubble made again while the reply is written (its
+ * thinking reads 思考过程 as ever, folded — but open when it takes the place of a bubble whose thinking the reader had
+ * open (ChatView, `thinkingLeftOpen`), until the conversation is left. A bubble made again while the reply is written (its
  * conversation left and opened again) shows at once what it had shown, and goes on from there. A press of
  * 停止生成 (until a stop that could not be sent) and a run that is not running any more show everything received at
  * once. A very long reply shows its first part only, and says so under it (what is left of that part is revealed
