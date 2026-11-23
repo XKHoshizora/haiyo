@@ -16,11 +16,12 @@ import { scriptedGateway } from "./helpers/models.ts";
 import { SOCIAL_ON, seedSocial, seedSocialAgents } from "./helpers/social.ts";
 
 /**
- * Step 0's stubs keep today's behaviour: the reach rule is today's, the money stubs answer yes, the notes of a social
+ * Step 0's seams keep today's behaviour (the reach rule is A1's now, asked with the switch on for the social half), the money stubs answer yes, the notes of a social
  * conversation are none, and a seeded social conversation takes a message through the write rule's skeleton.
  */
-const { app, db } = useApp({ env: SITE_ENV, models: scriptedGateway(), agentWorker: false });
+const { app, db } = useApp({ env: SITE_ENV, models: scriptedGateway(), agentWorker: false, config: SOCIAL_ON });
 const off = { social: { enabled: false } } as const;
+const on = { social: { enabled: true } } as const;
 
 let txn = 0;
 const send = (who: Actor, conv: string, text: string) => api(app, who, "POST", `/api/conversations/${conv}/messages`, { text, clientTxn: `ss${++txn}` });
@@ -44,13 +45,14 @@ describe("the stubs keep today's behaviour", () => {
     expect(await reach(db, v.id, agent.id, "group", off)).toBe("ok");
     await api(app, v, "PUT", `/api/blocks/${owner.id}`);
     expect(await reach(db, v.id, agent.id, "group", off)).toBe("blocked");
-    // Social: the owner, and a person with a live row; nobody else.
-    expect(await reach(db, owner.id, agent.id, "social", off)).toBe("ok");
-    expect(await reach(db, member.id, agent.id, "social", off)).toBe("no_access");
+    // Social (the block is lifted: a block now refuses a social subject too): the owner, and a person with a live row; nobody else.
+    await api(app, owner, "DELETE", `/api/blocks/${member.id}`);
+    expect(await reach(db, owner.id, agent.id, "social", on)).toBe("ok");
+    expect(await reach(db, member.id, agent.id, "social", on)).toBe("no_access");
     const seeded = await seedSocial(app, { owner, agentId: agent.id, visitor: member });
-    expect(await reach(db, member.id, agent.id, "social", off)).toBe("ok");
+    expect(await reach(db, member.id, agent.id, "social", on)).toBe("ok");
     await db.query(`update agent_contacts set state = 'ended', basis = null, end_reason = 'removed' where agent_id = $1 and subject_id = $2`, [agent.id, member.id]);
-    expect(await reach(db, member.id, agent.id, "social", off)).toBe("no_access");
+    expect(await reach(db, member.id, agent.id, "social", on)).toBe("barred");
     expect(seeded.subjectId).toBe(member.id);
   });
 
@@ -144,10 +146,10 @@ describe("a seeded social conversation takes a message through the write rule's 
     expect((await send(v, seeded.conversationId, "你好")).status).toBe(201);
     // The supervising owner writes too (the same `reach` is ok for them).
     expect((await send(owner, seeded.conversationId, "我是主人")).status).toBe(201);
-    expect(await canSend(db, seeded.conversationId, v.id, off)).toEqual({ ok: true });
+    expect(await canSend(db, seeded.conversationId, v.id, on)).toEqual({ ok: true });
     await db.query(`update agent_contacts set state = 'ended', basis = null, end_reason = 'removed' where agent_id = $1 and subject_id = $2`, [agent.id, v.id]);
     expect(await send(v, seeded.conversationId, "还在吗")).toMatchObject({ status: 403, json: { reason: "no_access" } });
-    expect(await canSend(db, seeded.conversationId, v.id, off)).toEqual({ ok: false, reason: "no_access" });
+    expect(await canSend(db, seeded.conversationId, v.id, on)).toEqual({ ok: false, reason: "no_access" });
     // The owner is never refused by a row.
     expect((await send(owner, seeded.conversationId, "还在")).status).toBe(201);
   });
@@ -156,7 +158,7 @@ describe("a seeded social conversation takes a message through the write rule's 
     const { owner, v, agent } = await world();
     const seeded = await seedSocial(app, { owner, agentId: agent.id, visitor: v });
     const mine = await api(app, v, "GET", "/api/sync");
-    expect(mine.json.social).toEqual({ enabled: false });
+    expect(mine.json.social).toEqual({ enabled: true });
     expect(mine.json.conversations.find((c: { id: string }) => c.id === seeded.conversationId)).toMatchObject({ type: "agent_social", myRole: "speaker", canSend: { ok: true } });
     const theirs = await api(app, owner, "GET", "/api/sync");
     expect(theirs.json.conversations.find((c: { id: string }) => c.id === seeded.conversationId)).toMatchObject({ type: "agent_social", myRole: "observer" });
@@ -197,8 +199,8 @@ describe("the notice sentences", () => {
 });
 
 describe("the switch", () => {
-  it("is off by default and a test turns it on with SOCIAL_ON", () => {
-    expect(app.deps.config.social).toEqual({ enabled: false });
+  it("a test turns it on with SOCIAL_ON (the default, off, is pinned by config-agents.test.ts)", () => {
+    expect(app.deps.config.social).toEqual({ enabled: true });
     expect(SOCIAL_ON).toEqual({ social: { enabled: true } });
   });
 });
