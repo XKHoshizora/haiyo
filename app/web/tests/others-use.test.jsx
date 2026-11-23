@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 // B9a and B9b: the use page of others' use of my Agents (Settings › 别人怎么用我的 Agent), its row and its section on the usage page, the Agent
 // card and page's three states, and the one-time notice at the top of 我的 Agent. Everything shown is the service's (`GET /api/me/others-use`):
-// the web only words it, and never compares what was used with a limit.
+// the web only words it, and never compares what was used with a limit. The page has NO stop and NO restore control of its own (that act lives
+// on the person's profile): a person is a link there.
 import "./markdown-ready.js";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
-import { AG1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, syncOf, usageOf } from "./fixtures.js";
-import { click, flush, inMain, installBrowser, mainText, openApp } from "./harness.jsx";
+import { AG1, ANN, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, deferred, syncOf, usageOf } from "./fixtures.js";
+import { click, flush, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
 import { OTHERS_STATES, othersNoticeText, othersStateOf } from "../src/data/othersCopy.js";
 
 beforeEach(() => installBrowser());
@@ -23,13 +24,13 @@ const SITE_MODEL = { source: "site", id: "free-1" };
 
 /** The route's answer for an owner with one Agent; `over` replaces any part. */
 const useOf = (over = {}) => ({
-  limits: { answers: 50, points: "70" },
-  used: { answers: 3, points: "12.5" },
+  limits: { answers: 50, points: "300" },
+  used: { answers: 3, points: "12.5", proactivePoints: "0" },
   reached: false,
   tight: false,
   byPerson: [{ person: MEI, answers: 2, points: "8" }, { person: KEN, answers: 1, points: "4.5" }],
   stopped: [],
-  agents: [{ agentId: AG1, answers: 3, points: "12.5", perDay: 41, reached: false, tight: false }],
+  agents: [{ agentId: AG1, answers: 3, points: "12.5", perDay: 41, reached: false, tight: false, canReply: true }],
   notice: false,
   ...over,
 });
@@ -40,14 +41,14 @@ const listText = () => document.querySelector(".list-col").textContent;
 const mainEl = () => document.querySelector(".main-col");
 
 /** The app with one Agent of mine; the use route answers `answer()` (a function, so a test can change what it says). */
-async function openWith({ social, answer = () => useOf(), api = {} } = {}) {
-  const agent = agentOf(AG1, { model: SITE_MODEL, groupMentions: "members" });
+async function openWith({ social, answer = () => useOf(), api = {}, agentFields = {} } = {}) {
+  const agent = agentOf(AG1, { model: SITE_MODEL, groupMentions: "members", ...agentFields });
   const principals = [...PRINCIPALS, agentPrincipal(AG1)];
   const sync = () => ({ ...syncOf([agentConv(agent.conversationId, AG1)], [], principals), ...(social === undefined ? {} : { social }) });
   const calls = {
     getOthersUse: vi.fn(async () => structuredClone(answer())),
     putOthersLimits: vi.fn(async (body) => body),
-    putBar: vi.fn(async () => ({ ok: true, ended: 0 })),
+    putBar: vi.fn(async () => ({ ok: true })),
     deleteBar: vi.fn(async () => ({ ok: true })),
     seenOthersNotice: vi.fn(async () => ({ ok: true })),
     getModels: vi.fn(async () => MODELS),
@@ -76,10 +77,13 @@ const goAgents = async () => {
 const answersBox = () => inMain().getByLabelText("每天最多回复的次数");
 const pointsBox = () => inMain().getByLabelText("每天最多花的点数");
 const enter = (box) => fireEvent.keyDown(box, { key: "Enter" });
+const typeInto = (box, value) => fireEvent.change(box, { target: { value } });
 
 describe("the three states, in one place", () => {
-  it("normal, tight and reached, exactly as the owner confirms them; reached first, as it implies tight", () => {
-    expect(OTHERS_STATES).toEqual({ ok: "正常", tight: "快用完了，较长的回复可能发不出", reached: "今天的额度用完了" });
+  it("normal, tight and reached, as the owner confirms them; reached first, as it implies tight; the third says it is OTHERS' use", () => {
+    expect(OTHERS_STATES).toEqual({ ok: "正常", tight: "余量不多，较长的回复可能发不出", reached: "别人今天的额度已用完" });
+    expect(OTHERS_STATES.tight).not.toContain("快用完了");
+    expect(OTHERS_STATES.reached).toContain("别人");
     expect(othersStateOf({ reached: false, tight: false })).toBe("ok");
     expect(othersStateOf({ reached: false, tight: true })).toBe("tight");
     expect(othersStateOf({ reached: true, tight: true })).toBe("reached");
@@ -94,61 +98,71 @@ describe("the settings row and the page", () => {
     expect(window.location.pathname).toBe("/settings/others");
     expect(document.title).toBe(`${NAME} · 设置 · Haiyo`);
     expect([...mainEl().querySelectorAll("h2")].map((h) => h.textContent)).toEqual([NAME]);
+    expect(inList().getByText("别人每天最多能花你多少点")).toBeTruthy();
   });
 
-  it("the sentence with the owner's two numbers; the Agent's per-day line; today's use", async () => {
-    const { calls } = await openPage();
+  it("the sentence with the owner's two numbers (300 by default); the Agent's line cannot be summed; today's use with the proactive part", async () => {
+    const { calls } = await openPage({ answer: () => useOf({ used: { answers: 3, points: "12.5", proactivePoints: "2" } }) });
     expect(calls.getOthersUse).toHaveBeenCalled();
     expect(answersBox().value).toBe("50");
-    expect(pointsBox().value).toBe("70");
-    const sentence = answersBox().closest("p").textContent;
-    expect(sentence).toBe("别人每天最多让我的 Agent 回复次，最多花我点");
+    expect(pointsBox().value).toBe("300");
+    expect(answersBox().closest("p").textContent).toBe("别人每天最多让我的 Agent 回复次，最多花我点");
     const text = mainText();
-    expect(text).toContain("小助手：以这个数，每天大约能回别人 41 次");
-    expect(text).toContain("已回 3 次，花了 12.5 点");
+    // The Agent's line says what ONE Agent alone would give from the whole shared amount: it is not "this Agent's share".
+    expect(text).toContain("小助手：只有它在回的话，每天大约能回 41 次");
+    expect(text).not.toContain("以这个数");
+    expect(text).toContain("已回别人 3 次，花了 12.5 点（其中主动回复 2 点）");
     expect(text).toContain("小美");
-    expect(text).toContain("@mei · 回了 2 次，花了 8 点");
+    expect(text).toContain("@mei · 回了对方 2 次，花了 8 点");
     expect(text).toContain("阿健");
+    expect(mainEl().querySelector(".others-agents strong").textContent).toBe("小助手");
+  });
+
+  it("an Agent that cannot answer anybody says so, never 「大约能回 0 次 · 正常」", async () => {
+    await openPage({ answer: () => useOf({ agents: [{ agentId: AG1, answers: 0, points: "0", perDay: 0, reached: false, tight: false, canReply: false }] }) });
+    expect(mainText()).toContain("小助手：现在没有可用的模型，不回别人");
+    expect(mainText()).not.toContain("大约能回 0 次");
+    expect(mainEl().querySelector(".others-agents").textContent).not.toContain("正常");
   });
 
   it("each number is saved on Enter or on leaving the box, both together, once; unchanged or wrong numbers are not saved", async () => {
     // (The service keeps what it was given, as it does.)
-    let limits = { answers: 50, points: "70" };
-    const { calls } = await openPage({
-      answer: () => useOf({ limits }),
-      api: { putOthersLimits: vi.fn(async (body) => (limits = body)) },
-    });
-    fireEvent.change(answersBox(), { target: { value: "20" } });
+    let limits = { answers: 50, points: "300" };
+    const { calls } = await openPage({ answer: () => useOf({ limits }), api: { putOthersLimits: vi.fn(async (body) => (limits = body)) } });
+    typeInto(answersBox(), "20");
     enter(answersBox());
     await flush();
     expect(calls.putOthersLimits).toHaveBeenCalledTimes(1);
-    expect(calls.putOthersLimits).toHaveBeenLastCalledWith({ answers: 20, points: "70" });
-    fireEvent.change(pointsBox(), { target: { value: " 035.50 " } });
+    expect(calls.putOthersLimits).toHaveBeenLastCalledWith({ answers: 20, points: "300" });
+    typeInto(pointsBox(), " 035.50 ");
     fireEvent.blur(pointsBox());
     await flush();
     expect(calls.putOthersLimits).toHaveBeenCalledTimes(2);
     expect(calls.putOthersLimits).toHaveBeenLastCalledWith({ answers: 20, points: "35.5" });
-    // Nothing typed that differs: no write. A wrong number: said under the sentence, no write.
+    // What is shown is what is stored: the box shows the normal form of what was sent.
+    expect(pointsBox().value).toBe("35.5");
+    // Nothing typed that differs: no write. A wrong number: said under the sentence, nothing sent.
     fireEvent.blur(pointsBox());
     await flush();
     expect(calls.putOthersLimits).toHaveBeenCalledTimes(2);
-    fireEvent.change(answersBox(), { target: { value: "0" } });
+    typeInto(answersBox(), "0");
     enter(answersBox());
     await flush();
     expect(calls.putOthersLimits).toHaveBeenCalledTimes(2);
     expect(mainText()).toContain("请填写 1 到 1000 之间的整数");
     expect(answersBox().getAttribute("aria-invalid")).toBe("true");
-    fireEvent.change(answersBox(), { target: { value: "20" } });
-    fireEvent.change(pointsBox(), { target: { value: "100001" } });
+    typeInto(answersBox(), "20");
+    typeInto(pointsBox(), "100001");
     fireEvent.blur(pointsBox());
     await flush();
     expect(calls.putOthersLimits).toHaveBeenCalledTimes(2);
-    expect(mainText()).toContain("请填写 1 到 100000 之间的点数（最多 6 位小数）");
+    expect(mainText()).toContain("点数请填 1 到 100000 的数");
+    expect(pointsBox().getAttribute("aria-invalid")).toBe("true");
   });
 
   it("an Enter that confirms an input method's candidate saves nothing", async () => {
     const { calls } = await openPage();
-    fireEvent.change(answersBox(), { target: { value: "20" } });
+    typeInto(answersBox(), "20");
     fireEvent.keyDown(answersBox(), { key: "Enter", isComposing: true });
     fireEvent.keyDown(answersBox(), { key: "Enter", keyCode: 229 });
     await flush();
@@ -157,22 +171,122 @@ describe("the settings row and the page", () => {
 
   it("a refusal of the save is said under the sentence", async () => {
     const { calls } = await openPage({ api: { putOthersLimits: vi.fn(async () => { throw apiError(429, "rate_limited"); }) } });
-    fireEvent.change(answersBox(), { target: { value: "20" } });
+    typeInto(answersBox(), "20");
     enter(answersBox());
     await flush();
     expect(calls.putOthersLimits).toHaveBeenCalledTimes(1);
     expect(mainEl().querySelector(".others-limit-sentence [role='alert']")?.textContent).toBeTruthy();
   });
 
+  describe("I3: each box owns its draft, saves go one at a time, what is stored is what is shown (a slow server)", () => {
+    /** A server that keeps the limits and answers each PUT when the test says so. */
+    function slowServer() {
+      let limits = { answers: 50, points: "300" };
+      const puts = [];
+      return {
+        puts,
+        answer: () => useOf({ limits }),
+        put: vi.fn((body) => {
+          const gate = deferred();
+          puts.push({ body, release: () => ((limits = body), gate.resolve(body)) });
+          return gate.promise;
+        }),
+        stored: () => limits,
+      };
+    }
+
+    it("the 7035.5 sequence: the first save's answer never writes into the box being typed in", async () => {
+      const server = slowServer();
+      await openPage({ answer: server.answer, api: { putOthersLimits: server.put } });
+      // The first box changes to 20 and the person moves on: its save starts and is slow.
+      typeInto(answersBox(), "20");
+      fireEvent.blur(answersBox());
+      await flush();
+      expect(server.puts).toHaveLength(1);
+      expect(server.puts[0].body).toEqual({ answers: 20, points: "300" });
+      // They clear the second box and begin typing 35.5 while the save is on its way.
+      fireEvent.focus(pointsBox());
+      typeInto(pointsBox(), "");
+      typeInto(pointsBox(), "35");
+      // The answer comes: the first number is stored and the page is read again; the second box keeps what is being typed.
+      server.puts[0].release();
+      await flush();
+      expect(answersBox().value).toBe("20");
+      expect(pointsBox().value).toBe("35");
+      typeInto(pointsBox(), "35.5");
+      fireEvent.blur(pointsBox());
+      await flush();
+      expect(server.puts).toHaveLength(2);
+      expect(server.puts[1].body).toEqual({ answers: 20, points: "35.5" });
+      server.puts[1].release();
+      await flush();
+      expect(server.stored()).toEqual({ answers: 20, points: "35.5" });
+      expect([answersBox().value, pointsBox().value]).toEqual(["20", "35.5"]);
+    });
+
+    it("two quick edits: the second is not dropped, it runs when the first ends, with what is shown by then", async () => {
+      const server = slowServer();
+      await openPage({ answer: server.answer, api: { putOthersLimits: server.put } });
+      typeInto(answersBox(), "20");
+      enter(answersBox());
+      await flush();
+      typeInto(answersBox(), "30");
+      enter(answersBox());
+      await flush();
+      expect(server.puts).toHaveLength(1);
+      server.puts[0].release();
+      await flush();
+      expect(server.puts).toHaveLength(2);
+      expect(server.puts[1].body).toEqual({ answers: 30, points: "300" });
+      server.puts[1].release();
+      await flush();
+      expect(server.stored()).toEqual({ answers: 30, points: "300" });
+      expect(answersBox().value).toBe("30");
+    });
+
+    it("an edit made during a save and left by blur is saved after it, both numbers as shown", async () => {
+      const server = slowServer();
+      await openPage({ answer: server.answer, api: { putOthersLimits: server.put } });
+      typeInto(answersBox(), "20");
+      enter(answersBox());
+      await flush();
+      typeInto(pointsBox(), "123.5");
+      fireEvent.blur(pointsBox());
+      await flush();
+      expect(server.puts).toHaveLength(1);
+      server.puts[0].release();
+      await flush();
+      expect(server.puts).toHaveLength(2);
+      expect(server.puts[1].body).toEqual({ answers: 20, points: "123.5" });
+      server.puts[1].release();
+      await flush();
+      expect(server.stored()).toEqual({ answers: 20, points: "123.5" });
+    });
+
+    it("a box nobody touched follows the service (a change made on another device shows after the next read)", async () => {
+      let limits = { answers: 50, points: "300" };
+      const { calls } = await openPage({
+        answer: () => useOf({ limits }),
+        // (Another device had set the points to 310 by the time this save was answered.)
+        api: { putOthersLimits: vi.fn(async (body) => ((limits = { answers: body.answers, points: "310" }), limits)) },
+      });
+      typeInto(answersBox(), "20");
+      enter(answersBox());
+      await flush();
+      expect(calls.putOthersLimits).toHaveBeenCalledTimes(1);
+      expect([answersBox().value, pointsBox().value]).toEqual(["20", "310"]);
+    });
+  });
+
   it("the three states are the service's: overall and per Agent, never counted from used and the limit", async () => {
     const states = [
       [{ reached: false, tight: false }, "正常"],
-      [{ reached: false, tight: true }, "快用完了，较长的回复可能发不出"],
-      [{ reached: true, tight: true }, "今天的额度用完了"],
+      [{ reached: false, tight: true }, "余量不多，较长的回复可能发不出"],
+      [{ reached: true, tight: true }, "别人今天的额度已用完"],
     ];
     for (const [flags, words] of states) {
       // Used far over the limit with `reached` false, and the other way: the words follow the flags alone.
-      await openPage({ answer: () => useOf({ ...flags, used: { answers: 9999, points: "9999" }, agents: [{ agentId: AG1, answers: 1, points: "1", perDay: 5, ...flags }] }) });
+      await openPage({ answer: () => useOf({ ...flags, used: { answers: 9999, points: "9999", proactivePoints: "0" }, agents: [{ agentId: AG1, answers: 1, points: "1", perDay: 5, canReply: true, ...flags }] }) });
       const text = mainText();
       expect(text.split(words).length - 1, words).toBe(2);
       for (const other of Object.values(OTHERS_STATES).filter((w) => w !== words)) expect(text, other).not.toContain(other);
@@ -180,13 +294,9 @@ describe("the settings row and the page", () => {
     }
   });
 
-  it("an Agent the route says nothing of is listed by nothing; an owner with no Agent is told so", async () => {
-    await openPage({ answer: () => useOf({ agents: [] }) });
+  it("an owner with no Agent is told so; nobody used them today: it says so; the numbers still show", async () => {
+    await openPage({ answer: () => useOf({ agents: [], byPerson: [] }) });
     expect(mainText()).toContain("你还没有可以回复别人的 Agent。");
-  });
-
-  it("nobody used them today: it says so; the numbers still show", async () => {
-    await openPage({ answer: () => useOf({ byPerson: [], used: { answers: 0, points: "0" } }) });
     expect(mainText()).toContain("今天还没有别人用过你的 Agent。");
     expect(answersBox().value).toBe("50");
   });
@@ -207,60 +317,42 @@ describe("the settings row and the page", () => {
   });
 });
 
-describe("停止往来 and 恢复往来 (only while the site's Agent social switch is on)", () => {
-  it("switch off (or not said): no 停止往来 and no 恢复往来 anywhere, no bar route called, and no stopped list while the route says none", async () => {
-    for (const social of [undefined, { enabled: false }]) {
-      const { calls } = await openPage({ social });
-      const text = mainText();
-      expect(text).not.toContain("停止往来");
-      expect(text).not.toContain("恢复往来");
-      expect(text).not.toContain("已停止往来的人");
+describe("people on the page: links to their profile; the page stops and resumes nobody", () => {
+  it("a person of today is a link to their profile; no 停止往来 or 恢复往来 button on the page, with the switch off or on, and no bar route is called", async () => {
+    for (const social of [undefined, { enabled: false }, { enabled: true }]) {
+      const { calls } = await openPage({ social, answer: () => useOf({ stopped: [{ person: KEN, since: "2026-11-20T04:00:00.000Z" }] }) });
+      const link = within(mainEl().querySelector(".others-people")).getByRole("link", { name: "小美" });
+      expect(link.getAttribute("href")).toBe(`/contacts/${MEI.id}`);
+      expect(inMain().queryByRole("button", { name: /停止往来|恢复往来/ })).toBeNull();
       expect(calls.putBar).not.toHaveBeenCalled();
       expect(calls.deleteBar).not.toHaveBeenCalled();
       cleanup();
     }
   });
 
-  it("switch off with a stopped list the service still names: the people are listed, without any control", async () => {
-    await openPage({ social: { enabled: false }, answer: () => useOf({ stopped: [{ person: MEI, since: "2026-11-20T00:00:00.000Z" }] }) });
-    expect(mainText()).toContain("已停止往来的人");
-    expect(mainText()).toContain("小美");
-    expect(inMain().queryByRole("button", { name: /往来/ })).toBeNull();
+  it("the link opens the person's page (the profile where the act lives)", async () => {
+    // (A person this client knows: the profile is drawn for those it knows.)
+    const known = { id: ANN, handle: "ann", displayName: "小安", avatarVersion: 0 };
+    await openPage({ answer: () => useOf({ byPerson: [{ person: known, answers: 1, points: "1" }] }) });
+    await click(within(mainEl().querySelector(".others-people")).getByRole("link", { name: "小安" }));
+    expect(window.location.pathname).toBe(`/contacts/${ANN}`);
   });
 
-  it("switch on: each person of today has 停止往来, which calls putBar for that person and reads the page again", async () => {
-    let stopped = [];
-    const { calls } = await openPage({
-      social: { enabled: true },
-      answer: () => useOf({ stopped, byPerson: stopped.length ? [{ person: KEN, answers: 1, points: "4.5" }] : useOf().byPerson }),
-    });
-    const stop = inMain().getByRole("button", { name: "停止往来：小美" });
-    expect(inMain().getAllByRole("button", { name: /^停止往来：/ })).toHaveLength(2);
-    stopped = [{ person: MEI, since: "2026-11-20T00:00:00.000Z" }];
-    await click(stop);
-    expect(calls.putBar).toHaveBeenCalledTimes(1);
-    expect(calls.putBar).toHaveBeenCalledWith(MEI.id);
-    expect(calls.getOthersUse).toHaveBeenCalledTimes(2);
-    // She is in the stopped list now, with 恢复往来.
-    expect(inMain().getByRole("button", { name: "恢复往来：小美" })).toBeTruthy();
-    expect(inMain().queryByRole("button", { name: "停止往来：小美" })).toBeNull();
+  it("the stopped list shows who and since when, as links, and says what the act does in both directions; nothing to press", async () => {
+    await openPage({ social: { enabled: true }, answer: () => useOf({ stopped: [{ person: MEI, since: "2026-11-20T04:00:00.000Z" }] }) });
+    const list = mainEl().querySelector(".others-stopped");
+    expect(within(list).getByRole("link", { name: "小美" }).getAttribute("href")).toBe(`/contacts/${MEI.id}`);
+    expect(list.textContent).toMatch(/@mei · 自 \d+月\d+日 起/);
+    expect(inMain().queryAllByRole("button").map((b) => b.textContent)).not.toContain("恢复往来");
+    expect(mainText()).toContain("停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。在对方的资料页可以恢复往来。");
   });
 
-  it("switch on: 恢复往来 calls deleteBar for that person; with nobody stopped the list says so", async () => {
-    let stopped = [{ person: MEI, since: "2026-11-20T00:00:00.000Z" }];
-    const { calls } = await openPage({ social: { enabled: true }, answer: () => useOf({ stopped }) });
-    stopped = [];
-    await click(inMain().getByRole("button", { name: "恢复往来：小美" }));
-    expect(calls.deleteBar).toHaveBeenCalledWith(MEI.id);
-    expect(mainText()).toContain("你没有停止过和谁的往来。");
-  });
-
-  it("a refusal is said under that person and nothing else changes", async () => {
-    const { calls } = await openPage({ social: { enabled: true }, api: { putBar: vi.fn(async () => { throw apiError(404, "not_found"); }) } });
-    await click(inMain().getByRole("button", { name: "停止往来：小美" }));
-    expect(calls.putBar).toHaveBeenCalledTimes(1);
-    expect(mainEl().querySelector(".others-people .field-msg")?.textContent).toBeTruthy();
-    expect(inMain().getByRole("button", { name: "停止往来：小美" })).toBeTruthy();
+  it("with the switch off and nobody stopped there is no stopped section; with it on and nobody stopped it says so", async () => {
+    await openPage({ social: { enabled: false } });
+    expect(mainText()).not.toContain("已停止往来的人");
+    cleanup();
+    await openPage({ social: { enabled: true } });
+    expect(mainText()).toContain("现在没有停止往来的人。");
   });
 });
 
@@ -271,59 +363,84 @@ describe("the usage page's section", () => {
     await click(inList().getByText("用量与余额", { selector: ".row-name" }));
     const section = mainEl().querySelector(".others-usage");
     expect(section.querySelector("h3").textContent).toBe("别人的使用");
-    expect(section.textContent).toContain("今天别人已回 3 次，花了 12.5 点 · 快用完了，较长的回复可能发不出");
+    expect(section.textContent).toContain("今天已回别人 3 次，花了 12.5 点 · 余量不多，较长的回复可能发不出");
     await click(within(section).getByRole("link", { name: NAME }));
     expect(window.location.pathname).toBe("/settings/others");
   });
 });
 
 describe("the Agent's card and page", () => {
-  it("the card says 今天的额度用完了 only when reached; the page says all three states from the service's flags", async () => {
+  it("the card says 别人今天的额度已用完 only when reached; the page says all three states from the service's flags", async () => {
     for (const [flags, words, card] of [
       [{ reached: false, tight: false }, "正常", false],
-      [{ reached: false, tight: true }, "快用完了，较长的回复可能发不出", false],
-      [{ reached: true, tight: true }, "今天的额度用完了", true],
+      [{ reached: false, tight: true }, "余量不多，较长的回复可能发不出", false],
+      [{ reached: true, tight: true }, "别人今天的额度已用完", true],
     ]) {
-      await openWith({ answer: () => useOf({ agents: [{ agentId: AG1, answers: 1, points: "1", perDay: 5, ...flags }] }) });
+      await openWith({
+        answer: () => useOf({ agents: [{ agentId: AG1, answers: 1, points: "1", perDay: 5, canReply: true, ...flags }] }),
+        agentFields: { othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 1, points: "1" } },
+      });
       await goAgents();
-      expect(listText().includes("今天的额度用完了"), words).toBe(card);
+      expect(listText().includes("别人今天的额度已用完"), words).toBe(card);
       await click(inList().getByText("小助手", { selector: ".row-name" }));
+      expect(document.querySelector(".main-col .kv").textContent, words).toContain(`别人今天的使用已回 1 次，花了 1 点 · ${words}`);
       cleanup();
     }
   });
 
-  it("the page's rows name the state next to what others used today", async () => {
-    const agent = agentOf(AG1, { model: SITE_MODEL, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 3, points: "12.5" } });
-    const sync = () => syncOf([agentConv(agent.conversationId, AG1)], [], [...PRINCIPALS, agentPrincipal(AG1)]);
-    await openApp({
-      sync,
-      api: {
-        getOthersUse: vi.fn(async () => useOf({ agents: [{ agentId: AG1, answers: 3, points: "12.5", perDay: 5, reached: false, tight: true }] })),
-        getModels: vi.fn(async () => MODELS),
-        listProviders: vi.fn(async () => ({ providers: [] })),
-        getUsage: vi.fn(async () => usageOf()),
-        listAgents: vi.fn(() => new Promise(() => {})),
+  it("the list and the page read the route once between them", async () => {
+    const { calls } = await openWith({ agentFields: { othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } } });
+    await goAgents();
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    expect(calls.getOthersUse).toHaveBeenCalledTimes(1);
+  });
+
+  it("the page's row says its own limit as the owner would read it, and what its proactive replies cost today", async () => {
+    await openWith({
+      answer: () => useOf(),
+      agentFields: {
+        othersLimit: { answers: null, points: null },
+        othersUsedToday: { answers: 3, points: "12.5" },
+        proactive: true,
+        proactiveLevel: "normal",
+        proactiveBudget: "70",
+        proactiveSpentToday: "4.25",
       },
-      handlers: { agents: () => ({ agents: [agent] }), models: () => MODELS },
     });
     await goAgents();
     await click(inList().getByText("小助手", { selector: ".row-name" }));
-    expect(document.querySelector(".main-col .kv").textContent).toContain("别人今天的使用已回 3 次，花了 12.5 点 · 快用完了，较长的回复可能发不出");
+    const kv = document.querySelector(".main-col .kv").textContent;
+    expect(kv).toContain("它自己的上限没有单独设置，和其他 Agent 共用你的每天上限");
+    expect(kv).toContain("主动参与群聊适中 · 每天最多花 70 点，今天花了 4.25 点");
+  });
+
+  it("an Agent that cannot answer says so on its page instead of a state", async () => {
+    await openWith({
+      answer: () => useOf({ agents: [{ agentId: AG1, answers: 0, points: "0", perDay: 0, reached: false, tight: false, canReply: false }] }),
+      agentFields: { othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } },
+    });
+    await goAgents();
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    const kv = document.querySelector(".main-col .kv").textContent;
+    expect(kv).toContain("现在没有可用的模型，不回别人");
+    expect(kv).not.toContain("正常");
   });
 });
 
 describe("the one-time notice at the top of 我的 Agent", () => {
-  const NOTICE = "别人让你的 Agent 回复，现在按人算：你所有的 Agent 加起来，每天最多回别人 50 次、最多花你 70 点，没人叫它时的主动回复也算在里面。Agent 自己的上限和主动回复的上限，原来是 20 点的，都已经提到 70 点。";
+  const NOTICE = "别人用你的 Agent，上限的算法变了：不再每个 Agent 各算各的，而是你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点，它们主动说的话也算在里面。原来设成 20 点的 Agent 自己的上限已经取消；原来是 20 点的主动回复上限，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。";
   const noticeEl = () => document.querySelector(".others-notice");
 
-  it("its text is exactly the copy, with the owner's two numbers, says what changed and never says it stayed the same; system UI, not a chat message", async () => {
+  it("its text is exactly the copy, with the owner's two numbers; it says what changed (the shared cap, the cleared own limit, the proactive 70) and where to change it, and never says it stayed the same", async () => {
     await openWith({ answer: () => useOf({ notice: true }) });
     await goAgents();
     expect(noticeEl().textContent).toContain(NOTICE);
-    expect(othersNoticeText({ answers: 50, points: "70" })).toBe(NOTICE);
+    expect(othersNoticeText({ answers: 50, points: "300" })).toBe(NOTICE);
     expect(noticeEl().textContent).not.toContain("不变");
+    expect(noticeEl().textContent).not.toContain("按人算");
     expect(within(noticeEl()).getByRole("button", { name: "知道了" })).toBeTruthy();
-    expect(document.querySelector(".chat")).toBeNull();
+    // System UI in the list column: no message of any conversation holds it.
+    expect(document.querySelector(".chat-view, .messages, [data-testid='message-list']")).toBeNull();
   });
 
   it("the owner's own numbers are in it (a changed number, grouped digits)", async () => {
@@ -346,10 +463,11 @@ describe("the one-time notice at the top of 我的 Agent", () => {
     expect(noticeEl()).toBeNull();
   });
 
-  it("when the service cannot take 知道了, the notice stays and a toast says so", async () => {
+  it("when the service cannot take 知道了, the notice stays and a toast says why", async () => {
     await openWith({ answer: () => useOf({ notice: true }), api: { seenOthersNotice: vi.fn(async () => { throw apiError(500, "internal"); }) } });
     await goAgents();
     await click(within(noticeEl()).getByRole("button", { name: "知道了" }));
     expect(noticeEl()).not.toBeNull();
+    expect(toastText()).toBeTruthy();
   });
 });

@@ -46,7 +46,7 @@ describe("settings list", () => {
     await goSettings();
     expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "别人怎么用我的 Agent", "记忆宫殿", "拉黑", "服务条款", "隐私政策", "联系我们"]);
     // (The one row about others' use of my Agents names them: it is the only place the word is allowed.)
-    const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll(PRODUCT_NAME, "").replaceAll("别人怎么用我的 Agent", "").replaceAll("别人用你的 Agent 花的点，每天的上限", "");
+    const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll(PRODUCT_NAME, "").replaceAll("别人怎么用我的 Agent", "").replaceAll("别人每天最多能花你多少点", "").replaceAll("你拉黑的人和 Agent，可在这里解除", "");
     for (const word of ["Agent", "设备", "演示", "重置", "示例数据"]) expect(text).not.toContain(word);
     expect(document.querySelector(".list-col .settings-me").textContent).toContain("Mei");
   });

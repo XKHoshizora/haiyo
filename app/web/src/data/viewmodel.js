@@ -285,12 +285,6 @@ function microPoints(value) {
   return BigInt(whole + (decimals + "000000").slice(0, 6));
 }
 
-/** Whether `spent` has reached `budget` (both decimal strings of points), compared on the digits (no float maths). */
-export function pointsReached(spent, budget) {
-  const a = microPoints(spent);
-  const b = microPoints(budget);
-  return a !== null && b !== null && a >= b;
-}
 
 const VIA_LEVELS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const isText = (v) => typeof v === "string" && v.length > 0;
@@ -735,6 +729,8 @@ function agentView(a, version, loaded) {
     ...(typeof a.proactive === "boolean" ? { proactive: a.proactive } : {}),
     ...(isProactiveLevel(a.proactiveLevel) ? { proactiveLevel: a.proactiveLevel } : {}),
     ...(typeof a.proactiveBudget === "string" ? { proactiveBudget: a.proactiveBudget } : {}),
+    /** What its proactive replies cost today (decimal points): the service says it to the owner alone. */
+    ...(typeof a.proactiveSpentToday === "string" ? { proactiveSpentToday: a.proactiveSpentToday } : {}),
     /** How it addresses me and the others: only the owner's view has these (absent, never defaulted, otherwise). */
     ...(typeof a.ownerAppellation === "string" || a.ownerAppellation === null ? { ownerAppellation: a.ownerAppellation } : {}),
     ...(Array.isArray(a.appellations) ? { appellations: a.appellations } : {}),

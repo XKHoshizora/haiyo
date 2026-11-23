@@ -4,7 +4,7 @@ import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { NAME_PART_PATTERN, agentName as agentNameProblem, appellation as appellationProblem, namePart as namePartProblem } from "../auth/validation.js";
 import { PROACTIVE_LEVELS, isProactiveLevel } from "../data/viewmodel.js";
-import { ANSWERS_WRONG, answersOf } from "../data/othersLimits.js";
+import { answersOf } from "../data/othersLimits.js";
 import { Btn, Field, Modal, Notice, Reason, Switch, focusInvalid } from "../ui/primitives.jsx";
 import { isEscape } from "../ui/keys.js";
 import { Select } from "../ui/Select.jsx";
@@ -33,7 +33,7 @@ export const CHAIN_BUDGET_DEFAULT = "50";
 /** 主动回复每天最多花 when nothing else is said, in points (the service's default: the owner's whole default number); its amount is a budget like the others. */
 export const PROACTIVE_BUDGET_DEFAULT = "70";
 /** Under the Agent's own limit: what leaving it empty means, in the words of the use page's two numbers. */
-const OTHERS_LIMIT_HINT = "不填，它就和你所有的 Agent 一起用你的总数（在“别人怎么用我的 Agent”里改）。填了，它自己每天最多这么多，也不会超过你的总数。";
+const OTHERS_LIMIT_HINT = "不填：它和你其他的 Agent 共用你的每天上限（在“别人怎么用我的 Agent”里改）。填了：它自己每天最多这么多，同时不超过你的每天上限。";
 /** The 记忆 switches: the form key, its label and what it says; the last two only matter while the first is on. */
 const MEMORY_HELPER = "它会记住关于你的事和自己学到的事。记忆每天有自己的额度，不占用你聊天的额度。";
 const MEMORY_SWITCHES = [
@@ -74,8 +74,8 @@ const BUDGET_HINTS = {
     web: "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
   },
   proactive: {
-    off: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
-    web: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
+    off: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
+    web: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
   },
 };
 // A budget's amount, either of them, as the service takes it.
@@ -103,8 +103,8 @@ export function budgetOf(text) {
 /** What is wrong with a budget's amount as typed (`budgetOf`): the sentence shown under it, or "". */
 const budgetProblem = (text) => (budgetOf(text) === null ? BUDGET_WRONG : "");
 
-const ANSWERS_OR_EMPTY = `${ANSWERS_WRONG}，或者留空`;
-const POINTS_WRONG_OR_EMPTY = `请填写 ${BUDGET_MIN} 到 ${BUDGET_MAX} 之间的点数（最多 6 位小数），或者留空`;
+const ANSWERS_OR_EMPTY = "请填 1 到 1000 的整数，或者不填";
+const POINTS_WRONG_OR_EMPTY = `请填 ${BUDGET_MIN} 到 ${BUDGET_MAX} 的点数，或者不填`;
 
 /** An Agent's own points limit as typed: the decimal string (`budgetOf`), null for nothing typed, undefined for anything else. */
 const pointsOf = (text) => {
@@ -675,7 +675,7 @@ export function AgentForm({ agent = null }) {
           {budgetBox("chainBudget")}
         </Field>
         <fieldset className="field others-limit" aria-describedby={`${othersId}-hint`}>
-          <legend>它自己的上限（可不填）</legend>
+          <legend>别人用它的上限（可不填）</legend>
           <div className="others-limit-parts">
             <Field label="每天最多回别人（次）" error={shown("othersAnswers")}>
               <input value={f.othersAnswers} onChange={set("othersAnswers")} inputMode="numeric" autoComplete="off" />

@@ -560,10 +560,10 @@ describe("providers, usage and site models", () => {
       proactiveLevel: "more",
       proactiveBudget: "70",
     });
-    // (`proactiveSpentToday` is not on the wire any more: it is read nowhere.)
-    expect(agentOfView({ proactive: true, proactiveSpentToday: "1.5" })).not.toHaveProperty("proactiveSpentToday");
-    const odd = agentOfView({ proactive: "yes", proactiveLevel: "loud", proactiveBudget: 20 });
-    for (const key of ["proactive", "proactiveLevel", "proactiveBudget"]) expect(odd).not.toHaveProperty(key);
+    // What its proactive replies cost today is the service's, to the owner (a string), and nothing else is kept.
+    expect(agentOfView({ proactive: true, proactiveSpentToday: "1.5" })).toMatchObject({ proactiveSpentToday: "1.5" });
+    const odd = agentOfView({ proactive: "yes", proactiveLevel: "loud", proactiveBudget: 20, proactiveSpentToday: 1.5 });
+    for (const key of ["proactive", "proactiveLevel", "proactiveBudget", "proactiveSpentToday"]) expect(odd).not.toHaveProperty(key);
   });
 });
 

@@ -104,7 +104,7 @@ function OthersUseSection() {
       <h3>别人的使用</h3>
       {use && (
         <p>
-          今天别人已回 {use.used.answers} 次，花了 {formatPoints(use.used.points)} 点 · {othersStateText(use)}
+          今天已回别人 {use.used.answers} 次，花了 {formatPoints(use.used.points)} 点 · {othersStateText(use)}
         </p>
       )}
       <p>

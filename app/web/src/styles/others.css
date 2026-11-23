@@ -2,12 +2,13 @@
 
 /* The sentence with its two numbers: the boxes sit in the line of text and wrap with it (one column wide at 360px). */
 .others-limit-sentence p:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; line-height: 1.5; }
+.others-unit { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .others-number {
   width: 5.5em; max-width: 100%; height: 36px; padding: 0 10px; box-sizing: border-box; text-align: center;
   border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-solid);
 }
 .others-number:focus { border-color: var(--purple); }
-.others-number[aria-invalid="true"] { border-color: var(--warn); }
+.others-number[aria-invalid="true"] { border-color: var(--warn); border-width: 2px; }
 .others-limit-sentence .field-hint, .others-limit-sentence .field-msg { margin-top: 6px; }
 .others-use h3 { margin: 20px 0 8px; }
 .others-today { line-height: 1.5; }

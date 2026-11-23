@@ -21,10 +21,10 @@ afterEach(() => {
 const SITE_MODEL = { source: "site", id: "free-1" };
 const ANSWERS = "每天最多回别人（次）";
 const POINTS = "每天最多花（点）";
-const LEGEND = "它自己的上限（可不填）";
-const HINT = "不填，它就和你所有的 Agent 一起用你的总数（在“别人怎么用我的 Agent”里改）。填了，它自己每天最多这么多，也不会超过你的总数。";
-const ANSWERS_WRONG = "请填写 1 到 1000 之间的整数，或者留空";
-const POINTS_WRONG = "请填写 1 到 100000 之间的点数（最多 6 位小数），或者留空";
+const LEGEND = "别人用它的上限（可不填）";
+const HINT = "不填：它和你其他的 Agent 共用你的每天上限（在“别人怎么用我的 Agent”里改）。填了：它自己每天最多这么多，同时不超过你的每天上限。";
+const ANSWERS_WRONG = "请填 1 到 1000 的整数，或者不填";
+const POINTS_WRONG = "请填 1 到 100000 的点数，或者不填";
 
 const rail = (name) => within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name });
 const inList = () => within(document.querySelector(".list-col"));
@@ -89,7 +89,7 @@ describe("the value sent (othersLimitOf)", () => {
 });
 
 describe("creating", () => {
-  it("shows 「它自己的上限（可不填）」 with two empty boxes and what empty means; a new Agent sends no limit of its own and never othersBudget", async () => {
+  it("shows 「别人用它的上限（可不填）」 with two empty boxes and what empty means; a new Agent sends no limit of its own and never othersBudget", async () => {
     const createAgent = await createWith(() => {
       expect(inMain().getByText(LEGEND)).toBeTruthy();
       expect([answers().value, points().value]).toEqual(["", ""]);
@@ -224,7 +224,7 @@ describe("the Agent's page", () => {
   };
 
   it("says its own limit (none by default) and what others used of it today, as the service says them", async () => {
-    expect(await show({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } })).toContain("它自己的上限没有单独设置，用你的总数");
+    expect(await show({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } })).toContain("它自己的上限没有单独设置，和其他 Agent 共用你的每天上限");
     cleanup();
     const text = await show({ othersLimit: { answers: 5, points: "35.5" }, othersUsedToday: { answers: 2, points: "3.5" } });
     expect(text).toContain("它自己的上限每天最多回别人 5 次，最多花 35.5 点");

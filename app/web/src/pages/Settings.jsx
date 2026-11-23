@@ -84,9 +84,9 @@ export function SettingsList() {
         <SettingsRow name={SETTINGS_PAGE_NAMES.profile} note="昵称、头像与账户" onOpen={() => open({ settingsPage: "profile" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.providers} note="你自己的模型服务账号与密钥" onOpen={() => open({ settingsPage: "providers" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.usage} note="今日免费额度、余额与最近用量" onOpen={() => open({ settingsPage: "usage" })} />
-        <SettingsRow name={SETTINGS_PAGE_NAMES.others} note="别人用你的 Agent 花的点，每天的上限" onOpen={() => open({ settingsPage: "others" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.others} note="别人每天最多能花你多少点" onOpen={() => open({ settingsPage: "others" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.memory} note="记住的关于你的事，可以在这里整理" onOpen={() => open({ settingsPage: "memory" })} />
-        <SettingsRow name={SETTINGS_PAGE_NAMES.blocks} note="你拉黑的人，可在这里解除" onOpen={() => open({ settingsPage: "blocks" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.blocks} note="你拉黑的人和 Agent，可在这里解除" onOpen={() => open({ settingsPage: "blocks" })} />
         {/* (A phone has no profile page open beside this list: the way out of the account is here.) */}
         {phone && signOut && (
           <li>
@@ -265,7 +265,7 @@ function BlockedPage() {
         {mine.length === 0 ? (
           <p className="muted">你没有拉黑任何人。</p>
         ) : (
-          <ul className="member-rows" aria-label="我拉黑的人">
+          <ul className="member-rows" aria-label="我拉黑的人和 Agent">
             {mine.map((b) => (
               <li key={b.target}>
                 <Avatar id={b.target} size={40} />

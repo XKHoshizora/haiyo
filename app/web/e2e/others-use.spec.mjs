@@ -44,11 +44,11 @@ for (const [size, contextOptions] of SIZES) {
     const answers = main.getByLabel("每天最多回复的次数");
     const points = main.getByLabel("每天最多花的点数");
     await expect(answers).toHaveValue("50");
-    await expect(points).toHaveValue("70");
+    await expect(points).toHaveValue("300");
     // The Agent's line and today's use: the service's numbers, a state in words.
-    await expect(main.getByText(/以这个数，每天大约能回别人 \d+ 次/)).toBeVisible();
-    await expect(main.getByText("已回 0 次，花了 0 点").first()).toBeVisible();
-    await expect(main.getByText(/正常|快用完了，较长的回复可能发不出|今天的额度用完了/).first()).toBeVisible();
+    await expect(main.getByText(/只有它在回的话，每天大约能回 \d+ 次/)).toBeVisible();
+    await expect(main.getByText("已回别人 0 次，花了 0 点").first()).toBeVisible();
+    await expect(main.getByText(/正常|余量不多，较长的回复可能发不出|别人今天的额度已用完/).first()).toBeVisible();
     // Agent social is off on this site: no 停止往来, no 恢复往来, no list of the stopped.
     await expect(main).not.toContainText("停止往来");
     await expect(main).not.toContainText("恢复往来");
@@ -57,7 +57,7 @@ for (const [size, contextOptions] of SIZES) {
     // Saved on Enter (both numbers, once) and kept over a reload.
     await answers.fill("20");
     await answers.press("Enter");
-    await expect(async () => expect(await limitsOf(ann)).toEqual({ answers: 20, points: "70" })).toPass();
+    await expect(async () => expect(await limitsOf(ann)).toEqual({ answers: 20, points: "300" })).toPass();
     await points.fill("35.5");
     await points.blur();
     await expect(async () => expect(await limitsOf(ann)).toEqual({ answers: 20, points: "35.5" })).toPass();
@@ -77,8 +77,9 @@ for (const [size, contextOptions] of SIZES) {
     // The usage page says it in one line and links here.
     await page.goto("/settings/usage");
     const usage = page.getByRole("region", { name: "用量与余额" });
+    await usage.getByRole("heading", { name: "别人的使用" }).scrollIntoViewIfNeeded();
     await expect(usage.getByRole("heading", { name: "别人的使用" })).toBeVisible();
-    await expect(usage.getByText(/今天别人已回 0 次，花了 0 点 · /)).toBeVisible();
+    await expect(usage.getByText(/今天已回别人 0 次，花了 0 点 · /)).toBeVisible();
     await socialbShot(page, `usage-section-${size}`);
     await usage.getByRole("link", { name: NAME }).click();
     await expect(page.getByRole("region", { name: NAME })).toBeVisible();
@@ -91,19 +92,17 @@ for (const [size, contextOptions] of SIZES) {
     await createAgentUi(page, {
       name,
       onFilled: async (form) => {
-        await expect(form.getByText("它自己的上限（可不填）")).toBeVisible();
+        await expect(form.getByText("别人用它的上限（可不填）")).toBeVisible();
         const answers = form.getByLabel("每天最多回别人（次）");
         const points = form.getByLabel("每天最多花（点）");
         await expect(answers).toHaveValue("");
         await expect(points).toHaveValue("");
-        await expect(form).toContainText("不填，它就和你所有的 Agent 一起用你的总数");
+        await expect(form).toContainText("不填：它和你其他的 Agent 共用你的每天上限");
         await answers.fill("12");
         await points.fill("35.5");
         const proactive = form.getByRole("switch", { name: "主动参与群聊" });
-        if ((await proactive.count()) > 0) {
-          await proactive.check();
-          await expect(form.getByLabel("主动回复每天最多花", { exact: true })).toHaveValue("70");
-        }
+        await proactive.check();
+        await expect(form.getByLabel("主动回复每天最多花", { exact: true })).toHaveValue("70");
         await answers.scrollIntoViewIfNeeded();
         await socialbShot(page, `agent-form-${size}`);
         expect(await noSideways(page)).toBe(true);

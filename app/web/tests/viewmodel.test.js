@@ -246,9 +246,10 @@ describe("messages", () => {
     expect(withLimit({})).not.toHaveProperty("othersUsedToday");
     for (const bad of [{ answers: "5", points: "1" }, { answers: 1.5, points: null }, { answers: 5, points: 7 }, null, "70"]) expect(withLimit({ othersLimit: bad }), JSON.stringify(bad)).not.toHaveProperty("othersLimit");
     for (const bad of [{ answers: 2 }, { answers: "2", points: "1" }, null]) expect(withLimit({ othersUsedToday: bad }), JSON.stringify(bad)).not.toHaveProperty("othersUsedToday");
-    // The three fields the wire no longer has are not read, whatever a (stale) answer says.
+    // The two fields the wire no longer has are not read, whatever a (stale) answer says; `proactiveSpentToday` is back (owner only, a string).
     const old = withLimit({ othersBudget: "35.5", othersSpentToday: "3.5", proactiveSpentToday: "1" });
-    for (const key of ["othersBudget", "othersSpentToday", "proactiveSpentToday"]) expect(old).not.toHaveProperty(key);
+    for (const key of ["othersBudget", "othersSpentToday"]) expect(old).not.toHaveProperty(key);
+    expect(old).toMatchObject({ proactiveSpentToday: "1" });
   });
 
   it("my Agent carries how it addresses me and the others as the service says them; absent stays absent (someone else's view has neither)", () => {

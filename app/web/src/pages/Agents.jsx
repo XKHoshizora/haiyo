@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { MODEL_GONE, commonErrorText } from "../data/errorTexts.js";
@@ -30,10 +30,11 @@ function othersRows(agent, row) {
     own === undefined
       ? null
       : own.answers === null && own.points === null
-        ? "没有单独设置，用你的总数"
+        ? "没有单独设置，和其他 Agent 共用你的每天上限"
         : [own.answers === null ? null : `每天最多回别人 ${own.answers} 次`, own.points === null ? null : `最多花 ${formatPoints(own.points)} 点`].filter(Boolean).join("，");
   const used = agent.othersUsedToday;
-  const usedText = used === undefined ? null : `已回 ${used.answers} 次，花了 ${formatPoints(used.points)} 点${row ? ` · ${othersStateText(row)}` : ""}`;
+  const state = row && row.canReply !== false ? ` · ${othersStateText(row)}` : row ? " · 现在没有可用的模型，不回别人" : "";
+  const usedText = used === undefined ? null : `已回 ${used.answers} 次，花了 ${formatPoints(used.points)} 点${state}`;
   return [...(ownText === null ? [] : [["它自己的上限", ownText]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
 }
 
@@ -43,7 +44,9 @@ function proactiveRows(agent) {
   const level = proactiveLevelLabel(agent.proactiveLevel);
   // The budget is always said by the service; if it somehow is not, the level alone is shown.
   if (agent.proactiveBudget === undefined) return [["主动参与群聊", level]];
-  return [["主动参与群聊", `${level} · 每天最多花 ${formatPoints(agent.proactiveBudget)} 点`]];
+  // Today's spend is the service's (`proactiveSpentToday`, owner only); said beside the daily budget, never compared with it here.
+  const spent = typeof agent.proactiveSpentToday === "string" ? `，今天花了 ${formatPoints(agent.proactiveSpentToday)} 点` : "";
+  return [["主动参与群聊", `${level} · 每天最多花 ${formatPoints(agent.proactiveBudget)} 点${spent}`]];
 }
 
 /** 它怎么称呼你 and how many others it has an appellation for: only in the owner's view of the Agent (mine), when set. */
@@ -121,7 +124,7 @@ function OthersNotice({ use, settle }) {
 export function AgentsList() {
   const { state, dispatch, actions } = useStore();
   const { nav } = state;
-  const { use, settle } = useOthersUse();
+  const { use, settle } = useOthersUse({ maxAge: 10_000 });
   /** This Agent's entry of the use route: its numbers and its state today. */
   const useOf = (id) => use?.agents?.find((a) => a.agentId === id) ?? null;
   const agents = myAgents(state);
@@ -297,7 +300,16 @@ function AgentDetail({ agent }) {
   const [deleting, setDeleting] = useState(false);
   const { nav } = state;
   const live = agent.loaded && !agent.deleted;
-  const { use } = useOthersUse();
+  const { use, reload } = useOthersUse({ maxAge: 10_000 });
+  // The numbers of the row come from the Agent's record and its state from the use route: when the record's change, the route is read again.
+  const usedKey = JSON.stringify([agent.othersUsedToday, agent.othersLimit]);
+  const firstKey = useRef(usedKey);
+  useEffect(() => {
+    if (firstKey.current !== usedKey) {
+      firstKey.current = usedKey;
+      reload();
+    }
+  }, [usedKey, reload]);
   // The 「别人」 tab is for a live Agent, and only while the site's Agent social switch is on.
   const othersOn = live && state.social?.enabled === true;
   // The memory tab is for a live Agent: one deleted while it is open falls back to the profile, as a tab not offered does (so does 「别人」).

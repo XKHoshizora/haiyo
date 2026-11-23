@@ -1720,7 +1720,7 @@ describe("主动参与群聊 (proactive replies)", () => {
     expect(inMain().getByLabelText(LEVEL).value).toBe("normal");
     expect(inMain().getByLabelText(AMOUNT).value).toBe("70");
     expect(document.getElementById(inMain().getByLabelText(AMOUNT).getAttribute("aria-describedby"))?.textContent).toBe(
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
     );
     // A typed amount only: no 不限 choice.
     expect(inMain().getByLabelText(AMOUNT).tagName).toBe("INPUT");
@@ -2266,13 +2266,13 @@ describe("联网搜索 (only while the site offers web search)", () => {
     };
     expect(await open(ON_SITE)).toEqual([
       "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
     ]);
     cleanup();
     // The site offering none: the words as before, to the character.
     expect(await open(MODELS)).toEqual([
       "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算在“别人怎么用我的 Agent”里的每天总数里。",
+      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
     ]);
   });
 
