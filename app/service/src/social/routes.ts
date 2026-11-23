@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { announceEnded } from "../agents/group-leave.ts";
 import { uuidParam } from "../schemas.ts";
 import type { Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
@@ -205,6 +206,7 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       if (!result.ok) throw new AppError(STATUS[result.code], result.code);
       // Blocking again is idempotent: the same 200, and no event when nothing changed.
       if (blockChanged(result)) announce(req, [me.id, other], result);
+      announceEnded(app.agentPort, result.ended);
       return { ok: true as const };
     },
   );

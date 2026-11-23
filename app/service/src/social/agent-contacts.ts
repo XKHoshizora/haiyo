@@ -1,4 +1,5 @@
 import type { EndedRuns } from "../agents/group-leave.ts";
+import { RUN_COLUMNS, toWireRun, type Announced, type RunRow } from "../agents/runs.ts";
 import type { Config } from "../config.ts";
 import { ensureSocial, lockConversation } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
@@ -8,7 +9,7 @@ import { discoverable, discoverableSql, reach } from "./reach.ts";
 import { areFriends } from "./relations.ts";
 
 // Who may reach an Agent, per Agent: rows in `agent_contacts`, the policy that makes them, and the one function that ends them.
-// Lane A: A4 (add, approve, decline, remove, the lists) is here; `endGrants` (A5a) and `applyPolicy` (A5c) are still Step 0's throwing bodies.
+// Lane A: A4 (add, approve, decline, remove, the lists) and A5a (`endGrants`) are here; `applyPolicy` (A5c) is still Step 0's throwing body.
 
 export type ContactPolicy = "ask" | "contacts" | "none";
 export type ContactState = "requested" | "live" | "ended";
@@ -20,9 +21,87 @@ export type GrantScope = { between: readonly [string, string] } | { agentId: str
 
 const LANE_A = "ring 1: lane A";
 
-/** The only way access stops; the caller runs `announceEnded` after commit. Lane A (A5a). */
-export async function endGrants(_t: Tx, _scope: GrantScope, _reason: "left" | "narrowed" | "removed" | "barred"): Promise<EndedRuns & { ended: number }> {
-  throw new Error(LANE_A);
+/**
+ * The only way access stops (design §1.2; plan A5a). In the caller's transaction, after its pair locks and any direct chat's
+ * notice (`endGrants` takes no conversation row):
+ *   1. the Agents' rows `for update`, in id order (`between`: every Agent of both people, deleted ones too);
+ *   2. the rows in scope that are `live` or `requested` end with `reason` (`between [A, B]`: the rows on A's Agents whose person
+ *      is B and on B's Agents whose person is A, an Agent of the other's included; `agentId`: that Agent's rows for the listed
+ *      subjects);
+ *   3. (the errands plan adds its one statement here);
+ *   4. the queued reply runs of those Agents are `cancelled` with `access_ended` and the running ones are marked `interrupted`
+ *      (`access_ended` unless one is marked already), what was noted on them dropped (`pending_seq` null): the runs in the pair's
+ *      social conversations (the other end a listed subject, or a person of the other side) and the runs in groups whose
+ *      `caller_id` is the person concerned (not `asker_ids`: attack M5).
+ * The queued runs are taken before the running ones, each in a statement of its own: a run being claimed at that moment is
+ * either seen queued (its claim waits on our row, finds it cancelled) or already running when the second statement looks.
+ * The caller runs `announceEnded` after commit. Nothing here writes a bar.
+ */
+export async function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred"): Promise<EndedRuns & { ended: number }> {
+  const agents =
+    "between" in scope
+      ? await t.query<{ id: string }>(
+          `select a.principal_id as id from agents a join principals p on p.id = a.principal_id
+            where p.owner_id = any($1::uuid[]) order by a.principal_id for update of a`,
+          [[...scope.between]],
+        )
+      : await t.query<{ id: string }>("select principal_id as id from agents where principal_id = $1 for update", [scope.agentId]);
+  if (agents.rows.length === 0) return { cancelled: [], running: [], ended: 0 };
+
+  // The runs' scope, as SQL over `r` (agent_runs) and `ag` (the run's Agent as a principal).
+  const inSocial = "exists (select 1 from social_pairs rsp where rsp.conversation_id = r.conversation_id and r.agent_id in (rsp.a_id, rsp.b_id)";
+  const inGroup = "exists (select 1 from conversations rc where rc.id = r.conversation_id and rc.type = 'group')";
+  let endRows: { sql: string; params: unknown[] };
+  let runsIn: { sql: string; params: unknown[] };
+  if ("between" in scope) {
+    const [a, b] = scope.between;
+    const concerned = "(case when ag.owner_id = $1::uuid then $2::uuid else $1::uuid end)";
+    endRows = {
+      sql: `update agent_contacts c set state = 'ended', end_reason = $3::text, basis = null, until = null
+              from principals ag
+             where ag.id = c.agent_id and c.state in ('live', 'requested')
+               and ((ag.owner_id = $1::uuid and c.person_id = $2::uuid) or (ag.owner_id = $2::uuid and c.person_id = $1::uuid))`,
+      params: [a, b, reason],
+    };
+    runsIn = {
+      sql: `ag.owner_id in ($1::uuid, $2::uuid) and (
+              (${inSocial} and exists (select 1 from principals ro where ro.id = case when rsp.a_id = r.agent_id then rsp.b_id else rsp.a_id end
+                                         and coalesce(ro.owner_id, ro.id) = ${concerned})))
+              or (r.caller_id = ${concerned} and ${inGroup}))`,
+      params: [a, b],
+    };
+  } else {
+    const persons = await t.query<{ person: string }>("select distinct coalesce(owner_id, id) as person from principals where id = any($1::uuid[])", [[...scope.subjectIds]]);
+    endRows = {
+      sql: `update agent_contacts c set state = 'ended', end_reason = $3::text, basis = null, until = null
+             where c.agent_id = $1::uuid and c.subject_id = any($2::uuid[]) and c.state in ('live', 'requested')`,
+      params: [scope.agentId, [...scope.subjectIds], reason],
+    };
+    runsIn = {
+      sql: `r.agent_id = $1::uuid and (
+              (${inSocial} and (rsp.a_id = any($2::uuid[]) or rsp.b_id = any($2::uuid[]))))
+              or (r.caller_id = any($3::uuid[]) and ${inGroup}))`,
+      params: [scope.agentId, [...scope.subjectIds], persons.rows.map((p) => p.person)],
+    };
+  }
+  const ended = await t.query(endRows.sql, endRows.params);
+
+  const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
+    `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now()
+       from principals ag
+      where ag.id = r.agent_id and r.purpose = 'reply' and r.status = 'queued' and ${runsIn.sql}
+      returning ${RUN_COLUMNS}, r.conversation_id, r.owner_id`,
+    runsIn.params,
+  );
+  const running = await t.query<{ id: string }>(
+    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended'), pending_seq = null
+       from principals ag
+      where ag.id = r.agent_id and r.purpose = 'reply' and r.status = 'running' and ${runsIn.sql}
+      returning r.id`,
+    runsIn.params,
+  );
+  const cancelled: Announced[] = queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) }));
+  return { cancelled, running: running.rows.map((r) => r.id), ended: ended.rowCount ?? 0 };
 }
 
 export interface PolicyChange {
@@ -223,9 +302,10 @@ export async function declineContact(t: Tx, ownerId: string, agentId: string, su
 }
 
 /**
- * Ends an access: by the Agent's owner a live row is `removed`; by the subject a live or waiting one is `left`. Null for anyone
- * else and for a row that is not there or is ended already (one answer for all: the route's 404). Ending a row here stops no run;
- * A5a's `endGrants` does that, and takes this over.
+ * Ends an access: by the Agent's owner the person's live row is `removed`, and so are the rows of the person's Agents on this
+ * Agent, live or waiting (design §1.2); by the subject a live or waiting row is `left`, its own only. Null for anyone else and
+ * for a row that is not there or is ended already, and for the owner a row that only waits (they decline it): one answer for
+ * all, the route's 404. `endGrants` ends the rows and stops what the person called on this Agent.
  */
 export async function removeContact(t: Tx, actorId: string, agentId: string, subjectId: string): Promise<(EndedRuns & { ended: number }) | null> {
   const byOwner = await isOwner(t, actorId, agentId);
@@ -233,12 +313,15 @@ export async function removeContact(t: Tx, actorId: string, agentId: string, sub
   const locked = await lockRow(t, agentId, subjectId);
   const state = locked?.row?.state;
   if (!locked || !(state === "live" || (state === "requested" && !byOwner))) return null;
-  await t.query("update agent_contacts set state = 'ended', end_reason = $3, basis = null, until = null where agent_id = $1 and subject_id = $2", [
-    agentId,
-    subjectId,
-    byOwner ? "removed" : "left",
-  ]);
-  return { cancelled: [], running: [], ended: 1 };
+  const subjectIds = byOwner
+    ? (
+        await t.query<{ subject_id: string }>(
+          "select subject_id from agent_contacts where agent_id = $1 and person_id = $2 and state in ('live', 'requested') order by subject_id",
+          [agentId, locked.personId],
+        )
+      ).rows.map((r) => r.subject_id)
+    : [subjectId];
+  return endGrants(t, { agentId, subjectIds }, byOwner ? "removed" : "left");
 }
 
 /** Whether `ownerId` owns the live Agent `agentId`: read before any lock (an Agent's owner is its owner for good). */

@@ -1,6 +1,8 @@
+import type { EndedRuns } from "../agents/group-leave.ts";
 import { appendDirectNotice } from "../conversations/store.ts";
 import type { Tx } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
+import { endGrants } from "./agent-contacts.ts";
 import { lockPair } from "./pair.ts";
 
 // The read-only pair questions live in relations.ts (a leaf module conversations can import).
@@ -13,6 +15,8 @@ export interface BlockResult {
   cancelledRequestIds: string[];
   /** The "blocked" notice in the pair's direct conversation, when the block is new and they have one. */
   notices: StoredMessage[];
+  /** The replies a new block stopped (a block of an Agent ends its blocker's row on it, `left`): the caller runs `announceEnded`. */
+  ended: EndedRuns;
 }
 
 const SAME_PAIR =
@@ -44,7 +48,14 @@ export async function blockPrincipal(t: Tx, blocker: string, blocked: string): P
   );
   const created = (ins.rowCount ?? 0) > 0;
   const notice = created ? await appendDirectNotice(t, { event: "blocked", actorId: blocker, principalId: blocked }) : null;
-  return { created, cancelledRequestIds: cancelled.rows.map((r) => r.id), notices: notice ? [notice] : [] };
+  // After the notice (the lock order). Blocking an Agent ends the blocker's own row on it, `left`, and stops what they called on
+  // it; it writes no bar (a bar is between two people).
+  let ended: EndedRuns = { cancelled: [], running: [] };
+  if (created) {
+    const kind = (await t.query<{ kind: "human" | "agent" }>("select kind from principals where id = $1", [blocked])).rows[0]?.kind;
+    if (kind === "agent") ended = await endGrants(t, { agentId: blocked, subjectIds: [blocker] }, "left");
+  }
+  return { created, cancelledRequestIds: cancelled.rows.map((r) => r.id), notices: notice ? [notice] : [], ended };
 }
 
 /** Whether a block call changed anything others should hear about. */
