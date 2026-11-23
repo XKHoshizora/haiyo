@@ -390,6 +390,8 @@ svg.model-brand { color: var(--ink-3); }
 .head-counts { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: middle; }
 .head-count { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .head-counts-sep { flex: none; width: 1px; height: 12px; background: var(--line-strong); }
+/* On a phone the gaps give way first, so two counts of three digits (a group may hold 500) are drawn whole at 360 px. */
+@media (max-width: 420px) { .head-counts { gap: 5px; } .head-count { gap: 2px; } .head-count svg { width: 12px; height: 12px; } }
 .chat-head-actions { display: flex; gap: 10px; align-items: center; }
 .chat-search {
   margin: 0 22px 8px; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: 10px;

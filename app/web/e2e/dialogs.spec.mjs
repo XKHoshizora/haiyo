@@ -224,12 +224,14 @@ test("an Agent's dialogs and the model picker's sheet at 402 px", async ({ peopl
   const remove = detail.getByRole("button", { name: "删除 Agent" });
   await contract(page, { open: () => remove.click(), dialog: page.getByRole("dialog", { name: `删除${name}` }), opener: remove, shot: "dialog-delete-agent-402" });
 
-  // The model picker on a phone is a sheet: a modal layer too (the page inert, the focus in its search), and Back closes the sheet only.
+  // The model picker on a phone is a sheet: a modal layer too (the page inert, the focus in the sheet but not in its search: no keyboard over the list), and Back closes the sheet only.
   await detail.getByRole("button", { name: "编辑" }).click();
   const trigger = page.getByLabel("模型", { exact: true });
   await trigger.click();
   const search = page.getByRole("combobox", { name: "搜索模型" });
-  await expect(search).toBeFocused();
+  await expect(search).toBeVisible();
+  await expect(search).not.toBeFocused();
+  expect(await page.evaluate(() => document.querySelector(".model-pop").contains(document.activeElement))).toBe(true);
   await expect.poll(() => rootInert(page)).toBe(true);
   await shoot(page, "sheet-model-picker-402");
   const at = page.url();
