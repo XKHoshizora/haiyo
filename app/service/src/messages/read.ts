@@ -291,7 +291,7 @@ export async function toWireForReaders(
 
   const shown = await q.query<{ reader_id: string; id: string; with_reasoning: boolean; with_queries: boolean } & ViaRow>(
     `select r.reader_id, m.id,
-            coalesce(c.type = 'agent' or (c.type = 'group' and sender.owner_id = r.reader_id), false) as with_reasoning,
+            coalesce(c.type = 'agent' or (c.type in ('group', 'agent_social') and sender.owner_id = r.reader_id), false) as with_reasoning,
             coalesce(c.type = 'agent' and sender.owner_id = r.reader_id, false) as with_queries,
             via.source as via_source, via.model as via_model, via.reasoning as via_reasoning, via.points as via_points,
             via.proactive as via_proactive, via.web as via_web
