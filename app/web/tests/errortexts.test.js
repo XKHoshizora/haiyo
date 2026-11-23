@@ -155,7 +155,7 @@ describe("the sentences batch 2A names", () => {
     // A saved key that can no longer be opened is answered provider_rejected too: the sentence asks for the key again.
     expect(providerErrorText("test", err("provider_rejected"))).toBe("供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。");
     expect(providerErrorText("list", err("provider_rejected"))).toBe("供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。");
-    expect(providerErrorText("test", err("provider_unavailable"))).toBe("连不上供应商，没有收到回答。请检查接口地址，稍后再试。");
+    expect(providerErrorText("test", err("provider_unavailable"))).toBe("没能连上供应商。请检查接口地址，稍后再试。");
     expect(agentErrorText("draft", err("busy", 503))).toBe("服务现在有点忙，请稍后再试。");
     // A 404 on the reply routes is "not yours / not here", never "it has ended".
     for (const route of ["stop", "retry", "dismiss", "topic"]) expect(replyErrorText(route, err("not_found", 404))).toBe("找不到要操作的内容，它可能已经不存在了。");
@@ -183,18 +183,18 @@ describe("the sentences batch 2A names", () => {
   // One mapping from what the provider's address did to a sentence, for 测试连接 and 同步模型 alike: an answer (any HTTP status) is
   // said to be an answer; only no answer at all is "连不上".
   const CLASSES = [
-    ["404, not offered", "provider_unavailable", "404", "供应商回答了，但这个地址不提供模型列表（404）。可以在下面手动添加模型名。"],
-    ["405, not offered", "provider_unavailable", "405", "供应商回答了，但这个地址不提供模型列表（405）。可以在下面手动添加模型名。"],
+    ["404, not offered", "provider_unavailable", "404", "供应商有回应，但这个地址没有模型列表（404）。可以手动添加模型。"],
+    ["405, not offered", "provider_unavailable", "405", "供应商有回应，但这个地址没有模型列表（405）。可以手动添加模型。"],
     ["401, key refused", "provider_rejected", "401", "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。（供应商返回的状态码：401）"],
     ["403, key refused", "provider_rejected", "403", "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。（供应商返回的状态码：403）"],
     ["key refused, no status (a saved key that cannot be opened)", "provider_rejected", undefined, "供应商拒绝了这个密钥，或已保存的密钥无法再使用。请重新填写密钥并保存，然后再试。"],
-    ["429, too many", "provider_unavailable", "429", "供应商回答了：请求太频繁了（429），请稍后再试。"],
-    ["500, its own trouble", "provider_unavailable", "500", "供应商回答了，但它那边出了问题（500），请稍后再试。"],
-    ["503, its own trouble", "provider_unavailable", "503", "供应商回答了，但它那边出了问题（503），请稍后再试。"],
-    ["200, not a list", "provider_unavailable", "200", "供应商回答了，但给出的不是模型列表。可以在下面手动添加模型名。"],
-    ["400, any other answer", "provider_unavailable", "400", "供应商回答了，但没有给出可用的模型列表（400）。可以在下面手动添加模型名。"],
-    ["no answer (timeout, DNS, TLS, a redirect)", "provider_unavailable", undefined, "连不上供应商，没有收到回答。请检查接口地址，稍后再试。"],
-    ["a status that is no number is never shown", "provider_unavailable", "<b>oops</b>", "连不上供应商，没有收到回答。请检查接口地址，稍后再试。"],
+    ["429, too many", "provider_unavailable", "429", "供应商说请求太频繁（429），请稍后再试。"],
+    ["500, its own trouble", "provider_unavailable", "500", "供应商那边出了问题（500），请稍后再试。"],
+    ["503, its own trouble", "provider_unavailable", "503", "供应商那边出了问题（503），请稍后再试。"],
+    ["200, not a list", "provider_unavailable", "200", "供应商有回应，但没能读到模型列表。可以手动添加模型。"],
+    ["400, any other answer", "provider_unavailable", "400", "供应商没有给出模型列表（400）。可以手动添加模型。"],
+    ["no answer (timeout, DNS, TLS, a redirect)", "provider_unavailable", undefined, "没能连上供应商。请检查接口地址，稍后再试。"],
+    ["a status that is no number is never shown", "provider_unavailable", "<b>oops</b>", "没能连上供应商。请检查接口地址，稍后再试。"],
     ["address refused", "address_not_allowed", undefined, "这个接口地址不被允许：需要是 https 开头的公网地址。"],
   ];
 

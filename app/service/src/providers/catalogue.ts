@@ -1,7 +1,7 @@
 import { z } from "zod";
 import providerFile from "./provider-catalog.json" with { type: "json" };
 import suffixFile from "./listing-suffixes.json" with { type: "json" };
-import { hostUnderSuffix, MIN_SUFFIX_LABELS } from "./host-suffix.ts";
+import { hostSuffixSchema, hostUnderSuffix } from "./host-suffix.ts";
 
 /**
  * The catalogue's providers by the host their API answers at (provider-catalog.json, written with model-catalog.json by
@@ -33,10 +33,7 @@ for (const provider of z.array(catalogProvider).parse(providerFile)) {
 const SUFFIX_RULES = z
   .array(
     z.strictObject({
-      hostSuffix: z
-        .string()
-        .regex(/^[a-z0-9.-]+$/)
-        .refine((s) => s.split(".").length >= MIN_SUFFIX_LABELS && !s.startsWith(".") && !s.endsWith("."), "too short a suffix"),
+      hostSuffix: hostSuffixSchema,
       likeHost: z.string().min(1),
     }),
   )

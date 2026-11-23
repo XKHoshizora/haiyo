@@ -95,7 +95,7 @@ describe("models/list on an address without a model list", () => {
     const owner = await signUp(app, "cataloguer");
     const ids = catalogueModels("https://api.deepseek.com")!;
     const id = await create(owner, "https://api.deepseek.com", [{ name: ids[0]! }]);
-    for (const status of [404, 405, 200]) {
+    for (const status of [404, 405]) {
       next.list = status;
       expect([status, await api(app, owner, "POST", `/api/providers/${id}/models/list`)]).toEqual([
         status,

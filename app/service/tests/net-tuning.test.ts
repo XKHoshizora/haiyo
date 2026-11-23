@@ -1,6 +1,6 @@
 import net from "node:net";
 import { describe, expect, it } from "vitest";
-import { CONNECT_ATTEMPT_TIMEOUT_MS } from "../src/net-tuning.ts";
+import { applyConnectTuning, CONNECT_ATTEMPT_TIMEOUT_MS } from "../src/net-tuning.ts";
 import { useApp } from "./helpers/harness.ts";
 
 /**
@@ -16,5 +16,11 @@ describe("the connection-attempt allowance", () => {
     expect(CONNECT_ATTEMPT_TIMEOUT_MS).toBe(3000);
     expect(net.getDefaultAutoSelectFamilyAttemptTimeout()).toBe(CONNECT_ATTEMPT_TIMEOUT_MS);
     expect(net.getDefaultAutoSelectFamily()).toBe(true);
+  });
+
+  it("applyConnectTuning itself sets it (not only the app's build: this does not depend on module state)", () => {
+    net.setDefaultAutoSelectFamilyAttemptTimeout(250);
+    applyConnectTuning();
+    expect(net.getDefaultAutoSelectFamilyAttemptTimeout()).toBe(3000);
   });
 });

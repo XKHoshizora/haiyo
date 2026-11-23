@@ -1,5 +1,6 @@
 import { config as loadDotenv } from "dotenv";
 import { createBlobStore } from "./attachments/blob.ts";
+import { applyConnectTuning } from "./net-tuning.ts";
 import { DEFAULT_UNSENT_AFTER_MINUTES, runSweep } from "./attachments/sweeper.ts";
 import { applyLedger, ensureAccount, formatPoints, lockAccount, parsePoints } from "./accounts/store.ts";
 import { mailCounts } from "./auth/mail-sender.ts";
@@ -14,6 +15,7 @@ import { askHidden } from "./prompt.ts";
 import { runMigrations } from "./migrate.ts";
 
 loadDotenv({ quiet: true });
+applyConnectTuning(); // the sweep reaches an S3 endpoint and every command a database: the same allowance as the service
 
 const USAGE =
   "usage: cli.ts migrate | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +

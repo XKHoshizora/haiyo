@@ -1875,8 +1875,11 @@ call — from before the name lookup until the answer is read or abandoned; one 
 call stopped by its caller closes its connection at once.
 The service gives each address of a host 3 000 ms to accept a connection before it tries the next (`src/net-tuning.ts`,
 set when the app is built; Node's default is 250 ms, which never reached providers whose handshake from our region takes
-longer, such as hosts in mainland China). Address families are still chosen automatically. Attempts at one host's addresses
-are in turn, so a dead host takes at most its addresses x 3 s, and the guard's 15 s end it anyway.
+longer, such as hosts in mainland China; 250 ms on the acceptance server's Node 24). Address families are still chosen
+automatically. Attempts at one host's addresses are in turn and the last gets no limit of its own: a connection takes at
+most (addresses - 1) x 3 s and then the last address until the caller's own deadline (the guard's 15 s). The cost: a first
+address that silently drops packets delays each new connection by up to 3 s (it was 0.25 s), bounded by each caller's own
+deadline. The command line (`src/cli.ts`) sets it too.
 
 #### `POST /api/providers`
 
@@ -1957,7 +1960,8 @@ with the code refresh would answer. `added`: the provider's saved `models` alrea
 **Where the list comes from, in order** (`createProviderProbe`, `src/providers/probe.ts`; the answer's `source` says which):
 1. The address's own `GET {baseUrl}/models`, in the protocol's own headers → `"source": "upstream"`. When it lists (even an
    empty list), that is the answer and it is the only request.
-2. Only when that is *not offered* — 404, 405, or a 200 with no list in it (not JSON, or no `data`/`models` array) — a short
+2. Only when that is *not offered* — 404, 405, or a 200 that is not a usable list in any form (HTML, an empty body, JSON without a `data`/`models` array: all
+the same, answered as a failure with status 200 and the upstream's own words in `detail`) — a short
    fixed set of **sibling listings on the same origin** (same scheme, host and port as the stored address), with the same
    key as `Authorization: Bearer`, read as an OpenAI list (`data[].id`): the paths of `src/providers/listing-siblings.json`
    (hand-kept: the rules by host suffix — the Aliyun `maas.aliyuncs.com` and `dashscope*.aliyuncs.com` family →
@@ -1965,7 +1969,9 @@ with the code refresh would answer. `added`: the provider's saved `models` alrea
    `MAX_SIBLING_REQUESTS` (2) of them, so at most three requests in all, within the probe's one 30 s deadline. The first that
    gives a non-empty list wins → `"source": "sibling"`: the models are listed by another address of the same provider and the
    chat address may not serve all of them (a client says so; 测试连接 with the model is the proof). A sibling that refuses the key
-   (401, 403) ends it as `provider_rejected`; any other failure of a sibling is skipped. A redirect is never followed (the guard
+   (401, 403) stops further tries but is never reported as a refused key — a guessed path says nothing about the key — so the
+   answer stays the address's own; any other failure of a sibling is skipped. Only the address's own 401/403 is
+   `provider_rejected`. A redirect is never followed (the guard
    treats every 3xx as `provider_unavailable`), so the key never goes to another origin; a sibling is never stored as the
    provider's address; nothing is logged but the usual counters. The test and the refresh never discover.
 3. When nothing lists, the failure is the address's own (its status and its own words in `detail`, as below), unless the

@@ -88,7 +88,7 @@ const CREATE_MODELS_HINT = "保存后从供应商的模型列表里挑选模型�
 /** In the 同步模型 dialog, after a list request that failed (the sentence of the edit form's hint). */
 const FAILED_BY_HAND = "有的供应商不提供模型列表。关闭这个窗口后，可以在下面手动添加模型。";
 /** In the 同步模型 dialog: the list came from another address of the same provider, which the chat address may not serve. */
-const FROM_SIBLING = "这份模型列表来自这个供应商的另一个地址，不一定都能在当前接口使用。添加后请用测试连接确认。";
+const FROM_SIBLING = "这些模型来自供应商的另一个地址，当前接口不一定都能用。添加后用测试连接确认。";
 /** In the 同步模型 dialog: the address has no model list, so these come from the public catalogue (models.dev). */
 const FROM_CATALOGUE = "这个接口没有模型列表，以下来自公开的模型目录，请只添加你确实能用的模型。";
 /** Under the address field. */

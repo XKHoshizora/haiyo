@@ -1,6 +1,6 @@
 import { z } from "zod";
 import tableFile from "./listing-siblings.json" with { type: "json" };
-import { hostUnderSuffix, MIN_SUFFIX_LABELS } from "./host-suffix.ts";
+import { hostSuffixSchema, hostUnderSuffix } from "./host-suffix.ts";
 
 /**
  * Where a provider may keep its model list when its own `{baseUrl}/models` has none (README "Model providers",
@@ -13,13 +13,9 @@ import { hostUnderSuffix, MIN_SUFFIX_LABELS } from "./host-suffix.ts";
 export const MAX_SIBLING_REQUESTS = 2;
 
 const listingPath = z.string().regex(/^\/[a-z0-9/_.-]*\/models$/).refine((p) => !p.startsWith("//"), "a path on the same origin");
-const hostSuffix = z
-  .string()
-  .regex(/^[a-z0-9.-]+$/)
-  .refine((s) => s.split(".").length >= MIN_SUFFIX_LABELS && !s.startsWith(".") && !s.endsWith("."), `at least ${MIN_SUFFIX_LABELS} labels`);
 const tableSchema = z.strictObject({
   /** Hosts under one of the suffixes (the suffix itself too) are tried at these paths, in this order. */
-  rules: z.array(z.strictObject({ hostSuffixes: z.array(hostSuffix).min(1), paths: z.array(listingPath).min(1) })),
+  rules: z.array(z.strictObject({ hostSuffixes: z.array(hostSuffixSchema).min(1), paths: z.array(listingPath).min(1) })),
   /** Tried last, for any host, unless it is the base's own listing. */
   generic: z.array(listingPath),
 });
@@ -45,6 +41,13 @@ export function siblingListingUrls(baseUrl: string, table: SiblingTable = SIBLIN
   }
   const own = `${baseUrl}/models`;
   const paths = [...table.rules.filter((r) => r.hostSuffixes.some((s) => hostUnderSuffix(host, s))).flatMap((r) => r.paths), ...table.generic];
+  let ownHref = own;
+  try {
+    ownHref = new URL(own).href;
+  } catch {
+    // an unparseable base gave no origin above
+  }
+  const seen = new Set<string>();
   const urls: string[] = [];
   for (const path of paths) {
     if (!path.startsWith("/") || path.startsWith("//")) continue;
@@ -55,7 +58,17 @@ export function siblingListingUrls(baseUrl: string, table: SiblingTable = SIBLIN
     } catch {
       // not a URL: skipped
     }
-    if (same && candidate !== own && !urls.includes(candidate)) urls.push(candidate);
+    // Compared as URLs, so another spelling of the same path (`/%76 1`) is the same resource.
+    let href = candidate;
+    try {
+      href = new URL(candidate).href;
+    } catch {
+      // not a URL: skipped by `same`
+    }
+    if (same && href !== ownHref && !seen.has(href)) {
+      urls.push(candidate);
+      seen.add(href);
+    }
   }
   return urls.slice(0, MAX_SIBLING_REQUESTS);
 }

@@ -398,18 +398,18 @@ export function providerErrorText(action, error) {
   return status && error?.code === "provider_rejected" ? `${text}（供应商返回的状态码：${status}）` : text;
 }
 
-const BY_HAND = "可以在下面手动添加模型名。";
+const BY_HAND = "可以手动添加模型。";
 /**
- * 测试连接's and 同步模型's one mapping for `provider_unavailable`, from the provider's HTTP status (null: it gave none, so
- * nothing was answered: a timeout, an unknown host, a TLS failure, a redirect): an answer is said to be one; only no answer is "连不上".
+ * 测试连接 and 同步模型 share this one mapping for `provider_unavailable`, from the provider's HTTP status (null: it gave none: a
+ * timeout, an unknown host, a TLS failure, a redirect, an answer cut off): the sentence claims no more than what is known.
  */
 function unavailableText(status) {
-  if (status === null) return "连不上供应商，没有收到回答。请检查接口地址，稍后再试。";
-  if (status === "404" || status === "405") return `供应商回答了，但这个地址不提供模型列表（${status}）。${BY_HAND}`;
-  if (status === "200") return `供应商回答了，但给出的不是模型列表。${BY_HAND}`;
-  if (status === "429") return "供应商回答了：请求太频繁了（429），请稍后再试。";
-  if (status.startsWith("5")) return `供应商回答了，但它那边出了问题（${status}），请稍后再试。`;
-  return `供应商回答了，但没有给出可用的模型列表（${status}）。${BY_HAND}`;
+  if (status === null) return "没能连上供应商。请检查接口地址，稍后再试。";
+  if (status === "404" || status === "405") return `供应商有回应，但这个地址没有模型列表（${status}）。${BY_HAND}`;
+  if (status === "200") return `供应商有回应，但没能读到模型列表。${BY_HAND}`;
+  if (status === "429") return "供应商说请求太频繁（429），请稍后再试。";
+  if (status.startsWith("5")) return `供应商那边出了问题（${status}），请稍后再试。`;
+  return `供应商没有给出模型列表（${status}）。${BY_HAND}`;
 }
 
 /** Whether a failed 测试连接 / 同步模型 says the address has no model list: it answered 404 or 405, or with something that is none (a 200). */

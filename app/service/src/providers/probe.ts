@@ -107,10 +107,11 @@ function hasList(protocol: Protocol, json: unknown): boolean {
  * Discovery (`listModels` with `discover`): when that listing is not offered (404, 405, or a 200 with no list in it), up
  * to `MAX_SIBLING_REQUESTS` sibling listings (`siblingListingUrls`, from `siblings`) are asked, in the OpenAI form
  * (`Authorization: Bearer`), all within the one `PROBE_DEADLINE_MS`. The first that gives a non-empty list wins. A sibling
- * that refuses the key ends it (`provider_rejected`, its detail); any other failure of a sibling is skipped, and when none
- * lists, the base's own failure is what is thrown (a 200 without a list: an empty list, as ever).
+ * that refuses the key stops further tries but is never reported as a refused key (a guessed path says nothing about it);
+ * any other failure of a sibling is skipped; when none lists, the base's own failure is what is thrown. A 200 that is no
+ * usable list (HTML, JSON without a list) counts as failed with status 200 and its words, in every form.
  */
-export function createProviderProbe(fetch: typeof globalThis.fetch, siblings: SiblingTable = SIBLING_TABLE): ProviderProbe {
+export function createProviderProbe(fetch: typeof globalThis.fetch, siblings: SiblingTable = SIBLING_TABLE, deadlineMs: number = PROBE_DEADLINE_MS): ProviderProbe {
   /** The failure for an upstream answer of `status` whose body was `body`. */
   const failed = (p: ProbeTarget, status: number, body: string | null) =>
     new ProviderCallError(keyRefused(status) ? "provider_rejected" : "provider_unavailable", status, upstreamDetail(status, body, p.apiKey));
@@ -128,7 +129,8 @@ export function createProviderProbe(fetch: typeof globalThis.fetch, siblings: Si
     try {
       text = await res.text();
     } catch {
-      throw new ProviderCallError("provider_unavailable", res.status);
+      // Cut off, stalled or too long: not an answer that said "no list", so no status.
+      throw new ProviderCallError("provider_unavailable");
     }
     try {
       return JSON.parse(text);
@@ -136,18 +138,20 @@ export function createProviderProbe(fetch: typeof globalThis.fetch, siblings: Si
       throw failed(p, res.status, text.slice(0, DETAIL_BODY_BYTES));
     }
   }
-  const own = (p: ProbeTarget, signal = AbortSignal.timeout(PROBE_DEADLINE_MS)) => get(p, `${p.baseUrl}/models`, keyHeaders(p), signal);
+  const own = (p: ProbeTarget, signal = AbortSignal.timeout(deadlineMs)) => get(p, `${p.baseUrl}/models`, keyHeaders(p), signal);
 
   return {
     async test(p) {
       await own(p);
     },
     async listModels(p, discover) {
-      const signal = AbortSignal.timeout(PROBE_DEADLINE_MS);
+      const signal = AbortSignal.timeout(deadlineMs);
       let first: ProviderCallError | null = null;
       try {
         const json = await own(p, signal);
         if (discover === undefined || hasList(p.protocol, json)) return namesIn(p.protocol, json).filter((n): n is string => typeof n === "string");
+        // A 200 that is no list is "not offered" in every form (JSON without a list as HTML): the same failure, with its words.
+        first = failed(p, 200, JSON.stringify(json).slice(0, DETAIL_BODY_BYTES));
       } catch (err) {
         first = toProviderCallError(err);
         if (discover === undefined || !notOffered(first)) throw first;
@@ -162,11 +166,12 @@ export function createProviderProbe(fetch: typeof globalThis.fetch, siblings: Si
           }
         } catch (err) {
           const failure = toProviderCallError(err);
-          if (failure.code === "provider_rejected" || failure.code === "address_not_allowed") throw failure;
+          if (failure.code === "address_not_allowed") throw failure;
+          // A guessed path that refuses the key says nothing about the key: no more tries, and the answer stays the base's own.
+          if (failure.code === "provider_rejected") break;
         }
       }
-      if (first !== null) throw first;
-      return [];
+      throw first ?? new ProviderCallError("provider_unavailable");
     },
   };
 }

@@ -6,6 +6,7 @@ import { guardedFetch } from "../src/providers/guard.ts";
 import { hostUnderSuffix, MIN_SUFFIX_LABELS } from "../src/providers/host-suffix.ts";
 import { MAX_SIBLING_REQUESTS, siblingListingUrls, type SiblingTable } from "../src/providers/listing-siblings.ts";
 import { createProviderProbe, PROBE_GUARD, ProviderCallError } from "../src/providers/probe.ts";
+import type { Resolve } from "../src/providers/guard.ts";
 import { holdsKeyPiece } from "../src/providers/upstream-detail.ts";
 import { createSlots } from "../src/slots.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
@@ -195,14 +196,68 @@ describe("listModels with discovery (the probe)", () => {
     expect(seen().slice(1)).toEqual(paths.slice(0, MAX_SIBLING_REQUESTS).map((p) => `GET ${p}`));
   });
 
-  it("a sibling that refuses the key (401, 403): provider_rejected with its status, and no further tries", async () => {
+  it("a sibling that refuses the key (401, 403) stops further tries, but is never a statement about the key: the answer is the base's own failure", async () => {
     for (const status of [401, 403]) {
       stub.reset();
       stub.answer(byPath({ "/s1/models": (res) => send(res, status, { error: { message: "bad key" } }), "/s2/models": (res) => send(res, 200, models("late")) }));
       const err = await failure(probeWith(loopbackTable(["/s1/models", "/s2/models"])).listModels(target("/apps/anthropic/v1"), { onSibling: () => {} }));
-      expect([status, err.code, err.upstreamStatus, seen()]).toEqual([status, "provider_rejected", status, ["GET /apps/anthropic/v1/models", "GET /s1/models"]]);
-      expect(err.detail).toEqual({ upstreamStatus: String(status), message: "bad key" });
+      expect([status, err.code, err.upstreamStatus, seen()]).toEqual([status, "provider_unavailable", 404, ["GET /apps/anthropic/v1/models", "GET /s1/models"]]);
+      expect(err.detail).toEqual({ upstreamStatus: "404", message: "Not support" });
     }
+  });
+
+  it("the base's own 401/403 still says the key was refused (and nothing else is tried)", async () => {
+    stub.answer(byPath({ "/apps/anthropic/v1/models": (res) => send(res, 401, { error: { message: "bad key" } }), "/s1/models": (res) => send(res, 200, models("late")) }));
+    const err = await failure(probeWith(loopbackTable(["/s1/models"])).listModels(target("/apps/anthropic/v1"), { onSibling: () => {} }));
+    expect([err.code, err.upstreamStatus, seen()]).toEqual(["provider_rejected", 401, ["GET /apps/anthropic/v1/models"]]);
+  });
+
+  it("a 200 that is not a usable list is not offered in every form: the failure with the upstream's own words once no sibling lists", async () => {
+    const forms: Array<[string, (res: http.ServerResponse) => void, string]> = [
+      ["json without a list", (res) => send(res, 200, NOT_SUPPORT), "Not support"],
+      ["json, data is no array", (res) => send(res, 200, { data: "x", message: "odd" }), "odd"],
+      ["html", (res) => send(res, 200, "<html>hello</html>", { "content-type": "text/html" }), "<html>hello</html>"],
+    ];
+    for (const [label, answer, said] of forms) {
+      stub.reset();
+      stub.answer(byPath({ "/a/v1/models": answer }));
+      const err = await failure(probeWith(loopbackTable(["/s1/models"])).listModels(target("/a/v1"), { onSibling: () => {} }));
+      expect([label, err.code, err.upstreamStatus, err.detail, seen()]).toEqual([label, "provider_unavailable", 200, { upstreamStatus: "200", message: said }, ["GET /a/v1/models", "GET /s1/models"]]);
+    }
+  });
+
+  it("a list that cannot be read to its end carries no status (it is not a 200 that is no list)", async () => {
+    stub.answer(
+      byPath({
+        "/a/v1/models": (res) => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(`{"data":[{"id":"${"x".repeat(PROBE_GUARD.maxResponseBytes + 10)}"}]}`);
+        },
+      }),
+    );
+    const err = await failure(probeWith(loopbackTable([])).listModels(target("/a/v1"), { onSibling: () => {} }));
+    expect([err.code, err.upstreamStatus]).toEqual(["provider_unavailable", undefined]);
+  });
+
+  it("every sibling is resolved and checked again: a name that turns private between the requests is address_not_allowed, one request sent", async () => {
+    const answers = [["127.0.0.1"], ["10.0.0.5"]];
+    const resolve: Resolve = async () => (answers.shift() ?? ["10.0.0.5"]).map((address) => ({ address, family: 4 }));
+    const table: SiblingTable = { rules: [{ hostSuffixes: ["rebind.test"], paths: ["/s1/models"] }], generic: [] };
+    const probe = createProviderProbe(guardedFetch({ ...PROBE_GUARD, calls: createSlots(8), allowInsecureLocal: true, resolve }), table);
+    const port = new URL(stub.baseUrl).port;
+    const err = await failure(probe.listModels({ protocol: "anthropic", baseUrl: `http://rebind.test:${port}/a/v1`, apiKey: KEY }, { onSibling: () => {} }));
+    expect([err.code, seen()]).toEqual(["address_not_allowed", ["GET /a/v1/models"]]);
+  });
+
+  it("one deadline covers the whole listing: a sibling that never answers ends it, with the base's failure", async () => {
+    stub.answer((req, res) => {
+      if (req.path === "/s1/models") return; // never answers
+      send(res, 404, NOT_SUPPORT);
+    });
+    const probe = createProviderProbe(guardedFetch({ ...PROBE_GUARD, calls: createSlots(8), allowInsecureLocal: true }), loopbackTable(["/s1/models"]), 400);
+    const started = Date.now();
+    const err = await failure(probe.listModels(target("/a/v1"), { onSibling: () => {} }));
+    expect([err.code, err.upstreamStatus, Date.now() - started < 5000]).toEqual(["provider_unavailable", 404, true]);
   });
 
   it("a sibling that fails otherwise (500, an oversize body) is skipped for the next one; both failing: the base's failure, and the one after the bound is not reached", async () => {
@@ -266,6 +321,30 @@ const listOf = async (owner: Actor, id: string) => {
   return { status: res.statusCode, json: JSON.parse(res.body), raw: res.body };
 };
 
+/** The real probe behind a fetch that sends https://api.deepseek.com (a host the catalogue knows) to the local stub. */
+const toStub = (inner: typeof fetch): typeof fetch => ((url: string, init?: RequestInit) => inner(String(url).replace("https://api.deepseek.com", origin(stub)), init)) as typeof fetch;
+describe("a 200 that is no list, through the real probe (the catalogue host and an unknown one)", () => {
+  const rewritten = useApp({ allowInsecureLocal: true, providerProbe: createProviderProbe(toStub(guardedFetch({ ...PROBE_GUARD, calls: createSlots(8), allowInsecureLocal: true }))) });
+  const listVia = async (owner: Actor, id: string) => (await api(rewritten.app, owner, "POST", `/api/providers/${id}/models/list`)).json;
+
+  it("JSON without a list and HTML alike: the catalogue's models at a host it knows; at an unknown host the failure with the upstream's words", async () => {
+    const owner = await signUp(rewritten.app, "gateway200");
+    const known = (await api(rewritten.app, owner, "POST", "/api/providers", providerBody({ name: "ds", apiKey: KEY, baseUrl: "https://api.deepseek.com/v1" }))).json.id as string;
+    const unknown = (await api(rewritten.app, owner, "POST", "/api/providers", providerBody({ name: "unk", apiKey: KEY, baseUrl: `${origin(stub)}/v1` }))).json.id as string;
+    for (const answer of [(res: http.ServerResponse) => send(res, 200, NOT_SUPPORT), (res: http.ServerResponse) => send(res, 200, "<html>hi</html>", { "content-type": "text/html" })]) {
+      stub.reset();
+      stub.answer(byPath({ "/v1/models": answer }));
+      const viaCatalogue = await listVia(owner, known);
+      expect([viaCatalogue.ok, viaCatalogue.source, viaCatalogue.listed.length > 0]).toEqual([true, "catalogue", true]);
+      const failed = await listVia(owner, unknown);
+      expect([failed.ok, failed.error, failed.upstreamStatus]).toEqual([false, "provider_unavailable", "200"]);
+    }
+    stub.reset();
+    stub.answer(byPath({ "/v1/models": (res) => send(res, 200, NOT_SUPPORT) }));
+    expect((await listVia(owner, unknown)).detail).toEqual({ upstreamStatus: "200", message: "Not support" });
+  });
+});
+
 describe("models/list on an address whose /models is not offered (the route, the generic sibling on the same origin)", () => {
   it("the measured case: a sibling list is returned, marked source \"sibling\", with the catalogue's hints; the base is never changed", async () => {
     const owner = await signUp(app, "bailian");
@@ -296,11 +375,11 @@ describe("models/list on an address whose /models is not offered (the route, the
     expect(stub.requests).toHaveLength(2);
   });
 
-  it("the sibling refuses the key: the answer is provider_rejected (401) with the sibling's text", async () => {
+  it("the guessed sibling refuses the key: it says nothing about the key, the answer is the address's own 404", async () => {
     const owner = await signUp(app, "refused");
     const p = await provider(owner, { protocol: "anthropic", baseUrl: `${origin(stub)}/apps/anthropic/v1` });
     stub.answer(byPath({ "/v1/models": (res) => send(res, 401, { error: { message: "invalid api key" } }) }));
-    expect((await listOf(owner, p.id)).json).toEqual({ ok: false, error: "provider_rejected", upstreamStatus: "401", detail: { upstreamStatus: "401", message: "invalid api key" } });
+    expect((await listOf(owner, p.id)).json).toEqual({ ok: false, error: "provider_unavailable", upstreamStatus: "404", detail: { upstreamStatus: "404", message: "Not support" } });
   });
 
   it("a redirect from the sibling to another origin: the base's failure answers, the other origin received nothing", async () => {
