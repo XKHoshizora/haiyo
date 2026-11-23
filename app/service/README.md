@@ -2837,12 +2837,7 @@ the Agent by its full handle (`GET /api/principals/lookup`), are let in by the o
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid) and **1b** (notes
 shown to a non-owner).
 
-**STEP 0 status.** Every route below is registered and answers 404 `not_found` to a signed-in caller (401 to nobody, 400 to a
-malformed request): lane A (the contact routes) and lane B (the owner's numbers) write their bodies. The shapes here are
-the contract they are written to. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the
-lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The
-switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything
-else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
+**STEP 0 status.** No route of Agent social is registered yet: the two route files exist and are wired in, and register none, so each route below answers the ordinary 404 until its lane adds it. Each entry under 「Planned」 is the contract the lane writes to; the lane that adds a route turns its line into a `####` heading in the same edit (`tests/readme.test.ts` wants a heading for every served route and for no other), adds its probe row to `tests/fuzz.test.ts` and, for a path parameter not in the list yet, its name to `tests/logging.test.ts`. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
 
 **Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's daily caps, what one reply to
 others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
@@ -2851,67 +2846,67 @@ others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
 `note_judge_unanswered`, `withheld_checks`, `others_limit_refused`, `others_held_back`, `others_turn_discarded`,
 `others_plain_fallback`, `social_post_refused`, `agent_reported`.
 
-#### `POST /api/agent-contacts`
+**Planned: `POST /api/agent-contacts`**
 
 *Session: required.* Body `{"agentId": "<uuid>"}`: add an Agent (lane A, ring 1a). → 201 `{"state": "live", "conversationId"}`
 (let in), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days), 404 `not_found`, 409 `is_yours`, 429
 `cooldown` `{"availableAt"}`.
 
-#### `GET /api/agent-contacts`
+**Planned: `GET /api/agent-contacts`**
 
 *Session: required.* (lane A, ring 1a) → 200 `{"mine": [{"agentId", "state", "conversationId", "since", "until", "ended":
 "declined" | "ended" | null}], "waiting": [{"agentId", "subject", "since", "until"}]}`. The visitor never learns why access ended.
 
-#### `POST /api/agent-contacts/:agentId/:subjectId/approve`
+**Planned: `POST /api/agent-contacts/:agentId/:subjectId/approve`**
 
 *Session: required.* No body. The Agent's owner lets a requester in (lane A, ring 1a). → 200 `{"state": "live", "conversationId"}`;
 409 `not_requested`; 404 `not_found`.
 
-#### `POST /api/agent-contacts/:agentId/:subjectId/decline`
+**Planned: `POST /api/agent-contacts/:agentId/:subjectId/decline`**
 
 *Session: required.* No body. The owner declines a request (lane A, ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`.
 
-#### `DELETE /api/agent-contacts/:agentId/:subjectId`
+**Planned: `DELETE /api/agent-contacts/:agentId/:subjectId`**
 
 *Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed`, by the subject `left`. → 200 `{"ok": true}`.
 
-#### `GET /api/agents/:id/contacts`
+**Planned: `GET /api/agents/:id/contacts`**
 
 *Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
 "picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations": […]}`.
 
-#### `PUT /api/agents/:id/contact-policy`
+**Planned: `PUT /api/agents/:id/contact-policy`**
 
 *Session: required; the Agent's owner only.* Body `{"policy": "ask" | "contacts" | "none", "picked": boolean, "picks":
 ["<uuid>"] (at most 500), "dryRun"?: boolean}` (lane A, ring 1a). → 200 `{"ends": number}`: how many accesses the change ends (with
 `dryRun`, only counted).
 
-#### `PUT /api/bars/:personId`
+**Planned: `PUT /api/bars/:personId`**
 
 *Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (lane A, ring 1a).
 → 200 `{"ok": true, "ended": number}`.
 
-#### `DELETE /api/bars/:personId`
+**Planned: `DELETE /api/bars/:personId`**
 
 *Session: required.* 恢复往来: lifts your own bar (never one a block set; lane A, ring 1a). → 200 `{"ok": true}`; 404 `not_found` otherwise.
 
-#### `POST /api/reports`
+**Planned: `POST /api/reports`**
 
 *Session: required.* Body `{"agentId": "<uuid>", "reason": "spam" | "harassment" | "privacy" | "other", "note"?: string
 (at most 500)}` (lane A, ring 1a). → 201 `{"id"}`.
 
-#### `PUT /api/agents/:id/note-verdicts`
+**Planned: `PUT /api/agents/:id/note-verdicts`**
 
 *Session: required; the Agent's owner only.* Body `{"noteKind": "owner" | "self", "noteId", "audienceId", "share": boolean,
 "cardSeq"?: number}` (lane A, ring 1b): the owner's yes or no on one note for one person; a card's answer names its message
 in `cardSeq`. → 200 `{"ok": true}`.
 
-#### `POST /api/agents/:id/persona-facts/:seq`
+**Planned: `POST /api/agents/:id/persona-facts/:seq`**
 
 *Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
 message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
 
-#### `GET /api/me/others-use`
+**Planned: `GET /api/me/others-use`**
 
 *Session: required.* (lane B, ring 1a) → 200 `{"limits": {"answers", "points"}, "used": {"answers", "points"}, "reached": boolean,
 "byPerson": [{"person", "answers", "points"}], "stopped": [{"person", "since"}], "agents": [{"agentId", "answers", "points",
@@ -2920,12 +2915,12 @@ message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
 sets it, and the Agent shape's `othersLimit` and `othersUsedToday` replace `othersBudget`, `othersSpentToday` and
 `proactiveSpentToday` when lane B lands (`proactiveBudget` stays).
 
-#### `PUT /api/me/others-limits`
+**Planned: `PUT /api/me/others-limits`**
 
 *Session: required.* Body `{"answers": 1–1000, "points": "<decimal string of points, 1–100 000>"}` (lane B, ring 1a): your two
 daily numbers for what others cause. → 200 `{"answers", "points"}`. Unset, `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` apply.
 
-#### `POST /api/me/others-limits/seen`
+**Planned: `POST /api/me/others-limits/seen`**
 
 *Session: required.* No body (lane B, ring 1a): the one-time notice that others' use is now counted per person has been seen. → 200 `{"ok": true}`.
 

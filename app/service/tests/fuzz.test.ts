@@ -3,15 +3,14 @@ import net from "node:net";
 import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import type { RouteEntry } from "../src/app.ts";
-import { OTHERS_STUBS } from "../src/accounts/others-routes.ts";
 import { createInvite } from "../src/auth/invites.ts";
 import type { ModelEvent, ModelGateway } from "../src/models/gateway.ts";
 import type { ProviderProbe } from "../src/providers/probe.ts";
-import { CONTACT_STUBS } from "../src/social/agent-contact-routes.ts";
 import { api, befriend, group, signUp, TERMS, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, PNG, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
+import { SOCIAL_ON } from "./helpers/social.ts";
 import { BOUNDARY, CLOSING, MULTIPART, multipart, partHead } from "./helpers/multipart.ts";
 import { providerBody } from "./helpers/providers.ts";
 import { APP_ORIGIN, issueTicket, listen, tryConnect } from "./helpers/ws.ts";
@@ -42,7 +41,8 @@ const models: ModelGateway = {
 const providerProbe: ProviderProbe = { test: async () => {}, listModels: async () => ["fuzz-model"] };
 
 const { blobs } = useProbeBlobs("af-fuzz-");
-const { app } = useApp({ blobs, env: SITE_ENV, models, providerProbe, agentWorker: false });
+// The Agent social switch is on, so that no route of it is hidden from the rules below by the switch (the routes are lane A's and B's to add).
+const { app } = useApp({ blobs, env: SITE_ENV, models, providerProbe, agentWorker: false, config: SOCIAL_ON });
 
 const FUZZ_TIMEOUT = 120_000;
 const UUID = "3f1c2a4e-9b7d-4c1e-8a2f-5d6e7f809a1b";
@@ -390,13 +390,6 @@ const AGENT_CONVERSATION = /^\/api\/conversations\/:id\/(run|runs|topic)(\/|$)/;
 const GROUP_AGENTS = /^\/api\/conversations\/:id\/agents\//;
 /** A group's replies as a member may know them (batch 2C): reached with the fixture's group, not the Agent's conversation. */
 const GROUP_RUNS = "/api/conversations/:id/runs";
-/**
- * Agent social's routes that are still Step 0 stubs, each listed beside its stub (`CONTACT_STUBS`, `OTHERS_STUBS`): a stub answers
- * 404 to everyone, so no probe can be taken past the checks. A listed route is held to being a stub (below); one that is not listed
- * gets every rule. The derived HEAD of a listed GET counts as it does.
- */
-const STUB_ROUTES = new Set([...CONTACT_STUBS, ...OTHERS_STUBS]);
-const isStubRoute = (name: string) => STUB_ROUTES.has(name.startsWith("HEAD ") ? `GET ${name.slice(5)}` : name);
 /** The routes of Agents, providers, usage and replies (this batch's): checked more strictly below. */
 const isAgentRoute = (url: string) => /^\/api\/(agents|providers|usage)(\/|$)/.test(url) || AGENT_CONVERSATION.test(url) || GROUP_AGENTS.test(url);
 
@@ -646,19 +639,7 @@ describe("fuzz", () => {
       // The avatar takes image bytes, not JSON: the avatar test below reaches it.
       if (route.url === "/api/agents/:id/avatar") continue;
       const deep = sent[i]!.filter((x) => x.label.endsWith("[signed in]") && !SHALLOW.has(x.status));
-      // A stub of Agent social (plan T0.4) answers 404 to everyone, so none of its probes gets past the checks: it is held to that
-      // below, with every other stub, instead of to the rule. A route not listed as a stub gets the rule.
-      if (isStubRoute(name)) continue;
       expect([name, deep.length > 0]).toEqual([name, true]);
-    }
-    // The stub lists tell the truth: each listed route is served, and still a stub (no signed-in probe was answered past the checks,
-    // the exact 404 being tests/social-stubs.test.ts's); a route that was written but is still listed fails here, until its entry goes.
-    expect(routes.filter((r) => r.method !== "HEAD" && STUB_ROUTES.has(`${r.method} ${r.url}`)).length).toBe(STUB_ROUTES.size);
-    for (const [i, route] of routes.entries()) {
-      const name = `${route.method} ${route.url}`;
-      if (!isStubRoute(name)) continue;
-      const past = sent[i]!.filter((x) => x.label.endsWith("[signed in]") && !SHALLOW.has(x.status));
-      expect([name, "still a stub", past.map((x) => `${x.label} → ${x.status}`)]).toEqual([name, "still a stub", []]);
     }
     expect(wrongBodies).toEqual([]);
     await stillHealthy();
