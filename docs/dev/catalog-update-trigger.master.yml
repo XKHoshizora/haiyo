@@ -1,0 +1,29 @@
+name: Model catalogue update
+
+# The daily trigger of the model catalogue update. THIS FILE DOES NOTHING HERE: it is kept under docs/dev/ on the
+# development branch so that nothing runs from it by accident. To switch the daily update on, the owner puts it on the
+# default branch (master) as  .github/workflows/catalog-update-trigger.yml  — that one file, nothing else.
+#
+# It only says WHEN; the work is the reusable workflow .github/workflows/catalog-update.yml of the development branch,
+# which this calls at that branch. So every later change to the steps, the guards or the tests is an ordinary change on
+# the development branch, and this file changes only when the development branch itself changes.
+# Plain-words guide: docs/dev/ci.md, "The daily model catalogue update".
+
+on:
+  schedule:
+    # 03:17 UTC every day (off the hour, when scheduled runs queue least).
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# All the job gets: it commits the refreshed snapshot to the development branch with the run's own token.
+permissions:
+  contents: write
+
+jobs:
+  update:
+    # The development branch is named on the next TWO lines and nowhere else: after `@` (which copy of the job runs —
+    # GitHub takes no variable there) and as `branch` (what the job checks out and pushes to). When the development
+    # branch changes, change both to the new name.
+    uses: XKHoshizora/haiyo/.github/workflows/catalog-update.yml@claude/agent-family-review-8a6084
+    with:
+      branch: claude/agent-family-review-8a6084

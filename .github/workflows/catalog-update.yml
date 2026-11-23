@@ -1,53 +1,67 @@
-name: Model catalogue update
+name: Model catalogue update (job)
 
-# Once a day: refresh the vendored models.dev snapshot (app/service/src/providers/model-catalog.json and
-# provider-catalog.json) on the development branch. A changed snapshot is committed only after the service type check
-# and the tests that read it pass; a snapshot that looks like an outage or a format change is refused by the generator
-# (--guard). Plain-words guide: docs/dev/ci.md; details: app/service/README.md, "Model providers".
-# Needs no secret beyond the job's own GITHUB_TOKEN.
+# Refreshes the vendored models.dev snapshot (app/service/src/providers/model-catalog.json and provider-catalog.json)
+# on the development branch. A changed snapshot is committed only after the service type check and the tests that
+# read it pass; a snapshot that looks like an outage or a format change is refused by the generator (--guard).
+#
+# This file is the JOB, a reusable workflow, and lives on the development branch — so the copy that is tested here
+# (tests/model-catalog.test.ts) is the copy that runs. What starts it every day is a small trigger on the default
+# branch, kept as docs/dev/catalog-update-trigger.master.yml until the owner puts it there; it calls this file at the
+# development branch and says which branch that is (`branch`). Plain-words guide: docs/dev/ci.md; details:
+# app/service/README.md, "Model providers". Needs no secret beyond the job's own GITHUB_TOKEN.
 
 on:
-  schedule:
-    # 03:17 UTC every day (off the hour, when scheduled runs queue least).
-    - cron: "17 3 * * *"
+  workflow_call:
+    inputs:
+      branch:
+        description: "The development branch: checked out, tested, and the only branch the snapshot is pushed to"
+        required: true
+        type: string
+  # By hand, on the branch chosen in "Run workflow" (GitHub offers the button only for a workflow file that is also on
+  # the default branch; until then use the trigger's button, or run the generator locally: docs/dev/ci.md).
   workflow_dispatch:
 
-permissions:
-  contents: write
-
-# One update at a time; a second waits for the first rather than cancelling it mid-push.
-concurrency:
-  group: catalog-update
-  cancel-in-progress: false
-
-env:
-  # The development branch the snapshot is committed to. Change it HERE (and only here) when the default development
-  # branch changes.
-  DEV_BRANCH: claude/agent-family-review-8a6084
-  # The throwaway database the tests use (see "Start Postgres"), as in ci.yml.
-  TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/af_test
+# Nothing by default: the one job below asks for what it needs.
+permissions: {}
 
 jobs:
   update:
     name: refresh the snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # The only scope, for the last step's push. A caller must grant at least this (permissions pass down and can only
+    # be kept or narrowed), or the push is refused.
+    permissions:
+      contents: write
+    # One update at a time; a second waits for the first rather than cancelling it mid-push.
+    concurrency:
+      group: catalog-update
+      cancel-in-progress: false
+    env:
+      # Named by the caller; for a run by hand, the branch it was started on. No branch name is written in this file.
+      DEV_BRANCH: ${{ inputs.branch || github.ref_name }}
+      # The throwaway database the tests use (see "Start Postgres"), as in ci.yml.
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/af_test
     defaults:
       run:
         working-directory: app/service
     steps:
+      # persist-credentials: false — the token is NOT left in .git/config: the install scripts, the type check and the
+      # tests below run without any right to push. Only the last step is handed it.
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEV_BRANCH }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: app/service/package-lock.json
 
-      # Downloads https://models.dev/models.json and api.json (public, no key). --guard: exit 1, nothing written, when
-      # the new snapshot shrank by more than 20 % or lost more than 5 % of the ids that had abilities. The script needs
-      # no installed package.
+      # Downloads https://models.dev/models.json and api.json (public, no key; tried three times). --guard: exit 1,
+      # nothing written, when the new snapshot looks broken against the one on disk (it shrank by more than 20 %, lost
+      # more than 5 % of the ids that had abilities, lost or flipped one ability on more than 20 %, or the provider list
+      # shrank by more than 20 %). The script needs no installed package.
       - name: Generate the snapshot
         run: node scripts/update-model-catalog.mjs --guard --summary="$RUNNER_TEMP/catalog-summary.txt"
 
@@ -90,9 +104,13 @@ jobs:
           tests/models-route.test.ts
           tests/build.test.ts
 
-      # Reached only when everything above passed: a failed check or test fails the run and commits nothing.
+      # Reached only when everything above passed: a failed check or test fails the run and commits nothing. The push
+      # is an ordinary one to the one branch: a branch that moved meanwhile refuses it, the run is red, and tomorrow's
+      # run tries again. The token is in this step's environment only.
       - name: Commit the snapshot
         if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -103,4 +121,4 @@ jobs:
             cat "$RUNNER_TEMP/catalog-summary.txt"
           } > "$RUNNER_TEMP/catalog-commit.txt"
           git commit -F "$RUNNER_TEMP/catalog-commit.txt"
-          git push origin "HEAD:${DEV_BRANCH}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${DEV_BRANCH}"

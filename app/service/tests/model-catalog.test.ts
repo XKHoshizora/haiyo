@@ -228,20 +228,40 @@ describe("guardCatalog (an upstream outage or format change must not wipe the ca
   });
 });
 
-describe("the daily update (.github/workflows/catalog-update.yml)", () => {
+describe("the daily update: the job (.github/workflows/catalog-update.yml) and its trigger for the default branch (docs/dev/)", () => {
   const workflow = readFileSync(new URL("../../../.github/workflows/catalog-update.yml", import.meta.url), "utf8");
+  const trigger = readFileSync(new URL("../../../docs/dev/catalog-update-trigger.master.yml", import.meta.url), "utf8");
+  /** A file's lines that are not comments. */
+  const code = (text: string) => text.split("\n").filter((line) => !/^\s*#/.test(line));
 
-  it("runs daily and by hand, names the development branch once, passes the guard, and writes with the job's own token only", () => {
-    expect(workflow).toMatch(/^on:\n  schedule:\n(?:\s+#.*\n)*\s+- cron: "\d+ \d+ \* \* \*"\n  workflow_dispatch:\n/m);
-    expect(workflow.match(/claude\/agent-family-review-8a6084/g)).toHaveLength(1);
-    expect(workflow).toMatch(/^  DEV_BRANCH: \S+$/m);
+  it("the job is a reusable workflow that names no branch: called with one, or run by hand on one; it passes the guard and asks for contents: write alone", () => {
+    expect(workflow).toMatch(/^on:\n  workflow_call:\n    inputs:\n      branch:\n(?:        .*\n)*?        required: true\n        type: string\n(?:\s+#.*\n)*  workflow_dispatch:\n/m);
+    // No schedule here (GitHub runs one only from the default branch) and no branch name: both are the trigger's.
+    expect(code(workflow).join("\n")).not.toMatch(/schedule:|cron:/);
+    expect(workflow).not.toMatch(/claude\/|agent-family-review/);
+    expect(workflow).toContain("      DEV_BRANCH: ${{ inputs.branch || github.ref_name }}");
     expect(workflow).toContain("ref: ${{ env.DEV_BRANCH }}");
-    expect(workflow).toContain('git push origin "HEAD:${DEV_BRANCH}"');
     expect(workflow).toMatch(/node scripts\/update-model-catalog\.mjs --guard --summary=/);
-    expect(workflow).toMatch(/^permissions:\n  contents: write\n/m);
+    // Nothing by default; the one job asks for contents: write and nothing else.
+    expect(workflow).toMatch(/^permissions: \{\}\n/m);
+    expect(code(workflow).filter((l) => /^\s+permissions:/.test(l))).toEqual(["    permissions:"]);
+    expect(workflow).toMatch(/^    permissions:\n      contents: write\n    #/m);
     expect(workflow).not.toContain("secrets.");
     // Actions pinned by major version, as ci.yml pins them.
     expect(workflow.match(/uses: \S+/g)).toEqual(["uses: actions/checkout@v4", "uses: actions/setup-node@v4"]);
+  });
+
+  it("the token: not left on disk for the install and the tests, handed to the push step alone; nothing of an expression reaches a shell line; the push is never forced", () => {
+    expect(workflow).toMatch(/uses: actions\/checkout@v4\n        with:\n          ref: \$\{\{ env\.DEV_BRANCH \}\}\n          persist-credentials: false\n/);
+    // Every `${{ }}` is the value of one of these keys — never inside a `run:` script.
+    const expressions = code(workflow).filter((line) => line.includes("${{"));
+    expect(expressions.map((line) => line.trim().split(":")[0])).toEqual(["DEV_BRANCH", "ref", "GH_TOKEN"]);
+    // The token appears once, in the last step's `env`, after every other step.
+    expect(workflow.match(/github\.token|GITHUB_TOKEN \}\}/g)).toEqual(["github.token"]);
+    expect(workflow.indexOf("GH_TOKEN: ${{ github.token }}")).toBeGreaterThan(workflow.indexOf("name: Commit the snapshot"));
+    const pushes = code(workflow).filter((line) => /git push/.test(line));
+    expect(pushes.map((l) => l.trim())).toEqual(['git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${DEV_BRANCH}"']);
+    expect(code(workflow).join("\n")).not.toMatch(/--force|-f\b.*push|push.*\s-f\b|"\+HEAD|\+refs/);
   });
 
   it("checks and tests before it commits: every step after the diff runs only for a changed snapshot, the commit last; the tests it names exist", () => {
@@ -252,9 +272,37 @@ describe("the daily update (.github/workflows/catalog-update.yml)", () => {
     expect(steps.length).toBeGreaterThanOrEqual(5);
     for (const step of steps) expect([step.split("\n")[0], step.includes("if: steps.diff.outputs.changed == 'true'")]).toEqual([step.split("\n")[0], true]);
     expect(afterDiff).not.toContain("continue-on-error");
-    const named = workflow.match(/tests\/[a-z-]+\.test\.ts/g)!;
-    expect(named).toEqual(["tests/model-catalog.test.ts", "tests/provider-catalog.test.ts", "tests/provider-hints.test.ts", "tests/providers.test.ts", "tests/models-route.test.ts", "tests/build.test.ts"]);
-    for (const file of named) expect([file, existsSync(new URL(`../${file}`, import.meta.url))]).toEqual([file, true]);
+    const named = workflow.match(/tests\/[a-z-]+\.test\.ts/g)!.filter((file, i, all) => all.indexOf(file) === i && i > 0);
+    expect(named).toEqual(["tests/provider-catalog.test.ts", "tests/provider-hints.test.ts", "tests/providers.test.ts", "tests/models-route.test.ts", "tests/build.test.ts"]);
+    expect(afterDiff).toContain("          tests/model-catalog.test.ts\n          tests/provider-catalog.test.ts\n");
+    for (const file of ["tests/model-catalog.test.ts", ...named]) expect([file, existsSync(new URL(`../${file}`, import.meta.url))]).toEqual([file, true]);
+  });
+
+  it("the trigger is not a workflow on this branch; it says when, grants contents: write, and calls the job at the development branch it names twice, on adjacent lines", () => {
+    // Under docs/, so nothing runs from it here; nothing else under .github/workflows/ runs on a schedule.
+    expect(existsSync(new URL("../../../.github/workflows/catalog-update-trigger.yml", import.meta.url))).toBe(false);
+    expect(trigger).toMatch(/^on:\n  schedule:\n(?:\s+#.*\n)*\s+- cron: "\d+ \d+ \* \* \*"\n  workflow_dispatch:\n/m);
+    expect(trigger).toMatch(/^permissions:\n  contents: write\n/m);
+    const lines = code(trigger).filter((line) => line.trim() !== "");
+    // Nothing else: a name, the triggers, the permission, one job that calls the job's file.
+    expect(lines).toEqual([
+      "name: Model catalogue update",
+      "on:",
+      "  schedule:",
+      expect.stringMatching(/^    - cron: "\d+ \d+ \* \* \*"$/),
+      "  workflow_dispatch:",
+      "permissions:",
+      "  contents: write",
+      "jobs:",
+      "  update:",
+      expect.stringMatching(/^    uses: [\w.-]+\/[\w.-]+\/\.github\/workflows\/catalog-update\.yml@\S+$/),
+      "    with:",
+      expect.stringMatching(/^      branch: \S+$/),
+    ]);
+    const called = lines[9]!.split("@")[1];
+    expect(lines[11]).toBe(`      branch: ${called}`);
+    expect(trigger).not.toContain("${{");
+    expect(trigger).not.toContain("secrets");
   });
 });
 
