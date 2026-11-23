@@ -451,14 +451,14 @@ describe("the marks at a row's right", () => {
     expect(marksOf("plain")).toEqual(["工具"]);
     // Each kind of mark has its own column, so the marks line up from row to row.
     const columns = (name) => [...rowOf(name).querySelectorAll("[data-col]")].map((m) => m.dataset.col);
-    expect(columns("小模型")).toEqual(["price", "vision", "thinking", "tools"]);
-    expect(columns("plain")).toEqual(["price", "vision", "thinking", "tools"]);
+    expect(columns("小模型")).toEqual(["price", "vision", "reasoning", "tools"]);
+    expect(columns("plain")).toEqual(["price", "vision", "reasoning", "tools"]);
     expect(listbox().textContent).not.toMatch(/联网/);
   });
 
   it("a list without site models has no price column", async () => {
     await openForm({ models: NO_SITE });
     await openPicker();
-    expect([...rowOf("plain").querySelectorAll("[data-col]")].map((m) => m.dataset.col)).toEqual(["thinking", "tools"]);
+    expect([...rowOf("plain").querySelectorAll("[data-col]")].map((m) => m.dataset.col)).toEqual(["reasoning", "tools"]);
   });
 });

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "../icons.js";
 import { composing, isEnter, isEscape } from "../ui/keys.js";
 import { ModelBrand } from "../ui/ModelBrand.jsx";
-import { COLUMNS, MarksLegend, ModelMarks, PRICE_TEXT, markKinds, markWords, useMarksMode } from "../ui/ModelMarks.jsx";
+import { MarksLegend, ModelMarks, PRICE_TEXT, columnOrder, markKinds, markWords, useMarksMode } from "../ui/ModelMarks.jsx";
 import { useMoreBelow } from "../ui/moreBelow.js";
 import { usePopover } from "../ui/popover.js";
 
@@ -84,7 +84,7 @@ export function ModelSelect({
   const optionId = new Map(all.map((o, i) => [o.key, `${base}-o${i}`]));
   // The columns some row can be marked in (a list without a price has no price column), and the abilities the list has (for its legend).
   const kindsInList = all.filter((o) => !o.disabled).flatMap((o) => markKinds(o.marks));
-  const columns = COLUMNS.filter((col) => kindsInList.some((k) => (col === "price" ? k in PRICE_TEXT : k === col)));
+  const columns = columnOrder().filter((col) => kindsInList.some((k) => (col === "price" ? k in PRICE_TEXT : k === col)));
   const words = wordsOf(query);
   const shown = visible(lead, groups, words);
   const rows = rowsOf(shown);

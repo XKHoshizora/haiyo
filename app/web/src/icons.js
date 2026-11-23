@@ -1,6 +1,7 @@
 // Single place for icon imports so a renamed icon only needs fixing here.
 export {
   ArrowLeft,
+  AudioLines,
   ArrowLeftRight,
   AtSign,
   Ban,
@@ -14,6 +15,7 @@ export {
   CircleCheck,
   CirclePause,
   CircleX,
+  Clapperboard,
   Clock,
   Copy,
   Download,
@@ -31,6 +33,7 @@ export {
   Folder,
   Image,
   ImageOff,
+  ImagePlus,
   Info,
   Laptop,
   Lightbulb,
@@ -60,6 +63,8 @@ export {
   User,
   UserPlus,
   Users,
+  Video,
+  Volume2,
   Wrench,
   X,
   Zap,

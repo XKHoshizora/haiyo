@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ModelSelect, optionLabel } from "../src/pages/ModelSelect.jsx";
 import { modelChoices, pickerGroups } from "../src/pages/ModelPicker.jsx";
-import { ModelMarks, marksModeFor } from "../src/ui/ModelMarks.jsx";
+import { ABILITIES, ModelMarks, abilityMarks, marksModeFor } from "../src/ui/ModelMarks.jsx";
 import { parseCss, read, rulesFor } from "./css-rules.js";
 
 let width = 0;
@@ -63,7 +63,7 @@ const marks = (el) => [...el.querySelectorAll(".model-mark")];
 
 describe("ModelMarks", () => {
   it("vision + pdf + reasoning + tools: four marks in a fixed order whatever order they come in, after the money", () => {
-    const { container } = render(<ModelMarks marks={["tools", "thinking", "vision", "paid"]} />);
+    const { container } = render(<ModelMarks marks={["tools", "reasoning", "vision", "paid"]} />);
     expect(marks(container).map((m) => m.textContent)).toEqual(["需余额", "看图", "思考", "工具"]);
     expect(within(container).getAllByRole("img").map((m) => m.getAttribute("aria-label"))).toEqual(["看图", "思考", "工具"]);
   });
@@ -75,7 +75,7 @@ describe("ModelMarks", () => {
   });
 
   it("each ability has a title that says it in full, and the money stays text", () => {
-    const { container } = render(<ModelMarks marks={["free", "vision", "thinking", "tools"]} mode="icons" />);
+    const { container } = render(<ModelMarks marks={["free", "vision", "reasoning", "tools"]} mode="icons" />);
     expect(marks(container).map((m) => m.getAttribute("title"))).toEqual([null, "能看图片", "支持思考", "会用工具（查聊天记录、看文件）"]);
     // Every ability mark carries an icon (an svg), the price never does.
     expect(marks(container).map((m) => m.querySelector("svg") !== null)).toEqual([false, true, true, true]);
@@ -86,6 +86,57 @@ describe("ModelMarks", () => {
     expect(marksModeFor(0)).toBe("text");
     expect([300, 519].map(marksModeFor)).toEqual(["icons", "icons"]);
     expect([520, 900].map(marksModeFor)).toEqual(["text", "text"]);
+  });
+});
+
+describe("the table of marks", () => {
+  const ALL_TRUE = { vision: true, reasoning: true, tools: true, pdf: true, audioIn: true, videoIn: true, imageOut: true, videoOut: true, audioOut: true };
+
+  it("holds the whole vocabulary, each with its word, name and icon; only 看图, 思考, 工具 are shown now", () => {
+    expect(ABILITIES.map((a) => [a.kind, a.text, a.shown])).toEqual([
+      ["vision", "看图", true],
+      ["reasoning", "思考", true],
+      ["tools", "工具", true],
+      ["audioIn", "听语音", false],
+      ["videoIn", "看视频", false],
+      ["pdf", "读 PDF", false],
+      ["imageOut", "画图", false],
+      ["videoOut", "生成视频", false],
+      ["audioOut", "生成语音", false],
+    ]);
+    for (const a of ABILITIES) expect([typeof a.title, typeof a.Icon, typeof a.from], a.kind).toEqual(["string", "object", "function"]);
+  });
+
+  it("a reserved row never renders and is never in the legend, even when the model's data says it is true", () => {
+    expect(abilityMarks(ALL_TRUE)).toEqual(["vision", "reasoning", "tools"]);
+    const { container } = render(<ModelMarks marks={Object.keys(ALL_TRUE)} />);
+    expect(marks(container).map((m) => m.textContent)).toEqual(["看图", "思考", "工具"]);
+    expect(container.textContent).not.toMatch(/PDF|语音|视频|画图/);
+    width = 340;
+    render(<ModelSelect label="模型" lead={[{ key: "a", name: "甲", marks: Object.keys(ALL_TRUE) }]} onChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "模型" }));
+    expect(document.querySelector(".model-legend").textContent).toBe("看图思考工具");
+    expect(screen.getByRole("option", { name: "甲 · 看图 · 思考 · 工具" })).toBeTruthy();
+  });
+
+  it("a reserved row is safe when its field is absent", () => {
+    for (const a of ABILITIES.filter((r) => !r.shown)) expect(a.from({}), a.kind).toBe(false);
+  });
+
+  it("flipping `shown` on one row draws it, in table order, with its accessible name (and puts it in the legend); flipped back, it is gone", () => {
+    const row = ABILITIES.find((a) => a.kind === "pdf");
+    row.shown = true;
+    try {
+      const { container } = render(<ModelMarks marks={["tools", "pdf", "vision"]} />);
+      expect(marks(container).map((m) => m.textContent)).toEqual(["看图", "工具", "读 PDF"]);
+      expect(within(container).getByRole("img", { name: "读 PDF" }).getAttribute("title")).toBe("能直接读 PDF");
+      expect(abilityMarks({ pdf: true })).toEqual(["tools", "pdf"]);
+    } finally {
+      row.shown = false;
+    }
+    cleanup();
+    const { container } = render(<ModelMarks marks={["tools", "pdf", "vision"]} />);
+    expect(marks(container).map((m) => m.textContent)).toEqual(["看图", "工具"]);
   });
 });
 
@@ -109,7 +160,7 @@ describe("the picker's rows", () => {
   it("a model without abilities keeps only the money (and its columns, empty, so rows line up)", () => {
     openPicker();
     expect(marks(row("素的")).map((m) => m.textContent)).toEqual(["免费"]);
-    expect([...row("素的").querySelectorAll("[data-col]")].map((m) => m.dataset.col)).toEqual(["price", "vision", "thinking", "tools"]);
+    expect([...row("素的").querySelectorAll("[data-col]")].map((m) => m.dataset.col)).toEqual(["price", "vision", "reasoning", "tools"]);
     expect(row("素的").querySelectorAll('[role="img"]')).toHaveLength(0);
   });
 
