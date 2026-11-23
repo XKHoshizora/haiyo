@@ -32,6 +32,8 @@ function Page() {
         <Modal title="测试" onClose={() => setOpen(false)} footer={<button type="button">完成</button>}>
           <div data-testid="list">行</div>
           <div data-testid="short">无处可滚</div>
+          <input type="range" aria-label="缩放" />
+          <input type="text" aria-label="名称" />
           <button type="button" onClick={() => setInner(true)}>再开一个</button>
           {inner && (
             <Modal title="上面的" onClose={() => setInner(false)}>
@@ -124,5 +126,67 @@ describe("the page behind an open layer", () => {
     expect(letThrough(scroller, -80)).toBe(true);
     expect(to).toHaveBeenLastCalledWith(0, 120);
     Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+  });
+
+  // The decision is by what can follow the move, not by which axis is larger: on iOS a prevented first move ends the whole gesture, and a thumb starts slanted.
+  for (const degrees of [10, 30, 45, 60, 80]) {
+    it(`a drag slanted ${degrees} degrees from the vertical on a list that scrolls vertically goes through; on a part that scrolls nothing it is stopped`, () => {
+      render(<Page />);
+      const list = screen.getByTestId("list");
+      scrolls(list, { over: 100, top: 40 });
+      const dx = Math.round(50 * Math.tan((degrees * Math.PI) / 180));
+      const slanted = (el) => {
+        fireEvent.touchStart(el, { touches: [{ clientX: 50, clientY: 200 }] });
+        return fireEvent.touchMove(el, { touches: [{ clientX: 50 + dx, clientY: 150 }] });
+      };
+      expect(slanted(list)).toBe(true);
+      expect(slanted(screen.getByTestId("short"))).toBe(false);
+    });
+  }
+
+  it("a drag that is sideways only, on a list that scrolls only vertically, is stopped (nothing can follow it)", () => {
+    render(<Page />);
+    const list = screen.getByTestId("list");
+    scrolls(list, { over: 100, top: 40 });
+    fireEvent.touchStart(list, { touches: [{ clientX: 50, clientY: 200 }] });
+    expect(fireEvent.touchMove(list, { touches: [{ clientX: 100, clientY: 200 }] })).toBe(false);
+  });
+
+  it("a drag on a range input or in a text field is never stopped (the thumb and the text move by the browser's own handling)", () => {
+    render(<Page />);
+    expect(letThrough(screen.getByLabelText("缩放"), 0)).toBe(true);
+    fireEvent.touchStart(screen.getByLabelText("缩放"), { touches: [{ clientX: 50, clientY: 200 }] });
+    expect(fireEvent.touchMove(screen.getByLabelText("缩放"), { touches: [{ clientX: 120, clientY: 202 }] })).toBe(true);
+    fireEvent.touchStart(screen.getByLabelText("名称"), { touches: [{ clientX: 50, clientY: 200 }] });
+    expect(fireEvent.touchMove(screen.getByLabelText("名称"), { touches: [{ clientX: 90, clientY: 200 }] })).toBe(true);
+  });
+
+  it("two fingers inside the layer (a pinch in the viewer) are never stopped, and after one lifts the other is judged again", () => {
+    render(<Page />);
+    const short = screen.getByTestId("short");
+    fireEvent.touchStart(short, { touches: [{ clientX: 10, clientY: 10 }, { clientX: 90, clientY: 90 }] });
+    expect(fireEvent.touchMove(short, { touches: [{ clientX: 5, clientY: 5 }, { clientX: 95, clientY: 95 }] })).toBe(true);
+    fireEvent.touchEnd(short, { touches: [{ clientX: 95, clientY: 95 }] });
+    expect(fireEvent.touchMove(short, { touches: [{ clientX: 95, clientY: 60 }] })).toBe(false);
+  });
+
+  it("at the list's top edge dragging down and at its bottom edge dragging up is stopped, so the page behind never takes it", () => {
+    render(<Page />);
+    const list = screen.getByTestId("list");
+    scrolls(list, { over: 100, top: 0 });
+    expect(letThrough(list, 60)).toBe(false);
+    scrolls(list, { over: 100, top: 100 });
+    expect(letThrough(list, -60)).toBe(false);
+    // ...and with the sideways part of a slanted drag the list still cannot follow either way.
+    fireEvent.touchStart(list, { touches: [{ clientX: 50, clientY: 200 }] });
+    expect(fireEvent.touchMove(list, { touches: [{ clientX: 70, clientY: 150 }] })).toBe(false);
+  });
+
+  it("shift+wheel on a box that scrolls only vertically is stopped (it means sideways)", () => {
+    render(<Page />);
+    const list = screen.getByTestId("list");
+    scrolls(list, { over: 100, top: 40 });
+    expect(fireEvent.wheel(list, { deltaY: 60, shiftKey: true })).toBe(false);
+    expect(fireEvent.wheel(list, { deltaY: 60 })).toBe(true);
   });
 });

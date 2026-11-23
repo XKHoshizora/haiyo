@@ -116,10 +116,10 @@ for (const [size, viewport] of PHONES) {
     await expect(body).toBeVisible();
     // The block the owner's band covered: 主动参与群聊 on, with 话多话少 and the daily number under it.
     const proactive = page.getByRole("switch", { name: /主动参与群聊/ }).or(page.getByRole("checkbox", { name: /主动参与群聊/ }));
-    if (await proactive.count()) {
-      await proactive.first().click();
-      await expect(page.getByText("话多话少", { exact: true }).first()).toBeVisible();
-    }
+    // (Loud: a pass always means the block was there.)
+    await expect(proactive.first(), "the e2e site offers 主动参与群聊").toBeVisible();
+    await proactive.first().click();
+    await expect(page.getByText("话多话少", { exact: true }).first()).toBeVisible();
     await shot(page, `f2-create-top-${size}`);
     await scrollAndCheck(page, body, `create-${size}`);
 

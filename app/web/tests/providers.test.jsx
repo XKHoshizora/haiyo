@@ -817,6 +817,22 @@ describe("the models of a provider", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
   });
 
+  it("levels in use that differ from the catalogue's can be adopted with one tap on the first option; unticking and ticking 支持思考 again keeps the choice", async () => {
+    const stale = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"], reportedLevels: ["low", "medium", "high"] }] });
+    const app = await openProviders({ providers: [stale] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
+    const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
+    await click(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }));
+    expect(modelRow("gpt-x").textContent).toContain("支持思考（低、中、高）");
+    fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
+    fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
+    await flush();
+    expect(group()).toBeTruthy();
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalled();
+  });
+
   it("the reported levels are sent again when the choice is put back to them", async () => {
     const levels = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
     const app = await openProviders({ providers: [levels] });

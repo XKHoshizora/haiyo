@@ -2,6 +2,7 @@ import React, { useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "../icons.js";
 import { composing, isEnter, isEscape } from "./keys.js";
+import { useMoreBelow } from "./moreBelow.js";
 import { usePopover } from "./popover.js";
 
 /** Letters typed this close together make one word to jump to (ms). */
@@ -42,6 +43,7 @@ export function Select({
   const listRef = useRef(null);
   // (On a phone the list is a sheet over an inert page: the focus goes to the list itself, which takes the same keys.)
   const { open, sheet, show, close, triggerRef, popRef, popStyle, up } = usePopover({ disabled, widthOf: (box) => Math.max(box.width, 200), focus: (asSheet) => asSheet && listRef.current?.focus() });
+  const more = useMoreBelow(listRef, open, options.length);
 
   const optionId = new Map(options.map((o, i) => [o.value, `${base}-o${i}`]));
   const current = options.find((o) => o.value === value) ?? null;
@@ -145,6 +147,7 @@ export function Select({
           {/* A press on an option leaves the focus on the button (one on the list's own scrollbar is let through). */}
           <div
             ref={listRef}
+            data-more={more || undefined}
             className="select-list"
             role="listbox"
             id={listId}

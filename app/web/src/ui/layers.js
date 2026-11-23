@@ -75,53 +75,82 @@ function inLiveRegion(target) {
   const host = hostOf(target instanceof Element ? target : target.parentElement);
   return host !== null && children.indexOf(host) >= children.indexOf(hostOf(top.node));
 }
-/** Whether a box between `target` and the top layer can scroll by `delta` (positive: down / right) on that axis. */
+/**
+ * Whether a box between `target` and the top layer can scroll by `delta` (positive: down / right) on that axis; with `delta` 0, in either direction.
+ */
 function canScroll(target, delta, vertical) {
   const top = stack.at(-1);
   for (let el = target instanceof Element ? target : target.parentElement; el && el !== document.body; el = el.parentElement) {
     if (scrollOf(el, vertical)) {
       const at = vertical ? el.scrollTop : el.scrollLeft;
       const max = vertical ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
-      if (delta > 0 ? at < max - 0.5 : at > 0.5) return true;
+      const down = at < max - 0.5;
+      const up = at > 0.5;
+      if (delta > 0 ? down : delta < 0 ? up : down || up) return true;
     }
     if (el === top?.node) break;
   }
   return false;
 }
+/** A control whose own drag is its job (a slider's thumb, the text in a field, a select): never judged. */
+const ownsItsDrag = (target) => target instanceof Element && target.closest("input, select, textarea") !== null && !(target.closest("textarea") && canScroll(target, 0, true));
+/**
+ * Whether a move of the finger or the wheel (`dx`, `dy`: the way the CONTENT is asked to go, positive: down / right) may go on: it starts in the live region
+ * and a box there can follow it on either axis, each axis by its own component — never by which one is larger. iOS decides on the first move: a move that
+ * is prevented ends the whole touch, and a thumb starts slanted, so a dominant-axis rule would kill a scroll the list could have followed. Only a move that
+ * nothing can follow (the page behind, a part that scrolls nothing, a list at its end) is stopped; that is also what keeps it from the page.
+ */
+function followed(target, dx, dy) {
+  if (!inLiveRegion(target)) return false;
+  if (ownsItsDrag(target)) return true;
+  if (dx === 0 && dy === 0) return canScroll(target, 0, true) || canScroll(target, 0, false);
+  return (dy !== 0 && canScroll(target, dy, true)) || (dx !== 0 && canScroll(target, dx, false));
+}
 let touchFrom = null;
+const pointOf = (event) => (event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null);
 function onTouchStart(event) {
-  touchFrom = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+  touchFrom = pointOf(event);
+}
+/** A finger left: the one that stays is followed from where it is (a two-finger touch is never judged, the pinch is left alone). */
+function onTouchEnd(event) {
+  touchFrom = pointOf(event);
 }
 function onTouchMove(event) {
-  if (!stack.length || event.defaultPrevented || event.touches.length !== 1 || !touchFrom) return;
-  const dx = touchFrom.x - event.touches[0].clientX;
-  const dy = touchFrom.y - event.touches[0].clientY;
-  const vertical = Math.abs(dy) >= Math.abs(dx);
-  touchFrom = { x: event.touches[0].clientX, y: event.touches[0].clientY };
-  if (inLiveRegion(event.target) && canScroll(event.target, vertical ? dy : dx, vertical)) return;
+  if (!stack.length || event.defaultPrevented || event.touches.length !== 1) return;
+  const now = pointOf(event);
+  const from = touchFrom ?? now;
+  touchFrom = now;
+  if (followed(event.target, from.x - now.x, from.y - now.y)) return;
   if (event.cancelable) event.preventDefault();
 }
 function onWheel(event) {
   if (!stack.length || event.defaultPrevented || event.ctrlKey) return;
-  const vertical = Math.abs(event.deltaY) >= Math.abs(event.deltaX);
-  if (inLiveRegion(event.target) && canScroll(event.target, vertical ? event.deltaY : event.deltaX, vertical)) return;
+  // Shift+wheel is sideways.
+  const dx = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
+  const dy = event.shiftKey ? 0 : event.deltaY;
+  if (followed(event.target, dx, dy)) return;
   if (event.cancelable) event.preventDefault();
 }
 let documentAt = null;
 function lockDocument() {
-  documentAt = { x: window.scrollX, y: window.scrollY };
+  documentAt = { x: window.scrollX, y: window.scrollY, path: window.location.pathname };
   document.documentElement.setAttribute("data-layer-open", "");
   document.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+  document.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
+  document.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: true });
   document.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
   document.addEventListener("wheel", onWheel, { capture: true, passive: false });
 }
 function unlockDocument() {
   document.documentElement.removeAttribute("data-layer-open");
   document.removeEventListener("touchstart", onTouchStart, { capture: true });
+  document.removeEventListener("touchend", onTouchEnd, { capture: true });
+  document.removeEventListener("touchcancel", onTouchEnd, { capture: true });
   document.removeEventListener("touchmove", onTouchMove, { capture: true });
   document.removeEventListener("wheel", onWheel, { capture: true });
   // Exactly where it was.
-  if (documentAt && (window.scrollX !== documentAt.x || window.scrollY !== documentAt.y)) window.scrollTo(documentAt.x, documentAt.y);
+  // (Only on the page it was taken on: a layer that closes with a change of page puts nothing back on the new one.)
+  if (documentAt && documentAt.path === window.location.pathname && (window.scrollX !== documentAt.x || window.scrollY !== documentAt.y)) window.scrollTo(documentAt.x, documentAt.y);
   documentAt = null;
 }
 

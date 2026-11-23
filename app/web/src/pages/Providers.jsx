@@ -356,13 +356,13 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   const summary = [model.vision && "能看图片", model.pdf && "能直接读 PDF"].filter(Boolean);
   const after = shownContext !== null ? [`上下文 ${grouped(shownContext)}${context === null ? "（默认）" : ""}`] : [];
   const thinking = model.reasoning ? (model.reported ? `支持思考（${model.levels ? model.levels.map(levelLabel).join("、") : "全部档位"}）` : "支持思考") : null;
-  // A model that reports which thinking levels it supports: the choice between those and every level, both ways open until it is saved.
+  // A model the catalogue lists thinking levels for: the choice between those and every level, both ways open until it is saved.
   const levelChoice =
     model.reasoning && model.reported ? (
       <fieldset className="checks" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
         <legend>思考档位</legend>
         <label>
-          <input type="radio" name={`levels-${panelId}`} checked={model.levels !== null} onChange={() => onChange({ ...model, levels: model.reported })} />
+          <input type="radio" name={`levels-${panelId}`} checked={model.levels !== null} onChange={() => onChange({ ...model, levels: model.reported })} onClick={() => model.levels !== model.reported && onChange({ ...model, levels: model.reported })} />
           <span>这个模型支持的档位（{model.reported.map(levelLabel).join("、")}）</span>
         </label>
         <label>
@@ -379,7 +379,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
     limit !== null ? `需要大于每次回复的输出上限 ${grouped(limit)}，Agent 才能使用这个模型。` : "需要大于每次回复的输出上限，Agent 才能使用这个模型。",
   ].join("");
   // Not reasoning any more: the levels it listed go too.
-  const flag = (key) => (event) => onChange({ ...model, [key]: event.target.checked, ...(key === "reasoning" && !event.target.checked ? { levels: null, reported: null } : {}) });
+  const flag = (key) => (event) => onChange({ ...model, [key]: event.target.checked, ...(key === "reasoning" && !event.target.checked ? { levels: null } : {}) });
   return (
     <li>
       <div className="member-body">

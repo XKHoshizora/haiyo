@@ -1846,7 +1846,7 @@ Agent cannot be pointed at their provider (400).
   list, or narrowing its levels, does not change the Agents that use it.
   `reportedLevels` (read only, never accepted: a body that has it is 400): the levels the catalogue lists for this model (`modelHints`)
   when it reasons and the catalogue knows it; absent otherwise. It is read when the provider is shown, not stored, so a model set to every
-  level (no `reasoningLevels`) still shows what it reports and can be put back to it, also after a reload.
+  level (no `reasoningLevels`) still shows what the catalogue lists for it and can be put back to it, also after a reload.
   `tools` (optional, a boolean): whether its replies may be offered tools (Agents and runs, Tools in a reply). Absent: not
   known yet, so they are — every model is given them until it is found unable. The service writes `false` itself the first
   time a reply finds the model cannot use them (its upstream refused them, or it called them garbled twice), on that model

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "../icons.js";
 import { composing, isEnter, isEscape } from "../ui/keys.js";
 import { ModelBrand } from "../ui/ModelBrand.jsx";
+import { useMoreBelow } from "../ui/moreBelow.js";
 import { usePopover } from "../ui/popover.js";
 
 /** What a row's marks say, and — where the short word needs it — what they mean (the provider form's own words). */
@@ -109,28 +110,9 @@ export function ModelSelect({
     if (key !== value) onChange?.(key, row);
   };
 
-  // Whether more rows wait below the list's edge: the cue (a shadow at the edge) shows exactly then, at every length of list.
+  // More rows below the list's edge: the cue (ui/moreBelow.js).
   const listRef = useRef(null);
-  const [more, setMore] = useState(false);
-  useLayoutEffect(() => {
-    const list = listRef.current;
-    if (!open || !list) {
-      setMore(false);
-      return undefined;
-    }
-    const measure = () => setMore(list.scrollTop + list.clientHeight < list.scrollHeight - 1);
-    measure();
-    list.addEventListener("scroll", measure, { passive: true });
-    const resized = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
-    resized?.observe(list);
-    const changed = typeof MutationObserver === "function" ? new MutationObserver(measure) : null;
-    changed?.observe(list, { childList: true, subtree: true });
-    return () => {
-      list.removeEventListener("scroll", measure);
-      resized?.disconnect();
-      changed?.disconnect();
-    };
-  }, [open, status]);
+  const more = useMoreBelow(listRef, open, status);
 
   // The row the keyboard is on stays in view.
   useLayoutEffect(() => {

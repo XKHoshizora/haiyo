@@ -38,7 +38,9 @@
 
 html, body, #root { height: 100%; }
 /* While a layer is open (ui/layers.js) the document itself does not scroll; the guard there stops the page's own boxes too. */
-html[data-layer-open], html[data-layer-open] body { overflow: hidden; }
+/* (scrollbar-gutter: where the document has a classic scrollbar its room stays, so the page does not shift.) */
+html[data-layer-open] { overflow: hidden; scrollbar-gutter: stable; }
+html[data-layer-open] body { overflow: hidden; }
 /* iOS makes its own guesses at text size (it inflated the wider rows of a list and left the narrow ones alone): never. The person's own text size
    still works through the normal mechanisms (Dynamic Type in the native shell, the browser's zoom and minimum font size, rem/em units). */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -56,7 +58,7 @@ body {
     radial-gradient(55% 50% at 85% 100%, rgba(255, 222, 240, 0.7), transparent 70%),
     radial-gradient(50% 50% at 20% 100%, rgba(214, 236, 255, 0.7), transparent 70%),
     linear-gradient(135deg, #f4effd, #eef0ff 55%, #f8eefa);
-  /* No `background-attachment: fixed`: the shell never scrolls the document, so it was not needed (iOS WebKit paints it as `scroll` anyway; desktop Safari scrolls inner boxes on the fast path without it). This is NOT the fix of the blank band on the long forms, which is still open (src/debug/paintProbe.js). */
+  /* No `background-attachment: fixed`: the shell never scrolls the document, so it was not needed (iOS WebKit paints it as `scroll` anyway; desktop Safari scrolls inner boxes on the fast path without it). This is NOT the fix of the blank band on the long forms, which is still open. */
 }
 
 h1, h2, h3, p, ul, ol, dl, dd, figure, blockquote { margin: 0; padding: 0; }
@@ -303,8 +305,9 @@ svg.model-brand { color: var(--ink-3); }
 .model-search input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: none; outline: none; font-size: 14px; color: var(--ink); }
 .model-search input::placeholder { color: var(--ink-3); }
 .model-list, .select-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-/* More rows below the edge: a shadow at the list's foot, only then (ModelSelect sets data-more), so a list never ends on a row boundary looking complete. */
-.model-list[data-more] { box-shadow: inset 0 -14px 10px -10px rgba(40, 32, 80, 0.3); }
+/* More rows below the edge (ui/moreBelow.js sets data-more): a soft shade over the list's foot, only then, drawn OVER the rows (a sticky strip, so a row with a
+   background cannot hide it): a list never ends on a row boundary looking complete. */
+.model-list[data-more]::after, .select-list[data-more]::after { content: ""; display: block; position: sticky; bottom: 0; height: 18px; margin-top: -18px; pointer-events: none; background: linear-gradient(to bottom, transparent, rgba(40, 32, 80, 0.16)); }
 .model-group-label { position: sticky; top: 0; z-index: 1; padding: 8px 8px 4px; background: #fff; font-size: 12px; color: var(--ink-3); }
 .model-option, .select-option { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 8px; border-radius: 8px; font-size: 14px; cursor: pointer; }
 .model-option.active, .select-option.active { background: var(--purple-tint); }
