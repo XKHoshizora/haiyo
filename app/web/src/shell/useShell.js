@@ -19,27 +19,37 @@ export const startsInBackground = () => inShell() && document.visibilityState ==
 export function useShellSession({ running, layer, api }) {
   useEffect(() => {
     if (!running || !inShell()) return undefined;
-    // Back from the background: the socket comes back through the data layer, and the permission is asked again (a change made in the system's
-    // Settings is learned here; a registration that failed is tried once more).
-    const back = () => {
-      layer.resume?.();
-      pushOnResume(api);
-    };
-    const offs = [on("pause", () => layer.pause?.()), on("resume", back)];
-    const shown = () => (document.visibilityState === "visible" ? back() : layer.pause?.());
-    document.addEventListener("visibilitychange", shown);
+    // "In the background" means paused by the shell, not what `visibilityState` says: measured in the shell, `haiyo:pause` comes first, while the
+    // page still says "visible" (`visibilitychange` to hidden follows ~0.8 s later), and `haiyo:resume` comes first on the way back, while it
+    // still says "hidden" (`visible` follows ~0.15 s later). So each signal acts on its own and the late one finds nothing left to do: the data
+    // layer's `pause` / `resume` do nothing when already paused / running, and the permission is asked once per return.
+    let foreground = !startsInBackground();
     let registered = false;
     const register = () => {
-      if (registered || document.visibilityState !== "visible") return;
+      if (registered || !foreground) return;
       registered = true;
       registerPush(api);
     };
+    // Back from the background: the socket comes back through the data layer, and the permission is asked again (a change made in the system's
+    // Settings is learned here; a registration that failed is tried once more).
+    const back = (resumed = false) => {
+      const was = foreground;
+      foreground = true;
+      layer.resume?.();
+      if (resumed || !was) pushOnResume(api);
+      register();
+    };
+    const away = () => {
+      foreground = false;
+      layer.pause?.();
+    };
+    const offs = [on("pause", away), on("resume", () => back(true))];
+    const shown = () => (document.visibilityState === "visible" ? back() : away());
+    document.addEventListener("visibilitychange", shown);
     register();
-    document.addEventListener("visibilitychange", register);
     return () => {
       for (const off of offs) off();
       document.removeEventListener("visibilitychange", shown);
-      document.removeEventListener("visibilitychange", register);
     };
   }, [running, layer, api]);
 }

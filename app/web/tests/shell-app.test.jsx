@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ApiError } from "../src/api/http.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
-import { StoreProvider, emptyState, useStore } from "../src/data/store.jsx";
+import { StoreProvider, createDataLayer, emptyState, useStore } from "../src/data/store.jsx";
+import { fakeTimers, fakeTransport, syncOf } from "./fixtures.js";
 import { useAppHistory } from "../src/state/appHistory.js";
 import * as bridge from "../src/shell/bridge.js";
 import { pushSessionEnded } from "../src/shell/push.js";
@@ -449,5 +450,108 @@ describe("settings, when notifications are off for the app", () => {
     await screen.findByText("设置");
     await act(async () => {});
     expect(screen.queryByText(LINE)).toBeNull();
+  });
+});
+
+// The order measured in the shell's WKWebView (iOS 27.2): going away, `haiyo:pause` arrives while `visibilityState` is still "visible" and
+// `visibilitychange` to hidden follows ~0.8 s later; coming back, `haiyo:resume` arrives while it is still "hidden" and `visibilitychange` to
+// visible follows ~0.15 s later. Each order, and the reverse, ends with exactly one open socket (or none), through the real data layer.
+describe("the order of the signals", () => {
+  let transport;
+  let visibilityState;
+  const realLayer = () => {
+    transport = fakeTransport({ sync: () => syncOf([]) });
+    return createDataLayer({ transport, api: {}, timers: fakeTimers(), now: () => 0 });
+  };
+  const mountReal = (api) =>
+    render(
+      <AuthRoot api={api} createLayer={realLayer}>
+        {() => <div data-testid="app" />}
+      </AuthRoot>,
+    );
+  const visibility = (state) => {
+    visibilityState.mockReturnValue(state);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+  };
+  const open = () => transport.sockets.filter((s) => !s.closed).length;
+  const connects = () => transport.log.filter((x) => x === "connect").length;
+  beforeEach(() => {
+    visibilityState = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  });
+
+  const live = async () => {
+    mountReal(apiOf());
+    await screen.findByTestId("app");
+    await waitFor(() => expect(open()).toBe(1));
+    await act(async () => {});
+  };
+
+  it("away: pause first (still visible), hidden after: one close, the late one a no-op; back: resume first (still hidden), visible after: one socket", async () => {
+    await enterShell({ hello: { ...HELLO, push: "denied" } });
+    await live();
+    act(() => shell.emit("pause"));
+    expect(open()).toBe(0);
+    visibility("hidden");
+    expect(open()).toBe(0);
+    expect(connects()).toBe(1);
+    shell.replies.hello = { ...HELLO, push: "granted" };
+    act(() => shell.emit("resume"));
+    await waitFor(() => expect(open()).toBe(1));
+    // The permission is asked while visibilityState still says hidden: "in the background" is the shell's pause, not the page's visibility.
+    await waitFor(() => expect(shell.named("push.register")).toHaveLength(1));
+    visibility("visible");
+    await act(async () => {});
+    expect(open()).toBe(1);
+    expect(connects()).toBe(2);
+    expect(shell.named("hello")).toHaveLength(2);
+  });
+
+  it("the reverse orders end the same way: hidden before pause, visible before resume", async () => {
+    await enterShell();
+    await live();
+    visibility("hidden");
+    expect(open()).toBe(0);
+    act(() => shell.emit("pause"));
+    expect(open()).toBe(0);
+    visibility("visible");
+    await waitFor(() => expect(open()).toBe(1));
+    act(() => shell.emit("resume"));
+    await act(async () => {});
+    expect(open()).toBe(1);
+    expect(connects()).toBe(2);
+  });
+
+  it("a resume with nothing before it (a missed pause), or twice, and a pause twice, leave one socket and none", async () => {
+    await enterShell();
+    await live();
+    act(() => shell.emit("resume"));
+    act(() => shell.emit("resume"));
+    await act(async () => {});
+    expect(open()).toBe(1);
+    expect(connects()).toBe(1);
+    act(() => shell.emit("pause"));
+    act(() => shell.emit("pause"));
+    visibility("hidden");
+    visibility("hidden");
+    expect(open()).toBe(0);
+  });
+
+  it("a page that loads in the background opens nothing; the shell's resume (visibilityState still hidden) connects it, the later visible adds nothing", async () => {
+    await enterShell({ hello: { ...HELLO, push: "notDetermined" } });
+    visibilityState.mockReturnValue("hidden");
+    const api = apiOf();
+    mountReal(api);
+    await screen.findByTestId("app");
+    await act(async () => {});
+    expect(connects()).toBe(0);
+    expect(shell.named("push.register")).toHaveLength(0);
+    act(() => shell.emit("resume"));
+    await waitFor(() => expect(open()).toBe(1));
+    await waitFor(() => expect(api.registerPushDevice).toHaveBeenCalledTimes(1));
+    visibility("visible");
+    await act(async () => {});
+    expect(open()).toBe(1);
+    expect(connects()).toBe(1);
+    expect(shell.named("push.register")).toHaveLength(1);
   });
 });

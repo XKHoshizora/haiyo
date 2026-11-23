@@ -175,3 +175,40 @@ test("in an ordinary browser the shell's events do nothing and no bridge exists"
   expect(new URL(page.url()).pathname).toBe("/");
   expect(await pushDevicesOf(ann.id)).toHaveLength(0);
 });
+
+test("a tapped link to a public page or a reset mail loads that page, the query kept; an address off this site does nothing", async ({ people }) => {
+  const ann = await people.member("Ann", { open: false });
+  await ann.context.addInitScript(fakeShell, { push: "granted", token: TOKEN, env: "production" });
+  const page = await people.openApp(ann);
+  await emit(page, "open", { path: "https://evil.example/terms" });
+  await page.waitForTimeout(300);
+  expect(new URL(page.url()).pathname).toBe("/");
+  await emit(page, "open", { path: "/terms" });
+  await expect(page).toHaveURL(/\/terms$/);
+  await page.goto("/");
+  await expect(rail(page)).toBeVisible();
+  const requested = [];
+  page.on("request", (r) => requested.push(new URL(r.url()).pathname + new URL(r.url()).search));
+  await emit(page, "open", { path: "/reset-password?token=abc123" });
+  await expect.poll(() => requested).toContain("/reset-password?token=abc123");
+});
+
+test("a resume asks the shell again: a permission turned on in the system's Settings registers the phone", async ({ people }) => {
+  const ann = await people.member("Ann", { open: false });
+  await ann.context.addInitScript(fakeShell, { push: "denied", token: TOKEN, env: "production" });
+  const page = await people.openApp(ann);
+  await goTo(page, "设置");
+  await expect(page.getByText(/通知已关闭/)).toBeVisible();
+  expect(await pushDevicesOf(ann.id)).toHaveLength(0);
+  await page.evaluate(() => {
+    const h = window.webkit.messageHandlers.haiyo;
+    const post = h.postMessage;
+    h.postMessage = async (m) => {
+      const reply = await post(m);
+      return m.name === "hello" ? { ...reply, push: "granted" } : m.name === "push.register" ? { token: "0123456789ABCDEF".repeat(4), env: "production" } : reply;
+    };
+  });
+  await emit(page, "resume");
+  await expect.poll(async () => (await pushDevicesOf(ann.id)).length).toBe(1);
+  await expect(page.getByText(/通知已关闭/)).toHaveCount(0);
+});
