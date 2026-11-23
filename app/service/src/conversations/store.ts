@@ -264,7 +264,7 @@ async function socialPermission(q: Queryable, conversationId: string, opts: Perm
 /**
  * THE write rule of social conversations, for many at once in ONE statement (the sync asks it for all of a person's): per
  * conversation, whether its relation is open. Person to Agent: `reach(the person, the Agent, 'social')` is `ok`. Agent to Agent:
- * `reach(X, Y, 'group')` and `reach(Y, X, 'group')` both. It is the same for a participant and for a supervising owner, so a
+ * the switch is on and `reach(X, Y, 'group')` and `reach(Y, X, 'group')` both. It is the same for a participant and for a supervising owner, so a
  * removal, a bar, a block or the switch shuts the owner's interjection as it shuts the person's own message. Refusals: `blocked`
  * stays `blocked`; `gone` is `agent_deleted` when the Agent asked is deleted, else `agent_unavailable`; `barred` and
  * `no_access` are `no_access`. A conversation that is no social conversation has no entry.
@@ -276,9 +276,11 @@ export async function socialCanSendMany(q: Queryable, conversationIds: readonly 
   const rule = (subject: string, agent: string, where: ReachWhere): string => reachSql({ subject, agent, where, socialOn });
   // `who` asks, `asked` is the Agent asked: the person and their Agent, or the first Agent and the second (then the second asks
   // the first as well).
-  const { rows } = await q.query<{ id: string; r1: Reach; d1: boolean; r2: Reach; d2: boolean }>(
-    `select x.id,
-            case when x.with_person then ${rule("x.who", "x.asked", "social")} else ${rule("x.who", "x.asked", "group")} end as r1,
+  const { rows } = await q.query<{ id: string; with_person: boolean; r1: Reach; d1: boolean; r2: Reach; d2: boolean }>(
+    `select x.id, x.with_person,
+            case when x.with_person then ${rule("x.who", "x.asked", "social")}
+                 when not (${socialOn}) then 'gone'
+                 else ${rule("x.who", "x.asked", "group")} end as r1,
             coalesce((select a.deleted_at is not null from agents a where a.principal_id = x.asked), true) as d1,
             case when x.with_person then 'ok' else ${rule("x.asked", "x.who", "group")} end as r2,
             coalesce((select a.deleted_at is not null from agents a where a.principal_id = x.who), true) as d2
@@ -290,7 +292,8 @@ export async function socialCanSendMany(q: Queryable, conversationIds: readonly 
     [conversationIds],
   );
   for (const r of rows) {
-    const [why, deleted] = r.r1 !== "ok" ? ([r.r1, r.d1] as const) : ([r.r2, r.d2] as const);
+    // Agent to Agent with the switch off is `gone` from the first side whichever Agent is deleted.
+    const [why, deleted] = r.r1 !== "ok" ? ([r.r1, r.d1 || (!r.with_person && r.d2)] as const) : ([r.r2, r.d2] as const);
     out.set(
       r.id,
       why === "ok"

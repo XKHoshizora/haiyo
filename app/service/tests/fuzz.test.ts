@@ -605,7 +605,8 @@ describe("fuzz", () => {
     }
     expect(findings).toEqual([]);
     // Agent social (A4): the add, with the fuzzing account's own Agent in the body (a 409 `is_yours`, past every check), before the
-    // pass below spends the account's twenty adds a minute on malformed ones.
+    // pass below spends the account's twenty adds a minute: Fastify refuses a malformed body before the handler, so only the
+    // probes of a valid shape spend it.
     const addRoute = routes.find((r) => r.method === "POST" && r.url === "/api/agent-contacts")!;
     const added = await probeAll(signedInAndOut(probesFor(addRoute, fx, { body: { agentId: fx.agent } }), fx.me.cookie), findings);
     expect([added.filter((x) => x.label.startsWith("the body given") && x.label.endsWith("[signed in]")).map((x) => x.status)]).toEqual([[409]]);

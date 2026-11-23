@@ -4,7 +4,7 @@ import { ensureSocial, lockConversation } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { handleOf } from "../principals/store.ts";
 import { lockPairs, orderedPair } from "./pair.ts";
-import { discoverable } from "./reach.ts";
+import { discoverable, discoverableSql, reach } from "./reach.ts";
 import { areFriends } from "./relations.ts";
 
 // Who may reach an Agent, per Agent: rows in `agent_contacts`, the policy that makes them, and the one function that ends them.
@@ -49,6 +49,8 @@ interface Locked {
   /** The person behind the subject (the subject itself, or its owner) and the Agent's owner. */
   personId: string;
   ownerId: string;
+  /** The subject is an Agent that is deleted. */
+  subjectDeleted: boolean;
   agent: { policy: ContactPolicy; picked: boolean };
   row: Row | null;
 }
@@ -60,8 +62,9 @@ interface Locked {
  * the Agent is no live Agent or the subject no principal. The owner and the kinds are read before the locks: neither changes.
  */
 async function lockRow(t: Tx, agentId: string, subjectId: string): Promise<Locked | null> {
-  const found = await t.query<{ owner_id: string; subject_kind: "human" | "agent"; subject_owner: string | null }>(
-    `select a.owner_id, s.kind as subject_kind, s.owner_id as subject_owner
+  const found = await t.query<{ owner_id: string; subject_kind: "human" | "agent"; subject_owner: string | null; subject_deleted: boolean }>(
+    `select a.owner_id, s.kind as subject_kind, s.owner_id as subject_owner,
+            exists (select 1 from agents sa where sa.principal_id = s.id and sa.deleted_at is not null) as subject_deleted
        from principals a join agents ag on ag.principal_id = a.id, principals s
       where a.id = $1 and a.kind = 'agent' and s.id = $2`,
     [agentId, subjectId],
@@ -79,7 +82,7 @@ async function lockRow(t: Tx, agentId: string, subjectId: string): Promise<Locke
   );
   if (!agent.rows[0] || agent.rows[0].deleted) return null;
   const row = await t.query<Row>("select state, until, end_reason from agent_contacts where agent_id = $1 and subject_id = $2 for update", [agentId, subjectId]);
-  return { personId, ownerId: f.owner_id, agent: { policy: agent.rows[0].contact_policy, picked: agent.rows[0].contact_picked }, row: row.rows[0] ?? null };
+  return { personId, ownerId: f.owner_id, subjectDeleted: f.subject_deleted, agent: { policy: agent.rows[0].contact_policy, picked: agent.rows[0].contact_picked }, row: row.rows[0] ?? null };
 }
 
 /** A request past its end is rewritten `ended`/`expired` when it is read for a decision (no sweep); true when this did it. */
@@ -117,11 +120,25 @@ const upsertLive = (t: Tx, agentId: string, subjectId: string, personId: string,
  * Dates are the database's `now()`.
  */
 export async function addContact(t: Tx, config: Pick<Config, "social" | "others">, subjectId: string, agentId: string): Promise<AddOutcome> {
+  // One statement, before any lock, tells an Agent nobody may find from one that is not there: both are answered after it, so
+  // that neither costs the caller more than the other (an Agent that is hidden from the caller must not take longer to refuse).
+  const socialOn = config.social.enabled ? "true" : "false";
+  const pre = await t.query<{ own: boolean; disc: boolean; subject_deleted: boolean }>(
+    `select (coalesce(s.owner_id, s.id) = a.owner_id) as own,
+            ${discoverableSql({ agent: "a.id", viewer: "coalesce(s.owner_id, s.id)", socialOn })}
+              and (s.kind = 'human' or ${discoverableSql({ agent: "a.id", viewer: "s.id", socialOn })}) as disc,
+            exists (select 1 from agents sa where sa.principal_id = s.id and sa.deleted_at is not null) as subject_deleted
+       from principals a, principals s where a.id = $1 and a.kind = 'agent' and s.id = $2`,
+    [agentId, subjectId],
+  );
+  const seen = pre.rows[0];
+  if (!seen || seen.subject_deleted || (!seen.own && !seen.disc)) return { refused: "not_found" };
   const locked = await lockRow(t, agentId, subjectId);
   if (!locked) return { refused: "not_found" };
   const { personId, ownerId, agent } = locked;
   if (personId === ownerId) return { refused: "is_yours" };
-  if (!(await discoverable(t, agentId, personId, config)) || (subjectId !== personId && !(await discoverable(t, agentId, subjectId, config)))) {
+  // Read again under the locks: what the statement above saw may have changed.
+  if (locked.subjectDeleted || !(await discoverable(t, agentId, personId, config)) || (subjectId !== personId && !(await discoverable(t, agentId, subjectId, config)))) {
     return { refused: "not_found" };
   }
   let row = locked.row;
@@ -151,7 +168,11 @@ export async function addContact(t: Tx, config: Pick<Config, "social" | "others"
   if (waitUntil) return { refused: "cooldown", availableAt: waitUntil };
 
   const barred = ((await t.query("select 1 from access_bars where lo_id = $1 and hi_id = $2", [lo, hi])).rowCount ?? 0) > 0;
-  const closedBefore = row?.state === "ended" && (row.end_reason === "narrowed" || row.end_reason === "removed" || row.end_reason === "barred");
+  const closed = (r: { state: ContactState; end_reason: EndReason | null } | undefined | null): boolean =>
+    r?.state === "ended" && (r.end_reason === "narrowed" || r.end_reason === "removed" || r.end_reason === "barred");
+  // The person's own row on this Agent counts for their Agent as well (design §1.2: "an ended row of P on this Agent").
+  const personRow = subjectId === personId ? row : (await t.query<Row>("select state, until, end_reason from agent_contacts where agent_id = $1 and subject_id = $2", [agentId, personId])).rows[0];
+  const closedBefore = closed(row) || closed(personRow);
   if (!barred && !closedBefore && agent.policy === "contacts" && (await areFriends(t, personId, ownerId))) {
     const picked = !agent.picked || ((await t.query("select 1 from agent_contact_picks where agent_id = $1 and person_id = $2", [agentId, personId])).rowCount ?? 0) > 0;
     if (picked) {
@@ -179,7 +200,10 @@ export async function approveContact(t: Tx, ownerId: string, agentId: string, su
   const locked = await lockRow(t, agentId, subjectId);
   if (!locked) return { refused: "not_requested" };
   if (await expireIfLate(t, agentId, subjectId, locked.row)) return { refused: "not_requested" };
-  if (locked.row?.state !== "requested") return { refused: "not_requested" };
+  if (locked.row?.state !== "requested" || locked.subjectDeleted) return { refused: "not_requested" };
+  // A block made after the request, either way, or an Agent gone since, ends the wait (a bar does not: an approval passes it).
+  const standing = await reach(t, subjectId, agentId, "social", { social: { enabled: true } });
+  if (standing === "blocked" || standing === "gone") return { refused: "not_requested" };
   await upsertLive(t, agentId, subjectId, locked.personId, "approved");
   return { conversationId: (await ensureSocial(t, subjectId, agentId)).conversationId };
 }
@@ -254,7 +278,7 @@ export async function contactsOf(q: Queryable, me: string): Promise<{ mine: Mine
             (select sp.conversation_id from social_pairs sp where sp.a_id = least(c.subject_id, c.agent_id) and sp.b_id = greatest(c.subject_id, c.agent_id)) as conversation_id,
             c.since, c.until
        from agent_contacts c join agents a on a.principal_id = c.agent_id and a.deleted_at is null
-      where c.subject_id = $1
+      where c.subject_id = $1 and c.person_id = $1
       order by c.since desc, c.agent_id`,
     [me],
   );
@@ -277,6 +301,7 @@ export async function contactsOf(q: Queryable, me: string): Promise<{ mine: Mine
        join principals s on s.id = c.subject_id
        left join principals so on so.id = s.owner_id
       where c.state = 'requested' and c.until > now()
+        and not exists (select 1 from agents sa where sa.principal_id = s.id and sa.deleted_at is not null)
       order by c.since desc, c.agent_id, c.subject_id`,
     [me],
   );

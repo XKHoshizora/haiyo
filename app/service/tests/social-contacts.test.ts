@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { addContact } from "../src/social/agent-contacts.ts";
 import { reach } from "../src/social/reach.ts";
 import { api, befriend, signUp, type Actor } from "./helpers/actors.ts";
@@ -413,9 +413,13 @@ describe("the lists", () => {
       await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, until, since) values ($1, $2, $2, 'requested', now() + interval '1 day', $3)`, [agentId, p.id, new Date(t0 + i * 1000)]);
       want.push({ agentId, subject: p.id });
     }
-    // Rows that do not wait: a live one, an ended one, an expired request.
+    // Rows that do not wait: a live one, an ended one, and a request that ran out (`until` past: still `requested` in the table).
     const noise = await person();
     await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [agents[0]!.id, noise.id]);
+    const endedOne = await person();
+    await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $2, 'ended', 'declined')`, [agents[0]!.id, endedOne.id]);
+    const lateOne = await person();
+    await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, until, since) values ($1, $2, $2, 'requested', now() - interval '1 hour', now() - interval '8 days')`, [agents[0]!.id, lateOne.id]);
     const stranger = await signUp(app, "wlstranger");
     expect((await api(app, stranger, "GET", "/api/agent-contacts")).json).toEqual({ mine: [], waiting: [] });
     const res = await api(app, owner, "GET", "/api/agent-contacts");
@@ -473,7 +477,8 @@ describe("races", () => {
     expect(a.json.conversationId).toBe(b.json.conversationId);
     expect((await db.query(`select count(*)::int n from social_pairs`)).rows[0]!.n).toBe(1);
     expect((await db.query(`select count(*)::int n from agent_contacts`)).rows[0]!.n).toBe(1);
-    expect((await db.query(`select count(*)::int n from messages where kind = 'system'`)).rows.length).toBe(1);
+    const conv = a.json.conversationId as string;
+    expect((await db.query(`select count(*)::int n from messages where kind = 'system' and conversation_id = $1`, [conv])).rows[0]!.n).toBe(1);
   });
 });
 
@@ -482,18 +487,107 @@ describe("announcing", () => {
     const { owner, agent } = await world("ann");
     const v = await signUp(app, "annvisitor");
     const told: string[][] = [];
+    const changed: Array<{ id: string; ids: string[] }> = [];
     const off = app.deps.social.on((ids) => void told.push([...ids]));
+    const offConv = app.deps.conversations.onMembershipChanged((id, ids) => void changed.push({ id, ids }));
     try {
       await add(v, agent.id);
       expect(told.some((ids) => ids.includes(v.id) && ids.includes(owner.id))).toBe(true);
+      // A request makes no conversation: nothing is published.
+      expect(changed).toEqual([]);
       told.length = 0;
-      await approve(owner, agent.id, v);
+      const approved = await approve(owner, agent.id, v);
       expect(told.some((ids) => ids.includes(v.id) && ids.includes(owner.id))).toBe(true);
+      // The new conversation reaches its human members: the visitor and the owner (not the Agent).
+      await vi.waitFor(() => expect(changed.map((c) => c.id)).toContain(approved.json.conversationId));
+      expect([...changed.find((c) => c.id === approved.json.conversationId)!.ids].sort()).toEqual([owner.id, v.id].sort());
       told.length = 0;
       await remove(owner, agent.id, v);
       expect(told.some((ids) => ids.includes(v.id) && ids.includes(owner.id))).toBe(true);
     } finally {
       off();
+      offConv();
+    }
+  });
+});
+
+describe("wrap-up of block 2's review (M1, M3, M4)", () => {
+  it("M1: a block made after the request makes it no longer approvable", async () => {
+    const { owner, agent } = await world("m1a");
+    const v = await signUp(app, "m1v");
+    await add(v, agent.id);
+    await db.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2)`, [v.id, agent.id]);
+    expect(await approve(owner, agent.id, v)).toMatchObject({ status: 409, json: { error: "not_requested" } });
+    expect((await db.query(`select count(*)::int n from social_pairs`)).rows[0]!.n).toBe(0);
+    await db.query(`delete from blocks`);
+    // The owner's block of the person: the same.
+    await db.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2)`, [owner.id, v.id]);
+    expect(await approve(owner, agent.id, v)).toMatchObject({ status: 409, json: { error: "not_requested" } });
+    await db.query(`delete from blocks`);
+    // A request nothing stands against is approved as ever.
+    expect((await approve(owner, agent.id, v)).status).toBe(200);
+  });
+
+  it("M3a: a person's own ended row closes the door for their Agent too: its add is a request, not a let-in", async () => {
+    const { owner, agent } = await world("m3a");
+    await policy(agent.id, "contacts");
+    const p = await signUp(app, "m3ap");
+    await befriend(app, owner, p);
+    const pAgent = await agentOf(p.id);
+    expect(await add(p, agent.id)).toMatchObject({ status: 201 });
+    expect((await remove(owner, agent.id, p)).status).toBe(200);
+    expect(await rowOf(agent.id, p.id)).toMatchObject({ state: "ended", end_reason: "removed" });
+    expect(await direct(pAgent, agent.id)).toMatchObject({ state: "requested" });
+  });
+
+  it("M3b: a request from an Agent that is deleted is not listed and cannot be approved or added", async () => {
+    const { owner, agent } = await world("m3b");
+    const p = await signUp(app, "m3bp");
+    const pAgent = await agentOf(p.id);
+    expect(await direct(pAgent, agent.id)).toMatchObject({ state: "requested" });
+    expect(((await api(app, owner, "GET", "/api/agent-contacts")).json.waiting as unknown[]).length).toBe(1);
+    await db.query(`update agents set deleted_at = now() where principal_id = $1`, [pAgent]);
+    expect((await api(app, owner, "GET", "/api/agent-contacts")).json.waiting).toEqual([]);
+    expect(await approve(owner, agent.id, pAgent)).toMatchObject({ status: 409, json: { error: "not_requested" } });
+    expect(await direct(pAgent, agent.id)).toEqual({ refused: "not_found" });
+  });
+
+  it("M5: the visitor's list leaves out the rows of an Agent that is deleted, and shows no row of anyone else's", async () => {
+    const { owner, agent } = await world("m5");
+    const other = (await mustCreateAgent(app, owner, { handle: "m5other" })) as MadeAgent;
+    const v = await signUp(app, "m5v");
+    await add(v, agent.id);
+    await add(v, other.id);
+    const list = async () => ((await api(app, v, "GET", "/api/agent-contacts")).json.mine as Array<{ agentId: string }>).map((r) => r.agentId).sort();
+    expect(await list()).toEqual([agent.id, other.id].sort());
+    await db.query(`update agents set deleted_at = now() where principal_id = $1`, [other.id]);
+    expect(await list()).toEqual([agent.id]);
+  });
+
+  it("M4: an Agent hidden from the caller is answered after the same statements as an id that is no principal", async () => {
+    const owner = await signUp(app, "m4owner");
+    const v = await signUp(app, "m4v");
+    const counted = async (agentId: string): Promise<number> => {
+      let n = 0;
+      await db.tx(async (t) => {
+        const wrapped = { ...t, query: (...a: Parameters<typeof t.query>) => (n++, t.query(...a)) } as typeof t;
+        expect(await addContact(wrapped, app.deps.config, v.id, agentId)).toEqual({ refused: "not_found" });
+      });
+      return n;
+    };
+    const unknown = await counted("00000000-0000-4000-8000-000000000000");
+    const hiding: Record<string, (id: string) => Promise<unknown>> = {
+      none: (id) => policy(id, "none"),
+      disabled: (id) => db.query(`update agents set disabled_at = now() where principal_id = $1`, [id]),
+      deleted: (id) => db.query(`update agents set deleted_at = now() where principal_id = $1`, [id]),
+      asker: (id) => db.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2)`, [v.id, id]),
+      theowner: () => db.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2)`, [owner.id, v.id]),
+    };
+    for (const [name, hide] of Object.entries(hiding)) {
+      const a = (await mustCreateAgent(app, owner, { handle: `m4${name}` })) as MadeAgent;
+      await hide(a.id);
+      expect([name, await counted(a.id)]).toEqual([name, unknown]);
+      await db.query(`delete from blocks`);
     }
   });
 });

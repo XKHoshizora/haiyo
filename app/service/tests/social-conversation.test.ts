@@ -207,4 +207,17 @@ describe("the write rule", () => {
     expect(await canSend(db, conv, owner.id, on)).toEqual({ ok: false, reason: "no_access" });
     expect(await canSend(db, conv, (await signUp(app, "csstranger")).id, on)).toBeNull();
   });
+
+  it("M2 of block 2's review: with the switch off an Agent-to-Agent conversation is shut for both owners too", async () => {
+    const { owner, agent } = await world("m2");
+    const other = await signUp(app, "m2other");
+    const theirs = (await mustCreateAgent(app, other, { handle: "m2theirs" })) as MadeAgent;
+    const { conversationId: conv } = await seedSocialAgents(app, { x: theirs.id, y: agent.id });
+    const { socialCanSendMany } = await import("../src/conversations/store.ts");
+    expect((await socialCanSendMany(db, [conv], on)).get(conv)).toEqual({ ok: true });
+    expect((await socialCanSendMany(db, [conv], { social: { enabled: false } })).get(conv)).toEqual({ ok: false, reason: "agent_unavailable" });
+    // A deleted Agent still says so, the switch or not.
+    await db.query(`update agents set deleted_at = now() where principal_id = $1`, [theirs.id]);
+    expect((await socialCanSendMany(db, [conv], { social: { enabled: false } })).get(conv)).toEqual({ ok: false, reason: "agent_deleted" });
+  });
 });
