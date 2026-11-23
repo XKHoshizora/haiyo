@@ -2922,11 +2922,15 @@ use or what is left).
   all your Agents (never multiplied by their number) and by both lanes others call for (calls on your Agents, and replies nobody asked for).
 - `used`: today's answers (distinct retry chains admitted in the site day) and points (settled charges plus what your running replies hold:
   the sum the cap is decided by).
-- `reached`, and `agents[].reached`: whether another person's reply would be refused NOW, decided by the function admission asks (`othersCheck`) at the
-  smallest hold admission could accept for that Agent (one plain call; nothing for a provider's own model, which only the answers refuse). An Agent
-  waiting behind others' holds is not reached; one with no model is not asked. Yours is true when your answers are used up, or when you have live
-  Agents and every one of them is reached (with none: when `used` has reached your points). So it can be true while `used` is under the limit
-  (22.5 of 70 on a paid model: the next reply needs 61.5), and is never false while every call would be refused.
+- `reached` and `tight`, yours and in each `agents[]` row: two one-sided facts about what another person's reply would meet now, each decided by the
+  function admission asks (`othersCheck`), because the hold of a future reply is not knowable. `reached: true` ONLY IF every call would be refused:
+  your answers are used up, or what is left (holds counted) is below a lower bound of any hold admission can compute for that Agent (its tool-less
+  system text from its persona, your name and the date, with no conversation, and the others' output limit). Never true while any reply could be
+  admitted. `tight: true` IF a reply could be refused for size: what is left is below the largest plain hold there is (the model's whole context
+  beside its output); `tight: false` means every plain reply fits. `reached` implies `tight`. So there are three states: neither (fits), `tight` (a
+  longer reply may not be sent), `reached` (certainly refused). Waiting behind other replies' holds is not refused. An Agent with no model (or whose
+  site model is gone) answers nobody: its row has `reached` false, `tight` false and `perDay` 0, and your `reached` / `tight` leave it out: yours is
+  `reached` when your answers are used up or every other Agent is (with none to ask, when `used` has reached your points), and `tight` when any is.
 - `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then answers, then id, `points` as
   `used`'s (settled plus held). A reply nobody asked for, and one whose caller has left, are in `used` and in no row.
 - `stopped`: the people you stopped contact with (停止往来) and have not since resumed, newest first: bars you set that no block made. Empty
@@ -2938,8 +2942,9 @@ use or what is left).
   tokens and the others' output limit), else the smaller of the answers number and `1 + ⌊(points − that hold) / the cost of a plain reply⌋`
   (5 000 input and 500 output tokens at its model's price); a provider's own model costs you nothing, so it gets the answers number; no
   model, 0. On the design's sites that is 50 on the free tier at 70 points and 1 on the paid.
-- `notice`: true while you have a live Agent, have not seen the one-time notice (`POST /api/me/others-limits/seen`) and your account is older than
-  migration 074 (an owner who joined after the change is told nothing about a change they never had).
+- `notice`: true while you have a live Agent, have not seen the one-time notice (`POST /api/me/others-limits/seen`) and your account row is older
+  than the moment migration 074 ran (the row is made at your first Agent, metered reply or grant, not at sign-up; an owner who joined after the change is
+  told nothing about a change they never had).
 
 #### `PUT /api/me/others-limits`
 

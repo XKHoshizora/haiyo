@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { stoppedOf, stoppedShape } from "../src/accounts/others-routes.ts";
-import { NO_RUN, othersCheck, othersUsedByAgents, othersUsedToday, perDayEstimate } from "../src/metering/others.ts";
+import { NO_RUN, othersCeilingHold, othersCheck, othersPlainFloor, othersUsedByAgents, othersUsedToday, perDayEstimate } from "../src/metering/others.ts";
+import { readOwnedAgent } from "../src/agents/store.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { createAgent, mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -144,7 +145,7 @@ describe("GET /api/me/others-use", () => {
     const owner = await newOwner();
     expect(await use(owner)).toEqual({
       status: 200,
-      json: { limits: { answers: 50, points: "70" }, used: { answers: 0, points: "0" }, reached: false, byPerson: [], stopped: [], agents: [], notice: false },
+      json: { limits: { answers: 50, points: "70" }, used: { answers: 0, points: "0" }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false },
     });
   });
 
@@ -157,13 +158,13 @@ describe("GET /api/me/others-use", () => {
     await reply({ agent: a!, ownerId: owner.id, lane: "own", micro: 50_000_000n, caller: owner.id });
     await seedRun(db, { ownerId: owner.id, agent: a!, lane: "others", hold: 500_000n, admittedAt: new Date() });
     expect((await use(owner)).json).toMatchObject({ limits: { answers: 50, points: "70" }, used: { answers: 3, points: "4.5" }, reached: false });
-    const put = await api(app, owner, "PUT", "/api/me/others-limits", { answers: 7, points: "4.5" });
-    expect([put.status, put.json]).toEqual([200, { answers: 7, points: "4.5" }]);
-    // Settled 4 plus held 0.5 is the number, but the Agent's reply holds it: another reply would wait behind it, not be refused (not reached).
-    expect((await use(owner)).json).toMatchObject({ limits: { answers: 7, points: "4.5" }, used: { answers: 3, points: "4.5" }, reached: false });
-    // The hold ends: 4 settled leaves 0.5, under one plain hold: reached.
+    const put = await api(app, owner, "PUT", "/api/me/others-limits", { answers: 7, points: "4.2" });
+    expect([put.status, put.json]).toEqual([200, { answers: 7, points: "4.2" }]);
+    // Settled 4 plus held 0.5 is over the number, but the Agent's reply holds some of it: another reply would wait behind it, not be refused.
+    expect((await use(owner)).json).toMatchObject({ limits: { answers: 7, points: "4.2" }, used: { answers: 3, points: "4.5" }, reached: false });
+    // The hold ends: 4 settled leaves 0.2, under the least a reply holds (its output alone is 0.224): reached.
     await db.query("update agent_runs set status = 'done', hold_micro = 0, finished_at = now() where owner_id = $1 and status = 'running'", [owner.id]);
-    expect((await use(owner)).json).toMatchObject({ used: { answers: 3, points: "4" }, reached: true });
+    expect((await use(owner)).json).toMatchObject({ used: { answers: 3, points: "4" }, reached: true, tight: true });
     expect((await api(app, owner, "PUT", "/api/me/others-limits", { answers: 3, points: "70" })).status).toBe(200);
     expect((await use(owner)).json).toMatchObject({ limits: { answers: 3, points: "70" }, reached: true });
     expect((await db.query(`select others_answers n, others_points_micro::text p from accounts where principal_id = $1`, [owner.id])).rows).toEqual([{ n: 3, p: "70000000" }]);
@@ -235,8 +236,8 @@ describe("GET /api/me/others-use", () => {
     const byId = new Map(got.map((x) => [x.agentId, x]));
     expect(got).toHaveLength(5);
     expect(byId.has(doomed.agentId)).toBe(false);
-    expect(byId.get(free.agentId)).toEqual({ agentId: free.agentId, answers: 1, points: "1.5", perDay: 50, reached: false });
-    expect(byId.get(paid.agentId)).toEqual({ agentId: paid.agentId, answers: 0, points: "0", perDay: 1, reached: false });
+    expect(byId.get(free.agentId)).toEqual({ agentId: free.agentId, answers: 1, points: "1.5", perDay: 50, reached: false, tight: false });
+    expect(byId.get(paid.agentId)).toEqual({ agentId: paid.agentId, answers: 0, points: "0", perDay: 1, reached: false, tight: true });
     expect(byId.get(tiny.agentId)).toMatchObject({ perDay: 0 });
     expect(byId.get(limited.agentId)).toMatchObject({ perDay: 3 });
     expect(byId.get(provider.agentId)).toMatchObject({ perDay: 50 });
@@ -277,31 +278,76 @@ describe("GET /api/me/others-use", () => {
   });
 });
 
-describe("reached: what is shown is what admission does (the same function)", () => {
+describe("reached and tight: two one-sided facts, each by the function admission asks", () => {
   const config = () => app.deps.config;
-  /** The verdict admission itself would give a plain one-call reply of `agent` now. */
-  const admission = async (ownerId: string, agentId: string, x: bigint) => othersCheck(db, config(), { id: NO_RUN, ownerId, agentId, lane: "others" }, x, "admission", new Date());
-
-  it("paid tier: 22.5 of 70 used, the next call's hold of 61.5 does not fit: reached is true for the Agent and the owner while used is far under the limit", async () => {
+  const POINTS_70 = 70n * POINT;
+  const room = async (id: string) => {
+    const json = (await use(await ownerOf(id))).json;
+    return json;
+  };
+  const owners = new Map<string, Actor>();
+  const ownerOf = async (id: string) => owners.get(id)!;
+  /** An owner with one Agent on `model` and `settled` points taken today, so that `left` is what remains of 70. */
+  async function world(model: typeof FREE_MODEL | typeof PAID_MODEL, left: (floor: bigint, ceiling: bigint) => bigint) {
     const owner = await newOwner();
-    const [paid] = await agentsOf(app, db, owner, 1, PAID_MODEL);
-    let got = (await use(owner)).json;
-    expect([got.reached, got.agents[0].reached]).toEqual([false, false]);
-    await reply({ agent: paid!, ownerId: owner.id, lane: "others", micro: 22_500_000n, caller: (await newOwner()).id });
-    expect(await admission(owner.id, paid!.agentId, 61_500_000n)).toEqual({ ok: false, limit: "points" });
-    got = (await use(owner)).json;
-    expect(got.used.points).toBe("22.5");
-    expect([got.reached, got.agents[0].reached]).toEqual([true, true]);
+    owners.set(owner.id, owner);
+    const [agent] = await agentsOf(app, db, owner, 1, model);
+    const row = (await readOwnedAgent(db, owner.id, agent!.agentId))!;
+    const floor = await othersPlainFloor(db, config(), row, null, new Date());
+    const ceiling = othersCeilingHold(config(), row.model);
+    const settled = POINTS_70 - left(floor, ceiling);
+    if (settled > 0n) await reply({ agent: agent!, ownerId: owner.id, lane: "others", micro: settled, caller: (await newOwner()).id });
+    return { owner, agent: agent!, row, floor, ceiling };
+  }
+  const states = async (owner: Actor) => {
+    const got = (await use(owner)).json;
+    return { owner: [got.reached, got.tight], agents: got.agents.map((a: { reached: boolean; tight: boolean }) => [a.reached, a.tight]) };
+  };
+
+  it("the floor is a real lower bound: a few hundred bytes of system text and the 800-token output, far under a typical 16 500-token reply", async () => {
+    const w = await world(FREE_MODEL, () => POINTS_70);
+    expect(w.floor).toBeGreaterThan(224_000n);
+    expect(w.floor).toBeLessThan(2_534_000n);
+    expect(w.ceiling).toBeGreaterThan(2_534_000n);
   });
 
-  it("free tier: 67.5 used leaves 2.5, under one plain hold of 2.534: reached; 67.4 leaves 2.6: not", async () => {
-    const owner = await newOwner();
-    const [free] = await agentsOf(app, db, owner, 1, FREE_MODEL);
-    const caller = (await newOwner()).id;
-    await reply({ agent: free!, ownerId: owner.id, lane: "others", micro: 67_400_000n, caller });
-    expect([(await use(owner)).json.reached, (await use(owner)).json.agents[0].reached]).toEqual([false, false]);
-    await reply({ agent: free!, ownerId: owner.id, lane: "others", micro: 100_000n, caller });
-    expect([(await use(owner)).json.reached, (await use(owner)).json.agents[0].reached]).toEqual([true, true]);
+  it("one micro-point below the floor: reached (and tight); at the floor: not reached, tight", async () => {
+    const below = await world(FREE_MODEL, (f) => f - 1n);
+    expect(await states(below.owner)).toEqual({ owner: [true, true], agents: [[true, true]] });
+    expect(await othersCheck(db, config(), { id: NO_RUN, ownerId: below.owner.id, agentId: below.agent.agentId, lane: "others" }, below.floor, "admission", new Date())).toEqual({ ok: false, limit: "points" });
+    const at = await world(FREE_MODEL, (f) => f);
+    expect(await states(at.owner)).toEqual({ owner: [false, true], agents: [[false, true]] });
+    expect(await othersCheck(db, config(), { id: NO_RUN, ownerId: at.owner.id, agentId: at.agent.agentId, lane: "others" }, at.floor, "admission", new Date())).toEqual({ ok: true });
+  });
+
+  it("between the floor and the ceiling: tight only; at the ceiling and above: neither", async () => {
+    const between = await world(FREE_MODEL, (f, c) => (f + c) / 2n);
+    expect(await states(between.owner)).toEqual({ owner: [false, true], agents: [[false, true]] });
+    const justBelow = await world(FREE_MODEL, (_f, c) => c - 1n);
+    expect((await states(justBelow.owner)).agents).toEqual([[false, true]]);
+    const atCeiling = await world(FREE_MODEL, (_f, c) => c);
+    expect(await states(atCeiling.owner)).toEqual({ owner: [false, false], agents: [[false, false]] });
+    const plenty = await world(FREE_MODEL, () => POINTS_70);
+    expect(await states(plenty.owner)).toEqual({ owner: [false, false], agents: [[false, false]] });
+  });
+
+  it("the review's examples are tight, not reached: a short reply fits (free tier 2.5 left, paid tier 47.5 left)", async () => {
+    const free = await world(FREE_MODEL, () => 2_500_000n);
+    expect(await states(free.owner)).toEqual({ owner: [false, true], agents: [[false, true]] });
+    expect(await othersCheck(db, config(), { id: NO_RUN, ownerId: free.owner.id, agentId: free.agent.agentId, lane: "others" }, 1_000_000n, "admission", new Date())).toEqual({ ok: true });
+    const paid = await world(PAID_MODEL, () => 47_500_000n);
+    expect(await states(paid.owner)).toEqual({ owner: [false, true], agents: [[false, true]] });
+    expect(await othersCheck(db, config(), { id: NO_RUN, ownerId: paid.owner.id, agentId: paid.agent.agentId, lane: "others" }, paid.floor, "admission", new Date())).toEqual({ ok: true });
+  });
+
+  it("a long-persona Agent whose floor exceeds what is left is reached, where the same room still serves a short persona", async () => {
+    const short = await world(FREE_MODEL, () => 5_000_000n);
+    expect((await states(short.owner)).agents).toEqual([[false, true]]);
+    const long = await world(FREE_MODEL, () => 5_000_000n);
+    await db.query("update agents set persona = $2 where principal_id = $1", [long.agent.agentId, "汉".repeat(20_000)]);
+    const row = (await readOwnedAgent(db, long.owner.id, long.agent.agentId))!;
+    expect(await othersPlainFloor(db, config(), row, null, new Date())).toBeGreaterThan(5_000_000n);
+    expect(await states(long.owner)).toEqual({ owner: [true, true], agents: [[true, true]] });
   });
 
   it("an Agent on its owner's own provider key holds nothing: only the answers reach it", async () => {
@@ -311,9 +357,8 @@ describe("reached: what is shown is what admission does (the same function)", ()
     await reply({ agent: free!, ownerId: owner.id, lane: "others", micro: 80_000_000n, caller: (await newOwner()).id });
     const got = (await use(owner)).json;
     const row = (id: string) => got.agents.find((a: { agentId: string }) => a.agentId === id);
-    expect([row(byok.agentId).reached, row(free!.agentId).reached, got.reached]).toEqual([false, true, false]);
-    // The answers number reaches it (and every Agent): one answer today, a number of 1.
-    await setOwnerNumbers(db, owner.id, { answers: 1, pointsMicro: 70n * POINT });
+    expect([row(byok.agentId).reached, row(byok.agentId).tight, row(free!.agentId).reached, got.reached, got.tight]).toEqual([false, false, true, false, true]);
+    await setOwnerNumbers(db, owner.id, { answers: 1, pointsMicro: POINTS_70 });
     const capped = (await use(owner)).json;
     expect([capped.agents.every((a: { reached: boolean }) => a.reached), capped.reached]).toEqual([true, true]);
   });
@@ -321,32 +366,44 @@ describe("reached: what is shown is what admission does (the same function)", ()
   it("an Agent whose own sub-limit binds is reached alone: the owner is not, while another Agent can still answer", async () => {
     const owner = await newOwner();
     const [a, b] = await agentsOf(app, db, owner, 2, FREE_MODEL);
-    await db.query("update agents set others_budget_micro = 2000000 where principal_id = $1", [a!.agentId]); // under one plain hold (2.534)
+    await db.query("update agents set others_budget_micro = 1000000 where principal_id = $1", [a!.agentId]);
+    await db.query("update agents set persona = $2 where principal_id = $1", [a!.agentId, "汉".repeat(12_000)]); // its floor is over its 1 point
     const got = (await use(owner)).json;
     const row = (id: string) => got.agents.find((x: { agentId: string }) => x.agentId === id);
-    expect([row(a!.agentId).reached, row(b!.agentId).reached, got.reached]).toEqual([true, false, false]);
-    expect(await admission(owner.id, a!.agentId, 2_534_000n)).toEqual({ ok: false, limit: "points" });
-    expect(await admission(owner.id, b!.agentId, 2_534_000n)).toEqual({ ok: true });
+    expect([row(a!.agentId).reached, row(b!.agentId).reached, got.reached, got.tight]).toEqual([true, false, false, true]);
   });
 
-  it("the answers cap binding while points remain: every Agent and the owner are reached", async () => {
+  it("the answers cap alone makes reached true, with points to spare", async () => {
     const owner = await newOwner();
     const [a, b] = await agentsOf(app, db, owner, 2, FREE_MODEL);
-    await setOwnerNumbers(db, owner.id, { answers: 2, pointsMicro: 70n * POINT });
+    await setOwnerNumbers(db, owner.id, { answers: 2, pointsMicro: POINTS_70 });
     const caller = (await newOwner()).id;
     await reply({ agent: a!, ownerId: owner.id, lane: "others", micro: 1n, caller });
     expect((await use(owner)).json.reached).toBe(false);
     await reply({ agent: b!, ownerId: owner.id, lane: "others", micro: 1n, caller });
     const got = (await use(owner)).json;
-    expect([got.used, got.reached, got.agents.map((x: { reached: boolean }) => x.reached)]).toEqual([{ answers: 2, points: "0.000002" }, true, [true, true]]);
+    expect([got.used, got.reached, got.tight, got.agents.map((x: { reached: boolean }) => x.reached)]).toEqual([{ answers: 2, points: "0.000002" }, true, true, [true, true]]);
+  });
+
+  it("an Agent with no model answers nobody: its row is not reached, not tight, perDay 0, and it does not stop the owner's reached", async () => {
+    const owner = await newOwner();
+    const [free] = await agentsOf(app, db, owner, 1, FREE_MODEL);
+    const bare = await mustCreateAgent(app, owner, {}); // a new Agent's model is null
+    const settled = POINTS_70 - 100_000n; // under any floor
+    await reply({ agent: free!, ownerId: owner.id, lane: "others", micro: settled, caller: (await newOwner()).id });
+    const got = (await use(owner)).json;
+    const row = (id: string) => got.agents.find((x: { agentId: string }) => x.agentId === id);
+    expect(row(bare.id)).toMatchObject({ reached: false, tight: false, perDay: 0 });
+    expect(row(free!.agentId)).toMatchObject({ reached: true, tight: true });
+    expect([got.reached, got.tight]).toEqual([true, true]);
   });
 
   it("waiting behind others' holds is not reached", async () => {
     const owner = await newOwner();
     const [a, b] = await agentsOf(app, db, owner, 2, FREE_MODEL);
     await setOwnerNumbers(db, owner.id, { answers: 50, pointsMicro: 5n * POINT });
-    await seedRun(db, { ownerId: owner.id, agent: b!, lane: "others", hold: 3n * POINT, admittedAt: new Date() });
-    expect(await admission(owner.id, a!.agentId, 2_534_000n)).toMatchObject({ ok: false, heldBackBy: expect.any(Array) });
+    await seedRun(db, { ownerId: owner.id, agent: b!, lane: "others", hold: 4_900_000n, admittedAt: new Date() });
+    expect(await othersCheck(db, config(), { id: NO_RUN, ownerId: owner.id, agentId: a!.agentId, lane: "others" }, 2_534_000n, "admission", new Date())).toMatchObject({ ok: false, heldBackBy: expect.any(Array) });
     const got = (await use(owner)).json;
     expect([got.reached, got.agents.map((x: { reached: boolean }) => x.reached)]).toEqual([false, [false, false]]);
   });
@@ -409,6 +466,35 @@ describe("the stopped list's output shape (independent of the table: lane I swap
       { person: { id: "b", handle: "hb", displayName: "nb", avatarVersion: 3 }, since: "2026-03-01T01:00:00.000Z" },
     ]);
     expect(stoppedShape([])).toEqual([]);
+  });
+
+  it("reads the caller's own stop rows of lane A's ruled table (setter_id, other_id, kind, since), newest first, and nothing else (rolled-back transaction)", async () => {
+    const owner = await newOwner();
+    const [p1, p2, p3, p4, p5] = [await newOwner(), await newOwner(), await newOwner(), await newOwner(), await newOwner()];
+    const client = await db.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(`create table access_bars (
+        setter_id uuid not null references principals (id) on delete cascade, other_id uuid not null references principals (id) on delete cascade,
+        kind text not null check (kind in ('stop', 'block')), since timestamptz not null default now(), primary key (setter_id, other_id, kind))`);
+      const bar = (setter: Actor, other: Actor, kind: string, since: string) =>
+        client.query("insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, $3, $4)", [setter.id, other.id, kind, since]);
+      await bar(owner, p1, "stop", "2026-03-01T01:00:00Z");
+      await bar(owner, p2, "stop", "2026-03-02T01:00:00Z");
+      await bar(owner, p2, "block", "2026-03-02T02:00:00Z"); // a block's row: not a stop
+      await bar(owner, p3, "block", "2026-03-03T01:00:00Z");
+      await bar(p4, owner, "stop", "2026-03-04T01:00:00Z"); // somebody else stopped it
+      await bar(p5, owner, "block", "2026-03-05T01:00:00Z");
+      await bar(p1, p2, "stop", "2026-03-06T01:00:00Z");
+      expect((await stoppedOf(client, owner.id)).map((r) => [r.person.id, r.since])).toEqual([
+        [p2.id, "2026-03-02T01:00:00.000Z"],
+        [p1.id, "2026-03-01T01:00:00.000Z"],
+      ]);
+      expect((await stoppedOf(client, owner.id))[0]!.person).toEqual({ id: p2.id, handle: p2.handle, displayName: expect.any(String), avatarVersion: expect.any(Number) });
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
   });
 
   it("is [] where no table of bars exists (the guard)", async () => {

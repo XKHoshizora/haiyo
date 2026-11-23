@@ -8,9 +8,8 @@ import { AppError } from "../../errors.ts";
 import { JudgeError, type Answer, type Judge } from "../../judge/client.ts";
 import type { StoredMessage } from "../../messages/model.ts";
 import { count } from "../../memory/stats.ts";
-import { NO_RUN, othersCheck, othersFits, othersFloorHold } from "../../metering/others.ts";
+import { NO_RUN, othersCheck, othersFits, othersPlainFloor } from "../../metering/others.ts";
 import { loadGroupScene, withRoster } from "../context.ts";
-import { groupSystemText, NO_NOTES } from "../runtime/prompt.ts";
 import { noneTriggered, overLaneLimit, queueRun, toldSince, type RunLimits, type Triggered } from "../runs.ts";
 import { lockAgent, readOwnedAgent, type AgentRow } from "../store.ts";
 import { judgeable, judgedAgentIds, mayAnswerUnasked, NOBODY, optionsFor, PICK, quietKey, requestFor, type Flaggable, type JudgeRequest, type Option } from "./candidates.ts";
@@ -327,19 +326,8 @@ export async function proactivePlainFloor(q: Queryable, config: DecideDeps["conf
   if (agent.model?.source !== "site") return 0n;
   const scene = await loadGroupScene(q, agent, conversationId);
   if (scene === null) return 0n;
-  const owner = await q.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
-  const text = groupSystemText(
-    { name: agent.name, handle: agent.handle, persona: agent.persona, bare: null },
-    { displayName: owner.rows[0]!.display_name },
-    withRoster(scene, []),
-    now,
-    config.siteTimezone,
-    "",
-    true,
-    NO_NOTES,
-    false,
-  ).text;
-  return othersFloorHold(config, agent.model, Buffer.byteLength(text, "utf8"));
+  // The one floor (metering/others.ts `othersPlainFloor`), with this group's own scene.
+  return othersPlainFloor(q, config, agent, withRoster(scene, []), now);
 }
 
 const proactiveRun = (agent: Pick<AgentRow, "id" | "ownerId">) => ({ id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "proactive" as const });

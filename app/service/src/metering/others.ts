@@ -3,6 +3,7 @@ import type { Lane } from "../agents/runs.ts";
 import type { AgentModel } from "../agents/store.ts";
 import type { Config } from "../config.ts";
 import type { Queryable, Tx } from "../db.ts";
+import { groupSystemText, NO_NOTES, type GroupScene } from "../agents/runtime/prompt.ts";
 import type { Resolved } from "../models/resolve.ts";
 import { maxCostMicro } from "./prices.ts";
 import type { PayClass } from "./pool.ts";
@@ -380,22 +381,67 @@ export function perDayEstimate(
   return Number(replies < answers ? replies : answers);
 }
 
+/** A group with nothing named: the smallest scene a group reply's system text can have. */
+const EMPTY_SCENE: GroupScene = { title: null, agents: [], more: false, people: [], morePeople: false };
+
 /**
- * Whether another person's reply on `agent` would be refused NOW (the owner's page says 「已到上限」 from this, never from a comparison
- * of its own): `othersCheck` (no lock; the function admission asks) at the smallest hold admission could accept, the plain one-call
- * hold (`othersFloorHold` at 16 500 input tokens; nothing for a provider's own model, so only the answers refuse it). A `limit`
- * verdict is reached; waiting behind others' holds (`heldBackBy`) is not. An Agent with no model, or a site model the site no longer
- * has, is not asked: it fails for another reason.
+ * The least a plain reply of `agent` can hold, as `begin` will hold it (the ONE floor: the proactive lane's early check and the use
+ * page both ask it): one call without tools at the model's prices (`othersFloorHold`, through `othersHold`), at the bytes of the
+ * tool-less system text as `begin` builds it from what is known before any conversation exists: the persona, the owner's name, the
+ * date and `scene` (the group's title and Agents when the caller knows the group; none: the smallest scene, so that the result is
+ * a lower bound for every group). Never the conversation shown, the roster of speakers, the mark or the notes, which only add bytes.
+ * 0 for a provider's own model. (A social reply's text, B7a, is a separate one; its floor is not claimed here.)
  */
-export async function agentReached(
+export async function othersPlainFloor(
+  q: Queryable,
+  config: Pick<Config, "siteModels" | "others" | "siteTimezone">,
+  agent: { name: string; handle: string; persona: string; ownerId: string; model: AgentModel },
+  scene: GroupScene | null,
+  now: Date,
+): Promise<bigint> {
+  if (agent.model?.source !== "site") return 0n;
+  const owner = await q.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
+  const text = groupSystemText(
+    { name: agent.name, handle: agent.handle, persona: agent.persona, bare: null },
+    { displayName: owner.rows[0]?.display_name ?? "" },
+    scene ?? EMPTY_SCENE,
+    now,
+    config.siteTimezone,
+    "",
+    true,
+    NO_NOTES,
+    false,
+  ).text;
+  return othersFloorHold(config, agent.model, Buffer.byteLength(text, "utf8"));
+}
+
+/** The most a plain reply can hold: the model's whole context beside its output (an input never passes it): the one upper bound that is provable. */
+export const othersCeilingHold = (config: Pick<Config, "siteModels" | "others">, model: AgentModel): bigint => othersFloorHold(config, model, Number.MAX_SAFE_INTEGER);
+
+/**
+ * What the owner's page may say of an Agent's room, two one-sided facts (a future reply's hold is not knowable, so one boolean cannot
+ * be exact), each by the function admission asks (`othersCheck`, no lock):
+ * - `reached`: true ONLY IF every call would be refused: the answers are used up, or what is left is below the floor
+ *   (`othersPlainFloor`, a lower bound of any hold admission can compute for the Agent) and the verdict is a `limit`. Never true while a
+ *   reply could be admitted. (Waiting behind other replies' holds is not refused, `heldBackBy`; and the owner's points are looked at
+ *   before the Agent's own number, so an Agent whose own number is spent can read not reached while another reply holds the owner's:
+ *   admission then waits and refuses, as the same function says.)
+ * - `tight`: true IF a reply COULD be refused for size: what is left (holds counted) is below the ceiling (`othersCeilingHold`).
+ *   False means every plain reply fits. `reached` implies `tight`.
+ * `askable` false: no model, or a site model the site no longer has: it can answer nobody, whatever the room; the page leaves it out.
+ */
+export async function agentRoom(
   q: Queryable,
   config: Pick<Config, "others" | "siteTimezone" | "siteModels">,
-  agent: { id: string; ownerId: string; model: AgentModel },
+  agent: { id: string; ownerId: string; name: string; handle: string; persona: string; model: AgentModel },
   now: Date,
-): Promise<boolean> {
-  if (agent.model === null) return false;
-  if (agent.model.source === "site" && !config.siteModels.some((m) => m.id === (agent.model as { id: string }).id)) return false;
-  const x = othersFloorHold(config, agent.model, PLAIN_REPLY_INPUT_TOKENS);
-  const verdict = await othersCheck(q, config, { id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "others" }, x, "admission", now);
-  return !verdict.ok && "limit" in verdict;
+): Promise<{ askable: boolean; reached: boolean; tight: boolean }> {
+  if (agent.model === null) return { askable: false, reached: false, tight: false };
+  if (agent.model.source === "site" && !config.siteModels.some((m) => m.id === (agent.model as { id: string }).id)) return { askable: false, reached: false, tight: false };
+  const run = { id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "others" as const };
+  const floor = await othersCheck(q, config, run, await othersPlainFloor(q, config, agent, null, now), "admission", now);
+  const reached = !floor.ok && "limit" in floor;
+  if (reached) return { askable: true, reached: true, tight: true };
+  const ceiling = await othersCheck(q, config, run, othersCeilingHold(config, agent.model), "admission", now);
+  return { askable: true, reached: false, tight: !ceiling.ok };
 }
