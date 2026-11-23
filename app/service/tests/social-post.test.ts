@@ -5,7 +5,7 @@ import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
-import { closeAllSockets } from "./helpers/ws.ts";
+import { closeAllSockets, connect } from "./helpers/ws.ts";
 
 /**
  * Lane B, B8: post, finish and claim for a social run. A reply is posted once, on the access and notes as they are NOW (`reach` again,
@@ -76,7 +76,11 @@ describe("a social reply is posted once", () => {
     expect((await db.query("select 1 from agent_runs where agent_id = $1 and id <> $2", [w.agent.id, run.id])).rowCount).toBe(0);
   });
 
-  it("no acknowledgement is posted in a social conversation: what the reply says before it calls a tool stays with the reply", async () => {
+  // I1 (B-4 review; controller ruling 2026-11-25): there is no separate acknowledgement MESSAGE in a social conversation, but the text the
+  // model writes before a tool call is KEPT as the beginning of the one reply that is posted. The visitor sees one message; the owner pays
+  // for the run as for any reply; only a reply with no visible text at all takes the empty-reply path (no message, the run fails, the
+  // visitor is told nothing of why).
+  it("I1: preface, a tool call, then an answer: one message, the preface first, no ack message", async () => {
     const w = await world("ack");
     await say(w.v, w.conv, "帮我查查");
     gateway.callTools([{ name: "search_messages", input: { query: "不存在的词语" } }], { text: "我查一下。" }).reply("没查到。");
@@ -84,6 +88,43 @@ describe("a social reply is posted once", () => {
     const messages = await posted(w);
     expect(messages).toHaveLength(1);
     expect(messages[0]!.body.ack).toBeUndefined();
+    const text = messages[0]!.body.text as string;
+    expect(text.startsWith("我查一下。")).toBe(true);
+    expect(text.indexOf("没查到。")).toBeGreaterThan(text.indexOf("我查一下。"));
+    expect(await runOf(w)).toMatchObject({ status: "done", error: null });
+  });
+
+  it("I1: preface, a tool call, then nothing: the preface is the reply, one message, the run done", async () => {
+    const w = await world("ackonly");
+    await say(w.v, w.conv, "帮我查查");
+    gateway.callTools([{ name: "search_messages", input: { query: "不存在的词语" } }], { text: "他周三下午有空。" }).empty();
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const messages = await posted(w);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.body.text).toBe("他周三下午有空。");
+    expect(messages[0]!.body.ack).toBeUndefined();
+    const run = await runOf(w);
+    expect(run).toMatchObject({ status: "done", error: null });
+    expect(await usageRecords(run.id)).toBe(1);
+  });
+
+  it("I1: no text at all (a call, then nothing): the existing empty-reply path, no message", async () => {
+    const w = await world("noneatall");
+    await say(w.v, w.conv, "帮我查查");
+    gateway.callTools([{ name: "search_messages", input: { query: "不存在的词语" } }]).empty();
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect(await posted(w)).toEqual([]);
+    expect((await runOf(w)).status).toBe("failed");
+  });
+
+  it("I1: the acknowledgement port call itself posts nothing and leaves the text with the reply (\"refused\", which leaves the stream alone)", async () => {
+    const w = await world("ackport");
+    await say(w.v, w.conv, "你好");
+    const ticket = await begun(w);
+    expect(await app.agentPort.acknowledge(ticket, { text: "我查一下。", reasoning: "" })).toBe("refused");
+    expect(await posted(w)).toEqual([]);
+    expect(await runOf(w)).toMatchObject({ status: "running", interrupted: null });
+    await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
   });
 });
 
@@ -163,11 +204,14 @@ describe("the claim", () => {
     const config = app.deps.config as { social: { enabled: boolean } };
     const before = config.social;
     config.social = { enabled: false };
+    const socket = await connect(app, w.owner);
     try {
       const ticket = await app.agentPort.claimNext();
       expect(ticket).not.toBeNull();
       expect(ticket!.conversationId).toBe(w.agent.conversationId);
       expect(await runOf(w)).toMatchObject({ status: "cancelled", error: "access_ended" });
+      // Announced to its owner: the run's end reaches the owner's socket for that conversation.
+      await socket.waitFor((e) => e.type === "run" && e.conversationId === w.conv && e.run?.status === "cancelled");
       await app.agentPort.finish(ticket!, { status: "cancelled" }, null, NOTHING);
     } finally {
       config.social = before;
@@ -175,5 +219,28 @@ describe("the claim", () => {
     // Switched on again, nothing answers the old message.
     expect(await app.agentPort.claimNext()).toBeNull();
     expect(await posted(w)).toEqual([]);
+  });
+
+  it("m5: the claim itself skips a social run while the switch is off, even one queued after the sweep (the sweep is neutralised here)", async () => {
+    const w = await world("filter");
+    await say(w.v, w.conv, "你好");
+    const config = app.deps.config as { social: { enabled: boolean } };
+    const before = config.social;
+    config.social = { enabled: false };
+    const port = app.agentPort as unknown as { endQueuedSocial: () => Promise<void> };
+    const sweep = port.endQueuedSocial;
+    port.endQueuedSocial = async () => {};
+    try {
+      expect(await app.agentPort.claimNext()).toBeNull();
+      expect(await runOf(w)).toMatchObject({ status: "queued" });
+    } finally {
+      port.endQueuedSocial = sweep;
+      config.social = before;
+    }
+    // Switched on again: the same run is claimed as usual.
+    const ticket = await app.agentPort.claimNext();
+    expect(ticket).not.toBeNull();
+    expect(ticket!.conversationId).toBe(w.conv);
+    await app.agentPort.finish(ticket!, { status: "cancelled" }, null, NOTHING);
   });
 });

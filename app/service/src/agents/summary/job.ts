@@ -8,7 +8,7 @@ import { count } from "../../memory/stats.ts";
 import { labelledEntry, toAttachment } from "../context.ts";
 import { attachmentLabel, entryText, minimalTokens } from "../runtime/context.ts";
 import { drawMark, speakerRole } from "../runtime/prompt.ts";
-import { placeOf } from "../../social/place.ts";
+import { placeOf, type Place } from "../../social/place.ts";
 import { liveAgent, lockAgent } from "../store.ts";
 import { atLongest, callPerson, capped, hasItems, mapItems, noItems, parseSummary, shownForm, summaryInput, summarySystem, whoIn, type Sections } from "./prompt.ts";
 import {
@@ -290,8 +290,8 @@ export async function runSummary(deps: SummaryDeps, job: SummaryJob, ctx: Summar
   const agent = await liveAgent(db, job.agentId);
   if (!agent) return;
   // A social conversation is never summarised (what a stranger said is no memory of the owner's): no job is made for one (port-impl.ts
-  // `finish`), and one asked for anyway does nothing.
-  if (job.conversationId !== agent.conversationId && (await placeOf(db, job.conversationId, agent).catch(() => null)) === "social") return;
+  // `finish`), and one asked for anyway does nothing. A place that cannot be read is treated as social: the job does nothing (fails closed).
+  if (job.conversationId !== agent.conversationId && (await placeOf(db, job.conversationId, agent).catch((): Place => "social")) === "social") return;
   const reader: PlacedReader = { agentId: agent.id, ownerId: agent.ownerId, conversationId: job.conversationId, group: job.conversationId !== agent.conversationId };
 
   const base = await summaryBase(db, agent.id, job.conversationId);

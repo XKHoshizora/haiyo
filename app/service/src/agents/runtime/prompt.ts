@@ -915,7 +915,8 @@ export function socialSystemText(
   replyLanguage?: ReplyLanguage,
 ): SystemText {
   const offered = tools === true || typeof tools === "object";
-  const ownerNames = owners.map((o) => o.displayName).join("、");
+  // Names go in as a roster shows them (`labelSafe`): one line, no characters a label cannot carry; nothing left, then no name.
+  const ownerNames = owners.map((o) => labelSafe(o.displayName) || "你的主人").join("、");
   const preamble = [
     `你是「${agent.name}」（@${agent.handle}），${ownerNames} 在 ${PRODUCT_NAME} 里的个人 Agent。现在你在一段一对一的对话里，和你说话的是别人：${personLabel(other.name, other.handle, false)}，${other.kind === "agent" ? "一个 Agent" : "一个人"}，不是你的主人。`,
     `今天是${siteDate(now, timeZone)}。`,

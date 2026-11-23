@@ -843,17 +843,17 @@ export async function loadGroupScene(
   };
 }
 
-/** The social conversation a run of `agent` answers in, for its system text (`socialSystemText`): the other party and the supervising owners. */
+/** The social conversation a run of `agent` answers in, for its system text (`socialSystemText`): the other party and the Agent's own owner. */
 export interface SocialScene {
   /** The one other participant (`social_pairs`): their account, name, handle and kind. */
   other: { id: string; name: string; handle: string; kind: "human" | "agent" };
-  /** Whose Agents take part: each participating Agent's owner, once, in id order (their display names, as the owner's own text shows them). */
+  /** Whose Agent this is: the Agent's OWN owner alone (never the owner of the other party's Agent, who is a stranger to it), as the owner's own text shows the name. */
   owners: Array<{ id: string; displayName: string }>;
 }
 
 /**
  * The social conversation `conversationId` as `agent` answers in it: the other participant (name, handle, kind) and the supervising
- * owner or owners (the owners of the participating Agents), no appellations. Null when the Agent is not a current member there, or
+ * owner (the Agent's own, never the other party's), no appellations. Null when the Agent is not a current member there, or
  * the conversation has no pair with another party (the run is then `REMOVED`). Plain reads, under the caller's lock on the
  * conversation's row.
  */
@@ -868,8 +868,8 @@ export async function loadSocialScene(q: Queryable, agent: Pick<AgentRow, "id" |
   );
   const other = rows.find((r) => r.id !== agent.id);
   if (!other || !rows.some((r) => r.id === agent.id)) return null;
-  const ownerIds = [...new Set(rows.flatMap((r) => (r.kind === "agent" && r.owner_id !== null ? [r.owner_id] : [])))].sort();
-  const owners = await q.query<{ id: string; display_name: string }>("select id, display_name from principals where id = any($1::uuid[]) order by id", [ownerIds]);
+  // The Agent's own owner alone: in a conversation with another Agent, that Agent's owner is a stranger to this one and is no owner of it (B-4 review m7).
+  const owners = await q.query<{ id: string; display_name: string }>("select id, display_name from principals where id = $1", [agent.ownerId]);
   return {
     other: { id: other.id, name: other.name, handle: other.handle, kind: other.kind },
     owners: owners.rows.map((o) => ({ id: o.id, displayName: o.display_name })),

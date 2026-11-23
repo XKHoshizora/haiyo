@@ -23,8 +23,12 @@ vi.mock("../src/memory/passage.ts", async (importOriginal) => {
 });
 
 const gateway = scriptedGateway();
-const { app, db } = useApp({ env: OTHERS_ENV, models: gateway, agentWorker: false, tools: true, config: SOCIAL_ON });
+const lines: string[] = [];
+const { app, db } = useApp({ env: OTHERS_ENV, models: gateway, agentWorker: false, tools: true, config: SOCIAL_ON, logStream: { write: (line) => void lines.push(line) } });
+/** The metric lines named `name` logged since the test began, with where they came from (`from`). */
+const metric = (name: string) => lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e.metric === name);
 afterEach(async () => {
+  lines.length = 0;
   loadNotesOverride.current = null;
   vi.restoreAllMocks();
   await closeAllSockets();
@@ -55,6 +59,7 @@ describe("ring 1a shows a visitor no owner notes at all", () => {
     const w = await world("canary");
     await db.query("insert into owner_notes (owner_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.owner.id, "OWNER-OPEN-CANARY 主人爱吃辣", "OWNER-VAULT-CANARY 主人的存款"]);
     await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.agent.id, "SELF-OPEN-CANARY 我记下的", "SELF-VAULT-CANARY 我私下记的"]);
+    await db.query("insert into agent_hearsay (agent_id, conversation_id, speaker_id, speaker_name, text, said_at) values ($1, $2, $3, $4, $5, now())", [w.agent.id, w.conv, w.v.id, "nw", "HEARSAY-CANARY 听来的话"]);
     await db.query("update agents set memory = true, shared_notes = true where principal_id = $1", [w.agent.id]);
     await say(w.v, w.conv, "你知道主人爱吃什么吗");
     gateway.reply("不方便说。");
@@ -67,6 +72,27 @@ describe("ring 1a shows a visitor no owner notes at all", () => {
     expect(JSON.stringify(posted.rows)).not.toContain("CANARY");
     const run = await runOf(w);
     expect(run).toMatchObject({ status: "done", shown_notes: null, withheld_notes: null });
+  });
+});
+
+describe("ring 1a, a run with a tool round", () => {
+  it("m4: every request of a social run that calls a tool (the steps and the finishing request) is free of every canary, and so is what is posted", async () => {
+    const w = await world("canarytool");
+    await setOwnerNumbers(db, w.owner.id, { pointsMicro: 70n * POINT });
+    await db.query("insert into owner_notes (owner_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.owner.id, "OWNER-OPEN-CANARY 主人爱吃辣", "OWNER-VAULT-CANARY 主人的存款"]);
+    await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.agent.id, "SELF-OPEN-CANARY 我记下的", "SELF-VAULT-CANARY 我私下记的"]);
+    await db.query("insert into agent_hearsay (agent_id, conversation_id, speaker_id, speaker_name, text, said_at) values ($1, $2, $3, $4, $5, now())", [w.agent.id, w.conv, w.v.id, "nw", "HEARSAY-CANARY 听来的话"]);
+    await db.query("update agents set memory = true, shared_notes = true where principal_id = $1", [w.agent.id]);
+    await say(w.v, w.conv, "帮我找找之前说过什么");
+    const before = gateway.calls.length;
+    gateway.callTools([{ name: "search_messages", input: { query: "主人" } }], { text: "我查一下。" }).reply("没有。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const mine = gateway.calls.slice(before);
+    expect(mine.length).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(mine)).not.toContain("CANARY");
+    const posted = await db.query<{ body: unknown }>("select body from messages where conversation_id = $1 and sender_id = $2 and kind = 'text'", [w.conv, w.agent.id]);
+    expect(posted.rows).toHaveLength(1);
+    expect(JSON.stringify(posted.rows)).not.toContain("CANARY");
   });
 });
 
@@ -135,5 +161,7 @@ describe("the advisory room", () => {
     expect(call.tools ?? []).toEqual([]);
     expect(call.system).toContain("你没有任何工具");
     expect(await runOf(tight)).toMatchObject({ status: "done" });
+    // m2: it was the advisory room in `begin` that dropped the tools, not step 3's admission fallback (the two are told apart on the metric line).
+    expect(metric("others_plain_fallback").map((e) => e.from)).toEqual(["advisory"]);
   });
 });

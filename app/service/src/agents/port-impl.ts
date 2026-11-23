@@ -494,8 +494,9 @@ export class DbAgentPort implements AgentPort {
    */
   async claimNext(): Promise<RunTicket | null> {
     const { config } = this.deps;
-    // The site's Agent social switch is off: a queued run in a social conversation is not claimed; it ends `access_ended`, announced to its
-    // owner, and nothing answers an old message when the switch comes back on (M5, M18).
+    // The site's Agent social switch is off: a queued run in a social conversation is not claimed (the claim's own filter, `$8`, holds
+    // even for one queued after this statement); it ends `access_ended`, announced to its owner, and nothing answers an old message
+    // when the switch comes back on (M5, M18).
     if (!config.social.enabled) await this.endQueuedSocial();
     const waiting = (r: string) =>
       `(${r}.held_back_by is not null
@@ -523,6 +524,7 @@ export class DbAgentPort implements AgentPort {
          select q.id from agent_runs q
           where q.status = 'queued' and q.purpose = 'reply'
             and (q.not_before is null or q.not_before <= $7::timestamptz)
+            and ($8::boolean or not exists (select 1 from conversations sc where sc.id = q.conversation_id and sc.type = 'agent_social'))
             and (select count(*) from agent_runs x where x.owner_id = q.owner_id and x.status = 'running') < $1
             and (q.lane = 'own'
               or (select count(*) from agent_runs x where x.owner_id = q.owner_id and x.status = 'running' and x.lane <> 'own') < $2)
@@ -543,6 +545,7 @@ export class DbAgentPort implements AgentPort {
         config.freeDailyMicro.toString(),
         siteDay(new Date(), config.siteTimezone),
         this.now(),
+        config.social.enabled,
       ],
     );
     const row = rows[0];
@@ -909,7 +912,7 @@ export class DbAgentPort implements AgentPort {
         const growth = roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens) + config.others.overCapNotes * noteBytes(longestToolName(offer.tools));
         const needed = othersHold(resolved, heldTokens, { growthTokens: growth, roomCapTokens: roomCap });
         if ((await othersRoomAdvisory(t, config, run.ownerId, agent.id, state.lane as OthersLane, now)) < needed) {
-          log.info({ metric: "others_plain_fallback" }, "agent run: an others' reply made without tools: the room its owner's number leaves does not cover the hold with them");
+          log.info({ metric: "others_plain_fallback", from: "advisory" }, "agent run: an others' reply made without tools: the room its owner's number leaves does not cover the hold with them");
           offer = null;
           reserved = 0;
           ({ loaded, refs } = await planOf(false, 0));
@@ -955,6 +958,8 @@ export class DbAgentPort implements AgentPort {
       const { agent, state } = await this.lockRun(t, run);
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
+      // A social run: its visitor may still reach the Agent now, after the attachments were read outside any transaction (B-4 review m1).
+      if (this.flags.get(run.id)?.place === "social" && (await runAccess(t, agent, state, this.deps.config)) !== "ok") return { end: ACCESS_ENDED };
       // Too late to start (it crossed the bound while its attachments were read): what step 1 took on is handed back as
       // noted, as a refusal hands it back, so its follow-up rule answers it.
       if (this.tooLate(state)) {
@@ -1067,7 +1072,7 @@ export class DbAgentPort implements AgentPort {
       // Admitted plain (N3): its with-tools hold did not fit, its one-call hold did — it makes one call without the tools it was
       // offered, as a reply whose tools the upstream refused does (`others_plain_fallback`).
       if (admission.plain) {
-        log.info({ metric: "others_plain_fallback" }, "agent run: an others' reply made without tools: only its one-call hold fit its owner's number");
+        log.info({ metric: "others_plain_fallback", from: "admission" }, "agent run: an others' reply made without tools: only its one-call hold fit its owner's number");
         tools = [];
       }
       // What a social reply was shown of its owner's notes, and what was left out for want of a yes: written with the admission, in this
@@ -1363,7 +1368,8 @@ export class DbAgentPort implements AgentPort {
    * `AgentPort.acknowledge`: what the reply said before it called a tool, posted at once as its acknowledgement
    * (`postAsAgent` "ack", in its own transaction), published after commit as any message of the Agent's — it calls
    * nobody — and, in a group, dropping the proactive judgement waiting there as the Agent's reply would. It cites
-   * nothing: every token of its run is taken out (tools/refs.ts `takeCites`). Refused, or empty, as `post`.
+   * nothing: every token of its run is taken out (tools/refs.ts `takeCites`). Refused, or empty, as `post`. In a social conversation
+   * nothing is posted and the answer is "refused": the text stays with the reply (see `posting`).
    */
   acknowledge(run: RunTicket, said: { text: string; reasoning: string }): Promise<"posted" | "refused" | "empty"> {
     return this.posting(run, { ...said, stopped: false, truncated: false }, "ack");
@@ -1376,8 +1382,10 @@ export class DbAgentPort implements AgentPort {
    */
   private async posting(run: RunTicket, said: Reply, as: "reply" | "ack"): Promise<"posted" | "refused" | "empty"> {
     const flags = this.flags.get(run.id);
-    // A social conversation has no acknowledgement: what a reply says before it calls a tool stays with the reply (posted, if at all, once).
-    if (as === "ack" && flags?.place === "social") return "empty";
+    // A social conversation has no acknowledgement MESSAGE. What the reply says before it calls a tool is kept as the beginning of the
+    // one reply that is posted: "refused" is the answer that leaves the worker's stream alone (it restarts it on anything else) and sets
+    // no stop flag (only the catch below does). If nothing follows the tool round, that text is the reply.
+    if (as === "ack" && flags?.place === "social") return "refused";
     const mark = flags?.mark ?? null;
     const reply: AgentReply = { ...said, refs: flags?.tools?.refs ?? null };
     try {
