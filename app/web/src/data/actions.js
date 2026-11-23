@@ -994,7 +994,8 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
       if (!result.ok) return result;
       const listed = Array.isArray(result.value?.listed) ? result.value.listed : [];
       // `source: "catalogue"`: the provider has no model list there, these are the public catalogue's models at its host.
-      const source = result.value?.source === "catalogue" ? { source: "catalogue" } : {};
+      // `source: "sibling"`: the list came from another address of the same provider (the service's listing-siblings table).
+      const source = result.value?.source === "catalogue" || result.value?.source === "sibling" ? { source: result.value.source } : {};
       return { ok: true, value: { listed: listed.filter((m) => typeof m?.name === "string").map(listedModel), ...source } };
     },
 

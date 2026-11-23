@@ -155,7 +155,7 @@ describe("providers: the other actions", () => {
     await expect(actions.listProviderModels(PID)).resolves.toEqual({
       ok: false,
       error: { code: "provider_unavailable", reason: null, status: 200, upstreamStatus: "404" },
-      text: "这个供应商没有提供模型列表（状态码 404），所以没能确认密钥是否可用。对话可能仍然可以使用，模型名称需要手动添加。",
+      text: "供应商有回应，但这个地址没有模型列表（404）。可以手动添加模型。",
     });
     listProviderModels.mockResolvedValueOnce({ ok: false, error: "provider_rejected", upstreamStatus: "401" });
     await expect(actions.listProviderModels(PID)).resolves.toMatchObject({

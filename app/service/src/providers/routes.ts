@@ -418,7 +418,7 @@ export function registerProviderRoutes(
         querystring: empty,
         body: noBody,
         response: {
-          200: z.union([z.object({ ok: z.literal(true), listed: z.array(listedModel), source: z.enum(["upstream", "catalogue"]) }), callFailure]),
+          200: z.union([z.object({ ok: z.literal(true), listed: z.array(listedModel), source: z.enum(["upstream", "sibling", "catalogue"]) }), callFailure]),
         },
       },
     },
@@ -438,18 +438,20 @@ export function registerProviderRoutes(
           .slice(0, MAX_LISTED_MODELS)
           .map((name) => ({ name, ...modelHints(name), added: saved.has(name) }));
       let names: string[];
+      let source: "upstream" | "sibling" = "upstream";
       try {
-        names = await providerProbe.listModels(target);
+        // Its own `/models` first; when that is not offered, a sibling listing on the same origin (listing-siblings.json).
+        names = await providerProbe.listModels(target, { onSibling: () => void (source = "sibling") });
       } catch (err) {
         const failure = toProviderCallError(err);
         logFailure(req.log, req.params.id, target.protocol, failure);
-        // No model list there (404, 405): the public catalogue's models of a provider at that very host, if it knows one.
-        const noList = failure.code === "provider_unavailable" && (failure.upstreamStatus === 404 || failure.upstreamStatus === 405);
+        // No model list there (404, 405, or a 200 that is none): the public catalogue's models of a provider at that very host, if it knows one.
+        const noList = failure.code === "provider_unavailable" && (failure.upstreamStatus === 404 || failure.upstreamStatus === 405 || failure.upstreamStatus === 200);
         const known = noList ? catalogueModels(target.baseUrl) : null;
         if (known !== null) return { ok: true as const, listed: listedOf(known), source: "catalogue" as const };
         return failed(failure);
       }
-      return { ok: true as const, listed: listedOf(names), source: "upstream" as const };
+      return { ok: true as const, listed: listedOf(names), source };
     },
   );
 
