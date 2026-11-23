@@ -87,6 +87,12 @@ export const listMessages = (conversationId, { before, limit } = {}) =>
 export const getMessage = (conversationId, seq) => request("GET", `/api/conversations/${seg(conversationId)}/messages/${seg(seq)}`);
 export const markRead = (conversationId, seq) => request("POST", `/api/conversations/${seg(conversationId)}/read`, { seq });
 
+// ───────── push devices (the iOS app's shell: shell/push.js)
+/** Binds the phone to this session. `body`: {token, env: "sandbox" | "production", appVersion?} → {ok: true}. */
+export const registerPushDevice = (body) => request("POST", "/api/push/devices", body);
+/** Unbinds this session's phone (always 200) → {ok: true}. */
+export const removePushDevice = () => request("DELETE", "/api/push/devices/current");
+
 // ───────── sync, catch-up and the socket
 export const getSync = () => request("GET", "/api/sync");
 /** positions: {[conversationId]: last seq held}. */
