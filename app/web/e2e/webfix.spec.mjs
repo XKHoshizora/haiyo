@@ -11,6 +11,8 @@ import { agentApi } from "./support/tools.mjs";
 import { WEB_DIR } from "./support/env.mjs";
 
 const BIG_PHONE = { viewport: { width: 402, height: 874 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 };
+/** Phones: the owner's class (shot 86 measures as 430x932) and 402x874. Chromium with touch events: these guard layout arithmetic, not what iOS paints. */
+const PHONES = [["402x874", { width: 402, height: 874 }], ["430x932", { width: 430, height: 932 }]];
 
 const SHOTS = process.env.WEBFIX_SHOTS ?? path.resolve(WEB_DIR, "..", "..", "..", "..", ".superpowers", "sdd", "2026-11-22-polish", "webfix-shots");
 /** A screenshot for the report (only with E2E_SHOTS=1). */
@@ -103,36 +105,43 @@ async function scrollAndCheck(page, body, label) {
   }
 }
 
-test("F2: a long form scrolled by touch stays painted from its top edge to its bottom, on the create and the edit page", async ({ people }) => {
-  const ann = await people.member("Ann", { contextOptions: BIG_PHONE });
-  const page = ann.page;
-  await goTo(page, "Agent");
-  await page.getByRole("button", { name: "创建 Agent", exact: true }).click();
-  await expect(page.getByRole("region", { name: "创建 Agent" })).toBeVisible();
-  const body = page.locator("form.page-body");
-  await expect(body).toBeVisible();
-  await shot(page, "f2-create-top");
-  await scrollAndCheck(page, body, "create");
+for (const [size, viewport] of PHONES) {
+  test(`F2 (Chromium only, layout guard, not iOS painting) ${size}: a long form scrolled by touch is drawn from its top edge to its bottom, create and edit page`, async ({ people }) => {
+    const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport } });
+    const page = ann.page;
+    await goTo(page, "Agent");
+    await page.getByRole("button", { name: "创建 Agent", exact: true }).click();
+    await expect(page.getByRole("region", { name: "创建 Agent" })).toBeVisible();
+    const body = page.locator("form.page-body");
+    await expect(body).toBeVisible();
+    // The block the owner's band covered: 主动参与群聊 on, with 话多话少 and the daily number under it.
+    const proactive = page.getByRole("switch", { name: /主动参与群聊/ }).or(page.getByRole("checkbox", { name: /主动参与群聊/ }));
+    if (await proactive.count()) {
+      await proactive.first().click();
+      await expect(page.getByText("话多话少", { exact: true }).first()).toBeVisible();
+    }
+    await shot(page, `f2-create-top-${size}`);
+    await scrollAndCheck(page, body, `create-${size}`);
 
-  // The check sees a blank: with the texts hidden most of the same boxes carry no ink (so a band the browser leaves unpainted fails it).
-  await body.evaluate((el) => (el.scrollTop = 0));
-  const labels = await visibleBlocks(page, "form.page-body");
-  await page.addStyleTag({ content: "form.page-body .field-label, form.page-body h3, form.page-body .field-hint { visibility: hidden !important; }" });
-  const blank = await inkIn(page, labels);
-  expect(blank.filter((amount) => amount < 3).length).toBeGreaterThan(blank.length / 2);
-  await page.goto("/");
+    // The check sees a blank: with the texts hidden most of the same boxes carry no ink.
+    await body.evaluate((el) => (el.scrollTop = 0));
+    const labels = await visibleBlocks(page, "form.page-body");
+    await page.addStyleTag({ content: "form.page-body .field-label, form.page-body h3, form.page-body .field-hint { visibility: hidden !important; }" });
+    const blank = await inkIn(page, labels);
+    expect(blank.filter((amount) => amount < 3).length).toBeGreaterThan(blank.length / 2);
+    await page.goto("/");
 
-  // The edit page of an Agent has the same body.
-  const agent = await agentApi(ann, { name: "表单检" });
-  await page.goto("/");
-  await goTo(page, "Agent");
-  await listRow(page, agent.name).click();
-  await page.getByRole("button", { name: "编辑" }).click();
-  await expect(page.getByRole("region", { name: "编辑 Agent" })).toBeVisible();
-  await scrollAndCheck(page, page.locator("form.page-body"), "edit");
-});
+    const agent = await agentApi(ann, { name: "表单检" });
+    await page.goto("/");
+    await goTo(page, "Agent");
+    await listRow(page, agent.name).click();
+    await page.getByRole("button", { name: "编辑" }).click();
+    await expect(page.getByRole("region", { name: "编辑 Agent" })).toBeVisible();
+    await scrollAndCheck(page, page.locator("form.page-body"), `edit-${size}`);
+  });
+}
 
-/** A provider of `count` models (named `<prefix>-01` …) added through the API; resolves with its name. */
+/** A provider of `count` models (named `<prefix>-01` ...) added through the API; resolves with its name. */
 async function providerWithModels(person, count, prefix) {
   const name = `prov-${uniq(6)}`;
   const models = Array.from({ length: count }, (_, i) => ({ name: `${prefix}-${String(i + 1).padStart(2, "0")}` }));
@@ -141,7 +150,7 @@ async function providerWithModels(person, count, prefix) {
   return name;
 }
 
-/** Settings → 记忆宫殿 and the memory model's sheet, open. */
+/** Settings > 记忆宫殿 and the memory model's sheet, open. */
 async function openMemoryModelSheet(page) {
   await goTo(page, "设置");
   await page.getByRole("button", { name: /记忆宫殿/ }).click();
@@ -151,33 +160,126 @@ async function openMemoryModelSheet(page) {
   return list;
 }
 
-/** Every row can be brought into view above the footer: the list scrolls (by touch), and its last row ends above the footer's top edge. */
-async function expectListReachesItsEnd(page, list, lastName) {
-  const frame = await list.boundingBox();
-  const sheet = page.locator(".model-pop");
-  for (let i = 0; i < 6; i += 1) await touchScroll(page, frame.x + frame.width / 2, frame.y + frame.height / 2, 400);
-  const last = list.getByRole("option", { name: new RegExp(lastName) });
-  await expect(last).toBeVisible();
-  const row = await last.boundingBox();
-  const foot = await sheet.locator(".model-foot").boundingBox();
-  const box = await sheet.boundingBox();
-  const listBox = await list.boundingBox();
-  expect(row.y + row.height, "the last row ends above the footer").toBeLessThanOrEqual(foot.y + 0.5);
-  expect(row.y, "and inside the list").toBeGreaterThanOrEqual(listBox.y - 0.5);
-  expect(foot.y + foot.height, "the footer stays on screen").toBeLessThanOrEqual(page.viewportSize().height + 0.5);
-  expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize().height + 0.5);
+/** The last row and the sheet in numbers: where the row ends against the list's visible part, the footer, and the screen; and the cue. */
+async function listState(page, lastName) {
+  await page.waitForTimeout(350); // (the sheet's own slide-in is over)
+  return page.evaluate((name) => {
+    const list = document.querySelector(".model-list");
+    const row = [...list.querySelectorAll("[role=option]")].find((el) => el.getAttribute("aria-label")?.startsWith(name));
+    const foot = document.querySelector(".model-foot").getBoundingClientRect();
+    const pop = document.querySelector(".model-pop").getBoundingClientRect();
+    const l = list.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    return { rowTop: r.top, rowBottom: r.bottom, listTop: l.top, listBottom: l.bottom, footTop: foot.top, popBottom: pop.bottom, screen: window.innerHeight, more: list.hasAttribute("data-more"), scrollable: list.scrollHeight > list.clientHeight + 1 };
+  }, lastName);
 }
 
-for (const [label, viewport] of [["360", { width: 360, height: 740 }], ["402", { width: 402, height: 874 }], ["402, short (keyboard up)", { width: 402, height: 520 }]]) {
-  test(`F3: the model sheet's list scrolls to its last row above the footer with 12 models, at ${label}`, async ({ people }) => {
+const SHEET_SIZES = [["360x740", { width: 360, height: 740 }], ["402x874", { width: 402, height: 874 }], ["430x932", { width: 430, height: 932 }]];
+
+for (const [size, viewport] of SHEET_SIZES) {
+  test(`F3 (Chromium only) ${size}: 6 own models (a few more rows than the old 560px sheet showed), no keyboard: the last row is whole above the footer, or the list is cut with the more-below cue`, async ({ people }) => {
+    test.skip(!canControlService, "needs the local model stub");
+    const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport } });
+    const prefix = `modelx${uniq(3)}`;
+    await providerWithModels(ann, 6, prefix);
+    await ann.page.goto("/");
+    await openMemoryModelSheet(ann.page);
+    await shot(ann.page, `f3-six-open-${size}`);
+    const at = await listState(ann.page, `${prefix}-06`);
+    const whole = at.rowTop >= at.listTop - 0.5 && at.rowBottom <= at.listBottom + 0.5;
+    // Either every row is whole in the list (and nothing says more), or the list is cut and says so. Never cut without the cue.
+    if (whole) expect(at.more, "everything fits: no cue").toBe(false);
+    else expect(at.more, "cut at the edge: the cue shows").toBe(true);
+    expect(at.footTop).toBeGreaterThanOrEqual(at.listBottom - 0.5);
+    expect(at.popBottom).toBeLessThanOrEqual(at.screen + 0.5);
+  });
+
+  test(`F3 (Chromium only) ${size}: 12 own models: the cue shows until the end, the last row scrolls whole above the footer`, async ({ people }) => {
     test.skip(!canControlService, "needs the local model stub");
     const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport } });
     const prefix = `modelx${uniq(3)}`;
     await providerWithModels(ann, 12, prefix);
     await ann.page.goto("/");
     const list = await openMemoryModelSheet(ann.page);
-    await shot(ann.page, `f3-sheet-open-${viewport.width}x${viewport.height}`);
-    await expectListReachesItsEnd(ann.page, list, `${prefix}-12`);
-    await shot(ann.page, `f3-sheet-end-${viewport.width}x${viewport.height}`);
+    const first = await listState(ann.page, `${prefix}-12`);
+    expect(first.scrollable).toBe(true);
+    expect(first.more, "cue at open").toBe(true);
+    const frame = await list.boundingBox();
+    for (let i = 0; i < 8; i += 1) await touchScroll(ann.page, frame.x + frame.width / 2, frame.y + frame.height / 2, 400);
+    const end = await listState(ann.page, `${prefix}-12`);
+    expect(end.rowBottom, "the last row ends above the footer").toBeLessThanOrEqual(end.footTop + 0.5);
+    expect(end.rowTop).toBeGreaterThanOrEqual(end.listTop - 0.5);
+    expect(end.more, "no cue at the end").toBe(false);
+    expect(end.popBottom).toBeLessThanOrEqual(end.screen + 0.5);
+    await shot(ann.page, `f3-twelve-end-${size}`);
   });
 }
+
+test("F3 (Chromium only, layout arithmetic: the window is cut to 520 high, which is not an on-screen keyboard): the sheet stays on screen", async ({ people }) => {
+  test.skip(!canControlService, "needs the local model stub");
+  const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport: { width: 402, height: 520 } } });
+  const prefix = `modelx${uniq(3)}`;
+  await providerWithModels(ann, 12, prefix);
+  await ann.page.goto("/");
+  await openMemoryModelSheet(ann.page);
+  const at = await listState(ann.page, `${prefix}-12`);
+  expect(at.popBottom).toBeLessThanOrEqual(at.screen + 0.5);
+  expect(at.footTop).toBeLessThanOrEqual(at.screen);
+});
+
+/** Every box in the app that is scrolled, by where it is (class and path): the page's position as a person sees it. */
+const scrollPositions = (page) =>
+  page.evaluate(() =>
+    [document.scrollingElement, ...document.querySelectorAll(".app *")]
+      .filter((el) => el && el.scrollTop > 0)
+      .map((el) => `${el.tagName}.${el.className}:${Math.round(el.scrollTop)}`),
+  );
+
+test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a sheet open a drag on the list, the search row, the footer and the backdrop does not move the page, and closing puts it back exactly", async ({ people }) => {
+  test.skip(!canControlService, "needs the local model stub");
+  const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport: { width: 430, height: 560 } } });
+  const prefix = `modelx${uniq(3)}`;
+  await providerWithModels(ann, 4, prefix);
+  await ann.page.goto("/");
+  const page = ann.page;
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /记忆宫殿/ }).click();
+  // The page under the sheet is scrolled a little first.
+  const scrolled = await page.evaluate(() => {
+    const box = [...document.querySelectorAll(".app *")].find((el) => ["auto", "scroll"].includes(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 80);
+    if (box) box.scrollTop = 60;
+    return Boolean(box);
+  });
+  expect(scrolled, "something on the page behind scrolls").toBe(true);
+  const before = await scrollPositions(page);
+  expect(before.length).toBeGreaterThan(0);
+  await page.getByRole("combobox", { name: /用哪个模型整理记忆/ }).or(page.getByRole("button", { name: /用哪个模型整理记忆/ })).first().click();
+  const list = page.getByRole("listbox", { name: "模型" });
+  await expect(list).toBeVisible();
+  const search = await page.getByRole("combobox", { name: "搜索模型" }).boundingBox();
+  const foot = await page.locator(".model-foot").boundingBox();
+  const lst = await list.boundingBox();
+  const spots = [
+    [lst.x + lst.width / 2, lst.y + lst.height / 2, 300],
+    [lst.x + lst.width / 2, lst.y + lst.height / 2, -300],
+    [search.x + 40, search.y + search.height / 2, 300],
+    [foot.x + 20, foot.y + foot.height / 2, 300],
+  ];
+  // (A touch that starts on the backdrop closes the sheet, as a tap there always did: last.)
+  const backdrop = [[200, 60, 300]];
+  const during = await scrollPositions(page);
+  const withoutList = (positions) => positions.filter((p) => !p.includes("model-list"));
+  for (const [x, y, dy] of spots) {
+    await touchScroll(page, x, y, dy);
+    // (The list's own scroll is not the page's.)
+    expect(withoutList(await scrollPositions(page))).toEqual(withoutList(during));
+  }
+  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-layer-open"))).toBe(true);
+  for (const [x, y, dy] of backdrop) {
+    await touchScroll(page, x, y, dy);
+    expect(withoutList(await scrollPositions(page))).toEqual(withoutList(during));
+  }
+  await expect(list).toBeHidden();
+  expect(await scrollPositions(page)).toEqual(before);
+  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-layer-open"))).toBe(false);
+});
