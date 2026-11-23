@@ -113,7 +113,7 @@ describe("request logging", () => {
 
   it("every route with a path parameter takes an id or a number, except the attachment's name (the log redacts that one)", () => {
     const params = new Set(app.routeList.flatMap((r) => [...r.url.matchAll(/:([A-Za-z]+)/g)].map((m) => m[1]!)));
-    expect([...params].sort()).toEqual(["changeId", "decision", "hearsayId", "id", "name", "noteId", "principalId", "proposalId", "runId", "seq", "verb"].filter((p) => params.has(p)));
+    expect([...params].sort()).toEqual(["agentId", "changeId", "decision", "hearsayId", "id", "name", "noteId", "principalId", "proposalId", "runId", "seq", "subjectId", "verb"].filter((p) => params.has(p)));
     // (decision and verb are fixed words, not user text; the rest are ids and a sequence number.)
     expect(params.has("handle")).toBe(false);
     // Only the attachments route has a :name, and it is the one the log redacts.

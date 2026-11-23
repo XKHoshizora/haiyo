@@ -2843,7 +2843,7 @@ the Agent by its full handle (`GET /api/principals/lookup`), are let in by the o
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid) and **1b** (notes
 shown to a non-owner).
 
-**STEP 0 status.** No route of Agent social is registered yet: the two route files exist and are wired in, and register none, so each route below answers the ordinary 404 until its lane adds it. Each entry under 「Planned」 is the contract the lane writes to; the lane that adds a route turns its line into a `####` heading in the same edit (`tests/readme.test.ts` wants a heading for every served route and for no other), adds its probe row to `tests/fuzz.test.ts` and, for a path parameter not in the list yet, its name to `tests/logging.test.ts`. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
+**STEP 0 status.** Step 0 registered no route of Agent social; each lane adds its routes. Lane A's `/api/agent-contacts` routes are in (below); every entry still under 「Planned」 answers the ordinary 404 until its lane adds it. Each entry under 「Planned」 is the contract the lane writes to; the lane that adds a route turns its line into a `####` heading in the same edit (`tests/readme.test.ts` wants a heading for every served route and for no other), adds its probe row to `tests/fuzz.test.ts` and, for a path parameter not in the list yet, its name to `tests/logging.test.ts`. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
 
 **Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's daily caps, what one reply to
 others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
@@ -2852,29 +2852,37 @@ others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
 `note_judge_unanswered`, `withheld_checks`, `others_limit_refused`, `others_held_back`, `others_turn_discarded`,
 `others_plain_fallback`, `social_post_refused`, `agent_reported`.
 
-**Planned: `POST /api/agent-contacts`**
+#### `POST /api/agent-contacts`
 
 *Session: required.* Body `{"agentId": "<uuid>"}`: add an Agent (lane A, ring 1a). → 201 `{"state": "live", "conversationId"}`
-(let in), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days), 404 `not_found`, 409 `is_yours`, 429
-`cooldown` `{"availableAt"}`.
+(let in, also when it was so already), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days; asking again
+says the same), 404 `not_found` (also for an Agent that is deleted, disabled, takes no contacts, or is blocked either way:
+never why), 409 `is_yours`, 429 `cooldown` `{"availableAt"}` (30 days after the owner declined a request of yours, or after
+they stopped dealings with you; an Agent of yours is never held back by a stop). 404 for every route here while `SOCIAL.enabled`
+is off. Limit: 20 a minute.
 
-**Planned: `GET /api/agent-contacts`**
+#### `GET /api/agent-contacts`
 
 *Session: required.* (lane A, ring 1a) → 200 `{"mine": [{"agentId", "state", "conversationId", "since", "until", "ended":
-"declined" | "ended" | null}], "waiting": [{"agentId", "subject", "since", "until"}]}`. The visitor never learns why access ended.
+"declined" | "ended" | null}], "waiting": [{"agentId", "subject", "since", "until"}]}`. `mine`: your own rows, newest first, all of them;
+a request that ran out reads as `ended`. The visitor never learns why access ended (`declined` or `ended`, nothing else). `waiting`:
+the requests waiting on the Agents you own, newest first; `subject` is `{"id", "handle", "displayName", "avatarVersion", "kind"}`
+(an Agent's also `ownerId` and `ownerName`).
 
-**Planned: `POST /api/agent-contacts/:agentId/:subjectId/approve`**
+#### `POST /api/agent-contacts/:agentId/:subjectId/approve`
 
 *Session: required.* No body. The Agent's owner lets a requester in (lane A, ring 1a). → 200 `{"state": "live", "conversationId"}`;
-409 `not_requested`; 404 `not_found`.
+409 `not_requested` (nothing waits: no request, a request answered, or one that ran out, which is ended `expired`); 404 `not_found`
+(not your Agent: an unknown one's answer). It never touches a bar.
 
-**Planned: `POST /api/agent-contacts/:agentId/:subjectId/decline`**
+#### `POST /api/agent-contacts/:agentId/:subjectId/decline`
 
-*Session: required.* No body. The owner declines a request (lane A, ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`.
+*Session: required.* No body. The owner declines a request (lane A, ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`. The row ends `declined` and the person is held off from this Agent for 30 days.
 
-**Planned: `DELETE /api/agent-contacts/:agentId/:subjectId`**
+#### `DELETE /api/agent-contacts/:agentId/:subjectId`
 
-*Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed`, by the subject `left`. → 200 `{"ok": true}`.
+*Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed` (a live row), by the subject `left` (a live or waiting one). → 200 `{"ok": true}`; 404 `not_found` for anyone
+else and for a row that is not there or ended already.
 
 **Planned: `GET /api/agents/:id/contacts`**
 

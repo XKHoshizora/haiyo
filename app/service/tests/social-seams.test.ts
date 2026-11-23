@@ -7,7 +7,7 @@ import { loadNotes } from "../src/memory/passage.ts";
 import { shownNotesPass } from "../src/memory/shown.ts";
 import { startNoteJudge } from "../src/memory/judge.ts";
 import { keepsRoom, othersFits } from "../src/metering/others.ts";
-import { addContact, applyPolicy, endGrants } from "../src/social/agent-contacts.ts";
+import { applyPolicy, endGrants } from "../src/social/agent-contacts.ts";
 import { discoverable, reach, reachSql, refusedSql } from "../src/social/reach.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -111,7 +111,6 @@ describe("the seams: reach is the rule, the money stubs say yes, notes are none"
     const t = db as never;
     await expect(endGrants(t, { between: [owner.id, member.id] }, "barred")).rejects.toThrow("ring 1: lane A");
     await expect(applyPolicy(t, owner.id, agent.id, { policy: "ask", picked: false, picks: [] }, { dryRun: true })).rejects.toThrow("ring 1: lane A");
-    await expect(addContact(t, app.deps.config, member.id, agent.id)).rejects.toThrow("ring 1: lane A");
   });
 
   it("a message that stopped runs interrupts them after commit, and one that stopped none interrupts nothing", () => {
