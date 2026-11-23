@@ -167,7 +167,7 @@ describe("a reply whose search is refused by its owner's number", () => {
         if (first) {
           first = false;
           const hold = BigInt((await db.query<{ h: string }>("select hold_micro::text as h from agent_runs where conversation_id = $1 order by created_at desc limit 1", [conv])).rows[0]!.h);
-          await paidReply(db, { agentId: ctx.agent, ownerId: ctx.owner, conversationId: ctx.own, lane: "others", micro: 70n * POINT - hold - 400_000n });
+          await paidReply(db, { agentId: ctx.agent, ownerId: ctx.owner, conversationId: ctx.own, lane: "others", micro: 300n * POINT - hold - 400_000n });
         }
         yield* events;
       })();

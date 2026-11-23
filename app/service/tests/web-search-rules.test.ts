@@ -836,7 +836,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     return { gate: { held, wait }, heldNow, release };
   };
 
-  it("at the shipped defaults (13 points a search, TOOLS.maxPoints 20, the owner's 70 points a day for others' use, a proactive budget of 70, no number of an Agent's own): one search a reply, five a day in each of those lanes (review I1: a change of any of the numbers shows here)", async () => {
+  it("at the shipped defaults (13 points a search, TOOLS.maxPoints 20, the owner's 300 points a day for others' use, a proactive budget of 70, no number of an Agent's own): one search a reply, 23 a day for others' calls and five for replies nobody asked for (review I1: a change of any of the numbers shows here)", async () => {
     const config = shipped();
     expect([config.tools.web.pointsMicroPerSearch, config.tools.maxPoints, config.tools.web.perReply]).toEqual([13_000_000, 20, 3]);
     const owner = await signUp(app, "dflta");
@@ -853,14 +853,14 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     const siteRun = await running(owner.id, site, site.conversationId, "own", config);
     await pre(siteRun, config);
     await expect(pre(siteRun, config)).rejects.toMatchObject({ by: "reply_cap" });
-    // Someone else's calls, and replies nobody asked for, a day: five searches settled (65 of the owner's 70, the Agent having no number of its
-    // own), and the sixth's 78 > 70. An owner and an Agent a lane: the owner's number counts both lanes together.
+    // Someone else's calls a day: 23 searches settled (299 of the owner's 300, the Agent having no number of its own), and the 24th's 312 > 300.
+    // Replies nobody asked for: the Agent's proactive budget of 70 binds first, as it did: five (65), and the sixth's 78 > 70.
     for (const lane of ["others", "proactive"] as const) {
       const o = await signUp(app, `dflt${lane.slice(0, 2)}o`);
-      await grant(db, o.id, 200n * POINT);
+      await grant(db, o.id, 400n * POINT);
       const a = await providerOf(o);
       const g = await group(app, o, `${lane}一`, [await signUp(app, `dflt${lane.slice(0, 2)}a`), await signUp(app, `dflt${lane.slice(0, 2)}b`)]);
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < (lane === "others" ? 23 : 5); i++) {
         const day = await running(o.id, a, g, lane, config);
         await pre(day, config);
         await ended(day, config);

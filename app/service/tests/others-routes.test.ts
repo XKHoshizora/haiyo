@@ -16,7 +16,7 @@ import { closeAllSockets } from "./helpers/ws.ts";
  * Lane B, B4: the numbers on the wire (an Agent's own `othersLimit` and `othersUsedToday`, the old three fields gone), the use routes
  * `GET /api/me/others-use`, `PUT /api/me/others-limits`, `POST /api/me/others-limits/seen`, and what they say of the owner's day. The
  * design's sites: 140 / 280 micro-points a token on the free tier, 3 000 / 15 000 on the paid, 800 output tokens, so a plain reply holds
- * 2.534 points (free) or 61.5 (paid). Limits are per owner: 50 answers and 70 points unless the owner says otherwise.
+ * 2.534 points (free) or 61.5 (paid). Limits are per owner: 50 answers and 300 points (Owner decision 2026-11-25) unless the owner says otherwise.
  */
 
 const env = { ...OTHERS_ENV, AGENT_TIERS: JSON.stringify({ free: 25, plus: 30 }) };
@@ -40,14 +40,28 @@ async function reply(o: { agent: { agentId: string; conversationId: string }; ow
 }
 
 describe("an Agent's wire", () => {
-  it("has othersLimit and othersUsedToday; othersBudget, othersSpentToday and proactiveSpentToday are gone, proactiveBudget stays", async () => {
+  it("has othersLimit, othersUsedToday and proactiveSpentToday; othersBudget and othersSpentToday are gone, proactiveBudget stays", async () => {
     const owner = await newOwner();
     const made = await mustCreateAgent(app, owner, {});
-    for (const gone of ["othersBudget", "othersSpentToday", "proactiveSpentToday"]) expect(Object.keys(made)).not.toContain(gone);
-    // A new Agent has no number of its own (the owner's 70 points and 50 answers apply), a proactive budget of 70 (074), and used nothing.
-    expect(made).toMatchObject({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, proactiveBudget: "70" });
+    for (const gone of ["othersBudget", "othersSpentToday"]) expect(Object.keys(made)).not.toContain(gone);
+    // A new Agent has no number of its own (the owner's 300 points and 50 answers apply), a proactive budget of 70 (074), and used nothing.
+    expect(made).toMatchObject({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, proactiveBudget: "70", proactiveSpentToday: "0" });
     expect((await api(app, owner, "GET", `/api/agents/${made.id}`)).json).toEqual(made);
     expect((await api(app, owner, "GET", "/api/agents")).json.agents).toEqual([made]);
+  });
+
+  it("proactiveSpentToday is what the Agent's proactive replies cost today (settled plus held, the one definition of used), not what others' calls cost; today only", async () => {
+    const owner = await newOwner();
+    const [a] = await agentsOf(app, db, owner, 1);
+    const caller = (await newOwner()).id;
+    await reply({ agent: a!, ownerId: owner.id, lane: "proactive", micro: 1_250_000n });
+    await reply({ agent: a!, ownerId: owner.id, lane: "proactive", micro: 3_000_000n, at: new Date(Date.now() - 3 * 86_400_000) });
+    await reply({ agent: a!, ownerId: owner.id, lane: "others", micro: 5_000_000n, caller });
+    await seedRun(db, { ownerId: owner.id, agent: a!, lane: "proactive", hold: 400_000n, admittedAt: new Date() });
+    const got = (await api(app, owner, "GET", `/api/agents/${a!.agentId}`)).json;
+    expect([got.proactiveSpentToday, got.othersUsedToday.points]).toEqual(["1.65", "5"]);
+    // Owner-only: the same Agent seen by anyone else carries neither field (agents-co-members / proactive-decide HIDDEN_KEYS).
+    expect((await use(owner)).json.used).toMatchObject({ points: "6.65", proactivePoints: "1.65" });
   });
 
   it("creates with othersLimit or the one-release alias othersBudget; both in one body is a 400", async () => {
@@ -147,7 +161,7 @@ describe("GET /api/me/others-use", () => {
     const owner = await newOwner();
     expect(await use(owner)).toEqual({
       status: 200,
-      json: { limits: { answers: 50, points: "70" }, used: { answers: 0, points: "0" }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false },
+      json: { limits: { answers: 50, points: "300" }, used: { answers: 0, points: "0", proactivePoints: "0" }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false },
     });
   });
 
@@ -159,7 +173,7 @@ describe("GET /api/me/others-use", () => {
     await reply({ agent: a!, ownerId: owner.id, lane: "proactive", micro: 1_000_000n });
     await reply({ agent: a!, ownerId: owner.id, lane: "own", micro: 50_000_000n, caller: owner.id });
     await seedRun(db, { ownerId: owner.id, agent: a!, lane: "others", hold: 500_000n, admittedAt: new Date() });
-    expect((await use(owner)).json).toMatchObject({ limits: { answers: 50, points: "70" }, used: { answers: 3, points: "4.5" }, reached: false });
+    expect((await use(owner)).json).toMatchObject({ limits: { answers: 50, points: "300" }, used: { answers: 3, points: "4.5", proactivePoints: "1" }, reached: false });
     const put = await api(app, owner, "PUT", "/api/me/others-limits", { answers: 7, points: "4.2" });
     expect([put.status, put.json]).toEqual([200, { answers: 7, points: "4.2" }]);
     // Settled 4 plus held 0.5 is over the number, but the Agent's reply holds some of it: another reply would wait behind it, not be refused.
@@ -217,10 +231,10 @@ describe("GET /api/me/others-use", () => {
     // Ties are really in it: two callers at exactly 100 points with one answer each.
     expect(order.filter((r) => r.points === 100_000_000n && r.answers === 1)).toHaveLength(2);
     // The owner's own total counts the proactive reply too, which no row names.
-    expect(got.used).toEqual({ answers: answers.reduce((x, y) => x + y, 0) + 1, points: pointsText(sums.reduce((x, y) => x + y, 0n) + 2_000_000n) });
+    expect(got.used).toEqual({ answers: answers.reduce((x, y) => x + y, 0) + 1, points: pointsText(sums.reduce((x, y) => x + y, 0n) + 2_000_000n), proactivePoints: "2" });
   });
 
-  it("agents: each live Agent's day and its perDay (50 free tier, 1 paid, the answers number on a provider's model, 0 for a number below one plain hold); a deleted Agent is not listed", async () => {
+  it("agents: each live Agent's day and its perDay (50 free tier, 11 paid at 300, the answers number on a provider's model, 0 for a number below one plain hold); a deleted Agent is not listed", async () => {
     const owner = await newOwner();
     const [free, paid, tiny, limited] = [
       (await agentsOf(app, db, owner, 1, FREE_MODEL))[0]!,
@@ -238,8 +252,9 @@ describe("GET /api/me/others-use", () => {
     const byId = new Map(got.map((x) => [x.agentId, x]));
     expect(got).toHaveLength(5);
     expect(byId.has(doomed.agentId)).toBe(false);
-    expect(byId.get(free.agentId)).toEqual({ agentId: free.agentId, answers: 1, points: "1.5", perDay: 50, reached: false, tight: false });
-    expect(byId.get(paid.agentId)).toEqual({ agentId: paid.agentId, answers: 0, points: "0", perDay: 1, reached: false, tight: true });
+    expect(byId.get(free.agentId)).toEqual({ agentId: free.agentId, answers: 1, points: "1.5", perDay: 50, reached: false, tight: false, canReply: true });
+    // At the default 300 a paid-tier Agent fits every plain reply (1 + ⌊(300 - 61.5) / 22.5⌋ = 11) and is not tight.
+    expect(byId.get(paid.agentId)).toEqual({ agentId: paid.agentId, answers: 0, points: "0", perDay: 11, reached: false, tight: false, canReply: true });
     expect(byId.get(tiny.agentId)).toMatchObject({ perDay: 0 });
     expect(byId.get(limited.agentId)).toMatchObject({ perDay: 3 });
     expect(byId.get(provider.agentId)).toMatchObject({ perDay: 50 });
@@ -293,6 +308,8 @@ describe("reached and tight: two one-sided facts, each by the function admission
   async function world(model: typeof FREE_MODEL | typeof PAID_MODEL, left: (floor: bigint, ceiling: bigint) => bigint) {
     const owner = await newOwner();
     owners.set(owner.id, owner);
+    // (These scenarios are about what is LEFT of a number: the owner's number is set to 70 here, not the default 300.)
+    await setOwnerNumbers(db, owner.id, { pointsMicro: POINTS_70 });
     const [agent] = await agentsOf(app, db, owner, 1, model);
     const row = (await readOwnedAgent(db, owner.id, agent!.agentId))!;
     const floor = await othersPlainFloor(db, config(), row, null, new Date(), "others");
@@ -314,12 +331,27 @@ describe("reached and tight: two one-sided facts, each by the function admission
     // 12 000 tokens of conversation are 36 000 bytes at most; the fullest scene and the summary add to that: under 12 points on the free tier.
     expect(free.ceiling).toBeLessThan(12_000_000n);
     expect(free.ceiling).toBeGreaterThan(36_000n * 140n);
-    // The paid tier's plain hold at 3 000 µpt an input byte: 36 000 bytes of conversation alone are 108 points, over the owner's 70: the real
-    // bound makes "fits for every reply" impossible there, so a paid-tier Agent reads tight from the start, and not reached.
+    // The paid tier's plain hold at 3 000 µpt an input byte: 36 000 bytes of conversation alone are 108 points, over a number of 70: the real
+    // bound makes "fits for every reply" impossible at 70, so at an owner's number of 70 a paid-tier Agent reads tight from the start, and not
+    // reached. (At the default of 300 it does not: the next test.)
     const paid = await world(PAID_MODEL, () => POINTS_70);
     expect(paid.ceiling).toBeGreaterThan(70_000_000n);
     expect(paid.floor).toBeLessThan(70_000_000n);
     expect(await states(paid.owner)).toEqual({ owner: [false, true], agents: [[false, true]] });
+  });
+
+  it("Owner decision 2026-11-25: at the DEFAULT 300 points a paid-model Agent with an ordinary persona and nothing used is neither tight nor reached; the paid ceiling is under 300", async () => {
+    const owner = await newOwner();
+    const [paid] = await agentsOf(app, db, owner, 1, PAID_MODEL);
+    const row = (await readOwnedAgent(db, owner.id, paid!.agentId))!;
+    const ceiling = await othersPlainCeiling(db, config(), row, new Date());
+    // The largest plain hold on the paid tier is about 204 points (README): under 300, so every plain reply fits.
+    expect(ceiling).toBeGreaterThan(200n * POINT);
+    expect(ceiling).toBeLessThan(300n * POINT);
+    expect((await use(owner)).json).toMatchObject({ limits: { points: "300" }, reached: false, tight: false, agents: [{ agentId: paid!.agentId, reached: false, tight: false, canReply: true }] });
+    // And it reads tight only when what is left is under that ceiling.
+    await reply({ agent: paid!, ownerId: owner.id, lane: "others", micro: 300n * POINT - ceiling + 1n, caller: (await newOwner()).id });
+    expect((await use(owner)).json).toMatchObject({ reached: false, tight: true });
   });
 
   it("a free-tier Agent with an ordinary persona at 70 points and nothing used is neither tight nor reached", async () => {
@@ -416,6 +448,7 @@ describe("reached and tight: two one-sided facts, each by the function admission
 
   it("an Agent on its owner's own provider key holds nothing: only the answers reach it", async () => {
     const owner = await newOwner();
+    await setOwnerNumbers(db, owner.id, { pointsMicro: POINTS_70 });
     const byok = await providerAgent(app, db, owner);
     const [free] = await agentsOf(app, db, owner, 1, FREE_MODEL);
     await reply({ agent: free!, ownerId: owner.id, lane: "others", micro: 80_000_000n, caller: (await newOwner()).id });
@@ -446,18 +479,19 @@ describe("reached and tight: two one-sided facts, each by the function admission
     expect((await use(owner)).json.reached).toBe(false);
     await reply({ agent: b!, ownerId: owner.id, lane: "others", micro: 1n, caller });
     const got = (await use(owner)).json;
-    expect([got.used, got.reached, got.tight, got.agents.map((x: { reached: boolean }) => x.reached)]).toEqual([{ answers: 2, points: "0.000002" }, true, true, [true, true]]);
+    expect([got.used, got.reached, got.tight, got.agents.map((x: { reached: boolean }) => x.reached)]).toEqual([{ answers: 2, points: "0.000002", proactivePoints: "0" }, true, true, [true, true]]);
   });
 
   it("an Agent with no model answers nobody: its row is not reached, not tight, perDay 0, and it does not stop the owner's reached", async () => {
     const owner = await newOwner();
+    await setOwnerNumbers(db, owner.id, { pointsMicro: POINTS_70 });
     const [free] = await agentsOf(app, db, owner, 1, FREE_MODEL);
     const bare = await mustCreateAgent(app, owner, {}); // a new Agent's model is null
     const settled = POINTS_70 - 100_000n; // under any floor
     await reply({ agent: free!, ownerId: owner.id, lane: "others", micro: settled, caller: (await newOwner()).id });
     const got = (await use(owner)).json;
     const row = (id: string) => got.agents.find((x: { agentId: string }) => x.agentId === id);
-    expect(row(bare.id)).toMatchObject({ reached: false, tight: false, perDay: 0 });
+    expect(row(bare.id)).toMatchObject({ reached: false, tight: false, perDay: 0, canReply: false });
     expect(row(free!.agentId)).toMatchObject({ reached: true, tight: true });
     expect([got.reached, got.tight]).toEqual([true, true]);
   });
@@ -485,7 +519,8 @@ describe("one definition of used", () => {
     for (const agent of [a!, b!]) {
       const answers = (await othersUsedToday(db, app.deps.config, owner.id, now, { agentId: agent.agentId })).answers;
       const pts = await othersUsedToday(db, app.deps.config, owner.id, now, { agentId: agent.agentId, lane: "others" });
-      expect(by.get(agent.agentId)).toEqual({ answers, pointsMicro: pts.settledMicro + pts.heldMicro });
+      const proactive = await othersUsedToday(db, app.deps.config, owner.id, now, { agentId: agent.agentId, lane: "proactive" });
+      expect(by.get(agent.agentId)).toEqual({ answers, pointsMicro: pts.settledMicro + pts.heldMicro, proactiveMicro: proactive.settledMicro + proactive.heldMicro });
     }
     const lane = await othersUsedToday(db, app.deps.config, owner.id, now, { lane: "others" });
     const rows = (await use(owner)).json.byPerson as Array<{ points: string }>;
@@ -511,7 +546,7 @@ describe("PUT /api/me/others-limits", () => {
   it("is one owner's: another owner's day and numbers are untouched", async () => {
     const [a, b] = [await newOwner(), await newOwner()];
     await api(app, a, "PUT", "/api/me/others-limits", { answers: 2, points: "3" });
-    expect((await use(b)).json.limits).toEqual({ answers: 50, points: "70" });
+    expect((await use(b)).json.limits).toEqual({ answers: 50, points: "300" });
   });
 });
 

@@ -72,6 +72,7 @@ const HIDDEN_KEYS = [
   "withheld_notes",
   "othersLimit",
   "othersUsedToday",
+  "proactivePoints",
   // The use page's own keys (plan B4): the owner's numbers per person and per Agent.
   "byPerson",
   "perDay",

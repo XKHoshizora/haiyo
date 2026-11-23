@@ -84,7 +84,7 @@ describe("the holds (design §8 test 2)", () => {
     const owner = await newOwner();
     const [a] = await agentsOf(app, db, owner, 1);
     expect(await othersNumbers(db, config(), owner.id, a!.agentId)).toEqual({
-      owner: { answers: 50, pointsMicro: 70n * POINT },
+      owner: { answers: 50, pointsMicro: 300n * POINT },
       agent: { answers: null, pointsMicro: null },
       proactiveMicro: 70n * POINT,
     });
@@ -361,7 +361,7 @@ describe("a reply someone else called for, as `begin` admits it", () => {
   it("which would pass the owner's number beside another reply's hold waits for it: queued behind it, counted", async () => {
     const k = await kitchen();
     const other = await mustCreateAgent(app, k.owner, { handle: "other", name: "other", model: FREE_MODEL, persona: "简短地回答。" });
-    const holder = await seedRun(db, { ownerId: k.owner.id, agent: { agentId: other.id, conversationId: other.conversationId }, lane: "others", hold: 69_900_000n, admittedAt: NOON });
+    const holder = await seedRun(db, { ownerId: k.owner.id, agent: { agentId: other.id, conversationId: other.conversationId }, lane: "others", hold: 299_900_000n, admittedAt: NOON });
     await k.ask();
     expect(await k.worker.runOnce()).toBe(true);
     expect(k.gateway.calls).toHaveLength(0);

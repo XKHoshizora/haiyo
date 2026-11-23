@@ -317,6 +317,8 @@ export class OthersLimit extends Error {
 export interface AgentUse {
   answers: number;
   pointsMicro: bigint;
+  /** Points of the Agent's proactive replies today (settled plus held), the one definition of "used" (`pointsToday`, lane `proactive`). */
+  proactiveMicro: bigint;
 }
 
 /**
@@ -339,7 +341,8 @@ export async function othersUsedByAgents(
   for (const id of agentIds) {
     const answers = await answersToday(q, config, ownerId, now, { agentId: id }, null);
     const points = await pointsToday(q, config, ownerId, now, { agentId: id, lane: "others" }, null);
-    out.set(id, { answers: answers.answers, pointsMicro: points.settledMicro + points.heldMicro });
+    const proactive = await pointsToday(q, config, ownerId, now, { agentId: id, lane: "proactive" }, null);
+    out.set(id, { answers: answers.answers, pointsMicro: points.settledMicro + points.heldMicro, proactiveMicro: proactive.settledMicro + proactive.heldMicro });
   }
   return out;
 }

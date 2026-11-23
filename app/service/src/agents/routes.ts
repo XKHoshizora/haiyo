@@ -88,11 +88,11 @@ const othersBudget = chainBudget.nullable();
  */
 const proactiveLevel = z.enum(PROACTIVE_LEVELS);
 const proactiveBudget = chainBudget;
-/** The proactive budget's default: 70 points, as migration 074 makes the column's (the owner's others' default; not tied to it). */
+/** The proactive budget's default: 70 points, as migration 074 makes the column's (not tied to the owner's others' cap, which is 300). */
 const DEFAULT_PROACTIVE_BUDGET = 70n * MICRO_PER_POINT;
 
 /** What others' use of an Agent has taken today when nothing has (a new Agent). */
-const NO_USE = { answers: 0, pointsMicro: 0n } as const;
+const NO_USE = { answers: 0, pointsMicro: 0n, proactiveMicro: 0n } as const;
 
 /**
  * The Agent's own others' numbers a body says: `othersLimit` as a whole, or the alias `othersBudget` for its points alone (the answers
@@ -173,6 +173,8 @@ const agentView = z.object({
   proactive: z.boolean(),
   proactiveLevel,
   proactiveBudget: z.string(),
+  /** What its proactive replies cost today (settled plus held, decimal points): the owner's view only. */
+  proactiveSpentToday: z.string(),
   memory: z.boolean(),
   memoryAsk: z.boolean(),
   sharedNotes: z.boolean(),
@@ -204,7 +206,7 @@ const agentView = z.object({
  * what it calls its owner and the people and Agents the owner named (`ownerAppellation`, `appellations`), and whether its
  * model is there to call (`modelUsable`, models/resolve.ts `modelsUsable`).
  */
-const toView = (a: AgentRow, used: { answers: number; pointsMicro: bigint }, appellations: AppellationEntry[], modelUsable: boolean, web = false): z.infer<typeof agentView> => ({
+const toView = (a: AgentRow, used: { answers: number; pointsMicro: bigint; proactiveMicro: bigint }, appellations: AppellationEntry[], modelUsable: boolean, web = false): z.infer<typeof agentView> => ({
   id: a.id,
   handle: a.handle,
   name: a.name,
@@ -221,6 +223,7 @@ const toView = (a: AgentRow, used: { answers: number; pointsMicro: bigint }, app
   proactive: a.proactive,
   proactiveLevel: a.proactiveLevel,
   proactiveBudget: formatPoints(a.proactiveBudgetMicro),
+  proactiveSpentToday: formatPoints(used.proactiveMicro),
   memory: a.memory,
   memoryAsk: a.memoryAsk,
   sharedNotes: a.sharedNotes,
@@ -291,7 +294,7 @@ export function registerAgentRoutes(
       await writeLimit(req, me.id);
       const b = req.body;
       assertProactiveAvailable(config, b.proactive);
-      // A new Agent has no numbers of its own unless its owner gives them (074): the owner's 70 points and 50 answers apply.
+      // A new Agent has no numbers of its own unless its owner gives them (074): the owner's 300 points and 50 answers apply.
       const own = othersNumbersOf(b, { answers: null, pointsMicro: null }) ?? { answers: null, pointsMicro: null };
       const input = {
         namePart: b.namePart,

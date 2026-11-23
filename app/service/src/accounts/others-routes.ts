@@ -18,12 +18,12 @@ const pointsNumber = pointsBetween(MICRO_PER_POINT, 100_000n * MICRO_PER_POINT);
 const person = z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number() });
 const useResponse = z.object({
   limits: z.object({ answers: z.number(), points: z.string() }),
-  used: z.object({ answers: z.number(), points: z.string() }),
+  used: z.object({ answers: z.number(), points: z.string(), proactivePoints: z.string() }),
   reached: z.boolean(),
   tight: z.boolean(),
   byPerson: z.array(z.object({ person, answers: z.number(), points: z.string() })),
   stopped: z.array(z.object({ person, since: z.string() })),
-  agents: z.array(z.object({ agentId: z.string(), answers: z.number(), points: z.string(), perDay: z.number(), reached: z.boolean(), tight: z.boolean() })),
+  agents: z.array(z.object({ agentId: z.string(), answers: z.number(), points: z.string(), perDay: z.number(), reached: z.boolean(), tight: z.boolean(), canReply: z.boolean() })),
   notice: z.boolean(),
 });
 
@@ -99,6 +99,8 @@ export function registerOthersRoutes(app: FastifyInstance): void {
       const perAgent = await othersUsedByAgents(t, config, me.id, ids, now);
       const byPerson = await othersByPerson(t, config, me.id, now);
       const usedPoints = used.settledMicro + used.heldMicro;
+      // Of those points, what the Agents' proactive replies cost (no caller: in the total and in no person's row).
+      const proactive = await othersUsedToday(t, config, me.id, now, { lane: "proactive" });
       const rows = [];
       const askable: boolean[] = [];
       for (const a of agents) {
@@ -106,7 +108,7 @@ export function registerOthersRoutes(app: FastifyInstance): void {
         const perDay = perDayEstimate(config, a.model, { owner, agent: { answers: a.othersAnswers, pointsMicro: a.othersBudgetMicro } });
         const room = await agentRoom(t, config, a, now);
         askable.push(room.askable);
-        rows.push({ agentId: a.id, answers: u.answers, points: formatPoints(u.pointsMicro), perDay, reached: room.reached, tight: room.tight });
+        rows.push({ agentId: a.id, answers: u.answers, points: formatPoints(u.pointsMicro), perDay, reached: room.reached, tight: room.tight, canReply: room.askable });
       }
       // The owner's two facts, over the Agents that could answer at all (one with no model answers nobody, whatever the room: its row shows
       // reached false, tight false, perDay 0, and it is left out): `reached` when the answers are used up or every such Agent is reached;
@@ -117,7 +119,7 @@ export function registerOthersRoutes(app: FastifyInstance): void {
       const tight = reached || asked.some((r) => r.tight);
       return {
         limits: { answers: owner.answers, points: formatPoints(owner.pointsMicro) },
-        used: { answers: used.answers, points: formatPoints(usedPoints) },
+        used: { answers: used.answers, points: formatPoints(usedPoints), proactivePoints: formatPoints(proactive.settledMicro + proactive.heldMicro) },
         reached,
         tight,
         byPerson: byPerson.map((r) => ({ person: r.person, answers: r.answers, points: formatPoints(r.pointsMicro) })),
