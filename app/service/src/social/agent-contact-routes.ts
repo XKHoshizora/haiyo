@@ -4,8 +4,9 @@ import { z } from "zod";
 import { announceEnded } from "../agents/group-leave.ts";
 import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
-import { uuidParam } from "../schemas.ts";
+import { userText, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
+import { reportAgent, REPORT_REASONS } from "./reports.ts";
 import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, declineContact, liftBar, removeContact, setBar, socialConversationsBetween } from "./agent-contacts.ts";
 
 // Lane A's route plugin (plan "Step 0 interfaces", Routes; README "Agent social"). Step 0 wired it in `app.ts` and registered NO route;
@@ -14,8 +15,8 @@ import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, d
 // Here so far (A4): POST and GET /api/agent-contacts; POST …/:agentId/:subjectId/approve and /decline; DELETE …/:agentId/:subjectId.
 // (A5b): PUT and DELETE /api/bars/:personId.
 // (A5c): GET /api/agents/:id/contacts; PUT /api/agents/:id/contact-policy.
-// Planned: POST /api/reports;
-// PUT /api/agents/:id/note-verdicts; POST /api/agents/:id/persona-facts/:seq. While `SOCIAL.enabled` is false every one of them
+// (A10): POST /api/reports.
+// Planned: PUT /api/agents/:id/note-verdicts; POST /api/agents/:id/persona-facts/:seq. While `SOCIAL.enabled` is false every one of them
 // answers 404 (the lookup, `GET /api/principals/lookup`, is not here: it exists already).
 const empty = z.object({});
 const ok = z.object({ ok: z.literal(true) });
@@ -37,6 +38,8 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
   const addLimit = perPrincipalLimit(app, 20);
   // A stop ends rows and runs of the other side: one budget for stopping and resuming, as blocks share one.
   const barLimit = perPrincipalLimit(app, 20);
+  // A report: five a minute (it writes a row the operator reads).
+  const reportLimit = perPrincipalLimit(app, 5);
 
   /** Every lane-A route answers 404 while the site's switch is off; after the session (and the terms) have been asked. */
   const requireSocial = (): void => {
@@ -289,6 +292,29 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       announceEnded(app.agentPort, ended);
       await announce(req, agentId, subjectId);
       return { ok: true as const };
+    },
+  );
+
+  api.post(
+    "/api/reports",
+    {
+      schema: {
+        params: empty,
+        querystring: empty,
+        body: z.object({ agentId: uuidParam, reason: z.enum(REPORT_REASONS), note: userText(0, 500).optional() }),
+        response: { 201: z.object({ id: z.string() }) },
+      },
+    },
+    async (req, reply) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      await reportLimit(req, me.id);
+      const note = req.body.note?.trim();
+      // An Agent the reporter cannot see is the answer of one that is not there (the avatar rule): nothing tells them apart.
+      const id = await reportAgent(db, config, me.id, req.body.agentId, req.body.reason, note ? note : null);
+      if (id === null) throw notFound();
+      req.log.info({ metric: "agent_reported", reason: req.body.reason }, "an Agent was reported");
+      return reply.code(201).send({ id });
     },
   );
 }

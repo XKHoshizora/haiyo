@@ -202,6 +202,34 @@ async function endGroupCalls(
   return out;
 }
 
+/**
+ * The operator disabled the Agent (`agent:disable`, social/reports.ts), in the same transaction: the replies others asked of it stop.
+ * Every queued reply in the lanes `others` and `proactive` is `cancelled` (`access_ended`), every running one `interrupted`
+ * (`access_ended`, `pending_seq` null; its post is then refused, as for any ending); the owner's own lane is untouched. Rows are not
+ * ended (a disable is no ending of access: enabling gives it all back). The Agent's row first (the lock order), the queued runs
+ * before the running ones (a run being claimed at that moment is seen queued or already running: see `endGrants`). The caller runs
+ * `announceEnded` after commit where it has a hub (the command line has none: a worker sees the interruption in the row).
+ */
+export async function interruptOthersRuns(t: Tx, agentId: string): Promise<EndedRuns> {
+  await t.query("select 1 from agents where principal_id = $1 for update", [agentId]);
+  const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
+    `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now(), pending_seq = null
+      where r.agent_id = $1 and r.purpose = 'reply' and r.status = 'queued' and r.lane in ('others', 'proactive')
+      returning ${RUN_COLUMNS}, r.conversation_id, r.owner_id`,
+    [agentId],
+  );
+  const running = await t.query<{ id: string }>(
+    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended'), pending_seq = null
+      where r.agent_id = $1 and r.purpose = 'reply' and r.status = 'running' and r.lane in ('others', 'proactive')
+      returning r.id`,
+    [agentId],
+  );
+  return {
+    cancelled: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) })),
+    running: running.rows.map((r) => r.id),
+  };
+}
+
 /** The one writer of bars: see `setBar`. */
 type BarKind = "stop" | "block";
 

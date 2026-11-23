@@ -2919,10 +2919,19 @@ in its own transaction; unblocking deletes only that block's row.
 is let in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise: no stop of yours, whatever else
 stands (the other person's, a block's): one answer.
 
-**Planned: `POST /api/reports`**
+#### `POST /api/reports`
 
 *Session: required.* Body `{"agentId": "<uuid>", "reason": "spam" | "harassment" | "privacy" | "other", "note"?: string
-(at most 500)}` (lane A, ring 1a). → 201 `{"id"}`.
+(at most 500)}` (lane A, ring 1a). Reports an Agent the caller can see: their own, one they share a conversation with now, one they
+blocked, or one that is discoverable to them (the rule of its avatar); for any other id, a deleted or disabled Agent a stranger cannot
+find, or a person, the answer is the 404 of an Agent that is not there. The row (`agent_reports`, `target_kind` `agent`) keeps the
+reporter's note (trimmed; none when it is empty) and the social conversation they share with the Agent, if they have one. Limit: five a
+minute. → 201 `{"id"}`; 404 `not_found`. 404 while `SOCIAL.enabled` is off. Counter `agent_reported` (the reason, never the note). The
+operator reads the reports on the command line (`reports:list [--open]`, `reports:close <id prefix> --outcome disabled|dismissed`:
+ids' prefixes, the Agent's handle, the reason, whether there is a note; never the note) and turns an Agent off and on with
+`agent:disable <full handle>` / `agent:enable <full handle>`: a disabled Agent is gone to everyone but its owner (the lookup, groups
+and social conversations alike), the replies others asked of it stop (queued ones cancelled, running ones interrupted, `access_ended`)
+and its owner's own replies go on; no row is touched, and enabling gives access back.
 
 **Planned: `PUT /api/agents/:id/note-verdicts`**
 
