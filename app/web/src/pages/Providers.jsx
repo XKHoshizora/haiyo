@@ -9,7 +9,7 @@ import { forgetDraft, peekDraft, saveDraft } from "../data/drafts.js";
 import { useUp } from "../state/appHistory.js";
 import { levelLabel } from "./ModelPicker.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
-import { ModelMarks, abilityMarks } from "../ui/ModelMarks.jsx";
+import { ModelMarks, abilityMarks, reportedOf } from "../ui/ModelMarks.jsx";
 import { noModelList } from "../data/errorTexts.js";
 
 /** The four interface types (the service's `protocol`), by the names people know them by. Fixed once created. */
@@ -162,6 +162,8 @@ const contextProblem = (text) => {
  * thinking levels it is offered with (null: every level), `reported` the levels the catalogue lists for it (what `levels` goes back to: the service
  * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too), and `tools` whether its replies may be offered tools as its entry says it
  * (undefined: it says nothing — not known yet, so they are; the service may set it false when the model turns out unable).
+ * It also carries what the catalogue reports of the model (`reportedOf`: `reportedTools` and what it takes and answers with),
+ * for its row's marks and the box's helper only: none of it is ever sent (`wireModel`).
  */
 const formModel = (m) => ({
   name: m.name,
@@ -172,10 +174,12 @@ const formModel = (m) => ({
   levels: m.reasoning ? modelLevels(m.reasoningLevels) : null,
   reported: m.reasoning ? (modelLevels(m.reportedLevels) ?? modelLevels(m.reasoningLevels)) : null,
   ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
+  ...reportedOf(m),
 });
 /**
  * As it is sent: the flags always, the context only when one is given, the levels only on a model that reasons, `tools`
- * only when the entry says it or its owner ticked or unticked it (left out, the service keeps what it has).
+ * only when the entry says it or its owner ticked or unticked it (left out, the service keeps what it has) — never because
+ * the catalogue reports it, and never `reportedTools` or anything else the catalogue reports (the service refuses them).
  */
 const wireModel = (m) => {
   const n = contextNumber(m.context);
@@ -191,7 +195,10 @@ const wireModel = (m) => {
 };
 const modelsKey = (list) =>
   JSON.stringify(list.map((m) => [m.name, m.vision, m.pdf, m.reasoning, m.contextTokens ?? null, m.reasoningLevels ?? null, m.tools ?? null]));
-/** A model from the provider's own list (同步模型) as the form adds it: its hints as flags, a known model's context and levels. */
+/**
+ * A model from the provider's own list (同步模型) as the form adds it: its hints as flags, a known model's context and levels.
+ * Nothing of `tools`: adding stores none (its mark comes from what the catalogue reports, carried along for the row).
+ */
 const syncedModel = (m) => ({
   name: m.name,
   vision: m.vision,
@@ -201,6 +208,7 @@ const syncedModel = (m) => ({
   context: Number.isInteger(m.contextTokens) ? String(Math.min(CONTEXT_MAX, Math.max(CONTEXT_MIN, m.contextTokens))) : "",
   levels: m.reasoning ? (m.reasoningLevels ?? null) : null,
   reported: m.reasoning ? (m.reasoningLevels ?? null) : null,
+  ...reportedOf(m),
 });
 
 /**
@@ -418,7 +426,8 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
               </label>
               <label>
                 {/* As its entry says, the mark's own story: ticked for true, unticked for false, the native mixed box while the entry says nothing (the
-                    service still offers it tools until a reply finds it unable). One click makes it a fact; saving it untouched sends nothing. */}
+                    service still offers it tools until a reply finds it unable) — also when the catalogue reports the model uses them: that is not
+                    stored, so the box stays mixed and only the helper differs. One click makes it a fact; saving it untouched sends nothing. */}
                 <input
                   type="checkbox"
                   checked={model.tools === true}
@@ -430,7 +439,11 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
                 />
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
-              {typeof model.tools !== "boolean" && <small id={`${panelId}-tools-unknown`} className="tools-unknown">还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。</small>}
+              {typeof model.tools !== "boolean" && (
+                <small id={`${panelId}-tools-unknown`} className="tools-unknown">
+                  {model.reportedTools === true ? "资料显示它会用工具，会先让它试着用。确定不会就取消。" : "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。"}
+                </small>
+              )}
             </fieldset>
             {levelChoice}
             <Field label="上下文容量" hint={contextHint} error={error}>
@@ -461,10 +474,11 @@ const SHOWN_ROWS = 200;
 const ADDED_AT_LIMIT = (n) => `已添加 ${n} 个模型。每个供应商最多 ${MAX_MODELS} 个模型，其余的没有添加。`;
 
 /** One model of the provider's own list: its name (and the catalogue's), its hints as tags, and 添加 or 已添加 · 移除. */
-function SyncRow({ model, added, full, onAdd, onRemove }) {
+function SyncRow({ model, added, stored, full, onAdd, onRemove }) {
   const label = model.label && model.label.toLowerCase() !== model.name.toLowerCase() ? model.label : null;
-  // What the provider's list says it can do: the picker's own marks (it does not say whether a model uses tools).
-  const marks = abilityMarks(model);
+  // What the list says the model can do: the picker's own marks (工具 here is only what the catalogue reports: a listed row stores nothing).
+  // One it is already saved as (`stored`: the form's model) adds what is stored of its tools, so a model turned off shows no 工具 here either.
+  const marks = abilityMarks(typeof stored?.tools === "boolean" ? { ...model, tools: stored.tools } : model);
   return (
     <li>
       <div className="member-body">
@@ -543,7 +557,7 @@ function SyncDialog({ provider, models, onAdd, onRemove, onDone, onClose, saving
     setNote(taken.length < toAdd.length ? ADDED_AT_LIMIT(taken.length) : null);
   };
   const rows = (list) =>
-    list.map((m) => <SyncRow key={m.name} model={m} added={have.has(m.name)} full={full} onAdd={onAdd} onRemove={onRemove} />);
+    list.map((m) => <SyncRow key={m.name} model={m} added={have.has(m.name)} stored={models.find((s) => s.name === m.name)} full={full} onAdd={onAdd} onRemove={onRemove} />);
   const more = (n) => n > 0 && <p className="muted">还有 {n} 个，请用搜索缩小范围</p>;
 
   return (

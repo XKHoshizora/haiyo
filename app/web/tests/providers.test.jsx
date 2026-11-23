@@ -750,6 +750,62 @@ describe("the models of a provider", () => {
     expect([box("gpt-x").checked, box("plain").checked]).toEqual([true, true]);
   });
 
+  it("会用工具 when the catalogue reports the model: still the mixed box (nothing is stored), another helper, the 工具 mark on its row; saved untouched it sends neither tools nor reportedTools; a stored false is unticked and unmarked whatever is reported", async () => {
+    const reported = providerOf(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true },
+        { name: "qwen-plus", vision: false, pdf: false, reasoning: true, contextTokens: 64000, tools: false, reportedTools: true },
+        { name: "qwen-vl-max", vision: true, pdf: false, reasoning: false, contextTokens: 64000, tools: true, reportedTools: true },
+        { name: "house-blend", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "qwen-omni-turbo", vision: true, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true, audioIn: true, videoIn: true, audioOut: true },
+      ],
+    });
+    const app = await openProviders({ providers: [reported] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    const names = ["deepseek-chat", "qwen-plus", "qwen-vl-max", "house-blend", "qwen-omni-turbo"];
+    const marks = (name) => [...modelRow(name).querySelectorAll(".model-mark")].map((m) => m.querySelector(".model-mark-text")?.textContent ?? m.textContent);
+    expect(names.map(marks)).toEqual([["工具"], ["思考"], ["看图", "工具"], [], ["看图", "工具"]]);
+    const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
+    for (const name of names) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    expect(names.map((name) => [box(name).checked, box(name).indeterminate])).toEqual([[false, true], [false, false], [true, false], [false, true], [false, true]]);
+    const REPORTED = "资料显示它会用工具，会先让它试着用。确定不会就取消。";
+    const UNKNOWN = "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。";
+    const helper = (name) => [REPORTED, UNKNOWN].filter((text) => within(modelRow(name)).queryByText(text));
+    expect(names.map(helper)).toEqual([[REPORTED], [], [], [UNKNOWN], [REPORTED]]);
+    expect(box("deepseek-chat").getAttribute("aria-describedby")).toBe(within(modelRow("deepseek-chat")).getByText(REPORTED).id);
+    // Another change, the boxes left alone: nothing of tools is sent for the unknown ones, and never what the catalogue reports.
+    fireEvent.click(within(modelRow("house-blend")).getByLabelText(/能看图片/));
+    await flush();
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "qwen-plus", vision: false, pdf: false, reasoning: true, contextTokens: 64000, tools: false },
+        { name: "qwen-vl-max", vision: true, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+        { name: "house-blend", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "qwen-omni-turbo", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
+      ],
+    });
+    expect(JSON.stringify(app.api.patchProvider.mock.calls)).not.toMatch(/reportedTools|audioIn|videoIn|audioOut/);
+  });
+
+  it("会用工具 on a reported model: one click on the mixed box says yes (stored true), a second says no (stored false, and the mark goes)", async () => {
+    const reported = providerOf(P1, { models: [{ name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true }] });
+    const app = await openProviders({ providers: [reported] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    const marks = () => [...modelRow("deepseek-chat").querySelectorAll(".model-mark")].map((m) => m.querySelector(".model-mark-text")?.textContent ?? m.textContent);
+    const box = () => within(modelRow("deepseek-chat")).getByLabelText("会用工具（查聊天记录、看文件）");
+    await click(within(modelRow("deepseek-chat")).getByRole("button", { name: /高级/ }));
+    await click(box());
+    expect([box().checked, box().indeterminate, marks()]).toEqual([true, false, ["工具"]]);
+    await click(box());
+    expect([box().checked, box().indeterminate, marks()]).toEqual([false, false, []]);
+    expect(modelRow("deepseek-chat").textContent).not.toContain("资料显示");
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false }] });
+  });
+
   it("an untouched unknown stays unknown: the box open and left alone, saved for another change, sends no tools and is still the mixed box", async () => {
     const unknown = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 }] });
     const app = await openProviders({ providers: [unknown] });
@@ -914,7 +970,7 @@ describe("同步模型", () => {
   const ALL = ["low", "medium", "high", "xhigh", "max"];
   const LISTING = [
     entry("gpt-x", { known: true, label: "GPT X", reasoning: true, added: true }),
-    entry("gpt-6-sol", { known: true, label: "GPT-6 Sol", vision: true, pdf: true, reasoning: true, contextTokens: 1050000, reasoningLevels: ALL }),
+    entry("gpt-6-sol", { known: true, label: "GPT-6 Sol", vision: true, pdf: true, reasoning: true, contextTokens: 1050000, reasoningLevels: ALL, reportedTools: true, audioIn: true }),
     entry("claude-long", { known: true, label: "Claude Long", vision: true, pdf: true, reasoning: true, contextTokens: 10000000, reasoningLevels: ["low", "high"] }),
     entry("house-blend"),
     entry("o3-mini", { known: true, label: "o3-mini", reasoning: true, contextTokens: 200000, reasoningLevels: ["low", "medium", "high"] }),
@@ -941,8 +997,11 @@ describe("同步模型", () => {
     expect(syncRows().map((li) => li.querySelector("strong").textContent)).toEqual(["gpt-x", "gpt-6-sol", "claude-long", "house-blend", "o3-mini"]);
     const sol = rowOf("gpt-6-sol");
     expect(sol.textContent).toContain("GPT-6 Sol");
-    // The marks are the picker's own (看图, 思考 in their order; this list says nothing of tools).
-    expect([...sol.querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["看图", "思考"]);
+    // The marks are the picker's own, in their order; 工具 is what the catalogue reports of the model (a listed row stores nothing).
+    expect([...sol.querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["看图", "思考", "工具"]);
+    // A row the catalogue reports nothing of has no 工具: o3-mini here, and a guess never has.
+    expect([...rowOf("o3-mini").querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["思考"]);
+    expect([...rowOf("house-blend").querySelectorAll(".model-mark")]).toEqual([]);
     expect([...rowOf("house-blend").querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["未收录"]);
     // The display name is not repeated when it is the id itself.
     expect(rowOf("o3-mini").querySelector(".member-body").textContent).not.toContain("o3-mini · o3-mini");
@@ -1005,6 +1064,22 @@ describe("同步模型", () => {
     expect(modelRow("claude-long").textContent).toContain("思考档位：低、高");
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it("a listed model that is already saved with tools: false has no 工具 in its row either, whatever the catalogue reports: stored false hides it everywhere", async () => {
+    const off = providerOf(P1, { models: [{ name: "gpt-6-sol", vision: true, pdf: true, reasoning: true, contextTokens: 64000, tools: false, reportedTools: true }] });
+    await openSync({ providers: [off] });
+    expect(rowOf("gpt-6-sol").textContent).toContain("已添加");
+    expect([...rowOf("gpt-6-sol").querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["看图", "思考"]);
+  });
+
+  it("a model added from the list stores no tools, whatever the catalogue reports: its row is marked 工具 at once and its box is the mixed one", async () => {
+    const app = await openSync();
+    await click(within(rowOf("gpt-6-sol")).getByRole("button", { name: "添加：gpt-6-sol" }));
+    await done();
+    const sent = app.api.patchProvider.mock.calls.at(-1)[1].models.find((m) => m.name === "gpt-6-sol");
+    expect(Object.keys(sent).filter((key) => ["tools", "reportedTools", "audioIn"].includes(key))).toEqual([]);
+    // (The service's answer is the mock's echo of what was sent: the mark here is the form's own row, before any reload.)
   });
 
   it("never changes whether a model may use tools: a model marked tools: false keeps it through 完成, a model added says nothing of it", async () => {

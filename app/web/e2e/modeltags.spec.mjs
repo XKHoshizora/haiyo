@@ -37,10 +37,11 @@ const SITE = [
   { id: "e2e-sol", label: "GPT-6 Sol", tier: "paid", vision: false, pdf: false, reasoning: ["low", "high"], contextTokens: 128000, tools: false },
   { id: "e2e-sonnet", label: "Claude Sonnet 5.5 with a rather long label to be cut", tier: "paid", vision: true, pdf: true, reasoning: ["high"], contextTokens: 128000, tools: true },
 ];
-// My provider's (the owner's kind of list): one that sees, one that thinks and says nothing of tools, one with a very long name.
+// My provider's (the owner's kind of list): one that sees, one that thinks and says nothing of tools — under a name the service's model
+// catalogue does not know, so nothing is reported of it either —, one with a very long name.
 const PROVIDER_MODELS = [
   { name: "deepseek-flash", vision: false, reasoning: false, contextTokens: 64000 },
-  { name: "deepseek-v4-flash", vision: false, reasoning: true, contextTokens: 64000 },
+  { name: "derpseek-v4-flash", vision: false, reasoning: true, contextTokens: 64000 },
   { name: "deepseek-v4-flash-vision-exp", vision: true, reasoning: true, contextTokens: 64000, tools: true },
   { name: LONG, vision: true, reasoning: true, contextTokens: 64000, tools: true },
 ];
@@ -51,7 +52,7 @@ const PHONES = [
 ];
 
 /** A person with the owner's kind of list; `keepReal`: the site's own models stay in it too (for an Agent that must be created). */
-async function setup(people, { keepReal = false } = {}) {
+async function setup(people, { keepReal = false, models = PROVIDER_MODELS } = {}) {
   const ann = await people.member("Ann");
   const { page } = ann;
   await page.route("**/api/models", async (route) => {
@@ -60,7 +61,7 @@ async function setup(people, { keepReal = false } = {}) {
     await route.fulfill({ response: res, json: { ...json, siteModels: keepReal ? [...json.siteModels, ...SITE] : SITE } });
   });
   const res = await ann.request.post("/api/providers", {
-    data: { name: `DerpSeek${uniq(3)}`, protocol: "openai_chat", baseUrl: modelStub.baseUrl, apiKey: `sk-e2e-${uniq(8)}-not-real`, models: PROVIDER_MODELS },
+    data: { name: `DerpSeek${uniq(3)}`, protocol: "openai_chat", baseUrl: modelStub.baseUrl, apiKey: `sk-e2e-${uniq(8)}-not-real`, models },
   });
   expect(res.status(), await res.text()).toBe(201);
   // The provider was added behind the page's back: read again.
@@ -157,7 +158,7 @@ for (const size of [...PHONES, { name: "1280", width: 1280, height: 860 }]) {
 
     // deepseek-v4-flash-vision-exp: 看图, its name read once, in order; one that says nothing of tools has no 工具; a model with no ability has no mark.
     await expect(list.getByRole("option", { name: /^deepseek-v4-flash-vision-exp · / })).toHaveAttribute("aria-label", "deepseek-v4-flash-vision-exp · 看图 · 思考 · 工具");
-    await expect(list.getByRole("option", { name: /^deepseek-v4-flash · / })).toHaveAttribute("aria-label", "deepseek-v4-flash · 思考");
+    await expect(list.getByRole("option", { name: /^derpseek-v4-flash · / })).toHaveAttribute("aria-label", "derpseek-v4-flash · 思考");
     await expect(list.getByRole("option", { name: "GPT-6 Sol · 需余额 · 思考" })).toBeVisible();
     // Every icon keeps a name and a title.
     for (const mark of await list.locator('.model-mark[role="img"]').all()) {
@@ -191,11 +192,11 @@ test("the provider page's rows carry the same marks, as words, at 360 and 1280 (
     // Words on a page, at any width, and no icon.
     await expectOneOfEach(rows, false);
     // A model that says nothing of tools has no 工具 (here, in the picker and in the sync list alike).
-    await expect(rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash" }).first().locator(".model-mark")).toHaveText(["思考"]);
+    await expect(rows.getByRole("listitem").filter({ hasText: "derpseek-v4-flash" }).first().locator(".model-mark")).toHaveText(["思考"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     // The form tells the mark's story: a model whose entry says nothing of tools has the mixed box (a screen reader says so), with its helper.
     if (width === 1280) {
-      const unknown = rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash" }).first();
+      const unknown = rows.getByRole("listitem").filter({ hasText: "derpseek-v4-flash" }).first();
       await unknown.getByRole("button", { name: /高级/ }).click();
       const box = unknown.getByLabel("会用工具（查聊天记录、看文件）");
       await expect(box).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
@@ -208,6 +209,122 @@ test("the provider page's rows carry the same marks, as words, at 360 and 1280 (
     await rows.scrollIntoViewIfNeeded();
     await shot(page, `providers-${width}`);
   }
+});
+
+// What the service's model catalogue reports of a model it knows (`reportedTools`, beside the stored `tools`): REAL catalogue ids on the
+// real service, nothing mocked but the site's list. The one rule (ModelMarks.jsx): stored true, yes; stored false, never; nothing stored,
+// what the catalogue reports. Screenshots go to CATALOG_SHOTS (when set).
+const CATALOG_SHOTS = process.env.CATALOG_SHOTS ?? "";
+const catalogShot = async (page, name) => {
+  if (!CATALOG_SHOTS) return;
+  mkdirSync(CATALOG_SHOTS, { recursive: true });
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: path.join(CATALOG_SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
+};
+const CATALOGUE_MODELS = [
+  // Nothing stored of tools: the catalogue's word draws the mark.
+  { name: "deepseek-chat", contextTokens: 64000 },
+  { name: "qwen-vl-max", vision: true, contextTokens: 64000 },
+  // Stored false (its owner's word, or a reply that failed): never marked, whatever the catalogue reports.
+  { name: "qwen-plus", reasoning: true, contextTokens: 64000, tools: false },
+  { name: "gpt-4o-mini", vision: true, contextTokens: 64000, tools: false },
+  // Not in the catalogue: nothing is reported, nothing is marked.
+  { name: "house-blend-1", contextTokens: 64000 },
+];
+const REPORTED_HELPER = "资料显示它会用工具，会先让它试着用。确定不会就取消。";
+const UNKNOWN_HELPER = "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。";
+
+test("what the catalogue reports: a provider model with nothing stored is marked 工具 in the picker (430 and 1280), on its provider row and in the sync list; a stored false hides it everywhere; the box tells the same story", async ({ people }) => {
+  const ann = await setup(people, { models: CATALOGUE_MODELS });
+  const page = ann.page;
+
+  // The picker, icons at 430 and words at 1280.
+  for (const [width, height] of [[430, 932], [1280, 860]]) {
+    await page.setViewportSize({ width, height });
+    // (The form stays open from one width to the next: the second time only its picker is opened again.)
+    const form = page.getByRole("region", { name: "创建 Agent" });
+    let list;
+    if (await form.isVisible()) {
+      await form.getByLabel("模型", { exact: true }).click();
+      list = page.getByRole("listbox", { name: "模型" });
+      await expect(list.getByRole("option")).toHaveCount(SITE.length + CATALOGUE_MODELS.length);
+    } else list = await openFormPicker(page, SITE.length + CATALOGUE_MODELS.length);
+    const label = (name) => list.getByRole("option", { name: new RegExp(`^${name}( · |$)`) });
+    await expect(label("deepseek-chat")).toHaveAttribute("aria-label", "deepseek-chat · 工具");
+    await expect(label("qwen-vl-max")).toHaveAttribute("aria-label", "qwen-vl-max · 看图 · 工具");
+    await expect(label("qwen-plus")).toHaveAttribute("aria-label", "qwen-plus · 思考");
+    await expect(label("gpt-4o-mini")).toHaveAttribute("aria-label", "gpt-4o-mini · 看图");
+    await expect(label("house-blend-1")).toHaveAttribute("aria-label", "house-blend-1");
+    await expectOneOfEach(list, width < 1280);
+    await expectRowsFit(page, list);
+    await catalogShot(page, `picker-${width}`);
+    await page.keyboard.press("Escape");
+  }
+
+  // The provider's rows, at 360 (from the start page: the form left open would cover a phone's navigation).
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.goto("/");
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /模型供应商/ }).click();
+  const section = page.getByRole("region", { name: "模型供应商" });
+  const rows = page.getByRole("list", { name: "模型列表" });
+  if (!(await rows.isVisible())) await section.getByRole("list", { name: "我的模型供应商" }).getByRole("listitem").first().getByRole("button", { name: "编辑" }).click();
+  const row = (name) => rows.getByRole("listitem").filter({ has: page.locator("strong", { hasText: new RegExp(`^${name}$`) }) });
+  await expect(row("deepseek-chat").locator(".model-mark")).toHaveText(["工具"]);
+  await expect(row("qwen-vl-max").locator(".model-mark")).toHaveText(["看图", "工具"]);
+  await expect(row("qwen-plus").locator(".model-mark")).toHaveText(["思考"]);
+  await expect(row("gpt-4o-mini").locator(".model-mark")).toHaveText(["看图"]);
+  await expect(row("house-blend-1").locator(".model-mark")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await rows.scrollIntoViewIfNeeded();
+  await catalogShot(page, "providers-360");
+
+  // The sync list (the provider's own, read by the real service): a row the catalogue reports is marked; one already saved with tools off is not.
+  await page.getByRole("button", { name: "同步模型", exact: true }).click();
+  const sync = page.getByRole("dialog", { name: /的模型（/ });
+  await expect(sync).toBeVisible();
+  const listed = (name) => sync.getByRole("list", { name: "供应商的模型" }).getByRole("listitem").filter({ has: page.locator("strong", { hasText: new RegExp(`^${name}$`) }) });
+  await expect(listed("claude-sonnet-5-5").locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(1);
+  await expect(listed("gpt-4o-mini")).toContainText("已添加");
+  await expect(listed("gpt-4o-mini").locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(0);
+  await expect(listed("stub-chat").locator(".model-mark")).toHaveCount(0);
+  await expect(listed("stub-chat")).toContainText("未收录");
+  expect(await sync.locator(".modal-body").evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await catalogShot(page, "sync-360");
+  await sync.getByRole("button", { name: "完成" }).click();
+  await expect(sync).toBeHidden();
+
+  // The box: reported and nothing stored — still mixed, with the helper that says where the mark comes from; stored false — unticked;
+  // unknown and unreported — mixed with the plain helper. Nothing was changed, so nothing is offered to save.
+  await page.setViewportSize({ width: 1280, height: 860 });
+  const box = (name) => row(name).getByLabel("会用工具（查聊天记录、看文件）");
+  for (const name of ["deepseek-chat", "qwen-plus", "house-blend-1"]) await row(name).getByRole("button", { name: /高级/ }).click();
+  await expect(box("deepseek-chat")).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
+  await expect(row("deepseek-chat").getByText(REPORTED_HELPER)).toBeVisible();
+  await expect(box("qwen-plus")).not.toBeChecked();
+  await expect(box("qwen-plus")).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）"');
+  await expect(row("qwen-plus").getByText(REPORTED_HELPER)).toHaveCount(0);
+  await expect(box("house-blend-1")).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
+  await expect(row("house-blend-1").getByText(UNKNOWN_HELPER)).toBeVisible();
+
+  // What the real service says of them, and what it stores when the list is sent back as the form sends it (the flags, the context, `tools`
+  // only where the entry says it — the form itself cannot be saved here: the stub's address is not https, which the form refuses; the form's
+  // own save is pinned in tests/providers.test.jsx): nothing of tools for a reported model, and nothing the catalogue reports is accepted.
+  const read = async () => (await (await ann.request.get("/api/providers")).json()).providers[0];
+  const provider = await read();
+  const state = (models) => models.map((m) => [m.name, m.tools, m.reportedTools]);
+  const expected = [
+    ["deepseek-chat", undefined, true],
+    ["qwen-vl-max", undefined, true],
+    ["qwen-plus", false, true],
+    ["gpt-4o-mini", false, true],
+    ["house-blend-1", undefined, undefined],
+  ];
+  expect(state(provider.models)).toEqual(expected);
+  const echo = provider.models.map((m) => ({ name: m.name, vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, contextTokens: m.contextTokens, ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}) }));
+  expect((await ann.request.patch(`/api/providers/${provider.id}`, { data: { models: echo } })).status()).toBe(200);
+  expect(state((await read()).models)).toEqual(expected);
+  expect((await ann.request.patch(`/api/providers/${provider.id}`, { data: { models: echo.map((m) => ({ ...m, reportedTools: true })) } })).status()).toBe(400);
 });
 
 test("the sync dialog (a list read from a sibling address) shows the marks (the provider's hints: no 工具) AND the sibling line, at 360 and 1280", async ({ people }) => {
