@@ -141,7 +141,10 @@ Events the shell dispatches on `window` (only to its own origin's page):
   below it (`obscuredContentInsets.top`: measured 53 pt in a window mid-screen on iPadOS 27.2, 75 pt in a window at the
   top of the screen on 27.0, 0 full screen in either orientation) and gives the room back once its `hello` with
   `layout` has been delivered. This needs no reserved regions, so it works from iPadOS 26.0; phones are never moved
-  (the Duo's rounded corners give a corner extra too).
+  (the Duo's rounded corners give a corner extra too). The rule rests on a measured fact: a full-screen iPad reports
+  no corner extra at the top, in either orientation (iPad Pro 13-inch, iPad Air 11-inch, iPad mini; `PageLayoutTests`
+  keeps it as a case). An iPad that reported one in full screen would have its unaware page pushed down by that
+  much: check it on the first real iPad. iPadOS 26.x in a window is unmeasured (no 26.x simulator runtime here).
 
 Events are hints, not a guarantee: they are fire-and-forget, a page reloaded in the background never hears `pause`,
 and the shell checks the page's origin inside the script. **A page that loads while `document.visibilityState` is

@@ -109,7 +109,9 @@ final class PageLayoutTests: XCTestCase {
 
     /// Only an iPad's window controls move a page that does not handle `layout`; a phone never (the Duo's rounded
     /// corners give a corner extra too). The rule reads no reserved regions, so it holds before iPadOS 27.1 as well,
-    /// and whichever side the controls are on.
+    /// and whichever side the controls are on. It rests on the measured fact that a full-screen iPad reports no
+    /// corner extra at the top in either orientation (the two full-screen cases below); a device that did would be
+    /// pushed down (README "Bridge").
     func testOnlyIPadWindowControlsKeepAnUnawarePageDown() {
         XCTAssertEqual(LayoutGeometry.windowControlsTop(T.iPadWindow), 53)
         XCTAssertEqual(LayoutGeometry.windowControlsTop(T.iPadFullScreen), 0)
