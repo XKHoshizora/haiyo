@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {
+      "hostSuffixes": ["maas.aliyuncs.com", "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"],
+      "paths": ["/compatible-mode/v1/models"]
+    }
+  ],
+  "generic": ["/v1/models"]
+}

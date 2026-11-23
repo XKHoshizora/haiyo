@@ -418,7 +418,7 @@ export function registerProviderRoutes(
         querystring: empty,
         body: noBody,
         response: {
-          200: z.union([z.object({ ok: z.literal(true), listed: z.array(listedModel), source: z.enum(["upstream", "catalogue"]) }), callFailure]),
+          200: z.union([z.object({ ok: z.literal(true), listed: z.array(listedModel), source: z.enum(["upstream", "sibling", "catalogue"]) }), callFailure]),
         },
       },
     },
@@ -438,8 +438,10 @@ export function registerProviderRoutes(
           .slice(0, MAX_LISTED_MODELS)
           .map((name) => ({ name, ...modelHints(name), added: saved.has(name) }));
       let names: string[];
+      let source: "upstream" | "sibling" = "upstream";
       try {
-        names = await providerProbe.listModels(target);
+        // Its own `/models` first; when that is not offered, a sibling listing on the same origin (listing-siblings.json).
+        names = await providerProbe.listModels(target, { onSibling: () => void (source = "sibling") });
       } catch (err) {
         const failure = toProviderCallError(err);
         logFailure(req.log, req.params.id, target.protocol, failure);
@@ -449,7 +451,7 @@ export function registerProviderRoutes(
         if (known !== null) return { ok: true as const, listed: listedOf(known), source: "catalogue" as const };
         return failed(failure);
       }
-      return { ok: true as const, listed: listedOf(names), source: "upstream" as const };
+      return { ok: true as const, listed: listedOf(names), source };
     },
   );
 

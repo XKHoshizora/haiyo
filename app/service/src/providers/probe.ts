@@ -1,5 +1,6 @@
 import type { Protocol } from "../config.ts";
 import { AppError } from "../errors.ts";
+import { siblingListingUrls, SIBLING_TABLE, type SiblingTable } from "./listing-siblings.ts";
 import { DETAIL_BODY_BYTES, readHead, upstreamDetail, type UpstreamDetail } from "./upstream-detail.ts";
 
 /**
@@ -18,8 +19,12 @@ export interface ProbeTarget {
 export interface ProviderProbe {
   /** Resolves when the provider accepts the key; otherwise throws a `ProviderCallError`. */
   test(p: ProbeTarget): Promise<void>;
-  /** The model names the provider's list endpoint gives; throws a `ProviderCallError`. */
-  listModels(p: ProbeTarget): Promise<string[]>;
+  /**
+   * The model names the provider's list endpoint gives; throws a `ProviderCallError`. With `discover`, when the
+   * address's own `/models` is not offered the siblings of listing-siblings.json are tried too (same origin, same key);
+   * `onSibling` is called when the names came from one. Without it, one request, as ever.
+   */
+  listModels(p: ProbeTarget, discover?: { onSibling: () => void }): Promise<string[]>;
 }
 
 export type ProviderCallCode = "provider_rejected" | "provider_unavailable" | "address_not_allowed";
@@ -83,26 +88,38 @@ function namesIn(protocol: Protocol, json: unknown): unknown[] {
   });
 }
 
+/** Whether a failed answer says "no model list here" (404, 405) or gave something that is not one (a 200 that did not parse). */
+const notOffered = (err: ProviderCallError): boolean =>
+  err.code === "provider_unavailable" && (err.upstreamStatus === 404 || err.upstreamStatus === 405 || err.upstreamStatus === 200);
+
+/** Whether a parsed answer has a model list at all (an empty one is a list). */
+function hasList(protocol: Protocol, json: unknown): boolean {
+  return Array.isArray((json as Record<string, unknown> | null)?.[protocol === "gemini" ? "models" : "data"]);
+}
+
 /**
  * The default probe: one authenticated `GET {baseUrl}/models` in the protocol's own headers, through `fetch`
  * (always a `guardedFetch`). 401/403 → `provider_rejected`; anything but a 200 with JSON → `provider_unavailable`;
  * the guard's refusal → `address_not_allowed`. Of a failed answer, the first `DETAIL_BODY_BYTES` are read for the
  * error's `detail` (`upstreamDetail`: bounded, cleaned, dropped when it holds a piece of the key) and nothing else kept;
  * of a good one, only the parsed names.
+ *
+ * Discovery (`listModels` with `discover`): when that listing is not offered (404, 405, or a 200 with no list in it), up
+ * to `MAX_SIBLING_REQUESTS` sibling listings (`siblingListingUrls`, from `siblings`) are asked, in the OpenAI form
+ * (`Authorization: Bearer`), all within the one `PROBE_DEADLINE_MS`. The first that gives a non-empty list wins. A sibling
+ * that refuses the key ends it (`provider_rejected`, its detail); any other failure of a sibling is skipped, and when none
+ * lists, the base's own failure is what is thrown (a 200 without a list: an empty list, as ever).
  */
-export function createProviderProbe(fetch: typeof globalThis.fetch): ProviderProbe {
+export function createProviderProbe(fetch: typeof globalThis.fetch, siblings: SiblingTable = SIBLING_TABLE): ProviderProbe {
   /** The failure for an upstream answer of `status` whose body was `body`. */
   const failed = (p: ProbeTarget, status: number, body: string | null) =>
     new ProviderCallError(keyRefused(status) ? "provider_rejected" : "provider_unavailable", status, upstreamDetail(status, body, p.apiKey));
 
-  async function listing(p: ProbeTarget): Promise<unknown> {
+  /** One authenticated GET of `url`: the parsed JSON of a 200, else a thrown `ProviderCallError`. */
+  async function get(p: ProbeTarget, url: string, headers: Record<string, string>, signal: AbortSignal): Promise<unknown> {
     let res: Response;
     try {
-      res = await fetch(`${p.baseUrl}/models`, {
-        method: "GET",
-        headers: { accept: "application/json", ...keyHeaders(p) },
-        signal: AbortSignal.timeout(PROBE_DEADLINE_MS),
-      });
+      res = await fetch(url, { method: "GET", headers: { accept: "application/json", ...headers }, signal });
     } catch (err) {
       throw toProviderCallError(err);
     }
@@ -119,12 +136,37 @@ export function createProviderProbe(fetch: typeof globalThis.fetch): ProviderPro
       throw failed(p, res.status, text.slice(0, DETAIL_BODY_BYTES));
     }
   }
+  const own = (p: ProbeTarget, signal = AbortSignal.timeout(PROBE_DEADLINE_MS)) => get(p, `${p.baseUrl}/models`, keyHeaders(p), signal);
+
   return {
     async test(p) {
-      await listing(p);
+      await own(p);
     },
-    async listModels(p) {
-      return namesIn(p.protocol, await listing(p)).filter((n): n is string => typeof n === "string");
+    async listModels(p, discover) {
+      const signal = AbortSignal.timeout(PROBE_DEADLINE_MS);
+      let first: ProviderCallError | null = null;
+      try {
+        const json = await own(p, signal);
+        if (discover === undefined || hasList(p.protocol, json)) return namesIn(p.protocol, json).filter((n): n is string => typeof n === "string");
+      } catch (err) {
+        first = toProviderCallError(err);
+        if (discover === undefined || !notOffered(first)) throw first;
+      }
+      if (discover === undefined) return [];
+      for (const url of siblingListingUrls(p.baseUrl, siblings)) {
+        try {
+          const names = namesIn("openai_chat", await get(p, url, { authorization: `Bearer ${p.apiKey}` }, signal)).filter((n): n is string => typeof n === "string");
+          if (names.length > 0) {
+            discover.onSibling();
+            return names;
+          }
+        } catch (err) {
+          const failure = toProviderCallError(err);
+          if (failure.code === "provider_rejected" || failure.code === "address_not_allowed") throw failure;
+        }
+      }
+      if (first !== null) throw first;
+      return [];
     },
   };
 }
