@@ -23,6 +23,7 @@ import {
   overLaneLimit,
   ownedAgentOf,
   queueRun,
+  standingCalls,
   triggerFromAgent,
   type Announced,
   type Lane,
@@ -319,6 +320,12 @@ export async function postAsAgent(
   if (agent.paused) throw new AppError(409, "agent_paused");
   if (!own && !(await currentMembership(t, conversationId, agentId))) throw new AppError(409, "agent_removed");
   if (!own && mark === null) throw new Error("a reply in a group is posted only with the mark its run drew");
+  // A person refused after `begin` dropped what it dropped (a block, a stop, a removal arriving while the reply was written): the
+  // calls the run answers are asked again. None left: nothing is posted (409 `access_ended`; the run ends cancelled, settled once
+  // through `finish`). Otherwise what goes on for the others quotes and mentions nobody refused (below). A told reply answers no call.
+  const calls = !own && !run.rows[0].told ? await standingCalls(t, runId) : null;
+  if (calls?.none) throw new AppError(409, "access_ended");
+  const refusedNow = calls?.refused ?? new Set<string>();
 
   // A reply offered tools: every token-shaped string goes first, from all it says — its text, its reasoning, its search
   // words — before anything reads it (a proposal, the block rule, the cut, the mark): those of its text of a number the
@@ -396,6 +403,11 @@ export async function postAsAgent(
       ])
     ).rowCount !== 0;
   if (overtaken) body.replyToSeq = Number(run.rows[0].covers);
+  // ... but never quoting a message of someone refused now.
+  if (body.replyToSeq !== undefined && refusedNow.size > 0) {
+    const quoted = await t.query<{ sender_id: string }>("select sender_id from messages where conversation_id = $1 and seq = $2", [conversationId, body.replyToSeq]);
+    if (quoted.rows[0] && refusedNow.has(quoted.rows[0].sender_id)) delete body.replyToSeq;
+  }
   if (run.rows[0].told) {
     // A told reply: the question it tells about, quoted, when the Agent may still see it (VISIBLE_JOIN, as a person's quote).
     const whisper = await whisperOfRun(t, runId);
@@ -422,7 +434,10 @@ export async function postAsAgent(
   if (toolCalls !== null) body.toolCalls = toolCalls;
   // Who its mentions mean, read once, now, from the text it stores (Task M: a model's text is typed text), and stored with
   // it: what it calls below, and everything after, reads that.
-  const read = await mentionsAtSend(t, { id: conversationId, type: own ? "agent" : "group" }, text);
+  const mentioned = await mentionsAtSend(t, { id: conversationId, type: own ? "agent" : "group" }, text);
+  // Nobody refused now is mentioned (their `mentions` are not stored: they would be notified of a reply that is not for them).
+  const unrefused = refusedNow.size === 0 ? null : (mentioned.mentions ?? []).filter((m) => !refusedNow.has(m.id));
+  const read = unrefused === null ? mentioned : { ...mentioned, mentions: unrefused.length === 0 ? null : unrefused };
   // What its text cites, beside it, as `found` is kept: in a group only that group's messages (each reader is sent only
   // those they can see, messages/read.ts) — where a link can be drawn, in its plain and its rendered text alike.
   const drawn = drawnCites(text, placed.cites, read.mentions ?? []);

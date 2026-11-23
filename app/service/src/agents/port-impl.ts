@@ -72,7 +72,7 @@ import {
   actOnTriggered,
   budgetReachedWith,
   droppedOnEnd,
-  dropBlockedCalls,
+  dropRefusedCalls,
   followUp,
   followUpOf,
   followUpOnEnd,
@@ -208,7 +208,7 @@ const STARTED_OVER: RunEnd = { status: "cancelled" };
 const NOTHING_LEFT: RunEnd = { status: "cancelled" };
 /**
  * Every call the reply answers (a told reply answers none: never so) was made by someone who has had a block with the Agent's owner, either way, since: each
- * would be refused now (runs.ts `dropBlockedCalls`), so with none left the reply ends before any call — nothing held or
+ * would be refused now (runs.ts `dropRefusedCalls`), so with none left the reply ends before any call — nothing held or
  * charged, no message, nothing to retry.
  */
 const BLOCKED_SINCE: RunEnd = { status: "cancelled" };
@@ -237,7 +237,7 @@ const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
 const HELD_BACK: RunEnd = Object.freeze({ status: "cancelled" });
 
 /** Why `postAsAgent` refuses a run's reply (409): the Agent's state, or what interrupted the run. */
-const REFUSED: ReadonlySet<string> = new Set(["agent_paused", "agent_deleted", "agent_removed", "halted"]);
+const REFUSED: ReadonlySet<string> = new Set(["agent_paused", "agent_deleted", "agent_removed", "halted", "owner_spoke", "access_ended", "notes_changed", "errand_ended"]);
 
 /** What `begin`, `finish` and recovery read of the run, under its row lock. */
 interface RunState {
@@ -656,13 +656,13 @@ export class DbAgentPort implements AgentPort {
       const scene = group ? await loadGroupScene(t, agent, run.conversationId) : null;
       if (group && scene === null) return { end: REMOVED };
       // A block made since a call, either way, between the Agent's owner and whoever made it: that call is dropped, as it
-      // would be refused now (runs.ts `dropBlockedCalls`, every lane, every group run: one of the owner's own may carry a
+      // would be refused now (runs.ts `dropRefusedCalls`, every lane, every group run: one of the owner's own may carry a
       // call relayed by someone else's Agent); with no call left the reply ends quietly. Not asked (no query) in the
       // Agent's own conversation, where every call is its owner's and nobody has a block with themselves — nor for a reply
       // `告诉他们` queued (`told`): it is its owner's own tell and answers nobody's call (what it covers is merely the
       // group's latest message then, anyone's); what was noted on it is held to the block rule by its follow-up.
       if (group && !state.told) {
-        const kept = await dropBlockedCalls(t, run.id, agent.ownerId);
+        const kept = await dropRefusedCalls(t, run.id, agent.ownerId);
         if (kept === null) return { end: BLOCKED_SINCE };
         Object.assign(state, kept);
       }

@@ -334,7 +334,7 @@ export async function askerLine(q: Queryable, runId: string): Promise<number> {
  * The calls reply run `runId` of Agent `agentId` answers that the Agent can see and show, by seq, oldest first: of the
  * messages that called for it (`agent_runs.call_seqs`, which holds the latest it covers too as it is written — but a told
  * reply's, which hold only the calls noted on it, all after what it covers and shown to it as nothing, `upTo`; its
- * `covers_seq` alone when not known — a call `runs.ts dropBlockedCalls` dropped is in neither), those that are text or
+ * `covers_seq` alone when not known — a call `runs.ts dropRefusedCalls` dropped is in neither), those that are text or
  * file messages the Agent can see (`VISIBLE_JOIN`) — one at or before the run's line
  * `line` (`askerLine`) only when it has text: it is shown even there, but as its text only (fix round 3: not its file).
  * What it was asked is answered, whoever spoke since. None: nothing is left to answer.

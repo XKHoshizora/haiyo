@@ -9,9 +9,8 @@ import { AppError, notFound } from "../errors.ts";
 import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../messages/model.ts";
 import { postingRun } from "../messages/read.ts";
 import { othersReached } from "../metering/others.ts";
-import { reach } from "../social/reach.ts";
+import { reach, refusedSql } from "../social/reach.ts";
 import { groupPlaceSql, placeOf, placeOfType, socialPlaceSql, type Place } from "../social/place.ts";
-import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
 import type { RunEnd } from "./runtime/port.ts";
@@ -557,25 +556,34 @@ export async function hearFrom(t: Tx, runId: string, from: number, to: number | 
 }
 
 /**
- * The block rule a call meets when it is made, met again by every call reply run `runId` of an Agent of `ownerId`
- * answers as it begins (reverse-paths audit A12; Task R fix round 1), whatever the run's lane: a call (`call_seqs`; its
- * `covers_seq` when not known) whose person has a block with the owner, either way — the sender of a person's message;
- * for an Agent's message that Agent's owner and the person behind it (`behindMessageSql`), as `followUp` reads them — would
- * be refused were it made now (`triggerInGroup`, `triggerFromAgent`), and is dropped: it is no longer among the calls the
- * run answers and nobody the owner has a block with is among its askers; what the run covers ends at the latest call
- * left (`covers_seq`, or `pending_seq` when that call was noted after its claim), so what came after that call is heard
- * by the usual rule as the run begins (`hearFrom`: someone blocked who wrote there is heard, as anyone is, and counts
- * toward its line, never as a call). A run whose caller is dropped becomes the remaining calls' by `followUp`'s rule —
- * its owner's own when the owner is behind one of them, else the earliest one's — and a person's while a person's call
- * is left (a reply nobody asked for keeps its lane, caller and trigger). The owner's own call is never dropped (nobody has
- * a block with themselves): `begin` asks this of every group run (none in the Agent's own conversation) but a reply
- * `告诉他们` queued, which answers nobody's call (its follow-up holds what was noted on it to the rule). Returns what the run now covers, has noted and its lane now (the caller takes them all: what a reply is bounded to is decided by the lane it has here; empty when nothing was dropped: one query),
- * or null when no call is left — then only its `pending_seq` is cleared, so no follow-up answers a dropped call.
+ * SQL: person `subject` (a SQL expression: a column, a parameter with its cast) is refused by the Agent `agent` (SQL) in a group
+ * (`refusedSql`: THE access decision: a block, a bar, an ended row, a deleted or disabled Agent). The switch is not asked of a group:
+ * `socialOn` is a literal, never a bind parameter (a parameter nothing else uses makes Postgres reject the statement). Every group
+ * site asks it, and so does lane A's `endGroupCalls` in the same terms (lane I makes that one call `dropRefusedCalls`).
  */
-export async function dropBlockedCalls(t: Tx, runId: string, ownerId: string): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane } | null> {
-  const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; behind: string | null; blocked: boolean; lane: Lane; caller_blocked: boolean }>(
-    `select m.seq::text as seq, p.kind, bh.caller_id as behind, ${blockedEitherWay("$2::uuid", "coalesce(p.owner_id, p.id), bh.caller_id")} as blocked,
-            r.lane, ${blockedEitherWay("$2::uuid", "r.caller_id")} as caller_blocked
+export const refusedInGroup = (subject: string, agent: string): string => refusedSql({ subject, agent, where: "group", socialOn: "false" });
+
+/**
+ * The rule a call meets when it is made (`triggerInGroup`, `triggerFromAgent`), met again by every call reply run `runId` of an
+ * Agent of `ownerId` answers as it begins (reverse-paths audit A12; B5b), whatever the run's lane: a call (`call_seqs`; its
+ * `covers_seq` when not known) whose person `refusedInGroup` refuses now — the sender of a person's message; for an Agent's message
+ * that Agent as a subject and the person behind it (`behindMessageSql`), as `followUp` reads them — is dropped: it is no longer among
+ * the calls the run answers and nobody refused is among its askers; what the run covers ends at the latest call left (`covers_seq`,
+ * or `pending_seq` when that call was noted after its claim), so what came after that call is heard by the usual rule as the run
+ * begins (`hearFrom`: someone refused who wrote there is heard, as anyone is, and counts toward its line, never as a call). A run whose
+ * caller is dropped becomes the remaining calls' by `followUp`'s rule — its owner's own when the owner is behind one of them, else
+ * the earliest one's — and a person's while a person's call is left (a reply nobody asked for keeps its lane, caller and trigger).
+ * The owner's own call is never dropped (`refusedInGroup` never refuses the owner): `begin` asks this of every group run but a reply
+ * `告诉他们` queued, which answers nobody's call. Returns what the run now covers, has noted and its lane now (the caller takes them
+ * all: what a reply is bounded to is decided by the lane it has here; empty when nothing was dropped: one query), or null when no call
+ * is left: the run ends (`cancelled`, no error: see `BLOCKED_SINCE`; lane A's `endGroupCalls` ends one `access_ended`), and what a third person noted on it
+ * (`pending_seq`) is kept for its follow-up, as theirs, while what only the refused noted is not.
+ */
+export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane } | null> {
+  const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; behind: string | null; refused: boolean; lane: Lane; caller_refused: boolean }>(
+    `select m.seq::text as seq, p.kind, bh.caller_id as behind,
+            (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})) as refused,
+            r.lane, (r.caller_id is not null and ${refusedInGroup("r.caller_id", "r.agent_id")}) as caller_refused
        from agent_runs r
        join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
        join principals p on p.id = m.sender_id
@@ -583,17 +591,23 @@ export async function dropBlockedCalls(t: Tx, runId: string, ownerId: string): P
        cross join lateral (select ${behindMessageSql("p", "pr")} as caller_id) bh
       where r.id = $1
       order by m.seq`,
-    [runId, ownerId],
+    [runId],
   );
-  if (!rows.some((r) => r.blocked)) return {};
-  const left = rows.filter((r) => !r.blocked);
+  if (!rows.some((r) => r.refused)) return {};
+  const left = rows.filter((r) => !r.refused);
   if (left.length === 0) {
-    await t.query("update agent_runs set pending_seq = null where id = $1", [runId]);
+    await t.query(
+      `update agent_runs r set pending_seq = case when exists (select 1 from messages nm join principals np on np.id = nm.sender_id
+                                                                where nm.conversation_id = r.conversation_id and nm.seq > r.covers_seq and nm.seq <= r.pending_seq
+                                                                  and nm.kind <> 'system' and nm.sender_id <> r.agent_id and not ${refusedInGroup("np.id", "r.agent_id")}) then r.pending_seq end
+        where r.id = $1`,
+      [runId],
+    );
     return null;
   }
   const { lane } = rows[0]!;
   const caller: Caller | null =
-    lane === "proactive" || !rows[0]!.caller_blocked
+    lane === "proactive" || !rows[0]!.caller_refused
       ? null
       : left.some((r) => r.behind === ownerId)
         ? callerOf(ownerId, ownerId)
@@ -603,13 +617,46 @@ export async function dropBlockedCalls(t: Tx, runId: string, ownerId: string): P
     `update agent_runs set call_seqs = $2::bigint[], covers_seq = least(covers_seq, $3::bigint),
             pending_seq = case when $3::bigint > covers_seq then $3::bigint end,
             asker_ids = case when asker_ids is null then null
-                             else array(select x.a from unnest(asker_ids) as x (a) where not ${blockedEitherWay("$4::uuid", "x.a")} order by x.a) end,
-            caller_id = case when $5::boolean then $6::uuid else caller_id end, lane = case when $5::boolean then $7::text else lane end,
-            triggered_by = coalesce($8::text, triggered_by)
+                             else array(select x.a from unnest(asker_ids) as x (a) where not ${refusedInGroup("x.a", "agent_runs.agent_id")} order by x.a) end,
+            caller_id = case when $4::boolean then $5::uuid else caller_id end, lane = case when $4::boolean then $6::text else lane end,
+            triggered_by = coalesce($7::text, triggered_by)
       where id = $1 returning covers_seq::text as covers_seq, pending_seq::text as pending_seq, lane`,
-    [runId, left.map((r) => Number(r.seq)), Number(left.at(-1)!.seq), ownerId, caller !== null, caller?.id ?? null, caller?.lane ?? null, by],
+    [runId, left.map((r) => Number(r.seq)), Number(left.at(-1)!.seq), caller !== null, caller?.id ?? null, caller?.lane ?? null, by],
   );
   return updated.rows[0]!;
+}
+
+/**
+ * At post time (`postAsAgent`, under the run's conversation row and its Agent's): the same rule met once more by the calls the run
+ * answers, for the window in which a person is refused after `begin` dropped what it dropped (an admitted run keeps its context; its
+ * output can be filtered only now). `none`: it answers calls and every one is refused: nothing is to be posted. `refused`: the
+ * persons refused now among its calls' senders, the persons behind them and its askers: a reply that goes on for others is not
+ * addressed to them (no quote of their message) and mentions none of them. Reads only. A run with no call of its own (`告诉他们`'s)
+ * is never refused; the caller leaves those out.
+ */
+export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string> }> {
+  const { rows } = await t.query<{ sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean }>(
+    `select p.id as sender, p.kind, bh.caller_id as behind,
+            ${refusedInGroup("p.id", "r.agent_id")} as sender_refused,
+            (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")}) as behind_refused
+       from agent_runs r
+       join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
+       join principals p on p.id = m.sender_id
+       left join agent_runs pr on p.kind = 'agent' and ${postingRun("m", "pr")}
+       cross join lateral (select ${behindMessageSql("p", "pr")} as caller_id) bh
+      where r.id = $1`,
+    [runId],
+  );
+  const askers = await t.query<{ a: string }>(
+    `select x.a from agent_runs r cross join lateral unnest(r.asker_ids) as x (a) where r.id = $1 and ${refusedInGroup("x.a", "r.agent_id")}`,
+    [runId],
+  );
+  const refused = new Set<string>(askers.rows.map((r) => r.a));
+  for (const r of rows) {
+    if (r.sender_refused && r.kind === "human") refused.add(r.sender);
+    if (r.behind_refused && r.behind !== null) refused.add(r.behind);
+  }
+  return { none: rows.length > 0 && rows.every((r) => r.sender_refused || r.behind_refused), refused };
 }
 
 /** The model of Agent `agentId` as its `agents` row says now (`agentModelOf`); null for none, or no such Agent. */
@@ -998,7 +1045,7 @@ async function triggerInGroup(t: Tx, conversationId: string, message: StoredMess
        join principals p on p.id = m.principal_id
        join agents a on a.principal_id = p.id
       where m.conversation_id = $1 and m.left_seq is null and p.kind = 'agent' and p.id = any($2::uuid[])
-        and not ${blockedEitherWay("p.owner_id", "$3::uuid")}
+        and not ${refusedInGroup("$3::uuid", "p.id")}
       order by p.id`,
     [conversationId, called, message.senderId],
   );
@@ -1157,18 +1204,18 @@ export async function triggerFromAgent(
   const called = mentionedIds(message).filter((id) => id !== poster.id);
   if (called.length === 0) return noneTriggered();
   const behind = behindAgentMessage(poster.ownerId, postedBy);
-  // A block, either way, between a target's owner and the poster's owner or the person behind the message (none to
-  // match when nobody is: `$5` null) refuses the target.
+  // The access decision (`refusedInGroup`) refuses the target for the poster Agent (a block, a bar, an ended row between its owner
+  // and the target's owner, or against the target) or for the person behind the message (none to match when nobody is: `$4` null).
   const { rows } = await t.query<{ id: string; owner_id: string; budget: string; others_budget: string | null; blocked: boolean }>(
     `select p.id, p.owner_id, a.chain_budget_micro::text as budget, a.others_budget_micro::text as others_budget,
-            ${blockedEitherWay("p.owner_id", "$4::uuid, $5::uuid")} as blocked
+            (${refusedInGroup("$3::uuid", "p.id")} or ($4::uuid is not null and ${refusedInGroup("$4::uuid", "p.id")})) as blocked
        from memberships m
        join principals p on p.id = m.principal_id
        join agents a on a.principal_id = p.id
       where m.conversation_id = $1 and m.left_seq is null and p.kind = 'agent' and p.id = any($2::uuid[]) and p.id <> $3
         and a.deleted_at is null and not a.paused and a.model_source is not null and a.group_mentions = 'members'
       order by p.id`,
-    [conversationId, called, poster.id, poster.ownerId, behind],
+    [conversationId, called, poster.id, behind],
   );
   // The targets refused below (a block, the halt, the chain limit, a chain budget, an others' daily budget), recorded with
   // the message as this returns, so that none of them counts it as a call later (`followUp`).
@@ -1306,11 +1353,11 @@ export async function followUp(
        join principals p on p.id = m.sender_id
        left join agent_runs r on p.kind = 'agent' and ${postingRun("m", "r")}
        cross join lateral (select ${behindMessageSql("p", "r")} as caller_id) bh
-      where m.conversation_id = $1 and m.seq > $2 and m.seq <= $3 and m.kind <> 'system' and m.sender_id <> $5 and ${notAcknowledgement("m")}
-        and not exists (select 1 from refused_agent_calls x where x.conversation_id = m.conversation_id and x.seq = m.seq and x.agent_id = $5)
-        and not ${blockedEitherWay("$4::uuid", "coalesce(p.owner_id, p.id), bh.caller_id")}
+      where m.conversation_id = $1 and m.seq > $2 and m.seq <= $3 and m.kind <> 'system' and m.sender_id <> $4 and ${notAcknowledgement("m")}
+        and not exists (select 1 from refused_agent_calls x where x.conversation_id = m.conversation_id and x.seq = m.seq and x.agent_id = $4)
+        and not (${refusedInGroup("p.id", "$4::uuid")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "$4::uuid")}))
       order by m.seq`,
-    [conversationId, covers, pending, agent.ownerId, agent.id],
+    [conversationId, covers, pending, agent.id],
   );
   // The calls the run noted (`callSeqs`, its `call_seqs`: each recorded as it was accepted when it was sent), never read
   // again from the text, which a rename or a member joining or leaving since would read otherwise (fix round 1, I1) — nor
@@ -1475,6 +1522,7 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
 export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessage, config: RunLimits): Promise<Triggered> {
   if (message.kind === "system") return noneTriggered();
   if (lock.conversation.type === "group") return triggerInGroup(t, lock.conversation.id, message, config);
+  if (lock.conversation.type === "agent_social") return triggerInSocial(t, lock, message, config);
   if (lock.conversation.type !== "agent") return noneTriggered();
   const conversationId = lock.conversation.id;
   const found = await t.query<{ agent_id: string }>("select agent_id from agent_conversations where conversation_id = $1", [conversationId]);
@@ -1508,6 +1556,88 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
     ? await recordRateLimited(t, agent, conversationId, message.seq, "human", caller, askers)
     : await queueRun(t, agent, conversationId, message.seq, "human", caller, askers);
   return { ...noneTriggered(), runs: [...gaveWay, run] };
+}
+
+/**
+ * A message in a social conversation (`agent_social`), in the send's transaction, which holds the conversation's row and (the write
+ * rule, `permission`) its participating Agents' rows. Two cases, told apart by who wrote it:
+ * 1. A supervisor's (an observer who owns a participating Agent; nobody else, whatever their name: RF5) is an interjection: that
+ *    Agent's queued reply here is `cancelled` (`owner_spoke`, announced to its owner); a running one is marked `interrupted`
+ *    (`owner_spoke`, `pending_seq` null) and its id returned in `stopped`, whose calls the route abandons after commit, and what it
+ *    posts is refused (`postAsAgent`); nothing is triggered.
+ * 2. A person participant's (the visitor V): `reach(V, Agent, 'social')` again; a paused or deleted Agent, or one with no model,
+ *    does nothing; an active run folds the message in (a queued one covers it, a running one notes it); else, the owner's numbers
+ *    reached (`refusedByOthersBudget`: the notice of once a site day), nothing; else, over V's minute (`calledLastMinute`) or the
+ *    owner's others' minute (`overLaneLimit`), a `rate_limited` run (reused, `rateLimitedInGroup`); an Agent whose model is gone
+ *    `model_gone`; else `queueRun`, caller V, lane `others`, triggered by `human`, askers [V]. The accounts are locked in id order,
+ *    last (the lock order).
+ * Agent-to-Agent conversations trigger nothing but interjections in ring 1.
+ */
+export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMessage, config: RunLimits): Promise<Triggered> {
+  const conversationId = lock.conversation.id;
+  const { rows: parts } = await t.query<{ id: string; kind: "human" | "agent"; owner_id: string | null }>(
+    `select p.id, p.kind, p.owner_id from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id) where sp.conversation_id = $1 order by p.id`,
+    [conversationId],
+  );
+  const agents = parts.filter((p) => p.kind === "agent");
+  const sender = message.senderId;
+  // A supervisor: the owner of a participating Agent, in the conversation as its observer.
+  const owned = agents.filter((a) => a.owner_id === sender);
+  if (owned.length > 0 && lock.membership.role === "observer") return interjection(t, conversationId, owned.map((a) => a.id));
+  // The visitor's: a person participant of a person-to-Agent conversation.
+  const visitor = parts.find((p) => p.kind === "human" && p.id === sender);
+  if (!visitor || agents.length !== 1) return noneTriggered();
+  const agent = await lockAgent(t, agents[0]!.id, conversationId);
+  if ((await reach(t, sender, agent.id, "social", config)) !== "ok") return noneTriggered();
+  if (agent.deleted || agent.paused || agent.model === null) return noneTriggered();
+  const folded = await t.query(
+    `update agent_runs
+        set covers_seq = case when status = 'queued' then greatest(covers_seq, $3) else covers_seq end,
+            pending_seq = case when status = 'running' then greatest(pending_seq, $3) else pending_seq end,
+            call_seqs = array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || $3::bigint) as x (s) order by s)
+      where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')`,
+    [agent.id, conversationId, message.seq],
+  );
+  if (folded.rowCount) return noneTriggered();
+  const caller = callerOf(agent.ownerId, sender);
+  const told = noneTold();
+  if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told, config)) return { ...noneTriggered(), ...told };
+  for (const id of [...new Set([agent.ownerId, sender])].sort()) await lockAccount(t, id);
+  const askers = [sender];
+  if ((await calledLastMinute(t, sender)) >= config.agentCallerRunsPerMinute || (await overLaneLimit(t, agent.ownerId, caller.lane, config))) {
+    return { ...noneTriggered(), runs: [await rateLimitedInGroup(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
+  }
+  // The call is someone else's on an Agent whose model is not there to call: recorded failed `model_gone` at once, as in a group.
+  if (!(await modelUsable(t, config, { ownerId: agent.ownerId, model: agent.model }))) {
+    return { ...noneTriggered(), runs: [await recordRateLimited(t, agent, conversationId, message.seq, "human", caller, askers, "model_gone")], ...told };
+  }
+  return { ...noneTriggered(), runs: [await queueRun(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
+}
+
+/**
+ * The owner's interjection (`triggerInSocial`, case 1) for the Agents `agentIds` (the owner's, participating there): their queued
+ * replies in the conversation are cancelled (`owner_spoke`, no pending), their running ones interrupted (`coalesce`: a mark already
+ * there stays) with no pending, and returned for the caller to abandon. The queued ones before the running ones: a run claimed in
+ * between is seen as one or the other (as `endGrants` orders them).
+ */
+async function interjection(t: Tx, conversationId: string, agentIds: readonly string[]): Promise<Triggered> {
+  const queued = await t.query<RunRow & { owner_id: string }>(
+    `update agent_runs r set status = 'cancelled', error = 'owner_spoke', finished_at = now(), pending_seq = null
+      where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply' and r.status = 'queued'
+      returning ${RUN_COLUMNS}, r.owner_id`,
+    [conversationId, [...agentIds]],
+  );
+  const running = await t.query<{ id: string }>(
+    `update agent_runs r set interrupted = coalesce(r.interrupted, 'owner_spoke'), pending_seq = null
+      where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply' and r.status = 'running'
+      returning r.id`,
+    [conversationId, [...agentIds]],
+  );
+  return {
+    ...noneTriggered(),
+    runs: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId, run: toWireRun(r) })),
+    stopped: running.rows.map((r) => r.id),
+  };
 }
 
 /**

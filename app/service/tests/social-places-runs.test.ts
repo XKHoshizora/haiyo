@@ -138,6 +138,8 @@ describe("a follow-up keeps its caller", () => {
     const sent = await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "再问一句", clientTxn: "spf1" });
     expect(sent.status).toBe(201);
     const seq = sent.json.message.seq as number;
+    // The send queued a run of its own (B6); what the test needs is the state after that run was folded into: none active.
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where status = 'queued'");
     // The ended run covered the opening notice (seq 1), noted the visitor's message (`pending_seq`), and recorded no call of it.
     const ended = await seedRun(w, { status: "done" as RunStatus, pending: seq, caller: w.v.id });
     await db.query("update agent_runs set covers_seq = 1, call_seqs = '{}' where id = $1", [ended.id]);
@@ -160,6 +162,7 @@ describe("a follow-up keeps its caller", () => {
     const w = await world();
     const sent = await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "再问一句", clientTxn: "spf2" });
     const seq = sent.json.message.seq as number;
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where status = 'queued'");
     const ended = await seedRun(w, { status: "done" as RunStatus, pending: seq, caller: w.v.id });
     await db.query("update agent_runs set covers_seq = 1 where id = $1", [ended.id]);
     await db.query(`update agent_contacts set state = 'ended', basis = null, end_reason = 'removed' where agent_id = $1 and subject_id = $2`, [w.agent.id, w.v.id]);
