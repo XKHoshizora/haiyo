@@ -44,8 +44,9 @@ describe("settings list", () => {
   it("offers the profile, model providers, usage, the memory palace, blocked people; no Agent, device or demo entries", async () => {
     await openApp({ sync: baseSync });
     await goSettings();
-    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑", "服务条款", "隐私政策", "联系我们"]);
-    const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll(PRODUCT_NAME, "");
+    expect([...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "别人怎么用我的 Agent", "记忆宫殿", "拉黑", "服务条款", "隐私政策", "联系我们"]);
+    // (The one row about others' use of my Agents names them: it is the only place the word is allowed.)
+    const text = (document.querySelector(".list-col").textContent + mainText()).replaceAll(PRODUCT_NAME, "").replaceAll("别人怎么用我的 Agent", "").replaceAll("别人用你的 Agent 花的点，每天的上限", "");
     for (const word of ["Agent", "设备", "演示", "重置", "示例数据"]) expect(text).not.toContain(word);
     expect(document.querySelector(".list-col .settings-me").textContent).toContain("Mei");
   });
@@ -410,6 +411,18 @@ describe("blocked people", () => {
     expect(names.sort()).toEqual(["小安", "朵拉"].sort());
     expect(inMain().getAllByRole("button", { name: "解除拉黑" })).toHaveLength(2);
     expect(mainText()).not.toContain("阿波");
+  });
+
+  it("a blocked Agent is shown as an Agent: tagged, with its account name, among the people I blocked", async () => {
+    const agent = { id: "00000000-0000-4000-8000-0000000000f1", handle: "kai.helper", displayName: "小帮手", avatarVersion: 0, kind: "agent" };
+    await openApp({ sync: baseSync, social: { ...emptySocial(), blocked: [PEOPLE[DORA], agent] } });
+    await goSettings();
+    await click(settingsRow("拉黑"));
+    const rows = [...inMain().getAllByRole("listitem")];
+    const row = rows.find((li) => li.textContent.includes("小帮手"));
+    expect(row.querySelector("strong").textContent).toBe("小帮手 Agent");
+    expect(row.textContent).toContain("@kai.helper");
+    expect(rows.find((li) => li.textContent.includes("朵拉")).querySelector(".tag")).toBeNull();
   });
 
   it("asks first; cancel changes nothing; confirming lifts only that block", async () => {

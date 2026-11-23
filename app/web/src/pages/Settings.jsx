@@ -12,6 +12,7 @@ import { BlockModal } from "./BlockModal.jsx";
 import { AvatarEditor } from "./AvatarEditor.jsx";
 import { ProvidersPage } from "./Providers.jsx";
 import { UsagePage } from "./Usage.jsx";
+import { OthersUsePage } from "./OthersUse.jsx";
 import { ChevronLeft, ChevronRight } from "../icons.js";
 import { usePhone } from "../ui/pointer.js";
 import { useSession } from "../auth/AuthRoot.jsx";
@@ -83,6 +84,7 @@ export function SettingsList() {
         <SettingsRow name={SETTINGS_PAGE_NAMES.profile} note="昵称、头像与账户" onOpen={() => open({ settingsPage: "profile" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.providers} note="你自己的模型服务账号与密钥" onOpen={() => open({ settingsPage: "providers" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.usage} note="今日免费额度、余额与最近用量" onOpen={() => open({ settingsPage: "usage" })} />
+        <SettingsRow name={SETTINGS_PAGE_NAMES.others} note="别人用你的 Agent 花的点，每天的上限" onOpen={() => open({ settingsPage: "others" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.memory} note="记住的关于你的事，可以在这里整理" onOpen={() => open({ settingsPage: "memory" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.blocks} note="你拉黑的人，可在这里解除" onOpen={() => open({ settingsPage: "blocks" })} />
         {/* (A phone has no profile page open beside this list: the way out of the account is here.) */}
@@ -268,8 +270,11 @@ function BlockedPage() {
               <li key={b.target}>
                 <Avatar id={b.target} size={40} />
                 <div className="member-body">
-                  <strong>{nameOf(state, b.target)}</strong>
-                  <p className="muted">{state.people[b.target]?.handle ?? ""}</p>
+                  <strong>
+                    {nameOf(state, b.target)}
+                    {state.agents[b.target] && <> <Tag>Agent</Tag></>}
+                  </strong>
+                  <p className="muted">{entity(state, b.target)?.handle ?? ""}</p>
                 </div>
                 <div className="member-actions">
                   <Btn small onClick={() => setTarget(b.target)}>解除拉黑</Btn>
@@ -523,7 +528,7 @@ function MemoryPage() {
   );
 }
 
-/** The settings page `nav.settingsPage` names: "profile" (the default), "providers", "usage", "memory" or "blocks". */
+/** The settings page `nav.settingsPage` names: "profile" (the default), "providers", "usage", "others", "memory" or "blocks". */
 export function SettingsMain() {
   const { state } = useStore();
   switch (state.nav.settingsPage) {
@@ -533,6 +538,8 @@ export function SettingsMain() {
       return <ProvidersPage back={<BackButton />} />;
     case "usage":
       return <UsagePage back={<BackButton />} />;
+    case "others":
+      return <OthersUsePage back={<BackButton />} />;
     case "memory":
       return <MemoryPage />;
     default:

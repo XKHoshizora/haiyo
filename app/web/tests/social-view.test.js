@@ -60,3 +60,19 @@ describe("the view of a social conversation", () => {
     expect("social" in state.conversations[G1]).toBe(false);
   });
 });
+
+describe("a blocked entry that is an Agent (`kind` on GET /api/social's blocked list)", () => {
+  const BLOCKED_AGENT = { id: "00000000-0000-4000-8000-0000000000f1", handle: "kai.helper", displayName: "小帮手", avatarVersion: 0, kind: "agent" };
+  const BLOCKED_PERSON = { id: ANN, handle: "ann", displayName: "小安", avatarVersion: 0 };
+  const social = { friends: [], incoming: [], outgoing: [], blocked: [BLOCKED_PERSON, BLOCKED_AGENT], blockedBy: [] };
+
+  it("is an Agent, listed under `agents` and never as a person; a person without `kind` stays a person; both are still blocks of mine", () => {
+    const view = toView({ ...M.applySync(M.initial(), syncOf([], [], PRINCIPALS)), social });
+    expect(view.agents[BLOCKED_AGENT.id]).toMatchObject({ kind: "agent", name: "小帮手", handle: "@kai.helper", mine: false });
+    expect(view.people[BLOCKED_AGENT.id]).toBeUndefined();
+    expect(view.people[ANN]).toMatchObject({ kind: "person", name: "小安" });
+    expect(view.agents[ANN]).toBeUndefined();
+    expect(view.blocks).toEqual([{ by: "me", target: ANN }, { by: "me", target: BLOCKED_AGENT.id }]);
+  });
+});
+

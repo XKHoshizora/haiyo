@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { setShowReplyPoints, useShowReplyPoints } from "../data/prefs.js";
 import { useStore } from "../data/store.jsx";
-import { Btn, KV, Reason, Switch } from "../ui/primitives.jsx";
+import { formatPoints } from "../data/viewmodel.js";
+import { othersStateText } from "../data/othersCopy.js";
+import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
+import { Btn, KV, Reason, Switch, TextLink } from "../ui/primitives.jsx";
+import { useOthersUse } from "./useOthersUse.js";
 
 /** A reply has ended (its usage is settled): `run` statuses after which nothing more is charged. */
 const ENDED = new Set(["done", "failed", "stopped", "cancelled"]);
@@ -81,6 +85,34 @@ function ReplyPointsSwitch() {
     <div className="reply-points">
       <Switch checked={on} onChange={(e) => setShowReplyPoints(e.target.checked)} label="在每条回复下显示消耗的点数" hint="只影响你这台设备上的显示。" hintClass="muted" />
     </div>
+  );
+}
+
+/**
+ * 别人的使用: one line of what others' use of my Agents has cost today (the service's numbers and state: `GET /api/me/others-use`) and the
+ * way to the page where it is read in full and its two numbers are set. Without the line (not read yet, or not readable), the link alone.
+ */
+function OthersUseSection() {
+  const { dispatch } = useStore();
+  const { use } = useOthersUse();
+  const open = (event) => {
+    event.preventDefault();
+    dispatch({ type: "nav", patch: { settingsPage: "others", pane: "main" } });
+  };
+  return (
+    <section className="others-usage" aria-label="别人的使用">
+      <h3>别人的使用</h3>
+      {use && (
+        <p>
+          今天别人已回 {use.used.answers} 次，花了 {formatPoints(use.used.points)} 点 · {othersStateText(use)}
+        </p>
+      )}
+      <p>
+        <TextLink href="/settings/others" onClick={open}>
+          {SETTINGS_PAGE_NAMES.others}
+        </TextLink>
+      </p>
+    </section>
   );
 }
 
@@ -195,6 +227,7 @@ export function UsagePage({ back }) {
       </header>
       <div className="page-body">
         {body}
+        <OthersUseSection />
         <ReplyPointsSwitch />
       </div>
     </section>

@@ -1,1 +1,37 @@
 /* Others' use of my Agents: the use page and its settings row, the Agent's numbers. Written by lane B (plan, File map). */
+
+/* The sentence with its two numbers: the boxes sit in the line of text and wrap with it (one column wide at 360px). */
+.others-limit-sentence p:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; line-height: 1.5; }
+.others-number {
+  width: 5.5em; max-width: 100%; height: 36px; padding: 0 10px; box-sizing: border-box; text-align: center;
+  border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-solid);
+}
+.others-number:focus { border-color: var(--purple); }
+.others-number[aria-invalid="true"] { border-color: var(--warn); }
+.others-limit-sentence .field-hint, .others-limit-sentence .field-msg { margin-top: 6px; }
+.others-use h3 { margin: 20px 0 8px; }
+.others-today { line-height: 1.5; }
+
+/* The state of a use: said in words (正常 / 快用完了… / 今天的额度用完了), the colour only follows it. */
+.others-state-tight { color: var(--warn); }
+.others-state-reached { color: var(--warn); font-weight: 600; }
+
+/* Each list row may be a sentence long: it wraps inside the column. */
+.others-use .member-rows li { flex-wrap: wrap; }
+.others-use .member-body { min-width: 0; overflow-wrap: anywhere; }
+
+/* The Agent's own limit in its form: two numbers side by side, one under the other on a narrow screen. */
+fieldset.others-limit { border: 0; margin: 0; padding: 0; min-width: 0; }
+fieldset.others-limit legend { padding: 0; margin-bottom: 6px; font-weight: 600; }
+.others-limit-parts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+@media (max-width: 480px) { .others-limit-parts { grid-template-columns: minmax(0, 1fr); } }
+
+/* The one-time notice at the top of 我的 Agent. */
+.others-notice { padding: 0 20px 10px; }
+
+/* A touch screen, or a phone: every control of these pages is a 44px target. */
+@media (pointer: coarse), (max-width: 480px) {
+  .others-use .btn, .others-use .back, .others-notice .btn, .others-usage .text-link { min-height: 44px; }
+  .others-number { height: 44px; }
+  fieldset.others-limit input { min-height: 44px; }
+}

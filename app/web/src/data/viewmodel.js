@@ -694,6 +694,12 @@ export const isProactiveLevel = (id) => PROACTIVE_LEVELS.some(([level]) => level
 /** The label of level `id`; the default's (适中) for anything else. */
 export const proactiveLevelLabel = (id) => (PROACTIVE_LEVELS.find(([level]) => level === id) ?? PROACTIVE_LEVELS[1])[1];
 
+/** `{answers: 1..1000 | null, points: decimal string | null}`: an Agent's own limit as the service says it. */
+const isOthersLimit = (v) =>
+  v !== null && typeof v === "object" && (v.answers === null || Number.isInteger(v.answers)) && (v.points === null || typeof v.points === "string");
+/** `{answers: count, points: decimal string}`: what others used of an Agent today. */
+const isOthersUsed = (v) => v !== null && typeof v === "object" && Number.isInteger(v.answers) && typeof v.points === "string";
+
 /** The prototype's two private-reply choices, by the service's `replyMode`. */
 const PRIVATE_REPLY = { always: "收到消息时回复", mention: "仅在我点名时回复" };
 
@@ -719,14 +725,16 @@ function agentView(a, version, loaded) {
     groupMentions: a.groupMentions === "owner" ? "owner" : "members",
     /** 一次接话最多花费: decimal points as the service says them (its default when it says nothing). */
     chainBudget: typeof a.chainBudget === "string" ? a.chainBudget : "50",
-    /** 别人 @ 每天最多花 (decimal points, null = unlimited) and what they spent today: only when the service says them. */
-    ...(a.othersBudget === null || typeof a.othersBudget === "string" ? { othersBudget: a.othersBudget } : {}),
-    ...(typeof a.othersSpentToday === "string" ? { othersSpentToday: a.othersSpentToday } : {}),
-    /** 主动参与群聊 with its level, daily budget and today's spend (decimal points): only the owner's view has these. */
+    /**
+     * The Agent's own limit on what others spend on it (a sub-limit inside its owner's two daily numbers; null in a part = none of its
+     * own) and what others used of it today (answers, decimal points): only when the service says them.
+     */
+    ...(isOthersLimit(a.othersLimit) ? { othersLimit: { answers: a.othersLimit.answers, points: a.othersLimit.points } } : {}),
+    ...(isOthersUsed(a.othersUsedToday) ? { othersUsedToday: { answers: a.othersUsedToday.answers, points: a.othersUsedToday.points } } : {}),
+    /** 主动参与群聊 with its level and daily budget (decimal points): only the owner's view has these. */
     ...(typeof a.proactive === "boolean" ? { proactive: a.proactive } : {}),
     ...(isProactiveLevel(a.proactiveLevel) ? { proactiveLevel: a.proactiveLevel } : {}),
     ...(typeof a.proactiveBudget === "string" ? { proactiveBudget: a.proactiveBudget } : {}),
-    ...(typeof a.proactiveSpentToday === "string" ? { proactiveSpentToday: a.proactiveSpentToday } : {}),
     /** How it addresses me and the others: only the owner's view has these (absent, never defaulted, otherwise). */
     ...(typeof a.ownerAppellation === "string" || a.ownerAppellation === null ? { ownerAppellation: a.ownerAppellation } : {}),
     ...(Array.isArray(a.appellations) ? { appellations: a.appellations } : {}),
@@ -803,9 +811,15 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
   const people = {};
   // An Agent is never a person: it is listed under `agents` (mine, and anyone else's I share a group with).
   for (const p of Object.values(model.principals)) if (p.id !== meId && p.kind !== "agent") people[p.id] = personView(p, versions[p.id]);
+  // (A blocked entry may be an Agent — `kind: "agent"`, said by the service — and is then an Agent, listed below under `agents`, never a person.)
+  const blockedAgents = [];
   if (social) {
     const named = [...social.friends, ...social.blocked, ...social.blockedBy, ...social.incoming.map((r) => r.principal), ...social.outgoing.map((r) => r.principal)];
-    for (const p of named) if (p.id !== meId && !people[p.id]) people[p.id] = personView(p, versions[p.id]);
+    for (const p of named) {
+      if (p.id === meId || people[p.id]) continue;
+      if (p.kind === "agent") blockedAgents.push(p);
+      else people[p.id] = personView(p, versions[p.id]);
+    }
   }
   if (model.me) {
     people[ME] = {
@@ -844,6 +858,7 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     };
     agents[p.id] = agentView(known, versions[p.id], false);
   }
+  for (const p of blockedAgents) if (!agents[p.id]) agents[p.id] = othersAgentView(p, versions[p.id], null);
   const nameOf = (id) => people[id]?.name ?? agents[id]?.name ?? null;
 
   const pendingByConv = new Map();

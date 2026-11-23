@@ -103,12 +103,12 @@ describe("the refusal texts", () => {
 });
 
 describe("the others' use settings page", () => {
-  it("is no address until lane B draws it (B9a adds `others` to SETTINGS_PAGES): /settings/others is an unknown address, as any", () => {
-    expect(SETTINGS_PAGES).not.toContain("others");
-    expect(navOfAddress({ path: "/settings/others" })).toEqual(navOfAddress({ path: "/settings/no-such-page" }));
-    expect(navOfAddress({ path: "/settings/others" })).toMatchObject({ section: "chat", pane: "list" });
-    // And a navigation that names it is drawn as the settings home, never as an address of its own.
-    expect(addressOf({ section: "settings", pane: "main", settingsPage: "others" }).path).toBe("/settings/profile");
+  it("is an address (B9a adds `others` to SETTINGS_PAGES): /settings/others and back", () => {
+    expect(SETTINGS_PAGES).toContain("others");
+    expect(navOfAddress({ path: "/settings/others" })).toMatchObject({ section: "settings", pane: "main", settingsPage: "others" });
+    expect(addressOf({ section: "settings", pane: "main", settingsPage: "others" }).path).toBe("/settings/others");
+    // Any other unknown page is still the home.
+    expect(navOfAddress({ path: "/settings/no-such-page" })).toMatchObject({ section: "chat", pane: "list" });
   });
 });
 
