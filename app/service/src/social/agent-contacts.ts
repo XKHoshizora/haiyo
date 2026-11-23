@@ -209,14 +209,16 @@ type BarKind = "stop" | "block";
  * The ONE writer of bars (Controller ruling 2026-11-24, Q4; A-3 review C1). A bar is a row "setter has barred other" of a kind:
  * `stop` (停止往来, and an unfriend that ended a row: the unfriender's stop) or `block` (a person's block of a person, written in
  * the block's own transaction). One row per (setter, other, kind): two people's decisions are two rows, and nobody's act ever
- * touches another person's row. `lockPair`, the row's `since` is now on every write, then `endGrants` ends every live or waiting
+ * touches another person's row. `lockPair`, the row's `since` is the clock's time of the write (`clock_timestamp()`, not the
+ * transaction's start: a row's `since` is compared with a bar's, and under the pair lock the two stamps then follow the lock order, never
+ * the order the transactions began in, A-3 review n6), then `endGrants` ends every live or waiting
  * row between the two sides, `barred` (a block: see `endGrants` for what it leaves to `begin`). Lifting a bar brings no row
  * back. Run it after the pair's direct chat's notice (the lock order); the caller announces the ended runs after commit.
  */
 export async function setBar(t: Tx, setterId: string, otherId: string, kind: BarKind): Promise<EndedRuns & { ended: number }> {
   await lockPair(t, setterId, otherId);
   await t.query(
-    "insert into access_bars (setter_id, other_id, kind) values ($1, $2, $3) on conflict (setter_id, other_id, kind) do update set since = now()",
+    "insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, $3, clock_timestamp()) on conflict (setter_id, other_id, kind) do update set since = clock_timestamp()",
     [setterId, otherId, kind],
   );
   return endGrantsIn(t, { between: [setterId, otherId] }, "barred", { eager: kind !== "block" });
@@ -229,7 +231,25 @@ export async function setBar(t: Tx, setterId: string, otherId: string, kind: Bar
 export async function liftBar(t: Tx, setterId: string, otherId: string): Promise<boolean> {
   await lockPair(t, setterId, otherId);
   const lifted = await t.query("delete from access_bars where setter_id = $1 and other_id = $2 and kind = 'stop'", [setterId, otherId]);
-  return (lifted.rowCount ?? 0) > 0;
+  if ((lifted.rowCount ?? 0) === 0) return false;
+  await settleLifted(t, setterId, otherId);
+  return true;
+}
+
+/**
+ * After the setter lifted their last bar (and the other person has none standing): the rows on the setter's Agents that were ended
+ * `barred` for this person are read back as what the setter did, `removed`, so the setter's own view of their own act does not read
+ * `left` (A-3 review n4). Reach is the same (an ended `removed` row is barred at step 5). While any bar stands, nothing is rewritten:
+ * a bar of the other person's would then read as the setter's act. Needs the pair lock.
+ */
+async function settleLifted(t: Tx, setterId: string, otherId: string): Promise<void> {
+  await t.query(
+    `update agent_contacts c set end_reason = 'removed'
+      where c.state = 'ended' and c.end_reason = 'barred' and c.person_id = $2
+        and c.agent_id in (select id from principals where owner_id = $1)
+        and not exists (select 1 from ${standingBarsSql("$1::uuid", "$2::uuid", "sl")})`,
+    [setterId, otherId],
+  );
 }
 
 /**
@@ -239,7 +259,9 @@ export async function liftBar(t: Tx, setterId: string, otherId: string): Promise
 export async function liftBlockBar(t: Tx, unblockerId: string, otherId: string): Promise<boolean> {
   await lockPair(t, unblockerId, otherId);
   const lifted = await t.query("delete from access_bars where setter_id = $1 and other_id = $2 and kind = 'block'", [unblockerId, otherId]);
-  return (lifted.rowCount ?? 0) > 0;
+  if ((lifted.rowCount ?? 0) === 0) return false;
+  await settleLifted(t, unblockerId, otherId);
+  return true;
 }
 
 /**
@@ -380,7 +402,7 @@ const upsertLive = (t: Tx, agentId: string, subjectId: string, personId: string,
   t.query(
     `insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $3, 'live', $4)
      on conflict (agent_id, subject_id) do update
-       set person_id = excluded.person_id, state = 'live', basis = excluded.basis, since = now(), until = null, end_reason = null`,
+       set person_id = excluded.person_id, state = 'live', basis = excluded.basis, since = clock_timestamp(), until = null, end_reason = null`,
     [agentId, subjectId, personId, basis],
   );
 

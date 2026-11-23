@@ -2889,7 +2889,7 @@ else and for a row that is not there or ended already.
 *Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
 "picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations":
 [{"conversationId", "subject"}]}`. `rows`: every row of the Agent, newest first, with its real end reason (`endReason`: `declined`,
-`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where you barred the person yourself, a row ended by the other person's bar reads `left`); `subject` is as in `waiting` of
+`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where you barred the person yourself, a row ended by the other person's bar reads `left`; once you have lifted your last bar and none of theirs stands, the rows your bar ended read `removed`); `subject` is as in `waiting` of
 `GET /api/agent-contacts`. `conversations`: the Agent's social conversations (「它和别人的对话」), newest first, each with the other
 end. 404 `not_found` for anyone but the owner and for a deleted Agent; 404 while `SOCIAL.enabled` is off.
 
