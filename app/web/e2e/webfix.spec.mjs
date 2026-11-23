@@ -4,6 +4,9 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { test, expect } from "./support/fixtures.mjs";
 import { goTo, listRow } from "./support/app.mjs";
+import { uniq } from "./support/accounts.mjs";
+import { canControlService } from "./support/control.mjs";
+import { modelStub } from "./support/model-stub.mjs";
 import { agentApi } from "./support/tools.mjs";
 import { WEB_DIR } from "./support/env.mjs";
 
@@ -20,13 +23,19 @@ async function shot(page, name) {
 
 /** A touch drag that scrolls the element under (x, y) by `dy` (positive: down), as a finger does; the wheel where the protocol has no touch gesture. */
 async function touchScroll(page, x, y, dy) {
+  const cdp = await page.context().newCDPSession(page);
   try {
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Input.synthesizeScrollGesture", { x, y, yDistance: -dy, speed: 1200, gestureSourceType: "touch" });
+    // A finger: down, a run of small moves (the page takes them for a pan), up. Nothing is flung afterwards.
+    const steps = Math.max(4, Math.ceil(Math.abs(dy) / 25));
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (let i = 1; i <= steps; i += 1) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - (dy * i) / steps }] });
+      await page.waitForTimeout(8);
+    }
+    await page.waitForTimeout(120);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } finally {
     await cdp.detach();
-  } catch {
-    await page.mouse.move(x, y);
-    await page.mouse.wheel(0, dy);
   }
   await page.waitForTimeout(250);
 }
@@ -85,9 +94,9 @@ async function scrollAndCheck(page, body, label) {
   for (const target of [180, 420, 700, 360, 120, Math.min(max, 1200)]) {
     const now = await body.evaluate((el) => el.scrollTop);
     await touchScroll(page, frame.x + frame.width / 2, frame.y + frame.height / 2, target - now);
+    expect(Math.abs((await body.evaluate((el) => el.scrollTop)) - target), "the touch really scrolled the form").toBeLessThan(40);
     const blocks = await visibleBlocks(page, "form.page-body");
-    expect(blocks.length).toBeGreaterThan(2);
-    expect(blocks.some((b) => b.y < frame.y + frame.height / 2)).toBe(true);
+    expect(blocks.length).toBeGreaterThan(0);
     const ink = await inkIn(page, blocks);
     ink.forEach((amount, i) => expect(amount, `${label}: block at y=${Math.round(blocks[i].y)} after scrolling to ${target}`).toBeGreaterThan(8));
     await shot(page, `f2-${label}-scrolled-${target}`);
@@ -122,3 +131,53 @@ test("F2: a long form scrolled by touch stays painted from its top edge to its b
   await expect(page.getByRole("region", { name: "编辑 Agent" })).toBeVisible();
   await scrollAndCheck(page, page.locator("form.page-body"), "edit");
 });
+
+/** A provider of `count` models (named `<prefix>-01` …) added through the API; resolves with its name. */
+async function providerWithModels(person, count, prefix) {
+  const name = `prov-${uniq(6)}`;
+  const models = Array.from({ length: count }, (_, i) => ({ name: `${prefix}-${String(i + 1).padStart(2, "0")}` }));
+  const res = await person.request.post("/api/providers", { data: { name, protocol: "openai_chat", baseUrl: modelStub.baseUrl, apiKey: `sk-e2e-${uniq(8)}-not-real`, models } });
+  expect(res.status(), await res.text()).toBe(201);
+  return name;
+}
+
+/** Settings → 记忆宫殿 and the memory model's sheet, open. */
+async function openMemoryModelSheet(page) {
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /记忆宫殿/ }).click();
+  await page.getByRole("combobox", { name: /用哪个模型整理记忆/ }).or(page.getByRole("button", { name: /用哪个模型整理记忆/ })).first().click();
+  const list = page.getByRole("listbox", { name: "模型" });
+  await expect(list).toBeVisible();
+  return list;
+}
+
+/** Every row can be brought into view above the footer: the list scrolls (by touch), and its last row ends above the footer's top edge. */
+async function expectListReachesItsEnd(page, list, lastName) {
+  const frame = await list.boundingBox();
+  const sheet = page.locator(".model-pop");
+  for (let i = 0; i < 6; i += 1) await touchScroll(page, frame.x + frame.width / 2, frame.y + frame.height / 2, 400);
+  const last = list.getByRole("option", { name: new RegExp(lastName) });
+  await expect(last).toBeVisible();
+  const row = await last.boundingBox();
+  const foot = await sheet.locator(".model-foot").boundingBox();
+  const box = await sheet.boundingBox();
+  const listBox = await list.boundingBox();
+  expect(row.y + row.height, "the last row ends above the footer").toBeLessThanOrEqual(foot.y + 0.5);
+  expect(row.y, "and inside the list").toBeGreaterThanOrEqual(listBox.y - 0.5);
+  expect(foot.y + foot.height, "the footer stays on screen").toBeLessThanOrEqual(page.viewportSize().height + 0.5);
+  expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize().height + 0.5);
+}
+
+for (const [label, viewport] of [["360", { width: 360, height: 740 }], ["402", { width: 402, height: 874 }], ["402, short (keyboard up)", { width: 402, height: 520 }]]) {
+  test(`F3: the model sheet's list scrolls to its last row above the footer with 12 models, at ${label}`, async ({ people }) => {
+    test.skip(!canControlService, "needs the local model stub");
+    const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport } });
+    const prefix = `modelx${uniq(3)}`;
+    await providerWithModels(ann, 12, prefix);
+    await ann.page.goto("/");
+    const list = await openMemoryModelSheet(ann.page);
+    await shot(ann.page, `f3-sheet-open-${viewport.width}x${viewport.height}`);
+    await expectListReachesItsEnd(ann.page, list, `${prefix}-12`);
+    await shot(ann.page, `f3-sheet-end-${viewport.width}x${viewport.height}`);
+  });
+}

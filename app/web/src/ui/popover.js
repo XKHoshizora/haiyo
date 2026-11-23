@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isEscape } from "./keys.js";
 import { useLayer } from "./layers.js";
+import { sheetFrameFor } from "./visualViewport.js";
 
 // How a button's list opens, for the model picker (src/pages/ModelSelect.jsx) and the plain Select (src/ui/Select.jsx):
 // the same place, the same ways to close it, the same look (styles.css: .model-pop, .select-pop).
@@ -62,6 +63,13 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
     if (!open) return undefined;
     latest.current.focus?.(sheet);
     const placeIt = () => {
+      if (onPhone()) {
+        // The sheet stands on the visible part (above the keyboard, whatever dvh says); no button to place it by.
+        const frame = sheetFrameFor(window.visualViewport, window.innerHeight);
+        const el = popRef.current;
+        if (el) for (const [name, value] of [["--sheet-h", frame && `${frame.height}px`], ["--sheet-bottom", frame && `${frame.bottom}px`], ["--sheet-inset", frame?.keyboard ? "0px" : null]]) value ? el.style.setProperty(name, value) : el.style.removeProperty(name);
+        return;
+      }
       const button = triggerRef.current;
       if (!button) return;
       const r = button.getBoundingClientRect();
@@ -92,9 +100,13 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
       if (!popRef.current?.contains(event.target)) placeIt();
     };
     window.addEventListener("resize", placeIt);
+    window.visualViewport?.addEventListener("resize", placeIt);
+    window.visualViewport?.addEventListener("scroll", placeIt);
     window.addEventListener("scroll", onScroll, true);
     return () => {
       window.removeEventListener("resize", placeIt);
+      window.visualViewport?.removeEventListener("resize", placeIt);
+      window.visualViewport?.removeEventListener("scroll", placeIt);
       window.removeEventListener("scroll", onScroll, true);
     };
   }, [open]);

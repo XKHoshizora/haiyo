@@ -261,6 +261,24 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
   });
 });
 
+describe("the phone's model sheet: the list is the one scroller, sized by the sheet", () => {
+  it("under 480px the sheet's height and place come from the visible part (custom properties the popover sets), not from dvh alone", () => {
+    const sheet = merged(rulesFor(rules, ".model-pop", "(max-width: 480px)"));
+    expect(sheet.height).toContain("--sheet-h");
+    expect(sheet.bottom).toContain("--sheet-bottom");
+    expect(sheet["padding"]).toContain("--sheet-inset");
+  });
+
+  it("the list takes what is left of a sheet of a set height (flex-basis 0, may shrink to nothing) and scrolls; the footer never shrinks", () => {
+    const list = merged(rulesFor(rules, ".model-list", "(max-width: 480px)"));
+    expect(list.flex).toBe("1 1 0");
+    const plainList = plain(".model-list");
+    expect(plainList["min-height"]).toBe("0");
+    expect(plainList["overflow-y"]).toBe("auto");
+    expect(plain(".model-foot").flex).toBe("none");
+  });
+});
+
 describe("M: the composite group avatar is one component whose layout depends only on its size", () => {
   const PLACING = ["transform", "margin", "position", "left", "right", "top", "bottom", "width", "height", "inset", "translate", "scale"];
   it("no rule from outside the component reaches the members it lays out (a descendant selector on .avatar or .avatar-img moves them out of their places)", () => {

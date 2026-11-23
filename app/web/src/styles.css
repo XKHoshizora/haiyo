@@ -334,12 +334,16 @@ svg.model-brand { color: var(--ink-3); }
 @media (max-width: 480px) {
   .model-scrim { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(40, 32, 80, 0.32); animation: model-fade 0.16s ease-out; }
   .model-pop, .model-pop.up, .select-pop, .select-pop.up {
-    left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: none; height: min(72dvh, 560px);
-    padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); border: 0; border-radius: 16px 16px 0 0;
+    /* The height and the place come from the visible part (ui/popover.js: --sheet-h, --sheet-bottom, --sheet-inset), so the keyboard never stands over the foot
+       of the list; dvh is only the fallback where the page cannot say. */
+    left: 0; right: 0; top: auto; bottom: var(--sheet-bottom, 0px); width: auto; max-height: none; height: var(--sheet-h, min(72dvh, 560px));
+    padding: 10px 10px calc(10px + var(--sheet-inset, env(safe-area-inset-bottom))); border: 0; border-radius: 16px 16px 0 0;
     box-shadow: 0 -12px 40px rgba(40, 32, 80, 0.22); animation: model-sheet-in 0.18s ease-out;
   }
   /* (A plain choice has no search field to keep in place: its sheet is only as tall as its options.) */
   .select-pop, .select-pop.up { height: auto; max-height: min(72dvh, 560px); }
+  /* A sheet of a set height: its list takes what is left of it (basis 0, so its own content never sets its height) and is the one thing that scrolls. */
+  .model-list { flex: 1 1 0; }
   .model-search { height: 40px; }
   .model-search input { font-size: 16px; }
   .model-option, .select-option { min-height: 44px; font-size: 15px; }
