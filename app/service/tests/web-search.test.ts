@@ -371,13 +371,20 @@ describe("the pre-hold's money (the pool: held whole or refused)", () => {
 
   it("a budget of its lane reached with the search (the others' daily, crossing it; the chain budget in a group): refused, nothing counted", async () => {
     // Others' daily budget 3 points: 0.5 settled today + the reply's 2 held + the search's 0.77 = 3.27 ≥ 3 — refused.
+    // (Decided by `othersFits` since B3, from the database: the run's row says its lane, the Agent's row its budget.)
+    const asOthers = async (x: Awaited<ReturnType<typeof admitted>>) => {
+      await db.query("update agent_runs set lane = 'others' where id = $1", [x.runId]);
+      await db.query("update agents set others_budget_micro = $2 where principal_id = $1", [x.agent.agentId, (3n * POINT).toString()]);
+    };
     const r = await admitted("lanea");
+    await asOthers(r);
     await paidReply(db, { agentId: r.agent.agentId, ownerId: r.owner.id, conversationId: r.agent.conversationId, lane: "others", micro: 500_000n });
-    const others = { lane: { lane: "others" as const, coversSeq: 0 }, agent: { othersBudgetMicro: 3n * POINT } };
+    const others = { lane: { lane: "others" as const, coversSeq: 0 } };
     await expect(preHold(r, webConfig(), others)).rejects.toMatchObject({ by: "lane_budget" });
     expect([await runRow(r.runId), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0]);
     // Without what was settled before, 2.77 < 3: held.
     const s = await admitted("laneb");
+    await asOthers(s);
     await preHold(s, webConfig(), others);
     expect((await runRow(s.runId)).web_searches).toBe(1);
     // A reply in a group covering more than its latest message from a person (an Agents' chain): its chain budget.

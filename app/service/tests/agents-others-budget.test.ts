@@ -394,30 +394,41 @@ describe("the others' daily budget", () => {
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "done", lane: "own", covers: asked });
   });
 
-  it("a reply being written counts for nothing until it is settled, whatever it holds: the next call is answered, nobody is told, and its owner's spend does not move", async () => {
+  it("a reply being written counts by what it holds (B3): its owner's own does not; another's under way, holding more than the budget, refuses the next call and the group is told once; the spend shown is what is settled", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
     const g2 = await anotherGroup(w, "second");
     await join(g2, anna.id);
-    // Its owner's reply under way in its own conversation, and another member's in the second group, each holding many
-    // times the budget (a hold is a reply's most it can cost).
+    // Its owner's reply under way in its own conversation holds many times the budget (a hold is a reply's most it can cost):
+    // it is the owner's own, and counts for nothing against what others may spend.
     await holding(anna, anna.conversationId, "own", 50 * POINT);
-    await holding(anna, g2, "others", 50 * POINT);
     const asked = await say(w.member, w.g, "@anna 一");
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others", covers: asked });
-    // In the second group a mention is noted on the reply under way.
-    const noted = await say(w.third, g2, "@anna 二");
-    expect(await runsOf(anna.id, g2)).toEqual([expect.objectContaining({ status: "running", pending: noted })]);
-    expect(await noticesOf(w.g)).toEqual([]);
-    expect(await noticesOf(g2)).toEqual([]);
+    await settleAll();
+
+    // Another member's reply under way in the second group, holding the same: it is held against the budget (it will be charged
+    // at most that), so the next call, in either group, is refused and the group told; a mention is not noted on it.
+    await holding(anna, g2, "others", 50 * POINT);
+    const before = await runsOf(anna.id, w.g);
+    await say(w.third, w.g, "@anna 二");
+    expect(await runsOf(anna.id, w.g)).toEqual(before);
+    expect(await noticesOf(w.g)).toHaveLength(1);
+    await say(w.third, g2, "@anna 三");
+    expect(await runsOf(anna.id, g2)).toEqual([expect.objectContaining({ status: "running", pending: null })]);
+    expect(await noticesOf(g2)).toHaveLength(1);
     expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "0" });
 
-    // Once what such replies were charged reaches it, the next call is refused and the group told.
+    // It ends: its hold is gone, and the call is answered again.
     await settleAll();
+    const again = await say(w.member, w.g, "@anna 四");
+    expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others", covers: again });
+    await settleAll();
+
+    // Once what such replies were charged reaches it, the next call is refused (the notice, once a day, was told).
     await paidOthers(anna, w.g, 2 * POINT);
-    const before = await runsOf(anna.id, w.g);
-    await say(w.third, w.g, "@anna 三");
-    expect(await runsOf(anna.id, w.g)).toEqual(before);
+    const settled = await runsOf(anna.id, w.g);
+    await say(w.third, w.g, "@anna 五");
+    expect(await runsOf(anna.id, w.g)).toEqual(settled);
     expect(await noticesOf(w.g)).toHaveLength(1);
     expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "2" });
   });

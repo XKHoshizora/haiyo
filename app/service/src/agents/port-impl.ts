@@ -7,7 +7,7 @@ import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
-import { boundedForOthers, keepsRoom, OthersLimit } from "../metering/others.ts";
+import { boundedForOthers, keepsRoom, othersFits, OthersLimit } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -1175,7 +1175,10 @@ export class DbAgentPort implements AgentPort {
         // a discard or a refused round included. Nothing is raised here; the tool phase has ended, so the answer is "final". What
         // the next call can cost beside what the reply has cost so far passing what is held would be a bug, and is counted.
         if (state.lane !== "own") {
-          if (sofar + next > modelHeld) this.deps.log.warn({ metric: "others_round_raise" }, "agent run: an others' reply's next call could cost more than its hold; the hold is not raised");
+          const raise = sofar + next > modelHeld ? sofar + next - modelHeld : 0n;
+          if (raise > 0n) this.deps.log.warn({ metric: "others_round_raise" }, "agent run: an others' reply's next call could cost more than its hold; the hold is not raised");
+          // The number the raise would have to fit (0 by construction): asked all the same, under the account lock; the answer stays "final".
+          await othersFits(t, config, { id: run.id, ownerId: run.ownerId, agentId: agent.id, lane: state.lane }, raise, "round", new Date());
           return "final";
         }
         // Another round must keep room for a last call after it: renewed from the next call's input bound and what one

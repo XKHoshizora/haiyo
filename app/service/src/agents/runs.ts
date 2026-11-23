@@ -8,6 +8,8 @@ import type { Queryable, Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
 import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../messages/model.ts";
 import { postingRun } from "../messages/read.ts";
+import { othersReached } from "../metering/others.ts";
+import { placeOf } from "../social/place.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
@@ -298,7 +300,7 @@ export async function latestRun(q: Queryable, conversationId: string): Promise<R
  * and the site's time zone, whose day the others' daily budget is counted in (`othersBudgetSpent`); and the site's models,
  * by which someone else's call on an Agent whose model is gone is refused as it is made (`reachAgents`).
  */
-export type RunLimits = Pick<Config, "agentRunsPerMinute" | "agentOthersRunsPerMinute" | "agentCallerRunsPerMinute" | "siteTimezone" | "siteModels">;
+export type RunLimits = Pick<Config, "agentRunsPerMinute" | "agentOthersRunsPerMinute" | "agentCallerRunsPerMinute" | "siteTimezone" | "siteModels" | "others">;
 
 /**
  * Of `agent_runs`: a reply started in the last minute — not one a limit refused (`rate_limited`), which started nothing
@@ -926,10 +928,11 @@ export const proactiveBudgetSpent = (q: Queryable, agent: Pick<AgentRow, "id" | 
 export async function othersBudgetSpent(
   t: Tx,
   conversationId: string,
-  agent: Pick<AgentRow, "id" | "othersBudgetMicro">,
+  agent: Pick<AgentRow, "id" | "ownerId">,
   dayStart: Date,
+  config: Pick<Config, "others" | "siteTimezone">,
 ): Promise<{ spent: boolean; notice: StoredMessage | null }> {
-  if (!(await laneBudgetSpent(t, agent.id, "others", agent.othersBudgetMicro, dayStart))) return { spent: false, notice: null };
+  if (!(await othersReached(t, config, agent.ownerId, agent.id, "others", new Date()))) return { spent: false, notice: null };
   return { spent: true, notice: await limitNotice(t, conversationId, agent.id, dayStart) };
 }
 
@@ -954,13 +957,14 @@ export const siteToday = (config: Pick<Config, "siteTimezone">): Date => siteDay
 async function refusedByOthersBudget(
   t: Tx,
   conversationId: string,
-  agent: Pick<AgentRow, "id" | "ownerId" | "othersBudgetMicro">,
+  agent: Pick<AgentRow, "id" | "ownerId">,
   lane: Lane,
   dayStart: Date,
   told: Told,
+  config: Pick<Config, "others" | "siteTimezone">,
 ): Promise<boolean> {
   if (lane !== "others") return false;
-  const { spent, notice } = await othersBudgetSpent(t, conversationId, agent, dayStart);
+  const { spent, notice } = await othersBudgetSpent(t, conversationId, agent, dayStart, config);
   if (notice) {
     told.notices.push(notice);
     told.budgetReached.push({ ownerId: agent.ownerId, agentId: agent.id });
@@ -983,36 +987,23 @@ export function refusedAtAdmission(agent: Pick<AgentRow, "proactive">, lane: Lan
 
 /**
  * Between two rounds of a reply that offers tools (`DbAgentPort.extend`, under the run's conversation row, its Agent's
- * and its own): whether what the reply has cost so far (`extra`, not settled yet) reaches a budget its lane is held to,
- * counted with what is settled — then no further round may call tools:
- * - `others`: the Agent's others' daily budget (`othersBudgetSpent`'s count; nobody is told: the reply goes on to its
- *   last call);
- * - `proactive`: its proactive daily budget;
- * - in a group, a reply that covers messages after the group's latest from a person (one in an Agents' chain, counted
- *   toward the chain budget: `chargedSince`): the Agent's chain budget there.
- * A budget of null is none. `runningWebExcept` (the web search's pre-hold, its own run's id; tools/web/hold.ts): the
- * daily budgets also count what the web searches the Agent's other replies of the lane hold now are charged
- * (`runningWeb`) — charges that stand whatever those replies become, read under the Agent's row the caller holds, which every pre-hold of the Agent
- * takes, so two replies racing for a budget's last points are put in order. (The chain budget needs no such count: an
- * Agent has one active run in a conversation, agent_runs_one_active_per_agent_conversation.)
+ * and its own), and at a web search's pre-hold: whether what the reply has cost so far (`extra`, not settled yet) reaches
+ * the Agent's chain budget — a reply in a group that covers messages after the group's latest from a person (one in an
+ * Agents' chain, counted toward the chain budget: `chargedSince`) — then no further round may call tools. The numbers an
+ * others' reply is held to (the owner's, the Agent's own, its proactive budget) are not here: `othersFits` decides them
+ * (metering/others.ts), under the account lock, at admission, at a search and at a round (B1 to B3). Only where `placeOf`
+ * is a group; an Agent has one active run in a conversation (agent_runs_one_active_per_agent_conversation), so the chain
+ * budget needs no count of other replies.
  */
 export async function budgetReachedWith(
   t: Tx,
   run: { conversationId: string; lane: Lane; coversSeq: number },
-  agent: Pick<AgentRow, "id" | "conversationId" | "othersBudgetMicro" | "proactiveBudgetMicro" | "chainBudgetMicro">,
+  agent: Pick<AgentRow, "id" | "conversationId" | "chainBudgetMicro">,
   extra: bigint,
-  config: Pick<Config, "siteTimezone">,
-  opts: { runningWebExcept?: string } = {},
+  _config: Pick<Config, "siteTimezone">,
 ): Promise<boolean> {
-  if (run.lane === "others" || run.lane === "proactive") {
-    const budget = run.lane === "others" ? agent.othersBudgetMicro : agent.proactiveBudgetMicro;
-    if (budget !== null) {
-      const spent = (await spentTodayOf(t, [agent.id], siteToday(config))).get(agent.id)?.[run.lane] ?? 0n;
-      const held = opts.runningWebExcept === undefined ? 0n : await runningWeb(t, agent.id, run.lane, opts.runningWebExcept);
-      if (spent + held + extra >= budget) return true;
-    }
-  }
   if (run.conversationId === agent.conversationId) return false;
+  if ((await placeOf(t, run.conversationId, agent)) !== "group") return false;
   const human = await latestHumanSeq(t, run.conversationId);
   return run.coversSeq > human && (await chargedSince(t, agent.id, run.conversationId, human)) + extra >= agent.chainBudgetMicro;
 }
@@ -1051,7 +1042,7 @@ async function triggerInGroup(t: Tx, conversationId: string, message: StoredMess
     if (agent.deleted || agent.paused || agent.model === null) continue;
     if (agent.groupMentions === "owner" && message.senderId !== agent.ownerId) continue;
     const by = callerOf(agent.ownerId, message.senderId);
-    if (await refusedByOthersBudget(t, conversationId, agent, by.lane, dayStart, told)) {
+    if (await refusedByOthersBudget(t, conversationId, agent, by.lane, dayStart, told, config)) {
       refused.push(agent.id);
       continue;
     }
@@ -1060,20 +1051,6 @@ async function triggerInGroup(t: Tx, conversationId: string, message: StoredMess
   }
   await recordRefusedCalls(t, conversationId, message.seq, refused);
   return { ...(await reachAgents(t, conversationId, calls, message.seq, "human", config)), stopped: [], ...told };
-}
-
-/**
- * What the web searches of Agent `agentId`'s replies in `lane` running now, `except` aside, are charged (not settled yet):
- * `web_charge_micro` (their actual once the engine said it, else their price) — or, for a row the old code wrote during a
- * deploy's overlap (`money_rule` 0, which has no such column of its own), `web_micro`, their price, as it charges them.
- */
-async function runningWeb(t: Tx, agentId: string, lane: BudgetedLane, except: string): Promise<bigint> {
-  const { rows } = await t.query<{ held: string }>(
-    `select coalesce(sum(case money_rule when 0 then web_micro else web_charge_micro end), 0)::text as held
-       from agent_runs where agent_id = $1 and lane = $2 and status = 'running' and id <> $3 and web_micro > 0`,
-    [agentId, lane, except],
-  );
-  return BigInt(rows[0]!.held);
 }
 
 /** The seq of the group's latest message from a person (a notice is nobody's message), 0 when there is none. */
@@ -1260,7 +1237,7 @@ export async function triggerFromAgent(
     if (spent?.notice) told.notices.push(spent.notice);
     const agent = { id: target.id, ownerId: target.owner_id, othersBudgetMicro: target.others_budget === null ? null : BigInt(target.others_budget) };
     const by = callerOf(agent.ownerId, behind);
-    if (spent || (await refusedByOthersBudget(t, conversationId, agent, by.lane, dayStart, told))) {
+    if (spent || (await refusedByOthersBudget(t, conversationId, agent, by.lane, dayStart, told, config))) {
       refused.push(target.id);
       continue;
     }
@@ -1394,7 +1371,7 @@ export async function followUp(
     if (spent?.notice) told.notices.push(spent.notice);
     if (spent) return followUpOf(null, told);
   }
-  if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told)) return followUpOf(null, told);
+  if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told, config)) return followUpOf(null, told);
   const by: TriggeredBy = asked ? "human" : "agent";
   const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
   const run = over ? await rateLimitedInGroup(t, agent, conversationId, pending, by, caller, askers) : await queueRun(t, agent, conversationId, pending, by, caller, askers);

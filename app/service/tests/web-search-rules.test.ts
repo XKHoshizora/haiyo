@@ -537,7 +537,9 @@ describe("the pre-hold under the lane budgets, two connections", () => {
       const agent = await meteredAgent(app, db, owner, { source: "provider", providerId: provider.id, model: "own-1" });
       const g1 = await group(app, owner, "一", [await signUp(app, `race${lane.slice(0, 3)}_a`), await signUp(app, `race${lane.slice(0, 3)}_c`)]);
       const g2 = await group(app, owner, "二", [await signUp(app, `race${lane.slice(0, 3)}_b`), await signUp(app, `race${lane.slice(0, 3)}_d`)]);
-      const budget = lane === "others" ? { othersBudgetMicro: POINT } : { proactiveBudgetMicro: POINT };
+      // The Agent's daily number for the lane: a point (decided by `othersFits` from the database since B3).
+      await db.query(`update agents set ${lane === "others" ? "others_budget_micro" : "proactive_budget_micro"} = $2 where principal_id = $1`, [agent.agentId, POINT.toString()]);
+      const budget = {};
       const a = { runId: await admittedIn(owner.id, agent, g1, lane), ownerId: owner.id, agentId: agent.agentId, conversationId: g1, lane };
       const b = { runId: await admittedIn(owner.id, agent, g2, lane), ownerId: owner.id, agentId: agent.agentId, conversationId: g2, lane };
       let held!: () => void;
@@ -569,20 +571,23 @@ describe("the pre-hold under the lane budgets, two connections", () => {
     const agent = await meteredAgent(app, db, owner, PAID);
     const g = await group(app, owner, "三", [await signUp(app, "bgsp_a"), await signUp(app, "bgsp_b")]);
     const r = { runId: await admittedIn(owner.id, agent, g, "proactive"), ownerId: owner.id, agentId: agent.agentId, conversationId: g, lane: "proactive" as const };
-    // Its first call held 2 points: 2 + 0.77035 ≥ 2.5 — refused; ≥ 3 is not reached — held.
-    await expect(preHold(r, { proactiveBudgetMicro: 2_500_000n }, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
-    await preHold(r, { proactiveBudgetMicro: 3n * POINT }, webConfig());
+    // Its first call held 2 points: 2 + 0.77035 > 2.5 — refused; > 3 is not reached — held (the budget is the Agent's row's: `othersFits`).
+    await db.query("update agents set proactive_budget_micro = 2500000 where principal_id = $1", [agent.agentId]);
+    await expect(preHold(r, {}, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
+    await db.query("update agents set proactive_budget_micro = 3000000 where principal_id = $1", [agent.agentId]);
+    await preHold(r, {}, webConfig());
     expect((await webOf(r.runId)).n).toBe(1);
   });
 
-  it("the lane budgets count another running reply's search at what it is charged: an old code's row (rule 0) at its price, a corrected one at its actual (third attack V3.5)", async () => {
+  it("the lane budgets count another running reply's search at what it holds: an old code's row (rule 0) and a corrected one alike, until it is settled at its actual (third attack V3.5; B3)", async () => {
     const owner = await signUp(app, "overlapweb");
     await grant(db, owner.id, 10n * POINT);
     const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "own-1", contextTokens: 32000 }] }))).json;
     const agent = await meteredAgent(app, db, owner, { source: "provider", providerId: provider.id, model: "own-1" });
     const g1 = await group(app, owner, "旧", [await signUp(app, "overlapweb_a"), await signUp(app, "overlapweb_b")]);
     const g2 = await group(app, owner, "新", [await signUp(app, "overlapweb_c"), await signUp(app, "overlapweb_d")]);
-    const budget = { othersBudgetMicro: (3n * PRICE) / 2n };
+    await db.query("update agents set others_budget_micro = $2 where principal_id = $1", [agent.agentId, ((3n * PRICE) / 2n).toString()]);
+    const budget = {};
     // A reply of the Agent in lane others the old code admitted during the overlap, its search held as it writes one.
     const old = (
       await db.query<{ id: string }>(
@@ -592,10 +597,15 @@ describe("the pre-hold under the lane budgets, two connections", () => {
       )
     ).rows[0]!.id;
     const b = { runId: await admittedIn(owner.id, agent, g2, "others"), ownerId: owner.id, agentId: agent.agentId, conversationId: g2, lane: "others" as const };
-    // Its price and this one's: 2 × 0.77035 ≥ 1.155525 — refused.
+    // Its hold (its search's price) and this one's: 2 × 0.77035 > 1.155525 — refused.
     await expect(preHold(b, budget, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
-    // The same row by the pool's rule, its search corrected to a quarter of the price: 1.25 × 0.77035 — held.
+    // The same row by the pool's rule, its search corrected to a quarter of the price: what it holds stands until it is settled (B3
+    // counts holds), so it is refused still.
     await db.query("update agent_runs set money_rule = 1, charge_to = null, web_charge_micro = $2 where id = $1", [old, (PRICE / 4n).toString()]);
+    await expect(preHold(b, budget, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
+    // Settled, at the corrected quarter: 0.25 + 0.77035 ≤ 1.155525 — held.
+    await db.query("update agent_runs set hold_micro = 0, status = 'done' where id = $1", [old]);
+    await paidReply(db, { agentId: agent.agentId, ownerId: owner.id, conversationId: g1, lane: "others", micro: PRICE / 4n });
     await preHold(b, budget, webConfig());
     expect((await webOf(b.runId)).n).toBe(1);
   });
