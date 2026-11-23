@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-// A group's header counts (ui/primitives.jsx HeadCounts): an icon and a number each; a count of 100 or more reads 99+ (never a number cut to a different one),
-// its accessible name keeps the whole number; no Agents, no second count.
+// A group's header counts (ui/primitives.jsx HeadCounts): an icon and a number each; the real numbers (a group has at most 500 members), the whole number in the accessible name; no Agents, no second count.
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
@@ -15,10 +14,9 @@ describe("HeadCounts", () => {
     expect(counts(container)).toEqual([["3 人", "3"], ["1 个 Agent", "1"]]);
   });
 
-  it("reads 99+ from 100 on, and still names the whole number", () => {
-    const { container } = render(<HeadCounts people={120} agents={100} />);
-    expect(counts(container)).toEqual([["120 人", "99+"], ["100 个 Agent", "99+"]]);
-    expect(counts(render(<HeadCounts people={99} agents={0} />).container)).toEqual([["99 人", "99"]]);
+  it("shows the real number at three digits too", () => {
+    const { container } = render(<HeadCounts people={128} agents={100} />);
+    expect(counts(container)).toEqual([["128 人", "128"], ["100 个 Agent", "100"]]);
   });
 
   it("no Agent: no divider and no second count, never a 0", () => {

@@ -4,11 +4,12 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { test, expect } from "./support/fixtures.mjs";
 import { befriend, uniq } from "./support/accounts.mjs";
-import { chatPane, goTo, listRow, openChat } from "./support/app.mjs";
+import { chatPane, goTo, listRow, openChat, sendFile } from "./support/app.mjs";
 import { canControlService } from "./support/control.mjs";
 import { modelStub } from "./support/model-stub.mjs";
 import { addApi, agentApi, groupApi } from "./support/tools.mjs";
 import { WEB_DIR } from "./support/env.mjs";
+import { png } from "./support/files.mjs";
 
 const BIG_PHONE = { viewport: { width: 402, height: 874 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 };
 /** Phones: the owner's class (shot 86 measures as 430x932) and 402x874. Chromium with touch events: these guard layout arithmetic, not what iOS paints. */
@@ -238,7 +239,13 @@ const scrollPositions = (page) =>
 
 /** The computed overflow-y of every box of the app that scrolls (or did): where the page behind a layer is no scroller any more, all are "hidden". */
 const scrollerModes = (page) =>
-  page.evaluate(() => [...document.querySelectorAll("#root *")].filter((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1).map((el) => `${el.tagName}.${el.className}:${getComputedStyle(el).overflowY}/${getComputedStyle(el).overflowX}`));
+  page.evaluate(() =>
+    [...document.querySelectorAll("#root *")]
+      .filter((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1)
+      .map((el) => `${el.tagName}.${el.className}:${getComputedStyle(el).overflowY}/${getComputedStyle(el).overflowX}`),
+  );
+/** Of the modes taken before a layer opened, the boxes that really scrolled (overflow auto or scroll on an axis): only they are the lock's business. */
+const scrolling = (modes) => modes.filter((m) => /(auto|scroll)/.test(m.split(":").at(-1)));
 
 test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a sheet open a drag on the list, the search row, the footer and the backdrop does not move the page, and closing puts it back exactly", async ({ people }) => {
   test.skip(!canControlService, "needs the local model stub");
@@ -265,8 +272,10 @@ test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a shee
   await expect(list).toBeVisible();
   // Nothing behind the layer is a scroller (touch screen): every box of the app that overflows has hidden overflow, its position unchanged.
   const modesDuring = await scrollerModes(page);
-  expect(modesDuring.length).toBeGreaterThan(0);
-  for (const mode of modesDuring) expect(mode, "a scroller behind the sheet is not scrollable").toMatch(/:hidden\/hidden$/);
+  const scrollersBefore = scrolling(modesBefore).map((m) => m.split(":")[0]);
+  expect(scrollersBefore.length).toBeGreaterThan(0);
+  // (Only the boxes that scrolled before: another box may overflow by a pixel with visible overflow and is no scroller.)
+  for (const mode of modesDuring.filter((m) => scrollersBefore.includes(m.split(":")[0]))) expect(mode, "a scroller behind the sheet is not scrollable").toMatch(/:hidden\/hidden$/);
   expect(await scrollPositions(page)).toEqual(before);
   const search = await page.getByRole("combobox", { name: "搜索模型" }).boundingBox();
   const foot = await page.locator(".model-foot").boundingBox();
@@ -368,13 +377,13 @@ for (const [size, viewport, options] of [["402x874", { width: 402, height: 874 }
     await expect(counts.locator('[aria-label="1 个 Agent"]')).toBeVisible();
     await expect(counts.locator('[title="3 人"]')).toHaveCount(1);
     expect(await counts.locator("svg").count()).toBe(2);
-    const oneLine = async () => counts.evaluate((el) => ({ h: el.getBoundingClientRect().height, fits: el.getBoundingClientRect().right <= el.closest(".chat-title").getBoundingClientRect().right + 1, head: document.querySelector(".chat-head").scrollWidth <= document.querySelector(".chat-head").clientWidth + 1 }));
+    const oneLine = async () => counts.evaluate((el) => ({ h: el.getBoundingClientRect().height, fits: el.scrollWidth <= el.clientWidth + 1 && [...el.querySelectorAll(".head-count")].at(-1).getBoundingClientRect().right <= el.closest(".chat-title").getBoundingClientRect().right + 1, head: document.querySelector(".chat-head").scrollWidth <= document.querySelector(".chat-head").clientWidth + 1 }));
     expect((await oneLine()).h).toBeLessThanOrEqual(24);
     await shot(page, `f6-group-header-${size}`);
     // Three-digit numbers: still one line, the header not pushed.
-    await counts.evaluate((el) => el.querySelectorAll("[aria-hidden=true]:not(svg):not(.head-counts-sep)").forEach((n) => (n.textContent = "99+")));
+    await counts.evaluate((el) => el.querySelectorAll("[aria-hidden=true]:not(svg):not(.head-counts-sep)").forEach((n) => (n.textContent = "888")));
     const wide = await oneLine();
-    expect(wide.fits, "the counts fit their room").toBe(true);
+    expect(wide.fits, "the last digit of the last count is drawn inside its room").toBe(true);
     expect(wide.h).toBeLessThanOrEqual(24);
     expect(wide.head).toBe(true);
     await shot(page, `f6-group-header-888-${size}`);
@@ -415,4 +424,53 @@ test("F3 (Chromium only): a long plain choice (the memory language) is cut at it
   const scrollable = await list.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
   if (scrollable) await expect(list).toHaveAttribute("data-more", "true");
   await shot(page, "f3-select-long-360x740");
+});
+
+const touchActionOf = (page, selector) => page.locator(selector).first().evaluate((el) => getComputedStyle(el).touchAction);
+
+test("F3 (Chromium, 402x874 touch): the only gesture a layer allows is scrolling its scroller (touch-action per part of the modal, the sheet and the viewer), and the sheet opens without the keyboard", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: BIG_PHONE });
+  const bo = await people.member("Bo");
+  await befriend(ann, bo);
+  const page = ann.page;
+  await page.goto("/");
+  // The viewer: the picture sent in a direct chat, opened.
+  await openChat(page, bo.displayName);
+  await sendFile(page, bo.displayName, { name: "图.png", mimeType: "image/png", buffer: png(40, 30) }, "选择图片或视频");
+  await chatPane(page, bo.displayName).getByRole("button", { name: "图.png", exact: true }).click();
+  await expect(page.locator(".viewer")).toBeVisible();
+  expect(await touchActionOf(page, ".viewer")).toBe("none");
+  expect(await touchActionOf(page, ".viewer-stage")).toBe("none");
+  await page.keyboard.press("Escape");
+  // A dialog: its backdrop, itself, head and foot take no gesture; its body takes the vertical pan.
+  await page.goto("/");
+  await page.getByRole("button", { name: /发起群聊|新建群聊|群聊/ }).first().click().catch(() => {});
+  if (await page.locator(".modal").count()) {
+    for (const selector of [".modal-backdrop", ".modal", ".modal-head", ".modal-foot"]) expect(await touchActionOf(page, selector), selector).toBe("none");
+    expect(await touchActionOf(page, ".modal-body")).toBe("pan-y");
+    await page.keyboard.press("Escape");
+  }
+  // The sheet: Settings > 记忆宫殿 > the memory model. Opened on a touch screen it does not raise the keyboard; a tap on the search field focuses it.
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /记忆宫殿/ }).click();
+  await page.getByRole("combobox", { name: /用哪个模型整理记忆/ }).or(page.getByRole("button", { name: /用哪个模型整理记忆/ })).first().click();
+  const list = page.getByRole("listbox", { name: "模型" });
+  await expect(list).toBeVisible();
+  const search = page.getByRole("combobox", { name: "搜索模型" });
+  await expect(search).not.toBeFocused();
+  expect(await page.evaluate(() => document.querySelector(".model-pop").contains(document.activeElement)), "the focus is in the sheet").toBe(true);
+  for (const selector of [".model-scrim", ".model-pop", ".model-search", ".model-foot"]) expect(await touchActionOf(page, selector), selector).toBe("none");
+  expect(await touchActionOf(page, ".model-list")).toBe("pan-y");
+  await search.click();
+  await expect(search).toBeFocused();
+});
+
+test("F3 (desktop): the model picker still focuses its search field when it opens", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { viewport: { width: 1280, height: 800 } } });
+  const page = ann.page;
+  await page.goto("/");
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /记忆宫殿/ }).click();
+  await page.getByRole("combobox", { name: /用哪个模型整理记忆/ }).or(page.getByRole("button", { name: /用哪个模型整理记忆/ })).first().click();
+  await expect(page.getByRole("combobox", { name: "搜索模型" })).toBeFocused();
 });

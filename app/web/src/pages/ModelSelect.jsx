@@ -83,7 +83,12 @@ export function ModelSelect({
     busy,
     onOpen,
     // The search field takes the focus.
-    focus: () => searchRef.current?.focus(),
+    // The search field takes the focus; on a touch screen it does not (no keyboard over a short list: a tap on the field focuses it as usual) and the sheet itself does.
+    focus: () => {
+      const touch = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+      if (touch) (listRef.current ?? popRef.current)?.focus();
+      else searchRef.current?.focus();
+    },
     widthOf: (box) => (compact ? 380 : Math.max(box.width, 320)),
   });
 
@@ -205,7 +210,7 @@ export function ModelSelect({
     createPortal(
       <>
         <div className="model-scrim" aria-hidden="true" />
-        <div ref={popRef} className={`model-pop${up ? " up" : ""}`} style={popStyle}>
+        <div ref={popRef} className={`model-pop${up ? " up" : ""}`} style={popStyle} tabIndex={-1}>
           {note && <p className="model-scope">{note}</p>}
           <div className="model-search">
             <Search size={15} aria-hidden="true" />
@@ -231,7 +236,7 @@ export function ModelSelect({
           ) : (
             <>
               {/* A press on a row or a group's name leaves the focus in the search field (one on the list's own scrollbar is let through). */}
-              <div className="model-list" ref={listRef} data-more={more || undefined} role="listbox" id={listId} aria-label="模型" onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
+              <div className="model-list" ref={listRef} tabIndex={-1} data-more={more || undefined} role="listbox" id={listId} aria-label="模型" onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
                 {shown.lead.map(row)}
                 {shown.groups.map((g) => (
                   <div key={g.id} role="group" aria-label={g.label} className="model-group">

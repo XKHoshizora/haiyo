@@ -128,28 +128,50 @@ describe("the scrollers behind a layer (styles.css)", () => {
   const FILES = ["styles.css", "styles/social.css", "styles/others.css"];
   const sheets = FILES.map((file) => readFileSync(path.join(root, file), "utf8"));
   const rules = sheets.flatMap((css) => parseCss(css));
-  const lock = rules.find((r) => r.selectors.some((s) => s.startsWith("body > [inert] :is(")));
+  const locks = rules.filter((r) => r.selectors.some((s) => s.startsWith("body > [inert] :is(")));
 
-  it("there is one rule, only on a touch screen, keyed on what the layers make inert, that hides their overflow", () => {
-    expect(lock).toBeTruthy();
-    expect(lock.conditions).toEqual(["(hover: none) and (pointer: coarse)"]);
-    expect(lock.decl.overflow).toBe("hidden");
+  it("the rules in the stylesheets: on a coarse hover-less pointer and on any WebKit on iOS or iPadOS, keyed on what the layers make inert, they hide overflow", () => {
+    expect(locks.map((r) => r.conditions.join()).sort()).toEqual(["(-webkit-touch-callout: none)", "(hover: none) and (pointer: coarse)"]);
+    for (const lock of locks) expect(lock.decl.overflow).toBe("hidden");
   });
 
-  it("it names every box of the app that scrolls (a rule that gives a selector overflow auto or scroll is in the list)", () => {
-    const named = new Set(/:is\(([^)]*)\)/.exec(lock.selectors[0])[1].split(",").map((s) => s.trim()));
-    const scrollers = new Set();
+  it("they name every box of the stylesheets that scrolls (a rule that gives a selector overflow auto or scroll is in the list), and textarea, which scrolls by default", () => {
+    const scrollers = new Set(["textarea"]);
     for (const r of rules) {
       const values = [r.decl.overflow, r.decl["overflow-y"], r.decl["overflow-x"]].filter(Boolean).join(" ");
       if (/\b(auto|scroll)\b/.test(values)) for (const s of r.selectors) scrollers.add(s);
     }
     expect(scrollers.size).toBeGreaterThan(10);
-    for (const s of scrollers) expect(named.has(s), s).toBe(true);
+    for (const lock of locks) {
+      const named = new Set(/:is\(([^)]*)\)/.exec(lock.selectors[0])[1].split(",").map((s) => s.trim()));
+      for (const s of scrollers) expect(named.has(s), `${lock.conditions}: ${s}`).toBe(true);
+    }
   });
 
   it("the document lock does not reserve a scrollbar's room (the shell has no document scrollbar; a gutter would narrow the app while a dialog is open)", () => {
     const lockRule = rules.find((r) => r.selectors.includes("html[data-layer-open]"));
     expect(lockRule.decl.overflow).toBe("hidden");
     expect(lockRule.decl).not.toHaveProperty("scrollbar-gutter");
+  });
+});
+
+describe("touch-action: the only gesture the browser starts inside a layer is scrolling the layer's own scroller (styles.css)", () => {
+  const rules = ["styles.css", "styles/social.css", "styles/others.css"].flatMap((file) => parseCss(readFileSync(path.join(import.meta.dirname, "..", "src", file), "utf8")));
+  const of = (selector) => rules.filter((r) => r.selectors.includes(selector) && r.decl["touch-action"]).map((r) => r.decl["touch-action"]).at(-1) ?? null;
+  const viaList = (selector) => rules.filter((r) => r.selectors.includes(selector) && r.decl["touch-action"]).at(-1)?.decl["touch-action"] ?? null;
+
+  it("the hosts and the parts that do not scroll (backdrop, dialog, its head and foot, the sheet, its search row, note, empty line and footer, the viewer) take no gesture", () => {
+    for (const selector of [".modal-backdrop", ".modal", ".modal-head", ".modal-foot", ".model-scrim", ".model-pop", ".select-pop", ".model-search", ".model-scope", ".model-empty", ".model-foot", ".viewer"]) {
+      expect(viaList(selector) ?? of(selector), selector).toBe("none");
+    }
+  });
+
+  it("the layer's own scrollers take the vertical pan only (a slider or a horizontal drag inside is still delivered to the control)", () => {
+    for (const selector of [".modal-body", ".model-list", ".select-list"]) expect(of(selector), selector).toBe("pan-y");
+  });
+
+  it("the image viewer's stage and the avatar stage keep their own gestures (pointer-driven pinch and drag), not the browser's", () => {
+    expect(of(".viewer-stage")).toBe("none");
+    expect(of(".avatar-stage") ?? "none").toBe("none");
   });
 });

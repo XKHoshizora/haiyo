@@ -43,11 +43,23 @@ html[data-layer-open] { overflow: hidden; }
 html[data-layer-open] body { overflow: hidden; }
 /* And, on a touch screen, nothing behind the layer is a scroller: iOS latches a touch onto the scroller under the finger even beneath a fixed overlay, so the
    candidates are taken away (hiding overflow keeps every scrollTop). `body > [inert]` is the page and the layers under the top one (ui/layers.js makes them inert).
-   The list is every box of the app that scrolls — tests/layers-scroll.test.jsx fails when a new one is not named here. Where a pointer is a mouse an inert subtree is
-   not hit-tested, so nothing is needed. */
+   The list is every box of the app that scrolls, a text field's own scroll included — tests/layers-scroll.test.jsx fails when a rule in these stylesheets gives a
+   selector overflow auto or scroll and the list does not name it (what the browser scrolls by default, like a textarea, is named by hand). Two conditions: a coarse
+   hover-less pointer, and any WebKit on iOS or iPadOS (an iPad with a trackpad or mouse reports a fine pointer). On a desktop mouse nothing is hidden: the layers' backdrops
+   cover the whole window, so a wheel lands on them (checked in Chromium by an e2e), and the locked document does not scroll; a layer opened on a page whose document
+   itself scrolls (none today: the public pages open none) would shift that page by its scrollbar's width. */
 @media (hover: none) and (pointer: coarse) {
-  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page) { overflow: hidden; }
+  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page) { overflow: hidden; }
 }
+@supports (-webkit-touch-callout: none) {
+  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page) { overflow: hidden; }
+}
+/* The only gesture the browser starts inside a layer is scrolling the layer's own scroller: its hosts and the parts that do not scroll take none (a drag there
+   cannot pan the page behind, keyboard up or not), the scrollers take the vertical pan. A slider inside a scroller still gets its horizontal drags (pan-y does not claim
+   them); the image viewer and the avatar stage drive pinch and drag themselves (pointer events), so they keep `none`. */
+.modal-backdrop, .modal, .modal-head, .modal-foot, .model-scrim, .model-pop, .select-pop, .model-search, .model-scope, .model-empty, .model-foot, .viewer { touch-action: none; }
+.modal-body, .model-list, .select-list { touch-action: pan-y; }
+
 /* iOS makes its own guesses at text size (it inflated the wider rows of a list and left the narrow ones alone): never. The person's own text size
    still works through the normal mechanisms (Dynamic Type in the native shell, the browser's zoom and minimum font size, rem/em units). */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }

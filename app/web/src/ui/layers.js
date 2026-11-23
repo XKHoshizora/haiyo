@@ -62,7 +62,7 @@ function settleInert() {
 // cannot scroll. So the scrollers are taken away instead of the gesture being judged (no touchmove or wheel handler anywhere: text fields, sliders, pinch, the
 // edge-swipe Back and selection behave natively): while a layer is open the document is locked (`html[data-layer-open]`, styles.css) and, on a touch screen,
 // every scroller behind it (`body > [inert]`: the page and the layers under the top one) is `overflow: hidden` (styles.css: the list of them, pinned by a
-// test); hiding overflow keeps every scrollTop where it is. Where a pointer is a mouse, an inert subtree is not hit-tested, so a wheel cannot reach it.
+// test); hiding overflow keeps every scrollTop where it is. On a mouse nothing is hidden: the layers' backdrops cover the whole window, so a wheel lands on them (an e2e checks it in Chromium).
 let documentAt = null;
 function lockDocument() {
   documentAt = { x: window.scrollX, y: window.scrollY, path: window.location.pathname };
