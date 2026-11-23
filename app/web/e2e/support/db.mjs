@@ -58,3 +58,10 @@ export function addWebSources(conversationId, seq, webSources, webCites = []) {
     if (rowCount !== 1) throw new Error("no such message");
   });
 }
+/** The phones bound to person `principalId` (`push_devices`: token, env, app_version), newest first. */
+export function pushDevicesOf(principalId) {
+  return withDatabase(async (client) => {
+    const { rows } = await client.query("select token, env, app_version from push_devices where principal_id = $1 order by created_at desc", [principalId]);
+    return rows;
+  });
+}
