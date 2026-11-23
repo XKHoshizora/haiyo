@@ -4,6 +4,7 @@ import {
   MAX_AVATAR_BYTES,
   OUTPUT_SIZE,
   QUALITY_STEPS,
+  containerSize,
   cropTransform,
   decodeResize,
   exifOrientation,
@@ -82,13 +83,19 @@ async function decodeSmall(file, full) {
  * Decodes the picked file. Resolves `{width, height, paint(canvas), crop(view), close()}`: `width`, `height` are the
  * picture's size once its orientation is applied (in the pixels of the original, however small the decode is kept); `paint`
  * draws it into the stage's canvas; `crop(view)` resolves the saved `File` (512 × 512, WebP — JPEG where WebP cannot be
- * encoded — under the service's limit). The size rule is checked on the file's header, before anything is decoded.
+ * encoded — under the service's limit). The size rule is checked on the file's header, before anything is decoded: a PNG's, a
+ * JPEG's, a WebP's, and a HEIC's, HEIF's or AVIF's (`containerSize`: a phone's photo). A format whose header is not read is decoded
+ * whole and checked after; a decode the browser gives up on (too large for it, or a format it does not know) is the 无法读取 sentence.
+ * The picture's turn: a JPEG's EXIF orientation is read here and applied unless the browser already did (`browserTurnsPictures`);
+ * any other format is decoded by `createImageBitmap` with its default (`imageOrientation: "from-image"`), so the browser turns it.
  * Rejects with an `AvatarProblem`.
  */
 export async function decodeAvatar(file) {
   const head = new Uint8Array(await file.slice(0, HEAD_BYTES).arrayBuffer());
   const header = imageSize(head);
-  const early = header ? sizeProblem(header.width, header.height) : "";
+  // (A HEIC's size is used for this refusal only: it is the size before the file's own turn, so not the shape the decode gives.)
+  const stated = header ?? containerSize(head);
+  const early = stated ? sizeProblem(stated.width, stated.height) : "";
   if (early) throw new AvatarProblem(early);
 
   // A browser that already turned the picture needs no turn of ours: its bitmap is upright (orientation 1 from here on).

@@ -1,5 +1,5 @@
 // The arithmetic of the avatar adjust dialog (src/ui/avatarCrop.js): limits, clamping, zoom about a point, orientation.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_PICK_BYTES,
   MAX_ZOOM,
@@ -12,6 +12,8 @@ import {
   DECODE_SHORT_SIDE,
   decodeResize,
   exifOrientation,
+  PICK_ACCEPT,
+  containerSize,
   imageSize,
   initialView,
   orientationMatrix,
@@ -40,15 +42,15 @@ function covers(view, w, h) {
 describe("what may be picked", () => {
   const file = (name, size, type) => ({ name, size, type });
 
-  it("PNG, JPEG and WebP up to exactly 20 MB; a file of unknown type by its name; nothing else", () => {
+  it("any picture up to exactly 20 MB — an iPhone's HEIC as well as PNG, JPEG and WebP; a file of unknown type by its name; a file that is no picture is refused", () => {
+    expect(PICK_ACCEPT).toBe("image/*");
     expect(pickProblem(file("a.png", MAX_PICK_BYTES, "image/png"))).toBe("");
-    expect(pickProblem(file("a.jpg", 5, "image/jpeg"))).toBe("");
-    expect(pickProblem(file("a.webp", 5, "image/webp"))).toBe("");
-    expect(pickProblem(file("a.JPEG", 5, ""))).toBe("");
-    expect(pickProblem(file("a.gif", 5, "image/gif"))).toBe("头像需要是 PNG、JPEG 或 WebP 格式的图片。");
-    expect(pickProblem(file("a.svg", 5, "image/svg+xml"))).toBe("头像需要是 PNG、JPEG 或 WebP 格式的图片。");
-    expect(pickProblem(file("a.txt", 5, ""))).toBe("头像需要是 PNG、JPEG 或 WebP 格式的图片。");
+    for (const type of ["image/jpeg", "image/webp", "image/heic", "image/heif", "image/heic-sequence", "image/avif", "image/gif", "image/bmp", "image/tiff"]) expect(pickProblem(file("IMG_0101", 5, type)), type).toBe("");
+    // (A browser that does not know the type gives none: the name says it.)
+    for (const name of ["a.JPEG", "a.jpg", "a.png", "a.webp", "IMG_0101.HEIC", "IMG_0102.heif", "a.avif", "a.gif", "a.bmp"]) expect(pickProblem(file(name, 5, "")), name).toBe("");
+    for (const [name, type] of [["a.txt", ""], ["a", ""], ["heic", ""], ["a.pdf", "application/pdf"], ["a.mov", "video/quicktime"], ["a.png", "text/plain"], ["a.heic.zip", ""]]) expect(pickProblem(file(name, 5, type)), `${name} ${type}`).toBe("这个文件不是图片，请换一张。");
     expect(pickProblem(file("big.png", MAX_PICK_BYTES + 1, "image/png"))).toBe("图片不能超过 20 MB。");
+    expect(pickProblem(file("IMG_0101.HEIC", MAX_PICK_BYTES + 1, "image/heic"))).toBe("图片不能超过 20 MB。");
   });
 
   it("up to 8000 pixels a side, with a clear message beyond that or for nothing readable", () => {
@@ -353,5 +355,74 @@ describe("the size, from the header bytes", () => {
     expect(decodeResize(DECODE_SHORT_SIDE, 8000)).toBeNull();
     expect(decodeResize(DECODE_SHORT_SIDE + 1, 8000)).toEqual({ resizeWidth: DECODE_SHORT_SIDE });
     expect(decodeResize(99, 100)).toBeNull();
+  });
+});
+
+// ───────── a picture in an ISO container (HEIC, HEIF, AVIF: an iPhone's photo): its size for the size rule, before it is decoded
+const be32 = (v) => [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
+const chars = (t) => [...t].map((c) => c.charCodeAt(0));
+const box = (type, body) => [...be32(8 + body.length), ...chars(type), ...body];
+const ispe = (w, h) => box("ispe", [0, 0, 0, 0, ...be32(w), ...be32(h)]);
+/** The start of such a file: `ftyp` with `brand`, then the item properties (a size per item: the tiles of a grid, the whole picture, a thumbnail). */
+const heic = (sizes, brand = "heic") =>
+  Uint8Array.from([...box("ftyp", [...chars(brand), 0, 0, 0, 0, ...chars("mif1")]), ...box("meta", [0, 0, 0, 0, ...box("iprp", box("ipco", sizes.flatMap(([w, h]) => ispe(w, h))))])]);
+
+describe("the size of a HEIC, HEIF or AVIF read from its header", () => {
+  it("the largest picture in it (the whole one, not a tile of its grid nor its thumbnail), at sizes around 10, 100 and 8000", () => {
+    for (const [w, h] of [[9, 10], [99, 101], [4032, 3024], [8000, 8000], [8001, 100], [100, 8001], [12000, 9000]]) {
+      expect(containerSize(heic([[8, 8], [w, h], [4, 4]])), `${w}x${h}`).toEqual({ width: w, height: h });
+      expect(containerSize(heic([[w, h]], "avif")), `avif ${w}x${h}`).toEqual({ width: w, height: h });
+    }
+    expect(containerSize(heic([[320, 240], [5712, 4284], [512, 512]], "heix"))).toEqual({ width: 5712, height: 4284 });
+  });
+
+  it("null for anything else: no container, no size in the bytes given, a size cut off, a zero size", () => {
+    expect(containerSize(new Uint8Array(0))).toBeNull();
+    expect(containerSize(Uint8Array.from([0x89, ...chars("PNG"), 13, 10, 26, 10, 0, 0, 0, 13, ...chars("IHDR"), ...ispe(100, 100)]))).toBeNull();
+    expect(containerSize(heic([]))).toBeNull();
+    expect(containerSize(heic([[0, 10]]))).toBeNull();
+    const whole = heic([[640, 480]]);
+    for (let cut = 0; cut < whole.length; cut += 1) expect(containerSize(whole.slice(0, cut)), `cut at ${cut}`).toBeNull();
+    // (imageSize, which the decode trusts for the picture's shape, does not answer for it: its size here is before any turn.)
+    expect(imageSize(whole)).toBeNull();
+  });
+});
+
+describe("decoding a picked picture (the real src/ui/avatarImage.js, with the browser's decoder stood in)", () => {
+  const heicFile = (w, h) => new File([heic([[w, h]]), new Uint8Array(64)], "IMG_0101.HEIC", { type: "image/heic" });
+  let decodeAvatar;
+  let decoder;
+  beforeEach(async () => {
+    ({ decodeAvatar } = await vi.importActual("../src/ui/avatarImage.js"));
+    decoder = vi.fn();
+    vi.stubGlobal("createImageBitmap", decoder);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  const bitmap = (width, height) => ({ width, height, close: vi.fn() });
+
+  it("a HEIC larger than 8000 pixels a side is refused from its header with the size sentence: nothing is decoded", async () => {
+    for (const [w, h] of [[8001, 100], [100, 8001], [12000, 9000]]) await expect(decodeAvatar(heicFile(w, h)), `${w}x${h}`).rejects.toMatchObject({ text: "图片的边不能超过 8000 像素。" });
+    expect(decoder).not.toHaveBeenCalled();
+  });
+
+  it("a HEIC within the limit is decoded whole, and its size and shape are the decoded picture's (the browser turns it; the header's size is before the turn)", async () => {
+    decoder.mockResolvedValue(bitmap(3024, 4032));
+    const file = heicFile(4032, 3024);
+    const image = await decodeAvatar(file);
+    expect({ width: image.width, height: image.height }).toEqual({ width: 3024, height: 4032 });
+    expect(decoder).toHaveBeenCalledTimes(1);
+    expect(decoder.mock.calls[0]).toEqual([file]);
+  });
+
+  it("a picture whose header says nothing and that decodes larger than the limit: the size sentence, and the decoded picture is released", async () => {
+    const big = bitmap(9000, 100);
+    decoder.mockResolvedValue(big);
+    await expect(decodeAvatar(new File([new Uint8Array(40)], "a.bmp", { type: "image/bmp" }))).rejects.toMatchObject({ text: "图片的边不能超过 8000 像素。" });
+    expect(big.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("a picture this browser cannot decode (a HEIC outside Safari, a damaged file): the sentence that says so", async () => {
+    decoder.mockRejectedValue(new Error("InvalidStateError"));
+    await expect(decodeAvatar(heicFile(4032, 3024))).rejects.toMatchObject({ text: "这张图片无法读取，请换一张。" });
   });
 });

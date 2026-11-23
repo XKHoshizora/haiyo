@@ -13,8 +13,14 @@ export const MAX_ZOOM = 5;
 export const OUTPUT_SIZE = 512;
 /** Encoder qualities tried one after the other until the result fits the service's limit. */
 export const QUALITY_STEPS = [0.92, 0.85, 0.78, 0.7, 0.6, 0.5, 0.4, 0.3];
-/** What the client accepts to start from: PNG, JPEG, WebP up to 20 MB and 8000 pixels a side. */
-export const PICK_TYPES = ["image/png", "image/jpeg", "image/webp"];
+/**
+ * What the client accepts to start from: any picture this browser can decode, up to 20 MB and 8000 pixels a side. The file picker is
+ * offered every picture (`PICK_ACCEPT`): a phone's photos are HEIC as often as JPEG, and whether one can be read is the decoder's
+ * answer (avatarImage.js), not a list's — the original never leaves the device, only the 512 × 512 crop made from it.
+ */
+export const PICK_ACCEPT = "image/*";
+/** The names of pictures, for a file the browser gives no type for. */
+const PICTURE_NAME = /\.(png|jpe?g|webp|heic|heif|avif|gif|bmp|tiff?)$/i;
 export const MAX_PICK_BYTES = 20 * 1024 * 1024;
 export const MAX_PICK_SIDE = 8000;
 /** What the service accepts as an avatar (it decides by the bytes): the saved result must fit. */
@@ -24,8 +30,8 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** The reason a picked file cannot be started from, or "" when it may be tried. */
 export function pickProblem(file) {
-  const typeKnown = PICK_TYPES.includes(file.type) || (file.type === "" && /\.(png|jpe?g|webp)$/i.test(file.name));
-  if (!typeKnown) return "头像需要是 PNG、JPEG 或 WebP 格式的图片。";
+  const picture = /^image\//.test(file.type) || (file.type === "" && PICTURE_NAME.test(file.name));
+  if (!picture) return "这个文件不是图片，请换一张。";
   if (file.size > MAX_PICK_BYTES) return "图片不能超过 20 MB。";
   return "";
 }
@@ -196,6 +202,28 @@ export function cropTransform(rect, out, orientation, width, height) {
 }
 
 // ───────── size from the header
+
+/**
+ * The size `{width, height}` of the largest picture in an ISO container (HEIC, HEIF, AVIF: what a phone's camera saves) read from its
+ * first bytes, or null when the bytes are not one or say no size. It is the size BEFORE the turn the file asks for (`irot`), and
+ * a grid's tiles and a thumbnail have sizes of their own there (the whole picture is the largest): good for the size rule, which
+ * asks only for the longest side, and for nothing else — `imageSize`, which the decode trusts for the picture's shape, says null.
+ */
+export function containerSize(bytes) {
+  const n = bytes.length;
+  const ascii = (at, text) => at + text.length <= n && [...text].every((c, i) => bytes[at + i] === c.charCodeAt(0));
+  const be32 = (at) => ((bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]) >>> 0;
+  if (!ascii(4, "ftyp")) return null;
+  let best = null;
+  // Every `ispe` property (its type, four bytes of version and flags, then width and height as 32-bit big-endian numbers).
+  for (let at = 8; at + 16 <= n; at += 1) {
+    if (bytes[at] !== 0x69 || !ascii(at, "ispe")) continue;
+    const width = be32(at + 8);
+    const height = be32(at + 12);
+    if (width > 0 && height > 0 && (!best || width * height > best.width * best.height)) best = { width, height };
+  }
+  return best;
+}
 
 /**
  * The stored size `{width, height}` of a PNG, JPEG or WebP read from its first bytes, without decoding it, or null when the

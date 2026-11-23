@@ -591,6 +591,36 @@ test("N1 at 390: a tab is its section's list — after creating an Agent, Back i
   await expect(bar(page)).toBeVisible();
 });
 
+test("an avatar on a phone (390): the picker offers every picture; a GIF opens the adjust dialog at the first pick and is saved; a file that is no picture is refused where it cannot be missed", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { ...PHONE, viewport: { width: 390, height: 844 } } });
+  const page = ann.page;
+  await bar(page).getByRole("button", { name: "设置" }).click();
+  await page.getByText("我的资料", { exact: true }).first().click();
+  await expect(page.getByLabel("选择头像图片")).toHaveAttribute("accept", "image/*");
+  await expect(page.locator(".avatar-editor .field-hint")).toHaveText("支持常见图片格式，不超过 20 MB；选好后可以拖动和缩放。");
+  // A file that is no picture: the line under the buttons, and the notice (on screen, whatever the page's scroll).
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "更换头像", exact: true }).click();
+  await (await chooser).setFiles({ name: "notes.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4") });
+  await expect(page.locator(".avatar-editor .field-msg")).toHaveText("这个文件不是图片，请换一张。");
+  const toast = page.locator(".toast");
+  await expect(toast).toHaveText("这个文件不是图片，请换一张。");
+  const box = await toast.boundingBox();
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(844);
+  await expect(page.getByRole("dialog", { name: "调整头像" })).toHaveCount(0);
+  // A picture that was not on the old list (a 1 × 1 GIF): one pick opens the dialog, and its crop is saved.
+  const gif = Buffer.from("R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
+  const uploads = [];
+  page.on("request", (r) => r.method() === "PUT" && r.url().includes("/avatar") && uploads.push(r.url()));
+  const dialog = await pickAvatarUi(page, "更换头像", { name: "dot.gif", mimeType: "image/gif", buffer: gif });
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("status").filter({ hasText: "头像已更新" })).toBeVisible();
+  expect(uploads).toHaveLength(1);
+  expect(await noSideways(page)).toBe(true);
+});
+
 test("N2 at 375: the add form of the providers is a page: Back is the list, Forward the typed form (the key never in the address), a fresh Add is empty", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: PHONE });
   const page = ann.page;
