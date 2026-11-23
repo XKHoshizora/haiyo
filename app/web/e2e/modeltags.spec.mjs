@@ -91,8 +91,43 @@ async function expectOneOfEach(scope, narrow) {
   for (const s of seen) expect(s, "a mark shows its word or its icon, never both").toEqual(narrow ? { word: false, icon: true } : { word: true, icon: false });
 }
 
+/**
+ * Defines `window.markDrawn(chip)` in the page: the box of what a mark really DRAWS — its text as the browser lays it out (a range over its rendered text
+ * nodes, wherever they are: a bare text node counts) joined with its visible icon — or null when it draws nothing. The earlier checks measured the chip's own
+ * box and the `.model-mark-text` / `svg` elements inside it; a money chip had neither (its word was a bare text node), so for it they compared nothing and
+ * passed while the word was drawn under the chip.
+ */
+const defineMarkDrawn = () => {
+  window.markDrawn = (chip) => {
+    const rects = [];
+    const walker = document.createTreeWalker(chip, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.textContent.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      rects.push(...[...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0));
+    }
+    for (const svg of chip.querySelectorAll("svg")) {
+      const r = svg.getBoundingClientRect();
+      if (getComputedStyle(svg).display !== "none" && r.width > 0) rects.push(r);
+    }
+    if (rects.length === 0) return null;
+    return { left: Math.min(...rects.map((r) => r.left)), right: Math.max(...rects.map((r) => r.right)), top: Math.min(...rects.map((r) => r.top)), bottom: Math.max(...rects.map((r) => r.bottom)) };
+  };
+  window.boxInside = (t, c, slack = 0.5) => Boolean(t) && t.left >= c.left - slack && t.right <= c.right + slack && t.top >= c.top - slack && t.bottom <= c.bottom + slack;
+};
+
+/** On a page (provider rows, sync rows: no option rows there): every mark of `scope` draws something, inside its own chip. */
+async function expectMarksDrawn(page, scope) {
+  await page.evaluate(defineMarkDrawn);
+  const out = await scope.locator(".model-mark:not(.model-gap)").evaluateAll((chips) => chips.filter((c) => !window.boxInside(window.markDrawn(c), c.getBoundingClientRect())).map((c) => c.textContent));
+  expect(await scope.locator(".model-mark:not(.model-gap)").count()).toBeGreaterThan(0);
+  expect(out, "what each mark draws lies inside its chip").toEqual([]);
+}
+
 /** Geometry of a list's rows: marks inside their row on one line, one line high, no sideways scroll; the rows as the page sees them. */
 async function expectRowsFit(page, list) {
+  await page.evaluate(defineMarkDrawn);
   const rows = await list.getByRole("option").evaluateAll((options) =>
     options.map((o) => {
       const box = o.getBoundingClientRect();
@@ -107,6 +142,13 @@ async function expectRowsFit(page, list) {
         const pad = parseFloat(getComputedStyle(chip).paddingLeft) + parseFloat(getComputedStyle(chip).paddingRight);
         return Math.abs(c.width - (r.width + pad)) > 1 || chip.scrollWidth > chip.clientWidth;
       });
+      // What every mark DRAWS (window.markDrawn: its text as laid out, or its icon) lies inside its own chip and inside the row, and there is something drawn
+      // (a mark that draws nothing, or whose word is under its chip over the next row, fails here). A money chip (免费 / 需余额) is one line high: as high
+      // as an ability chip of the same list (18 px).
+      const live = [...o.querySelectorAll(".model-marks .model-mark:not(.model-gap)")];
+      const drawnOut = live.filter((c) => !window.boxInside(window.markDrawn(c), c.getBoundingClientRect()) || !window.boxInside(window.markDrawn(c), box)).map((c) => c.dataset.col);
+      const abilityHeight = o.closest('[role="listbox"]').querySelector(".model-mark-ability:not(.model-gap)")?.getBoundingClientRect().height ?? 18;
+      const priceHeights = live.filter((c) => c.dataset.col === "price").map((c) => c.getBoundingClientRect().height - abilityHeight);
       // The name keeps at least its first six characters' width (a probe in the name's own font).
       const probe = document.createElement("span");
       probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(name).font}`;
@@ -120,6 +162,8 @@ async function expectRowsFit(page, list) {
         inside: marks ? marks.right <= box.right + 0.5 && marks.left >= box.left : true,
         chipHeights: chips.map((c) => Math.round(c.height)),
         spill,
+        drawnOut,
+        priceHeights,
         floor: name.clientWidth + 0.5 >= six,
         cut: name.scrollWidth > name.clientWidth,
         nameWidth: name.clientWidth,
@@ -132,6 +176,8 @@ async function expectRowsFit(page, list) {
     expect(new Set(r.chipHeights).size, `${r.label}: chips on one line`).toBeLessThanOrEqual(1);
     expect(r.spill, `${r.label}: every word exactly fills its chip`).toBe(false);
     expect(r.floor, `${r.label}: at least the first six characters of the name are left`).toBe(true);
+    expect(r.drawnOut, `${r.label}: what each mark draws (the money word too) lies inside its chip and its row`).toEqual([]);
+    for (const d of r.priceHeights) expect(Math.abs(d), `${r.label}: the money chip is one line, as high as an ability chip`).toBeLessThanOrEqual(0.5);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await list.evaluate((l) => l.scrollWidth <= l.clientWidth + 1)).toBe(true);
@@ -190,6 +236,7 @@ test("the provider page's rows carry the same marks, as words, at 360 and 1280 (
     await expect(seeing.locator(".model-mark")).toHaveText(["看图", "思考", "工具"]);
     // Words on a page, at any width, and no icon.
     await expectOneOfEach(rows, false);
+    await expectMarksDrawn(page, rows);
     // A model that says nothing of tools has no 工具 (here, in the picker and in the sync list alike).
     await expect(rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash" }).first().locator(".model-mark")).toHaveText(["思考"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -245,6 +292,7 @@ test("the sync dialog (a list read from a sibling address) shows the marks (the 
     await expect(known.locator(".model-mark").first()).toBeVisible();
     await expect(known.locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(0);
     await expectOneOfEach(sync, false);
+    await expectMarksDrawn(page, sync);
     expect(await sync.evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true);
     // The dialog lies inside the screen with its 20 px gutter on both sides (at 360 it used to run to the right edge), and its body does not scroll sideways.
     const box = await sync.boundingBox();
@@ -355,6 +403,7 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
       { width, strip: strip[key] ?? strip[620], long: LONG },
     );
     const rows = page.locator(".model-option");
+    await page.evaluate(defineMarkDrawn);
     const geometry = await rows.evaluateAll((els) =>
       els.map((o) => {
         const box = o.getBoundingClientRect();
@@ -366,7 +415,10 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
           // The visible word or icon fills its chip exactly (the chip is as wide as it and its padding): able to fail on a width too wide or too narrow.
           const cs = getComputedStyle(c);
           const exact = !visible || c.classList.contains("model-gap") || Math.abs(r.width - (visible.width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight))) <= 1;
-          return { col: c.dataset.col, left: r.left, right: r.right, inside: exact && (!visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5)), shown: Boolean(visible) };
+          // What the mark draws (its text as laid out — a bare text node counts — or its icon) lies inside the chip, and the chip is one line (18 px) high.
+          const drawn = c.classList.contains("model-gap") ? null : window.markDrawn(c);
+          const drawnOk = c.classList.contains("model-gap") || (window.boxInside(drawn, r) && Math.abs(r.height - 18) <= 0.5);
+          return { col: c.dataset.col, drawnOk, drawnBelow: drawn ? drawn.bottom - r.bottom : 0, left: r.left, right: r.right, inside: exact && (!visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5)), shown: Boolean(visible) };
         });
         const marks = o.querySelector(".model-marks");
         const probe = document.createElement("span");
@@ -388,6 +440,7 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
       // limit is known and only something of the name is asked for.
       if (key === "360-three") expect(g.nameWidth + 0.5, "the first six characters of the name are left").toBeGreaterThanOrEqual(g.six);
       else expect(g.nameWidth, "some of the name is left").toBeGreaterThan(20);
+      for (const c of g.cells) expect(c.drawnOk, `${c.col}: what the mark draws lies inside its one-line chip (its bottom is ${c.drawnBelow} px under the chip's)`).toBe(true);
       for (const c of g.cells) expect(c.inside, `${c.col}: the ${narrow ? "icon" : "word"} inside its chip`).toBe(true);
     }
     // In row `all` every ability cell shows exactly its word (wide) or its icon (narrow); a row with fewer marks keeps every column where it was.

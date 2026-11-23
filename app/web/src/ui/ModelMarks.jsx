@@ -76,7 +76,7 @@ export const ModelMarks = memo(
           if (col === "price") {
             return kind ? (
               <span key={col} data-col={col} data-sizer={PRICE_SIZER} className={`model-mark model-mark-${kind}`}>
-                {PRICE_TEXT[kind]}
+                <span className="model-price-word">{PRICE_TEXT[kind]}</span>
               </span>
             ) : (
               <span key={col} data-col={col} data-sizer={PRICE_SIZER} className="model-mark model-gap" aria-hidden="true" />
