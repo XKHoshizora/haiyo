@@ -319,9 +319,10 @@ export type RunLimits = Pick<Config, "agentRunsPerMinute" | "agentOthersRunsPerM
 
 /**
  * Of `agent_runs`: a reply started in the last minute — not one a limit refused (`rate_limited`), which started nothing
- * (`startedLastMinute`, `calledLastMinute`).
+ * (`startedLastMinute`, `calledLastMinute`). Nor a reply the owner's interjection cancelled before it reached a model (`owner_spoke`,
+ * never admitted): a visitor cannot make it, and it called nothing; one admitted first called the model and counts.
  */
-const STARTED_LAST_MINUTE = "purpose = 'reply' and created_at > now() - interval '1 minute' and error is distinct from 'rate_limited' and error is distinct from 'owner_spoke'";
+const STARTED_LAST_MINUTE = "purpose = 'reply' and created_at > now() - interval '1 minute' and error is distinct from 'rate_limited' and (error is distinct from 'owner_spoke' or admitted_at is not null)";
 
 /**
  * `STARTED_LAST_MINUTE` as an owner's minute counts it (`startedLastMinute`): not a reply whose model was not there to
@@ -1603,13 +1604,15 @@ export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMes
   if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told, config)) return { ...noneTriggered(), ...told };
   for (const id of [...new Set([agent.ownerId, sender])].sort()) await lockAccount(t, id);
   const askers = [sender];
-  // An Agent whose model is gone is recorded failed `model_gone` at once, and never held to the owner's minute (as `reachAgents` decides).
+  // The order of `reachAgents`: the visitor's own minute first (a `model_gone` row counts in it, so a visitor cannot write one
+  // row a message without end), then an Agent whose model is gone (recorded failed `model_gone` at once, never held to the owner's
+  // minute), then the owner's others' minute.
+  const limited = async () => ({ ...noneTriggered(), runs: [await rateLimitedInGroup(t, agent, conversationId, message.seq, "human", caller, askers)], ...told });
+  if ((await calledLastMinute(t, sender)) >= config.agentCallerRunsPerMinute) return limited();
   if (!(await modelUsable(t, config, { ownerId: agent.ownerId, model: agent.model }))) {
     return { ...noneTriggered(), runs: [await recordRateLimited(t, agent, conversationId, message.seq, "human", caller, askers, "model_gone")], ...told };
   }
-  if ((await calledLastMinute(t, sender)) >= config.agentCallerRunsPerMinute || (await overLaneLimit(t, agent.ownerId, caller.lane, config))) {
-    return { ...noneTriggered(), runs: [await rateLimitedInGroup(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
-  }
+  if (await overLaneLimit(t, agent.ownerId, caller.lane, config)) return limited();
   return { ...noneTriggered(), runs: [await queueRun(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
 }
 

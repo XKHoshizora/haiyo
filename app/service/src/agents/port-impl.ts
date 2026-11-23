@@ -1308,7 +1308,11 @@ export class DbAgentPort implements AgentPort {
       if (!duplicate) this.deps.proactive?.cancelled(run.conversationId);
       return "posted";
     } catch (err) {
-      if (err instanceof AppError && REFUSED.has(err.code)) return "refused";
+      if (err instanceof AppError && REFUSED.has(err.code)) {
+        // A refused acknowledgement means the reply itself would be refused: stop it now (the worker's next poll), not after more rounds.
+        if (as === "ack") this.flagsOf(run.id).stop = true;
+        return "refused";
+      }
       if (err instanceof RunNotRunning) {
         this.deps.log.warn({ runId: run.id, status: err.status }, "agent run: ended elsewhere while it was answered (another instance's recovery); its reply is not posted");
         return "refused";

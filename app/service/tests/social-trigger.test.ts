@@ -210,6 +210,35 @@ describe("the review's cases", () => {
     expect((await runsOf(w)).filter((r) => r.status === "failed").map((r) => r.error)).toContain("model_gone");
   });
 
+  it("n1: over the visitor's own minute, a gone model is held to it first (a rate_limited run, reused), not a new model_gone row each time", async () => {
+    const w = await world();
+    for (let i = 0; i < 5; i++) {
+      await db.query(
+        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, caller_id, triggered_by, finished_at)
+         values ('reply', $1, $2, $3, 'done', 1, 'others', $4, 'human', now())`,
+        [w.conv, w.agent.id, w.owner.id, w.v.id],
+      );
+    }
+    await db.query("update agents set site_model_id = 'gone' where principal_id = $1", [w.agent.id]);
+    await say(w.v, w.conv, "在吗");
+    await say(w.v, w.conv, "在吗？");
+    const failed = (await runsOf(w)).filter((r) => r.status === "failed");
+    expect(failed.map((r) => r.error)).toEqual(["rate_limited"]);
+  });
+
+  it("n2: an admitted reply the owner's interjection interrupted called the model: it counts toward the visitor's minute; one that never started does not", async () => {
+    const w = await world();
+    for (let i = 0; i < 5; i++) {
+      await db.query(
+        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, lane, caller_id, triggered_by, admitted_at, finished_at)
+         values ('reply', $1, $2, $3, 'cancelled', 'owner_spoke', 1, 'others', $4, 'human', now(), now())`,
+        [w.conv, w.agent.id, w.owner.id, w.v.id],
+      );
+    }
+    await say(w.v, w.conv, "还在吗");
+    expect((await runsOf(w)).filter((r) => r.status === "failed").map((r) => r.error)).toEqual(["rate_limited"]);
+  });
+
   it("a deleted Agent calls nobody", async () => {
     const w = await world();
     await db.query("update agents set deleted_at = now() where principal_id = $1", [w.agent.id]);

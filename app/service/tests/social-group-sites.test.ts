@@ -13,9 +13,10 @@ import { scriptedGateway } from "./helpers/models.ts";
 
 /**
  * Lane B, B5b: every group site asks `refusedSql` (the one access decision) instead of the block alone, and one rule ends a call in a
- * group: the refused caller's calls are taken out, a run left with no call ends quietly (`cancelled`, no error: `access_ended` is for social runs) and has nothing left noted; what
- * a third person noted, and nothing is posted to or about a person refused at post time. This branch's `refusedSql` is Step 0's (blocks
- * only): stops, removals and narrowings reach these sites through the same function and are tested in I1a once lane A's is in.
+ * group: the refused caller's calls are taken out; a run left with no call ends quietly (`cancelled`, no error: `access_ended` is for
+ * social runs) and has nothing left noted; at post time, nothing is posted when no call the run answers stands, and the reply never
+ * quotes or mentions a person refused now. This branch's `refusedSql` is Step 0's (blocks only): stops, removals and narrowings reach
+ * these sites through the same function and are tested in I1a once lane A's is in.
  */
 const gateway = scriptedGateway();
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false });
@@ -122,6 +123,19 @@ describe("one rule for the end of a group call", () => {
     await block(w.owner, w.mia);
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(await firstRun(w.anna.id, w.g)).toMatchObject({ status: "cancelled", error: null, pending: null });
+  });
+
+  it("m4: a refused acknowledgement stops the reply (the stop flag) instead of letting it run on", async () => {
+    const w = await world();
+    await say(w.mia, w.g, "@anna_bot MIA-ASK 在吗？");
+    const ticket = (await app.agentPort.claimNext())!;
+    expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
+    expect(app.agentPort.shouldStop(ticket)).toBe(false);
+    await block(w.owner, w.mia);
+    expect(await app.agentPort.acknowledge(ticket, { text: "我查一下", reasoning: "" })).toBe("refused");
+    expect(app.agentPort.shouldStop(ticket)).toBe(true);
+    expect(await textsOf(w.g, w.anna.id)).toEqual([]);
+    await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
   });
 
   it("a person blocked after begin: a reply whose only call is theirs is not posted; money settles once", async () => {
