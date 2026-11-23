@@ -340,16 +340,35 @@ svg.model-brand { color: var(--ink-3); }
 .model-reason { flex: none; font-size: 12px; }
 /* Where a model is switched for an Agent from a group: a quiet line at the list's top says the change is everywhere. */
 .model-scope { flex: none; margin: 0 0 6px; padding: 2px 4px 0; font-size: 12px; color: var(--ink-3); }
-/* The marks: each kind in a column of its own width, so they line up from row to row (an empty one keeps its room). */
-.model-marks { flex: none; display: flex; gap: 4px; }
+/* The marks (src/ui/ModelMarks.jsx): money is text at every width; an ability shows its WORD or its ICON, never both: the word while the picker's box is wide
+   (and on a page), the icon alone while it is narrow (the container query below: the box's own width, not the screen's, so the first frame is right). Each column
+   is as wide as its own word: a row without that mark holds a hidden copy (.model-gap), so nothing has a fixed width, a long word cannot spill, and the marks
+   line up from row to row. A long name gives way first: it is cut with an ellipsis (flex 1, min-width 0), the marks never shrink or wrap. */
+.model-pop { container: modelpop / inline-size; }
+.model-marks { flex: none; display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 11.5px; }
 .model-mark {
-  min-width: calc(2em + 10px); height: 18px; padding: 0 5px; border-radius: 5px; font-size: 11.5px; line-height: 18px; text-align: center;
+  display: inline-flex; align-items: center; justify-content: center; height: 18px; padding: 0 6px; border-radius: 5px; font-size: 11.5px; line-height: 18px;
   white-space: nowrap; background: rgba(120, 116, 143, 0.12); color: var(--ink-2);
 }
-.model-mark[data-col="price"] { min-width: calc(3em + 10px); }
-.model-mark:empty { visibility: hidden; }
+.model-mark-icon { display: none; flex: none; }
+/* The price column is as wide as its longest word whichever word a row has (a hidden copy of it, overlaid: grid area 1/1), so it never depends on the row or the font. */
+.model-mark[data-col="price"] { display: inline-grid; justify-items: center; }
+.model-mark[data-col="price"]::after { content: attr(data-sizer); grid-area: 1 / 1; visibility: hidden; user-select: none; }
+.model-mark[data-col="price"] > * { grid-area: 1 / 1; }
+.model-gap { visibility: hidden; user-select: none; }
 .model-mark-free { background: var(--ok-bg); color: var(--ok); }
 .model-mark-paid { background: var(--warn-bg); color: var(--warn); }
+/* What the icons mean (the key: the one place an icon and its word appear together), only while the marks are icons. */
+.model-legend { display: none; flex: none; flex-wrap: wrap; gap: 2px 12px; margin: 4px 0 0; padding: 6px 8px 0; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-3); }
+.model-legend span { display: inline-flex; align-items: center; gap: 4px; }
+@container modelpop (max-width: 519px) {
+  .model-mark-ability { padding: 0 5px; }
+  .model-mark-ability .model-mark-icon { display: block; }
+  .model-mark-ability .model-mark-text { display: none; }
+  .model-legend { display: flex; }
+}
+/* On a page row the marks have a line of their own and say their words (the row is not a narrow list); they may wrap rather than push the actions. */
+.model-marks-row { flex-wrap: wrap; margin-top: 4px; }
 .model-empty { margin: 0; padding: 14px 8px; font-size: 13px; color: var(--ink-3); text-align: center; }
 .model-foot { flex: none; display: flex; margin: 6px -6px -6px; padding: 4px 6px; border-top: 1px solid var(--line); }
 @keyframes model-pop-in { from { opacity: 0; transform: translateY(-3px); } }
@@ -576,6 +595,13 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 .memory-vault .memory-rows:empty { display: none; }
 .thinking { font-size: 13px; color: var(--ink-2); }
 .thinking > summary { width: fit-content; cursor: pointer; }
+/* Folded until the reader opens it, its header is the only way in: a 44px target on a touch screen or a narrow one, that
+   takes no room (the header stays its one line). The target reaches up from the header's lower edge, over the gap and
+   the name line above — nothing there can be pressed — and never down into the bubble; a little past its text, too. */
+@media (pointer: coarse), (max-width: 480px) {
+  .thinking > summary { position: relative; z-index: 1; }
+  .thinking > summary::before { content: ""; position: absolute; left: 0; right: -12px; bottom: 0; height: 44px; }
+}
 .thinking-text { margin-top: 4px; padding: 4px 10px; border-left: 3px solid var(--line-strong); white-space: pre-wrap; word-break: break-word; }
 .proposal-persona { white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Under a reply of my own Agent: which model and thinking level it used (and what it cost, when that is shown). */
@@ -946,6 +972,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .checks label { display: flex; align-items: center; gap: 10px; font-size: 15px; }
 .checks small { color: var(--ink-3); margin-left: 6px; }
 .checks[role="radiogroup"] > small { margin-left: 0; }
+.checks > .tools-unknown { margin: -4px 0 0 26px; font-size: 13px; }
 .radio-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 760px; }
 .radio-cards label {
   display: flex; gap: 10px; padding: 12px; border-radius: 12px; border: 1px solid var(--line-strong); background: rgba(255, 255, 255, 0.6);
@@ -1006,7 +1033,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 
 /* ───────── modal & toast */
 .modal-backdrop {
-  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; place-items: center; overflow: hidden; overscroll-behavior: contain;
+  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; overflow: hidden; overscroll-behavior: contain;
   padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .modal {
@@ -1030,7 +1057,9 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .sync-tools > .btn { flex: none; }
 .sync-name { overflow-wrap: anywhere; }
 .sync-name .muted { font-size: 13px; }
-.sync-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.sync-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
+/* The 未收录 tag beside the marks is drawn like a mark (one system of chips). */
+.sync-tags .tag { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 5px; font-size: 11.5px; line-height: 18px; }
 .sync-rows li { padding: 7px 2px; gap: 10px; }
 .sync-rows .member-actions { align-items: center; }
 .sync-added { font-size: 13px; }

@@ -22,6 +22,7 @@ import {
   forgetRevealed,
   isReplying,
   seesImages,
+  thinkingLeftOpen,
 } from "./AgentChatBits.jsx";
 import { ChatHitRow, SearchFooter } from "./SearchHits.jsx";
 import { useJumpTo } from "./useJumpTo.js";
@@ -173,11 +174,19 @@ export function ChatView({ conv }) {
   const finishing = finish && finish.convId === conv.id && !replying && !detached && last?.id === finish.messageId ? finish : null;
   /** The reply whose bubble was shown at the last commit: `{ convId, runId }`, or null. */
   const bubbleShown = useRef(null);
+  const showing = finishing ? finishing.runId : replying ? run.id : null;
+  // The bubble gives way in this render, and the reader had its thinking open: the stored reply that takes its place
+  // starts with its thinking open (MessageItem `thinkingOpen`), so nothing moves under the reader. Known only in this one
+  // render — the stored reply shown again later (the conversation left and opened again, a reload) is folded like any.
+  const gone = bubbleShown.current;
+  const openThinkingOf =
+    agentChat && gone && gone.convId === conv.id && !detached && gone.runId !== showing && thinkingLeftOpen(gone.runId)
+      ? newestFrom(conv.messages, conv.agentId)?.id ?? null
+      : null;
   useLayoutEffect(() => {
     shownStream.current = replying && conv.stream ? { convId: conv.id, runId: run.id, stream: conv.stream } : null;
     // A bubble that gave way here (to its stored message, its end, a newer reply) is not made again: what it had shown
     // is forgotten. Not when the conversation was left or a detached window hides it: made again, it goes on from there.
-    const showing = finishing ? finishing.runId : replying ? run.id : null;
     const was = bubbleShown.current;
     if (was && was.convId === conv.id && !detached && was.runId !== showing) forgetRevealed(was.runId);
     bubbleShown.current = showing ? { convId: conv.id, runId: showing } : null;
@@ -568,7 +577,7 @@ export function ChatView({ conv }) {
               ) : whisper ? (
                 <Whisper key={`w:${whisper.id}`} whisper={whisper} conv={conv} />
               ) : (
-                <MessageItem key={msg.id} msg={msg} conv={conv} flash={flash !== null && msg.seq === flash} onReply={block ? () => dispatch({ type: "toast", text: block.text }) : setReplyTo} onJump={jumpTo} />
+                <MessageItem key={msg.id} msg={msg} conv={conv} thinkingOpen={msg.id === openThinkingOf} flash={flash !== null && msg.seq === flash} onReply={block ? () => dispatch({ type: "toast", text: block.text }) : setReplyTo} onJump={jumpTo} />
               ),
             )}
             {failedRun && <RunStatusLine key={failedRun.id} conv={conv} run={failedRun} />}

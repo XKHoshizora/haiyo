@@ -1,2 +1,3 @@
 # The repository root ignores every `data/` directory (runtime data of the old app); this one is source code.
 !src/data/
+.work/
