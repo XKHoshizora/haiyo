@@ -126,10 +126,23 @@ describe("resolveModel", () => {
       call: { maxOutputTokens: config().providerDefaultMaxOutputTokens, thinkingSwitch: false },
     });
 
-    // Its levels narrowed after the Agent chose one: the run is not failed, the saved level is still sent (until the
-    // Agent is edited, when it must be one of them).
-    await api(app, owner, "PATCH", `/api/providers/${provider.id}`, { models: [{ ...models[0], reasoningLevels: ["low"] }, models[1]] });
-    expect(await resolveModel(db, config(), deep)).toMatchObject({ name: "deep", reasoningAllowed: REASONING_LEVELS });
+    // Its levels narrowed after the Agent chose one (xhigh): the run is not failed, and it is made at the nearest level
+    // below the saved one that the model still lists — never at one it does not list; `none` when none is below.
+    const narrowed = async (reasoningLevels: string[] | undefined) => {
+      const { reasoningLevels: _, ...rest } = { ...models[0], reasoningLevels };
+      expect((await api(app, owner, "PATCH", `/api/providers/${provider.id}`, { models: [reasoningLevels ? { ...rest, reasoningLevels } : rest, models[1]] })).status).toBe(200);
+      return resolveModel(db, config(), deep);
+    };
+    const room = Math.floor((50000 - config().providerDefaultMaxOutputTokens) / 2);
+    const at = (level: "low" | "medium" | "high") => config().providerDefaultMaxOutputTokens + Math.min(config().reasoningAllowanceTokens[level], room);
+    expect(await narrowed(["low"])).toMatchObject({ name: "deep", reasoningAllowed: ["none", "low"], reasoning: "low", call: { maxOutputTokens: at("low"), thinkingSwitch: true } });
+    expect(await narrowed(["low", "medium", "max"])).toMatchObject({ reasoningAllowed: ["none", "low", "medium", "max"], reasoning: "medium", call: { maxOutputTokens: at("medium") } });
+    expect(await narrowed(["high", "xhigh"])).toMatchObject({ reasoningAllowed: ["none", "high", "xhigh"], reasoning: "xhigh" });
+    expect(await narrowed(["max"])).toMatchObject({ reasoningAllowed: ["none", "max"], reasoning: "none", call: { maxOutputTokens: config().providerDefaultMaxOutputTokens } });
+    // The Agent's own level is not rewritten by any of it.
+    expect((await readOwnedAgent(db, owner.id, deep.id))?.reasoning).toBe("xhigh");
+    // Every level again (no list): the saved level is the one sent.
+    expect(await narrowed(undefined)).toMatchObject({ reasoningAllowed: REASONING_LEVELS, reasoning: "xhigh" });
 
     // Its address changed: another upstream, so what the old one refused (src/models/gateway.ts `Refusals`) is not
     // carried over to it.
@@ -171,8 +184,8 @@ describe("resolveModel", () => {
     expect(await at()).toMatchObject({ reasoning: "none", call: { maxOutputTokens: 8192 } }); // a persona draft names no level
     expect(await at("none")).toMatchObject({ reasoning: "none", call: { maxOutputTokens: 8192 } });
     expect(await at("low")).toMatchObject({ reasoning: "low", call: { maxOutputTokens: 8192 + 2000 } });
-    // A level the model does not take is called (and sized) as none.
-    expect(await at("high")).toMatchObject({ reasoning: "none", call: { maxOutputTokens: 8192 } });
+    // A level the model does not list is called (and sized) as the nearest one below it that it does: medium here.
+    expect(await at("high")).toMatchObject({ reasoning: "medium", call: { maxOutputTokens: 8192 + 6000 } });
     // REASONING_ALLOWANCE_TOKENS is what is added.
     const custom = { ...config(), reasoningAllowanceTokens: { ...config().reasoningAllowanceTokens, low: 0, medium: 100_000 } };
     const thinker = (reasoning: ReasoningLevel) => resolveModel(db, custom, { model: { source: "site", id: "thinker" }, ownerId: owner.id, reasoning });
@@ -213,8 +226,31 @@ describe("resolveModel", () => {
         }
       }
     }
+  });
+
+  it("callLevel: the wanted level when the model lists it, else the nearest listed level below it; none when none is below", () => {
     expect(callLevel(["none", "low"], "low")).toBe("low");
-    expect(callLevel(["none", "low"], "max")).toBe("none");
+    expect(callLevel(["none", "low"], "max")).toBe("low");
+    expect(callLevel(["none", "low", "high"], "medium")).toBe("low");
+    expect(callLevel(["none", "low", "high"], "xhigh")).toBe("high");
+    expect(callLevel(["none", "low", "high"], "max")).toBe("high");
+    expect(callLevel(["none", "high", "max"], "low")).toBe("none");
+    expect(callLevel(["none", "max"], "xhigh")).toBe("none");
+    expect(callLevel(["none"], "max")).toBe("none");
+    // (However the list is ordered, and whether or not it says `none`.)
+    expect(callLevel(["max", "low"], "high")).toBe("low");
+    expect(callLevel(["high"], "low")).toBe("none");
+    for (const wanted of REASONING_LEVELS) expect(callLevel(REASONING_LEVELS, wanted)).toBe(wanted);
+    for (const wanted of REASONING_LEVELS) expect(callLevel([], wanted)).toBe("none");
+  });
+
+  it("a site model whose configured levels were narrowed below an Agent's saved one: the nearest listed level below it, as for a provider model", async () => {
+    const owner = await signUp(app, "sita");
+    const agent = await agentWith(owner, { model: { source: "site", id: "thinker" }, reasoning: "medium" });
+    const withLevels = (levels: Array<"low" | "medium" | "high" | "xhigh" | "max">) => ({ ...config(), siteModels: config().siteModels.map((m) => (m.id === "thinker" ? { ...m, reasoning: levels } : m)) });
+    expect(await resolveModel(db, withLevels(["low", "high"]), agent)).toMatchObject({ reasoningAllowed: ["none", "low", "high"], reasoning: "low", call: { maxOutputTokens: 8192 + config().reasoningAllowanceTokens.low } });
+    expect(await resolveModel(db, withLevels(["high"]), agent)).toMatchObject({ reasoningAllowed: ["none", "high"], reasoning: "none", call: { maxOutputTokens: 8192 } });
+    expect(await resolveModel(db, withLevels([]), agent)).toMatchObject({ reasoningAllowed: ["none"], reasoning: "none" });
   });
 
   it("is null when the provider is not the Agent owner's (or gone)", async () => {

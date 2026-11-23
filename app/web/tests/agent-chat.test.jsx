@@ -2284,7 +2284,7 @@ describe("switching the model where I am (my Agent's own conversation)", () => {
     expect(rowOf("gpt-x").getAttribute("aria-selected")).toBe("false");
   });
 
-  it("choosing a model saves it with one update of the Agent (its level kept when the new model takes it, else 不思考), the button off meanwhile", async () => {
+  it("choosing a model saves it with one update of the Agent (its level kept when the new model lists it, else the nearest below), the button off meanwhile", async () => {
     const record = agentOf(AG1, { model: SITE_PAID, reasoning: "high" });
     const saving = deferred();
     const patchAgent = vi.fn(() => saving.promise);
@@ -2312,6 +2312,15 @@ describe("switching the model where I am (my Agent's own conversation)", () => {
     await click(rowOf("小模型"));
     expect(patchAgent).toHaveBeenLastCalledWith(AG1, { model: SITE_FREE, reasoning: "none" });
     expect(headModel().textContent).toBe("小模型");
+  });
+
+  it("a level the new model does not list is saved as the nearest one below it that it does (最高 on gpt-x → 高 on 大模型)", async () => {
+    const record = agentOf(AG1, { model: PROVIDER_MODEL, reasoning: "max" });
+    const patchAgent = keep(record);
+    await openAgentChat({ agent: { model: PROVIDER_MODEL, reasoning: "max" }, providers: [providerOf()], api: { patchAgent } });
+    await click(headModel());
+    await click(rowOf("大模型"));
+    expect(patchAgent).toHaveBeenLastCalledWith(AG1, { model: SITE_PAID, reasoning: "high" });
   });
 
   it("while my providers are being read it says so, and no key chooses a row it does not show", async () => {

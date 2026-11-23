@@ -38,6 +38,7 @@ import {
 import { PEOPLE, click, dialog, flush, goContacts, inMain, installBrowser, mainText, openApp, push, rowNames, toastText } from "./harness.jsx";
 import { optionsOf, pickOption } from "./select-helpers.js";
 import { othersBudgetSent } from "../src/pages/AgentForm.jsx";
+import { effectiveLevel } from "../src/pages/ModelPicker.jsx";
 import { ModelGoneTag } from "../src/pages/Agents.jsx";
 import { StoreProvider, emptyState } from "../src/data/store.jsx";
 
@@ -666,9 +667,14 @@ describe("思考程度", () => {
     expect(levels()).toEqual(["不思考", "低", "高"]);
     await chooseModel("gpt-x");
     expect(levels()).toEqual(["不思考", "低", "中", "高", "很高", "最高"]);
+    // A level the next model does not list becomes the nearest one below it that it does (最高 → 高), 不思考 when there is none.
     pickOption(inMain().getByLabelText("思考程度"), "max");
     await chooseModel("大模型 · 需余额");
-    expect(inMain().getByLabelText("思考程度").value).toBe("none");
+    expect(inMain().getByLabelText("思考程度").value).toBe("high");
+    await chooseModel("gpt-x");
+    pickOption(inMain().getByLabelText("思考程度"), "medium");
+    await chooseModel("大模型 · 需余额");
+    expect(inMain().getByLabelText("思考程度").value).toBe("low");
     await chooseModel("plain");
     expect(inMain().queryByLabelText("思考程度")).toBeNull();
   });
@@ -688,6 +694,84 @@ describe("思考程度", () => {
     await chooseModel("all-levels");
     expect(levels()).toEqual(["不思考", "低", "中", "高", "很高", "最高"]);
     expect(inMain().getByLabelText("思考程度").value).toBe("max");
+    pickOption(inMain().getByLabelText("思考程度"), "xhigh");
+    await chooseModel("some-levels");
+    expect(inMain().getByLabelText("思考程度").value).toBe("high");
+  });
+
+  // The one rule (the service's `callLevel`, here `effectiveLevel`): the saved level when the model lists it, else the nearest listed one below.
+  it("effectiveLevel: the saved level when listed, else the nearest listed level below it, 不思考 when none is", () => {
+    expect(effectiveLevel(["none", "low"], "low")).toBe("low");
+    expect(effectiveLevel(["none", "low"], "max")).toBe("low");
+    expect(effectiveLevel(["none", "low", "high"], "medium")).toBe("low");
+    expect(effectiveLevel(["none", "low", "high"], "xhigh")).toBe("high");
+    expect(effectiveLevel(["none", "high", "max"], "low")).toBe("none");
+    expect(effectiveLevel(["none"], "max")).toBe("none");
+    expect(effectiveLevel(["max", "low"], "high")).toBe("low");
+    for (const level of ["none", "low", "medium", "high", "xhigh", "max"]) expect(effectiveLevel(["none", "low", "medium", "high", "xhigh", "max"], level)).toBe(level);
+    expect(effectiveLevel(["none", "low"], "unknown")).toBe("none");
+  });
+
+  describe("an Agent whose saved level its model no longer lists", () => {
+    const pageLevel = () => [...document.querySelectorAll(".main-col .kv-row")].find((row) => row.querySelector("dt").textContent === "思考程度").querySelector("dd").textContent;
+    const narrowed = (reasoningLevels) => providerOf(undefined, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, ...(reasoningLevels ? { reasoningLevels } : {}) }] });
+    const onProvider = (reasoning) => agentOf(AG1, { intro: "旧简介", model: { source: "provider", providerId: P1, model: "gpt-x" }, reasoning });
+    const open = async (record, providers) => {
+      const patchAgent = vi.fn(async (_id, patch) => ({ ...record, ...patch }));
+      const app = await openAgents({ agents: [record], providers, api: { patchAgent } });
+      app.transport.handlers.agent = () => record;
+      await openRow("小助手");
+      return { app, patchAgent };
+    };
+    const edit = () => click(inMain().getByRole("button", { name: /编辑/ }));
+
+    it("a provider model narrowed to 低 and 中 under a saved 很高: its page and the edit form both say 中, the level it runs at", async () => {
+      const { patchAgent } = await open(onProvider("xhigh"), [narrowed(["low", "medium"])]);
+      expect(pageLevel()).toBe("中");
+      await edit();
+      expect(levels()).toEqual(["不思考", "低", "中"]);
+      expect(inMain().getByLabelText("思考程度").value).toBe("medium");
+      // Nothing I did not touch is sent: the saved level is not rewritten by looking at it, nor by saving something else.
+      type("简介", "新简介");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(patchAgent).toHaveBeenCalledTimes(1);
+      expect(patchAgent.mock.calls[0][1]).toEqual({ intro: "新简介" });
+    });
+
+    it("the level I pick there is sent, also the one already shown", async () => {
+      const { patchAgent } = await open(onProvider("xhigh"), [narrowed(["low", "medium"])]);
+      await edit();
+      pickOption(inMain().getByLabelText("思考程度"), "low");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(patchAgent.mock.calls[0][1]).toEqual({ reasoning: "low" });
+    });
+
+    it("no listed level below the saved one: 不思考 on both; every level listed again (全部档位): the saved level on both", async () => {
+      await open(onProvider("low"), [narrowed(["high", "max"])]);
+      expect(pageLevel()).toBe("不思考");
+      await edit();
+      expect(inMain().getByLabelText("思考程度").value).toBe("none");
+      cleanup();
+      await open(onProvider("xhigh"), [narrowed(null)]);
+      expect(pageLevel()).toBe("很高");
+      await edit();
+      expect(inMain().getByLabelText("思考程度").value).toBe("xhigh");
+    });
+
+    it("a site model the same: 大模型 lists 低 and 高, a saved 中 shows 低 and a saved 最高 shows 高", async () => {
+      await open(agentOf(AG1, { model: { source: "site", id: "paid-1" }, reasoning: "medium" }), [PROVIDER]);
+      expect(pageLevel()).toBe("低");
+      await edit();
+      expect(inMain().getByLabelText("思考程度").value).toBe("low");
+      cleanup();
+      await open(agentOf(AG1, { model: { source: "site", id: "paid-1" }, reasoning: "max" }), [PROVIDER]);
+      expect(pageLevel()).toBe("高");
+    });
+
+    it("a model that is gone (nothing known of what it lists) shows the saved level", async () => {
+      await open(agentOf(AG1, { model: { source: "provider", providerId: P1, model: "retired" }, reasoning: "high", modelUsable: false }), [PROVIDER]);
+      expect(pageLevel()).toBe("高");
+    });
   });
 });
 

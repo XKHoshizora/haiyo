@@ -749,7 +749,7 @@ describe("reasoning", () => {
     expect(JSON.stringify(lastCall())).not.toContain("SECRETTHOUGHT");
   });
 
-  it("the call carries the Agent's level when the model allows it, else none", async () => {
+  it("the call carries the Agent's level when the model lists it, else the nearest listed level below it", async () => {
     const { owner, agent, conv } = await owned("lvl", "eyes", { reasoning: "medium" });
     await say(owner, conv, "想一想");
     await answer("想好了。");
@@ -758,7 +758,7 @@ describe("reasoning", () => {
     await db.query("update agents set reasoning = 'high' where principal_id = $1", [agent.id]);
     await say(owner, conv, "再想想");
     await answer("又想好了。");
-    expect(lastCall().reasoning).toBe("none");
+    expect(lastCall().reasoning).toBe("medium");
   });
 });
 
