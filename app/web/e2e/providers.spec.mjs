@@ -229,7 +229,7 @@ test("思考档位 under 高级 for every model that thinks: one the catalogue d
   if (await thinks("house-think").isChecked()) await thinks("house-think").uncheck();
   await expect(levels).toHaveCount(0);
   await thinks("house-think").check();
-  await expect(levels).toContainText("资料里没有这个模型的档位，默认全部可选。");
+  await expect(levels).toContainText("默认全部档位可选。这个模型不支持的，可以取消。");
   await expect(levels.getByRole("checkbox")).toHaveCount(5);
   for (const label of ["低", "中", "高", "很高", "最高"]) await expect(levels.getByRole("checkbox", { name: label, exact: true })).toBeChecked();
   // Each box's label is a 44 px target, at 360 too.
@@ -258,6 +258,7 @@ test("思考档位 under 高级 for every model that thinks: one the catalogue d
   await rowOf("o3-mini").getByRole("button", { name: "高级设置：o3-mini" }).click();
   const known = rowOf("o3-mini").getByRole("radiogroup", { name: "思考档位：o3-mini" });
   await expect(known).toContainText("资料显示支持：低、中、高。");
+  await expect(known.getByRole("radio", { name: "资料里的档位", exact: true })).not.toBeChecked();
   await expect(known.getByRole("radio", { name: "全部档位" })).toBeChecked();
   await expect(rowOf("o3-mini").getByRole("checkbox", { name: "很高", exact: true })).toHaveCount(0);
   await shoot("o3-mini", "known");

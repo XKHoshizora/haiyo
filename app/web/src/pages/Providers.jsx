@@ -381,27 +381,37 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
         <legend>思考档位</legend>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={sameLevels(model.levels, model.reported)} onChange={() => onChange({ ...model, levels: model.reported })} onClick={() => !sameLevels(model.levels, model.reported) && onChange({ ...model, levels: model.reported })} />
-          <span>这个模型支持的档位（{model.reported.map(levelLabel).join("、")}）</span>
+          <span>资料里的档位</span>
         </label>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={model.levels === null} onChange={() => onChange({ ...model, levels: null })} />
           <span>全部档位</span>
         </label>
-        <small id={`${panelId}-levels-hint`} className="muted">资料显示支持：{model.reported.map(levelLabel).join("、")}。档位不对或不全时，选全部档位。</small>
+        {/* The levels are named once, here. Levels in use that are neither choice (ticked by hand before the catalogue knew the model, or
+            the catalogue's list changed since) are named too: neither radio is chosen then, and the choice must not look lost. */}
+        <small id={`${panelId}-levels-hint`} className="muted">
+          {model.levels !== null && !sameLevels(model.levels, model.reported) && `现在用的是：${model.levels.map(levelLabel).join("、")}。`}
+          资料显示支持：{model.reported.map(levelLabel).join("、")}。档位不对或不全时，选全部档位。
+        </small>
       </fieldset>
     ) : (
       <fieldset className="checks level-checks" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
         <legend>思考档位</legend>
-        <small id={`${panelId}-levels-hint`} className="muted">资料里没有这个模型的档位，默认全部可选。不支持的档位可以取消。</small>
+        {/* (It says nothing of the catalogue: for a model not saved as thinking the form does not know what the catalogue holds.) */}
+        <small id={`${panelId}-levels-hint`} className="muted">默认全部档位可选。这个模型不支持的，可以取消。</small>
         <div className="level-boxes">
-          {LEVEL_IDS.map((level) => (
-            <label key={level}>
-              <input type="checkbox" checked={levelUsed(level)} onChange={() => toggleLevel(level)} />
-              <span>{levelLabel(level)}</span>
-            </label>
-          ))}
+          {LEVEL_IDS.map((level) => {
+            // The last one ticked stays: it says so itself (`aria-disabled`, described by the line), and still takes the focus.
+            const last = model.levels?.length === 1 && model.levels[0] === level;
+            return (
+              <label key={level}>
+                <input type="checkbox" checked={levelUsed(level)} aria-disabled={last || undefined} aria-describedby={last ? `${panelId}-levels-last` : undefined} onChange={() => toggleLevel(level)} />
+                <span>{levelLabel(level)}</span>
+              </label>
+            );
+          })}
         </div>
-        {model.levels?.length === 1 && <small className="muted" role="status">至少保留一个档位。都不要时，取消上面的「支持思考」。</small>}
+        {model.levels?.length === 1 && <small id={`${panelId}-levels-last`} className="muted">至少保留一个档位。不需要思考时，取消上面的「支持思考」。</small>}
       </fieldset>
     );
   const parts = [model.pdf && "能直接读 PDF", thinking, ...after].filter(Boolean);
