@@ -1026,7 +1026,7 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 
 /* ───────── modal & toast */
 .modal-backdrop {
-  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; place-items: center; overflow: hidden; overscroll-behavior: contain;
+  position: fixed; inset: 0; z-index: 60; background: rgba(40, 32, 80, 0.32); display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; overflow: hidden; overscroll-behavior: contain;
   padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .modal {

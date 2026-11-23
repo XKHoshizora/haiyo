@@ -246,6 +246,11 @@ test("the sync dialog (a list read from a sibling address) shows the marks (the 
     await expect(known.locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(0);
     await expectOneOfEach(sync, false);
     expect(await sync.evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true);
+    // The dialog lies inside the screen with its 20 px gutter on both sides (at 360 it used to run to the right edge), and its body does not scroll sideways.
+    const box = await sync.boundingBox();
+    expect(box.x, "left gutter").toBeGreaterThanOrEqual(19.5);
+    expect(box.x + box.width, "right gutter").toBeLessThanOrEqual(width - 19.5);
+    expect(await sync.locator(".modal-body").evaluate((el) => el.scrollWidth <= el.clientWidth + 1), "the body does not scroll sideways").toBe(true);
     await shot(page, `sync-${width}`);
     await sync.getByRole("button", { name: "完成" }).click();
     await expect(sync).toBeHidden();
