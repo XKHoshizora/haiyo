@@ -55,6 +55,8 @@ async function setup(people) {
     data: { name: `DerpSeek${uniq(3)}`, protocol: "openai_chat", baseUrl: modelStub.baseUrl, apiKey: `sk-e2e-${uniq(8)}-not-real`, models: PROVIDER_MODELS },
   });
   expect(res.status(), await res.text()).toBe(201);
+  // The provider was added behind the page's back: read again.
+  await page.reload();
   return ann;
 }
 
@@ -143,8 +145,9 @@ test("the provider page's rows carry the same marks, with their words, at 360 an
     await goTo(page, "设置");
     await page.getByRole("button", { name: /模型供应商/ }).click();
     const section = page.getByRole("region", { name: "模型供应商" });
-    await section.getByRole("list", { name: "我的模型供应商" }).getByRole("listitem").first().getByRole("button", { name: "编辑" }).click();
     const rows = page.getByRole("list", { name: "模型列表" });
+    // (Settings opens on the form again when it was left open.)
+    if (!(await rows.isVisible())) await section.getByRole("list", { name: "我的模型供应商" }).getByRole("listitem").first().getByRole("button", { name: "编辑" }).click();
     const seeing = rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash-vision-exp" });
     await expect(seeing.locator(".model-mark")).toHaveText(["看图", "思考", "工具"]);
     await expect(seeing.locator(".model-mark-text").first()).toBeVisible();
