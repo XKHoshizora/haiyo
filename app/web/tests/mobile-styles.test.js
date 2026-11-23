@@ -254,6 +254,11 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
     expect(body["background-repeat"]).toBe("no-repeat");
     expect(body["background-color"]).toBeTruthy();
   });
+
+  it("the page gradient is not `background-attachment: fixed` (iOS WebKit leaves the pages that scroll inside the shell half-painted: blank bands, half-erased lines)", () => {
+    for (const rule of rules) expect(rule.decl["background-attachment"], rule.selectors.join(",")).not.toBe("fixed");
+    expect(plain("body")["background-attachment"] ?? "scroll").toBe("scroll");
+  });
 });
 
 describe("M: the composite group avatar is one component whose layout depends only on its size", () => {
