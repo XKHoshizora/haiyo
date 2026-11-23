@@ -10,6 +10,8 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { AG1, ANN, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, deferred, syncOf, usageOf } from "./fixtures.js";
 import { click, flush, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
 import { OTHERS_STATES, othersNoticeText, othersStateOf } from "../src/data/othersCopy.js";
+import { sinceText } from "../src/pages/OthersUse.jsx";
+import { forgetOthersUse, readOthersUse, storeOf } from "../src/data/othersUseCache.js";
 
 beforeEach(() => installBrowser());
 afterEach(() => {
@@ -111,7 +113,8 @@ describe("the settings row and the page", () => {
     // The Agent's line says what ONE Agent alone would give from the whole shared amount: it is not "this Agent's share".
     expect(text).toContain("小助手：只有它在回的话，每天大约能回 41 次");
     expect(text).not.toContain("以这个数");
-    expect(text).toContain("已回别人 3 次，花了 12.5 点（其中主动回复 2 点）");
+    expect(text).toContain("已回别人 3 次（含主动回复），花了 12.5 点（其中主动回复 2 点）");
+    expect(text).toContain("今天回了 3 次（含主动回复），别人叫它花了 12.5 点");
     expect(text).toContain("小美");
     expect(text).toContain("@mei · 回了对方 2 次，花了 8 点");
     expect(text).toContain("阿健");
@@ -149,7 +152,7 @@ describe("the settings row and the page", () => {
     enter(answersBox());
     await flush();
     expect(calls.putOthersLimits).toHaveBeenCalledTimes(2);
-    expect(mainText()).toContain("请填写 1 到 1000 之间的整数");
+    expect(mainText()).toContain("次数请填 1 到 1000 的整数");
     expect(answersBox().getAttribute("aria-invalid")).toBe("true");
     typeInto(answersBox(), "20");
     typeInto(pointsBox(), "100001");
@@ -263,6 +266,75 @@ describe("the settings row and the page", () => {
       expect(server.stored()).toEqual({ answers: 20, points: "123.5" });
     });
 
+    it("a save queued when the page is left is still sent (leaving only stops drawing)", async () => {
+      const server = slowServer();
+      await openPage({ answer: server.answer, api: { putOthersLimits: server.put } });
+      typeInto(answersBox(), "20");
+      enter(answersBox());
+      await flush();
+      typeInto(pointsBox(), "35.5");
+      fireEvent.blur(pointsBox());
+      await flush();
+      expect(server.puts).toHaveLength(1);
+      // The page is left (the owner goes back) while the first save is on its way.
+      cleanup();
+      server.puts[0].release();
+      await flush();
+      expect(server.puts).toHaveLength(2);
+      expect(server.puts[1].body).toEqual({ answers: 20, points: "35.5" });
+    });
+
+    it("a save that fails while another is queued: the queued one runs with both numbers as shown, the failure is said only if that fails too", async () => {
+      let limits = { answers: 50, points: "300" };
+      let n = 0;
+      const put = vi.fn(async (body) => {
+        if (++n === 1) throw apiError(500, "internal");
+        limits = body;
+        return body;
+      });
+      await openPage({ answer: () => useOf({ limits }), api: { putOthersLimits: put } });
+      typeInto(answersBox(), "20");
+      enter(answersBox());
+      typeInto(pointsBox(), "123.5");
+      fireEvent.blur(pointsBox());
+      await flush();
+      expect(put).toHaveBeenCalledTimes(2);
+      expect(put).toHaveBeenLastCalledWith({ answers: 20, points: "123.5" });
+      expect(limits).toEqual({ answers: 20, points: "123.5" });
+      expect(mainEl().querySelector(".others-limit-sentence [role='alert']")).toBeNull();
+    });
+
+    it("a read already in flight when a save completes does not answer the reload after it: the reload starts its own request, after that one", async () => {
+      const { app } = await openPage();
+      const actions = app.layer.actions;
+      const store = storeOf(actions);
+      const sent = [];
+      const gates = [];
+      let limits = { answers: 50, points: "300" };
+      // (Each read answers with the state of the moment it was SENT, as a real request does.)
+      app.api.getOthersUse.mockImplementation(() => {
+        const gate = deferred();
+        const at = structuredClone(limits);
+        sent.push(at);
+        gates.push(() => gate.resolve(useOf({ limits: at })));
+        return gate.promise;
+      });
+      const before = readOthersUse(actions, store);
+      expect(sent).toHaveLength(1);
+      limits = { answers: 20, points: "300" }; // the save lands while that read is in flight
+      const after = readOthersUse(actions, store, { afterWrite: true });
+      // The reload asked for after the write is not the older request, and it has not been sent before that one answered.
+      expect(after).not.toBe(before);
+      expect(sent).toHaveLength(1);
+      gates[0]();
+      await before;
+      await flush();
+      expect(sent).toEqual([{ answers: 50, points: "300" }, { answers: 20, points: "300" }]);
+      gates[1]();
+      await after;
+      expect(store.use.limits).toEqual({ answers: 20, points: "300" });
+    });
+
     it("a box nobody touched follows the service (a change made on another device shows after the next read)", async () => {
       let limits = { answers: 50, points: "300" };
       const { calls } = await openPage({
@@ -292,6 +364,26 @@ describe("the settings row and the page", () => {
       for (const other of Object.values(OTHERS_STATES).filter((w) => w !== words)) expect(text, other).not.toContain(other);
       cleanup();
     }
+  });
+
+  it("the proactive part of today's line is left out when it is zero", async () => {
+    await openPage({ answer: () => useOf({ used: { answers: 3, points: "12.5", proactivePoints: "0" } }) });
+    expect(mainText()).toContain("已回别人 3 次（含主动回复），花了 12.5 点");
+    expect(mainText()).not.toContain("其中主动回复");
+  });
+
+  it("the date of a stop: no year in this year, the year otherwise", () => {
+    const now = new Date(2026, 10, 25, 12);
+    expect(sinceText(new Date(2026, 10, 20, 12).toISOString(), now)).toBe("11月20日");
+    expect(sinceText(new Date(2025, 10, 5, 12).toISOString(), now)).toBe("2025年11月5日");
+    expect(sinceText("nonsense", now)).toBe("");
+  });
+
+  it("the shared read is forgotten when the session ends: nothing of it is shown under the next one", async () => {
+    const { app } = await openPage();
+    expect(storeOf(app.layer.actions).use).not.toBeNull();
+    forgetOthersUse(app.layer.actions);
+    expect(storeOf(app.layer.actions).use).toBeNull();
   });
 
   it("an owner with no Agent is told so; nobody used them today: it says so; the numbers still show", async () => {
@@ -342,7 +434,7 @@ describe("people on the page: links to their profile; the page stops and resumes
     await openPage({ social: { enabled: true }, answer: () => useOf({ stopped: [{ person: MEI, since: "2026-11-20T04:00:00.000Z" }] }) });
     const list = mainEl().querySelector(".others-stopped");
     expect(within(list).getByRole("link", { name: "小美" }).getAttribute("href")).toBe(`/contacts/${MEI.id}`);
-    expect(list.textContent).toMatch(/@mei · 自 \d+月\d+日 起/);
+    expect(list.textContent).toMatch(/@mei · (\d+年)?\d+月\d+日停止/);
     expect(inMain().queryAllByRole("button").map((b) => b.textContent)).not.toContain("恢复往来");
     expect(mainText()).toContain("停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。在对方的资料页可以恢复往来。");
   });
@@ -364,6 +456,7 @@ describe("the usage page's section", () => {
     const section = mainEl().querySelector(".others-usage");
     expect(section.querySelector("h3").textContent).toBe("别人的使用");
     expect(section.textContent).toContain("今天已回别人 3 次，花了 12.5 点 · 余量不多，较长的回复可能发不出");
+    expect(section.textContent).not.toContain("含主动回复");
     await click(within(section).getByRole("link", { name: NAME }));
     expect(window.location.pathname).toBe("/settings/others");
   });
@@ -428,7 +521,7 @@ describe("the Agent's card and page", () => {
 });
 
 describe("the one-time notice at the top of 我的 Agent", () => {
-  const NOTICE = "别人用你的 Agent，上限的算法变了：不再每个 Agent 各算各的，而是你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点，它们主动说的话也算在里面。原来设成 20 点的 Agent 自己的上限已经取消；原来是 20 点的主动回复上限，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。";
+  const NOTICE = "别人用你的 Agent，每天的上限变了：以前每个 Agent 各有 20 点，现在你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点，它们主动说的话也算在里面。每个 Agent 原来的 20 点上限已取消；主动回复的上限原来是 20 点的，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。";
   const noticeEl = () => document.querySelector(".others-notice");
 
   it("its text is exactly the copy, with the owner's two numbers; it says what changed (the shared cap, the cleared own limit, the proactive 70) and where to change it, and never says it stayed the same", async () => {
@@ -437,10 +530,11 @@ describe("the one-time notice at the top of 我的 Agent", () => {
     expect(noticeEl().textContent).toContain(NOTICE);
     expect(othersNoticeText({ answers: 50, points: "300" })).toBe(NOTICE);
     expect(noticeEl().textContent).not.toContain("不变");
-    expect(noticeEl().textContent).not.toContain("按人算");
+    for (const word of ["按人算", "算法", "原来设成"]) expect(noticeEl().textContent).not.toContain(word);
     expect(within(noticeEl()).getByRole("button", { name: "知道了" })).toBeTruthy();
-    // System UI in the list column: no message of any conversation holds it.
-    expect(document.querySelector(".chat-view, .messages, [data-testid='message-list']")).toBeNull();
+    // System UI in the list column of 我的 Agent: nothing of a conversation holds it (no open chat is on screen).
+    expect(document.querySelector(".list-col").contains(noticeEl())).toBe(true);
+    expect(mainEl().contains(noticeEl())).toBe(false);
   });
 
   it("the owner's own numbers are in it (a changed number, grouped digits)", async () => {

@@ -32,4 +32,4 @@ export const othersStateText = (row) => OTHERS_STATES[othersStateOf(row)];
  */
 export const OTHERS_NOTICE_BUTTON = "知道了";
 export const othersNoticeText = (limits) =>
-  `别人用你的 Agent，上限的算法变了：不再每个 Agent 各算各的，而是你所有的 Agent 合在一起，每天最多回别人 ${limits.answers} 次、最多花你 ${formatPoints(limits.points)} 点，它们主动说的话也算在里面。原来设成 20 点的 Agent 自己的上限已经取消；原来是 20 点的主动回复上限，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。`;
+  `别人用你的 Agent，每天的上限变了：以前每个 Agent 各有 20 点，现在你所有的 Agent 合在一起，每天最多回别人 ${limits.answers} 次、最多花你 ${formatPoints(limits.points)} 点，它们主动说的话也算在里面。每个 Agent 原来的 20 点上限已取消；主动回复的上限原来是 20 点的，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。`;

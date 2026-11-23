@@ -2,7 +2,7 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { formatPoints } from "../data/viewmodel.js";
-import { ANSWERS_WRONG, answersOf } from "../data/othersLimits.js";
+import { answersOf } from "../data/othersLimits.js";
 import { othersStateOf, othersStateText } from "../data/othersCopy.js";
 import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
 import { Avatar, Btn, Reason, TextLink } from "../ui/primitives.jsx";
@@ -11,6 +11,7 @@ import { budgetOf } from "./AgentForm.jsx";
 import { useOthersUse } from "./useOthersUse.js";
 
 const POINTS_WRONG = "点数请填 1 到 100000 的数";
+const ANSWERS_WRONG_HERE = "次数请填 1 到 1000 的整数";
 
 /**
  * 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [300] 点」: the owner's two numbers. Each box owns its draft: a number typed (or being
@@ -52,7 +53,7 @@ function LimitSentence({ limits, onSave }) {
     const draft = { ...shown.current };
     const a = answersOf(draft.answers);
     const p = budgetOf(draft.points);
-    if (a === null || a === undefined) return setError({ field: "answers", text: ANSWERS_WRONG });
+    if (a === null || a === undefined) return setError({ field: "answers", text: ANSWERS_WRONG_HERE });
     if (p === null) return setError({ field: "points", text: POINTS_WRONG });
     setError({ field: null, text: "" });
     const same = a === stored.current.answers && p === budgetOf(stored.current.points);
@@ -82,10 +83,11 @@ function LimitSentence({ limits, onSave }) {
     }
     running.current = true;
     try {
+      // (Leaving the page does not drop a save asked for: `alive` only guards what is drawn.)
       do {
         again.current = false;
         await once();
-      } while (again.current && alive.current);
+      } while (again.current);
     } finally {
       running.current = false;
     }
@@ -132,12 +134,13 @@ function LimitSentence({ limits, onSave }) {
   );
 }
 
-/** "11月5日" in the browser's own time. */
-function sinceText(iso) {
+/** "11月5日" in the browser's own time, with the year when it is not this year ("2025年11月5日"). */
+export function sinceText(iso, now = new Date()) {
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return "";
   const at = new Date(ms);
-  return `${at.getMonth() + 1}月${at.getDate()}日`;
+  const year = at.getFullYear() === now.getFullYear() ? "" : `${at.getFullYear()}年`;
+  return `${year}${at.getMonth() + 1}月${at.getDate()}日`;
 }
 
 /**
@@ -169,7 +172,7 @@ export function OthersUsePage({ back }) {
   const save = async (body) => {
     const limits = await actions.putOthersLimits(body);
     if (use && limits && typeof limits.answers === "number") settle({ ...use, limits });
-    await reload();
+    await reload({ afterWrite: true });
   };
 
   let body;
@@ -198,7 +201,7 @@ export function OthersUsePage({ back }) {
 
         <h3>今天</h3>
         <p className="others-today">
-          已回别人 {use.used.answers} 次，花了 {formatPoints(use.used.points)} 点
+          已回别人 {use.used.answers} 次（含主动回复），花了 {formatPoints(use.used.points)} 点
           {typeof proactive === "string" && formatPoints(proactive) !== "0" && `（其中主动回复 ${formatPoints(proactive)} 点）`}
           <span className={`others-state others-state-${othersStateOf(use)}`}> · {othersStateText(use)}</span>
         </p>
@@ -216,7 +219,7 @@ export function OthersUsePage({ back }) {
                     {a.canReply === false ? "：现在没有可用的模型，不回别人" : `：只有它在回的话，每天大约能回 ${a.perDay} 次`}
                   </p>
                   <p className="muted">
-                    今天回了 {a.answers} 次，花了 {formatPoints(a.points)} 点
+                    今天回了 {a.answers} 次（含主动回复），别人叫它花了 {formatPoints(a.points)} 点
                     {a.canReply !== false && <span className={`others-state others-state-${othersStateOf(a)}`}> · {othersStateText(a)}</span>}
                   </p>
                 </div>
@@ -258,7 +261,7 @@ export function OthersUsePage({ back }) {
                     <Avatar id={row.person.id} size={40} />
                     <div className="member-body">
                       <strong><PersonLink person={row.person} /></strong>
-                      <p className="muted">@{row.person.handle} · 自 {sinceText(row.since)} 起</p>
+                      <p className="muted">@{row.person.handle} · {sinceText(row.since)}停止</p>
                     </div>
                   </li>
                 ))}

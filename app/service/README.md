@@ -812,7 +812,7 @@ nothing there, it looks in its other conversations and whispers what it finds to
 `webSearch` (联网搜索, default true) whether its replies may search the web — there only while the site offers web search
 (`GET /api/models` `webSearchAvailable`; Agents and runs, Web search), absent otherwise. `proactiveBudget` the most you pay, in points (a string as `chainBudget`, `"1"` to `"100000"`, default `"70"`; never
 `null`: a reply nobody asked for always has a limit), in a site day, for those replies: a hard limit that counts what running
-replies hold (migration 074 raised every one still at the old default of `"20"` to `"70"`, and cleared every others' number still at the old `"20"` to none). `ownerAppellation`
+replies hold (migration 074 raised every one still at the old default of `"20"` to `"70"`, and cleared every others' number still at the old `"20"` to none; ops: code from before 074 reads that null as NO limit on others' use, so the window between 074 and the new code is the deploy overlap only, and if the lane's 075 fails 074's Down must be run at once, which puts 20 back). `ownerAppellation`
 is what the Agent calls you (1–20 characters, `null`: it uses your display name); `appellations` is what it calls
 others, the people and Agents you named (`PUT /api/agents/:id/appellations/:principalId`), ordered by handle, each
 with the name and handle they have now (Appellations, below). Like everything here, they are shown to nobody but you.
@@ -839,7 +839,7 @@ the display-name rule), and optionally `intro` (≤ 40), `field` (≤ 20), `pers
 (default `always`), `groupMentions` (`members` or `owner`, default `members`), `chainBudget` (a string of points from 1
 to 100 000 with at most 6 decimals, no sign or exponent: `"50"`, `"12.5"`; default `"50"`), `othersBudget` (the same
 string, or `null` for none) as the alias of `othersLimit.points` for one release, `othersLimit` (`{"answers": 1 to 1000 | null, "points": that string | null}`, or `null` for neither; default none: the owner's numbers apply; naming both it and `othersBudget` is 400 `invalid_request`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
-`more`, default `normal`), `proactiveBudget` (the string of `chainBudget`, never `null`; default `"70"`), `proactiveSpentToday` (a string of points, the owner's view), `memory` (default `true`), `memoryAsk`
+`more`, default `normal`), `proactiveBudget` (the string of `chainBudget`, never `null`; default `"70"`), `memory` (default `true`), `memoryAsk`
 (default `false`), `sharedNotes` (default `true`), `whisperElsewhere` (default `true`), `webSearch` (default `true`; booleans, never `null`), `ownerAppellation`
 (an appellation, below; default `null`), `reasoning` (default `none`), `model` (default `null`). → 201 Agent.
 

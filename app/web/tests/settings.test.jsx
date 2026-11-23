@@ -452,7 +452,7 @@ describe("blocked people", () => {
     await openApp({ sync: baseSync });
     await goSettings();
     await click(settingsRow("拉黑"));
-    expect(mainText()).toContain("你没有拉黑任何人。");
+    expect(mainText()).toContain("你没有拉黑任何人或 Agent。");
   });
 });
 

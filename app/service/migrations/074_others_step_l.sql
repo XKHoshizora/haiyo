@@ -12,12 +12,15 @@ update agents set others_budget_micro = null where others_budget_micro = 2000000
 -- reads null.
 alter table agents alter column others_budget_micro drop default;
 -- Controller ruling 2026-11-24 (B-1 review, B-2 dispatch): the proactive budget is a hard sub-cap that counts holds. Rows still at the old
--- default 20 become 70 (the same rule as the others' number: every row at exactly 20 points; a number an owner set below or above 20 stays),
--- and the column default becomes 70 for new Agents.
+-- default 20 become 70 (the same selection as the others' number: every row at exactly 20 points; a number an owner set below or above 20
+-- stays; the result differs: 70 here, none there), and the column default becomes 70 for new Agents.
 update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
 alter table agents alter column proactive_budget_micro set default 70000000;
 -- Down Migration
--- (the clearing and the raise are not undone: a null cannot be told from an owner's own choice of no limit, and a row at 70 not from one an
--- owner set. Agents made after Up keep a null others' number, which code from before 074 reads as no limit, so Down leaves them.)
+-- (Owner decision 2026-11-25, N2: code from before 074 reads a NULL others' number as no limit at all, so Down must not leave one. Every NULL
+-- becomes 20 points again, the old default; this also caps an owner who had chosen no limit, the safe direction for money. A proactive
+-- budget at exactly 70 becomes 20 again; a row at 70 cannot be told from one an owner set, and 20 is the bound the old code was built on.)
+update agents set others_budget_micro = 20000000 where others_budget_micro is null;
+update agents set proactive_budget_micro = 20000000 where proactive_budget_micro = 70000000;
 alter table agents alter column others_budget_micro set default 20000000;
 alter table agents alter column proactive_budget_micro set default 20000000;

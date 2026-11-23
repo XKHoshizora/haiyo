@@ -263,7 +263,7 @@ function BlockedPage() {
       </header>
       <div className="page-body">
         {mine.length === 0 ? (
-          <p className="muted">你没有拉黑任何人。</p>
+          <p className="muted">你没有拉黑任何人或 Agent。</p>
         ) : (
           <ul className="member-rows" aria-label="我拉黑的人和 Agent">
             {mine.map((b) => (

@@ -30,7 +30,7 @@ const chars = (text) => [...text].length;
 
 /** 一次接话最多花费 when nothing else is said, in points (the service's default). */
 export const CHAIN_BUDGET_DEFAULT = "50";
-/** 主动回复每天最多花 when nothing else is said, in points (the service's default: the owner's whole default number); its amount is a budget like the others. */
+/** 主动回复每天最多花 when nothing else is said, in points (the service's default, 074's); its amount is a budget like the others. */
 export const PROACTIVE_BUDGET_DEFAULT = "70";
 /** Under the Agent's own limit: what leaving it empty means, in the words of the use page's two numbers. */
 const OTHERS_LIMIT_HINT = "不填：它和你其他的 Agent 共用你的每天上限（在“别人怎么用我的 Agent”里改）。填了：它自己每天最多这么多，同时不超过你的每天上限。";

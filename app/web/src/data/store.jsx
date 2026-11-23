@@ -3,6 +3,7 @@ import * as routes from "../api/routes.js";
 import { navAtStart } from "../state/location.js";
 import { reducer } from "../state/reducer.js";
 import { createActions } from "./actions.js";
+import { forgetOthersUse } from "./othersUseCache.js";
 import { initial, resetKeepingDrafts } from "./model.js";
 import { httpTransport, start as startSync } from "./sync.js";
 import { deadlinesOf, toView } from "./viewmodel.js";
@@ -151,6 +152,7 @@ export function createDataLayer({
     stop() {
       epoch += 1;
       forgetRequests();
+      forgetOthersUse(actions);
       const running = engine;
       engine = null;
       running?.stop();

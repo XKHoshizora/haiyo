@@ -47,7 +47,7 @@ for (const [size, contextOptions] of SIZES) {
     await expect(points).toHaveValue("300");
     // The Agent's line and today's use: the service's numbers, a state in words.
     await expect(main.getByText(/只有它在回的话，每天大约能回 \d+ 次/)).toBeVisible();
-    await expect(main.getByText("已回别人 0 次，花了 0 点").first()).toBeVisible();
+    await expect(main.getByText("已回别人 0 次（含主动回复），花了 0 点").first()).toBeVisible();
     await expect(main.getByText(/正常|余量不多，较长的回复可能发不出|别人今天的额度已用完/).first()).toBeVisible();
     // Agent social is off on this site: no 停止往来, no 恢复往来, no list of the stopped.
     await expect(main).not.toContainText("停止往来");
@@ -64,7 +64,7 @@ for (const [size, contextOptions] of SIZES) {
     // A wrong number is said under the sentence and nothing is written.
     await answers.fill("0");
     await answers.press("Enter");
-    await expect(main.getByRole("alert")).toContainText("请填写 1 到 1000 之间的整数");
+    await expect(main.getByRole("alert")).toContainText("次数请填 1 到 1000 的整数");
     expect(await limitsOf(ann)).toEqual({ answers: 20, points: "35.5" });
     await socialbShot(page, `use-page-wrong-${size}`);
     await page.reload();
@@ -77,7 +77,7 @@ for (const [size, contextOptions] of SIZES) {
     // The usage page says it in one line and links here.
     await page.goto("/settings/usage");
     const usage = page.getByRole("region", { name: "用量与余额" });
-    await usage.getByRole("heading", { name: "别人的使用" }).scrollIntoViewIfNeeded();
+    await usage.getByRole("link", { name: NAME }).scrollIntoViewIfNeeded();
     await expect(usage.getByRole("heading", { name: "别人的使用" })).toBeVisible();
     await expect(usage.getByText(/今天已回别人 0 次，花了 0 点 · /)).toBeVisible();
     await socialbShot(page, `usage-section-${size}`);

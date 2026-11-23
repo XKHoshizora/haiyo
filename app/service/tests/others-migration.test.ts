@@ -110,13 +110,20 @@ describe("074: the step-L change", () => {
       await client.query(`insert into agents (principal_id) values ($1)`, [fresh[0]!.id]);
       expect(await one(`select others_budget_micro::text o, proactive_budget_micro::text p from agents where principal_id = $1`, [fresh[0]!.id])).toEqual([{ o: null, p: "70000000" }]);
 
-      // Down puts the defaults back and leaves the changed rows (a null cannot be told from an owner's no limit, nor a row at 70 from one an owner set).
+      // Down (N2: old code reads NULL as no limit): every NULL others' number is 20 again, a proactive budget at exactly 70 is 20 again, every other
+      // number stays, the defaults are put back, and nothing else of any row moves.
+      const beforeDown = await agentRows();
       await client.query(down);
       expect(await defaults()).toEqual([
         { c: "others_budget_micro", d: "20000000" },
         { c: "proactive_budget_micro", d: "20000000" },
       ]);
-      expect((await agentRows()).filter((r) => r.handle !== "mig_bot_fresh").map((r) => [r.handle, r.others, r.proactive])).toEqual(after.map((r) => [r.handle, r.others, r.proactive]));
+      const back = await agentRows();
+      expect(back.map((r) => [r.handle, r.others, r.proactive])).toEqual(
+        beforeDown.map((r) => [r.handle, r.others === null ? "20000000" : r.others, r.proactive === "70000000" ? "20000000" : r.proactive]),
+      );
+      expect(back.filter((r) => r.others === null)).toEqual([]);
+      expect(back.map((r) => r.rest)).toEqual(beforeDown.map((r) => r.rest));
     } finally {
       await client.query("rollback");
       client.release();

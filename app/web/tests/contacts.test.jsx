@@ -457,7 +457,7 @@ describe("blocks", () => {
     await click(dialogButton("解除我的拉黑"));
     expect(unblockPrincipal).toHaveBeenCalledWith(DORA);
     expect(mainText()).not.toContain("朵拉");
-    expect(mainText()).toContain("你没有拉黑任何人。");
+    expect(mainText()).toContain("你没有拉黑任何人或 Agent。");
   });
 });
 
