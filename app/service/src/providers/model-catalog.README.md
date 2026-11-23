@@ -6,15 +6,29 @@ A reduced snapshot of the [models.dev](https://models.dev) model catalogue (repo
 catalogue itself.
 
 - Source: https://models.dev/models.json (the canonical models) and https://models.dev/api.json (each lab's own entry, for its thinking levels; and each provider's API address and model ids, for provider-catalog.json)
-- Fetched: 2026-11-17
+- Fetched: 2026-11-23
 - Licence: MIT (below)
-- Entries: 631
-- Providers (provider-catalog.json): 292
+- Entries: 640
+- Providers (provider-catalog.json): 294
 
 Each entry: `id` (the model id, lower case), `lab`, `name` (its display name), `vision` (takes images), `pdf` (takes
 PDFs), `reasoning`, `chat` (takes and answers text, and is not an embedding, reranking, speech, transcription, image,
-video or realtime model), `contextTokens` (when the catalogue gives one) and `reasoningLevels` (the lab's `effort`
-values among `low`, `medium`, `high`, `xhigh`, `max`, when it has them).
+video or realtime model), `contextTokens` (when the catalogue gives one), `reasoningLevels` (the lab's `effort`
+values among `low`, `medium`, `high`, `xhigh`, `max`, when it has them), and six abilities that are there only as
+`true` (absent: no, or the catalogue does not say): `tools` (the catalogue's `tool_call`), `audioIn` and `videoIn`
+(takes audio, video), `imageOut`, `videoOut` and `audioOut` (answers with images, video, audio).
+
+Whether a provider's model may use tools is answered in this order: its owner's choice or a reply that failed for lack
+of them (stored `tools: false`, or `true`) > a reply whose tool call ran (stored `tools: true`) > this catalogue's
+`tools` (read when the model is shown, never stored) > unknown (offered tools until a reply fails).
+
+## Daily update
+
+`.github/workflows/catalog-update.yml` runs the script once a day (and by hand: Actions > "Model catalogue update" >
+Run workflow) with `--guard`: a snapshot that shrank by more than 20 % or lost more than 5 % of the ids that had
+abilities in the previous one is refused and nothing is written. A changed snapshot is committed to the development
+branch only after the service type check and the tests that read it pass; the commit message says what was added,
+removed and changed.
 
 # provider-catalog.json
 
