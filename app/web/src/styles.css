@@ -972,6 +972,11 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .checks label { display: flex; align-items: center; gap: 10px; font-size: 15px; }
 .checks small { color: var(--ink-3); margin-left: 6px; }
 .checks[role="radiogroup"] > small { margin-left: 0; }
+.checks.level-checks > small { margin-left: 0; }
+/* The five level boxes: one row that wraps, each a 44 px target. */
+.level-boxes { display: flex; flex-wrap: wrap; gap: 0 14px; }
+.level-boxes label { min-width: 44px; min-height: 44px; white-space: nowrap; }
+.model-panel .level-boxes label span { flex: none; }
 .checks > .tools-unknown { margin: -4px 0 0 26px; font-size: 13px; }
 .radio-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 760px; }
 .radio-cards label {
