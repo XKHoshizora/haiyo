@@ -255,7 +255,7 @@ describe("the pages on a phone (the owner's TestFlight screenshots, A to C)", ()
     expect(body["background-color"]).toBeTruthy();
   });
 
-  it("the page gradient is not `background-attachment: fixed` (iOS WebKit leaves the pages that scroll inside the shell half-painted: blank bands, half-erased lines)", () => {
+  it("the page gradient is not `background-attachment: fixed` (not needed: the shell never scrolls the document; iOS paints it as scroll anyway. This does NOT claim to fix the blank band on the long forms)", () => {
     for (const rule of rules) expect(rule.decl["background-attachment"], rule.selectors.join(",")).not.toBe("fixed");
     expect(plain("body")["background-attachment"] ?? "scroll").toBe("scroll");
   });

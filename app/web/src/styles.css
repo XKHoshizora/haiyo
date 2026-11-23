@@ -56,8 +56,7 @@ body {
     radial-gradient(55% 50% at 85% 100%, rgba(255, 222, 240, 0.7), transparent 70%),
     radial-gradient(50% 50% at 20% 100%, rgba(214, 236, 255, 0.7), transparent 70%),
     linear-gradient(135deg, #f4effd, #eef0ff 55%, #f8eefa);
-  /* Not `background-attachment: fixed`: iOS WebKit paints a fixed background behind the shell's own scrollers (a form, a long list) badly —
-     bands of the scroller stay blank and lines at their edge are drawn half erased. The shell does not scroll the page, so the gradient stays in place anyway. */
+  /* No `background-attachment: fixed`: the shell never scrolls the document, so it was not needed (iOS WebKit paints it as `scroll` anyway; desktop Safari scrolls inner boxes on the fast path without it). This is NOT the fix of the blank band on the long forms, which is still open (src/debug/paintProbe.js). */
 }
 
 h1, h2, h3, p, ul, ol, dl, dd, figure, blockquote { margin: 0; padding: 0; }
