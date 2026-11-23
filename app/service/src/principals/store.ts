@@ -1,5 +1,7 @@
+import type { Config } from "../config.ts";
 import type { Queryable } from "../db.ts";
 import { AppError } from "../errors.ts";
+import { discoverableSql } from "../social/reach.ts";
 
 /**
  * SQL: the handle of principal `p` (a `principals` alias) as everyone is shown it: a person's own; an Agent's its owner's
@@ -14,6 +16,8 @@ export const handleOf = (p: string): string =>
 export const HANDLE_MAX = 24;
 /** The shape of a person's handle (registration, a change, a lookup): 3 to `HANDLE_MAX` of `a-z0-9_`. */
 export const HANDLE_PATTERN = new RegExp(`^[a-z0-9_]{3,${HANDLE_MAX}}$`);
+/** The shape of an Agent's full handle (a lookup): a person's handle, a dot, a name part. */
+export const AGENT_HANDLE_PATTERN = new RegExp(`^[a-z0-9_]{3,${HANDLE_MAX}}\\.[a-z0-9_]{2,${HANDLE_MAX}}$`);
 /** The shape of an Agent's name part: 2 to `HANDLE_MAX` of `a-z0-9_`. Its handle is `<owner's handle>.<name part>`. */
 export const NAME_PART_PATTERN = new RegExp(`^[a-z0-9_]{2,${HANDLE_MAX}}$`);
 
@@ -81,8 +85,8 @@ export interface PublicPrincipal {
 }
 
 /**
- * A person by exact handle. An Agent's handle finds nothing, for everyone including its owner: Agents are
- * reached through the owner's Agent routes only, and cannot be looked up or befriended.
+ * A person by exact handle. An Agent's name part finds nothing, for everyone including its owner: an Agent is found by its full
+ * handle through `findAgentByHandle` (when it is discoverable) and cannot be befriended.
  */
 export async function findByHandle(db: Queryable, handle: string): Promise<PublicPrincipal | null> {
   const { rows } = await db.query<{ id: string; handle: string; display_name: string; avatar_version: number }>(
@@ -93,26 +97,61 @@ export async function findByHandle(db: Queryable, handle: string): Promise<Publi
   return r ? { id: r.id, handle: r.handle, displayName: r.display_name, avatarVersion: r.avatar_version } : null;
 }
 
+/** What a lookup tells of a discoverable Agent: its public profile and its owner's name, nothing else. */
+export type AgentCard = PublicPrincipal & { kind: "agent"; ownerId: string; ownerName: string; intro: string; field: string };
+
 /**
- * Whose avatar `viewerId` may load by id: any person's, and an Agent's only when the viewer owns it or shares a
- * conversation with it now (both are current members of it: `left_seq is null` for both). For anybody else — a
- * stranger, or someone whose shared membership (theirs or the Agent's) has ended — an Agent's id finds nothing, exactly
- * as an id that is no principal (an Agent is invisible to everyone but its owner and, while they share a group, its
- * fellow members).
+ * A discoverable Agent by its full handle `<owner's handle>.<name part>`, as `handleOf` builds it, case ignored. Null for every
+ * other case alike — no such Agent, a deleted or disabled one, one that takes no contacts (`contact_policy` none), a block either
+ * way, the viewer's own, the switch off (`discoverableSql`) — so no caller can tell them apart. A deleted Agent's handle, taken
+ * again by a new Agent, names the new one.
+ */
+export async function findAgentByHandle(q: Queryable, handle: string, viewerId: string, config: Pick<Config, "social">): Promise<AgentCard | null> {
+  const h = handle.toLowerCase();
+  if (!AGENT_HANDLE_PATTERN.test(h)) return null;
+  const dot = h.indexOf(".");
+  const { rows } = await q.query<{ id: string; handle: string; display_name: string; avatar_version: number; owner_id: string; owner_name: string; intro: string; field: string }>(
+    `select ag.id, ${handleOf("ag")} as handle, ag.display_name, ag.avatar_version, ag.owner_id, o.display_name as owner_name, a.intro, a.field
+       from principals o
+       join principals ag on ag.owner_id = o.id and ag.kind = 'agent' and ag.handle = $2
+       join agents a on a.principal_id = ag.id and a.deleted_at is null
+      where o.kind = 'human' and o.handle = $1
+        and ${discoverableSql({ agent: "ag.id", viewer: "$3::uuid", socialOn: config.social.enabled ? "true" : "false" })}`,
+    [h.slice(0, dot), h.slice(dot + 1), viewerId],
+  );
+  const r = rows[0];
+  return r
+    ? { id: r.id, handle: r.handle, displayName: r.display_name, avatarVersion: r.avatar_version, kind: "agent", ownerId: r.owner_id, ownerName: r.owner_name, intro: r.intro, field: r.field }
+    : null;
+}
+
+/**
+ * Whether `viewerId` may see the Agent `agentId`: it is theirs, it shares a conversation with them now (both are current members
+ * of it: `left_seq is null` for both), or it is discoverable to them (`discoverableSql`, the switch on). SQL boolean over `p`, a
+ * `principals` alias; `viewer` a SQL expression.
+ */
+export const agentSeenSql = (p: string, viewer: string, config: Pick<Config, "social">): string =>
+  `(${p}.owner_id = ${viewer}
+    or exists (select 1 from memberships them
+                 join memberships me on me.conversation_id = them.conversation_id
+                                    and me.principal_id = ${viewer} and me.left_seq is null
+                where them.principal_id = ${p}.id and them.left_seq is null)
+    or ${discoverableSql({ agent: `${p}.id`, viewer, socialOn: config.social.enabled ? "true" : "false" })})`;
+
+/**
+ * Whose avatar `viewerId` may load by id: any person's, and an Agent's only when the viewer can see it (`agentSeenSql`: owns it,
+ * shares a conversation with it now, or it is discoverable to them). For anybody else — a stranger, or someone whose shared
+ * membership (theirs or the Agent's) has ended — an Agent's id finds nothing, exactly as an id that is no principal.
  */
 export async function findAvatarSubject(
   db: Queryable,
   id: string,
   viewerId: string,
+  config: Pick<Config, "social">,
 ): Promise<{ id: string; displayName: string; avatarKey: string | null } | null> {
   const { rows } = await db.query<{ id: string; display_name: string; avatar_key: string | null }>(
     `select p.id, p.display_name, p.avatar_key from principals p
-      where p.id = $1
-        and (p.kind = 'human' or p.owner_id = $2
-             or exists (select 1 from memberships them
-                          join memberships me on me.conversation_id = them.conversation_id
-                                             and me.principal_id = $2 and me.left_seq is null
-                         where them.principal_id = p.id and them.left_seq is null))`,
+      where p.id = $1 and (p.kind = 'human' or ${agentSeenSql("p", "$2::uuid", config)})`,
     [id, viewerId],
   );
   const r = rows[0];

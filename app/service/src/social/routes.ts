@@ -6,7 +6,7 @@ import type { Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import type { StoredMessage } from "../messages/model.ts";
-import { findByHandle, HANDLE_PATTERN } from "../principals/store.ts";
+import { agentSeenSql, findByHandle, HANDLE_PATTERN } from "../principals/store.ts";
 import { requirePrincipal } from "../session.ts";
 import { blockChanged, blockPrincipal, unblockPrincipal, type BlockResult } from "./blocks.ts";
 import type { SocialListener } from "./events.ts";
@@ -187,10 +187,20 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       const other = req.params.principalId;
       if (other === me.id) throw new AppError(400, "invalid_request");
       const result = await db.tx(async (t): Promise<Outcome<BlockResult>> => {
-        // Only a person can be blocked: an Agent's id is answered as an id that is no principal, for everyone (its
-        // owner included). So no block of an Agent exists, and unblocking one is the no-op a random id gets.
-        const exists = await t.query("select 1 from principals where id = $1 and kind = 'human'", [other]);
-        if (exists.rowCount === 0) return { ok: false, code: "not_found" };
+        // A person can be blocked. An Agent can be too, only while the switch is on and only by someone who sees it (it is
+        // discoverable to them, or they share a conversation with it now, or they already block it: blocking again is the same 200):
+        // for anyone else its id is answered as an id that is no principal. Its own owner cannot (400). An Agent's block writes no bar.
+        const principal = await t.query<{ kind: "human" | "agent"; owner_id: string | null; seen: boolean }>(
+          `select p.kind, p.owner_id,
+                  (p.kind = 'agent' and ${app.deps.config.social.enabled ? "true" : "false"}
+                   and (${agentSeenSql("p", "$2::uuid", app.deps.config)}
+                        or exists (select 1 from blocks mine where mine.blocker_id = $2 and mine.blocked_id = p.id))) as seen
+             from principals p where p.id = $1`,
+          [other, me.id],
+        );
+        const target = principal.rows[0];
+        if (!target || (target.kind === "agent" && !target.seen)) return { ok: false, code: "not_found" };
+        if (target.kind === "agent" && target.owner_id === me.id) throw new AppError(400, "invalid_request");
         return { ok: true, ...(await blockPrincipal(t, me.id, other)) };
       });
       if (!result.ok) throw new AppError(STATUS[result.code], result.code);

@@ -1,7 +1,7 @@
 import { appendDirectNotice, ensureDirect } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
-import type { PublicPrincipal } from "../principals/store.ts";
+import { handleOf, type PublicPrincipal } from "../principals/store.ts";
 import { lockPair, orderedPair } from "./pair.ts";
 import { areFriends, blockBetween } from "./relations.ts";
 
@@ -203,7 +203,7 @@ export async function socialView(db: Queryable, me: string): Promise<SocialView>
   const incoming = await requests("r.to_id", "r.from_id");
   const outgoing = await requests("r.from_id", "r.to_id");
   const blocked = await db.query<PRow>(
-    `select p.id, p.handle::text as handle, p.display_name, p.avatar_version from blocks b join principals p on p.id = b.blocked_id
+    `select p.id, ${handleOf("p")} as handle, p.display_name, p.avatar_version from blocks b join principals p on p.id = b.blocked_id
       where b.blocker_id = $1 order by p.handle`,
     [me],
   );

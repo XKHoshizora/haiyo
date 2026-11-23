@@ -756,15 +756,17 @@ picked from the @ list mean anyone but the one picked.
 An Agent is a principal of kind `agent` owned by one person for good, with a dedicated conversation (type `agent`)
 whose members are exactly the owner and the Agent. Everything here is the owner's: for anybody else every
 `/api/agents/:id…` route, and the conversation routes of that conversation, answer the JSON 404 `not_found`
-byte for byte as for an id that does not exist. An Agent's handle is unknown to `GET /api/principals/lookup` and
+byte for byte as for an id that does not exist. An Agent's name part is unknown to `GET /api/principals/lookup` (its full handle finds it only while it is discoverable) and its handle to
 `POST /api/friend-requests` (also for its owner: their pattern has no dot). Only its owner puts it into a group, and only one the owner is a member
 of (`POST /api/conversations/:id/members`): for someone who is not a current member of that group the route is 404
 `not_found`, as for a group that does not exist, whatever the id; for a member who is not its owner its id is refused
 exactly as the id of a non-friend or an unknown principal is (403 `forbidden`). Among a new group's `memberIds`
 (`POST /api/conversations`) it is refused so (403) for everyone, its owner included.
-Its id is unknown to `GET`/`HEAD /api/principals/:id/avatar` for anybody but its owner and whoever shares a
-conversation with it now (see below), and to `PUT`/`DELETE /api/blocks/:principalId` for everyone, its owner included
-(an Agent cannot be blocked): the answer of an id that does not exist, byte for byte (`tests/enumeration.test.ts`).
+Its id is unknown to `GET`/`HEAD /api/principals/:id/avatar` for anybody but its owner, whoever shares a
+conversation with it now (see below) and whoever it is discoverable to, and to `PUT /api/blocks/:principalId` for everyone but, while `SOCIAL.enabled` is on, someone who sees it (it is discoverable to them,
+they share a conversation with it now, or they already block it; its own owner is refused 400 `invalid_request`), and to `DELETE` as a
+random id's no-op: the answer of an id that does not exist, byte for byte (`tests/enumeration.test.ts`). Blocking an Agent writes the
+block only, no bar, and `GET /api/social` lists it in `blocked` by its full handle.
 
 An Agent is in a group only while its owner is: its owner adds it, the group's creator or its owner takes it out, and it
 leaves with its owner — when the owner leaves or is removed — and when it is deleted (Conversations,
@@ -2439,9 +2441,13 @@ read (to tell its type), never the whole file. `Content-Length` is only sent for
 
 *Session: required.* Finds a principal by exact handle — the way to get someone's id to befriend them.
 
-- Query: `handle` (at most 100, lower-cased, then `^[a-z0-9_]{3,24}$`). No prefix or partial matches.
-- 200 `{"id", "handle", "displayName", "avatarVersion"}` (also for yourself); 404 `not_found` — also for a handle a
-  person gave up (Handles) and an Agent's name part, exactly as for one nobody has.
+- Query: `handle` (at most 100, lower-cased, then `^[a-z0-9_]{3,24}$`; while `SOCIAL.enabled` is on also an Agent's full handle
+  `<owner's handle>.<name part>`, `^[a-z0-9_]{3,24}.[a-z0-9_]{2,24}$`). No prefix or partial matches.
+- 200 `{"id", "handle", "displayName", "avatarVersion"}` (also for yourself); for a discoverable Agent 200 `{"id", "handle",
+  "displayName", "avatarVersion", "kind": "agent", "ownerId", "ownerName", "intro", "field"}`. An Agent is discoverable to the
+  caller when it is not deleted or disabled, its contact policy is not `none`, no block lies either way between the caller and its
+  owner or the Agent, the switch is on and the caller is not its owner. 404 `not_found` — also for a handle a person gave up
+  (Handles), an Agent's name part and every Agent that is not discoverable, exactly as for one nobody has (the answer never says why).
 - Limit: 30 per minute, found or not (the limit is what stops probing for handles).
 
 ### Friends and blocks

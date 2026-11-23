@@ -12,9 +12,11 @@ import { setDream, setMemoryLanguage, setMemoryModel, setNewNotes } from "../mem
 import { requirePrincipal } from "../session.ts";
 import { defaultAvatarSvg } from "./avatar.ts";
 import { AVATAR_HEADERS, avatarBudget, readStoredAvatar, registerAvatarPut, storeAvatar } from "./avatar-upload.ts";
-import { changeHandle, findAvatarSubject, findByHandle, HANDLE_PATTERN, swapAvatarKey, updateDisplayName } from "./store.ts";
+import { AGENT_HANDLE_PATTERN, changeHandle, findAgentByHandle, findAvatarSubject, findByHandle, HANDLE_PATTERN, swapAvatarKey, updateDisplayName } from "./store.ts";
 
 const publicPrincipal = z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number() });
+/** A discoverable Agent as a lookup answers it (plan A2): its profile and its owner's name. First in the union: a person has no `kind`. */
+const agentCard = publicPrincipal.extend({ kind: z.literal("agent"), ownerId: z.string(), ownerName: z.string(), intro: z.string(), field: z.string() });
 
 export function registerPrincipalRoutes(app: FastifyInstance): void {
   const { db, blobs } = app.deps;
@@ -22,6 +24,8 @@ export function registerPrincipalRoutes(app: FastifyInstance): void {
 
   // Handle lookup is the only way to probe for handles, so it is throttled per principal.
   const lookupLimit = perPrincipalLimit(app, 30);
+  // With the site's Agent social switch off the lookup is what it always was: a dotted handle is not a handle (400).
+  const lookupHandle = app.deps.config.social.enabled ? z.union([z.string().regex(HANDLE_PATTERN), z.string().regex(AGENT_HANDLE_PATTERN)]) : z.string().regex(HANDLE_PATTERN);
   // Others see both everywhere (and every avatar is a blob write): 10 changes a minute each; the avatar budget also
   // counts your Agents' avatars.
   const renameLimit = perPrincipalLimit(app, 10);
@@ -111,15 +115,19 @@ export function registerPrincipalRoutes(app: FastifyInstance): void {
             .string()
             .max(100)
             .transform((s) => s.toLowerCase())
-            .pipe(z.string().regex(HANDLE_PATTERN)),
+            .pipe(lookupHandle),
         }),
-        response: { 200: publicPrincipal },
+        response: { 200: z.union([agentCard, publicPrincipal]) },
       },
     },
     async (req) => {
       const me = await requirePrincipal(req);
       await lookupLimit(req, me.id);
-      const found = await findByHandle(db, req.query.handle);
+      // A person by handle; a dotted handle is an Agent's, found only when it is discoverable to the caller (an undiscoverable one is
+      // answered exactly as a handle nobody has).
+      const found = req.query.handle.includes(".")
+        ? await findAgentByHandle(db, req.query.handle, me.id, app.deps.config)
+        : await findByHandle(db, req.query.handle);
       if (!found) throw new AppError(404, "not_found");
       return found;
     },
@@ -130,15 +138,15 @@ export function registerPrincipalRoutes(app: FastifyInstance): void {
   /**
    * What `GET`/`HEAD /api/principals/:id/avatar` answer with: the stored image (its type from the bytes,
    * only when browsers may show it) or the generated SVG. `whole: false` reads no more than the sniffing
-   * prefix of a stored image, so a HEAD does not drain the blob. Any person's; an Agent's for its owner and for whoever
-   * shares a conversation with it now (anybody else: the 404 of an id that is no principal; `findAvatarSubject`).
+   * prefix of a stored image, so a HEAD does not drain the blob. Any person's; an Agent's for its owner, for whoever shares a
+   * conversation with it now and for whoever it is discoverable to (anybody else: the 404 of an id that is no principal; `findAvatarSubject`).
    */
   async function avatarOf(
     req: FastifyRequest<{ Params: { id: string } }>,
     whole: boolean,
   ): Promise<{ type: string; body: Buffer | string; complete: boolean }> {
     const me = await requirePrincipal(req);
-    const subject = await findAvatarSubject(db, req.params.id, me.id);
+    const subject = await findAvatarSubject(db, req.params.id, me.id, app.deps.config);
     if (!subject) throw new AppError(404, "not_found");
     const stored = subject.avatarKey ? await readStoredAvatar(blobs, subject.avatarKey, whole) : null;
     if (stored) return stored;
