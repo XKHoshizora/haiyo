@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { ConversationEvents } from "../conversations/events.ts";
 import type { MemoryCallDeps } from "./call.ts";
-import { runPersonaAid, type Claimed } from "./persona-aid.ts";
+import { releasePersona, runPersonaAid, type Claimed } from "./persona-aid.ts";
 import type { Hub } from "../sync/hub.ts";
 
 /**
@@ -13,9 +13,11 @@ import type { Hub } from "../sync/hub.ts";
  *
  * A pass claims, in one statement, at most `OTHERS.judgeOwnersPerPoll` Agents whose persona was saved since it was last read
  * (`persona_version > persona_checked_version`), at most one of each owner: the claim is the stamp, so an Agent is never handled twice
- * for one version, whoever polls. While the switch is off the claimed Agents are stamped and nothing is called (a persona saved then
- * is never read: turning the switch on makes no burst, attack M11). A claimed Agent whose call could not be made (the memory allowance
- * spent, no model) is not read again for that version: the persona aid is a help, never a gate.
+ * for one version, whoever polls. While the switch is off the worker claims nothing, calls nothing and stamps nothing: at the first
+ * switch-on every persona that exists is read once, at this pace (10 owners a poll), each within its owner's daily memory allowance
+ * (A-4 review I2, reversing attack M11). A claimed Agent whose call could not be made for good (the memory allowance spent, no model)
+ * is not read again for that version: the persona aid is a help, never a gate; one refused for a moment (the owner's calls are at their
+ * cap) or cut short by the stop is given back, to be read at a later pass (m5).
  *
  * The timer starts one interval after the worker and is `unref`ed (an app a test builds itself does not pass the option that turns it
  * off); in a test the pass is called by hand. Nothing is logged but counters and ids: never a persona, a sentence or a note.
@@ -54,11 +56,14 @@ export function startNoteJudge(deps: NoteJudgeDeps, opts: { timer?: false } = {}
 
   async function pass(): Promise<number> {
     if (closed || deps.closing.aborted) return 0;
-    const claimed = await claim();
     if (!deps.config.social.enabled) return 0;
+    const claimed = await claim();
     let calls = 0;
     for (const agent of claimed) {
-      if (closed || deps.closing.aborted) break;
+      if (closed || deps.closing.aborted) {
+        await releasePersona(deps.db, agent);
+        continue;
+      }
       try {
         calls += await runPersonaAid(deps, agent, deps.closing);
       } catch (err) {

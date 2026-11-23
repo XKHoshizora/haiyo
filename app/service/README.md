@@ -2889,7 +2889,7 @@ else and for a row that is not there or ended already.
 *Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
 "picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations":
 [{"conversationId", "subject"}]}`. `rows`: every row of the Agent, newest first, with its real end reason (`endReason`: `declined`,
-`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where you barred the person yourself, a row ended by the other person's bar reads `left`; once you have lifted your last bar and none of theirs stands, the rows your bar ended read `removed`); `subject` is as in `waiting` of
+`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where your own bar ended it (the row records whose bar did, `barred_by`), a row ended by the other person's bar reads `left` for good, whoever lifts last; once you have lifted your last bar against that person, only the rows your bar ended read `removed`); `subject` is as in `waiting` of
 `GET /api/agent-contacts`. `conversations`: the Agent's social conversations (「它和别人的对话」), newest first, each with the other
 end. 404 `not_found` for anyone but the owner and for a deleted Agent; 404 while `SOCIAL.enabled` is off.
 
@@ -2910,8 +2910,11 @@ person's calls are taken out of a reply (it is cancelled only when it answers no
 no one else is left). The bar is your own row: it is lifted by you alone (the other person's own stop or block is theirs), and the pair
 stays barred while a row of either of you stands. → 200 `{"ok": true, "ended": number}` (also when a bar stands already); 400 `invalid_request` for yourself; 404
 `not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
-Every block of a person by a person, and every unfriend that ends a row, writes its own row too (a block's, or the unfriender's stop)
-in its own transaction; unblocking deletes only that block's row.
+Every block of a person by a person writes its own row too (a block's) in its own transaction; unblocking deletes only that block's row.
+Unfriending is just unfriending (Owner decision 2026-11-25, as in WeChat and QQ): it writes no bar, starts no cooldown and puts no one in a
+stopped list. What follows from the friendship being gone is that the accesses admitted because of it (`contacts`, the policy that lets
+friends in) between the two sides' Agents and people end as an ordinary ending, and that is all: a row the owner approved one by one stays,
+and once they are friends again the same policy admits them again, with no 恢复往来. 停止往来 is the only act that writes a `stop` row.
 
 #### `DELETE /api/bars/:personId`
 
@@ -2929,9 +2932,14 @@ reporter's note (trimmed; none when it is empty) and the social conversation the
 minute. → 201 `{"id"}`; 404 `not_found`. 404 while `SOCIAL.enabled` is off. Counter `agent_reported` (the reason, never the note). The
 operator reads the reports on the command line (`reports:list [--open]`, `reports:close <id prefix> --outcome disabled|dismissed`:
 ids' prefixes, the Agent's handle, the reason, whether there is a note; never the note) and turns an Agent off and on with
-`agent:disable <full handle>` / `agent:enable <full handle>`: a disabled Agent is gone to everyone but its owner (the lookup, groups
-and social conversations alike), the replies others asked of it stop (queued ones cancelled, running ones interrupted, `access_ended`)
-and its owner's own replies go on; no row is touched, and enabling gives access back.
+`agent:disable <full handle>` / `agent:enable <full handle>`: a disabled Agent is gone to everyone but its owner. That is one fact, `gone`,
+read by the one access decision (`reach` and its SQL twin `refusedSql`), so it holds wherever the decision is asked: the lookup, the
+avatar rule and every social conversation (permission to write, a reply's start and its post), and, in groups, every call site
+that asks it (lane B's B5b wires the group sites to `refusedSql`; ring 1a deploys only as a whole, with it). The replies others asked of
+it stop (queued ones cancelled, running ones interrupted, `access_ended`; the owner's own call noted on one stays noted), and its owner's
+own replies go on; no row is touched, and enabling gives access back. The command line has no live connection: screens that are open
+catch up at their next sync (a typed message to a disabled Agent is answered 403 at once). `reports:close --outcome disabled` disables the
+Agent too, by the same path (an outcome that only recorded would read as having acted); `dismissed` only records.
 
 **Planned: `PUT /api/agents/:id/note-verdicts`**
 
@@ -2944,10 +2952,11 @@ in `cardSeq`. → 200 `{"ok": true}`.
 *Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
 message `seq` of the Agent's own conversation. The card says that a sentence of the persona looks like a fact about the owner or someone
 else (a persona is read whole by anyone the Agent talks to); it is made by the persona aid, which reads each new persona version once on
-the owner's memory model and allowance (one call per version, none while `SOCIAL.enabled` is off, none for an owner's own edit), keeps only
-sentences found in the persona word for word, at most three, and shows a card to its owner alone: `system.card`
-`{"answer": "moved" | "kept" | null, "expired": boolean, "sentence"}`. `move: true` takes the sentence out of the persona (its first
-occurrence; the persona's version goes up and counts as read) and writes it as a note about the owner (in the vault); a sentence no
+the owner's memory model and allowance (one call per version, none while `SOCIAL.enabled` is off and nothing stamped then, so that at the
+first switch-on every persona that exists is read once, ten owners a poll; none for an owner's own edit; a call refused for a moment
+because the owner's calls are at their cap is made at a later pass), keeps only whole sentences of the persona (no fragment, clause or few
+characters; a sentence the owner answered 不用, or whose card still waits, is not asked again), at most three, and shows a card to its owner alone: `system.card`
+`{"answer": "moved" | "kept" | null, "expired": boolean, "sentence"}`. `move: true` takes the sentence out of the persona (the sentence as a whole, with its end mark; the persona's version goes up and counts as read) and writes it as a note about the owner (in the vault); a sentence no
 longer in the persona changes nothing and is answered `kept`. `move: false` leaves everything and records `kept`. One answer per card
 (`social_card_answers`); a card is answerable `OTHERS.cardDays` days. → 200 `{"ok": true, "moved": boolean}`; 404 `not_found` for what is
 no card of this Agent (and for anyone but its owner); 409 `answered`, `expired`, `room_full` (the notes have no room: nothing is

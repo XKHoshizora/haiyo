@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { unfriend as unfriendIn } from "../src/social/friends.ts";
 import { blockPrincipal, deleteBlock } from "../src/social/blocks.ts";
-import { addContact, approveContact, liftBar, setBar } from "../src/social/agent-contacts.ts";
+import { addContact, approveContact, contactsOfAgent, liftBar, setBar } from "../src/social/agent-contacts.ts";
 import { reach, standingBarsSql, type Reach } from "../src/social/reach.ts";
 import { api, befriend, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -198,6 +198,39 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
     expect(await barRows(a, b)).toEqual([]);
   });
 
+  it("a row reads by whose bar ended it, whoever lifts last (A-4 review m4): lifting relabels only the lifter's own rows, and the other person's bar never changes a label", async () => {
+    const a = await signUp(app, "m4a");
+    const b = await signUp(app, "m4b");
+    const ya = await newAgent(a, "m4ya");
+    const vb = await agentOf(b.id);
+    const live = (agentId: string, subjectId: string, personId: string) =>
+      db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $3, 'live', 'approved') on conflict (agent_id, subject_id) do update set state = 'live', basis = 'approved', end_reason = null`, [agentId, subjectId, personId]);
+    const read = async (subject: string) => ((await api(app, a, "GET", `/api/agents/${ya.id}/contacts`)).json.rows as Array<{ subject: { id: string }; endReason: string }>).find((r) => r.subject.id === subject)!.endReason;
+    // B stops A first: the row of B's Agent on A's Agent ends by B's bar. A's own view of it: a person left.
+    await live(ya.id, vb, b.id);
+    expect((await stop(b, a)).status).toBe(200);
+    expect(await read(vb)).toBe("left");
+    // A, with B's stop standing, stops B: a live row of B itself ends by A's bar.
+    await live(ya.id, b.id, b.id);
+    expect((await stop(a, b)).status).toBe(200);
+    expect(await read(b.id)).toBe("barred");
+    expect(await read(vb)).toBe("left");
+    // B lifts; nothing changes in A's view. A lifts: only A's own row is relabelled; B's bar's row stays a leaving for good.
+    expect((await resume(b, a)).status).toBe(200);
+    expect([await read(b.id), await read(vb)]).toEqual(["barred", "left"]);
+    expect((await resume(a, b)).status).toBe(200);
+    expect([await read(b.id), await read(vb)]).toEqual(["removed", "left"]);
+    // The other order: A's bar ended a row, B stops, A lifts while B's stop stands, B lifts last: the label is the same.
+    await live(ya.id, b.id, b.id);
+    expect((await stop(a, b)).status).toBe(200);
+    expect((await stop(b, a)).status).toBe(200);
+    expect(await read(b.id)).toBe("barred");
+    expect((await resume(a, b)).status).toBe(200);
+    expect(await read(b.id)).toBe("removed");
+    expect((await resume(b, a)).status).toBe(200);
+    expect([await read(b.id), await read(vb)]).toEqual(["removed", "left"]);
+  });
+
   /**
    * The model: six booleans (each person's stop, each person's block, each person's `block` bar row). An event changes only its
    * actor's own booleans. After every event the table's rows, each person's own row count and WHO IS BARRED (the standing bars,
@@ -206,6 +239,9 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
   type S = { stopA: boolean; stopB: boolean; blockA: boolean; blockB: boolean; rowA: boolean; rowB: boolean };
   const EVENTS = ["stopA", "stopB", "resumeA", "resumeB", "blockA", "blockB", "unblockA", "unblockB", "unfriendA", "unfriendB"] as const;
   async function runModel(states: S[], events: readonly (typeof EVENTS)[number][]): Promise<number> {
+    // The dimension of A-4 review m4: each person's Agent has an ended row of the other person's Agent, ended `barred` by one of the
+    // two. After every event each owner reads such a row as `barred` only while their own bar that ended it stands, as `removed` once
+    // they lifted their last one, and as `left` for ever when the OTHER person's bar ended it, whoever lifts last.
     const A = await person();
     const B = await person();
     const YA = await agentOf(A.id);
@@ -215,8 +251,8 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
     const standing = (s: S) => s.stopA || s.stopB || (s.blockA && s.rowA) || (s.blockB && s.rowB);
     const standingNow = async () => ((await db.query(`select 1 from ${standingBarsSql("$1::uuid", "$2::uuid", "mb")}`, [A.id, B.id])).rowCount ?? 0) > 0;
     let cases = 0;
-    for (const s of states) {
-      for (const event of events) {
+    for (const [si, s] of states.entries()) {
+      for (const [ei, event] of events.entries()) {
         const key = event.endsWith("A") ? "A" : "B";
         const [who, other, whoAgent] = key === "A" ? [A, B, YA] : [B, A, YB];
         // The state, written as the code writes it (a lone block or a lone row only as an older process left it).
@@ -224,6 +260,13 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
         await db.query(`delete from friendships where a_id = any($1::uuid[]) or b_id = any($1::uuid[])`, [[A.id, B.id]]);
         await db.query(`delete from blocks where blocker_id = any($1::uuid[])`, [[A.id, B.id]]);
         await db.query(`delete from access_bars where setter_id = any($1::uuid[])`, [[A.id, B.id]]);
+        const has = { A: s.stopA || s.rowA, B: s.stopB || s.rowB };
+        const flip = (si + ei) % 2 === 1;
+        // The row on YA is ended by A's bar when the pattern says so and A has one, else by B's; the row on YB likewise the other way round.
+        const endedBy = { YA: (flip && has.A ? "A" : "B") as "A" | "B", YB: (!flip && has.B ? "B" : "A") as "A" | "B" };
+        for (const [on, subject, person, by] of [[YA, YB, B, endedBy.YA], [YB, YA, A, endedBy.YB]] as const) {
+          await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason, barred_by) values ($1, $2, $3, 'ended', 'barred', $4)`, [on, subject, person.id, by === "A" ? A.id : B.id]);
+        }
         if (s.stopA) await db.tx((t) => setBar(t, A.id, B.id, "stop"));
         if (s.stopB) await db.tx((t) => setBar(t, B.id, A.id, "stop"));
         for (const [p, q, block, row] of [[A, B, s.blockA, s.rowA], [B, A, s.blockB, s.rowB]] as const) {
@@ -233,12 +276,14 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
         }
         expect(await barRows(A, B, N)).toEqual(rowsOf(s));
         const want: S = { ...s };
+        let lifted: "A" | "B" | null = null;
         if (event.startsWith("stop")) {
           await db.tx((t) => setBar(t, who.id, other.id, "stop"));
           want[`stop${key}`] = true;
         } else if (event.startsWith("resume")) {
           expect(await db.tx((t) => liftBar(t, who.id, other.id))).toBe(s[`stop${key}`]);
           want[`stop${key}`] = false;
+          if (s[`stop${key}`]) lifted = key;
         } else if (event.startsWith("block")) {
           await db.tx((t) => blockPrincipal(t, who.id, other.id));
           if (!s[`block${key}`]) {
@@ -250,15 +295,17 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
           if (s[`block${key}`]) {
             want[`block${key}`] = false;
             want[`row${key}`] = false; // the row goes with the block it was written for; a lone row is not touched
+            if (s[`row${key}`]) lifted = key; // the lift (and its relabelling) happens only where a row was deleted
           }
         } else {
-          // An unfriend that ends a live row of the other person on the actor's Agent writes the actor's stop, and nothing else.
+          // An unfriend writes no bar (Owner decision 2026-11-25); a row approved one by one stays live.
           const [lo, hi] = [A.id, B.id].sort();
           await db.query(`insert into friendships (a_id, b_id) values ($1, $2)`, [lo, hi]);
-          await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [whoAgent, other.id]);
+          // (A row approved one by one is live only where no bar stands: a bar ends every row, and none is made while it stands.)
+          const withRow = !standing(s);
+          if (withRow) await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [whoAgent, other.id]);
           expect((await db.tx((t) => unfriendIn(t, who.id, other.id))).ok).toBe(true);
-          want[`stop${key}`] = true;
-          expect((await db.query(`select state, end_reason from agent_contacts where agent_id = $1`, [whoAgent])).rows).toEqual([{ state: "ended", end_reason: "barred" }]);
+          if (withRow) expect((await db.query(`select state, end_reason from agent_contacts where agent_id = $1 and subject_id = $2`, [whoAgent, other.id])).rows).toEqual([{ state: "live", end_reason: null }]);
         }
         const at = [JSON.stringify(s), event];
         // After: the rows are exactly the model's, nobody's act touched the other person's rows ...
@@ -267,6 +314,15 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
           const k = p === A ? "A" : "B";
           const own = (await db.query(`select 1 from access_bars where setter_id = $1`, [p.id])).rows.length;
           expect([at, own]).toEqual([at, Number(want[`stop${k}`]) + Number(want[`row${k}`])]);
+        }
+        // ... and each owner reads each ended row by whose bar ended it, however the other person lifts.
+        for (const [owner, k, on, subject, by] of [[A, "A", YA, YB, endedBy.YA], [B, "B", YB, YA, endedBy.YB]] as const) {
+          const mine = by === k;
+          const relabelled = mine && lifted === k && !(want[`stop${k}`] || want[`row${k}`]);
+          const read = (await contactsOfAgent(db, owner.id, on))!.rows.find((r) => r.subject.id === subject)!.endReason;
+          expect([at, k, read]).toEqual([at, k, mine ? (relabelled ? "removed" : "barred") : "left"]);
+          const stored = (await db.query(`select end_reason, barred_by from agent_contacts where agent_id = $1 and subject_id = $2`, [on, subject])).rows[0];
+          expect([at, k, stored]).toEqual([at, k, relabelled ? { end_reason: "removed", barred_by: null } : { end_reason: "barred", barred_by: by === "A" ? A.id : B.id }]);
         }
         // ... and who is barred follows: the pair is barred iff any row stands (a block's row only while its block does); each
         // person's reach of the other's Agent is `blocked` while a block stands, else `barred` while a bar does, else open.
@@ -358,13 +414,13 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
     // O set it: O reads barred on their Agent. V did not: V reads the row of O on their Agent as a leaving, though the same ending made it.
     expect(await rows(o, y.id)).toEqual([[v.id, "barred"]]);
     expect(await rows(v, vy.id)).toEqual([[o.id, "left"]]);
-    // V then bars O too: now V reads their own.
+    // V then bars O too: the row was ended by O's bar, so V still reads a leaving (A-4 review m4: the row records whose bar ended it).
     await stop(v, o);
-    expect(await rows(v, vy.id)).toEqual([[o.id, "barred"]]);
+    expect(await rows(v, vy.id)).toEqual([[o.id, "left"]]);
     // The other way round: only V barred O.
     await resume(o, v);
     await resume(v, o);
-    await db.query(`update agent_contacts set state = 'live', basis = 'approved', end_reason = null`);
+    await db.query(`update agent_contacts set state = 'live', basis = 'approved', end_reason = null, barred_by = null`);
     await stop(v, o);
     expect(await rows(o, y.id)).toEqual([[v.id, "left"]]);
     expect(await rows(v, vy.id)).toEqual([[o.id, "barred"]]);
@@ -487,45 +543,53 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
   });
 });
 
-describe("unfriending", () => {
-  it("writes the unfriender's own stop only when it ends a live or waiting row; and the stopped person cannot take it over", async () => {
+describe("unfriending (Owner decision 2026-11-25: just unfriending, as in WeChat / QQ)", () => {
+  it("writes no bar and no cooldown; rows admitted because of the friendship end as an ordinary ending, a row the owner approved one by one stays; re-friending restores the friends' reach with no 恢复往来", async () => {
     const owner = await signUp(app, "unfowner");
-    const withRow = await signUp(app, "unfrow");
-    const withRequest = await signUp(app, "unfreq");
+    const viaFriends = await signUp(app, "unfrow");
+    const approved = await signUp(app, "unfapp");
     const noRow = await signUp(app, "unfno");
-    const y = await newAgent(owner, "unfy");
-    for (const f of [withRow, withRequest, noRow]) await befriend(app, owner, f);
-    await add(withRow, y.id);
-    await approve(owner, y.id, withRow);
-    await add(withRequest, y.id);
-    const g = await newGroup(withRow.id);
-    const queued = await queuedRun(y.id, g, withRow.id);
-    const N = { [owner.id]: "O", [withRow.id]: "R", [withRequest.id]: "Q", [noRow.id]: "N" };
-    expect((await unfriend(owner, withRow)).status).toBe(200);
-    expect(await rowState(y.id, withRow.id)).toEqual({ state: "ended", endReason: "barred" });
-    expect(await barRows(owner, withRow, N)).toEqual(["O>R stop"]);
+    const yAsk = await newAgent(owner, "unfyask");
+    const yFriends = await newAgent(owner, "unfyfr");
+    await policy(yFriends.id, "contacts");
+    for (const f of [viaFriends, approved, noRow]) await befriend(app, owner, f);
+    await add(approved, yAsk.id);
+    await approve(owner, yAsk.id, approved);
+    expect((await add(viaFriends, yFriends.id)).status).toBe(201);
+    const g = await newGroup(viaFriends.id);
+    const queued = await queuedRun(yFriends.id, g, viaFriends.id);
+    expect(await rowState(yFriends.id, viaFriends.id)).toEqual({ state: "live", endReason: null });
+
+    expect((await unfriend(owner, viaFriends)).status).toBe(200);
+    expect(await rowState(yFriends.id, viaFriends.id)).toEqual({ state: "ended", endReason: "left" });
     expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: "access_ended" });
-    expect((await unfriend(owner, withRequest)).status).toBe(200);
-    expect(await rowState(y.id, withRequest.id)).toEqual({ state: "ended", endReason: "barred" });
+    expect((await db.query(`select count(*)::int n from access_bars where setter_id = any($1::uuid[]) or other_id = any($1::uuid[])`, [[owner.id, viaFriends.id]])).rows[0]!.n).toBe(0);
+    // The one the owner approved by hand is untouched, and so is one with no row.
+    expect((await unfriend(owner, approved)).status).toBe(200);
+    expect(await rowState(yAsk.id, approved.id)).toEqual({ state: "live", endReason: null });
     expect((await unfriend(owner, noRow)).status).toBe(200);
-    expect(await barRows(owner, noRow)).toEqual([]);
-    // The other side's Agents count too.
+    expect((await db.query(`select count(*)::int n from access_bars where setter_id = $1 or other_id = $1`, [owner.id])).rows[0]!.n).toBe(0);
+    // Not stopped, so no cooldown and no 恢复往来: the unfriended person is just not a friend until they are again.
+    expect(await add(viaFriends, yFriends.id)).toMatchObject({ status: 202 });
+    expect((await resume(owner, viaFriends)).status).toBe(404);
+    // (Its request waits, as for anyone who is no friend; they withdraw it, become friends again, and the policy lets them in at once.)
+    expect((await api(app, viaFriends, "DELETE", `/api/agent-contacts/${yFriends.id}/${viaFriends.id}`)).status).toBe(200);
+    await befriend(app, owner, viaFriends);
+    expect(await add(viaFriends, yFriends.id)).toMatchObject({ status: 201 });
+    expect(await rowState(yFriends.id, viaFriends.id)).toEqual({ state: "live", endReason: null });
+    expect(await reach(db, viaFriends.id, yFriends.id, "group", on)).toBe("ok");
+  });
+
+  it("the other side's Agents count the same way: an Agent of the unfriended person that admitted the unfriender as a friend ends it, as an ordinary ending", async () => {
+    const owner = await signUp(app, "unfo2");
     const f2 = await signUp(app, "unff2");
     const fAgent = await newAgent(f2, "unff2bot");
+    await policy(fAgent.id, "contacts");
     await befriend(app, owner, f2);
-    await add(owner, fAgent.id);
-    await approve(f2, fAgent.id, owner);
+    expect((await add(owner, fAgent.id)).status).toBe(201);
     expect((await unfriend(f2, owner)).status).toBe(200);
-    expect(await rowState(fAgent.id, owner.id)).toEqual({ state: "ended", endReason: "barred" });
-    expect(await barRows(owner, f2, { [owner.id]: "O", [f2.id]: "F" })).toEqual(["F>O stop"]);
-    // O unfriended R: R befriends again, asks again through an Agent of theirs, and unfriends: R's own stop is a row of R's.
-    await befriend(app, owner, withRow);
-    expect(await direct(await agentOf(withRow.id), y.id)).toMatchObject({ state: "requested" });
-    expect((await unfriend(withRow, owner)).status).toBe(200);
-    expect(await barRows(owner, withRow, N)).toEqual(["O>R stop", "R>O stop"]);
-    expect((await resume(withRow, owner)).status).toBe(200);
-    expect(await barRows(owner, withRow, N)).toEqual(["O>R stop"]);
-    expect(await reach(db, withRow.id, y.id, "group", on)).toBe("barred");
+    expect(await rowState(fAgent.id, owner.id)).toEqual({ state: "ended", endReason: "left" });
+    expect((await db.query(`select count(*)::int n from access_bars where setter_id = any($1::uuid[]) or other_id = any($1::uuid[])`, [[owner.id, f2.id]])).rows[0]!.n).toBe(0);
   });
 });
 

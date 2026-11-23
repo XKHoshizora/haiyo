@@ -4,6 +4,7 @@ import type { ConversationEvents } from "../conversations/events.ts";
 import { visibleJoin } from "../conversations/store.ts";
 import type { Db } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
+import { socialPlaceSql } from "../social/place.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import { CLOSE_GRACE_MS, CONFIGURATION_FAILURES, type ApnsClient, type ApnsFailure } from "./apns.ts";
 import { removeDeadDevice, removeExpiredDevices, type PushDevice, type PushEnv } from "./devices.ts";
@@ -149,7 +150,7 @@ async function targets(db: Db, messages: StoredMessage[]): Promise<Target[]> {
        from unnest($1::uuid[], $2::bigint[], $3::uuid[]) as m (conversation_id, seq, sender_id)
        join principals snd on snd.id = m.sender_id
        join (select ms.conversation_id, ms.principal_id as reader_id from memberships ms join conversations rc on rc.id = ms.conversation_id
-              where ms.left_seq is null and not (rc.type = 'agent_social' and ms.role = 'observer')) r
+              where ms.left_seq is null and not (${socialPlaceSql("rc")} and ms.role = 'observer')) r
          on r.conversation_id = m.conversation_id and r.reader_id <> m.sender_id
        ${visibleJoin("r.reader_id")}
        join push_devices d on d.principal_id = r.reader_id

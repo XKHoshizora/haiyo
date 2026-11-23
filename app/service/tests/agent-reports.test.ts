@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -162,6 +163,9 @@ describe("the operator's disable and enable", () => {
     const out = await cli("agent:disable", handle);
     expect([out.code, out.stderr]).toEqual([0, ""]);
     expect(out.stdout).not.toContain("NOTE_CANARY");
+    // The line says the truth about groups (A-4 review I1): the one access decision, whose group sites are lane B's B5b.
+    expect(out.stdout).toContain("refusedSql");
+    expect(out.stdout).toContain("B5b");
     expect((await db.query(`select disabled_at is not null as d from agents where principal_id = $1`, [w.agent.id])).rows[0]).toEqual({ d: true });
     expect(await reach(db, w.visitor.id, w.agent.id, "social", on)).toBe("gone");
     expect(await reach(db, w.visitor.id, w.agent.id, "group", on)).toBe("gone");
@@ -184,6 +188,28 @@ describe("the operator's disable and enable", () => {
     expect(await runOf(r.groupQueued)).toMatchObject({ status: "cancelled" });
   }, TIMEOUT);
 
+  it("a disable keeps the owner's own call that is noted on an interrupted reply (A-4 review m2), and drops what another person's was", async () => {
+    const w = await world();
+    const handle = await fullHandle(w.agent.id);
+    const noted = async (by: string) => {
+      const g = (await db.query<{ id: string }>(`insert into conversations (type, creator_id, title) values ('group', $1, 'g') returning id`, [w.visitor.id])).rows[0]!.id;
+      const seq = Number((await db.query<{ seq: string }>(`insert into messages (conversation_id, seq, sender_id, kind, body) values ($1, 1, $2, 'text', '{"text":"hi"}'::jsonb) returning seq::text as seq`, [g, by])).rows[0]!.seq);
+      return (
+        await db.query<{ id: string }>(
+          `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, lane, caller_id, started_at)
+           values ('reply', $1, $2, $3, 'running', 0, $4, 'human', 'others', $5, now()) returning id`,
+          [g, w.agent.id, w.owner.id, seq, w.visitor.id],
+        )
+      ).rows[0]!.id;
+    };
+    const ownerCall = await noted(w.owner.id);
+    const visitorCall = await noted(w.visitor.id);
+    expect((await cli("agent:disable", handle)).code).toBe(0);
+    const read = async (id: string) => (await db.query(`select interrupted, pending_seq is not null as noted from agent_runs where id = $1`, [id])).rows[0];
+    expect(await read(ownerCall)).toEqual({ interrupted: "access_ended", noted: true });
+    expect(await read(visitorCall)).toEqual({ interrupted: "access_ended", noted: false });
+  }, TIMEOUT);
+
   it("an unknown handle, a person's handle, an Agent that is deleted: refused, nothing changed", async () => {
     const w = await world();
     expect((await cli("agent:disable", "nobody_here.nothing")).code).not.toBe(0);
@@ -194,6 +220,19 @@ describe("the operator's disable and enable", () => {
     expect(gone.code).not.toBe(0);
     expect((await db.query(`select disabled_at from agents where principal_id = $1`, [w.agent.id])).rows[0].disabled_at).toBeNull();
   }, TIMEOUT);
+});
+
+describe("what the README says of a disable (A-4 review I1)", () => {
+  it("says it takes effect through the one access decision and that lane B's B5b wires the group sites, not that groups are covered by lane A alone", () => {
+    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+    const at = readme.indexOf("`agent:disable <full handle>` / `agent:enable <full handle>`");
+    expect(at).toBeGreaterThan(0);
+    const text = readme.slice(at, at + 1500).replace(/\s+/g, " ");
+    expect(text).toContain("`refusedSql`");
+    expect(text).toContain("B5b");
+    expect(text).toContain("deploys only as a whole");
+    expect(text).not.toContain("groups and social conversations alike");
+  });
 });
 
 describe("reports:list and reports:close", () => {
@@ -227,7 +266,15 @@ describe("reports:list and reports:close", () => {
     const open = await cli("reports:list", "--open");
     expect(open.stdout).toContain((b.json.id as string).slice(0, 8));
     expect(open.stdout).not.toContain((a.json.id as string).slice(0, 8));
-    expect((await cli("reports:close", (b.json.id as string).slice(0, 8), "--outcome", "disabled")).code).toBe(0);
+    // A dismissal turns nothing off; the outcome "disabled" is no trap (A-4 review m1): it disables the Agent, as agent:disable does.
+    const disabledAt = async () => (await db.query(`select disabled_at is not null as d from agents where principal_id = $1`, [w.agent.id])).rows[0].d;
+    expect(await disabledAt()).toBe(false);
+    const gone = await cli("reports:close", (b.json.id as string).slice(0, 8), "--outcome", "disabled");
+    expect([gone.code, gone.stderr]).toEqual([0, ""]);
+    expect(gone.stdout).toContain("disabled");
+    expect(gone.stdout).toContain("agent");
     expect((await db.query(`select outcome from agent_reports where id = $1`, [b.json.id])).rows[0].outcome).toBe("disabled");
+    expect(await disabledAt()).toBe(true);
+    expect(await reach(db, w.visitor.id, w.agent.id, "social", on)).toBe("gone");
   }, TIMEOUT);
 });

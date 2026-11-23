@@ -232,7 +232,7 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `S:src/social/place.ts` (new) | 0, frozen | `Place`, `placeOf`, `placeOfType`, `groupPlaceSql`, `socialPlaceSql` |
 | `S:src/social/reach.ts` (new) | 0→A | `reach`, `reachSql`, `refusedSql`, `discoverable`, `discoverableSql` |
 | `S:src/social/agent-contacts.ts`, `agent-contact-routes.ts` (new) | 0→A | rows, `endGrants`, bars, `applyPolicy`; lane-A routes; (as built in Step 0) the plugin registers no route: lane A adds each route here, with its shared-file rows (see the File map's row for `fuzz.test.ts`) |
-| `S:src/social/friends.ts`, `blocks.ts`, `routes.ts` | A | unfriend and block write bars; a person may block an Agent |
+| `S:src/social/friends.ts`, `blocks.ts`, `routes.ts` | A | an unfriend ends the `contacts`-basis rows only (Owner decision 2026-11-25: no bar); a block writes the bar; a person may block an Agent |
 | `S:src/principals/store.ts`, `principals/routes.ts` | A | Agent lookup; discoverable avatars |
 | `S:src/conversations/store.ts` | 0→A | `ConversationType`; `ensureSocial`; the `agent_social` arm of `permission()` (Step 0 skeleton, A3a full) |
 | `S:src/conversations/system.ts`, `S:src/messages/model.ts` | 0→A | the new events and their sentences |
@@ -750,7 +750,7 @@ alter table agents add column persona_checked_version integer not null default 0
 create index agents_persona_due_idx on agents (principal_id) where persona_version > persona_checked_version;
 -- Whose bar ended a row (A-4 review m4): the setter, on a row ended `barred`; lifting a bar relabels only the rows its setter's bar ended.
 alter table agent_contacts add column barred_by uuid references principals (id) on delete set null,
-  add constraint agent_contacts_barred_by_check check (barred_by is null or end_reason = 'barred');
+  add constraint agent_contacts_barred_by_check check (barred_by is null or coalesce(end_reason = 'barred', false));
 -- One answer per owner card (persona_fact now; note_withheld in ring 1b): the card's own message (attack M7).
 create table social_card_answers (
   message_id bigint primary key references messages (id) on delete cascade,
@@ -957,7 +957,7 @@ The caller runs `announceEnded(app.agentPort, ended)` after commit. A person's b
 
 **Produces:** (**Controller ruling 2026-11-24 (A-3 review)**, C1: bars are directional and one row per decision; 075 edited before it was applied anywhere)
 ```ts
-/** The one writer of bars (Controller ruling 2026-11-24, Q4). An unfriend that ends a row writes the unfriender's `stop`. */
+/** The one writer of bars (Controller ruling 2026-11-24, Q4). 停止往来 writes `stop`, a block `block`; an unfriend writes none (Owner decision 2026-11-25). */
 export function setBar(t: Tx, setterId: string, otherId: string, kind: "stop" | "block"): Promise<EndedRuns & { ended: number }>;
 /** 恢复往来: deletes the caller's own `stop` row against the other person, and nothing else. False: they had none. */
 export function liftBar(t: Tx, setterId: string, otherId: string): Promise<boolean>;
@@ -968,7 +968,7 @@ export function liftBlockBar(t: Tx, unblockerId: string, otherId: string): Promi
 - `setBar`: `lockPair(setter, other)`, upsert the row (`since = now()` on every write), then `endGrants({between}, "barred")` (a block: see A5a for what it leaves to `begin`). Lifting a bar brings no row back.
 - What each side SEES is its own rows: 恢复往来 on a pair where only the other side has a row answers exactly as if no bar existed for the caller (one statement, one 404); the cooldown (A4) and design test 6 follow the setter's own `stop` row; the owner's `GET /api/agents/:id/contacts` reads `barred` only where the owner barred the person themselves (the other person's bar reads `left`); a frame goes to the other person only when something of theirs ended, never on a lift.
 - `PUT /api/bars/:personId` (a person only) → `setBar(me, other, "stop")`. `DELETE` → `liftBar`: no stop of the caller's → the one 404.
-- **Unfriend** writes the unfriender's `stop` only when at least one live or requested row exists between the two sides. It runs after `appendDirectNotice` (friends.ts:157).
+- **Unfriend** (**Owner decision 2026-11-25**: just unfriending, as in WeChat / QQ) writes NO `stop` row, sets no bar, starts no cooldown and adds nothing to a stopped list. It ends, through `endGrants` as an ordinary ending (`left`), the live rows whose basis is `contacts` between the two sides, and no others (rows approved one by one stay); re-friending restores the contacts policy's reach with no 恢复往来. It runs after `appendDirectNotice` (friends.ts:157).
 - **Controller ruling 2026-11-24 (Q4):**
   - Every person-to-person block writes its row: `blockPrincipal` calls `setBar(blocker, blocked, "block")` after its notice (blocks.ts:46).
   - `unblockPrincipal` (through `deleteBlock`, the one unblock path, which the demo's reset also uses, without the notice) deletes the block and the blocker's `block` row in one transaction.
@@ -993,7 +993,7 @@ expect((await api(app, v, "DELETE", `/api/bars/${owner.id}`)).status).toBe(404);
 expect((await api(app, owner, "DELETE", `/api/bars/${v.id}`)).status).toBe(200);
 expect(await rowState(y1, v)).toEqual({ state: "ended", endReason: "barred" });
 expect(raced.approve).toMatchObject({ status: 409, json: { error: "not_requested" } });          // an approval racing a bar
-await unfriend(owner, friendWithRow); expect(await rowState(y2, friendWithRow)).toEqual({ state: "ended", endReason: "barred" });
+await unfriend(owner, friendWithRow); expect(await rowState(y2, friendWithRow)).toEqual({ state: "ended", endReason: "left" }); // a `contacts`-basis row; no bar (Owner decision 2026-11-25)
 await unfriend(owner, friendNoRow); expect(await bars(owner, friendNoRow)).toEqual([]);
 // Q4: every person-to-person block writes its own row; the setter's unblock deletes that row and nothing else.
 await block(o2, w); expect(await barRows(o2, w)).toEqual(["o2>w block"]);
@@ -1003,7 +1003,7 @@ await stop(o2, w); await block(o2, w); await unblock(o2, w); expect(await barRow
 await block(o4, y); expect((await api(app, o4, "DELETE", `/api/bars/${y.id}`)).status).toBe(404);
 // C1: a block that existed before 075 and is removed after it ran: its unblock lifts its backfilled bar; group @ is today's again.
 await runBackfill(); await unblock(oldBlocker, oldBlocked); expect(await barOf(oldBlocker, oldBlocked)).toBeNull();
-// A stop and an unfriend by the same person are one `stop` row; by two people, two rows, each lifted by its own setter.
+// An unfriend writes no row at all (Owner decision 2026-11-25); a stop by two people is two rows, each lifted by its own setter.
 // Each of a bar and an O→V block ends V's live rows and stops V's social runs (endGrants), after the direct chat's notice.
 ```
 - [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `PUT /api/bars/:personId` and `DELETE /api/bars/:personId` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
@@ -1970,6 +1970,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - **m4.** The root fix while 075 is editable: `agent_contacts.barred_by` records whose bar ended a row (set with the ending `barred`, null otherwise). Lifting a bar relabels only the rows that setter's bar ended, and only when the setter has no bar left against the other person; the other person's bar never changes a label, so the result no longer depends on who lifts last.
   - **m1.** `reports:close --outcome disabled` also disables the Agent, through the same path as `agent:disable` (the plan's A10 says the report's outcome is "disabled"; the outcome that records without acting is the trap).
   - **m10, m12.** The summary leg of the memory-isolation canary must be able to fail; shared test files get appended rows only.
+- **Owner decision 2026-11-25 (on the A-4 review's n1)**: unfriending is just unfriending, as in WeChat / QQ. An unfriend writes no `stop` row, sets no bar, starts no 30-day cooldown and puts no one in the unfriender's stopped list; the person can send a friend request again as before. It still ends, through `endGrants` as an ordinary ending (`left`, not `barred`), the grant rows whose basis is `contacts` between the two sides; rows approved one by one are untouched, nothing is announced beyond what unfriending shows today, and re-friending restores the contacts policy's reach without 恢复往来. 停止往来 stays the only act that writes a `stop` row and the only one with the cooldown; block stays block (A5b, File map, README).
 - **Accepted as proposed:** `reach` in `social/reach.ts` (D2); separate owner and judge columns (D4); shared files written once in Step 0 (D12).
 - **Controller ruling 2026-11-24 (final):**
   - the two-part hold, the three-part ruling withdrawn, spend ≤ hold proved for its four cases (B2b);

@@ -6,6 +6,7 @@ import { createAgentWorker } from "../src/agents/runtime/worker.ts";
 import { runCatchUp } from "../src/memory/catchup.ts";
 import { runFlags } from "../src/memory/hearsay.ts";
 import { runReview, type PipelineDeps } from "../src/memory/pipeline.ts";
+import { writeFlags } from "../src/agents/proactive/listeners.ts";
 import { createWhisper } from "../src/whispers/store.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -22,7 +23,8 @@ import { closeAllSockets } from "./helpers/ws.ts";
 // review, the flags, the summary, the nap), however it is asked for.
 const gateway = scriptedGateway();
 const judge = scriptedJudge();
-const { app, db, clock } = useApp({ env: SITE_ENV, models: gateway, judge, agentWorker: false, tools: true, memory: true, config: { judge: JUDGE, ...SOCIAL_ON } });
+// A-4 review m10: a window of a few lines is worth a summary call (`summaryMinFoldWeight` 1), so that a summary leg can fail.
+const { app, db, clock } = useApp({ env: { ...SITE_ENV, MEMORY: JSON.stringify({ summaryMinFoldWeight: 1, summaryMinIntervalMs: 0 }) }, models: gateway, judge, agentWorker: false, tools: true, memory: true, config: { judge: JUDGE, ...SOCIAL_ON } });
 const memory = () => app.deps.memory!;
 const FAST = { source: "site", id: "fast" } as const;
 const VISITOR_CANARY = "SOCIAL_CANARY 蓝鲸计划的口令是七七";
@@ -136,6 +138,35 @@ describe("a social conversation is no place of memory", () => {
     await runReview(pipelineDeps(), { kind: "review", agentId: w.agent.id, conversationId: w.g }, ctx());
     expect(calls()).toBeGreaterThan(before);
     expect(((await api(app, w.owner, "GET", "/api/memory/notes")).json.notes as Array<{ text: string }>).map((n) => n.text)).toEqual(["喜欢吃辣"]);
+  });
+
+  it("the rolling summary is never made for a social conversation, though its window is worth a call (A-4 review m10); the same job in a group makes one; the flag table holds no social row whoever writes it", async () => {
+    const w = await world("sm");
+    expect(app.deps.config.memory.summaryMinFoldWeight).toBe(1);
+    let top = 0;
+    let gtop = 0;
+    for (let i = 0; i < 6; i++) {
+      top = await say(w.visitor, w.s, `一起去爬山吧第${i}次`);
+      gtop = await say(w.owner, w.g, `周末一起去爬山吧第${i}次`);
+    }
+    const before = calls();
+    memory().summarise(w.agent.id, w.s, top);
+    clock.advance(10 * MIN);
+    await memory().idle();
+    expect(calls()).toBe(before);
+    for (const t of ["conversation_summaries", "conversation_summary_attempts"]) expect([t, (await db.query(`select 1 from ${t} where conversation_id = $1`, [w.s])).rowCount]).toEqual([t, 0]);
+    // The control: the same job for the group makes a call and writes a summary.
+    gateway.reply(JSON.stringify({ 人物与称呼: [], 说过的事: [{ said_by: null, text: "大家想去爬山" }], 定下的事: [], 还没解决的: [] }));
+    memory().summarise(w.agent.id, w.g, gtop);
+    clock.advance(10 * MIN);
+    await memory().idle();
+    expect(calls()).toBe(before + 1);
+    expect((await db.query("select 1 from conversation_summaries where conversation_id = $1", [w.g])).rowCount).toBe(1);
+    // Defence in depth (m10c): the flag writer itself refuses a social conversation; a group's flag is written.
+    expect(await writeFlags(db, [{ agentId: w.agent.id, conversationId: w.s, seq: 2, kind: "own" }])).toEqual([]);
+    expect(await rowsIn("memory_flags", w.agent.id, w.s)).toEqual([]);
+    await db.query("update agents set memory = true where principal_id = $1", [w.agent.id]);
+    expect(await writeFlags(db, [{ agentId: w.agent.id, conversationId: w.g, seq: 2, kind: "own" }])).toHaveLength(1);
   });
 
   it("the owner's memory never carries a visitor's words into another conversation, and a social conversation is never a place a lookup finds anything in; a group still is (control)", async () => {

@@ -5,7 +5,8 @@ import type { Config } from "../config.ts";
 import type { ConversationEvents } from "../conversations/events.ts";
 import { lockConversationKeys } from "../conversations/store.ts";
 import { appendSystem } from "../conversations/system.ts";
-import { groupPlaceSql } from "../social/place.ts";
+import { ownOrGroupPlaceSql } from "../social/memory-places.ts";
+import { groupPlaceSql, socialPlaceSql } from "../social/place.ts";
 import type { Db, Queryable, Tx } from "../db.ts";
 import type { Judge } from "../judge/client.ts";
 import type { StoredMessage } from "../messages/model.ts";
@@ -87,7 +88,7 @@ export async function reviewableAgent(db: Db, agentId: string): Promise<AgentRow
  * that names a conversation asks this first.
  */
 export async function inSocial(q: Queryable, conversationId: string): Promise<boolean> {
-  const { rowCount } = await q.query("select 1 from conversations c where c.id = $1 and c.type = 'agent_social'", [conversationId]);
+  const { rowCount } = await q.query(`select 1 from conversations c where c.id = $1 and ${socialPlaceSql("c")}`, [conversationId]);
   return (rowCount ?? 0) > 0;
 }
 
@@ -182,7 +183,7 @@ export async function memorySwitched(
  * review position or a group state row (`agent_group_state`) in — and its own conversation.
  */
 const SWITCH_CONVERSATIONS = `select m.conversation_id from memberships m join conversations sc on sc.id = m.conversation_id
-                      where m.principal_id = $1 and m.left_seq is null and (${groupPlaceSql("sc")} or sc.type = 'agent')
+                      where m.principal_id = $1 and m.left_seq is null and ${ownOrGroupPlaceSql("sc")}
                      union select s.conversation_id from memory_review_state s where s.agent_id = $1
                      union select g.conversation_id from agent_group_state g where g.agent_id = $1`;
 

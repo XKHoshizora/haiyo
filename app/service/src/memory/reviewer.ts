@@ -4,12 +4,16 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db.ts";
 import type { CatchUpContext, CatchUpJob } from "./catchup.ts";
 import { notAcknowledgement } from "../messages/model.ts";
+import { socialPlaceSql } from "../social/place.ts";
 import { liveAgents, newDreamState, SWEEP_JOB, type DreamContext, type DreamJob, type NapJob, type SweepJob } from "./dream.ts";
 import type { FlagsContext, FlagsJob } from "./hearsay.ts";
 import type { ConversionState, ConvertJob, ConvertResult, MemoryLanguage } from "./language.ts";
 import { errInfo, inSocial, reviewableAgent, reviewedSeq, type ReviewJob } from "./pipeline.ts";
 import { countDroppedFlags } from "./stats.ts";
 import { EXPLICIT } from "./review.ts";
+
+/** The kinds of job that name no conversation: memory's own housekeeping, which `pump` lets through whatever a conversation is. Every other kind is asked whether its conversation is a social one. */
+const NO_CONVERSATION_KINDS: ReadonlySet<string> = new Set(["dream", "nap", "convert", "sweep"]);
 
 /**
  * When a review runs (what it does is pipeline.ts): after an Agent's reply, once the conversation has been quiet
@@ -194,7 +198,7 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
       void Promise.resolve()
         .then(async () => {
           // Memory never works in a social conversation (plan A9): the one place every kind of job that names a conversation passes.
-          if (job.kind !== "dream" && job.kind !== "nap" && job.kind !== "convert" && job.kind !== "sweep" && (await inSocial(db, job.conversationId))) return;
+          if (!NO_CONVERSATION_KINDS.has(job.kind) && (await inSocial(db, job.conversationId))) return;
           return deps.run(job, ctx);
         })
         .catch((err: unknown) => log.error({ ...errInfo(err), agentId: job.agentId, conversationId: job.conversationId }, "a memory review failed; nothing was changed"))
@@ -335,7 +339,7 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
     const { rows } = await db.query<{ agent_id: string; conversation_id: string }>(
       `select c.agent_id, c.conversation_id from memory_catchups c
          join agents a on a.principal_id = c.agent_id and a.memory
-          join conversations cc on cc.id = c.conversation_id and cc.type <> 'agent_social'
+          join conversations cc on cc.id = c.conversation_id and not ${socialPlaceSql("cc")}
         where c.next_seq <= c.to_seq and ($1::uuid is null or c.agent_id = $1)
         order by c.created_at, c.conversation_id`,
       [agentId ?? null],
@@ -442,7 +446,7 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
         const { rows } = await db.query<{ agent_id: string; conversation_id: string }>(
           `select distinct m.sender_id as agent_id, m.conversation_id
              from messages m
-             join conversations rc on rc.id = m.conversation_id and rc.type <> 'agent_social'
+             join conversations rc on rc.id = m.conversation_id and not ${socialPlaceSql("rc")}
              join agents a on a.principal_id = m.sender_id and a.memory and not a.paused and a.deleted_at is null
              left join memory_review_state s on s.agent_id = m.sender_id and s.conversation_id = m.conversation_id
             where m.kind = 'text' and m.created_at > now() - interval '${RESUME_WINDOW}' and (m.body -> 'fixed') is distinct from 'true'::jsonb
@@ -460,7 +464,7 @@ export function createReviewer(deps: ReviewerDeps): Reviewer {
         countDroppedFlags(db, dropped.rows);
         const flags = await db.query<{ agent_id: string; conversation_id: string }>(
           `select distinct f.agent_id, f.conversation_id from memory_flags f
-             join conversations fc on fc.id = f.conversation_id and fc.type <> 'agent_social'
+             join conversations fc on fc.id = f.conversation_id and not ${socialPlaceSql("fc")}
              join agents a on a.principal_id = f.agent_id and a.memory and not a.paused and a.deleted_at is null`,
         );
         for (const r of flags.rows) {

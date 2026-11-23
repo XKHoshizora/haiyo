@@ -43,9 +43,13 @@ create table agent_reports (
   constraint agent_reports_agent_shape check (target_kind <> 'agent' or agent_id is not null)
 );
 create index agent_reports_open_idx on agent_reports (created_at) where handled_at is null;
--- The persona aid (plan A8b). A persona saved before it counts as checked: no burst at deploy (attack M11).
+-- The persona aid (plan A8b). Every persona that exists is unchecked: the worker reads each once, at its bounded pace, from the first
+-- switch-on (A-4 review I2, reversing attack M11: the burst it feared is met by OTHERS.judgeOwnersPerPoll).
 alter table agents add column persona_checked_version integer not null default 0;
-update agents set persona_checked_version = persona_version;
+create index agents_persona_due_idx on agents (principal_id) where persona_version > persona_checked_version;
+-- Whose bar ended a row (A-4 review m4): the setter, on a row ended `barred`; lifting a bar relabels only the rows its setter's bar ended.
+alter table agent_contacts add column barred_by uuid references principals (id) on delete set null,
+  add constraint agent_contacts_barred_by_check check (barred_by is null or coalesce(end_reason = 'barred', false));
 -- One answer per owner card (persona_fact now; note_withheld in ring 1b): the card's own message (attack M7).
 create table social_card_answers (
   message_id bigint primary key references messages (id) on delete cascade,
@@ -54,6 +58,8 @@ create table social_card_answers (
 );
 -- Down Migration
 drop table social_card_answers;
+alter table agent_contacts drop column barred_by;
+drop index agents_persona_due_idx;
 alter table agents drop column persona_checked_version;
 drop table agent_reports; drop table agent_contact_picks;
 alter table agents drop column disabled_at, drop column contact_picked, drop column contact_policy;

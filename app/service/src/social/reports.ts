@@ -1,6 +1,6 @@
 import type { EndedRuns } from "../agents/group-leave.ts";
 import type { Config } from "../config.ts";
-import type { Db, Queryable } from "../db.ts";
+import type { Db, Queryable, Tx } from "../db.ts";
 import { agentSeenSql } from "../principals/store.ts";
 import { interruptOthersRuns } from "./agent-contacts.ts";
 
@@ -61,9 +61,14 @@ export async function disableAgent(db: Db, handle: string): Promise<{ agentId: s
   return db.tx(async (t) => {
     const id = await liveAgentByHandle(t, handle);
     if (id === null) return null;
-    await t.query("update agents set disabled_at = coalesce(disabled_at, now()) where principal_id = $1", [id]);
-    return { agentId: id, ended: await interruptOthersRuns(t, id) };
+    return { agentId: id, ended: await disableAgentIn(t, id) };
   });
+}
+
+/** The one path of a disable (`agent:disable` and `reports:close --outcome disabled`): `disabled_at`, and the replies others asked of it stop. */
+async function disableAgentIn(t: Tx, agentId: string): Promise<EndedRuns> {
+  await t.query("update agents set disabled_at = coalesce(disabled_at, now()) where principal_id = $1", [agentId]);
+  return interruptOthersRuns(t, agentId);
 }
 
 /** The operator lifts the disable: `disabled_at` is null again, nothing else changes. Null: no live Agent has that handle. */
@@ -122,16 +127,28 @@ export async function listReports(q: Queryable, o: { open: boolean }): Promise<R
 /** At least this many characters of a report's id name it (`reports:list` prints that many). */
 export const REPORT_PREFIX_MIN = 8;
 
-/** Closes the report whose id starts with `prefix`, once. `closed` carries the full id; the others say why not. */
-export async function closeReport(db: Db, prefix: string, outcome: ReportOutcome): Promise<{ closed: string } | { refused: "short" | "not_found" | "ambiguous" | "already" }> {
+/**
+ * Closes the report whose id starts with `prefix`, once. `closed` carries the full id; the others say why not. The outcome `disabled`
+ * also disables the report's Agent, in the same transaction and by the same path as `agent:disable` (A-4 review m1: an outcome that
+ * only records would be a trap); `disabled` then carries what stopped (none when the Agent is deleted already: it is gone).
+ */
+export async function closeReport(
+  db: Db,
+  prefix: string,
+  outcome: ReportOutcome,
+): Promise<{ closed: string; disabled?: { agentId: string; ended: EndedRuns } } | { refused: "short" | "not_found" | "ambiguous" | "already" }> {
   const p = prefix.toLowerCase();
   if (!/^[0-9a-f-]+$/.test(p) || p.replace(/-/g, "").length < REPORT_PREFIX_MIN) return { refused: "short" };
   return db.tx(async (t) => {
-    const { rows } = await t.query<{ id: string; handled_at: Date | null }>("select id, handled_at from agent_reports where id::text like $1 || '%' order by id for update", [p]);
+    const { rows } = await t.query<{ id: string; handled_at: Date | null; agent_id: string }>("select id, handled_at, agent_id from agent_reports where id::text like $1 || '%' order by id for update", [p]);
     if (rows.length === 0) return { refused: "not_found" as const };
     if (rows.length > 1) return { refused: "ambiguous" as const };
     if (rows[0]!.handled_at !== null) return { refused: "already" as const };
     await t.query("update agent_reports set handled_at = now(), outcome = $2 where id = $1", [rows[0]!.id, outcome]);
-    return { closed: rows[0]!.id };
+    if (outcome !== "disabled") return { closed: rows[0]!.id };
+    const live = await t.query("select 1 from agents where principal_id = $1 and deleted_at is null", [rows[0]!.agent_id]);
+    return (live.rowCount ?? 0) === 0
+      ? { closed: rows[0]!.id }
+      : { closed: rows[0]!.id, disabled: { agentId: rows[0]!.agent_id, ended: await disableAgentIn(t, rows[0]!.agent_id) } };
   });
 }

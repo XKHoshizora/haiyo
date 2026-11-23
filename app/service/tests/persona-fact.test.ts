@@ -4,6 +4,7 @@ import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
+import { verbatimFacts } from "../src/memory/persona-aid.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 
 // Plan A8b (ring 1a; design §4): the persona aid. A persona is sent whole to a visitor's reply, so each new persona version is read once
@@ -105,7 +106,7 @@ describe("the persona aid's worker", () => {
     expect((await personaOf(w.agent.id)).persona_checked_version).toBe(1);
   });
 
-  it("personas saved while the switch is off make no call: they are stamped, and turning it on later reads none of them", async () => {
+  it("personas saved while the switch is off: no call and NOTHING stamped (A-4 review I2); turned on, each is read once", async () => {
     await clearBacklog();
     (app.deps.config as { social: unknown }).social = { enabled: false };
     const w = await world();
@@ -114,10 +115,39 @@ describe("the persona aid's worker", () => {
     } finally {
       (app.deps.config as { social: unknown }).social = { enabled: true };
     }
+    expect(await personaOf(w.agent.id)).toMatchObject({ persona_version: 1, persona_checked_version: 0 });
+    expect(gateway.calls).toHaveLength(0);
+    gateway.reply(facts(FACT));
+    expect(await aid()).toBe(1);
     expect(await personaOf(w.agent.id)).toMatchObject({ persona_version: 1, persona_checked_version: 1 });
+    expect((await cardsOf(w.agent.conversationId)).map((c) => c.body.sentence)).toEqual([FACT]);
+    expect(await aid()).toBe(0);
+  });
+
+  it("25 owners with a persona each: the first poll serves 10, the second 10, the third 5; each is read exactly once", async () => {
+    await clearBacklog();
+    const owners: Awaited<ReturnType<typeof world>>[] = [];
+    for (let i = 0; i < 25; i++) owners.push(await world("你好。"));
+    for (let i = 0; i < 25; i++) gateway.reply(facts());
+    const polls = [await aid(), await aid(), await aid(), await aid()];
+    expect(polls).toEqual([10, 10, 5, 0]);
+    expect(gateway.calls).toHaveLength(25);
+    expect(gateway.pending()).toBe(0);
+  });
+
+  it("a persona read refused for a moment (the owner's calls are at their cap) is read again once there is room (A-4 review m5); one refused for good is not", async () => {
+    await clearBacklog();
+    const w = await world();
+    const cap = app.deps.config.agentMaxConcurrentRuns;
+    for (let i = 0; i < cap; i++) await db.query(`insert into agent_runs (purpose, owner_id, status, started_at) values ('draft', $1, 'running', now())`, [w.owner.id]);
     expect(await aid()).toBe(0);
     expect(gateway.calls).toHaveLength(0);
-    expect(await cardsOf(w.agent.conversationId)).toEqual([]);
+    expect(await personaOf(w.agent.id)).toMatchObject({ persona_version: 1, persona_checked_version: 0 });
+    await db.query(`delete from agent_runs where owner_id = $1 and purpose = 'draft'`, [w.owner.id]);
+    gateway.reply(facts(FACT));
+    expect(await aid()).toBe(1);
+    expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
+    expect((await cardsOf(w.agent.conversationId)).map((c) => c.body.sentence)).toEqual([FACT]);
   });
 
   it("a poll serves at most OTHERS.judgeOwnersPerPoll owners and one Agent of each: 105 owners, one with two Agents", async () => {
@@ -138,7 +168,7 @@ describe("the persona aid's worker", () => {
     };
     for (const [i, o] of owners.entries()) await agentFor(o, `pa${i}`);
     await agentFor(owners[0]!, "pasecond");
-    // The switch off stamps without a call: 10 owners, one Agent each.
+    // The switch off claims, calls and stamps nothing (A-4 review I2).
     (app.deps.config as { social: unknown }).social = { enabled: false };
     try {
       expect(await aid()).toBe(0);
@@ -146,11 +176,11 @@ describe("the persona aid's worker", () => {
       (app.deps.config as { social: unknown }).social = { enabled: true };
     }
     const left = async () => Number((await db.query<{ n: string }>(`select count(*)::text as n from agents where persona_version > persona_checked_version`)).rows[0]!.n);
-    expect(await left()).toBe(106 - 10);
+    expect(await left()).toBe(106);
     // With it on, a poll is 10 calls (an owner with two Agents is served one per poll).
     for (let i = 0; i < 10; i++) gateway.reply(facts());
     expect(await aid()).toBe(10);
-    expect(await left()).toBe(106 - 20);
+    expect(await left()).toBe(106 - 10);
     await clearBacklog();
   });
 
@@ -198,6 +228,42 @@ describe("the persona aid's worker", () => {
     expect(keys).not.toContain('"card"');
     expect((await api(app, visitor, "GET", `/api/conversations/${w.agent.conversationId}/messages`)).status).toBe(404);
     expect((await api(app, visitor, "POST", `/api/agents/${w.agent.id}/persona-facts/1`, { move: true })).status).toBe(404);
+  });
+});
+
+describe("what makes a card (A-4 review m6, m7)", () => {
+  it("only a whole sentence of the persona is kept: a fragment, a clause or a few characters are not, and the sentence's own end mark goes with it", () => {
+    const keep = (facts: string[]) => verbatimFacts(JSON.stringify({ facts }), PERSONA);
+    expect(keep([FACT])).toEqual([FACT]);
+    expect(keep([FACT.slice(0, -1)])).toEqual([FACT]);
+    expect(keep([FACT2, "你是一个说话简洁的助手。"])).toEqual([FACT2, "你是一个说话简洁的助手。"]);
+    expect(keep(["杭州滨江区"])).toEqual([]);
+    expect(keep(["主人住在杭州滨江区"])).toEqual([]);
+    expect(keep(["家里养了一只猫。"])).toEqual([]);
+    expect(keep(["主人"])).toEqual([]);
+    expect(keep([PERSONA])).toEqual([]);
+    expect(verbatimFacts(JSON.stringify({ facts: ["我住在杭州"] }), "我住在杭州")).toEqual(["我住在杭州"]);
+  });
+
+  it("a sentence the owner answered 不用, or whose card still waits, is not asked again by a later save", async () => {
+    await clearBacklog();
+    const w = await world();
+    gateway.reply(facts(FACT, FACT2));
+    await aid();
+    const [first, second] = await cardsOf(w.agent.conversationId);
+    expect((await answer(w.owner, w.agent.id, Number(first!.seq), false)).status).toBe(200);
+    // FACT was kept as it is; FACT2's card still waits (unanswered, not expired); a moved sentence is gone from the persona.
+    expect(second).toBeTruthy();
+    expect((await patchPersona(w.owner, w.agent.id, `${PERSONA}又加一句。`)).status).toBe(200);
+    gateway.reply(facts(FACT, FACT2));
+    expect(await aid()).toBe(1);
+    expect((await cardsOf(w.agent.conversationId)).map((c) => c.body.sentence)).toEqual([FACT, FACT2]);
+    // An expired card that was never answered is asked again.
+    await db.query(`update messages set body = jsonb_set(body, '{expiresAt}', to_jsonb($2::text)) where id = $1`, [(await db.query<{ id: string }>(`select id::text from messages where conversation_id = $1 and seq = $2`, [w.agent.conversationId, Number(second!.seq)])).rows[0]!.id, new Date(Date.now() - 1000).toISOString()]);
+    expect((await patchPersona(w.owner, w.agent.id, `${PERSONA}再加一句。`)).status).toBe(200);
+    gateway.reply(facts(FACT, FACT2));
+    await aid();
+    expect((await cardsOf(w.agent.conversationId)).map((c) => c.body.sentence)).toEqual([FACT, FACT2, FACT2]);
   });
 });
 

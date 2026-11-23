@@ -6,6 +6,7 @@ import { handleOf } from "../principals/store.ts";
 import type { Mention } from "../messages/model.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { weight } from "../metering/tokens.ts";
+import { socialPlaceSql } from "../social/place.ts";
 
 /**
  * Whispers (悄悄话, design rules 16 and 19): a small note in a conversation that only the owner of one of its Agents ever
@@ -467,7 +468,7 @@ export async function createWhisper(
     `insert into whispers (conversation_id, owner_id, agent_id, after_seq, kind, body)
      select $1::uuid, $2::uuid, $3::uuid, $4::bigint, $5::text, $6::jsonb
       where exists (select 1 from memberships me where me.conversation_id = $1 and me.principal_id = $2 and me.left_seq is null)
-        and not exists (select 1 from conversations sc where sc.id = $1 and sc.type = 'agent_social')
+        and not exists (select 1 from conversations sc where sc.id = $1 and ${socialPlaceSql("sc")})
         and exists (
           select 1 from memberships am
             join agents a on a.principal_id = am.principal_id

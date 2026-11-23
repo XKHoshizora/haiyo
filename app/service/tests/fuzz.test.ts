@@ -407,7 +407,7 @@ function validParams(route: Pick<RouteEntry, "method" | "url">, fx: Fixture): Re
   const { method, url } = route;
   const out: Record<string, string> = {};
   for (const name of params(url)) {
-    if (name === "seq") out[name] = url.includes("/persona-facts/") ? fx.personaCard : "2";
+    if (name === "seq") out[name] = "2";
     else if (name === "principalId") out[name] = fx.victim.id; // the one whose removal, unfriending or blocking costs nothing
     else if (name === "runId") out[name] = fx.run;
     else if (name === "proposalId") out[name] = fx.proposal;
@@ -443,6 +443,8 @@ function validParams(route: Pick<RouteEntry, "method" | "url">, fx: Fixture): Re
                       : randomUUID(); // a route added later: still fuzzed, with an id nobody has
     }
   }
+  // Agent social, lane A (A8b): the persona card's answer names the fixture's real card (a row appended; the shared `seq` line above is as it was).
+  if (url === "/api/agents/:id/persona-facts/:seq") out.seq = fx.personaCard;
   return out;
 }
 

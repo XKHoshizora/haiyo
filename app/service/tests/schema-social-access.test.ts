@@ -130,6 +130,23 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
     await expect(db.query(`delete from principals where id = $1`, [agent])).rejects.toThrow(/foreign key|violates/);
   });
 
+  test("whose bar ended a row is recorded only on a row ended `barred` (A-4 review m4); the aid's due Agents have an index", async () => {
+    const owner = await human();
+    const person = await human();
+    const agent = await agentOf(owner);
+    const row = (o: { state: string; reason: string | null; by: string | null }) =>
+      db.query(
+        `insert into agent_contacts (agent_id, subject_id, person_id, state, basis, end_reason, barred_by) values ($1, $2, $2, $3, case when $3 = 'live' then 'approved' end, $4, $5)
+         on conflict (agent_id, subject_id) do update set state = excluded.state, basis = excluded.basis, end_reason = excluded.end_reason, barred_by = excluded.barred_by`,
+        [agent, person, o.state, o.reason, o.by],
+      );
+    await expect(row({ state: "ended", reason: "left", by: owner })).rejects.toThrow(/agent_contacts_barred_by_check/);
+    await expect(row({ state: "live", reason: null, by: owner })).rejects.toThrow(/check/);
+    await row({ state: "ended", reason: "barred", by: owner });
+    await row({ state: "ended", reason: "barred", by: null });
+    expect((await db.query(`select 1 from pg_indexes where indexname = 'agents_persona_due_idx'`)).rowCount).toBe(1);
+  });
+
   test("a card has one answer", async () => {
     const owner = await human();
     const { rows: c } = await db.query<{ id: string }>(`insert into conversations (type, creator_id) values ('agent', $1) returning id`, [owner]);
@@ -180,7 +197,9 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
       await client.query(up!.replace("-- Up Migration", ""));
       expect(await rows()).toEqual(old);
       expect((await one(`select count(*)::int n from access_bars where kind = 'block'`))[0]!.n).toBe(50);
-      expect(await one(`select count(*)::int n from agents where persona_checked_version <> persona_version`)).toEqual([{ n: 0 }]);
+      // A-4 review I2 (reversing attack M11): no persona that exists is marked as checked; the worker reads each at its pace once the switch is on.
+      expect(await one(`select count(*)::int n from agents where persona_checked_version <> 0`)).toEqual([{ n: 0 }]);
+      expect(await one(`select count(*)::int n from agents where persona_version > persona_checked_version`)).toEqual([{ n: 11 }]);
       expect(await one(`select count(*)::int n from agents where contact_policy <> 'ask' or contact_picked or disabled_at is not null`)).toEqual([{ n: 0 }]);
       expect(await one(`select (select count(*)::int from agent_reports) r, (select count(*)::int from agent_contact_picks) p, (select count(*)::int from social_card_answers) c`)).toEqual([{ r: 0, p: 0, c: 0 }]);
     } finally {

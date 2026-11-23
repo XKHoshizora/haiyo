@@ -49,7 +49,9 @@ export function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narrowed" 
   return endGrantsIn(t, scope, reason, { eager: true });
 }
 
-async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred", o: { eager: boolean }): Promise<EndedRuns & { ended: number }> {
+/** `by`: whose bar ends the rows (`barred` only: a row records it, `agent_contacts.barred_by`, so that lifting a bar relabels only its own rows). */
+async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred", o: { eager: boolean; by?: string }): Promise<EndedRuns & { ended: number }> {
+  const barredBy = reason === "barred" ? (o.by ?? null) : null;
   const agents =
     "between" in scope
       ? await t.query<{ id: string }>(
@@ -71,11 +73,11 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
     const [a, b] = scope.between;
     const concerned = "(case when ag.owner_id = $1::uuid then $2::uuid else $1::uuid end)";
     endRows = {
-      sql: `update agent_contacts c set state = 'ended', end_reason = $3::text, basis = null, until = null
+      sql: `update agent_contacts c set state = 'ended', end_reason = $3::text, barred_by = $4::uuid, basis = null, until = null
               from principals ag
              where ag.id = c.agent_id and c.state in ('live', 'requested')
                and ((ag.owner_id = $1::uuid and c.person_id = $2::uuid) or (ag.owner_id = $2::uuid and c.person_id = $1::uuid))`,
-      params: [a, b, reason],
+      params: [a, b, reason, barredBy],
     };
     runsIn = {
       sql: `ag.owner_id in ($1::uuid, $2::uuid) and (${inSocial} and exists (select 1 from principals ro where ro.id = case when rsp.a_id = r.agent_id then rsp.b_id else rsp.a_id end
@@ -88,9 +90,9 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
     const persons = await t.query<{ person: string }>("select distinct coalesce(owner_id, id) as person from principals where id = any($1::uuid[])", [[...scope.subjectIds]]);
     const people = persons.rows.map((p) => p.person);
     endRows = {
-      sql: `update agent_contacts c set state = 'ended', end_reason = $3::text, basis = null, until = null
+      sql: `update agent_contacts c set state = 'ended', end_reason = $3::text, barred_by = $4::uuid, basis = null, until = null
              where c.agent_id = $1::uuid and c.subject_id = any($2::uuid[]) and c.state in ('live', 'requested')`,
-      params: [scope.agentId, [...scope.subjectIds], reason],
+      params: [scope.agentId, [...scope.subjectIds], reason, barredBy],
     };
     runsIn = { sql: `r.agent_id = $1::uuid and (${inSocial} and (rsp.a_id = any($2::uuid[]) or rsp.b_id = any($2::uuid[]))))`, params: [scope.agentId, [...scope.subjectIds]] };
     concernedOf = () => people;
@@ -205,7 +207,7 @@ async function endGroupCalls(
 /**
  * The operator disabled the Agent (`agent:disable`, social/reports.ts), in the same transaction: the replies others asked of it stop.
  * Every queued reply in the lanes `others` and `proactive` is `cancelled` (`access_ended`), every running one `interrupted`
- * (`access_ended`, `pending_seq` null; its post is then refused, as for any ending); the owner's own lane is untouched. Rows are not
+ * (`access_ended`, its post is then refused, as for any ending; the owner's own call noted on it stays noted, another person's goes); the owner's own lane is untouched. Rows are not
  * ended (a disable is no ending of access: enabling gives it all back). The Agent's row first (the lock order), the queued runs
  * before the running ones (a run being claimed at that moment is seen queued or already running: see `endGrants`). The caller runs
  * `announceEnded` after commit where it has a hub (the command line has none: a worker sees the interruption in the row).
@@ -219,7 +221,9 @@ export async function interruptOthersRuns(t: Tx, agentId: string): Promise<Ended
     [agentId],
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended'), pending_seq = null
+    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended'),
+            -- the owner's own call noted on it stays noted (their replies go on); another person's goes (A-4 review m2)
+            pending_seq = case when exists (select 1 from messages pm where pm.conversation_id = r.conversation_id and pm.seq = r.pending_seq and pm.sender_id = r.owner_id) then r.pending_seq end
       where r.agent_id = $1 and r.purpose = 'reply' and r.status = 'running' and r.lane in ('others', 'proactive')
       returning r.id`,
     [agentId],
@@ -235,7 +239,7 @@ type BarKind = "stop" | "block";
 
 /**
  * The ONE writer of bars (Controller ruling 2026-11-24, Q4; A-3 review C1). A bar is a row "setter has barred other" of a kind:
- * `stop` (停止往来, and an unfriend that ended a row: the unfriender's stop) or `block` (a person's block of a person, written in
+ * `stop` (停止往来 only: an unfriend writes no bar) or `block` (a person's block of a person, written in
  * the block's own transaction). One row per (setter, other, kind): two people's decisions are two rows, and nobody's act ever
  * touches another person's row. `lockPair`, the row's `since` is the clock's time of the write (`clock_timestamp()`, not the
  * transaction's start: a row's `since` is compared with a bar's, and under the pair lock the two stamps then follow the lock order, never
@@ -249,7 +253,7 @@ export async function setBar(t: Tx, setterId: string, otherId: string, kind: Bar
     "insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, $3, clock_timestamp()) on conflict (setter_id, other_id, kind) do update set since = clock_timestamp()",
     [setterId, otherId, kind],
   );
-  return endGrantsIn(t, { between: [setterId, otherId] }, "barred", { eager: kind !== "block" });
+  return endGrantsIn(t, { between: [setterId, otherId] }, "barred", { eager: kind !== "block", by: setterId });
 }
 
 /**
@@ -265,17 +269,18 @@ export async function liftBar(t: Tx, setterId: string, otherId: string): Promise
 }
 
 /**
- * After the setter lifted their last bar (and the other person has none standing): the rows on the setter's Agents that were ended
- * `barred` for this person are read back as what the setter did, `removed`, so the setter's own view of their own act does not read
- * `left` (A-3 review n4). Reach is the same (an ended `removed` row is barred at step 5). While any bar stands, nothing is rewritten:
- * a bar of the other person's would then read as the setter's act. Needs the pair lock.
+ * After the setter lifted a bar and has none of their own left against the other person: the rows on the setter's Agents that THEIR
+ * bar ended (`barred_by`) are read back as what the setter did, `removed`, so the setter's own view of their own act does not read
+ * `left` (A-3 review n4). Reach is the same (an ended `removed` row is barred at step 5). Only the setter's own rows change, whoever
+ * lifts last: a row the other person's bar ended stays a leaving (A-4 review m4), and the other person's bar, standing or lifted,
+ * decides nothing here. Needs the pair lock.
  */
 async function settleLifted(t: Tx, setterId: string, otherId: string): Promise<void> {
   await t.query(
-    `update agent_contacts c set end_reason = 'removed'
-      where c.state = 'ended' and c.end_reason = 'barred' and c.person_id = $2
+    `update agent_contacts c set end_reason = 'removed', barred_by = null
+      where c.state = 'ended' and c.end_reason = 'barred' and c.barred_by = $1 and c.person_id = $2
         and c.agent_id in (select id from principals where owner_id = $1)
-        and not exists (select 1 from ${standingBarsSql("$1::uuid", "$2::uuid", "sl")})`,
+        and not exists (select 1 from access_bars sb where sb.setter_id = $1 and sb.other_id = $2)`,
     [setterId, otherId],
   );
 }
@@ -430,7 +435,7 @@ const upsertLive = (t: Tx, agentId: string, subjectId: string, personId: string,
   t.query(
     `insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $3, 'live', $4)
      on conflict (agent_id, subject_id) do update
-       set person_id = excluded.person_id, state = 'live', basis = excluded.basis, since = clock_timestamp(), until = null, end_reason = null`,
+       set person_id = excluded.person_id, state = 'live', basis = excluded.basis, since = clock_timestamp(), until = null, end_reason = null, barred_by = null`,
     [agentId, subjectId, personId, basis],
   );
 
@@ -513,7 +518,7 @@ export async function addContact(t: Tx, config: Pick<Config, "social" | "others"
   const asked = await t.query<{ until: Date }>(
     `insert into agent_contacts (agent_id, subject_id, person_id, state, until) values ($1, $2, $3, 'requested', now() + make_interval(days => $4))
      on conflict (agent_id, subject_id) do update
-       set person_id = excluded.person_id, state = 'requested', basis = null, since = now(), until = excluded.until, end_reason = null
+       set person_id = excluded.person_id, state = 'requested', basis = null, since = now(), until = excluded.until, end_reason = null, barred_by = null
      returning until`,
     [agentId, subjectId, personId, config.others.requestDays],
   );
@@ -637,8 +642,8 @@ export async function contactsOfAgent(q: Queryable, ownerId: string, agentId: st
     `select ${cols},
             case when c.state = 'requested' and c.until <= now() then 'ended' else c.state end as state, c.basis,
             case when c.state = 'requested' and c.until <= now() then 'expired'
-                 -- barred is the owner to read only when they barred the person themselves: what another person bar did reads as a leaving.
-                 when c.end_reason = 'barred' and not exists (select 1 from access_bars ob where ob.setter_id = $2 and ob.other_id = c.person_id) then 'left'
+                 -- barred is the owner's to read only when it was their own bar that ended the row: what another person's bar did reads as a leaving.
+                 when c.end_reason = 'barred' and c.barred_by is distinct from $2 then 'left'
                  else c.end_reason end as end_reason,
             c.since, c.until,
             (select sp.conversation_id from social_pairs sp where sp.a_id = least(c.subject_id, c.agent_id) and sp.b_id = greatest(c.subject_id, c.agent_id)) as conversation_id

@@ -3,7 +3,7 @@ import { appendDirectNotice, ensureDirect } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
 import { handleOf, type PublicPrincipal } from "../principals/store.ts";
-import { setBar } from "./agent-contacts.ts";
+import { endGrants } from "./agent-contacts.ts";
 import { lockPair, orderedPair } from "./pair.ts";
 import { areFriends, blockBetween } from "./relations.ts";
 
@@ -157,15 +157,25 @@ export async function unfriend(
   const del = await t.query("delete from friendships where a_id = $1 and b_id = $2", [lo, hi]);
   if ((del.rowCount ?? 0) === 0) return { ok: false, code: "not_found" };
   const notice = await appendDirectNotice(t, { event: "friendship_ended", actorId: actor, principalId: other });
-  // A bar (the unfriender's own `stop`) only when this ends at least one row (live or waiting) between the two sides: pairs who
-  // never had Agent access keep today's rules. After the notice (the lock order).
-  const rows = await t.query(
-    `select 1 from agent_contacts c join principals ag on ag.id = c.agent_id
-      where c.state in ('live', 'requested')
-        and ((ag.owner_id = $1 and c.person_id = $2) or (ag.owner_id = $2 and c.person_id = $1)) limit 1`,
+  // Unfriending is just unfriending (Owner decision 2026-11-25): no bar, no cooldown, nothing in anyone's stopped list. What follows from
+  // the friendship being gone: the rows admitted BECAUSE of it (basis `contacts`) between the two sides' Agents and people end, as an
+  // ordinary ending (`left`: the pair may be admitted again by the same policy once they are friends again); a row the owner approved
+  // one by one is not touched. After the notice (the lock order); each Agent in id order, as `endGrants` locks them.
+  const friendRows = await t.query<{ agent_id: string; subject_id: string }>(
+    `select c.agent_id, c.subject_id from agent_contacts c join principals ag on ag.id = c.agent_id
+      where c.state = 'live' and c.basis = 'contacts'
+        and ((ag.owner_id = $1 and c.person_id = $2) or (ag.owner_id = $2 and c.person_id = $1))
+      order by c.agent_id, c.subject_id`,
     [actor, other],
   );
-  const ended: EndedRuns = (rows.rowCount ?? 0) > 0 ? await setBar(t, actor, other, "stop") : { cancelled: [], running: [] };
+  const byAgent = new Map<string, string[]>();
+  for (const r of friendRows.rows) byAgent.set(r.agent_id, [...(byAgent.get(r.agent_id) ?? []), r.subject_id]);
+  const ended: EndedRuns = { cancelled: [], running: [] };
+  for (const [agentId, subjectIds] of byAgent) {
+    const done = await endGrants(t, { agentId, subjectIds }, "left");
+    ended.cancelled.push(...done.cancelled);
+    ended.running.push(...done.running);
+  }
   return { ok: true, conversationId: notice?.conversationId ?? null, notices: notice ? [notice] : [], ended };
 }
 

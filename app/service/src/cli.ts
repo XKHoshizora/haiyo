@@ -19,7 +19,7 @@ const USAGE =
   "usage: cli.ts migrate | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
   "credits:grant --handle <h> --points <n> [--note <text>] | credits:show --handle <h> | tier:set --handle <h> --tier <name> | models:list | memory:stats [--days <n>] | " +
   "demo:seed --email <address> [--handle <h>] [--name <text>] (password from DEMO_PASSWORD or asked) | " +
-  "agent:disable <full handle> | agent:enable <full handle> | reports:list [--open] | reports:close <id prefix> --outcome disabled|dismissed";
+  "agent:disable <full handle> | agent:enable <full handle> | reports:list [--open] | reports:close <id prefix> --outcome disabled|dismissed (disabled also disables the Agent, as agent:disable)";
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -256,7 +256,7 @@ if (command === "migrate") {
     if (command === "agent:disable") {
       const r = await disableAgent(db, handle);
       if (r === null) throw new Error(`no such Agent: ${handle}`);
-      console.log(`disabled agent ${r.agentId.slice(0, 8)}: ${r.ended.cancelled.length} queued replies cancelled, ${r.ended.running.length} running replies interrupted; its rows are untouched`);
+      console.log(`disabled agent ${r.agentId.slice(0, 8)}: ${r.ended.cancelled.length} queued replies cancelled, ${r.ended.running.length} running replies interrupted; its rows are untouched; it is gone to everyone but its owner through the one access decision (refusedSql); groups ask it at every call site once lane B's B5b is in, and ring 1a deploys only with it`);
     } else {
       const r = await enableAgent(db, handle);
       if (r === null) throw new Error(`no such Agent: ${handle}`);
@@ -296,7 +296,11 @@ if (command === "migrate") {
         : "that report is closed already",
       );
     }
-    console.log(`closed ${r.closed.slice(0, 8)}: ${outcome}`);
+    console.log(
+      r.disabled
+        ? `closed ${r.closed.slice(0, 8)}: ${outcome}; disabled agent ${r.disabled.agentId.slice(0, 8)}: ${r.disabled.ended.cancelled.length} queued replies cancelled, ${r.disabled.ended.running.length} running replies interrupted`
+        : `closed ${r.closed.slice(0, 8)}: ${outcome}`,
+    );
   } finally {
     await db.close();
   }

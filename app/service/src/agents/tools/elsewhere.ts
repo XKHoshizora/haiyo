@@ -4,6 +4,7 @@ import type { Db, Queryable, Tx } from "../../db.ts";
 import { inSearchBudget, searchRows, type SearchRow } from "../../messages/search.ts";
 import type { Hub } from "../../sync/hub.ts";
 import { createWhisper, foundElsewhereAbout, mayTell, readableHits, roomForFoundElsewhere, whisperOfRun, type HitRow, type Whisper } from "../../whispers/store.ts";
+import { ownOrGroupPlaceSql } from "../../social/memory-places.ts";
 import { groupPlaceSql } from "../../social/place.ts";
 import { QUOTE_MAX_CHARS } from "../runtime/context.ts";
 import { cleanText, foldVertical, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/prompt.ts";
@@ -130,7 +131,7 @@ async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk):
   const rows = await inSearchBudget(db, config.searchStatementTimeoutMs, async (t) => {
     const { rows: places } = await t.query<{ id: string }>(
       `select am.conversation_id as id from memberships am join conversations ac on ac.id = am.conversation_id
-        where am.principal_id = $1 and am.left_seq is null and am.conversation_id <> $2 and (${groupPlaceSql("ac")} or ac.type = 'agent')
+        where am.principal_id = $1 and am.left_seq is null and am.conversation_id <> $2 and ${ownOrGroupPlaceSql("ac")}
           and exists (select 1 from memberships om where om.conversation_id = am.conversation_id and om.principal_id = $3 and om.left_seq is null)
         order by am.conversation_id`,
       [scope.agentId, scope.conversationId, scope.ownerId],
