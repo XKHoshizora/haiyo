@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { stoppedOf, stoppedShape } from "../src/accounts/others-routes.ts";
-import { NO_RUN, othersCeilingHold, othersCheck, othersPlainFloor, othersUsedByAgents, othersUsedToday, perDayEstimate } from "../src/metering/others.ts";
+import { NO_RUN, othersCheck, othersPlainCeiling, othersPlainFloor, othersUsedByAgents, othersUsedToday, perDayEstimate } from "../src/metering/others.ts";
 import { readOwnedAgent } from "../src/agents/store.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { createAgent, mustCreateAgent } from "./helpers/agents.ts";
@@ -294,7 +294,7 @@ describe("reached and tight: two one-sided facts, each by the function admission
     const [agent] = await agentsOf(app, db, owner, 1, model);
     const row = (await readOwnedAgent(db, owner.id, agent!.agentId))!;
     const floor = await othersPlainFloor(db, config(), row, null, new Date());
-    const ceiling = othersCeilingHold(config(), row.model);
+    const ceiling = await othersPlainCeiling(db, config(), row, new Date());
     const settled = POINTS_70 - left(floor, ceiling);
     if (settled > 0n) await reply({ agent: agent!, ownerId: owner.id, lane: "others", micro: settled, caller: (await newOwner()).id });
     return { owner, agent: agent!, row, floor, ceiling };
@@ -304,11 +304,35 @@ describe("reached and tight: two one-sided facts, each by the function admission
     return { owner: [got.reached, got.tight], agents: got.agents.map((a: { reached: boolean; tight: boolean }) => [a.reached, a.tight]) };
   };
 
-  it("the floor is a real lower bound: a few hundred bytes of system text and the 800-token output, far under a typical 16 500-token reply", async () => {
+  it("the numbers: the floor is the system text and the 800-token output, the ceiling adds the fullest scene, the summary and 3 x the context cap", async () => {
+    const free = await world(FREE_MODEL, () => POINTS_70);
+    expect(free.floor).toBeGreaterThan(224_000n);
+    expect(free.floor).toBeLessThan(2_534_000n);
+    expect(free.ceiling).toBeGreaterThan(free.floor);
+    // 12 000 tokens of conversation are 36 000 bytes at most; the fullest scene and the summary add to that: under 12 points on the free tier.
+    expect(free.ceiling).toBeLessThan(12_000_000n);
+    expect(free.ceiling).toBeGreaterThan(36_000n * 140n);
+    // The paid tier's plain hold at 3 000 µpt an input byte: 36 000 bytes of conversation alone are 108 points, over the owner's 70: the real
+    // bound makes "fits for every reply" impossible there, so a paid-tier Agent reads tight from the start, and not reached.
+    const paid = await world(PAID_MODEL, () => POINTS_70);
+    expect(paid.ceiling).toBeGreaterThan(70_000_000n);
+    expect(paid.floor).toBeLessThan(70_000_000n);
+    expect(await states(paid.owner)).toEqual({ owner: [false, true], agents: [[false, true]] });
+  });
+
+  it("a free-tier Agent with an ordinary persona at 70 points and nothing used is neither tight nor reached", async () => {
     const w = await world(FREE_MODEL, () => POINTS_70);
-    expect(w.floor).toBeGreaterThan(224_000n);
-    expect(w.floor).toBeLessThan(2_534_000n);
-    expect(w.ceiling).toBeGreaterThan(2_534_000n);
+    expect(await states(w.owner)).toEqual({ owner: [false, false], agents: [[false, false]] });
+  });
+
+  it("notes the Agent holds raise its ceiling (a group is shown a subset of them); a memory-off Agent's do not count", async () => {
+    const noted = await world(FREE_MODEL, () => POINTS_70);
+    const of0 = async () => othersPlainCeiling(db, config(), (await readOwnedAgent(db, noted.owner.id, noted.agent.agentId))!, new Date());
+    const base = await of0();
+    for (let i = 0; i < 40; i++) await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [noted.agent.agentId, `笔记${i}`.repeat(30)]);
+    expect(await of0()).toBeGreaterThan(base + 40n * 140n * 100n);
+    await db.query("update agents set memory = false where principal_id = $1", [noted.agent.agentId]);
+    expect(await of0()).toBe(base);
   });
 
   it("one micro-point below the floor: reached (and tight); at the floor: not reached, tight", async () => {

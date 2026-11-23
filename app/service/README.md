@@ -2926,8 +2926,10 @@ use or what is left).
   function admission asks (`othersCheck`), because the hold of a future reply is not knowable. `reached: true` ONLY IF every call would be refused:
   your answers are used up, or what is left (holds counted) is below a lower bound of any hold admission can compute for that Agent (its tool-less
   system text from its persona, your name and the date, with no conversation, and the others' output limit). Never true while any reply could be
-  admitted. `tight: true` IF a reply could be refused for size: what is left is below the largest plain hold there is (the model's whole context
-  beside its output); `tight: false` means every plain reply fits. `reached` implies `tight`. So there are three states: neither (fits), `tight` (a
+  admitted. `tight: true` IF a reply could be refused for size: what is left is below the largest hold admission can compute for a plain reply of that
+  Agent (its system text with the fullest group scene, the notes it holds, the summary and three times the context cap, never more than the
+  model's context beside its output); `tight: false` means every plain reply fits. A model priced like the design's paid tier is `tight` from the start
+  at 70 points (36 000 bytes of conversation alone hold 108 points): the page then says so, honestly. `reached` implies `tight`. So there are three states: neither (fits), `tight` (a
   longer reply may not be sent), `reached` (certainly refused). Waiting behind other replies' holds is not refused. An Agent with no model (or whose
   site model is gone) answers nobody: its row has `reached` false, `tight` false and `perDay` 0, and your `reached` / `tight` leave it out: yours is
   `reached` when your answers are used up or every other Agent is (with none to ask, when `used` has reached your points), and `tight` when any is.

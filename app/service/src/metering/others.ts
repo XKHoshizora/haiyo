@@ -3,7 +3,19 @@ import type { Lane } from "../agents/runs.ts";
 import type { AgentModel } from "../agents/store.ts";
 import type { Config } from "../config.ts";
 import type { Queryable, Tx } from "../db.ts";
-import { groupSystemText, NO_NOTES, type GroupScene } from "../agents/runtime/prompt.ts";
+import {
+  groupSystemText,
+  GROUP_AGENTS_NAMED,
+  GROUP_PEOPLE_NAMED,
+  NO_NOTES,
+  notesPassage,
+  passageBudget,
+  SUMMARY_HEADING,
+  SUMMARY_SAID_BY,
+  type GroupScene,
+} from "../agents/runtime/prompt.ts";
+import { AGENT_NAME_MAX, DISPLAY_NAME_MAX } from "../schemas.ts";
+import { notesFor } from "../memory/store.ts";
 import type { Resolved } from "../models/resolve.ts";
 import { maxCostMicro } from "./prices.ts";
 import type { PayClass } from "./pool.ts";
@@ -415,8 +427,69 @@ export async function othersPlainFloor(
   return othersFloorHold(config, agent.model, Buffer.byteLength(text, "utf8"));
 }
 
-/** The most a plain reply can hold: the model's whole context beside its output (an input never passes it): the one upper bound that is provable. */
-export const othersCeilingHold = (config: Pick<Config, "siteModels" | "others">, model: AgentModel): bigint => othersFloorHold(config, model, Number.MAX_SAFE_INTEGER);
+/** A string of `n` four-byte characters: the most bytes a name or a line of that many characters can have. */
+const WIDE = (n: number): string => "\u{1F600}".repeat(n);
+
+/** The fullest group scene a system text can show: the longest title, 20 Agents, 30 people, each with the longest names, handles, intros and appellations. */
+function fullScene(): GroupScene {
+  const handle = "a".repeat(49); // <owner's handle (24)>.<name part (24)>
+  return {
+    title: WIDE(60),
+    agents: Array.from({ length: GROUP_AGENTS_NAMED }, () => ({ name: WIDE(AGENT_NAME_MAX), handle, intro: WIDE(40) })),
+    more: true,
+    people: Array.from({ length: GROUP_PEOPLE_NAMED }, () => ({ name: WIDE(DISPLAY_NAME_MAX), handle, role: "你的主人" as const, appellation: WIDE(20) })),
+    morePeople: true,
+  };
+}
+
+/**
+ * The most a plain reply of `agent` to another person can hold: `othersFloorHold` at the most input bytes ADMISSION CAN COMPUTE for it
+ * (`holdTokens` counts utf-8 bytes of the system text and of every message part, at most the model's context beside its output, plus
+ * the images' and PDFs' constants: port-impl.ts `begin`, the `held` sum). What is unknown before the reply is only what the plan lets
+ * in, and each part has a bound of its own:
+ * - the system text: the one `begin` builds (`groupSystemText`) with the Agent's real persona and the owner's name and the FULLEST scene,
+ *   a mark and a roster of the most names there can be (the scene and the people are capped by `GROUP_AGENTS_NAMED`, `GROUP_PEOPLE_NAMED`
+ *   and the schemas' name lengths, at four bytes a character); a social conversation's text is not built yet (B7a) and has no more
+ *   than that scene's;
+ * - the notes passage, appended to it: at most what the Agent's stored notes make (`notesPassage` of ALL of them, hearsay of every
+ *   group, in the group's shorter form: a group is shown a subset of these, and a subset's passage is never longer) and at most
+ *   `passageBudget` weight (`fitNotes`, port-impl.ts:728), a weight being at most 3 bytes (`weight`, metering/tokens.ts);
+ * - the rolling summary, the system text's last passage (`withSummary`): its fixed heading and line and at most `MEMORY.summaryMaxWeight`
+ *   weight as shown, so at most 3 bytes a weight;
+ * - the conversation: the plan keeps messages (labels, quotes and attachments' estimates counted: `shown`, `ContextPlan`, agents/context.ts)
+ *   to at most the place's cap in estimated tokens, an estimate being its weight times a ratio of at least 1 (`planRatio`), so the text
+ *   a plan keeps weighs at most the cap and has at most 3 bytes a weight, attachments' constants (`fixedTokens`, a part of that estimate)
+ *   included: at most 3 x the cap. The cap is the largest that applies to an others' reply: `AGENT_GROUP_CONTEXT_TOKENS` in a group,
+ *   `OTHERS.contextWeight` in a social conversation (agents/context.ts `loadContext`, port-impl.ts:769).
+ * A reply `告诉他们` (toldPassage) is the owner's own, never an others' call. Nothing else is sent: a plain call has no tools, no replayed
+ * calls (the Agent's own conversation only), no greeting.
+ */
+export async function othersPlainCeiling(
+  q: Queryable,
+  config: Pick<Config, "siteModels" | "others" | "siteTimezone" | "memory" | "agentGroupContextTokens">,
+  agent: { id: string; name: string; handle: string; persona: string; ownerId: string; memory: boolean; sharedNotes: boolean; model: AgentModel },
+  now: Date,
+): Promise<bigint> {
+  if (agent.model?.source !== "site") return 0n;
+  const site = config.siteModels.find((m) => m.id === (agent.model as { id: string }).id);
+  if (!site) return 0n;
+  const owner = await q.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
+  const ownerName = owner.rows[0]?.display_name ?? "";
+  const system = groupSystemText({ name: agent.name, handle: agent.handle, persona: agent.persona, bare: "a".repeat(24) }, { displayName: ownerName }, fullScene(), now, config.siteTimezone, "abcdef", false, NO_NOTES, false).text;
+  const maxOutput = Math.min(site.maxOutputTokens, config.others.outputTokens);
+  // Notes: a superset of any place's (the owner's whole view: everything), shown in the group's form.
+  const all = await notesFor(q, agent, { conversationId: "", group: false });
+  const stored = notesPassage(
+    { owner: all.owner, self: all.self, hearsay: all.hearsay.map((h) => ({ speakerName: h.speakerName, text: h.text, saidAt: h.saidAt, group: "" })) },
+    "group",
+    config.siteTimezone,
+    ownerName,
+  );
+  const notes = Math.min(Buffer.byteLength(stored, "utf8"), 3 * Math.floor(passageBudget(site.contextTokens, maxOutput, config.memory.passageShare)));
+  const summary = Buffer.byteLength(`${SUMMARY_HEADING}${SUMMARY_SAID_BY}`, "utf8") + 3 * config.memory.summaryMaxWeight + 16;
+  const conversation = 3 * Math.max(config.agentGroupContextTokens, config.others.contextWeight);
+  return othersFloorHold(config, agent.model, Buffer.byteLength(system, "utf8") + (notes > 0 ? notes + 2 : 0) + summary + conversation);
+}
 
 /**
  * What the owner's page may say of an Agent's room, two one-sided facts (a future reply's hold is not knowable, so one boolean cannot
@@ -426,14 +499,14 @@ export const othersCeilingHold = (config: Pick<Config, "siteModels" | "others">,
  *   reply could be admitted. (Waiting behind other replies' holds is not refused, `heldBackBy`; and the owner's points are looked at
  *   before the Agent's own number, so an Agent whose own number is spent can read not reached while another reply holds the owner's:
  *   admission then waits and refuses, as the same function says.)
- * - `tight`: true IF a reply COULD be refused for size: what is left (holds counted) is below the ceiling (`othersCeilingHold`).
+ * - `tight`: true IF a reply COULD be refused for size: what is left (holds counted) is below the ceiling (`othersPlainCeiling`: the largest hold admission can compute for a plain reply of this Agent, proved part by part there).
  *   False means every plain reply fits. `reached` implies `tight`.
  * `askable` false: no model, or a site model the site no longer has: it can answer nobody, whatever the room; the page leaves it out.
  */
 export async function agentRoom(
   q: Queryable,
-  config: Pick<Config, "others" | "siteTimezone" | "siteModels">,
-  agent: { id: string; ownerId: string; name: string; handle: string; persona: string; model: AgentModel },
+  config: Pick<Config, "others" | "siteTimezone" | "siteModels" | "memory" | "agentGroupContextTokens">,
+  agent: { id: string; ownerId: string; name: string; handle: string; persona: string; memory: boolean; sharedNotes: boolean; model: AgentModel },
   now: Date,
 ): Promise<{ askable: boolean; reached: boolean; tight: boolean }> {
   if (agent.model === null) return { askable: false, reached: false, tight: false };
@@ -442,6 +515,6 @@ export async function agentRoom(
   const floor = await othersCheck(q, config, run, await othersPlainFloor(q, config, agent, null, now), "admission", now);
   const reached = !floor.ok && "limit" in floor;
   if (reached) return { askable: true, reached: true, tight: true };
-  const ceiling = await othersCheck(q, config, run, othersCeilingHold(config, agent.model), "admission", now);
+  const ceiling = await othersCheck(q, config, run, await othersPlainCeiling(q, config, agent, now), "admission", now);
   return { askable: true, reached: false, tight: !ceiling.ok };
 }
