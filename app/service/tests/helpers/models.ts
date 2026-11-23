@@ -43,7 +43,7 @@ export interface CallToolsOptions {
 
 type Step =
   | Answer
-  | { kind: "tools"; calls: Array<{ name: string; input: unknown }>; options: CallToolsOptions }
+  | { kind: "tools"; calls: Array<{ name: string; input: unknown; id?: string }>; options: CallToolsOptions }
   | { kind: "fail"; code: ModelErrorCode; afterText: string; afterReasoning: string; status?: number; usage?: { inputTokens: number; outputTokens: number } }
   | { kind: "cut"; text: string; reasoning: string }
   | { kind: "hang"; before: string; thought: string; gate: Promise<Answer>; reached: (call: ModelCall) => void };
@@ -62,11 +62,11 @@ export interface ScriptedGateway extends ModelGateway {
   /**
    * The next call is a round that ends in tool calls: it streams `options.reasoning`, then `options.text` (if any), then
    * one `tool_call` per call (each with an id no other call of this gateway has; `input: null` for a name the call did
-   * not offer), then a finish naming them, with `options.usage` (default null), `options.truncated`, and an opaque
+   * not offer; a call may name its own `id`), then a finish naming them, with `options.usage` (default null), `options.truncated`, and an opaque
    * assistant turn that survives a JSON round trip, as the real gateway's does. The call must offer tools (it throws
    * otherwise), and the call after it must answer this round (see the header).
    */
-  callTools(calls: Array<{ name: string; input: unknown }>, options?: CallToolsOptions): ScriptedGateway;
+  callTools(calls: Array<{ name: string; input: unknown; id?: string }>, options?: CallToolsOptions): ScriptedGateway;
   /**
    * The next call is one whose upstream refused the tools: it answers as `reply(text, options)` does and, when the call
    * offered tools, its finish reports `toolsRefused`.
@@ -264,9 +264,10 @@ export function scriptedGateway(): ScriptedGateway {
       yield* emit("reasoning", step.options.reasoning ?? "");
       yield* emit("text", text);
       const made: ToolCall[] = [];
-      for (const { name, input } of step.calls) {
+      for (const { name, input, id } of step.calls) {
         signal.throwIfAborted();
-        const toolCall = { id: `scripted-call-${++toolCallsMade}`, name, input: offered.has(name) ? input : null };
+        // `id`: a call given an id of its own (a provider's long one; the others' reply's bound on ids) has it.
+        const toolCall = { id: id ?? `scripted-call-${++toolCallsMade}`, name, input: offered.has(name) ? input : null };
         made.push(toolCall);
         yield { type: "tool_call", call: toolCall };
       }

@@ -96,9 +96,10 @@ export interface ContextRun {
    * messages only — and nothing at or before seq `after`, the run's asker's line (`askerLine`): no message, no quote of
    * one, no attachment of one — but the calls it answers, at `calls` (`callsSeen`): one after the line whole, one at or
    * before it as its text only (neither its own attachment nor its quote, fix round 3). The Agent's own conversation is
-   * limited by the model's context alone.
+   * limited by the model's context alone. `place` `social` (a social conversation, B7a): the same, with the label's role words of a
+   * social conversation (`speakerRole`: 对方, 你的主人); absent, a group's.
    */
-  group: { maxTokens: number; maxMessages: number; after: number; calls: readonly number[] } | null;
+  group: { maxTokens: number; maxMessages: number; after: number; calls: readonly number[]; place?: "group" | "social" } | null;
   /**
    * The ratio the context is planned at (metering/tokens.ts `planRatio` of the model's learned ratio, read once by the
    * run): every text of the plan — the system text, the messages, the cut of the newest — counts its weight times this.
@@ -334,7 +335,7 @@ export async function askerLine(q: Queryable, runId: string): Promise<number> {
  * The calls reply run `runId` of Agent `agentId` answers that the Agent can see and show, by seq, oldest first: of the
  * messages that called for it (`agent_runs.call_seqs`, which holds the latest it covers too as it is written — but a told
  * reply's, which hold only the calls noted on it, all after what it covers and shown to it as nothing, `upTo`; its
- * `covers_seq` alone when not known — a call `runs.ts dropBlockedCalls` dropped is in neither), those that are text or
+ * `covers_seq` alone when not known — a call `runs.ts dropRefusedCalls` dropped is in neither), those that are text or
  * file messages the Agent can see (`VISIBLE_JOIN`) — one at or before the run's line
  * `line` (`askerLine`) only when it has text: it is shown even there, but as its text only (fix round 3: not its file).
  * What it was asked is answered, whoever spoke since. None: nothing is left to answer.
@@ -559,7 +560,7 @@ async function loadPage(
             id: r.sender_id,
             name: r.sender_name,
             handle: r.sender_handle,
-            role: speakerRole(r.sender_id, r.sender_kind, run.ownerId),
+            role: speakerRole(r.sender_id, r.sender_kind, run.ownerId, run.group?.place ?? "group"),
             present: r.sender_present,
             quoted,
           }
@@ -839,6 +840,39 @@ export async function loadGroupScene(
       appellation: r.id === agent.ownerId ? agent.ownerAppellation : r.appellation,
     })),
     inGroup: people.rows[0]?.in_group ?? 0,
+  };
+}
+
+/** The social conversation a run of `agent` answers in, for its system text (`socialSystemText`): the other party and the Agent's own owner. */
+export interface SocialScene {
+  /** The one other participant (`social_pairs`): their account, name, handle and kind. */
+  other: { id: string; name: string; handle: string; kind: "human" | "agent" };
+  /** Whose Agent this is: the Agent's OWN owner alone (never the owner of the other party's Agent, who is a stranger to it), as the owner's own text shows the name. */
+  owners: Array<{ id: string; displayName: string }>;
+}
+
+/**
+ * The social conversation `conversationId` as `agent` answers in it: the other participant (name, handle, kind) and the supervising
+ * owner (the Agent's own, never the other party's), no appellations. Null when the Agent is not a current member there, or
+ * the conversation has no pair with another party (the run is then `REMOVED`). Plain reads, under the caller's lock on the
+ * conversation's row.
+ */
+export async function loadSocialScene(q: Queryable, agent: Pick<AgentRow, "id" | "ownerId">, conversationId: string): Promise<SocialScene | null> {
+  if (!(await currentMembership(q, conversationId, agent.id))) return null;
+  const { rows } = await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent"; owner_id: string | null }>(
+    `select p.id, p.display_name as name, ${handleOf("p")} as handle, p.kind, p.owner_id
+       from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id)
+      where sp.conversation_id = $1
+      order by p.id`,
+    [conversationId],
+  );
+  const other = rows.find((r) => r.id !== agent.id);
+  if (!other || !rows.some((r) => r.id === agent.id)) return null;
+  // The Agent's own owner alone: in a conversation with another Agent, that Agent's owner is a stranger to this one and is no owner of it (B-4 review m7).
+  const owners = await q.query<{ id: string; display_name: string }>("select id, display_name from principals where id = $1", [agent.ownerId]);
+  return {
+    other: { id: other.id, name: other.name, handle: other.handle, kind: other.kind },
+    owners: owners.rows.map((o) => ({ id: o.id, displayName: o.display_name })),
   };
 }
 

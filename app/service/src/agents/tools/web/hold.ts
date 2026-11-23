@@ -2,8 +2,9 @@ import { MICRO_PER_POINT, siteDay } from "../../../accounts/store.ts";
 import type { Config } from "../../../config.ts";
 import type { Db, Tx } from "../../../db.ts";
 import type { ChargeTo } from "../../../metering/admit.ts";
+import { keepsRoom, othersFits } from "../../../metering/others.ts";
 import { fuseCost, inBand, searchCharge, tool } from "../../../metering/pool.ts";
-import { lockPots, readParts } from "../../../metering/wallet.ts";
+import { classOf, lockPots, readParts } from "../../../metering/wallet.ts";
 import { budgetReachedWith, type Lane } from "../../runs.ts";
 import type { AgentRow } from "../../store.ts";
 import { WEB_LANE_BUDGET, WEB_NO_MONEY, WEB_REPLY_CAP, WEB_SITE_DAY, WEB_UNAVAILABLE } from "./words.ts";
@@ -140,9 +141,10 @@ export async function recordSearchCost(db: Db, held: HeldSearch, actual: bigint 
  *    provider's model (no class: its model costs nothing) — else refused (`unavailable`);
  * 2. the money, each bound its own refusal (`RefusedBy`): the model part of the reply so far at its bound (a site model's
  *    hold, less the room kept on `AB` for a last call, `reserveMicro`, and less its searches; 0 for a provider's model),
- *    with what its searches are charged so far and this one's price, within `TOOLS.maxPoints` (`reply_cap`); no budget of
- *    its lane reached (runs.ts `budgetReachedWith`, counting the searches its Agent's other replies in the same daily lane
- *    hold now: `runningWeb`; `lane_budget`); and the price held whole on the owner's pots beside every promise (pool.ts
+ *    with what its searches are charged so far and this one's price, within `TOOLS.maxPoints` (`reply_cap`); no chain budget
+ *    reached (runs.ts `budgetReachedWith`; `lane_budget`), and for a reply somebody other than the owner called for the
+ *    owner's numbers kept (`othersFits`, counting settled plus every running reply's hold, the run's own included;
+ *    `lane_budget`); and the price held whole on the owner's pots beside every promise (pool.ts
  *    `tool`, class `AB` whatever the model's tier — the allowance first at settlement —, under the account lock: so a
  *    search is never paid by forgiveness; `no_points`);
  * 3. today's money fuse of the whole site (`takeFuse`, at the configured estimate) — past it, refused (`site_fuse`, and
@@ -153,10 +155,10 @@ export async function recordSearchCost(db: Db, held: HeldSearch, actual: bigint 
  */
 export async function holdSearch(
   t: Tx,
-  config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "tools">,
+  config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "tools" | "others">,
   o: {
     run: { id: string; ownerId: string; conversationId: string };
-    agent: Pick<AgentRow, "id" | "conversationId" | "othersBudgetMicro" | "proactiveBudgetMicro" | "chainBudgetMicro">;
+    agent: Pick<AgentRow, "id" | "conversationId" | "chainBudgetMicro">;
     lane: { lane: Lane; coversSeq: number };
     /** The room the reply keeps on the free allowance for its last call (port-impl.ts `RunMoney.reserveMicro`). */
     reserveMicro: bigint;
@@ -175,12 +177,19 @@ export async function holdSearch(
   const price = BigInt(web.pointsMicroPerSearch);
   const hold = BigInt(row.hold);
   const searched = BigInt(row.web);
-  const reserve = site && row.charge_to === "free" ? o.reserveMicro : 0n;
+  // The room kept for the last call: on the free allowance, and for every reply somebody other than the owner called for (`keepsRoom`).
+  const reserve = site && row.charge_to !== null && keepsRoom(classOf(row.charge_to as "free" | "balance"), o.lane.lane) ? o.reserveMicro : 0n;
   const model = site && hold - reserve - searched > 0n ? hold - reserve - searched : 0n;
   const spent = model + BigInt(row.web_charge) + price;
   if (spent > BigInt(config.tools.maxPoints) * MICRO_PER_POINT) throw new SearchRefused("reply_cap");
-  if (await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent, config, { runningWebExcept: o.run.id })) {
+  if (await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent)) {
     throw new SearchRefused("lane_budget");
+  }
+  // An others' reply: the owner's numbers (and the Agent's own), counting what is settled today and every running reply's hold, this
+  // run's own included — its model part and its earlier searches, as `spent` counts them above — under the account lock (B3, D19).
+  if (o.lane.lane !== "own") {
+    const verdict = await othersFits(t, config, { id: o.run.id, ownerId: o.run.ownerId, agentId: o.agent.id, lane: o.lane.lane }, price, "search", now);
+    if (!verdict.ok) throw new SearchRefused("lane_budget");
   }
   const { pots } = await lockPots(t, config, o.run.ownerId, now);
   if (tool(pots, await readParts(t, o.run.ownerId), { run: o.run.id, cls: "AB", x: price }) === null) throw new SearchRefused("no_points");

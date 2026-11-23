@@ -43,6 +43,15 @@ export interface ToolRun {
   /** At most how many calls of each tool, by name, one reply runs (loop.ts `LoopGuard`); a tool not named has only the round cap. */
   readonly perTool: Readonly<Record<string, number>>;
   /**
+   * An others' reply (a reply somebody other than the Agent's owner called for): the most calls that run in the whole reply, all
+   * tools together (`OTHERS.toolCalls`, loop.ts `LoopGuard.maxCalls`), and the most further calls it has answered with the
+   * over-cap note (`OTHERS.overCapNotes`). Set, the tool phase also ends after the first round that called tools, whatever
+   * it ran (the next call is the last), and a turn asking for more calls than both allow is discarded, once, and the reply
+   * finished without tools (worker.ts; plan B2a, B2b). Absent: neither — the owner's own replies, as before.
+   */
+  readonly callsCap?: number;
+  readonly overCapNotes?: number;
+  /**
    * What each tool's work is, by name: what the reply's status says while it runs (`AgentPort.activity`) and what it is
    * counted under in what the reply looked up (`Reply.lookups`). A tool not named shows nothing and counts nothing.
    */
@@ -309,7 +318,9 @@ export interface AgentPort {
    * Posts what a reply said before it calls a tool, at once, as a message of its own ("先应一声、再交付"): its
    * acknowledgement — at most one per reply (the worker's rule), the answer coming later as its reply (`post`). Its text
    * and reasoning are kept as a reply's are (in a group without the run's mark), it calls nobody (its mentions are not
-   * read), and it ends nothing: the run goes on. "refused" and "empty" as `post` says them.
+   * read), and it ends nothing: the run goes on. "refused" and "empty" as `post` says them. In a SOCIAL conversation there is no
+   * acknowledgement message: the port posts nothing and answers "refused", which tells the worker to leave the stream alone, so that what
+   * the reply said stays the beginning of the one reply that is posted (it restarts the stream on any other answer).
    */
   acknowledge(run: RunTicket, said: { text: string; reasoning: string }): Promise<"posted" | "refused" | "empty">;
   /**

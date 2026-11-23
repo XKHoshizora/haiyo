@@ -106,7 +106,7 @@ describe("on a phone", () => {
     fireEvent.click(within(bar()).getByRole("button", { name: "设置" }));
     await flush();
     const rows = [...document.querySelectorAll(".list-col .row.slim")].filter((r) => !r.classList.contains("danger-row"));
-    expect(rows.map((r) => r.querySelector(".row-name").textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "记忆宫殿", "拉黑", "服务条款", "隐私政策", "联系我们"]);
+    expect(rows.map((r) => r.querySelector(".row-name").textContent)).toEqual(["我的资料", "模型供应商", "用量与余额", "别人怎么用我的 Agent", "记忆宫殿", "拉黑", "服务条款", "隐私政策", "联系我们"]);
     for (const row of rows) expect(row.querySelector("svg.row-chevron")).toBeTruthy();
     expect(document.querySelector(".list-col").textContent).not.toContain("快捷入口");
   });

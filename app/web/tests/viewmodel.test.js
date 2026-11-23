@@ -230,18 +230,28 @@ describe("messages", () => {
     );
     const v = toView(M.applySync(M.initial(), sync), { now: NOW });
     expect(v.convs[G1].messages.map((m) => [m.text, Boolean(m.hidden)])).toEqual([
-      ["「安的助手」今天的额度已用完", false],
+      ["「安的助手」今天只回复它的主人了", false],
       ["不认识的 Agent", false],
     ]);
   });
 
-  it("my Agent carries the daily budget for others' calls and today's spend as the service says them; absent stays absent", () => {
-    const withBudget = (extra) =>
+  it("my Agent carries its own limit on others' use and what they used today as the service says them; absent or malformed stays absent; the old fields are read nowhere", () => {
+    const withLimit = (extra) =>
       toView(M.applyAgents(M.applySync(M.initial(), syncOf([agentConv(A1, AG1)], [], [...PRINCIPALS, agentPrincipal(AG1)])), [agentOf(AG1, extra)]), { now: NOW }).agents[AG1];
-    expect(withBudget({ othersBudget: "35.5", othersSpentToday: "3.5" })).toMatchObject({ othersBudget: "35.5", othersSpentToday: "3.5" });
-    expect(withBudget({ othersBudget: null, othersSpentToday: "0" })).toMatchObject({ othersBudget: null, othersSpentToday: "0" });
-    expect(withBudget({})).not.toHaveProperty("othersBudget");
-    expect(withBudget({})).not.toHaveProperty("othersSpentToday");
+    expect(withLimit({ othersLimit: { answers: 5, points: "35.5" }, othersUsedToday: { answers: 2, points: "3.5" } })).toMatchObject({
+      othersLimit: { answers: 5, points: "35.5" },
+      othersUsedToday: { answers: 2, points: "3.5" },
+    });
+    // A part with no limit of its own is null; both null is an Agent with none (never an absent `othersLimit`, which the service always sends).
+    expect(withLimit({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } })).toMatchObject({ othersLimit: { answers: null, points: null } });
+    expect(withLimit({})).not.toHaveProperty("othersLimit");
+    expect(withLimit({})).not.toHaveProperty("othersUsedToday");
+    for (const bad of [{ answers: "5", points: "1" }, { answers: 1.5, points: null }, { answers: 5, points: 7 }, null, "70"]) expect(withLimit({ othersLimit: bad }), JSON.stringify(bad)).not.toHaveProperty("othersLimit");
+    for (const bad of [{ answers: 2 }, { answers: "2", points: "1" }, null]) expect(withLimit({ othersUsedToday: bad }), JSON.stringify(bad)).not.toHaveProperty("othersUsedToday");
+    // The two fields the wire no longer has are not read, whatever a (stale) answer says; `proactiveSpentToday` is back (owner only, a string).
+    const old = withLimit({ othersBudget: "35.5", othersSpentToday: "3.5", proactiveSpentToday: "1" });
+    for (const key of ["othersBudget", "othersSpentToday"]) expect(old).not.toHaveProperty(key);
+    expect(old).toMatchObject({ proactiveSpentToday: "1" });
   });
 
   it("my Agent carries how it addresses me and the others as the service says them; absent stays absent (someone else's view has neither)", () => {

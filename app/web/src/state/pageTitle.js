@@ -6,7 +6,7 @@ import { convTitle, entity, nameOf } from "./selectors.js";
 
 export const SECTION_NAMES = { chat: "消息", contacts: "通讯录", agents: "Agent", settings: "设置" };
 /** The settings pages, as their rows in the settings list name them (pages/Settings.jsx draws the rows from here). */
-export const SETTINGS_PAGE_NAMES = { profile: "我的资料", providers: "模型供应商", usage: "用量与余额", memory: "记忆宫殿", blocks: "拉黑" };
+export const SETTINGS_PAGE_NAMES = { profile: "我的资料", providers: "模型供应商", usage: "用量与余额", others: "别人怎么用我的 Agent", memory: "记忆宫殿", blocks: "拉黑" };
 
 /** The parts of the page's name, the page first (the product's name is not among them). */
 function partsOf(state) {

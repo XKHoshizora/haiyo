@@ -153,7 +153,7 @@ describe("switch off: nothing changes", () => {
     expect(toolsPassage("group")).toBe(TODAY_GROUP);
     expect(toolsPassage("own", "unavailable")).toBe(`${TODAY_OWN}\n${NO_WEB_HERE}`);
     expect(toolsPassage("group", "unavailable")).toBe(`${TODAY_GROUP}\n${NO_WEB_HERE}`);
-    expect(toolSpecs({ group: false }).map((t) => t.name)).toEqual(["search_messages", "current_time", "read_file"]);
+    expect(toolSpecs({ place: "own" }).map((t) => t.name)).toEqual(["search_messages", "current_time", "read_file"]);
     // The passages of a reply offered the web search are pinned too (their bytes at 4476eda, before Agent social's Step 0 gave the
     // function a `Place`): a social reply's arm (plan B7a) must leave these two exactly as they are.
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -171,7 +171,7 @@ describe("switch off: nothing changes", () => {
     gateway.callTools([{ name: SEARCH_WEB, input: { query: QUERY } }]).reply("见〔w1〕。");
     expect(await worker.runOnce()).toBe(true);
     const [first, second] = gateway.calls;
-    expect(first!.tools).toEqual(toolSpecs({ group: false }));
+    expect(first!.tools).toEqual(toolSpecs({ place: "own" }));
     expect(first!.system).toContain(TODAY_OWN);
     expect(first!.system).not.toContain("search_web");
     expect(first!.system).not.toContain(NO_WEB_HERE);
@@ -256,7 +256,7 @@ describe("who is offered it", () => {
     await say(owner, own, "你好");
     off.reply("你好。");
     await webWorker(off, null, app.deps.config).worker.runOnce();
-    expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ group: false }));
+    expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ place: "own" }));
     expect(gateway.calls[0]!.system).toBe(off.calls[0]!.system.replace(TODAY_OWN, `${TODAY_OWN}\n${NO_WEB_HERE}`));
     expect(engine.queries).toEqual([]);
   });
@@ -371,13 +371,20 @@ describe("the pre-hold's money (the pool: held whole or refused)", () => {
 
   it("a budget of its lane reached with the search (the others' daily, crossing it; the chain budget in a group): refused, nothing counted", async () => {
     // Others' daily budget 3 points: 0.5 settled today + the reply's 2 held + the search's 0.77 = 3.27 ≥ 3 — refused.
+    // (Decided by `othersFits` since B3, from the database: the run's row says its lane, the Agent's row its budget.)
+    const asOthers = async (x: Awaited<ReturnType<typeof admitted>>) => {
+      await db.query("update agent_runs set lane = 'others' where id = $1", [x.runId]);
+      await db.query("update agents set others_budget_micro = $2 where principal_id = $1", [x.agent.agentId, (3n * POINT).toString()]);
+    };
     const r = await admitted("lanea");
+    await asOthers(r);
     await paidReply(db, { agentId: r.agent.agentId, ownerId: r.owner.id, conversationId: r.agent.conversationId, lane: "others", micro: 500_000n });
-    const others = { lane: { lane: "others" as const, coversSeq: 0 }, agent: { othersBudgetMicro: 3n * POINT } };
+    const others = { lane: { lane: "others" as const, coversSeq: 0 } };
     await expect(preHold(r, webConfig(), others)).rejects.toMatchObject({ by: "lane_budget" });
     expect([await runRow(r.runId), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0]);
     // Without what was settled before, 2.77 < 3: held.
     const s = await admitted("laneb");
+    await asOthers(s);
     await preHold(s, webConfig(), others);
     expect((await runRow(s.runId)).web_searches).toBe(1);
     // A reply in a group covering more than its latest message from a person (an Agents' chain): its chain budget.
@@ -548,7 +555,7 @@ describe("the count and the charge stand however the search ends", () => {
       agentId: agent.id,
       ownerId: owner.id,
       conversationId: own,
-      group: false,
+      place: "own" as const,
       refs: new RunRefs({}, true),
       heardTo: 0,
       mark: null,

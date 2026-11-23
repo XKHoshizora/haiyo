@@ -1,6 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { BlobStore } from "../../attachments/blob.ts";
 import type { Config } from "../../config.ts";
+import type { Place } from "../../social/place.ts";
 import type { Db } from "../../db.ts";
 import type { ToolCall, ToolSpec } from "../../models/gateway.ts";
 import { createSlots, type Slots } from "../../slots.ts";
@@ -36,7 +37,8 @@ export { SEARCH_WEB } from "./web/tool.ts";
  * in its own conversation where what its call shows begins (`shownFrom`).
  */
 export interface RunScope extends RunTicket {
-  readonly group: boolean;
+  /** Where the run is (port-impl.ts `RunFlags.place`): decides what the tools may look at (a group: this group; a social conversation: this conversation; the own conversation: its own and its groups, never a social one). */
+  readonly place: Place;
   readonly refs: RunRefs;
   readonly heardTo: number;
   readonly mark: string | null;
@@ -90,8 +92,8 @@ export interface ElsewhereAsk {
 }
 
 /** The tools a reply is offered: the search (in a group, of that group only), the clock, the file; and the web search when it is (`web`). */
-export function toolSpecs(where: { group: boolean; web?: boolean }): ToolSpec[] {
-  return [searchSpec(where.group), clockSpec, fileSpec, ...(where.web === true ? [webSpec] : [])];
+export function toolSpecs(where: { place: Place; web?: boolean }): ToolSpec[] {
+  return [searchSpec(where.place), clockSpec, fileSpec, ...(where.web === true ? [webSpec] : [])];
 }
 
 /** What each tool's work is (its status while it runs, what it is counted under). */
@@ -149,10 +151,10 @@ export function createToolbox(deps: ToolDeps): Toolbox {
   return {
     offer: (_run, where) => {
       const perTool = { [SEARCH_MESSAGES]: searchPerReply, [READ_FILE]: filePerReply, [CURRENT_TIME]: timePerReply };
-      if (web === null) return { tools: toolSpecs({ group: where.group }), perTool, kinds: { ...KINDS } };
+      if (web === null) return { tools: toolSpecs({ place: where.place }), perTool, kinds: { ...KINDS } };
       const offered = where.web === true;
       return {
-        tools: toolSpecs({ group: where.group, web: offered }),
+        tools: toolSpecs({ place: where.place, web: offered }),
         perTool: offered ? { ...perTool, [SEARCH_WEB]: web.perReply } : perTool,
         kinds: offered ? { ...KINDS, [SEARCH_WEB]: "web" as const } : { ...KINDS },
         web: offered ? "offered" : "unavailable",

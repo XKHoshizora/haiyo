@@ -469,7 +469,8 @@ describe("the holds of one owner's replies are capped together by queueing, not 
     const ned = await signUp(app, "groupned");
     const a = await mustCreateAgent(app, owner, { model: FIVE, handle: "held_ann", name: "Ann", persona: "简短地回答。" });
     const b = await mustCreateAgent(app, owner, { model: FIVE, handle: "held_bob", name: "Bob", persona: "简短地回答。" });
-    await grant(db, owner.id, 6n * POINT);
+    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (800 output tokens at 1 000: 0.8, B2a).
+    await grant(db, owner.id, 5_500_000n);
     const g = await group(app, owner, "team", [mia, ned]);
     for (const agent of [a, b]) expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
     const [miaSocket, ownerSocket] = [await connect(app, mia), await connect(app, owner)];
@@ -687,7 +688,8 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
     const [mia, ned] = [await signUp(app, "keepmia"), await signUp(app, "keepned")];
     const x = await mustCreateAgent(app, owner, { model: FIVE, handle: "keep_x", name: "Xia", persona: "简短地回答。Xia", othersBudget: "6" });
     const y = await agentOf(owner, FIVE, "Yan");
-    await grant(db, owner.id, 6n * POINT);
+    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (800 output tokens at 1 000: 0.8, B2a).
+    await grant(db, owner.id, 5_500_000n);
     const g = await group(app, owner, "team", [mia, ned]);
     expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: x.id })).status).toBe(201);
     const { port } = workerWith(scriptedGateway());
@@ -1017,7 +1019,8 @@ describe("fix round 2: the free allowance's room for the last call, renewed a ro
     const y = await agentOf(owner, FIVE, "Yan");
     const z = await agentOf(owner, PAID, "Zed");
     const w = await agentOf(owner, PAID, "Wen");
-    await grant(db, owner.id, 6n * POINT);
+    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (800 output tokens at 1 000: 0.8, B2a).
+    await grant(db, owner.id, 5_500_000n);
     const g = await group(app, owner, "team", [mia, ned]);
     expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: x.id })).status).toBe(201);
     const { port } = workerWith(scriptedGateway(), { config: { ...app.deps.config, agentMaxConcurrentOthersRuns: 1 } });

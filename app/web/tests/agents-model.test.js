@@ -555,13 +555,14 @@ describe("providers, usage and site models", () => {
   it("an Agent's proactive settings come only as the service says them, and a malformed one is not kept", () => {
     const agentOfView = (fields) => Object.values(view(M.applyAgent(M.initial(), { id: "00000000-0000-4000-8000-0000000000a1", handle: "h", name: "n", ...fields })).agents)[0];
     expect(agentOfView({})).not.toHaveProperty("proactive");
-    expect(agentOfView({ proactive: true, proactiveLevel: "more", proactiveBudget: "20", proactiveSpentToday: "1.5" })).toMatchObject({
+    expect(agentOfView({ proactive: true, proactiveLevel: "more", proactiveBudget: "70" })).toMatchObject({
       proactive: true,
       proactiveLevel: "more",
-      proactiveBudget: "20",
-      proactiveSpentToday: "1.5",
+      proactiveBudget: "70",
     });
-    const odd = agentOfView({ proactive: "yes", proactiveLevel: "loud", proactiveBudget: 20, proactiveSpentToday: null });
+    // What its proactive replies cost today is the service's, to the owner (a string), and nothing else is kept.
+    expect(agentOfView({ proactive: true, proactiveSpentToday: "1.5" })).toMatchObject({ proactiveSpentToday: "1.5" });
+    const odd = agentOfView({ proactive: "yes", proactiveLevel: "loud", proactiveBudget: 20, proactiveSpentToday: 1.5 });
     for (const key of ["proactive", "proactiveLevel", "proactiveBudget", "proactiveSpentToday"]) expect(odd).not.toHaveProperty(key);
   });
 });

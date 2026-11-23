@@ -60,3 +60,15 @@ export async function polishShot(page, name, { clip } = {}) {
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(POLISH_DIR, `${name}.png`), animations: "disabled", caret: "hide", clip });
 }
+
+/** Lane socialb's shots (the use page and the Agent form), under .superpowers/sdd/2026-11-22-polish/socialb-shots/ of the checkout's top folder. */
+const SOCIALB_DIR = path.resolve(WEB_DIR, "..", "..", "..", "..", ".superpowers", "sdd", "2026-11-22-polish", "socialb-shots");
+
+/** One screenshot `<name>.png` of the page as it is for lane socialb's report (only with E2E_SHOTS=1). */
+export async function socialbShot(page, name, { fullPage = false } = {}) {
+  if (!shooting) return;
+  mkdirSync(SOCIALB_DIR, { recursive: true });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(SOCIALB_DIR, `${name}.png`), animations: "disabled", caret: "hide", fullPage });
+}
+

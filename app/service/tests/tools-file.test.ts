@@ -307,7 +307,7 @@ describe("reading a file", () => {
     const refs = new RunRefs();
     const ref = refs.file(early.id, { conversationId: g, seq: early.seq });
     const heardTo = Number((await db.query<{ seq: string }>("select seq::text from conversations where id = $1", [g])).rows[0]!.seq);
-    const scope = { id: run, agentId: agent.id, ownerId: owner.id, conversationId: g, group: true, refs, heardTo, mark: null };
+    const scope = { id: run, agentId: agent.id, ownerId: owner.id, conversationId: g, place: "group" as const, refs, heardTo, mark: null };
     const out = await runTool(deps(), scope, { id: "c1", name: READ_FILE, input: { file: ref } }, new AbortController().signal);
     expect(out.output).toEqual({ error: "这个文件现在看不到了。" });
     // A file sent after the line (and within what the reply heard) is read.

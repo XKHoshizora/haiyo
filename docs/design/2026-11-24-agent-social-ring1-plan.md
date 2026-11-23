@@ -32,7 +32,7 @@ Each is reported to the controller. "Controller ruling 2026-11-24" marks a rulin
 | D6 | The judge, the withheld check and the persona aid start from a reply, a post and a persona save | Those sites are lane B's files | The worker in `memory/judge.ts` polls. In ring 1a it handles only Agents whose `persona_version` passed `persona_checked_version` (the persona aid, A8b, moved to ring 1a by Controller ruling 2026-11-24 (verification, N4)). In ring 1b it adds queued verdict rows and runs with `withheld_notes` not checked. A reply never waits for it. |
 | D7 | 「谁可以加它为好友」 in web `AgentForm` | `AgentForm.jsx` holds the per-Agent others' number, which lane B rewrites | The setting, picks, contacts, requests and 「它和别人的对话」 live in the tab 「别人」 on the Agent's page (`pages/AgentOthers.jsx`, lane A, ring 1a), mounted by Step 0 in `Agents.jsx`. |
 | D8 | A new `findAgentByHandle` and a lookup | One lookup exists: `GET /api/principals/lookup` (principals/routes.ts:105); it lower-cases the handle (:113) | The same route answers a discoverable Agent by its full handle `<owner>.<name part>`, case-insensitively as people's handles already are (attack M1). A person's answer is byte-for-byte today's. |
-| D9 | `accounts.others_answers` 50, `others_points_micro` 70 | Constants the controller tunes; `agents.others_budget_micro` defaults to 20 points for every Agent (migrations/020_others_budget.sql:9) | Account columns nullable, null reads `OTHERS.answersPerDay` / `OTHERS.pointsPerDay`. **Controller ruling 2026-11-24 (attack, I7):** lane B's 074 (B4; moved out of Step 0 by Controller ruling 2026-11-24 (verification, E1)) raises an Agent's number from 20 to 70 points where it still holds 020's default. A value an owner set to exactly 20 cannot be told from the default, so **every row at exactly 20 points is raised**. New Agents get no number of their own (null: the owner's numbers bind). **Controller ruling 2026-11-24 (final):** the cap is per owner per day, one value each (50 answers, 70 points by default), decided by `othersFits` under the account lock; it never multiplies with the number of Agents. No migration writes an owner number: null reads the config default. An Agent's own number is only a sub-limit inside its owner's, and the raise to 70 (the owner's default) cannot pass it. The design's migration table says otherwise; both sentences are set side by side under "Design conflict for the owner", and ring 1a implements the per-owner reading. Acceptance data is disposable. The 70 default is still the owner's to confirm (Rollout). |
+| D9 | `accounts.others_answers` 50, `others_points_micro` 300 (Owner decision 2026-11-25 (cap); it was 70) | Constants the controller tunes; `agents.others_budget_micro` defaults to 20 points for every Agent (migrations/020_others_budget.sql:9) | Account columns nullable, null reads `OTHERS.answersPerDay` / `OTHERS.pointsPerDay`. **Controller ruling 2026-11-24 (attack, I7):** lane B's 074 (B4; moved out of Step 0 by Controller ruling 2026-11-24 (verification, E1)) raises an Agent's number from 20 to 70 points where it still holds 020's default. A value an owner set to exactly 20 cannot be told from the default, so **every row at exactly 20 points is raised**. New Agents get no number of their own (null: the owner's numbers bind). **Controller ruling 2026-11-24 (final):** the cap is per owner per day, one value each (50 answers, 70 points by default), decided by `othersFits` under the account lock; it never multiplies with the number of Agents. No migration writes an owner number: null reads the config default. An Agent's own number is only a sub-limit inside its owner's, and the raise to 70 (the owner's default) cannot pass it. The design's migration table said otherwise; **Owner decision 2026-11-25** settles it for the shared cap (the section above), which ring 1a implements. Acceptance data is disposable. The 70 default is still the owner's to confirm (Rollout). |
 | D10 | The points cap waits in `HeldBack` | `HeldBack.on` takes `free`, `balance`, `any` (admit.ts:56) | An others' hold-back is `HeldBack(behind, "any")`; the owner's own replies never wait behind it (`olderMarkSql`, admit.ts:130). |
 | D11 | "Tools are offered only when the advisory room covers the hold with tools" | Step 1 of `begin` has the plan, not yet the attachments' bytes | Step 1 estimates the hold with tools from the plan's texts; step 3 decides exactly under the lock. If step 3 refuses a with-tools hold for points while the plain hold fits, the run falls back to a plain call (attack M12). This holds for both kinds of points refusal, a wait or a limit: one money invariant (Controller ruling 2026-11-24 (verification), N3; B1). |
 | D12 | Lanes share nothing after Step 0 | `README.md` headings must match served routes (`tests/readme.test.ts`); `config.ts`, `app.ts`, both `HIDDEN_KEYS` lists, web `api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx`, `.env.example`, `app/deploy/README.md`, the e2e env lists and `tests/helpers/social.ts` are needed by both | Step 0 writes them once: the route plugins of both rings are wired in `app.ts` and register no route (as built: a stub answering 404 is indistinguishable from no route, and it would need an exemption from the fuzz rule), the README carries the shapes as planned entries, the config groups are complete, `seedSocial` is frozen. Neither lane edits them afterwards; lane I tidies the README. A lane that needs a change there stops and reports. Accepted by the controller. |
@@ -45,23 +45,31 @@ Each is reported to the controller. "Controller ruling 2026-11-24" marks a rulin
 | D19 | `othersFits`: "settled + holds ≤ cap, exactly" | Today's pre-hold counts the run's own model part before its lane check (tools/web/hold.ts:176–182) | **Controller ruling 2026-11-24 (attack, C2):** `othersFits` counts every running others' run's `hold_micro`, this run's own included, at admission (where it is still 0: `admitRun` writes it after `admit`, admit.ts:247), at the search pre-hold and at each round. One formula, one function. |
 | D20 | `assemble` and `PLACES` "land with the social lane" (harness §2) | — | Deferred to the errands plan on purpose (attack M13): ring 1 introduces `Place` and threads it through each site; the errands plan replaces the threading with `assemble(run, place)` when `ask_agent` joins the own row. |
 
-### Design conflict for the owner (Controller ruling 2026-11-24 (final))
+### Owner decision 2026-11-25: the others' cap is shared (settles the design's two conflicting sentences; replaces the note "Design conflict for the owner")
 
-The design says two things about the owner's points number that cannot both hold for an owner with more than one Agent:
-
-| Where | The sentence (design rev 3) |
-|---|---|
-| §0, sentence 8, and §5 "Numbers" | "Others' use is capped per owner by two numbers." / "`accounts.others_answers` (default 50) and `accounts.others_points_micro` (proposed default **70**, derived below) — 「别人每天最多让我的 Agent 回复 50 次，最多花我 70 点」." |
-| §5 "Migration", row "Points", column "After" | "that Agent's own number unchanged; the owner's number is the sum of its Agents' (null counts as 100 000, capped there). The room is now hard (holds counted)." |
-
-**Ring 1a implements the per-owner reading:**
-- Every owner has one points number and one answers number per site day (default 70 and 50; null in `accounts` reads the config default).
+The design said two things about the owner's points number that could not both hold for an owner with more than one Agent (§0 and §5 "Numbers": one cap per owner; §5 "Migration": the sum of the Agents' numbers). **The owner has decided: the others' cap is SHARED.** 70 points and 50 answers per person per day, across all of that person's Agents. An Agent's own number is only a sub-limit inside it, empty by default for a new Agent. The sum sentence is not implemented and is withdrawn.
+- Every owner has one points number and one answers number per site day (default 300 and 50; null in `accounts` reads the config default).
 - `othersFits` enforces both under the account lock, whatever the number of Agents.
 - No migration writes a sum.
 - An Agent's own number (`agents.others_budget_micro`, `agents.others_answers`) is a sub-limit inside its owner's. The I7 raise (20 → 70) sets it to the owner's default, so it can never let the owner's total pass the owner's cap.
-- An owner with three Agents at the old default therefore has 70 points for all three together, not 210.
+- An owner with three Agents at the old default therefore has 300 points for all three together, not 900 (Owner decision 2026-11-25 (cap)).
+- The web says it so (B9a, B9b): the use page's sentence 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {300} 点」 is the owner's one pair for all their Agents; the form's 「它自己的上限（可不填）」 is empty for a new Agent and says that empty means 「和你所有的 Agent 一起用你的总数」.
 
-The sum sentence is not implemented. A later ruling may restore it; that would be one `insert … on conflict` in a new migration.
+### Owner decision 2026-11-25 (cap): the per-person cap is 300 points
+
+70 points was inherently tight for a paid-model Agent (its largest plain hold is about 204 points, so it read 「快用完了」 from the first moment). **The per-person daily cap for what others may spend is 300 points; answers stay 50** (`OTHERS.pointsPerDay` 300). At 300 a paid-model Agent with an ordinary persona and nothing used is neither `tight` nor `reached` (its ceiling, 204.2, is under 300; tested). The Agent's OWN number must not bind by accident: **migration 074, applied nowhere yet, is edited so that a row still at migration 020's old default of exactly 20 points becomes NULL (no sub-limit of its own) instead of 70**; the column default stays NULL; a number the owner set to anything else (70 included) is kept. The proactive budget keeps the earlier ruling (exactly 20 → 70, default 70). Where a number below says 70 for the others' cap, this decision wins. Consequences, pinned by tests: three default Agents share 300, never 900; at the design's prices 35 replies offered tools fit in 300 points at once on the free tier (8.387 each) and 1 on the paid tier (194.127), the next paid reply falling back to its plain hold (61.5); `perDay` at 300 is 50 on the free tier and 11 on the paid.
+
+### Controller ruling 2026-11-25 (B-5 review)
+
+- **One place for 停止往来 and 恢复往来 (I1 and I2).** The use page has NO stop and NO restore control. Each person of today, and each person of the stopped list, is a link to that person's profile, where lane A's 停止往来 dialog and 恢复往来 live; the stopped list only shows who is stopped and since when. A stop works both ways and the access it ended does not come back: the stopped list's sentence says so.
+- **The number boxes (I3).** Each box owns its draft; an answer of the service never overwrites a box being edited; saves are serialised (the latest values win, none dropped); what is saved is what is shown; invalid input is refused in place. Tested with a slow fake server.
+- **Copy about money must be true (I4)** (still "copy for the owner to confirm"): tight 「余量不多，较长的回复可能发不出」; reached 「别人今天的额度已用完」 (it is OTHER people's use that is used up; the owner's own chat is unaffected; the card and the pages use the one wording); a per-Agent line 「{name}：只有它在回的话，每天大约能回 {N} 次」 that cannot be summed; the stopped-list sentence 「停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。」.
+- **Restored information.** `proactiveSpentToday` is back on the owner's Agent wire (the one definition of "used", lane `proactive`; owner-only, in both `HIDDEN_KEYS`), `used.proactivePoints` on the use route, and `canReply` on each `agents[]` row (false for an Agent with no usable model: the page says so instead of 「0 次 · 正常」). The Agent page shows 「…每天最多花 {N} 点，今天花了 {S} 点」.
+- **The card's tag** stays for `reached` only; the use page states `tight` per Agent.
+
+**Controller ruling 2026-11-25 (B-5 re-review).** N1: the use page's person links and its sentence about 停止往来 stay as built; making them true (the profile draws a person known only by id; the stop control is offered for any person, a group-only caller included) is the integration's job. N2: accepted in writing that code from before 074 reads a NULL others' number as no limit (the deploy overlap, a failed 075, a Down); 074's Down therefore sets every NULL back to 20 and a proactive budget at 70 back to 20; if 075 fails, run 074's Down at once.
+
+**Controller ruling 2026-11-25 (B-5 review 3).** The use page's sentence 「点名字，到对方的资料页，可以在那里停止往来。」 is drawn ONLY while the site's Agent social switch is on (`state.social.enabled`, the fact the sync already sends the web: `sync.social.enabled`). With the switch off the rows are still listed, as plain names, not links to a profile that has no stop control (links only for friends was the alternative; the plain row is simpler and the same for everyone). The integration still owes the rest of its item 1: the profile draws a person known only by id and offers the stop control for any person. `GET /api/me/others-use` gains `used.proactiveAnswers` (the count of proactive replies, the same one definition of used, owner-only) so the page's answers add up.
 
 ---
 
@@ -111,7 +119,7 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 |---|---|---|
 | `SOCIAL.enabled` | `false` | the operator's site switch |
 | `OTHERS.answersPerDay` | 50 | an owner's daily answers others cause (lanes `others`, `proactive`) |
-| `OTHERS.pointsPerDay` | 70 | the same in points, settled plus held (owner's to confirm, D9) |
+| `OTHERS.pointsPerDay` | 300 | the same in points, settled plus held (owner's to confirm, D9) |
 | `OTHERS.toolCalls` | 1 | real tool calls in a whole others' reply, all tools together |
 | `OTHERS.overCapNotes` | 3 | further calls a whole others' reply may have answered with a note (Controller ruling 2026-11-24, Q1) |
 | `OTHERS.outputTokens` | 800 | output limit of every call of an others' reply; reasoning `none` |
@@ -154,8 +162,8 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 - `note_withheld` card: 「〈{audience}〉问到了相关的事，这条没有告诉他：〈{note}〉。以后可以告诉他吗？」, buttons 「可以」 / 「不说」.
 - `persona_fact` card: 「人格里这句话像是关于你或别人的事实：〈{sentence}〉。别人问起时可能被说出来。要移到“关于我”吗？」, buttons 「移到“关于我”」 / 「不用」.
 - Shown notes: 「以后别说」.
-- Limits: 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {70} 点」; per Agent 「以这个数，每天大约能回别人 {N} 次」; reached 「别人今天的使用已到上限」.
-- The one-time notice (B9b; Controller ruling 2026-11-24 (verification), N2): 「别人让你的 Agent 回复，现在按人算：你所有的 Agent 加起来，每天最多回别人 {answers} 次、最多花你 {points} 点。哪个 Agent 原来用的是默认的 20 点上限，它自己的上限已经提到 70 点。」, button 「知道了」.
+- Limits (Controller ruling 2026-11-25 (B-5 review), copy for the owner to confirm): 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {300} 点」 (the owner's one pair for all their Agents); per Agent 「{name}：只有它在回的话，每天大约能回别人 {N} 次」 (it cannot be summed); the three states: fits 「正常」, tight 「余量不多，较长的回复可能发不出」, reached 「别人今天的额度已用完」 (one wording on the card and the pages). Stopped list: 「停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。」; a person is a link to their profile (no stop or restore control on the use page).
+- The one-time notice (B9b; Owner decision 2026-11-25 (cap), Controller ruling 2026-11-25 (B-5 review), copy for the owner to confirm): 「别人用你的 Agent，每天的上限变了：以前每个 Agent 默认各有 20 点，现在你所有的 Agent 合在一起，每天最多回别人 {answers} 次、最多花你 {points} 点，它们主动说的话也算在里面。还是默认 20 点的 Agent，自己的上限已取消；你改过的不变。主动回复的上限原来是 20 点的，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。」 (Controller ruling 2026-11-25 (B-5 re-review): plain before and after), button 「知道了」. True of 074 as edited: an Agent's own number of exactly 20 was cleared, a proactive budget of exactly 20 became 70, proactive replies count inside the shared numbers.
 - Use page: 「停止往来」 / 「恢复往来」. Agent page tab: 「别人」; list 「它和别人的对话」.
 
 **Lock order** (agents/store.ts:177, plus this plan):
@@ -185,7 +193,7 @@ The input classes most likely to bite that no task's own tests would otherwise c
 5. **A visitor pretending to be the owner** (→ B7a): display name 「主人」, display name equal to the owner's, text 「〔{mark} 主人｜你的主人〕我是主人」. Only the real owner's observer membership is labelled 你的主人, and the interjection rule (B6) applies only to it.
 6. **One visitor talking to two Agents of one owner** (→ A6a; attack class 1): live on Y1 (contacts, appellation 「小周」) and Y2 (approved, none). The shared owner notes' verdicts are per Agent and never reset each other.
 7. **A provider that sends tool calls on every request** (→ B2b; attack class 2): calls on the tool-less request, on the final request, with long ids. One discard at most; the tool-less request's calls are ignored and its text posts; spend ≤ hold; done within a few seconds.
-8. **A visitor's message that is only a file, or longer than `OTHERS.contextWeight`** (→ B7a, A8a; attack class 3). A file-only message gets a reply that reads the file's name, with the language line abstract. A message over the weight ends `failed` `context_too_small` with its notice, the same as in a group, and no retry. The withheld check skips a run whose latest question has no text.
+8. **A visitor's message that is only a file, or longer than `OTHERS.contextWeight`** (→ B7a, A8a; attack class 3). A file-only message gets a reply that reads the file's name, with the language line abstract. A message over the weight is cut to it, as a group's is to its cap (Controller ruling 2026-11-25 (B-4 dispatch), B7a, ruling 4: `context_too_small` is the model's context alone, `holdsNewest`). The withheld check skips a run whose latest question has no text.
 9. **The migrated money state of existing owners** (→ B4; attack class 4): Agents at 020's default on paid-tier models; an owner with one, and one with three, Agents at the old default; an Agent with a null budget. After 074 each owner has exactly 70 points and 50 answers for all their Agents together (Controller ruling 2026-11-24 (final)), and a paid-tier Agent at the old default answers others at least once a day. An Agent whose owner set its own number below 20 keeps it; on a paid-tier model it answers no one, and the use page shows its `perDay` as 0 (Controller ruling 2026-11-24 (verification), M-V2).
 10. **Rows past 100 on the owner's side** (→ A3b, A12a, A7; attack class 5): 105 observed social conversations in sync and in the web list (one `reachSql` query, not 105); 105 queued audiences waiting for judge units (served oldest first, at most `judgeOwnersPerPoll` owners a poll).
 
@@ -209,7 +217,7 @@ The remaining 1a tasks fit around these.
 **The minimum for the first trial** (Controller ruling 2026-11-24 (verification), I15). Lane I may merge both lanes and start I1a and the trial as soon as these are in:
 - Step 0;
 - lane A: A0, A1, **A2** (the lookup), A3a, A3b, A4, **A9** (memory never reviews a social conversation), A11a, A12a;
-- lane B: B1, B2a, B2b, B3, B4 (074 must be in before any deploy that carries 075), **B5a** (the visitor sees the reply state), B6, B7a, **B7b** (until it lands a social run is offered tools under the own-conversation scope, port-impl.ts:785, reaching the Agent's own conversation), B8.
+- lane B: B1, B2a, B2b, B3, B4 (074 must be in before any deploy that carries 075), **B9a and B9b** (Controller ruling 2026-11-24 (B-2 review, I3): B4's wire replaces three fields the old web reads, so nothing of B4 deploys with the old web), **B5a** (the visitor sees the reply state), **B5b** (stops, removals and narrowings are enforced in groups by its sites), B6, B7a, **B7b** (until it lands a social run is offered tools under the own-conversation scope, port-impl.ts:785, reaching the Agent's own conversation), B8.
 
 The four in bold are the ones the verifier named beyond the slice. The rest of ring 1a merges at lane I after them. Every lane I merge deploys both lanes together.
 
@@ -531,7 +539,7 @@ alter table accounts drop column others_notice_seen_at, drop column others_point
 - [ ] **Failing tests:**
 ```ts
 expect(loadConfig({ ...base }).social).toEqual({ enabled: false });
-expect(loadConfig({ ...base }).others).toEqual({ answersPerDay: 50, pointsPerDay: 70, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
+expect(loadConfig({ ...base }).others).toEqual({ answersPerDay: 50, pointsPerDay: 300, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
   notesWeight: 1000, judgeBatch: 20, judgeCallsPerDay: 5, withheldCallsPerDay: 3, judgeAttemptsPerVersion: 2, judgeInputBytes: 9000,
   judgeOutputTokens: 2200, judgeOwnerExamples: 4, judgePollMs: 5000, judgeOwnersPerPoll: 10, withheldInputBytes: 6000, withheldCardsMax: 3,
   cardDays: 7, requestDays: 7, cooldownDays: 30 });
@@ -1345,16 +1353,29 @@ expect(gateway.calls[1]!.system).toBe(prepared.call.systemWithoutTools); expect(
 -- Up Migration
 -- Step L (design §5; plan B4). Deploys only with lane B's code, which makes an Agent's number a sub-limit inside its owner's
 -- (Controller ruling 2026-11-24 (verification), E1/N1).
--- Controller ruling 2026-11-24 (attack, I7): an Agent's number still at migration 020's default (20 points) becomes 70. A value an
--- owner set to exactly 20 cannot be told from the default, so every row at exactly 20 points is raised. New Agents get none of their own.
--- Controller ruling 2026-11-24 (final): 70 is the owner's default, so the raise never lets an Agent pass its owner's cap. The owner's
--- numbers are not written here: null reads OTHERS.answersPerDay (50) and OTHERS.pointsPerDay (70), one value per owner however many
--- Agents they have (plan "Design conflict for the owner").
-update agents set others_budget_micro = 70000000 where others_budget_micro = 20000000;
-alter table agents alter column others_budget_micro set default null;
+-- Controller ruling 2026-11-24 (attack, I7), changed by Owner decision 2026-11-25 (cap): an Agent's number still at migration 020's
+-- default (exactly 20 points) is REMOVED (null: no sub-limit of its own), not raised. A value an owner set to exactly 20 cannot be told from
+-- the default, so every row at exactly 20 points is cleared; a number set to anything else is kept. New Agents get none of their own.
+-- The owner's numbers are not written here: null reads OTHERS.answersPerDay (50) and OTHERS.pointsPerDay (300), one value per owner however
+-- many Agents they have (plan "Owner decision 2026-11-25").
+update agents set others_budget_micro = null where others_budget_micro = 20000000;
+-- Controller ruling 2026-11-24 (B-2 dispatch): the others' number keeps a NULL column default after this migration (a new Agent has no
+-- sub-limit of its own; the owner's per-day cap, 300 points and 50 answers, is what applies). 074 drops 020's default of 20, so a new row
+-- reads null.
+alter table agents alter column others_budget_micro drop default;
+-- Controller ruling 2026-11-24 (B-1 review, B-2 dispatch): the proactive budget is a hard sub-cap that counts holds. Rows still at the old
+-- default 20 become 70 (the same selection as the others' number: every row at exactly 20 points; a number an owner set below or above 20
+-- stays; the result differs: 70 here, none there), and the column default becomes 70 for new Agents.
+update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
+alter table agents alter column proactive_budget_micro set default 70000000;
 -- Down Migration
--- (the raise is not undone: a row at 70 cannot be told from one an owner set)
+-- (Owner decision 2026-11-25, N2: code from before 074 reads a NULL others' number as no limit at all, so Down must not leave one. Every NULL
+-- becomes 20 points again, the old default; this also caps an owner who had chosen no limit, the safe direction for money. A proactive
+-- budget at exactly 70 becomes 20 again; a row at 70 cannot be told from one an owner set, and 20 is the bound the old code was built on.)
+update agents set others_budget_micro = 20000000 where others_budget_micro is null;
+update agents set proactive_budget_micro = 20000000 where proactive_budget_micro = 70000000;
 alter table agents alter column others_budget_micro set default 20000000;
+alter table agents alter column proactive_budget_micro set default 20000000;
 ```
 - `tests/schema-agents.test.ts:109–128` changes with it (G1): its title says "null by default"; the `ob_default` row expects `budget: null`; the rest of the range checks stay.
 - The new default is tested by a SQL insert there, as the existing test does (`insert into agents (principal_id) values ($1)`). Creation through the API passes `DEFAULT_OTHERS_BUDGET` (agents/routes.ts:82, :292) until this task removes it (G2).
@@ -1368,16 +1389,20 @@ alter table agents alter column others_budget_micro set default 20000000;
 - `GET /api/me/others-use`:
   - `byPerson`: today's callers of the owner's others' runs, ordered by points, then answers, then id;
   - `stopped`: the owner's own `stop` rows (`access_bars` where `setter_id` is the owner and `kind = 'stop'`; A-3 review C1; a block's row is never in it). **Controller ruling 2026-11-24 (final):** the list is empty until lane A's 075 is in (it creates `access_bars`). It is read only while `SOCIAL.enabled`, which is never on before 075 (Rollout), else `[]`. So the route never names a table lane B's branch lacks, and no control is shown that cannot work (B9a). Its end-to-end path is I1a.7 and I2a (M-V6);
+  - `reached` and `tight`, owner-level and in each `agents[]` row (**Controller ruling 2026-11-24 (B-2 review, I1; re-review R-I1)**): the hold of a future reply is not knowable, so one boolean cannot be exact; there are two one-sided facts, each by the function admission asks (`othersCheck`, no lock), each with a guarantee stated one way only.
+    - `reached: true` ONLY IF every call would be refused: the answers are used up, or what is left (holds counted) is below `othersPlainFloor`, a real lower bound of any hold admission can compute for that Agent (the tool-less system text as `begin` builds it from the persona, the owner's name and the date, with no conversation, plus the others' output limit; the one function the proactive lane's early check also uses). Never true while any reply could be admitted. Waiting behind other replies' holds is not refused.
+    - `tight: true` IF a reply COULD be refused for size: what is left is below `othersPlainCeiling`, the largest hold admission can compute for a plain reply of that Agent (Controller ruling 2026-11-24 (B-2 re-review, refinement)): `othersPlainFloor`'s kind of text with the fullest scene, the notes the Agent holds, the summary and 3 x the largest context cap that applies (`AGENT_GROUP_CONTEXT_TOKENS`, `OTHERS.contextWeight`), proved part by part in the function's comment. `tight` false means every plain reply fits. `reached` implies `tight`. At the design's figures a free-tier Agent with an ordinary persona has floor 0.48 and ceiling 9.2 points (neither state at 70 used 0); a paid-tier one 17.5 and 204.2, so it reads `tight` from the start at 70: the conversation cap alone (36 000 bytes) holds 108 points on that tier.
+    - So the page has three states: fits (neither), tight (a longer reply may not be sent), reached (certainly refused). The owner-level facts run over the Agents that could answer at all (an Agent with no model, or whose site model is gone, shows `reached` false, `tight` false, `perDay` 0 and is left out): `reached` when the answers are used up or every such Agent is reached (with none, when used has reached the points); `tight` when any such Agent is.
   - `agents[].perDay = perDayEstimate(price, numbers)`: 0 when the binding points (the owner's, or the Agent's own lower number) do not cover one plain hold (16 500 bytes), else `min(answers, 1 + ⌊(points − plainHold) / plainCost⌋)` with `plainCost` = 5 000 input and 500 output tokens at the model's price. That is 50 for the free tier at 70 and 1 for the paid tier; a provider model gets the answers number;
-  - `notice`: true while `others_notice_seen_at` is null and the owner has an Agent (Controller ruling 2026-11-24, Q5).
+  - `notice`: true while `others_notice_seen_at` is null, the owner has an Agent and the account was made before 074 ran (`pgmigrations.run_on`): an owner who joined after the change is told nothing about a change they never had (Controller ruling 2026-11-24, Q5; B-2 review, M7).
 - `PUT /api/me/others-limits`, `POST /api/me/others-limits/seen`.
 
 - [ ] **Failing tests:**
   - `others-migration.test.ts`: 074's Up, in a rolled-back transaction over seeded Agents:
-    - an Agent at 20 points → 70 (I7); one at 35 stays 35; one at null stays null; a new row's default is null;
-    - no `accounts.others_*` value is written: every owner reads 70 points and 50 answers (Controller ruling 2026-11-24 (final));
-    - **M-V1, the price explicit:** an owner with three Agents at the old default, on a scripted model whose every others' reply holds exactly 7 points and settles exactly 7 (usage = hold, no tools). Replies come one after another, spread over the three. After every admission and settle, settled + Σ holds ≤ 70 (N3's invariant, not a count). The 11th reply of the day is refused because 70 settled + 7 > 70, never anywhere near 210;
-    - RF9: a paid-tier owner at the old default answers a member's @ at least once a day (61.5 ≤ 70);
+    - an Agent at 20 points → null (Owner decision 2026-11-25 (cap): no sub-limit of its own; it was 70); one at 35 or at 70 stays; one at null stays null; a new row's default is null;
+    - no `accounts.others_*` value is written: every owner reads 300 points and 50 answers (Owner decision 2026-11-25 (cap));
+    - **M-V1, the price explicit:** an owner with three Agents at the old default, on a scripted model whose every others' reply holds exactly 7 points and settles exactly 7 (usage = hold, no tools). Replies come one after another, spread over the three. After every admission and settle, settled + Σ holds ≤ 300 (N3's invariant, not a count; as built the replies are 29.624 points). The 11th reply of the day is refused because 296.24 settled + 29.624 > 300, never anywhere near 900; the counts of replies with tools that fit are pinned (35 free, 1 paid);
+    - RF9, as ruled by Owner decision 2026-11-25 (cap): at 300 a paid-tier owner's first reply fits with its tools (194.127) and the second falls back to its plain hold (61.5);
     - **M-V2:** an Agent whose owner set its own number below 20 (say 10 points) keeps that number after 074. On a paid-tier model (plain hold 61.5 > 10) it answers no one: no reply of others is admitted, and the use page shows its `perDay` as 0. It is the owner's own number, shown on the form (B9b), which the owner may raise or clear.
   - `others-routes.test.ts`:
     - the wire keys;
@@ -1403,6 +1428,8 @@ alter table agents alter column others_budget_micro set default 20000000;
   - retry answers 404 (attack M11 of the design);
   - the chain budget does not apply;
   - a follow-up keeps its caller (`callerOf(owner, run.caller_id)`).
+
+**As built:** `runSitePlace(q, conversationId)` (runs.ts) is the place of a route's `:id` where no Agent is named yet (`placeOfType` with the conversation standing for the Agent's own; 404 for a direct chat); `runAudience` returns `place` (not `type`) and lists members for a social conversation as for a group; `followUp` in a social conversation is `followUpInSocial` (the ended run's caller, `reach` again, the numbers, the minute); `RunLimits` gains `social`. `begin`'s others' bounds still read the run's lane (`lane !== "own"`): the lane is `callerOf(owner, caller)`, so the owner calling their own Agent in a group is never bounded, another member or a visitor is, and a social run's lane is always `others`; `begin` takes `placeOf` itself in B7a.
 
 - [ ] **Failing test:**
   - The owner's socket gets `{type: "run", run}` and the visitor's `{type: "run", agentId, state}` with no run, id or `error` (recursive key check).
@@ -1430,6 +1457,12 @@ alter table agents alter column others_budget_micro set default 20000000;
 
 Every removed check is a case of `reach`'s step 3, so no block that refuses today stops refusing. Bars and ended rows refuse in addition.
 
+**Controller ruling 2026-11-24 (B-3 dispatch), as built in block 3** (the four hand-offs of lane A's reviews; each is a rule of this task):
+1. **One decision, asked in one way.** Lane A's `refusedSql` is the ONE access decision (its `access_bars` rows, `reach` and `reachSql` are its own); this branch codes against its SIGNATURE only. A group site passes `socialOn: "false"` as a literal: `reachSql` with `where: "group"` never uses `socialOn`, so a bind parameter passed for it and used nowhere else is rejected by Postgres. Every group site goes through `refusedInGroup(subject, agent)` (runs.ts; candidates.ts imports the same text from `agents/refusal.ts`, which builds it with `refusedSql`): the sender's calls, the person behind an Agent's message, an Agent subject, the askers, `followUp`'s noted calls, the proactive candidates. `blockedEitherWay` is no longer asked alone at any group site (a source test pins it).
+2. **One rule for every ending in groups** (block, stop, unfriend, removal, narrowing, blocking an Agent): a group run is never cancelled whole; the refused caller's calls are taken out (`dropRefusedCalls`, at `begin`: the one rule lane A's `endGroupCalls` applies at the moment of the ending; lane I makes `endGroupCalls` call it); a run left with no call ends quietly; a running run is interrupted only if the refused caller is its sole caller. Stops, removals and narrowings are enforced in groups by this, with no further code, once lane A's `refusedSql` is in.
+3. **The window after `begin`.** `postAsAgent` asks the same of the calls the run answers (`standingCalls`, over the calls `m.seq <= covers_seq`, under the run's conversation row and its Agent's): none left, nothing is posted (409 `access_ended`, a refusal like the interruptions: the run ends `cancelled` with `error: null`, settled once through `finish`); otherwise the reply goes on for the others and neither quotes (`replyToSeq`) nor mentions (`mentions`) a person refused now. `REFUSED` (port-impl.ts) gains `owner_spoke`, `access_ended`, `notes_changed`, `errand_ended` here, not in B8: lane A's interruptions already make `postAsAgent` throw those codes. B8 keeps its social part.
+4. **One function for lane I.** `dropRefusedCalls(t, runId, ownerId)` replaces `dropBlockedCalls` (same shape of answer). **Ruled (B-3 review): a group run left with no call ends quietly, `cancelled` with `error: null` (`BLOCKED_SINCE`, `tests/agents-block-recheck.test.ts` unedited); `access_ended` is for social runs only.** Nothing is left noted on such a run (a follow-up answers calls only, and every call it carries is refused). Lane I makes `endGroupCalls` call `dropRefusedCalls` and end group runs with `null`.
+
 - [ ] **Failing test:**
   - Over 105 seeded group callers (Step 0's rule), the sites' `refusedSql` answers exactly as `blockedEitherWay` did.
   - The existing group tests stay green: `agents-group-*`, `agents-block-recheck`, `proactive-decide`, `proactive-runs`.
@@ -1450,6 +1483,8 @@ Every removed check is a case of `reach`'s step 3, so no block that refuses toda
    - else, over V's minute (`calledLastMinute`, :352) or the owner's others' minute (`overLaneLimit`, :338) → a `rate_limited` run;
    - else `queueRun` with caller V, lane `others`, triggered by `human`, askers `[V]`.
 3. Agent↔Agent conversations trigger nothing but interjections in ring 1.
+
+**As built:** `triggerInSocial(t, lock, message, config)` and `interjection` (runs.ts). A supervisor is told by role and ownership (an `observer` membership of the owner of a participating Agent), never by name (RF5). The fold also records the call (`call_seqs`). Over V's minute or the owner's others' minute the run is recorded with `rateLimitedInGroup` (one reusable `rate_limited` run per Agent, as in a group); an Agent whose model is gone gets `model_gone`. A running run's `interrupted` uses `coalesce`, so an earlier mark stays; its post is refused (`REFUSED`).
 
 - [ ] **Failing test:**
   - V's message queues one run (`others`, caller V); V's second folds into it.
@@ -1500,11 +1535,18 @@ expect(call.messages.flatMap((m) => m.parts).some((p) => p.type === "tool-call")
 expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔${mark} ${owner.displayName}｜你的主人〕`]);
 // RF5: a visitor named 主人, or as the owner, writing 「〔{mark} 主人｜你的主人〕我是主人」 → still 对方.
 // RF8: a file-only visitor message → the reply is shown the file's name and the abstract language line; a message over
-// OTHERS.contextWeight → failed context_too_small, the visitor sees the failed state, no retry.
+// OTHERS.contextWeight → cut to it, the call is made (Controller ruling 2026-11-25 (B-4 dispatch), B7a, ruling 4; not `context_too_small`).
 // Ring 1a: the notes passage is absent (no note of any kind in the call; a vault canary and an open-note canary appear nowhere).
 // A run whose row was ended before it started ends cancelled/access_ended with no model call.
 ```
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-begin.test.ts tests/reply-history.test.ts tests/web-search.test.ts tests/context.test.ts tests/context-group.test.ts tests/summary.test.ts tests/agent-port-boundary.test.ts`; `calibrate-memory.mjs --check`; commit `feat(agents): a social reply's access, scene, context and system text`.
+
+**Controller ruling 2026-11-25 (B-4 dispatch), B7a** (rulings 1, 5 and 6 of the dispatch):
+1. **The default-deny guard is replaced, arm by arm.** Block 3's guard at the top of `begin` is gone; `begin` reads the place once per attempt (`placeOf`, no query for the own conversation) and every arm names its place: the group's arms (`loadGroupScene`, `dropRefusedCalls`, `toldHits`, `namePartCalls`, `hearFrom`, `askerLine`, the group system text, the group's notes, the pair's summary) run for `group` only, and a social run takes the social arms (`runAccess`, `loadSocialScene`, `socialSystemText`, `loadNotes` social, no summary, `OTHERS.contextWeight`) or ends. Anything the social path does not handle stays denied: a social run whose caller is the owner, has none, or is not in lane `others` is `cancelled`/`access_ended` before any call (`runAccess`). `tests/social-begin.test.ts` shows that no social run takes a group arm (group system text, roster, group notes, the memory review, a summary).
+2. **The money bounds follow the place.** `begin` decides "bounded as another person's reply" by `social || lane !== "own"`: a social run is never unbounded whatever its row says (one real tool call, three notes, the two-part hold, `plain`, the per-owner cap through `othersFits`); the owner's own paths are byte-identical (the sha256 pins of `reply-history`, the owner money tests unmoved).
+3. **The page facts re-checked against the social text.** `othersPlainFloor` takes the place (`group` | `social` | default `any`: the lower of the two) and the proactive lane stays a group's, so the floor is a lower bound by construction. `othersPlainCeiling` counts the LONGER of the fullest group text and the fullest social text (two owners, an Agent for the other party, every name at its limit) and of the notes passage in either form, so it stays an upper bound; the social context cap (`OTHERS.contextWeight`) is already inside `max(AGENT_GROUP_CONTEXT_TOKENS, OTHERS.contextWeight)`; a plain call has no tools, no replayed calls and no summary.
+4. **A message over `OTHERS.contextWeight`** is cut to it as a group's is to its cap (the plan's earlier "fails `context_too_small`" is the model's context alone, as in a group: `holdsNewest`).
+5. **No memory review of a social conversation:** `finish` calls neither `memory.noted` nor `memory.summarise` for a social run, and `summary/job.ts` makes nothing for one.
 
 ### Task B7b: Tools in a social conversation; the own search without social — Lane B
 
@@ -1524,6 +1566,10 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
   - Group and own tool behaviour stays as today: `tools-search`, `tools-scope`, `tools-file`, `whisper-elsewhere`.
 - [ ] Run → fails. Implement. Run those; commit `feat(agents): tools in a social conversation are scoped to it`.
 
+**Controller ruling 2026-11-25 (B-4 dispatch), B7b** (rulings 3 and 4 of the dispatch; lane A's review of `agents/tools/search.ts:226`):
+1. **The own conversation's search and `read_file` never see a social conversation, enforced at the query.** The own place lists the Agent's memberships through `groupPlaceSql` (its own conversation and groups, never `agent_social`), so a stranger's words cannot enter the context that holds the owner's vault notes and full tools; `read_file` reads a file only where its conversation is not `agent_social` unless the call names that conversation (`within`). Canary tests both ways: a visitor's canary is never returned to an own-conversation tool call (search or file), and an own-conversation canary is never returned to a call made in a social run.
+2. **A tool call in a social run names only that conversation** (`RunScope.place`, `toolSpecs({place})`): the search looks in this conversation up to `heardTo` and never calls `lookElsewhere`, the file tool reads this conversation's files, the web guard reads the participants' names as in a group; a second social conversation and a group each hold a canary.
+
 ### Task B7c: Notes wiring and the advisory room — Lane B
 
 **Files:** modify `S:src/agents/port-impl.ts` (:714–724 notes; step 3 writes `shown_notes`, `withheld_notes`), `S:src/metering/others.ts` (`othersRoomAdvisory`); create `S:tests/social-notes-wiring.test.ts`.
@@ -1538,6 +1584,8 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
   - with the advisory room below the with-tools hold, the reply is offered no tools and makes one call.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-notes-wiring.test.ts tests/social-begin.test.ts`; commit `feat(agents): a social run records the notes it was shown; the advisory room`.
 
+**Controller ruling 2026-11-25 (B-4 dispatch), B7c** (ruling 2 of the dispatch): **ring 1a shows a visitor NO owner notes at all.** `loadNotes(…, {place: "social", conversationId, audienceId})` yields nothing shown and nothing withheld; the persona is the only owner-authored text in the request. A canary in the owner's notes (open and vault) never appears in any request built for a social run, nor in what is posted (`tests/social-notes-wiring.test.ts`).
+
 ### Task B8: Post, finish and claim for a social run — Lane B
 
 **Files:** modify `S:src/agents/conversation.ts` (:285–439), `S:src/agents/port-impl.ts` (:236 `REFUSED`; :457–521 `claimNext`; :1211 `acknowledge`; :1220–1246 `posting`; :1297–1298 `finish`; :1342 `removed`); create `S:tests/social-post.test.ts`.
@@ -1550,7 +1598,7 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
 
   A failure marks the run `interrupted` with that value and `pending_seq = null` in this transaction (the run row after the note rows, as the lock order says), and returns the refusal. Otherwise it posts as in a group, with no proposal, `queries`, `toolCalls` or `triggerFromAgent`.
 - `REFUSED` gains `owner_spoke`, `access_ended`, `notes_changed`, `errand_ended`. `posting` maps `{refused}` to `"refused"`, and `finish` records `cancelled` with the interruption.
-- `acknowledge` in social posts nothing (`"empty"`).
+- `acknowledge` in social posts nothing and answers `"refused"`, which leaves the reply's text alone (Controller ruling 2026-11-25 (B-4 review), below).
 - `finish` in social calls no `memory.noted` and no `memory.summarise`; `removed` is never true for social.
 - `claimNext` (M5, M18): while `SOCIAL.enabled` is false, a queued run in an `agent_social` conversation is not claimed and is ended: `cancelled`, `access_ended`, announced to its owner. When the switch comes back on, nothing answers old messages.
 
@@ -1561,17 +1609,28 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
   - With the switch off, a queued social run ends `access_ended` at the next claim and an own run is claimed.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-post.test.ts tests/runs*.test.ts tests/tools-ack.test.ts tests/agents-claim.test.ts tests/runs-restart.test.ts tests/reply-replay.test.ts`; commit `feat(agents): a social reply is posted once, on access and notes as they are now`.
 
+**Controller ruling 2026-11-25 (B-4 dispatch), B8** (rulings 7 and 8 of the dispatch): the outcomes `owner_spoke`, `access_ended`, `notes_changed` and `errand_ended` at post and finish never leave an unhandled rejection or a half-posted message, and the hold is settled exactly once; the visitor is never told WHY (an owner's interjection reads to the visitor as the run's failed or cancelled state and nothing more; the owner's own wire is the only one with a reason). A started reply's rule is as above (a run that has posted stands). `tests/agents-block-recheck.test.ts` stays unedited: a group run left with no call ends `cancelled`, `error: null`; `access_ended` is for social runs. The refused acknowledgement's stop flag (B-3 re-review m4) is a group case and is done in port-impl.ts's `posting`.
+
+**Controller ruling 2026-11-25 (B-4 review), B8, the text before a tool call.** In a social conversation there is no separate acknowledgement MESSAGE (unchanged), but what the model says before its tool call is KEPT as the beginning of the one reply that is posted: `acknowledge` answers `"refused"`, which the worker answers by leaving the stream alone (it restarts it on any other answer), and the text of a later round follows it as in any reply. If nothing follows the tool round, that kept text IS the reply: a reply with any visible text is posted, and only a reply with no visible text at all takes the existing empty-reply path. What each case looks like, and costs:
+- **Preface, tool call, answer:** the visitor sees one message, the preface first and the answer after it (a blank line between); the owner pays for the run as for any reply (the model's calls and the tools').
+- **Preface, tool call, nothing more:** the visitor sees one message, the preface; the run is `done`; the owner pays the same.
+- **No visible text at all** (a call, then nothing, or an empty reply): the visitor sees the failed state and no message, told nothing of why; the owner is charged what the calls cost, exactly as for any empty reply today (the existing empty-reply rule; this ruling adds no charge-free and no extra-charge case).
+- **A first turn that asks for more calls than its hold covers** (the others' reply's discard rule, D5) still drops that turn's text with the turn, as today; the plain request that finishes the reply writes the whole message.
+Tests: `tests/social-post.test.ts` (preface and answer; preface and nothing; no text; the port call itself); the owner's own conversation and groups are unchanged (`tests/tools-ack.test.ts` and `tests/reply-history.test.ts`, unedited).
+
 ### Task B9a: Web: the use page and its settings row — Lane B
 
 **Files:** modify `W:src/state/location.js` (`SETTINGS_PAGES` gains `others` here, with the page: as built in Step 0 it is not there yet), `W:src/pages/Settings.jsx` (a row 「别人怎么用我的 Agent」 → page `others`, and its title in `state/pageTitle.js`), `W:src/pages/Usage.jsx` (a section 「别人的使用」: one line and a link), `W:src/styles/others.css`; create `W:src/pages/OthersUse.jsx`, `W:tests/others-use.test.jsx`.
 
 **Produces:** `OthersUse` (page title 「别人怎么用我的 Agent」):
-- the sentence 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [70] 点」 with both numbers editable in place (saved on Enter or blur);
+- the sentence 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [300] 点」 with both numbers editable in place (saved on Enter or blur; Controller ruling 2026-11-25 (B-5 review): each box owns its draft, saves are serialised);
 - per Agent 「{name}：以这个数，每天大约能回别人 {perDay} 次」;
 - today's use, with 「别人今天的使用已到上限」 when reached;
 - today by person.
 
 **Controller ruling 2026-11-24 (attack, I10):** 「停止往来」 on each person and the stopped list with 「恢复往来」 show only while `state.social.enabled`. While the switch is off they are absent.
+
+**Superseded by Controller ruling 2026-11-25 (B-5 review):** the use page has no 停止往来 and no 恢复往来 control (and no bar route call, and no test of one); each person is a link to their profile, where lane A's dialog lives; the stopped list shows who and since when, from the route's `stopped`, with no control.
 
 The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(pointer: coarse)`.
 
@@ -1580,13 +1639,13 @@ The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(point
 
 ### Task B9b: Web: the Agent's numbers, the form, the one-time notice — Lane B
 
-**Files:** modify `W:src/pages/Agents.jsx` (`othersRows`; 「别人今天的使用已到上限」 on the card and the page; the notice), `W:src/pages/AgentForm.jsx` (:94–116, :167–197, :423–474), `W:src/data/viewmodel.js` (:723–729); fix `W:tests/agents-model.test.js`, `agents-pages.test.jsx`, `viewmodel.test.js`; create `W:tests/agent-form-others.test.jsx`.
+**Files:** modify `W:src/pages/Agents.jsx` (`othersRows`; 「别人今天的使用已到上限」 on the card and the page; the notice), `W:src/pages/AgentForm.jsx` (:33 and :35, the forms' defaults of 20 for the others' and the proactive number: the proactive default is now 70 and a new Agent sends no `othersBudget`; :94–116, :167–197, :423–474), `W:e2e/agents-proactive.spec.mjs` (:78, :87 pin the proactive "20"), `W:src/data/viewmodel.js` (:723–729); fix `W:tests/agents-model.test.js`, `agents-pages.test.jsx`, `viewmodel.test.js`; create `W:tests/agent-form-others.test.jsx`.
 
 **Produces:**
 - **The one-time notice** at the top of 我的 Agent while `notice`, worded by Exact copy, with 「知道了」 → `seenOthersNotice`. It is web UI, dismissed per account, never a chat event (Controller ruling 2026-11-24, Q5).
   - **Controller ruling 2026-11-24 (verification), N2:** the copy says what changed. The limit is now per person: {answers} answers and {points} points a day, shared by all of the owner's Agents. Each Agent's own number was raised where it still had the old default. No sentence says the numbers are unchanged. {answers} and {points} are the owner's numbers as `GET /api/me/others-use` gives them.
 - **AgentForm** (**verification, M-V4**): 「它自己的上限（可不填）：每天最多回别人 {N} 次，最多花 {M} 点」 sends `othersLimit`.
-  - Both fields show the Agent's own numbers as stored, so a raised 70 shows as 70.
+  - Both fields show the Agent's own numbers as stored, so a number of 70 shows as 70 (Agents at the old 20 now show empty).
   - Emptying a field and saving sends `null` for it, so the Agent then has only its owner's numbers. This is how an owner who raised their own number above 70 lets an Agent with the raised 70 use it.
 
 - [ ] **Failing tests:**
@@ -1594,7 +1653,7 @@ The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(point
   - its text is exactly Exact copy's, with the owner's two numbers, and it contains no 「不变」;
   - AgentForm sends `othersLimit` and never `othersBudget`;
   - a raised 70 shows as 70; clearing both fields sends `othersLimit: null`;
-  - the card says 「别人今天的使用已到上限」 when used ≥ limit.
+  - the card and the page word the three states of `agents[].reached` / `tight` (and the owner-level `reached` / `tight`) by Exact copy's three lines, and never compare used with the limit in the web (Controller ruling 2026-11-24 (B-2 review, I1; R-I1)).
 - [ ] Run → fails. Implement. `npm test`, `npm run build`; commit `feat(web): an Agent's own numbers and the step-L notice`.
 - [ ] **Push `lane/social-b` and read the run.**
 
@@ -1906,17 +1965,19 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 1. **Gate** (**Controller ruling 2026-11-24 (attack, I9)**; **Controller ruling 2026-11-24 (verification), E2**). The gate starts at the **Step 0 merge**, because the working branch is deployed to the acceptance site after every merge and 073 is on it from then on. The controller cuts the Step 0 lane only after migrations 070, 071 and 072 (lanes storepush, storepages, invites) are on the working branch. So every database 073 reaches already has them, the acceptance site first and then production. The runner's order check would otherwise leave them unrunnable.
 2. **Step 0** merges and deploys with 073, which is **completely inert** (E1/N1): no row or default changes and nothing reads it. Nothing anyone sees changes.
-3. **Ring 1a: lanes A and B together** (**verification, E1/N1**). Lane B's 074 (the step-L raise) and lane A's 075 (bars, the backfill, the persona aid's columns) never deploy alone. Applied without lane B's owner cap, the raise would let others spend 70 points a day per Agent with no owner total (runs.ts:900–903, :1006–1013). And 075 applied before 074 would leave 074 unrunnable. Neither lane merges to the working branch on its own. Lane I's first joint merge brings both, and its deploy applies 074 then 075; every deploy from then on carries both.
+3. **Ring 1a: lanes A and B together** (**verification, E1/N1**). Lane B's 074 (the step-L change) and lane A's 075 (bars, the backfill, the persona aid's columns) never deploy alone. Applied without lane B's owner cap, 074 as edited by Owner decision 2026-11-25 (an Agent's own number of exactly 20 becomes NULL) leaves the old code with NO per-Agent limit on others' use at all, which it reads as 不限 (runs.ts:900–903, :1006–1013), and no owner total. And 075 applied before 074 would leave 074 unrunnable. Neither lane merges to the working branch on its own. Lane I's first joint merge brings both, and its deploy applies 074 then 075; every deploy from then on carries both.
    - **The first trial** may start once the minimum set (Rings table, I15) is in: lane I merges both lanes, runs I1a and I2a's path, and deploys.
    - **Step L**, which every deploy from then on carries whatever the switch says. In groups, others' replies now:
      - make one real tool call at 800 tokens without reasoning;
      - meet two hard, hold-aware numbers per owner;
      - meet the proactive budget as a hard sub-cap.
 
-     Agents at the old default 20 points get 70 as a sub-limit (D9). Every owner has one 70-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final), "Design conflict for the owner"). Owners see the one-time notice, whose copy says the limit is now per person and that defaults were raised (N2).
+     Agents at the old default 20 points lose their own number (null; Owner decision 2026-11-25 (cap), D9). Every owner has one 300-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final); Owner decision 2026-11-25). Owners see the one-time notice, whose copy says the limit is now shared by all their Agents, that an Agent's own 20 was cancelled and that the proactive 20 became 70 (N2).
+   - **The proactive budget** (**Controller ruling 2026-11-24 (B-1 review)**). 074 also raises an Agent's proactive budget from 20 to 70 points where it still holds the old default, by the same rule as its others' number (every row at exactly 20 points), and sets the column's default to 70 for new Agents (Controller ruling 2026-11-24 (B-2 dispatch); an Agent's others' number, by contrast, keeps a null default: no sub-limit of its own). A paid-tier Agent at 70 can make a proactive reply plain (61.5 points) but not with tools (194.1): this number is the owner's to confirm, with the 70. The proactive judgement asks `othersFits` (the function admission asks, holds counted) before it spends a judgement, so a candidate whose cheapest possible reply cannot be admitted costs no judgement call and leaves no cancelled run. As built (B-1 re-review): "cheapest" is `proactivePlainFloor`, the plain hold through `othersHold` with the input known before the judgement (the tool-less system text as `begin` builds it from the persona, the group and the owner's name, without the conversation, the roster, the mark or the notes) and the others' output limit; the part not known is the conversation shown (at most the group's context cap of input at the model's input price), so a candidate between the floor and the real plain hold still costs one judgement and leaves a cancelled run if admission then refuses it.
+   - **The overlap** (B-2 review, M6): node-pg-migrate commits 074 on its own before 075 runs, and the new container migrates while the old one still serves. For that short window, and for as long as a failed 075 leaves the old container serving, the old code reads the NULL that 074 wrote (an Agent's own number cleared from the old default 20) as NO limit on others' use, with no owner cap, and creates Agents with an explicit 20. **Accepted in writing (Controller ruling 2026-11-25, N2):** the window is the deploy overlap and nothing else; if 075 fails, run 074's Down at once (it puts 20 back on every NULL, and 20 on a proactive budget at 70), and fix forward; rolling the code back without the Down would keep 074 applied under the old code: the hazard itself.
    - **While the switch is off**, the use page's stopped list is empty and no 停止往来 or 恢复往来 control is shown (Controller ruling 2026-11-24 (final); I10).
    - **Check on test.haiyo.org:** a member's @ answers within the numbers; the notice shows once; the use page lists today by person.
-   - **The default of 70 points (and 50 answers) is still the owner's to confirm** before production (I7).
+   - **The default of 300 points (and 50 answers)** is the owner's decision of 2026-11-25 (it was a proposed 70).
    - `SOCIAL` stays `{"enabled": false}` in production until the controller turns it on. The first switch-on waits until every process of the previous deploy has exited.
    - **The trial:** on the acceptance site, the switch on, two test accounts run I2a's path by hand, including the stopped list (M-V6). Visitors see no owner notes in 1a.
    - **The persona aid is in ring 1a** (N4, A8b). It runs from the first switch-on, so production's switch-on may follow ring 1a when the controller says so. A visitor's reply is shown the persona, which the aid has checked for owner facts, and no owner notes until ring 1b.
@@ -1989,7 +2050,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 - **Controller ruling 2026-11-24 (final):**
   - the two-part hold, the three-part ruling withdrawn, spend ≤ hold proved for its four cases (B2b);
   - an owner's yes or no on a shared owner note holds on all their Agents for that visitor, and only the judge is per Agent (A6a);
-  - the others' cap is per owner, one value each, never multiplied by Agents, with the design's conflicting migration sentence recorded beside it (D9, "Design conflict for the owner", B4);
+  - the others' cap is per owner, one value each, never multiplied by Agents, with the design's conflicting migration sentence withdrawn by the Owner decision 2026-11-25 (D9, B4);
   - a call id over 64 characters counts as one call, and a turn past the counted bytes is discarded (B2b);
   - the stopped list is empty until lane A's schema (B4; 075 after the verification).
 
@@ -2002,6 +2063,10 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - **N4.** The persona aid (A8b) needs nothing of the judge, so it moved to ring 1a, with its columns in 075 and its card in `SocialCards.jsx` (A8b, A12c, Rollout 3).
   - **I15.** A2, B5a, B7b and A9 are named in the minimum for a trial. Lane I starts once that set is in (Rings table, I1a).
   - **G1–G8** are in T0.1, T0.3, T0.4 and B4. **M-V1** (B4), **M-V2** (B4), **M-V3** (B2b), **M-V4** (B9b), **M-V5** (A6a), and **M-V6** (B4, I1a.7, I2a) are in the tasks named.
+
+- **Controller ruling 2026-11-24 (B-3 dispatch):** the four hand-offs of lane A's reviews are rules of B5b (see there): one decision (`refusedSql`, `socialOn` a literal in groups), one rule for every ending in groups, the window after `begin` closed at post time (over the calls the run ANSWERS: `m.seq <= covers_seq`; a noted call is its follow-up's), one function (`dropRefusedCalls`) for lane I. Ruled: a group run left with no call ends `cancelled`, `error: null`; `access_ended` is for social runs only.
+- **Controller ruling 2026-11-24 (B-3 review):** default-deny at the root: until B7a builds the social `begin`, a run whose place is `social` is ended by a guard at the top of `begin` (`cancelled`, `access_ended`, before admission: nothing held or charged); B7a removes the guard arm by arm.
+- **Controller ruling 2026-11-25 (B-4 dispatch):** the guard of block 3 is replaced arm by arm by the social `begin` (B7a); ring 1a shows a visitor no owner note, canaried (B7c); the own search and file read exclude social at the query and a social run's tools name only its conversation (B7b); the money bounds follow `placeOf` (B7a); the page facts are re-checked against the social text (B7a); the four interruption outcomes at post and finish settle once and tell the visitor nothing (B8); `agents-block-recheck.test.ts` stays unedited.
 
 ---
 

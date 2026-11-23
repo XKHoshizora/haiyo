@@ -166,22 +166,21 @@ describe("read again as it is admitted", () => {
     expect(gateway.calls.length).toBe(calls);
   };
 
-  it("its proactive budget: of two queued in two groups one reply short of it, the first runs and settles past it, the second ends there — no call, no charge, nobody told", async () => {
+  it("its proactive budget, with its hold: of two queued in two groups one micro-point short of it, neither can be held within it, so both end at admission — no call, no charge, nobody told", async () => {
     const w = await world();
     const g2 = await group(app, w.member, "second", [w.owner, w.third]);
     const anna = await agentIn(w.owner, "anna", w.g, { proactiveBudget: "2" });
     expect((await api(app, w.owner, "POST", `/api/conversations/${g2}/members`, { principalId: anna.id })).status).toBe(201);
     await paidUnasked(anna, 2 * POINT - 1);
-    await unasked(anna, w.g, await say(w.third, w.g, "问一"));
+    const first = await unasked(anna, w.g, await say(w.third, w.g, "问一"));
     const second = await unasked(anna, g2, await say(w.third, g2, "问二"));
-
-    gateway.reply("答一", { usage: { inputTokens: 10, outputTokens: 10 } });
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "done", error: null, lane: "proactive" }]);
 
     const [ownerS, memberS] = [await connect(app, w.owner), await connect(app, w.member)];
     const pushed = vi.spyOn(app.realtime, "pushAgentChanged");
     const notices = await noticesOf(g2);
+    await endsAtAdmission();
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "cancelled", error: null, lane: "proactive" }]);
+    expect(await chargedFor(first.run.id)).toBe("0");
     await endsAtAdmission();
     expect(await runsOf(anna.id, g2)).toEqual([{ status: "cancelled", error: null, lane: "proactive" }]);
     expect(await chargedFor(second.run.id)).toBe("0");

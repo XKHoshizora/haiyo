@@ -8,7 +8,7 @@ import { paidReply } from "./helpers/metering.ts";
 
 /**
  * The owner's settings for proactive replies (README "Agents"): `proactive`, `proactiveLevel`, `proactiveBudget`, and
- * `proactiveSpentToday` in the owner's view. Turning it on needs the judgement model (`JUDGE`); nothing else does.
+ * `othersUsedToday` in the owner's view. Turning it on needs the judgement model (`JUDGE`); nothing else does.
  */
 
 const { app, db } = useApp({ env: { ...SITE_ENV, RATE_LIMIT_SCALE: "1000" }, agentWorker: false });
@@ -24,16 +24,16 @@ const JUDGE = {
 const withJudge = () =>
   buildApp({ config: { ...app.deps.config, judge: JUDGE }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });
 
-const KEYS = ["proactive", "proactiveLevel", "proactiveBudget", "proactiveSpentToday"];
+const KEYS = ["proactive", "proactiveLevel", "proactiveBudget"];
 
 describe("proactive settings", () => {
-  it("a new Agent has them off, at level normal, with 20 points a day, none spent", async () => {
+  it("a new Agent has them off, at level normal, with 70 points a day (074)", async () => {
     const owner = await signUp(app, "pro_defaults");
     const agent = await mustCreateAgent(app, owner);
-    expect(agent).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "20", proactiveSpentToday: "0" });
-    expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "20" });
+    expect(agent).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "70" });
+    expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "70" });
     const list = (await api(app, owner, "GET", "/api/agents")).json as { agents: Record<string, unknown>[] };
-    expect(list.agents[0]).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "20", proactiveSpentToday: "0" });
+    expect(list.agents[0]).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "70" });
   });
 
   it("validates each field on create and PATCH; there is no unlimited budget", async () => {
@@ -122,13 +122,13 @@ describe("proactive settings", () => {
     expect(await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactive: false })).toMatchObject({ status: 200, json: { proactive: false } });
   });
 
-  it("the owner's view has the four keys", async () => {
+  it("the owner's view has the three keys", async () => {
     const owner = await signUp(app, "pro_view");
     const agent = await mustCreateAgent(app, owner);
     expect(Object.keys((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as object)).toEqual(expect.arrayContaining(KEYS));
   });
 
-  it("proactiveSpentToday counts only settled charges of lane proactive runs since the site day began; othersSpentToday is unchanged by them", async () => {
+  it("othersUsedToday.points counts the settled charges of lane others since the site day began, and what its running replies hold (its own points number scopes that lane): a proactive reply's, the owner's own and yesterday's are not in it", async () => {
     const owner = await signUp(app, "pro_spent");
     const agent = await mustCreateAgent(app, owner);
     const yesterday = new Date(siteToday(app.deps.config).getTime() - 3_600_000);
@@ -139,17 +139,17 @@ describe("proactive settings", () => {
     await paid("others", 7_000_000, null);
     await paid("own", 11_000_000, null);
     await paid("proactive", 40_000_000, yesterday);
-    const view = (await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as Record<string, string>;
-    expect(view).toMatchObject({ proactiveSpentToday: "3.5", othersSpentToday: "7" });
-    const list = (await api(app, owner, "GET", "/api/agents")).json as { agents: Record<string, string>[] };
-    expect(list.agents[0]).toMatchObject({ proactiveSpentToday: "3.5", othersSpentToday: "7" });
-    // A reply still being written holds points but has spent none.
+    const view = (await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as { othersUsedToday: { points: string } };
+    expect(view.othersUsedToday.points).toBe("7");
+    const list = (await api(app, owner, "GET", "/api/agents")).json as { agents: Array<{ othersUsedToday: { points: string } }> };
+    expect(list.agents[0]!.othersUsedToday.points).toBe("7");
+    // A reply still being written holds points, and a proactive reply's hold is the proactive budget's, not the others' number's.
     await db.query(
       `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at, source, model, charge_to, hold_micro, lane)
        values ('reply', $1, $2, $3, 'running', 0, now(), 'site', 'fast', 'balance', 9000000, 'proactive')`,
       [agent.conversationId, agent.id, owner.id],
     );
-    expect(((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as Record<string, string>).proactiveSpentToday).toBe("3.5");
+    expect(((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as { othersUsedToday: { points: string } }).othersUsedToday.points).toBe("7");
   });
 });
 

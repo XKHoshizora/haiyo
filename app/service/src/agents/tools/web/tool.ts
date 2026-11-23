@@ -120,7 +120,8 @@ async function guardReads(db: Db, scope: RunScope): Promise<{ ownerSaid: string 
           [scope.conversationId, scope.ownerId, scope.heardTo],
         )
       : { rows: [] };
-  if (!scope.group) return { ownerSaid: said.rows[0]?.text ?? null, names: [] };
+  // Anywhere but the own conversation (a group, a social conversation) the guard reads the names of everyone there.
+  if (scope.place === "own") return { ownerSaid: said.rows[0]?.text ?? null, names: [] };
   const people = await db.query<{ name: string; handle: string }>(
     `select p.display_name as name, ${handleOf("p")} as handle
        from memberships ms join principals p on p.id = ms.principal_id

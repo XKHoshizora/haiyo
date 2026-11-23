@@ -4,7 +4,7 @@ import { isCount } from "../../metering/prices.ts";
 import { estimateTokens, holdTokens, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR, weightWithin } from "../../metering/tokens.ts";
 import { ModelError, type ModelCall, type ModelGateway, type ToolCall, type ToolResult } from "../../models/gateway.ts";
 import { cleanModelText, hasVisibleText } from "../../schemas.ts";
-import { cutResult, FINAL_LINE, fitsSchema, isRefusal, LoopGuard, OVER_CAP, REPEATED, UNUSABLE, withFinalLine } from "./loop.ts";
+import { cutResult, FINAL_LINE, fitsSchema, isRefusal, longestToolName, LoopGuard, OVER_CAP, REPEATED, turnOver, UNUSABLE, withFinalLine } from "./loop.ts";
 import {
   BUSY,
   failedEnd,
@@ -620,7 +620,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (kind === "web" && input !== null && typeof input === "object" && typeof input.query === "string") return { ...input, query: queryForm(input.query) };
       return kind === "file" && input !== null && typeof input === "object" && typeof input.file === "string" ? { ...input, file: fileNumber(input.file) } : c.input;
     };
-    const guard = new LoopGuard({ maxRounds: limits.maxRounds, perTool: bounds.perTool, same });
+    const guard = new LoopGuard({ maxRounds: limits.maxRounds, perTool: bounds.perTool, same, ...(bounds.callsCap !== undefined ? { maxCalls: bounds.callsCap } : {}) });
     // No token-shaped string is streamed, as the stored reply keeps none (its citations are beside its text); a reply
     // offered the web search holds its `〔w1〕` too.
     const web = Object.values(bounds.kinds).includes("web");
@@ -632,7 +632,11 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     /** The calls of the steps the request that wrote the answer carried: set only when that round finished. */
     let trace: readonly ToolTrace[] = [];
     let stepsTokens = 0;
-    const tally = { rounds: 0, calls: 0, ran: 0, repeats: 0, over: 0, garbled: 0, failed: 0, plain: false };
+    const tally = { rounds: 0, calls: 0, ran: 0, repeats: 0, over: 0, garbled: 0, failed: 0, plain: false, discarded: false };
+    /** An others' reply's first turn was discarded (once at most: `bounds.callsCap`, loop.ts `turnOver`). */
+    let discarded = false;
+    /** The longest tool name offered: what an others' reply's hold counts its notes' names at. */
+    const longestName = longestToolName(tools);
     let final = false;
     /** The upstream refused a later round: the reply is asked for once more as one without tools (`prepared.call`). */
     let plain = false;
@@ -709,7 +713,11 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         if (finished?.usage) meter.add(finished.usage, input, 0);
         // A later round the upstream refused (400, 422: something in the rounds it will not take, which nothing of ours can
         // mend): once, the reply is asked for as one that offers no tools, from the conversation alone, its cost held first.
-        if (steps.length > 0 && !plain && (round.status === 400 || round.status === 422)) {
+        // An others' reply does so only when the refused round spent nothing: that round was its final request, which took
+        // the hold's last-call part, and the tool-less request takes it in its place; had it reported usage, the part is
+        // spent and the reply ends as any failed round ends (plan B2b, M-V3).
+        const spentBefore = finished?.usage != null && finished.usage.inputTokens + finished.usage.outputTokens > 0;
+        if (steps.length > 0 && !plain && (round.status === 400 || round.status === 422) && (bounds.callsCap === undefined || !spentBefore)) {
           const next = await extend(holdTokens([ordinary.system, ...texts], bounds.contextTokens, prepared.call.maxOutputTokens));
           if (next === "stop" || next === "busy") {
             ending = { last: { finished: CUT_SHORT, failure: null, why: null }, noAnswer: next === "stop" ? ENDED_ELSEWHERE : BUSY };
@@ -744,6 +752,25 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         ending = { last: round };
         trace = traces.slice(0, carried).flat();
         break;
+      }
+      // An others' reply's first turn that its hold does not cover (more calls than one real and its notes, a call id past
+      // `TOOL_CALL_ID_MAX`, answers that would pass the counted bytes), at most once and only on the request that offered tools:
+      // nothing of it is built — no call runs, no result, step, acknowledgement or trace — and its text is dropped; its usage
+      // stays metered. The reply is finished by the tool-less path a refused round takes, its cost held first (`extend`,
+      // which raises nothing here): whatever calls that request carries are ignored, its text is the answer (plan B2b, C3).
+      if (bounds.callsCap !== undefined && !discarded && turnOver(finished.toolCalls, { callsCap: bounds.callsCap, overCapNotes: bounds.overCapNotes ?? 0, longestToolName: longestName })) {
+        discarded = true;
+        tally.discarded = true;
+        out.restart();
+        const next = await extend(holdTokens([ordinary.system, ...texts], bounds.contextTokens, prepared.call.maxOutputTokens));
+        if (next === "stop" || next === "busy") {
+          ending = { last: { finished: CUT_SHORT, failure: null, why: null }, noAnswer: next === "stop" ? ENDED_ELSEWHERE : BUSY };
+          break;
+        }
+        plain = true;
+        tally.plain = true;
+        log.info({ metric: "others_turn_discarded", runId: run.id, calls: finished.toolCalls.length }, "agent run: an others' reply asked for more than its hold covers; its turn is dropped and it is finished without tools");
+        continue;
       }
       // Work follows: what the reply said before it, when it shows anything, is posted at once as its acknowledgement —
       // one per reply — and the answer is what it says after it.
@@ -851,7 +878,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         ending = { last: { finished: CUT_SHORT, failure: null, why: null }, noAnswer: next === "stop" ? ENDED_ELSEWHERE : BUSY };
         break;
       }
-      final = next === "final" || guard.exhausted() || guard.mustEnd() || unusable || stepsTokens >= room;
+      // An others' reply has one tool round, whatever it ran (plan B2a): the next call is its last.
+      final = next === "final" || guard.exhausted() || guard.mustEnd() || unusable || stepsTokens >= room || bounds.callsCap !== undefined;
     }
 
     quiet();

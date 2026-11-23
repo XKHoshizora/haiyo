@@ -1,4 +1,7 @@
-import { findDownloadable } from "../../attachments/store.ts";
+import type { Downloadable } from "../../attachments/store.ts";
+import { VISIBLE_JOIN } from "../../conversations/store.ts";
+import { socialPlaceSql } from "../../social/place.ts";
+import type { Queryable } from "../../db.ts";
 import { weight } from "../../metering/tokens.ts";
 import type { ToolSpec } from "../../models/gateway.ts";
 import { askerLine, readPrefix } from "../context.ts";
@@ -66,6 +69,33 @@ interface Page {
 }
 
 /**
+ * The attachment `attachmentId`, if and only if the message that carries it is visible to `readerId` now (`VISIBLE_JOIN`, as
+ * attachments/store.ts `findDownloadable` decides it), within `within` when given (a group's or a social conversation's: that
+ * conversation, after `after`, at most `upTo`) and — enforced in this one statement — never from a social conversation unless
+ * `within` names it: the own conversation's `read_file` cannot be made to read a stranger's file by any number it is handed.
+ */
+async function readable(
+  q: Queryable,
+  readerId: string,
+  attachmentId: string,
+  within: { conversationId: string; after: number; upTo: number } | null,
+): Promise<Downloadable | null> {
+  const { rows } = await q.query<{ blob_key: string; name: string; size: string; mime: string; inline: boolean }>(
+    `select a.blob_key, a.name, a.size, a.mime, a.inline
+       from attachments a
+       join messages m on m.id = a.message_id and m.conversation_id = a.conversation_id
+       join conversations c on c.id = a.conversation_id
+       ${VISIBLE_JOIN}
+      where a.id = $2
+        and ($3::uuid is null or (a.conversation_id = $3::uuid and m.seq > $4::bigint and m.seq <= $5::bigint))
+        and ($3::uuid is not null or not ${socialPlaceSql("c")})`,
+    [readerId, attachmentId, within?.conversationId ?? null, within?.after ?? 0, within?.upTo ?? 0],
+  );
+  const r = rows[0];
+  return r ? { blobKey: r.blob_key, name: r.name, size: Number(r.size), mime: r.mime, inline: r.inline } : null;
+}
+
+/**
  * Reads one page of the file `input.file` names for `scope`'s reply: at most `TOOLS.resultMaxWeight` in all (the page as
  * JSON), from character `from` of the file's text (as `fileText` gives it). The read is bounded by what the page can hold:
  * the file's first `from` + 3 × that weight characters at most (a character weighs at least a third), read as at most four
@@ -78,8 +108,10 @@ export async function readFile(deps: ToolDeps, scope: RunScope, input: FileInput
   if (from < 0) return { output: { error: BAD_FROM } };
   if (from >= FILE_READ_MAX_CHARS) return { output: { error: FROM_TOO_FAR } };
 
-  const within = scope.group ? { conversationId: scope.conversationId, after: await askerLine(deps.db, scope.id), upTo: scope.heardTo } : null;
-  const found = await findDownloadable(deps.db, scope.agentId, attachmentId, within);
+  // A group: this group, after its asker's line; a social conversation: this conversation, all it can see; the own conversation: any
+  // file its Agent may read in a conversation that is not a social one (`readable`).
+  const within = scope.place === "own" ? null : { conversationId: scope.conversationId, after: scope.place === "group" ? await askerLine(deps.db, scope.id) : 0, upTo: scope.heardTo };
+  const found = await readable(deps.db, scope.agentId, attachmentId, within);
   if (found === null) return { output: { error: FILE_NOT_SEEN } };
   if (found.inline || found.mime === "application/pdf") return { output: { error: CANNOT_READ } };
 
@@ -97,7 +129,7 @@ export async function readFile(deps: ToolDeps, scope: RunScope, input: FileInput
 
   // In a group the run's mark is taken out; the rest is shown as it is (what looks like a citation in it is what someone
   // wrote). `from` and `next` count the file's own characters.
-  const clean = (s: string): string => withoutMark(s, scope.group ? scope.mark : null);
+  const clean = (s: string): string => withoutMark(s, scope.place !== "own" ? scope.mark : null);
   const name = clean(found.name);
   const page = (n: number): Page => {
     const next = n < rest.length || more ? from + n : null;

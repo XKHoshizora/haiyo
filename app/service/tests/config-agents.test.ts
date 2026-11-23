@@ -781,7 +781,7 @@ describe("the Agent social configuration (SOCIAL, OTHERS, MEMORY.judgeModel)", (
     expect(loadConfig({ ...base, SOCIAL: "" }).social).toEqual({ enabled: false });
     expect(loadConfig({ ...base, SOCIAL: '{"enabled":true}' }).social).toEqual({ enabled: true });
     expect(loadConfig({ ...base }).others).toEqual({
-      answersPerDay: 50, pointsPerDay: 70, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
+      answersPerDay: 50, pointsPerDay: 300, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
       notesWeight: 1000, judgeBatch: 20, judgeCallsPerDay: 5, withheldCallsPerDay: 3, judgeAttemptsPerVersion: 2, judgeInputBytes: 9000,
       judgeOutputTokens: 2200, judgeOwnerExamples: 4, judgePollMs: 5000, judgeOwnersPerPoll: 10, withheldInputBytes: 6000, withheldCardsMax: 3,
       cardDays: 7, requestDays: 7, cooldownDays: 30,

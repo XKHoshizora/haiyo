@@ -4,7 +4,7 @@ import { MAX_CHOICE_OPTIONS, type Question } from "../../judge/client.ts";
 import { modelsUsable } from "../../models/resolve.ts";
 import { notAcknowledgement, type Mention } from "../../messages/model.ts";
 import { handleOf } from "../../principals/store.ts";
-import { blockedEitherWay } from "../../social/relations.ts";
+import { refusedInGroup } from "../refusal.ts";
 import { agentModelOf } from "../store.ts";
 import { labelName, oneLine } from "../runtime/prompt.ts";
 import { heardFromOf, type Listener } from "./listeners.ts";
@@ -113,13 +113,13 @@ export async function namesAnAgent(q: Queryable, mentions: readonly Mention[] | 
  * SQL: whether Agent `p` (a `principals` alias, with its `agents` row `a` and its `memberships` row `m` in the group) may
  * answer unasked the message at seq `seq` from person `sender` (parameter positions, spliced in): a current member since
  * before that message (an Agent answers nothing from before it joined), with proactive replies on, not paused or deleted,
- * with a model, whose owner has no block with the sender in either direction (the sender may be the owner). Read when
+ * with a model, that the access decision does not refuse for the sender (`refusedSql`: a block, a bar, an ended row; the sender may be the owner). Read when
  * the options are offered (`optionsFor`) and again under their locks (decide.ts).
  */
 export const mayAnswerUnasked = (seq: string, sender: string): string =>
   `m.left_seq is null and m.joined_seq < ${seq} and p.kind = 'agent'
    and a.proactive and not a.paused and a.deleted_at is null and a.model_source is not null
-   and not ${blockedEitherWay("p.owner_id", sender)}`;
+   and not ${refusedInGroup(sender, "p.id")}`;
 
 /**
  * The Agents that may answer unasked `senderId`'s message at `seq` in the group (`mayAnswerUnasked`) and whose model is

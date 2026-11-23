@@ -462,7 +462,7 @@ export interface OthersConfig {
 const othersSchema = z
   .strictObject({
     answersPerDay: positive(50, 1000),
-    pointsPerDay: positive(70, 100_000),
+    pointsPerDay: positive(300, 100_000),
     toolCalls: positive(1, 10),
     overCapNotes: z.number().int().min(0).max(20).default(3),
     outputTokens: positive(800, 100_000),

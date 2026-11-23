@@ -535,22 +535,21 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ estimated: false, cost, balance: cost, forgiven: "0" }]);
   });
 
-  it("the Agent's others' daily budget reached mid-run by what the reply has cost: the next call is the last", async () => {
+  it("the Agent's others' daily budget is held for up front (B1): a reply whose hold cannot fit within it, with tools or plain, ends at admission — no call, nothing held or charged, the group told", async () => {
     const owner = await signUp(app, "budgetowner");
     const member = await signUp(app, "budgetmember");
     const g = await group(app, owner, "饭搭子", [member, await signUp(app, "budgetthird")]);
-    // A paid model and a balance of 20 points: nothing but the budget stops a round.
+    // A paid model and a balance of 20 points: nothing but the budget, one point, which not even its one call can be held within.
     const agent = await mustCreateAgent(app, owner, { handle: "chef", name: "chef", model: PAID, persona: "简短地回答。", othersBudget: "1" });
     await grant(db, owner.id, 20n * POINT);
     await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [g, agent.id]);
-    // A point: the budget, reached by the first round alone.
-    const gateway = scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { usage: U(1000, 900) }).reply("就这样。", { usage: U(100, 10) });
+    const gateway = scriptedGateway();
     const { worker } = toolWorker(gateway);
     await say(member, g, "@chef 附近有什么好吃的？");
     expect(await worker.runOnce()).toBe(true);
-    expect(gateway.calls).toHaveLength(2);
-    expect(isFinal(gateway.calls[1]!)).toBe(true);
-    expect(await runOf(owner.id)).toMatchObject({ status: "done", hold: "0" });
+    expect(gateway.calls).toHaveLength(0);
+    expect(await runOf(owner.id)).toMatchObject({ status: "cancelled", hold: "0" });
+    expect((await db.query("select count(*)::int as n from messages where conversation_id = $1 and body ->> 'event' = 'agent_daily_budget_reached'", [g])).rows[0].n).toBe(1);
   });
 
   it("stopped during its third round, which reported nothing: the first two rounds' reported tokens, their hidden reasoning in them, are charged; the third's estimate is added; the raised hold is released", async () => {
@@ -681,7 +680,7 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ source: "provider", cost: "0", free: "0", balance: "0", input: 900_000, output: 9000 }]);
   });
 
-  it("a provider's model in a lane with a daily budget: extend answers ok while the budget is not reached, and final once what is settled reaches it — nothing held either way, its owner's account never waited on", async () => {
+  it("a provider's model in an others' lane: extend answers final whatever the budget says (its one tool round has been made) — nothing held, its owner's account never waited on", async () => {
     const owner = await signUp(app, "ownbudget");
     const member = await signUp(app, "ownbudgetmember");
     const g = await group(app, owner, "饭搭子", [member, await signUp(app, "ownbudgetthird")]);
@@ -713,11 +712,9 @@ describe("the money of a reply that offers tools", () => {
       }
     };
 
-    // The budget not reached: another round.
-    expect(await extend()).toBe("ok");
+    // An others' reply has one tool round (B2a): the next call is the last, the budget reached or not.
+    expect(await extend()).toBe("final");
     expect(await holdOf(ticket.id)).toBe(0n);
-    // An earlier reply of the Agent's to someone else, on a site model, settled today at a point: the budget is reached,
-    // and the next call is the last.
     await paidReply(db, { agentId: agent.id, ownerId: owner.id, conversationId: g, lane: "others", micro: POINT });
     expect(await extend()).toBe("final");
     expect(await holdOf(ticket.id)).toBe(0n);
@@ -880,12 +877,12 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     const lineTokens = estimateTokens(`\n\n${FINAL_LINE}`);
     const definitions = estimateTokens(JSON.stringify(TOOLS), TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
     /** What `prepared` was planned with, with the conversation's room capped at `cap` (a group's). */
-    const planOf = (prepared: Prepared, cap: number | null) => {
+    const planOf = (prepared: Prepared, cap: number | null, maxOut = MAX_OUT) => {
       const system = { rest: prepared.call.system, passage: "" };
       const capped = (n: number) => (cap === null ? n : Math.min(n, cap));
-      const results = Math.min(Math.ceil(2 * app.deps.config.tools.resultMaxWeight * TOOL_TEXT_FACTOR), Math.floor(capped(contextBudget(CONTEXT, MAX_OUT, system, 1, definitions)) / 3));
+      const results = Math.min(Math.ceil(2 * app.deps.config.tools.resultMaxWeight * TOOL_TEXT_FACTOR), Math.floor(capped(contextBudget(CONTEXT, maxOut, system, 1, definitions)) / 3));
       const reserved = definitions + lineTokens + results;
-      const whole = contextBudget(CONTEXT, MAX_OUT, system, 1, reserved);
+      const whole = contextBudget(CONTEXT, maxOut, system, 1, reserved);
       const toolRun = prepared.toolRun!;
       expect(toolRun.limit).toBe(estimateTokens(prepared.call.system) + reserved + whole);
       // The rounds' room: the results' share, and what the conversation (the planned input less the system text) left
@@ -917,7 +914,8 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     expect(isRunEnd(inGroup)).toBe(false);
     const cap = app.deps.config.agentGroupContextTokens;
     expect(cap).toBe(12_000);
-    const plan = planOf(inGroup, cap);
+    // A member's call: the call's output is `OTHERS.outputTokens`, 800, not the model's 1 000 (lane `others`).
+    const plan = planOf(inGroup, cap, app.deps.config.others.outputTokens);
     expect(plan.results).toBe(4000);
     expect(plan.whole).toBeGreaterThan(cap);
   });

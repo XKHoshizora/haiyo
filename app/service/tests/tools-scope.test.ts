@@ -111,7 +111,8 @@ describe("a search in a group cannot leave it", () => {
   it("every trick in the arguments — the canary, the other group's title and id, extra keys naming a conversation or 'all' — finds nothing outside, and every search statement names only this group", async () => {
     const w = await world();
     const spy = spyDb(app.deps.db);
-    await say(w.mia, w.a, "@scope_bot 帮我查查蓝鲸计划");
+    // Called by the Agent's owner: an others' reply runs one real call (plan B2a), and here all five are to be tried.
+    await say(w.owner, w.a, "@scope_bot 帮我查查蓝鲸计划");
     gateway
       .callTools([
         { name: SEARCH_MESSAGES, input: { query: CANARY } },
@@ -126,7 +127,7 @@ describe("a search in a group cannot leave it", () => {
     expect(first.tools?.map((t) => t.name)).toContain(SEARCH_MESSAGES);
     const results = outputs(second);
     // The three the schema takes ran and found nothing in this group; the two with keys of their own were not run.
-    const nothing = { results: [], note: "这个群的记录里没找到。" };
+    const nothing = { results: [], note: "这个群的记录里没找到。只有在你和主人的专属会话里才能查所有地方。" };
     expect(results).toEqual([nothing, nothing, nothing, { error: "这个请求无法执行。" }, { error: "这个请求无法执行。" }]);
     const shown = JSON.stringify(second.steps);
     for (const secret of [`${CANARY}：`, "下周三在老地方"]) expect([secret, shown.includes(secret)]).toEqual([secret, false]);
@@ -140,6 +141,27 @@ describe("a search in a group cannot leave it", () => {
     // Nothing the tools sent named the other group as a conversation, anywhere.
     const conversationParams = spy.sent.flatMap((s) => s.params.filter((p) => Array.isArray(p) || (typeof p === "string" && /^[0-9a-f-]{36}$/.test(p))));
     expect(JSON.stringify(conversationParams).includes(w.b)).toBe(false);
+  });
+
+  it("called by a member, whose reply runs one real call: the first trick runs over this group alone, the rest are answered with the note", async () => {
+    const w = await world();
+    const spy = spyDb(app.deps.db);
+    await say(w.mia, w.a, "@scope_bot 帮我查查蓝鲸计划");
+    gateway
+      .callTools([
+        { name: SEARCH_MESSAGES, input: { query: CANARY } },
+        { name: SEARCH_MESSAGES, input: { query: "乙群-秘密" } },
+        { name: SEARCH_MESSAGES, input: { query: "蓝鲸计划", conversationId: w.b } },
+      ])
+      .reply("没查到。");
+    expect(await toolWorker(deps({ db: spy.db })).runOnce()).toBe(true);
+    const second = gateway.calls.at(-1)!;
+    expect(outputs(second)).toEqual([{ results: [], note: "这个群的记录里没找到。" }, { note: "这类查询这次回复里不能再用了。" }, { error: "这个请求无法执行。" }]);
+    const sent = searches(spy.sent);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.params[0]).toBe(w.agent.id);
+    expect(sent[0]!.params[1]).toEqual([w.a]);
+    expect(JSON.stringify(second.steps).includes(`${CANARY}：`)).toBe(false);
   });
 
   it("from the Agent's own conversation the canary is found, with where it was said (the group's title)", async () => {
@@ -225,7 +247,7 @@ describe("a group reply never sees past its asker's line", () => {
     expect((await api(app, w.owner, "POST", `/api/conversations/${w.a}/members`, { principalId: sam.id })).status).toBe(201);
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     await db.query("update agent_runs set asker_ids = array[$2::uuid, $3::uuid] where id = $1", [run, w.mia.id, sam.id]);
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo: await conversationSeq(w.a), mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, place: "group", refs: new RunRefs(), heardTo: await conversationSeq(w.a), mark: null };
     const signal = new AbortController().signal;
     const byName = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "预算表-m3" } }, signal);
     expect(byName.output).toEqual({ results: [], note: "这个群的记录里没找到。" });
@@ -238,7 +260,7 @@ describe("a group reply never sees past its asker's line", () => {
     for (const i of [1, 2, 3]) await say(w.ned, w.a, `天花板-n6 第${i}条`);
     await say(w.mia, w.a, "@scope_bot 找找");
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs({ m: 999_998 }), heardTo: await conversationSeq(w.a), mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, place: "group", refs: new RunRefs({ m: 999_998 }), heardTo: await conversationSeq(w.a), mark: null };
     const out = (await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "天花板-n6" } }, new AbortController().signal)).output as { more: boolean; results: Array<{ ref: string }> };
     expect([out.results.map((r) => r.ref), out.more]).toEqual([["〔m999999〕"], true]);
   });
@@ -250,7 +272,7 @@ describe("a group reply never sees past its asker's line", () => {
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     const heardTo = await conversationSeq(w.a);
     await say(w.ned, w.a, "后来才说：蓝鲸计划在五楼");
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo, mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, place: "group", refs: new RunRefs(), heardTo, mark: null };
     const out = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }, new AbortController().signal);
     // The earlier message only: not the later one (past heardTo), nor the question the reply answers (item E).
     expect((out.output as { results: Array<{ text: string }> }).results.map((r) => r.text)).toEqual(["之前说过：蓝鲸计划在三楼"]);
@@ -283,7 +305,7 @@ describe("a file is read only where it may be", () => {
     agentId: w.agent.id,
     ownerId: w.owner.id,
     conversationId,
-    group,
+    place: group ? ("group" as const) : ("own" as const),
     refs,
     heardTo: await conversationSeq(conversationId),
     mark: null,

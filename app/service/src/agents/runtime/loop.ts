@@ -13,6 +13,51 @@ export const REPEATED = "这个已经查过了，结果和上次一样。请用�
 export const OVER_CAP = "这类查询这次回复里不能再用了。";
 /** The result of a call that cannot be run: a tool not offered, an input its schema refuses, a call cut short, a tool that failed. */
 export const UNUSABLE = "这个请求无法执行。";
+/**
+ * The most characters of a tool call's id an others' reply's hold counts (README "Agent social", An others' reply): the notes that answer
+ * the calls it does not run carry the id, and the hold is measured with ids of this length. A call whose id is longer makes
+ * its turn one the hold does not cover: the turn is discarded (worker.ts, plan B2b).
+ */
+export const TOOL_CALL_ID_MAX = 64;
+/**
+ * The bytes of an answer to a call, as every hold measures a part (`partText`, context.ts: `{id, name, output}` as JSON), its
+ * output left out: what a call's answer costs besides what it says — the id and the name it echoes.
+ */
+const framingBytes = (id: string, name: string): number => Buffer.byteLength(JSON.stringify({ id, name, output: null }), "utf8") - Buffer.byteLength("null", "utf8");
+/** The longest of the loop's own answers (the over-cap note, the repeat note, the garbled call's error) as JSON. */
+const NOTE_OUTPUT_BYTES = Math.max(
+  ...[{ note: OVER_CAP }, { note: REPEATED }, { error: UNUSABLE }].map((output) => Buffer.byteLength(JSON.stringify(output), "utf8")),
+);
+/**
+ * The most a call past the first can be answered with, in bytes (`partText` of `{id, name, output}` at its utf-8 bytes): the id
+ * at `TOOL_CALL_ID_MAX` characters, the longest tool name offered and the longest note — `REPEATED`: 203 bytes with
+ * `search_messages`. What an others' reply's hold counts for each of its notes (port-impl.ts `begin`).
+ */
+export const noteBytes = (longestToolName: string): number => framingBytes("x".repeat(TOOL_CALL_ID_MAX), longestToolName) + NOTE_OUTPUT_BYTES;
+/** The longest tool name of `tools`, in bytes: what an others' reply's notes are measured with (the hold and the discard test alike). */
+export const longestToolName = (tools: ReadonlyArray<{ name: string }>): string =>
+  tools.reduce((longest, t) => (Buffer.byteLength(t.name, "utf8") > Buffer.byteLength(longest, "utf8") ? t.name : longest), "");
+/** What the hold counts, for the one real result, besides the result itself (`roomGrowth`: its id, its name, its JSON). */
+export const RESULT_FRAMING_BYTES = 200;
+
+/**
+ * Whether an others' reply's first turn is one its hold does not cover (worker.ts, plan B2b): its calls come to more than
+ * `callsCap` that run and `overCapNotes` that are answered with a note; or a call's id is longer than `TOOL_CALL_ID_MAX`
+ * (the hold counts ids at that length: such a call counts as the whole of the turn's allowance); or the answers it would get,
+ * at the real bytes of their ids and names (an unknown tool's name is the model's own), would pass what the hold counted
+ * for them — `callsCap` results (their framing at `RESULT_FRAMING_BYTES`) and `overCapNotes` notes at the longest offered name.
+ * The results themselves are cut to the same weight in both.
+ */
+export function turnOver(
+  calls: readonly Pick<ToolCall, "id" | "name">[],
+  o: { callsCap: number; overCapNotes: number; longestToolName: string },
+): boolean {
+  if (calls.length > o.callsCap + o.overCapNotes) return true;
+  if (calls.some((c) => c.id.length > TOOL_CALL_ID_MAX)) return true;
+  const framing = calls.reduce((sum, c) => sum + framingBytes(c.id, c.name), 0);
+  const worst = framing + Math.max(0, calls.length - o.callsCap) * NOTE_OUTPUT_BYTES;
+  return worst > o.callsCap * RESULT_FRAMING_BYTES + o.overCapNotes * noteBytes(o.longestToolName);
+}
 /** The line the system text gains for the last call of a reply that used tools. */
 export const FINAL_LINE = "你已经不能再查了，请用上面查到的内容直接回答。";
 /** What ends a result cut to its weight. */
@@ -43,16 +88,19 @@ export function canonicalJson(value: unknown): string {
  * provider's id (ids repeat, and may be empty). `admit`: the first time a call is seen it runs ("run"), unless its
  * tool has been run as often as `perTool` allows it (looked up as the tool's own entry; a tool with none has only the
  * round cap) — then "over"; a call run before is a "repeat", and one seen a third time ends the tool phase (`mustEnd`).
- * `roundDone` counts a round that called tools; `exhausted` once `maxRounds` have.
+ * `roundDone` counts a round that called tools; `exhausted` once `maxRounds` have. `maxCalls` (an others' reply: one real call,
+ * `OTHERS.toolCalls`) bounds the calls that run in the whole reply, all tools together: the first usable ones run, the
+ * rest are "over" — a repeat is still a repeat.
  */
 export class LoopGuard {
   private readonly seen = new Map<string, number>();
   private readonly ran = new Set<string>();
   private readonly used = new Map<string, number>();
   private rounds = 0;
+  private runs = 0;
   private repeatedThrice = false;
 
-  constructor(private readonly limits: { maxRounds: number; perTool: Readonly<Record<string, number>>; same?: (call: ToolCall) => unknown }) {}
+  constructor(private readonly limits: { maxRounds: number; perTool: Readonly<Record<string, number>>; same?: (call: ToolCall) => unknown; maxCalls?: number }) {}
 
   admit(call: ToolCall): "run" | "repeat" | "over" {
     const key = `${call.name}\u0000${canonicalJson(this.limits.same ? this.limits.same(call) : call.input)}`;
@@ -60,11 +108,13 @@ export class LoopGuard {
     this.seen.set(key, times);
     if (times >= 3) this.repeatedThrice = true;
     if (this.ran.has(key)) return "repeat";
+    if (this.limits.maxCalls !== undefined && this.runs >= this.limits.maxCalls) return "over";
     const cap = Object.hasOwn(this.limits.perTool, call.name) ? this.limits.perTool[call.name] : undefined;
     const used = this.used.get(call.name) ?? 0;
     if (cap !== undefined && used >= cap) return "over";
     this.used.set(call.name, used + 1);
     this.ran.add(key);
+    this.runs++;
     return "run";
   }
 

@@ -193,7 +193,7 @@ export function noticeText(system, fallback, nameOf, where = {}) {
       text = `${n(system.agentId)}已达到本次接话的点数上限，有人发言后继续。`;
       break;
     case "agent_daily_budget_reached":
-      text = `「${n(system.agentId)}」今天的额度已用完`;
+      text = `「${n(system.agentId)}」今天只回复它的主人了`;
       break;
     case "agent_quieted":
       text = `「${n(system.agentId)}」暂时不主动发言，需要时可以 @ 它`;
@@ -285,12 +285,6 @@ function microPoints(value) {
   return BigInt(whole + (decimals + "000000").slice(0, 6));
 }
 
-/** Whether `spent` has reached `budget` (both decimal strings of points), compared on the digits (no float maths). */
-export function pointsReached(spent, budget) {
-  const a = microPoints(spent);
-  const b = microPoints(budget);
-  return a !== null && b !== null && a >= b;
-}
 
 const VIA_LEVELS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const isText = (v) => typeof v === "string" && v.length > 0;
@@ -694,6 +688,12 @@ export const isProactiveLevel = (id) => PROACTIVE_LEVELS.some(([level]) => level
 /** The label of level `id`; the default's (适中) for anything else. */
 export const proactiveLevelLabel = (id) => (PROACTIVE_LEVELS.find(([level]) => level === id) ?? PROACTIVE_LEVELS[1])[1];
 
+/** `{answers: 1..1000 | null, points: decimal string | null}`: an Agent's own limit as the service says it. */
+const isOthersLimit = (v) =>
+  v !== null && typeof v === "object" && (v.answers === null || Number.isInteger(v.answers)) && (v.points === null || typeof v.points === "string");
+/** `{answers: count, points: decimal string}`: what others used of an Agent today. */
+const isOthersUsed = (v) => v !== null && typeof v === "object" && Number.isInteger(v.answers) && typeof v.points === "string";
+
 /** The prototype's two private-reply choices, by the service's `replyMode`. */
 const PRIVATE_REPLY = { always: "收到消息时回复", mention: "仅在我点名时回复" };
 
@@ -719,13 +719,17 @@ function agentView(a, version, loaded) {
     groupMentions: a.groupMentions === "owner" ? "owner" : "members",
     /** 一次接话最多花费: decimal points as the service says them (its default when it says nothing). */
     chainBudget: typeof a.chainBudget === "string" ? a.chainBudget : "50",
-    /** 别人 @ 每天最多花 (decimal points, null = unlimited) and what they spent today: only when the service says them. */
-    ...(a.othersBudget === null || typeof a.othersBudget === "string" ? { othersBudget: a.othersBudget } : {}),
-    ...(typeof a.othersSpentToday === "string" ? { othersSpentToday: a.othersSpentToday } : {}),
-    /** 主动参与群聊 with its level, daily budget and today's spend (decimal points): only the owner's view has these. */
+    /**
+     * The Agent's own limit on what others spend on it (a sub-limit inside its owner's two daily numbers; null in a part = none of its
+     * own) and what others used of it today (answers, decimal points): only when the service says them.
+     */
+    ...(isOthersLimit(a.othersLimit) ? { othersLimit: { answers: a.othersLimit.answers, points: a.othersLimit.points } } : {}),
+    ...(isOthersUsed(a.othersUsedToday) ? { othersUsedToday: { answers: a.othersUsedToday.answers, points: a.othersUsedToday.points } } : {}),
+    /** 主动参与群聊 with its level and daily budget (decimal points): only the owner's view has these. */
     ...(typeof a.proactive === "boolean" ? { proactive: a.proactive } : {}),
     ...(isProactiveLevel(a.proactiveLevel) ? { proactiveLevel: a.proactiveLevel } : {}),
     ...(typeof a.proactiveBudget === "string" ? { proactiveBudget: a.proactiveBudget } : {}),
+    /** What its proactive replies cost today (decimal points): the service says it to the owner alone. */
     ...(typeof a.proactiveSpentToday === "string" ? { proactiveSpentToday: a.proactiveSpentToday } : {}),
     /** How it addresses me and the others: only the owner's view has these (absent, never defaulted, otherwise). */
     ...(typeof a.ownerAppellation === "string" || a.ownerAppellation === null ? { ownerAppellation: a.ownerAppellation } : {}),
@@ -803,9 +807,15 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
   const people = {};
   // An Agent is never a person: it is listed under `agents` (mine, and anyone else's I share a group with).
   for (const p of Object.values(model.principals)) if (p.id !== meId && p.kind !== "agent") people[p.id] = personView(p, versions[p.id]);
+  // (A blocked entry may be an Agent — `kind: "agent"`, said by the service — and is then an Agent, listed below under `agents`, never a person.)
+  const blockedAgents = [];
   if (social) {
     const named = [...social.friends, ...social.blocked, ...social.blockedBy, ...social.incoming.map((r) => r.principal), ...social.outgoing.map((r) => r.principal)];
-    for (const p of named) if (p.id !== meId && !people[p.id]) people[p.id] = personView(p, versions[p.id]);
+    for (const p of named) {
+      if (p.id === meId || people[p.id]) continue;
+      if (p.kind === "agent") blockedAgents.push(p);
+      else people[p.id] = personView(p, versions[p.id]);
+    }
   }
   if (model.me) {
     people[ME] = {
@@ -844,6 +854,7 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     };
     agents[p.id] = agentView(known, versions[p.id], false);
   }
+  for (const p of blockedAgents) if (!agents[p.id]) agents[p.id] = othersAgentView(p, versions[p.id], null);
   const nameOf = (id) => people[id]?.name ?? agents[id]?.name ?? null;
 
   const pendingByConv = new Map();

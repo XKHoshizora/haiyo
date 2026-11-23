@@ -6,6 +6,7 @@ import type { ToolSpec } from "../../models/gateway.ts";
 import { askerLine } from "../context.ts";
 import type { ToolOutcome } from "../runtime/port.ts";
 import { cleanText, labelName, NO_GROUP_TITLE, oneLine, speakerRole, TOOL_MATERIAL, withoutMark } from "../runtime/prompt.ts";
+import { groupPlaceSql, type Place } from "../../social/place.ts";
 import { siteDateTime, siteWeekday } from "./clock.ts";
 import type { ElsewhereAsk, RunScope, ToolDeps } from "./index.ts";
 import { BAD_DATE, QUERY_TOO_LONG, QUERY_TOO_SHORT, SEARCH_BUSY, SEARCH_MESSAGES, SEARCH_TIMEOUT } from "./search-words.ts";
@@ -36,6 +37,8 @@ export const ELLIPSIS = "…";
 // The fixed sentences the model is answered with (its refusals in search-words.ts).
 export const NOT_FOUND = "没找到。";
 export const NOT_FOUND_IN_GROUP = "这个群的记录里没找到。";
+/** What nothing found in a social conversation says: this conversation only, never another place's name. */
+export const NOT_FOUND_HERE = "这段对话的记录里没找到。";
 /**
  * What nothing found in a group adds when only the Agent's owner asked (rule 3): never another place's name. A plain
  * description of the situation, so the model words it itself (no sentence in its first person to repeat).
@@ -44,10 +47,13 @@ export const ASK_ME_AT_HOME = "只有在你和主人的专属会话里才能查�
 /** Who wrote a result that the Agent itself wrote. */
 export const BY_YOU = "你自己";
 
-export function searchSpec(group: boolean): ToolSpec {
+export function searchSpec(place: Place): ToolSpec {
   return {
     name: SEARCH_MESSAGES,
-    description: group
+    description:
+      place === "social"
+        ? "在这段对话的聊天记录里按原文查找消息：找包含这些字的消息，不是按意思找。返回最新的几条，每条有编号 ref（引用时把它原样照抄进回复）、谁说的 who、什么时候 when、原文片段 text；文件消息还有 file（文件编号和文件名，可以用 read_file 读）。more 为 true 时还有更早的，可以换词或加日期再查。"
+        : place === "group"
       ? "在这个群的聊天记录里按原文查找消息：找包含这些字的消息，不是按意思找。返回最新的几条，每条有编号 ref（引用时把它原样照抄进回复）、谁说的 who、什么时候 when、原文片段 text；文件消息还有 file（文件编号和文件名，可以用 read_file 读）。more 为 true 时还有更早的，可以换词或加日期再查。"
       : "在我们的对话和你所在的群里按原文查找消息：找包含这些字的消息，不是按意思找。返回最新的几条，每条有编号 ref（引用时把它原样照抄进回复）、谁说的 who、什么时候 when、原文片段 text；在群里说的有 where（群名），没有 where 的就是我们之间说的；文件消息还有 file（文件编号和文件名，可以用 read_file 读）。more 为 true 时还有更早的，可以换词或加日期再查。",
     parameters: {
@@ -192,8 +198,9 @@ export async function searchMessages(deps: ToolDeps, scope: RunScope, input: Sea
   }
 
   if (found.rows.length === 0) {
-    if (scope.group) lookElsewhere(deps, scope, { term, from, before, after });
-    const note = scope.group ? NOT_FOUND_IN_GROUP + (found.ownerAsked ? ASK_ME_AT_HOME : "") : NOT_FOUND;
+    // Only a group's nothing starts the elsewhere hook (a social conversation never looks anywhere else).
+    if (scope.place === "group") lookElsewhere(deps, scope, { term, from, before, after });
+    const note = scope.place === "social" ? NOT_FOUND_HERE : scope.place === "group" ? NOT_FOUND_IN_GROUP + (found.ownerAsked ? ASK_ME_AT_HOME : "") : NOT_FOUND;
     return { output: { results: [], note }, query: term };
   }
   const { results, refs, more } = fit(found, deps, scope, term);
@@ -218,12 +225,22 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
   let conversationIds: string[];
   let window = null;
   let line = 0;
-  if (scope.group) {
+  if (scope.place !== "own") {
+    // A group or a social conversation: exactly this one, up to what the reply had heard — in a group also after its asker's line; a
+    // social reply is shown the whole conversation it can see (no asker's line), as its context is (agents/context.ts).
     conversationIds = [scope.conversationId];
-    line = await askerLine(t, scope.id);
+    line = scope.place === "group" ? await askerLine(t, scope.id) : 0;
     window = { conversationId: scope.conversationId, after: line, upTo: scope.heardTo };
   } else {
-    const { rows } = await t.query<{ id: string }>("select conversation_id as id from memberships where principal_id = $1 and left_seq is null order by conversation_id", [scope.agentId]);
+    // The Agent's own conversation and its groups; never a social conversation, enforced HERE, in the statement that lists where to
+    // look (a stranger's words must not enter the context that holds the owner's notes and full tools): `groupPlaceSql` or its own.
+    const { rows } = await t.query<{ id: string }>(
+      `select m.conversation_id as id
+         from memberships m join conversations c on c.id = m.conversation_id
+        where m.principal_id = $1 and m.left_seq is null and (m.conversation_id = $2 or ${groupPlaceSql("c")})
+        order by m.conversation_id`,
+      [scope.agentId, scope.conversationId],
+    );
     conversationIds = rows.map((r) => r.id);
   }
   // Never what this run answers and is shown (in a group its calls and the latest message it covers; in its own
@@ -232,7 +249,7 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
   const answering = { runId: scope.id, conversationId: scope.conversationId, shownFrom: scope.shownFrom ?? null };
   const rows = await searchRows(t, scope.agentId, { conversationIds, ...o, timeZone: deps.config.siteTimezone, window, answering, limit: SEARCH_RESULTS_MAX + 1 });
   let ownerAsked = false;
-  if (scope.group && rows.length === 0) {
+  if (scope.place === "group" && rows.length === 0) {
     const asked = await t.query<{ only: boolean | null }>("select coalesce(asker_ids, '{}') = array[$2::uuid] as only from agent_runs where id = $1", [scope.id, scope.ownerId]);
     ownerAsked = asked.rows[0]?.only === true;
   }
@@ -254,13 +271,13 @@ const WIDEST_FILE = "f999999";
  * by its number as the model is shown it, `〔m1〕` (`ref`, refs.ts): the only numbers it can cite.
  */
 function fit(found: Found, deps: ToolDeps, scope: RunScope, term: string): { results: Result[]; refs: MessageRef[]; more: boolean } {
-  const clean = (s: string): string => withoutMark(s, scope.group ? scope.mark : null);
+  const clean = (s: string): string => withoutMark(s, scope.place !== "own" ? scope.mark : null);
   const drafts = found.rows.slice(0, SEARCH_RESULTS_MAX).map((row) => {
     const seq = Number(row.seq);
     // Who they are to the Agent by account, as a group's labels say it (`speakerRole`); the Agent itself is `你自己`.
-    const role = row.sender_id === scope.agentId ? null : speakerRole(row.sender_id, row.sender_kind, scope.ownerId);
+    const role = row.sender_id === scope.agentId ? null : speakerRole(row.sender_id, row.sender_kind, scope.ownerId, scope.place === "social" ? "social" : "group");
     const { date, time } = siteDateTime(row.created_at, deps.config.siteTimezone);
-    const elsewhere = !scope.group && row.conversation_id !== scope.conversationId;
+    const elsewhere = scope.place === "own" && row.conversation_id !== scope.conversationId;
     const file = row.attachment ? { id: row.attachment.id, name: clean(row.attachment.name) } : null;
     const result: Result = {
       ref: scope.refs.token(WIDEST_MESSAGE),

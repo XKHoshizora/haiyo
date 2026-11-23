@@ -10,6 +10,10 @@ import { foundOf, lookupsOf, queriesOf, type Cite, type LookupFields, type Messa
 import { acknowledgementTxn, postingRun } from "../messages/read.ts";
 import { insertMessage, MESSAGE_COLUMNS, toStored, type MessageBody, type MessageRow, type StoredMessage } from "../messages/model.ts";
 import { MESSAGE_TEXT_MAX } from "../messages/send.ts";
+import { placeOf } from "../social/place.ts";
+import { reach } from "../social/reach.ts";
+import { shownNotesPass } from "../memory/shown.ts";
+import type { ShownNote } from "../memory/passage.ts";
 import { cleanModelText, hasVisibleText } from "../schemas.ts";
 import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
 import { parseProposalBlock, storeProposal } from "./persona.ts";
@@ -23,12 +27,14 @@ import {
   overLaneLimit,
   ownedAgentOf,
   queueRun,
+  standingCalls,
   triggerFromAgent,
   type Announced,
   type Lane,
   type RunLimits,
   type Triggered,
 } from "./runs.ts";
+import { refusedInGroup } from "./refusal.ts";
 import { forgetSummaries } from "./summary/store.ts";
 import { askedOf } from "./tools/elsewhere.ts";
 import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
@@ -47,6 +53,9 @@ import {
 } from "./store.ts";
 import type { ProactiveLevel, ReasoningLevel } from "../config.ts";
 
+/** What `postAsAgent` returns for a reply it posted (or found already posted): the message, whether it was a repeat, and what the message called for. */
+export type PostedReply = { message: StoredMessage; duplicate: boolean; triggered: Triggered };
+
 /** The most of a reply's reasoning that is stored; the rest is cut (it is never shown to a model again). */
 export const REASONING_MAX = 32_000;
 
@@ -61,6 +70,8 @@ export interface NewAgent {
   groupMentions: GroupMentions;
   chainBudgetMicro: bigint;
   othersBudgetMicro: bigint | null;
+  /** The Agent's own answers number (`othersLimit.answers`); absent: none. */
+  othersAnswers?: number | null;
   proactive: boolean;
   proactiveLevel: ProactiveLevel;
   proactiveBudgetMicro: bigint;
@@ -116,8 +127,8 @@ export async function createAgent(
   const created = await t.query<{ created_at: Date }>(
     `insert into agents (principal_id, intro, field, persona, persona_version, reply_mode, group_mentions, reasoning,
                          model_source, site_model_id, provider_id, provider_model, chain_budget_micro, others_budget_micro, owner_appellation,
-                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) returning created_at`,
+                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search, others_answers)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) returning created_at`,
     [
       id,
       input.intro,
@@ -139,6 +150,7 @@ export async function createAgent(
       input.sharedNotes,
       input.whisperElsewhere,
       input.webSearch ?? true,
+      input.othersAnswers ?? null,
     ],
   );
   const conversation = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent', $1) returning id", [ownerId]);
@@ -171,6 +183,7 @@ export async function createAgent(
     groupMentions: input.groupMentions,
     chainBudgetMicro: input.chainBudgetMicro,
     othersBudgetMicro: input.othersBudgetMicro,
+    othersAnswers: input.othersAnswers ?? null,
     proactive: input.proactive,
     proactiveLevel: input.proactiveLevel,
     proactiveBudgetMicro: input.proactiveBudgetMicro,
@@ -291,7 +304,7 @@ export async function postAsAgent(
   mark: string | null,
   config: RunLimits & Pick<Config, "agentChainLimit" | "tools">,
   as: "reply" | "ack" = "reply",
-): Promise<{ message: StoredMessage; duplicate: boolean; triggered: Triggered } | null> {
+): Promise<PostedReply | null | { refused: "access_ended" | "notes_changed" }> {
   const agent = await lockAgent(t, agentId, conversationId);
   const own = conversationId === agent.conversationId;
   const ack = as === "ack";
@@ -304,8 +317,8 @@ export async function postAsAgent(
   // A run that has ended — another instance's recovery ended it while this one was still answering — is never posted;
   // nor is one its Agent's pause or delete interrupted, even once the Agent is resumed (runs.ts); nor a run of another
   // conversation's, here.
-  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string; told: boolean }>(
-    "select status, interrupted, lane, caller_id, covers_seq::text as covers, whisper_id is not null as told from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
+  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string; told: boolean; shown_notes: ShownNote[] | null }>(
+    "select status, interrupted, lane, caller_id, covers_seq::text as covers, whisper_id is not null as told, shown_notes from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
     [runId, agentId, conversationId],
   );
   if (run.rows[0]?.status !== "running") throw new RunNotRunning(runId, run.rows[0]?.status ?? null);
@@ -315,6 +328,23 @@ export async function postAsAgent(
   if (agent.paused) throw new AppError(409, "agent_paused");
   if (!own && !(await currentMembership(t, conversationId, agentId))) throw new AppError(409, "agent_removed");
   if (!own && mark === null) throw new Error("a reply in a group is posted only with the mark its run drew");
+  // A social conversation: no acknowledgement (nothing the Agent says before a tool is posted there), and the reply is posted on the
+  // access and the notes as they are NOW — the visitor may be refused (`reach`, with the switch), or a note it was shown no longer be
+  // told them (`shownNotesPass`). Either marks the run interrupted in THIS transaction (the run row after the note rows, the lock order)
+  // and is returned, not thrown: the mark commits, the run ends `cancelled` with that value, nothing is posted, and the visitor is told
+  // nothing of why. A group's rule below (`standingCalls`) is not asked of it: a social run has one caller.
+  const social = !own && (await placeOf(t, conversationId, agent)) === "social";
+  if (social) {
+    if (ack) return null;
+    const refusal = await socialRefusal(t, agent, runId, run.rows[0].caller_id, run.rows[0].shown_notes ?? [], config);
+    if (refusal !== null) return { refused: refusal };
+  }
+  // A person refused after `begin` dropped what it dropped (a block, a stop, a removal arriving while the reply was written): the
+  // calls the run answers are asked again. None left: nothing is posted (409 `access_ended` is only the signal; the run ends cancelled, no error, settled once
+  // through `finish`). Otherwise what goes on for the others quotes and mentions nobody refused (below). A told reply answers no call.
+  const calls = !own && !social && !run.rows[0].told ? await standingCalls(t, runId) : null;
+  if (calls?.none) throw new AppError(409, "access_ended");
+  const refusedNow = calls?.refused ?? new Set<string>();
 
   // A reply offered tools: every token-shaped string goes first, from all it says — its text, its reasoning, its search
   // words — before anything reads it (a proposal, the block rule, the cut, the mark): those of its text of a number the
@@ -392,12 +422,19 @@ export async function postAsAgent(
       ])
     ).rowCount !== 0;
   if (overtaken) body.replyToSeq = Number(run.rows[0].covers);
+  // ... but never quoting a message of someone refused now.
+  if (body.replyToSeq !== undefined && refusedNow.size > 0) {
+    const quoted = await t.query<{ sender_id: string }>("select sender_id from messages where conversation_id = $1 and seq = $2", [conversationId, body.replyToSeq]);
+    if (quoted.rows[0] && refusedNow.has(quoted.rows[0].sender_id)) delete body.replyToSeq;
+  }
   if (run.rows[0].told) {
     // A told reply: the question it tells about, quoted, when the Agent may still see it (VISIBLE_JOIN, as a person's quote).
     const whisper = await whisperOfRun(t, runId);
     const asked = whisper ? askedOf(whisper.body.detail) : null;
     const seen = asked !== null && (await t.query(`select 1 from messages m ${VISIBLE_JOIN} where m.conversation_id = $2 and m.seq = $3`, [agentId, conversationId, asked])).rowCount !== 0;
-    if (seen) body.replyToSeq = asked;
+    // ... and not a message of someone refused now (the owner's press is no reason to answer them in the group).
+    const askedRefused = seen && !own && (await t.query(`select 1 from messages m where m.conversation_id = $2 and m.seq = $3 and ${refusedInGroup("m.sender_id", "$1::uuid")}`, [agentId, conversationId, asked])).rowCount !== 0;
+    if (seen && !askedRefused) body.replyToSeq = asked;
     else delete body.replyToSeq;
   }
   // What its tools looked up: the counts, and the messages found (each reader is sent only those they can see,
@@ -418,7 +455,11 @@ export async function postAsAgent(
   if (toolCalls !== null) body.toolCalls = toolCalls;
   // Who its mentions mean, read once, now, from the text it stores (Task M: a model's text is typed text), and stored with
   // it: what it calls below, and everything after, reads that.
-  const read = await mentionsAtSend(t, { id: conversationId, type: own ? "agent" : "group" }, text);
+  // (A social reply reads none: nobody is called there but by their own message.)
+  const mentioned = social ? { mentions: null, asksAgent: false } : await mentionsAtSend(t, { id: conversationId, type: own ? "agent" : "group" }, text);
+  // Nobody refused now is mentioned (their `mentions` are not stored: they would be notified of a reply that is not for them).
+  const unrefused = refusedNow.size === 0 ? null : (mentioned.mentions ?? []).filter((m) => !refusedNow.has(m.id));
+  const read = unrefused === null ? mentioned : { ...mentioned, mentions: unrefused.length === 0 ? null : unrefused };
   // What its text cites, beside it, as `found` is kept: in a group only that group's messages (each reader is sent only
   // those they can see, messages/read.ts) — where a link can be drawn, in its plain and its rendered text alike.
   const drawn = drawnCites(text, placed.cites, read.mentions ?? []);
@@ -435,10 +476,31 @@ export async function postAsAgent(
   // only once its message reaches a run, fix round 3).
   const postedBy = { id: run.rows[0].caller_id, lane: run.rows[0].lane };
   const covered = Number(run.rows[0].covers);
-  const triggered = own
+  const triggered = own || social
     ? noneTriggered()
     : await triggerFromAgent(t, conversationId, message, agent, postedBy, config, () => hearFrom(t, runId, covered, message.seq));
   return { message, duplicate: false, triggered };
+}
+
+/**
+ * A social reply's last look before it is posted, under the conversation's and the Agent's row: the run's one caller must still reach
+ * the Agent (`reach`, social) and every note it was shown (`shown`, the run's `shown_notes`) must still be one they may be told
+ * (`shownNotesPass`). Otherwise the run is marked `interrupted` with that reason and nothing noted (`pending_seq` null), in the caller's
+ * transaction, and the reason is returned. A caller who is missing or is the Agent's owner is refused outright (`runAccess`'s rule).
+ */
+async function socialRefusal(
+  t: Tx,
+  agent: AgentRow,
+  runId: string,
+  callerId: string | null,
+  shown: readonly ShownNote[],
+  config: Pick<Config, "social">,
+): Promise<"access_ended" | "notes_changed" | null> {
+  let reason: "access_ended" | "notes_changed" | null = null;
+  if (callerId === null || callerId === agent.ownerId || (await reach(t, callerId, agent.id, "social", config)) !== "ok") reason = "access_ended";
+  else if (!(await shownNotesPass(t, agent, callerId, shown))) reason = "notes_changed";
+  if (reason !== null) await t.query("update agent_runs set interrupted = $2, pending_seq = null where id = $1", [runId, reason]);
+  return reason;
 }
 
 /** `p` as `withoutUnfinishedBlock` leaves its text: cut at its first `<af-` (the cites after it gone), its end trimmed. */

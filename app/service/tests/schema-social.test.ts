@@ -110,7 +110,7 @@ describe("073: others' columns and the social skeleton", () => {
   // 073 is applied to a live site at the merge and can never be edited again, so this is the proof that it is inert: on tables with
   // rows, whatever migration is the latest (the pattern of money-wallet.test.ts, 066's: split the file, run its Down, write the old
   // code's rows, run its Up, all inside one transaction that is rolled back).
-  test("on populated tables nothing changes: every old row, the shape and the 20-point default are as they were (down, rows crossing 10 and 100, up; rolled back)", async () => {
+  test("on populated tables nothing changes: every old row, the shape and the defaults are as they were (down, rows crossing 10 and 100, up; rolled back)", async () => {
     const sql = readFileSync(new URL("../migrations/073_others_columns_and_social_skeleton.sql", import.meta.url), "utf8");
     const [up, down] = sql.split("-- Down Migration");
     const NEW_COLUMNS: Record<string, string[]> = {
@@ -167,7 +167,8 @@ describe("073: others' columns and the social skeleton", () => {
       await client.query(up!.replace("-- Up Migration", ""));
       expect(await rows()).toEqual(old);
       expect(await shape()).toEqual(before);
-      expect((await one(`select column_default d from information_schema.columns where table_name = 'agents' and column_name = 'others_budget_micro'`))[0]).toEqual({ d: "20000000" });
+      // 074 (lane B) dropped 020's default of 20 points: it is whatever the live database has, which 073 does not touch.
+      expect((await one(`select column_default d from information_schema.columns where table_name = 'agents' and column_name = 'others_budget_micro'`))[0]).toEqual({ d: null });
       expect(
         await one(`select (select count(*)::int from social_pairs) pairs, (select count(*)::int from agent_contacts) contacts,
                           (select count(*)::int from agent_runs where admitted_at is not null or shown_notes is not null or withheld_notes is not null) runs,
@@ -182,7 +183,7 @@ describe("073: others' columns and the social skeleton", () => {
 
   test("is inert: the skeleton is empty, and no existing row or default changed", async () => {
     for (const t of ["social_pairs", "agent_contacts"]) expect(await count(t)).toBe(0);
-    expect(await columnDefault("agents", "others_budget_micro")).toBe("20000000"); // 074 (B4) changes it, not 073
+    expect(await columnDefault("agents", "others_budget_micro")).toBeNull(); // 074 (B4) dropped the 20-point default; 073 does not touch it
     expect(await columnDefault("agents", "others_answers")).toBeNull();
     expect(await columnDefault("accounts", "others_answers")).toBeNull();
     expect(await columnDefault("accounts", "others_points_micro")).toBeNull();

@@ -75,12 +75,14 @@ function keysOf(value: unknown, out = new Set<string>()): Set<string> {
   return out;
 }
 
-const SOL_VIA = { model: { source: "site", id: SOL.id, label: SOL.label }, reasoning: "medium", points: "6.9" };
-const PROV_VIA = { model: { source: "provider", model: PROV.model }, reasoning: "high", points: "0" };
+// Both replies were called for by mia, who is not their Agents' owner: an others' reply is called at reasoning `none` (plan B2a), whatever
+// level its Agent is set to, and `via` says what was called.
+const SOL_VIA = { model: { source: "site", id: SOL.id, label: SOL.label }, reasoning: "none", points: "1.6" };
+const PROV_VIA = { model: { source: "provider", model: PROV.model }, reasoning: "none", points: "0" };
 
 /**
  * mia's group with owen (his Agent `sol_bot`, on the site model SOL at medium) and ned (his Agent `prov_bot`, on his own
- * provider's model at high). Each Agent answered mia once; owen's reply cost 6.9 points (6 000 + 900 tokens at 1 000
+ * provider's model at high). Each Agent answered mia once; owen's reply cost 1.6 points (1 000 + 600 tokens at 1 000
  * micro-points), ned's nothing. sam is mia's friend and in no conversation with them. Everyone had a socket open from
  * the start; `last` is mia's message after both replies, which every socket has received.
  */
@@ -107,7 +109,7 @@ async function viaWorld() {
   const sockets = new Map<Actor, TestSocket>();
   for (const who of [owen, ned, mia, sam]) sockets.set(who, await connect(app, who));
   await say(mia, g, "@sol_bot SOLASK-q9x 周六几点？");
-  await answer("SOLREPLY-q9x 周六十点。", { reasoning: "想想", usage: { inputTokens: 6000, outputTokens: 900 } });
+  await answer("SOLREPLY-q9x 周六十点。", { reasoning: "想想", usage: { inputTokens: 1000, outputTokens: 600 } });
   await say(mia, g, "@prov_bot PROVASK-q9x 周日呢？");
   await answer("PROVREPLY-q9x 周日也是十点。", { usage: { inputTokens: 5000, outputTokens: 5000 } });
   const [mine, theirs] = [await seqFrom(g, sol.id), await seqFrom(g, prov.id)];
@@ -219,13 +221,13 @@ describe("which model and thinking level a reply used: its Agent's owner's only"
     expect(clean(w.sockets.get(w.sam)!.events)).toEqual({ via: false, leaked: [] });
   });
 
-  it("points is what its owner was charged for that run (as GET /api/usage reports it): 6.9 for the site reply, 0 on the owner's provider", async () => {
+  it("points is what its owner was charged for that run (as GET /api/usage reports it): 1.6 for the site reply, 0 on the owner's provider", async () => {
     const w = await viaWorld();
     const charged = async (runId: string) =>
       (await db.query<{ p: string }>("select (free_micro + balance_micro)::text as p from usage_records where run_id = $1", [runId])).rows[0]!.p;
-    expect(await charged(await runOf(w.g, w.sol.id))).toBe("6900000");
+    expect(await charged(await runOf(w.g, w.sol.id))).toBe("1600000");
     expect(await charged(await runOf(w.g, w.prov.id))).toBe("0");
-    expect((await api(app, w.owen, "GET", "/api/usage")).json.recent).toEqual([{ agentId: w.sol.id, purpose: "reply", model: SOL.id, source: "site", points: "6.9", replies: 1 }]);
+    expect((await api(app, w.owen, "GET", "/api/usage")).json.recent).toEqual([{ agentId: w.sol.id, purpose: "reply", model: SOL.id, source: "site", points: "1.6", replies: 1 }]);
     expect((await api(app, w.ned, "GET", "/api/usage")).json.recent).toEqual([{ agentId: w.prov.id, purpose: "reply", model: PROV.model, source: "provider", points: "0", replies: 1 }]);
   });
 
@@ -233,8 +235,8 @@ describe("which model and thinking level a reply used: its Agent's owner's only"
     const w = await viaWorld();
     const calls = gateway.calls.slice(-2);
     expect(calls.map((c) => [c.model, c.reasoning])).toEqual([
-      [SOL.model, "medium"],
-      [PROV.model, "high"],
+      [SOL.model, "none"],
+      [PROV.model, "none"],
     ]);
     const patched = await api(app, w.owen, "PATCH", `/api/agents/${w.sol.id}`, { model: { source: "site", id: "fast" }, reasoning: "none" });
     expect(patched.status).toBe(200);
@@ -369,7 +371,7 @@ describe("the second push, on the paths a normal reply does not take", () => {
     await owen.waitFor(ended);
     const frames = framesOf(owen, w.g, seq);
     // The released run was charged nothing: its copy says so.
-    expect(frames.map(({ e }) => ("via" in e.message ? e.message.via : "absent"))).toEqual(["absent", { model: { source: "site", id: SOL.id, label: SOL.label }, reasoning: "medium", points: "0" }]);
+    expect(frames.map(({ e }) => ("via" in e.message ? e.message.via : "absent"))).toEqual(["absent", { model: { source: "site", id: SOL.id, label: SOL.label }, reasoning: "none", points: "0" }]);
     expect(frames[1]!.at).toBeLessThan(owen.events.findIndex(ended));
     // Nobody else gets the reply twice or with a via.
     const marker = await say(w.mia, w.g, "好");

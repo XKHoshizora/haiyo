@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { ADDRESS_PATTERN, addressRanges, codeRanges, inAddress, mentionsAtSend } from "../src/agents/mentions.ts";
 import { judgeable, namesAnAgent } from "../src/agents/proactive/candidates.ts";
 import { NOTHING, type RunTicket } from "../src/agents/runtime/port.ts";
-import { postAsAgent } from "../src/agents/conversation.ts";
+import { postAsAgent, type PostedReply } from "../src/agents/conversation.ts";
 import { triggerFromAgent } from "../src/agents/runs.ts";
 import { lockAgent } from "../src/agents/store.ts";
 import { insertMessage } from "../src/messages/model.ts";
@@ -355,10 +355,10 @@ describe("an Agent's reply is read once, at its post", () => {
     const posted = await db.tx((t) =>
       postAsAgent(t, jarvis.id, w.g, ticket.id, { text: "我请 @bobby.helper 来。", reasoning: "", stopped: false, truncated: false }, "k7f2ab", app.deps.config),
     );
-    expect(posted?.triggered.runs).toHaveLength(1);
-    expect(posted!.message.mentions).toEqual([{ id: helper.id, start: 3, length: 13 }]);
-    expect(await stored(w.g, posted!.message.seq)).toEqual([{ id: helper.id, start: 3, length: 13 }]);
-    expect(await covered(helper.id, w.g)).toEqual([posted!.message.seq]);
+    expect((posted as PostedReply | null)?.triggered.runs).toHaveLength(1);
+    expect((posted as PostedReply).message.mentions).toEqual([{ id: helper.id, start: 3, length: 13 }]);
+    expect(await stored(w.g, (posted as PostedReply).message.seq)).toEqual([{ id: helper.id, start: 3, length: 13 }]);
+    expect(await covered(helper.id, w.g)).toEqual([(posted as PostedReply).message.seq]);
   });
 
   it("the trigger reads the stored entries, not the text: an entry calls its Agent whatever the text says; the text alone calls nobody", async () => {
@@ -468,8 +468,8 @@ describe("fix round 1: an Agent asked but not named is decided at send too (I-1)
     const posted = await db.tx((t) =>
       postAsAgent(t, jarvis.id, w.g, ticket.id, { text: "问问 @bobby.loner 吧", reasoning: "", stopped: false, truncated: false }, "k7f2ab", app.deps.config),
     );
-    expect(posted!.message.mentions).toBeNull();
-    expect(await asks(w.g, posted!.message.seq)).toBe(true);
+    expect((posted as PostedReply).message.mentions).toBeNull();
+    expect(await asks(w.g, (posted as PostedReply).message.seq)).toBe(true);
   });
 
   it("asks_agent never reaches anyone: not in history, a single read, a push or the send's answer", async () => {

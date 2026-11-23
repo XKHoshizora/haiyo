@@ -324,7 +324,9 @@ describe("a search in a group that finds nothing there", () => {
   it("at most one whisper a reply, and at most 3 open for the owner in a group: more are not made", async () => {
     const w = await world();
     const hook = createElsewhere(elsewhereDeps());
-    await say(w.mia, w.g, "@olive_bot 两件事");
+    // Called by the Agent's owner: a reply of its own has several tool rounds (a reply a member called for has one, plan B2a), so
+    // two searches that find nothing here in one reply are what the once-a-reply cap is held to.
+    await say(w.owner, w.g, "@olive_bot 两件事");
     gateway
       .callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }])
       .callTools([{ name: SEARCH_MESSAGES, input: { query: "口令是七七" } }])
@@ -397,7 +399,7 @@ describe("a search in a group that finds nothing there", () => {
     const log = { warn: app.log.warn.bind(app.log), error: app.log.error.bind(app.log), info: (obj: unknown) => void counted.push(obj) } as ElsewhereDeps["log"];
     const hook = createElsewhere(elsewhereDeps({ db: gated, log }), { atOnce: 1 });
     const run = (await db.query<{ id: string }>("insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane) values ('reply', $1, $2, $3, 'done', 1, 'human', 'own') returning id", [w.g, w.agent.id, w.owner.id])).rows[0]!.id;
-    const scope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.g, group: true, refs: new RunRefs(), heardTo: 1, mark: null };
+    const scope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.g, place: "group" as const, refs: new RunRefs(), heardTo: 1, mark: null };
     const first = hook(scope, { term: "蓝鲸计划", from: null, before: null, after: null });
     await reachedP;
     await hook(scope, { term: "口令是七七", from: null, before: null, after: null });
@@ -951,7 +953,7 @@ describe("the state of a told whisper is derived, never stored (Redesign D)", ()
     // A's told reply queued: telling, still counted — a lookup of another reply there makes nothing.
     expect((await api(app, w.owner, "POST", `/api/whispers/${a!.id}/accept`)).status).toBe(200);
     const done = (await db.query<{ id: string }>("insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane) values ('reply', $1, $2, $3, 'done', 1, 'human', 'own') returning id", [w.g, w.agent.id, w.owner.id])).rows[0]!.id;
-    const scope = { id: done, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.g, group: true, refs: new RunRefs(), heardTo: 1, mark: null };
+    const scope = { id: done, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.g, place: "group" as const, refs: new RunRefs(), heardTo: 1, mark: null };
     await hook(scope, { term: "蓝鲸计划", from: null, before: null, after: null });
     expect(await whispersOf(w.owner.id, w.g)).toHaveLength(3);
     // A told (in words the group's next search does not find): room for one.
