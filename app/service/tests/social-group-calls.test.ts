@@ -5,10 +5,13 @@ import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { SOCIAL_ON } from "./helpers/social.ts";
 
-// A-3 review I1: ONE rule for every ending in groups. An ending never cancels a group reply as a whole: it takes THAT person's calls
-// out of it. A queued reply left with no call is cancelled quietly; a running one is stopped as a social one when no call of
-// anyone else is left, and goes on for the others. A person's block of a person leaves a reply that has not begun to `begin`'s own
-// recheck (agents-block-recheck.test.ts), and stops one that is in flight like any ending.
+// ONE rule for every ending in groups (A-3 review I1; B-3 dispatch; integration). An ending never cancels a group reply as a whole: the
+// replies are held to THE access decision as it stands after the ending (`refusedInGroup`, through runs.ts `dropRefusedCalls` and
+// `standingCalls`, the functions `begin` and the post use). A refused caller's calls leave a reply that has not called its model; one left
+// with no call is cancelled quietly, with NO error (`access_ended` is a social run's). A reply in flight goes on for the others, and is
+// stopped when every call it ANSWERS is refused; what a person not refused noted on it (a call) stays for its follow-up. An ending that
+// refuses nobody in a group (a visitor leaving an Agent) takes nothing out. A person's block of a person leaves a reply that has not begun
+// to `begin`'s own recheck (agents-block-recheck.test.ts), and stops one that is in flight like any ending.
 const { app, db } = useApp({ env: SITE_ENV, config: SOCIAL_ON, agentWorker: false });
 
 interface MadeAgent {
@@ -43,8 +46,9 @@ interface RunSpec {
   caller?: string | null;
   askers?: string[];
   admitted?: boolean;
-  /** A message of this person noted on it after the calls (`pending_seq`). */
+  /** A message of this person noted on it after the calls (`pending_seq`): a call (it joins `call_seqs`, as the fold writes it) unless `notedIsCall` is false. */
   noted?: string;
+  notedIsCall?: boolean;
 }
 async function run(o: RunSpec): Promise<{ id: string; seqs: number[] }> {
   const seqs: number[] = [];
@@ -53,7 +57,7 @@ async function run(o: RunSpec): Promise<{ id: string; seqs: number[] }> {
   const { rows } = await db.query<{ id: string }>(
     `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, call_seqs, pending_seq, triggered_by, lane, caller_id, started_at, asker_ids, model, source)
      values ('reply', $1, $2, (select owner_id from principals where id = $2), $3, $4, $5::bigint[], $6, 'human', 'others', $7, case when $3 = 'running' then now() end, $8::uuid[], $9, case when $9::text is not null then 'provider' end) returning id`,
-    [o.group, o.agentId, o.status, seqs.at(-1), seqs, noted, o.caller === undefined ? o.calls[0] : o.caller, o.askers ?? [...new Set(o.calls)], o.admitted ? "fast" : null],
+    [o.group, o.agentId, o.status, seqs.at(-1), noted !== null && o.notedIsCall !== false ? [...seqs, noted] : seqs, noted, o.caller === undefined ? o.calls[0] : o.caller, o.askers ?? [...new Set(o.calls)], o.admitted ? "fast" : null],
   );
   return { id: rows[0]!.id, seqs };
 }
@@ -64,11 +68,15 @@ const view = async (id: string) =>
       [id],
     )
   ).rows[0] as { status: string; error: string | null; interrupted: string | null; pending: number | null; calls: number[]; covers: number; caller: string | null; lane: string; askers: string[] };
+/** V let in on the Agent: an ending that closes that row `barred`, `removed` or `narrowed` refuses V in a group too (reach, step 5). */
+const letIn = (agentId: string, v: string) =>
+  db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [agentId, v]);
 const between = (a: string, b: string) => db.tx((t) => endGrants(t, { between: [a, b] }, "barred"));
 
-describe("an ending takes the ended person's calls out of a group reply", () => {
-  it("queued: a folded third party's call survives, the reply becomes theirs; with no call left it is cancelled quietly", async () => {
+describe("an ending takes the refused person's calls out of a group reply", () => {
+  it("queued: a folded third party's call survives, the reply becomes theirs; with no call left it is cancelled quietly, with no error", async () => {
     const { owner, v, s, agent } = await world("q");
+    await letIn(agent.id, v.id);
     const g = await newGroup(owner.id);
     const shared = await run({ agentId: agent.id, group: g, status: "queued", calls: [v.id, s.id] });
     const g2 = await newGroup(owner.id);
@@ -77,34 +85,53 @@ describe("an ending takes the ended person's calls out of a group reply", () => 
     const withOwner = await run({ agentId: agent.id, group: g3, status: "queued", calls: [v.id, owner.id] });
     const result = await between(owner.id, v.id);
     expect(await view(shared.id)).toMatchObject({ status: "queued", error: null, interrupted: null, calls: [shared.seqs[1]], covers: shared.seqs[1], caller: s.id, lane: "others", askers: [s.id] });
-    expect(await view(only.id)).toMatchObject({ status: "cancelled", error: "access_ended" });
-    // The owner's own call takes the reply over, as `dropBlockedCalls` does it.
+    expect(await view(only.id)).toMatchObject({ status: "cancelled", error: null, pending: null });
+    // The owner's own call takes the reply over, as `dropRefusedCalls` does it at `begin`.
     expect(await view(withOwner.id)).toMatchObject({ status: "queued", calls: [withOwner.seqs[1]], caller: owner.id, lane: "own" });
     expect(result.cancelled.map((c) => c.run.id)).toEqual([only.id]);
+    expect(result.cancelled[0]!.run).not.toHaveProperty("error", "access_ended");
   });
 
-  it("running and admitted: it goes on for the others, and is stopped as a social reply when the ended person is its only caller", async () => {
+  it("running and admitted: it goes on for the others, and is stopped when every call it ANSWERS is refused; a call someone else noted on it stays", async () => {
     const { owner, v, s, agent } = await world("ra");
+    await letIn(agent.id, v.id);
     const shared = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", admitted: true, calls: [v.id, s.id] });
     const only = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", admitted: true, calls: [v.id] });
-    // Something of a third person noted on it stays noted (it is no call of the ended person's); with nothing noted, nothing is.
+    // A third person's CALL noted on it stays noted (its follow-up answers it); the refused person's own does not, and neither does a
+    // message that is no call (a follow-up answers calls only).
     const notedOther = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", admitted: true, calls: [v.id], noted: s.id });
     const notedOwn = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", admitted: true, calls: [v.id], noted: v.id });
+    const notedChat = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", admitted: true, calls: [v.id], noted: s.id, notedIsCall: false });
     const result = await between(owner.id, v.id);
     expect(await view(shared.id)).toMatchObject({ status: "running", interrupted: null, calls: shared.seqs, caller: v.id });
     expect(await view(only.id)).toMatchObject({ status: "running", interrupted: "access_ended", pending: null });
     expect(await view(notedOther.id)).toMatchObject({ interrupted: "access_ended", pending: notedOther.seqs[0]! + 1 });
     expect(await view(notedOwn.id)).toMatchObject({ interrupted: "access_ended", pending: null });
-    expect([...result.running].sort()).toEqual([only.id, notedOther.id, notedOwn.id].sort());
+    expect(await view(notedChat.id)).toMatchObject({ interrupted: "access_ended", pending: null });
+    expect([...result.running].sort()).toEqual([only.id, notedOther.id, notedOwn.id, notedChat.id].sort());
   });
 
-  it("running, not admitted yet (claimed, no model call): decided as a queued one", async () => {
+  it("running, not admitted yet (claimed, no model call): its calls are decided as a queued one's; with none left it is marked, for its `begin` to end before any call", async () => {
     const { owner, v, s, agent } = await world("ru");
+    await letIn(agent.id, v.id);
     const shared = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", calls: [v.id, s.id] });
     const only = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", calls: [v.id] });
-    await between(owner.id, v.id);
+    const result = await between(owner.id, v.id);
     expect(await view(shared.id)).toMatchObject({ status: "running", interrupted: null, calls: [shared.seqs[1]], caller: s.id });
-    expect(await view(only.id)).toMatchObject({ status: "running", interrupted: "access_ended" });
+    expect(await view(only.id)).toMatchObject({ status: "running", interrupted: "access_ended", pending: null });
+    expect(result.running).toEqual([only.id]);
+  });
+
+  it("an ending that refuses nobody in a group takes nothing out: a visitor who leaves the Agent may still @ it there", async () => {
+    const { owner, v, agent } = await world("lf");
+    await letIn(agent.id, v.id);
+    const queued = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "queued", calls: [v.id] });
+    const inFlight = await run({ agentId: agent.id, group: await newGroup(owner.id), status: "running", admitted: true, calls: [v.id] });
+    const result = await db.tx((t) => endGrants(t, { agentId: agent.id, subjectIds: [v.id] }, "left"));
+    expect(result.ended).toBe(1);
+    expect(await view(queued.id)).toMatchObject({ status: "queued", error: null, calls: queued.seqs, caller: v.id });
+    expect(await view(inFlight.id)).toMatchObject({ status: "running", interrupted: null });
+    expect([result.cancelled, result.running]).toEqual([[], []]);
   });
 
   it("a person's block of a person leaves a reply that has not begun to `begin`, and stops one in flight", async () => {
@@ -121,7 +148,7 @@ describe("an ending takes the ended person's calls out of a group reply", () => 
   });
 });
 
-describe("the same through the routes: a third party's folded call survives every ending", () => {
+describe("the same through the routes: a third party's folded call survives every ending, and a reply left with no call ends with no error", () => {
   type Ending = (w: Awaited<ReturnType<typeof world>>) => Promise<void>;
   const endings: Record<string, Ending> = {
     "停止往来": async (w) => void expect((await api(app, w.owner, "PUT", `/api/bars/${w.v.id}`)).status).toBe(200),
@@ -140,7 +167,7 @@ describe("the same through the routes: a third party's folded call survives ever
       const others = await run({ agentId: w.agent.id, group: await newGroup(w.owner.id), status: "queued", calls: [w.s.id] });
       await end(w);
       expect([name, await view(shared.id)]).toEqual([name, expect.objectContaining({ status: "queued", error: null, calls: [shared.seqs[1]], caller: w.s.id })]);
-      expect([name, await view(only.id)]).toEqual([name, expect.objectContaining({ status: "cancelled", error: "access_ended" })]);
+      expect([name, await view(only.id)]).toEqual([name, expect.objectContaining({ status: "cancelled", error: null })]);
       expect([name, await view(others.id)]).toEqual([name, expect.objectContaining({ status: "queued", calls: others.seqs })]);
     });
   }

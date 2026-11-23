@@ -153,7 +153,10 @@ async function conversationEntries(t: Tx, me: string, config: Pick<Config, "whis
             pair.peer_id, peer.read_seq as peer_read_seq,
             ac.agent_id, ag.paused as agent_paused, ag.deleted_at is not null as agent_deleted, agm.read_seq as agent_read_seq,
             (select count(*) from messages m ${VISIBLE_JOIN}
-              where m.conversation_id = c.id and m.seq > me.read_seq and m.kind <> 'system' and m.sender_id <> $1 and ${notAcknowledgement("m")}) as unread,
+              where m.conversation_id = c.id and m.seq > me.read_seq and m.sender_id <> $1 and ${notAcknowledgement("m")}
+                -- No notice counts but one: the persona aid's card, a question that waits for the Agent's owner in that Agent's own
+                -- conversation (only the owner is a member there), while the site's Agent social switch is on (off, no client draws it).
+                and (m.kind <> 'system' or (${config.social.enabled ? "true" : "false"} and c.type = 'agent' and m.body ->> 'event' = 'persona_fact'))) as unread,
             -- The caller's own whispers there that wait for an answer (open, offering a button; a found-elsewhere one neither
             -- told nor telling, with a hit left to read: whispers/store.ts), and nobody else's (owner_id is the reader).
             (select count(*) from whispers w

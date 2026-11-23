@@ -94,7 +94,7 @@ describe("narrowing", () => {
     expect(await rowOf(agent.id, approved.id)).toMatchObject({ state: "live", basis: "approved" });
     expect(await agentState(agent.id)).toEqual({ contact_policy: "ask", contact_picked: false });
     expect(await runOf(running)).toMatchObject({ status: "running", interrupted: "access_ended", pending_seq: null });
-    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
     // The friend is refused now, and may ask again as a request (the row closed is `narrowed`).
     expect((await api(app, friend, "POST", `/api/conversations/${s}/messages`, { text: "x", clientTxn: "pl1" })).status).toBe(403);
     expect(await api(app, friend, "POST", "/api/agent-contacts", { agentId: agent.id })).toMatchObject({ status: 202 });

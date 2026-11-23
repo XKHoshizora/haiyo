@@ -284,10 +284,22 @@ interface RunState {
   original_at: Date | null;
   /** The reply had produced something before it was lost: its acknowledgement posted, or a tool round completed. */
   progressed: boolean;
+  /** The run is in a social conversation (`agent_social`): how an ended access is recorded (`interruptionEnd`). */
+  social: boolean;
 }
 const RUN_STATE =
   "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
-  "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at";
+  "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at, " +
+  "coalesce((select sc.type = 'agent_social' from conversations sc where sc.id = agent_runs.conversation_id), false) as social";
+
+/**
+ * How a run its mark `interrupted` ended is recorded: `cancelled` with the mark as its reason. One exception (Controller ruling
+ * 2026-11-24 (B-3 dispatch); integration): a GROUP run whose access ended (`access_ended`: the ending found no call it answers left,
+ * social/agent-contacts.ts `endGroupCalls`, or the operator disabled its Agent) ends quietly, with no error, as a group run left with
+ * no call does at `begin` (`BLOCKED_SINCE`) and at its post. `access_ended` as a recorded reason is a social run's.
+ */
+const interruptionEnd = (state: Pick<RunState, "interrupted" | "social">): RunEnd =>
+  state.interrupted === "access_ended" && !state.social ? { status: "cancelled" } : { status: "cancelled", error: state.interrupted! };
 
 /**
  * An automatic retry that would START more than `AUTO_RETRY_WINDOW_MS` after its original call was made (held back by
@@ -366,9 +378,9 @@ interface RunFlags {
  * reason (also when the Agent was resumed meanwhile); a refused post is `cancelled` for the Agent's state — deleted,
  * paused, or no longer a member of the run's group (`removed`).
  */
-function recorded(end: RunEnd, s: { posted: boolean; interrupted: Interruption | null; agent: AgentRow; removed: boolean }): RunEnd {
+function recorded(end: RunEnd, s: { posted: boolean; interrupted: Interruption | null; social: boolean; agent: AgentRow; removed: boolean }): RunEnd {
   if (s.posted) return end.status === "stopped" ? end : { status: "done" };
-  if (s.interrupted) return { status: "cancelled", error: s.interrupted };
+  if (s.interrupted) return interruptionEnd(s);
   if (end.status === "cancelled" && end.error === undefined) {
     if (s.agent.deleted) return { status: "cancelled", error: "agent_deleted" };
     if (s.agent.paused) return { status: "cancelled", error: "agent_paused" };
@@ -580,7 +592,7 @@ export class DbAgentPort implements AgentPort {
    * for — or null when it may go on.
    */
   private halted(run: RunTicket, agent: AgentRow, state: RunState): RunEnd | null {
-    if (state.interrupted) return { status: "cancelled", error: state.interrupted };
+    if (state.interrupted) return interruptionEnd(state);
     if (agent.deleted) return { status: "cancelled", error: "agent_deleted" };
     if (agent.paused) return { status: "cancelled", error: "agent_paused" };
     if (state.stop_asked || this.shouldStop(run)) return { status: "stopped" };
@@ -1391,7 +1403,10 @@ export class DbAgentPort implements AgentPort {
     try {
       const posted = await this.deps.db.tx((t) => postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as));
       // The access or a note it was shown ended meanwhile (a social reply): the run was marked in that transaction, which committed.
-      if (posted !== null && "refused" in posted) return "refused";
+      if (posted !== null && "refused" in posted) {
+        this.deps.log.info({ metric: "social_post_refused", reason: posted.refused }, "agent run: a social reply was not posted (its access, or a note it was shown, ended before the post)");
+        return "refused";
+      }
       if (!posted) return "empty";
       const { message, duplicate, triggered } = posted;
       // In a group, the notices the Agent's message led to follow it; the runs it called for go to their owners, the
@@ -1516,7 +1531,7 @@ export class DbAgentPort implements AgentPort {
       const refused = reply === undefined && state.rows[0].interrupted === null && end.status === "cancelled" && end.error === undefined;
       // (Never in a social conversation: its refusals are the run's own marks, `access_ended` and the rest.)
       const removed = refused && run.conversationId !== agent.conversationId && this.flags.get(run.id)?.place !== "social" && !(await currentMembership(t, run.conversationId, agent.id));
-      const final = recorded(end, { posted: reply !== undefined, interrupted: state.rows[0].interrupted, agent, removed });
+      const final = recorded(end, { posted: reply !== undefined, interrupted: state.rows[0].interrupted, social: state.rows[0].social, agent, removed });
       const ours = final.status === "failed" && final.error === "busy";
       const settled = await settle(t, config, run.id, usage, fallback, final.status, now, { forgiveAll: ours, log: this.deps.log });
       // In the same transaction, under the account lock settlement took: the reminder about money it calls for, if any,
@@ -1733,7 +1748,7 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
   const end: RunEnd = posted
     ? { status: posted.stopped === true ? "stopped" : "done" }
     : state.interrupted
-      ? { status: "cancelled", error: state.interrupted }
+      ? interruptionEnd(state)
       : failedEnd("provider_unavailable", { kind: "lost", progress: state.progressed || progress });
   // A run settled already had its hold released with its record.
   const settled = (await t.query("select 1 from usage_records where run_id = $1", [runId])).rowCount !== 0;

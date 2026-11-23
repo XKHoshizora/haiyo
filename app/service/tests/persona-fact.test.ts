@@ -301,6 +301,36 @@ describe("the card and its answer", () => {
     expect((await personaOf(w.agent.id)).persona_version).toBe(2);
   });
 
+  // Lane I (Controller ruling 2026-11-25 (A-5 review), I1): the card must be noticed. It counts as unread for its owner in the Agent's own
+  // conversation, as a message would; another notice there does not; answering it does not read it, reading does; and while the site's
+  // switch is off (the web then draws no card) it counts nothing.
+  it("the card counts as unread for its owner: 1 for the Agent's own conversation, not lowered by the answer, cleared by reading; nothing with the switch off", async () => {
+    const w = await carded();
+    const unread = async () =>
+      ((await api(app, w.owner, "GET", "/api/sync")).json.conversations as Array<{ id: string; unread: number }>).find((c) => c.id === w.agent.conversationId)!.unread;
+    const read = (seq: number) => api(app, w.owner, "POST", `/api/conversations/${w.agent.conversationId}/read`, { seq });
+    expect((await read(w.seq - 1)).status).toBe(200);
+    expect(await unread()).toBe(1);
+    // Another notice after it (a new topic) is no unread message, as before.
+    await db.query(
+      `insert into messages (conversation_id, seq, sender_id, kind, body) select $1, max(seq) + 1, $2, 'system', '{"event":"topic_reset"}'::jsonb from messages where conversation_id = $1`,
+      [w.agent.conversationId, w.agent.id],
+    );
+    expect(await unread()).toBe(1);
+    const config = app.deps.config as { social: { enabled: boolean } };
+    const before = config.social;
+    config.social = { enabled: false };
+    try {
+      expect(await unread()).toBe(0);
+    } finally {
+      config.social = before;
+    }
+    expect((await answer(w.owner, w.agent.id, w.seq, false)).status).toBe(200);
+    expect(await unread()).toBe(1);
+    expect((await read(w.seq)).status).toBe(200);
+    expect(await unread()).toBe(0);
+  });
+
   it("not moving keeps the persona as it is and records the answer; an expired card, an unknown seq, another kind of message, and anyone else's: 409 or 404", async () => {
     const w = await carded();
     const kept = await answer(w.owner, w.agent.id, w.seq, false);

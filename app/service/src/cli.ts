@@ -12,13 +12,13 @@ import { CHANGE_KEEP_DAYS, sweepMemoryChanges } from "./memory/sweep.ts";
 import { expireWhispers, removeOldWhispers, WHISPER_KEEP_DAYS, WHISPER_OPEN_DAYS } from "./whispers/store.ts";
 import { deliverReminders } from "./metering/reminders.ts";
 import { askHidden } from "./prompt.ts";
-import { runMigrations } from "./migrate.ts";
+import { runMigrations, undoMigration } from "./migrate.ts";
 
 loadDotenv({ quiet: true });
 applyConnectTuning(); // the sweep reaches an S3 endpoint and every command a database: the same allowance as the service
 
 const USAGE =
-  "usage: cli.ts migrate | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
+  "usage: cli.ts migrate | migrate:down --name <the last migration applied, e.g. 074_others_step_l> | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
   "credits:grant --handle <h> --points <n> [--note <text>] | credits:show --handle <h> | tier:set --handle <h> --tier <name> | models:list | memory:stats [--days <n>] | " +
   "demo:seed --email <address> [--handle <h>] [--name <text>] (password from DEMO_PASSWORD or asked) | " +
   "agent:disable <full handle> | agent:enable <full handle> | reports:list [--open] | reports:close <id prefix> --outcome disabled|dismissed (disabled also disables the Agent, as agent:disable)";
@@ -66,6 +66,12 @@ const [command, ...args] = process.argv.slice(2);
 
 if (command === "migrate") {
   await runMigrations(databaseUrl());
+} else if (command === "migrate:down") {
+  // The operator's way back from a deploy that went wrong (README, Deployment): one migration, the last, and only the one named.
+  const name = flag(args, "--name");
+  if (!name || !/^[0-9]{3}_[a-z0-9_]+$/.test(name)) throw new Error("--name must be a migration's name, such as 074_others_step_l");
+  await undoMigration(databaseUrl(), name);
+  console.log(`undone: ${name}`);
 } else if (command === "invite:create") {
   const ttlHours = Number(flag(args, "--ttl-hours") ?? 72);
   if (!Number.isFinite(ttlHours) || ttlHours <= 0) throw new Error("--ttl-hours must be a positive number");
@@ -258,7 +264,7 @@ if (command === "migrate") {
     if (command === "agent:disable") {
       const r = await disableAgent(db, handle);
       if (r === null) throw new Error(`no such Agent: ${handle}`);
-      console.log(`disabled agent ${r.agentId.slice(0, 8)}: ${r.ended.cancelled.length} queued replies cancelled, ${r.ended.running.length} running replies interrupted; its rows are untouched; it is gone to everyone but its owner through the one access decision (refusedSql); groups ask it at every call site once lane B's B5b is in, and ring 1a deploys only with it`);
+      console.log(`disabled agent ${r.agentId.slice(0, 8)}: ${r.ended.cancelled.length} queued replies cancelled, ${r.ended.running.length} running replies interrupted; its rows are untouched; it is gone to everyone but its owner through the one access decision (refusedSql), in groups too`);
     } else {
       const r = await enableAgent(db, handle);
       if (r === null) throw new Error(`no such Agent: ${handle}`);

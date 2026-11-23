@@ -43,9 +43,9 @@ export const stoppedShape = (rows: readonly StoppedRow[]): StoppedPerson[] =>
   rows.map((r) => ({ person: { id: r.id, handle: r.handle, displayName: r.name, avatarVersion: r.avatar_version }, since: r.since.toISOString() }));
 
 /**
- * The one query for the stopped list, written against lane A's ruled table shape (075): `access_bars(setter_id, other_id, kind in
- * ('stop', 'block'), since)`, one row per (setter, other, kind). The caller's OWN `stop` rows only, newest first: not a block's row, not
- * a row somebody else set about them. Lane I confirms it against the real 075.
+ * The one query for the stopped list, over migration 075's `access_bars(setter_id, other_id, kind in ('stop', 'block'), since)`, one
+ * row per (setter, other, kind). The caller's OWN `stop` rows only, newest first: not a block's row, not a row somebody else set about
+ * them (nobody is ever shown that another person stopped them).
  */
 async function readStopped(q: Queryable, ownerId: string): Promise<StoppedRow[]> {
   const { rows } = await q.query<StoppedRow>(
@@ -58,15 +58,8 @@ async function readStopped(q: Queryable, ownerId: string): Promise<StoppedRow[]>
   return rows;
 }
 
-/**
- * The people `ownerId` has stopped contact with and has not since resumed, newest first (`readStopped`). The table of bars is read only
- * where it exists, so a branch without lane A's schema never names a table it lacks; `SOCIAL.enabled` is what makes the caller ask.
- */
-export async function stoppedOf(q: Queryable, ownerId: string): Promise<StoppedPerson[]> {
-  const there = await q.query<{ here: boolean }>("select to_regclass('public.access_bars') is not null as here");
-  if (!there.rows[0]!.here) return [];
-  return stoppedShape(await readStopped(q, ownerId));
-}
+/** The people `ownerId` has stopped contact with and has not since resumed, newest first (`readStopped`); `SOCIAL.enabled` is what makes the caller ask. */
+export const stoppedOf = async (q: Queryable, ownerId: string): Promise<StoppedPerson[]> => stoppedShape(await readStopped(q, ownerId));
 
 export function registerOthersRoutes(app: FastifyInstance): void {
   const { db, config } = app.deps;
@@ -123,7 +116,7 @@ export function registerOthersRoutes(app: FastifyInstance): void {
         reached,
         tight,
         byPerson: byPerson.map((r) => ({ person: r.person, answers: r.answers, points: formatPoints(r.pointsMicro) })),
-        // Read only while the site has Agent social on (never before lane A's schema), and then only where the table is.
+        // Read only while the site has Agent social on: off, there is no 停止往来 anywhere and the list reads empty (plan Rollout 3, I10).
         stopped: config.social.enabled ? await stoppedOf(t, me.id) : [],
         agents: rows,
         notice: notice.rows[0]!.notice,

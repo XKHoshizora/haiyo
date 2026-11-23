@@ -557,7 +557,7 @@ function pointsText(micro: bigint): string {
   return frac ? `${whole}.${frac}` : `${whole}`;
 }
 
-describe("the stopped list's output shape (independent of the table: lane I swaps the one query)", () => {
+describe("the stopped list: its output shape and its one query over migration 075's access_bars", () => {
   it("is [{person: {id, handle, displayName, avatarVersion}, since: ISO string}], in the order given, and nothing else", () => {
     const row = (id: string, since: string) => ({ id, handle: `h${id}`, name: `n${id}`, avatar_version: 3, since: new Date(since) });
     expect(stoppedShape([row("a", "2026-03-02T01:00:00Z"), row("b", "2026-03-01T01:00:00Z")])).toEqual([
@@ -567,15 +567,12 @@ describe("the stopped list's output shape (independent of the table: lane I swap
     expect(stoppedShape([])).toEqual([]);
   });
 
-  it("reads the caller's own stop rows of lane A's ruled table (setter_id, other_id, kind, since), newest first, and nothing else (rolled-back transaction)", async () => {
+  it("reads the caller's own stop rows of access_bars (setter_id, other_id, kind, since), newest first, and nothing else (rolled-back transaction)", async () => {
     const owner = await newOwner();
     const [p1, p2, p3, p4, p5] = [await newOwner(), await newOwner(), await newOwner(), await newOwner(), await newOwner()];
     const client = await db.pool.connect();
     try {
       await client.query("begin");
-      await client.query(`create table access_bars (
-        setter_id uuid not null references principals (id) on delete cascade, other_id uuid not null references principals (id) on delete cascade,
-        kind text not null check (kind in ('stop', 'block')), since timestamptz not null default now(), primary key (setter_id, other_id, kind))`);
       const bar = (setter: Actor, other: Actor, kind: string, since: string) =>
         client.query("insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, $3, $4)", [setter.id, other.id, kind, since]);
       await bar(owner, p1, "stop", "2026-03-01T01:00:00Z");
@@ -596,18 +593,29 @@ describe("the stopped list's output shape (independent of the table: lane I swap
     }
   });
 
-  it("is [] where no table of bars exists (the guard)", async () => {
+  it("is [] for someone who stopped nobody", async () => {
     const owner = await newOwner();
     expect(await stoppedOf(db, owner.id)).toEqual([]);
   });
 });
 
-describe("the stopped list with the switch on and no access_bars table yet", () => {
-  // Lane B's branch has no 075: the route reads the table only where it exists, so it never names a table this branch lacks.
+describe("the stopped list on the route follows the site's switch", () => {
   const social = useApp({ env, agentWorker: false, config: SOCIAL_ON });
-  it("answers [] (and 200) when the switch is on and the table is not there", async () => {
-    const owner = await signUp(social.app, `sw${++n}x${Math.floor(Math.random() * 1e6)}`);
-    const res = await api(social.app, owner, "GET", "/api/me/others-use");
-    expect([res.status, res.json.stopped]).toEqual([200, []]);
+  it("switch on: the route lists the caller's own stop; switch off: the same owner reads [] (no 停止往来 exists anywhere then)", async () => {
+    const tag = `sw${++n}x${Math.floor(Math.random() * 1e6)}`;
+    const [owner, other] = [await signUp(social.app, `${tag}a`), await signUp(social.app, `${tag}b`)];
+    await social.db.query("insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')", [owner.id, other.id]);
+    const on = await api(social.app, owner, "GET", "/api/me/others-use");
+    expect([on.status, on.json.stopped.map((r: { person: { id: string } }) => r.person.id)]).toEqual([200, [other.id]]);
+    // Nobody is shown that another person stopped them.
+    expect((await api(social.app, other, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
+    const config = social.app.deps.config as { social: { enabled: boolean } };
+    const before = config.social;
+    config.social = { enabled: false };
+    try {
+      expect((await api(social.app, owner, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
+    } finally {
+      config.social = before;
+    }
   });
 });

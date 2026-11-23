@@ -563,7 +563,7 @@ export { refusedInGroup };
  * SQL: the calls run `$1` carries (`call_seqs`; its `covers_seq` when not known), one row each: `r` the run, `m` the call's message, `p`
  * its sender, `bh.caller_id` the person behind it (`behindMessageSql`: the sender, or for an Agent's message the caller of the run that
  * posted it). `columns` are spliced after `select`, `order` after the rows. THE reading of a run's calls: `dropRefusedCalls` and
- * `standingCalls` both ask it (lane A's `endGroupCalls` repeats it until lane I makes it call this).
+ * `standingCalls` both ask it, and through them every ending of access in a group (social/agent-contacts.ts `endGroupCalls`).
  */
 const callRowsSql = (columns: string, order = ""): string =>
   `select ${columns}
@@ -633,10 +633,12 @@ export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): P
  * answers, for the window in which a person is refused after `begin` dropped what it dropped (an admitted run keeps its context; its
  * output can be filtered only now). `none`: it answers calls (those at or before `covers_seq`) and every one is refused: nothing is to
  * be posted. `refused`: the persons refused now among all its calls' senders, the persons behind them and its askers: a reply that goes
- * on for others quotes none of their messages and stores no mention of them (the text may still name them). Reads only. A run with no call of its own (`告诉他们`'s)
- * is never refused; the caller leaves those out.
+ * on for others quotes none of their messages and stores no mention of them (the text may still name them). `noted`: a call noted on
+ * it since (after `covers_seq`) by someone not refused, which a follow-up will answer (an ending that stops the run keeps what was noted
+ * only then: social/agent-contacts.ts `endGroupCalls`). Reads only. A run with no call of its own (`告诉他们`'s) is never refused; the
+ * caller leaves those out.
  */
-export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string> }> {
+export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string>; noted: boolean }> {
   const { rows } = await t.query<{ sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean; answered: boolean }>(
     callRowsSql(
       `p.id as sender, p.kind, bh.caller_id as behind, m.seq <= r.covers_seq as answered,
@@ -656,7 +658,11 @@ export async function standingCalls(t: Tx, runId: string): Promise<{ none: boole
   }
   // The calls it ANSWERS are those at or before what it covers; a call noted on it since (`pending_seq`) is its follow-up's, never a reason to post.
   const answered = rows.filter((r) => r.answered);
-  return { none: answered.length > 0 && answered.every((r) => r.sender_refused || r.behind_refused), refused };
+  return {
+    none: answered.length > 0 && answered.every((r) => r.sender_refused || r.behind_refused),
+    refused,
+    noted: rows.some((r) => !r.answered && !r.sender_refused && !r.behind_refused),
+  };
 }
 
 /** The model of Agent `agentId` as its `agents` row says now (`agentModelOf`); null for none, or no such Agent. */

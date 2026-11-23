@@ -3,6 +3,7 @@ import { assertCanSend, lockForWrite, VISIBLE_JOIN } from "../conversations/stor
 import type { Db, Queryable, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { AttachmentRef } from "../messages/model.ts";
+import { socialPlaceSql } from "../social/place.ts";
 import type { BlobStore } from "./blob.ts";
 import { releaseBlob } from "./pending.ts";
 
@@ -71,13 +72,15 @@ export interface Downloadable {
  * from the same snapshot. Null for every other case alike — unknown id, never sent (also for the
  * uploader), another conversation, a late joiner's pre-join message, a member who left or was removed. `within`: also
  * only when its message is in that conversation, after seq `after` and at most `upTo` (what a group reply's file tool may
- * read: agents/tools/file.ts).
+ * read: agents/tools/file.ts). `notSocial`: and never one in a social conversation (`agent_social`) unless `within` names that
+ * conversation: what an Agent's tool may read in its own conversation (the same one statement, so the tool has no access rule of its own).
  */
 export async function findDownloadable(
   q: Queryable,
   readerId: string,
   attachmentId: string,
   within: { conversationId: string; after: number; upTo: number } | null = null,
+  notSocial = false,
 ): Promise<Downloadable | null> {
   const { rows } = await q.query<{ blob_key: string; name: string; size: string; mime: string; inline: boolean }>(
     `select a.blob_key, a.name, a.size, a.mime, a.inline
@@ -85,8 +88,9 @@ export async function findDownloadable(
        join messages m on m.id = a.message_id and m.conversation_id = a.conversation_id
        ${VISIBLE_JOIN}
       where a.id = $2
-        and ($3::uuid is null or (a.conversation_id = $3::uuid and m.seq > $4::bigint and m.seq <= $5::bigint))`,
-    [readerId, attachmentId, within?.conversationId ?? null, within?.after ?? 0, within?.upTo ?? 0],
+        and ($3::uuid is null or (a.conversation_id = $3::uuid and m.seq > $4::bigint and m.seq <= $5::bigint))
+        and (not $6::boolean or $3::uuid is not null or not exists (select 1 from conversations sc where sc.id = a.conversation_id and ${socialPlaceSql("sc")}))`,
+    [readerId, attachmentId, within?.conversationId ?? null, within?.after ?? 0, within?.upTo ?? 0, notSocial],
   );
   const r = rows[0];
   return r ? { blobKey: r.blob_key, name: r.name, size: Number(r.size), mime: r.mime, inline: r.inline } : null;

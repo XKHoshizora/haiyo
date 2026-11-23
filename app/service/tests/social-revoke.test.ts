@@ -143,7 +143,7 @@ describe("endGrants: what it stops", () => {
     expect(result.cancelled).toHaveLength(1);
     expect(result.cancelled[0]).toMatchObject({ ownerId: owner.id, conversationId: g1, run: { id: queued, status: "cancelled" } });
     expect(await runOf(running)).toMatchObject({ status: "running", ...ended });
-    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
     expect((await db.query(`select finished_at from agent_runs where id = $1`, [queued])).rows[0]!.finished_at).not.toBeNull();
     // A group run someone else called, V only among its askers (the design says the caller, attack M5), stays; so does everything of W's.
     expect(await runOf(callerElse)).toMatchObject({ status: "running", ...untouched });
@@ -175,7 +175,9 @@ describe("endGrants: what it stops", () => {
     expect([...result.running].sort()).toEqual([r1, r3].sort());
     expect(result.cancelled.map((x) => x.run.id).sort()).toEqual([r2, r4].sort());
     for (const id of [r1, r3]) expect(await runOf(id)).toMatchObject({ status: "running", ...ended });
-    for (const id of [r2, r4]) expect(await runOf(id)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    // (A social reply ends `access_ended`; a group reply left with no call ends quietly, with no error.)
+    expect(await runOf(r2)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    expect(await runOf(r4)).toMatchObject({ status: "cancelled", error: null });
     for (const id of [keep1, keep3]) expect(await runOf(id)).toMatchObject({ status: "running", ...untouched });
     expect(await runOf(keep2)).toMatchObject({ status: "queued", ...untouched });
     expect(yc).toBeTruthy();
@@ -268,7 +270,7 @@ describe("what takes it over", () => {
     expect(await rowOf(agent.id, w.id)).toMatchObject({ state: "live" });
     expect(await rowOf(agent.id, wAgent)).toMatchObject({ state: "requested" });
     expect(await runOf(running)).toMatchObject({ status: "running", ...ended });
-    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
     // A waiting request is not removed by the owner (decline it): as before.
     expect((await api(app, owner, "DELETE", `/api/agent-contacts/${agent.id}/${wAgent}`)).status).toBe(404);
     expect(await rowOf(agent.id, wAgent)).toMatchObject({ state: "requested" });
@@ -304,7 +306,7 @@ describe("what takes it over", () => {
     }
     expect(await rowOf(agent.id, v.id)).toMatchObject({ state: "ended", end_reason: "left" });
     expect(await runOf(running)).toMatchObject({ status: "running", ...ended });
-    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
     // The other Agent of the owner is not the one blocked.
     expect(await rowOf(other.id, v.id)).toMatchObject({ state: "requested" });
     expect(await runOf(otherQueued)).toMatchObject({ status: "queued", ...untouched });

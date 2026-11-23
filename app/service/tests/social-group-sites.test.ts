@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mayAnswerUnasked } from "../src/agents/proactive/candidates.ts";
 import { NOTHING } from "../src/agents/runtime/port.ts";
-import { refusedSql } from "../src/social/reach.ts";
+import { reach, refusedSql } from "../src/social/reach.ts";
 import { blockedEitherWay } from "../src/social/relations.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -15,8 +15,8 @@ import { scriptedGateway } from "./helpers/models.ts";
  * Lane B, B5b: every group site asks `refusedSql` (the one access decision) instead of the block alone, and one rule ends a call in a
  * group: the refused caller's calls are taken out; a run left with no call ends quietly (`cancelled`, no error: `access_ended` is for
  * social runs) and has nothing left noted; at post time, nothing is posted when no call the run answers stands, and the reply never
- * quotes or mentions a person refused now. This branch's `refusedSql` is Step 0's (blocks only): stops, removals and narrowings reach
- * these sites through the same function and are tested in I1a once lane A's is in.
+ * quotes or mentions a person refused now. Stops, removals and narrowings reach these sites through the same function: tested with the
+ * real routes in tests/social-ring1a.test.ts and tests/social-group-calls.test.ts.
  */
 const gateway = scriptedGateway();
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false });
@@ -80,7 +80,7 @@ describe("the sites ask refusedSql", () => {
     expect(mayAnswerUnasked("$2", "$3")).toContain(refusedSql({ subject: "$3", agent: "p.id", where: "group", socialOn: "false" }));
   });
 
-  it("105 callers: refusedSql answers as the block rule did, for a person and for an Agent of theirs", async () => {
+  it("105 callers: refusedSql over many rows answers as `reach` does for each (blocks, a stop either way, an ended row), and as the block rule did where only a block stands", async () => {
     const owner = await signUp(app, "gs_o105");
     const agent = (await mustCreateAgent(app, owner, { handle: "gs105_bot", model: FAST })) as { id: string };
     const people: Actor[] = [];
@@ -88,6 +88,14 @@ describe("the sites ask refusedSql", () => {
     for (const [i, p] of people.entries()) {
       if (i % 3 === 1) await block(owner, p);
       if (i % 3 === 2) await block(p, owner);
+    }
+    // Lane A's access beside the blocks (the integration): a stop set by the owner, a stop set by the other person, and a row the owner removed.
+    const plainOnes = people.filter((_, i) => i % 3 === 0);
+    for (const [k, p] of plainOnes.entries()) {
+      if (k % 5 === 1) await db.query("insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')", [owner.id, p.id]);
+      if (k % 5 === 2) await db.query("insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')", [p.id, owner.id]);
+      if (k % 5 === 3) await db.query("insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $2, 'ended', 'removed')", [agent.id, p.id]);
+      if (k % 5 === 4) await db.query("insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $2, 'ended', 'left')", [agent.id, p.id]);
     }
     const theirAgent = (await mustCreateAgent(app, people[1]!, { handle: "gs105_theirs", model: FAST })) as { id: string };
     const ids = [...people.map((p) => p.id), theirAgent.id, agent.id];
@@ -99,7 +107,11 @@ describe("the sites ask refusedSql", () => {
     );
     expect(rows).toHaveLength(107);
     expect(rows.filter((r) => r.old).length).toBe(70 + 1);
-    for (const r of rows) expect(r.now).toBe(r.old);
+    // THE decision, asked one by one: the SQL twin spliced over many rows says the same of every one of them.
+    for (const r of rows) expect([r.id, r.now]).toEqual([r.id, (await reach(db, r.id, agent.id, "group", app.deps.config)) !== "ok"]);
+    // Where a block stands the old rule and the new agree; the new one also refuses the 7 + 7 stopped and the 7 removed, and not the 7 who left.
+    for (const r of rows.filter((x) => x.old)) expect(r.now).toBe(true);
+    expect(rows.filter((r) => r.now && !r.old).length).toBe(21);
   }, 180_000);
 });
 

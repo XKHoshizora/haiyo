@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "migrate": "tsx src/cli.ts migrate",
+    "migrate:down": "tsx src/cli.ts migrate:down",
     "migrate:prod": "node --enable-source-maps dist/cli.js migrate",
     "invite:create": "tsx src/cli.ts invite:create",
     "invite:create:prod": "node --enable-source-maps dist/cli.js invite:create",

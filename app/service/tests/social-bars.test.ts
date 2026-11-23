@@ -536,7 +536,7 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
       expect(await runOf(running)).toMatchObject({ status: "running", interrupted: "access_ended", pending_seq: null });
       // V's only call leaves the group reply: a stop cancels it quietly now; a block leaves a reply that has not begun to the check
       // `begin` makes call by call (agents-block-recheck.test.ts), which drops the same call then.
-      if (how === "bar") expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: "access_ended" });
+      if (how === "bar") expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
       else expect(await runOf(queued)).toMatchObject({ status: "queued", error: null, interrupted: null });
       expect((await barRows(owner, v)).length).toBe(1);
     }

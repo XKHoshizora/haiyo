@@ -163,17 +163,19 @@ describe("the operator's disable and enable", () => {
     const out = await cli("agent:disable", handle);
     expect([out.code, out.stderr]).toEqual([0, ""]);
     expect(out.stdout).not.toContain("NOTE_CANARY");
-    // The line says the truth about groups (A-4 review I1): the one access decision, whose group sites are lane B's B5b.
+    // The line says the truth about groups (A-4 review I1; the integration): the one access decision, asked in groups too.
     expect(out.stdout).toContain("refusedSql");
-    expect(out.stdout).toContain("B5b");
+    expect(out.stdout).toContain("in groups too");
+    expect(out.stdout).not.toContain("B5b");
     expect((await db.query(`select disabled_at is not null as d from agents where principal_id = $1`, [w.agent.id])).rows[0]).toEqual({ d: true });
     expect(await reach(db, w.visitor.id, w.agent.id, "social", on)).toBe("gone");
     expect(await reach(db, w.visitor.id, w.agent.id, "group", on)).toBe("gone");
     expect(await reach(db, w.owner.id, w.agent.id, "social", on)).toBe("ok");
     expect((await api(app, w.stranger, "GET", `/api/principals/lookup?handle=${handle}`)).status).toBe(404);
     expect(await runOf(r.socialRunning)).toMatchObject({ status: "running", interrupted: "access_ended" });
-    expect(await runOf(r.groupQueued)).toMatchObject({ status: "cancelled", error: "access_ended" });
-    expect(await runOf(r.proactiveQueued)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    // (In a group a reply that ends so ends quietly, with no error: `access_ended` is a social run's.)
+    expect(await runOf(r.groupQueued)).toMatchObject({ status: "cancelled", error: null });
+    expect(await runOf(r.proactiveQueued)).toMatchObject({ status: "cancelled", error: null });
     expect(await runOf(r.ownRunning)).toMatchObject({ status: "running", interrupted: null });
     expect(await runOf(r.ownQueued)).toMatchObject({ status: "queued", interrupted: null });
     // Again: nothing more happens, and the same answer.
@@ -222,16 +224,17 @@ describe("the operator's disable and enable", () => {
   }, TIMEOUT);
 });
 
-describe("what the README says of a disable (A-4 review I1)", () => {
-  it("says it takes effect through the one access decision and that lane B's B5b wires the group sites, not that groups are covered by lane A alone", () => {
+describe("what the README says of a disable (A-4 review I1; the integration: tests/social-ring1a.test.ts proves the group half)", () => {
+  it("says it takes effect through the one access decision, at every group site too, and how its replies are recorded", () => {
     const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
     const at = readme.indexOf("`agent:disable <full handle>` / `agent:enable <full handle>`");
     expect(at).toBeGreaterThan(0);
     const text = readme.slice(at, at + 1500).replace(/\s+/g, " ");
     expect(text).toContain("`refusedSql`");
-    expect(text).toContain("B5b");
-    expect(text).toContain("deploys only as a whole");
-    expect(text).not.toContain("groups and social conversations alike");
+    expect(text).toContain("every group site");
+    expect(text).toContain("answers nobody but its owner, in a group too");
+    expect(text).toContain("with no error in a group");
+    expect(text).not.toContain("B5b");
   });
 });
 

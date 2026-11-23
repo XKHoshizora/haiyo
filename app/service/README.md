@@ -30,6 +30,7 @@ Development (TypeScript run directly by `tsx`; tests by vitest):
 ```
 npm install
 npm run migrate      # node-pg-migrate up against DATABASE_URL
+npm run migrate:down -- --name <migration>   # undoes ONE migration, the last one applied, only when it is the one named (Deployment)
 npm run dev          # tsx watch src/server.ts
 npm test             # vitest, against TEST_DATABASE_URL
 npm run typecheck    # tsc --noEmit (src and tests)
@@ -53,6 +54,7 @@ no TypeScript at run time; a production install `npm ci --omit=dev` is enough):
 ```
 npm run build                    # tsc -p tsconfig.build.json: src/ → dist/ (git-ignored), with source maps
 npm run migrate:prod             # node dist/cli.js migrate (finds migrations/ next to dist/)
+node dist/cli.js migrate:down --name <migration>   # the same undo on a built service (Deployment)
 npm start                        # node dist/server.js
 npm run invite:create:prod -- [--ttl-hours <n>] [--uses <n>]   # likewise invite:list:prod, invite:revoke:prod
 npm run inbox:list:prod -- [--to <email>]
@@ -326,7 +328,37 @@ timed for it. `proactive` (tests only): `false` builds none, `{ delayMs }` waits
 
 **Build and start.** See Commands: `npm run build`, `npm run migrate:prod`, `npm start`.
 
-**Migration 074 (others' numbers) and 075 (Agent social).** Code from before 074 reads a NULL per-Agent others' number as NO limit on others' use, and 074 writes NULL for every Agent that still had the old default of 20 points. So the only safe window between 074 and the new code is the deploy overlap itself. If 075 fails, run 074's Down at once: it puts 20 points back on every NULL others' number, puts a proactive budget at exactly 70 back to 20, and restores both column defaults; then fix forward.
+**Migration 074 (others' numbers) and 075 (Agent social): one deploy.** The two are ring 1a's and are applied in that order
+by the same start (the container's `migrate`, each in its own transaction). What to know before deploying them:
+
+- *The window.* 074 clears an Agent's own others' number where it still held the old default of 20 points (NULL: no number
+  of its own; its owner's one pair of daily numbers applies) and raises a proactive budget at exactly 20 to 70. Code from
+  BEFORE 074 reads that NULL as NO limit on others' use, and has no owner total. So between the moment 074 commits and the
+  moment only the new code serves, an old process still serving has no bound on what others spend on those Agents. Keep that
+  window to the deploy's own overlap: stop the old container before the new one starts (a short outage) where that is
+  possible; where the new one starts first, do not leave the old one serving once the new one is healthy.
+- *If 075 fails,* the new container stops before it serves anything (a failed migration ends the start), 074 stays applied,
+  and the old code, if it is what serves, runs without that bound. Take 074 back at once, with the new image and the site's
+  environment:
+
+  ```
+  docker run --rm --env-file agent-family.env agent-family node dist/cli.js migrate:down --name 074_others_step_l
+  ```
+
+  (`npm run migrate:down -- --name 074_others_step_l` from a checkout.) It undoes one migration, the last one applied, and
+  only when that is the one named; it prints `undone: 074_others_step_l`. 074's Down puts 20 points back on EVERY Agent with
+  no number of its own (also one whose owner had chosen no limit before: the safe direction for money), puts a proactive
+  budget at exactly 70 back to 20, and restores both column defaults (20). Check that no Agent is left without a number
+  (`select count(*) from agents where others_budget_micro is null` is 0), start the old code, then fix 075 and deploy again:
+  the next Up puts every row where the first one did (20 → none, a proactive 20 → 70; a number an owner set to anything else
+  is never touched). Rolling the code back WITHOUT the Down keeps 074 applied under the old code: the hazard itself.
+- *After it.* Every owner has one 300-point and one 50-answer cap a day for all their Agents together, and owners whose
+  account is older than 074 see the one-time notice. `SOCIAL` stays `{"enabled": false}` until it is turned on: with it off
+  nothing of Agent social's access is reachable (Agent social, "While `SOCIAL.enabled` is off"). Turn it on only once every
+  process of the previous deploy has exited; from then the persona aid reads each existing persona once, ten owners a poll.
+
+The whole path (Down for both, the old rows, Up for both, a failed 075, 074's Down, the fix forward) is run through the real
+runner by `tests/ring1a-migrations.test.ts`.
 
 **Web client (`WEB_DIST`).** Unset (the default) the service serves only the API, and every other path is
 the JSON 404. Set to the directory of the built web client (`app/web/dist`: `index.html` and `assets/`; start-up
@@ -587,11 +619,12 @@ Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_p
 replies, Log. Pushes write theirs (`push`, `push_off`, `push_config_refused`, `push_devices_expired`, `push_targets_failed`,
 `push_failed`): Push notifications, Counters in the log.
 
-Agent social writes ten (Agent social, Counters; each a count and an id or a reason, never a text): `note_judge_calls`,
-`note_judge_refused_count`, `note_judge_unanswered`, `withheld_checks` (ring 1b's judge and withheld check),
-`others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback` (what others' use of an Agent
-was refused, held back, cut short or finished without tools), `social_post_refused` (a social reply the post-time check
-stopped) and `agent_reported` (a report of an Agent).
+Agent social writes eight in ring 1a (Agent social, Counters; each a count and an id or a reason, never a text):
+`others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback`, `others_round_raise` (what others'
+use of an Agent was refused, held back, cut short, finished without tools, or could have cost past its hold),
+`social_post_refused` (a social reply the post-time check stopped), `persona_aid` (a persona read by the persona aid) and
+`agent_reported` (a report of an Agent). Ring 1b adds `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`
+and `withheld_checks`.
 
 ### Usage and points
 
@@ -2877,21 +2910,59 @@ People other than an Agent's owner reach it in a conversation of its own kind, `
 and the Agent) who speak, and the Agent's owner who watches (role `observer`, shown as 主人) and may write in it. They find
 the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以加它为好友」:
 `需要我同意` by default, `我的联系人可以直接加`, `不让别人加`), and cost the owner at most two daily numbers. Every way access
-ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid) and **1b** (notes
-shown to a non-owner).
+ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid), which is what the
+routes below are, and **1b** (notes shown to a non-owner), which is not built: its one route is under 「Planned」.
 
-**STEP 0 status.** Step 0 registered no route of Agent social; each lane adds its routes. Lane A's `/api/agent-contacts` routes are in (below); every entry still under 「Planned」 answers the ordinary 404 until its lane adds it. Each entry under 「Planned」 is the contract the lane writes to; the lane that adds a route turns its line into a `####` heading in the same edit (`tests/readme.test.ts` wants a heading for every served route and for no other), adds its probe row to `tests/fuzz.test.ts` and, for a path parameter not in the list yet, its name to `tests/logging.test.ts`. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
+**Two parts, one switch.** Ring 1a is two things that deploy together (migrations 074 and 075; Deployment):
+
+- *Others' use and its money* (step L): one pair of daily numbers per owner for everything other people cause on all of that
+  owner's Agents (calls in groups, replies nobody asked for, visitors' replies), what one reply to someone else may do (one real
+  tool call, a bounded output, no reasoning), the use routes (`/api/me/others-use`, `/api/me/others-limits`) and the one-time
+  notice. This part is live whatever `SOCIAL.enabled` says.
+- *Access* (the `agent_social` conversation, who may add an Agent, 停止往来 and 恢复往来, blocking an Agent, reports, the
+  persona aid). All of it is behind `SOCIAL.enabled` (`{"enabled": false}` by default).
+
+**While `SOCIAL.enabled` is off:** every route of this section but the three under `/api/me/others-…` answers 404; the lookup
+finds people only; no social conversation is created or written in, and a reply queued in one ends (`access_ended`) instead of
+answering later; the persona aid reads nothing and stamps nothing; `stopped` in `GET /api/me/others-use` is `[]`; `/api/sync`
+says `"social": {"enabled": false}` and the web draws none of it. Groups behave exactly as with it on (the same model call, the
+same posted message, the same frames: tests/social-ring1a.test.ts). Turning it off later is safe at any time: nothing is deleted
+and history stays readable.
+
+**One access decision.** Whether a person (or an Agent of theirs) may reach an Agent is `reach` (social/reach.ts) and its SQL
+twin `refusedSql`: the Agent deleted or disabled, a block either way (of the person, of the Agent), a bar (停止往来, either
+person's), the person's own row on the Agent. Every site asks it and nothing else: permission to write in a social
+conversation, a reply's start and its post there, and in a group the mention, a relay between Agents, the options of a reply
+nobody asked for, a reply's start (`dropRefusedCalls`) and its post (`standingCalls`). So does every ending: in a group an
+ending never cancels a reply as a whole. It takes the calls of whoever is refused now out of the replies that have not called
+their model; a reply left with no call ends quietly (`cancelled`, no error), and a reply in flight is stopped only when every
+call it answers is refused (what someone else noted on it is answered by its follow-up). `access_ended` as a run's recorded
+reason is a social run's alone. An ending that refuses nobody in a group (unfriending; a visitor who removes an Agent from their
+contacts) takes nothing out of a group reply: in a group anyone may @ an Agent.
+
+**The persona card is unread.** The persona aid's card (`persona_fact`) counts as an unread message for the Agent's owner in
+that Agent's own conversation (`unread` in `/api/sync`), as no other notice does, while `SOCIAL.enabled` is on; it makes no push.
+Answering it does not read it; reading the conversation does. An expired card counts until the conversation is read.
 
 **Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's daily caps, what one reply to
 others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
 
-**Counters.** `{ "metric": "<name>", … }` at `info`, ids and counts only: `note_judge_calls`, `note_judge_refused_count`,
-`note_judge_unanswered`, `withheld_checks`, `others_limit_refused`, `others_held_back`, `others_turn_discarded`,
-`others_plain_fallback`, `social_post_refused`, `agent_reported`.
+**Counters.** `{ "metric": "<name>", … }`, ids, counts and reasons only, never a text. Written in ring 1a:
+`others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback` (what others' use of an Agent was
+refused, held back, cut short or finished without tools), `others_round_raise` (at `warn`: a later call of an others' reply could
+cost more than its hold; the hold is not raised), `social_post_refused` (`reason`: a social reply the post-time check stopped),
+`persona_aid` (the persona aid read a persona: the Agent's id, how many cards) and `agent_reported` (the reason). Ring 1b's,
+not written yet: `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`, `withheld_checks`.
+
+**For whoever adds a route here.** A route gets its `####` heading in the same edit (`tests/readme.test.ts` wants a heading
+for every served route and for no other), its probe row in `tests/fuzz.test.ts` and, for a path parameter not in the list yet,
+its name in `tests/logging.test.ts`. An entry under 「Planned」 is the contract its ring writes to and answers the ordinary 404
+until then. Migration 073 holds the inert columns and the empty tables (`social_pairs`, `agent_contacts`); 074 is the step-L
+change of the numbers; 075 is access (`access_bars`, the bars made from existing blocks, the persona aid's columns).
 
 #### `POST /api/agent-contacts`
 
-*Session: required.* Body `{"agentId": "<uuid>"}`: add an Agent (lane A, ring 1a). → 201 `{"state": "live", "conversationId"}`
+*Session: required.* Body `{"agentId": "<uuid>"}`: add an Agent (ring 1a). → 201 `{"state": "live", "conversationId"}`
 (let in, also when it was so already), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days; asking again
 says the same), 404 `not_found` (also for an Agent that is deleted, disabled, takes no contacts, or is blocked either way:
 never why), 409 `is_yours`, 429 `cooldown` `{"availableAt"}` (30 days after the owner declined a request of yours, or after
@@ -2900,7 +2971,7 @@ is off. Limit: 20 a minute.
 
 #### `GET /api/agent-contacts`
 
-*Session: required.* (lane A, ring 1a) → 200 `{"mine": [{"agentId", "state", "conversationId", "since", "until", "ended":
+*Session: required.* (ring 1a) → 200 `{"mine": [{"agentId", "state", "conversationId", "since", "until", "ended":
 "declined" | "ended" | null}], "waiting": [{"agentId", "subject", "since", "until"}]}`. `mine`: your own rows, newest first, all of them;
 a request that ran out reads as `ended`. The visitor never learns why access ended (`declined` or `ended`, nothing else). `waiting`:
 the requests waiting on the Agents you own, newest first; `subject` is `{"id", "handle", "displayName", "avatarVersion", "kind"}`
@@ -2908,22 +2979,22 @@ the requests waiting on the Agents you own, newest first; `subject` is `{"id", "
 
 #### `POST /api/agent-contacts/:agentId/:subjectId/approve`
 
-*Session: required.* No body. The Agent's owner lets a requester in (lane A, ring 1a). → 200 `{"state": "live", "conversationId"}`;
+*Session: required.* No body. The Agent's owner lets a requester in (ring 1a). → 200 `{"state": "live", "conversationId"}`;
 409 `not_requested` (nothing waits: no request, a request answered, or one that ran out, which is ended `expired`); 404 `not_found`
 (not your Agent: an unknown one's answer). It never touches a bar.
 
 #### `POST /api/agent-contacts/:agentId/:subjectId/decline`
 
-*Session: required.* No body. The owner declines a request (lane A, ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`. The row ends `declined` and the person is held off from this Agent for 30 days.
+*Session: required.* No body. The owner declines a request (ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`. The row ends `declined` and the person is held off from this Agent for 30 days.
 
 #### `DELETE /api/agent-contacts/:agentId/:subjectId`
 
-*Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed` (a live row), by the subject `left` (a live or waiting one). → 200 `{"ok": true}`; 404 `not_found` for anyone
+*Session: required.* Ends an access (ring 1a): by the owner it is `removed` (a live row), by the subject `left` (a live or waiting one). → 200 `{"ok": true}`; 404 `not_found` for anyone
 else and for a row that is not there or ended already.
 
 #### `GET /api/agents/:id/contacts`
 
-*Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
+*Session: required; the Agent's owner only.* (ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
 "picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations":
 [{"conversationId", "subject"}]}`. `rows`: every row of the Agent, newest first, with its real end reason (`endReason`: `declined`,
 `expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where your own bar ended it (the row records whose bar did, `barred_by`), a row ended by the other person's bar reads `left` for good, whoever lifts last; once you have lifted your last bar against that person, only the rows your bar ended read `removed`); `subject` is as in `waiting` of
@@ -2933,7 +3004,7 @@ end. 404 `not_found` for anyone but the owner and for a deleted Agent; 404 while
 #### `PUT /api/agents/:id/contact-policy`
 
 *Session: required; the Agent's owner only.* Body `{"policy": "ask" | "contacts" | "none", "picked": boolean, "picks":
-["<uuid>"] (at most 500), "dryRun"?: boolean}` (lane A, ring 1a). → 200 `{"ends": number}`: how many accesses the change ends (with
+["<uuid>"] (at most 500), "dryRun"?: boolean}` (ring 1a). → 200 `{"ends": number}`: how many accesses the change ends (with
 `dryRun`, only counted and nothing is written). The accesses the new setting would not create end: to `none` every live and waiting
 row; to `ask` the live rows let in as 「我的联系人」; to `contacts` with picks those whose person is not picked or no longer a friend;
 what those people called on the Agent stops. Approved rows stay; widening ends and creates nothing. The picks are replaced. 400
@@ -2941,10 +3012,11 @@ what those people called on the Agent stops. Approved rows stay; widening ends a
 
 #### `PUT /api/bars/:personId`
 
-*Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (lane A, ring 1a).
-Every live or waiting row between the two sides ends, and their replies in the pair's social conversations stop; in a group the
-person's calls are taken out of a reply (it is cancelled only when it answers no one else, and stopped only when in flight and
-no one else is left). The bar is your own row: it is lifted by you alone (the other person's own stop or block is theirs), and the pair
+*Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (ring 1a).
+Every live or waiting row between the two sides ends, and their replies in the pair's social conversations stop (`access_ended`); in a group the
+person's calls are taken out of a reply (it ends, quietly and with no error, only when it answers no one else; one in flight is stopped only when
+every call it answers is theirs, and a call someone else noted on it is then answered by its follow-up: One access decision, above). It is
+offered on the person's profile for anyone, a stranger who only called your Agent in a group included, and nowhere else. The bar is your own row: it is lifted by you alone (the other person's own stop or block is theirs), and the pair
 stays barred while a row of either of you stands. → 200 `{"ok": true, "ended": number}` (also when a bar stands already); 400 `invalid_request` for yourself; 404
 `not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
 Every block of a person by a person writes its own row too (a block's) in its own transaction; unblocking deletes only that block's row.
@@ -2962,7 +3034,7 @@ stands (the other person's, a block's): one answer.
 #### `POST /api/reports`
 
 *Session: required.* Body `{"agentId": "<uuid>", "reason": "spam" | "harassment" | "privacy" | "other", "note"?: string
-(at most 500)}` (lane A, ring 1a). Reports an Agent the caller can see: their own, one they share a conversation with now, one they
+(at most 500)}` (ring 1a). Reports an Agent the caller can see: their own, one they share a conversation with now, one they
 blocked, or one that is discoverable to them (the rule of its avatar); for any other id, a deleted or disabled Agent a stranger cannot
 find, or a person, the answer is the 404 of an Agent that is not there. The row (`agent_reports`, `target_kind` `agent`) keeps the
 reporter's note (trimmed; none when it is empty) and the social conversation they share with the Agent, if they have one. Limit: five a
@@ -2971,22 +3043,22 @@ operator reads the reports on the command line (`reports:list [--open]`, `report
 ids' prefixes, the Agent's handle, the reason, whether there is a note; never the note) and turns an Agent off and on with
 `agent:disable <full handle>` / `agent:enable <full handle>`: a disabled Agent is gone to everyone but its owner. That is one fact, `gone`,
 read by the one access decision (`reach` and its SQL twin `refusedSql`), so it holds wherever the decision is asked: the lookup, the
-avatar rule and every social conversation (permission to write, a reply's start and its post), and, in groups, every call site
-that asks it (lane B's B5b wires the group sites to `refusedSql`; ring 1a deploys only as a whole, with it). The replies others asked of
-it stop (queued ones cancelled, running ones interrupted, `access_ended`; the owner's own call noted on one stays noted), and its owner's
-own replies go on; no row is touched, and enabling gives access back. The command line has no live connection: screens that are open
+avatar rule, every social conversation (permission to write, a reply's start and its post) and every group site (a mention, a relay, a
+reply nobody asked for, a reply's start and its post): a disabled Agent answers nobody but its owner, in a group too. The replies others asked of
+it stop (queued ones cancelled, running ones interrupted: recorded `access_ended` in a social conversation and with no error in a group;
+the owner's own call noted on one stays noted), and its owner's own replies go on; no row is touched, and enabling gives access back. The command line has no live connection: screens that are open
 catch up at their next sync (a typed message to a disabled Agent is answered 403 at once). `reports:close --outcome disabled` disables the
 Agent too, by the same path (an outcome that only recorded would read as having acted); `dismissed` only records.
 
 **Planned: `PUT /api/agents/:id/note-verdicts`**
 
 *Session: required; the Agent's owner only.* Body `{"noteKind": "owner" | "self", "noteId", "audienceId", "share": boolean,
-"cardSeq"?: number}` (lane A, ring 1b): the owner's yes or no on one note for one person; a card's answer names its message
+"cardSeq"?: number}` (ring 1b): the owner's yes or no on one note for one person; a card's answer names its message
 in `cardSeq`. → 200 `{"ok": true}`.
 
 #### `POST /api/agents/:id/persona-facts/:seq`
 
-*Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
+*Session: required; the Agent's owner only.* Body `{"move": boolean}` (ring 1a: the persona aid): answers the `persona_fact` card at
 message `seq` of the Agent's own conversation. The card says that a sentence of the persona looks like a fact about the owner or someone
 else (a persona is read whole by anyone the Agent talks to); it is made by the persona aid, which reads each new persona version once on
 the owner's memory model and allowance (one call per version, none while `SOCIAL.enabled` is off and nothing stamped then, so that at the
@@ -3027,9 +3099,10 @@ use or what is left).
   `reached` when your answers are used up or every other Agent is (with none to ask, when `used` has reached your points), and `tight` when any is.
 - `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then answers, then id, `points` as
   `used`'s (settled plus held). A reply nobody asked for, and one whose caller has left, are in `used` and in no row.
-- `stopped`: the people you stopped contact with (停止往来) and have not since resumed, newest first: bars you set that no block made. Empty
-  while `SOCIAL.enabled` is off, and while the table that holds bars (Agent social's own migration) is not there; the web shows no 停止往来 or
-  恢复往来 control then.
+- `stopped`: the people you stopped contact with (停止往来) and have not since resumed, newest first: your own `stop` rows of `access_bars`,
+  never a block's row and never a stop somebody else set about you. Empty while `SOCIAL.enabled` is off; the web shows no 停止往来 or
+  恢复往来 control then, and lists the people of `byPerson` as plain names. With it on, each person of `byPerson` and `stopped` is a link to
+  that person's profile, the one place where 停止往来 and 恢复往来 are (the page itself has neither).
 - `agents`: each of your live Agents' day (as `othersUsedToday` of its shape: so the rows' `points` leave out replies nobody asked for,
   which `used` counts) and `perDay`, about how many replies a site day it can give
   others: 0 when the numbers that bind it (yours, or its own where lower) do not cover one plain reply's hold (one call at 16 500 input
