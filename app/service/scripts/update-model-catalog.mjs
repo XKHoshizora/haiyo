@@ -284,7 +284,8 @@ async function main() {
   const dir = new URL("../src/providers/", import.meta.url);
   const previous = previousCatalog(new URL("model-catalog.json", dir));
   if (guard) guardCatalog(previous, entries);
-  const summary = catalogSummary(previous, entries);
+  const providersBefore = previousCatalog(new URL("provider-catalog.json", dir)).length;
+  const summary = `${catalogSummary(previous, entries)}\nProviders (provider-catalog.json): ${providersBefore} -> ${providers.length}`;
   if (summaryFile) writeFileSync(summaryFile, `${summary}\n`);
   writeFileSync(new URL("model-catalog.json", dir), formatCatalog(entries));
   writeFileSync(new URL("provider-catalog.json", dir), formatCatalog(providers));

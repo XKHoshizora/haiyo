@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ABILITIES, catalogReadme, catalogSummary, diffCatalog, formatCatalog, guardCatalog, reduceCatalog, type CatalogEntry } from "../scripts/update-model-catalog.mjs";
 
@@ -177,6 +177,36 @@ describe("guardCatalog (an upstream outage or format change must not wipe the ca
     const plain = many(200, { vision: false });
     expect(() => guardCatalog(plain, plain.slice(40))).not.toThrow();
     expect(() => guardCatalog(plain, plain.slice(41))).toThrow(/shrank/);
+  });
+});
+
+describe("the daily update (.github/workflows/catalog-update.yml)", () => {
+  const workflow = readFileSync(new URL("../../../.github/workflows/catalog-update.yml", import.meta.url), "utf8");
+
+  it("runs daily and by hand, names the development branch once, passes the guard, and writes with the job's own token only", () => {
+    expect(workflow).toMatch(/^on:\n  schedule:\n(?:\s+#.*\n)*\s+- cron: "\d+ \d+ \* \* \*"\n  workflow_dispatch:\n/m);
+    expect(workflow.match(/claude\/agent-family-review-8a6084/g)).toHaveLength(1);
+    expect(workflow).toMatch(/^  DEV_BRANCH: \S+$/m);
+    expect(workflow).toContain("ref: ${{ env.DEV_BRANCH }}");
+    expect(workflow).toContain('git push origin "HEAD:${DEV_BRANCH}"');
+    expect(workflow).toMatch(/node scripts\/update-model-catalog\.mjs --guard --summary=/);
+    expect(workflow).toMatch(/^permissions:\n  contents: write\n/m);
+    expect(workflow).not.toContain("secrets.");
+    // Actions pinned by major version, as ci.yml pins them.
+    expect(workflow.match(/uses: \S+/g)).toEqual(["uses: actions/checkout@v4", "uses: actions/setup-node@v4"]);
+  });
+
+  it("checks and tests before it commits: every step after the diff runs only for a changed snapshot, the commit last; the tests it names exist", () => {
+    const order = ["Generate the snapshot", "Did the snapshot change?", "Service type check", "Tests that read the catalogue", "Commit the snapshot"].map((name) => workflow.indexOf(`name: ${name}`));
+    expect(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1]!))).toBe(true);
+    const afterDiff = workflow.slice(workflow.indexOf("id: diff"));
+    const steps = afterDiff.split(/\n      - /).slice(1);
+    expect(steps.length).toBeGreaterThanOrEqual(5);
+    for (const step of steps) expect([step.split("\n")[0], step.includes("if: steps.diff.outputs.changed == 'true'")]).toEqual([step.split("\n")[0], true]);
+    expect(afterDiff).not.toContain("continue-on-error");
+    const named = workflow.match(/tests\/[a-z-]+\.test\.ts/g)!;
+    expect(named).toEqual(["tests/model-catalog.test.ts", "tests/provider-catalog.test.ts", "tests/provider-hints.test.ts", "tests/providers.test.ts", "tests/models-route.test.ts", "tests/build.test.ts"]);
+    for (const file of named) expect([file, existsSync(new URL(`../${file}`, import.meta.url))]).toEqual([file, true]);
   });
 });
 
