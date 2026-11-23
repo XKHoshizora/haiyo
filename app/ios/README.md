@@ -111,7 +111,7 @@ The page calls `window.webkit.messageHandlers.haiyo.postMessage({ name, args })`
 | `name` | `args` | Reply |
 |---|---|---|
 | `hello` | `{ events?: ["pause", "resume", "open", "layout"] }` — the events the page handles | `{ bridge: 1, shell, build, os, push, events, layout? }`; `push` is `granted`, `denied` or `notDetermined` (re-register silently when `granted`); `layout` only when the page listed it: as in `haiyo:layout` below, current at the reply. The events take effect when the answer is delivered, not when it is asked |
-| `push.register` | — | asks for notification permission if needed, then `{ token, env }`, `{ denied: true }` or `{ error }` (`timeout` after 30 s, `busy` with 4 waiting) |
+| `push.register` | — | asks for notification permission if needed, then `{ token, env }`, `{ denied: true }` or `{ error }`; `env` is `development` (Debug) or `production` (Acceptance, Store). It always answers exactly once: the system's permission prompt has no time limit (the answer waits for the person), then `timeout` if APNs gives no token within 30 s, `busy` with 4 waiting. A page should not give up on it while the prompt may be open |
 | `badge.set` | `{ n }`, a whole number 0–99999 | `{ ok }`: `false` when the system refused (no badge permission yet) |
 
 Refused messages reject with `forbidden` (not the shell's own origin, or not the main frame), `malformed` or `unknown`.
