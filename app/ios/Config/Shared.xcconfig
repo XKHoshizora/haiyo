@@ -1,7 +1,7 @@
 // Settings every configuration of the app shares. The version and the build number live here and nowhere else:
 // raise CURRENT_PROJECT_VERSION for every upload (App Store Connect refuses a build number it has seen).
 MARKETING_VERSION = 0.1.0
-CURRENT_PROJECT_VERSION = 2
+CURRENT_PROJECT_VERSION = 3
 
 // The owner's team (it also appears in every signed build and in the site's apple-app-site-association).
 DEVELOPMENT_TEAM = LUW9SF3X94

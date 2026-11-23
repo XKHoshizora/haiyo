@@ -10,7 +10,7 @@ final class ShellConfigTests: XCTestCase {
         XCTAssertEqual(config?.apnsEnvironment, "development")
         XCTAssertEqual(config?.channel, "acceptance")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String, "0.1.0")
-        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String, "2")
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String, "3")
         XCTAssertEqual(Bundle.main.bundleIdentifier, "org.haiyo.app")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String, "Haiyo")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "ITSAppUsesNonExemptEncryption") as? Bool, false)
