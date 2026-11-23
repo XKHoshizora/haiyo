@@ -99,18 +99,28 @@ async function expectRowsFit(page, list) {
       const marks = o.querySelector(".model-marks")?.getBoundingClientRect();
       const name = o.querySelector(".model-name");
       const chips = [...o.querySelectorAll(".model-mark:not(.model-gap)")].filter((c) => c.getBoundingClientRect().width > 0).map((c) => c.getBoundingClientRect());
-      // Every visible word lies inside its own chip.
-      const spill = [...o.querySelectorAll(".model-mark-text")].filter((t) => t.getBoundingClientRect().width > 0).some((t) => {
+      // Every visible word fits its own chip EXACTLY: the chip is as wide as its word and its padding (a fixed width, too wide or too narrow, fails).
+      const spill = [...o.querySelectorAll(".model-mark-ability .model-mark-text")].filter((t) => t.getBoundingClientRect().width > 0).some((t) => {
         const r = t.getBoundingClientRect();
-        const c = t.closest(".model-mark").getBoundingClientRect();
-        return r.left < c.left - 0.5 || r.right > c.right + 0.5;
+        const chip = t.closest(".model-mark");
+        const c = chip.getBoundingClientRect();
+        const pad = parseFloat(getComputedStyle(chip).paddingLeft) + parseFloat(getComputedStyle(chip).paddingRight);
+        return Math.abs(c.width - (r.width + pad)) > 1 || chip.scrollWidth > chip.clientWidth;
       });
+      // The name keeps at least its first six characters' width (a probe in the name's own font).
+      const probe = document.createElement("span");
+      probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(name).font}`;
+      probe.textContent = name.textContent.slice(0, 6);
+      document.body.append(probe);
+      const six = probe.getBoundingClientRect().width;
+      probe.remove();
       return {
         label: o.getAttribute("aria-label"),
         rowHeight: box.height,
         inside: marks ? marks.right <= box.right + 0.5 && marks.left >= box.left : true,
         chipHeights: chips.map((c) => Math.round(c.height)),
         spill,
+        floor: name.clientWidth + 0.5 >= six,
         cut: name.scrollWidth > name.clientWidth,
         nameWidth: name.clientWidth,
       };
@@ -120,7 +130,8 @@ async function expectRowsFit(page, list) {
     expect(r.inside, `${r.label}: marks inside the row`).toBe(true);
     expect(r.rowHeight, `${r.label}: one line`).toBeLessThanOrEqual(46);
     expect(new Set(r.chipHeights).size, `${r.label}: chips on one line`).toBeLessThanOrEqual(1);
-    expect(r.spill, `${r.label}: every word inside its chip`).toBe(false);
+    expect(r.spill, `${r.label}: every word exactly fills its chip`).toBe(false);
+    expect(r.floor, `${r.label}: at least the first six characters of the name are left`).toBe(true);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await list.evaluate((l) => l.scrollWidth <= l.clientWidth + 1)).toBe(true);
@@ -157,7 +168,7 @@ for (const size of [...PHONES, { name: "1280", width: 1280, height: 860 }]) {
     const rows = await expectRowsFit(page, list);
     const long = rows.find((r) => r.label.startsWith(LONG));
     expect(long.cut, "the long name is cut with an ellipsis").toBe(true);
-    expect(long.nameWidth, "something of the name is left").toBeGreaterThan(40);
+    expect(long.nameWidth, "something of the name is left").toBeGreaterThan(60);
 
     await shot(page, `picker-${size.name}`);
     if (!narrow) await shot(page, "popover-1280", { clip: await page.locator(".model-pop").boundingBox() });
@@ -182,15 +193,41 @@ test("the provider page's rows carry the same marks, as words, at 360 and 1280 (
     // A model that says nothing of tools has no 工具 (here, in the picker and in the sync list alike).
     await expect(rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash" }).first().locator(".model-mark")).toHaveText(["思考"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    // The form tells the mark's story: a model whose entry says nothing of tools has the mixed box (a screen reader says so), with its helper.
+    if (width === 1280) {
+      const unknown = rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash" }).first();
+      await unknown.getByRole("button", { name: /高级/ }).click();
+      const box = unknown.getByLabel("会用工具（查聊天记录、看文件）");
+      await expect(box).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
+      await expect(unknown.getByText("还不确定。勾上表示它会用工具，不勾表示不会。")).toBeVisible();
+      await box.click();
+      await expect(unknown.locator(".model-mark")).toHaveText(["思考", "工具"]);
+      await expect(unknown.getByText("还不确定。勾上表示它会用工具，不勾表示不会。")).toHaveCount(0);
+    }
     await seeing.scrollIntoViewIfNeeded();
     await rows.scrollIntoViewIfNeeded();
     await shot(page, `providers-${width}`);
   }
 });
 
-test("the sync dialog's rows carry the marks (the provider's hints: no 工具) at 360 and 1280", async ({ people }) => {
+test("the sync dialog (a list read from a sibling address) shows the marks (the provider's hints: no 工具) AND the sibling line, at 360 and 1280", async ({ people }) => {
   const ann = await setup(people);
   const page = ann.page;
+  const entry = (name, fields = {}) => ({ name, vision: false, pdf: false, reasoning: false, chat: true, known: false, added: false, ...fields });
+  await page.route("**/models/list", (route) =>
+    route.fulfill({
+      json: {
+        ok: true,
+        source: "sibling",
+        listed: [
+          entry("claude-sonnet-5-5", { known: true, label: "Claude Sonnet 5.5", vision: true, pdf: true, reasoning: true, contextTokens: 200000 }),
+          entry("gpt-4o-mini", { known: true, label: "GPT-4o mini", vision: true, contextTokens: 128000 }),
+          entry("stub-chat"),
+          entry("a-rather-long-model-name-from-the-sibling-list-that-has-to-be-cut-somewhere", { known: true, label: "Long", vision: true, reasoning: true }),
+        ],
+      },
+    }),
+  );
   for (const [width, height] of [[360, 740], [1280, 860]]) {
     await page.setViewportSize({ width, height });
     await goTo(page, "设置");
@@ -202,6 +239,8 @@ test("the sync dialog's rows carry the marks (the provider's hints: no 工具) a
     await expect(sync).toBeVisible();
     const rows = sync.getByRole("list", { name: "供应商的模型" }).getByRole("listitem");
     // The catalogue knows claude-sonnet-5-5: its hints are the marks (words, on a page's dialog), and the list says nothing of tools.
+    // The sibling line is there beside the rows (outside the marks).
+    await expect(sync.getByText("这些模型是从供应商的另一个地址读到的")).toBeVisible();
     const known = rows.filter({ hasText: "claude-sonnet-5-5" });
     await expect(known.locator(".model-mark").first()).toBeVisible();
     await expect(known.locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(0);
@@ -285,22 +324,26 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
     // Nine abilities and the price do not fit a 360 px phone row beside any name (the marks alone are about 300 px), so there the list has six
     // columns (the three shown and three reserved, the longest words among them); in a 620 px box all nine.
     const six = ["vision", "reasoning", "tools", "videoOut", "audioOut", "audioIn"];
+    const three = ["vision", "reasoning", "tools"];
     strip = {
       620: { all: markup(["paid", ...kinds], kinds), one: markup(["free", "tools"], kinds), none: markup([], kinds), cols: kinds },
       360: { all: markup(["paid", ...six], six), one: markup(["free", "tools"], six), none: markup([], six), cols: six },
+      // What is shown today: the three abilities and the price at 360 px, where the name has a real floor.
+      "360-three": { all: markup(["paid", ...three], three), one: markup(["free", "tools"], three), none: markup([], three), cols: three },
     };
   } finally {
     await vite.close();
   }
   await page.goto("/");
-  for (const [width, narrow] of [[620, false], [360, true]]) {
+  for (const [key, narrow] of [[620, false], [360, true], ["360-three", true]]) {
+    const width = Number(String(key).slice(0, 3));
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.evaluate(
       ({ width: w, strip: s, long }) => {
         const row = (marks) => `<div class="model-option" role="option"><span class="model-check"></span><span style="width:16px;flex:none"></span><span class="model-name">${long}</span>${marks}</div>`;
         document.body.innerHTML = `<div class="model-pop" style="position:fixed;left:0;top:0;width:${w}px;height:auto"><div class="model-list" role="listbox">${row(s.all)}${row(s.one)}${row(s.none)}</div></div>`;
       },
-      { width, strip: strip[width], long: LONG },
+      { width, strip: strip[key], long: LONG },
     );
     const rows = page.locator(".model-option");
     const geometry = await rows.evaluateAll((els) =>
@@ -311,19 +354,31 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
           const r = c.getBoundingClientRect();
           const part = [...c.querySelectorAll(".model-mark-text, svg")].find((el) => getComputedStyle(el).display !== "none");
           const visible = part ? part.getBoundingClientRect() : null;
-          return { col: c.dataset.col, left: Math.round(r.left * 10) / 10, right: Math.round(r.right * 10) / 10, inside: !visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5), shown: Boolean(visible) };
+          // The visible word or icon fills its chip exactly (the chip is as wide as it and its padding): able to fail on a width too wide or too narrow.
+          const cs = getComputedStyle(c);
+          const exact = !visible || c.classList.contains("model-gap") || Math.abs(r.width - (visible.width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight))) <= 1;
+          return { col: c.dataset.col, left: Math.round(r.left * 10) / 10, right: Math.round(r.right * 10) / 10, inside: exact && (!visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5)), shown: Boolean(visible) };
         });
         const marks = o.querySelector(".model-marks");
-        return { height: box.height, nameWidth: name.clientWidth, cut: name.scrollWidth > name.clientWidth, marksRight: marks ? marks.getBoundingClientRect().right : 0, rowRight: box.right, cells };
+        const probe = document.createElement("span");
+        probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(name).font}`;
+        probe.textContent = name.textContent.slice(0, 6);
+        document.body.append(probe);
+        const six = probe.getBoundingClientRect().width;
+        probe.remove();
+        return { height: box.height, six, nameWidth: name.clientWidth, cut: name.scrollWidth > name.clientWidth, marksRight: marks ? marks.getBoundingClientRect().right : 0, rowRight: box.right, cells };
       }),
     );
     const [all, one, none] = geometry;
-    expect(all.cells.map((c) => c.col)).toEqual(["price", ...strip[width].cols.slice().sort((x, y) => kinds.indexOf(x) - kinds.indexOf(y))]);
+    expect(all.cells.map((c) => c.col)).toEqual(["price", ...strip[key].cols.slice().sort((x, y) => kinds.indexOf(x) - kinds.indexOf(y))]);
     for (const g of geometry) {
       expect(g.height, "one line").toBeLessThanOrEqual(46);
       expect(g.marksRight <= g.rowRight + 0.5, "marks inside the row").toBe(true);
       expect(g.cut, "the long name is cut").toBe(true);
-      expect(g.nameWidth, "some of the name is left").toBeGreaterThan(20);
+      // The name floor: with today's three marks, at least the first six characters; with six or nine (reserved rows, see the table's note) the
+      // limit is known and only something of the name is asked for.
+      if (key === "360-three") expect(g.nameWidth + 0.5, "the first six characters of the name are left").toBeGreaterThanOrEqual(g.six);
+      else expect(g.nameWidth, "some of the name is left").toBeGreaterThan(20);
       for (const c of g.cells) expect(c.inside, `${c.col}: the ${narrow ? "icon" : "word"} inside its chip`).toBe(true);
     }
     // In row `all` every ability cell shows exactly its word (wide) or its icon (narrow); a row with fewer marks keeps every column where it was.
@@ -332,6 +387,6 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
     expect(none.cells.map((c) => [c.col, c.left, c.right])).toEqual(all.cells.map((c) => [c.col, c.left, c.right]));
     // No chip overlaps its neighbour.
     for (const [a, b] of all.cells.slice(1).map((c, i) => [all.cells[i], c])) expect(a.right, `${a.col} before ${b.col}`).toBeLessThanOrEqual(b.left + 0.5);
-    await shot(page, `all-marks-${narrow ? "360" : "620"}`, { clip: await page.locator(".model-pop").boundingBox() });
+    await shot(page, `all-marks-${key}`, { clip: await page.locator(".model-pop").boundingBox() });
   }
 });

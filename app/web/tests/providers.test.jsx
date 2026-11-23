@@ -711,7 +711,7 @@ describe("the models of a provider", () => {
     expect(toastText()).toBe("供应商已保存");
   });
 
-  it("会用工具（查聊天记录、看文件） is ticked unless the model's entry says tools: false; unticking saves tools: false and ticking tools: true, in the one PATCH of its list", async () => {
+  it("会用工具（查聊天记录、看文件） tells the mark's story: unknown (no tools in its entry) is the indeterminate box with a helper, one click makes it true, a model marked false is unticked; saving an untouched unknown keeps it unknown", async () => {
     const marked = providerOf(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
@@ -722,23 +722,47 @@ describe("the models of a provider", () => {
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
     const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
     for (const name of ["gpt-x", "plain"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
-    expect([box("gpt-x").checked, box("plain").checked]).toEqual([true, false]);
+    // Unknown reads as the native mixed state (a screen reader says "mixed"), not as ticked; a model that says false is unticked.
+    expect([box("gpt-x").checked, box("plain").checked]).toEqual([false, false]);
+    expect([box("gpt-x").indeterminate, box("plain").indeterminate]).toEqual([true, false]);
+    const HELPER = "还不确定。勾上表示它会用工具，不勾表示不会。";
+    expect(within(modelRow("gpt-x")).getByText(HELPER)).toBeTruthy();
+    expect(box("gpt-x").getAttribute("aria-describedby")).toBe(within(modelRow("gpt-x")).getByText(HELPER).id);
+    expect(within(modelRow("plain")).queryByText(HELPER)).toBeNull();
+    // One click makes either a fact; the helper goes with the doubt.
     fireEvent.click(box("gpt-x"));
     fireEvent.click(box("plain"));
     await flush();
-    expect([box("gpt-x").checked, box("plain").checked]).toEqual([false, true]);
+    expect([box("gpt-x").checked, box("plain").checked]).toEqual([true, true]);
+    expect([box("gpt-x").indeterminate, box("plain").indeterminate]).toEqual([false, false]);
+    expect(within(modelRow("gpt-x")).queryByText(HELPER)).toBeNull();
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
       models: [
-        { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, tools: false },
+        { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, tools: true },
         { name: "plain", vision: false, pdf: false, reasoning: false, contextTokens: 16000, tools: true },
       ],
     });
     // As saved: the form, opened again, holds what the service answered.
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
     for (const name of ["gpt-x", "plain"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
-    expect([box("gpt-x").checked, box("plain").checked]).toEqual([false, true]);
+    expect([box("gpt-x").checked, box("plain").checked]).toEqual([true, true]);
+  });
+
+  it("an untouched unknown stays unknown: the box open and left alone, saved for another change, sends no tools and is still the mixed box", async () => {
+    const unknown = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 }] });
+    const app = await openProviders({ providers: [unknown] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
+    const box = () => within(modelRow("gpt-x")).getByLabelText("会用工具（查聊天记录、看文件）");
+    expect(box().indeterminate).toBe(true);
+    fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/能看图片/));
+    await flush();
+    // The other change does not touch it (the box is still the mixed one).
+    expect(box().indeterminate).toBe(true);
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: true, pdf: false, reasoning: true, contextTokens: 64000 }] });
   });
 
   it("a model marked tools: false keeps it when the list is saved for another change; one whose entry says nothing sends nothing of it", async () => {
@@ -833,12 +857,10 @@ describe("the models of a provider", () => {
     expect(marks("sees-only")).toEqual(["看图"]);
     expect(marks("nothing")).toEqual([]);
     // 工具 is a known fact: a model whose entry says nothing of it (not known yet; the service still offers it tools) shows none, here as in the picker and the sync list;
-    // ticking the box (unticked, then ticked: the owner says it) makes it a fact.
+    // one click on the mixed box (the owner says it) makes it a fact.
     expect(marks("tools-unknown")).toEqual(["思考"]);
     const box = () => within(modelRow("tools-unknown")).getByLabelText("会用工具（查聊天记录、看文件）");
     await click(within(modelRow("tools-unknown")).getByRole("button", { name: /高级/ }));
-    await click(box());
-    expect(marks("tools-unknown")).toEqual(["思考"]);
     await click(box());
     expect(marks("tools-unknown")).toEqual(["思考", "工具"]);
     // Read out, each mark is its short word; the sentence keeps what the marks cannot say (the levels, the context).

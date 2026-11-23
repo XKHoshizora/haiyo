@@ -417,10 +417,20 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
                 <span>支持思考 <small>用它的 Agent 可以选择思考程度</small></span>
               </label>
               <label>
-                {/* Ticked unless its entry says false (the service sets that when the model turns out unable to use them). */}
-                <input type="checkbox" checked={model.tools !== false} onChange={flag("tools")} />
+                {/* As its entry says, the mark's own story: ticked for true, unticked for false, the native mixed box while the entry says nothing (the
+                    service still offers it tools until a reply finds it unable). One click makes it a fact; saving it untouched sends nothing. */}
+                <input
+                  type="checkbox"
+                  checked={model.tools === true}
+                  ref={(el) => {
+                    if (el) el.indeterminate = typeof model.tools !== "boolean";
+                  }}
+                  aria-describedby={typeof model.tools !== "boolean" ? `${panelId}-tools-unknown` : undefined}
+                  onChange={flag("tools")}
+                />
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
+              {typeof model.tools !== "boolean" && <small id={`${panelId}-tools-unknown`} className="tools-unknown">还不确定。勾上表示它会用工具，不勾表示不会。</small>}
             </fieldset>
             {levelChoice}
             <Field label="上下文容量" hint={contextHint} error={error}>

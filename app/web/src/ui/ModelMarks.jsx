@@ -18,6 +18,13 @@ export const PRICE_TEXT = { free: "免费", paid: "需余额" };
  * fields the service reports, any of them absent: an unknown is not shown),
  * `shown`. Today the wire carries `vision`, `reasoning` (a boolean here), `tools` and `pdf`; `audioIn`, `videoIn`, `imageOut`,
  * `videoOut` and `audioOut` are the names the service will carry.
+ *
+ * BEFORE ANY RESERVED ROW IS TURNED ON the design needs three more things (turning a row on is one line in code, but past four marks it is not
+ * one line of design: nine abilities and the price take about 300 px of icons, or 490 px of words, leaving the name a few characters):
+ * a name floor (a row keeps at least about half its width, or ten characters, for the name), a per-row cap with a "+N" chip (the full set stays in
+ * the row's accessible name and title), and a word/icon threshold that depends on the number of columns instead of the fixed 519 px; the legend
+ * may then wrap to two lines. The hidden column copies (`.model-gap`) are fine at three columns; replace them (a grid with shared column
+ * tracks) before many rows are on.
  */
 export const ABILITIES = [
   { kind: "vision", text: "看图", title: "能看图片", Icon: Eye, from: (m) => m.vision === true, shown: true },
