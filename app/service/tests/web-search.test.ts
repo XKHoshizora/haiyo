@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatPoints } from "../src/accounts/store.ts";
 import { changeSweep, webEngineOf } from "../src/app.ts";
@@ -153,6 +154,11 @@ describe("switch off: nothing changes", () => {
     expect(toolsPassage("own", "unavailable")).toBe(`${TODAY_OWN}\n${NO_WEB_HERE}`);
     expect(toolsPassage("group", "unavailable")).toBe(`${TODAY_GROUP}\n${NO_WEB_HERE}`);
     expect(toolSpecs({ group: false }).map((t) => t.name)).toEqual(["search_messages", "current_time", "read_file"]);
+    // The passages of a reply offered the web search are pinned too (their bytes at 4476eda, before Agent social's Step 0 gave the
+    // function a `Place`): a social reply's arm (plan B7a) must leave these two exactly as they are.
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(sha(toolsPassage("own", "offered"))).toBe("9a3436a652b695399192688dfeae6af021cac93408f791a3ceae39a4ac7400f6");
+    expect(sha(toolsPassage("group", "offered"))).toBe("d49760055d70a288d897ae938cbbfe7c25acd045b5f102d5c8a43ca143568ade");
     // The web's passage writes no number of its own: one in the system text would be planted and void it for the run.
     for (const place of ["own", "group"] as const) expect(toolsPassage(place, "offered")).not.toMatch(/〔\s*[mfw]\s*[0-9]/i);
   });

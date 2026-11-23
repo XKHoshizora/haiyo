@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { formatPoints, MICRO_PER_POINT, parsePoints } from "../accounts/store.ts";
+import { formatPoints, MICRO_PER_POINT, pointsBetween } from "../accounts/store.ts";
 import { PROACTIVE_LEVELS, REASONING_LEVELS } from "../config.ts";
 import type { Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
@@ -67,11 +67,7 @@ const DEFAULT_CHAIN_BUDGET = 50n * MICRO_PER_POINT;
  * `chainBudget` as a request gives it: a decimal string of points (no sign, no exponent, at most 6 fraction digits, as
  * money is on the wire) from 1 to 100 000; micro-points once parsed.
  */
-const chainBudget = z
-  .string()
-  .regex(/^[0-9]{1,6}(?:\.[0-9]{1,6})?$/)
-  .transform((s) => parsePoints(s)!)
-  .refine((micro) => micro >= CHAIN_BUDGET_MIN && micro <= CHAIN_BUDGET_MAX);
+const chainBudget = pointsBetween(CHAIN_BUDGET_MIN, CHAIN_BUDGET_MAX);
 /**
  * `othersBudget`, the most its owner pays in a site day for the Agent's replies other people called for (runs.ts
  * `othersBudgetSpent`): as `chainBudget` (1 to 100 000 points), or `null` for no limit; 20 points unless its owner says

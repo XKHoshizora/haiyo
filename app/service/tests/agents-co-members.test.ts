@@ -80,6 +80,9 @@ const HIDDEN_KEYS = [
   "ownerShare",
   "judgeShare",
   "card",
+  // Why an access ended: the owner's to read; the other side never learns it.
+  "endReason",
+  "end_reason",
   "ownerAppellation",
   "appellations",
   "memory",

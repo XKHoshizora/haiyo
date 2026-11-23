@@ -59,7 +59,7 @@ export async function seedSocialAgents(app: FastifyInstance, o: { x: string; y: 
     const ownerX = ownerOf.get(o.x);
     const ownerY = ownerOf.get(o.y);
     if (!ownerX || !ownerY) throw new Error("seedSocialAgents: both ids must be Agents");
-    const created = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent_social', $1) returning id", [ownerX]);
+    const created = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent_social', $1) returning id", [o.x]);
     const conversationId = created.rows[0]!.id;
     const [lo, hi] = orderedPair(o.x, o.y);
     await t.query("insert into social_pairs (conversation_id, a_id, b_id) values ($1, $2, $3)", [conversationId, lo, hi]);

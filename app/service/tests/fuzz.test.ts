@@ -389,6 +389,14 @@ const GROUP_AGENTS = /^\/api\/conversations\/:id\/agents\//;
 /** A group's replies as a member may know them (batch 2C): reached with the fixture's group, not the Agent's conversation. */
 const GROUP_RUNS = "/api/conversations/:id/runs";
 /** The routes of Agents, providers, usage and replies (this batch's): checked more strictly below. */
+/** Agent social's stub routes the deep-probe rule cannot reach yet (see its use). */
+const SOCIAL_STUBS = new Set([
+  "GET /api/agents/:id/contacts",
+  "HEAD /api/agents/:id/contacts",
+  "PUT /api/agents/:id/contact-policy",
+  "PUT /api/agents/:id/note-verdicts",
+  "POST /api/agents/:id/persona-facts/:seq",
+]);
 const isAgentRoute = (url: string) => /^\/api\/(agents|providers|usage)(\/|$)/.test(url) || AGENT_CONVERSATION.test(url) || GROUP_AGENTS.test(url);
 
 /** A real id for each path parameter, so malformed bodies and queries reach as deep as they can. */
@@ -636,6 +644,10 @@ describe("fuzz", () => {
       wrongBodies.push(...malformedBody.filter((x) => x.status < 400 || x.status >= 500).map((x) => `${name}: ${x.label} → ${x.status}`));
       // The avatar takes image bytes, not JSON: the avatar test below reaches it.
       if (route.url === "/api/agents/:id/avatar") continue;
+      // Agent social's routes under /api/agents are Step 0 stubs that answer 404 to everyone until lane A writes them (plan T0.4):
+      // none can be taken past the checks yet. Lane A deletes each entry from this list in the task that writes its route; the rules
+      // above (a malformed path or body is a 4xx) still hold for them.
+      if (SOCIAL_STUBS.has(name)) continue;
       const deep = sent[i]!.filter((x) => x.label.endsWith("[signed in]") && !SHALLOW.has(x.status));
       expect([name, deep.length > 0]).toEqual([name, true]);
     }

@@ -32,7 +32,7 @@ const reportBody = z.strictObject({
 /** An owner's yes or no on one note for one audience, optionally answering the card it came from (ring 1b). */
 const verdictBody = z.strictObject({
   noteKind: z.enum(["owner", "self"]),
-  noteId: z.string().min(1).max(64),
+  noteId: uuidParam,
   audienceId: uuidParam,
   share: z.boolean(),
   cardSeq: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),

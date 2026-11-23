@@ -475,7 +475,8 @@ const othersSchema = z
     judgeInputBytes: positive(9000, 200_000),
     judgeOutputTokens: positive(2200, 100_000),
     judgeOwnerExamples: z.number().int().min(0).max(50).default(4),
-    judgePollMs: positive(5000, 3_600_000),
+    // At least a second: below it the worker would poll the database in a tight loop.
+    judgePollMs: z.number().int().min(1000).max(3_600_000).default(5000),
     judgeOwnersPerPoll: positive(10, 1000),
     withheldInputBytes: positive(6000, 200_000),
     withheldCardsMax: positive(3, 50),

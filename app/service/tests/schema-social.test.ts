@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { useApp } from "./helpers/harness.ts";
 
@@ -104,6 +105,79 @@ describe("073: others' columns and the social skeleton", () => {
     await expect(db.query("update agents set others_answers = 0 where principal_id = $1", [agent])).rejects.toThrow(/check/);
     await db.query("update accounts set others_answers = 1000, others_points_micro = 1000000 where principal_id = $1", [owner]);
     await db.query("update agents set others_answers = 1 where principal_id = $1", [agent]);
+  });
+
+  // 073 is applied to a live site at the merge and can never be edited again, so this is the proof that it is inert: on tables with
+  // rows, whatever migration is the latest (the pattern of money-wallet.test.ts, 066's: split the file, run its Down, write the old
+  // code's rows, run its Up, all inside one transaction that is rolled back).
+  test("on populated tables nothing changes: every old row, the shape and the 20-point default are as they were (down, rows crossing 10 and 100, up; rolled back)", async () => {
+    const sql = readFileSync(new URL("../migrations/073_others_columns_and_social_skeleton.sql", import.meta.url), "utf8");
+    const [up, down] = sql.split("-- Down Migration");
+    const NEW_COLUMNS: Record<string, string[]> = {
+      accounts: ["others_answers", "others_points_micro", "others_notice_seen_at"],
+      agents: ["others_answers"],
+      agent_runs: ["admitted_at", "shown_notes", "withheld_notes"],
+    };
+    const client = await db.pool.connect();
+    const one = async (q: string, p: unknown[] = []) => (await client.query(q, p)).rows as Array<Record<string, any>>;
+    /** Count and a hash of every row of a table, its 073 columns left out. */
+    const rows = async () => {
+      const out: Record<string, unknown> = {};
+      for (const t of ["principals", "accounts", "agents", "conversations", "agent_runs", "memberships"]) {
+        out[t] = (await one(`select count(*)::int n, md5(coalesce(string_agg((to_jsonb(x) - $1::text[])::text, '|' order by (to_jsonb(x) - $1::text[])::text), '')) h from ${t} x`, [NEW_COLUMNS[t] ?? []]))[0];
+      }
+      return out;
+    };
+    /** Everything 073 could touch: columns with their defaults, the checks, the indexes. */
+    const shape = async () => ({
+      columns: await one(`select table_name t, column_name c, column_default d, is_nullable n from information_schema.columns where table_schema = 'public' order by 1, 2`),
+      checks: await one(`select conrelid::regclass::text t, conname, pg_get_constraintdef(oid) d from pg_constraint where connamespace = 'public'::regnamespace and contype = 'c' order by 1, 2`),
+      indexes: await one(`select indexname, indexdef from pg_indexes where schemaname = 'public' order by 1`),
+    });
+    try {
+      await client.query("begin");
+      const before = await shape();
+      await client.query(down!);
+      // The old code's rows: 105 people with accounts, 12 Agents (no budget, 5 points, the old default 20), 105 conversations of
+      // the three old types and 105 runs in every lane and with every old interruption.
+      const people: string[] = [];
+      for (let i = 0; i < 105; i++) {
+        await client.query(`insert into "user" (id, name, email, "emailVerified") values ($1::text, $1::text, $1::text || '@example.test', true)`, [`auth-usr_${i}`]);
+        const p = await one(`insert into principals (kind, handle, display_name, auth_user_id) values ('human', $1::citext, $1::text, 'auth-' || $1::text) returning id`, [`usr_${i}`]);
+        people.push(p[0]!.id);
+        await client.query(`insert into accounts (principal_id, balance_micro) values ($1, $2)`, [p[0]!.id, i * 1000]);
+      }
+      const agents: Array<{ id: string; owner: string }> = [];
+      for (let i = 0; i < 12; i++) {
+        const p = await one(`insert into principals (kind, handle, display_name, owner_id) values ('agent', $1::citext, $1::text, $2) returning id`, [`bot_${i}`, people[i % 3]]);
+        await client.query(`insert into agents (principal_id, others_budget_micro) values ($1, $2)`, [p[0]!.id, i % 4 === 0 ? null : i % 4 === 1 ? 20_000_000 : 5_000_000]);
+        agents.push({ id: p[0]!.id, owner: people[i % 3]! });
+      }
+      const reasons = [null, "agent_paused", "agent_deleted", "agent_removed", "halted"];
+      for (let i = 0; i < 105; i++) {
+        const c = await one(`insert into conversations (type, creator_id) values ($1, $2) returning id`, [["direct", "group", "agent"][i % 3], people[i]]);
+        const a = agents[i % 12]!;
+        await client.query(
+          `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, interrupted, lane) values ('reply', $1, $2, $3, 'done', $4, $5, $6)`,
+          [c[0]!.id, a.id, a.owner, i + 1, reasons[i % 5], ["own", "others", "proactive"][i % 3]],
+        );
+      }
+      const old = await rows();
+      expect(old).toMatchObject({ principals: { n: 117 }, accounts: { n: 105 }, agents: { n: 12 }, conversations: { n: 105 }, agent_runs: { n: 105 } });
+      await client.query(up!.replace("-- Up Migration", ""));
+      expect(await rows()).toEqual(old);
+      expect(await shape()).toEqual(before);
+      expect((await one(`select column_default d from information_schema.columns where table_name = 'agents' and column_name = 'others_budget_micro'`))[0]).toEqual({ d: "20000000" });
+      expect(
+        await one(`select (select count(*)::int from social_pairs) pairs, (select count(*)::int from agent_contacts) contacts,
+                          (select count(*)::int from agent_runs where admitted_at is not null or shown_notes is not null or withheld_notes is not null) runs,
+                          (select count(*)::int from accounts where others_answers is not null or others_points_micro is not null or others_notice_seen_at is not null) accounts,
+                          (select count(*)::int from agents where others_answers is not null) agents`),
+      ).toEqual([{ pairs: 0, contacts: 0, runs: 0, accounts: 0, agents: 0 }]);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
   });
 
   test("is inert: the skeleton is empty, and no existing row or default changed", async () => {

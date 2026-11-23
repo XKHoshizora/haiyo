@@ -103,7 +103,7 @@ describe("the stubs keep today's behaviour", () => {
 
   it("the note judge does nothing yet, and what lane A owns throws", async () => {
     const { owner, member, agent } = await world();
-    const judge = startNoteJudge({ db, config: app.deps.config, models: app.deps.models, log: app.log, inFlight: new Set(), conversations: app.deps.conversations }, { timer: false });
+    const judge = startNoteJudge({ db, config: app.deps.config, models: app.deps.models, log: app.log, inFlight: new Set(), conversations: app.deps.conversations, closing: new AbortController().signal }, { timer: false });
     expect(await judge.runOnce()).toBe(0);
     await judge.close();
     const t = db as never;

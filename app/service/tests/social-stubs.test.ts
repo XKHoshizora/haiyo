@@ -55,7 +55,7 @@ const STUBS: Stub[] = [
     method: "PUT",
     url: `/api/agents/${ID}/note-verdicts`,
     body: { noteKind: "owner", noteId: ID2, audienceId: ID, share: true, cardSeq: 3 },
-    bad: [{ body: {} }, { body: { noteKind: "other", noteId: ID2, audienceId: ID, share: true } }, { body: { noteKind: "self", noteId: ID2, audienceId: ID, share: "yes" } }],
+    bad: [{ body: {} }, { body: { noteKind: "owner", noteId: "not-a-uuid", audienceId: ID, share: true } }, { body: { noteKind: "other", noteId: ID2, audienceId: ID, share: true } }, { body: { noteKind: "self", noteId: ID2, audienceId: ID, share: "yes" } }],
   },
   { method: "POST", url: `/api/agents/${ID}/persona-facts/4`, body: { move: true }, bad: [{ body: {} }, { url: `/api/agents/${ID}/persona-facts/x`, body: { move: true } }] },
   // Lane B: accounts/others-routes.ts
@@ -92,7 +92,7 @@ describe("the route stubs of Agent social", () => {
         refused++;
       }
     }
-    expect(refused).toBe(27);
+    expect(refused).toBe(28);
   });
 
   it("answers 404 also over a seeded social conversation: the stubs read nothing", async () => {

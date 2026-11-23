@@ -790,7 +790,7 @@ describe("the Agent social configuration (SOCIAL, OTHERS, MEMORY.judgeModel)", (
   });
 
   test("a number out of range, an unknown key, a wrong type and bad JSON are refused naming the variable", () => {
-    for (const bad of ['{"toolCalls":0}', '{"toolCalls":1.5}', '{"answersPerDay":"50"}', '{"surprise":1}', "[]", "nope"]) expect(() => loadConfig({ ...base, OTHERS: bad }), bad).toThrow(/OTHERS/);
+    for (const bad of ['{"judgePollMs":999}', '{"toolCalls":0}', '{"toolCalls":1.5}', '{"answersPerDay":"50"}', '{"surprise":1}', "[]", "nope"]) expect(() => loadConfig({ ...base, OTHERS: bad }), bad).toThrow(/OTHERS/);
     for (const bad of ['{"enabled":"yes"}', '{"enabled":1}', '{"surprise":true}', "nope"]) expect(() => loadConfig({ ...base, SOCIAL: bad }), bad).toThrow(/SOCIAL/);
   });
 

@@ -2908,7 +2908,7 @@ in `cardSeq`. → 200 `{"ok": true}`.
 
 #### `POST /api/agents/:id/persona-facts/:seq`
 
-*Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1b): answers the `persona_fact` card at
+*Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
 message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
 
 #### `GET /api/me/others-use`

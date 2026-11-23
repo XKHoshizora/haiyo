@@ -22,7 +22,9 @@ export function canonicalNav(nav) {
 /** The section an address is in. */
 export const sectionOfPath = (path) => (path.startsWith("/contacts") ? "contacts" : path.startsWith("/agents") ? "agents" : path.startsWith("/settings") ? "settings" : "chat");
 
-export const SETTINGS_PAGES = ["profile", "providers", "usage", "memory", "blocks", "others"];
+// ("others", the use page of others' use of my Agents, is lane B's: it is an address once the page is drawn (B9a adds it here); until then
+// /settings/others is no address, as any unknown one.)
+export const SETTINGS_PAGES = ["profile", "providers", "usage", "memory", "blocks"];
 const ID = "[0-9a-zA-Z_-]{1,64}";
 
 /** `{path, overlay}` of the navigation `nav`; `overlay` is null or "details". */

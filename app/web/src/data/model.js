@@ -256,6 +256,8 @@ function metadata(entry) {
     canSend: entry.canSend ?? { ok: false, reason: "closed" },
     members: entry.members ?? [],
     createdAt: entry.createdAt ?? null,
+    // A social conversation: its participants and their Agents (`agent_social` only; nothing owner-only).
+    ...(entry.type === "agent_social" ? { social: entry.social ?? null } : {}),
   };
 }
 

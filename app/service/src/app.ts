@@ -594,11 +594,10 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   app.decorate("agentWorker", agentWorker);
   // Agent social's background worker: a handle that does nothing in Step 0 (lane A fills it in, A8b in ring 1a).
   const noteJudge = startNoteJudge(
-    { db: deps.db, config, models: deps.models, log: app.log, inFlight: memoryRuns, conversations: deps.conversations, realtime: app.realtime },
+    { db: deps.db, config, models: deps.models, log: app.log, inFlight: memoryRuns, conversations: deps.conversations, realtime: app.realtime, closing: memoryClosing.signal },
     options.noteJudgeTimer === false ? { timer: false } : {},
   );
   app.decorate("noteJudge", noteJudge);
-  app.addHook("onClose", async () => noteJudge.close());
   // The persona drafts this process is working on, by run id: the stale-run sweep leaves them alone, as it does the
   // worker's runs.
   const draftRuns = new Set<string>();
@@ -663,7 +662,13 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     // No review starts from here on, and a call under way is told it is abandoned before it is waited for.
     memory?.close();
     memoryClosing.abort();
+    // Agent social's worker is told to stop with the memory calls' signal (its calls are `memoryCall`s, which return at once once it
+    // is aborted) and is waited for as long as they are, before `endMemoryCalls()`.
+    const judgeClosed = within(noteJudge.close(), SHUTDOWN_GRACE_MS).then((ended) => {
+      if (!ended) app.log.warn(`the Agent social worker was not done within ${SHUTDOWN_GRACE_MS} ms of the stop; what it was doing is dropped`);
+    });
     await Promise.all([
+      judgeClosed,
       within(endDrafts(), SHUTDOWN_GRACE_MS).then((ended) => {
         if (!ended) app.log.warn(`persona drafts not ended within ${SHUTDOWN_GRACE_MS} ms of the stop; their runs stay running until the stale-run sweep or the next start releases them`);
       }),
