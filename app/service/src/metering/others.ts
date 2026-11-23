@@ -36,9 +36,22 @@ export interface OthersNumbers {
   pointsMicro: bigint;
 }
 
+/** An owner's two numbers: the account's own, else the config's (one reader: `othersNumbers` and the use route both call it). */
+export async function ownerNumbers(q: Queryable, config: Pick<Config, "others">, ownerId: string): Promise<OthersNumbers> {
+  const { rows } = await q.query<{ answers: number | null; points: string | null }>(
+    "select others_answers as answers, others_points_micro::text as points from accounts where principal_id = $1",
+    [ownerId],
+  );
+  const r = rows[0];
+  return {
+    answers: r?.answers ?? config.others.answersPerDay,
+    pointsMicro: r?.points == null ? BigInt(config.others.pointsPerDay) * MICRO_PER_POINT : BigInt(r.points),
+  };
+}
+
 /**
- * The numbers `othersFits` holds an Agent's others' replies to: the owner's (the account's own, else the config's), the
- * Agent's own sub-limits (null: none) and the Agent's proactive budget (a hard sub-cap since B1).
+ * The numbers `othersFits` holds an Agent's others' replies to: the owner's (`ownerNumbers`), the Agent's own sub-limits (null:
+ * none) and the Agent's proactive budget (a hard sub-cap since B1).
  */
 export async function othersNumbers(
   q: Queryable,
@@ -46,26 +59,15 @@ export async function othersNumbers(
   ownerId: string,
   agentId: string,
 ): Promise<{ owner: OthersNumbers; agent: { answers: number | null; pointsMicro: bigint | null }; proactiveMicro: bigint }> {
-  const { rows } = await q.query<{
-    owner_answers: number | null;
-    owner_points: string | null;
-    agent_answers: number | null;
-    agent_points: string | null;
-    proactive: string;
-  }>(
-    `select acc.others_answers as owner_answers, acc.others_points_micro::text as owner_points,
-            a.others_answers as agent_answers, a.others_budget_micro::text as agent_points, a.proactive_budget_micro::text as proactive
-       from agents a left join accounts acc on acc.principal_id = $1
-      where a.principal_id = $2`,
-    [ownerId, agentId],
+  const { rows } = await q.query<{ agent_answers: number | null; agent_points: string | null; proactive: string }>(
+    `select others_answers as agent_answers, others_budget_micro::text as agent_points, proactive_budget_micro::text as proactive
+       from agents where principal_id = $1`,
+    [agentId],
   );
   const r = rows[0];
   if (!r) throw new Error(`othersNumbers: ${agentId} is not an Agent`);
   return {
-    owner: {
-      answers: r.owner_answers ?? config.others.answersPerDay,
-      pointsMicro: r.owner_points === null ? BigInt(config.others.pointsPerDay) * MICRO_PER_POINT : BigInt(r.owner_points),
-    },
+    owner: await ownerNumbers(q, config, ownerId),
     agent: { answers: r.agent_answers, pointsMicro: r.agent_points === null ? null : BigInt(r.agent_points) },
     proactiveMicro: BigInt(r.proactive),
   };
@@ -296,20 +298,15 @@ export async function othersUsedByAgents(
   agentIds: readonly string[],
   now: Date,
 ): Promise<Map<string, AgentUse>> {
-  const from = siteDayStart(now, config.siteTimezone, 0);
-  const to = nextSiteMidnight(now, config.siteTimezone);
-  const { rows } = await q.query<{ id: string; answers: number; settled: string; held: string }>(
-    `select a.id,
-            (select count(distinct coalesce(r.retry_of, r.id))::int from agent_runs r
-              where r.agent_id = a.id and r.owner_id = $2 and r.purpose = 'reply' and r.lane = any($3::text[]) and r.admitted_at >= $4 and r.admitted_at < $5) as answers,
-            (select coalesce(sum(u.free_micro + u.balance_micro), 0)::text from usage_records u join agent_runs r on r.id = u.run_id
-              where u.agent_id = a.id and u.owner_id = $2 and u.created_at >= $4 and u.created_at < $5 and r.purpose = 'reply' and r.lane = 'others') as settled,
-            (select coalesce(sum(r.hold_micro), 0)::text from agent_runs r
-              where r.agent_id = a.id and r.owner_id = $2 and r.status = 'running' and r.purpose = 'reply' and r.lane = 'others') as held
-       from unnest($1::uuid[]) as a (id)`,
-    [agentIds, ownerId, OTHERS_LANES, from, to],
-  );
-  return new Map(rows.map((r) => [r.id, { answers: r.answers, pointsMicro: BigInt(r.settled) + BigInt(r.held) }]));
+  const out = new Map<string, AgentUse>();
+  // The same two functions enforcement counts with (`answersToday`, `pointsToday`): one definition of "used"; one Agent at a time
+  // (an owner has few), one query at a time (`q` may be a transaction's one connection).
+  for (const id of agentIds) {
+    const answers = await answersToday(q, config, ownerId, now, { agentId: id }, null);
+    const points = await pointsToday(q, config, ownerId, now, { agentId: id, lane: "others" }, null);
+    out.set(id, { answers: answers.answers, pointsMicro: points.settledMicro + points.heldMicro });
+  }
+  return out;
 }
 
 /** One person's calls on an owner's Agents today (`othersByPerson`). */
@@ -381,4 +378,24 @@ export function perDayEstimate(
   const plainCost = BigInt(PLAIN_COST_INPUT_TOKENS) * BigInt(site.inputMicroPerToken) + BigInt(PLAIN_COST_OUTPUT_TOKENS) * BigInt(site.outputMicroPerToken);
   const replies = plainCost === 0n ? answers : 1n + (points - plainHold) / plainCost;
   return Number(replies < answers ? replies : answers);
+}
+
+/**
+ * Whether another person's reply on `agent` would be refused NOW (the owner's page says 「已到上限」 from this, never from a comparison
+ * of its own): `othersCheck` (no lock; the function admission asks) at the smallest hold admission could accept, the plain one-call
+ * hold (`othersFloorHold` at 16 500 input tokens; nothing for a provider's own model, so only the answers refuse it). A `limit`
+ * verdict is reached; waiting behind others' holds (`heldBackBy`) is not. An Agent with no model, or a site model the site no longer
+ * has, is not asked: it fails for another reason.
+ */
+export async function agentReached(
+  q: Queryable,
+  config: Pick<Config, "others" | "siteTimezone" | "siteModels">,
+  agent: { id: string; ownerId: string; model: AgentModel },
+  now: Date,
+): Promise<boolean> {
+  if (agent.model === null) return false;
+  if (agent.model.source === "site" && !config.siteModels.some((m) => m.id === (agent.model as { id: string }).id)) return false;
+  const x = othersFloorHold(config, agent.model, PLAIN_REPLY_INPUT_TOKENS);
+  const verdict = await othersCheck(q, config, { id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "others" }, x, "admission", now);
+  return !verdict.ok && "limit" in verdict;
 }

@@ -155,7 +155,7 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 - `persona_fact` card: 「人格里这句话像是关于你或别人的事实：〈{sentence}〉。别人问起时可能被说出来。要移到“关于我”吗？」, buttons 「移到“关于我”」 / 「不用」.
 - Shown notes: 「以后别说」.
 - Limits: 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {70} 点」; per Agent 「以这个数，每天大约能回别人 {N} 次」; reached 「别人今天的使用已到上限」.
-- The one-time notice (B9b; Controller ruling 2026-11-24 (verification), N2): 「别人让你的 Agent 回复，现在按人算：你所有的 Agent 加起来，每天最多回别人 {answers} 次、最多花你 {points} 点。哪个 Agent 原来用的是默认的 20 点上限，它自己的上限已经提到 70 点。」, button 「知道了」.
+- The one-time notice (B9b; Controller ruling 2026-11-24 (verification), N2; amended by Controller ruling 2026-11-24 (B-2 review, I4), copy for the owner to confirm): 「别人让你的 Agent 回复，现在按人算：你所有的 Agent 加起来，每天最多回别人 {answers} 次、最多花你 {points} 点，没人叫它时的主动回复也算在里面。原来上限是 20 点的 Agent，它自己的上限和主动回复的上限都已经提到 70 点。」, button 「知道了」. True of 074: a limit of exactly 20 (the default, or an owner's own choice of 20) was raised in both columns; proactive replies count inside the shared numbers.
 - Use page: 「停止往来」 / 「恢复往来」. Agent page tab: 「别人」; list 「它和别人的对话」.
 
 **Lock order** (agents/store.ts:177, plus this plan):
@@ -209,7 +209,7 @@ The remaining 1a tasks fit around these.
 **The minimum for the first trial** (Controller ruling 2026-11-24 (verification), I15). Lane I may merge both lanes and start I1a and the trial as soon as these are in:
 - Step 0;
 - lane A: A0, A1, **A2** (the lookup), A3a, A3b, A4, **A9** (memory never reviews a social conversation), A11a, A12a;
-- lane B: B1, B2a, B2b, B3, B4 (074 must be in before any deploy that carries 075), **B5a** (the visitor sees the reply state), B6, B7a, **B7b** (until it lands a social run is offered tools under the own-conversation scope, port-impl.ts:785, reaching the Agent's own conversation), B8.
+- lane B: B1, B2a, B2b, B3, B4 (074 must be in before any deploy that carries 075), **B9a and B9b** (Controller ruling 2026-11-24 (B-2 review, I3): B4's wire replaces three fields the old web reads, so nothing of B4 deploys with the old web), **B5a** (the visitor sees the reply state), B6, B7a, **B7b** (until it lands a social run is offered tools under the own-conversation scope, port-impl.ts:785, reaching the Agent's own conversation), B8.
 
 The four in bold are the ones the verifier named beyond the slice. The rest of ring 1a merges at lane I after them. Every lane I merge deploys both lanes together.
 
@@ -1357,7 +1357,8 @@ alter table agents alter column others_budget_micro drop default;
 update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
 alter table agents alter column proactive_budget_micro set default 70000000;
 -- Down Migration
--- (the raises are not undone: a row at 70 cannot be told from one an owner set)
+-- (the raises are not undone: a row at 70 cannot be told from one an owner set. Agents made after Up keep a null others' number, which
+-- code from before 074 reads as no limit, and a null cannot be told from an owner's own choice of no limit, so Down leaves them.)
 alter table agents alter column others_budget_micro set default 20000000;
 alter table agents alter column proactive_budget_micro set default 20000000;
 ```
@@ -1373,8 +1374,9 @@ alter table agents alter column proactive_budget_micro set default 20000000;
 - `GET /api/me/others-use`:
   - `byPerson`: today's callers of the owner's others' runs, ordered by points, then answers, then id;
   - `stopped`: bars this owner set with reason `stopped` that are not `by_block`. **Controller ruling 2026-11-24 (final):** the list is empty until lane A's 075 is in (it creates `access_bars`). It is read only while `SOCIAL.enabled`, which is never on before 075 (Rollout), else `[]`. So the route never names a table lane B's branch lacks, and no control is shown that cannot work (B9a). Its end-to-end path is I1a.7 and I2a (M-V6);
+  - `reached` and `agents[].reached` (**Controller ruling 2026-11-24 (B-2 review, I1)**): what is shown is what admission does, from the same function. An Agent is `reached` when `othersCheck` (no lock) at the smallest hold admission could accept for it, the plain one-call hold (`othersFloorHold`, 16 500 input tokens; x = 0 for a provider's own model, so only the answers can refuse it), answers `limit` (a points `heldBackBy` is waiting, not reached; an Agent with no model is not asked). The owner's `reached` is true when the owner's answers are used up, or when the owner has live Agents and every one of them is `reached`, else, with no Agent, when settled plus held has reached the points. So `reached` is never false while every call would be refused.
   - `agents[].perDay = perDayEstimate(price, numbers)`: 0 when the binding points (the owner's, or the Agent's own lower number) do not cover one plain hold (16 500 bytes), else `min(answers, 1 + ⌊(points − plainHold) / plainCost⌋)` with `plainCost` = 5 000 input and 500 output tokens at the model's price. That is 50 for the free tier at 70 and 1 for the paid tier; a provider model gets the answers number;
-  - `notice`: true while `others_notice_seen_at` is null and the owner has an Agent (Controller ruling 2026-11-24, Q5).
+  - `notice`: true while `others_notice_seen_at` is null, the owner has an Agent and the account was made before 074 ran (`pgmigrations.run_on`): an owner who joined after the change is told nothing about a change they never had (Controller ruling 2026-11-24, Q5; B-2 review, M7).
 - `PUT /api/me/others-limits`, `POST /api/me/others-limits/seen`.
 
 - [ ] **Failing tests:**
@@ -1585,7 +1587,7 @@ The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(point
 
 ### Task B9b: Web: the Agent's numbers, the form, the one-time notice — Lane B
 
-**Files:** modify `W:src/pages/Agents.jsx` (`othersRows`; 「别人今天的使用已到上限」 on the card and the page; the notice), `W:src/pages/AgentForm.jsx` (:94–116, :167–197, :423–474), `W:src/data/viewmodel.js` (:723–729); fix `W:tests/agents-model.test.js`, `agents-pages.test.jsx`, `viewmodel.test.js`; create `W:tests/agent-form-others.test.jsx`.
+**Files:** modify `W:src/pages/Agents.jsx` (`othersRows`; 「别人今天的使用已到上限」 on the card and the page; the notice), `W:src/pages/AgentForm.jsx` (:33 and :35, the forms' defaults of 20 for the others' and the proactive number: the proactive default is now 70 and a new Agent sends no `othersBudget`; :94–116, :167–197, :423–474), `W:e2e/agents-proactive.spec.mjs` (:78, :87 pin the proactive "20"), `W:src/data/viewmodel.js` (:723–729); fix `W:tests/agents-model.test.js`, `agents-pages.test.jsx`, `viewmodel.test.js`; create `W:tests/agent-form-others.test.jsx`.
 
 **Produces:**
 - **The one-time notice** at the top of 我的 Agent while `notice`, worded by Exact copy, with 「知道了」 → `seenOthersNotice`. It is web UI, dismissed per account, never a chat event (Controller ruling 2026-11-24, Q5).
@@ -1599,7 +1601,7 @@ The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(point
   - its text is exactly Exact copy's, with the owner's two numbers, and it contains no 「不变」;
   - AgentForm sends `othersLimit` and never `othersBudget`;
   - a raised 70 shows as 70; clearing both fields sends `othersLimit: null`;
-  - the card says 「别人今天的使用已到上限」 when used ≥ limit.
+  - the card says 「别人今天的使用已到上限」 when the use route's `agents[].reached` for that Agent is true, and the page when `reached` is (Controller ruling 2026-11-24 (B-2 review, I1): what is shown is what admission does; never a comparison of used with limit made in the web).
 - [ ] Run → fails. Implement. `npm test`, `npm run build`; commit `feat(web): an Agent's own numbers and the step-L notice`.
 - [ ] **Push `lane/social-b` and read the run.**
 
@@ -1912,6 +1914,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
      Agents at the old default 20 points get 70 as a sub-limit (D9). Every owner has one 70-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final), "Design conflict for the owner"). Owners see the one-time notice, whose copy says the limit is now per person and that defaults were raised (N2).
    - **The proactive budget** (**Controller ruling 2026-11-24 (B-1 review)**). 074 also raises an Agent's proactive budget from 20 to 70 points where it still holds the old default, by the same rule as its others' number (every row at exactly 20 points), and sets the column's default to 70 for new Agents (Controller ruling 2026-11-24 (B-2 dispatch); an Agent's others' number, by contrast, keeps a null default: no sub-limit of its own). A paid-tier Agent at 70 can make a proactive reply plain (61.5 points) but not with tools (194.1): this number is the owner's to confirm, with the 70. The proactive judgement asks `othersFits` (the function admission asks, holds counted) before it spends a judgement, so a candidate whose cheapest possible reply cannot be admitted costs no judgement call and leaves no cancelled run. As built (B-1 re-review): "cheapest" is `proactivePlainFloor`, the plain hold through `othersHold` with the input known before the judgement (the tool-less system text as `begin` builds it from the persona, the group and the owner's name, without the conversation, the roster, the mark or the notes) and the others' output limit; the part not known is the conversation shown (at most the group's context cap of input at the model's input price), so a candidate between the floor and the real plain hold still costs one judgement and leaves a cancelled run if admission then refuses it.
+   - **The overlap** (B-2 review, M6): node-pg-migrate commits 074 on its own before 075 runs, and the new container migrates while the old one still serves. For that short window, and for as long as a failed 075 leaves the old container serving, the old code reads the raised 70 as an Agent's own soft budget with no owner cap, and creates Agents with an explicit 20. Accepted for the window; a deploy whose 075 fails is rolled back at once.
    - **While the switch is off**, the use page's stopped list is empty and no 停止往来 or 恢复往来 control is shown (Controller ruling 2026-11-24 (final); I10).
    - **Check on test.haiyo.org:** a member's @ answers within the numbers; the notice shows once; the use page lists today by person.
    - **The default of 70 points (and 50 answers) is still the owner's to confirm** before production (I7).

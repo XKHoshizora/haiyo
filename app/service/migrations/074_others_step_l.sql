@@ -17,6 +17,7 @@ alter table agents alter column others_budget_micro drop default;
 update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
 alter table agents alter column proactive_budget_micro set default 70000000;
 -- Down Migration
--- (the raises are not undone: a row at 70 cannot be told from one an owner set)
+-- (the raises are not undone: a row at 70 cannot be told from one an owner set. Agents made after Up keep a null others' number, which
+-- code from before 074 reads as no limit, and a null cannot be told from an owner's own choice of no limit, so Down leaves them.)
 alter table agents alter column others_budget_micro set default 20000000;
 alter table agents alter column proactive_budget_micro set default 20000000;
