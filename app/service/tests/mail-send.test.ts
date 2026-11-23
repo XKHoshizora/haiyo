@@ -7,7 +7,7 @@ import { createInvite } from "../src/auth/invites.ts";
 import { RESET_PASSWORD_TTL_SECONDS, VERIFY_EMAIL_TTL_SECONDS } from "../src/auth/mail-copy.ts";
 import { BACKOFF_SECONDS, REFUSED_PAUSE_MS, createMailSender, mailCounts } from "../src/auth/mail-sender.ts";
 import { mailPolicy, sendMail, type MailKind, type MailPolicy } from "../src/auth/mailer.ts";
-import { api, signUp } from "./helpers/actors.ts";
+import { api, signUp, TERMS } from "./helpers/actors.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
 
 const KEY = "re_test_key_that_must_never_be_printed";
@@ -401,7 +401,7 @@ describe("mail is really sent", () => {
   test("a registration answers as ever while delivery is down: the mail is only queued", async () => {
     script = Array.from({ length: 3 }, () => ({ status: 500 }));
     const code = await createInvite(db, { ttlHours: 1 });
-    const res = await api(app, null, "POST", "/api/register", { inviteCode: code, email: "new@example.test", password: "correct horse battery", displayName: "New", handle: "new_one" });
+    const res = await api(app, null, "POST", "/api/register", { inviteCode: code, email: "new@example.test", password: "correct horse battery", displayName: "New", handle: "new_one", ...TERMS });
     expect(res).toEqual({ status: 201, json: { ok: true } });
     expect(seen).toHaveLength(0);
     const { rows } = await db.query<{ status: string; deliver: boolean }>("select status, deliver from mail_outbox where kind = 'verify_email'");
@@ -503,7 +503,7 @@ describe("a per-address cap on mail", () => {
     try {
       const answers = [];
       for (let i = 0; i < 5; i++) {
-        answers.push(await api(open, null, "POST", "/api/register", { email: "again@example.test", password: "correct horse battery", displayName: "Again", handle: `again_${i}` }));
+        answers.push(await api(open, null, "POST", "/api/register", { email: "again@example.test", password: "correct horse battery", displayName: "Again", handle: `again_${i}`, ...TERMS }));
       }
       for (const r of answers) expect(r).toEqual(answers[0]);
       const rows = await counts("again@example.test", "verify_email");

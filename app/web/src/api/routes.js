@@ -14,13 +14,18 @@ function withQuery(path, query = {}) {
 }
 
 // ───────── auth
-export const register = (body) => request("POST", "/api/register", body); // {inviteCode?, email, password, displayName, handle}
+export const register = (body) => request("POST", "/api/register", body); // {inviteCode?, email, password, displayName, handle, termsVersion, privacyVersion, adult: true}
+/** The signed-in person accepts the terms and the privacy policy in force, 18+ declared → {termsAccepted: true}; 409 terms_outdated. */
+export const acceptTerms = (body) => request("POST", "/api/me/terms", body); // {termsVersion, privacyVersion, adult: true}
 export const signIn = (body) => request("POST", "/api/auth/sign-in/email", body); // {email, password, rememberMe?}
 export const signOut = () => request("POST", "/api/auth/sign-out");
 export const verifyEmail = (token) => request("GET", withQuery("/api/auth/verify-email", { token }));
 export const requestPasswordReset = (body) => request("POST", "/api/auth/request-password-reset", body); // {email, redirectTo?}
 export const resetPassword = (body) => request("POST", "/api/auth/reset-password", body); // {newPassword, token}
-/** No session needed. → {mailDelivered}: whether this site really sends mail (false: mail is only kept in its outbox). */
+/**
+ * No session needed. → {mailDelivered, termsRequired}: whether this site really sends mail (false: mail is only kept in its
+ * outbox), and whether registration asks for the terms (false while they are drafts: `LEGAL` off).
+ */
 export const getSite = () => request("GET", "/api/site");
 
 // ───────── me and principals

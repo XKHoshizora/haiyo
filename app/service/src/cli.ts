@@ -3,20 +3,22 @@ import { createBlobStore } from "./attachments/blob.ts";
 import { DEFAULT_UNSENT_AFTER_MINUTES, runSweep } from "./attachments/sweeper.ts";
 import { applyLedger, ensureAccount, formatPoints, lockAccount, parsePoints } from "./accounts/store.ts";
 import { mailCounts } from "./auth/mail-sender.ts";
-import { createInvite } from "./auth/invites.ts";
+import { MAX_INVITE_USES, createInvite, listInvites, revokeInvite } from "./auth/invites.ts";
 import { loadConfig } from "./config.ts";
 import { createDb, type Db } from "./db.ts";
 import { configureStats, formatStats, readStats } from "./memory/stats.ts";
 import { CHANGE_KEEP_DAYS, sweepMemoryChanges } from "./memory/sweep.ts";
 import { expireWhispers, removeOldWhispers, WHISPER_KEEP_DAYS, WHISPER_OPEN_DAYS } from "./whispers/store.ts";
 import { deliverReminders } from "./metering/reminders.ts";
+import { askHidden } from "./prompt.ts";
 import { runMigrations } from "./migrate.ts";
 
 loadDotenv({ quiet: true });
 
 const USAGE =
-  "usage: cli.ts migrate | invite:create [--ttl-hours <n>] | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
-  "credits:grant --handle <h> --points <n> [--note <text>] | credits:show --handle <h> | tier:set --handle <h> --tier <name> | models:list | memory:stats [--days <n>]";
+  "usage: cli.ts migrate | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
+  "credits:grant --handle <h> --points <n> [--note <text>] | credits:show --handle <h> | tier:set --handle <h> --tier <name> | models:list | memory:stats [--days <n>] | " +
+  "demo:seed --email <address> [--handle <h>] [--name <text>] (password from DEMO_PASSWORD or asked)";
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -64,9 +66,44 @@ if (command === "migrate") {
 } else if (command === "invite:create") {
   const ttlHours = Number(flag(args, "--ttl-hours") ?? 72);
   if (!Number.isFinite(ttlHours) || ttlHours <= 0) throw new Error("--ttl-hours must be a positive number");
+  const usesText = flag(args, "--uses") ?? "1";
+  const uses = /^[0-9]+$/.test(usesText) ? Number(usesText) : Number.NaN;
+  if (!Number.isInteger(uses) || uses < 1 || uses > MAX_INVITE_USES) {
+    throw new Error(`--uses must be a whole number from 1 to ${MAX_INVITE_USES}`);
+  }
   const db = createDb(databaseUrl());
   try {
-    console.log(await createInvite(db, { ttlHours }));
+    console.log(await createInvite(db, { ttlHours, uses }));
+  } finally {
+    await db.close();
+  }
+} else if (command === "invite:list") {
+  const db = createDb(databaseUrl());
+  try {
+    // Hash prefixes only, never a code (a code is shown once, when it is made).
+    const rows = await listInvites(db);
+    console.log("hash\tuses\texpires\tcreated\tstate");
+    const now = Date.now();
+    for (const r of rows) {
+      const state = r.revoked ? "revoked" : r.expiresAt.getTime() <= now ? "expired" : r.uses >= r.maxUses ? "used up" : "open";
+      console.log([r.hashPrefix, `${r.uses}/${r.maxUses}`, r.expiresAt.toISOString(), r.createdAt.toISOString(), state].join("\t"));
+    }
+  } finally {
+    await db.close();
+  }
+} else if (command === "invite:revoke") {
+  const prefix = requiredFlag(args, "--prefix").toLowerCase();
+  const db = createDb(databaseUrl());
+  try {
+    const result = await revokeInvite(db, prefix);
+    if (!result.ok) {
+      throw new Error(
+        result.reason === "ambiguous" ? "more than one code starts with that prefix; give more of it"
+        : result.reason === "not_found" ? "no code starts with that prefix"
+        : "--prefix must be at least 6 hex characters (see invite:list)",
+      );
+    }
+    console.log(`revoked ${result.hashPrefix}: no more sign-ups; accounts already made are untouched`);
   } finally {
     await db.close();
   }
@@ -179,6 +216,34 @@ if (command === "migrate") {
   // Prices are micro-points per token. The upstream key (apiKeyEnv) is deliberately never read or printed.
   for (const m of loadConfig().siteModels) {
     console.log(`${m.id}  "${m.label}"  tier ${m.tier}  protocol ${m.protocol}  in ${m.inputMicroPerToken}  out ${m.outputMicroPerToken}  (micro-points per token)`);
+  }
+} else if (command === "demo:seed") {
+  // The App Review account (src/demo.ts): made, or put back. The password comes from the operator and is never printed.
+  const email = requiredFlag(args, "--email");
+  const handle = flag(args, "--handle");
+  const name = flag(args, "--name");
+  const password = process.env.DEMO_PASSWORD || (process.stdin.isTTY ? await askHidden("Password for the demo account (not shown): ") : "");
+  if (!password) {
+    console.error("demo:seed needs the demo account's password: set DEMO_PASSWORD, or run it in a terminal to be asked (it is never printed)");
+    process.exit(1);
+  }
+  // Loaded here only: the other commands never load Better Auth or the Agents' code.
+  const { createAuth, createSessionEvents } = await import("./auth/auth.ts");
+  const { DemoRefused, seedDemo } = await import("./demo.ts");
+  const config = loadConfig();
+  const db = createDb(config.databaseUrl, { statementTimeoutMs: config.dbStatementTimeoutMs, acquireTimeoutMs: config.dbAcquireTimeoutMs });
+  // Better Auth's own errors, by their message only (it logs no secret; there is no request log here).
+  const auth = createAuth(config, db, createSessionEvents(), { error: ((what: unknown, msg?: string) => console.error(msg ?? String(what))) as never });
+  try {
+    const r = await seedDemo(db, config, auth, { email, password, ...(handle === undefined ? {} : { handle }), ...(name === undefined ? {} : { name }) });
+    console.log(`${r.created ? "made" : "put back"} the demo account ${r.email} (@${r.handle}): Agent @${r.agentHandle}, group "${r.groupTitle}"`);
+    if (r.model === null) console.log("warning: the site has no models (SITE_MODELS), so the demo Agent cannot reply");
+  } catch (err) {
+    if (!(err instanceof DemoRefused)) throw err;
+    console.error(`demo:seed refused: ${err.message}`);
+    process.exitCode = 1;
+  } finally {
+    await db.close();
   }
 } else if (command === "memory:stats") {
   // The memory counters (README "Memory counters"): counts only, no owner, conversation or text; days as columns.

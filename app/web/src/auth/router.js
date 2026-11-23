@@ -5,12 +5,14 @@ import { useSyncExternalStore } from "react";
 export const VERIFY_ERRORS = ["INVALID_TOKEN", "TOKEN_EXPIRED", "USER_NOT_FOUND", "INVALID_USER"];
 
 const SCREENS = { "/signin": "signin", "/register": "register", "/verify": "verify", "/forgot": "forgot", "/reset-password": "reset" };
+/** The public pages (src/legal/): open to anyone, signed in or not, whatever the session is doing. */
+const LEGAL = { "/terms": "terms", "/privacy": "privacy", "/contact": "contact" };
 const RESET_PATH = "/reset-password";
 
 const cleanPath = (pathname) => pathname.replace(/\/+$/, "") || "/";
 
 /**
- * @returns {{name: "signin"|"register"|"verify"|"forgot"|"reset"|"app", error?: string|null}}
+ * @returns {{name: "signin"|"register"|"verify"|"forgot"|"reset"|"legal"|"app", error?: string|null, doc?: "terms"|"privacy"|"contact"}}
  * The service's verification link redirects to `<origin>/` on success and `<origin>/?error=CODE` on failure
  * (the callbackURL given when the mail was made), so `/` with a known code is the failure landing; the sign-in
  * resend asks for `/verify` itself.
@@ -19,6 +21,7 @@ export function parseRoute({ pathname, search = "" }) {
   const path = cleanPath(pathname);
   const error = new URLSearchParams(search).get("error");
   if (path === "/" && VERIFY_ERRORS.includes(error)) return { name: "verify", error };
+  if (LEGAL[path]) return { name: "legal", doc: LEGAL[path] };
   const name = SCREENS[path];
   if (name === "verify") return { name, error };
   return { name: name ?? "app" };
@@ -26,11 +29,15 @@ export function parseRoute({ pathname, search = "" }) {
 
 /**
  * What to show for a route given the session: `{view}` or `{redirect}` (replace the address with that path).
- * `status` is "loading" | "in" | "out"; while loading nothing is decided, so neither screen flashes.
+ * `status` is "loading" | "in" | "terms" | "out"; while loading nothing is decided, so neither screen flashes (but a public page
+ * is shown at once). "terms": signed in, with the terms or the privacy policy of a version not yet accepted — every page of
+ * the app is the question (`accept`) until it is answered.
  */
 export function decide(route, status) {
+  if (route.name === "legal") return { view: "legal" };
   if (status === "loading") return { view: "loading" };
-  const signedIn = status === "in";
+  const signedIn = status === "in" || status === "terms";
+  if (status === "terms" && route.name === "app") return { view: "accept" };
   switch (route.name) {
     case "signin":
     case "register":

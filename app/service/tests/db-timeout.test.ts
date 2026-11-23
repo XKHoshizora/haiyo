@@ -3,7 +3,7 @@ import { abandonedAfterMs, holdBlob, sweepPendingBlobs } from "../src/attachment
 import { sweepOrphans } from "../src/attachments/store.ts";
 import { createInvite } from "../src/auth/invites.ts";
 import { loadConfig } from "../src/config.ts";
-import { api, befriend, signUp } from "./helpers/actors.ts";
+import { api, befriend, signUp, TERMS } from "./helpers/actors.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 import { CLOSING, destroyOpenRequests, multipart, MULTIPART, openRequest, partHead } from "./helpers/multipart.ts";
@@ -77,7 +77,7 @@ describe("the pool's statement timeout (DB_STATEMENT_TIMEOUT_MS)", () => {
 
   it("a registration whose account insert times out is 503 busy (not a 4xx), writes nothing and keeps the invite", async () => {
     const inviteCode = await createInvite(db, { ttlHours: 1 });
-    const body = { inviteCode, email: "late@example.test", password: "a good password", displayName: "Late", handle: "late_one" };
+    const body = { inviteCode, email: "late@example.test", password: "a good password", displayName: "Late", handle: "late_one", ...TERMS };
     // Reads of "user" go on (the e-mail check); Better Auth's insert waits on the lock until it times out.
     const unlock = await lockTable(`"user"`, "share");
     try {

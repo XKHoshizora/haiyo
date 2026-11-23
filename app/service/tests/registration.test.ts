@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { signJWT } from "better-auth/crypto";
 import { lockAccountEmail } from "../src/auth/accounts.ts";
 import { createInvite, hashInviteCode } from "../src/auth/invites.ts";
-import { api, mailLink, signIn, signUp } from "./helpers/actors.ts";
+import { api, mailLink, signIn, signUp, TERMS } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
 
 const PASSWORD = "correct horse battery";
@@ -14,7 +14,7 @@ describe("registering an e-mail that already has an account", () => {
 
   const invite = () => createInvite(db, { ttlHours: 1 });
   const register = (body: Record<string, unknown>) =>
-    api(app, null, "POST", "/api/register", { password: PASSWORD, displayName: "Probe", ...body });
+    api(app, null, "POST", "/api/register", { password: PASSWORD, displayName: "Probe", ...TERMS, ...body });
   const count = async (sql: string, params: unknown[] = []) => Number((await db.query<{ n: string }>(sql, params)).rows[0]!.n);
   /** `used`: consumed; `usedBy`: the principal it made, if one exists. */
   const inviteState = async (code: string) =>
@@ -41,23 +41,24 @@ describe("registering an e-mail that already has an account", () => {
   const notices = async (email: string) =>
     (await db.query<{ subject: string; body: string; html: string | null }>("select subject, body, html from mail_outbox where kind = 'registration_attempt' and recipient = $1", [email])).rows;
 
-  test("an invite holder learns nothing: whatever the e-mail, the invite is used up and every answer is the same", async () => {
+  test("an invite holder learns nothing: whatever the e-mail, the invite is untouched and every answer is the same", async () => {
     const verified = await signUp(app, "has_account");
     await pending("pending@example.test", "pending_one");
     const seen = [];
     for (const [i, email] of [verified.email, "pending@example.test", "nobody@example.test"].entries()) {
       const code = await invite();
       const probe = await register({ inviteCode: code, email, handle: `probe_${i}` });
-      // The adversarial review's check: the same invite again, with a taken handle.
+      // The adversarial review's check: the same invite again, with a taken handle. A sign-up takes no use, so it
+      // is still usable whatever the first e-mail was: the answer says nothing about that e-mail.
       const check = await register({ inviteCode: code, email: `check${i}@example.test`, handle: verified.handle });
       seen.push({ probe, check, used: (await inviteState(code))!.used });
     }
-    expect(seen[0]).toEqual({ probe: CREATED, check: { status: 400, json: { error: "invalid_invite" } }, used: true });
+    expect(seen[0]).toEqual({ probe: CREATED, check: { status: 409, json: { error: "handle_taken" } }, used: false });
     expect(seen[1]).toEqual(seen[0]);
     expect(seen[2]).toEqual(seen[0]);
   });
 
-  test("a verified account is left as it is; its owner gets at most one notice an hour; the invite is used up", async () => {
+  test("a verified account is left as it is; its owner gets at most one notice an hour; the invite is untouched", async () => {
     const owner = await signUp(app, "the_owner");
     const snapshot = () =>
       db.query(
@@ -70,7 +71,7 @@ describe("registering an e-mail that already has an account", () => {
     expect(await register({ inviteCode: code, email: owner.email.toUpperCase(), handle: "squatter" })).toEqual(CREATED);
     expect((await snapshot()).rows).toEqual(before);
     expect(await count("select count(*) n from principals")).toBe(1);
-    expect(await inviteState(code)).toEqual({ usedBy: null, used: true });
+    expect(await inviteState(code)).toEqual({ usedBy: null, used: false });
     const [notice, ...more] = await notices(owner.email);
     expect(more).toEqual([]);
     expect(notice!.subject).toBe("有人尝试用你的邮箱注册 Haiyo");
@@ -79,11 +80,11 @@ describe("registering an e-mail that already has an account", () => {
     // No verification mail: nothing was created.
     expect(await count("select count(*) n from mail_outbox where kind = 'verify_email' and recipient = $1", [owner.email])).toBe(1);
 
-    // More attempts within the hour: still answered and still using up their invites, but no more mail.
+    // More attempts within the hour: still answered, and their invites still untouched, but no more mail.
     for (const handle of ["squatter_2", "squatter_3"]) {
       const next = await invite();
       expect(await register({ inviteCode: next, email: owner.email, handle })).toEqual(CREATED);
-      expect((await inviteState(next))!.used).toBe(true);
+      expect((await inviteState(next))!.used).toBe(false);
     }
     expect(await notices(owner.email)).toHaveLength(1);
     // An hour after the last notice there may be another.
@@ -119,8 +120,11 @@ describe("registering an e-mail that already has an account", () => {
     for (const table of [`"user" where id`, `"account" where "userId"`, `"session" where "userId"`, `"verification" where value`]) {
       expect([table, await count(`select count(*) n from ${table} = $1`, [old.userId])]).toEqual([table, 0]);
     }
-    expect(await inviteState(firstCode)).toEqual({ usedBy: null, used: true });
-    expect(await inviteState(code)).toEqual({ usedBy: now!.principalId, used: true });
+    // Replacing costs the code nothing and leaves one note: the old account's note went with it.
+    expect(await inviteState(firstCode)).toEqual({ usedBy: null, used: false });
+    expect(await inviteState(code)).toEqual({ usedBy: null, used: false });
+    expect(await count("select count(*) n from pending_invites where principal_id = $1", [now!.principalId])).toBe(1);
+    expect(await count("select count(*) n from pending_invites where code_hash = $1", [hashInviteCode(firstCode)])).toBe(0);
 
     // The replaced account's verification and reset links do nothing.
     const stale = await app.inject({ method: "GET", url: staleLink });
@@ -186,24 +190,25 @@ describe("registering an e-mail that already has an account", () => {
       expect([what, res]).toEqual([what, { status: 500, json: { error: "internal" } }]);
       expect([what, await accountOf(email)]).toEqual([what, [old]]);
       expect([what, (await inviteState(code))!.used]).toEqual([what, false]);
+      // Nothing of the refused registration is left: the old account keeps its note, the new code has none.
+      expect([what, await count("select count(*) n from pending_invites where principal_id = $1", [old.principalId])]).toEqual([what, 1]);
+      expect([what, await count("select count(*) n from pending_invites where code_hash = $1", [hashInviteCode(code)])]).toEqual([what, 0]);
     }
   });
 
-  test("eight registrations racing for one invite: exactly one is made, whatever the e-mails", async () => {
+  test("eight registrations racing on one invite all answer 201 and none takes it; each new address gets one account", async () => {
     const owner = await signUp(app, "race_owner");
     await pending("race_pending@example.test", "race_pending");
     for (let round = 0; round < 4; round++) {
-      const code = await invite();
+      const code = await createInvite(db, { ttlHours: 1, uses: 8 });
       const emails = [owner.email, "race_pending@example.test", ...Array.from({ length: 6 }, (_, i) => `race${round}_${i}@example.test`)];
       const handles = emails.map((_, i) => `race${round}_${i}`);
       const results = await Promise.all(emails.map((email, i) => register({ inviteCode: code, email, handle: handles[i] })));
-      const won = results.flatMap((r, i) => (r.status === 201 ? [i] : []));
-      expect(won).toHaveLength(1);
-      for (const [i, r] of results.entries()) if (i !== won[0]) expect(r).toEqual({ status: 400, json: { error: "invalid_invite" } });
-      expect((await inviteState(code))!.used).toBe(true);
-      // The winner made an account unless its e-mail was the verified owner's.
+      expect(results).toEqual(emails.map(() => CREATED));
+      expect((await inviteState(code))!.used).toBe(false);
+      // The verified owner's address makes nothing; every other one makes exactly one account.
       const made = await count("select count(*) n from principals where handle = any($1::text[])", [handles]);
-      expect(made).toBe(won[0] === 0 ? 0 : 1);
+      expect(made).toBe(emails.length - 1);
     }
     expect(await accountOf(owner.email)).toMatchObject([{ verified: true, handle: owner.handle }]);
     expect(await accountOf("race_pending@example.test")).toHaveLength(1);
@@ -220,7 +225,8 @@ describe("registering an e-mail that already has an account", () => {
       expect(accounts).toHaveLength(1);
       expect(handles).toContain(accounts[0]!.handle);
       expect(await count("select count(*) n from principals where handle = any($1::text[])", [handles])).toBe(1);
-      for (const code of codes) expect((await inviteState(code))!.used).toBe(true);
+      for (const code of codes) expect((await inviteState(code))!.used).toBe(false);
+      expect(await count("select count(*) n from pending_invites where code_hash = any($1::text[])", [codes.map(hashInviteCode)])).toBe(1);
     }
   });
 

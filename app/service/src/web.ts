@@ -7,7 +7,7 @@ import { notFound } from "./errors.ts";
 
 declare module "fastify" {
   interface FastifyContextConfig {
-    /** Set on the web client's route, so `app.routeList` (the API) can leave it out. */
+    /** Set on the routes that serve the site's files, not the API (the web client's, src/app-links.ts), so `app.routeList` (the API) can leave them out. */
     webClient?: boolean;
   }
 }

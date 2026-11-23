@@ -1,3 +1,4 @@
+import { createPrivateKey } from "node:crypto";
 import { isIP } from "node:net";
 import path from "node:path";
 import { z } from "zod";
@@ -53,7 +54,7 @@ export type ReasoningAllowance = Readonly<Record<ThinkingLevel, number>>;
 export const DEFAULT_REASONING_ALLOWANCE: ReasoningAllowance = { low: 2000, medium: 6000, high: 12000, xhigh: 24000, max: 48000 };
 
 /** The service's own secrets: a site model's `apiKeyEnv` may not name one (its value would be sent upstream as a key). */
-export const SERVICE_SECRET_VARIABLES = ["DATABASE_URL", "AUTH_SECRET", "PROVIDER_KEY_SECRET", "S3_SECRET_ACCESS_KEY", "S3_ACCESS_KEY_ID", "RESEND_API_KEY"] as const;
+export const SERVICE_SECRET_VARIABLES = ["DATABASE_URL", "AUTH_SECRET", "PROVIDER_KEY_SECRET", "S3_SECRET_ACCESS_KEY", "S3_ACCESS_KEY_ID", "RESEND_API_KEY", "APNS_KEY_P8"] as const;
 
 /** A model the site itself offers. `apiKeyEnv` names the environment variable holding the upstream key. */
 export interface SiteModel {
@@ -410,6 +411,24 @@ const agentsSchema = z.strictObject({
   autoRetryDelaysMs: z.array(z.number().int().min(0).max(600_000)).max(2).default([20_000, 120_000]),
 });
 
+/**
+ * Whether the site requires its terms of service and privacy policy (`LEGAL`; README "Accounts and sessions", Terms;
+ * src/legal.ts). Off by default: while the texts are drafts the owner has not approved, nobody is asked to accept them.
+ */
+export interface LegalConfig {
+  /**
+   * True: registration needs the acceptance and the 18+ declaration, every signed-in route answers 403 `terms_required`
+   * until the versions in force are accepted, and the web asks. False: nothing of it (the pages stay public; an acceptance
+   * sent is not recorded at registration, `POST /api/me/terms` still records one). Turn it on only after the owner has filled
+   * the placeholders and approved the texts.
+   */
+  required: boolean;
+}
+
+const legalSchema = z.strictObject({
+  required: z.boolean().default(false),
+});
+
 /** `WHISPERS` unset: every default. */
 export const DEFAULT_WHISPERS: Readonly<WhispersConfig> = Object.freeze(whispersSchema.parse({}));
 
@@ -747,6 +766,8 @@ const envSchema = z.object({
   WHISPERS: jsonVariable(whispersSchema, whispersSchema.parse({})),
   /** JSON object of how failed replies are tried again by the system (see AgentsConfig); unset or empty: the default. */
   AGENTS: jsonVariable(agentsSchema, agentsSchema.parse({})),
+  /** JSON object of whether the terms and the privacy policy are required (see LegalConfig); unset or empty: not required. */
+  LEGAL: jsonVariable(legalSchema, legalSchema.parse({})),
   BLOB_DIR: z.string().min(1).default("./data/blobs"),
   /** Directory with the built web client (index.html and /assets); unset: the service serves no web files. */
   WEB_DIST: optionalString,
@@ -823,7 +844,79 @@ const envSchema = z.object({
     .pipe(z.number().max(1440, "SWEEP_INTERVAL_MINUTES must be at most 1440 (one day)")),
   /** A search's statements are cancelled after this long (503 busy). */
   SEARCH_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
+  // The iOS app's four (`appleSettings` checks them): none of them ever stops the start — a chat service must not fail to
+  // boot because of a push key; a malformed one switches off what needs it, and a warning at start names it.
+  /** The iOS app's Team ID at Apple (10 capitals and digits): the universal-links file and the push token's issuer. */
+  APPLE_TEAM_ID: optionalString,
+  /** The iOS app's bundle id (reverse DNS, e.g. `org.haiyo.app`): the universal-links file and the push topic. */
+  APPLE_BUNDLE_ID: optionalString,
+  /** The Key ID of the APNs signing key (10 capitals and digits). */
+  APNS_KEY_ID: optionalString,
+  /** A secret (one of `SERVICE_SECRET_VARIABLES`): the APNs signing key, the `.p8` file's PEM text. Never logged, never kept malformed. */
+  APNS_KEY_P8: optionalString,
 });
+
+/** The iOS app at Apple (README "Push notifications", Deployment "Universal links"). */
+export interface AppleConfig {
+  /** `APPLE_TEAM_ID` and `APPLE_BUNDLE_ID` both set: the app, and `/.well-known/apple-app-site-association` is served; else null. */
+  app: { teamId: string; bundleId: string } | null;
+  /**
+   * Token-based APNs (src/push/apns.ts) — the token's issuer, the topic (the bundle id), the key's id and its PEM — when all
+   * four variables are set; else null, and no push is sent (nothing else changes). `keyPem` is a secret: never print this.
+   */
+  push: { teamId: string; topic: string; keyId: string; keyPem: string } | null;
+  /** Which of Apple's variables are unset when at least one of them is set (one line at start says so); empty when none is set. */
+  missing: string[];
+  /** Which are set but malformed — taken as unset, never a refused start; the same line names them (never their values). */
+  malformed: string[];
+}
+
+/**
+ * `APNS_KEY_P8` as the PEM it holds — also when pasted on one line with `\n` escapes —, or null when it is no P-256 private
+ * key (APNs signs with ES256 only). Nothing of a value that fails is kept or repeated.
+ */
+function apnsKeyPem(raw: string): string | null {
+  const pem = raw.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").trim();
+  try {
+    const key = createPrivateKey(pem);
+    return key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails?.namedCurve === "prime256v1" ? pem : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The shape each of Apple's ids must have (the key is checked by `apnsKeyPem`). */
+const APPLE_ID_SHAPES: Readonly<Record<"APPLE_TEAM_ID" | "APPLE_BUNDLE_ID" | "APNS_KEY_ID", RegExp>> = {
+  APPLE_TEAM_ID: /^[A-Z0-9]{10}$/,
+  APPLE_BUNDLE_ID: /^(?=.{1,155}$)[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/,
+  APNS_KEY_ID: /^[A-Z0-9]{10}$/,
+};
+
+/**
+ * The app at Apple from its variables: both identifiers make the app (its universal links); those and the key's id and key
+ * make the pushes. Nothing here stops the start: a missing variable is named in `missing`, a malformed one is taken as unset
+ * and named in `malformed` (one warning at start, src/push/notify.ts).
+ */
+function appleSettings(e: { APPLE_TEAM_ID?: string | undefined; APPLE_BUNDLE_ID?: string | undefined; APNS_KEY_ID?: string | undefined; APNS_KEY_P8?: string | undefined }): AppleConfig {
+  const given = { APPLE_TEAM_ID: e.APPLE_TEAM_ID, APPLE_BUNDLE_ID: e.APPLE_BUNDLE_ID, APNS_KEY_ID: e.APNS_KEY_ID, APNS_KEY_P8: e.APNS_KEY_P8 };
+  const unset = Object.entries(given).filter(([, v]) => v === undefined).map(([k]) => k);
+  const malformed: string[] = [];
+  const valid = (name: keyof typeof APPLE_ID_SHAPES): string | undefined => {
+    const v = given[name];
+    if (v === undefined) return undefined;
+    if (APPLE_ID_SHAPES[name].test(v)) return v;
+    malformed.push(name);
+    return undefined;
+  };
+  const teamId = valid("APPLE_TEAM_ID");
+  const bundleId = valid("APPLE_BUNDLE_ID");
+  const keyId = valid("APNS_KEY_ID");
+  const keyPem = e.APNS_KEY_P8 === undefined ? undefined : (apnsKeyPem(e.APNS_KEY_P8) ?? undefined);
+  if (e.APNS_KEY_P8 !== undefined && keyPem === undefined) malformed.push("APNS_KEY_P8");
+  const app = teamId !== undefined && bundleId !== undefined ? { teamId, bundleId } : null;
+  const push = app && keyId !== undefined && keyPem !== undefined ? { teamId: app.teamId, topic: app.bundleId, keyId, keyPem } : null;
+  return { app, push, missing: unset.length === Object.keys(given).length ? [] : unset, malformed };
+}
 
 export interface Config {
   databaseUrl: string;
@@ -892,6 +985,8 @@ export interface Config {
   whispers: WhispersConfig;
   /** How a reply that failed for a passing reason is tried again by the system. */
   agents: AgentsConfig;
+  /** Whether the terms and the privacy policy are required. */
+  legal: LegalConfig;
   blobDir: string;
   /** Absolute path of the built web client to serve, or undefined to serve none. */
   webDist: string | undefined;
@@ -936,6 +1031,8 @@ export interface Config {
   searchStatementTimeoutMs: number;
   /** Minutes between the in-process attachment sweeps; 0: none (run `attachments:sweep` by hand). */
   sweepIntervalMinutes: number;
+  /** The iOS app at Apple: its universal-links file and its pushes. */
+  apple: AppleConfig;
 }
 
 /** How long before the server closes an idle connection a persona draft must have answered on it. */
@@ -1064,6 +1161,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     allowance: e.ALLOWANCE,
     whispers: e.WHISPERS,
     agents: e.AGENTS,
+    legal: e.LEGAL,
     blobDir: e.BLOB_DIR,
     webDist: e.WEB_DIST === undefined ? undefined : path.resolve(e.WEB_DIST),
     port: e.PORT,
@@ -1098,5 +1196,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     dbAcquireTimeoutMs: e.DB_ACQUIRE_TIMEOUT_MS,
     searchStatementTimeoutMs: e.SEARCH_STATEMENT_TIMEOUT_MS,
     sweepIntervalMinutes: e.SWEEP_INTERVAL_MINUTES,
+    apple: appleSettings(e),
   };
 }

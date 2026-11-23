@@ -36,6 +36,14 @@ export function backdateMessage(conversationId, seq, days) {
 }
 
 /**
+ * Forgets what person `principalId` accepted (the service's `terms_acceptances`), as for an account made before the terms:
+ * their next sign-in asks again. Resolves with how many acceptances there were.
+ */
+export function forgetTermsAcceptance(principalId) {
+  return withDatabase(async (client) => (await client.query("delete from terms_acceptances where principal_id = $1", [principalId])).rowCount);
+}
+
+/**
  * Gives an Agent's stored reply `seq` of `conversationId` what a reply whose run searched the web keeps beside its text
  * (`webSources`, `webCites`; the service's agents/tools/web), straight in its body: how a spec shows such a reply without
  * turning the web search on for the shared service (and without any engine). Resolves once it is written.

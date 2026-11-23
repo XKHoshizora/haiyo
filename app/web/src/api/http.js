@@ -27,7 +27,16 @@ export class ApiError extends Error {
 
 const AUTH_PREFIX = "/api/auth/";
 let onUnauthenticated = null;
+let onTermsRequired = null;
 let sessionEpoch = 0;
+
+/**
+ * Registers the function called for every 403 `terms_required` of this session (the service's answer to any signed-in
+ * request while the account has not accepted the terms and the privacy policy in force). Pass null to clear.
+ */
+export function setTermsRequiredHandler(fn) {
+  onTermsRequired = typeof fn === "function" ? fn : null;
+}
 
 /** A new session or the end of one: 401s of requests that started before this are about the old session. */
 export function bumpSessionEpoch() {
@@ -134,6 +143,13 @@ function apiErrorOf(status, data, path, epoch) {
       onUnauthenticated(error);
     } catch {
       /* the handler must never replace the ApiError */
+    }
+  }
+  if (status === 403 && code === "terms_required" && onTermsRequired && epoch === sessionEpoch) {
+    try {
+      onTermsRequired(error);
+    } catch {
+      /* as above */
     }
   }
   return error;

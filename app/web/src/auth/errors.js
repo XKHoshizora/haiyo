@@ -3,8 +3,12 @@
 const MESSAGES = {
   invalid_email_or_password: "邮箱或密码不对，请再试一次。",
   email_not_verified: "这个邮箱还没有验证。我们刚刚又发了一封验证邮件，请查收后再登录。",
-  invalid_invite: "邀请码无效或已过期，请向邀请你的人确认。",
+  invalid_invite: "邀请码无效、已过期或已用完，请向邀请你的人确认。",
   handle_taken: "这个账号名已被占用，换一个试试。",
+  // The page is older than the terms or the privacy policy in force (POST /api/register, POST /api/me/terms).
+  terms_outdated: "条款刚刚更新了，请刷新页面后再试。",
+  // A registration sent without the two boxes, on a site that asks for them (POST /api/register): the page shows them now.
+  terms_required: "请先勾选下面两项，再注册。",
   rate_limited: "操作太频繁了，请稍等一分钟再试。",
   invalid_token: "链接无效或已过期，请重新申请。",
   invalid_email: "邮箱格式不正确",
@@ -38,6 +42,7 @@ export const fieldOf = (code) => FIELDS[code] ?? null;
 
 const VERIFY_MESSAGES = {
   TOKEN_EXPIRED: "验证链接已过期。请直接登录，我们会重新发送一封验证邮件。",
+  INVITE_USED_UP: "这个邀请码的名额已经用完。",
 };
 export const VERIFY_FALLBACK = "验证链接无效或已被使用。如果还没验证，请直接登录，我们会重新发送一封验证邮件。";
 

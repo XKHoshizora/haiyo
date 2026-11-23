@@ -599,6 +599,25 @@ describe("the holds and allowance configuration", () => {
   });
 });
 
+describe("the terms configuration (LEGAL)", () => {
+  test("unset or empty: the terms and the privacy policy are not required (the texts are drafts until the owner approves them)", () => {
+    expect(loadConfig(base).legal).toEqual({ required: false });
+    expect(loadConfig({ ...base, LEGAL: "" }).legal).toEqual({ required: false });
+    expect(loadConfig({ ...base, LEGAL: "{}" }).legal).toEqual({ required: false });
+  });
+
+  test("turned on: required", () => {
+    expect(loadConfig({ ...base, LEGAL: '{"required":true}' }).legal).toEqual({ required: true });
+    expect(loadConfig({ ...base, LEGAL: '{"required":false}' }).legal).toEqual({ required: false });
+  });
+
+  test("a string, a number, an unknown key and bad JSON refuse", () => {
+    for (const bad of ['{"required":"true"}', '{"required":1}', '{"enabled":true}', "[]", "true", "nope"]) {
+      expect(() => loadConfig({ ...base, LEGAL: bad }), bad).toThrow(/LEGAL/);
+    }
+  });
+});
+
 describe("the whispers configuration", () => {
   test("unset or empty: a found-elsewhere whisper expires 24 hours after it was made", () => {
     expect(loadConfig(base).whispers).toEqual({ elsewhereTtlHours: 24 });

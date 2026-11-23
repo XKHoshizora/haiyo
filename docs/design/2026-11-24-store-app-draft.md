@@ -317,7 +317,7 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
 | S2 条款、隐私、联系；注册时同意和 18+ 声明 | 三个公开页；记版本 | 主人认可文本 | **能**（`register.ts`、`Settings.jsx`、新页面） | 1.5 |
 | S3 第三方 AI 同意与撤回 | 记同意、能撤回、撤回后的处理 | S2（同一个同意流程）；主人定口径 | **要协调**：把某人的发言排除出 Agent 上下文要动 `agents/context.ts` 和记忆，是 harness 的地方 | 2.5 |
 | S4 举报与过滤 | 复用社交设计的 `agent_reports`；词表过滤 | 社交设计的举报表 | **要协调**：表只建一次，谁先做谁照社交设计建 | 2.5 |
-| S5 推送设备与 APNs 发送 | `push_devices`、发送器、按会话判断 | 无（角标数等 S6，先发不带数的） | **能**（新文件；只在 `hub.ts` 的 `onMessages` 挂一处） | 3 |
+| S5 推送设备与 APNs 发送 | `push_devices`、发送器、按会话判断 | 无（角标数等 S6，先发不带数的） | **能**（新文件；单独订阅 `onMessages`，hub 只加 `hasSocketFor` 和 `probe` 两个方法） | 3 |
 | S6 服务端未读数（角标） | 和网页同一规则的未读总数 | 社交道 3(a)（它要改未读） | **排在社交道 3(a) 之后**，或者并进那一道 | 1 |
 | S7 删除账号 | 28 个限制外键、社交新表、磁盘上的文件 | 钱包道和社交道的表都合进来以后 | **最后做**；守卫测试可以先放 | 3.5 |
 | S8 演示账号 | 生产环境给审核用的账号 | S2、S3（演示账号也走同意） | **能** | 1 |
@@ -329,8 +329,9 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
 
 - 现状：`web.ts` 的 `segmentsOf` 遇到以 `.` 开头的段就返回 null；最后一段又没有扩展名，于是回落成 `index.html`。所以 `/.well-known/apple-app-site-association` 现在返回的是网页。
 - 做法：在通配路由之前单独注册一条 `GET /.well-known/apple-app-site-association`。
-  - 内容由配置 `APPLE_APP_ID`（`<Team ID>.<bundle id>`，不是密钥）生成；
-  - `content-type: application/json`；不重定向；没配就返回 JSON 404。
+  - 内容由配置 `APPLE_TEAM_ID` 和 `APPLE_BUNDLE_ID`（都不是密钥）生成，文件里写成 `<APPLE_TEAM_ID>.<APPLE_BUNDLE_ID>`；这两个变量推送也用（S5）；
+  - `content-type: application/json`；不重定向；没配（或格式不对）就返回 JSON 404。
+  - （已建，lane storepush）只在 `.well-known` 下提供，根路径不提供：苹果现行文档只写了这个地址。
   - 路径：`/chat/*`、`/reset-password*`；排除 `/api/*`。验证邮箱的链接先到 `/api/auth/verify-email`（在排除之列），照旧用浏览器打开。
 - 苹果经自己的 CDN 去取这个文件 [T11]。
 - 测试：返回 JSON 而不是 HTML；没配时 404；HEAD 也对。
@@ -386,31 +387,37 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
 
 ### S5 推送设备与 APNs 发送（3）
 
-- 新表 `push_devices`：
+（已建，lane storepush；细节以 `app/service/README.md` 的 “Push notifications” 为准。）
+
+- 新表 `push_devices`（迁移 070）：
   - `id`；
   - `principal_id`（→ principals，删除时级联）；
-  - `session_id`（→ Better Auth 的 `session`，删除时级联：退出登录或会话结束，设备就跟着没了）；
+  - `session_id`（唯一，→ Better Auth 的 `session`，删除时级联：退出登录、改密码、注销账号，设备就跟着没了；会话过期的，由定期清理删掉）；
   - `token`（唯一）、`env`（sandbox / production）、`app_version`；
-  - `created_at`、`last_seen_at`、`disabled_at`。
+  - `created_at`、`last_seen_at`。没有 `disabled_at`：令牌失效就删掉那一行。
 - 接口：
   - `POST /api/push/devices { token, env, appVersion }`：绑定到当前会话；按令牌 upsert，换账号或换会话就改绑。
   - `DELETE /api/push/devices/current`。
-- 发给谁：在 `hub.ts:389` 的 `onMessages`，消息存好以后——
-  - 每个人类成员，发送者自己除外；
-  - 和发送者之间有拉黑（任一方向）的跳过；
+- 发给谁：单独订阅 `ConversationEvents.onMessages`（就是 hub 收消息的那个通知，不改 hub 的投递），消息存好以后——
+  - 每个看得见这条消息的当前成员，发送者自己除外；
+  - 和发送者之间有拉黑（任一方向）的跳过；Agent 发的消息按它主人的拉黑算；
   - 不计入未读的跳过（系统消息、Agent 的确认）；
-  - 这个人的每台设备：**它的会话在 `bySession`（`hub.ts:141`）里没有活着的 socket**，就发。
+  - 这个人的每台设备：**它自己的会话在 hub 上没有打开的 socket（`Hub.hasSocketFor`），或者有但 3 秒内不回 ping（`Hub.probe`）**，就发。
+  - 同一台设备、同一个会话，上一条推送还没处理完时再来的消息不再单独推（合并）。
 - 为什么按会话：同一个人桌面浏览器开着、手机应用在后台时，手机也要收到推送。按“这个人在不在线”判断就会漏掉（评审指出的）。
-- 壳暂停时网页主动关掉自己的 socket（S9），服务端立刻知道它没了。不这样做，挂起的应用的 socket 会“看起来还活着”一段时间，推送就被跳过（评审指出的）。现有心跳每 30 秒一次（`hub.ts:29`），不回应的连接要到下一次心跳才清掉，也就是 30–60 秒。
+- 壳暂停时网页主动关掉自己的 socket（S9），服务端立刻知道它没了。关闭没送出去就被挂起的，socket 在服务端还“开着”但回不了 ping：探一下，3 秒没回就照发（晚 3 秒，不会丢）。不用改客户端。
 - 发送：
-  - `node:http2` 连 `api.push.apple.com`（开发构建用 sandbox）；ES256 JWT 用 `node:crypto` 签，20–60 分钟换一次 [T15]。**不加依赖。**
-  - 头：`apns-topic`（bundle id）、`apns-push-type: alert`、`apns-collapse-id`（会话 id）、`apns-priority: 10`。
-  - 回 410 或 `BadDeviceToken`，就写 `disabled_at`。
-- 内容（不带正文，不带发送人）：
+  - `node:http2` 连 `api.push.apple.com`（开发构建用 sandbox）；ES256 JWT 用 `node:crypto` 签，用 50 分钟换一次，不早于 20 分钟 [T15]。**不加依赖。**
+  - 头：`apns-topic`（bundle id）、`apns-push-type: alert`、`apns-collapse-id`（会话 id）、`apns-priority: 10`、`apns-expiration`（一天）。
+  - 回 410 或 400 `BadDeviceToken`：删掉那台设备。
+  - 回 403（密钥、Key ID、Team ID 不对；`BadEnvironmentKeyIdInToken`：密钥不包括这个环境）、`TopicDisallowed` 等（bundle id 不对）、`TooManyProviderTokenUpdates`：是配置的问题，不删设备，**只暂停这个 APNs 环境（sandbox 或 production）的推送** 15 分钟，给运维写一行警告（每类每个环境一次）；`DeviceTokenNotForTopic`（别的 app 的令牌）只暂停那一个令牌。
+  - 规矩：暂停的范围不超过这次失败能证明的范围。用户能选的（令牌、`env`）因此永远停不掉本来能送到的推送（苹果全部拒绝原因逐条的表在 `src/push/apns.ts` 开头）。
+  - 429 / 5xx / 断线 / 超时：2 秒、30 秒各重试一次，然后放弃。
+- 内容（不带正文，不带发送人）。**S6 之前不带角标数**：
   ```json
-  { "aps": { "alert": { "title": "Haiyo", "body": "你有新消息" }, "badge": 3, "sound": "default", "thread-id": "<会话 id>" }, "c": "<会话 id>" }
+  { "aps": { "alert": { "title": "Haiyo", "body": "你有新消息" }, "sound": "default", "thread-id": "<会话 id>" }, "c": "<会话 id>" }
   ```
-- 配置：`APNS_KEY_P8`（或文件路径）、`APNS_KEY_ID`、`APNS_TEAM_ID`、`APNS_TOPIC`。只放在部署环境里，由主人放（第 5 节）。没配就不发，别的照常。
+- 配置：`APPLE_TEAM_ID`（Team ID）、`APPLE_BUNDLE_ID`（bundle id，就是推送的 topic）、`APNS_KEY_ID`（Key ID）、`APNS_KEY_P8`（`.p8` 密钥文件的全文；保留换行，或者写成一行用 `\n`；不支持文件路径）。只放在部署环境里，由主人放（第 5 节）。缺任何一个或格式不对：不发推送，别的照常，启动时写一行警告点名是哪个变量（不写值）；服务照样启动。
 - 测试：测试里起一个本地 HTTP/2 假 APNs，用测试时生成的密钥签名。不碰真密钥。
 
 ### S6 服务端未读数（角标）（1）
@@ -517,9 +524,12 @@ Hotwire Native（37signals 的 HEY、Basecamp 就是网页壳）可以作先例�
    - 卖家名就是法定姓名，不能用别名；改 Apple 账号上的名字不会改卖家名 [L15]。
    - 以后要转成组织：由账号持有人申请，要是组织的创办人，并且有 D-U-N-S 号码 [L15]。
 2. **Bundle ID**：建议 `org.haiyo.app`（**待定**）。在开发者网站登记 App ID，勾选 Push Notifications 和 Associated Domains；也可以在第 3 步后交给 Xcode 自动处理。
+   - 定下来的 bundle ID 就是 `APPLE_BUNDLE_ID` 的值，测试站点和生产站点都要设。
 3. **在这台 Mac 的 Xcode 里登录 Apple ID**（Xcode → Settings → Accounts）。真机运行、归档、上传都要；我不登录。
 4. **APNs 密钥**：在开发者网站的 Keys 里建一个 .p8 密钥，记下 Key ID 和 Team ID。
-   - 密钥由主人自己放进生产和测试站点的部署环境（S5 的四个变量）；
+   - 建的时候环境选 **Sandbox & Production**（团队范围）：只选一个环境的密钥，另一个环境的 APNs 会拒绝（`BadEnvironmentKeyIdInToken`），发往那个环境的推送就会暂停，日志里有一行警告说明。
+   - 主人自己在生产和测试站点的部署环境里设这四个变量：`APPLE_TEAM_ID`（Team ID）、`APNS_KEY_ID`（Key ID）、`APNS_KEY_P8`（.p8 密钥文件的全文）、`APPLE_BUNDLE_ID`（第 2 步的 bundle ID）；
+   - 贴错了（格式不对）或少一个：那个站点不发推送，别的照常，启动日志里有一行警告点名是哪个变量（不写值）；服务照样启动；
    - 我不看、不建、不传。
 5. **App Store Connect 建应用记录**：名称 Haiyo、主要语言、bundle ID、SKU。
 6. **定图标**（另一个会话会把候选做成图标大小给主人看）。

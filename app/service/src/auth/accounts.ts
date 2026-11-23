@@ -47,7 +47,7 @@ const SIGNED_IN_TRACES = `
  * Deletes an account whose e-mail was never verified, inside the registration that replaces it: its principal,
  * its auth user with its sessions and credentials (they cascade), and its outstanding reset links. What other
  * people did to it goes with it — friend requests to it, blocks of it — and their ids are returned so they can be
- * told after commit. The invite it was registered with stays used up, by nobody now.
+ * told after commit. Its invite loses nothing: a use is taken only at verification.
  *
  * Throws (and so rolls the registration back) rather than delete a verified account or one with anything a
  * signed-in person makes (SIGNED_IN_TRACES).
@@ -65,7 +65,6 @@ export async function removeUnverifiedAccount(t: Tx, account: ExistingAccount): 
     const requests = await t.query<{ id: string }>("delete from friend_requests where to_id = $1 returning from_id as id", [principalId]);
     const blocks = await t.query<{ id: string }>("delete from blocks where blocked_id = $1 returning blocker_id as id", [principalId]);
     for (const { id } of [...requests.rows, ...blocks.rows]) affected.add(id);
-    await t.query("update invites set used_by = null where used_by = $1", [principalId]);
     await t.query("delete from principals where id = $1", [principalId]);
   }
   await t.query(`delete from verification where value = $1 and identifier like 'reset-password:%'`, [account.userId]);

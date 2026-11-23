@@ -33,7 +33,9 @@ npm run migrate      # node-pg-migrate up against DATABASE_URL
 npm run dev          # tsx watch src/server.ts
 npm test             # vitest, against TEST_DATABASE_URL
 npm run typecheck    # tsc --noEmit (src and tests)
-npm run invite:create -- [--ttl-hours <n>]          # prints a new invite code (default 72 h)
+npm run invite:create -- [--ttl-hours <n>] [--uses <n>]   # prints a new invite code once (default 72 h, default 1 sign-up; --uses 1-1000 lets that many people sign up with the one code)
+npm run invite:list                                 # every code by the first 8 characters of its hash (never the code): sign-ups taken / allowed, expiry, created, state
+npm run invite:revoke -- --prefix <hash prefix>     # closes that code to further sign-ups (accounts already made stay); refused when the prefix matches none or several
 npm run inbox:list -- [--to <email>]                # the mail outbox
 npm run mail:status                                 # per day: mails queued, sent, failed, expired, retries (counts only)
 npm run attachments:sweep -- [--older-than <min>]   # unsent uploads and abandoned blobs (by hand; the server does it itself)
@@ -41,6 +43,7 @@ npm run credits:grant -- --handle <h> --points <n> [--note <text>]   # n: decima
 npm run credits:show -- --handle <h>                # a person's tier and points balance (an Agent's handle is refused)
 npm run tier:set -- --handle <h> --tier <name>      # a tier named in AGENT_TIERS
 npm run models:list                                 # the site models: id, label, tier, protocol, prices (never the key)
+npm run demo:seed -- --email <address> [--handle <h>] [--name <text>]   # the App Review account, made or put back; asks for its password (Demo account, below)
 npm run catalog:update [-- <models.json> <api.json>] # downloads models.dev (or reads saved copies) into src/providers/model-catalog.json; commit it
 ```
 
@@ -51,15 +54,80 @@ no TypeScript at run time; a production install `npm ci --omit=dev` is enough):
 npm run build                    # tsc -p tsconfig.build.json: src/ → dist/ (git-ignored), with source maps
 npm run migrate:prod             # node dist/cli.js migrate (finds migrations/ next to dist/)
 npm start                        # node dist/server.js
-npm run invite:create:prod -- [--ttl-hours <n>]
+npm run invite:create:prod -- [--ttl-hours <n>] [--uses <n>]   # likewise invite:list:prod, invite:revoke:prod
 npm run inbox:list:prod -- [--to <email>]
 npm run attachments:sweep:prod -- [--older-than <min>]
 npm run credits:grant:prod -- --handle <h> --points <n> [--note <text>]   # likewise credits:show:prod, tier:set:prod, models:list:prod
+npm run demo:seed:prod -- --email <address>      # asks for the password, not shown (Demo account, below)
 ```
 
 Deploy `dist/`, `migrations/`, `package.json` and `package-lock.json` together: the build looks for
 `../migrations` from `dist/`. `tests/build.test.ts` keeps `npm start` and the `:prod` scripts on `node dist/…`
 and every run-time import of `src/` a production dependency.
+
+### Demo account (for App Review)
+
+The App Store needs an account the reviewer can sign in with. `demo:seed` makes it on the site it runs against (the
+deployment's own environment, as the other `:prod` commands), or puts it back (`src/demo.ts`, `tests/demo.test.ts`).
+
+**Run it in a terminal and type the password when it asks.** Nothing is shown as you type, and the password never
+reaches the shell's history (`src/prompt.ts`; also through `railway run` from a terminal):
+
+```
+npm run demo:seed:prod -- --email <the reviewer's address>
+Password for the demo account (not shown):
+```
+
+Where no terminal can ask (a script, a scheduled job), the password may come from the environment variable
+`DEMO_PASSWORD` instead. Never write it on the command line (`DEMO_PASSWORD=… npm run …` stays in the shell's history)
+or in a `.env` file (the command reads `.env`, and the file stays on disk): read it into the variable without showing it,
+run the command, and remove the variable. bash or zsh:
+
+```
+read -rs DEMO_PASSWORD && export DEMO_PASSWORD
+npm run demo:seed:prod -- --email <the reviewer's address>
+unset DEMO_PASSWORD
+```
+
+PowerShell:
+
+```
+$env:DEMO_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Password')).Password
+npm run demo:seed:prod -- --email <the reviewer's address>
+Remove-Item Env:DEMO_PASSWORD
+```
+
+Or the hosting platform's own secret variable for that one run. Without a terminal and without `DEMO_PASSWORD` the
+command stops and says so.
+
+- **The password** is 10 to 128 characters, yours to choose. It is never printed, logged or stored (only Better Auth's
+  hash). Put the same password, with the address, in App Store Connect's review information.
+- **What it makes** the first time: the account (`--handle`, default `app_review`; `--name`, default `Reviewer`), its
+  address already verified, the terms and the privacy policy in force accepted with the 18+ declaration; two made-up
+  people, Mika and Ren, named after the handle (`<handle>_mika`, `<handle>_ren`, the handle cut to 19 characters; by
+  default `app_review_mika`, `app_review_ren`), with addresses under `.invalid` and no password (nobody can sign in as
+  them), its friends; its Agent Mochi (`<handle>.mochi`), on the site's free model (the first site model when none is
+  free; with no site models it says so: the Agent then cannot reply); and a group, Weekend plans, of the four, with five
+  lines Mika and Ren said. Nothing is posted as the Agent: it says what its model writes when the reviewer talks to it.
+  An unguessable `--handle` keeps anyone from taking the three handles before the first run.
+- **Run it again before each submission and after each review.** The password is set to the one given; every session
+  of the account ends (an earlier reviewer is signed out); its name and its handle are put back (a review may change
+  the handle); the documents in force are accepted again; the Agent is there and not paused (a new one when a review
+  deleted it); the friendships are back (a block undone); and the group of the four is there with its five lines (a new
+  group when the reviewer left the old one). Nothing else changes: what a reviewer added (messages, other groups or
+  Agents, the avatar) stays. Running it twice in a row changes nothing but the password's hash and the sessions.
+- **It only ever touches its own.** Every principal it made is listed in `demo_principals` (migration 071). If the
+  address belongs to any other account, or a handle or an address it needs to anyone else, it stops with
+  `demo:seed refused: …` and changes nothing (one transaction). A handle held by an earlier demo account under another
+  address names that address: run with it, or choose another `--handle`.
+- **Points.** The Agent replies on the site's daily free allowance, and its web searches cost points too. A busy review
+  can use the allowance up: give the account points before submitting, for example
+  `npm run credits:grant:prod -- --handle app_review --points 50 --note "App Review"`.
+- **For the review notes.** Mika and Ren are made-up people this command seeds; they never reply (the app shows them as
+  真人, people). Their five lines are in English; the app's interface is Chinese. Mochi replies when the reviewer
+  writes to it or mentions it in the group.
+- The account does not expire. Its sessions end after 7 days without use, like everyone's: a reviewer who comes back
+  later signs in again.
 
 ## Configuration (`src/config.ts`)
 
@@ -74,7 +142,7 @@ credentials, a plain host name or address, and no query or fragment, else start-
 provider's is stored: lower-case host, no default port, no trailing slash; its address is checked at every call),
 `apiKeyEnv` (the name of another variable that holds the upstream key, so the JSON carries
 no secret; start-up fails naming it if unset, and naming the model if it is one of the service's own `DATABASE_URL`,
-`AUTH_SECRET`, `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID`, `RESEND_API_KEY` — case ignored —, or a web
+`AUTH_SECRET`, `PROVIDER_KEY_SECRET`, `S3_SECRET_ACCESS_KEY`, `S3_ACCESS_KEY_ID`, `RESEND_API_KEY`, `APNS_KEY_P8` — case ignored —, or a web
 search engine's key toward another host than that engine's (`WEB_SEARCH_API_KEY` never, as Exa is no model vendor;
 `WEB_SEARCH_DEEPSEEK_API_KEY` only for a model on `api.deepseek.com`, so one DeepSeek account can share its key; a
 DeepSeek model reached through a proxy host needs the key in a variable of its own; the same for a judge channel); two models may share
@@ -159,6 +227,13 @@ free allowance and the balance — that every promise on them, the reply's own i
 waits, queued; a reply's later rounds and tools are held against all that is left; 0.01–1, default 1)),
 `ALLOWANCE` (when an owner is reminded of the day's free allowance, JSON, every field optional; Metering, Reminders:
 `warnAt` (the share of it used at which they are told, once a day; above 0 and below 1, default 0.8)),
+`LEGAL` (whether the site requires its terms of service and privacy policy, JSON; Accounts and sessions, Terms: `required`
+(boolean, default `false`: registration asks for nothing and records nothing, no route answers `terms_required`, the web
+shows neither the boxes nor the question; the three pages stay public with their draft notice; `true`: everything the
+Terms paragraph describes). **Turn it on only after the owner has filled the placeholders and approved the texts, and
+after the testers have loaded this version once** (a tab still open from an earlier version has no acceptance screen: it is
+refused with 403 `terms_required` until it is reloaded). Accounts made while it was off have no acceptance on record (nor
+an 18+ declaration); they are asked once, at their next request.),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
 whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
 `AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional;
@@ -166,6 +241,15 @@ Replies, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic r
 most 2, each 0–600 000; default `[20000, 120000]`; `[]` turns automatic retries off)),
 `HOST` (the address to listen on: an IPv4/IPv6 address or `localhost`, default `0.0.0.0`, every interface; `127.0.0.1` for local-only),
 `WEB_DIST` (optional: directory of the built web client to serve, see Deployment; unset serves none),
+the iOS app's four, all optional and set only in the deployment's environment: `APPLE_TEAM_ID` (the Team ID, 10 capitals
+and digits) and `APPLE_BUNDLE_ID` (the bundle id, e.g. `org.haiyo.app`) — both set, the universal-links file is served
+(Deployment, Universal links) and they are the push token's issuer and topic —, `APNS_KEY_ID` (the APNs key's Key ID, 10
+capitals and digits) and `APNS_KEY_P8` (a **secret**: the `.p8` key file's text, a P-256 private key in PEM; real line
+breaks or `\n` on one line; never logged, never in an error, never named as a site model key). All four set: pushes are
+sent (Push notifications); any of them missing **or malformed** (a key that is no P-256 private key, an id of the wrong
+shape): none are, everything else works as ever, and one WARN line at start names the missing and the malformed ones
+(`push_off`, names only, never a value) — never a refused start, unlike every other variable: a chat service must not fail
+to boot because of a push key (a malformed Team or bundle id also turns the universal-links file off),
 `S3_*` (optional, all-or-none), `REGISTRATION_MODE` (`invite` | `open`, default `invite`),
 `MAIL_MODE` (`outbox` | `resend`, default `outbox`; `resend` needs `RESEND_API_KEY` — a secret — and `MAIL_FROM`, optional `MAIL_REPLY_TO`; `MAIL_PER_ADDRESS_HOUR`, default 5; see Mail delivery below), `RATE_LIMIT_SCALE` (multiplier for every rate limit, default 1),
 `CLIENT_IP_HEADER` / `TRUST_PROXY` (where the client's address comes from; see Deployment),
@@ -213,6 +297,8 @@ oldest queued reply and runs it to its end; false when none is queued) or `drain
 it; `app.staleRunSweep.run()` sweeps at once either way (see Agents and runs, Recovery).
 `Deps.judge` is the judgement model (`src/judge/client.ts`; null without `JUDGE`); tests inject a scripted one
 (`scriptedJudge()` in `tests/helpers/judge.ts`).
+`Deps.apns` is the APNs sender (`src/push/apns.ts`; null unless the four push variables are set); tests inject one
+pointed at a scripted local HTTP/2 server (`fakeApns()` in `tests/helpers/apns.ts`): no test reaches Apple.
 `Deps.proactive` is the proactive scheduler (`src/agents/proactive/scheduler.ts`): after a person's message in a group
 that called no Agent, it waits until nobody has written there for `PROACTIVE.debounceMs`, then has the latest message
 judged once and acts on the outcome as on a mention's (notices published, runs announced). A message that called an
@@ -259,6 +345,20 @@ fails naming `WEB_DIST` if the directory has no `index.html`), the service serve
   (and of `app.routeList`, which lists API routes only); the Origin check, rate limits and the WebSocket
   upgrade are unaffected.
 
+**Universal links (`APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`).** `GET /.well-known/apple-app-site-association` (and its
+`HEAD`) is Apple's file of which links open in the iOS app (`src/app-links.ts`). With both variables set it answers 200
+`Content-Type: application/json` (exactly that, no charset), `Cache-Control: public, max-age=3600` (it changes only with a
+deploy; Apple's CDN fetches it about daily), with
+`{"applinks": {"details": [{"appIDs": ["<APPLE_TEAM_ID>.<APPLE_BUNDLE_ID>"], "components": [{"/": "/api/*", "exclude": true}, {"/": "/chat/*"}, {"/": "/reset-password*"}]}]}}`:
+a conversation (`/chat/<id>`) and a password reset link open in the app; nothing under `/api/` does (an e-mail
+verification link goes there and stays in the browser), and the exclusion comes first because the first matching pattern
+wins. Unset or malformed (either of them): `404 {"error":"not_found"}`. Never a redirect and never the web client's page (before, the
+wildcard sent `index.html` for this extensionless path); served whether or not `WEB_DIST` is set. Apple's documentation
+names this `.well-known` URL only, and since iOS 14 devices fetch it through Apple's CDN, not from the site
+(developer.apple.com/documentation/xcode/supporting-associated-domains, read 2026-11-23), so the root
+`/apple-app-site-association` is not served. Like the web client's files it is kept out of the route reference and of
+`app.routeList`. The CDN must be able to reach the site over https with a valid certificate.
+
 **One instance.** Run exactly one instance of the service (one replica, no cluster mode); see Sync and
 realtime for why and what scaling out would take.
 
@@ -301,7 +401,8 @@ stale-run sweep timer unless asked (`staleRunSweep`); tests sweep with `app.stal
 proactive scheduler unless asked (`proactive`, with a judgement model configured: `tests/proactive-scheduler.test.ts`);
 other files that judge call `decideProactive` themselves. Between two tests (`betweenTests`) it empties the database only
 once the app is quiet — its queues and jobs, and every other transaction of the database, one between two statements
-too — and holds the reply worker's loop until the truncate has ended; the hub's heartbeat runs on no timer under it
+too — and holds the reply worker's loop until the truncate has ended; the hub's heartbeat and the push's own timer
+(`BuildOptions.pushTimer`: its counters and expired-phone sweep, `app.push.sweepExpired()` by hand) run on no timer under it
 (`app.realtime.tick()` beats by hand). So no work of the app's takes table locks against the truncate's
 (`tests/harness.test.ts`).
 
@@ -340,7 +441,7 @@ too — and holds the reply worker's loop until the truncate has ended; the hub'
   not exist.
 - **HEAD.** Every `GET` route also answers `HEAD` with the same status and headers and no body (Fastify
   runs the `GET` handler). `HEAD /api/attachments/:id` and `HEAD /api/principals/:id/avatar` are their own routes (below): they do not read the whole file.
-- **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) →
+- **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) → the terms accepted (403 `terms_required`) →
   rate limit (429) → the route's own rules. Registration counts its rate limit before checking the shape,
   and so do the sign-in, reset-request and verification-link limiters in front of Better Auth.
 
@@ -357,6 +458,7 @@ Every error body is `{"error": "<snake_case_code>"}`, sometimes with details nex
 | 401 | `unauthenticated` | No valid session (or a WebSocket ticket that is unknown, used or expired) |
 | 402 | `no_quota` | A site-model call cannot start: nothing is left to pay for it (see Metering). `reason` `free_and_balance` (a free-tier model: today's free allowance and the balance are both used up; `resetsAt`, the next midnight in `SITE_TIMEZONE`, ISO instant) or `balance` (a paid-tier model: no balance) |
 | 403 | `forbidden` | Cross-site request, or not allowed by the route's rule (e.g. only the creator renames) |
+| 403 | `terms_required` | While the site requires the terms (`LEGAL.required`; at registration, 400 `terms_required` for an acceptance missing): every route that needs a session, while the account has not accepted the terms and the privacy policy in force (Accounts and sessions, Terms); not `GET /api/me` and `POST /api/me/terms`, which the question needs. Nothing was done |
 | 403 | `cannot_send` | With `reason`: `blocked` or `not_friends` (a direct chat whose pair cannot write to each other), or `agent_deleted` (an Agent's conversation after the Agent was deleted: sending, uploading, starting a new topic) |
 | 403 | `agent_limit` | Creating an Agent with as many undeleted Agents as the account's tier allows |
 | 404 | `not_found` | Does not exist, or is not yours to see (identical answers) |
@@ -420,6 +522,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `GET /api/conversations/:id` | 120 | principal |
 | `POST /api/sync/catchup` | 60 | principal |
 | `POST /api/ws-ticket` | 30 | principal |
+| `POST /api/push/devices` + `DELETE /api/push/devices/current` | 30 together | principal |
 | WebSockets | at most 5 open; a 6th closes the oldest (code 4002) | principal |
 
 Everything else is not rate limited.
@@ -468,7 +571,8 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   badly (or the form is built wrong), and the acceptance smoke test is to check it.
 
 Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_partial`, `judge_daily_limit`): Proactive
-replies, Log.
+replies, Log. Pushes write theirs (`push`, `push_off`, `push_config_refused`, `push_devices_expired`, `push_targets_failed`,
+`push_failed`): Push notifications, Counters in the log.
 
 ### Usage and points
 
@@ -2046,11 +2150,14 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
 
 #### `GET /api/site`
 
-*Session: none.* → 200 `{"mailDelivered": boolean}`: whether this site really delivers mail (`MAIL_MODE=resend`;
+*Session: none.* → 200 `{"mailDelivered": boolean, "termsRequired": boolean}`. `termsRequired`: whether registration asks
+for the terms, the privacy policy and the 18+ declaration (`LEGAL.required`; Accounts and sessions, Terms): the registration
+page shows its two boxes only when it is true; when this answer has not come or could not be read it shows none and lets
+the service decide (`POST /api/register` answers 400 `terms_required` when they were needed, and the page then shows them). `mailDelivered`: whether this site really delivers mail (`MAIL_MODE=resend`;
 false in `outbox` mode, where mail is only written to `mail_outbox`). The page after registering and the
 forgot-password page read it, so that a site that sends no mail says so (这个站点不发送邮件。请向管理员索取验证链接。)
 instead of saying a mail was sent. The same answer for every caller, signed in or not; nothing else about the mail
-setup. Not rate limited (it reads no database).
+or terms setup. Not rate limited (it reads no database).
 
 ### Accounts and sessions
 
@@ -2083,13 +2190,25 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
 - Body: `inviteCode` (string, at most 100; required when `REGISTRATION_MODE=invite`, ignored when `open`),
   `email` (an e-mail address, at most 254), `password` (10–128 characters), `displayName` (see
   `PATCH /api/me`: 1–40 characters after removing format characters (not joiners) and trimming, one line), `handle`
-  (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`).
-- 201 `{"ok": true}` whether or not the e-mail already has an account, and the invite is used up either way: the
-  answer, its timing and the invite afterwards are the same. What an invite holder can still learn, accepted:
-  one answer per invite. After a 201 for an address, whether the chosen handle now exists (a handle lookup, a
-  second registration with that handle — 409 —, or signing in with the chosen password — 403
-  `email_not_verified` against 401) tells whether the address already had a verified account (then nothing was
-  created). Each such probe uses up a single-use invite and, for a verified account, mails its owner a
+  (`^[a-z0-9_]{3,24}$`: lower-case letters, digits, `_`), and the acceptance (Terms, below): `termsVersion` and
+  `privacyVersion` (strings, 1–40: the versions of the terms of service and the privacy policy the person was shown) and
+  `adult` (`true`: they declare they are 18 or older). These three are required only while the site requires the terms
+  (`LEGAL.required`): one missing, or `adult` not `true`, is 400 `terms_required` (a code of its own: the registration page,
+  which shows the two boxes only once it knows the site asks for them, shows them on this answer, keeping what was typed);
+  a value of the wrong type is 400 `invalid_request`. With it off they may be sent or left out, and are not read: no
+  version is checked and nothing is recorded.
+- 201 `{"ok": true}` whether or not the e-mail already has an account, and the invite is untouched either way: a use of
+  it is taken when the account becomes real, at e-mail verification (in the same transaction; a code that has run out
+  or been revoked since the sign-up refuses that verification — the link redirects to `/verify?error=INVITE_USED_UP`
+  and the account stays unverified). So the answer, its timing and the invite afterwards are the same for every
+  address, an abandoned or replaced sign-up costs the code nothing, and a code made with `--uses n` admits n
+  verified accounts. At most 2 x (uses left) + 5 sign-ups per code may wait for their link at once (a sign-up waits
+  for as long as its 24 h link works); over that the answer is the usual `invalid_invite`. The periodic sweep removes
+  unverified accounts whose link has expired, with their invite note (100 a run; never a verified account, one without
+  an invite note, or one that holds anything a signed-in person makes). What an invite holder can still learn, accepted: after a 201 for an address, whether the chosen
+  handle now exists (a handle lookup, a second registration with that handle — 409 —, or signing in with the chosen
+  password — 403 `email_not_verified` against 401) tells whether the address already had a verified account (then
+  nothing was created). Each such probe, for a verified account, mails its owner a
   `registration_attempt` notice (at most hourly). Held back
   like the reset request's answer: at least 400 ms (plus up to 50 ms at random) after its whole body was in;
   errors are not held back. What happens depends on the e-mail (compared lower-cased):
@@ -2100,7 +2219,7 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   - An account whose e-mail is not verified yet (it has never signed in): this registration replaces it, in the
     same transaction. The old account's principal, auth user, sessions, credentials and reset links are
     deleted; friend requests to it and blocks of it are deleted too (whoever made them gets a `social` push);
-    its handle is free again; the invite it was registered with stays used up. The new password, handle and
+    its handle is free again; its invite loses nothing (a use is taken only at verification). The new password, handle and
     display name apply and a fresh verification mail is sent. Links mailed for the old account stop working
     (its verification link redirects with `INVALID_TOKEN`, its reset links are `invalid_token`). An unverified
     account that holds anything only a signed-in person makes — messages, memberships, friendships, blocks it
@@ -2113,10 +2232,14 @@ WebSockets close with 4001; an expired session's sockets close within 30 s.
   callback URL-encoded), valid 24 h; opening it lands on the client's `<APP_ORIGIN>/verify` (or
   `/verify?error=CODE`). A link only ever verifies the account it was mailed for.
   The e-mail must be verified before sign-in works.
-- Errors: 400 `invalid_invite` (missing, unknown, expired or used invite; checked first, so without a usable
+- While the site requires the terms, the account made records the acceptance with it (Terms, below), in the same
+  transaction; an address that already had a verified account gets nothing recorded (nothing was made).
+- Errors: 400 `terms_required` (while the site requires the terms: the acceptance missing, or `adult` not `true`; checked
+  before anything else, nothing is used up), 409 `terms_outdated` (`termsVersion` or `privacyVersion` is not the version in force: the page is older than
+  the documents; checked before anything else, nothing is used up), 400 `invalid_invite` (missing, unknown, expired, revoked or used-up invite — a code made with `--uses n` admits n sign-ups, then it is used up; checked first, so without a usable
   invite nothing else — not even whether the handle is taken — is revealed), 409 `handle_taken` (a person holds
   the handle, also an unverified account this registration would otherwise replace, or gave it up — Handles; an
-  Agent's name part is no person's handle; the invite is not used up), 400 `invalid_request` (shape, or a value
+  Agent's name part is no person's handle; the invite is untouched), 400 `invalid_request` (shape, or a value
   Better Auth refuses).
 - Limit: 10 per minute per client address.
 
@@ -2184,7 +2307,11 @@ accepted but not used: the mail links to the web app).
 
 #### `GET /api/me`
 
-*Session: required.* → 200 `{"id", "handle", "displayName", "avatarVersion", "email", "newNotes", "memoryModel", "memoryModelUsable", "dream", "memoryLanguage", "handleChangeAvailableAt"}`: the signed-in principal.
+*Session: required.* → 200 `{"id", "handle", "displayName", "avatarVersion", "email", "newNotes", "memoryModel", "memoryModelUsable", "dream", "memoryLanguage", "handleChangeAvailableAt", "termsAccepted"}`: the signed-in principal.
+`termsRequired` is whether the site requires the terms at all (`LEGAL.required`). `termsAccepted` is `false` when the
+account has not accepted the terms and the privacy policy in force (made before them, or a document has a new version
+since): while `termsRequired` is true the web app then asks once, before anything else (Terms, below); while it is false
+nobody is asked.
 `handleChangeAvailableAt` is when they may change their handle again (an ISO time, 365 days after their last change), or
 `null` when they may now (they never changed it, or the year has passed).
 `newNotes` (`"auto"`, `"vault"` or `"open"`; `"auto"` until chosen) is what newly written notes of their Agents' memory do
@@ -2195,6 +2322,41 @@ and `memoryModelUsable` (`false` when that model cannot be called now: its provi
 cannot be opened, the model is off the provider's list or no longer on the site; always `true` while `memoryModel` is `null`).
 `dream` (a boolean, `true` until chosen) says whether their notes are consolidated while they are away (An Agent's memory, 入梦).
 `memoryLanguage` (`null`, the default: automatic; else one of `zh-Hans`, `zh-Hant`, `ja`, `en`, `ko`, `fr`, `de`, `es`, `pt`, `ru`, `it`, `vi`, `th`, `id`) is the one language their notes are written in (An Agent's memory, *One language*).
+
+**Terms** (`src/legal.ts`, migration `071_terms_and_demo.sql`, `tests/terms.test.ts`). The terms of service and the privacy
+policy are texts of the web app (`/terms`, `/privacy`, and the contact page `/contact`, all readable without signing in; the
+texts are files in `app/web/src/legal/texts/`). Each has a version (`LEGAL_VERSIONS`, a date, with `.2`, `.3`… for a later version of the same day; the web holds the same two
+strings in `app/web/src/legal/versions.js`). A person accepts both, and declares they are 18 or older (self-declared: no
+date of birth is asked or kept), when they register (`POST /api/register`) and, when `termsAccepted` is false, at their next
+sign-in (`POST /api/me/terms`). Each acceptance is a row of `terms_acceptances`: the account, the two versions, when
+(`accepted_at`) and when the 18+ declaration was made with it (`adult_declared_at`). Rows are never changed; a later
+acceptance of new versions is a row beside the earlier one. They go with the account (cascade). A change to a text that
+people must agree to again takes a new version in both files: every account is then asked again.
+
+**Whether the site requires them** is the switch `LEGAL` (`{"required": true}`; Configuration). It is off by default:
+while the texts are drafts with the owner's placeholders, registration asks for nothing and records nothing, no route
+answers `terms_required`, `GET /api/me` and `GET /api/site` say `termsRequired: false`, and the web shows neither the
+boxes nor the question; the three pages stay public with their draft notice, and `POST /api/me/terms` still records an
+acceptance. **Turn it on only after the owner has filled the placeholders and approved the texts, and after the testers
+have loaded this version once** (a tab open from an earlier version has no acceptance screen and must be reloaded). Turned
+on, every account without an acceptance of the versions in force (all those made while it was off, which have no proof of
+acceptance or 18+ declaration before that) is asked at its next request.
+What follows is the behaviour with it on.
+
+Where it is enforced: registration is refused without it (400 / 409 above). After that, every route that needs a session
+answers 403 `terms_required` while the account has not accepted the versions in force (`requirePrincipal`, `src/session.ts`,
+reads it in the same query as the principal), the socket's ticket (`POST /api/ws-ticket`) included, so no socket opens
+either; only `GET /api/me` (which says `termsAccepted`) and `POST /api/me/terms` are let through, and signing out is Better
+Auth's own route. A new version comes with a new build, and the restart closes every socket: a client that reconnects or
+calls anything is told `terms_required`, and the web app then shows the question (also in a tab that was open). The pages
+themselves are the web app's (the site serves `index.html` for them): they need JavaScript.
+
+#### `POST /api/me/terms`
+
+*Session: required.* Body: `termsVersion`, `privacyVersion`, `adult` (as for `POST /api/register`). Records that the
+signed-in person accepts the documents in force (Terms, above); accepting them again changes nothing. → 200
+`{"termsAccepted": true}`. Errors: 409 `terms_outdated` (a version that is not the one in force), 400 `invalid_request`
+(`adult` not `true`, a field missing). Limit: 10 per minute per person.
 
 ### Profiles and principals
 
@@ -2624,6 +2786,30 @@ while the session that asked for it lasts. Limit: 30 per minute.
 `unauthenticated`; another or a missing `Origin` 403 `forbidden`; a plain `GET` without an upgrade 404
 `not_found`. An upgrade request to any other path is 404 `not_found` before that route runs.
 
+### Push devices (the iOS app)
+
+What the page calls in the iOS app (the web client's shell bridge, docs/design/2026-11-24-store-app-draft.md §2): once
+signed in, `push.register` asks the phone for its APNs token and the page sends it here; on sign-out it unbinds it before
+signing out. When pushes are sent, and what they carry: Push notifications (`src/push/`). Both routes work whether or not
+pushes are configured (a token registered before the key is set takes pushes once it is). Limit: 30 per minute together.
+
+#### `POST /api/push/devices`
+
+*Session: required.* Body `{"token": "<hex>", "env": "sandbox" | "production", "appVersion"?: "<string>"}`: the APNs
+device token as the shell gives it (hex, 32 to 100 bytes, any case; stored lower-case), which APNs it is for (`sandbox`
+for a development build), and optionally the shell's version (1–32 printable ASCII characters). → 200 `{"ok": true}`.
+Binds the token to **this session**: the session has one phone at most (a new token from it replaces its old one), and a
+token one row at most — registered from another session, of yours or of another account, it moves here (the token names
+the phone, not the person). Registering again is the same 200 (it refreshes `env` and `appVersion`). The row goes when the
+session does: sign-out, a password reset (every session), an expired session is never pushed to, and deleting the person.
+Errors: 400 `invalid_request` (a field missing or malformed), 401 `unauthenticated`.
+
+#### `DELETE /api/push/devices/current`
+
+*Session: required.* Unbinds this session's phone, if it has one. → 200 `{"ok": true}` always. Signing out does the same
+by itself (the session's row is deleted, and the device with it); the page calls this first so that nothing is pushed in
+between.
+
 ## Wire shapes
 
 **Principal** (in `/api/sync`'s `principals`, and the `principals` of message reads and searches): `{"id", "handle", "displayName", "avatarVersion", "kind": "human" | "agent", "ownerId"?, "intro"?, "field"?}`.
@@ -2965,6 +3151,115 @@ conversations you were added to — `conversation`, `social`, `read`, `run` and 
 offline are not replayed; for an Agent's conversation you show, `GET /api/conversations/:id/run`, and for a group,
 `GET /api/conversations/:id/runs`. 4. Apply the
 buffered pushes by the rules above.
+
+## Push notifications (`src/push/`)
+
+Pushes to the iOS app's phones through APNs (Apple's push service), for messages that arrive while the app is not in
+front. Configured by the four variables in Configuration (`APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`, `APNS_KEY_ID`,
+`APNS_KEY_P8`); without all of them nothing is pushed and nothing else changes. Phones are registered with Push devices
+(the HTTP API above), one row of `push_devices` per signed-in session of the app.
+
+**Which messages.** Every stored message (`ConversationEvents.onMessages`, after commit — where the hub hears of it)
+that counts as unread does (`countsForPush`; the same rule as the sync's `unread` and the web client's
+`countsAsUnread`): a person's message and an Agent's reply — in its owner's own conversation and in a group — and not a
+system notice (joins, leaves, renames, memory notices …) nor an Agent's acknowledgement. Whispers are no messages and are
+never pushed. Conversations cannot be muted today; when they can, a muted one is skipped here.
+
+**To whom.** Each phone of each current member who may see the message (THE visibility rule, `visibleJoin`), except: the
+sender; anyone with a block either way between them and the sender — an Agent's message by its owner's blocks (an Agent is
+blocked as its owner is, `coalesce(owner_id, id)`, as the reply rules do); a phone whose session has ended or expired (an
+expired session's row is never pushed to, and the periodic sweep deletes it: below). One push per phone and conversation
+at a time: a message while that phone's push for the same conversation is still out (being asked, queued, sent or
+retried) adds none (`coalesced`) — it would carry the same content and collapse id.
+
+**Present.** A phone is not pushed to while **its own session** is present: it has an `OPEN` socket at the hub
+(`Hub.hasSocketFor`, `src/sync/hub.ts`; a socket whose close has begun delivers nothing and does not count) **and** that
+socket answers a ping within `PRESENCE_PROBE_MS` (3 s; `Hub.probe`: one probe per session at a time, a second ask shares
+its answer). The page in the app closes its socket when the app goes to the background (the shell's `haiyo:pause`) and
+opens it again in front (`haiyo:resume`), so:
+- the app in front: its socket answers within a round trip (the pong is the networking layer's, not the page's script) and
+  brings the message — no push;
+- the app in the background: no socket, pushed at once — also while the same person has the web open on a desktop
+  (another session, another socket) or a second phone in front (its own session);
+- the app suspended before its close got out (or killed, or its network gone): its socket is still open here but cannot
+  answer, so the phone is pushed when the probe ends (3 s late, never lost: a message coalesced during the probe counts in its re-check); a socket that closes during the probe, at
+  once. The heartbeat still drops such a socket on its own (30–60 s, `HEARTBEAT_MS`);
+- the web in a browser registers no phone, so a browser is never pushed to.
+The probe needs no client change. It costs one ping per probe, and one probe per session runs at a time (a second ask
+while one runs shares its answer); a present phone answers within a round trip, so the next message pings again — about
+one ping per message, or one per round trip in a burst. No answer is cached (a cached "present" could go stale). After a
+probe that ran and had no answer, the push is asked once more before it is sent (one indexed query): not when the
+phone's row changed meanwhile (signed out, moved to another account, registered again), its session ended, or its person
+read up to the message on another device (counted `stale`). "Present" is decided when the push is decided (after the
+recipients are read), in this process: the hub and the pushes are one instance (Sync and realtime, Single instance only).
+
+**What a push carries.** Content-free, always:
+`{"aps": {"alert": {"title": "Haiyo", "body": "你有新消息"}, "sound": "default", "thread-id": "<conversation id>"}, "c": "<conversation id>"}`
+— the product's name and fixed system wording, never a sender, a group's name or any text of a message. `c` is what the
+app opens (`/chat/<c>`); `thread-id` groups a conversation's pushes on the phone. Headers: `apns-topic` (the bundle id),
+`apns-push-type: alert`, `apns-priority: 10`, `apns-collapse-id` (the conversation's id: a later push of the same
+conversation replaces the earlier on the phone), `apns-expiration` (a day: an older push is no news). No badge yet: the
+service has no unread total (the per-conversation `unread` of `GET /api/sync` exists, a total for a person does not);
+when it does, its number goes in `aps.badge`.
+
+**The sender** (`src/push/apns.ts`). `node:http2` to `api.push.apple.com` (a `sandbox` token to
+`api.sandbox.push.apple.com`), one connection per host, kept while it lasts (closed after an hour idle, opened again on
+the next push); a provider token (ES256 JWT signed with `node:crypto`: `kid` the Key ID, `iss` the Team ID, `iat`) used
+for 50 minutes and made anew after — never sooner than 20 minutes, Apple's bounds. Answers:
+- 200: sent.
+- 410 (`Unregistered`, `ExpiredToken`) and 400 `BadDeviceToken`: the token is dead and its device row is deleted (unless
+  the phone registered it again after the push was decided: Apple allows pushing a dead token again once the app
+  retrieves it again). Nothing else deletes a phone.
+- **The rule of a pause: a pause is never wider than what the failing request proves**, so nothing a signed-in person can
+  choose — the token they register, the `env` (so the APNs host) they register it for — can pause a push that would have
+  got through. A refusal of the key or the topic proves only that that host refuses it (an APNs key can be limited to one
+  environment), so it pauses **that host**: 403 (`InvalidProviderToken`, `MissingProviderToken`, …: the key, its id or
+  the Team ID; `auth`), 403 `BadEnvironmentKeyIdInToken` (the key does not cover this environment; `key_env`: create the key as
+  **Sandbox & Production**), 400 `TopicDisallowed` / `BadTopic` / `MissingTopic` (the topic, `APPLE_BUNDLE_ID`; `topic`),
+  429 `TooManyProviderTokenUpdates` (`token_rate`: renewed too often, restarts in a row — no person can provoke it,
+  renewals being at most one per 20 minutes whatever is pushed). A refusal of a token pauses **that token**: 400
+  `DeviceTokenNotForTopic` (a token of another app; `topic`) — and so do 403 `Forbidden` and any 403 reason Apple does
+  not document (`auth`): Apple gives them no cause, so nothing proves more than this one request (a host is paused only for
+  a reason whose cause is the configuration alone). Each pause lasts `CONFIGURATION_PAUSE_MS` (15 minutes; a
+  push there is `paused` without being sent), then pushes are tried again. Nothing pauses every push: a person's sandbox
+  phone can pause only the sandbox host, which no TestFlight or App Store phone uses, and only for a refusal every push
+  there would get anyway. No phone is deleted for any of these; one WARN line per class and host says so (below). The
+  table of every reason Apple documents — what it is here, what it pauses, whether a person can provoke it — is at the top
+  of `src/push/apns.ts`; `tests/push-apns.test.ts` walks it row by row.
+- 403 `ExpiredProviderToken`: retried once — with the token another push has renewed since, or with one made anew if it
+  is at least 20 minutes old; else `auth` (a clock that is off), on that host.
+- 429 `TooManyRequests`, 5xx, a broken connection or no answer within 10 s: retried after 2 s, then after 30 s, then given
+  up (at most three attempts) — never a loop; the wait gives its place back. Only the connection that attempt used is
+  touched: one stream reset leaves it up (for this retry and everyone else's), a broken one forgets itself, a silent one
+  or one answering 503, `IdleTimeout` or `UnrelatedKeyIdInToken` takes no new pushes (what is on it may finish) and the
+  retry opens another.
+- Any other answer: given up (`rejected`).
+
+At most 32 pushes in flight and 5 000 waiting; beyond, `overloaded`. A push never holds up a request or a message: it runs
+after the commit, on its own. **The stop** takes at most `STOP_WAIT_MS` (5 s) in all: it closes the sender first (its retry
+waits end at once, `closed`; every connection it opened — one already closing gracefully too — is closed, and destroyed
+after `CLOSE_GRACE_MS`, 2 s), then waits for what is under way until the deadline, and writes the last counters.
+
+**Expired sessions.** The push's own timer (every 10 minutes, with the counters; it always runs, with or without APNs and
+whatever `MEMORY.changesSweepMs` says) deletes the phones of expired sessions — a session row goes only when its cookie is
+shown again, so an abandoned phone's token would otherwise stay — counted as `push_devices_expired`. Sessions last 7 days
+from their last use, so a phone whose app was not opened for a week gets no more pushes.
+
+**Counters in the log.** Never a token, a conversation's id, a person or any text. `{"metric": "push", "sent", "removed",
+"present", "coalesced", "stale", "failed": {"<class>": n}}` every 10 minutes when anything was counted, and at the stop:
+pushes APNs took, devices deleted for a dead token, phones skipped as present, pushes not made because one was out, pushes
+no longer wanted after a probe, and pushes given up by class (`throttled`, `server`, `network`, `timeout`, `auth`,
+`key_env`, `topic`, `token_rate`, `rejected`, `overloaded`, `closed`, `paused`). `{"metric": "push_off", "missing": [...],
+"malformed": [...], "links": "on" | "off"}` (WARN, variable names only) once at start when some of the four variables are
+set but not all, or one is malformed; `links: "off"` (and the message) when the universal-links file is off too (no valid
+Team and bundle id). `{"metric": "push_config_refused", "class": "auth" | "key_env" | "topic" | "token_rate", "host":
+"sandbox" | "production"}` (WARN) once per class, host and process, the first time that host refuses the configuration,
+with what to check. `{"metric": "push_devices_expired", "removed"}` from the sweep. `push_targets_failed` /
+`push_failed` with a database error's code only, when the recipients could not be read or a dead device not deleted.
+
+**What only a real device shows** (the tests talk to a local stand-in): that Apple accepts the token's signature with the
+real key; the real hosts' TLS and HTTP/2 settings; the sandbox/production pairing of a real build's token; how often the
+real APNs answers 429; and how a suspended WKWebView's socket behaves (the probe covers it either way).
 
 ## Agents and runs (`src/agents/`)
 

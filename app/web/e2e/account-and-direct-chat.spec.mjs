@@ -34,6 +34,9 @@ async function signUp(page, identity) {
   await page.getByLabel("密码", { exact: true }).fill(identity.password);
   await page.getByLabel("昵称").fill(identity.displayName);
   await page.getByLabel("账号名").fill(identity.handle);
+  // The suite's site does not require the terms (`LEGAL` off, the default while the texts are drafts): no boxes to tick
+  // (legal.spec.mjs runs with them required).
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
   await page.getByRole("button", { name: "注册", exact: true }).click();
   await expectMailPage(page, "验证邮箱", "验证链接");
 
