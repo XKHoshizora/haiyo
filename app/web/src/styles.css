@@ -345,7 +345,7 @@ svg.model-brand { color: var(--ink-3); }
    is as wide as its own word: a row without that mark holds a hidden copy (.model-gap), so nothing has a fixed width, a long word cannot spill, and the marks
    line up from row to row. A long name gives way first: it is cut with an ellipsis (flex 1, min-width 0), the marks never shrink or wrap. */
 .model-pop { container: modelpop / inline-size; }
-.model-marks { flex: none; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.model-marks { flex: none; display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 11.5px; }
 .model-mark {
   display: inline-flex; align-items: center; justify-content: center; height: 18px; padding: 0 6px; border-radius: 5px; font-size: 11.5px; line-height: 18px;
   white-space: nowrap; background: rgba(120, 116, 143, 0.12); color: var(--ink-2);
