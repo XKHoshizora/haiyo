@@ -247,7 +247,7 @@ describe("a group reply never sees past its asker's line", () => {
     expect((await api(app, w.owner, "POST", `/api/conversations/${w.a}/members`, { principalId: sam.id })).status).toBe(201);
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     await db.query("update agent_runs set asker_ids = array[$2::uuid, $3::uuid] where id = $1", [run, w.mia.id, sam.id]);
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo: await conversationSeq(w.a), mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, place: "group", refs: new RunRefs(), heardTo: await conversationSeq(w.a), mark: null };
     const signal = new AbortController().signal;
     const byName = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "预算表-m3" } }, signal);
     expect(byName.output).toEqual({ results: [], note: "这个群的记录里没找到。" });
@@ -260,7 +260,7 @@ describe("a group reply never sees past its asker's line", () => {
     for (const i of [1, 2, 3]) await say(w.ned, w.a, `天花板-n6 第${i}条`);
     await say(w.mia, w.a, "@scope_bot 找找");
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs({ m: 999_998 }), heardTo: await conversationSeq(w.a), mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, place: "group", refs: new RunRefs({ m: 999_998 }), heardTo: await conversationSeq(w.a), mark: null };
     const out = (await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "天花板-n6" } }, new AbortController().signal)).output as { more: boolean; results: Array<{ ref: string }> };
     expect([out.results.map((r) => r.ref), out.more]).toEqual([["〔m999999〕"], true]);
   });
@@ -272,7 +272,7 @@ describe("a group reply never sees past its asker's line", () => {
     const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.a])).rows[0]!.id;
     const heardTo = await conversationSeq(w.a);
     await say(w.ned, w.a, "后来才说：蓝鲸计划在五楼");
-    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, group: true, refs: new RunRefs(), heardTo, mark: null };
+    const scope: RunScope = { id: run, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.a, place: "group", refs: new RunRefs(), heardTo, mark: null };
     const out = await runTool(deps(), scope, { id: "c1", name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }, new AbortController().signal);
     // The earlier message only: not the later one (past heardTo), nor the question the reply answers (item E).
     expect((out.output as { results: Array<{ text: string }> }).results.map((r) => r.text)).toEqual(["之前说过：蓝鲸计划在三楼"]);
@@ -305,7 +305,7 @@ describe("a file is read only where it may be", () => {
     agentId: w.agent.id,
     ownerId: w.owner.id,
     conversationId,
-    group,
+    place: group ? ("group" as const) : ("own" as const),
     refs,
     heardTo: await conversationSeq(conversationId),
     mark: null,

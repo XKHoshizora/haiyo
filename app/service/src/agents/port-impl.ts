@@ -148,7 +148,7 @@ export interface Toolbox {
    */
   offer(
     run: RunTicket,
-    where: { group: boolean; web?: boolean },
+    where: { place: Place; web?: boolean },
   ): { tools: ToolSpec[]; perTool: Record<string, number>; kinds: Record<string, Activity>; web?: WebPrompt };
   run(scope: RunScope, call: ToolCall, signal: AbortSignal): Promise<ToolOutcome>;
 }
@@ -842,9 +842,9 @@ export class DbAgentPort implements AgentPort {
       // offers none; then what they take of the context — their definitions at the plan's ratio, as tools' text is planned
       // (`TOOL_TEXT_FACTOR`), and what providers add around them, reserved as the system text is — and room for what they
       // bring back (below).
-      // (A social run is offered none until B7b scopes them to its conversation: default-deny.)
+      // (A social run is offered the tools scoped to its conversation alone: `RunScope.place`.)
       let offer: Offer | null =
-        !social && told === null && !state.greets && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, mayWeb ? { group, web: true } : { group }) : null;
+        told === null && !state.greets && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, mayWeb ? { place, web: true } : { place }) : null;
       if (offer !== null && offer.tools.length === 0) offer = null;
       web = offer?.web;
       // Only a reply offered tools says its language (`REPLY_LANGUAGE`), and not one nobody called for. The message answered: in
@@ -1144,7 +1144,7 @@ export class DbAgentPort implements AgentPort {
     const { shown, ownerAsked } = flags.tools;
     // A reply offered the web search: what it was shown and whose call it answers (its query guard), its pre-hold (`holdSearch`).
     const web = shown === undefined ? {} : { shown, ownerAsked: ownerAsked === true, holdSearch: () => this.holdSearch(run) };
-    const scope: RunScope = { ...run, group: flags.place !== "own", refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, shownFrom: flags.tools.shownFrom, ...web };
+    const scope: RunScope = { ...run, place: flags.place, refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, shownFrom: flags.tools.shownFrom, ...web };
     return box.run(scope, call, signal);
   }
 

@@ -153,7 +153,7 @@ describe("switch off: nothing changes", () => {
     expect(toolsPassage("group")).toBe(TODAY_GROUP);
     expect(toolsPassage("own", "unavailable")).toBe(`${TODAY_OWN}\n${NO_WEB_HERE}`);
     expect(toolsPassage("group", "unavailable")).toBe(`${TODAY_GROUP}\n${NO_WEB_HERE}`);
-    expect(toolSpecs({ group: false }).map((t) => t.name)).toEqual(["search_messages", "current_time", "read_file"]);
+    expect(toolSpecs({ place: "own" }).map((t) => t.name)).toEqual(["search_messages", "current_time", "read_file"]);
     // The passages of a reply offered the web search are pinned too (their bytes at 4476eda, before Agent social's Step 0 gave the
     // function a `Place`): a social reply's arm (plan B7a) must leave these two exactly as they are.
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -171,7 +171,7 @@ describe("switch off: nothing changes", () => {
     gateway.callTools([{ name: SEARCH_WEB, input: { query: QUERY } }]).reply("见〔w1〕。");
     expect(await worker.runOnce()).toBe(true);
     const [first, second] = gateway.calls;
-    expect(first!.tools).toEqual(toolSpecs({ group: false }));
+    expect(first!.tools).toEqual(toolSpecs({ place: "own" }));
     expect(first!.system).toContain(TODAY_OWN);
     expect(first!.system).not.toContain("search_web");
     expect(first!.system).not.toContain(NO_WEB_HERE);
@@ -256,7 +256,7 @@ describe("who is offered it", () => {
     await say(owner, own, "你好");
     off.reply("你好。");
     await webWorker(off, null, app.deps.config).worker.runOnce();
-    expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ group: false }));
+    expect(gateway.calls[0]!.tools).toEqual(toolSpecs({ place: "own" }));
     expect(gateway.calls[0]!.system).toBe(off.calls[0]!.system.replace(TODAY_OWN, `${TODAY_OWN}\n${NO_WEB_HERE}`));
     expect(engine.queries).toEqual([]);
   });
@@ -555,7 +555,7 @@ describe("the count and the charge stand however the search ends", () => {
       agentId: agent.id,
       ownerId: owner.id,
       conversationId: own,
-      group: false,
+      place: "own" as const,
       refs: new RunRefs({}, true),
       heardTo: 0,
       mark: null,

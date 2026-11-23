@@ -68,7 +68,7 @@ describe("the clock", () => {
 describe("the three tools a reply is offered", () => {
   it("search_messages, current_time and read_file, each an object of named keys only; the search says where it looks", () => {
     for (const group of [false, true]) {
-      const specs = toolSpecs({ group });
+      const specs = toolSpecs({ place: group ? "group" : "own" });
       expect(specs.map((s) => s.name)).toEqual([SEARCH_MESSAGES, CURRENT_TIME, READ_FILE]);
       for (const s of specs) expect([s.name, s.parameters.type, s.parameters.additionalProperties]).toEqual([s.name, "object", false]);
       expect(specs[0]!.parameters.required).toEqual(["query"]);
@@ -76,18 +76,18 @@ describe("the three tools a reply is offered", () => {
       expect(Object.keys(specs[1]!.parameters.properties as object)).toEqual([]);
       expect(specs[2]!.parameters.required).toEqual(["file"]);
     }
-    expect(toolSpecs({ group: true })[0]!.description).toContain("这个群");
-    expect(toolSpecs({ group: false })[0]!.description).not.toContain("这个群");
+    expect(toolSpecs({ place: "group" })[0]!.description).toContain("这个群");
+    expect(toolSpecs({ place: "own" })[0]!.description).not.toContain("这个群");
   });
 
   it("each with its own count (TOOLS) and its kind of work", () => {
     const run = { id: "r", agentId: "a", ownerId: "o", conversationId: "c" };
-    const offer = createToolbox(deps()).offer(run, { group: false });
+    const offer = createToolbox(deps()).offer(run, { place: "own" });
     const { searchPerReply, filePerReply, timePerReply } = app.deps.config.tools;
     expect(offer.perTool).toEqual({ [SEARCH_MESSAGES]: searchPerReply, [READ_FILE]: filePerReply, [CURRENT_TIME]: timePerReply });
     expect(offer.kinds).toEqual({ [SEARCH_MESSAGES]: "search", [READ_FILE]: "file", [CURRENT_TIME]: "time" });
-    expect(offer.tools).toEqual(toolSpecs({ group: false }));
-    expect(createToolbox(deps()).offer(run, { group: true }).tools).toEqual(toolSpecs({ group: true }));
+    expect(offer.tools).toEqual(toolSpecs({ place: "own" }));
+    expect(createToolbox(deps()).offer(run, { place: "group" }).tools).toEqual(toolSpecs({ place: "group" }));
   });
 });
 

@@ -1064,7 +1064,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     const engine = fakeEngine();
     const { owner, agent, own } = await owned("notheld");
     const deps = { engine, slots: createSlots(4, 4), config: { maxResults: 6, siteUsdPerDay: 20 }, resultMaxWeight: 3000, timeZone: "Asia/Shanghai", db, log: { info: () => {}, warn: () => {} } };
-    const scope = (answer: unknown) => ({ id: "run-y", agentId: agent.id, ownerId: owner.id, conversationId: own, group: false, refs: new RunRefs({}, true), heardTo: 0, mark: null, shown: [], ownerAsked: true, holdSearch: async () => answer as never });
+    const scope = (answer: unknown) => ({ id: "run-y", agentId: agent.id, ownerId: owner.id, conversationId: own, place: "own" as const, refs: new RunRefs({}, true), heardTo: 0, mark: null, shown: [], ownerAsked: true, holdSearch: async () => answer as never });
     for (const answer of [undefined, null, 0, {}, { day: 1 }]) {
       expect((await searchWebTool(deps, scope(answer), { query: QUERY }, new AbortController().signal)).output).toEqual({ error: "联网搜索暂时用不了。" });
     }
@@ -1080,7 +1080,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     const engine = fakeEngine(() => ({ results: RESULTS, costMicroUsd: 5000n }) as never);
     const out = await searchWebTool(
       { engine, slots: createSlots(4, 4), config: { maxResults: 6, siteUsdPerDay: 20 }, resultMaxWeight: 3000, timeZone: "Asia/Shanghai", db: failing, log },
-      { id: "run-x", agentId: agent.id, ownerId: owner.id, conversationId: own, group: false, refs: new RunRefs({}, true), heardTo: 0, mark: null, shown: [], ownerAsked: true, holdSearch: async () => ({ day: "2026-11-22", estimateMicroUsd: 13_000n, at80: false, runId: "run-x", priceMicro: 13_000_000n }) },
+      { id: "run-x", agentId: agent.id, ownerId: owner.id, conversationId: own, place: "own" as const, refs: new RunRefs({}, true), heardTo: 0, mark: null, shown: [], ownerAsked: true, holdSearch: async () => ({ day: "2026-11-22", estimateMicroUsd: 13_000n, at80: false, runId: "run-x", priceMicro: 13_000_000n }) },
       { query: QUERY },
       new AbortController().signal,
     );
