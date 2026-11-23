@@ -40,10 +40,12 @@ export interface AgentRow {
   chainBudgetMicro: bigint;
   /**
    * The most its owner pays, in micro-points, in a site day for its replies that people other than its owner called for
-   * (lane `others`; `othersBudget`): a sub-limit inside the owner's own numbers, held to at admission with the hold
-   * (metering/others.ts `othersFits`); null for none of its own. The owner's setting.
+   * (lane `others`; `othersLimit.points`): a sub-limit inside the owner's own numbers, held to at admission with the hold
+   * (metering/others.ts `othersFits`); null for none of its own (a new Agent has none: 074). The owner's setting.
    */
   othersBudgetMicro: bigint | null;
+  /** The most answers a site day it may give people other than its owner (`othersLimit.answers`), both lanes; null for none of its own. The owner's setting. */
+  othersAnswers: number | null;
   /** Whether it may answer in a group without being called, when the judgement model picks it. The owner's setting. */
   proactive: boolean;
   /** How readily it does (`less`, `normal`, `more`). The owner's setting. */
@@ -92,6 +94,7 @@ interface AgentDbRow {
   group_mentions: GroupMentions;
   chain_budget_micro: string;
   others_budget_micro: string | null;
+  others_answers: number | null;
   proactive: boolean;
   proactive_level: ProactiveLevel;
   proactive_budget_micro: string;
@@ -114,7 +117,7 @@ interface AgentDbRow {
 
 const SELECT = `select p.id, p.owner_id, ${handleOf("p")} as handle, p.handle::text as name_part, p.display_name as name, p.avatar_version, a.intro, a.field, a.persona,
        a.persona_version, a.reply_mode, a.group_mentions, a.chain_budget_micro::text,
-       a.others_budget_micro::text, a.proactive, a.proactive_level, a.proactive_budget_micro::text, a.memory, a.memory_ask, a.shared_notes, a.whisper_elsewhere, a.web_search, a.owner_appellation, a.reasoning, a.model_source, a.site_model_id, a.provider_id, a.provider_model,
+       a.others_budget_micro::text, a.others_answers, a.proactive, a.proactive_level, a.proactive_budget_micro::text, a.memory, a.memory_ask, a.shared_notes, a.whisper_elsewhere, a.web_search, a.owner_appellation, a.reasoning, a.model_source, a.site_model_id, a.provider_id, a.provider_model,
        a.paused, a.deleted_at is not null as deleted, ac.conversation_id, a.created_at
   from agents a
   join principals p on p.id = a.principal_id
@@ -150,6 +153,7 @@ function toAgent(r: AgentDbRow): AgentRow {
     groupMentions: r.group_mentions,
     chainBudgetMicro: BigInt(r.chain_budget_micro),
     othersBudgetMicro: r.others_budget_micro === null ? null : BigInt(r.others_budget_micro),
+    othersAnswers: r.others_answers,
     proactive: r.proactive,
     proactiveLevel: r.proactive_level,
     proactiveBudgetMicro: BigInt(r.proactive_budget_micro),
@@ -289,6 +293,7 @@ export interface AgentPatch {
   groupMentions?: GroupMentions;
   chainBudgetMicro?: bigint;
   othersBudgetMicro?: bigint | null;
+  othersAnswers?: number | null;
   proactive?: boolean;
   proactiveLevel?: ProactiveLevel;
   proactiveBudgetMicro?: bigint;
@@ -310,7 +315,8 @@ export async function updateAgent(t: Tx, current: AgentRow, patch: AgentPatch): 
     `update agents set intro = $2, field = $3, persona = $4, persona_version = $5, reply_mode = $6, group_mentions = $7,
             reasoning = $8, model_source = $9, site_model_id = $10, provider_id = $11, provider_model = $12, chain_budget_micro = $13,
             others_budget_micro = $14, owner_appellation = $15, proactive = $16, proactive_level = $17,
-            proactive_budget_micro = $18, memory = $19, memory_ask = $20, shared_notes = $21, whisper_elsewhere = $22, web_search = $23
+            proactive_budget_micro = $18, memory = $19, memory_ask = $20, shared_notes = $21, whisper_elsewhere = $22, web_search = $23,
+            others_answers = $24
       where principal_id = $1`,
     [
       current.id,
@@ -333,6 +339,7 @@ export async function updateAgent(t: Tx, current: AgentRow, patch: AgentPatch): 
       next.sharedNotes,
       next.whisperElsewhere,
       next.webSearch,
+      next.othersAnswers,
     ],
   );
   if (next.name !== current.name) await t.query("update principals set display_name = $2 where id = $1", [current.id, next.name]);

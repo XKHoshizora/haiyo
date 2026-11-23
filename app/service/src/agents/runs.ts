@@ -872,28 +872,6 @@ async function reachAgents(
 }
 
 /**
- * What each of `agentIds` was charged since `dayStart` for its replies in the two lanes that have a daily budget
- * (`others`, `proactive`), settled charges only, both in one statement (an owner's list of Agents).
- */
-export async function spentTodayOf(
-  q: Queryable,
-  agentIds: readonly string[],
-  dayStart: Date,
-): Promise<Map<string, { others: bigint; proactive: bigint }>> {
-  const { rows } = await q.query<{ id: string; others: string; proactive: string }>(
-    `select a.id,
-            coalesce(sum(u.free_micro + u.balance_micro) filter (where r.lane = 'others'), 0)::text as others,
-            coalesce(sum(u.free_micro + u.balance_micro) filter (where r.lane = 'proactive'), 0)::text as proactive
-       from unnest($1::uuid[]) as a (id)
-       left join usage_records u on u.agent_id = a.id and u.created_at >= $2
-       left join agent_runs r on r.id = u.run_id
-      group by a.id`,
-    [agentIds, dayStart],
-  );
-  return new Map(rows.map((r) => [r.id, { others: BigInt(r.others), proactive: BigInt(r.proactive) }]));
-}
-
-/**
  * Whether the numbers an others' call is held to are reached for a call on `agent` in `conversationId` by someone other
  * than its owner (lane `others`; the caller checks the lane): `othersReached`, the advisory twin of `othersFits` — the
  * owner's answers and points, the Agent's own, settled today plus what running replies hold; on a provider's own model

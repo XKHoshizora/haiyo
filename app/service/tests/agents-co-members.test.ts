@@ -72,6 +72,9 @@ const HIDDEN_KEYS = [
   "withheld_notes",
   "othersLimit",
   "othersUsedToday",
+  // The use page's own keys (plan B4): the owner's numbers per person and per Agent.
+  "byPerson",
+  "perDay",
   "contactPolicy",
   "contactPicked",
   "picks",
@@ -270,7 +273,7 @@ async function world() {
     groupMentions: "owner",
     proactive: false,
     proactiveLevel: "normal",
-    proactiveBudget: "20",
+    proactiveBudget: "70",
     memory: true,
     memoryAsk: false,
     sharedNotes: true,

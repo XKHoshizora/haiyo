@@ -1,0 +1,22 @@
+-- Up Migration
+-- Step L (design §5; plan B4). Deploys only with lane B's code, which makes an Agent's number a sub-limit inside its owner's
+-- (Controller ruling 2026-11-24 (verification), E1/N1).
+-- Controller ruling 2026-11-24 (attack, I7): an Agent's number still at migration 020's default (20 points) becomes 70. A value an
+-- owner set to exactly 20 cannot be told from the default, so every row at exactly 20 points is raised. New Agents get none of their own.
+-- Controller ruling 2026-11-24 (final): 70 is the owner's default, so the raise never lets an Agent pass its owner's cap. The owner's
+-- numbers are not written here: null reads OTHERS.answersPerDay (50) and OTHERS.pointsPerDay (70), one value per owner however many
+-- Agents they have (plan "Design conflict for the owner").
+update agents set others_budget_micro = 70000000 where others_budget_micro = 20000000;
+-- Controller ruling 2026-11-24 (B-2 dispatch): the others' number keeps a NULL column default after this migration (a new Agent has no
+-- sub-limit of its own; the owner's per-day cap, 70 points and 50 answers, is what applies). The line of the earlier round that set that
+-- default to 70 is withdrawn. 074 drops 020's default of 20, so a new row reads null.
+alter table agents alter column others_budget_micro drop default;
+-- Controller ruling 2026-11-24 (B-1 review, B-2 dispatch): the proactive budget is a hard sub-cap that counts holds. Rows still at the old
+-- default 20 become 70 (the same rule as the others' number: every row at exactly 20 points; a number an owner set below or above 20 stays),
+-- and the column default becomes 70 for new Agents.
+update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
+alter table agents alter column proactive_budget_micro set default 70000000;
+-- Down Migration
+-- (the raises are not undone: a row at 70 cannot be told from one an owner set)
+alter table agents alter column others_budget_micro set default 20000000;
+alter table agents alter column proactive_budget_micro set default 20000000;

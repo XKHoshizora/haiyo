@@ -219,7 +219,7 @@ describe("the others' daily budget", () => {
     await say(w.owner, anna.conversationId, "你好");
     expect((await runsOf(anna.id, anna.conversationId)).at(-1)).toMatchObject({ status: "queued", lane: "own" });
     // Its owner sees what others spent today, and only that.
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersBudget: "2", othersSpentToday: "2" });
+    expect(await viewOf(w.owner, anna)).toMatchObject({ othersLimit: { points: "2" }, othersUsedToday: { points: "2" } });
   });
 
   it("an Agent of someone else is refused the same way", async () => {
@@ -358,7 +358,7 @@ describe("the others' daily budget", () => {
       [w.owner.id, anna.id],
       [w.owner.id, anna.id],
     ]);
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "1.999999" });
+    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "1.999999" } });
   });
 
   it.each([
@@ -416,7 +416,8 @@ describe("the others' daily budget", () => {
     await say(w.third, g2, "@anna 三");
     expect(await runsOf(anna.id, g2)).toEqual([expect.objectContaining({ status: "running", pending: null })]);
     expect(await noticesOf(g2)).toHaveLength(1);
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "0" });
+    // Others' use counts what the reply being written holds (the number is decided by settled plus held).
+    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "50" } });
 
     // It ends: its hold is gone, and the call is answered again.
     await settleAll();
@@ -430,7 +431,7 @@ describe("the others' daily budget", () => {
     await say(w.third, w.g, "@anna 五");
     expect(await runsOf(anna.id, w.g)).toEqual(settled);
     expect(await noticesOf(w.g)).toHaveLength(1);
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "2" });
+    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "2" } });
   });
 
   it("a person's mention it refused is no call of a later follow-up whose answer it lies in: that follow-up is the caller's whose mention was noted", async () => {
@@ -461,7 +462,7 @@ describe("the others' daily budget", () => {
     await paidOthers(anna, w.g, 50 * POINT, new Date(dayStart.getTime() - 1000));
     await say(w.member, w.g, "@anna 你好");
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others" });
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "0" });
+    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "0" } });
     await settleAll();
     // From the day's first instant it counts.
     await paidOthers(anna, w.g, 2 * POINT, dayStart);
@@ -490,7 +491,7 @@ describe("the others' daily budget", () => {
     expect(await queued(w.member, "@anna 一")).toBe(false);
     expect(await noticesOf(w.g)).toHaveLength(1);
     // Raised above today's spend (2.5 points): answered at once.
-    expect(await patch("3")).toMatchObject({ othersBudget: "3", othersSpentToday: "2.5" });
+    expect(await patch("3")).toMatchObject({ othersLimit: { points: "3" }, othersUsedToday: { points: "2.5" } });
     expect(await queued(w.member, "@anna 二")).toBe(true);
     await db.query("update agent_runs set status = 'done', finished_at = now() where agent_id = $1 and conversation_id = $2", [anna.id, w.g]);
     // Lowered below it: refused at once (the group was told today already).
@@ -498,13 +499,13 @@ describe("the others' daily budget", () => {
     expect(await queued(w.third, "@anna 三")).toBe(false);
     expect(await noticesOf(w.g)).toHaveLength(1);
     // No limit: answered, however much was spent.
-    expect(await patch(null)).toMatchObject({ othersBudget: null, othersSpentToday: "2.5" });
+    expect(await patch(null)).toMatchObject({ othersLimit: { points: null }, othersUsedToday: { points: "2.5" } });
     expect(await queued(w.third, "@anna 四")).toBe(true);
     // Its owner's list shows each Agent's own.
     const listed = (await api(app, w.owner, "GET", "/api/agents")).json.agents as Array<Record<string, unknown>>;
-    expect(listed.map((a) => [a.id, a.othersBudget, a.othersSpentToday])).toEqual([
+    expect(listed.map((a) => [a.id, (a.othersLimit as { points: string | null }).points, (a.othersUsedToday as { points: string }).points])).toEqual([
       [anna.id, null, "2.5"],
-      [plain.id, "20", "0"],
+      [plain.id, null, "0"],
     ]);
   });
 });

@@ -1,5 +1,6 @@
 import { lockAccount, MICRO_PER_POINT, nextSiteMidnight, siteDayStart } from "../accounts/store.ts";
 import type { Lane } from "../agents/runs.ts";
+import type { AgentModel } from "../agents/store.ts";
 import type { Config } from "../config.ts";
 import type { Queryable, Tx } from "../db.ts";
 import type { Resolved } from "../models/resolve.ts";
@@ -144,7 +145,9 @@ async function pointsToday(
 
 /** What has been used today of the owner's numbers (or, with `scope`, of one Agent's, one lane's). No lock: advisory, or under the caller's. */
 export async function othersUsedToday(q: Queryable, config: Pick<Config, "siteTimezone">, ownerId: string, now: Date, scope: Scope = {}): Promise<OthersUse> {
-  const [answers, points] = await Promise.all([answersToday(q, config, ownerId, now, scope, null), pointsToday(q, config, ownerId, now, scope, null)]);
+  // One after the other: `q` may be a transaction's one connection.
+  const answers = await answersToday(q, config, ownerId, now, scope, null);
+  const points = await pointsToday(q, config, ownerId, now, scope, null);
   return { answers: answers.answers, settledMicro: points.settledMicro, heldMicro: points.heldMicro };
 }
 
@@ -271,4 +274,111 @@ export class OthersLimit extends Error {
     super(`others' limit reached: ${limit}`);
     this.name = "OthersLimit";
   }
+}
+
+/** What each of an owner's Agents has taken of the owner's numbers today (`othersUsedByAgents`). */
+export interface AgentUse {
+  answers: number;
+  pointsMicro: bigint;
+}
+
+/**
+ * What each of `agentIds` (all of one owner's) has used of the site day `now` is in, against its own limits, in one statement: the
+ * answers (distinct retry chains admitted today, both lanes others call for: the Agent's own answers number counts both) and the
+ * points (settled plus held, lane `others` only: the Agent's own points number scopes that lane; its proactive replies have
+ * `proactiveBudget`, and the owner's total, `othersUsedToday`, counts both). An Agent with nothing is in the map with zeros.
+ * Advisory, no lock: the owner's view (`othersUsedToday` of the Agent wire, the use page's `agents`).
+ */
+export async function othersUsedByAgents(
+  q: Queryable,
+  config: Pick<Config, "siteTimezone">,
+  ownerId: string,
+  agentIds: readonly string[],
+  now: Date,
+): Promise<Map<string, AgentUse>> {
+  const from = siteDayStart(now, config.siteTimezone, 0);
+  const to = nextSiteMidnight(now, config.siteTimezone);
+  const { rows } = await q.query<{ id: string; answers: number; settled: string; held: string }>(
+    `select a.id,
+            (select count(distinct coalesce(r.retry_of, r.id))::int from agent_runs r
+              where r.agent_id = a.id and r.owner_id = $2 and r.purpose = 'reply' and r.lane = any($3::text[]) and r.admitted_at >= $4 and r.admitted_at < $5) as answers,
+            (select coalesce(sum(u.free_micro + u.balance_micro), 0)::text from usage_records u join agent_runs r on r.id = u.run_id
+              where u.agent_id = a.id and u.owner_id = $2 and u.created_at >= $4 and u.created_at < $5 and r.purpose = 'reply' and r.lane = 'others') as settled,
+            (select coalesce(sum(r.hold_micro), 0)::text from agent_runs r
+              where r.agent_id = a.id and r.owner_id = $2 and r.status = 'running' and r.purpose = 'reply' and r.lane = 'others') as held
+       from unnest($1::uuid[]) as a (id)`,
+    [agentIds, ownerId, OTHERS_LANES, from, to],
+  );
+  return new Map(rows.map((r) => [r.id, { answers: r.answers, pointsMicro: BigInt(r.settled) + BigInt(r.held) }]));
+}
+
+/** One person's calls on an owner's Agents today (`othersByPerson`). */
+export interface PersonUse {
+  person: { id: string; handle: string; displayName: string; avatarVersion: number };
+  answers: number;
+  pointsMicro: bigint;
+}
+
+/**
+ * The people whose calls the owner's others' replies answered today, by points (settled plus held), then answers, then id: the
+ * callers of the replies of lane `others` (a proactive reply has no caller, and one whose caller has left names nobody; both are
+ * in the owner's total and in no row).
+ */
+export async function othersByPerson(q: Queryable, config: Pick<Config, "siteTimezone">, ownerId: string, now: Date): Promise<PersonUse[]> {
+  const from = siteDayStart(now, config.siteTimezone, 0);
+  const to = nextSiteMidnight(now, config.siteTimezone);
+  const { rows } = await q.query<{ id: string; handle: string; name: string; avatar_version: number; answers: number; points: string }>(
+    `with chains as (
+       select r.caller_id, count(distinct coalesce(r.retry_of, r.id))::int as answers
+         from agent_runs r
+        where r.owner_id = $1 and r.purpose = 'reply' and r.lane = 'others' and r.caller_id is not null and r.admitted_at >= $2 and r.admitted_at < $3
+        group by r.caller_id),
+     settled as (
+       select r.caller_id, sum(u.free_micro + u.balance_micro) as micro
+         from usage_records u join agent_runs r on r.id = u.run_id
+        where u.owner_id = $1 and u.created_at >= $2 and u.created_at < $3 and r.purpose = 'reply' and r.lane = 'others' and r.caller_id is not null
+        group by r.caller_id),
+     held as (
+       select caller_id, sum(hold_micro) as micro from agent_runs
+        where owner_id = $1 and status = 'running' and purpose = 'reply' and lane = 'others' and caller_id is not null
+        group by caller_id)
+     select p.id, p.handle::text as handle, p.display_name as name, p.avatar_version, coalesce(c.answers, 0) as answers,
+            (coalesce(s.micro, 0) + coalesce(h.micro, 0))::text as points
+       from principals p
+       left join chains c on c.caller_id = p.id left join settled s on s.caller_id = p.id left join held h on h.caller_id = p.id
+      where c.caller_id is not null or s.caller_id is not null or h.caller_id is not null
+      order by coalesce(s.micro, 0) + coalesce(h.micro, 0) desc, coalesce(c.answers, 0) desc, p.id`,
+    [ownerId, from, to],
+  );
+  return rows.map((r) => ({ person: { id: r.id, handle: r.handle, displayName: r.name, avatarVersion: r.avatar_version }, answers: r.answers, pointsMicro: BigInt(r.points) }));
+}
+
+/** The estimate's plain reply: held for 16 500 input tokens, costing 5 000 input and 500 output tokens. */
+const PLAIN_REPLY_INPUT_TOKENS = 16_500;
+const PLAIN_COST_INPUT_TOKENS = 5_000;
+const PLAIN_COST_OUTPUT_TOKENS = 500;
+
+/**
+ * How many replies a site day an Agent can give others, estimated for the owner's page (plan B4): 0 when the numbers that bind
+ * it (the owner's, or the Agent's own where lower) do not cover one plain reply's hold (one call at 16 500 input tokens and the
+ * others' output limit: `othersFloorHold`), else `min(answers, 1 + ⌊(points − plain hold) / plain cost⌋)` with the plain cost of
+ * 5 000 input and 500 output tokens at the model's price. A provider's own model costs the owner nothing: the answers number. No
+ * model, or a site model the site no longer has: 0.
+ */
+export function perDayEstimate(
+  config: Pick<Config, "siteModels" | "others">,
+  model: AgentModel,
+  numbers: { owner: OthersNumbers; agent: { answers: number | null; pointsMicro: bigint | null } },
+): number {
+  if (model === null) return 0;
+  const answers = BigInt(Math.min(numbers.owner.answers, numbers.agent.answers ?? Number.MAX_SAFE_INTEGER));
+  if (model.source !== "site") return Number(answers);
+  const site = config.siteModels.find((m) => m.id === model.id);
+  if (!site) return 0;
+  const points = numbers.agent.pointsMicro !== null && numbers.agent.pointsMicro < numbers.owner.pointsMicro ? numbers.agent.pointsMicro : numbers.owner.pointsMicro;
+  const plainHold = othersFloorHold(config, model, PLAIN_REPLY_INPUT_TOKENS);
+  if (points < plainHold) return 0;
+  const plainCost = BigInt(PLAIN_COST_INPUT_TOKENS) * BigInt(site.inputMicroPerToken) + BigInt(PLAIN_COST_OUTPUT_TOKENS) * BigInt(site.outputMicroPerToken);
+  const replies = plainCost === 0n ? answers : 1n + (points - plainHold) / plainCost;
+  return Number(replies < answers ? replies : answers);
 }

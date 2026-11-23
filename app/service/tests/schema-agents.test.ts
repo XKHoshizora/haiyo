@@ -82,14 +82,14 @@ describe("agent, provider, metering and run tables", () => {
     await expect(insert("cb_null", null)).rejects.toMatchObject({ code: "23502" });
   });
 
-  test("proactive is off, proactive_level normal and proactive_budget_micro 20 points by default; the level is one of three, the budget from 1 to 100 000 points", async () => {
+  test("proactive is off, proactive_level normal and proactive_budget_micro 70 points by default (074); the level is one of three, the budget from 1 to 100 000 points", async () => {
     const owner = await human("owner_pr");
     const insert = async (handle: string, column: string, value: unknown) =>
       db.query(`insert into agents (principal_id, ${column}) values ($1, $2)`, [await agentPrincipal(owner, handle), value]);
     await db.query(`insert into agents (principal_id) values ($1)`, [await agentPrincipal(owner, "pr_default")]);
     expect(
       (await db.query(`select proactive, proactive_level, proactive_budget_micro::text as budget from agents`)).rows,
-    ).toEqual([{ proactive: false, proactive_level: "normal", budget: "20000000" }]);
+    ).toEqual([{ proactive: false, proactive_level: "normal", budget: "70000000" }]);
     for (const level of ["less", "normal", "more"]) await insert(`pr_${level}`, "proactive_level", level);
     await insert("pr_low", "proactive_budget_micro", "1000000");
     await insert("pr_high", "proactive_budget_micro", "100000000000");
@@ -106,7 +106,7 @@ describe("agent, provider, metering and run tables", () => {
     }
   });
 
-  test("others_budget_micro is 20 points by default, from 1 to 100 000 points in micro-points, or null for no limit", async () => {
+  test("others_budget_micro is null by default (074), from 1 to 100 000 points in micro-points, or null for no limit", async () => {
     const owner = await human("owner_ob");
     const insert = async (handle: string, value: unknown) =>
       db.query(`insert into agents (principal_id, others_budget_micro) values ($1, $2)`, [await agentPrincipal(owner, handle), value]);
@@ -121,7 +121,7 @@ describe("agent, provider, metering and run tables", () => {
       `select p.handle::text as handle, a.others_budget_micro::text as budget from agents a join principals p on p.id = a.principal_id order by p.handle`,
     );
     expect(rows).toEqual([
-      { handle: "ob_default", budget: "20000000" },
+      { handle: "ob_default", budget: null },
       { handle: "ob_high", budget: "100000000000" },
       { handle: "ob_low", budget: "1000000" },
       { handle: "ob_null", budget: null },

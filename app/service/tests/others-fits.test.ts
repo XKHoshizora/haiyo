@@ -85,15 +85,15 @@ describe("the holds (design §8 test 2)", () => {
     const [a] = await agentsOf(app, db, owner, 1);
     expect(await othersNumbers(db, config(), owner.id, a!.agentId)).toEqual({
       owner: { answers: 50, pointsMicro: 70n * POINT },
-      agent: { answers: null, pointsMicro: 20n * POINT },
-      proactiveMicro: 20n * POINT,
+      agent: { answers: null, pointsMicro: null },
+      proactiveMicro: 70n * POINT,
     });
     await setOwnerNumbers(db, owner.id, { answers: 7, pointsMicro: 30n * POINT });
     await db.query("update agents set others_answers = 3, others_budget_micro = null where principal_id = $1", [a!.agentId]);
     expect(await othersNumbers(db, config(), owner.id, a!.agentId)).toEqual({
       owner: { answers: 7, pointsMicro: 30n * POINT },
       agent: { answers: 3, pointsMicro: null },
-      proactiveMicro: 20n * POINT,
+      proactiveMicro: 70n * POINT,
     });
   });
 });

@@ -61,6 +61,8 @@ export interface NewAgent {
   groupMentions: GroupMentions;
   chainBudgetMicro: bigint;
   othersBudgetMicro: bigint | null;
+  /** The Agent's own answers number (`othersLimit.answers`); absent: none. */
+  othersAnswers?: number | null;
   proactive: boolean;
   proactiveLevel: ProactiveLevel;
   proactiveBudgetMicro: bigint;
@@ -116,8 +118,8 @@ export async function createAgent(
   const created = await t.query<{ created_at: Date }>(
     `insert into agents (principal_id, intro, field, persona, persona_version, reply_mode, group_mentions, reasoning,
                          model_source, site_model_id, provider_id, provider_model, chain_budget_micro, others_budget_micro, owner_appellation,
-                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) returning created_at`,
+                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search, others_answers)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) returning created_at`,
     [
       id,
       input.intro,
@@ -139,6 +141,7 @@ export async function createAgent(
       input.sharedNotes,
       input.whisperElsewhere,
       input.webSearch ?? true,
+      input.othersAnswers ?? null,
     ],
   );
   const conversation = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent', $1) returning id", [ownerId]);
@@ -171,6 +174,7 @@ export async function createAgent(
     groupMentions: input.groupMentions,
     chainBudgetMicro: input.chainBudgetMicro,
     othersBudgetMicro: input.othersBudgetMicro,
+    othersAnswers: input.othersAnswers ?? null,
     proactive: input.proactive,
     proactiveLevel: input.proactiveLevel,
     proactiveBudgetMicro: input.proactiveBudgetMicro,

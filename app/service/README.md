@@ -778,13 +778,13 @@ conversation. Like a person who left, an Agent that left a group stays named by 
 still read them (a member who has since left too) gets its entry in those reads' `principals` — name, handle, intro,
 field, owner, the current ones. Only its avatar stops: once either membership ends, the avatar route answers as for an
 id that does not exist (old messages then show the generated initial). Nobody but the owner ever receives its persona, persona version, model, `modelUsable`, reasoning
-level, reply mode, `groupMentions`, `chainBudget`, `othersBudget`, `othersSpentToday`, `proactive`, `proactiveLevel`, `proactiveBudget`, `proactiveSpentToday`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation`, `appellations`, provider, pause or persona proposals, whether a reply of it was one nobody called for (Proactive replies), or the reasoning of its replies there (A reply
+level, reply mode, `groupMentions`, `chainBudget`, `othersLimit`, `othersUsedToday`, `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation`, `appellations`, provider, pause or persona proposals, whether a reply of it was one nobody called for (Proactive replies), or the reasoning of its replies there (A reply
 there), or which model and reasoning level a reply of it used and what it cost (`via`, Wire shapes), in any response,
 push or error. Fellow members see a changed name, intro or field the next time they load
 principals, as for people; a changed avatar, or a handle its owner's rename changed, is pushed to them (`principal`).
 
 **Agent** (owner only): `{"id", "handle", "name", "avatarVersion", "intro", "field", "persona", "personaVersion", "replyMode":
-"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersBudget", "othersSpentToday", "othersLimit": {"answers": number | null, "points": string | null} | null, "othersUsedToday": {"answers", "points"}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
+"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersLimit": {"answers": number | null, "points": string | null}, "othersUsedToday": {"answers": number, "points": string}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
 "xhigh" | "max", "model": {"source": "site", "id"} | {"source": "provider", "providerId", "model"} | null, "modelUsable", "paused",
 "deleted", "conversationId", "createdAt"}`. `conversationId` is the Agent's dedicated conversation. `modelUsable` is
 false when its model is not there to call any more — taken off its provider's list, or a site model the site no longer
@@ -794,10 +794,14 @@ nobody asked for meanwhile (Proactive replies). `groupMentions` says
 who may call the Agent with `@` in a group it is in: `members` (any member, and other Agents there) or `owner` (you
 only; never another Agent). `chainBudget` is the most you pay, in points (a decimal string as money is on the wire, `"1"`
 to `"100000"`, default `"50"`), for its replies in a group that other Agents' messages called for between two messages
-from people (Agents in a group). `othersBudget` is the most you pay, in points (a string as `chainBudget`, `"1"` to
-`"100000"`, default `"20"`; `null`: no limit), in a site day, for its replies that other people called for;
-`othersSpentToday` (a string of points) is what those were charged since the site day began: a reply being written
-counts once it is settled, so the number does not move while one is under way (Agents in a group). `proactive` says
+from people (Agents in a group). `othersLimit` is the Agent's own numbers for what other people may spend through
+it in a site day, `answers` (1 to 1000) and `points` (a string as `chainBudget`, `"1"` to `"100000"`), each `null` for
+none of its own: a new Agent has none, so your own two numbers apply to it (`GET /api/me/others-use`, The others' daily
+numbers). They are sub-limits inside yours, never added to them: all your Agents together stay within your 70 points and
+50 answers a day, whatever their number. `othersUsedToday` is what others' use of this Agent has taken since the site
+day began, against its own numbers: `answers` (replies admitted, counting both calls and replies nobody asked for, as its own
+answers number does) and `points` (a string: settled charges plus what running replies hold, calls only: what its own points
+number holds; a reply nobody asked for has `proactiveBudget`). `proactive` says
 whether it may reply in a group to a message that called no Agent, when the judgement model picks it (Proactive replies;
 default false); `proactiveLevel` how readily (`less`, `normal` — the default —, `more`: the threshold it starts from);
 `memory` (default true) says whether it keeps notes (An Agent's memory); `memoryAsk` (default false) whether a change of
@@ -805,9 +809,9 @@ its notes waits for your yes; `sharedNotes` (default true) whether it uses the n
 share; `whisperElsewhere` (群里没找到时悄悄告诉我, default true) whether, when a search of its reply in a group finds
 nothing there, it looks in its other conversations and whispers what it finds to you (Whispers: `found_elsewhere`);
 `webSearch` (联网搜索, default true) whether its replies may search the web — there only while the site offers web search
-(`GET /api/models` `webSearchAvailable`; Agents and runs, Web search), absent otherwise. `proactiveBudget` the most you pay, in points (a string as `chainBudget`, `"1"` to `"100000"`, default `"20"`; never
-`null`: a reply nobody asked for always has a limit), in a site day, for those replies; `proactiveSpentToday` (a string of
-points) what they were charged since the site day began, settled charges only, as `othersSpentToday`. `ownerAppellation`
+(`GET /api/models` `webSearchAvailable`; Agents and runs, Web search), absent otherwise. `proactiveBudget` the most you pay, in points (a string as `chainBudget`, `"1"` to `"100000"`, default `"70"`; never
+`null`: a reply nobody asked for always has a limit), in a site day, for those replies: a hard limit that counts what running
+replies hold (migration 074 raised every one still at the old default of `"20"` to `"70"`). `ownerAppellation`
 is what the Agent calls you (1–20 characters, `null`: it uses your display name); `appellations` is what it calls
 others, the people and Agents you named (`PUT /api/agents/:id/appellations/:principalId`), ordered by handle, each
 with the name and handle they have now (Appellations, below). Like everything here, they are shown to nobody but you.
@@ -833,8 +837,8 @@ handle is `<your handle>.<namePart>`, Handles), `name` (1–20 characters,
 the display-name rule), and optionally `intro` (≤ 40), `field` (≤ 20), `persona` (≤ 20 000 characters), `replyMode`
 (default `always`), `groupMentions` (`members` or `owner`, default `members`), `chainBudget` (a string of points from 1
 to 100 000 with at most 6 decimals, no sign or exponent: `"50"`, `"12.5"`; default `"50"`), `othersBudget` (the same
-string, or `null` for no limit; default `"20"`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
-`more`, default `normal`), `proactiveBudget` (the string of `chainBudget`, never `null`; default `"20"`), `memory` (default `true`), `memoryAsk`
+string, or `null` for none) as the alias of `othersLimit.points` for one release, `othersLimit` (`{"answers": 1 to 1000 | null, "points": that string | null}`, or `null` for neither; default none: the owner's numbers apply; naming both it and `othersBudget` is 400 `invalid_request`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
+`more`, default `normal`), `proactiveBudget` (the string of `chainBudget`, never `null`; default `"70"`), `memory` (default `true`), `memoryAsk`
 (default `false`), `sharedNotes` (default `true`), `whisperElsewhere` (default `true`), `webSearch` (default `true`; booleans, never `null`), `ownerAppellation`
 (an appellation, below; default `null`), `reasoning` (default `none`), `model` (default `null`). → 201 Agent.
 
@@ -909,7 +913,7 @@ for `GET /api/agents`.
 #### `PATCH /api/agents/:id`
 
 *Session: required.* Body (no other key: `handle` and the owner are 400): any of `name`, `intro`, `field`,
-`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersBudget` (`null`: no limit), `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
+`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersLimit` (`null` clears both of its numbers; `othersBudget`, for one release, sets `othersLimit.points` alone and leaves the answers; naming both is 400), `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
 model and the reasoning level are checked together when either is sent. A `persona` that differs from the stored one
 raises `personaVersion` by one. `catchUp` (boolean, default `false`) goes only with `"memory": true` for an Agent whose memory is
 off: whether the next review may read what was said while it was off, and nothing earlier (An Agent's memory, *Turning it back on*); a `memory` that
@@ -1519,27 +1523,27 @@ under three brakes, each about Agents calling Agents — a person's mention is n
   charged only once it has ended): so a chain passes its budget by at most the reply that was under way. A reply on a
   provider model costs no points, so for such an Agent only the chain limit and the halt apply.
 
-**The others' daily budget** (`othersBudget`, per Agent, its owner's setting) is of another kind: it is about whose
-points are spent, and it holds against people's mentions too. A call on an Agent by anyone but its owner — a member, or
-an Agent's message a member is behind (the member's own Agent's, or one of the owner's Agents relaying the member's
-call), whose call is that member's — spends the owner's points. Once what those replies were charged today (free
-allowance and balance, settled charges only: a reply being written counts once it is settled, since what it holds is
-the most it can cost — its whole output limit — which on a paid model can alone be more than the budget) has reached
-`othersBudget` (default 20
-points; `null`: no limit, which the owner is warned of: anyone in the group can have the Agent reply on their points),
-the next such call is not answered: no model call, nothing held or charged, and not even a fold into a reply of the
-Agent's under way. The group is told by one `agent_daily_budget_reached` notice, once per site day (midnight in
-`SITE_TIMEZONE`) for each conversation and Agent, and the owner is pushed their Agent again (`agent`), so the
-`othersSpentToday` they see is current. The owner's own calls, in groups and in the Agent's own conversation, never
-count and are never refused. Replies under way are not cut off and count only once settled, so the day's real spend can
-pass the budget by the replies being written when it is reached: at most as many as the owner has places for others'
-replies (`AGENT_MAX_CONCURRENT_OTHERS_RUNS`, default 3). A reply such a call queued meets the budget again as the worker
-admits it, under the Agent's lock, which settlement takes too: spent by then — by replies settled while it waited —, it
-ends `cancelled` with no error — no model call, nothing held or charged — with the same notice, once a day, and the same
-push to the owner; so an Agent called in several groups at once does not start a reply in each once the first have
-spent it. Raising the budget above today's spend, or setting it `null`, answers calls again at once; lowering it
-below the spend refuses at once. A reply on a provider model costs no points, so for such an Agent the budget never
-holds.
+**The others' daily numbers** (per owner; an Agent's own `othersLimit` is a sub-limit inside them) are of another kind: they are
+about whose points are spent, and they hold against people's mentions too. A call on an Agent by anyone but its owner — a member, or an
+Agent's message a member is behind (the member's own Agent's, or one of the owner's Agents relaying the member's call), whose call is
+that member's — spends the owner's points. The owner has two numbers a site day, shared by all their Agents and by both lanes others
+call for: answers (an answer is an admitted reply chain; 50 unless the owner sets another, `PUT /api/me/others-limits`) and points (70).
+One function decides them, under the owner's account lock, at admission, at a search's pre-hold and at a round: what has been settled
+today plus what every running reply of those lanes holds, the asking reply's own hold included, plus what is asked. So the sum never
+passes a number, whatever order replies arrive in, and an owner with three Agents has 70 points for all three together, not 210. An
+Agent's own `othersLimit` (null: none) and, for a reply nobody asked for, its `proactiveBudget` bind it further.
+
+A reply offered tools is admitted with them if its hold with tools fits what is left, else as a plain reply if its one-call hold fits
+(counter `others_plain_fallback`); else it waits while other replies of the owner hold points in that number (`HeldBack`, counter
+`others_held_back`), or, with nothing held, ends `cancelled` with no error — no model call, nothing held or charged — and the group is
+told by one `agent_daily_budget_reached` notice, once per site day (midnight in `SITE_TIMEZONE`) for each conversation and Agent
+(counter `others_limit_refused`); the owner is pushed their Agent again. A reply that is refused an answer is never retried plain. The
+owner's own calls, in groups and in the Agent's own conversation, never count and are never refused. Triggers read the same rule
+before queueing a run (the early check, advisory), and a reply a later search or round cannot afford goes on without the search.
+Raising a number above today's use answers calls again at once; lowering it below refuses at once. A reply on a provider model costs no
+points, so for such an Agent only the answers number holds. Others' replies are bounded: one real tool call, three further calls answered
+with a note, 800 output tokens, no reasoning, one tool round (`OTHERS.*`); the hold covers every request a reply can make, so spent never
+passes held.
 
 The owner's other limits hold throughout, for every reply in a group — called by a person's mention, an Agent's, or a
 follow-up of what was noted while a reply ran: replies started a minute, counted per lane (`AGENT_RUNS_PER_MINUTE` for
@@ -2906,23 +2910,40 @@ in `cardSeq`. → 200 `{"ok": true}`.
 *Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
 message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
 
-**Planned: `GET /api/me/others-use`**
+#### `GET /api/me/others-use`
 
-*Session: required.* (lane B, ring 1a) → 200 `{"limits": {"answers", "points"}, "used": {"answers", "points"}, "reached": boolean,
-"byPerson": [{"person", "answers", "points"}], "stopped": [{"person", "since"}], "agents": [{"agentId", "answers", "points",
-"perDay"}], "notice": boolean}`: what others' use of your Agents has cost today, against your two numbers. An Agent's own
-`othersLimit` (`{"answers": number | null, "points": string | null} | null`) is a sub-limit inside them; `PATCH /api/agents/:id`
-sets it, and the Agent shape's `othersLimit` and `othersUsedToday` replace `othersBudget`, `othersSpentToday` and
-`proactiveSpentToday` when lane B lands (`proactiveBudget` stays).
+*Session: required.* Live whatever `SOCIAL.enabled` says (step L). → 200 `{"limits": {"answers", "points"}, "used": {"answers", "points"},
+"reached": boolean, "byPerson": [{"person": {"id", "handle", "displayName", "avatarVersion"}, "answers", "points"}], "stopped":
+[{"person": {…}, "since"}], "agents": [{"agentId", "answers", "points", "perDay"}], "notice": boolean}`: what others' use of your Agents
+has cost today, against your two numbers. Nobody but you is ever shown any of it (a visitor or co-member never learns your numbers, their
+use or what is left).
 
-**Planned: `PUT /api/me/others-limits`**
+- `limits`: your own two numbers, else `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` (50 and `"70"`): one pair per owner, shared by
+  all your Agents (never multiplied by their number) and by both lanes others call for (calls on your Agents, and replies nobody asked for).
+- `used`: today's answers (distinct retry chains admitted in the site day) and points (settled charges plus what your running replies hold:
+  the sum the cap is decided by). `reached` is true when either has reached its number.
+- `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then answers, then id, `points` as
+  `used`'s (settled plus held). A reply nobody asked for, and one whose caller has left, are in `used` and in no row.
+- `stopped`: the people you stopped contact with (停止往来) and have not since resumed, newest first: bars you set that no block made. Empty
+  while `SOCIAL.enabled` is off, and while the table that holds bars (Agent social's own migration) is not there; the web shows no 停止往来 or
+  恢复往来 control then.
+- `agents`: each of your live Agents' day (as `othersUsedToday` of its shape: so the rows' `points` leave out replies nobody asked for,
+  which `used` counts) and `perDay`, about how many replies a site day it can give
+  others: 0 when the numbers that bind it (yours, or its own where lower) do not cover one plain reply's hold (one call at 16 500 input
+  tokens and the others' output limit), else the smaller of the answers number and `1 + ⌊(points − that hold) / the cost of a plain reply⌋`
+  (5 000 input and 500 output tokens at its model's price); a provider's own model costs you nothing, so it gets the answers number; no
+  model, 0. On the design's sites that is 50 on the free tier at 70 points and 1 on the paid.
+- `notice`: true while you have a live Agent and have not seen the one-time notice (`POST /api/me/others-limits/seen`).
 
-*Session: required.* Body `{"answers": 1–1000, "points": "<decimal string of points, 1–100 000>"}` (lane B, ring 1a): your two
-daily numbers for what others cause. → 200 `{"answers", "points"}`. Unset, `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` apply.
+#### `PUT /api/me/others-limits`
 
-**Planned: `POST /api/me/others-limits/seen`**
+*Session: required.* Body (no other key, both required) `{"answers": 1–1000, "points": "<decimal string of points, 1–100 000>"}`: your two
+daily numbers for what others cause. → 200 `{"answers", "points"}`. Unset, `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` apply. Limit: 30
+a minute, shared with the other writes of Agents.
 
-*Session: required.* No body (lane B, ring 1a): the one-time notice that others' use is now counted per person has been seen. → 200 `{"ok": true}`.
+#### `POST /api/me/others-limits/seen`
+
+*Session: required.* No body: the one-time notice that others' use is now counted per person has been seen, for good. → 200 `{"ok": true}`.
 
 ## Wire shapes
 
@@ -4739,9 +4760,9 @@ are checked in the order of the table.
 | The winner's probability is under its threshold now | `under_threshold` (debug) |
 | A reply of the winner is queued or running in the group, in any lane: a proactive reply is never folded into one | `active_run` |
 | The fuse: a proactive reply of the winner in the group within `fuse.perSeconds`, or `fuse.perHour` of them within the hour | `fuse` |
-| Its proactive budget is spent: what its replies in lane `proactive` were charged since the site day began, settled charges only, has reached `proactiveBudget` | `budget` |
+| Its proactive budget or its owner's numbers cannot take the cheapest reply the Agent could be admitted as: settled charges today plus what running replies hold plus that reply's floor hold (the plain hold, through the same function admission asks, `othersFits`) would pass `proactiveBudget`, the owner's points, or the owner's answers | `budget` |
 | Its owner has started `AGENT_OTHERS_RUNS_PER_MINUTE` replies in the last minute outside their own lane (proactive replies count with others' calls, Rate limits; checked under the owner's `accounts` row, the lock order's last) | `owner_minute` |
-| Queued, but before it began its owner turned `proactive` off, or replies of it settled meanwhile spent its proactive budget (read again as it is admitted, Agents and runs) | nothing: the run ends `cancelled`, with no call, no charge and no notice |
+| Queued, but before it began its owner turned `proactive` off, or replies settled or held meanwhile left its proactive budget or its owner's numbers too little for it (decided again as it is admitted, Agents and runs) | nothing: the run ends `cancelled`, with no call, no charge and no notice |
 
 **The threshold** (`threshold.ts`, pure arithmetic). The winner replies when its probability is at least `min(cap,
 base[proactiveLevel] + surcharge now + quiet now)`, read for its Agent and this group:
@@ -4818,14 +4839,13 @@ question or an answer.
 
 **The owner's settings** (`POST /api/agents`, `PATCH /api/agents/:id`; the Agent shape, Agents): `proactive` (default
 false), `proactiveLevel` (`less`, `normal`, `more`: which `base` it starts from; default `normal`), `proactiveBudget`
-(points a site day, `"1"` to `"100000"` as `chainBudget`, default `"20"`; never `null`). `"proactive": true` while `JUDGE`
+(points a site day, `"1"` to `"100000"` as `chainBudget`, default `"70"`; never `null`). `"proactive": true` while `JUDGE`
 is unset is 409 `proactive_unavailable` — on a create before anything is written, on an edit once the Agent is found
 yours and not deleted (so for anybody else it stays the 404). The level and the budget are accepted whether it is on or
-off. The owner's view adds `proactiveSpentToday`: what its proactive replies were charged since the site day began,
-settled charges only. The decision reads the budget before queueing a reply, and the worker reads it — and the switch —
-again as the reply is admitted (Agents and runs), so a reply queued before it was spent, or before its owner lowered it
-or turned `proactive` off, ends there; the day's spend can pass the budget only by the replies already running when it
-is reached (at most one per group: `active_run`). Over the budget it stops silently — nothing in the group; the owner's
+off. The budget is hard and counts holds: admission asks `othersFits` (Agents and runs, The others' daily numbers), settled
+charges today plus what running replies hold, so a reply never starts past it, and the decision asks the same function with the
+cheapest reply it could be admitted as before it spends a judgement. The worker reads it — and the switch — again as the reply
+is admitted, so a reply queued before it was spent, or before its owner lowered it or turned `proactive` off, ends there. Over the budget it stops silently — nothing in the group; the owner's
 page shows the spend — and raising the budget lets it speak again at once, since every decision reads it. Each reply's model call
 is its owner's, as any reply's (Metering); on a provider model it costs no points, so the budget never holds there, while
 the fuse and the owner's minute do. `GET /api/models` answers `proactiveAvailable` (whether `JUDGE` is configured).
@@ -4855,7 +4875,7 @@ at `info`, so the two `debug` lines show only when the level is lowered.
 - `{ "metric": "proactive_skipped", "reason", "agentId", "conversationId" }`: the judgement picked an Agent that did not
   reply, and why (the table above). At `debug` for `under_threshold` (most messages are chat: the usual case) and
   `already_decided`; at `info` for `hushed`, `active_run`, `fuse`, `budget` and `owner_minute`. Many `budget` lines:
-  owners' budgets are low for how often their Agents are picked; `owner_minute`: their minute for others is full; `fuse`
+  owners' numbers or the Agents' proactive budgets are low for how often the Agents are picked; `owner_minute`: their minute for others is full; `fuse`
   should practically never appear — it guards against the judgement misbehaving, so look at what is being picked;
   `hushed` counts mild complaints about the very Agent picked.
 - `{ "metric": "judge_failed", "reason", "conversationId" }` (info): no channel answered; `reason` is the client's
