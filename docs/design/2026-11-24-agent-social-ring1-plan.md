@@ -1526,6 +1526,13 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
 ```
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-begin.test.ts tests/reply-history.test.ts tests/web-search.test.ts tests/context.test.ts tests/context-group.test.ts tests/summary.test.ts tests/agent-port-boundary.test.ts`; `calibrate-memory.mjs --check`; commit `feat(agents): a social reply's access, scene, context and system text`.
 
+**Controller ruling 2026-11-25 (B-4 dispatch), B7a** (rulings 1, 5 and 6 of the dispatch):
+1. **The default-deny guard is replaced, arm by arm.** Block 3's guard at the top of `begin` is gone; `begin` reads the place once per attempt (`placeOf`, no query for the own conversation) and every arm names its place: the group's arms (`loadGroupScene`, `dropRefusedCalls`, `toldHits`, `namePartCalls`, `hearFrom`, `askerLine`, the group system text, the group's notes, the pair's summary) run for `group` only, and a social run takes the social arms (`runAccess`, `loadSocialScene`, `socialSystemText`, `loadNotes` social, no summary, `OTHERS.contextWeight`) or ends. Anything the social path does not handle stays denied: a social run whose caller is the owner, has none, or is not in lane `others` is `cancelled`/`access_ended` before any call (`runAccess`). `tests/social-begin.test.ts` shows that no social run takes a group arm (group system text, roster, group notes, the memory review, a summary).
+2. **The money bounds follow the place.** `begin` decides "bounded as another person's reply" by `social || lane !== "own"`: a social run is never unbounded whatever its row says (one real tool call, three notes, the two-part hold, `plain`, the per-owner cap through `othersFits`); the owner's own paths are byte-identical (the sha256 pins of `reply-history`, the owner money tests unmoved).
+3. **The page facts re-checked against the social text.** `othersPlainFloor` takes the place (`group` | `social` | default `any`: the lower of the two) and the proactive lane stays a group's, so the floor is a lower bound by construction. `othersPlainCeiling` counts the LONGER of the fullest group text and the fullest social text (two owners, an Agent for the other party, every name at its limit) and of the notes passage in either form, so it stays an upper bound; the social context cap (`OTHERS.contextWeight`) is already inside `max(AGENT_GROUP_CONTEXT_TOKENS, OTHERS.contextWeight)`; a plain call has no tools, no replayed calls and no summary.
+4. **A message over `OTHERS.contextWeight`** is cut to it as a group's is to its cap (the plan's earlier "fails `context_too_small`" is the model's context alone, as in a group: `holdsNewest`).
+5. **No memory review of a social conversation:** `finish` calls neither `memory.noted` nor `memory.summarise` for a social run, and `summary/job.ts` makes nothing for one.
+
 ### Task B7b: Tools in a social conversation; the own search without social — Lane B
 
 **Files:** modify `S:src/agents/port-impl.ts` (:785 offer, :1040 `RunScope`), `S:src/agents/tools/index.ts` (:93–94, :152–155), `tools/search.ts` (:47, :195–196, :221–226, :235, :257, :263), `tools/file.ts` (:81, :100), `tools/web/tool.ts:123`; create `S:tests/social-tools.test.ts`.
@@ -1544,6 +1551,10 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
   - Group and own tool behaviour stays as today: `tools-search`, `tools-scope`, `tools-file`, `whisper-elsewhere`.
 - [ ] Run → fails. Implement. Run those; commit `feat(agents): tools in a social conversation are scoped to it`.
 
+**Controller ruling 2026-11-25 (B-4 dispatch), B7b** (rulings 3 and 4 of the dispatch; lane A's review of `agents/tools/search.ts:226`):
+1. **The own conversation's search and `read_file` never see a social conversation, enforced at the query.** The own place lists the Agent's memberships through `groupPlaceSql` (its own conversation and groups, never `agent_social`), so a stranger's words cannot enter the context that holds the owner's vault notes and full tools; `read_file` reads a file only where its conversation is not `agent_social` unless the call names that conversation (`within`). Canary tests both ways: a visitor's canary is never returned to an own-conversation tool call (search or file), and an own-conversation canary is never returned to a call made in a social run.
+2. **A tool call in a social run names only that conversation** (`RunScope.place`, `toolSpecs({place})`): the search looks in this conversation up to `heardTo` and never calls `lookElsewhere`, the file tool reads this conversation's files, the web guard reads the participants' names as in a group; a second social conversation and a group each hold a canary.
+
 ### Task B7c: Notes wiring and the advisory room — Lane B
 
 **Files:** modify `S:src/agents/port-impl.ts` (:714–724 notes; step 3 writes `shown_notes`, `withheld_notes`), `S:src/metering/others.ts` (`othersRoomAdvisory`); create `S:tests/social-notes-wiring.test.ts`.
@@ -1557,6 +1568,8 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
   - a fake `loadNotes` returning two shown and one withheld writes them in step 3 and not before;
   - with the advisory room below the with-tools hold, the reply is offered no tools and makes one call.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-notes-wiring.test.ts tests/social-begin.test.ts`; commit `feat(agents): a social run records the notes it was shown; the advisory room`.
+
+**Controller ruling 2026-11-25 (B-4 dispatch), B7c** (ruling 2 of the dispatch): **ring 1a shows a visitor NO owner notes at all.** `loadNotes(…, {place: "social", conversationId, audienceId})` yields nothing shown and nothing withheld; the persona is the only owner-authored text in the request. A canary in the owner's notes (open and vault) never appears in any request built for a social run, nor in what is posted (`tests/social-notes-wiring.test.ts`).
 
 ### Task B8: Post, finish and claim for a social run — Lane B
 
@@ -1580,6 +1593,8 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
   - No acknowledgement is posted in social; no `noted`, no `summarise`.
   - With the switch off, a queued social run ends `access_ended` at the next claim and an own run is claimed.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-post.test.ts tests/runs*.test.ts tests/tools-ack.test.ts tests/agents-claim.test.ts tests/runs-restart.test.ts tests/reply-replay.test.ts`; commit `feat(agents): a social reply is posted once, on access and notes as they are now`.
+
+**Controller ruling 2026-11-25 (B-4 dispatch), B8** (rulings 7 and 8 of the dispatch): the outcomes `owner_spoke`, `access_ended`, `notes_changed` and `errand_ended` at post and finish never leave an unhandled rejection or a half-posted message, and the hold is settled exactly once; the visitor is never told WHY (an owner's interjection reads to the visitor as the run's failed or cancelled state and nothing more; the owner's own wire is the only one with a reason). A started reply's rule is as above (a run that has posted stands). `tests/agents-block-recheck.test.ts` stays unedited: a group run left with no call ends `cancelled`, `error: null`; `access_ended` is for social runs. The refused acknowledgement's stop flag (B-3 re-review m4) is a group case and is done in port-impl.ts's `posting`.
 
 ### Task B9a: Web: the use page and its settings row — Lane B
 
@@ -2001,6 +2016,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 - **Controller ruling 2026-11-24 (B-3 dispatch):** the four hand-offs of lane A's reviews are rules of B5b (see there): one decision (`refusedSql`, `socialOn` a literal in groups), one rule for every ending in groups, the window after `begin` closed at post time (over the calls the run ANSWERS: `m.seq <= covers_seq`; a noted call is its follow-up's), one function (`dropRefusedCalls`) for lane I. Ruled: a group run left with no call ends `cancelled`, `error: null`; `access_ended` is for social runs only.
 - **Controller ruling 2026-11-24 (B-3 review):** default-deny at the root: until B7a builds the social `begin`, a run whose place is `social` is ended by a guard at the top of `begin` (`cancelled`, `access_ended`, before admission: nothing held or charged); B7a removes the guard arm by arm.
+- **Controller ruling 2026-11-25 (B-4 dispatch):** the guard of block 3 is replaced arm by arm by the social `begin` (B7a); ring 1a shows a visitor no owner note, canaried (B7c); the own search and file read exclude social at the query and a social run's tools name only its conversation (B7b); the money bounds follow `placeOf` (B7a); the page facts are re-checked against the social text (B7a); the four interruption outcomes at post and finish settle once and tell the visitor nothing (B8); `agents-block-recheck.test.ts` stays unedited.
 
 ---
 
