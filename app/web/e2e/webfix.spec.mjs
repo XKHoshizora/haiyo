@@ -3,11 +3,11 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { test, expect } from "./support/fixtures.mjs";
-import { goTo, listRow } from "./support/app.mjs";
-import { uniq } from "./support/accounts.mjs";
+import { befriend, uniq } from "./support/accounts.mjs";
+import { chatPane, goTo, listRow, openChat } from "./support/app.mjs";
 import { canControlService } from "./support/control.mjs";
 import { modelStub } from "./support/model-stub.mjs";
-import { agentApi } from "./support/tools.mjs";
+import { addApi, agentApi, groupApi } from "./support/tools.mjs";
 import { WEB_DIR } from "./support/env.mjs";
 
 const BIG_PHONE = { viewport: { width: 402, height: 874 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 };
@@ -283,3 +283,63 @@ test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a shee
   expect(await scrollPositions(page)).toEqual(before);
   expect(await page.evaluate(() => document.documentElement.hasAttribute("data-layer-open"))).toBe(false);
 });
+
+for (const [size, viewport, options] of [["402x874", { width: 402, height: 874 }, BIG_PHONE], ["360x740", { width: 360, height: 740 }, BIG_PHONE], ["1280x800", { width: 1280, height: 800 }, {}]]) {
+  test(`F6 ${size}: a direct chat header has no subtitle; a group's header counts people and Agents with icons on one line; nobody is labelled a person`, async ({ people }) => {
+    const ann = await people.member("Ann", { contextOptions: { ...options, viewport } });
+    const bo = await people.member("Bo");
+    const cy = await people.member("Cy");
+    await befriend(ann, bo);
+    await befriend(ann, cy);
+    const title = `群${uniq(4)}`;
+    const group = await groupApi(ann, [bo, cy], title);
+    const agent = await agentApi(ann, { name: "小机" });
+    await addApi(ann, group.id, agent.id);
+    const page = ann.page;
+    await page.goto("/");
+    // A direct chat: the title alone.
+    await openChat(page, bo.displayName);
+    const head = chatPane(page, bo.displayName).locator(".chat-head");
+    await expect(head.locator(".chat-title p")).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText("真人");
+    await shot(page, `f6-direct-header-${size}`);
+    // A group: 3 people and 1 Agent.
+    await page.goto("/");
+    await openChat(page, title);
+    const counts = chatPane(page, title).locator(".chat-head .head-counts");
+    await expect(counts.locator('[aria-label="3 人"]')).toBeVisible();
+    await expect(counts.locator('[aria-label="1 个 Agent"]')).toBeVisible();
+    await expect(counts.locator('[title="3 人"]')).toHaveCount(1);
+    expect(await counts.locator("svg").count()).toBe(2);
+    const oneLine = async () => counts.evaluate((el) => ({ h: el.getBoundingClientRect().height, fits: el.scrollWidth <= el.parentElement.clientWidth + 1, head: document.querySelector(".chat-head").scrollWidth <= document.querySelector(".chat-head").clientWidth + 1 }));
+    expect((await oneLine()).h).toBeLessThanOrEqual(24);
+    await shot(page, `f6-group-header-${size}`);
+    // Three-digit numbers: still one line, the header not pushed.
+    await counts.evaluate((el) => el.querySelectorAll("[aria-hidden=true]:not(svg):not(.head-counts-sep)").forEach((n) => (n.textContent = "888")));
+    const wide = await oneLine();
+    expect(wide.h).toBeLessThanOrEqual(24);
+    expect(wide.head).toBe(true);
+    await shot(page, `f6-group-header-888-${size}`);
+    // Both member views: the side panel (会话资料 > 发言成员, where there is one) and the full page (群资料 > 群成员): nobody is labelled a person;
+    // the Agent keeps its tag and its owner, the creator her tag.
+    const pane = chatPane(page, title);
+    const panelButton = pane.getByRole("button", { name: "会话资料" });
+    if (await panelButton.count()) {
+      await panelButton.first().click();
+      await expect(page.getByRole("heading", { name: "发言成员" })).toBeVisible();
+      await expect(page.locator("body")).not.toContainText("真人");
+      await expect(page.getByText("主人：").first()).toBeVisible();
+      await shot(page, `f6-details-panel-${size}`);
+      await page.getByRole("button", { name: "打开群资料" }).click();
+    } else {
+      await pane.getByRole("button", { name: "群资料" }).first().click();
+    }
+    const profile = page.getByRole("region", { name: "群资料" });
+    await expect(profile.getByRole("heading", { name: "群成员" })).toBeVisible();
+    await expect(profile.getByText("共 4 位成员")).toBeVisible();
+    await expect(profile.getByText("创建者", { exact: true })).toBeVisible();
+    await expect(profile.getByText("主人：")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("真人");
+    await shot(page, `f6-group-profile-${size}`);
+  });
+}

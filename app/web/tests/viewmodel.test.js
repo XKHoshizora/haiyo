@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as M from "../src/data/model.js";
 import { toView, formatAt, formatMessageAt, formatMessageTitle, expiryText, formatPoints, replyPoints, displayPoints, balancePoints, namesAgent, webAddress } from "../src/data/viewmodel.js";
 import { ME } from "../src/data/identities.js";
-import { convSubtitle, convTitle, entity, isAgent, lastPreview, myAgents, nameOf, ownerOf, publishBlock, senderName } from "../src/state/selectors.js";
+import { convSubtitle, convTitle, entity, groupCounts, isAgent, lastPreview, myAgents, nameOf, ownerOf, publishBlock, senderName } from "../src/state/selectors.js";
 import {
   A1,
   A2,
@@ -69,7 +69,9 @@ describe("conversations", () => {
     const c = v.convs[G1];
     expect(c).toMatchObject({ type: "group", title: "周末小组", admin: ANN });
     expect(c.members).toEqual([ANN, ME, BO]);
-    expect(convSubtitle(v, c)).toBe("3 位真人");
+    // (A group is counted by the header's own counts, `groupCounts`, not by a line of text; nobody is labelled a person.)
+    expect(convSubtitle(v, c)).toBeNull();
+    expect(groupCounts(v, c)).toEqual({ people: 3, agents: 0 });
   });
 
   it("orders by last activity; empty conversations by createdAt when present, else the service's order", () => {
@@ -644,14 +646,15 @@ describe("someone else's Agent in a group I am in (batch 2C)", () => {
     expect("proactive" in v.convs[G1].messages[1].via).toBe(false);
   });
 
-  it("the group's subtitle counts the people, and the Agents when there are any", () => {
+  it("a group counts its people, and its Agents when there are any (groupCounts); a direct chat has no subtitle and no counts", () => {
     const v = toView(sharedModel(), { now: NOW });
     expect(v.convs[G1].members).toEqual([ME, ANN, BO, OAG]);
-    expect(convSubtitle(v, v.convs[G1])).toBe("3 位真人 · 1 个 Agent");
+    expect(groupCounts(v, v.convs[G1])).toEqual({ people: 3, agents: 1 });
     const two = toView(M.applySync(M.initial(), syncOf([agentConv(A1, AG1), group(G1, { members: [...MEMBERS, { id: AG1, role: "speaker", isCreator: false }] })], [], [...PRINCIPALS, agentPrincipal(AG1), annBot()])), { now: NOW });
-    expect(convSubtitle(two, two.convs[G1])).toBe("3 位真人 · 2 个 Agent");
+    expect(groupCounts(two, two.convs[G1])).toEqual({ people: 3, agents: 2 });
     const none = toView(model({ conversations: [group(G1)] }), { now: NOW });
-    expect(convSubtitle(none, none.convs[G1])).toBe("3 位真人");
+    expect(groupCounts(none, none.convs[G1])).toEqual({ people: 3, agents: 0 });
+    expect(convSubtitle(none, none.convs[G1])).toBeNull();
   });
 });
 

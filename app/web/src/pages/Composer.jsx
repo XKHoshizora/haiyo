@@ -361,7 +361,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
           <div className="mention-heading">提及会话中的成员 {!touch && <small>↑↓ 选择 · Enter 确认</small>}</div>
           {full ? <p className="mention-empty">{MENTIONS_FULL_TEXT}</p> : !matches.length && <p className="mention-empty">没有匹配的成员</p>}
           {matches.map((id,i)=><button key={id} id={`mention-${id}`} role="option" aria-selected={i===selected} type="button" onMouseDown={e=>e.preventDefault()} onClick={()=>chooseMention(id)}>
-            <Avatar id={id} size={28}/><span><strong>{nameOf(state,id)}</strong><small>{isAgent(state,id)?`${entity(state,id).handle} · Agent · 主人：${nameOf(state,ownerOf(state,id))}${state.agents[id].paused?" · 已暂停":""}`:"真人 · 会话成员"}</small></span>
+            <Avatar id={id} size={28}/><span><strong>{nameOf(state,id)}</strong><small>{isAgent(state,id)?`${entity(state,id).handle} · Agent · 主人：${nameOf(state,ownerOf(state,id))}${state.agents[id].paused?" · 已暂停":""}`:"会话成员"}</small></span>
           </button>)}
         </div>}
         <div className={`composer-field${disabled ? " composer-field-off" : ""}`}>

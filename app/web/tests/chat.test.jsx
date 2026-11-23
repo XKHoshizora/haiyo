@@ -163,6 +163,22 @@ describe("conversation list", () => {
   });
 });
 
+describe("nobody is labelled a person", () => {
+  it("a direct chat's header is its title alone: no subtitle line, no empty gap; a group's header counts its people with an icon", async () => {
+    await openApp();
+    await openChat("小安");
+    const title = document.querySelector(".chat-head .chat-title");
+    expect(title.querySelector("p")).toBeNull();
+    expect(document.body.textContent).not.toContain("真人");
+    await openChat("周末小组");
+    const counts = document.querySelector(".chat-head .chat-title .head-counts");
+    expect(counts.querySelectorAll("svg").length).toBe(1);
+    expect(counts.querySelector('[aria-label="3 人"]')).toBeTruthy();
+    expect(counts.querySelector(".head-counts-sep")).toBeNull();
+    expect(counts.querySelector('[aria-label$="Agent"]')).toBeNull();
+  });
+});
+
 describe("reading", () => {
   it("opening a chat marks it read up to the newest seq once the tab is visible and focused", async () => {
     const { api } = await openApp();

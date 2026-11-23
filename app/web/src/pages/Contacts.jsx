@@ -87,7 +87,6 @@ export function ContactsList() {
               <span className="row-body">
                 <span className="row-top">
                   <span className="row-name">{nameOf(state, id)}</span>
-                  <Tag tone="human">真人</Tag>
                 </span>
                 <span className="row-sub">
                   <span className="row-preview">
@@ -174,7 +173,7 @@ export function ContactCard() {
         <div>
           <p className="eyebrow">联系人卡片</p>
           <h2>
-            {who.name} <Tag tone="human">真人</Tag> {blocked && <Tag tone="warn">已拉黑</Tag>}
+            {who.name} {blocked && <Tag tone="warn">已拉黑</Tag>}
             {blockedByThem && <Tag tone="warn">对方拉黑了你</Tag>}
           </h2>
           <p className="muted">{who.handle}</p>
@@ -183,8 +182,7 @@ export function ContactCard() {
       <div className="page-body">
         <KV
           rows={[
-            ["身份", "真人账户"],
-            ["这段会话谁能看", `你与${who.name}两位真人`],
+            ["这段会话谁能看", `你与${who.name}两个人`],
           ]}
         />
 

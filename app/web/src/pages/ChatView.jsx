@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
-import { convTitle, convSubtitle, drawnTextOf, isAgent, nameOf, publishBlock } from "../state/selectors.js";
-import { ConvAvatar, Btn, IconBtn, Notice, Tag } from "../ui/primitives.jsx";
+import { convTitle, convSubtitle, drawnTextOf, groupCounts, isAgent, nameOf, publishBlock } from "../state/selectors.js";
+import { ConvAvatar, Btn, HeadCounts, IconBtn, Notice, Tag } from "../ui/primitives.jsx";
 import { isEscape } from "../ui/keys.js";
 import { AgentModelSwitch } from "./ModelPicker.jsx";
 import { MarkdownView, NEWEST_NEAR } from "../ui/markdownView.jsx";
@@ -143,6 +143,8 @@ export function ChatView({ conv }) {
   // An Agent's conversation: its reply being written (a bubble at the end) or its failed reply (a status line at the
   // end), as the view model says; neither under a detached window, which does not reach the end.
   const agentChat = conv.type === "agent";
+  const subtitle = convSubtitle(state, conv);
+  const counts = groupCounts(state, conv);
   const agent = agentChat ? state.agents[conv.agentId] ?? null : null;
   const run = agentChat && !detached ? conv.run : null;
   const replying = isReplying(run);
@@ -492,10 +494,12 @@ export function ChatView({ conv }) {
               </>
             )}
           </h2>
-          <p>
-            <span className="chat-sub">{convSubtitle(state, conv)}</span>
-            {agentChat && <AgentModel agentId={conv.agentId} deleted={Boolean(block)} />}
-          </p>
+          {(subtitle || counts || agentChat) && (
+            <p>
+              {(subtitle || counts) && <span className="chat-sub">{subtitle}{counts && <HeadCounts people={counts.people} agents={counts.agents} />}</span>}
+              {agentChat && <AgentModel agentId={conv.agentId} deleted={Boolean(block)} />}
+            </p>
+          )}
         </div>
         <div className="chat-head-actions">
           <IconBtn label="搜索本会话" className="boxed" aria-pressed={searching} onClick={() => (setSearching(!searching), setQuery(""))}><Search size={22} /></IconBtn>

@@ -107,7 +107,10 @@ describe("StoreProvider", () => {
     expect(screen.getByText("早上好", { selector: "blockquote" })).toBeTruthy();
     expect(screen.getAllByText(/小安拉黑了你，只能由对方解除/).length).toBeGreaterThan(0);
     expect(screen.getByText("你创建了群聊「周末小组」，并邀请小安、阿波加入")).toBeTruthy();
-    expect(screen.getAllByText("3 位真人").length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText("3 人").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/真人/)).toBeNull();
+    // 会话资料 > 发言成员 (the side panel) says it of nobody either.
+    expect(document.body.textContent).not.toContain("真人");
     expect(screen.getAllByRole("button", { name: "群资料" }).length).toBe(1);
     expect(screen.getByText("阿波：周六可以吗")).toBeTruthy();
   });

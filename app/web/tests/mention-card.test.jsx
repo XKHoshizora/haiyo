@@ -159,7 +159,8 @@ describe("the card", () => {
     await act(async () => vi.advanceTimersByTimeAsync(300));
     expect(card().getAttribute("role")).toBe("tooltip");
     expect(card().querySelector("strong").textContent).toBe("阿波");
-    expect(card().textContent).toContain("真人");
+    // (A person has no label; only an Agent is tagged.)
+    expect(card().textContent).not.toContain("真人");
     expect(card().textContent).toContain("@bo");
     expect(card().textContent).not.toContain("主人");
     expect(card().querySelector(".avatar")).not.toBeNull();

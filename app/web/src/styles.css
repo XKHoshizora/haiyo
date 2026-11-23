@@ -367,6 +367,10 @@ svg.model-brand { color: var(--ink-3); }
 .chat-title h2 { font-size: 23px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-title p { font-size: 15px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-title .chat-sub { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A group's people and Agents: an icon and a number each, a thin divider between; one line, the muted colour that passes contrast, digits of one width. */
+.head-counts { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: middle; }
+.head-count { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.head-counts-sep { flex: none; width: 1px; height: 12px; background: var(--line-strong); }
 .chat-head-actions { display: flex; gap: 10px; align-items: center; }
 .chat-search {
   margin: 0 22px 8px; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: 10px;
