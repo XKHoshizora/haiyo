@@ -820,17 +820,27 @@ describe("the models of a provider", () => {
   it("each model row marks what it can do with the picker's own marks (看图, 思考, 工具; none for what it lacks), not in a sentence", async () => {
     const abilities = providerOf(P1, {
       models: [
-        { name: "all-four", vision: true, pdf: true, reasoning: true, contextTokens: 64000 },
+        { name: "all-four", vision: true, pdf: true, reasoning: true, contextTokens: 64000, tools: true },
+        { name: "tools-unknown", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
         { name: "sees-only", vision: true, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
         { name: "nothing", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
       ],
     });
     await openProviders({ providers: [abilities] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
-    const marks = (name) => [...modelRow(name).querySelectorAll(".model-mark")].map((m) => m.textContent);
+    const marks = (name) => [...modelRow(name).querySelectorAll(".model-mark")].map((m) => m.querySelector(".model-mark-text")?.textContent ?? m.textContent);
     expect(marks("all-four")).toEqual(["看图", "思考", "工具"]);
     expect(marks("sees-only")).toEqual(["看图"]);
     expect(marks("nothing")).toEqual([]);
+    // 工具 is a known fact: a model whose entry says nothing of it (not known yet; the service still offers it tools) shows none, here as in the picker and the sync list;
+    // ticking the box (unticked, then ticked: the owner says it) makes it a fact.
+    expect(marks("tools-unknown")).toEqual(["思考"]);
+    const box = () => within(modelRow("tools-unknown")).getByLabelText("会用工具（查聊天记录、看文件）");
+    await click(within(modelRow("tools-unknown")).getByRole("button", { name: /高级/ }));
+    await click(box());
+    expect(marks("tools-unknown")).toEqual(["思考"]);
+    await click(box());
+    expect(marks("tools-unknown")).toEqual(["思考", "工具"]);
     // Read out, each mark is its short word; the sentence keeps what the marks cannot say (the levels, the context).
     expect(within(modelRow("all-four")).getAllByRole("img").map((m) => m.getAttribute("aria-label"))).toEqual(["看图", "思考", "工具"]);
     // No chip for PDF: the sentence says it, as before; seeing is the mark's alone.

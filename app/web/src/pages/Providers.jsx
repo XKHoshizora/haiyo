@@ -453,7 +453,7 @@ const ADDED_AT_LIMIT = (n) => `已添加 ${n} 个模型。每个供应商最多 
 function SyncRow({ model, added, full, onAdd, onRemove }) {
   const label = model.label && model.label.toLowerCase() !== model.name.toLowerCase() ? model.label : null;
   // What the provider's list says it can do: the picker's own marks (it does not say whether a model uses tools).
-  const marks = abilityMarks({ ...model, tools: false });
+  const marks = abilityMarks(model);
   return (
     <li>
       <div className="member-body">

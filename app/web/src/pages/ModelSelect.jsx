@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "../icons.js";
 import { composing, isEnter, isEscape } from "../ui/keys.js";
 import { ModelBrand } from "../ui/ModelBrand.jsx";
-import { MarksLegend, ModelMarks, PRICE_TEXT, columnOrder, markKinds, markWords, useMarksMode } from "../ui/ModelMarks.jsx";
+import { MarksLegend, ModelMarks, PRICE_TEXT, columnOrder, markKinds, markWords } from "../ui/ModelMarks.jsx";
 import { useMoreBelow } from "../ui/moreBelow.js";
 import { usePopover } from "../ui/popover.js";
 
@@ -26,8 +26,9 @@ const rowsOf = (shown) => [...shown.lead, ...shown.groups.flatMap((g) => g.optio
 
 /**
  * A model picker: a button showing the current model (its brand mark and name) that opens a searchable list of models
- * grouped by where they come from, each row with its brand mark, its name and its marks at the right (免费 / 需余额, then 看图,
- * 读 PDF, 思考, 工具: src/ui/ModelMarks.jsx; icons only, with a legend, while the list is narrow), the current one ticked. Under 480 px wide the list is a sheet at the bottom of the screen.
+ * grouped by where they come from, each row with its brand mark, its name and its marks at the right (免费 / 需余额, then the
+ * abilities in the table of src/ui/ModelMarks.jsx: 看图, 思考, 工具; the word, or the icon with a legend while the picker's box
+ * is narrow), the current one ticked. Under 480 px wide the list is a sheet at the bottom of the screen.
  * `disabled`: it cannot be opened (a disabled button); `busy`: its choice is being saved — it cannot be opened either,
  * but stays focusable.
  *
@@ -82,9 +83,13 @@ export function ModelSelect({
   // Every row's id (by its place among all rows, never by its key, which may hold anything a name may).
   const all = [...lead, ...groups.flatMap((g) => g.options)];
   const optionId = new Map(all.map((o, i) => [o.key, `${base}-o${i}`]));
-  // The columns some row can be marked in (a list without a price has no price column), and the abilities the list has (for its legend).
-  const kindsInList = all.filter((o) => !o.disabled).flatMap((o) => markKinds(o.marks));
-  const columns = columnOrder().filter((col) => kindsInList.some((k) => (col === "price" ? k in PRICE_TEXT : k === col)));
+  // The columns: the abilities some row has are columns of the whole list (so the marks line up from group to group); the money's
+  // is a column only where a group has a price (a provider's rows do not give room to a price they never show).
+  const kindsOf = (options) => options.filter((o) => !o.disabled).flatMap((o) => markKinds(o.marks));
+  const abilityColumns = columnOrder().filter((col) => col !== "price" && kindsOf(all).includes(col));
+  const columnsOf = (options) => (kindsOf(options).some((k) => k in PRICE_TEXT) ? ["price", ...abilityColumns] : abilityColumns);
+  const leadColumns = columnsOf(lead);
+  const groupColumns = new Map(groups.map((g) => [g.id, columnsOf(g.options)]));
   const words = wordsOf(query);
   const shown = visible(lead, groups, words);
   const rows = rowsOf(shown);
@@ -107,8 +112,6 @@ export function ModelSelect({
   // More rows below the list's edge: the cue (ui/moreBelow.js).
   const listRef = useRef(null);
   const more = useMoreBelow(listRef, open, status);
-  // How the marks are drawn: by the list's own width, never the screen's (a sheet and a popover differ, a form's wide one does not).
-  const marksMode = useMarksMode(listRef, `${open}${status}`);
 
   // The row the keyboard is on stays in view.
   useLayoutEffect(() => {
@@ -157,7 +160,7 @@ export function ModelSelect({
     }
   };
 
-  const row = (option) => {
+  const row = (option, columns) => {
     const selected = option.key === value;
     const marks = option.marks ?? [];
     return (
@@ -179,7 +182,7 @@ export function ModelSelect({
         {option.disabled ? (
           option.reason && <span className="model-reason" aria-hidden="true">{option.reason}</span>
         ) : (
-          columns.length > 0 && <ModelMarks marks={marks} mode={marksMode} columns={columns} decorative />
+          columns.length > 0 && <ModelMarks marks={marks} columns={columns} decorative />
         )}
       </div>
     );
@@ -216,20 +219,21 @@ export function ModelSelect({
           ) : (
             <>
               {/* A press on a row or a group's name leaves the focus in the search field (one on the list's own scrollbar is let through). */}
-              <div className="model-list" ref={listRef} tabIndex={-1} data-more={more || undefined} data-marks={marksMode} role="listbox" id={listId} aria-label="模型" onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
-                {shown.lead.map(row)}
+              <div className="model-list" ref={listRef} tabIndex={-1} data-more={more || undefined} role="listbox" id={listId} aria-label="模型" onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
+                {shown.lead.map((o) => row(o, leadColumns))}
                 {shown.groups.map((g) => (
                   <div key={g.id} role="group" aria-label={g.label} className="model-group">
                     <div className="model-group-label" aria-hidden="true">{g.label}</div>
                     {g.options.length > 0 ? (
-                      g.options.map(row)
+                      g.options.map((o) => row(o, groupColumns.get(g.id)))
                     ) : (
                       <div role="option" aria-selected="false" aria-disabled="true" className="model-option model-note">{g.empty}</div>
                     )}
                   </div>
                 ))}
               </div>
-              {marksMode === "icons" && <MarksLegend kinds={kindsInList} />}
+              {/* What the icons mean (the stylesheet shows it only while the picker is narrow): of the rows shown. */}
+              <MarksLegend kinds={kindsOf(rows)} />
               {words.length > 0 && rows.length === 0 && <p className="model-empty" role="status">没有匹配的模型</p>}
             </>
           )}

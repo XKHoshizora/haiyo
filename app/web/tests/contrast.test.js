@@ -108,10 +108,11 @@ describe("white text on a colour", () => {
 });
 
 describe("the marks of a model row", () => {
-  // The chip over the picker (white), over the keyboard's row, over the provider page's card; its glyph and word are one colour.
+  // The chip over the picker (white), over the keyboard's row, and on the provider page (the page at its darkest, the model row's own ground).
   const grounds = {
     "a picker": colour("#fff"),
     "the active row": over(bg(".model-option.active"), colour("#fff")),
+    "the provider page (darkest point of the page)": darkest,
   };
   it.each(Object.keys(grounds))("an ability's icon reaches 3:1 and its word 4.5:1 on its chip over %s", (name) => {
     const chip = over(bg(".model-mark"), grounds[name]);
@@ -124,7 +125,8 @@ describe("the marks of a model row", () => {
   ])("%s reaches 4.5:1 on its chip", (_, selector) => {
     expect(Number(ratio(colour(plain(selector).color), bg(selector)).toFixed(2))).toBeGreaterThanOrEqual(4.5);
   });
-  it("the legend's words are the muted ink and reach 4.5:1 on the picker", () => {
-    expect(plain(".model-legend").color).toBe("var(--ink-3)");
+  it("the legend's words and icons (the muted ink) reach 4.5:1 on the picker they stand in", () => {
+    const ink = colour(plain(".model-legend").color);
+    expect(Number(ratio(ink, over(bg(".model-pop"), darkest)).toFixed(2))).toBeGreaterThanOrEqual(4.5);
   });
 });

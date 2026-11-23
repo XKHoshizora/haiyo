@@ -127,8 +127,8 @@ export const runOf = (id, status, fields = {}) => ({ id, status, retryable: fals
 
 /** `GET /api/models` with a free model without reasoning and a paid one with two levels. */
 export const SITE_MODELS = [
-  { id: "free-1", label: "小模型", tier: "free", vision: false, pdf: false, reasoning: [], contextTokens: 32000 },
-  { id: "paid-1", label: "大模型", tier: "paid", vision: true, pdf: true, reasoning: ["low", "high"], contextTokens: 128000 },
+  { id: "free-1", label: "小模型", tier: "free", vision: false, pdf: false, reasoning: [], contextTokens: 32000, tools: true },
+  { id: "paid-1", label: "大模型", tier: "paid", vision: true, pdf: true, reasoning: ["low", "high"], contextTokens: 128000, tools: true },
 ];
 export const MODELS = { siteModels: SITE_MODELS, providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 } };
 
