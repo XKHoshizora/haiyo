@@ -2,6 +2,7 @@ import { ME } from "../data/identities.js";
 import { previewOfMarkdown } from "../ui/markdownPreview.js";
 import { drawnText } from "../ui/drawnText.js";
 import { PROPOSAL_ONLY } from "../data/viewmodel.js";
+import { isObserved, socialEnds } from "./social.js";
 
 export const entity = (state, id) => state.people[id] || state.agents[id] || null;
 /** Any Agent: mine, or someone else's in a group I am in. */
@@ -27,7 +28,7 @@ export function myAgents(state) {
 export const nameOf = (state, id) => entity(state, id)?.name || "未知";
 // A message's sender (or a quote's) whom nobody has named here: they left before this client saw them.
 export const senderName = (state, id) => entity(state, id)?.name || "已退出的成员";
-export const TYPE_LABEL = { human: "私聊", agent: "私聊", group: "群聊" };
+export const TYPE_LABEL = { human: "私聊", agent: "私聊", group: "群聊", social: "Agent 对话" };
 
 export function otherMember(conv) {
   return conv.members.find((id) => id !== ME);
@@ -35,6 +36,12 @@ export function otherMember(conv) {
 
 export function convTitle(state, conv) {
   if (conv.title) return conv.title;
+  // A social conversation: the Agent I talk to (a visitor's), or the two ends I watch (an observing owner's).
+  if (conv.type === "social") {
+    const { agentId, otherId } = socialEnds(state, conv);
+    if (conv.myRole === "observer") return `${nameOf(state, agentId)} · ${nameOf(state, otherId)}`;
+    return nameOf(state, agentId ?? otherId);
+  }
   return nameOf(state, otherMember(conv));
 }
 
@@ -42,6 +49,7 @@ export function convTitle(state, conv) {
 export function convSubtitle(state, conv) {
   // (A deleted Agent's line says what the conversation is now — read only — and no model: it can no longer reply, so its model is of no use there.)
   if (conv.type === "agent") return agentDeleted(state, conv) ? "你的 Agent · 已删除，只能查看" : "你的 Agent · 专属会话";
+  if (conv.type === "social") return conv.myRole === "observer" ? "旁观的对话" : "Agent 对话";
   if (conv.type !== "group") return "真人私聊";
   const agents = conv.members.filter((id) => isAgent(state, id)).length;
   const people = `${conv.members.length - agents} 位真人`;
@@ -58,6 +66,8 @@ export const agentDeleted = (state, conv) =>
 // null when publishing is allowed, otherwise the user-facing reason (the service's verdict, see viewmodel.js `hold`).
 // A deleted Agent's conversation reads as such as soon as anything here knows it (its record may arrive first).
 export function publishBlock(state, conv) {
+  // A social conversation says why it cannot be written in by the reason the service gave, once (the shared `hold` is for the others).
+  if (conv.type === "social") return socialBlock(conv);
   if (agentDeleted(state, conv)) return { kind: "agentDeleted", reason: "agent_deleted", text: AGENT_DELETED_TEXT, pending: [], canRestore: false };
   return conv.hold ?? null;
 }
@@ -90,7 +100,7 @@ export function lastPreview(state, conv) {
   if (last.kind === "file") body = "[文件]";
   // A reply that is only a persona proposal has no text of its own.
   if (last.kind === "text" && last.proposal && !body) body = PROPOSAL_ONLY;
-  const group = conv.type === "group";
+  const group = conv.type === "group" || conv.type === "social";
   if (group && last.from === ME) return `你：${body}`;
   if (group && last.from) return `${senderName(state, last.from)}：${body}`;
   return body;
@@ -106,5 +116,22 @@ export const quiet = (state, conv) => conv.type === "agent" && (conv.hold?.kind 
 
 /** What waits for me in the tab bar's number: every conversation but the quiet ones. */
 export function unreadTotal(state) {
-  return state.order.reduce((n, id) => n + (state.convs[id] && !quiet(state, state.convs[id]) ? state.convs[id].unread || 0 : 0), 0);
+  return state.order.reduce((n, id) => n + (state.convs[id] && !quiet(state, state.convs[id]) && !isObserved(state.convs[id]) ? state.convs[id].unread || 0 : 0), 0);
+}
+
+/** The conversations of the main list, in order: the ones I watch as my Agents' supervisor (Agent social) are in the Agent's 「别人」 tab, never here. */
+export const listedConvs = (state) => state.order.map((id) => state.convs[id]).filter((c) => c && !isObserved(c));
+
+/** Why a social conversation cannot be written in, by the service's reason (the plan's error texts); null when it can. */
+function socialBlock(conv) {
+  if (conv.canSend?.ok !== false) return null;
+  const reason = conv.canSend.reason;
+  const watching = conv.myRole === "observer";
+  const text =
+    reason === "agent_deleted" ? AGENT_DELETED_TEXT
+    : reason === "agent_unavailable" ? "这个 Agent 现在不可用。"
+    : reason === "blocked" ? "你们之间有拉黑，不能再发送消息。"
+    : watching ? "这段对话已结束，不能再发送消息。"
+    : "你已不能再和它聊天。";
+  return { kind: "social", reason, text, pending: [], canRestore: false };
 }

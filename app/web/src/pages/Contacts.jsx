@@ -6,6 +6,7 @@ import { expiryText } from "../data/viewmodel.js";
 import { ME } from "../data/identities.js";
 import { entity, myAgents, nameOf } from "../state/selectors.js";
 import {
+  agentContactsOf,
   blockedMe,
   directConvWith,
   friendIds,
@@ -15,6 +16,7 @@ import {
   outgoingRequests,
   requestWith,
   relationOf,
+  socialOn,
 } from "../state/social.js";
 import { Avatar, LoadingRow, Tag, Btn, IconBtn, Modal, Notice, Reason, KV } from "../ui/primitives.jsx";
 import { ListHeader, SearchBox } from "./ChatList.jsx";
@@ -22,6 +24,8 @@ import { BlockModal } from "./BlockModal.jsx";
 import { AddFriendModal } from "./AddFriendModal.jsx";
 import { useAction, useNow } from "./useAction.js";
 import { openAgentChat } from "./AgentForm.jsx";
+import { AgentContactRows } from "./AgentContactRows.jsx";
+import { DealingsSection } from "./AgentDealings.jsx";
 import { ChevronLeft, UserPlus } from "../icons.js";
 
 const REL = {
@@ -46,7 +50,10 @@ export function ContactsList() {
   // My own Agents (never someone else's from a group), below my friends as in the prototype; a deleted one is not a contact.
   const allAgents = myAgents(state).filter((a) => !a.deleted);
   const agents = allAgents.filter((a) => matchesPerson(a, query));
-  const nothing = allFriends.length === 0 && incoming.length === 0 && outgoing.length === 0 && allAgents.length === 0;
+  // Agent social: the Agents I let in or asked, and the requests waiting on my own Agents (nothing while the site's switch is off).
+  const social = socialOn(state) ? agentContactsOf(state) : { mine: [], waiting: [] };
+  const socialRows = social.mine.filter((r) => r.state !== "ended").length + social.waiting.length;
+  const nothing = allFriends.length === 0 && incoming.length === 0 && outgoing.length === 0 && allAgents.length === 0 && socialRows === 0;
 
   return (
     <>
@@ -119,10 +126,11 @@ export function ContactsList() {
             </button>
           </li>
         ))}
-        {requests.length === 0 && friends.length === 0 && agents.length === 0 && !state.loaded && !query.trim() && (
+        <AgentContactRows query={query} />
+        {requests.length === 0 && friends.length === 0 && agents.length === 0 && socialRows === 0 && !state.loaded && !query.trim() && (
           <LoadingRow />
         )}
-        {requests.length === 0 && friends.length === 0 && agents.length === 0 && (state.loaded || query.trim()) && (
+        {requests.length === 0 && friends.length === 0 && agents.length === 0 && socialRows === 0 && (state.loaded || query.trim()) && (
           <li className="rows-empty">{nothing && !query.trim() ? "还没有联系人，点右上角的按钮添加好友" : "没有找到匹配的联系人"}</li>
         )}
       </ul>
@@ -258,6 +266,7 @@ export function ContactCard() {
             <Reason>只有你可以解除自己的拉黑。</Reason>
           </div>
         )}
+        <DealingsSection personId={id} name={who.name} />
       </div>
       {dialog === "block" && <BlockModal target={id} onClose={() => setDialog(null)} />}
       {dialog === "unfriend" && <UnfriendModal id={id} name={who.name} onClose={() => setDialog(null)} />}

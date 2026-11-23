@@ -32,12 +32,12 @@ const fact = (seq, card = { answer: null, expired: false, sentence: SENTENCE }, 
     ...extra,
   });
 
-async function openChat(messages, { api = {} } = {}) {
+async function openChat(messages, { api = {}, social = { enabled: true } } = {}) {
   const record = agentOf(AG1, { model: SITE_FREE });
   const lastSeq = messages.reduce((max, m) => Math.max(max, m.seq), 0);
   const conversation = agentConv(A1, AG1, { lastSeq, readSeq: lastSeq, agent: { paused: false, deleted: false }, canSend: { ok: true } });
   const app = await openApp({
-    sync: () => syncOf([conversation], messages, [...PRINCIPALS, agentPrincipal()]),
+    sync: () => ({ ...syncOf([conversation], messages, [...PRINCIPALS, agentPrincipal()]), social }),
     api: { answerPersonaFact: vi.fn(async () => ({ ok: true, moved: true })), listProviders: vi.fn(async () => ({ providers: [] })), ...api },
     handlers: { agents: () => ({ agents: [record] }), agent: () => record, run: () => ({ run: null }), models: () => MODELS },
   });
@@ -101,6 +101,12 @@ describe("the persona_fact card", () => {
     expect(inLi(3).getByRole("alert").textContent).toContain("装不下");
     expect(inLi(3).getByRole("button", { name: MOVE })).toBeTruthy();
     expect(inLi(3).getByRole("button", { name: "不用" })).toBeTruthy();
+  });
+
+  it("while the site's switch is off the card is not drawn at all: no button whose route answers 404 (A-4 review m8)", async () => {
+    await openChat([...BASE, fact(3)], { social: { enabled: false } });
+    expect(li(3)?.textContent ?? "").toBe("");
+    expect(document.body.textContent).not.toContain(MOVE);
   });
 
   it("an event without the owner's `card` shows nothing (no one else is sent it)", async () => {

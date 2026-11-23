@@ -197,7 +197,10 @@ export function StoreProvider({ children, initialState, dataLayer }) {
     () => (initialState ? null : toView(snapshot.model, { now: layer.now(), offersAt: Date.now() })),
     [initialState, snapshot.model, layer, come],
   );
-  const state = useMemo(() => (view ? { ...ui, ...view, connection: snapshot.connection, connectionFailed: snapshot.failed } : ui), [ui, view, snapshot.connection, snapshot.failed]);
+  const state = useMemo(
+    () => (view ? { ...ui, ...view, agentContacts: snapshot.model.agentContacts ?? null, connection: snapshot.connection, connectionFailed: snapshot.failed } : ui),
+    [ui, view, snapshot.model.agentContacts, snapshot.connection, snapshot.failed],
+  );
 
   useEffect(() => {
     if (!state.toast) return undefined;

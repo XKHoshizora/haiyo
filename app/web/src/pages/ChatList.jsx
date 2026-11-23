@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PRODUCT_NAME } from "../brand.js";
 import { useStore } from "../data/store.jsx";
-import { quiet, convTitle, entity, lastPreview, TYPE_LABEL, otherMember } from "../state/selectors.js";
+import { quiet, convTitle, entity, lastPreview, listedConvs, TYPE_LABEL, otherMember } from "../state/selectors.js";
+import { isSocialConv, pictureConv } from "../state/social.js";
 import { ConvAvatar, IconBtn, LoadingRow, Tag } from "../ui/primitives.jsx";
 import { isEscape } from "../ui/keys.js";
 import { Plus, Search, UserPlus, Users } from "../icons.js";
@@ -88,9 +89,8 @@ export function ChatList() {
   },[menu]);
   const q = query.trim().toLowerCase();
 
-  const rows = state.order
-    .map((id) => state.convs[id])
-    .filter(Boolean)
+  // (The conversations I only watch as my Agents' owner are the Agent's, in its 「别人」 tab: never in this list.)
+  const rows = listedConvs(state)
     .filter((c) => (filter === "unread" ? c.unread > 0 && !quiet(state, c) : filter === "group" ? c.type === "group" : true))
     .filter((c) => matches(state, c, q));
 
@@ -129,11 +129,11 @@ export function ChatList() {
               aria-current={state.nav.convId === c.id ? "true" : undefined}
               onClick={() => dispatch({ type: "nav/openConv", convId: c.id })}
             >
-              <ConvAvatar conv={c} size={48} />
+              <ConvAvatar conv={pictureConv(state, c)} size={48} />
               <span className="row-body">
                 <span className="row-top">
                   <span className="row-name">{convTitle(state, c)}</span>
-                  {c.type === "agent" && !quiet(state, c) && <Tag>Agent</Tag>}
+                  {(c.type === "agent" || isSocialConv(c)) && !quiet(state, c) && <Tag>Agent</Tag>}
                   {c.type === "agent" && quiet(state, c) && <Tag tone="muted">已删除</Tag>}
                   <time>{c.at}</time>
                 </span>

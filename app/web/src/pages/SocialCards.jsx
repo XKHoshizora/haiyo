@@ -5,6 +5,7 @@ import React, { useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { socialErrorText } from "../data/errorTexts.js";
 import { publishBlock } from "../state/selectors.js";
+import { socialOn } from "../state/social.js";
 import { Btn } from "../ui/primitives.jsx";
 import { useDecision } from "./AgentChatBits.jsx";
 
@@ -50,6 +51,8 @@ export function PersonaFactCard({ msg, conv }) {
     }
   };
 
+  // While the site's switch is off the route answers 404: no card, so no button that cannot work (Global Constraint 7; review m8).
+  if (!socialOn(state)) return null;
   const ended = card.answer ?? done;
   const note = ended === "moved" ? MOVED : ended === "kept" ? KEPT : ended === "over" || card.expired ? OVER : null;
   return (

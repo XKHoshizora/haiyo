@@ -11,8 +11,7 @@ import { addressOf, navOfAddress, SETTINGS_PAGES } from "../src/state/location.j
 import { AG1, A1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, fakeTimers, fakeTransport, settle, syncOf, usageOf } from "./fixtures.js";
 import { click, flush, inMain, installBrowser, openApp } from "./harness.jsx";
 
-// (The tab itself, `pages/AgentOthers.jsx`, is a stub that draws nothing until lane A writes it. It cannot be replaced by a mock here:
-// tests/setup.js loads the application's chunk before any test file runs. So these tests see the mount by what surrounds it.)
+// (The tab itself, `pages/AgentOthers.jsx`, is lane A's, tested in tests/agent-others-tab.test.jsx; here only that it is mounted.)
 
 const ID = "0b9c1c6e-0000-4000-8000-000000000001";
 const ID2 = "0b9c1c6e-0000-4000-8000-000000000002";
@@ -164,8 +163,9 @@ describe("the Agent page", () => {
     expect(tabs()).toEqual(["资料", "参与的会话", "记忆宫殿", "别人"]);
     await click(inMain().getByRole("tab", { name: "别人" }));
     expect(inMain().getByRole("tab", { name: "别人" }).getAttribute("aria-selected")).toBe("true");
-    // The tab is the stub's: the page body holds nothing of the profile, the groups or the memory, and nothing else yet.
-    expect(document.querySelector(".main-col .page-body").children).toHaveLength(0);
+    // The page body is the tab's (here its contacts could not be read: its own line), nothing of the profile, the groups or the memory.
+    expect(document.querySelector(".main-col .page-body").children.length).toBeGreaterThan(0);
+    expect(within(document.querySelector(".main-col .page-body")).queryByText("参与的会话")).toBeNull();
   });
 
   it("the tab is the live Agent's, and goes with the switch: turned off while open, the page falls back to the profile", async () => {
@@ -180,9 +180,10 @@ describe("the Agent page", () => {
   });
 });
 
-describe("the default tab", () => {
-  it("shows nothing until lane A writes it", async () => {
-    const { AgentOthersTab } = await import("../src/pages/AgentOthers.jsx");
-    expect(AgentOthersTab({ agent: { id: AG1 } })).toBeNull();
+describe("the tab", () => {
+  it("is a component of its own (lane A's A11b), not the Step 0 stub", async () => {
+    const { AgentOthersTab, POLICY_QUESTION } = await import("../src/pages/AgentOthers.jsx");
+    expect(typeof AgentOthersTab).toBe("function");
+    expect(POLICY_QUESTION).toBe("谁可以加它为好友");
   });
 });

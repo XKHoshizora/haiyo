@@ -35,6 +35,8 @@ import {
   applyModels,
   applyPrincipals,
   applyRun,
+  applyAgentContacts,
+  holdsGroupRuns,
   applySocial,
   applySync,
   applyWhisper,
@@ -96,6 +98,7 @@ export function httpTransport({ timers, WebSocketImpl } = {}) {
     catchUp: routes.catchUp,
     getConversation: routes.getConversation,
     getSocial: routes.getSocial,
+    listAgentContacts: routes.listAgentContacts,
     listAgents: routes.listAgents,
     getAgent: routes.getAgent,
     getMessage: routes.getMessage,
@@ -342,6 +345,17 @@ export function start(
     const res = await transport.getSocial();
     if (my !== conn) return;
     setModel(applySocial(getModel(), res));
+    // Agent social: the people I let in or waited on, and the requests waiting on my Agents, change with the same push. Only while the
+    // site's switch is on (no route of it is called otherwise); a failure leaves what is held, a 401 ends the session.
+    if (getModel().socialOn && typeof transport.listAgentContacts === "function") {
+      try {
+        const contacts = await transport.listAgentContacts();
+        if (my !== conn) return;
+        setModel(applyAgentContacts(getModel(), contacts));
+      } catch (err) {
+        if (isSignedOut(err)) throw err;
+      }
+    }
   }
 
   // ───────── Agent work, in the background once the connection is live (see the header)
@@ -525,7 +539,7 @@ export function start(
    * after RUN_RETRY_MS; failing again, its replies held as being written are shown as unknown.
    */
   async function refreshGroupRuns(my, id) {
-    if (getModel().conversations[id]?.type !== "group") return;
+    if (!holdsGroupRuns(getModel().conversations[id]?.type)) return;
     let res;
     try {
       res = await transport.getGroupRuns(id);
@@ -619,7 +633,7 @@ export function start(
         // A conversation not held when buffering began has no floor: anything of the Agent held counts (no bubble).
         const since = buffered ? buffered.get(event.conversationId) ?? 0 : undefined;
         // A group's: one Agent's reply, the owner's run or anyone else's state (only that is read of it).
-        if (model.conversations[event.conversationId]?.type === "group") {
+        if (holdsGroupRuns(model.conversations[event.conversationId]?.type)) {
           setModel(applyGroupRun(model, event.conversationId, event.agentId, event, { since }));
           return;
         }

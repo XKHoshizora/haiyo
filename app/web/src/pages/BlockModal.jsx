@@ -1,6 +1,6 @@
 import React from "react";
 import { useStore } from "../data/store.jsx";
-import { nameOf } from "../state/selectors.js";
+import { isAgent, nameOf } from "../state/selectors.js";
 import { iBlocked } from "../state/social.js";
 import { friendErrorText } from "../data/errorTexts.js";
 import { Modal, Btn, Notice } from "../ui/primitives.jsx";
@@ -12,6 +12,7 @@ export function BlockModal({ target, onClose }) {
   const { busy, run } = useAction();
   const blocked = iBlocked(state, target);
   const name = nameOf(state, target);
+  const agent = isAgent(state, target);
   const confirm = async () => {
     const action = blocked ? "unblock" : "block";
     const res = await run(action, () => (blocked ? actions.unblockPrincipal(target) : actions.blockPrincipal(target)), (e) => friendErrorText(action, e));
@@ -34,6 +35,17 @@ export function BlockModal({ target, onClose }) {
         <>
           <p>只解除你自己的拉黑。</p>
           <Notice tone="info">如果你们仍是好友，并且对方没有拉黑你，私聊就可以继续发送；否则需要重新成为好友，或等对方解除拉黑。</Notice>
+        </>
+      ) : agent ? (
+        <>
+          <p>
+            你要拉黑 <strong>{name}</strong>：
+          </p>
+          <ul className="plain-list">
+            <li>你和它的对话会结束，你让它做的事会停下，已有历史不受影响。</li>
+            <li>你也找不到它，不能再加它为联系人。</li>
+            <li>你可以随时解除自己的拉黑。</li>
+          </ul>
         </>
       ) : (
         <>

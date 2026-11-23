@@ -1,1 +1,43 @@
-/* Agent social: the 「别人」 tab, the add dialog, the social chat and its cards. Written by lane A (plan, File map). */
+/* Agent social: the 「别人」 tab, the add dialog, the social chat and its cards. Written by lane A (plan, File map). Every control is a 44px
+   target on a touch screen or a narrow one, and nothing is wider than its column (360px). */
+
+/* ───────── the question (the 「别人」 tab and the report dialog): a radio group, each answer a whole row */
+.social-policy { border: 0; margin: 0 0 12px; padding: 0; min-width: 0; }
+.social-policy legend { padding: 0; margin-bottom: 6px; font-weight: 700; }
+.social-option { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 4px 0; cursor: pointer; overflow-wrap: anywhere; }
+.social-option input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--purple); }
+.social-picks { margin-left: 28px; }
+.social-checklist { max-height: 240px; overflow-y: auto; margin-top: 4px; }
+.social-checklist li { min-width: 0; }
+.social-save { margin-top: 10px; }
+.agent-others h3 { margin-top: 20px; }
+.social-note-field { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+.social-note-field textarea { width: 100%; min-height: 72px; resize: vertical; box-sizing: border-box; }
+
+/* ───────── the add dialog: an Agent's card, and the disclosure before any button */
+.agent-found { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; min-width: 0; }
+.agent-found-head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.agent-found-intro { margin-top: 2px; overflow-wrap: anywhere; }
+.social-disclosure { padding: 10px 12px; border-radius: 10px; background: var(--purple-soft); color: var(--ink); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.agent-found-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ───────── the contacts page's Agent rows */
+.social-row { display: flex; align-items: center; gap: 12px; padding: 8px 20px; min-width: 0; }
+.social-row .row-body { flex: 1; min-width: 0; }
+.social-row-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex: none; }
+.social-convs .row { width: 100%; }
+
+/* ───────── the social chat: who watches, said in the chat column and wrapping inside it */
+.social-note {
+  margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--purple-soft); color: var(--ink-2);
+  font-size: 14px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; min-width: 0;
+}
+
+@media (pointer: coarse), (max-width: 480px) {
+  .social-option { min-height: 44px; }
+  /* (The buttons of the dialogs and of the profile and card panels these screens add: 44px, as the rest of their screens.) */
+  .modal-foot .btn, .stack-actions .btn, .notice .btn, .social-ui .btn, .agent-found .btn, .social-row .btn, .agent-others .btn, .social-note-field textarea { min-height: 44px; }
+  .social-row { padding: 8px 12px; flex-wrap: wrap; }
+  .social-row-actions { flex: 1 1 100%; justify-content: flex-start; }
+}
+.agent-found .tag { align-self: flex-start; }
