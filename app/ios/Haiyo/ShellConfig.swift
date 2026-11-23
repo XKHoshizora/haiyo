@@ -8,8 +8,6 @@ struct ShellConfig: Equatable {
     let host: String
     let version: String
     let build: String
-    /// The APNs environment a token from this build belongs to: "development" or "production".
-    let apnsEnvironment: String
     /// "acceptance" (Debug, Acceptance: the test site, internal TestFlight only) or "store".
     var channel: String = "acceptance"
 
@@ -20,12 +18,10 @@ struct ShellConfig: Equatable {
         guard let raw = info["HaiyoHost"] as? String else { return nil }
         let host = raw.lowercased()
         guard isBareHost(host) else { return nil }
-        let env = (info["HaiyoApnsEnvironment"] as? String) == "production" ? "production" : "development"
         return ShellConfig(
             host: host,
             version: info["CFBundleShortVersionString"] as? String ?? "0",
             build: info["CFBundleVersion"] as? String ?? "0",
-            apnsEnvironment: env,
             channel: (info["HaiyoChannel"] as? String) == "store" ? "store" : "acceptance"
         )
     }

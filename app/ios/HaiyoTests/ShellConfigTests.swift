@@ -8,7 +8,7 @@ final class ShellConfigTests: XCTestCase {
         let config = ShellConfig.parse(info: Bundle.main.infoDictionary ?? [:])
         XCTAssertEqual(config?.host, "test.haiyo.org")
         XCTAssertEqual(config?.origin.absoluteString, "https://test.haiyo.org")
-        XCTAssertEqual(config?.apnsEnvironment, "development")
+        XCTAssertEqual(ApnsEnvironment.current, "sandbox", "the simulator's APNs is the sandbox")
         XCTAssertEqual(config?.channel, "acceptance")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String, "0.1.0")
         // The build number changes with every upload (Config/Shared.xcconfig); it must be a positive whole number.
@@ -21,6 +21,30 @@ final class ShellConfigTests: XCTestCase {
             XCTAssertFalse((Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "").isEmpty, key)
         }
         XCTAssertNotNil(Bundle.main.url(forResource: "PrivacyInfo", withExtension: "xcprivacy"))
+    }
+
+    /// The APNs environment in the service's words, from the app's own signed profile (a signed envelope around an XML
+    /// property list): development-signed → sandbox; distribution-signed, or no profile (App Store) → production;
+    /// the simulator → sandbox.
+    func testTheApnsEnvironmentComesFromTheSignedProfile() {
+        func profile(_ aps: String?) -> Data {
+            let entitlements = aps.map { "<key>aps-environment</key><string>\($0)</string>" } ?? ""
+            let xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict><key>Name</key><string>x</string>
+            <key>Entitlements</key><dict>\(entitlements)<key>get-task-allow</key><true/></dict></dict></plist>
+            """
+            return Data([0x30, 0x82, 0x4e, 0x1f, 0x06, 0x09]) + Data(xml.utf8) + Data([0xa0, 0x82, 0x0d, 0x00, 0x3c])
+        }
+        XCTAssertEqual(ApnsEnvironment.apsEnvironment(inProfile: profile("development")), "development")
+        XCTAssertEqual(ApnsEnvironment.name(profile: profile("development"), isSimulator: false), "sandbox")
+        XCTAssertEqual(ApnsEnvironment.name(profile: profile("production"), isSimulator: false), "production")
+        XCTAssertEqual(ApnsEnvironment.name(profile: nil, isSimulator: false), "production", "installed from the App Store")
+        XCTAssertEqual(ApnsEnvironment.name(profile: nil, isSimulator: true), "sandbox")
+        XCTAssertEqual(ApnsEnvironment.name(profile: profile("production"), isSimulator: true), "sandbox")
+        XCTAssertEqual(ApnsEnvironment.name(profile: profile(nil), isSimulator: false), "production", "no push entitlement")
+        XCTAssertEqual(ApnsEnvironment.name(profile: Data("not a profile".utf8), isSimulator: false), "production")
     }
 
     /// iPhone and iPad; on iPad every orientation and a resizable window; the iPhone stays portrait for now. Read from
@@ -47,8 +71,6 @@ final class ShellConfigTests: XCTestCase {
             XCTAssertNil(ShellConfig.parse(info: ["HaiyoHost": bad]), bad)
         }
         XCTAssertNil(ShellConfig.parse(info: [:]))
-        XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org", "HaiyoApnsEnvironment": "production"])?.apnsEnvironment, "production")
-        XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org", "HaiyoApnsEnvironment": "other"])?.apnsEnvironment, "development")
         XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org", "HaiyoChannel": "store"])?.channel, "store")
         XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "x.org"])?.channel, "acceptance")
         for good in ["test.haiyo.org", "haiyo.org", "a-b.c-d.example", "x1.y2"] {

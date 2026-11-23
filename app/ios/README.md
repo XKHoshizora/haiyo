@@ -46,9 +46,9 @@ or `Config/Store.xcconfig`; it becomes the Info.plist key `HaiyoHost` and the as
 the origin is always `https://<host>`. The version and the build number are one line each in `Config/Shared.xcconfig`
 (raise `CURRENT_PROJECT_VERSION` for every upload).
 
-| Configuration | Settings file | `HAIYO_CHANNEL` | APNs | Used for |
+| Configuration | Settings file | `HAIYO_CHANNEL` | Usual APNs (`env`) | Used for |
 |---|---|---|---|---|
-| Debug | `Acceptance.xcconfig` (`test.haiyo.org`) | acceptance | development | Xcode runs, unit tests |
+| Debug | `Acceptance.xcconfig` (`test.haiyo.org`) | acceptance | sandbox | Xcode runs, unit tests |
 | Acceptance | `Acceptance.xcconfig` (`test.haiyo.org`) | acceptance | production | internal TestFlight builds of the acceptance site |
 | Store | `Store.xcconfig` (host empty) | store | production | the App Store build; the scheme's Archive builds this one |
 
@@ -111,7 +111,7 @@ The page calls `window.webkit.messageHandlers.haiyo.postMessage({ name, args })`
 | `name` | `args` | Reply |
 |---|---|---|
 | `hello` | `{ events?: ["pause", "resume", "open", "layout"] }` — the events the page handles | `{ bridge: 1, shell, build, os, push, events, layout? }`; `push` is `granted`, `denied` or `notDetermined` (re-register silently when `granted`); `layout` only when the page listed it: as in `haiyo:layout` below, current at the reply. The events take effect when the answer is delivered, not when it is asked |
-| `push.register` | — | asks for notification permission if needed, then `{ token, env }`, `{ denied: true }` or `{ error }`; `env` is `development` (Debug) or `production` (Acceptance, Store). It always answers exactly once: the system's permission prompt has no time limit (the answer waits for the person), then `timeout` if APNs gives no token within 30 s, `busy` with 4 waiting. A page should not give up on it while the prompt may be open |
+| `push.register` | — | asks for notification permission if needed, then `{ token, env }`, `{ denied: true }` or `{ error }`; `env` is the service's word, `sandbox` or `production`, read from the app's own signed profile (`aps-environment`: development → sandbox; a distribution profile, or none as from the App Store → production; the simulator → sandbox), so it is right however the build was signed. Builds up to 0.1.0 (3) said `development` instead of `sandbox` (Debug only). It always answers exactly once: the system's permission prompt has no time limit (the answer waits for the person), then `timeout` if APNs gives no token within 30 s, `busy` with 4 waiting. A page should not give up on it while the prompt may be open |
 | `badge.set` | `{ n }`, a whole number 0–99999 | `{ ok }`: `false` when the system refused (no badge permission yet) |
 
 Refused messages reject with `forbidden` (not the shell's own origin, or not the main frame), `malformed` or `unknown`.
@@ -193,9 +193,6 @@ no file names, no paths or URLs with ids, no query strings, no message text, no 
 - App-Bound Domains (`WKAppBoundDomains` = the host, `limitsNavigationsToAppBoundDomains`): not enabled in v0. It
   would make the bridge's origin rule OS-enforced; it also changes how the WebKit tests load other origins, so it gets
   its own measured change.
-- APNs environment: `HaiyoApnsEnvironment` comes from the build configuration, not the signing profile; a
-  configuration run from Xcode with a development profile reports `production`. The service (S5) should treat
-  `BadDeviceToken` from one environment as "try the other once".
 
 ## Debug-only launch options
 

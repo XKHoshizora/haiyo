@@ -341,7 +341,7 @@ final class ShellViewController: UIViewController, BridgeHost {
     }
 
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void) {
-        PushCenter.shared.register(environment: config.apnsEnvironment, completion: completion)
+        PushCenter.shared.register(environment: ApnsEnvironment.current, completion: completion)
     }
 
     func bridgeBadgeSet(_ n: Int, completion: @escaping ([String: Any]) -> Void) {

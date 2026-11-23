@@ -1,6 +1,36 @@
 import UIKit
 import UserNotifications
 
+/// Which APNs a token from this app belongs to, in the service's words: "sandbox" or "production". Read from the app's
+/// own signed provisioning profile, so it is right however the build was signed (an Acceptance build run from Xcode on
+/// a device is development-signed and gets sandbox tokens): `aps-environment` development → "sandbox", production →
+/// "production". An app installed from the App Store carries no profile: "production". The simulator: "sandbox".
+enum ApnsEnvironment {
+    static let current: String = {
+        #if targetEnvironment(simulator)
+        let simulator = true
+        #else
+        let simulator = false
+        #endif
+        let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) }
+        return name(profile: profile, isSimulator: simulator)
+    }()
+
+    static func name(profile: Data?, isSimulator: Bool) -> String {
+        if isSimulator { return "sandbox" }
+        return profile.flatMap(apsEnvironment(inProfile:)) == "development" ? "sandbox" : "production"
+    }
+
+    /// The profile is a signed (CMS) envelope around a plain XML property list: `Entitlements` → `aps-environment`.
+    static func apsEnvironment(inProfile data: Data) -> String? {
+        guard let start = data.range(of: Data("<?xml".utf8)),
+              let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
+              let plist = try? PropertyListSerialization.propertyList(from: data[start.lowerBound..<end.upperBound], format: nil) as? [String: Any],
+              let entitlements = plist["Entitlements"] as? [String: Any] else { return nil }
+        return entitlements["aps-environment"] as? String
+    }
+}
+
 /// Notification permission, the APNs token and the badge. Present but idle until the page calls `push.register`
 /// (the service side does not exist yet). Taps on a notification open its conversation.
 final class PushCenter: NSObject, UNUserNotificationCenterDelegate {

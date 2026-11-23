@@ -20,8 +20,6 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>HaiyoApnsEnvironment</key>
-	<string>$(HAIYO_APNS_ENV)</string>
 	<key>HaiyoChannel</key>
 	<string>$(HAIYO_CHANNEL)</string>
 	<key>HaiyoHost</key>
