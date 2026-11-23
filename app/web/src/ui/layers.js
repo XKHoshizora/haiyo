@@ -57,6 +57,74 @@ function settleInert() {
   }
 }
 
+// ───────── the page behind does not scroll
+// `inert` stops focus and taps, not scrolling: on iOS a drag on a layer whose list has little or nothing to scroll is handed to what is behind it, and the
+// pages scroll in boxes of their own (a form, a list), not in the document. So while a layer is open: the document is locked (`html[data-layer-open]`,
+// styles.css), and every touch move or wheel is judged here — it goes on only when it starts inside the top layer (or what was opened from it) on a
+// box that can scroll the way it goes; anything else is stopped, which is also what keeps a drag at a list's end from reaching the page.
+const scrollOf = (el, vertical) => {
+  const style = getComputedStyle(el);
+  const mode = vertical ? style.overflowY : style.overflowX;
+  return (mode === "auto" || mode === "scroll") && (vertical ? el.scrollHeight > el.clientHeight : el.scrollWidth > el.clientWidth);
+};
+/** Whether `target` is in the top layer or in something opened after it (the body's later children). */
+function inLiveRegion(target) {
+  const top = stack.at(-1);
+  if (!top || !(target instanceof Node)) return false;
+  const children = [...document.body.children];
+  const host = hostOf(target instanceof Element ? target : target.parentElement);
+  return host !== null && children.indexOf(host) >= children.indexOf(hostOf(top.node));
+}
+/** Whether a box between `target` and the top layer can scroll by `delta` (positive: down / right) on that axis. */
+function canScroll(target, delta, vertical) {
+  const top = stack.at(-1);
+  for (let el = target instanceof Element ? target : target.parentElement; el && el !== document.body; el = el.parentElement) {
+    if (scrollOf(el, vertical)) {
+      const at = vertical ? el.scrollTop : el.scrollLeft;
+      const max = vertical ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
+      if (delta > 0 ? at < max - 0.5 : at > 0.5) return true;
+    }
+    if (el === top?.node) break;
+  }
+  return false;
+}
+let touchFrom = null;
+function onTouchStart(event) {
+  touchFrom = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+}
+function onTouchMove(event) {
+  if (!stack.length || event.defaultPrevented || event.touches.length !== 1 || !touchFrom) return;
+  const dx = touchFrom.x - event.touches[0].clientX;
+  const dy = touchFrom.y - event.touches[0].clientY;
+  const vertical = Math.abs(dy) >= Math.abs(dx);
+  touchFrom = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+  if (inLiveRegion(event.target) && canScroll(event.target, vertical ? dy : dx, vertical)) return;
+  if (event.cancelable) event.preventDefault();
+}
+function onWheel(event) {
+  if (!stack.length || event.defaultPrevented || event.ctrlKey) return;
+  const vertical = Math.abs(event.deltaY) >= Math.abs(event.deltaX);
+  if (inLiveRegion(event.target) && canScroll(event.target, vertical ? event.deltaY : event.deltaX, vertical)) return;
+  if (event.cancelable) event.preventDefault();
+}
+let documentAt = null;
+function lockDocument() {
+  documentAt = { x: window.scrollX, y: window.scrollY };
+  document.documentElement.setAttribute("data-layer-open", "");
+  document.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+  document.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
+  document.addEventListener("wheel", onWheel, { capture: true, passive: false });
+}
+function unlockDocument() {
+  document.documentElement.removeAttribute("data-layer-open");
+  document.removeEventListener("touchstart", onTouchStart, { capture: true });
+  document.removeEventListener("touchmove", onTouchMove, { capture: true });
+  document.removeEventListener("wheel", onWheel, { capture: true });
+  // Exactly where it was.
+  if (documentAt && (window.scrollX !== documentAt.x || window.scrollY !== documentAt.y)) window.scrollTo(documentAt.x, documentAt.y);
+  documentAt = null;
+}
+
 /** A search box's own Esc: it empties the box, as the browsers' own search fields do, and React hears the change. */
 function emptySearch(field) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(field, "");
@@ -105,6 +173,7 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
     const neighbours = neighboursOf(previous);
     const layer = { node, close: () => latest.current.onClose?.(), held: () => Boolean(latest.current.held?.()) };
     stack.push(layer);
+    if (stack.length === 1) lockDocument();
     settleInert();
     if (autofocus && !node.contains(document.activeElement)) {
       const first = node.querySelector("[data-autofocus]") || focusables(node)[0];
@@ -144,6 +213,7 @@ export function useLayer(ref, { onClose, returnTo = null, held = null, active = 
       node.removeEventListener("keydown", onTab);
       const at = stack.indexOf(layer);
       if (at >= 0) stack.splice(at, 1);
+      if (stack.length === 0) unlockDocument();
       settleInert();
       if (history) {
         window.removeEventListener("popstate", onPop);

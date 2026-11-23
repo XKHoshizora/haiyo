@@ -51,6 +51,15 @@ describe("sheetFrameFor: a bottom sheet that stands on the visible part, above t
     expect(sheetFrameFor({ scale: 1, offsetLeft: 0, offsetTop: 100, width: 402, height: 520 }, 874)).toEqual({ height: 374, bottom: 254, keyboard: true });
   });
 
+  it("given what the content needs, it is that tall (every row shown) up to 85% of the visible part; more content than that: the cap, so the list is cut and scrolls", () => {
+    const vv = { scale: 1, offsetLeft: 0, offsetTop: 0, width: 430, height: 932 };
+    expect(sheetFrameFor(vv, 932, 600)).toEqual({ height: 600, bottom: 0, keyboard: false });
+    expect(sheetFrameFor(vv, 932, 1400)).toEqual({ height: 792, bottom: 0, keyboard: false });
+    expect(sheetFrameFor(vv, 932, 120).height).toBe(200);
+    // With the keyboard up the cap is of what is left.
+    expect(sheetFrameFor({ ...vv, height: 520 }, 932, 1400)).toEqual({ height: 442, bottom: 412, keyboard: true });
+  });
+
   it("never less than a few rows, and nothing without a visual viewport (the stylesheet's own height then)", () => {
     expect(sheetFrameFor({ scale: 1, offsetLeft: 0, offsetTop: 0, width: 402, height: 200 }, 874).height).toBe(200);
     expect(sheetFrameFor(null, 874)).toBeNull();

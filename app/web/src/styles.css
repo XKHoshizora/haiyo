@@ -37,6 +37,8 @@
 *::-webkit-scrollbar-corner { background: transparent; }
 
 html, body, #root { height: 100%; }
+/* While a layer is open (ui/layers.js) the document itself does not scroll; the guard there stops the page's own boxes too. */
+html[data-layer-open], html[data-layer-open] body { overflow: hidden; }
 /* iOS makes its own guesses at text size (it inflated the wider rows of a list and left the narrow ones alone): never. The person's own text size
    still works through the normal mechanisms (Dynamic Type in the native shell, the browser's zoom and minimum font size, rem/em units). */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -302,6 +304,8 @@ svg.model-brand { color: var(--ink-3); }
 .model-search input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: none; outline: none; font-size: 14px; color: var(--ink); }
 .model-search input::placeholder { color: var(--ink-3); }
 .model-list, .select-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* More rows below the edge: a shadow at the list's foot, only then (ModelSelect sets data-more), so a list never ends on a row boundary looking complete. */
+.model-list[data-more] { box-shadow: inset 0 -14px 10px -10px rgba(40, 32, 80, 0.3); }
 .model-group-label { position: sticky; top: 0; z-index: 1; padding: 8px 8px 4px; background: #fff; font-size: 12px; color: var(--ink-3); }
 .model-option, .select-option { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 8px; border-radius: 8px; font-size: 14px; cursor: pointer; }
 .model-option.active, .select-option.active { background: var(--purple-tint); }
@@ -341,7 +345,7 @@ svg.model-brand { color: var(--ink-3); }
     box-shadow: 0 -12px 40px rgba(40, 32, 80, 0.22); animation: model-sheet-in 0.18s ease-out;
   }
   /* (A plain choice has no search field to keep in place: its sheet is only as tall as its options.) */
-  .select-pop, .select-pop.up { height: auto; max-height: min(72dvh, 560px); }
+  .select-pop, .select-pop.up { height: auto; max-height: var(--sheet-h, min(72dvh, 560px)); }
   /* A sheet of a set height: its list takes what is left of it (basis 0, so its own content never sets its height) and is the one thing that scrolls. */
   .model-list { flex: 1 1 0; }
   .model-search { height: 40px; }

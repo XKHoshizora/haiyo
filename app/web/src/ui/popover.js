@@ -62,11 +62,15 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
   useLayoutEffect(() => {
     if (!open) return undefined;
     latest.current.focus?.(sheet);
+    let fitted = 0;
     const placeIt = () => {
       if (onPhone()) {
         // The sheet stands on the visible part (above the keyboard, whatever dvh says); no button to place it by.
-        const frame = sheetFrameFor(window.visualViewport, window.innerHeight);
         const el = popRef.current;
+        // What its list needs to show every row: the sheet now, less its list as shown, plus the list whole. Only ever grows while it is open (typing does not move the search field).
+        const list = el?.querySelector(".model-list");
+        if (list) fitted = Math.max(fitted, el.offsetHeight - list.clientHeight + list.scrollHeight);
+        const frame = sheetFrameFor(window.visualViewport, window.innerHeight, fitted || null);
         if (el) for (const [name, value] of [["--sheet-h", frame && `${frame.height}px`], ["--sheet-bottom", frame && `${frame.bottom}px`], ["--sheet-inset", frame?.keyboard ? "0px" : null]]) value ? el.style.setProperty(name, value) : el.style.removeProperty(name);
         return;
       }
@@ -99,11 +103,15 @@ export function usePopover({ disabled = false, busy = false, widthOf, focus, onO
     const onScroll = (event) => {
       if (!popRef.current?.contains(event.target)) placeIt();
     };
+    // Rows that arrive after it opened (the providers being read) make it taller, never shorter.
+    const rows = typeof MutationObserver === "function" && popRef.current ? new MutationObserver(placeIt) : null;
+    rows?.observe(popRef.current, { childList: true, subtree: true });
     window.addEventListener("resize", placeIt);
     window.visualViewport?.addEventListener("resize", placeIt);
     window.visualViewport?.addEventListener("scroll", placeIt);
     window.addEventListener("scroll", onScroll, true);
     return () => {
+      rows?.disconnect();
       window.removeEventListener("resize", placeIt);
       window.visualViewport?.removeEventListener("resize", placeIt);
       window.visualViewport?.removeEventListener("scroll", placeIt);

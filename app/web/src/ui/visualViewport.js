@@ -45,14 +45,16 @@ export function layerStyleFor(vv, windowHeight) {
 }
 
 /**
- * A bottom sheet's height and place for the visible part `vv`: 72% of what is visible (at most 560px, at least 200px or all there is), standing on
+ * A bottom sheet's height and place for the visible part `vv`: what its content needs (`natural`) up to 85% of what is visible, else 72% (at most 560px); at least 200px or all there is. It stands on
  * the visible part's bottom edge — with the keyboard up that is the keyboard's top edge, so no row of the sheet is under it. `keyboard`: the
  * visible part is smaller than the window (the sheet then needs no room for the home indicator). `null` without a visual viewport or when the page is
  * zoomed (the stylesheet's own size then).
  */
-export function sheetFrameFor(vv, windowHeight) {
+export function sheetFrameFor(vv, windowHeight, natural = null) {
   if (!vv || Math.abs(vv.scale - 1) >= 0.01) return null;
-  const height = Math.max(Math.min(vv.height, 200), Math.min(560, Math.round(vv.height * 0.72)));
+  const floor = Math.min(vv.height, 200);
+  // Given what the content needs, as tall as that (so every row is shown) up to 85% of the visible part; else 72%, at most 560px.
+  const height = natural > 0 ? Math.max(floor, Math.min(Math.round(vv.height * 0.85), Math.round(natural))) : Math.max(floor, Math.min(560, Math.round(vv.height * 0.72)));
   const bottom = Math.max(0, Math.round(windowHeight - (vv.offsetTop + vv.height)));
   return { height, bottom, keyboard: bottom > 0 || vv.height < windowHeight - 1 };
 }

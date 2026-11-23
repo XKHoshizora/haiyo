@@ -109,6 +109,29 @@ export function ModelSelect({
     if (key !== value) onChange?.(key, row);
   };
 
+  // Whether more rows wait below the list's edge: the cue (a shadow at the edge) shows exactly then, at every length of list.
+  const listRef = useRef(null);
+  const [more, setMore] = useState(false);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!open || !list) {
+      setMore(false);
+      return undefined;
+    }
+    const measure = () => setMore(list.scrollTop + list.clientHeight < list.scrollHeight - 1);
+    measure();
+    list.addEventListener("scroll", measure, { passive: true });
+    const resized = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    resized?.observe(list);
+    const changed = typeof MutationObserver === "function" ? new MutationObserver(measure) : null;
+    changed?.observe(list, { childList: true, subtree: true });
+    return () => {
+      list.removeEventListener("scroll", measure);
+      resized?.disconnect();
+      changed?.disconnect();
+    };
+  }, [open, status]);
+
   // The row the keyboard is on stays in view.
   useLayoutEffect(() => {
     if (open && activeKey !== null) document.getElementById(optionId.get(activeKey))?.scrollIntoView?.({ block: "nearest" });
@@ -226,7 +249,7 @@ export function ModelSelect({
           ) : (
             <>
               {/* A press on a row or a group's name leaves the focus in the search field (one on the list's own scrollbar is let through). */}
-              <div className="model-list" role="listbox" id={listId} aria-label="模型" onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
+              <div className="model-list" ref={listRef} data-more={more || undefined} role="listbox" id={listId} aria-label="模型" onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
                 {shown.lead.map(row)}
                 {shown.groups.map((g) => (
                   <div key={g.id} role="group" aria-label={g.label} className="model-group">
