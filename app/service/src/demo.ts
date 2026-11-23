@@ -13,6 +13,7 @@ import { listOwnedAgents, lockAgent, setAgentState, type AgentModel } from "./ag
 import { recordAcceptance } from "./legal.ts";
 import { sendMessage } from "./messages/send.ts";
 import { HANDLE_PATTERN } from "./principals/store.ts";
+import { unblockPrincipal } from "./social/blocks.ts";
 import { orderedPair } from "./social/pair.ts";
 
 /** The reviewer's account unless the operator names others (`--handle`, `--name`). */
@@ -192,7 +193,9 @@ export async function seedDemo(db: Db, config: Config, auth: Auth, input: DemoIn
     // Friends with both, as an accepted request leaves them (a block or an unfriending of a review is undone).
     for (const memberId of memberIds) {
       const [lo, hi] = orderedPair(reviewerId, memberId);
-      await t.query("delete from blocks where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1)", [reviewerId, memberId]);
+      // Through the one unblock path, so that a block's bar goes with it (and passes to the other's block, if that stands too).
+      await unblockPrincipal(t, reviewerId, memberId);
+      await unblockPrincipal(t, memberId, reviewerId);
       await t.query("insert into friendships (a_id, b_id) values ($1, $2) on conflict do nothing", [lo, hi]);
       await ensureDirect(t, memberId, reviewerId, reviewerId);
     }

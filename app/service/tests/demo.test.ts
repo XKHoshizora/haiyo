@@ -99,6 +99,8 @@ describe("demo:seed", () => {
     const mika = (await db.query<{ id: string }>("select id from principals where handle = 'app_review_mika'")).rows[0]!.id;
     expect((await api(app, reviewer, "DELETE", `/api/agents/${agent.id}`)).status).toBe(200);
     expect((await api(app, reviewer, "PUT", `/api/blocks/${mika}`)).status).toBe(200);
+    // A person's block writes a bar; the demo's undo goes through the unblock path, so none is left orphaned (review M7 of block 1).
+    expect(await count("select count(*) n from access_bars")).toBe(1);
     expect((await api(app, reviewer, "DELETE", `/api/conversations/${first.id}/members/${(await api(app, reviewer, "GET", "/api/me")).json.id}`)).status).toBe(200);
 
     await seed();
@@ -108,6 +110,7 @@ describe("demo:seed", () => {
     expect(group.members).toEqual(["app_review", "app_review.mochi", "app_review_mika", "app_review_ren"].sort());
     expect(group.said).toHaveLength(5);
     expect(await count("select count(*) n from blocks")).toBe(0);
+    expect(await count("select count(*) n from access_bars")).toBe(0);
     const agents = (await api<{ agents: Array<{ id: string; deleted: boolean; paused: boolean }> }>(app, back, "GET", "/api/agents")).json.agents.filter((a) => !a.deleted);
     expect(agents).toHaveLength(1);
     expect(agents[0]!.id).not.toBe(agent.id);

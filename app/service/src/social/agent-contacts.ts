@@ -4,12 +4,12 @@ import type { Config } from "../config.ts";
 import { ensureSocial, lockConversation } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { handleOf } from "../principals/store.ts";
-import { lockPairs, orderedPair } from "./pair.ts";
+import { lockPair, lockPairs, orderedPair } from "./pair.ts";
 import { discoverable, discoverableSql, reach } from "./reach.ts";
 import { areFriends } from "./relations.ts";
 
 // Who may reach an Agent, per Agent: rows in `agent_contacts`, the policy that makes them, and the one function that ends them.
-// Lane A: A4 (add, approve, decline, remove, the lists) and A5a (`endGrants`) are here; `applyPolicy` (A5c) is still Step 0's throwing body.
+// Lane A: A4 (add, approve, decline, remove, the lists), A5a (`endGrants`) and A5b (the bars) are here; `applyPolicy` (A5c) is still Step 0's throwing body.
 
 export type ContactPolicy = "ask" | "contacts" | "none";
 export type ContactState = "requested" | "live" | "ended";
@@ -37,7 +37,17 @@ const LANE_A = "ring 1: lane A";
  * either seen queued (its claim waits on our row, finds it cancelled) or already running when the second statement looks.
  * The caller runs `announceEnded` after commit. Nothing here writes a bar.
  */
-export async function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred"): Promise<EndedRuns & { ended: number }> {
+export function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred"): Promise<EndedRuns & { ended: number }> {
+  return endGrantsIn(t, scope, reason, { groups: true });
+}
+
+/**
+ * `endGrants`, with a choice for step 4's group runs. A person's block of a person (`setBar`'s origin `block`) leaves them to
+ * the check that exists already: a group's reply meets a block as it begins, call by call, and a reply that answers several
+ * calls keeps answering the others (agents-block-recheck.test.ts); ending the whole reply here would drop the owner's own call
+ * folded into it. So that block ends the rows and the runs in the pair's social conversations only (`groups: false`).
+ */
+async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred", o: { groups: boolean }): Promise<EndedRuns & { ended: number }> {
   const agents =
     "between" in scope
       ? await t.query<{ id: string }>(
@@ -67,7 +77,7 @@ export async function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narr
       sql: `ag.owner_id in ($1::uuid, $2::uuid) and (
               (${inSocial} and exists (select 1 from principals ro where ro.id = case when rsp.a_id = r.agent_id then rsp.b_id else rsp.a_id end
                                          and coalesce(ro.owner_id, ro.id) = ${concerned})))
-              or (r.caller_id = ${concerned} and ${inGroup}))`,
+              ${o.groups ? `or (r.caller_id = ${concerned} and ${inGroup})` : ""})`,
       params: [a, b],
     };
   } else {
@@ -80,8 +90,8 @@ export async function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narr
     runsIn = {
       sql: `r.agent_id = $1::uuid and (
               (${inSocial} and (rsp.a_id = any($2::uuid[]) or rsp.b_id = any($2::uuid[]))))
-              or (r.caller_id = any($3::uuid[]) and ${inGroup}))`,
-      params: [scope.agentId, [...scope.subjectIds], persons.rows.map((p) => p.person)],
+              ${o.groups ? `or (r.caller_id = any($3::uuid[]) and ${inGroup})` : ""})`,
+      params: o.groups ? [scope.agentId, [...scope.subjectIds], persons.rows.map((p) => p.person)] : [scope.agentId, [...scope.subjectIds]],
     };
   }
   const ended = await t.query(endRows.sql, endRows.params);
@@ -102,6 +112,74 @@ export async function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narr
   );
   const cancelled: Announced[] = queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) }));
   return { cancelled, running: running.rows.map((r) => r.id), ended: ended.rowCount ?? 0 };
+}
+
+type BarRow = { reason: "stopped" | "unfriended"; set_by: string; by_block: boolean };
+const readBar = async (t: Tx, a: string, b: string): Promise<BarRow | undefined> => {
+  const [lo, hi] = orderedPair(a, b);
+  return (await t.query<BarRow>("select reason, set_by, by_block from access_bars where lo_id = $1 and hi_id = $2 for update", [lo, hi])).rows[0];
+};
+
+/**
+ * The ONE writer of bars (Controller ruling 2026-11-24, Q4; design §1.2): 停止往来, an unfriend that ended a row, and every
+ * block of a person by a person (in the block's own transaction). `lockPair`, then one row per pair: the stricter reason is
+ * kept (`stopped` over `unfriended`) and `since` is now on every write. A new row: `set_by` the setter, `by_block` only for a
+ * block. An existing one written by a stop or an unfriend: `by_block` false (it stands for more than a block now) and `set_by`
+ * the setter when the bar is `stopped` after the write; written by a block: `set_by` and `by_block` stay as they are. Then
+ * `endGrants` ends every live or waiting row between the two sides, `barred` (a block: and the runs in their social conversations
+ * only, see `endGrantsIn`). Lifting a bar brings no row back. Run it after
+ * the pair's direct chat's notice (the lock order); the caller announces the ended runs after commit.
+ */
+export async function setBar(t: Tx, setterId: string, otherId: string, reason: "stopped" | "unfriended", origin: "stop" | "unfriend" | "block"): Promise<EndedRuns & { ended: number }> {
+  await lockPair(t, setterId, otherId);
+  const [lo, hi] = orderedPair(setterId, otherId);
+  const cur = await readBar(t, setterId, otherId);
+  if (!cur) {
+    await t.query("insert into access_bars (lo_id, hi_id, reason, set_by, by_block) values ($1, $2, $3, $4, $5)", [lo, hi, reason, setterId, origin === "block"]);
+  } else {
+    const next = cur.reason === "stopped" || reason === "stopped" ? "stopped" : "unfriended";
+    if (origin === "block") await t.query("update access_bars set reason = $3, since = now() where lo_id = $1 and hi_id = $2", [lo, hi, next]);
+    else
+      await t.query("update access_bars set reason = $3, by_block = false, set_by = case when $3 = 'stopped' then $4::uuid else set_by end, since = now() where lo_id = $1 and hi_id = $2", [lo, hi, next, setterId]);
+  }
+  return endGrantsIn(t, { between: [setterId, otherId] }, "barred", { groups: origin !== "block" });
+}
+
+/**
+ * 恢复往来: deletes the bar `setterId` set when it does not stand for a block. False: none (no bar, someone else's, or a block's).
+ * If a block between the two still stands under it (the setter's own, else the other's), the stop is lifted and the bar stays
+ * for that block, handed to it: a block never stands without a bar.
+ */
+export async function liftBar(t: Tx, setterId: string, otherId: string): Promise<boolean> {
+  await lockPair(t, setterId, otherId);
+  const cur = await readBar(t, setterId, otherId);
+  if (!cur || cur.set_by !== setterId || cur.by_block) return false;
+  const [lo, hi] = orderedPair(setterId, otherId);
+  const blockers = await t.query<{ blocker_id: string }>(
+    "select blocker_id from blocks where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1) order by (blocker_id = $1) desc",
+    [setterId, otherId],
+  );
+  if (blockers.rows[0]) {
+    await t.query("update access_bars set reason = 'stopped', set_by = $3, by_block = true where lo_id = $1 and hi_id = $2", [lo, hi, blockers.rows[0].blocker_id]);
+  } else {
+    await t.query("delete from access_bars where lo_id = $1 and hi_id = $2", [lo, hi]);
+  }
+  return true;
+}
+
+/**
+ * In the unblock's transaction, after the block row is deleted: lifts only the bar that block set (`set_by` the unblocker,
+ * `by_block`); if the other person still blocks the unblocker, the bar passes to that block. False: this block set no bar.
+ */
+export async function liftBlockBar(t: Tx, unblockerId: string, otherId: string): Promise<boolean> {
+  await lockPair(t, unblockerId, otherId);
+  const cur = await readBar(t, unblockerId, otherId);
+  if (!cur || cur.set_by !== unblockerId || !cur.by_block) return false;
+  const [lo, hi] = orderedPair(unblockerId, otherId);
+  const theirs = await t.query("select 1 from blocks where blocker_id = $2 and blocked_id = $1", [unblockerId, otherId]);
+  if ((theirs.rowCount ?? 0) > 0) await t.query("update access_bars set set_by = $3 where lo_id = $1 and hi_id = $2", [lo, hi, otherId]);
+  else await t.query("delete from access_bars where lo_id = $1 and hi_id = $2", [lo, hi]);
+  return true;
 }
 
 export interface PolicyChange {

@@ -2,7 +2,7 @@ import type { EndedRuns } from "../agents/group-leave.ts";
 import { appendDirectNotice } from "../conversations/store.ts";
 import type { Tx } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
-import { endGrants } from "./agent-contacts.ts";
+import { endGrants, liftBlockBar, setBar } from "./agent-contacts.ts";
 import { lockPair } from "./pair.ts";
 
 // The read-only pair questions live in relations.ts (a leaf module conversations can import).
@@ -48,12 +48,14 @@ export async function blockPrincipal(t: Tx, blocker: string, blocked: string): P
   );
   const created = (ins.rowCount ?? 0) > 0;
   const notice = created ? await appendDirectNotice(t, { event: "blocked", actorId: blocker, principalId: blocked }) : null;
-  // After the notice (the lock order). Blocking an Agent ends the blocker's own row on it, `left`, and stops what they called on
-  // it; it writes no bar (a bar is between two people).
+  // After the notice (the lock order). Blocking a person writes the bar, through the one writer, in this transaction, and it ends
+  // every row between the two sides. Blocking an Agent ends the blocker's own row on it, `left`, and stops what they called on it;
+  // it writes no bar (a bar is between two people).
   let ended: EndedRuns = { cancelled: [], running: [] };
   if (created) {
     const kind = (await t.query<{ kind: "human" | "agent" }>("select kind from principals where id = $1", [blocked])).rows[0]?.kind;
     if (kind === "agent") ended = await endGrants(t, { agentId: blocked, subjectIds: [blocker] }, "left");
+    else if (kind === "human") ended = await setBar(t, blocker, blocked, "stopped", "block");
   }
   return { created, cancelledRequestIds: cancelled.rows.map((r) => r.id), notices: notice ? [notice] : [], ended };
 }
@@ -71,5 +73,7 @@ export async function unblockPrincipal(
   const del = await t.query("delete from blocks where blocker_id = $1 and blocked_id = $2", [blocker, blocked]);
   const removed = (del.rowCount ?? 0) > 0;
   const notice = removed ? await appendDirectNotice(t, { event: "unblocked", actorId: blocker, principalId: blocked }) : null;
+  // The bar this block set goes with it (or passes to the other person's block); a stop's bar stays.
+  if (removed) await liftBlockBar(t, blocker, blocked);
   return { removed, notices: notice ? [notice] : [] };
 }

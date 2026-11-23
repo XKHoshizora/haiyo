@@ -174,7 +174,8 @@ export function registerSocialRoutes(app: FastifyInstance): void {
     async (req) => {
       const me = await requirePrincipal(req);
       const other = req.params.principalId;
-      await run(req, (t) => unfriend(t, me.id, other), () => [me.id, other]);
+      const r = await run(req, (t) => unfriend(t, me.id, other), () => [me.id, other]);
+      announceEnded(app.agentPort, r.ended);
       return { ok: true as const };
     },
   );

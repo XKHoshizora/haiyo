@@ -6,13 +6,14 @@ import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
-import { addContact, approveContact, contactsOf, declineContact, removeContact } from "./agent-contacts.ts";
+import { addContact, approveContact, contactsOf, declineContact, liftBar, removeContact, setBar } from "./agent-contacts.ts";
 
 // Lane A's route plugin (plan "Step 0 interfaces", Routes; README "Agent social"). Step 0 wired it in `app.ts` and registered NO route;
 // a lane adds a route by writing it here and, in the same edit, what every route has (plan File map, "shared, row per route"): its
 // probe row in tests/fuzz.test.ts, its README heading, and, if the name is new, its path parameter in tests/logging.test.ts.
 // Here so far (A4): POST and GET /api/agent-contacts; POST …/:agentId/:subjectId/approve and /decline; DELETE …/:agentId/:subjectId.
-// Planned: GET /api/agents/:id/contacts; PUT /api/agents/:id/contact-policy; PUT and DELETE /api/bars/:personId; POST /api/reports;
+// (A5b): PUT and DELETE /api/bars/:personId.
+// Planned: GET /api/agents/:id/contacts; PUT /api/agents/:id/contact-policy; POST /api/reports;
 // PUT /api/agents/:id/note-verdicts; POST /api/agents/:id/persona-facts/:seq. While `SOCIAL.enabled` is false every one of them
 // answers 404 (the lookup, `GET /api/principals/lookup`, is not here: it exists already).
 const empty = z.object({});
@@ -33,6 +34,8 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
   const { db, config, social, conversations } = app.deps;
   const api = app.withTypeProvider<ZodTypeProvider>();
   const addLimit = perPrincipalLimit(app, 20);
+  // A stop ends rows and runs of the other side: one budget for stopping and resuming, as blocks share one.
+  const barLimit = perPrincipalLimit(app, 20);
 
   /** Every lane-A route answers 404 while the site's switch is off; after the session (and the terms) have been asked. */
   const requireSocial = (): void => {
@@ -58,6 +61,61 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
     social.emit([...new Set([r.person_id, r.owner_id])], req.log);
     if (r.conversation_id && r.humans) conversations.publish({ messages: [], conversations: [{ conversationId: r.conversation_id, principalIds: r.humans }] }, req.log);
   }
+
+  /**
+   * After a bar was written: both sides refetch, and every social conversation between the two sides (a person's, or one of
+   * their Agents') changed what it can do, so its human members are told.
+   */
+  async function announceBar(req: FastifyRequest, a: string, b: string): Promise<void> {
+    social.emit([a, b], req.log);
+    const { rows } = await db.query<{ conversation_id: string; humans: string[] | null }>(
+      `select sp.conversation_id,
+              (select array_agg(m.principal_id) from memberships m join principals mp on mp.id = m.principal_id
+                where m.conversation_id = sp.conversation_id and m.left_seq is null and mp.kind = 'human') as humans
+         from social_pairs sp join principals pa on pa.id = sp.a_id join principals pb on pb.id = sp.b_id
+        where coalesce(pa.owner_id, pa.id) = any($1::uuid[]) and coalesce(pb.owner_id, pb.id) = any($1::uuid[])
+          and coalesce(pa.owner_id, pa.id) <> coalesce(pb.owner_id, pb.id)`,
+      [[a, b]],
+    );
+    conversations.publish(
+      { messages: [], conversations: rows.filter((r) => r.humans).map((r) => ({ conversationId: r.conversation_id, principalIds: r.humans! })) },
+      req.log,
+    );
+  }
+
+  api.put(
+    "/api/bars/:personId",
+    { schema: { params: z.object({ personId: uuidParam }), querystring: empty, response: { 200: z.object({ ok: z.literal(true), ended: z.number() }) } } },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      await barLimit(req, me.id);
+      const other = req.params.personId;
+      if (other === me.id) throw new AppError(400, "invalid_request");
+      // A person only: an Agent's id, like an unknown one, is not found.
+      const kind = (await db.query<{ kind: string }>("select kind from principals where id = $1", [other])).rows[0]?.kind;
+      if (kind !== "human") throw notFound();
+      const ended = await db.tx((t) => setBar(t, me.id, other, "stopped", "stop"));
+      announceEnded(app.agentPort, ended);
+      await announceBar(req, me.id, other);
+      return { ok: true as const, ended: ended.ended };
+    },
+  );
+
+  api.delete(
+    "/api/bars/:personId",
+    { schema: { params: z.object({ personId: uuidParam }), querystring: empty, response: { 200: ok } } },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      await barLimit(req, me.id);
+      const other = req.params.personId;
+      // Only the setter, and never a block's bar: every other case is the same 404.
+      if (!(await db.tx((t) => liftBar(t, me.id, other)))) throw notFound();
+      social.emit([me.id, other], req.log);
+      return { ok: true as const };
+    },
+  );
 
   api.post(
     "/api/agent-contacts",

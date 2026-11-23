@@ -2895,14 +2895,18 @@ else and for a row that is not there or ended already.
 ["<uuid>"] (at most 500), "dryRun"?: boolean}` (lane A, ring 1a). → 200 `{"ends": number}`: how many accesses the change ends (with
 `dryRun`, only counted).
 
-**Planned: `PUT /api/bars/:personId`**
+#### `PUT /api/bars/:personId`
 
 *Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (lane A, ring 1a).
-→ 200 `{"ok": true, "ended": number}`.
+Every live or waiting row between the two sides ends, and their replies in the pair's social conversations and in groups the other
+called stop. → 200 `{"ok": true, "ended": number}` (also when a bar stands already); 400 `invalid_request` for yourself; 404
+`not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
+Every block of a person by a person writes the same bar in its own transaction, and unblocking lifts only the bar that block set.
 
-**Planned: `DELETE /api/bars/:personId`**
+#### `DELETE /api/bars/:personId`
 
-*Session: required.* 恢复往来: lifts your own bar (never one a block set; lane A, ring 1a). → 200 `{"ok": true}`; 404 `not_found` otherwise.
+*Session: required.* 恢复往来: lifts your own bar (never one a block set; lane A, ring 1a). It brings no row back: whoever is let
+in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise (no bar, someone else's, a block's).
 
 **Planned: `POST /api/reports`**
 

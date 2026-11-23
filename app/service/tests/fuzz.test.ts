@@ -409,6 +409,7 @@ function validParams(route: Pick<RouteEntry, "method" | "url">, fx: Fixture): Re
     // Agent social (lane A): the fuzzing account's own Agent, and a person who has no row on it.
     else if (name === "agentId") out[name] = fx.agent;
     else if (name === "subjectId") out[name] = fx.peer.id;
+    else if (name === "personId") out[name] = fx.victim.id; // 停止往来 of the one whose removal, unfriending or blocking costs nothing
     else {
       const collection = url.split(`/:${name}`)[0]!.split("/").pop();
       out[name] =
@@ -669,6 +670,16 @@ describe("fuzz", () => {
       const got = sent[routes.indexOf(route)]!;
       expect([name, got.filter((x) => x.label.startsWith("path ") && (x.status < 400 || x.status >= 500))]).toEqual([name, []]);
       if (route.method !== "DELETE" && name !== "POST /api/agent-contacts") expect([name, got.some((x) => x.label.endsWith("[signed in]") && !SHALLOW.has(x.status))]).toEqual([name, true]);
+    }
+    // Agent social, lane A (A5b): 停止往来 and 恢复往来. A malformed path parameter is a 4xx; the stop took one probe past the checks (a
+    // 200 with the fixture's victim); the resume's answer depends on whether a stop came first, so it has no deeper answer to demand.
+    const barRoutes = routes.filter((r) => r.url.startsWith("/api/bars") && r.method !== "HEAD");
+    expect(barRoutes.map((r) => `${r.method} ${r.url}`).sort()).toEqual(["DELETE /api/bars/:personId", "PUT /api/bars/:personId"]);
+    for (const route of barRoutes) {
+      const name = `${route.method} ${route.url}`;
+      const got = sent[routes.indexOf(route)]!;
+      expect([name, got.filter((x) => x.label.startsWith("path ") && (x.status < 400 || x.status >= 500))]).toEqual([name, []]);
+      if (route.method === "PUT") expect([name, got.some((x) => x.label.endsWith("[signed in]") && x.status === 200)]).toEqual([name, true]);
     }
     await stillHealthy();
   });

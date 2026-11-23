@@ -1,7 +1,9 @@
+import type { EndedRuns } from "../agents/group-leave.ts";
 import { appendDirectNotice, ensureDirect } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
 import { handleOf, type PublicPrincipal } from "../principals/store.ts";
+import { setBar } from "./agent-contacts.ts";
 import { lockPair, orderedPair } from "./pair.ts";
 import { areFriends, blockBetween } from "./relations.ts";
 
@@ -149,13 +151,22 @@ export async function unfriend(
   t: Tx,
   actor: string,
   other: string,
-): Promise<Outcome<{ conversationId: string | null; notices: StoredMessage[] }>> {
+): Promise<Outcome<{ conversationId: string | null; notices: StoredMessage[]; ended: EndedRuns }>> {
   await lockPair(t, actor, other);
   const [lo, hi] = orderedPair(actor, other);
   const del = await t.query("delete from friendships where a_id = $1 and b_id = $2", [lo, hi]);
   if ((del.rowCount ?? 0) === 0) return { ok: false, code: "not_found" };
   const notice = await appendDirectNotice(t, { event: "friendship_ended", actorId: actor, principalId: other });
-  return { ok: true, conversationId: notice?.conversationId ?? null, notices: notice ? [notice] : [] };
+  // A bar only when this ends at least one row (live or waiting) between the two sides: pairs who never had Agent access keep
+  // today's rules. After the notice (the lock order).
+  const rows = await t.query(
+    `select 1 from agent_contacts c join principals ag on ag.id = c.agent_id
+      where c.state in ('live', 'requested')
+        and ((ag.owner_id = $1 and c.person_id = $2) or (ag.owner_id = $2 and c.person_id = $1)) limit 1`,
+    [actor, other],
+  );
+  const ended: EndedRuns = (rows.rowCount ?? 0) > 0 ? await setBar(t, actor, other, "unfriended", "unfriend") : { cancelled: [], running: [] };
+  return { ok: true, conversationId: notice?.conversationId ?? null, notices: notice ? [notice] : [], ended };
 }
 
 export interface RequestEntry {
