@@ -227,8 +227,10 @@ export async function othersCheck(
 }
 
 /**
- * Advisory (no lock), at a trigger: whether a number is already reached — the owner's answers or points (settled plus
- * held), the Agent's own answers, its lane's number. A call then reaches nothing. `othersFits` decides for good, at admission.
+ * Advisory (no lock), at a trigger: whether a call of an Agent is already refused by the numbers: `othersCheck` at the least a
+ * call can cost (one micro-point, so that "settled plus held plus 1 over the number" is "reached"; nothing for an Agent whose model
+ * costs nothing, `points: false`, which only the answers refuse, as at admission). One rule with admission and the proactive
+ * early check; `othersFits` decides for good.
  */
 export async function othersReached(
   q: Queryable,
@@ -237,30 +239,30 @@ export async function othersReached(
   agentId: string,
   lane: OthersLane,
   now: Date,
-  /** `points: false`: the Agent's model costs nothing (a provider's own): only the answers count, as at admission. */
   o: { points?: boolean } = {},
 ): Promise<boolean> {
-  const numbers = await othersNumbers(q, config, ownerId, agentId);
-  const owner = await othersUsedToday(q, config, ownerId, now);
-  const points = o.points ?? true;
-  if (owner.answers >= numbers.owner.answers || (points && owner.settledMicro + owner.heldMicro >= numbers.owner.pointsMicro)) return true;
-  if (numbers.agent.answers !== null && (await othersUsedToday(q, config, ownerId, now, { agentId })).answers >= numbers.agent.answers) return true;
-  if (!points) return false;
-  const own = lane === "others" ? numbers.agent.pointsMicro : numbers.proactiveMicro;
-  if (own === null) return false;
-  const used = await othersUsedToday(q, config, ownerId, now, { agentId, lane });
-  return used.settledMicro + used.heldMicro >= own;
+  const verdict = await othersCheck(q, config, { id: NO_RUN, ownerId, agentId, lane }, o.points === false ? 0n : 1n, "admission", now);
+  return !verdict.ok;
 }
 
+/** The id of a run that does not exist: what a check made before any run (a trigger, a candidate) asks with. */
+export const NO_RUN = "00000000-0000-0000-0000-000000000000";
+
 /**
- * The least an others' reply of an Agent on `model` can hold: one call at its output limit, no input — what a candidate must
- * fit for any reply of it to be admitted (the proactive judgement asks it with `othersFits` before it spends a call). 0 for a
- * provider's own model (it holds nothing).
+ * The least an others' reply of an Agent on `model` can hold, given `inputBytes` of input it is sure to send: one call at those
+ * bytes (never more than the model's context beside its output) and the others' output limit: `othersHold`, the one definition
+ * admission holds by, without a last call. 0 for a provider's own model (it holds nothing).
  */
-export function othersLeastHold(config: Pick<Config, "siteModels" | "others">, model: { source: string; id?: string } | null): bigint {
+export function othersFloorHold(config: Pick<Config, "siteModels" | "others">, model: { source: string; id?: string } | null, inputBytes: number): bigint {
   if (model?.source !== "site") return 0n;
   const site = config.siteModels.find((m) => m.id === model.id);
-  return site ? BigInt(site.outputMicroPerToken) * BigInt(Math.min(site.maxOutputTokens, config.others.outputTokens)) : 0n;
+  if (!site) return 0n;
+  const maxOutputTokens = Math.min(site.maxOutputTokens, config.others.outputTokens);
+  const priced = { source: "site", price: { inputMicroPerToken: site.inputMicroPerToken, outputMicroPerToken: site.outputMicroPerToken }, call: { maxOutputTokens } } as unknown as Pick<
+    Resolved,
+    "price" | "call" | "source"
+  >;
+  return othersHold(priced, Math.max(0, Math.min(inputBytes, site.contextTokens - maxOutputTokens)), null);
 }
 
 /** A run refused by an others' number: which one. */

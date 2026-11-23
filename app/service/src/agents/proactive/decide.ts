@@ -8,9 +8,11 @@ import { AppError } from "../../errors.ts";
 import { JudgeError, type Answer, type Judge } from "../../judge/client.ts";
 import type { StoredMessage } from "../../messages/model.ts";
 import { count } from "../../memory/stats.ts";
-import { othersCheck, othersFits, othersLeastHold } from "../../metering/others.ts";
+import { NO_RUN, othersCheck, othersFits, othersFloorHold } from "../../metering/others.ts";
+import { loadGroupScene, withRoster } from "../context.ts";
+import { groupSystemText, NO_NOTES } from "../runtime/prompt.ts";
 import { noneTriggered, overLaneLimit, queueRun, toldSince, type RunLimits, type Triggered } from "../runs.ts";
-import { agentModelOf, lockAgent, type AgentRow } from "../store.ts";
+import { lockAgent, readOwnedAgent, type AgentRow } from "../store.ts";
 import { judgeable, judgedAgentIds, mayAnswerUnasked, NOBODY, optionsFor, PICK, quietKey, requestFor, type Flaggable, type JudgeRequest, type Option } from "./candidates.ts";
 import { listenersFor, writeFlags, type MemoryFlag } from "./listeners.ts";
 import { decidedAlready, lockStates, othersSinceSurcharge, saveState, stampJudged } from "./state.ts";
@@ -76,7 +78,7 @@ export async function decideProactive(deps: DecideDeps, conversationId: string, 
 
   const message = await judgeable(db, conversationId, seq);
   if (message === null || (await decidedAlready(db, conversationId, seq))) return noneTriggered();
-  const options = await affordable(db, await optionsFor(db, conversationId, seq, message.senderId, config), config);
+  const options = await affordable(db, await optionsFor(db, conversationId, seq, message.senderId, config), conversationId, config, new Date());
   const listeners = await listenersFor(db, conversationId, seq);
   if (options.length === 0 && listeners.length === 0) return noneTriggered();
   const day = siteDay(new Date(), config.siteTimezone);
@@ -311,29 +313,51 @@ async function lockOptions(t: Tx, conversationId: string, seq: number, ids: read
   return new Map(locked.filter((a) => options.has(a.id)).map((a) => [a.id, a]));
 }
 
-const NO_RUN = "00000000-0000-0000-0000-000000000000";
-
 /**
- * Whether a proactive reply of `agent` could be admitted at all: `othersFits` — the one function admission asks, holds counted
- * — at the least such a reply can hold (`othersLeastHold`), the answers too. A candidate that fails spends no judgement (the
- * options are filtered by it before the model is asked, without a lock or a transaction) and leaves no cancelled run; asked again under the locks where the
- * pick is acted on (`whyNot`).
+ * The least a proactive reply of `agent` in the group can hold, as `begin` will hold it: one call without tools (a reply
+ * nobody called for is offered tools, but its plain hold is the smallest admission can accept), at its model's prices
+ * (`othersFloorHold`, through `othersHold`). Known before the judgement: the model's prices, its output limit (the others'), and
+ * the tool-less system text as `begin` builds it from what is known now: the persona, the group's title and Agents, the
+ * owner's name, the date. Missing, so that the floor is a lower bound and not the hold: the conversation shown (the
+ * newest messages up to the group's context cap, `AGENT_GROUP_CONTEXT_TOKENS`), the roster of those who spoke, the run's
+ * mark and the owner's notes. The gap is at most the cap's worth of input at the model's input price (on the design's paid
+ * site, 12 000 x 3 000 = 36 points; on the free tier 1.7), and in practice the messages of the recent talk.
  */
-async function fitsAdmission(q: Queryable, locked: boolean, config: DecideDeps["config"], agent: Pick<AgentRow, "id" | "ownerId" | "model">, now: Date): Promise<boolean> {
-  const verdict = await (locked ? othersFits : othersCheck)(q as Tx, config, { id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "proactive" }, othersLeastHold(config, agent.model), "admission", now);
-  return verdict.ok;
+export async function proactivePlainFloor(q: Queryable, config: DecideDeps["config"], agent: AgentRow, conversationId: string, now: Date): Promise<bigint> {
+  if (agent.model?.source !== "site") return 0n;
+  const scene = await loadGroupScene(q, agent, conversationId);
+  if (scene === null) return 0n;
+  const owner = await q.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
+  const text = groupSystemText(
+    { name: agent.name, handle: agent.handle, persona: agent.persona, bare: null },
+    { displayName: owner.rows[0]!.display_name },
+    withRoster(scene, []),
+    now,
+    config.siteTimezone,
+    "",
+    true,
+    NO_NOTES,
+    false,
+  ).text;
+  return othersFloorHold(config, agent.model, Buffer.byteLength(text, "utf8"));
 }
 
-/** `options` less the Agents whose proactive replies could not be admitted now (`fitsAdmission`). */
-async function affordable(db: Db, options: Option[], config: DecideDeps["config"]): Promise<Option[]> {
+const proactiveRun = (agent: Pick<AgentRow, "id" | "ownerId">) => ({ id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "proactive" as const });
+
+/**
+ * `options` less the Agents whose proactive replies could not be admitted now, before the judgement is asked: `othersCheck`, the
+ * rule `othersFits` decides admission by, without the lock, so that decide opens no transaction before the judge, at the
+ * least hold (`proactivePlainFloor`), the answers too. A candidate that fails spends no judgement and leaves no run. An
+ * Agent whose floor passes may still be refused at admission (the floor is a lower bound, see there): it is asked again under
+ * the locks where the pick is acted on (`whyNot`, `othersFits`), which only refuses.
+ */
+async function affordable(db: Db, options: Option[], conversationId: string, config: DecideDeps["config"], now: Date): Promise<Option[]> {
   const kept: Option[] = [];
   for (const option of options) {
-    const { rows } = await db.query<{ owner_id: string } & Parameters<typeof agentModelOf>[0]>(
-      "select p.owner_id, a.model_source, a.site_model_id, a.provider_id, a.provider_model from agents a join principals p on p.id = a.principal_id where a.principal_id = $1",
-      [option.agentId],
-    );
-    const row = rows[0];
-    if (row && (await fitsAdmission(db, false, config, { id: option.agentId, ownerId: row.owner_id, model: agentModelOf(row) }, new Date()))) kept.push(option);
+    const owner = await db.query<{ owner_id: string }>("select owner_id from principals where id = $1", [option.agentId]);
+    const agent = owner.rows[0] ? await readOwnedAgent(db, owner.rows[0].owner_id, option.agentId) : null;
+    // One that cannot be read now is left to the locked check where the pick is acted on.
+    if (!agent || (await othersCheck(db, config, proactiveRun(agent), await proactivePlainFloor(db, config, agent, conversationId, now), "admission", now)).ok) kept.push(option);
   }
   return kept;
 }
@@ -346,9 +370,10 @@ async function affordable(db: Db, options: Option[], config: DecideDeps["config"
  * quiet, if only a little (`hushed`: the judgement tends to pick the very Agent a mild complaint is about); `p` is under
  * its threshold now (`under_threshold`); a reply of it is queued or running in the group (`active_run`: a proactive reply
  * is never folded into one); the fuse — a proactive reply of it in the group within `fuse.perSeconds`, or `fuse.perHour`
- * of them within the hour (`fuse`); its proactive budget is spent: what its proactive replies were charged today, settled
- * charges only, has reached it (`budget`); its owner has started the others' replies a minute (`owner_minute`, the
- * others' lane's own check, which locks the owner's `accounts` row: the lock order's last step).
+ * of them within the hour (`fuse`); its owner has started the others' replies a minute (`owner_minute`, the others' lane's own
+ * check, which locks the owner's `accounts` row: the lock order's last step); its numbers cannot hold the least a reply of it
+ * holds (`budget`: `othersFits` under that lock, settled today plus every running hold plus `proactivePlainFloor`, the
+ * answers too; only a refusal the unlocked check before the judgement (`affordable`) did not make: something changed since).
  */
 async function whyNot(
   t: Tx,
@@ -380,6 +405,6 @@ async function whyNot(
   if (fuse.rows[0]!.recent > 0 || fuse.rows[0]!.hour >= P.fuse.perHour) return "fuse";
   if (await overLaneLimit(t, agent.ownerId, "proactive", config)) return "owner_minute";
   // Its numbers, asked as admission asks them: under the owner's account lock, after the one above (the lock order's last step).
-  if (!(await fitsAdmission(t, true, config, agent, now))) return "budget";
+  if (!(await othersFits(t, config, proactiveRun(agent), await proactivePlainFloor(t, config, agent, conversationId, now), "admission", now)).ok) return "budget";
   return null;
 }

@@ -3,7 +3,7 @@ import { FINAL_LINE, noteBytes, OVER_CAP, REPEATED, UNUSABLE } from "../src/agen
 import { NO_TOOLS } from "../src/agents/runtime/prompt.ts";
 import { TOOL_PREAMBLE_TOKENS } from "../src/metering/tokens.ts";
 import type { ModelCall, ModelGateway, ToolCall } from "../src/models/gateway.ts";
-import { isRunEnd } from "../src/agents/runtime/port.ts";
+import { isRunEnd, type Prepared } from "../src/agents/runtime/port.ts";
 import { othersHold } from "../src/metering/others.ts";
 import { signUp } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -235,9 +235,14 @@ describe("the hold that covers an others' reply (B2b)", () => {
     const k = await othersKitchen(app, db, { box: boxOf() });
     await k.ask();
     const ticket = (await k.port.claimNext())!;
-    expect(isRunEnd(await k.port.begin(ticket))).toBe(false);
+    const prepared = await k.port.begin(ticket);
+    expect(isRunEnd(prepared)).toBe(false);
+    const sent = prepared as Prepared;
+    // The run's own held input (call 1's bytes, as `begin` holds them): the next call, after a round that cost something, is held at
+    // no more than that plus the step — the old measure (against call 1's part alone) would have counted it.
+    const held = bytesOf([sent.call.system, ...sent.call.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : []))), JSON.stringify(sent.tools)]) + TOOL_PREAMBLE_TOKENS;
     const none = { inputChars: 0, outputChars: 0 };
-    expect(await k.port.extend(ticket, null, none, 5_000)).toBe("final");
+    expect(await k.port.extend(ticket, U(900, 60), none, held)).toBe("final");
     expect(metric("others_round_raise")).toHaveLength(0);
     expect(await k.port.extend(ticket, null, none, 99_000)).toBe("final");
     expect(metric("others_round_raise")).toHaveLength(1);
