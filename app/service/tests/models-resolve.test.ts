@@ -114,6 +114,7 @@ describe("resolveModel", () => {
       providerId: provider.id,
       // Its entry says nothing of tools: not known yet, so its replies may be offered them.
       tools: true,
+      toolsUnknown: true,
     });
     const plain = await agentWith(owner, { model: { source: "provider", providerId: provider.id, model: "plain" } });
     // Not marked as one that reasons: none only, the default output limit, no thinking switch.
@@ -193,6 +194,10 @@ describe("resolveModel", () => {
     const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models }))).json;
     const tools = async (model: string) => (await resolveModel(db, config(), { model: { source: "provider", providerId: provider.id, model }, ownerId: owner.id }))?.tools;
     expect([await tools("unsaid"), await tools("able"), await tools("unable")]).toEqual([true, true, false]);
+    // Whether its entry says nothing yet (what a reply whose tool call ran may store): never from the catalogue, which is not stored.
+    const unknown = async (model: string) => (await resolveModel(db, config(), { model: { source: "provider", providerId: provider.id, model }, ownerId: owner.id }))?.toolsUnknown;
+    expect([await unknown("unsaid"), await unknown("able"), await unknown("unable")]).toEqual([true, false, false]);
+    expect((await resolveModel(db, off, { model: { source: "site", id: "thinker" }, ownerId: owner.id }))).not.toHaveProperty("toolsUnknown");
   });
 
   it("outputLimit: the allowance is at most half of what the context leaves beside the reply's limit, never below the reply's limit", () => {
