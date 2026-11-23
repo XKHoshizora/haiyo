@@ -11,6 +11,7 @@ import {
   NOTES_SECRET_CLAUSE,
   notesPassage,
   passageBudget,
+  socialSystemText,
   SUMMARY_HEADING,
   SUMMARY_SAID_BY,
   type GroupScene,
@@ -406,7 +407,11 @@ const EMPTY_SCENE: GroupScene = { title: null, agents: [], more: false, people: 
  * a lower bound for every group). Never the conversation shown, the roster of speakers, the mark or the notes, which only add bytes.
  * `lane` picks the text's shape, so that the floor is a lower bound BY CONSTRUCTION: an others' reply's text carries the called
  * sentence (`unasked` false), the proactive lane's the unasked passage (69 to 113 bytes longer), and each is floored by its own.
- * 0 for a provider's own model. (A social reply's text, B7a, is a separate one; its floor is not claimed here.)
+ * 0 for a provider's own model. `place` says whose text the floor is: a group's (`group`, with `scene`), a social conversation's (`social`:
+ * `socialSystemText` with the fewest names there can be, one owner, a person for the other party, no mark and no notes) or, by default,
+ * a bound for BOTH (`any`: the lower of the two, which is what an Agent's room asks, since either may be the reply admission holds for).
+ * The proactive lane is a group's alone (a social reply is only ever called for). So the floor is a lower bound of the hold of every
+ * reply of that lane in that place BY CONSTRUCTION: it is built by the place's own text function from the least its inputs can be.
  */
 export async function othersPlainFloor(
   q: Queryable,
@@ -415,21 +420,33 @@ export async function othersPlainFloor(
   scene: GroupScene | null,
   now: Date,
   lane: "others" | "proactive",
+  place: "group" | "social" | "any" = "any",
 ): Promise<bigint> {
   if (agent.model?.source !== "site") return 0n;
   const owner = await q.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
-  const text = groupSystemText(
-    { name: agent.name, handle: agent.handle, persona: agent.persona, bare: null },
-    { displayName: owner.rows[0]?.display_name ?? "" },
-    scene ?? EMPTY_SCENE,
-    now,
-    config.siteTimezone,
-    "",
-    lane === "proactive",
-    NO_NOTES,
-    false,
-  ).text;
-  return othersFloorHold(config, agent.model, Buffer.byteLength(text, "utf8"));
+  const displayName = owner.rows[0]?.display_name ?? "";
+  const grouped = (): number =>
+    Buffer.byteLength(
+      groupSystemText(
+        { name: agent.name, handle: agent.handle, persona: agent.persona, bare: null },
+        { displayName },
+        scene ?? EMPTY_SCENE,
+        now,
+        config.siteTimezone,
+        "",
+        lane === "proactive",
+        NO_NOTES,
+        false,
+      ).text,
+      "utf8",
+    );
+  const social = (): number =>
+    Buffer.byteLength(
+      socialSystemText({ name: agent.name, handle: agent.handle, persona: agent.persona }, [{ displayName }], { name: "", handle: "", kind: "human" }, now, config.siteTimezone, "", NO_NOTES, false).text,
+      "utf8",
+    );
+  const bytes = lane === "proactive" || place === "group" ? grouped() : place === "social" ? social() : Math.min(grouped(), social());
+  return othersFloorHold(config, agent.model, bytes);
 }
 
 /** A string of `n` four-byte characters: the most bytes a name or a line of that many characters can have. */
@@ -454,10 +471,11 @@ function fullScene(): GroupScene {
  * in, and each part has a bound of its own:
  * - the system text: the one `begin` builds (`groupSystemText`) with the Agent's real persona and the owner's name and the FULLEST scene,
  *   a mark and a roster of the most names there can be (the scene and the people are capped by `GROUP_AGENTS_NAMED`, `GROUP_PEOPLE_NAMED`
- *   and the schemas' name lengths, at four bytes a character); a social conversation's text is not built yet (B7a) and has no more
- *   than that scene's;
+ *   and the schemas' name lengths, at four bytes a character); and a social conversation's (`socialSystemText`) with the longest
+ *   names it can show (two owners and an Agent for the other party, each at the schemas' limits, four bytes a character): the bound is
+ *   the LONGER of the two texts, so it is an upper bound for a reply in either place (the longer is a pinned fact of the test, not a hope);
  * - the notes passage, appended to it: at most what the Agent's stored notes make (`notesPassage` of ALL of them, hearsay of every
- *   group, in the group's shorter form: a group is shown a subset of these, and a subset's passage is never longer) and at most
+ *   group, in the longer of the group's and the social form: a place is shown a subset of these, and a subset's passage is never longer) and at most
  *   `passageBudget` weight (`fitNotes`, port-impl.ts:728), a weight being at most 3 bytes (`weight`, metering/tokens.ts);
  * - the rolling summary, the system text's last passage (`withSummary`): its fixed heading and line and at most `MEMORY.summaryMaxWeight`
  *   weight as shown, so at most 3 bytes a weight;
@@ -480,17 +498,28 @@ export async function othersPlainCeiling(
   if (!site) return 0n;
   const owner = await q.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
   const ownerName = owner.rows[0]?.display_name ?? "";
-  const system = groupSystemText({ name: agent.name, handle: agent.handle, persona: agent.persona, bare: "a".repeat(24) }, { displayName: ownerName }, fullScene(), now, config.siteTimezone, "abcdef", false, NO_NOTES, false).text;
+  const grouped = groupSystemText({ name: agent.name, handle: agent.handle, persona: agent.persona, bare: "a".repeat(24) }, { displayName: ownerName }, fullScene(), now, config.siteTimezone, "abcdef", false, NO_NOTES, false).text;
+  const handle = "a".repeat(49);
+  const social = socialSystemText(
+    { name: agent.name, handle: agent.handle, persona: agent.persona },
+    [{ displayName: ownerName }, { displayName: WIDE(DISPLAY_NAME_MAX) }],
+    { name: WIDE(DISPLAY_NAME_MAX), handle, kind: "agent" },
+    now,
+    config.siteTimezone,
+    "abcdef",
+    NO_NOTES,
+    false,
+  ).text;
+  const system = Buffer.byteLength(grouped, "utf8") >= Buffer.byteLength(social, "utf8") ? grouped : social;
   const maxOutput = Math.min(site.maxOutputTokens, config.others.outputTokens);
   // Notes: a superset of any place's (the owner's whole view: everything), shown in the group's form.
   const all = await notesFor(q, agent, { conversationId: "", group: false });
-  const stored = notesPassage(
-    { owner: all.owner, self: all.self, hearsay: all.hearsay.map((h) => ({ speakerName: h.speakerName, text: h.text, saidAt: h.saidAt, group: "" })) },
-    "group",
-    config.siteTimezone,
-    ownerName,
+  const everything = { owner: all.owner, self: all.self, hearsay: all.hearsay.map((h) => ({ speakerName: h.speakerName, text: h.text, saidAt: h.saidAt, group: "" })) };
+  const stored = Math.max(
+    Buffer.byteLength(notesPassage(everything, "group", config.siteTimezone, ownerName), "utf8"),
+    Buffer.byteLength(notesPassage(everything, "social", config.siteTimezone, ownerName), "utf8"),
   );
-  const notes = Math.min(Buffer.byteLength(stored, "utf8"), 3 * Math.floor(passageBudget(site.contextTokens, maxOutput, config.memory.passageShare)));
+  const notes = Math.min(stored, 3 * Math.floor(passageBudget(site.contextTokens, maxOutput, config.memory.passageShare)));
   const summary = Buffer.byteLength(`${SUMMARY_HEADING}${SUMMARY_SAID_BY}`, "utf8") + 3 * config.memory.summaryMaxWeight + 16;
   const conversation = 3 * Math.max(config.agentGroupContextTokens, config.others.contextWeight);
   // The notes passage, its two separator bytes and the clause the secrets sentence gains with notes (`NOTES_SECRET_CLAUSE`).

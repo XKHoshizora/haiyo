@@ -7,7 +7,8 @@ import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
-import { placeOf } from "../social/place.ts";
+import { placeOf, type Place } from "../social/place.ts";
+import { reach } from "../social/reach.ts";
 import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
@@ -35,6 +36,7 @@ import {
   hasOwnerTurn,
   loadContext,
   loadGroupScene,
+  loadSocialScene,
   withRoster,
   type BuiltContext,
   type LeftOut,
@@ -66,7 +68,7 @@ import {
   type Usage,
 } from "./runtime/port.ts";
 import { detectLanguage, type ReplyLanguage } from "./runtime/language.ts";
-import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, passageBudget, systemText, systemTokens, type PromptNotes, type SystemText, type ToolsPrompt, type WebPrompt } from "./runtime/prompt.ts";
+import { fitNotes, GREETING_LINE, GREETING_TURN, groupSystemText, NO_NOTES, passageBudget, socialSystemText, systemText, systemTokens, type PromptNotes, type SystemText, type ToolsPrompt, type WebPrompt } from "./runtime/prompt.ts";
 import { holdSearch as preHoldSearch, SearchRefused, type HeldSearch, type RefusedBy } from "./tools/web/hold.ts";
 import { fuseLine, WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
 import {
@@ -213,8 +215,12 @@ const NOTHING_LEFT: RunEnd = { status: "cancelled" };
  * charged, no message, nothing to retry.
  */
 const BLOCKED_SINCE: RunEnd = { status: "cancelled" };
-/** A social run before B7a's `begin` exists: ended before any call (`begin`'s guard), `access_ended` as an ended access is. */
-const SOCIAL_UNBUILT: RunEnd = { status: "cancelled", error: "access_ended" };
+/**
+ * A social run whose access is not there at its start (`runAccess`: the caller is refused now, or is not the one person a social run
+ * answers): ended before any call, nothing held or charged, `access_ended` as an ended access is for a social run (a group run left
+ * with no call ends quietly with no error: `BLOCKED_SINCE`). The visitor is never told why: the run's state is all they see.
+ */
+const ACCESS_ENDED: RunEnd = { status: "cancelled", error: "access_ended" };
 /** The model's context cannot hold the owner's newest message (`holdsNewest`): no call is made. */
 const TOO_SMALL: RunEnd = { status: "failed", error: "context_too_small" };
 /** The provider's saved key cannot be opened (`KeyUnreadableError`): as a refused key, its owner must save it again. */
@@ -268,6 +274,8 @@ interface RunState {
   told: boolean;
   /** A new Agent's first reply (`agent_runs.greets`, conversation.ts `createAgent`): told to greet its owner. */
   greets: boolean;
+  /** Whose call it answers (`agent_runs.caller_id`): a social run's one visitor; null when not known. */
+  caller_id: string | null;
   /** An automatic retry (runs.ts `scheduleAutoRetry`): the run of its original call; null for an original. */
   retry_of: string | null;
   /** How many automatic attempts came before it (0: none, an original or the owner's own 重试). */
@@ -278,7 +286,7 @@ interface RunState {
   progressed: boolean;
 }
 const RUN_STATE =
-  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, greets, retry_of, auto_attempt, progressed, " +
+  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
   "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at";
 
 /**
@@ -323,10 +331,10 @@ interface RunFlags {
   /** Its Agent's pause, delete or leaving the run's group interrupted it: nothing more of it is pushed. */
   silenced: boolean;
   /**
-   * Its conversation is a group (decided at `begin`, from the run's conversation and its Agent's own): none of it is
-   * streamed (plan ruling 2) — its reply arrives whole, with its message.
+   * Where it is (`placeOf`, decided at `begin`, once per attempt): anywhere but the Agent's own conversation — a group or a social
+   * conversation — none of it is streamed (plan ruling 2): its reply arrives whole, with its message.
    */
-  group: boolean;
+  place: Place;
   /**
    * In a group, the run's mark (prompt.ts `newMark`), kept from the moment `begin` hands over the call that carries it:
    * `post` takes this copy, never one the worker could hand it, out of the reply. Null until then, and in the Agent's own
@@ -367,6 +375,18 @@ function recorded(end: RunEnd, s: { posted: boolean; interrupted: Interruption |
     if (s.removed) return REMOVED;
   }
   return end;
+}
+
+/**
+ * Whether a social run's one caller may still reach its Agent (plan B7a; the errands plan extends it with the errand a run serves):
+ * `reach(caller, Agent, 'social')`, and no other caller than a visitor: a social run is always lane `others`, its caller a person
+ * who is not the Agent's owner (the owner's message interjects, it never calls: `triggerInSocial`). A run with no caller, the
+ * owner as caller or another lane is refused outright (`no_access`), so no social run can carry the owner's authority or run
+ * unbounded. Anything but `ok` ends the run `access_ended` before any call.
+ */
+async function runAccess(t: Tx, agent: AgentRow, state: Pick<RunState, "caller_id" | "lane">, config: Pick<Config, "social">): Promise<"ok" | "no_access" | "gone" | "blocked" | "barred"> {
+  if (state.caller_id === null || state.caller_id === agent.ownerId || state.lane !== "others") return "no_access";
+  return reach(t, state.caller_id, agent.id, "social", config);
 }
 
 /**
@@ -647,21 +667,31 @@ export class DbAgentPort implements AgentPort {
           withoutTools: string | null;
           tools: { refs: RunRefs; heardTo: number; shown?: readonly string[]; ownerAsked?: boolean } | null;
           told: boolean;
+          /** Bounded as another person's reply is (`boundedForOthers`, one real tool call, the two-part hold, the others' numbers). */
+          bounded: boolean;
         }
     > => {
       const { agent, state } = await this.lockRun(t, run);
-      // Anywhere but the Agent's own conversation is a group: nothing of the reply is streamed (`emit`).
-      const group = run.conversationId !== agent.conversationId;
-      if (group) this.flagsOf(run.id).group = true;
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
-      // Default-deny (B-3 review I2): a run whose place is `social` has no social `begin` yet (B7a builds it, arm by arm, and removes
-      // this guard with it): it would run as a group reply, with the owner's open notes, group text and group tools. It ends before any
-      // model call, nothing held (admission is step 3) and nothing charged: `cancelled`, `access_ended`.
-      if (group && (await placeOf(t, run.conversationId, agent)) === "social") return { end: SOCIAL_UNBUILT };
-      // In a group: the Agent must still be a member there (nothing else may have marked the run yet).
+      // Where the run is, read once for this attempt: the Agent's own conversation (no query), a group, or a social conversation. Not
+      // own: nothing of the reply is streamed (`emit`), and it has a mark and labels. Every arm below that is not for the own
+      // conversation names its place: nothing a place does not name is done for it (a social run never takes a group arm).
+      const place: Place = run.conversationId === agent.conversationId ? "own" : await placeOf(t, run.conversationId, agent);
+      const group = place === "group";
+      const social = place === "social";
+      const away = place !== "own";
+      if (away) this.flagsOf(run.id).place = place;
+      // A social run: its one visitor may still reach the Agent (`runAccess`); anything else ends it before any call, unread.
+      if (social && (await runAccess(t, agent, state, this.deps.config)) !== "ok") return { end: ACCESS_ENDED };
+      // In a group: the Agent must still be a member there (nothing else may have marked the run yet); the same in a social conversation.
       const scene = group ? await loadGroupScene(t, agent, run.conversationId) : null;
       if (group && scene === null) return { end: REMOVED };
+      const socialScene = social ? await loadSocialScene(t, agent, run.conversationId) : null;
+      if (social && socialScene === null) return { end: REMOVED };
+      // Bounded as another person's reply is: every social run (its caller is never the owner: `runAccess`), and any other run not
+      // in lane `own`. Decided here by the place, so no social run can be unbounded whatever its row says.
+      const bounded = social || state.lane !== "own";
       // A block made since a call, either way, between the Agent's owner and whoever made it: that call is dropped, as it
       // would be refused now (runs.ts `dropRefusedCalls`, every lane, every group run: one of the owner's own may carry a
       // call relayed by someone else's Agent); with no call left the reply ends quietly. Not asked (no query) in the
@@ -700,7 +730,7 @@ export class DbAgentPort implements AgentPort {
       }
       if (!resolved) return { end: MODEL_GONE };
       // A reply somebody other than its owner called for: every call at most `OTHERS.outputTokens` of output, reasoning `none`.
-      if (state.lane !== "own") resolved = boundedForOthers(resolved, config.others.outputTokens);
+      if (bounded) resolved = boundedForOthers(resolved, config.others.outputTokens);
       // Whether its name part alone, typed, calls it there (mentions.ts `namePartCalls`: how a send would read it — no
       // message is read): then the system text names both ways it is called. Not for a reply nobody asked for, whose text
       // says nobody called it.
@@ -724,12 +754,21 @@ export class DbAgentPort implements AgentPort {
       // What its Agent may be shown of its memory here (`notesFor`'s rules), read once with the rest, under the same locks.
       // An onboarding run (its own conversation, no persona yet) is shown none (`systemPrompt`), so none is read.
       // At most `MEMORY.passageShare` of the model's context goes to it: over that entries are left out (`fitNotes`).
+      // A social run reads its place's notes (`loadNotes`, social: in ring 1a none at all, whatever the owner wrote; ring 1b decides what
+      // this one person may be shown), never a group's.
       const notes =
-        !group && agent.persona === ""
+        place === "own" && agent.persona === ""
           ? NO_NOTES
           : fitNotes(
-              (await loadNotes(t, agent, group ? { place: "group", conversationId: run.conversationId } : { place: "own" }, config)).notes,
-              group ? "group" : "own",
+              (
+                await loadNotes(
+                  t,
+                  agent,
+                  place === "own" ? { place: "own" } : group ? { place: "group", conversationId: run.conversationId } : { place: "social", conversationId: run.conversationId, audienceId: state.caller_id! },
+                  config,
+                )
+              ).notes,
+              place,
               config.siteTimezone,
               displayName,
               passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare),
@@ -755,9 +794,11 @@ export class DbAgentPort implements AgentPort {
           const tools: ToolsPrompt = offered && web !== undefined ? { web } : offered;
           const text = scene
             ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, state.lane === "proactive", notes, told === null ? tools : "told", replyLanguage)
-            : systemText(agent, { displayName }, now, agent.persona === "" ? "onboarding" : "normal", config.siteTimezone, notes, tools, replyLanguage);
+            : socialScene
+              ? socialSystemText(agent, socialScene.owners, socialScene.other, now, config.siteTimezone, mark, notes, tools, replyLanguage)
+              : systemText(agent, { displayName }, now, agent.persona === "" ? "onboarding" : "normal", config.siteTimezone, notes, tools, replyLanguage);
           // A new Agent's first reply greets its owner in its own words (`greets`): the fixed instruction last.
-          if (state.greets && !group) return { text: `${text.text}\n\n${GREETING_LINE}`, rest: `${text.rest}\n\n${GREETING_LINE}`, passage: text.passage };
+          if (state.greets && place === "own") return { text: `${text.text}\n\n${GREETING_LINE}`, rest: `${text.rest}\n\n${GREETING_LINE}`, passage: text.passage };
           // What a reply `告诉他们` queued is to tell, after the rest (measured with it: `rest`).
           if (told === null) return text;
           const passage = toldPassage(told);
@@ -770,13 +811,20 @@ export class DbAgentPort implements AgentPort {
       // (runs.ts `hearFrom`, fix round 2), so the line counts them, and so does whatever it hands down.
       // (A told reply hears nobody beyond what it covers: it is shown nothing later, `upTo` below.)
       if (group && told === null) await hearFrom(t, run.id, coveredBefore, null);
+      // A social run has no asker's line: the Agent is shown the whole conversation it can see (`after` 0), up to the weight a social
+      // reply is shown (`OTHERS.contextWeight`), and the calls it answers.
       const line = group ? await askerLine(t, run.id) : 0;
-      const calls = group ? await callsSeen(t, agent.id, run.id, line) : [];
-      if (group && calls.length === 0 && told === null) return { end: NOTHING_LEFT };
-      const cap = group ? { maxTokens: config.agentGroupContextTokens, maxMessages: GROUP_CONTEXT_MESSAGES, after: line, calls } : null;
+      const calls = away ? await callsSeen(t, agent.id, run.id, line) : [];
+      if (away && calls.length === 0 && told === null) return { end: NOTHING_LEFT };
+      const cap = group
+        ? { maxTokens: config.agentGroupContextTokens, maxMessages: GROUP_CONTEXT_MESSAGES, after: line, calls }
+        : social
+          ? { maxTokens: config.others.contextWeight, maxMessages: GROUP_CONTEXT_MESSAGES, after: 0, calls, place: "social" as const }
+          : null;
       // The pair's summary and what of it may be shown, read once for every plan below (round 2, N-4: two indexed reads at
       // most, nothing of the conversation's history), here, under the row its job writes it under.
-      const summary = await readPairSummary(t, { agentId: agent.id, ownerId: agent.ownerId, conversationId: run.conversationId, group }, config.memory.summaryMaxWeight);
+      // No summary in a social conversation (none is made there: summary/job.ts): nothing of one is shown.
+      const summary = social ? { stored: null, shown: null } : await readPairSummary(t, { agentId: agent.id, ownerId: agent.ownerId, conversationId: run.conversationId, group }, config.memory.summaryMaxWeight);
       const plan = {
         agentId: agent.id,
         ownerId: agent.ownerId,
@@ -794,18 +842,19 @@ export class DbAgentPort implements AgentPort {
       // offers none; then what they take of the context — their definitions at the plan's ratio, as tools' text is planned
       // (`TOOL_TEXT_FACTOR`), and what providers add around them, reserved as the system text is — and room for what they
       // bring back (below).
+      // (A social run is offered none until B7b scopes them to its conversation: default-deny.)
       let offer: Offer | null =
-        told === null && !state.greets && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, mayWeb ? { group, web: true } : { group }) : null;
+        !social && told === null && !state.greets && config.tools.enabled && resolved.tools && this.deps.toolbox ? this.deps.toolbox.offer(run, mayWeb ? { group, web: true } : { group }) : null;
       if (offer !== null && offer.tools.length === 0) offer = null;
       web = offer?.web;
       // Only a reply offered tools says its language (`REPLY_LANGUAGE`), and not one nobody called for. The message answered: in
       // the Agent's own conversation its owner's latest at or before what the run covers; in a group the latest call it answers.
       if (offer !== null && state.lane !== "proactive") {
         const answered = await t.query<{ text: string | null }>(
-          group
+          away
             ? "select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2"
             : "select body ->> 'text' as text from messages where conversation_id = $1 and sender_id = $3 and kind in ('text', 'file') and (body -> 'fixed') is distinct from 'true'::jsonb and seq <= $2 order by seq desc limit 1",
-          group ? [run.conversationId, calls[calls.length - 1] ?? 0] : [run.conversationId, covers, agent.ownerId],
+          away ? [run.conversationId, calls[calls.length - 1] ?? 0] : [run.conversationId, covers, agent.ownerId],
         );
         replyLanguage = detectLanguage(answered.rows[0]?.text ?? "") ?? undefined;
       }
@@ -820,7 +869,7 @@ export class DbAgentPort implements AgentPort {
        */
       const planOf = async (numbered: boolean, reserved: number): Promise<{ loaded: LoadedContext; refs: RunRefs | null }> => {
         const refs = numbered ? new RunRefs({}, web === "offered") : null;
-        const replay = refs !== null && !group && offer !== null ? { replay: { tools: new Set(offer.tools.map((tool) => tool.name)), timeZone: config.siteTimezone, maxCalls: maxCallsOf(config.tools) } } : {};
+        const replay = refs !== null && place === "own" && offer !== null ? { replay: { tools: new Set(offer.tools.map((tool) => tool.name)), timeZone: config.siteTimezone, maxCalls: maxCallsOf(config.tools) } } : {};
         return { loaded: await loadContext(t, { ...plan, reserved, ...(refs ? { refs } : {}), ...replay }, resolved, system(refs !== null), this.deps.drawMark), refs };
       };
       const definitions = offer === null ? 0 : estimateTokens(JSON.stringify(offer.tools), planned * TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
@@ -840,7 +889,7 @@ export class DbAgentPort implements AgentPort {
         ({ loaded, refs } = await planOf(false, 0));
       }
       // A new Agent's greeting before its owner has written: the one turn it is shown is what is so (`GREETING_TURN`).
-      if (state.greets && !group && !hasOwnerTurn(loaded)) loaded.entries.push({ role: "user", text: GREETING_TURN, attachment: null });
+      if (state.greets && place === "own" && !hasOwnerTurn(loaded)) loaded.entries.push({ role: "user", text: GREETING_TURN, attachment: null });
       if (!hasOwnerTurn(loaded)) return { end: loaded.topicStart > 0 && covers <= loaded.topicStart ? STARTED_OVER : BUSY };
       if (!holdsNewest(loaded.entries, loaded.budget, loaded.planRatio)) return { end: TOO_SMALL };
       // A reply offered tools also carries the text a reply offered none is sent (the same mark and roster), for whenever
@@ -854,7 +903,7 @@ export class DbAgentPort implements AgentPort {
       // And whether it answers its owner's own call: only then do the owner's typed words exempt a query (review M6).
       const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: state.lane === "own" && state.triggered_by === "human" } : {};
       const tools = heard === null || refs === null ? null : { refs, heardTo: Number(heard.rows[0]?.seq ?? 0), ...shown };
-      return { resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null };
+      return { resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, bounded };
     });
     if ("end" in first) return first.end;
 
@@ -897,7 +946,7 @@ export class DbAgentPort implements AgentPort {
         if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
         return { end: ENDED_QUIETLY, told };
       }
-      const { resolved, loaded, covers, key, ratio, offer, reserved, withoutTools } = first;
+      const { resolved, loaded, covers, key, ratio, offer, reserved, withoutTools, bounded } = first;
       // The tools the reply is offered (step 1); none after a plain admission (below).
       let tools = offer?.tools ?? [];
       // What admission holds for the input: the most it can cost — its text at its utf-8 bytes, at most what the context
@@ -927,7 +976,7 @@ export class DbAgentPort implements AgentPort {
       const growthTokens =
         offer === null
           ? 0
-          : state.lane !== "own"
+          : bounded
             ? roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens) +
               config.others.overCapNotes * noteBytes(longestToolName(offer.tools))
             : offer.tools.every((tool) => Object.hasOwn(offer.perTool, tool.name))
@@ -938,13 +987,13 @@ export class DbAgentPort implements AgentPort {
       const lastCall =
         tools.length === 0
           ? 0n
-          : state.lane !== "own"
+          : bounded
             ? othersHold(resolved, held, { growthTokens, roomCapTokens }) - maxCostMicro(resolved, held)
             : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
       // What an others' reply offered tools holds if its with-tools hold does not fit its owner's number (`admit`, N3): the one
       // call it then makes without them — the text for going without them and the same messages — at its most.
       const plainMicro =
-        tools.length === 0 || withoutTools === null || state.lane === "own"
+        tools.length === 0 || withoutTools === null || !bounded
           ? null
           : maxCostMicro(resolved, holdTokens([withoutTools, ...messageTexts], resolved.contextTokens, resolved.call.maxOutputTokens) + context.fixedTokens);
       let admission;
@@ -981,7 +1030,7 @@ export class DbAgentPort implements AgentPort {
             [run.id, err.behind, err.on, first.coveredBefore, first.covers],
           );
           const queued = await t.query<RunRow>(`select ${RUN_COLUMNS} from agent_runs r where r.id = $1`, [run.id]);
-          if (state.lane !== "own") log.info({ metric: "others_held_back" }, "agent run: an others' reply waits for its owner's other replies to end");
+          if (bounded) log.info({ metric: "others_held_back" }, "agent run: an others' reply waits for its owner's other replies to end");
           return { end: HELD_BACK, queued: { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(queued.rows[0]!) } };
         }
         if (!(err instanceof AppError) || err.code !== "no_quota") throw err;
@@ -1026,7 +1075,7 @@ export class DbAgentPort implements AgentPort {
               : {
                   perTool: offer.perTool,
                   // An others' reply: one real call, three notes, one tool round (plan B2a).
-                  ...(state.lane !== "own" ? { callsCap: config.others.toolCalls, overCapNotes: config.others.overCapNotes } : {}),
+                  ...(bounded ? { callsCap: config.others.toolCalls, overCapNotes: config.others.overCapNotes } : {}),
                   kinds: offer.kinds,
                   acknowledged,
                   contextTokens: resolved.contextTokens,
@@ -1071,7 +1120,7 @@ export class DbAgentPort implements AgentPort {
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name };
     // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
-    flags.tools = result.prepared.tools.length > 0 && first.tools !== null ? { ...first.tools, shownFrom: flags.group ? null : context.shownFrom } : null;
+    flags.tools = result.prepared.tools.length > 0 && first.tools !== null ? { ...first.tools, shownFrom: flags.place !== "own" ? null : context.shownFrom } : null;
     return result.prepared;
   }
 
@@ -1080,7 +1129,7 @@ export class DbAgentPort implements AgentPort {
     // removal from the run's group has answered, no delta goes out, however late it is delivered. A run that has
     // finished emits nothing, and a run in a group never does (to nobody, its owner included).
     const flags = this.flags.get(run.id);
-    if (!flags || flags.silenced || flags.group) return;
+    if (!flags || flags.silenced || flags.place !== "own") return;
     this.deps.realtime.pushDelta(run.ownerId, run.conversationId, run.id, delta, () => !flags.silenced);
   }
 
@@ -1095,7 +1144,7 @@ export class DbAgentPort implements AgentPort {
     const { shown, ownerAsked } = flags.tools;
     // A reply offered the web search: what it was shown and whose call it answers (its query guard), its pre-hold (`holdSearch`).
     const web = shown === undefined ? {} : { shown, ownerAsked: ownerAsked === true, holdSearch: () => this.holdSearch(run) };
-    const scope: RunScope = { ...run, group: flags.group, refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, shownFrom: flags.tools.shownFrom, ...web };
+    const scope: RunScope = { ...run, group: flags.place !== "own", refs: flags.tools.refs, heardTo: flags.tools.heardTo, mark: flags.mark, shownFrom: flags.tools.shownFrom, ...web };
     return box.run(scope, call, signal);
   }
 
@@ -1349,6 +1398,8 @@ export class DbAgentPort implements AgentPort {
     // An attempt held back at admission ended in `begin`, which told its owner: the run may already be under way again.
     if (end === HELD_BACK) return;
     const leftOut = this.flags.get(run.id)?.leftOut ?? null;
+    // A social conversation is never reviewed or summarised (memory is the owner's own, and what a stranger said never becomes a note).
+    const social = this.flags.get(run.id)?.place === "social";
     let result: Recorded | null | undefined;
     try {
       result = await this.record(run, end, usage, fallback, this.now());
@@ -1369,7 +1420,7 @@ export class DbAgentPort implements AgentPort {
     // A reply stands: the conversation may have something to remember (the reviewer never throws and reads for itself), and
     // what its context left out may be folded into the pair's rolling summary. An acknowledgement alone is nothing to
     // remember (memory/review.ts `UNSPOKEN`).
-    if (result.reply !== null) {
+    if (result.reply !== null && !social) {
       this.deps.memory?.noted(run.agentId, run.conversationId);
       if (leftOut !== null) this.deps.memory?.summarise(run.agentId, run.conversationId, leftOut.to);
     }
@@ -1553,7 +1604,7 @@ const REFUSED_METRIC: Readonly<Record<RefusedBy, string | null>> = {
 };
 
 /** A run's flags as an attempt starts. */
-const freshFlags = (): RunFlags => ({ stop: false, silenced: false, group: false, mark: null, money: null, model: null, leftOut: null, tools: null });
+const freshFlags = (): RunFlags => ({ stop: false, silenced: false, place: "own", mark: null, money: null, model: null, leftOut: null, tools: null });
 
 export function createAgentPort(deps: AgentPortDeps): DbAgentPort {
   return new DbAgentPort(deps);

@@ -260,16 +260,4 @@ describe("the review's cases", () => {
     expect(queued[0]).toMatchObject({ caller_id: w.v.id, lane: "others" });
   });
 
-  it("I2: a queued social run makes no model call, shows no notes, spends nothing and ends access_ended (until B7a's begin)", async () => {
-    const w = await world();
-    await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [w.agent.id, "主人的笔记 CANARY-OPEN"]);
-    const before = gateway.calls.length;
-    await say(w.v, w.conv, "你好");
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(gateway.calls.length).toBe(before);
-    const [run] = await runsOf(w);
-    expect(run).toMatchObject({ status: "cancelled", error: "access_ended" });
-    expect(Number((await db.query<{ n: string }>("select coalesce(sum(free_micro + balance_micro), 0) as n from usage_records where run_id = $1", [run!.id])).rows[0]!.n)).toBe(0);
-    expect((await db.query<{ hold_micro: string | null }>("select hold_micro::text from agent_runs where id = $1", [run!.id])).rows[0]!.hold_micro ?? "0").toBe("0");
-  });
 });

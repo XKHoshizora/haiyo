@@ -366,9 +366,10 @@ describe("reached and tight: two one-sided facts, each by the function admission
     await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [w.agent.agentId, "一条笔记"]);
     const row = (await readOwnedAgent(db, w.owner.id, w.agent.agentId))!;
     const all = await notesFor(db, row, { conversationId: "", group: false });
-    const passage = notesPassage({ owner: all.owner, self: all.self, hearsay: [] }, "group", config().siteTimezone, "");
+    // B7a: the ceiling bounds a social reply too, so it counts the longer of the group's and the social passage form.
+    const bytesOf = (place: "group" | "social") => Buffer.byteLength(notesPassage({ owner: all.owner, self: all.self, hearsay: [] }, place, config().siteTimezone, ""), "utf8");
     const delta = (await of0()) - base;
-    const bytes = Buffer.byteLength(passage, "utf8");
+    const bytes = Math.max(bytesOf("group"), bytesOf("social"));
     expect(bytes).toBeGreaterThan(0);
     // 140 µpt a byte, no clamp: the passage, its two separator bytes, and the clause.
     expect(delta).toBe(BigInt(bytes + 2 + Buffer.byteLength(NOTES_SECRET_CLAUSE, "utf8")) * 140n);

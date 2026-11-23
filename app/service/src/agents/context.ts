@@ -96,9 +96,10 @@ export interface ContextRun {
    * messages only — and nothing at or before seq `after`, the run's asker's line (`askerLine`): no message, no quote of
    * one, no attachment of one — but the calls it answers, at `calls` (`callsSeen`): one after the line whole, one at or
    * before it as its text only (neither its own attachment nor its quote, fix round 3). The Agent's own conversation is
-   * limited by the model's context alone.
+   * limited by the model's context alone. `place` `social` (a social conversation, B7a): the same, with the label's role words of a
+   * social conversation (`speakerRole`: 对方, 你的主人); absent, a group's.
    */
-  group: { maxTokens: number; maxMessages: number; after: number; calls: readonly number[] } | null;
+  group: { maxTokens: number; maxMessages: number; after: number; calls: readonly number[]; place?: "group" | "social" } | null;
   /**
    * The ratio the context is planned at (metering/tokens.ts `planRatio` of the model's learned ratio, read once by the
    * run): every text of the plan — the system text, the messages, the cut of the newest — counts its weight times this.
@@ -559,7 +560,7 @@ async function loadPage(
             id: r.sender_id,
             name: r.sender_name,
             handle: r.sender_handle,
-            role: speakerRole(r.sender_id, r.sender_kind, run.ownerId),
+            role: speakerRole(r.sender_id, r.sender_kind, run.ownerId, run.group?.place ?? "group"),
             present: r.sender_present,
             quoted,
           }
@@ -839,6 +840,39 @@ export async function loadGroupScene(
       appellation: r.id === agent.ownerId ? agent.ownerAppellation : r.appellation,
     })),
     inGroup: people.rows[0]?.in_group ?? 0,
+  };
+}
+
+/** The social conversation a run of `agent` answers in, for its system text (`socialSystemText`): the other party and the supervising owners. */
+export interface SocialScene {
+  /** The one other participant (`social_pairs`): their account, name, handle and kind. */
+  other: { id: string; name: string; handle: string; kind: "human" | "agent" };
+  /** Whose Agents take part: each participating Agent's owner, once, in id order (their display names, as the owner's own text shows them). */
+  owners: Array<{ id: string; displayName: string }>;
+}
+
+/**
+ * The social conversation `conversationId` as `agent` answers in it: the other participant (name, handle, kind) and the supervising
+ * owner or owners (the owners of the participating Agents), no appellations. Null when the Agent is not a current member there, or
+ * the conversation has no pair with another party (the run is then `REMOVED`). Plain reads, under the caller's lock on the
+ * conversation's row.
+ */
+export async function loadSocialScene(q: Queryable, agent: Pick<AgentRow, "id" | "ownerId">, conversationId: string): Promise<SocialScene | null> {
+  if (!(await currentMembership(q, conversationId, agent.id))) return null;
+  const { rows } = await q.query<{ id: string; name: string; handle: string; kind: "human" | "agent"; owner_id: string | null }>(
+    `select p.id, p.display_name as name, ${handleOf("p")} as handle, p.kind, p.owner_id
+       from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id)
+      where sp.conversation_id = $1
+      order by p.id`,
+    [conversationId],
+  );
+  const other = rows.find((r) => r.id !== agent.id);
+  if (!other || !rows.some((r) => r.id === agent.id)) return null;
+  const ownerIds = [...new Set(rows.flatMap((r) => (r.kind === "agent" && r.owner_id !== null ? [r.owner_id] : [])))].sort();
+  const owners = await q.query<{ id: string; display_name: string }>("select id, display_name from principals where id = any($1::uuid[]) order by id", [ownerIds]);
+  return {
+    other: { id: other.id, name: other.name, handle: other.handle, kind: other.kind },
+    owners: owners.rows.map((o) => ({ id: o.id, displayName: o.display_name })),
   };
 }
 
