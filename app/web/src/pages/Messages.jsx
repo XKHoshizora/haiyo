@@ -18,6 +18,7 @@ import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
 import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits.jsx";
 import { MemoryNotice } from "./MemoryChip.jsx";
+import { PersonaFactCard } from "./SocialCards.jsx";
 import { ReplyLookups } from "./ReplyLookups.jsx";
 import { citingOf, WebSources } from "./WebSources.jsx";
 import { CitesContext } from "../ui/cites.jsx";
@@ -174,6 +175,9 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
   const { state, dispatch, actions } = useStore();
   // The menu of a bubble (long-press, right-click, the context-menu key): ui/BubbleMenu.jsx.
   const bubbleMenu = useBubbleMenu(() => messageActions({ state, dispatch, msg, onReply }));
+  // The persona aid's card (A8b): only in my own conversation with the Agent, and only when the service sent its `card` (to the owner alone).
+  // Before the hidden test: the notice sentence of the event is not worded here (it has no line of its own), the card is the notice.
+  if (msg.kind === "system" && msg.system?.event === "persona_fact") return conv.type === "agent" && msg.system.card ? <PersonaFactCard msg={msg} conv={conv} /> : null;
   // A notice of an event this client does not know shows nothing.
   if (msg.hidden) return null;
   if (msg.kind === "system") {

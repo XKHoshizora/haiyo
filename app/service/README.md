@@ -2939,10 +2939,19 @@ and its owner's own replies go on; no row is touched, and enabling gives access 
 "cardSeq"?: number}` (lane A, ring 1b): the owner's yes or no on one note for one person; a card's answer names its message
 in `cardSeq`. → 200 `{"ok": true}`.
 
-**Planned: `POST /api/agents/:id/persona-facts/:seq`**
+#### `POST /api/agents/:id/persona-facts/:seq`
 
 *Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
-message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
+message `seq` of the Agent's own conversation. The card says that a sentence of the persona looks like a fact about the owner or someone
+else (a persona is read whole by anyone the Agent talks to); it is made by the persona aid, which reads each new persona version once on
+the owner's memory model and allowance (one call per version, none while `SOCIAL.enabled` is off, none for an owner's own edit), keeps only
+sentences found in the persona word for word, at most three, and shows a card to its owner alone: `system.card`
+`{"answer": "moved" | "kept" | null, "expired": boolean, "sentence"}`. `move: true` takes the sentence out of the persona (its first
+occurrence; the persona's version goes up and counts as read) and writes it as a note about the owner (in the vault); a sentence no
+longer in the persona changes nothing and is answered `kept`. `move: false` leaves everything and records `kept`. One answer per card
+(`social_card_answers`); a card is answerable `OTHERS.cardDays` days. → 200 `{"ok": true, "moved": boolean}`; 404 `not_found` for what is
+no card of this Agent (and for anyone but its owner); 409 `answered`, `expired`, `room_full` (the notes have no room: nothing is
+changed and the card can be answered again); 422 `note_refused`. Limit: 30 a minute. 404 while `SOCIAL.enabled` is off.
 
 **Planned: `GET /api/me/others-use`**
 

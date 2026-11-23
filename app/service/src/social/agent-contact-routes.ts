@@ -4,7 +4,8 @@ import { z } from "zod";
 import { announceEnded } from "../agents/group-leave.ts";
 import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
-import { userText, uuidParam } from "../schemas.ts";
+import { answerPersonaFact } from "../memory/persona-aid.ts";
+import { positiveIntString, userText, uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
 import { reportAgent, REPORT_REASONS } from "./reports.ts";
 import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, declineContact, liftBar, removeContact, setBar, socialConversationsBetween } from "./agent-contacts.ts";
@@ -15,8 +16,8 @@ import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, d
 // Here so far (A4): POST and GET /api/agent-contacts; POST …/:agentId/:subjectId/approve and /decline; DELETE …/:agentId/:subjectId.
 // (A5b): PUT and DELETE /api/bars/:personId.
 // (A5c): GET /api/agents/:id/contacts; PUT /api/agents/:id/contact-policy.
-// (A10): POST /api/reports.
-// Planned: PUT /api/agents/:id/note-verdicts; POST /api/agents/:id/persona-facts/:seq. While `SOCIAL.enabled` is false every one of them
+// (A10): POST /api/reports. (A8b): POST /api/agents/:id/persona-facts/:seq.
+// Planned: PUT /api/agents/:id/note-verdicts. While `SOCIAL.enabled` is false every one of them
 // answers 404 (the lookup, `GET /api/principals/lookup`, is not here: it exists already).
 const empty = z.object({});
 const ok = z.object({ ok: z.literal(true) });
@@ -40,6 +41,7 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
   const barLimit = perPrincipalLimit(app, 20);
   // A report: five a minute (it writes a row the operator reads).
   const reportLimit = perPrincipalLimit(app, 5);
+  const cardLimit = perPrincipalLimit(app, 30);
 
   /** Every lane-A route answers 404 while the site's switch is off; after the session (and the terms) have been asked. */
   const requireSocial = (): void => {
@@ -315,6 +317,26 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       if (id === null) throw notFound();
       req.log.info({ metric: "agent_reported", reason: req.body.reason }, "an Agent was reported");
       return reply.code(201).send({ id });
+    },
+  );
+
+  api.post(
+    "/api/agents/:id/persona-facts/:seq",
+    {
+      schema: {
+        params: z.object({ id: uuidParam, seq: positiveIntString() }),
+        querystring: empty,
+        body: z.object({ move: z.boolean() }),
+        response: { 200: z.object({ ok: z.literal(true), moved: z.boolean() }) },
+      },
+    },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      await cardLimit(req, me.id);
+      const { moved } = await answerPersonaFact(db, config, me.id, req.params.id, req.params.seq, req.body.move);
+      if (moved) app.realtime.pushAgentChanged(me.id, req.params.id);
+      return { ok: true as const, moved };
     },
   );
 }

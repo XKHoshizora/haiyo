@@ -4,6 +4,8 @@ import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import type { RouteEntry } from "../src/app.ts";
 import { createInvite } from "../src/auth/invites.ts";
+import { lockConversation } from "../src/conversations/store.ts";
+import { appendSystem } from "../src/conversations/system.ts";
 import type { ModelEvent, ModelGateway } from "../src/models/gateway.ts";
 import type { ProviderProbe } from "../src/providers/probe.ts";
 import { api, befriend, group, signUp, TERMS, type Actor } from "./helpers/actors.ts";
@@ -289,6 +291,8 @@ interface Fixture {
   change: string;
   /** A whisper of the fuzzing account's about `agent` in the group, open (src/whispers/). */
   whisper: string;
+  /** The seq of a `persona_fact` card of `agent` in its own conversation (the persona aid, A8b), unanswered. */
+  personaCard: string;
 }
 
 const FAST = { source: "site", id: "fast" } as const;
@@ -358,6 +362,10 @@ async function fixture(): Promise<Fixture> {
      select id, $2, $3, seq, 'found_elsewhere', '{"text": "找到了", "actions": ["tell", "dismiss"]}'::jsonb from conversations where id = $1 returning id`,
     [g, me.id, agent.id],
   );
+  const card = await app.deps.db.tx(async (t) => {
+    await lockConversation(t, agent.conversationId);
+    return appendSystem(t, agent.conversationId, { event: "persona_fact", actorId: agent.id, agentId: agent.id, sentence: "主人住在杭州。", personaVersion: 1, expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
+  });
   return {
     me,
     peer,
@@ -381,6 +389,7 @@ async function fixture(): Promise<Fixture> {
     heardToConfirm: heard.rows[1]!.id,
     change: change.rows[0]!.id,
     whisper: whisper.rows[0]!.id,
+    personaCard: String(card.seq),
   };
 }
 
@@ -398,7 +407,7 @@ function validParams(route: Pick<RouteEntry, "method" | "url">, fx: Fixture): Re
   const { method, url } = route;
   const out: Record<string, string> = {};
   for (const name of params(url)) {
-    if (name === "seq") out[name] = "2";
+    if (name === "seq") out[name] = url.includes("/persona-facts/") ? fx.personaCard : "2";
     else if (name === "principalId") out[name] = fx.victim.id; // the one whose removal, unfriending or blocking costs nothing
     else if (name === "runId") out[name] = fx.run;
     else if (name === "proposalId") out[name] = fx.proposal;
@@ -473,6 +482,8 @@ function plausibleBody(route: RouteEntry, fx: Fixture): Record<string, unknown> 
       return { agentId: fx.agent };
     case "POST /api/reports":
       return { agentId: fx.agent, reason: "spam" };
+    case "POST /api/agents/:id/persona-facts/:seq":
+      return { move: false };
     case "PUT /api/agents/:id/contact-policy":
       return { policy: "ask", picked: false, picks: [], dryRun: true };
     case "POST /api/providers":
@@ -692,6 +703,8 @@ describe("fuzz", () => {
     const reportRoute = routes.find((r) => r.method === "POST" && r.url === "/api/reports")!;
     expect(reportRoute).toBeDefined();
     expect(["POST /api/reports", sent[routes.indexOf(reportRoute)]!.some((x) => x.label.endsWith("[signed in]") && x.status === 201)]).toEqual(["POST /api/reports", true]);
+    // Agent social, lane A (A8b): the persona card's answer; the fixture's Agent has one, so a probe got past the checks (the agent-route rule above).
+    expect(routes.some((r) => r.method === "POST" && r.url === "/api/agents/:id/persona-facts/:seq")).toBe(true);
     await stillHealthy();
   });
 
