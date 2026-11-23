@@ -188,6 +188,14 @@ describe("events from the shell", () => {
     ["an encoded slash", "/chat/a%2fb"],
     ["an encoded backslash", "/chat/a%5Cb"],
     ["the service's own paths, however written", "/API/me"],
+    ["an encoded letter of /api", "/%61pi/me"],
+    ["an encoded letter, upper case", "/%41PI/me"],
+    ["a double encoding", "/%2561pi/me"],
+    ["the well-known files", "/.well-known/apple-app-site-association"],
+    ["the well-known files, encoded", "/%2ewell-known/x"],
+    ["the well-known files, upper case", "/.WELL-KNOWN/x"],
+    ["a script or a data file of the site", "/assets/index-abc.js"],
+    ["a file name", "/nothing.json"],
     ["a control character", "/chat/a\n/b"],
     ["an empty string", ""],
     ["a number", 5],
@@ -235,6 +243,37 @@ describe("events from the shell", () => {
     expect(bridge.takeOpen()).toBeNull();
     expect(JSON.stringify(logs.map((l) => l.mock.calls))).not.toContain("token");
     void name;
+  });
+
+  it("an encoded slash in the QUERY is part of the value: a reset link whose token has one keeps it", async () => {
+    const shell = installShell();
+    await bridge.startShell();
+    const load = vi.spyOn(bridge.loader, "assign").mockImplementation(() => {});
+    shell.emit("open", { path: "/reset-password?token=a%2Fb%5Cc" });
+    expect(load).toHaveBeenCalledWith("/reset-password?token=a%2Fb%5Cc");
+    shell.emit("open", { path: "/terms?x=%2f%2F" });
+    expect(load).toHaveBeenLastCalledWith("/terms?x=%2f%2F");
+  });
+
+  it("an encoded slash in the PATH is still refused, whatever follows", async () => {
+    const shell = installShell();
+    await bridge.startShell();
+    const load = vi.spyOn(bridge.loader, "assign").mockImplementation(() => {});
+    shell.emit("open", { path: "/terms%2f..%2fapi/me?x=1" });
+    shell.emit("open", { path: "/a%5cb?x=1" });
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("`/` with a query is the verification landing, loaded with its query; a bare `/` is the app's list", async () => {
+    const shell = installShell();
+    await bridge.startShell();
+    const load = vi.spyOn(bridge.loader, "assign").mockImplementation(() => {});
+    shell.emit("open", { path: "/?error=TOKEN_EXPIRED" });
+    expect(load).toHaveBeenCalledWith("/?error=TOKEN_EXPIRED");
+    expect(bridge.takeOpen()).toBeNull();
+    shell.emit("open", { path: "/" });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(bridge.takeOpen()).toBe("/");
   });
 
   it("an in-app address keeps going to the app's navigation, not to a load", async () => {

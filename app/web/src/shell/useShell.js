@@ -21,30 +21,29 @@ export function useShellSession({ running, layer, api }) {
     if (!running || !inShell()) return undefined;
     // "In the background" means paused by the shell, not what `visibilityState` says: measured in the shell, `haiyo:pause` comes first, while the
     // page still says "visible" (`visibilitychange` to hidden follows ~0.8 s later), and `haiyo:resume` comes first on the way back, while it
-    // still says "hidden" (`visible` follows ~0.15 s later). So each signal acts on its own and the late one finds nothing left to do: the data
-    // layer's `pause` / `resume` do nothing when already paused / running, and the permission is asked once per return.
-    let foreground = !startsInBackground();
+    // still says "hidden" (`visible` follows ~0.15 s later). So a signal does not act: it says whether the page is paused (the last one wins), and
+    // one step, `reconcile`, makes the socket match, after every signal and as often as needed (the data layer's `pause` / `resume` do nothing
+    // when already paused / running). A quick bounce, a burst, or a late signal can therefore only end where the last one says.
+    let paused = startsInBackground();
     let registered = false;
+    const reconcile = () => (paused ? layer.pause?.() : layer.resume?.());
     const register = () => {
-      if (registered || !foreground) return;
+      if (registered || paused) return;
       registered = true;
       registerPush(api);
     };
-    // Back from the background: the socket comes back through the data layer, and the permission is asked again (a change made in the system's
-    // Settings is learned here; a registration that failed is tried once more).
-    const back = (resumed = false) => {
-      const was = foreground;
-      foreground = true;
-      layer.resume?.();
-      if (resumed || !was) pushOnResume(api);
+    // `resumed`: the shell's own word that the app is back (the permission is asked again: a change made in the system's Settings is learned
+    // here, and a registration that failed is tried once more).
+    const say = (nowPaused, resumed = false) => {
+      const was = paused;
+      paused = nowPaused;
+      reconcile();
+      if (paused) return;
+      if (resumed || was) pushOnResume(api);
       register();
     };
-    const away = () => {
-      foreground = false;
-      layer.pause?.();
-    };
-    const offs = [on("pause", away), on("resume", () => back(true))];
-    const shown = () => (document.visibilityState === "visible" ? back() : away());
+    const offs = [on("pause", () => say(true)), on("resume", () => say(false, true))];
+    const shown = () => say(document.visibilityState !== "visible");
     document.addEventListener("visibilitychange", shown);
     register();
     return () => {

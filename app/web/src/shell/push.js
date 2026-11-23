@@ -32,32 +32,42 @@ let generation = 0;
 let active = false;
 /** This session's phone is bound at the service. */
 let registered = false;
-/** A `push.register` is waiting for its answer. */
-let inflight = false;
+/** The `push.register` that is waiting for its answer: `{ id, generation, push, at }`, or null. It is abandoned (and a new one may start) when its session ended, when a hello reports another permission, or after `ABANDON_MS`. */
+let inflight = null;
+let attempts = 0;
+/** The question (or the silent registration) was begun once in this page load, whatever came of it. */
+let asked = false;
 /** A fresh `hello` of a resume is on its way. */
 let refreshing = false;
 /** The badge was cleared for the session that is ending. */
 let cleared = false;
 
-/** One `push.register` and the POST that follows. Never throws; never two at once. */
+/** How long a `push.register` may stay unanswered before the next resume may start another (the system's question can stay open that long). */
+export const ABANDON_MS = 10 * 60_000;
+
+const holding = (info) => inflight && inflight.generation === generation && inflight.push === info.push && Date.now() - inflight.at < ABANDON_MS;
+
+/** One `push.register` and the POST that follows. Never throws; never two at once (unless the earlier is abandoned, see `inflight`). */
 async function attempt(api, info) {
-  if (inflight || registered) return;
-  inflight = true;
+  if (registered || holding(info)) return;
+  const claim = { id: (attempts += 1), generation, push: info.push, at: Date.now() };
+  inflight = claim;
+  asked = true;
   const mine = generation;
   try {
     const reply = await request("push.register", {});
-    if (mine !== generation) return;
+    if (mine !== generation || inflight !== claim) return;
     const env = ENVIRONMENTS[reply?.env];
     if (typeof reply?.token === "string" && TOKEN.test(reply.token) && !env) counters.unknownEnv += 1;
     if (typeof reply?.token !== "string" || !TOKEN.test(reply.token) || !env) return;
     const body = { token: reply.token, env };
     if (typeof info.shell === "string" && VERSION.test(info.shell)) body.appVersion = info.shell;
     await api.registerPushDevice(body);
-    if (mine === generation) registered = true;
+    if (mine === generation && inflight === claim) registered = true;
   } catch {
     /* tried again at the next resume or cold start; what failed is not logged (a token is in what was sent) */
   } finally {
-    inflight = false;
+    if (inflight === claim) inflight = null;
   }
 }
 
@@ -86,13 +96,18 @@ export async function pushOnResume(api) {
   refreshing = true;
   const mine = generation;
   try {
-    const info = await refreshHello();
+    let info;
+    try {
+      info = await refreshHello();
+    } finally {
+      // (Only the hello is waited for here: a `push.register` that never answers must not hold the next resume's hello.)
+      refreshing = false;
+    }
     if (mine !== generation || !info) return;
-    if (info.push === "granted") await attempt(api, info);
+    // (A hello that failed at the start leaves the question unasked: the first answer after it asks it, once.)
+    if (info.push === "granted" || (info.push === "notDetermined" && !asked)) await attempt(api, info);
   } catch {
     /* see above */
-  } finally {
-    refreshing = false;
   }
 }
 
@@ -111,6 +126,8 @@ export async function unregisterPush(api) {
   generation += 1;
   active = false;
   registered = false;
+  inflight = null;
+  asked = false;
   const control = new AbortController();
   let timer;
   try {
@@ -138,5 +155,7 @@ export async function pushSessionEnded() {
   generation += 1;
   active = false;
   registered = false;
+  inflight = null;
+  asked = false;
   if (!cleared) await clearBadge();
 }

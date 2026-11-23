@@ -175,6 +175,7 @@ describe("push", () => {
     mount(api);
     await waitFor(() => expect(api.registerPushDevice).toHaveBeenCalledTimes(1));
     order.length = 0;
+    await waitFor(() => expect(layers[0].start).toHaveBeenCalled());
     act(() => layers[0].end());
     await screen.findByLabelText("邮箱");
     await waitFor(() => expect(shell.named("badge.set")).toHaveLength(1));
@@ -285,6 +286,7 @@ describe("a tapped notification, signed out", () => {
     const api = apiOf();
     mount(api);
     await screen.findByTestId("app");
+    await waitFor(() => expect(layers[0].start).toHaveBeenCalled());
     act(() => layers[0].end());
     await screen.findByLabelText("邮箱");
     act(() => shell.emit("open", { path: `/chat/${C1}` }));
@@ -553,5 +555,69 @@ describe("the order of the signals", () => {
     expect(open()).toBe(1);
     expect(connects()).toBe(1);
     expect(shell.named("push.register")).toHaveLength(1);
+  });
+});
+
+// N5: the signals do not act, they say whether the page is paused by the shell (the last one wins), and one step makes the socket match.
+describe("a bounce, and a burst of signals", () => {
+  let transport;
+  let visibilityState;
+  const mountReal = () => {
+    transport = fakeTransport({ sync: () => syncOf([]) });
+    render(
+      <AuthRoot api={apiOf()} createLayer={() => createDataLayer({ transport, api: {}, timers: fakeTimers(), now: () => 0 })}>
+        {() => <div data-testid="app" />}
+      </AuthRoot>,
+    );
+  };
+  const open = () => transport.sockets.filter((s) => !s.closed).length;
+  const visibility = (state) => {
+    visibilityState.mockReturnValue(state);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+  };
+  beforeEach(() => {
+    visibilityState = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  });
+  const live = async () => {
+    await enterShell();
+    mountReal();
+    await screen.findByTestId("app");
+    await waitFor(() => expect(open()).toBe(1));
+    await act(async () => {});
+  };
+
+  it("leaving and coming back inside the lag, in either order of the late signals, ends with the app in front and one socket", async () => {
+    await live();
+    // pause (still visible) - resume (still visible: the page never left) - the late hidden - the late visible
+    act(() => shell.emit("pause"));
+    act(() => shell.emit("resume"));
+    visibility("hidden");
+    visibility("visible");
+    await waitFor(() => expect(open()).toBe(1));
+    // and with the late events the other way round
+    act(() => shell.emit("pause"));
+    visibility("hidden");
+    act(() => shell.emit("resume"));
+    visibility("visible");
+    await waitFor(() => expect(open()).toBe(1));
+    // the late hidden of a bounce, read when it arrives: the page is visible again, so it is no leaving
+    act(() => shell.emit("pause"));
+    act(() => shell.emit("resume"));
+    visibility("visible");
+    await act(async () => {});
+    expect(open()).toBe(1);
+  });
+
+  it("ten alternating signals ending in the foreground leave exactly one socket, ending paused none", async () => {
+    await live();
+    for (let i = 0; i < 10; i += 1) act(() => shell.emit(i % 2 === 0 ? "pause" : "resume"));
+    await waitFor(() => expect(open()).toBe(1));
+    await act(async () => {});
+    expect(open()).toBe(1);
+    for (let i = 0; i < 10; i += 1) act(() => shell.emit(i % 2 === 0 ? "resume" : "pause"));
+    await act(async () => {});
+    expect(open()).toBe(0);
+    act(() => shell.emit("resume"));
+    await waitFor(() => expect(open()).toBe(1));
   });
 });

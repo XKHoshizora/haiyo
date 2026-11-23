@@ -225,7 +225,6 @@ describe("one push.register at a time, and the next resume", () => {
     const api = fakePushApi();
     const first = push.registerPush(api);
     await vi.waitFor(() => expect(shell.named("push.register")).toHaveLength(1));
-    shell.replies.hello = { ...HELLO, push: "granted" };
     await push.pushOnResume(api);
     await push.pushOnResume(api);
     expect(shell.named("push.register")).toHaveLength(1);
@@ -305,5 +304,57 @@ describe("a sign-out never waits long", () => {
     await vi.advanceTimersByTimeAsync(push.UNBIND_MS + push.BADGE_MS + 5);
     expect(ended).toBe(true);
     expect(push.UNBIND_MS + push.BADGE_MS).toBeLessThanOrEqual(5_000);
+  });
+});
+
+describe("one in flight, but never for ever", () => {
+  it("a sign-out ends the claim of a request that never answers: the next person's phone is bound at once", async () => {
+    const shell = await shellOf({ register: () => new Promise(() => {}) });
+    const api = fakePushApi();
+    push.registerPush(api);
+    await vi.waitFor(() => expect(shell.named("push.register")).toHaveLength(1));
+    await push.unregisterPush(api);
+    shell.replies["push.register"] = { token: TOKEN, env: "production" };
+    await push.registerPush(api);
+    expect(shell.named("push.register")).toHaveLength(2);
+    expect(api.registerPushDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("a hello that reports another state abandons the earlier request; the same state does not ask again", async () => {
+    const shell = await shellOf({ hello: { ...HELLO, push: "notDetermined" }, register: () => new Promise(() => {}) });
+    const api = fakePushApi();
+    push.registerPush(api);
+    await vi.waitFor(() => expect(shell.named("push.register")).toHaveLength(1));
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(1);
+    shell.replies.hello = { ...HELLO, push: "granted" };
+    shell.replies["push.register"] = { token: TOKEN, env: "production" };
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(2);
+    expect(api.registerPushDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("a request still unanswered after the stated time is abandoned, and the next resume tries once more", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const shell = await shellOf({ register: () => new Promise(() => {}) });
+    const api = fakePushApi();
+    push.registerPush(api);
+    await vi.waitFor(() => expect(shell.named("push.register")).toHaveLength(1));
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(1);
+    vi.setSystemTime(Date.now() + push.ABANDON_MS + 1);
+    push.pushOnResume(api);
+    await vi.waitFor(() => expect(shell.named("push.register")).toHaveLength(2));
+  });
+
+  it("a first hello that failed leaves the question unasked: the resume that gets an answer asks it once", async () => {
+    const shell = await shellOf({ hello: () => Promise.reject("forbidden") });
+    const api = fakePushApi();
+    await push.registerPush(api);
+    expect(shell.named("push.register")).toHaveLength(0);
+    shell.replies.hello = { ...HELLO, push: "notDetermined" };
+    await push.pushOnResume(api);
+    await push.pushOnResume(api);
+    expect(shell.named("push.register")).toHaveLength(1);
   });
 });

@@ -3,8 +3,8 @@
 // rejects with "unavailable", nothing is listened to and nothing is left on `window`.
 //
 // The page calls `window.webkit.messageHandlers.haiyo.postMessage({ name, args })`, which returns a promise: the reply is correlated by
-// WebKit itself (no ids of ours); a refusal rejects with `forbidden`, `malformed` or `unknown`. What this module adds is a time limit (the
-// shell has its own for `push.register`: 30 s), a plain error with a short code, and events.
+// WebKit itself (no ids of ours); a refusal rejects with `forbidden`, `malformed` or `unknown`. What this module adds is a time limit (none for
+// `push.register`, which waits on the person's answer to the system's question), a plain error with a short code, and events.
 //
 // Events the shell sends (`haiyo:pause`, `haiyo:resume`, `haiyo:open`) are hints: fire-and-forget, never guaranteed. `hello` lists the ones
 // this build handles (HANDLED_EVENTS) — `layout` is not among them — and the shell falls back to loading the URL itself for `open` otherwise.
@@ -118,13 +118,22 @@ export function on(event, fn) {
 }
 
 // ───────── a tapped notification or link: the address to open
-// The path comes from a notification or a link, so it is only ever one of the app's own pages (state/location.js knows them), a plain path
-// without query or fragment, never an address of another site.
+// The address comes from a notification or a link. An address of the app (state/location.js knows them) goes to its navigation, as a plain path;
+// any other page of this site is loaded as it is (`pageHrefOf`); an address of another site, or anything that is not a page, is dropped.
 const PLACEHOLDER_ORIGIN = "https://app.invalid";
 
-/** A plain path of this site as the shell writes it: `/…`, not `//host`, no backslash, no control character, no encoded slash. */
+/**
+ * A path of this site as the shell writes it: `/…`, not `//host`, no backslash or control character anywhere, and no encoded slash or backslash
+ * in the PATH (a query may hold `%2F`: a value is not a segment).
+ */
 const plain = (raw) =>
-  typeof raw === "string" && raw.length > 0 && raw.length <= 2048 && raw.startsWith("/") && !raw.startsWith("//") && !/[\\\u0000-\u001f\u007f]|%2f|%5c/i.test(raw);
+  typeof raw === "string" &&
+  raw.length > 0 &&
+  raw.length <= 2048 &&
+  raw.startsWith("/") &&
+  !raw.startsWith("//") &&
+  !/[\\\u0000-\u001f\u007f]/.test(raw) &&
+  !/%2f|%5c/i.test(raw.split(/[?#]/)[0]);
 
 /** The path of a page of the app (`/chat/<id>`, `/contacts`, ...) that `raw` names, or null when it is anything else. Query and fragment are dropped. */
 export function appPathOf(raw) {
@@ -137,7 +146,8 @@ export function appPathOf(raw) {
   }
   if (url.origin !== PLACEHOLDER_ORIGIN) return null;
   const path = url.pathname.replace(/\/+$/, "") || "/";
-  if (path === "/") return path;
+  // (`/` with a query is not the list: `/?error=…` is the verification landing, a page of its own.)
+  if (path === "/") return url.search === "" ? path : null;
   // (An address the app does not know is read as its first list: only a real page is `pane: main` or in another section.)
   const page = navOfAddress({ path });
   return page.section !== "chat" || page.pane !== "list" ? path : null;
@@ -145,8 +155,10 @@ export function appPathOf(raw) {
 
 /**
  * Any other page of this site the shell sends (the terms and privacy pages, the sign-in, register and reset screens, a reset or verification link
- * with its query): the path and query to load as they are, or null for anything off this origin, the service's own `/api` paths, or a malformed
- * address. The query may hold a token: it is never logged.
+ * with its query, `/?error=…`): the path and query to load as they are, or null for anything off this origin, a malformed address, or what is not a
+ * page. That is decided on the DECODED path (decoded once; a path that still holds a `%` after that, or whose decoded form has other segments than
+ * the written one, is refused): the service's `/api`, `/assets` and `/.well-known` by their first segment, any dot segment, and a file name
+ * (a last segment with a dot). The query may hold a token: it is never logged.
  */
 export function pageHrefOf(raw) {
   if (!plain(raw)) return null;
@@ -156,7 +168,17 @@ export function pageHrefOf(raw) {
   } catch {
     return null;
   }
-  if (url.origin !== window.location.origin || /^\/api(\/|$)/i.test(url.pathname)) return null;
+  if (url.origin !== window.location.origin) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(url.pathname);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("%") || decoded.split("/").length !== url.pathname.split("/").length) return null;
+  const segments = decoded.split("/").filter(Boolean).map((s) => s.toLowerCase());
+  if (segments.some((s) => s === "." || s === ".." || s === ".well-known")) return null;
+  if (["api", "assets"].includes(segments[0]) || segments.at(-1)?.includes(".")) return null;
   return url.pathname + url.search;
 }
 
