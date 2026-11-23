@@ -6,14 +6,15 @@ import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
-import { addContact, approveContact, contactsOf, declineContact, liftBar, removeContact, setBar } from "./agent-contacts.ts";
+import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, declineContact, liftBar, removeContact, setBar } from "./agent-contacts.ts";
 
 // Lane A's route plugin (plan "Step 0 interfaces", Routes; README "Agent social"). Step 0 wired it in `app.ts` and registered NO route;
 // a lane adds a route by writing it here and, in the same edit, what every route has (plan File map, "shared, row per route"): its
 // probe row in tests/fuzz.test.ts, its README heading, and, if the name is new, its path parameter in tests/logging.test.ts.
 // Here so far (A4): POST and GET /api/agent-contacts; POST …/:agentId/:subjectId/approve and /decline; DELETE …/:agentId/:subjectId.
 // (A5b): PUT and DELETE /api/bars/:personId.
-// Planned: GET /api/agents/:id/contacts; PUT /api/agents/:id/contact-policy; POST /api/reports;
+// (A5c): GET /api/agents/:id/contacts; PUT /api/agents/:id/contact-policy.
+// Planned: POST /api/reports;
 // PUT /api/agents/:id/note-verdicts; POST /api/agents/:id/persona-facts/:seq. While `SOCIAL.enabled` is false every one of them
 // answers 404 (the lookup, `GET /api/principals/lookup`, is not here: it exists already).
 const empty = z.object({});
@@ -82,6 +83,71 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       req.log,
     );
   }
+
+  api.get(
+    "/api/agents/:id/contacts",
+    {
+      schema: {
+        params: z.object({ id: uuidParam }),
+        querystring: empty,
+        response: {
+          200: z.object({
+            policy: z.enum(["ask", "contacts", "none"]),
+            picked: z.boolean(),
+            picks: z.array(z.string()),
+            rows: z.array(
+              z.object({
+                subject: subjectView,
+                state: z.enum(["requested", "live", "ended"]),
+                basis: z.enum(["approved", "contacts"]).nullable(),
+                since: z.string(),
+                until: z.string().nullable(),
+                endReason: z.enum(["declined", "expired", "left", "narrowed", "removed", "barred"]).nullable(),
+                conversationId: z.string().nullable(),
+              }),
+            ),
+            conversations: z.array(z.object({ conversationId: z.string(), subject: subjectView })),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      const view = await contactsOfAgent(db, me.id, req.params.id);
+      if (!view) throw notFound();
+      return view;
+    },
+  );
+
+  api.put(
+    "/api/agents/:id/contact-policy",
+    {
+      schema: {
+        params: z.object({ id: uuidParam }),
+        querystring: empty,
+        body: z.object({
+          policy: z.enum(["ask", "contacts", "none"]),
+          picked: z.boolean(),
+          picks: z.array(uuidParam).max(500),
+          dryRun: z.boolean().optional(),
+        }),
+        response: { 200: z.object({ ends: z.number() }) },
+      },
+    },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      const { dryRun, ...next } = req.body;
+      const done = await db.tx((t) => applyPolicy(t, me.id, req.params.id, next, { dryRun: dryRun === true }));
+      if (dryRun !== true) {
+        announceEnded(app.agentPort, done.ended);
+        social.emit([me.id], req.log);
+        for (const subject of done.subjects) await announce(req, req.params.id, subject);
+      }
+      return { ends: done.ends };
+    },
+  );
 
   api.put(
     "/api/bars/:personId",

@@ -3,13 +3,15 @@ import { RUN_COLUMNS, toWireRun, type Announced, type RunRow } from "../agents/r
 import type { Config } from "../config.ts";
 import { ensureSocial, lockConversation } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
+import { lockOwnedAgent } from "../agents/store.ts";
+import { AppError } from "../errors.ts";
 import { handleOf } from "../principals/store.ts";
 import { lockPair, lockPairs, orderedPair } from "./pair.ts";
 import { discoverable, discoverableSql, reach } from "./reach.ts";
 import { areFriends } from "./relations.ts";
 
 // Who may reach an Agent, per Agent: rows in `agent_contacts`, the policy that makes them, and the one function that ends them.
-// Lane A: A4 (add, approve, decline, remove, the lists), A5a (`endGrants`) and A5b (the bars) are here; `applyPolicy` (A5c) is still Step 0's throwing body.
+// Lane A: A4 (add, approve, decline, remove, the lists), A5a (`endGrants`), A5b (the bars) and A5c (`applyPolicy`) are here.
 
 export type ContactPolicy = "ask" | "contacts" | "none";
 export type ContactState = "requested" | "live" | "ended";
@@ -18,8 +20,6 @@ export type EndReason = "declined" | "expired" | "left" | "narrowed" | "removed"
 
 /** What access to end: all of two people's (an Agent of either's included), or an Agent's for the listed subjects. */
 export type GrantScope = { between: readonly [string, string] } | { agentId: string; subjectIds: readonly string[] };
-
-const LANE_A = "ring 1: lane A";
 
 /**
  * The only way access stops (design §1.2; plan A5a). In the caller's transaction, after its pair locks and any direct chat's
@@ -188,9 +188,53 @@ export interface PolicyChange {
   picks: readonly string[];
 }
 
-/** An owner's change of who may add an Agent: how many rows it ends (`dryRun`: counted, not ended). Lane A (A5c). */
-export async function applyPolicy(_t: Tx, _ownerId: string, _agentId: string, _next: PolicyChange, _opts: { dryRun: boolean }): Promise<{ ends: number; ended: EndedRuns }> {
-  throw new Error(LANE_A);
+/**
+ * An owner's change of who may add an Agent (design §1.2; plan A5c), under `lockOwnedAgent` (404 for anyone else's): the rows
+ * the new setting would not create end `narrowed`, and what their persons called on this Agent stops (`endGrants`):
+ *   - to `none`: every live and waiting row;
+ *   - to `ask`: the live rows of basis `contacts`;
+ *   - to `contacts` with picks: the live rows of basis `contacts` whose person is not picked or no longer a friend.
+ * Approved rows stay under `ask` and `contacts`; widening ends and creates nothing. `dryRun` counts and writes nothing;
+ * otherwise the setting and its picks (replaced) are saved in the same transaction, so an add or an approval waiting on the
+ * Agent's row meets the new setting. `subjects` are the subjects whose rows ended (for the caller's announcements). 400
+ * `invalid_request` when a pick is no person, or is the owner.
+ */
+export async function applyPolicy(
+  t: Tx,
+  ownerId: string,
+  agentId: string,
+  next: PolicyChange,
+  opts: { dryRun: boolean },
+): Promise<{ ends: number; ended: EndedRuns; subjects: string[] }> {
+  await lockOwnedAgent(t, ownerId, agentId);
+  const picks = [...new Set(next.picks)];
+  if (picks.length > 0) {
+    const real = await t.query("select 1 from principals where id = any($1::uuid[]) and kind = 'human' and id <> $2", [picks, ownerId]);
+    if ((real.rowCount ?? 0) !== picks.length) throw new AppError(400, "invalid_request");
+  }
+  const affected =
+    next.policy === "none"
+      ? await t.query<{ subject_id: string }>("select subject_id from agent_contacts where agent_id = $1 and state in ('live', 'requested') order by subject_id", [agentId])
+      : next.policy === "ask"
+        ? await t.query<{ subject_id: string }>("select subject_id from agent_contacts where agent_id = $1 and state = 'live' and basis = 'contacts' order by subject_id", [agentId])
+        : next.picked
+          ? await t.query<{ subject_id: string }>(
+              `select c.subject_id from agent_contacts c
+                where c.agent_id = $1 and c.state = 'live' and c.basis = 'contacts'
+                  and (not (c.person_id = any($2::uuid[]))
+                       or not exists (select 1 from friendships f where f.a_id = least(c.person_id, $3::uuid) and f.b_id = greatest(c.person_id, $3::uuid)))
+                order by c.subject_id`,
+              [agentId, picks, ownerId],
+            )
+          : { rows: [] as Array<{ subject_id: string }> };
+  const subjects = affected.rows.map((r) => r.subject_id);
+  if (opts.dryRun) return { ends: subjects.length, ended: { cancelled: [], running: [] }, subjects: [] };
+  await t.query("update agents set contact_policy = $2, contact_picked = $3 where principal_id = $1", [agentId, next.policy, next.picked]);
+  await t.query("delete from agent_contact_picks where agent_id = $1", [agentId]);
+  if (picks.length > 0) await t.query("insert into agent_contact_picks (agent_id, person_id) select $1, unnest($2::uuid[])", [agentId, picks]);
+  if (subjects.length === 0) return { ends: 0, ended: { cancelled: [], running: [] }, subjects: [] };
+  const done = await endGrants(t, { agentId, subjectIds: subjects }, "narrowed");
+  return { ends: done.ended, ended: { cancelled: done.cancelled, running: done.running }, subjects };
 }
 
 export type AddOutcome =
@@ -409,6 +453,81 @@ async function isOwner(q: Queryable, ownerId: string, agentId: string): Promise<
     [agentId, ownerId],
   );
   return (rowCount ?? 0) > 0;
+}
+
+export interface AgentContactRow {
+  subject: WaitingRow["subject"];
+  state: ContactState;
+  basis: ContactBasis | null;
+  since: string;
+  until: string | null;
+  /** The real reason, for the owner: a request that ran out reads `expired`. */
+  endReason: EndReason | null;
+  conversationId: string | null;
+}
+
+/**
+ * What an Agent's owner sees of who can reach it (plan A5c, `GET /api/agents/:id/contacts`): the setting, the picks, every
+ * row (newest first; a late request reads ended `expired`), and the Agent's social conversations (「它和别人的对话」, newest
+ * first, each with the other end). Null for anyone but the owner and for a deleted Agent.
+ */
+export async function contactsOfAgent(q: Queryable, ownerId: string, agentId: string): Promise<{
+  policy: ContactPolicy;
+  picked: boolean;
+  picks: string[];
+  rows: AgentContactRow[];
+  conversations: Array<{ conversationId: string; subject: WaitingRow["subject"] }>;
+} | null> {
+  const a = await q.query<{ contact_policy: ContactPolicy; contact_picked: boolean }>(
+    "select a.contact_policy, a.contact_picked from agents a join principals p on p.id = a.principal_id where a.principal_id = $1 and p.owner_id = $2 and a.deleted_at is null",
+    [agentId, ownerId],
+  );
+  if (!a.rows[0]) return null;
+  const picks = await q.query<{ person_id: string }>("select person_id from agent_contact_picks where agent_id = $1 order by person_id", [agentId]);
+  type S = { id: string; handle: string; display_name: string; avatar_version: number; kind: "human" | "agent"; owner_id: string | null; owner_name: string | null };
+  const subjectOf = (r: S): WaitingRow["subject"] => ({
+    id: r.id,
+    handle: r.handle,
+    displayName: r.display_name,
+    avatarVersion: r.avatar_version,
+    kind: r.kind,
+    ...(r.kind === "agent" ? { ownerId: r.owner_id!, ownerName: r.owner_name ?? "" } : {}),
+  });
+  const cols = `s.id, ${handleOf("s")} as handle, s.display_name, s.avatar_version, s.kind, s.owner_id, so.display_name as owner_name`;
+  const rows = await q.query<S & { state: ContactState; basis: ContactBasis | null; end_reason: EndReason | null; since: Date; until: Date | null; conversation_id: string | null }>(
+    `select ${cols},
+            case when c.state = 'requested' and c.until <= now() then 'ended' else c.state end as state, c.basis,
+            case when c.state = 'requested' and c.until <= now() then 'expired' else c.end_reason end as end_reason,
+            c.since, c.until,
+            (select sp.conversation_id from social_pairs sp where sp.a_id = least(c.subject_id, c.agent_id) and sp.b_id = greatest(c.subject_id, c.agent_id)) as conversation_id
+       from agent_contacts c join principals s on s.id = c.subject_id left join principals so on so.id = s.owner_id
+      where c.agent_id = $1
+      order by c.since desc, c.subject_id`,
+    [agentId],
+  );
+  const conversations = await q.query<S & { conversation_id: string }>(
+    `select ${cols}, sp.conversation_id
+       from social_pairs sp join conversations cv on cv.id = sp.conversation_id
+       join principals s on s.id = case when sp.a_id = $1 then sp.b_id else sp.a_id end left join principals so on so.id = s.owner_id
+      where $1 in (sp.a_id, sp.b_id)
+      order by cv.created_at desc, sp.conversation_id`,
+    [agentId],
+  );
+  return {
+    policy: a.rows[0].contact_policy,
+    picked: a.rows[0].contact_picked,
+    picks: picks.rows.map((r) => r.person_id),
+    rows: rows.rows.map((r) => ({
+      subject: subjectOf(r),
+      state: r.state,
+      basis: r.state === "live" ? r.basis : null,
+      since: r.since.toISOString(),
+      until: r.until && r.state !== "live" ? r.until.toISOString() : null,
+      endReason: r.state === "ended" ? r.end_reason : null,
+      conversationId: r.conversation_id,
+    })),
+    conversations: conversations.rows.map((r) => ({ conversationId: r.conversation_id, subject: subjectOf(r) })),
+  };
 }
 
 export interface MineRow {

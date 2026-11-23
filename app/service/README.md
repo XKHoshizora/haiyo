@@ -2884,16 +2884,23 @@ the requests waiting on the Agents you own, newest first; `subject` is `{"id", "
 *Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed` (a live row), by the subject `left` (a live or waiting one). → 200 `{"ok": true}`; 404 `not_found` for anyone
 else and for a row that is not there or ended already.
 
-**Planned: `GET /api/agents/:id/contacts`**
+#### `GET /api/agents/:id/contacts`
 
 *Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
-"picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations": […]}`.
+"picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations":
+[{"conversationId", "subject"}]}`. `rows`: every row of the Agent, newest first, with its real end reason (`endReason`: `declined`,
+`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`); `subject` is as in `waiting` of
+`GET /api/agent-contacts`. `conversations`: the Agent's social conversations (「它和别人的对话」), newest first, each with the other
+end. 404 `not_found` for anyone but the owner and for a deleted Agent; 404 while `SOCIAL.enabled` is off.
 
-**Planned: `PUT /api/agents/:id/contact-policy`**
+#### `PUT /api/agents/:id/contact-policy`
 
 *Session: required; the Agent's owner only.* Body `{"policy": "ask" | "contacts" | "none", "picked": boolean, "picks":
 ["<uuid>"] (at most 500), "dryRun"?: boolean}` (lane A, ring 1a). → 200 `{"ends": number}`: how many accesses the change ends (with
-`dryRun`, only counted).
+`dryRun`, only counted and nothing is written). The accesses the new setting would not create end: to `none` every live and waiting
+row; to `ask` the live rows let in as 「我的联系人」; to `contacts` with picks those whose person is not picked or no longer a friend;
+what those people called on the Agent stops. Approved rows stay; widening ends and creates nothing. The picks are replaced. 400
+`invalid_request` for a pick that is no person or is the owner; 404 `not_found` for anyone but the owner.
 
 #### `PUT /api/bars/:personId`
 

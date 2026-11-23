@@ -141,8 +141,8 @@ describe("blocking an Agent", () => {
     const social = await api(app, v, "GET", "/api/social");
     expect(social.json.blocked).toEqual([{ id: agent.id, handle: agent.handle, displayName: expect.any(String), avatarVersion: expect.any(Number), kind: "agent" }]);
     expect((await api(app, v, "DELETE", `/api/blocks/${agent.id}`)).status).toBe(200);
-    expect(await reach(db, v.id, agent.id, "social", on)).toBe("ok"); // the row was never touched
-    await db.query(`delete from agent_contacts where agent_id = $1`, [agent.id]);
+    // The block ended their row (`left`, A5a) and unblocking brings nothing back: they have to be let in again.
+    expect((await db.query(`select state, end_reason from agent_contacts where agent_id = $1 and subject_id = $2`, [agent.id, v.id])).rows).toEqual([{ state: "ended", end_reason: "left" }]);
     expect(await reach(db, v.id, agent.id, "social", on)).toBe("no_access");
     expect(owner.id).not.toBe(v.id);
   });

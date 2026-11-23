@@ -471,6 +471,8 @@ function plausibleBody(route: RouteEntry, fx: Fixture): Record<string, unknown> 
       return { name: "Fuzz", model: FAST };
     case "POST /api/agent-contacts":
       return { agentId: fx.agent };
+    case "PUT /api/agents/:id/contact-policy":
+      return { policy: "ask", picked: false, picks: [], dryRun: true };
     case "POST /api/providers":
       return providerBody({ name: `fz${n}`, models: [{ name: "m", reasoning: true, reasoningLevels: ["low", "high"] }] });
     case "PATCH /api/providers/:id":
@@ -681,6 +683,9 @@ describe("fuzz", () => {
       expect([name, got.filter((x) => x.label.startsWith("path ") && (x.status < 400 || x.status >= 500))]).toEqual([name, []]);
       if (route.method === "PUT") expect([name, got.some((x) => x.label.endsWith("[signed in]") && x.status === 200)]).toEqual([name, true]);
     }
+    // Agent social, lane A (A5c): the owner's view and setting of who may add an Agent; the real Agent took each of them past the checks.
+    const policyRoutes = routes.filter((r) => /^\/api\/agents\/:id\/contact/.test(r.url) && r.method !== "HEAD");
+    expect(policyRoutes.map((r) => `${r.method} ${r.url}`).sort()).toEqual(["GET /api/agents/:id/contacts", "PUT /api/agents/:id/contact-policy"]);
     await stillHealthy();
   });
 

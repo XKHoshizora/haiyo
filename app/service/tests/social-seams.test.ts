@@ -7,7 +7,6 @@ import { loadNotes } from "../src/memory/passage.ts";
 import { shownNotesPass } from "../src/memory/shown.ts";
 import { startNoteJudge } from "../src/memory/judge.ts";
 import { keepsRoom, othersFits } from "../src/metering/others.ts";
-import { applyPolicy, endGrants } from "../src/social/agent-contacts.ts";
 import { discoverable, reach, reachSql, refusedSql } from "../src/social/reach.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -103,14 +102,11 @@ describe("the seams: reach is the rule, the money stubs say yes, notes are none"
     expect(grp.notes).toEqual(NO_NOTES);
   });
 
-  it("the note judge does nothing yet, and what lane A has not built throws", async () => {
-    const { owner, member, agent } = await world();
+  it("the note judge does nothing yet", async () => {
+    await world();
     const judge = startNoteJudge({ db, config: app.deps.config, models: app.deps.models, log: app.log, inFlight: new Set(), conversations: app.deps.conversations, closing: new AbortController().signal }, { timer: false });
     expect(await judge.runOnce()).toBe(0);
     await judge.close();
-    const t = db as never;
-    await expect(endGrants(t, { between: [owner.id, member.id] }, "barred")).rejects.toThrow("ring 1: lane A");
-    await expect(applyPolicy(t, owner.id, agent.id, { policy: "ask", picked: false, picks: [] }, { dryRun: true })).rejects.toThrow("ring 1: lane A");
   });
 
   it("a message that stopped runs interrupts them after commit, and one that stopped none interrupts nothing", () => {
