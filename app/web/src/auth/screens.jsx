@@ -222,7 +222,7 @@ export function SignIn({ api, onSignedIn, expired }) {
       {expired && <Notice tone="pause">登录已失效，请重新登录。</Notice>}
       <FormBody form={form} submitLabel="登录">
         <Field label="邮箱" error={form.errors.email}>
-          <input type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} {...form.bind("email")} />
+          <input type="email" autoComplete="email" inputMode="email" autoCapitalize="none" spellCheck={false} {...form.bind("email")} />
         </Field>
         <Field label="密码" error={form.errors.password}>
           <input type="password" autoComplete="current-password" {...form.bind("password")} />
@@ -279,7 +279,7 @@ export function Register({ api }) {
           <input type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} {...form.bind("inviteCode")} />
         </Field>
         <Field label="邮箱" error={form.errors.email}>
-          <input type="email" autoComplete="email" autoCapitalize="none" spellCheck={false} {...form.bind("email")} />
+          <input type="email" autoComplete="email" inputMode="email" autoCapitalize="none" spellCheck={false} {...form.bind("email")} />
         </Field>
         <Field label="密码" hint="至少 10 位" error={form.errors.password}>
           <input type="password" autoComplete="new-password" {...form.bind("password")} />
@@ -345,7 +345,7 @@ export function Forgot({ api }) {
     >
       <FormBody form={form} submitLabel="发送重置邮件">
         <Field label="邮箱" error={form.errors.email}>
-          <input type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} {...form.bind("email")} />
+          <input type="email" autoComplete="email" inputMode="email" autoCapitalize="none" spellCheck={false} {...form.bind("email")} />
         </Field>
       </FormBody>
     </AuthCard>

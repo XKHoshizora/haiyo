@@ -183,7 +183,7 @@ describe("sign-in", () => {
 
   it("sets the right autocomplete attributes", async () => {
     await signedOutAt(signInApi());
-    expect(screen.getByLabelText("邮箱").getAttribute("autocomplete")).toBe("username");
+    expect(screen.getByLabelText("邮箱").getAttribute("autocomplete")).toBe("email");
     expect(screen.getByLabelText("密码").getAttribute("autocomplete")).toBe("current-password");
   });
 
@@ -561,6 +561,26 @@ describe("verification landing", () => {
     mount(outApi());
     await screen.findByText(/验证链接无效或已被使用/);
   });
+});
+
+describe("what every account form's fields declare to the keyboard and to AutoFill", () => {
+  // `username` made iOS withhold third-party keyboards on the e-mail field (WebKit reports it as a credential field): the e-mail fields say `email`.
+  const SCREENS = [
+    ["/signin", "登录", [["email", "email", "email", "email"], ["password", "password", "current-password", null]]],
+    ["/forgot", "发送重置邮件", [["email", "email", "email", "email"]]],
+    ["/register", "注册", [["inviteCode", "text", "off", null], ["email", "email", "email", "email"], ["password", "password", "new-password", null], ["displayName", "text", "nickname", null], ["handle", "text", "off", null]]],
+    ["/reset-password?token=t0", "重置密码", [["password", "password", "new-password", null]]],
+  ];
+  for (const [path, button, expected] of SCREENS) {
+    it(`${path}: type, autocomplete and inputmode of each field`, async () => {
+      at(path);
+      mount(outApi());
+      await screen.findByRole("button", { name: button });
+      const inputs = [...document.querySelectorAll("form input:not([type=checkbox])")];
+      expect(inputs.map((el) => [el.name, el.type, el.getAttribute("autocomplete"), el.getAttribute("inputmode")])).toEqual(expected);
+      for (const el of inputs) expect(el.getAttribute("autocomplete")).not.toBe("username");
+    });
+  }
 });
 
 describe("forgot and reset password", () => {
