@@ -40,7 +40,7 @@ Each is reported to the controller. "Controller ruling 2026-11-24" marks a rulin
 | D14 | The judge's daily count from `MEMORY.judgeModel`'s price | The brief: 5 calls a day, a constant | `OTHERS.judgeCallsPerDay = 5`, its derivation pinned by a test (⌊10 / 1.88⌋ = 5). **Controller ruling 2026-11-24 (Q2):** withheld checks use at most `OTHERS.withheldCallsPerDay = 3`; 2 are always the batch judge's; `takeJudgeUnit` decides every unit. |
 | D15 | Tests 3 and 9 | Errands are not here | Moved to the errands plan. |
 | D16 | "for 7 days" | One note per card in the design's text | One `note_withheld` card per note the check returns, at most `OTHERS.withheldCardsMax = 3`, none while one for the same note and audience is open. |
-| D17 | "A bar is written by 停止往来 and by the owner's block, always" | Today's unblock deletes only the block (social/blocks.ts:54–63) | **Controller ruling 2026-11-24 (Q4): confirmed.** Every person-to-person block writes the bar through `setBar`, in the block's transaction; unblocking by the setter lifts only the bar that block set (`access_bars.by_block`). Existing blocks are backfilled in lane A's 075, which deploys with the code that maintains bars (C1; numbering by Controller ruling 2026-11-24 (verification, E1)). |
+| D17 | "A bar is written by 停止往来 and by the owner's block, always" | Today's unblock deletes only the block (social/blocks.ts:54–63) | **Controller ruling 2026-11-24 (Q4): confirmed.** Every person-to-person block writes the bar through `setBar`, in the block's transaction; unblocking by the setter lifts only the row that block wrote (`access_bars`, one row per setter and kind: **Controller ruling 2026-11-24 (A-3 review)**, C1). Existing blocks are backfilled in lane A's 075, which deploys with the code that maintains bars (C1; numbering by Controller ruling 2026-11-24 (verification, E1)). |
 | D18 | "announced by a one-time owner card" (step L) | No card kind fits a site-wide change | **Controller ruling 2026-11-24 (Q5): confirmed.** A one-time web notice in system UI text, dismissed per account; never a chat event or a message from an Agent. |
 | D19 | `othersFits`: "settled + holds ≤ cap, exactly" | Today's pre-hold counts the run's own model part before its lane check (tools/web/hold.ts:176–182) | **Controller ruling 2026-11-24 (attack, C2):** `othersFits` counts every running others' run's `hold_micro`, this run's own included, at admission (where it is still 0: `admitRun` writes it after `admit`, admit.ts:247), at the search pre-hold and at each round. One formula, one function. |
 | D20 | `assemble` and `PLACES` "land with the social lane" (harness §2) | — | Deferred to the errands plan on purpose (attack M13): ring 1 introduces `Place` and threads it through each site; the errands plan replaces the threading with `assemble(run, place)` when `ask_agent` joins the own row. |
@@ -223,7 +223,7 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 |---|---|---|
 | `S:migrations/073_others_columns_and_social_skeleton.sql` | 0, frozen at its merge (applied on the acceptance site at once) | completely inert: the others' columns, `admitted_at`, the notice column; the empty skeleton (`agent_social` type, `social_pairs`, `agent_contacts`, interruption values, `shown_notes`, `withheld_notes`) |
 | `S:migrations/074_others_step_l.sql` | B (ring 1a, B4) | the step-L raise 20 → 70 and the column default null (Controller ruling 2026-11-24 (verification, E1)) |
-| `S:migrations/075_agent_social_access.sql` | A (ring 1a, A0) | bars with `by_block` and the backfill from blocks, contact policy and picks, `disabled_at`, `agent_reports`, `persona_checked_version`, `social_card_answers` |
+| `S:migrations/075_agent_social_access.sql` | A (ring 1a, A0) | bars (one row per setter, other person and kind, A-3 review C1) and the backfill from blocks, contact policy and picks, `disabled_at`, `agent_reports`, `persona_checked_version`, `social_card_answers` |
 | `S:migrations/076_social_notes.sql` | A (ring 1b, A6a) | `note_verdicts` (per Agent), `note_judge_days`, `withheld_checked_at` |
 | `S:tests/schema-agents.test.ts` | B (B4) | its :109–128 default (20 points) stays true until 074, which B4 writes with the test's change (G1) |
 | `S:src/config.ts`, `S:.env.example`, `app/deploy/README.md`, `W:e2e/support/env.mjs`, `W:e2e/support/system.mjs` | 0 | `SOCIAL`, `OTHERS`, `MEMORY.judgeModel` |
@@ -671,19 +671,19 @@ Branch `lane/social-a` from the Step 0 merge.
 
 - [ ] **Failing test** `tests/schema-social-access.test.ts`:
 ```ts
-it("a bar is one row per pair, set by one of the two", async () => {
-  await expect(bar({ lo: hi, hi: lo })).rejects.toThrow(/check/);
-  await expect(bar({ set_by: third.id })).rejects.toThrow(/check/);
-  await expect(bar({ reason: "paused" })).rejects.toThrow(/check/);
-  await expect(bar({ by_block: true, reason: "unfriended" })).rejects.toThrow(/check/);
+it("a bar is one row per setter, other person and kind", async () => {
+  await expect(bar({ setter: a, other: a })).rejects.toThrow(/check/);
+  await expect(bar({ kind: "unfriended" })).rejects.toThrow(/check/);
   await bar({}); await expect(bar({})).rejects.toThrow(/access_bars_pkey/);
+  await bar({ setter: b, other: a }); await bar({ kind: "block" });        // two people's decisions are two rows, a block its own
 });
-it("bars from blocks (Controller ruling 2026-11-24, Q4): one bar per blocked pair", async () => {
+it("bars from blocks (Controller ruling 2026-11-24, Q4; A-3 review C1): one `block` row per block between people, set by the blocker", async () => {
   // The block between "-- bars from blocks begin" and "-- bars from blocks end" of 075, run in a rolled-back transaction over
   // 105 seeded person-to-person block rows (81 one-way, 12 pairs blocking each other) and 3 rows naming an Agent (by SQL).
-  expect(await countBars()).toBe(81 + 12);
-  expect(await barOf(mutualPair)).toMatchObject({ reason: "stopped", by_block: true, set_by: earlierBlockerOf(mutualPair) });
-  expect(await barOf(oneWay)).toMatchObject({ set_by: oneWay.blocker, since: oneWay.blockedAt });
+  expect(await countBars()).toBe(81 + 24);
+  expect(await barOf(mutualPair.first, mutualPair.second)).toMatchObject({ kind: "block", since: mutualPair.at });
+  expect(await barOf(mutualPair.second, mutualPair.first)).toMatchObject({ kind: "block" });
+  expect(await barOf(oneWay.blocker, oneWay.blocked)).toMatchObject({ kind: "block", since: oneWay.blockedAt });
   expect(await barsTouchingAgents()).toBe(0);
 });
 it("a report is an Agent report until a later migration widens target_kind", async () => {
@@ -701,27 +701,23 @@ it("a persona saved before the aid counts as checked (attack M11); a card has on
 -- Up Migration
 -- Agent social, ring 1a, lane A (design §1.1, §4's persona aid; plan A0, A8b). Deploys with lane A's code (Controller ruling 2026-11-24
 -- (attack), C1), together with lane B's 074 (Controller ruling 2026-11-24 (verification), E1/N1).
+-- Bars are directional and one row per decision (A-3 review C1): "setter has barred other", of one kind, lifted only by its setter
+-- through its own act (a stop by 恢复往来, a block by the unblock). A pair is barred iff any row stands in either direction.
 create table access_bars (
-  lo_id uuid not null references principals (id) on delete cascade,
-  hi_id uuid not null references principals (id) on delete cascade,
-  reason text not null check (reason in ('stopped', 'unfriended')),
-  set_by uuid not null references principals (id) on delete cascade,
+  setter_id uuid not null references principals (id) on delete cascade,
+  other_id uuid not null references principals (id) on delete cascade,
+  kind text not null check (kind in ('stop', 'block')),
   since timestamptz not null default now(),
-  -- Controller ruling 2026-11-24 (Q4): true while the bar stands only for set_by's block of the other; that unblock lifts it.
-  by_block boolean not null default false,
-  primary key (lo_id, hi_id),
-  check (lo_id < hi_id),
-  check (set_by = lo_id or set_by = hi_id),
-  check (not by_block or reason = 'stopped')
+  primary key (setter_id, other_id, kind),
+  check (setter_id <> other_id)
 );
+create index access_bars_other_idx on access_bars (other_id, setter_id);
 -- bars from blocks begin
-insert into access_bars (lo_id, hi_id, reason, set_by, since, by_block)
-select distinct on (least(b.blocker_id, b.blocked_id), greatest(b.blocker_id, b.blocked_id))
-       least(b.blocker_id, b.blocked_id), greatest(b.blocker_id, b.blocked_id), 'stopped', b.blocker_id, b.created_at, true
+insert into access_bars (setter_id, other_id, kind, since)
+select b.blocker_id, b.blocked_id, 'block', b.created_at
   from blocks b
   join principals pa on pa.id = b.blocker_id and pa.kind = 'human'
-  join principals pb on pb.id = b.blocked_id and pb.kind = 'human'
- order by least(b.blocker_id, b.blocked_id), greatest(b.blocker_id, b.blocked_id), b.created_at, b.blocker_id;
+  join principals pb on pb.id = b.blocked_id and pb.kind = 'human';
 -- bars from blocks end
 alter table agents
   add column contact_policy text not null default 'ask' check (contact_policy in ('ask', 'contacts', 'none')),
@@ -777,7 +773,7 @@ The rule (design §1.2, D3, and **Controller ruling 2026-11-24 (attack, I8)**). 
 1. The Agent is deleted → `gone`. Disabled, or (`where = 'social'` and the switch off), with P ≠ O → `gone`.
 2. P = O → `ok`.
 3. A block either way between P and O, between P and the Agent, between the subject and the Agent, or, when the subject is an Agent, between O and the subject → `blocked`. The last keeps today's relay check against the poster's side (runs.ts:1217) now that A2 lets a person block an Agent.
-4. A bar between P and O → `barred`, unless the subject's own row on the Agent is `live` with `basis = 'approved'` and `since > bar.since`.
+4. A bar between P and O: any row of `access_bars` in either direction (one person's `stop`, or a `block` row while its block stands: a `block` row without its block bars nobody, so an unblock an older process served leaves nothing behind, A-3 review m4) → `barred`, unless the subject's own row on the Agent is live, approved and newer than the latest of them. `standingBarsSql` is the one text of "the bars that stand"; `reachSql` and the add flow both read it.
 5. The subject's own row: `live` → `ok`; `ended` `narrowed`, `removed` or `barred` → `barred`.
 6. Otherwise `group` → `ok`, `social` → `no_access`. An Agent subject is judged only on its own row; a person's row never grants their Agent.
 
@@ -894,7 +890,7 @@ export function contactsOf(q: Queryable, me: string): Promise<{ mine: MineRow[];
 - **Add**, in order:
   1. One of the owner's own → `is_yours`.
   2. Undiscoverable → `not_found`.
-  3. **Cooldown** (**Controller ruling 2026-11-24 (attack, I11)**, design §1.2: "after a stop for the stopped person, and after a decline on this Agent of any of P's subjects"): refused with `availableAt` when the subject itself is the person O stopped (`access_bars.reason = 'stopped'`, `set_by = O`, not `by_block`) within `cooldownDays`, or when a row of any of P's subjects on this Agent was declined and its `until` is in the future. A stop's cooldown never refuses P's Agents. Their add becomes a request by the bar (step 4), as design test 6 needs.
+  3. **Cooldown** (**Controller ruling 2026-11-24 (attack, I11)**, design §1.2: "after a stop for the stopped person, and after a decline on this Agent of any of P's subjects"): refused with `availableAt` when the subject itself is the person O stopped (O's own `stop` row: `access_bars` with setter O, other P, kind `stop`; A-3 review C1) within `cooldownDays`, or when a row of any of P's subjects on this Agent was declined and its `until` is in the future. A stop's cooldown never refuses P's Agents. Their add becomes a request by the bar (step 4), as design test 6 needs.
   4. A bar, or an ended `narrowed`/`removed`/`barred` row of P on this Agent → a request.
   5. `contacts`, P a friend of O, and (picks off, or P picked) → `live`, basis `contacts`, plus `ensureSocial`.
   6. Otherwise a request (`until = now + requestDays`).
@@ -937,13 +933,13 @@ expect(await addContactDirect(wAgent, contactsAgent)).toMatchObject({ state: "re
 1. takes the Agents' rows `for update`, in id order, directly (`between`: every Agent of both people);
 2. ends the rows in scope that are `live` or `requested`, with the reason (`between [A, B]`: rows on A's Agents whose person is B, and on B's Agents whose person is A);
 3. (errands: the errands plan adds its one statement here);
-4. cancels the queued and marks the running reply runs of those Agents: queued `cancelled` with error `access_ended`; running `interrupted = coalesce(interrupted, 'access_ended')`, `pending_seq = null`. In scope are the pairs' social conversations, and groups where the run's `caller_id` is the person concerned. Design §1.2 says "the caller"; `asker_ids` is not used (attack M5).
+4. cancels the queued and marks the running reply runs of those Agents: queued `cancelled` with error `access_ended`; running `interrupted = coalesce(interrupted, 'access_ended')`, `pending_seq = null`. In scope are the pairs' social conversations (queued: cancelled, running: interrupted), and, in groups, **THAT person's calls** (**Controller ruling 2026-11-24 (A-3 review)**, I1): one rule for every ending (a bar, an unfriend, a removal, a narrowing, a block of an Agent, a person's block). An ending never cancels a group reply as a whole: it takes the ended person's calls out of it (`call_seqs`, the askers, the caller as `dropBlockedCalls` re-derives it). A queued reply left with no call is cancelled quietly (`access_ended`); a running one is interrupted exactly as a social reply (money settles once, through the pause path) when no call of anyone else is left, and goes on for the others otherwise; a reply claimed but not yet admitted (`model` null) is decided as a queued one. Something of a third person noted on an interrupted reply (`pending_seq`) stays noted. The one exception of mechanism: a person's block of a person leaves a reply that has not begun to `begin`'s own recheck (`dropBlockedCalls`, pinned by `agents-block-recheck.test.ts`, which keeps its calls until then), the same rule at the moment it begins; a reply in flight is stopped by a block as by any ending. Calls are read as `dropBlockedCalls` reads them (a person's message; an Agent's: its owner and the person behind it); `asker_ids` only follows. Each run row is locked first (after the Agents' rows).
 
 The caller runs `announceEnded(app.agentPort, ended)` after commit. A person's block of an Agent (A2) ends their own row `left` through it.
 
 - [ ] **Failing test** (design §8 test 1, lane A's half; runs seeded as rows):
   - For each of a removal and V's block of the Agent: the running run is `access_ended` with `pending_seq` null; the queued one is `cancelled`/`access_ended`; `ended.running` names the running one.
-  - A group run of that Agent called by V is ended; one called by someone else, with V among its askers, is not.
+  - A group reply of that Agent that answers only V's calls is ended; one that answers others' calls with V among its askers only, is not; one that answers V's and S's calls loses V's (S's is answered, the caller becomes S's).
   - A send by V that waits on the Agent's row behind the action (two connections, `holdThen`) is refused 403 `no_access` once the action commits.
   - V's block of the Agent writes no bar.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-revoke.test.ts tests/social-contacts.test.ts`; commit `feat(social): endGrants, the only way access stops`.
@@ -952,30 +948,31 @@ The caller runs `announceEnded(app.agentPort, ended)` after commit. A person's b
 
 **Files:** modify `S:src/social/agent-contacts.ts` (`setBar`, `liftBar`, `liftBlockBar`), `agent-contact-routes.ts` (bars), `S:src/social/friends.ts:148` (`unfriend`), `S:src/social/blocks.ts:27` and `:54`; create `S:tests/social-bars.test.ts`.
 
-**Produces:**
+**Produces:** (**Controller ruling 2026-11-24 (A-3 review)**, C1: bars are directional and one row per decision; 075 edited before it was applied anywhere)
 ```ts
-/** The one writer of bars (Controller ruling 2026-11-24, Q4). */
-export function setBar(t: Tx, setterId: string, otherId: string, reason: "stopped" | "unfriended", origin: "stop" | "unfriend" | "block"): Promise<EndedRuns & { ended: number }>;
-/** 恢复往来: deletes a bar this setter set that does not stand for a block. False: none. */
+/** The one writer of bars (Controller ruling 2026-11-24, Q4). An unfriend that ends a row writes the unfriender's `stop`. */
+export function setBar(t: Tx, setterId: string, otherId: string, kind: "stop" | "block"): Promise<EndedRuns & { ended: number }>;
+/** 恢复往来: deletes the caller's own `stop` row against the other person, and nothing else. False: they had none. */
 export function liftBar(t: Tx, setterId: string, otherId: string): Promise<boolean>;
-/** In the unblock's transaction: lifts only the bar that block set; if the other still blocks the unblocker, the bar passes to the other's block. */
+/** In the unblock's transaction (with the block row's deletion): deletes the unblocker's own `block` row, and nothing else. */
 export function liftBlockBar(t: Tx, unblockerId: string, otherId: string): Promise<boolean>;
 ```
-- `setBar`: `lockPair(setter, other)`. One row per pair; the stricter reason is kept; `since = now()` on every write.
-  - A new row: `set_by = setter`, `by_block = (origin = 'block')`.
-  - An existing row, written by a `stop` or `unfriend`: `by_block = false`, and `set_by = setter` when the write sets or keeps `stopped`.
-  - An existing row, written by a `block`: `set_by` and `by_block` are left as they are.
-  - Then `endGrants({between}, "barred")`. Lifting a bar brings no row back.
-- `PUT /api/bars/:personId` (a person only) → `setBar(me, other, "stopped", "stop")`. `DELETE` → `liftBar`: not the setter, or a block's bar → 404.
-- **Unfriend** writes `unfriended` (origin `unfriend`) only when at least one live or requested row exists between the two sides. It runs after `appendDirectNotice` (friends.ts:157).
+- `access_bars` holds one row per (setter, other person, kind), kind `stop` or `block`. A pair is barred iff ANY row stands in either direction (`reach`/`reachSql`, one implementation, `standingBarsSql`). **Each row is lifted only by its own setter through its own act; nobody's act ever touches another person's row. There is no hand-over of any kind.** A `block` row stands only while its block does (self-healing on read: an orphan row from an unblock an older process served bars nobody).
+- `setBar`: `lockPair(setter, other)`, upsert the row (`since = now()` on every write), then `endGrants({between}, "barred")` (a block: see A5a for what it leaves to `begin`). Lifting a bar brings no row back.
+- What each side SEES is its own rows: 恢复往来 on a pair where only the other side has a row answers exactly as if no bar existed for the caller (one statement, one 404); the cooldown (A4) and design test 6 follow the setter's own `stop` row; the owner's `GET /api/agents/:id/contacts` reads `barred` only where the owner barred the person themselves (the other person's bar reads `left`); a frame goes to the other person only when something of theirs ended, never on a lift.
+- `PUT /api/bars/:personId` (a person only) → `setBar(me, other, "stop")`. `DELETE` → `liftBar`: no stop of the caller's → the one 404.
+- **Unfriend** writes the unfriender's `stop` only when at least one live or requested row exists between the two sides. It runs after `appendDirectNotice` (friends.ts:157).
 - **Controller ruling 2026-11-24 (Q4):**
-  - Every person-to-person block writes the bar: `blockPrincipal` calls `setBar(blocker, blocked, "stopped", "block")` after its notice (blocks.ts:46).
-  - `unblockPrincipal` calls `liftBlockBar` in its transaction.
-  - 075's backfill gives existing blocks their bars, and this task's code ships with it (C1).
+  - Every person-to-person block writes its row: `blockPrincipal` calls `setBar(blocker, blocked, "block")` after its notice (blocks.ts:46).
+  - `unblockPrincipal` (through `deleteBlock`, the one unblock path, which the demo's reset also uses, without the notice) deletes the block and the blocker's `block` row in one transaction.
+  - 075's backfill writes one `block` row per existing person-to-person block (setter = the blocker), and this task's code ships with it (C1).
+- Block, unblock, unfriend and a block of an Agent publish the pair's social conversations to their people (`socialConversationsBetween`), so open screens lose a stale "can send".
 
 - [ ] **Failing test** (design §8 test 6, R2-C1 and R3-I1; group-@ parts in I1a):
 ```ts
 await stop(owner, v); expect(await rowState(y1, v)).toEqual({ state: "ended", endReason: "barred" });
+// A-3 review C1: V cannot undo O's stop by any sequence of PUT/DELETE /api/bars, unfriend, block/unblock (every state of the pair
+// × every event, asserted row by row); both stopped → both must restore; stop + block of one person → the unblock leaves the stop.
 // One approved request of V's Agent VA on Y1 passes exactly that row; the bar stays. VA's add goes through addContact directly
 // (ring 1a's route takes only the caller as subject) and is a request, not a cooldown (I11).
 expect(await addContactDirect(va, y1)).toMatchObject({ state: "requested" }); await approve(owner, y1, va);
@@ -991,16 +988,16 @@ expect(await rowState(y1, v)).toEqual({ state: "ended", endReason: "barred" });
 expect(raced.approve).toMatchObject({ status: 409, json: { error: "not_requested" } });          // an approval racing a bar
 await unfriend(owner, friendWithRow); expect(await rowState(y2, friendWithRow)).toEqual({ state: "ended", endReason: "barred" });
 await unfriend(owner, friendNoRow); expect(await bars(owner, friendNoRow)).toEqual([]);
-// Q4: every person-to-person block writes the bar; the setter's unblock lifts only the bar that block set.
-await block(o2, w); expect(await barOf(o2, w)).toMatchObject({ set_by: o2.id, by_block: true });
-await unblock(o2, w); expect(await barOf(o2, w)).toBeNull();
-await block(o2, w); await block(w, o2); await unblock(o2, w); expect(await barOf(o2, w)).toMatchObject({ set_by: w.id, by_block: true });
-await stop(o2, w); await block(o2, w); await unblock(o2, w); expect(await barOf(o2, w)).toMatchObject({ by_block: false });
+// Q4: every person-to-person block writes its own row; the setter's unblock deletes that row and nothing else.
+await block(o2, w); expect(await barRows(o2, w)).toEqual(["o2>w block"]);
+await unblock(o2, w); expect(await barRows(o2, w)).toEqual([]);
+await block(o2, w); await block(w, o2); await unblock(o2, w); expect(await barRows(o2, w)).toEqual(["w>o2 block"]);
+await stop(o2, w); await block(o2, w); await unblock(o2, w); expect(await barRows(o2, w)).toEqual(["o2>w stop"]);
 await block(o4, y); expect((await api(app, o4, "DELETE", `/api/bars/${y.id}`)).status).toBe(404);
 // C1: a block that existed before 075 and is removed after it ran: its unblock lifts its backfilled bar; group @ is today's again.
 await runBackfill(); await unblock(oldBlocker, oldBlocked); expect(await barOf(oldBlocker, oldBlocked)).toBeNull();
-// The stricter reason is kept: unfriended then stopped → stopped; stopped then unfriended → stopped.
-// Each of a bar and an O→V block ends V's live rows and interrupts V's runs (endGrants), after the direct chat's notice.
+// A stop and an unfriend by the same person are one `stop` row; by two people, two rows, each lifted by its own setter.
+// Each of a bar and an O→V block ends V's live rows and stops V's social runs (endGrants), after the direct chat's notice.
 ```
 - [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `PUT /api/bars/:personId` and `DELETE /api/bars/:personId` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-bars.test.ts tests/social-revoke.test.ts tests/social.test.ts tests/schema-social-access.test.ts`; commit `feat(social): bars from 停止往来, unfriends and blocks; 恢复往来`.
@@ -1363,7 +1360,7 @@ alter table agents alter column others_budget_micro set default 20000000;
 - `PATCH` takes `othersLimit` (or `null`). For one release an `othersBudget` in a body is read as `othersLimit.points`. A new Agent gets no number of its own: `DEFAULT_OTHERS_BUDGET` (:82) and its use at :292 go, and an absent key writes null, the column's default after 074 (D9; G2).
 - `GET /api/me/others-use`:
   - `byPerson`: today's callers of the owner's others' runs, ordered by points, then answers, then id;
-  - `stopped`: bars this owner set with reason `stopped` that are not `by_block`. **Controller ruling 2026-11-24 (final):** the list is empty until lane A's 075 is in (it creates `access_bars`). It is read only while `SOCIAL.enabled`, which is never on before 075 (Rollout), else `[]`. So the route never names a table lane B's branch lacks, and no control is shown that cannot work (B9a). Its end-to-end path is I1a.7 and I2a (M-V6);
+  - `stopped`: the owner's own `stop` rows (`access_bars` where `setter_id` is the owner and `kind = 'stop'`; A-3 review C1; a block's row is never in it). **Controller ruling 2026-11-24 (final):** the list is empty until lane A's 075 is in (it creates `access_bars`). It is read only while `SOCIAL.enabled`, which is never on before 075 (Rollout), else `[]`. So the route never names a table lane B's branch lacks, and no control is shown that cannot work (B9a). Its end-to-end path is I1a.7 and I2a (M-V6);
   - `agents[].perDay = perDayEstimate(price, numbers)`: 0 when the binding points (the owner's, or the Agent's own lower number) do not cover one plain hold (16 500 bytes), else `min(answers, 1 + ⌊(points − plainHold) / plainCost⌋)` with `plainCost` = 5 000 input and 500 output tokens at the model's price. That is 50 for the free tier at 70 and 1 for the paid tier; a provider model gets the answers number;
   - `notice`: true while `others_notice_seen_at` is null and the owner has an Agent (Controller ruling 2026-11-24, Q5).
 - `PUT /api/me/others-limits`, `POST /api/me/others-limits/seen`.
@@ -1614,7 +1611,7 @@ Branch `lane/social-i1a` from the merge of both lanes, made as soon as the minim
      - V's add is refused by the cooldown;
      - the owner's `DELETE /api/bars/:v` (恢复往来) empties `stopped`;
      - V's next add is a request again, and V's old row stays `ended`/`barred`;
-     - a bar that stands for a block (`by_block`) is never in `stopped`.
+     - a block's row (`kind = 'block'`) is never in `stopped`.
 
      With the switch off the same owner reads `stopped: []`.
 - [ ] Run; a red here is fixed in the owning lane's files by its rules. Commit `test(social): ring 1a across both lanes`.
@@ -1955,6 +1952,11 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - I13: examples from current candidates only (A7).
   - I14: the disclosure in the request dialog (A11a).
   - I15: two rings, seven tasks split (this layout); the minimum for a trial added by the verification (Rings table).
+- **Controller ruling 2026-11-24 (A-3 review)** (lane A block 3's review, `sociala-b3-review.md`):
+  - **C1.** One bar row per pair cannot hold two people's decisions, so the code kept inventing hand-overs and the stopped person could take a stop over and lift it. The bar is directional and per kind: `access_bars` = one row per (setter, other person, `stop` | `block`), 075 edited (applied nowhere yet), the backfill one `block` row per person-to-person block. A pair is barred iff any row stands either way; each row is lifted only by its setter through its own act; no hand-over code (A0, A1, A5b).
+  - **I1.** One rule for every ending in groups: an ending takes THAT person's calls out of a group reply and never cancels it as a whole; queued: drop the calls, cancel quietly when none is left; running: stopped as a social reply when the ended person is its only caller, goes on otherwise (A5a). Lane B's B5b completes it (see the report's note).
+  - **Recorded as right:** `liftBar` handing a stop's bar to a standing block was right in the one-row model and is gone with it; the write rule of A3a, the approval-vs-bar and claim-vs-ending race tests (each asserts a real wait), the lock order (pair, direct notice, Agents in id order, rows, runs), `endGrants` taking no conversation row, and the money path of a stopped reply (the existing pause settlement) were confirmed by the review.
+  - **For the errands plan (Agent subjects, unreachable through ring-1 routes):** (a) a person's block of an Agent ends only the person's own row, so their Agents' live rows on it stay live (refused meanwhile by `reach` step 3) and grant again after the unblock; the errands plan must end them too. (b) Narrowing an Agent subject's row ends the group calls its person made though the person's own approved row may stand; the errands plan must scope that by subject. (c) `addContact` reads an Agent subject's own ended row and its person's row; the errands plan decides what an Agent subject's cooldown is.
 - **Accepted as proposed:** `reach` in `social/reach.ts` (D2); separate owner and judge columns (D4); shared files written once in Step 0 (D12).
 - **Controller ruling 2026-11-24 (final):**
   - the two-part hold, the three-part ruling withdrawn, spend ≤ hold proved for its four cases (B2b);
