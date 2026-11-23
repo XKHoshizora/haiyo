@@ -157,7 +157,8 @@ const contextProblem = (text) => {
 
 /**
  * A model of the provider as the form holds it: the context as text ("" means the service's default), `levels` the
- * thinking levels it lists (null: every level), and `tools` whether its replies may be offered tools as its entry says it
+ * thinking levels it is offered with (null: every level), `reported` the levels the model reports (what `levels` goes back to; the form only
+ * keeps them while it is open: the service stores `levels`, and null for "every level"), and `tools` whether its replies may be offered tools as its entry says it
  * (undefined: it says nothing — not known yet, so they are; the service may set it false when the model turns out unable).
  */
 const formModel = (m) => ({
@@ -167,6 +168,7 @@ const formModel = (m) => ({
   reasoning: Boolean(m.reasoning),
   context: Number.isFinite(m.contextTokens) ? String(m.contextTokens) : "",
   levels: m.reasoning ? modelLevels(m.reasoningLevels) : null,
+  reported: m.reasoning ? modelLevels(m.reasoningLevels) : null,
   ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
 });
 /**
@@ -196,6 +198,7 @@ const syncedModel = (m) => ({
   // The catalogue's context, within what the form accepts for it.
   context: Number.isInteger(m.contextTokens) ? String(Math.min(CONTEXT_MAX, Math.max(CONTEXT_MIN, m.contextTokens))) : "",
   levels: m.reasoning ? (m.reasoningLevels ?? null) : null,
+  reported: m.reasoning ? (m.reasoningLevels ?? null) : null,
 });
 
 /**
@@ -352,18 +355,23 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   const tooSmall = shownContext !== null && limit !== null && shownContext <= limit;
   const summary = [model.vision && "能看图片", model.pdf && "能直接读 PDF"].filter(Boolean);
   const after = shownContext !== null ? [`上下文 ${grouped(shownContext)}${context === null ? "（默认）" : ""}`] : [];
-  // A model that reasons and lists its levels: the levels, small, beside 支持思考, and the way back to every level.
-  const thinking = model.reasoning ? (
-    <>
-      支持思考
-      {model.levels && (
-        <>
-          <small className="muted">（{model.levels.map(levelLabel).join("、")}）</small>{" "}
-          <Btn small variant="text" aria-label={`改为全部档位：${model.name}`} onClick={() => onChange({ ...model, levels: null })}>改为全部档位</Btn>
-        </>
-      )}
-    </>
-  ) : null;
+  const thinking = model.reasoning ? "支持思考" : null;
+  // A model that reports which thinking levels it supports: the choice between those and every level, both ways open until it is saved.
+  const levelChoice =
+    model.reasoning && model.reported ? (
+      <fieldset className="checks level-choice" role="radiogroup" aria-label={`思考档位：${model.name}`}>
+        <legend>思考档位</legend>
+        <label>
+          <input type="radio" name={`levels-${panelId}`} checked={model.levels !== null} onChange={() => onChange({ ...model, levels: model.reported })} />
+          <span>按模型报告的（{model.reported.map(levelLabel).join("、")}）</span>
+        </label>
+        <label>
+          <input type="radio" name={`levels-${panelId}`} checked={model.levels === null} onChange={() => onChange({ ...model, levels: null })} />
+          <span>全部档位</span>
+        </label>
+        <small className="muted">模型给的档位不对或不全时，选全部档位。</small>
+      </fieldset>
+    ) : null;
   const parts = [...summary, thinking, ...after].filter(Boolean);
   const contextHint = [
     `模型一次能读的内容，以 token 计，${grouped(CONTEXT_MIN)} 到 ${grouped(CONTEXT_MAX)}。`,
@@ -371,7 +379,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
     limit !== null ? `需要大于每次回复的输出上限 ${grouped(limit)}，Agent 才能使用这个模型。` : "需要大于每次回复的输出上限，Agent 才能使用这个模型。",
   ].join("");
   // Not reasoning any more: the levels it listed go too.
-  const flag = (key) => (event) => onChange({ ...model, [key]: event.target.checked, ...(key === "reasoning" && !event.target.checked ? { levels: null } : {}) });
+  const flag = (key) => (event) => onChange({ ...model, [key]: event.target.checked, ...(key === "reasoning" && !event.target.checked ? { levels: null, reported: null } : {}) });
   return (
     <li>
       <div className="member-body">
@@ -385,6 +393,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
           ))}
           {tooSmall && " · 上下文太小，Agent 不能使用"}
         </p>
+        {levelChoice}
         {open && (
           <div id={panelId} className="model-panel">
             <fieldset className="checks">
