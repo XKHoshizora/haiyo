@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { actOnTriggered, noneTriggered } from "../src/agents/runs.ts";
 import { NO_NOTES } from "../src/agents/runtime/prompt.ts";
 import { renderNotice } from "../src/conversations/system.ts";
-import { canSend, ensureSocial } from "../src/conversations/store.ts";
+import { canSend } from "../src/conversations/store.ts";
 import { loadNotes } from "../src/memory/passage.ts";
 import { shownNotesPass } from "../src/memory/shown.ts";
 import { startNoteJudge } from "../src/memory/judge.ts";
@@ -35,7 +35,7 @@ async function world() {
 }
 const asAgent = (owner: Actor, agent: { id: string }) => ({ id: agent.id, ownerId: owner.id, memory: true, sharedNotes: true });
 
-describe("the stubs keep today's behaviour", () => {
+describe("the seams: reach is the rule, the money stubs say yes, notes are none", () => {
   it("reach: a group is ok unless a block lies between the owner and the person; social is ok for the owner and a live row", async () => {
     const { owner, member, v, agent } = await world();
     expect(await reach(db, member.id, agent.id, "group", off)).toBe("ok");
@@ -82,7 +82,7 @@ describe("the stubs keep today's behaviour", () => {
     expect(await reach(db, other.id, agent.id, "group", off)).toBe("blocked");
   });
 
-  it("nothing is discoverable, the money stubs say yes, the notes of a social conversation are none", async () => {
+  it("an Agent is not discoverable with the switch off, the money stubs say yes, the notes of a social conversation are none", async () => {
     const { owner, member, v, agent } = await world();
     expect(await discoverable(db, agent.id, member.id, off)).toBe(false);
     expect([keepsRoom("AB", "own"), keepsRoom("B", "own"), keepsRoom("B", "others"), keepsRoom("B", "proactive"), keepsRoom("A", "own")]).toEqual([true, false, true, true, false]);
@@ -103,7 +103,7 @@ describe("the stubs keep today's behaviour", () => {
     expect(grp.notes).toEqual(NO_NOTES);
   });
 
-  it("the note judge does nothing yet, and what lane A owns throws", async () => {
+  it("the note judge does nothing yet, and what lane A has not built throws", async () => {
     const { owner, member, agent } = await world();
     const judge = startNoteJudge({ db, config: app.deps.config, models: app.deps.models, log: app.log, inFlight: new Set(), conversations: app.deps.conversations, closing: new AbortController().signal }, { timer: false });
     expect(await judge.runOnce()).toBe(0);
@@ -112,7 +112,6 @@ describe("the stubs keep today's behaviour", () => {
     await expect(endGrants(t, { between: [owner.id, member.id] }, "barred")).rejects.toThrow("ring 1: lane A");
     await expect(applyPolicy(t, owner.id, agent.id, { policy: "ask", picked: false, picks: [] }, { dryRun: true })).rejects.toThrow("ring 1: lane A");
     await expect(addContact(t, app.deps.config, member.id, agent.id)).rejects.toThrow("ring 1: lane A");
-    await expect(ensureSocial(t, member.id, agent.id)).rejects.toThrow("ring 1: lane A");
   });
 
   it("a message that stopped runs interrupts them after commit, and one that stopped none interrupts nothing", () => {
@@ -150,8 +149,8 @@ describe("a seeded social conversation takes a message through the write rule's 
     await db.query(`update agent_contacts set state = 'ended', basis = null, end_reason = 'removed' where agent_id = $1 and subject_id = $2`, [agent.id, v.id]);
     expect(await send(v, seeded.conversationId, "还在吗")).toMatchObject({ status: 403, json: { reason: "no_access" } });
     expect(await canSend(db, seeded.conversationId, v.id, on)).toEqual({ ok: false, reason: "no_access" });
-    // The owner is never refused by a row.
-    expect((await send(owner, seeded.conversationId, "还在")).status).toBe(201);
+    // The relation is shut for the supervising owner as well (A3a): their interjection follows the person's reach.
+    expect(await send(owner, seeded.conversationId, "还在")).toMatchObject({ status: 403, json: { reason: "no_access" } });
   });
 
   it("syncs as a conversation of its own type, a speaker for the visitor and an observer for the owner, the switch in the view", async () => {

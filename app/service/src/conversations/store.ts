@@ -5,7 +5,7 @@ import type { PairEvent, StoredMessage } from "../messages/model.ts";
 import { AGENT_PROFILE_COLUMNS, AGENT_PROFILE_JOIN, agentProfile, type AgentProfile, type AgentProfileRow } from "../messages/principals.ts";
 import { handleOf } from "../principals/store.ts";
 import { lockPair, orderedPair } from "../social/pair.ts";
-import { reach, type Reach } from "../social/reach.ts";
+import { reach, type Reach, type ReachWhere } from "../social/reach.ts";
 import { canDirectSend } from "../social/relations.ts";
 import { appendSystem } from "./system.ts";
 
@@ -239,35 +239,40 @@ async function permission(
     );
     return rows[0]?.deleted === false ? { ok: true } : { ok: false, reason: "agent_deleted" };
   }
-  if (type === "agent_social") return socialPermission(q, conversationId, principalId, opts);
+  if (type === "agent_social") return socialPermission(q, conversationId, opts);
   const reason = await canDirectSend(q, principalId, peerId!);
   return reason ? { ok: false, reason } : { ok: true };
 }
 
 /**
- * Who may write in a social conversation, by `reach` (social/reach.ts): a person who is a participant, and an owner who supervises
- * it, may write iff `reach(them, the Agent, 'social')` is `ok`; in an Agent-to-Agent conversation a supervising owner may write
- * iff `reach(them, each Agent, 'group')` is. Refusals: `blocked` stays `blocked`; `gone` is `agent_deleted` when the Agent is
- * deleted, else `agent_unavailable`; `barred` and `no_access` are `no_access`.
+ * Who may write in a social conversation (design §2; plan A3a): whoever is let in to it, a participant or a supervising owner,
+ * while its relation is open; the relation is the same for all of them. Person to Agent: `reach(the person, the Agent, 'social')`
+ * is `ok`, so a removal, a bar, a block or the switch shuts it for the owner's interjection as for the person's own message.
+ * Agent to Agent: `reach(X, Y, 'group')` and `reach(Y, X, 'group')` both. Refusals: `blocked` stays `blocked`; `gone` is
+ * `agent_deleted` when the Agent is deleted, else `agent_unavailable`; `barred` and `no_access` are `no_access`.
  */
-async function socialPermission(q: Queryable, conversationId: string, principalId: string, opts: PermissionOptions): Promise<CanSend> {
+async function socialPermission(q: Queryable, conversationId: string, opts: PermissionOptions): Promise<CanSend> {
   const { rows: parts } = await q.query<{ id: string; kind: "human" | "agent" }>(
     `select p.id, p.kind from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id) where sp.conversation_id = $1 order by p.id`,
     [conversationId],
   );
   const agentIds = parts.filter((p) => p.kind === "agent").map((p) => p.id);
+  const person = parts.find((p) => p.kind === "human");
   if (agentIds.length === 0) return { ok: false, reason: "no_access" };
   // The Agents' rows, in id order (`lockAgent`'s order), after the conversation row the write already holds.
   if (opts.lock) await q.query("select principal_id from agents where principal_id = any($1::uuid[]) order by principal_id for update", [agentIds]);
+  // Each question is (who asks, which Agent is asked, how): the Agent asked is the one a refusal speaks of.
+  const asks: Array<[string, string, ReachWhere]> = person
+    ? [[person.id, agentIds[0]!, "social"]]
+    : [[agentIds[0]!, agentIds[1]!, "group"], [agentIds[1]!, agentIds[0]!, "group"]];
   const verdicts: Reach[] = [];
-  if (agentIds.length === 1) verdicts.push(await reach(q, principalId, agentIds[0]!, "social", opts.config));
-  else for (const id of agentIds) verdicts.push(await reach(q, principalId, id, "group", opts.config));
+  for (const [who, asked, where] of asks) verdicts.push(await reach(q, who, asked, where, opts.config));
   const refused = verdicts.findIndex((v) => v !== "ok");
   if (refused < 0) return { ok: true };
   const why = verdicts[refused]!;
   if (why === "blocked") return { ok: false, reason: "blocked" };
   if (why === "gone") {
-    const { rows } = await q.query<{ deleted: boolean }>("select deleted_at is not null as deleted from agents where principal_id = $1", [agentIds[refused]]);
+    const { rows } = await q.query<{ deleted: boolean }>("select deleted_at is not null as deleted from agents where principal_id = $1", [asks[refused]![1]]);
     return { ok: false, reason: rows[0]?.deleted === true ? "agent_deleted" : "agent_unavailable" };
   }
   return { ok: false, reason: "no_access" };
@@ -339,10 +344,35 @@ export async function ensureDirect(t: Tx, a: string, b: string, creatorId: strin
 
 /**
  * The social conversation of a person (or Agent) `subjectId` with Agent `agentId`, created on first use together with its first
- * message, `social_opened` (the disclosure). Lane A (A3a, ring 1a). STEP 0: throws.
+ * message, `social_opened` (the disclosure). The caller holds the pair locks (A4: `lockPairs` on the subject's person with the
+ * Agent's owner, and the subject with the Agent), so two adds of one pair never both create it. One `social_pairs` row per
+ * unordered pair. Members: both parties `speaker` from seq 0, and each party's owner `observer` from seq 0, once, never the
+ * subject itself. `created` false (and no notice) when the pair has its conversation already.
  */
-export async function ensureSocial(_t: Tx, _subjectId: string, _agentId: string): Promise<{ conversationId: string; created: boolean; notice: StoredMessage | null }> {
-  throw new Error("ring 1: lane A");
+export async function ensureSocial(t: Tx, subjectId: string, agentId: string): Promise<{ conversationId: string; created: boolean; notice: StoredMessage | null }> {
+  const [lo, hi] = orderedPair(subjectId, agentId);
+  const existing = await t.query<{ conversation_id: string }>("select conversation_id from social_pairs where a_id = $1 and b_id = $2", [lo, hi]);
+  if (existing.rows[0]) return { conversationId: existing.rows[0].conversation_id, created: false, notice: null };
+
+  const parties = await t.query<{ id: string; kind: "human" | "agent"; owner_id: string | null }>("select id, kind, owner_id from principals where id = any($1::uuid[])", [[subjectId, agentId]]);
+  const byId = new Map(parties.rows.map((r) => [r.id, r]));
+  const subject = byId.get(subjectId);
+  const agent = byId.get(agentId);
+  if (!subject || !agent || agent.kind !== "agent" || !agent.owner_id) throw new Error("ensureSocial: the second party must be an Agent");
+  const agentIds = subject.kind === "agent" ? [subjectId, agentId] : [agentId];
+  const ownerIds = [...new Set([subject.owner_id, agent.owner_id].filter((o): o is string => o !== null && o !== subjectId))];
+
+  const created = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent_social', $1) returning id", [subjectId]);
+  const conversationId = created.rows[0]!.id;
+  await t.query("insert into social_pairs (conversation_id, a_id, b_id) values ($1, $2, $3)", [conversationId, lo, hi]);
+  await t.query(
+    `insert into memberships (conversation_id, principal_id, role, joined_seq)
+     select $1, p, case when p = any($2::uuid[]) then 'speaker' else 'observer' end, 0 from unnest($3::uuid[]) as p`,
+    [conversationId, [subjectId, agentId], [subjectId, agentId, ...ownerIds]],
+  );
+  await lockConversation(t, conversationId);
+  const notice = await appendSystem(t, conversationId, { event: "social_opened", actorId: agentId, agentIds, ownerIds });
+  return { conversationId, created: true, notice };
 }
 
 /**
