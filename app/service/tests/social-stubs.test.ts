@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { OTHERS_STUBS } from "../src/accounts/others-routes.ts";
+import { CONTACT_STUBS } from "../src/social/agent-contact-routes.ts";
 import { api, signUp } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -17,6 +19,8 @@ const ID2 = "00000000-0000-4000-8000-000000000002";
 type Method = "GET" | "POST" | "PUT" | "DELETE";
 interface Stub {
   method: Method;
+  /** The route as the stub lists name it (`CONTACT_STUBS`, `OTHERS_STUBS`). */
+  route: string;
   url: string;
   /** A valid body (none: the route takes none). */
   body?: unknown;
@@ -24,16 +28,16 @@ interface Stub {
   bad?: Array<{ url?: string; body?: unknown }>;
 }
 
-const STUBS: Stub[] = [
+const ALL: Stub[] = [
   // Lane A: social/agent-contact-routes.ts
-  { method: "POST", url: "/api/agent-contacts", body: { agentId: ID }, bad: [{ body: {} }, { body: { agentId: "nope" } }, { body: { agentId: ID, extra: 1 } }] },
-  { method: "GET", url: "/api/agent-contacts" },
-  { method: "POST", url: `/api/agent-contacts/${ID}/${ID2}/approve`, bad: [{ url: `/api/agent-contacts/nope/${ID2}/approve` }] },
-  { method: "POST", url: `/api/agent-contacts/${ID}/${ID2}/decline`, bad: [{ url: `/api/agent-contacts/${ID}/nope/decline` }] },
-  { method: "DELETE", url: `/api/agent-contacts/${ID}/${ID2}`, bad: [{ url: `/api/agent-contacts/nope/${ID2}` }] },
-  { method: "GET", url: `/api/agents/${ID}/contacts`, bad: [{ url: "/api/agents/nope/contacts" }] },
+  { method: "POST", route: "/api/agent-contacts", url: "/api/agent-contacts", body: { agentId: ID }, bad: [{ body: {} }, { body: { agentId: "nope" } }, { body: { agentId: ID, extra: 1 } }] },
+  { method: "GET", route: "/api/agent-contacts", url: "/api/agent-contacts" },
+  { method: "POST", route: "/api/agent-contacts/:agentId/:subjectId/approve", url: `/api/agent-contacts/${ID}/${ID2}/approve`, bad: [{ url: `/api/agent-contacts/nope/${ID2}/approve` }] },
+  { method: "POST", route: "/api/agent-contacts/:agentId/:subjectId/decline", url: `/api/agent-contacts/${ID}/${ID2}/decline`, bad: [{ url: `/api/agent-contacts/${ID}/nope/decline` }] },
+  { method: "DELETE", route: "/api/agent-contacts/:agentId/:subjectId", url: `/api/agent-contacts/${ID}/${ID2}`, bad: [{ url: `/api/agent-contacts/nope/${ID2}` }] },
+  { method: "GET", route: "/api/agents/:id/contacts", url: `/api/agents/${ID}/contacts`, bad: [{ url: "/api/agents/nope/contacts" }] },
   {
-    method: "PUT",
+    method: "PUT", route: "/api/agents/:id/contact-policy",
     url: `/api/agents/${ID}/contact-policy`,
     body: { policy: "ask", picked: false, picks: [], dryRun: true },
     bad: [
@@ -43,33 +47,43 @@ const STUBS: Stub[] = [
       { body: { policy: "ask", picked: false, picks: Array.from({ length: 501 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`) } },
     ],
   },
-  { method: "PUT", url: `/api/bars/${ID}`, bad: [{ url: "/api/bars/nope" }] },
-  { method: "DELETE", url: `/api/bars/${ID}`, bad: [{ url: "/api/bars/nope" }] },
+  { method: "PUT", route: "/api/bars/:personId", url: `/api/bars/${ID}`, bad: [{ url: "/api/bars/nope" }] },
+  { method: "DELETE", route: "/api/bars/:personId", url: `/api/bars/${ID}`, bad: [{ url: "/api/bars/nope" }] },
   {
-    method: "POST",
+    method: "POST", route: "/api/reports",
     url: "/api/reports",
     body: { agentId: ID, reason: "spam", note: "n" },
     bad: [{ body: {} }, { body: { agentId: ID, reason: "boring" } }, { body: { agentId: ID, reason: "spam", note: "x".repeat(501) } }],
   },
   {
-    method: "PUT",
+    method: "PUT", route: "/api/agents/:id/note-verdicts",
     url: `/api/agents/${ID}/note-verdicts`,
     body: { noteKind: "owner", noteId: ID2, audienceId: ID, share: true, cardSeq: 3 },
     bad: [{ body: {} }, { body: { noteKind: "owner", noteId: "not-a-uuid", audienceId: ID, share: true } }, { body: { noteKind: "other", noteId: ID2, audienceId: ID, share: true } }, { body: { noteKind: "self", noteId: ID2, audienceId: ID, share: "yes" } }],
   },
-  { method: "POST", url: `/api/agents/${ID}/persona-facts/4`, body: { move: true }, bad: [{ body: {} }, { url: `/api/agents/${ID}/persona-facts/x`, body: { move: true } }] },
+  { method: "POST", route: "/api/agents/:id/persona-facts/:seq", url: `/api/agents/${ID}/persona-facts/4`, body: { move: true }, bad: [{ body: {} }, { url: `/api/agents/${ID}/persona-facts/x`, body: { move: true } }] },
   // Lane B: accounts/others-routes.ts
-  { method: "GET", url: "/api/me/others-use" },
+  { method: "GET", route: "/api/me/others-use", url: "/api/me/others-use" },
   {
-    method: "PUT",
+    method: "PUT", route: "/api/me/others-limits",
     url: "/api/me/others-limits",
     body: { answers: 50, points: "70" },
     bad: [{ body: {} }, { body: { answers: 0, points: "70" } }, { body: { answers: 1001, points: "70" } }, { body: { answers: 50, points: "0" } }, { body: { answers: 50, points: "100001" } }, { body: { answers: 50, points: "7e1" } }],
   },
-  { method: "POST", url: "/api/me/others-limits/seen" },
+  { method: "POST", route: "/api/me/others-limits/seen", url: "/api/me/others-limits/seen" },
 ];
 
+// A lane that writes a route removes its entry from `CONTACT_STUBS` / `OTHERS_STUBS` beside the stub (never here): the row of a route no
+// longer listed is not held to the stub's answer any more, and every row of a still-listed route must have one.
+const LISTED = new Set([...CONTACT_STUBS, ...OTHERS_STUBS]);
+const STUBS = ALL.filter((s) => LISTED.has(`${s.method} ${s.route}`));
+
 describe("the route stubs of Agent social", () => {
+  it("lists every stub's route once, and every listed route has a row here", () => {
+    expect(new Set(STUBS.map((s) => `${s.method} ${s.route}`)).size).toBe(STUBS.length);
+    expect(STUBS.length).toBe(LISTED.size);
+  });
+
   it("every one answers 404 not_found to a signed-in caller, 401 to nobody", async () => {
     const me = await signUp(app, "stubby");
     for (const s of STUBS) {
@@ -92,7 +106,7 @@ describe("the route stubs of Agent social", () => {
         refused++;
       }
     }
-    expect(refused).toBe(28);
+    expect(refused).toBe(STUBS.reduce((n, s) => n + (s.bad?.length ?? 0), 0));
   });
 
   it("answers 404 also over a seeded social conversation: the stubs read nothing", async () => {

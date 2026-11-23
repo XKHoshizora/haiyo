@@ -10,6 +10,9 @@ import { MICRO_PER_POINT, pointsBetween } from "./store.ts";
 // (ring 1a: B4) writes the bodies and the answers and keeps the schemas. Unlike lane A's, these are live whatever
 // `SOCIAL.enabled` says: the owner's numbers are step L, which ships with the first deploy.
 
+/** The routes of this file that are still Step 0 stubs (see `CONTACT_STUBS` in social/agent-contact-routes.ts): lane B removes an entry when it writes the route. */
+export const OTHERS_STUBS: readonly string[] = ["GET /api/me/others-use", "PUT /api/me/others-limits", "POST /api/me/others-limits/seen"];
+
 const empty = z.object({});
 
 /** Points as a request gives them, from 1 to 100 000 (the Agents' budgets' schema). */

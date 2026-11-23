@@ -114,7 +114,7 @@ describe("request logging", () => {
   it("every route with a path parameter takes an id or a number, except the attachment's name (the log redacts that one)", () => {
     const params = new Set(app.routeList.flatMap((r) => [...r.url.matchAll(/:([A-Za-z]+)/g)].map((m) => m[1]!)));
     expect([...params].sort()).toEqual(["agentId", "changeId", "decision", "hearsayId", "id", "name", "noteId", "personId", "principalId", "proposalId", "runId", "seq", "subjectId", "verb"].filter((p) => params.has(p)));
-    // (decision and verb are fixed words, not user text; the rest are ids and a sequence number. agentId, subjectId and personId of Agent social are uuid-validated by their route schemas before anything is logged: never free text.)
+    // (decision and verb are fixed words, not user text; the rest are ids and a sequence number. agentId, subjectId and personId are ids as :id is, uuids by their route schemas. The URL is logged as the request arrives, for every route alike, so what keeps free text out of a path is that these routes take only ids, never a handle or a name: the web puts ids there, and a segment that is no uuid meets no handler.)
     expect(params.has("handle")).toBe(false);
     // Only the attachments route has a :name, and it is the one the log redacts.
     expect(app.routeList.filter((r) => r.url.includes(":name")).map((r) => r.url)).toEqual(["/api/attachments/:id/:name", "/api/attachments/:id/:name"]);

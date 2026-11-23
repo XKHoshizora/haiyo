@@ -10,6 +10,27 @@ import { requirePrincipal } from "../session.ts";
 // A2 to A5, A10, A11; ring 1b: A6b, A8b) writes the bodies and the answers, and keeps the schemas. While `SOCIAL.enabled` is
 // false the real routes answer 404 as the stubs do (the lookup, `GET /api/principals/lookup`, is not here: it exists already).
 
+/**
+ * The routes of this file that are still Step 0 stubs, one entry per route (`"METHOD /path"`). A lane that replaces a stub with a
+ * real handler removes its entry in the same edit, in this file; nothing else names the route. The tests read the list: a listed
+ * route must still be a stub (it answers no signed-in probe past the checks: tests/fuzz.test.ts; the exact 404:
+ * tests/social-stubs.test.ts), and a route that is not listed gets the full rules of every real route.
+ */
+export const CONTACT_STUBS: readonly string[] = [
+  "POST /api/agent-contacts",
+  "GET /api/agent-contacts",
+  "POST /api/agent-contacts/:agentId/:subjectId/approve",
+  "POST /api/agent-contacts/:agentId/:subjectId/decline",
+  "DELETE /api/agent-contacts/:agentId/:subjectId",
+  "GET /api/agents/:id/contacts",
+  "PUT /api/agents/:id/contact-policy",
+  "PUT /api/bars/:personId",
+  "DELETE /api/bars/:personId",
+  "POST /api/reports",
+  "PUT /api/agents/:id/note-verdicts",
+  "POST /api/agents/:id/persona-facts/:seq",
+];
+
 const empty = z.object({});
 const pairParams = z.object({ agentId: uuidParam, subjectId: uuidParam });
 const idParams = z.object({ id: uuidParam });
