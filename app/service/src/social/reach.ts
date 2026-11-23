@@ -10,7 +10,8 @@ import { blockedEitherWay } from "./relations.ts";
 //   1. the Agent is deleted (or is no Agent) -> gone; disabled, or (social and the switch off), with P not O -> gone;
 //   2. P is O -> ok;
 //   3. a block either way between P and O, P and the Agent, the subject and the Agent, or the subject and O -> blocked;
-//   4. a bar between P and O -> barred, unless the subject's own row on the Agent is live, approved and newer than the bar;
+//   4. a bar between P and O (either one's: any row of `access_bars` either way) -> barred, unless the subject's own row on the Agent is
+//      live, approved and newer than the latest bar;
 //   5. the subject's own row: live -> ok; ended narrowed, removed or barred -> barred;
 //   6. otherwise group -> ok, social -> no_access. An Agent subject is judged on its own row only: a person's row never grants
 //      their Agent.
@@ -29,6 +30,16 @@ interface ReachSqlOptions {
 }
 
 /**
+ * SQL (`access_bars <alias> where …`, to follow `from`): the bars that stand between persons `p` and `o` (SQL expressions): a row
+ * in either direction. A `block` row stands only while its block does (a row left behind by an unblock an older process served
+ * bars nobody: the table heals on read, A-3 review m4); a `stop` row stands until its setter lifts it. The one definition: `reachSql`
+ * and the add flow both read bars through it.
+ */
+export const standingBarsSql = (p: string, o: string, alias: string): string =>
+  `access_bars ${alias} where ((${alias}.setter_id = ${p} and ${alias}.other_id = ${o}) or (${alias}.setter_id = ${o} and ${alias}.other_id = ${p}))
+     and (${alias}.kind = 'stop' or exists (select 1 from blocks ${alias}l where ${alias}l.blocker_id = ${alias}.setter_id and ${alias}l.blocked_id = ${alias}.other_id))`;
+
+/**
  * SQL text for an expression evaluating to one of `Reach`'s values; `subject` and `agent` are SQL expressions (a parameter
  * with its cast, a column), `socialOn` a SQL boolean. THE statement of the rule: `reach` runs this one, and every query that asks
  * it of many rows at once splices it in (`refusedSql`). Its inner aliases all start `rch`, so that an expression of the caller's
@@ -41,10 +52,11 @@ export function reachSql(o: ReachSqlOptions): string {
   // The person behind the subject: an Agent's owner, or the subject itself.
   const P = `coalesce((select rchs.owner_id from principals rchs where rchs.id = ${S}), ${S})`;
   const own = (cond: string): string => `exists (select 1 from agent_contacts rchc where rchc.agent_id = ${A} and rchc.subject_id = ${S} and ${cond})`;
-  const bar = `exists (select 1 from access_bars rchb
-                        where rchb.lo_id = least(${P}, ${O}) and rchb.hi_id = greatest(${P}, ${O})
-                          and not exists (select 1 from agent_contacts rchc
-                                           where rchc.agent_id = ${A} and rchc.subject_id = ${S} and rchc.state = 'live' and rchc.basis = 'approved' and rchc.since > rchb.since))`;
+  // Barred while any bar stands between P and O, either way, unless the subject's own row is live, approved and newer than the
+  // latest of them (an approval passes the bars, and only that row).
+  const lastBar = `(select max(rchb.since) from ${standingBarsSql(P, O, "rchb")})`;
+  const bar = `(${lastBar} is not null and not exists (select 1 from agent_contacts rchc
+                                           where rchc.agent_id = ${A} and rchc.subject_id = ${S} and rchc.state = 'live' and rchc.basis = 'approved' and rchc.since > ${lastBar}))`;
   const unavailable = o.where === "social" ? `rcha.disabled_at is not null or not (${o.socialOn})` : `rcha.disabled_at is not null`;
   return `(case
     when coalesce((select rcha.deleted_at is not null from agents rcha where rcha.principal_id = ${A}), true) then 'gone'

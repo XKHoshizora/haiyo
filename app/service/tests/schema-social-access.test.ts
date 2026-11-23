@@ -25,19 +25,21 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
     return rows[0]!.id;
   }
 
-  test("a bar is one row per pair, set by one of the two", async () => {
+  test("a bar is one row per setter, other person and kind; a person cannot bar themself", async () => {
     const a = await human();
     const b = await human();
-    const third = await human();
-    const [lo, hi] = [a, b].sort() as [string, string];
-    const bar = (o: Partial<{ lo: string; hi: string; reason: string; set_by: string; by_block: boolean }> = {}) =>
-      db.query(`insert into access_bars (lo_id, hi_id, reason, set_by, by_block) values ($1, $2, $3, $4, $5)`, [o.lo ?? lo, o.hi ?? hi, o.reason ?? "stopped", o.set_by ?? lo, o.by_block ?? false]);
-    await expect(bar({ lo: hi, hi: lo })).rejects.toThrow(/check/);
-    await expect(bar({ set_by: third })).rejects.toThrow(/check/);
-    await expect(bar({ reason: "paused" })).rejects.toThrow(/check/);
-    await expect(bar({ by_block: true, reason: "unfriended" })).rejects.toThrow(/check/);
+    const bar = (o: Partial<{ setter: string; other: string; kind: string }> = {}) =>
+      db.query(`insert into access_bars (setter_id, other_id, kind) values ($1, $2, $3)`, [o.setter ?? a, o.other ?? b, o.kind ?? "stop"]);
+    await expect(bar({ setter: a, other: a })).rejects.toThrow(/check/);
+    await expect(bar({ kind: "unfriended" })).rejects.toThrow(/check/);
     await bar({});
     await expect(bar({})).rejects.toThrow(/access_bars_pkey/);
+    // The other direction, and the other kind, are rows of their own: two people's decisions are never one row.
+    await bar({ setter: b, other: a });
+    await bar({ kind: "block" });
+    expect((await db.query(`select count(*)::int n from access_bars where setter_id in ($1, $2) and other_id in ($1, $2)`, [a, b])).rows[0]!.n).toBe(3);
+    // A person's removal takes their bars with it.
+    await db.query(`delete from access_bars where setter_id = $1`, [a]);
   });
 
   test("a contact policy is one of three; an Agent is not disabled until someone says so", async () => {
@@ -51,7 +53,7 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
   });
 
   // The block of 075 between its two markers, run in a rolled-back transaction over blocks crossing 10 and 100.
-  test("bars from blocks (Controller ruling 2026-11-24, Q4): one bar per blocked pair", async () => {
+  test("bars from blocks (Controller ruling 2026-11-24, Q4; A-3 review C1): one `block` row per block between people, set by the blocker", async () => {
     const sql = readFileSync(FILE, "utf8");
     const begin = sql.indexOf("-- bars from blocks begin");
     const end = sql.indexOf("-- bars from blocks end");
@@ -95,47 +97,18 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
       await client.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2)`, [agent2, people[13]!]);
       expect((await one(`select count(*)::int n from blocks`))[0]!.n).toBe(105 + 4);
       await client.query(backfill);
-      expect((await one(`select count(*)::int n from access_bars`))[0]!.n).toBe(81 + 12);
+      // One row per block between people: 81 one way, and both directions of the 12 mutual pairs.
+      expect((await one(`select count(*)::int n from access_bars`))[0]!.n).toBe(81 + 24);
+      expect((await one(`select count(*)::int n from access_bars where kind <> 'block'`))[0]!.n).toBe(0);
       for (const m of mutual) {
-        const [lo, hi] = [m.first, m.second].sort();
-        expect((await one(`select reason, by_block, set_by, since from access_bars where lo_id = $1 and hi_id = $2`, [lo, hi]))[0]).toEqual({ reason: "stopped", by_block: true, set_by: m.first, since: m.at });
+        expect((await one(`select setter_id, other_id, kind, since from access_bars where setter_id = $1 and other_id = $2`, [m.first, m.second]))[0]).toEqual({ setter_id: m.first, other_id: m.second, kind: "block", since: m.at });
+        expect((await one(`select setter_id, other_id, kind from access_bars where setter_id = $1 and other_id = $2`, [m.second, m.first]))[0]).toEqual({ setter_id: m.second, other_id: m.first, kind: "block" });
       }
       for (const w of oneWay) {
-        const [lo, hi] = [w.blocker, w.blocked].sort();
-        expect((await one(`select reason, by_block, set_by, since from access_bars where lo_id = $1 and hi_id = $2`, [lo, hi]))[0]).toEqual({ reason: "stopped", by_block: true, set_by: w.blocker, since: w.at });
+        expect((await one(`select kind, since from access_bars where setter_id = $1 and other_id = $2`, [w.blocker, w.blocked]))[0]).toEqual({ kind: "block", since: w.at });
+        expect((await one(`select count(*)::int n from access_bars where setter_id = $1 and other_id = $2`, [w.blocked, w.blocker]))[0]!.n).toBe(0);
       }
-      expect((await one(`select count(*)::int n from access_bars b where exists (select 1 from principals p where p.id in (b.lo_id, b.hi_id) and p.kind = 'agent')`))[0]!.n).toBe(0);
-    } finally {
-      await client.query("rollback");
-      client.release();
-    }
-  });
-
-  // M10 of block 1's review: a pair that blocked each other at one instant. The bar's setter is the lower blocker id, in either insert order.
-  test("bars from blocks: a tie in time goes to the lower blocker id", async () => {
-    const sql = readFileSync(FILE, "utf8");
-    const backfill = sql.slice(sql.indexOf("-- bars from blocks begin"), sql.indexOf("-- bars from blocks end"));
-    const client = await db.pool.connect();
-    const one = async (q: string, p: unknown[] = []) => (await client.query(q, p)).rows as Array<Record<string, any>>;
-    try {
-      await client.query("begin");
-      const at = new Date("2026-03-03T03:03:03Z");
-      const pairs: Array<{ lo: string; hi: string }> = [];
-      for (let i = 0; i < 12; i++) {
-        const ids: string[] = [];
-        for (const k of [0, 1]) {
-          await client.query(`insert into "user" (id, name, email, "emailVerified") values ($1::text, $1::text, $1::text || '@example.test', true)`, [`auth-tie_${i}_${k}`]);
-          ids.push((await one(`insert into principals (kind, handle, display_name, auth_user_id) values ('human', $1::citext, $1::text, 'auth-' || $1::text) returning id`, [`tie_${i}_${k}`]))[0]!.id);
-        }
-        const [lo, hi] = ids.sort() as [string, string];
-        pairs.push({ lo, hi });
-        const rows = i % 2 ? [[lo, hi], [hi, lo]] : [[hi, lo], [lo, hi]];
-        for (const [x, y] of rows) await client.query(`insert into blocks (blocker_id, blocked_id, created_at) values ($1, $2, $3)`, [x, y, at]);
-      }
-      await client.query(backfill);
-      for (const { lo, hi } of pairs) {
-        expect((await one(`select set_by, since from access_bars where lo_id = $1 and hi_id = $2`, [lo, hi]))[0]).toEqual({ set_by: lo, since: at });
-      }
+      expect((await one(`select count(*)::int n from access_bars b where exists (select 1 from principals p where p.id in (b.setter_id, b.other_id) and p.kind = 'agent')`))[0]!.n).toBe(0);
     } finally {
       await client.query("rollback");
       client.release();
@@ -206,7 +179,7 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
       expect(old).toMatchObject({ principals: { n: 117 }, agents: { n: 12 }, blocks: { n: 50 }, conversations: { n: 105 }, messages: { n: 105 } });
       await client.query(up!.replace("-- Up Migration", ""));
       expect(await rows()).toEqual(old);
-      expect((await one(`select count(*)::int n from access_bars where by_block and reason = 'stopped'`))[0]!.n).toBe(50);
+      expect((await one(`select count(*)::int n from access_bars where kind = 'block'`))[0]!.n).toBe(50);
       expect(await one(`select count(*)::int n from agents where persona_checked_version <> persona_version`)).toEqual([{ n: 0 }]);
       expect(await one(`select count(*)::int n from agents where contact_policy <> 'ask' or contact_picked or disabled_at is not null`)).toEqual([{ n: 0 }]);
       expect(await one(`select (select count(*)::int from agent_reports) r, (select count(*)::int from agent_contact_picks) p, (select count(*)::int from social_card_answers) c`)).toEqual([{ r: 0, p: 0, c: 0 }]);

@@ -38,17 +38,31 @@ async function newGroup(creator: string): Promise<string> {
   const { rows } = await db.query<{ id: string }>(`insert into conversations (type, creator_id, title) values ('group', $1, 'g') returning id`, [creator]);
   return rows[0]!.id;
 }
-/** An active reply of `agentId` in `conversationId` called by `callerId`; `pending_seq` is set so that dropping it can be seen. */
-async function runIn(agentId: string, conversationId: string, callerId: string | null, status: "queued" | "running", askers: string[] | null = null): Promise<string> {
+/**
+ * An active reply of `agentId` in `conversationId` called by `callerId`; `pending_seq` is set so that dropping it can be seen. In a
+ * group the call is a real message (by `author`, the caller unless said), which `call_seqs` and `covers_seq` name: an ending
+ * decides a group reply by whose calls it answers.
+ */
+async function runIn(agentId: string, conversationId: string, callerId: string | null, status: "queued" | "running", askers: string[] | null = null, author: string | null = callerId): Promise<string> {
+  const group = (await db.query<{ type: string }>(`select type from conversations where id = $1`, [conversationId])).rows[0]!.type === "group";
+  let call = 0;
+  if (group) {
+    call = Number(
+      (await db.query<{ seq: string }>(
+        `insert into messages (conversation_id, seq, sender_id, kind, body) select $1, coalesce(max(seq), 0) + 1, $2, 'text', '{"text":"hi"}'::jsonb from messages where conversation_id = $1 returning seq::text as seq`,
+        [conversationId, author],
+      )).rows[0]!.seq,
+    );
+  }
   const { rows } = await db.query<{ id: string }>(
-    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, lane, caller_id, started_at, asker_ids)
-     values ('reply', $1, $2, (select owner_id from principals where id = $2), $4, 0, 5, 'human', 'others', $3, case when $4 = 'running' then now() end, $5) returning id`,
-    [conversationId, agentId, callerId, status, askers],
+    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, call_seqs, pending_seq, triggered_by, lane, caller_id, started_at, asker_ids)
+     values ('reply', $1, $2, (select owner_id from principals where id = $2), $4, $6, case when $7::boolean then array[$6::bigint] end, 5 + $6, 'human', 'others', $3, case when $4 = 'running' then now() end, $5) returning id`,
+    [conversationId, agentId, callerId, status, askers, call, group],
   );
   return rows[0]!.id;
 }
 const runOf = async (id: string) => (await db.query(`select status, error, interrupted, pending_seq from agent_runs where id = $1`, [id])).rows[0] as { status: string; error: string | null; interrupted: string | null; pending_seq: string | null };
-const untouched = { error: null, interrupted: null, pending_seq: "5" };
+const untouched = { error: null, interrupted: null };
 const ended = { interrupted: "access_ended", pending_seq: null };
 const rowOf = async (agentId: string, subjectId: string) =>
   (await db.query(`select state, basis, end_reason, until from agent_contacts where agent_id = $1 and subject_id = $2`, [agentId, subjectId])).rows[0] as { state: string; basis: string | null; end_reason: string | null; until: Date | null } | undefined;
@@ -122,7 +136,7 @@ describe("endGrants: what it stops", () => {
     const queued = await runIn(agent.id, g1, v.id, "queued");
     const callerElse = await runIn(agent.id, g2, w.id, "running", [v.id, w.id]);
     const otherSocial = await runIn(agent.id, sw, w.id, "queued");
-    const nobody = await runIn(agent.id, g3, null, "queued", [v.id]);
+    const nobody = await runIn(agent.id, g3, null, "queued", [v.id], w.id);
     const result = await grants({ agentId: agent.id, subjectIds: [v.id] }, "removed");
     expect(result.ended).toBe(1);
     expect(result.running).toEqual([running]);

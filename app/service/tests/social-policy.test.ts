@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyPolicy, addContact } from "../src/social/agent-contacts.ts";
 import { api, befriend, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -40,11 +40,21 @@ async function newGroup(creator: string): Promise<string> {
   const { rows } = await db.query<{ id: string }>(`insert into conversations (type, creator_id, title) values ('group', $1, 'g') returning id`, [creator]);
   return rows[0]!.id;
 }
-async function runIn(agentId: string, conversationId: string, callerId: string, status: "queued" | "running"): Promise<string> {
+async function runIn(agentId: string, conversationId: string, callerId: string | null, status: "queued" | "running", askers: string[] | null = null, author: string | null = callerId): Promise<string> {
+  const group = (await db.query<{ type: string }>(`select type from conversations where id = $1`, [conversationId])).rows[0]!.type === "group";
+  let call = 0;
+  if (group) {
+    call = Number(
+      (await db.query<{ seq: string }>(
+        `insert into messages (conversation_id, seq, sender_id, kind, body) select $1, coalesce(max(seq), 0) + 1, $2, 'text', '{"text":"hi"}'::jsonb from messages where conversation_id = $1 returning seq::text as seq`,
+        [conversationId, author],
+      )).rows[0]!.seq,
+    );
+  }
   const { rows } = await db.query<{ id: string }>(
-    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, lane, caller_id, started_at)
-     values ('reply', $1, $2, (select owner_id from principals where id = $2), $4, 0, 5, 'human', 'others', $3, case when $4 = 'running' then now() end) returning id`,
-    [conversationId, agentId, callerId, status],
+    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, call_seqs, pending_seq, triggered_by, lane, caller_id, started_at, asker_ids)
+     values ('reply', $1, $2, (select owner_id from principals where id = $2), $4, $6, case when $7::boolean then array[$6::bigint] end, 5 + $6, 'human', 'others', $3, case when $4 = 'running' then now() end, $5) returning id`,
+    [conversationId, agentId, callerId, status, askers, call, group],
   );
   return rows[0]!.id;
 }
@@ -178,6 +188,42 @@ describe("narrowing", () => {
     expect((await adding).status).toBe(404);
     expect(await approving).toMatchObject({ status: 409, json: { error: "not_requested" } });
     expect((await db.query(`select count(*)::int n from agent_contacts where agent_id = $1 and state = 'live'`, [agent.id])).rows[0]!.n).toBe(0);
+  });
+});
+
+describe("announcing a narrowing, and a deleted Agent (A-3 review m6, m7)", () => {
+  it("105 ended rows are announced with one statement for the conversations, not one each", async () => {
+    const { owner, agent } = await world("ann");
+    await set(agent.id, "contacts");
+    const people: Actor[] = [];
+    for (let i = 0; i < 105; i++) {
+      const p = await person();
+      people.push(p);
+      await row(agent.id, p.id, "live", "contacts");
+    }
+    const told: string[][] = [];
+    const off = app.deps.social.on((ids) => void told.push([...ids]));
+    const spy = vi.spyOn(app.deps.db, "query");
+    try {
+      expect(await put(owner, agent.id, { policy: "ask", picked: false, picks: [] })).toMatchObject({ status: 200, json: { ends: 105 } });
+      expect(spy.mock.calls.filter((c) => typeof c[0] === "string" && c[0].includes("social_pairs")).length).toBe(1);
+    } finally {
+      spy.mockRestore();
+      off();
+    }
+    // Everyone whose row ended refetches, and the owner.
+    const heard = new Set(told.flat());
+    expect(heard.has(owner.id)).toBe(true);
+    for (const p of people) expect(heard.has(p.id)).toBe(true);
+  });
+
+  it("the policy of one's own deleted Agent is refused as any Agent that is not there, and writes nothing", async () => {
+    const { owner, agent } = await world("del");
+    expect((await api(app, owner, "DELETE", `/api/agents/${agent.id}`)).status).toBe(200);
+    const gone = await put(owner, agent.id, { policy: "none", picked: false, picks: [] });
+    const unknown = await put(owner, "00000000-0000-4000-8000-000000000000", { policy: "none", picked: false, picks: [] });
+    expect([gone.status, gone.json]).toEqual([unknown.status, unknown.json]);
+    expect(await agentState(agent.id)).toEqual({ contact_policy: "ask", contact_picked: false });
   });
 });
 

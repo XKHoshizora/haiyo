@@ -140,8 +140,7 @@ describe("the write rule", () => {
     await live(agent.id, v.id);
     const { conversationId: conv } = await open(v.id, agent.id);
     expect((await send(v, conv, "hi")).status).toBe(201);
-    const [lo, hi] = [v.id, owner.id].sort();
-    await db.query(`insert into access_bars (lo_id, hi_id, reason, set_by, since) values ($1, $2, 'stopped', $3, now() + interval '1 second')`, [lo, hi, v.id]);
+    await db.query(`insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, 'stop', now() + interval '1 second')`, [v.id, owner.id]);
     expect(await send(v, conv, "hi")).toMatchObject({ status: 403, json: { reason: "no_access" } });
     expect(await send(owner, conv, "hi")).toMatchObject({ status: 403, json: { reason: "no_access" } });
   });

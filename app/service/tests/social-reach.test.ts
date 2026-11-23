@@ -58,8 +58,7 @@ const row = (w: World, subject: string, state: "live" | "requested" | "ended", o
     ],
   );
 const bar = (w: World, since = T1) => {
-  const [lo, hi] = [w.P, w.O].sort();
-  return db.query(`insert into access_bars (lo_id, hi_id, reason, set_by, since) values ($1, $2, 'stopped', $3, $4)`, [lo, hi, w.P, since]);
+  return db.query(`insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, 'stop', $3)`, [w.P, w.O, since]);
 };
 const block = (blocker: string, blocked: string) => db.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2)`, [blocker, blocked]);
 
@@ -144,11 +143,11 @@ describe("reach", () => {
       ["live", async (p) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [w.agent, p])), "ok", "ok"],
       ["requested", async (p) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, until) values ($1, $2, $2, 'requested', now() + interval '1 day')`, [w.agent, p])), "no_access", "ok"],
       ["narrowed", async (p) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $2, 'ended', 'narrowed')`, [w.agent, p])), "barred", "barred"],
-      ["barred, no row", async (p) => void (await db.query(`insert into access_bars (lo_id, hi_id, reason, set_by) values (least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid), 'stopped', $1)`, [p, w.O])), "barred", "barred"],
+      ["barred, no row", async (p) => void (await db.query(`insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')`, [p, w.O])), "barred", "barred"],
       [
         "barred, then approved",
         async (p) => {
-          await db.query(`insert into access_bars (lo_id, hi_id, reason, set_by, since) values (least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid), 'stopped', $1, $3)`, [p, w.O, T1]);
+          await db.query(`insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, 'stop', $3)`, [p, w.O, T1]);
           await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis, since) values ($1, $2, $2, 'live', 'approved', $3)`, [w.agent, p, T2]);
         },
         "ok",
@@ -189,7 +188,7 @@ describe("the twin over Agent subjects (the relay check, I8)", () => {
       ["its own row live", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $3, 'live', 'approved')`, [w.agent, a.agent, a.person])), "ok", "ok"],
       ["only its person's row live", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [w.agent, a.person])), "no_access", "ok"],
       ["its own row narrowed", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $3, 'ended', 'narrowed')`, [w.agent, a.agent, a.person])), "barred", "barred"],
-      ["its person barred", async (a) => void (await db.query(`insert into access_bars (lo_id, hi_id, reason, set_by) values (least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid), 'stopped', $1)`, [a.person, w.O])), "barred", "barred"],
+      ["its person barred", async (a) => void (await db.query(`insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')`, [a.person, w.O])), "barred", "barred"],
       ["O blocks its person", async (a) => void (await block(w.O, a.person)), "blocked", "blocked"],
       ["it blocks the Agent", async (a) => void (await block(a.agent, w.agent)), "blocked", "blocked"],
     ];

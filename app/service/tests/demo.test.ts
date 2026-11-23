@@ -101,6 +101,9 @@ describe("demo:seed", () => {
     expect((await api(app, reviewer, "PUT", `/api/blocks/${mika}`)).status).toBe(200);
     // A person's block writes a bar; the demo's undo goes through the unblock path, so none is left orphaned (review M7 of block 1).
     expect(await count("select count(*) n from access_bars")).toBe(1);
+    // A 停止往来 of the reviewer's own (the route is off with the switch off; its row as it writes it) must not survive the reset either.
+    const reviewerId = (await api(app, reviewer, "GET", "/api/me")).json.id as string;
+    await db.query("insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')", [reviewerId, mika]);
     expect((await api(app, reviewer, "DELETE", `/api/conversations/${first.id}/members/${(await api(app, reviewer, "GET", "/api/me")).json.id}`)).status).toBe(200);
 
     await seed();
@@ -111,6 +114,8 @@ describe("demo:seed", () => {
     expect(group.said).toHaveLength(5);
     expect(await count("select count(*) n from blocks")).toBe(0);
     expect(await count("select count(*) n from access_bars")).toBe(0);
+    // The reset leaves no `unblocked` notice in the review's direct chat: it is not the reviewer's doing.
+    expect(await count(`select count(*) n from messages where kind = 'system' and body->>'event' = 'unblocked'`)).toBe(0);
     const agents = (await api<{ agents: Array<{ id: string; deleted: boolean; paused: boolean }> }>(app, back, "GET", "/api/agents")).json.agents.filter((a) => !a.deleted);
     expect(agents).toHaveLength(1);
     expect(agents[0]!.id).not.toBe(agent.id);

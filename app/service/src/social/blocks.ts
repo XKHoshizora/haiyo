@@ -55,7 +55,7 @@ export async function blockPrincipal(t: Tx, blocker: string, blocked: string): P
   if (created) {
     const kind = (await t.query<{ kind: "human" | "agent" }>("select kind from principals where id = $1", [blocked])).rows[0]?.kind;
     if (kind === "agent") ended = await endGrants(t, { agentId: blocked, subjectIds: [blocker] }, "left");
-    else if (kind === "human") ended = await setBar(t, blocker, blocked, "stopped", "block");
+    else if (kind === "human") ended = await setBar(t, blocker, blocked, "block");
   }
   return { created, cancelledRequestIds: cancelled.rows.map((r) => r.id), notices: notice ? [notice] : [], ended };
 }
@@ -63,17 +63,26 @@ export async function blockPrincipal(t: Tx, blocker: string, blocked: string): P
 /** Whether a block call changed anything others should hear about. */
 export const blockChanged = (r: BlockResult): boolean => r.created || r.cancelledRequestIds.length > 0;
 
+/**
+ * The one way a block goes (the core of `unblockPrincipal`; the demo's reset calls it too, without the notice): the block row and,
+ * in the same transaction, the `block` bar row of this blocker, and nothing else: the other person's block and anybody's stop
+ * stay. Whether a block was removed.
+ */
+export async function deleteBlock(t: Tx, blocker: string, blocked: string): Promise<boolean> {
+  await lockPair(t, blocker, blocked);
+  const del = await t.query("delete from blocks where blocker_id = $1 and blocked_id = $2", [blocker, blocked]);
+  const removed = (del.rowCount ?? 0) > 0;
+  if (removed) await liftBlockBar(t, blocker, blocked);
+  return removed;
+}
+
 /** Restores nothing but the ability to interact. Returns whether a block was removed, and its notice. */
 export async function unblockPrincipal(
   t: Tx,
   blocker: string,
   blocked: string,
 ): Promise<{ removed: boolean; notices: StoredMessage[] }> {
-  await lockPair(t, blocker, blocked);
-  const del = await t.query("delete from blocks where blocker_id = $1 and blocked_id = $2", [blocker, blocked]);
-  const removed = (del.rowCount ?? 0) > 0;
+  const removed = await deleteBlock(t, blocker, blocked);
   const notice = removed ? await appendDirectNotice(t, { event: "unblocked", actorId: blocker, principalId: blocked }) : null;
-  // The bar this block set goes with it (or passes to the other person's block); a stop's bar stays.
-  if (removed) await liftBlockBar(t, blocker, blocked);
   return { removed, notices: notice ? [notice] : [] };
 }

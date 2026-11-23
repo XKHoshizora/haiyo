@@ -1,27 +1,23 @@
 -- Up Migration
 -- Agent social, ring 1a, lane A (design §1.1, §4's persona aid; plan A0, A8b). Deploys with lane A's code (Controller ruling 2026-11-24
 -- (attack), C1), together with lane B's 074 (Controller ruling 2026-11-24 (verification), E1/N1).
+-- Bars are directional and one row per decision (A-3 review C1): a row is "setter has barred other", of one kind, lifted only by its
+-- setter through its own act (a stop by 恢复往来, a block by the unblock). A pair is barred iff any row exists in either direction.
 create table access_bars (
-  lo_id uuid not null references principals (id) on delete cascade,
-  hi_id uuid not null references principals (id) on delete cascade,
-  reason text not null check (reason in ('stopped', 'unfriended')),
-  set_by uuid not null references principals (id) on delete cascade,
+  setter_id uuid not null references principals (id) on delete cascade,
+  other_id uuid not null references principals (id) on delete cascade,
+  kind text not null check (kind in ('stop', 'block')),
   since timestamptz not null default now(),
-  -- Controller ruling 2026-11-24 (Q4): true while the bar stands only for set_by's block of the other; that unblock lifts it.
-  by_block boolean not null default false,
-  primary key (lo_id, hi_id),
-  check (lo_id < hi_id),
-  check (set_by = lo_id or set_by = hi_id),
-  check (not by_block or reason = 'stopped')
+  primary key (setter_id, other_id, kind),
+  check (setter_id <> other_id)
 );
+create index access_bars_other_idx on access_bars (other_id, setter_id);
 -- bars from blocks begin
-insert into access_bars (lo_id, hi_id, reason, set_by, since, by_block)
-select distinct on (least(b.blocker_id, b.blocked_id), greatest(b.blocker_id, b.blocked_id))
-       least(b.blocker_id, b.blocked_id), greatest(b.blocker_id, b.blocked_id), 'stopped', b.blocker_id, b.created_at, true
+insert into access_bars (setter_id, other_id, kind, since)
+select b.blocker_id, b.blocked_id, 'block', b.created_at
   from blocks b
   join principals pa on pa.id = b.blocker_id and pa.kind = 'human'
-  join principals pb on pb.id = b.blocked_id and pb.kind = 'human'
- order by least(b.blocker_id, b.blocked_id), greatest(b.blocker_id, b.blocked_id), b.created_at, b.blocker_id;
+  join principals pb on pb.id = b.blocked_id and pb.kind = 'human';
 -- bars from blocks end
 alter table agents
   add column contact_policy text not null default 'ask' check (contact_policy in ('ask', 'contacts', 'none')),

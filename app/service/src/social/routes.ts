@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { announceEnded } from "../agents/group-leave.ts";
+import { socialConversationsBetween } from "./agent-contacts.ts";
 import { uuidParam } from "../schemas.ts";
 import type { Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
@@ -72,6 +73,14 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       { messages: notices, conversations: [...changed].map((conversationId) => ({ conversationId, principalIds: pair })) },
       req.log,
     );
+  }
+
+  /**
+   * After a block, an unblock or an unfriend: the social conversations between the two sides (a person's, or their Agents') changed
+   * what they can do, so their human members are told and an open screen loses a stale "can send" (A-3 review m2).
+   */
+  async function publishSocial(req: FastifyRequest, a: string, b: string): Promise<void> {
+    conversations.publish({ messages: [], conversations: await socialConversationsBetween(db, a, b) }, req.log);
   }
 
   /**
@@ -176,6 +185,7 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       const other = req.params.principalId;
       const r = await run(req, (t) => unfriend(t, me.id, other), () => [me.id, other]);
       announceEnded(app.agentPort, r.ended);
+      await publishSocial(req, me.id, other);
       return { ok: true as const };
     },
   );
@@ -208,6 +218,7 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       // Blocking again is idempotent: the same 200, and no event when nothing changed.
       if (blockChanged(result)) announce(req, [me.id, other], result);
       announceEnded(app.agentPort, result.ended);
+      if (blockChanged(result)) await publishSocial(req, me.id, other);
       return { ok: true as const };
     },
   );
@@ -220,7 +231,10 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       await blockLimit(req, me.id);
       const other = req.params.principalId;
       const r = await db.tx((t) => unblockPrincipal(t, me.id, other));
-      if (r.removed) announce(req, [me.id, other], r);
+      if (r.removed) {
+        announce(req, [me.id, other], r);
+        await publishSocial(req, me.id, other);
+      }
       return { ok: true as const };
     },
   );

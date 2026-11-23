@@ -2889,7 +2889,7 @@ else and for a row that is not there or ended already.
 *Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
 "picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations":
 [{"conversationId", "subject"}]}`. `rows`: every row of the Agent, newest first, with its real end reason (`endReason`: `declined`,
-`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`); `subject` is as in `waiting` of
+`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where you barred the person yourself, a row ended by the other person's bar reads `left`); `subject` is as in `waiting` of
 `GET /api/agent-contacts`. `conversations`: the Agent's social conversations (「它和别人的对话」), newest first, each with the other
 end. 404 `not_found` for anyone but the owner and for a deleted Agent; 404 while `SOCIAL.enabled` is off.
 
@@ -2905,15 +2905,19 @@ what those people called on the Agent stops. Approved rows stay; widening ends a
 #### `PUT /api/bars/:personId`
 
 *Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (lane A, ring 1a).
-Every live or waiting row between the two sides ends, and their replies in the pair's social conversations and in groups the other
-called stop. → 200 `{"ok": true, "ended": number}` (also when a bar stands already); 400 `invalid_request` for yourself; 404
+Every live or waiting row between the two sides ends, and their replies in the pair's social conversations stop; in a group the
+person's calls are taken out of a reply (it is cancelled only when it answers no one else, and stopped only when in flight and
+no one else is left). The bar is your own row: it is lifted by you alone (the other person's own stop or block is theirs), and the pair
+stays barred while a row of either of you stands. → 200 `{"ok": true, "ended": number}` (also when a bar stands already); 400 `invalid_request` for yourself; 404
 `not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
-Every block of a person by a person writes the same bar in its own transaction, and unblocking lifts only the bar that block set.
+Every block of a person by a person, and every unfriend that ends a row, writes its own row too (a block's, or the unfriender's stop)
+in its own transaction; unblocking deletes only that block's row.
 
 #### `DELETE /api/bars/:personId`
 
-*Session: required.* 恢复往来: lifts your own bar (never one a block set; lane A, ring 1a). It brings no row back: whoever is let
-in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise (no bar, someone else's, a block's).
+*Session: required.* 恢复往来: lifts your own stop (never a block's row, and never the other person's). It brings no row back: whoever
+is let in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise: no stop of yours, whatever else
+stands (the other person's, a block's): one answer.
 
 **Planned: `POST /api/reports`**
 

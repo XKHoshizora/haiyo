@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { addContact } from "../src/social/agent-contacts.ts";
+import { addContact, removeContact } from "../src/social/agent-contacts.ts";
 import { reach } from "../src/social/reach.ts";
 import { api, befriend, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -47,15 +47,14 @@ const rowOf = async (agentId: string, subjectId: string) =>
   (await db.query(`select state, basis, person_id, since, until, end_reason from agent_contacts where agent_id = $1 and subject_id = $2`, [agentId, subjectId])).rows[0] as
     | { state: string; basis: string | null; person_id: string; since: Date; until: Date | null; end_reason: string | null }
     | undefined;
-/** O stopped P (what 停止往来 writes, A5b): the bar, set by O. */
+/** O stopped P (what 停止往来 writes, A5b): O's own `stop` row (`by` another: that person's; `block`: a `block` row, with no block behind it). */
 const stop = (ownerId: string, personId: string, o: { by?: string; block?: boolean } = {}) => {
-  const [lo, hi] = [ownerId, personId].sort();
-  return db.query(`insert into access_bars (lo_id, hi_id, reason, set_by, by_block) values ($1, $2, 'stopped', $3, $4)`, [lo, hi, o.by ?? ownerId, o.block ?? false]);
+  const setter = o.by ?? ownerId;
+  return db.query(`insert into access_bars (setter_id, other_id, kind) values ($1, $2, $3)`, [setter, setter === ownerId ? personId : ownerId, o.block ? "block" : "stop"]);
 };
-const ageBar = (a: string, b: string, ms: number) => {
-  const [lo, hi] = [a, b].sort();
-  return db.query(`update access_bars set since = since - $3 * interval '1 millisecond' where lo_id = $1 and hi_id = $2`, [lo, hi, ms]);
-};
+/** Moves the setter's bar against the other person back in time. */
+const ageBar = (setter: string, other: string, ms: number) =>
+  db.query(`update access_bars set since = since - $3 * interval '1 millisecond' where setter_id = $1 and other_id = $2`, [setter, other, ms]);
 const direct = (subjectId: string, agentId: string) => db.tx((t) => addContact(t, app.deps.config, subjectId, agentId));
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -263,15 +262,16 @@ describe("decline, the cooldown, and a stop", () => {
     expect(await add(w, agent.id)).toMatchObject({ status: 202, json: { state: "requested" } });
     expect(await direct(wAgent, agent.id)).toMatchObject({ state: "requested" });
     expect((await db.query(`select count(*)::int n from access_bars`)).rows[0]!.n).toBe(1);
-    // A bar W set against the owner, or a block's, holds nobody off; it still makes an add a request, never a let-in.
+    // A bar W set against the owner holds nobody off; it still makes an add a request, never a let-in.
     await db.query(`delete from access_bars`);
     await db.query(`delete from agent_contacts`);
     await stop(owner.id, w.id, { by: w.id });
     expect(await add(w, agent.id)).toMatchObject({ status: 202 });
+    // A `block` row whose block is gone (an unblock an older process served) bars nobody: it heals on read; W is let in as a friend.
     await db.query(`delete from access_bars`);
     await db.query(`delete from agent_contacts`);
     await stop(owner.id, w.id, { block: true });
-    expect(await add(w, agent.id)).toMatchObject({ status: 202 });
+    expect(await add(w, agent.id)).toMatchObject({ status: 201, json: { state: "live" } });
   });
 
   it("after a bar an approval lets in again, and only from that moment (the approved row is newer than the bar)", async () => {
@@ -562,6 +562,26 @@ describe("wrap-up of block 2's review (M1, M3, M4)", () => {
     expect(await list()).toEqual([agent.id, other.id].sort());
     await db.query(`update agents set deleted_at = now() where principal_id = $1`, [other.id]);
     expect(await list()).toEqual([agent.id]);
+  });
+
+  it("m5: leaving, or removing, answers after the same statements for an id that is no Agent, a hidden Agent and a row that is not there", async () => {
+    const owner = await signUp(app, "m5owner");
+    const v = await signUp(app, "m5v");
+    const hidden = (await mustCreateAgent(app, owner, { handle: "m5hid" })) as MadeAgent;
+    await policy(hidden.id, "none");
+    const counted = async (actor: string, agentId: string, subject: string): Promise<number> => {
+      let n = 0;
+      await db.tx(async (t) => {
+        const wrapped = { ...t, query: (...a: Parameters<typeof t.query>) => (n++, t.query(...a)) } as typeof t;
+        expect(await removeContact(wrapped, actor, agentId, subject)).toBeNull();
+      });
+      return n;
+    };
+    const unknown = await counted(v.id, "00000000-0000-4000-8000-000000000000", v.id);
+    expect(await counted(v.id, hidden.id, v.id)).toBe(unknown);
+    // A stranger asking to end someone else's row, and the owner naming a row that is not there: the same.
+    expect(await counted(v.id, hidden.id, owner.id)).toBe(unknown);
+    expect(await counted(owner.id, hidden.id, v.id)).toBe(unknown);
   });
 
   it("M4: an Agent hidden from the caller is answered after the same statements as an id that is no principal", async () => {

@@ -157,15 +157,15 @@ export async function unfriend(
   const del = await t.query("delete from friendships where a_id = $1 and b_id = $2", [lo, hi]);
   if ((del.rowCount ?? 0) === 0) return { ok: false, code: "not_found" };
   const notice = await appendDirectNotice(t, { event: "friendship_ended", actorId: actor, principalId: other });
-  // A bar only when this ends at least one row (live or waiting) between the two sides: pairs who never had Agent access keep
-  // today's rules. After the notice (the lock order).
+  // A bar (the unfriender's own `stop`) only when this ends at least one row (live or waiting) between the two sides: pairs who
+  // never had Agent access keep today's rules. After the notice (the lock order).
   const rows = await t.query(
     `select 1 from agent_contacts c join principals ag on ag.id = c.agent_id
       where c.state in ('live', 'requested')
         and ((ag.owner_id = $1 and c.person_id = $2) or (ag.owner_id = $2 and c.person_id = $1)) limit 1`,
     [actor, other],
   );
-  const ended: EndedRuns = (rows.rowCount ?? 0) > 0 ? await setBar(t, actor, other, "unfriended", "unfriend") : { cancelled: [], running: [] };
+  const ended: EndedRuns = (rows.rowCount ?? 0) > 0 ? await setBar(t, actor, other, "stop") : { cancelled: [], running: [] };
   return { ok: true, conversationId: notice?.conversationId ?? null, notices: notice ? [notice] : [], ended };
 }
 

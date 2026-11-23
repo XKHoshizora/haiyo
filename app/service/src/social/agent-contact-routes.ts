@@ -6,7 +6,7 @@ import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
-import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, declineContact, liftBar, removeContact, setBar } from "./agent-contacts.ts";
+import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, declineContact, liftBar, removeContact, setBar, socialConversationsBetween } from "./agent-contacts.ts";
 
 // Lane A's route plugin (plan "Step 0 interfaces", Routes; README "Agent social"). Step 0 wired it in `app.ts` and registered NO route;
 // a lane adds a route by writing it here and, in the same edit, what every route has (plan File map, "shared, row per route"): its
@@ -64,22 +64,32 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
   }
 
   /**
-   * After a bar was written: both sides refetch, and every social conversation between the two sides (a person's, or one of
-   * their Agents') changed what it can do, so its human members are told.
+   * After a stop: the setter refetches; the other person too, and the social conversations between the two sides (a person's, or
+   * their Agents') are published to their human members, only when something of theirs ended (`changed`): otherwise nothing of
+   * theirs differs, and a frame would tell them that a bar was set (A-3 review m3).
    */
-  async function announceBar(req: FastifyRequest, a: string, b: string): Promise<void> {
-    social.emit([a, b], req.log);
-    const { rows } = await db.query<{ conversation_id: string; humans: string[] | null }>(
-      `select sp.conversation_id,
+  async function announceBar(req: FastifyRequest, setter: string, other: string, changed: boolean): Promise<void> {
+    social.emit(changed ? [setter, other] : [setter], req.log);
+    if (changed) conversations.publish({ messages: [], conversations: await socialConversationsBetween(db, setter, other) }, req.log);
+  }
+
+  /** After a narrowing: the owner and every person whose row ended refetch, and their conversations are published; two statements in all. */
+  async function announceNarrowed(req: FastifyRequest, agentId: string, ownerId: string, subjectIds: readonly string[]): Promise<void> {
+    if (subjectIds.length === 0) {
+      social.emit([ownerId], req.log);
+      return;
+    }
+    const { rows } = await db.query<{ conversation_id: string; humans: string[] | null; person_id: string }>(
+      `select sp.conversation_id, coalesce(s.owner_id, s.id) as person_id,
               (select array_agg(m.principal_id) from memberships m join principals mp on mp.id = m.principal_id
                 where m.conversation_id = sp.conversation_id and m.left_seq is null and mp.kind = 'human') as humans
-         from social_pairs sp join principals pa on pa.id = sp.a_id join principals pb on pb.id = sp.b_id
-        where coalesce(pa.owner_id, pa.id) = any($1::uuid[]) and coalesce(pb.owner_id, pb.id) = any($1::uuid[])
-          and coalesce(pa.owner_id, pa.id) <> coalesce(pb.owner_id, pb.id)`,
-      [[a, b]],
+         from principals s left join social_pairs sp on sp.a_id = least(s.id, $1::uuid) and sp.b_id = greatest(s.id, $1::uuid)
+        where s.id = any($2::uuid[])`,
+      [agentId, [...subjectIds]],
     );
+    social.emit([...new Set([ownerId, ...rows.map((r) => r.person_id)])], req.log);
     conversations.publish(
-      { messages: [], conversations: rows.filter((r) => r.humans).map((r) => ({ conversationId: r.conversation_id, principalIds: r.humans! })) },
+      { messages: [], conversations: rows.filter((r) => r.conversation_id && r.humans).map((r) => ({ conversationId: r.conversation_id, principalIds: r.humans! })) },
       req.log,
     );
   }
@@ -142,8 +152,7 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       const done = await db.tx((t) => applyPolicy(t, me.id, req.params.id, next, { dryRun: dryRun === true }));
       if (dryRun !== true) {
         announceEnded(app.agentPort, done.ended);
-        social.emit([me.id], req.log);
-        for (const subject of done.subjects) await announce(req, req.params.id, subject);
+        await announceNarrowed(req, req.params.id, me.id, done.subjects);
       }
       return { ends: done.ends };
     },
@@ -161,9 +170,9 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       // A person only: an Agent's id, like an unknown one, is not found.
       const kind = (await db.query<{ kind: string }>("select kind from principals where id = $1", [other])).rows[0]?.kind;
       if (kind !== "human") throw notFound();
-      const ended = await db.tx((t) => setBar(t, me.id, other, "stopped", "stop"));
+      const ended = await db.tx((t) => setBar(t, me.id, other, "stop"));
       announceEnded(app.agentPort, ended);
-      await announceBar(req, me.id, other);
+      await announceBar(req, me.id, other, ended.ended > 0);
       return { ok: true as const, ended: ended.ended };
     },
   );
@@ -176,9 +185,10 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       requireSocial();
       await barLimit(req, me.id);
       const other = req.params.personId;
-      // Only the setter, and never a block's bar: every other case is the same 404.
+      // Only the caller's own stop: every other case (none, the other person's, a block's) is the same 404. Nothing of the other
+      // person's changes, so only the caller is told.
       if (!(await db.tx((t) => liftBar(t, me.id, other)))) throw notFound();
-      social.emit([me.id, other], req.log);
+      social.emit([me.id], req.log);
       return { ok: true as const };
     },
   );
