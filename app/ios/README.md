@@ -63,6 +63,9 @@ identical) and prints the host it builds for.
 4. Before any submission: `plutil -extract HaiyoHost raw <archive>/Products/Applications/Haiyo.app/Info.plist` must
    print the production host, and `HaiyoChannel` must be `store`.
 
+**2026-11-25: the owner decided that the first App Store version supports iPad.** The app stays universal, and Store
+archives are made with `HAIYO_IPAD_RELEASE=1`; the guard below stays, so that each archive states it on purpose.
+
 The app is universal (`TARGETED_DEVICE_FAMILY = 1,2`), and iPad on the App Store is one way. Archiving Store therefore
 also fails while it includes iPad, unless `HAIYO_IPAD_RELEASE=1` is given on purpose, once the owner has decided to ship
 iPad (or set `TARGETED_DEVICE_FAMILY = 1` in `Config/Store.xcconfig`). Give `HAIYO_IPAD_RELEASE=1` on the
@@ -198,10 +201,16 @@ no file names, no paths or URLs with ids, no query strings, no message text, no 
 
 - `age.range` (Declared Age Range API, plan §1.6 / §2) is not built: a store blocker, not needed for internal
   TestFlight.
-- iPad: App Store Connect then requires 13-inch iPad screenshots, and once a version with iPad is on the App Store,
-  later versions cannot drop it (`docs/design/2026-11-24-ios-shell-ipad-duo-plan.md`). Ship iPad with or after the
-  web's size-class layout and its handling of `layout`; the Store archive refuses iPad until `HAIYO_IPAD_RELEASE=1`
-  ("Configurations").
+- iPad (in the first version, the owner's decision of 2026-11-25): App Store Connect requires at least one 13-inch iPad
+  screenshot (2064×2752 or 2048×2732, portrait or landscape; the iPad Pro 13-inch simulator captures 2064×2752), and
+  once a version with iPad is on the App Store, later versions cannot drop it
+  (`docs/design/2026-11-24-ios-shell-ipad-duo-plan.md`). Before submitting: the web's layout by available space and its
+  handling of `layout` (until then iPad windows show the stopgap band), the iPad screenshots taken after that, and the
+  real-iPad checks (a full-screen iPad needs less than 24 pt of corner extra at the top; windows on iPadOS 26.x/27.0
+  and the current release; Split View, Slide Over, Stage Manager; rotation without reload; share popover; keyboard and
+  trackpad; push). The owner also decides in App Store Connect whether the app is offered on Apple silicon Macs and
+  Apple Vision Pro (it is unless he opts out; the build settings do not change that). Archive Store with
+  `HAIYO_IPAD_RELEASE=1` on the command line ("Configurations").
 - App-Bound Domains (`WKAppBoundDomains` = the host, `limitsNavigationsToAppBoundDomains`): not enabled in v0. It
   would make the bridge's origin rule OS-enforced; it also changes how the WebKit tests load other origins, so it gets
   its own measured change.
