@@ -690,8 +690,9 @@ it("a report is an Agent report until a later migration widens target_kind", asy
   await expect(report({ target_kind: "message", message_id: m })).rejects.toThrow(/agent_reports_target_kind_check/);
   await expect(report({ target_kind: "agent", agent_id: null })).rejects.toThrow(/agent_reports_agent_shape/);
 });
-it("a persona saved before the aid counts as checked (attack M11); a card has one answer", async () => {
-  expect(await agentRow(agentWithPersona)).toMatchObject({ persona_checked_version: agentWithPersona.persona_version });
+it("a persona saved before the aid is NOT checked (A-4 review I2, reversing M11); an ended row records whose bar ended it; a card has one answer", async () => {
+  expect(await agentRow(agentWithPersona)).toMatchObject({ persona_checked_version: 0 });
+  await expect(contactEnded({ end_reason: "left", barred_by: a })).rejects.toThrow(/agent_contacts_barred_by_check/);
   await cardAnswer(m, "moved"); await expect(cardAnswer(m, "kept")).rejects.toThrow(/social_card_answers_pkey/);
   await expect(cardAnswer(m2, "maybe")).rejects.toThrow(/check/);
 });
@@ -743,9 +744,13 @@ create table agent_reports (
   constraint agent_reports_agent_shape check (target_kind <> 'agent' or agent_id is not null)
 );
 create index agent_reports_open_idx on agent_reports (created_at) where handled_at is null;
--- The persona aid (plan A8b). A persona saved before it counts as checked: no burst at deploy (attack M11).
+-- The persona aid (plan A8b). Every persona that exists is unchecked: the worker reads each once, at its bounded pace, from the first
+-- switch-on (A-4 review I2, reversing attack M11: the burst it feared is met by OTHERS.judgeOwnersPerPoll).
 alter table agents add column persona_checked_version integer not null default 0;
-update agents set persona_checked_version = persona_version;
+create index agents_persona_due_idx on agents (principal_id) where persona_version > persona_checked_version;
+-- Whose bar ended a row (A-4 review m4): the setter, on a row ended `barred`; lifting a bar relabels only the rows its setter's bar ended.
+alter table agent_contacts add column barred_by uuid references principals (id) on delete set null,
+  add constraint agent_contacts_barred_by_check check (barred_by is null or end_reason = 'barred');
 -- One answer per owner card (persona_fact now; note_withheld in ring 1b): the card's own message (attack M7).
 create table social_card_answers (
   message_id bigint primary key references messages (id) on delete cascade,
@@ -754,6 +759,8 @@ create table social_card_answers (
 );
 -- Down Migration
 drop table social_card_answers;
+alter table agent_contacts drop column barred_by;
+drop index agents_persona_due_idx;
 alter table agents drop column persona_checked_version;
 drop table agent_reports; drop table agent_contact_picks;
 alter table agents drop column disabled_at, drop column contact_picked, drop column contact_policy;
@@ -1076,7 +1083,7 @@ So it is in ring 1a, and its columns are in 075 (A0).
 
 **Produces:**
 - **The worker.** `startNoteJudge` runs `runOnce()` every `OTHERS.judgePollMs`. `runOnce()` claims, in one statement, at most `OTHERS.judgeOwnersPerPoll` Agents with `persona_version > persona_checked_version`, at most one per owner: `update agents set persona_checked_version = persona_version where id in (select distinct on (owner_id) id … for update skip locked) returning …`. The claim is the stamp, so an Agent is never handled twice for one version.
-  - While the switch is off, the claimed Agents are stamped and nothing is called (attack M11).
+  - While the switch is off the worker claims nothing, calls nothing and stamps nothing (A-4 review I2, reversing attack M11): at the first switch-on every existing persona is read once, at this pace.
   - It returns the calls made. Ring 1b's A7 and A8a add the judge batch and the withheld check to the same per-owner pass.
 - **The call.** While the switch is on: one `memoryCall`, as every memory call is today (the owner's memory model, reasoning `none`, the owner's memory allowance; no judge unit). It asks which persona sentences state facts about the owner or a third person.
 - **The cards.** Only sentences found verbatim in the persona as it is now are kept, at most 3. Each gets one `persona_fact` card in the Agent's own conversation (event of "Step 0 interfaces"), and the wire `card: {answer, expired, sentence}` goes to the owner only.
@@ -1094,7 +1101,7 @@ So it is in ring 1a, and its columns are in 075 (A0).
   - one call per persona version, and two workers polling at once make one call;
   - a move removes exactly that sentence, adds the owner note and makes no new call;
   - a second move → 409;
-  - personas saved while the switch was off make no call when it is turned on;
+  - personas saved while the switch was off make no call and are not stamped; turned on, each is read once, 10 owners a poll;
   - the card and its `card` field reach the owner only (`HIDDEN_KEYS`);
   - web: the wording and both buttons; 「移到“关于我”」 sends `move: true`; an answered card shows no button.
 - [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `POST /api/agents/:id/persona-facts/:seq` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
@@ -1957,6 +1964,12 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - **I1.** One rule for every ending in groups: an ending takes THAT person's calls out of a group reply and never cancels it as a whole; queued: drop the calls, cancel quietly when none is left; running: stopped as a social reply when the ended person is its only caller, goes on otherwise (A5a). Lane B's B5b completes it (see the report's note).
   - **Recorded as right:** `liftBar` handing a stop's bar to a standing block was right in the one-row model and is gone with it; the write rule of A3a, the approval-vs-bar and claim-vs-ending race tests (each asserts a real wait), the lock order (pair, direct notice, Agents in id order, rows, runs), `endGrants` taking no conversation row, and the money path of a stopped reply (the existing pause settlement) were confirmed by the review.
   - **For the errands plan (Agent subjects, unreachable through ring-1 routes):** (a) a person's block of an Agent ends only the person's own row, so their Agents' live rows on it stay live (refused meanwhile by `reach` step 3) and grant again after the unblock; the errands plan must end them too. (b) Narrowing an Agent subject's row ends the group calls its person made though the person's own approved row may stand; the errands plan must scope that by subject. (c) `addContact` reads an Agent subject's own ended row and its person's row; the errands plan decides what an Agent subject's cooldown is.
+- **Controller ruling 2026-11-24 (A-4 review)** (lane A block 4's review, `sociala-b4-review.md`):
+  - **I1.** `agent:disable` takes effect in groups through the ONE access decision (`refusedSql`, whose first step is `gone` for a disabled Agent), which lane B's B5b wires into every group site. Ring 1a deploys only as a whole, so the README and the CLI line say this for the whole, not "groups alike" as a claim about lane A alone. Lane I verifies it (I1a: a disabled Agent answers nobody in a group).
+  - **I2.** Reverses the M11 ruling, whose reason (no burst at deploy) the worker's limit of 10 owners per 5-second poll already meets. 075 (applied nowhere) is edited: no persona is marked as checked, and the worker with the switch off claims, calls and stamps nothing. At the first switch-on every existing persona is read once, at the worker's pace, within each owner's daily memory allowance.
+  - **m4.** The root fix while 075 is editable: `agent_contacts.barred_by` records whose bar ended a row (set with the ending `barred`, null otherwise). Lifting a bar relabels only the rows that setter's bar ended, and only when the setter has no bar left against the other person; the other person's bar never changes a label, so the result no longer depends on who lifts last.
+  - **m1.** `reports:close --outcome disabled` also disables the Agent, through the same path as `agent:disable` (the plan's A10 says the report's outcome is "disabled"; the outcome that records without acting is the trap).
+  - **m10, m12.** The summary leg of the memory-isolation canary must be able to fail; shared test files get appended rows only.
 - **Accepted as proposed:** `reach` in `social/reach.ts` (D2); separate owner and judge columns (D4); shared files written once in Step 0 (D12).
 - **Controller ruling 2026-11-24 (final):**
   - the two-part hold, the three-part ruling withdrawn, spend ≤ hold proved for its four cases (B2b);
