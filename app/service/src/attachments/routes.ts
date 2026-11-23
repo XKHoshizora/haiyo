@@ -297,7 +297,7 @@ export function registerAttachmentRoutes(app: FastifyInstance): void {
   /** After the cheap checks: hold a key, stream the file, then re-check and insert under the send locks. */
   async function acceptUpload(req: FastifyRequest, reply: FastifyReply, conversationId: string, uploaderId: string) {
     // Refuse what is obviously refused before reading a byte of the body: the answers a send gets.
-    const verdict = await canSend(db, conversationId, uploaderId);
+    const verdict = await canSend(db, conversationId, uploaderId, config);
     if (!verdict) throw notFound();
     if (!verdict.ok) throw new AppError(403, "cannot_send", { reason: verdict.reason });
     if ((await usedBytes(db, uploaderId)) >= config.attachmentQuotaBytes) throw quotaExceeded();
@@ -322,6 +322,7 @@ export function registerAttachmentRoutes(app: FastifyInstance): void {
           t,
           { conversationId, uploaderId, blobKey: key, name: file.name, size: file.size, mime, inline },
           config.attachmentQuotaBytes,
+          config,
         ),
       );
       return reply.code(201).send(stored);

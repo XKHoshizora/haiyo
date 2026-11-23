@@ -246,7 +246,7 @@ export async function seedDemo(db: Db, config: Config, auth: Auth, input: DemoIn
     if (!(await currentMemberIds(t, groupId)).includes(agent.id)) await addMember(t, groupId, reviewerId, agent.id);
     // What the two people said, once: a message already there under its key is not sent again.
     for (const [i, line] of SEEDED.entries()) {
-      await sendMessage(t, groupId, memberIds[line.by]!, { text: line.text, clientTxn: `demo-seed-${i + 1}` });
+      await sendMessage(t, groupId, memberIds[line.by]!, { text: line.text, clientTxn: `demo-seed-${i + 1}` }, config);
     }
 
     return {

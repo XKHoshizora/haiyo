@@ -1,9 +1,11 @@
+import type { Config } from "../config.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
 import type { PairEvent, StoredMessage } from "../messages/model.ts";
 import { AGENT_PROFILE_COLUMNS, AGENT_PROFILE_JOIN, agentProfile, type AgentProfile, type AgentProfileRow } from "../messages/principals.ts";
 import { handleOf } from "../principals/store.ts";
 import { lockPair, orderedPair } from "../social/pair.ts";
+import { reach, type Reach } from "../social/reach.ts";
 import { canDirectSend } from "../social/relations.ts";
 import { appendSystem } from "./system.ts";
 
@@ -32,7 +34,7 @@ export const VISIBLE_JOIN = visibleJoin("$1");
 
 export const MAX_GROUP_MEMBERS = 500;
 
-export type ConversationType = "direct" | "group" | "agent";
+export type ConversationType = "direct" | "group" | "agent" | "agent_social";
 
 export interface ConversationRow {
   id: string;
@@ -206,7 +208,17 @@ export async function lockForWrite(t: Tx, conversationId: string, principalId: s
   return { conversation, membership, peerId };
 }
 
-export type CanSend = { ok: true } | { ok: false; reason: "blocked" | "not_friends" | "agent_deleted" };
+export type CanSend = { ok: true } | { ok: false; reason: "blocked" | "not_friends" | "agent_deleted" | "no_access" | "agent_unavailable" };
+
+/**
+ * `lock`: inside a write that holds the conversation row (`assertCanSend`): a social conversation's participating Agents' rows are
+ * taken `for update`, in id order, so that a delete, a pause or a bar committing meanwhile is seen by the next write and not this
+ * one. `config` carries the site's Agent social switch to `reach`.
+ */
+interface PermissionOptions {
+  lock: boolean;
+  config: Pick<Config, "social">;
+}
 
 async function permission(
   q: Queryable,
@@ -214,6 +226,7 @@ async function permission(
   conversationId: string,
   principalId: string,
   peerId: string | null,
+  opts: PermissionOptions,
 ): Promise<CanSend> {
   if (type === "group") return { ok: true };
   if (type === "agent") {
@@ -226,19 +239,49 @@ async function permission(
     );
     return rows[0]?.deleted === false ? { ok: true } : { ok: false, reason: "agent_deleted" };
   }
+  if (type === "agent_social") return socialPermission(q, conversationId, principalId, opts);
   const reason = await canDirectSend(q, principalId, peerId!);
   return reason ? { ok: false, reason } : { ok: true };
 }
 
 /**
+ * Who may write in a social conversation, by `reach` (social/reach.ts): a person who is a participant, and an owner who supervises
+ * it, may write iff `reach(them, the Agent, 'social')` is `ok`; in an Agent-to-Agent conversation a supervising owner may write
+ * iff `reach(them, each Agent, 'group')` is. Refusals: `blocked` stays `blocked`; `gone` is `agent_deleted` when the Agent is
+ * deleted, else `agent_unavailable`; `barred` and `no_access` are `no_access`.
+ */
+async function socialPermission(q: Queryable, conversationId: string, principalId: string, opts: PermissionOptions): Promise<CanSend> {
+  const { rows: parts } = await q.query<{ id: string; kind: "human" | "agent" }>(
+    `select p.id, p.kind from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id) where sp.conversation_id = $1 order by p.id`,
+    [conversationId],
+  );
+  const agentIds = parts.filter((p) => p.kind === "agent").map((p) => p.id);
+  if (agentIds.length === 0) return { ok: false, reason: "no_access" };
+  // The Agents' rows, in id order (`lockAgent`'s order), after the conversation row the write already holds.
+  if (opts.lock) await q.query("select principal_id from agents where principal_id = any($1::uuid[]) order by principal_id for update", [agentIds]);
+  const verdicts: Reach[] = [];
+  if (agentIds.length === 1) verdicts.push(await reach(q, principalId, agentIds[0]!, "social", opts.config));
+  else for (const id of agentIds) verdicts.push(await reach(q, principalId, id, "group", opts.config));
+  const refused = verdicts.findIndex((v) => v !== "ok");
+  if (refused < 0) return { ok: true };
+  const why = verdicts[refused]!;
+  if (why === "blocked") return { ok: false, reason: "blocked" };
+  if (why === "gone") {
+    const { rows } = await q.query<{ deleted: boolean }>("select deleted_at is not null as deleted from agents where principal_id = $1", [agentIds[refused]]);
+    return { ok: false, reason: rows[0]?.deleted === true ? "agent_deleted" : "agent_unavailable" };
+  }
+  return { ok: false, reason: "no_access" };
+}
+
+/**
  * Whether `principalId` may send in the conversation right now: direct chats follow the pair's
  * friendship and blocks, groups let every current member send, an Agent's conversation lets its owner send
- * until the Agent is deleted. Null when not a current member of an
+ * until the Agent is deleted, a social conversation follows `reach` (above). Null when not a current member of an
  * open conversation. Advisory outside a transaction: the upload route's pre-check uses it, and sends and
  * uploads re-check under the locks. `GET /api/sync` gives the same verdict for all its direct chats at
  * once (canDirectSendMany); every one of these takes the other party from `direct_pairs`.
  */
-export async function canSend(q: Queryable, conversationId: string, principalId: string): Promise<CanSend | null> {
+export async function canSend(q: Queryable, conversationId: string, principalId: string, config: Pick<Config, "social">): Promise<CanSend | null> {
   const { rows } = await q.query<{ type: ConversationType; a_id: string | null; b_id: string | null }>(
     `select c.type, d.a_id, d.b_id
        from conversations c
@@ -250,12 +293,12 @@ export async function canSend(q: Queryable, conversationId: string, principalId:
   const r = rows[0];
   if (!r) return null;
   const peerId = r.type === "direct" ? (r.a_id === principalId ? r.b_id : r.a_id) : null;
-  return permission(q, r.type, conversationId, principalId, peerId);
+  return permission(q, r.type, conversationId, principalId, peerId, { lock: false, config });
 }
 
 /** Inside a write holding `lockForWrite`: 403 `cannot_send` with the reason, the same refusal a send gets. */
-export async function assertCanSend(t: Tx, lock: WriteLock): Promise<void> {
-  const verdict = await permission(t, lock.conversation.type, lock.conversation.id, lock.membership.principalId, lock.peerId);
+export async function assertCanSend(t: Tx, lock: WriteLock, config: Pick<Config, "social">): Promise<void> {
+  const verdict = await permission(t, lock.conversation.type, lock.conversation.id, lock.membership.principalId, lock.peerId, { lock: true, config });
   if (!verdict.ok) throw new AppError(403, "cannot_send", { reason: verdict.reason });
 }
 
@@ -292,6 +335,14 @@ export async function ensureDirect(t: Tx, a: string, b: string, creatorId: strin
     [id, lo, hi],
   );
   return id;
+}
+
+/**
+ * The social conversation of a person (or Agent) `subjectId` with Agent `agentId`, created on first use together with its first
+ * message, `social_opened` (the disclosure). Lane A (A3a, ring 1a). STEP 0: throws.
+ */
+export async function ensureSocial(_t: Tx, _subjectId: string, _agentId: string): Promise<{ conversationId: string; created: boolean; notice: StoredMessage | null }> {
+  throw new Error("ring 1: lane A");
 }
 
 /**

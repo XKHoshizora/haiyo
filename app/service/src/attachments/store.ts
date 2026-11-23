@@ -1,3 +1,4 @@
+import type { Config } from "../config.ts";
 import { assertCanSend, lockForWrite, VISIBLE_JOIN } from "../conversations/store.ts";
 import type { Db, Queryable, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
@@ -42,9 +43,9 @@ export async function usedBytes(q: Queryable, uploaderId: string): Promise<numbe
  * `{reason: "quota"}`), and inserts the row, releasing the blob's pending record in the same
  * transaction (see pending.ts). The caller discards the blob if this throws.
  */
-export async function insertAttachment(t: Tx, a: NewAttachment, quotaBytes: number): Promise<AttachmentRef> {
+export async function insertAttachment(t: Tx, a: NewAttachment, quotaBytes: number, config: Pick<Config, "social">): Promise<AttachmentRef> {
   const lock = await lockForWrite(t, a.conversationId, a.uploaderId);
-  await assertCanSend(t, lock);
+  await assertCanSend(t, lock, config);
   await t.query("select pg_advisory_xact_lock($1::int, hashtext($2::text))", [QUOTA_LOCK_CLASS, a.uploaderId]);
   if ((await usedBytes(t, a.uploaderId)) + a.size > quotaBytes) throw quotaExceeded();
   await releaseBlob(t, a.blobKey);

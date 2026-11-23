@@ -10,6 +10,7 @@ import { api, befriend, group, signUp, TERMS, type Actor } from "./helpers/actor
 import { mustCreateAgent, PNG, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
+import { SOCIAL_ON } from "./helpers/social.ts";
 import { BOUNDARY, CLOSING, MULTIPART, multipart, partHead } from "./helpers/multipart.ts";
 import { providerBody } from "./helpers/providers.ts";
 import { APP_ORIGIN, issueTicket, listen, tryConnect } from "./helpers/ws.ts";
@@ -40,7 +41,8 @@ const models: ModelGateway = {
 const providerProbe: ProviderProbe = { test: async () => {}, listModels: async () => ["fuzz-model"] };
 
 const { blobs } = useProbeBlobs("af-fuzz-");
-const { app } = useApp({ blobs, env: SITE_ENV, models, providerProbe, agentWorker: false });
+// The Agent social switch is on, so that no route of it is hidden from the rules below by the switch (the routes are lane A's and B's to add).
+const { app } = useApp({ blobs, env: SITE_ENV, models, providerProbe, agentWorker: false, config: SOCIAL_ON });
 
 const FUZZ_TIMEOUT = 120_000;
 const UUID = "3f1c2a4e-9b7d-4c1e-8a2f-5d6e7f809a1b";

@@ -177,6 +177,37 @@ export const resetTopic = (conversationId) => request("POST", `/api/conversation
 export const haltAgents = (conversationId) => request("POST", `/api/conversations/${seg(conversationId)}/agents/halt`);
 
 // ───────── model providers (the API key is sent in a body and never comes back: `keyLast4` only)
+// ───────── Agent social (app/service/README.md "Agent social"; lane A's contacts, bars, reports and verdicts, lane B's numbers)
+/** The Agents I added and the requests waiting for me → {mine: [{agentId, state, conversationId, since, until, ended}], waiting: [...]}. */
+export const listAgentContacts = () => request("GET", "/api/agent-contacts");
+/** Add an Agent: 201 {state: "live", conversationId} · 202 {state: "requested", until} · 404 · 409 is_yours · 429 cooldown {availableAt}. */
+export const addAgentContact = (agentId) => request("POST", "/api/agent-contacts", { agentId });
+/** The owner lets a requester in → {state: "live", conversationId}; 409 not_requested. */
+export const approveAgentContact = (agentId, subjectId) => request("POST", `/api/agent-contacts/${seg(agentId)}/${seg(subjectId)}/approve`);
+export const declineAgentContact = (agentId, subjectId) => request("POST", `/api/agent-contacts/${seg(agentId)}/${seg(subjectId)}/decline`);
+/** Ends an access: by the owner it is removed, by the subject left → {ok: true}. */
+export const removeAgentContact = (agentId, subjectId) => request("DELETE", `/api/agent-contacts/${seg(agentId)}/${seg(subjectId)}`);
+/** My Agent's contacts and policy (the owner only) → {policy, picked, picks, rows, conversations}. */
+export const getAgentContacts = (agentId) => request("GET", `/api/agents/${seg(agentId)}/contacts`);
+/** body: {policy: "ask" | "contacts" | "none", picked, picks: [id], dryRun?} → {ends}. */
+export const putContactPolicy = (agentId, body) => request("PUT", `/api/agents/${seg(agentId)}/contact-policy`, body);
+/** 停止往来 with a person → {ok: true, ended}. */
+export const putBar = (personId) => request("PUT", `/api/bars/${seg(personId)}`);
+/** 恢复往来 (my own bar only) → {ok: true}. */
+export const deleteBar = (personId) => request("DELETE", `/api/bars/${seg(personId)}`);
+/** body: {agentId, reason: "spam" | "harassment" | "privacy" | "other", note?} → 201 {id}. */
+export const reportAgent = (body) => request("POST", "/api/reports", body);
+/** The owner's yes or no on one note for one person; body: {noteKind, noteId, audienceId, share, cardSeq?} → {ok: true}. */
+export const putNoteVerdict = (agentId, body) => request("PUT", `/api/agents/${seg(agentId)}/note-verdicts`, body);
+/** Answers the persona-fact card at message `seq` → {ok: true, moved}; 409 answered | expired. */
+export const answerPersonaFact = (agentId, seq, move) => request("POST", `/api/agents/${seg(agentId)}/persona-facts/${seg(seq)}`, { move });
+/** What others' use of my Agents has cost today against my two numbers → {limits, used, reached, byPerson, stopped, agents, notice}. */
+export const getOthersUse = () => request("GET", "/api/me/others-use");
+/** body: {answers: 1..1000, points: "decimal 1..100000"} → {answers, points}. */
+export const putOthersLimits = (body) => request("PUT", "/api/me/others-limits", body);
+/** The one-time notice about the per-person limit was seen → {ok: true}. */
+export const seenOthersNotice = () => request("POST", "/api/me/others-limits/seen");
+
 export const listProviders = () => request("GET", "/api/providers"); // → {providers: [Provider]}
 /** body: {name, protocol, baseUrl, apiKey, models?} → Provider */
 export const createProvider = (body) => request("POST", "/api/providers", body);

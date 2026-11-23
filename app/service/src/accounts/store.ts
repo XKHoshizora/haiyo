@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Queryable, Tx } from "../db.ts";
 
 /** Micro-points in one point. Money is `bigint` micro-points everywhere; on the wire it is a decimal string of points. */
@@ -30,6 +31,18 @@ export function parsePoints(text: string): bigint | null {
   const micro = BigInt(m[2]!) * MICRO_PER_POINT + BigInt((m[3] ?? "").padEnd(6, "0"));
   return m[1] === "-" ? -micro : micro;
 }
+
+/**
+ * A number of points as a request gives it: a decimal string (no sign, no exponent, at most 6 fraction digits), exact micro-points
+ * once parsed, from `min` to `max` micro-points inclusive. The one schema of a points limit in a request body (an Agent's
+ * `chainBudget`, `othersBudget`, `proactiveBudget`; the owner's numbers for others' use).
+ */
+export const pointsBetween = (min: bigint, max: bigint) =>
+  z
+    .string()
+    .regex(/^[0-9]{1,6}(?:\.[0-9]{1,6})?$/)
+    .transform((s) => parsePoints(s)!)
+    .refine((micro) => micro >= min && micro <= max);
 
 const parts = (now: Date, timeZone: string, options: Intl.DateTimeFormatOptions): Record<string, string> =>
   Object.fromEntries(

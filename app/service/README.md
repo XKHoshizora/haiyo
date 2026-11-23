@@ -236,6 +236,17 @@ refused with 403 `terms_required` until it is reloaded). Accounts made while it 
 an 18+ declaration); they are asked once, at their next request.),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
 whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
+`SOCIAL` (the operator's switch for Agent social, JSON; Agent social, Configuration: `enabled` (boolean, default `false`: people
+other than an Agent's owner cannot reach it — no social conversation can be made, written in or run, and no entry point shows —;
+groups and everything that exists today behave as ever)),
+`OTHERS` (the numbers that bound others' use of an Agent, JSON, every field optional; Agent social, Configuration: `answersPerDay`
+(50) and `pointsPerDay` (70) are an owner's daily caps for what others cause, one value each whatever the number of Agents;
+`toolCalls` (1), `overCapNotes` (3), `outputTokens` (800) bound one others' reply; `contextWeight` (4000) and `notesWeight` (1000)
+what it is shown; `judgeBatch` (20), `judgeCallsPerDay` (5), `withheldCallsPerDay` (3, always less than `judgeCallsPerDay`),
+`judgeAttemptsPerVersion` (2), `judgeInputBytes` (9000), `judgeOutputTokens` (2200), `judgeOwnerExamples` (4), `judgePollMs` (5000),
+`judgeOwnersPerPoll` (10), `withheldInputBytes` (6000) and `withheldCardsMax` (3) the notes judge of ring 1b; `cardDays` (7),
+`requestDays` (7) and `cooldownDays` (30) how long a card can be answered, a contact request waits, and a stopped or declined
+request is refused),
 `AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional;
 Replies, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic retry of one original call, in ms; at
 most 2, each 0–600 000; default `[20000, 120000]`; `[]` turns automatic retries off)),
@@ -527,7 +538,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 
 Everything else is not rate limited.
 
-**Metrics in the log.** The service writes ten kinds of line at `info`, each a JSON log object with a `metric` field,
+**Metrics in the log.** The service writes ten kinds of line at `info` (and the Agent social counters at the end of this list), each a JSON log object with a `metric` field,
 for an operator to tune the numbers above (and the site's models) from (nothing else about them is recorded or exposed):
 
 - `{ "metric": "run_wait_ms", "lane", "ms" }`, once for each reply the worker claims (its first claim; not again when it is
@@ -573,6 +584,12 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
 Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_partial`, `judge_daily_limit`): Proactive
 replies, Log. Pushes write theirs (`push`, `push_off`, `push_config_refused`, `push_devices_expired`, `push_targets_failed`,
 `push_failed`): Push notifications, Counters in the log.
+
+Agent social writes ten (Agent social, Counters; each a count and an id or a reason, never a text): `note_judge_calls`,
+`note_judge_refused_count`, `note_judge_unanswered`, `withheld_checks` (ring 1b's judge and withheld check),
+`others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback` (what others' use of an Agent
+was refused, held back, cut short or finished without tools), `social_post_refused` (a social reply the post-time check
+stopped) and `agent_reported` (a report of an Agent).
 
 ### Usage and points
 
@@ -767,7 +784,7 @@ push or error. Fellow members see a changed name, intro or field the next time t
 principals, as for people; a changed avatar, or a handle its owner's rename changed, is pushed to them (`principal`).
 
 **Agent** (owner only): `{"id", "handle", "name", "avatarVersion", "intro", "field", "persona", "personaVersion", "replyMode":
-"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersBudget", "othersSpentToday", "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
+"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersBudget", "othersSpentToday", "othersLimit": {"answers": number | null, "points": string | null} | null, "othersUsedToday": {"answers", "points"}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
 "xhigh" | "max", "model": {"source": "site", "id"} | {"source": "provider", "providerId", "model"} | null, "modelUsable", "paused",
 "deleted", "conversationId", "createdAt"}`. `conversationId` is the Agent's dedicated conversation. `modelUsable` is
 false when its model is not there to call any more — taken off its provider's list, or a site model the site no longer
@@ -2761,8 +2778,9 @@ How they work together is under Sync and realtime below.
 
 #### `GET /api/sync`
 
-*Session: required.* Everything a client loads at start → 200 `{"me", "conversations", "principals",
-"messages", "whispers"?}` (shape under Wire shapes). `whispers` (only when there are any): your own whispers (Whispers)
+*Session: required.* Everything a client loads at start → 200 `{"me", "social", "conversations", "principals",
+"messages", "whispers"?}` (shape under Wire shapes). `social` is `{"enabled": boolean}`: the site's Agent social switch
+(`SOCIAL.enabled`); a client shows nothing of Agent social while it is false. `whispers` (only when there are any): your own whispers (Whispers)
 — every open one, and the answered or expired ones that follow a message `messages` holds (all of a conversation whose
 messages are all there) —, at most 500 (every open one first, then the newest answered or expired ones), ascending by
 `afterSeq`, then `createdAt`, per conversation in `conversations` order. Limit: 60 per minute.
@@ -2810,6 +2828,102 @@ Errors: 400 `invalid_request` (a field missing or malformed), 401 `unauthenticat
 by itself (the session's row is deleted, and the device with it); the page calls this first so that nothing is pushed in
 between.
 
+### Agent social
+
+People other than an Agent's owner reach it in a conversation of its own kind, `agent_social`: two participants (a person
+and the Agent) who speak, and the Agent's owner who watches (role `observer`, shown as 主人) and may write in it. They find
+the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以加它为好友」:
+`需要我同意` by default, `我的联系人可以直接加`, `不让别人加`), and cost the owner at most two daily numbers. Every way access
+ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid) and **1b** (notes
+shown to a non-owner).
+
+**STEP 0 status.** No route of Agent social is registered yet: the two route files exist and are wired in, and register none, so each route below answers the ordinary 404 until its lane adds it. Each entry under 「Planned」 is the contract the lane writes to; the lane that adds a route turns its line into a `####` heading in the same edit (`tests/readme.test.ts` wants a heading for every served route and for no other), adds its probe row to `tests/fuzz.test.ts` and, for a path parameter not in the list yet, its name to `tests/logging.test.ts`. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
+
+**Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's daily caps, what one reply to
+others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
+
+**Counters.** `{ "metric": "<name>", … }` at `info`, ids and counts only: `note_judge_calls`, `note_judge_refused_count`,
+`note_judge_unanswered`, `withheld_checks`, `others_limit_refused`, `others_held_back`, `others_turn_discarded`,
+`others_plain_fallback`, `social_post_refused`, `agent_reported`.
+
+**Planned: `POST /api/agent-contacts`**
+
+*Session: required.* Body `{"agentId": "<uuid>"}`: add an Agent (lane A, ring 1a). → 201 `{"state": "live", "conversationId"}`
+(let in), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days), 404 `not_found`, 409 `is_yours`, 429
+`cooldown` `{"availableAt"}`.
+
+**Planned: `GET /api/agent-contacts`**
+
+*Session: required.* (lane A, ring 1a) → 200 `{"mine": [{"agentId", "state", "conversationId", "since", "until", "ended":
+"declined" | "ended" | null}], "waiting": [{"agentId", "subject", "since", "until"}]}`. The visitor never learns why access ended.
+
+**Planned: `POST /api/agent-contacts/:agentId/:subjectId/approve`**
+
+*Session: required.* No body. The Agent's owner lets a requester in (lane A, ring 1a). → 200 `{"state": "live", "conversationId"}`;
+409 `not_requested`; 404 `not_found`.
+
+**Planned: `POST /api/agent-contacts/:agentId/:subjectId/decline`**
+
+*Session: required.* No body. The owner declines a request (lane A, ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`.
+
+**Planned: `DELETE /api/agent-contacts/:agentId/:subjectId`**
+
+*Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed`, by the subject `left`. → 200 `{"ok": true}`.
+
+**Planned: `GET /api/agents/:id/contacts`**
+
+*Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
+"picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations": […]}`.
+
+**Planned: `PUT /api/agents/:id/contact-policy`**
+
+*Session: required; the Agent's owner only.* Body `{"policy": "ask" | "contacts" | "none", "picked": boolean, "picks":
+["<uuid>"] (at most 500), "dryRun"?: boolean}` (lane A, ring 1a). → 200 `{"ends": number}`: how many accesses the change ends (with
+`dryRun`, only counted).
+
+**Planned: `PUT /api/bars/:personId`**
+
+*Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (lane A, ring 1a).
+→ 200 `{"ok": true, "ended": number}`.
+
+**Planned: `DELETE /api/bars/:personId`**
+
+*Session: required.* 恢复往来: lifts your own bar (never one a block set; lane A, ring 1a). → 200 `{"ok": true}`; 404 `not_found` otherwise.
+
+**Planned: `POST /api/reports`**
+
+*Session: required.* Body `{"agentId": "<uuid>", "reason": "spam" | "harassment" | "privacy" | "other", "note"?: string
+(at most 500)}` (lane A, ring 1a). → 201 `{"id"}`.
+
+**Planned: `PUT /api/agents/:id/note-verdicts`**
+
+*Session: required; the Agent's owner only.* Body `{"noteKind": "owner" | "self", "noteId", "audienceId", "share": boolean,
+"cardSeq"?: number}` (lane A, ring 1b): the owner's yes or no on one note for one person; a card's answer names its message
+in `cardSeq`. → 200 `{"ok": true}`.
+
+**Planned: `POST /api/agents/:id/persona-facts/:seq`**
+
+*Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
+message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
+
+**Planned: `GET /api/me/others-use`**
+
+*Session: required.* (lane B, ring 1a) → 200 `{"limits": {"answers", "points"}, "used": {"answers", "points"}, "reached": boolean,
+"byPerson": [{"person", "answers", "points"}], "stopped": [{"person", "since"}], "agents": [{"agentId", "answers", "points",
+"perDay"}], "notice": boolean}`: what others' use of your Agents has cost today, against your two numbers. An Agent's own
+`othersLimit` (`{"answers": number | null, "points": string | null} | null`) is a sub-limit inside them; `PATCH /api/agents/:id`
+sets it, and the Agent shape's `othersLimit` and `othersUsedToday` replace `othersBudget`, `othersSpentToday` and
+`proactiveSpentToday` when lane B lands (`proactiveBudget` stays).
+
+**Planned: `PUT /api/me/others-limits`**
+
+*Session: required.* Body `{"answers": 1–1000, "points": "<decimal string of points, 1–100 000>"}` (lane B, ring 1a): your two
+daily numbers for what others cause. → 200 `{"answers", "points"}`. Unset, `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` apply.
+
+**Planned: `POST /api/me/others-limits/seen`**
+
+*Session: required.* No body (lane B, ring 1a): the one-time notice that others' use is now counted per person has been seen. → 200 `{"ok": true}`.
+
 ## Wire shapes
 
 **Principal** (in `/api/sync`'s `principals`, and the `principals` of message reads and searches): `{"id", "handle", "displayName", "avatarVersion", "kind": "human" | "agent", "ownerId"?, "intro"?, "field"?}`.
@@ -2824,7 +2938,7 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
 
 ```jsonc
 {
-  "id": "…", "type": "direct" | "group" | "agent", "title": "team" /* null in direct chats */,
+  "id": "…", "type": "direct" | "group" | "agent" | "agent_social", "title": "team" /* null in direct chats */,
   "creatorId": "…",                                // groups only: a direct chat has no creator role
   "avatarVersion": 3,                              // groups with an avatar only (GET /api/conversations/:id/avatar?v=)
   "myRole": "speaker" | "observer", "closed": false,
@@ -2832,7 +2946,8 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
   "peerId": "…",                                   // direct chats only: the other person of the pair
   "agentId": "…",                                  // Agent conversations only: the Agent (no peerId)
   "agent": { "paused": false, "deleted": false },  // Agent conversations only
-  "canSend": { "ok": true } | { "ok": false, "reason": "blocked" | "not_friends" | "closed" | "agent_deleted" },
+  "canSend": { "ok": true } | { "ok": false, "reason": "blocked" | "not_friends" | "closed" | "agent_deleted" | "no_access" | "agent_unavailable" },
+  "social": { "participants": ["<lower id>", "<higher id>"], "agents": [{ "id": "…", "ownerId": "…" }] },   // social conversations (type "agent_social") only; nothing owner-only; myRole there: speaker for a participant, observer for a supervising owner
   "members": [{ "id": "…", "role": "speaker", "isCreator": true }],   // current members, join order; isCreator only in groups
   "lastSeq": 42,       // the conversation's newest seq (counts messages from before you joined too)
   "readSeq": 40,       // your read marker
@@ -2977,6 +3092,9 @@ client can render its own:
 | `agent_chain_paused` | `actorId` (the Agent whose message it was), `limit` (`AGENT_CHAIN_LIMIT`) | in a group, the first Agent's message that would call another Agent after the last `limit` messages that are not notices were all Agents'; once until a person writes: “Agent 已连续对话 {limit} 条，已暂停互相接话，有人发言后继续。” |
 | `agent_budget_reached` | `actorId` = `agentId` (the Agent whose `chainBudget` is reached) | in a group, the first Agent's message that would call it once its chain budget is reached — or the end of its reply that reached it, when only Agents' messages were noted on that reply for a follow-up (pushed after that reply's `run`); once per Agent until a person writes: “{Agent 名} 已达到本次接话的点数上限，有人发言后继续。” |
 | `agent_daily_budget_reached` | `actorId` = `agentId` (the Agent whose others' daily budget is spent) | in a group, the first call on the Agent by someone other than its owner that finds the budget spent — a mention, a follow-up of one, or a reply such a call queued as it is about to start; once per site day for each conversation and Agent, whoever calls; nothing of lane or caller goes with it: “「{Agent 名}」今天的额度已用完” |
+| `social_opened` | `actorId` (the Agent reached), `agentIds`, `ownerIds` (the owners who watch and may write) | the first message of an `agent_social` conversation (Agent social): “这是{主人}的 Agent。{主人}能看到你们的对话，也可能插话。” (two owners: their names joined by 、) |
+| `note_withheld` | `actorId` = `agentId`, `audienceId`, `noteKind` (`owner` or `self`), `noteId`, `expiresAt` | ring 1b, in the Agent's own conversation, for its owner only: a note it held back from someone who asked about it (Agent social): “有一条笔记没有告诉别人” (the card's details come with the event, to the owner's client alone) |
+| `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有一句话可能是事实” |
 | `agent_quieted` | `actorId` = `agentId` (the Agent asked to keep quiet) | in a group, a person's message the judgement model is sure asks the Agent to be quiet, or says it is a nuisance: it hardly replies there unasked for a while (a mention still calls it); at most once an hour for each conversation and Agent; nothing says who asked: “「{Agent 名}」暂时不主动发言，需要时可以 @ 它” |
 
 Clients must ignore fields and events they do not know: later batches add more.
@@ -3074,6 +3192,7 @@ downloads.
 ```jsonc
 {
   "me": { "id": "…", "handle": "alice", "displayName": "Alice", "avatarVersion": 0, "email": "alice@example.test" },
+  "social": { "enabled": false },                    // the site's Agent social switch (SOCIAL.enabled)
   "conversations": [ /* Conversation, see Wire shapes; the ones you are a current member of */ ],
   "principals": [{ "id": "…", "handle": "bob", "displayName": "Bob", "avatarVersion": 0, "kind": "human" | "agent" }],   // Principal, by handle; an Agent adds "ownerId", "intro", "field"
   "messages": [ /* WireMessage: per conversation its newest 30 visible messages, ascending by seq */ ]
@@ -4499,6 +4618,7 @@ milliseconds.
 | Field | Default (range) | What it does |
 |---|---|---|
 | `model` | none (a site model's `id`) | The site model memory calls use; none: the cheapest free-tier site model (Memory calls) |
+| `judgeModel` | none (a site model's `id`; one that is not in `SITE_MODELS` stops the start) | The site model the notes judge and the withheld check use (Agent social, ring 1b); none: the memory model's |
 | `roomOwner`, `roomSelf`, `roomHearsay` | 2000, 3000, 2000 (1–3000: the database guards a note at 9000 characters) | What the notes about the owner, an Agent's own notes and what it heard may hold, at most, in weight |
 | `modelEntryMax` | 200 (1–200) | The longest an entry a model wrote is, in weight (every model-written note, in a review, a dream, hearsay and a conversion, and every item of a rolling summary, is held to it; the database guard of 600 characters on hearsay covers 200 weight) |
 | `quietMs`, `maxReplies` | 600 000 (1–86 400 000), 8 (1–1 000) | A review of an Agent's own conversation runs after this much quiet, or this many replies since the last |

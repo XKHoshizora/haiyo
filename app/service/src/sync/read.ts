@@ -9,7 +9,7 @@ import { waitingSql, whispersFrom } from "../whispers/store.ts";
 import { wireWhispers, type WireOptions, type WireWhisper } from "../whispers/wire.ts";
 
 /** What sync and catch-up read by: the site models' labels (messages), the site's time zone and `WHISPERS` (whispers). */
-export type SyncConfig = ReadConfig & Pick<Config, "siteTimezone" | "whispers">;
+export type SyncConfig = ReadConfig & Pick<Config, "siteTimezone" | "whispers" | "social">;
 const wireOptions = (config: SyncConfig): WireOptions => ({ timeZone: config.siteTimezone, elsewhereTtlHours: config.whispers.elsewhereTtlHours });
 
 /** How many of the newest visible messages per conversation `GET /api/sync` returns. */
@@ -20,6 +20,14 @@ export const CATCHUP_MAX_MESSAGES = 500;
 export const CATCHUP_MAX_POSITIONS = 500;
 
 type Role = "speaker" | "observer";
+
+/** What a social conversation (`agent_social`) shows of itself to everyone who is in it. Lane A fills it (A3b). */
+export interface SyncSocial {
+  /** The two participants (`social_pairs`), lower id first. */
+  participants: [string, string];
+  /** The participating Agents and their owners; nothing owner-only (no `paused`, no `deleted`: attack I12). */
+  agents: Array<{ id: string; ownerId: string }>;
+}
 
 export interface SyncConversation {
   id: string;
@@ -39,7 +47,12 @@ export interface SyncConversation {
   agentId?: string;
   /** Agent conversations only. */
   agent?: { paused: boolean; deleted: boolean };
-  canSend: { ok: true } | { ok: false; reason: "blocked" | "not_friends" | "closed" | "agent_deleted" };
+  canSend: { ok: true } | { ok: false; reason: "blocked" | "not_friends" | "closed" | "agent_deleted" | "no_access" | "agent_unavailable" };
+  /**
+   * Social conversations only (`type` `agent_social`): the participants and their Agents. `myRole` there is `speaker` for a
+   * participant and `observer` for a supervising owner.
+   */
+  social?: SyncSocial;
   members: Array<{ id: string; role: Role; isCreator: boolean }>;
   /** The conversation's last assigned seq (it reveals how much was said, also before the caller joined). */
   lastSeq: number;
@@ -58,6 +71,8 @@ export interface SyncConversation {
 export type { SyncPrincipal };
 
 export interface SyncView {
+  /** The site's Agent social switch (`SOCIAL.enabled`): a client shows nothing of Agent social while it is off. */
+  social: { enabled: boolean };
   conversations: SyncConversation[];
   /** Every principal the response mentions: members, the caller, and anyone named in a visible message. */
   principals: SyncPrincipal[];
@@ -242,6 +257,7 @@ export async function syncView(db: Db, me: string, config: SyncConfig): Promise<
     const principals = await readPrincipals(t, mentioned);
 
     return {
+      social: { enabled: config.social.enabled },
       conversations: out,
       principals,
       messages,

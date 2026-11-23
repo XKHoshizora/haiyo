@@ -85,6 +85,8 @@ export function initial() {
     refills: {},
     /** The last /api/social answer. */
     social: null,
+    /** The site's Agent social switch, as the last sync said (`sync.social.enabled`); false until it says true. (Not `social`: that is /api/social's.) */
+    socialOn: false,
     /** conversation id → how many times I left it (see `stayOf`). */
     stays: {},
     /** conversation id → detached window {n, messages, hasOlder, focusSeq} (see the header). */
@@ -254,6 +256,8 @@ function metadata(entry) {
     canSend: entry.canSend ?? { ok: false, reason: "closed" },
     members: entry.members ?? [],
     createdAt: entry.createdAt ?? null,
+    // A social conversation: its participants and their Agents (`agent_social` only; nothing owner-only).
+    ...(entry.type === "agent_social" ? { social: entry.social ?? null } : {}),
   };
 }
 
@@ -481,6 +485,7 @@ export function applySync(state, sync) {
     me: sync.me,
     owner: meId,
     synced: true,
+    socialOn: sync.social?.enabled === true,
     principals,
     avatarVersions,
     conversations,

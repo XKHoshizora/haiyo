@@ -35,7 +35,7 @@ Each is reported to the controller. "Controller ruling 2026-11-24" marks a rulin
 | D9 | `accounts.others_answers` 50, `others_points_micro` 70 | Constants the controller tunes; `agents.others_budget_micro` defaults to 20 points for every Agent (migrations/020_others_budget.sql:9) | Account columns nullable, null reads `OTHERS.answersPerDay` / `OTHERS.pointsPerDay`. **Controller ruling 2026-11-24 (attack, I7):** lane B's 074 (B4; moved out of Step 0 by Controller ruling 2026-11-24 (verification, E1)) raises an Agent's number from 20 to 70 points where it still holds 020's default. A value an owner set to exactly 20 cannot be told from the default, so **every row at exactly 20 points is raised**. New Agents get no number of their own (null: the owner's numbers bind). **Controller ruling 2026-11-24 (final):** the cap is per owner per day, one value each (50 answers, 70 points by default), decided by `othersFits` under the account lock; it never multiplies with the number of Agents. No migration writes an owner number: null reads the config default. An Agent's own number is only a sub-limit inside its owner's, and the raise to 70 (the owner's default) cannot pass it. The design's migration table says otherwise; both sentences are set side by side under "Design conflict for the owner", and ring 1a implements the per-owner reading. Acceptance data is disposable. The 70 default is still the owner's to confirm (Rollout). |
 | D10 | The points cap waits in `HeldBack` | `HeldBack.on` takes `free`, `balance`, `any` (admit.ts:56) | An others' hold-back is `HeldBack(behind, "any")`; the owner's own replies never wait behind it (`olderMarkSql`, admit.ts:130). |
 | D11 | "Tools are offered only when the advisory room covers the hold with tools" | Step 1 of `begin` has the plan, not yet the attachments' bytes | Step 1 estimates the hold with tools from the plan's texts; step 3 decides exactly under the lock. If step 3 refuses a with-tools hold for points while the plain hold fits, the run falls back to a plain call (attack M12). This holds for both kinds of points refusal, a wait or a limit: one money invariant (Controller ruling 2026-11-24 (verification), N3; B1). |
-| D12 | Lanes share nothing after Step 0 | `README.md` headings must match served routes (`tests/readme.test.ts`); `config.ts`, `app.ts`, both `HIDDEN_KEYS` lists, web `api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx`, `.env.example`, `app/deploy/README.md`, the e2e env lists and `tests/helpers/social.ts` are needed by both | Step 0 writes them once: every route of both rings is a stub answering 404, the README carries every heading and shape, the config groups are complete, `seedSocial` is frozen. Neither lane edits them afterwards; lane I tidies the README. A lane that needs a change there stops and reports. Accepted by the controller. |
+| D12 | Lanes share nothing after Step 0 | `README.md` headings must match served routes (`tests/readme.test.ts`); `config.ts`, `app.ts`, both `HIDDEN_KEYS` lists, web `api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx`, `.env.example`, `app/deploy/README.md`, the e2e env lists and `tests/helpers/social.ts` are needed by both | Step 0 writes them once: the route plugins of both rings are wired in `app.ts` and register no route (as built: a stub answering 404 is indistinguishable from no route, and it would need an exemption from the fuzz rule), the README carries the shapes as planned entries, the config groups are complete, `seedSocial` is frozen. Neither lane edits them afterwards; lane I tidies the README. A lane that needs a change there stops and reports. Accepted by the controller. |
 | D13 | Agent subjects; Agent↔Agent conversations | Ring 1 creates person↔Agent conversations only | `agent_contacts`, `reach`, `reachSql`, `permission()` and `ensureSocial` take an Agent subject now. The add route takes only the caller as subject; the errands plan widens it. |
 | D14 | The judge's daily count from `MEMORY.judgeModel`'s price | The brief: 5 calls a day, a constant | `OTHERS.judgeCallsPerDay = 5`, its derivation pinned by a test (⌊10 / 1.88⌋ = 5). **Controller ruling 2026-11-24 (Q2):** withheld checks use at most `OTHERS.withheldCallsPerDay = 3`; 2 are always the batch judge's; `takeJudgeUnit` decides every unit. |
 | D15 | Tests 3 and 9 | Errands are not here | Moved to the errands plan. |
@@ -76,7 +76,7 @@ From `docs/dev/lane-rules.md`:
 - Nothing about a whisper reaches anyone but the owner: no key, no count, no event, no unread change, no search hit. New owner-only keys are added to both `HIDDEN_KEYS` lists (`tests/agents-co-members.test.ts:49`, `tests/proactive-decide.test.ts:1152`).
 - Never log message text, tool arguments, tool results, note text or model answers. Counters only.
 - `agents/runtime/` imports no `db`, `pg` or `store` (boundary test).
-- Every new route has a README heading; every new Agent field is in the README shape line; a new config group follows the seven steps in the code map §8 (`.superpowers/sdd/batch2-code-map.md:172`).
+- Every new route has a README heading (as built in Step 0, written by the lane that registers it, with its fuzz row); every new Agent field is in the README shape line; a new config group follows the seven steps in the code map §8 (`.superpowers/sdd/batch2-code-map.md:172`).
 - A model that cannot use tools keeps replying exactly as today.
 - Tests first; real Postgres; `scriptedGateway` / `scriptedJudge`; one editor at a time per folder; whole-file commits. Tests that check an order, a page boundary or a range by a number use data crossing 10 and 100.
 - No new npm dependency, no install, no change to WSL/Postgres. Never read `.env`, `.local/`, `*-Key.txt`.
@@ -131,7 +131,21 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 | `OTHERS.cardDays` | 7 | how long a card can be answered |
 | `OTHERS.requestDays` | 7 | how long a contact request waits |
 | `OTHERS.cooldownDays` | 30 | requests refused after a stop (the stopped person) or a decline (on that Agent) |
-| `MEMORY.judgeModel` | `null` | the judge's site model when the owner chose no memory model; null: `MEMORY.model` |
+| `MEMORY.judgeModel` | `null` | the judge's site model when the owner chose no memory model; null: `MEMORY.model`. **As built in Step 0:** it must be the id of a site model in `SITE_MODELS` (`loadConfig` refuses another, naming `judgeModel`) |
+
+**The ranges `OTHERS` enforces (as built in Step 0, `config.ts` `othersSchema`; out of range stops the start naming `OTHERS`, never a silent clamp).** They are the controller's, not a lane's: a lane that needs a wider one stops and reports.
+
+| Key | Range |
+|---|---|
+| `answersPerDay`, `pointsPerDay` | 1–1000 (an account column's range), 1–100 000 |
+| `toolCalls`, `overCapNotes` | 1–10, 0–20 |
+| `outputTokens`, `contextWeight`, `notesWeight` | 1–100 000, 1–200 000, 1–20 000 |
+| `judgeBatch`, `judgeCallsPerDay`, `judgeAttemptsPerVersion` | 1–200, 1–1000, 1–10 |
+| `withheldCallsPerDay` | 0–1000, and strictly below `judgeCallsPerDay` (Q2) |
+| `judgeInputBytes`, `withheldInputBytes`, `judgeOutputTokens` | 1–200 000, 1–200 000, 1–100 000 |
+| `judgeOwnerExamples`, `judgeOwnersPerPoll`, `withheldCardsMax` | 0–50, 1–1000, 1–50 |
+| `judgePollMs` | 1000–3 600 000 (a floor of a second: below it the worker would poll the database in a loop) |
+| `cardDays`, `requestDays`, `cooldownDays` | 1–365, 1–365, 1–3650 |
 
 **Exact copy** (Chinese UI; system text, never the Agent's voice):
 - The question: 「谁可以加它为好友」: 「需要我同意」 (default) / 「我的联系人可以直接加」 (sub-entry 「只让其中一些人」) / 「不让别人加」.
@@ -213,11 +227,11 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `S:migrations/076_social_notes.sql` | A (ring 1b, A6a) | `note_verdicts` (per Agent), `note_judge_days`, `withheld_checked_at` |
 | `S:tests/schema-agents.test.ts` | B (B4) | its :109–128 default (20 points) stays true until 074, which B4 writes with the test's change (G1) |
 | `S:src/config.ts`, `S:.env.example`, `app/deploy/README.md`, `W:e2e/support/env.mjs`, `W:e2e/support/system.mjs` | 0 | `SOCIAL`, `OTHERS`, `MEMORY.judgeModel` |
-| `S:src/app.ts` | 0 | registers both route files; starts the worker (a no-op until A8b in ring 1a; A7 and A8a add to it in ring 1b) |
+| `S:src/app.ts` | 0 | registers both route files; starts the worker (a no-op until A8b in ring 1a; A7 and A8a add to it in ring 1b). **As built in Step 0:** the worker is built with `closing: memoryClosing.signal`, closed in `preClose` right after that signal is aborted and waited for as long as the memory calls (`SHUTDOWN_GRACE_MS`), and `BuildOptions.noteJudgeTimer?: false` (the harness passes it) leaves its timer off in tests |
 | `S:README.md` | 0, then I | every heading of both rings, the shapes, config, metrics |
 | `S:src/social/place.ts` (new) | 0, frozen | `Place`, `placeOf`, `placeOfType`, `groupPlaceSql`, `socialPlaceSql` |
 | `S:src/social/reach.ts` (new) | 0→A | `reach`, `reachSql`, `refusedSql`, `discoverable`, `discoverableSql` |
-| `S:src/social/agent-contacts.ts`, `agent-contact-routes.ts` (new) | 0→A | rows, `endGrants`, bars, `applyPolicy`; lane-A routes |
+| `S:src/social/agent-contacts.ts`, `agent-contact-routes.ts` (new) | 0→A | rows, `endGrants`, bars, `applyPolicy`; lane-A routes; (as built in Step 0) the plugin registers no route: lane A adds each route here, with its shared-file rows (see the File map's row for `fuzz.test.ts`) |
 | `S:src/social/friends.ts`, `blocks.ts`, `routes.ts` | A | unfriend and block write bars; a person may block an Agent |
 | `S:src/principals/store.ts`, `principals/routes.ts` | A | Agent lookup; discoverable avatars |
 | `S:src/conversations/store.ts` | 0→A | `ConversationType`; `ensureSocial`; the `agent_social` arm of `permission()` (Step 0 skeleton, A3a full) |
@@ -235,15 +249,17 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `S:src/agents/port-impl.ts`, `agents/runs.ts`, `agents/runtime/prompt.ts`, `agents/runtime/port.ts` (`RunEnd`, G4) | 0→B | Step 0's signature changes; then lane B |
 | The tests Step 0 updates for `Place` (G5): `S:tests/memory-prompt.test.ts`, `reply-language`, `tool-loop-money`, `tools-capability`, `tools-clock`, `tools-refs`, `web-search`, `memory-routes` (`*.test.ts`) | 0, then the lane owning the source they test | `true` → `"group"`, `false` → `"own"` |
 | `S:src/agents/conversation.ts`, `context.ts`, `run-routes.ts`, `routes.ts`, `store.ts`, `runtime/worker.ts`, `loop.ts`, `tools/index.ts`, `search.ts`, `file.ts`, `web/tool.ts`, `summary/job.ts`, `proactive/candidates.ts`, `S:src/sync/hub.ts` | B | runs, places, bounds, the wire numbers |
-| `S:src/accounts/others-routes.ts` (new) | 0→B | lane-B routes |
+| `S:src/accounts/others-routes.ts` (new) | 0→B | lane-B routes; (as built in Step 0) the plugin registers none yet: lane B adds each route here with its shared-file rows |
+| `S:tests/fuzz.test.ts`, `S:tests/logging.test.ts`, and the route headings of `S:README.md` | **shared, row per route, append-only** (as built in Step 0) | every lane adds only its own rows next to the names of the routes it registers (a probe row; a path-parameter name; a `####` heading), in the task that registers the route: an ordinary, trivially mergeable edit. Step 0 registers no route, so these files hold no row for Agent social yet. (`fuzz.test.ts` runs with `SOCIAL` on, from Step 0. B4 also edits it for the `othersBudget` field walk.) |
 | `S:tests/helpers/social.ts` (new, T0.3) | 0, frozen (attack M8) | `seedSocial`, `seedSocialAgents`, `SOCIAL_ON` |
 | `S:tests/helpers/others.ts` (new) | B | lane B's money fixtures |
 | `S:tests/agents-co-members.test.ts`, `tests/proactive-decide.test.ts`, `tests/config-agents.test.ts` | 0 | hidden keys; the three old wire fields out of :252–257 (attack I5); config |
-| `W:src/api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx` | 0 | routes, thin actions, error texts, the `others` settings page id, the two stylesheets |
+| `W:src/api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `main.jsx` | 0 | routes, thin actions, error texts, the two stylesheets |
+| `W:src/state/location.js` | 0→B | untouched by Step 0 in the end (as built: `others` is not an address until the page is drawn); B9a adds `others` to `SETTINGS_PAGES` with the page |
 | `W:src/styles/social.css` (0→A), `W:src/styles/others.css` (0→B) | | each lane's styles |
 | `W:src/data/model.js` (0→A), `data/sync.js`, `state/selectors.js`, `state/social.js` | A | `agent_social` in the model; supervised conversations out of the main list |
 | `W:src/pages/AddFriendModal.jsx`, `Contacts.jsx`, `ChatList.jsx`, `ChatView.jsx`, `Messages.jsx`, `Composer.jsx`, `BlockModal.jsx`, `DetailsPanel.jsx`, `AgentOthers.jsx` (0→A), `ReportModal.jsx`, `SocialCards.jsx` (the `persona_fact` card in 1a, A8b; `note_withheld` in 1b), `ShownNotes.jsx` (1b) | A | add, chat, tab, report, the persona card; the withheld card and shown notes in 1b |
-| `W:src/pages/Agents.jsx` (0→B), `AgentForm.jsx`, `Settings.jsx`, `Usage.jsx`, `OthersUse.jsx`, `W:src/data/viewmodel.js` | B | numbers, use page, wire |
+| `W:src/pages/Agents.jsx` (0→B), `AgentForm.jsx`, `Settings.jsx`, `Usage.jsx`, `OthersUse.jsx`, `W:src/data/viewmodel.js` (0→B) | B | numbers, use page, wire. **As built in Step 0:** `viewmodel.js` got `state.social = {enabled}` and the whole `agent_social` conversation arm (type `"social"`, `social` kept, an owner's own Agents' thinking kept, the Agent's run rows as a group's; `W:tests/social-view.test.js`), and `data/model.js`'s `metadata` keeps `social` for that type: lane A's A12a needs neither file's conversation mapping again, lane B keeps the rest (`agentView`, the numbers) |
 | `W:e2e/social.spec.mjs` | I | the browser path of each ring |
 
 ---
@@ -294,6 +310,8 @@ export function ensureSocial(t: Tx, subjectId: string, agentId: string): Promise
 // permission(q, type, conversationId, principalId, peerId, opts: { lock: boolean; config: Pick<Config, "social"> }) gains a working
 // `agent_social` arm in Step 0 (attack I4; T0.3): its participants and supervisors by Step 0's `reach`, the Agents' rows `for update`
 // in id order when `lock`. canSend(q, id, principal, config) and assertCanSend(t, lock, config) take the config.
+// As built in Step 0, so do the two writers above them, the config last: sendMessage(t, conversationId, senderId, input, config: Pick<Config, "social">)
+// and insertAttachment(t, a, quotaBytes, config: Pick<Config, "social">).
 
 // ── S:src/messages/model.ts (Step 0) ───────────────────────────────────────────────────
 // SystemEvent gains (errand_result reserved for the errands plan, not declared):
@@ -307,7 +325,7 @@ export type Interruption = "agent_paused" | "agent_deleted" | "agent_removed" | 
 // G4: RunEnd's cancelled error (agents/runtime/port.ts:138) widens to the same eight values (`Interruption` cannot be imported there:
 // runtime/ imports no store), or `recorded()` and `halted()` (port-impl.ts:354–363, :539) stop compiling.
 export function actOnTriggered(triggered: Triggered, to: { announce(run: Announced): void; log: Pick<FastifyBaseLogger, "info">; realtime: Pick<Hub, "pushAgentChanged">; interrupt(runIds: readonly string[]): void }): void;
-// Step 0 updates both callers: messages/routes.ts:94 and port-impl.ts:1233.
+// Step 0 updates all three callers (as built in Step 0): messages/routes.ts:94, port-impl.ts:1233 and app.ts's proactive scheduler `act`.
 
 // ── S:src/agents/runtime/prompt.ts (Step 0: `group: boolean` becomes `place: Place`; "own" = false, "group" = true, "social" throws until B7a) ─
 export function toolsPassage(place: Place, web?: WebPrompt): string;                                          // :94
@@ -322,6 +340,7 @@ export interface SyncSocial {
   agents: Array<{ id: string; ownerId: string }>;
 }
 // SyncConversation gains `social?: SyncSocial` (iff type "agent_social"); myRole "speaker" for a participant, "observer" for a supervising owner.
+// As built in Step 0: `SyncConfig` gains `"social"` (the view says the switch), and the route's zod schemas carry `agent_social`, the two new `canSend` reasons and `social`.
 // SyncView gains `social: { enabled: boolean }`.
 
 // ── S:src/memory/passage.ts (Step 0 signature; social returns no notes until ring 1b, A6a) ─
@@ -342,7 +361,11 @@ export function shownNotesPass(t: Tx, agent: { id: string; ownerId: string; shar
 
 // ── S:src/memory/judge.ts (Step 0: does nothing; lane A: A8b in ring 1a, A7 and A8a in ring 1b) ──
 export interface NoteJudge { runOnce(): Promise<number>; close(): Promise<void> }
-export function startNoteJudge(deps: MemoryCallDeps & { conversations: ConversationEvents; realtime?: Pick<Hub, "pushAgentChanged"> }, opts?: { timer?: false }): NoteJudge;
+export function startNoteJudge(deps: MemoryCallDeps & { conversations: ConversationEvents; realtime?: Pick<Hub, "pushAgentChanged">; closing: AbortSignal }, opts?: { timer?: false }): NoteJudge;
+// As built in Step 0: `closing` is `memoryClosing.signal`, the one every memory call is made with (`memoryCall(deps, ownerId, input, closing)`);
+// app.ts aborts it and calls `close()` in `preClose`, so a call in flight returns at once (`tests/note-judge-stop.test.ts`). `BuildOptions.noteJudgeTimer?: false`
+// turns the timer off in tests (the harness does; `app.noteJudge.runOnce()` by hand). A8b starts its timer one interval late and `unref`s it,
+// because apps a test builds itself do not pass the option.
 
 // ── S:src/metering/others.ts (Step 0: keepsRoom real, othersFits answers ok; lane B, B1) ─
 export type OthersLane = "others" | "proactive";
@@ -360,7 +383,7 @@ export function seedSocial(app: FastifyInstance, o: { owner: Actor; agentId: str
 export function seedSocialAgents(app: FastifyInstance, o: { x: string; y: string }): Promise<SocialSeed>;
 ```
 
-**Routes** (Step 0 registers each with its zod schema answering 404 `not_found`, and writes its README heading).
+**Routes** (as built in Step 0: Step 0 wires the two plugin files and registers none of these; the lane that adds a route writes its schemas, handler, fuzz row, README heading and, if new, its path-parameter name in the logging test's list. The README's 「Planned」 lines carry the shapes below.)
 
 Lane A, `social/agent-contact-routes.ts`, `registerAgentContactRoutes(app)`:
 
@@ -378,7 +401,7 @@ Lane A, `social/agent-contact-routes.ts`, `registerAgentContactRoutes(app)`:
 | `DELETE /api/bars/:personId` | 1a | | `{ok: true}` (恢复往来; only the setter, never a block's bar; else 404) |
 | `POST /api/reports` | 1a | `{agentId, reason: "spam" \| "harassment" \| "privacy" \| "other", note?: ≤ 500}` | 201 `{id}` |
 | `PUT /api/agents/:id/note-verdicts` | 1b | `{noteKind, noteId, audienceId, share: boolean, cardSeq?: number}` | `{ok: true}` (a card's answer names its message: attack M7) |
-| `POST /api/agents/:id/persona-facts/:seq` | 1b | `{move: boolean}` | `{ok: true, moved}` · 409 `answered` / `expired` |
+| `POST /api/agents/:id/persona-facts/:seq` | 1a (as built in Step 0: N4 moved the persona aid, its card and this route into ring 1a; A8b writes it) | `{move: boolean}` | `{ok: true, moved}` · 409 `answered` / `expired` |
 
 Lane B, `accounts/others-routes.ts`, `registerOthersRoutes(app)`:
 
@@ -496,6 +519,7 @@ alter table agents drop column others_answers;
 alter table accounts drop column others_notice_seen_at, drop column others_points_micro, drop column others_answers;
 ```
 - [ ] Run the test → passes; `npx vitest run tests/schema.test.ts tests/schema-agents.test.ts` still pass unchanged (a fresh `--tag` database locally). `columnDefault(table, column)` is a five-line helper local to `schema-social.test.ts` that reads `information_schema.columns.column_default`.
+- [ ] **As built in Step 0:** the inertness is proved on populated tables, in the pattern that works whatever migration is the latest (`money-wallet.test.ts`, 066's): `schema-social.test.ts` splits 073 at `-- Down Migration`, and in one rolled-back transaction runs the Down, writes rows crossing 10 and 100 (105 people with accounts, 12 Agents at null, 5 and 20 points, 105 conversations, 105 runs in every lane and with every old interruption), runs the Up, and asserts every old row's hash, the whole shape (columns with defaults, checks, indexes) and the 20-point default are as before, and the new tables and columns empty.
 - [ ] Commit `feat(schema): 073, inert columns and the empty social skeleton (step 0)`.
 
 ### Task 0.2: Config groups `SOCIAL`, `OTHERS`, `MEMORY.judgeModel` — Step 0
@@ -536,13 +560,13 @@ expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 20, ju
   - `messages/model.ts`: the events.
   - `S:src/agents/runs.ts`: `Interruption`; `interruptRuns`' reason type; `Triggered.stopped`; `actOnTriggered`'s `interrupt`.
   - `S:src/agents/runtime/port.ts:138`: `RunEnd`'s `cancelled` error widens to the eight values of `Interruption`, written out as a literal union (runtime/ imports no store), so `recorded()` and `halted()` (port-impl.ts:354–363, :539) still compile (G4). It is the only Step 0 edit to that file, which is lane B's afterwards.
-  - `S:src/messages/routes.ts:94`, `S:src/agents/port-impl.ts:1233`: pass `interrupt`.
+  - `S:src/messages/routes.ts:94`, `S:src/agents/port-impl.ts:1233` and (as built in Step 0, the plan missed it) `S:src/app.ts`'s proactive scheduler `act`: pass `interrupt`.
   - `S:src/sync/read.ts`: types; `SyncView.social`.
   - `S:src/memory/passage.ts`: the signature, with the two overloads of "Step 0 interfaces".
   - `S:src/memory/routes.ts:250`, `:252` and `S:src/agents/port-impl.ts:718`: callers of `loadNotes` and `fitNotes`. memory/routes.ts:250 stays on `db` outside a transaction: the own and group overload takes a `Queryable`; only `social` needs a `Tx` (G6).
   - `S:src/agents/runtime/prompt.ts`: `toolsPassage` (:94), `webToolsPassage` (:128), `notesPassage` (:442), `fitNotes` (:481) take `Place`; callers updated.
   - Tests that call those four with the old boolean, changed `false` → `"own"` and `true` → `"group"` and nothing else (G5): `memory-prompt` (29 calls), `memory-routes` (3), `web-search` (6), `tools-clock` (4), `reply-language`, `tool-loop-money`, `tools-capability`, `tools-refs` (1 each).
-  - `S:src/app.ts`: start the judge, `app.noteJudge`.
+  - `S:src/app.ts`: start the judge, `app.noteJudge` (as built in Step 0: with `closing: memoryClosing.signal`, closed in `preClose`, `BuildOptions.noteJudgeTimer`; see the judge block of "Step 0 interfaces").
 
 **Produces:** every signature in "Step 0 interfaces". Bodies:
 - Real: `placeOf`, `placeOfType`, `groupPlaceSql`, `socialPlaceSql`, `keepsRoom`.
@@ -583,22 +607,22 @@ expect(await renderNotice(db, s, { event: "social_opened", actorId: agent.id, ag
 - [ ] Implement as stated. `tsc` must pass with the widened `ConversationType`. Every `switch` on it gets an `agent_social` arm. Where Step 0 cannot answer yet, the arm throws "ring 1: lane A" or "ring 1: lane B", and the commit message lists each one. None may be on the send path, which the skeleton covers.
 - [ ] Run `npx vitest run tests/place.test.ts tests/social-seams.test.ts tests/messages.test.ts tests/memory-routes.test.ts tests/memory-prompt.test.ts tests/reply-language.test.ts tests/tool-loop-money.test.ts tests/tools-capability.test.ts tests/tools-clock.test.ts tests/tools-refs.test.ts tests/web-search.test.ts tests/runs.test.ts tests/runs-pause.test.ts tests/agents-co-members.test.ts tests/reply-history.test.ts`; typecheck; commit `feat(social): step 0 seams: placeOf, reach, the write rule's skeleton, othersFits, loadNotes(place), events`.
 
-### Task 0.4: Route stubs, README contract, frozen helpers, hidden keys — Step 0
+### Task 0.4: Route plugins, README contract, frozen helpers, hidden keys — Step 0
 
-**Files:** create `S:src/social/agent-contact-routes.ts`, `S:src/accounts/others-routes.ts` (stubs, full zod schemas), `S:tests/social-stubs.test.ts`. `S:tests/helpers/social.ts` already exists from T0.3 (verification G3). Modify:
+**Files:** create `S:src/social/agent-contact-routes.ts`, `S:src/accounts/others-routes.ts` (**as built in Step 0:** plugin functions that register no route; no stub handlers, no `social-stubs.test.ts`). `S:tests/helpers/social.ts` already exists from T0.3 (verification G3). Modify:
 - `S:src/app.ts`: register both route files.
 - `S:README.md`:
-  - every heading of both rings, with the request and answer shapes;
+  - **as built in Step 0:** the request and answer shapes of both rings as 「Planned」 lines (a `####` heading would need a served route: `tests/readme.test.ts` checked, it fails for a heading with no route); each lane turns its lines into headings when it registers the routes;
   - the Agent shape line gains `"othersLimit"`, `"othersUsedToday"`;
   - the sync shape gains `social` and the `agent_social` conversation, and the events;
   - metrics: `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`, `withheld_checks`, `others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback`, `social_post_refused`, `agent_reported`.
 - `S:tests/agents-co-members.test.ts`:
-  - `HIDDEN_KEYS` (:49) gains `shownNotes`, `withheld`, `shown_notes`, `withheld_notes`, `othersLimit`, `othersUsedToday`, `contactPolicy`, `contactPicked`, `picks`, `audienceId`, `noteId`, `ownerShare`, `judgeShare`, `card`;
+  - `HIDDEN_KEYS` (:49) gains `shownNotes`, `withheld`, `shown_notes`, `withheld_notes`, `othersLimit`, `othersUsedToday`, `contactPolicy`, `contactPicked`, `picks`, `audienceId`, `noteId`, `ownerShare`, `judgeShare`, `card`, and (as built in Step 0) `endReason`, `end_reason` (the visitor never learns why access ended, attack M6);
   - the owner-view `toMatchObject` at :252–257 no longer names `othersBudget`, `othersSpentToday`, `proactiveSpentToday` (attack I5), so the test passes before and after B4.
 - `S:tests/proactive-decide.test.ts:1152`: the same `HIDDEN_KEYS` additions.
 
-- [ ] **Failing test** `tests/social-stubs.test.ts`: every new route answers 404 `{"error":"not_found"}` to a signed-in caller and 401 to none; a malformed body is 400 before the stub; `tests/readme.test.ts` passes. `seedSocial` gives members `[visitor speaker 0, agent speaker 0, owner observer 0]`, a live row and a first message `social_opened`. Its rows are the same as A4's own add would write; a test in A4 compares them.
-- [ ] Run → fails. Implement. Run `npx vitest run tests/social-stubs.test.ts tests/readme.test.ts tests/agents-co-members.test.ts tests/proactive-decide.test.ts`; commit `feat(social): step 0 route stubs, README contract, hidden keys`.
+- [ ] **Failing test** (as built in Step 0: no stub test; the seed's rows are in `tests/social-seams.test.ts`): `tests/readme.test.ts` passes; `tests/fuzz.test.ts` runs with `SOCIAL_ON`, and no expectation of it changed. `seedSocial` gives members `[visitor speaker 0, agent speaker 0, owner observer 0]`, a live row and a first message `social_opened`. Its rows are the same as A4's own add would write; a test in A4 compares them.
+- [ ] Run → fails. Implement. Run `npx vitest run tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts tests/agents-co-members.test.ts tests/proactive-decide.test.ts`; commit `feat(social): step 0 route stubs, README contract, hidden keys`.
 
 ### Task 0.5: Web seams — Step 0
 
@@ -613,9 +637,9 @@ expect(await renderNotice(db, s, { event: "social_opened", actorId: agent.id, ag
   - `agent_unavailable` 「这个 Agent 现在不可用。」;
   - `answered` 「这件事已经回答过了。」;
   - `expired` 「这张卡片已经过期了。」 (attack M7).
-- `W:src/state/location.js`: `SETTINGS_PAGES` gains `others`.
+- `W:src/state/location.js`: `SETTINGS_PAGES` gains `others`. **As built in Step 0:** it does not, yet: an address the app cannot draw is no address (`/settings/others` would draw the profile page), so B9a adds `others` to `SETTINGS_PAGES` together with the page it draws (`W:tests/social-seams.test.jsx` pins that it is an unknown address until then).
 - `W:src/main.jsx`: imports `styles/social.css` and `styles/others.css`.
-- `W:src/data/model.js`: keeps `sync.social` as `state.social = {enabled}`.
+- `W:src/data/model.js`: keeps `sync.social.enabled` as `model.socialOn` (**as built in Step 0**: `model.social` already holds `GET /api/social`'s answer); `W:src/data/viewmodel.js` says it as the view's `state.social = {enabled}`, which every page reads.
 - `W:src/pages/Agents.jsx`: a pill `["others", "别人"]` while `state.social?.enabled && live`, rendering `<AgentOthersTab agent={agent} />`.
 
 Create `W:src/pages/AgentOthers.jsx` (`export function AgentOthersTab({ agent }) { return null; }`), the two empty stylesheets, and `W:tests/social-seams.test.jsx`.
@@ -818,7 +842,7 @@ expect(Object.keys((await api(app, v, "GET", `/api/principals/lookup?handle=${ow
 **Files:** modify `S:src/conversations/store.ts` (`ensureSocial`; `permission()` :211 with A1's `reach`); create `S:tests/social-conversation.test.ts`.
 
 **Produces:**
-- `ensureSocial(t, subjectId, agentId)`: the caller holds the pair locks (A4's order). One `social_pairs` row per unordered pair. The conversation is `type 'agent_social'`, `creator_id = subjectId`, no title.
+- `ensureSocial(t, subjectId, agentId)`: the caller holds the pair locks (A4's order). One `social_pairs` row per unordered pair. The conversation is `type 'agent_social'`, `creator_id = subjectId`, no title (for an Agent subject too: an Agent's id; as built in Step 0, `seedSocialAgents` writes `creator_id = x`).
   - Memberships: both participants `speaker` from seq 0; each participating Agent's owner `observer` from seq 0, once, never the subject itself.
   - Then `appendSystem(… social_opened …)`.
   - A row equal to `seedSocial`'s (frozen) is the test's fixture.
@@ -901,6 +925,7 @@ expect(await addContactDirect(wAgent, contactsAgent)).toMatchObject({ state: "re
 // The list: 105 rows across 12 Agents, newest first, all of them. seedSocial's rows equal an add's.
 // I5: an add racing a narrowing on two connections (holdThen): no row the new policy would not create is live afterwards.
 ```
+- [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `POST /api/agent-contacts`, `GET /api/agent-contacts`, `POST /api/agent-contacts/:agentId/:subjectId/approve` and `/decline` and `DELETE /api/agent-contacts/:agentId/:subjectId` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fails. Implement (dates are the database's `now()`). Run `npx vitest run tests/social-contacts.test.ts tests/social-reach.test.ts tests/social-conversation.test.ts`; commit `feat(social): contact rows`.
 
 ### Task A5a: `endGrants` and what it stops — Lane A
@@ -977,6 +1002,7 @@ await runBackfill(); await unblock(oldBlocker, oldBlocked); expect(await barOf(o
 // The stricter reason is kept: unfriended then stopped → stopped; stopped then unfriended → stopped.
 // Each of a bar and an O→V block ends V's live rows and interrupts V's runs (endGrants), after the direct chat's notice.
 ```
+- [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `PUT /api/bars/:personId` and `DELETE /api/bars/:personId` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-bars.test.ts tests/social-revoke.test.ts tests/social.test.ts tests/schema-social-access.test.ts`; commit `feat(social): bars from 停止往来, unfriends and blocks; 恢复往来`.
 
 ### Task A5c: Narrowing the policy — Lane A
@@ -994,6 +1020,7 @@ Approved rows stay under `ask` and `contacts`. `dryRun` counts and writes nothin
   - 12 contacts-basis rows → `dryRun` answers `{ends: 12}` and writes nothing; 105 rows → `{ends: 105}`.
   - Narrowing to `ask` ends exactly the contacts-basis rows; approved rows stay.
   - The narrowing interrupts their runs (`access_ended`).
+- [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `GET /api/agents/:id/contacts` and `PUT /api/agents/:id/contact-policy` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-policy.test.ts tests/social-contacts.test.ts`; commit `feat(social): narrowing the policy`.
 
 ### Task A9: Memory and elsewhere never see a social conversation — Lane A
@@ -1032,6 +1059,7 @@ await groupSearchFindsNothing(); expect(JSON.stringify(await whispersOf(owner)))
   - A report of a visible Agent → 201; of an unknown or undiscoverable one, the same 404; the sixth in a minute → 429.
   - After `agent:disable`: `reach` is `gone` for non-owners (social and group), the lookup 404s, a running others' run is interrupted, and the owner's own reply still runs.
   - `agent:enable` restores access, rows untouched.
+- [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `POST /api/reports` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/agent-reports.test.ts tests/social-reach.test.ts`; commit `feat(social): reports, the operator's disable, no pushes to observers`.
 
 ### Task A8b: The persona aid, its worker and its card — Lane A (ring 1a)
@@ -1072,6 +1100,7 @@ So it is in ring 1a, and its columns are in 075 (A0).
   - personas saved while the switch was off make no call when it is turned on;
   - the card and its `card` field reach the owner only (`HIDDEN_KEYS`);
   - web: the wording and both buttons; 「移到“关于我”」 sends `move: true`; an answered card shows no button.
+- [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `POST /api/agents/:id/persona-facts/:seq` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/persona-fact.test.ts tests/persona.test.ts tests/agents-co-members.test.ts`; `npm test`, `npm run build` in `app/web`; commit `feat(memory): the persona aid, its worker and its card (ring 1a)`.
 
 ### Task A11a: Web: find and add an Agent, with the disclosure; contacts — Lane A
@@ -1105,7 +1134,7 @@ So it is in ring 1a, and its columns are in 075 (A0).
 ### Task A12a: Web: the social chat — Lane A
 
 **Files:** modify:
-- `W:src/data/model.js`: :205 private fields; :496, :1453, :1465, :1482 group run states for `agent_social`.
+- `W:src/data/model.js`: :205 private fields; :496, :1453, :1465, :1482 group run states for `agent_social`. (As built in Step 0, `data/viewmodel.js`'s conversation arm for `agent_social` and `metadata`'s `social` are done: type `"social"`, the Agent's run rows read as a group's, an owner's own Agents' thinking kept; the model's run-state functions above are still this task's.)
 - `W:src/state/selectors.js` (the unread total), `W:src/pages/ChatList.jsx:88`, `ChatView.jsx`, `Messages.jsx`, `Composer.jsx`.
 
 Create `W:tests/social-chat.test.jsx`, `W:tests/social-list.test.js`.
@@ -1353,6 +1382,7 @@ alter table agents alter column others_budget_micro set default 20000000;
     - `perDay` is 50 free and 1 paid, and 0 for M-V2's Agent at 10 points on the paid tier;
     - `stopped` is `[]` while the switch is off;
     - `notice` is true until seen.
+- [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `GET /api/me/others-use`, `PUT /api/me/others-limits` and `POST /api/me/others-limits/seen` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fail. Implement. Run `npx vitest run tests/others-routes.test.ts tests/others-migration.test.ts tests/schema-agents.test.ts tests/agents.test.ts tests/readme.test.ts tests/agents-co-members.test.ts` and the nine above; commit `feat(money): 074, others' numbers on the wire, the use routes, the step-L card`.
 
 ### Task B5a: `placeOf` in the run code and the hub — Lane B
@@ -1454,7 +1484,7 @@ Create `S:tests/social-begin.test.ts`.
   - a social form of the group's soft line (prompt.ts:846 `secrets`);
   - the persona whole.
 
-  `toolsPassage("social")` speaks of 「这段对话」 and has no 「先说一声」 sentence. Own and group texts stay byte-identical (the sha256 pins of `reply-history.test.ts`).
+  `toolsPassage("social")` speaks of 「这段对话」 and has no 「先说一声」 sentence. Own and group texts stay byte-identical (**as built in Step 0, narrowed**: the sha256 pins of `reply-history.test.ts` cover the texts of replies without tools only; the tools passages are pinned by the literal `TODAY_OWN`/`TODAY_GROUP` of `web-search.test.ts` and, from Step 0, by sha256 pins of the web-offered own and group passages, taken from their bytes at 4476eda).
 
 - [ ] **Failing test:**
 ```ts
@@ -1470,7 +1500,7 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
 // Ring 1a: the notes passage is absent (no note of any kind in the call; a vault canary and an open-note canary appear nowhere).
 // A run whose row was ended before it started ends cancelled/access_ended with no model call.
 ```
-- [ ] Run → fails. Implement. Run `npx vitest run tests/social-begin.test.ts tests/reply-history.test.ts tests/context.test.ts tests/context-group.test.ts tests/summary.test.ts tests/agent-port-boundary.test.ts`; `calibrate-memory.mjs --check`; commit `feat(agents): a social reply's access, scene, context and system text`.
+- [ ] Run → fails. Implement. Run `npx vitest run tests/social-begin.test.ts tests/reply-history.test.ts tests/web-search.test.ts tests/context.test.ts tests/context-group.test.ts tests/summary.test.ts tests/agent-port-boundary.test.ts`; `calibrate-memory.mjs --check`; commit `feat(agents): a social reply's access, scene, context and system text`.
 
 ### Task B7b: Tools in a social conversation; the own search without social — Lane B
 
@@ -1529,7 +1559,7 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
 
 ### Task B9a: Web: the use page and its settings row — Lane B
 
-**Files:** modify `W:src/pages/Settings.jsx` (a row 「别人怎么用我的 Agent」 → page `others`), `W:src/pages/Usage.jsx` (a section 「别人的使用」: one line and a link), `W:src/styles/others.css`; create `W:src/pages/OthersUse.jsx`, `W:tests/others-use.test.jsx`.
+**Files:** modify `W:src/state/location.js` (`SETTINGS_PAGES` gains `others` here, with the page: as built in Step 0 it is not there yet), `W:src/pages/Settings.jsx` (a row 「别人怎么用我的 Agent」 → page `others`, and its title in `state/pageTitle.js`), `W:src/pages/Usage.jsx` (a section 「别人的使用」: one line and a link), `W:src/styles/others.css`; create `W:src/pages/OthersUse.jsx`, `W:tests/others-use.test.jsx`.
 
 **Produces:** `OthersUse` (page title 「别人怎么用我的 Agent」):
 - the sentence 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [70] 点」 with both numbers editable in place (saved on Enter or blur);
@@ -1618,7 +1648,7 @@ Lane A only (memory and its web), then lane I. Lane B's code already records sho
 
 ### Task A6a: Migration 076; candidates and the use rule, per Agent — Lane A
 
-**Files:** create `S:migrations/076_social_notes.sql`; modify `S:src/memory/passage.ts` (`loadNotes` social), `S:src/memory/store.ts` (`candidatesFor`); create `S:src/memory/verdicts.ts`, `S:tests/social-notes.test.ts`.
+**Files:** create `S:migrations/076_social_notes.sql`; modify `S:src/memory/passage.ts` (`loadNotes` social), `S:src/memory/store.ts` (`candidatesFor`; and, as built in Step 0, `notesFor` takes the `NotesPlace` union: `loadNotes` of the own place passes it `{conversationId: "", group: false}` today, which works only because `notesFor` reads the id for a group alone); create `S:src/memory/verdicts.ts`, `S:tests/social-notes.test.ts`.
 
 **Produces:** 076 (Controller ruling 2026-11-24 (verification), E1/N1; the persona aid's columns and `social_card_answers` are 075's, A0), exactly:
 ```sql
@@ -1719,6 +1749,7 @@ export function setOwnerVerdict(t: Tx, agent: AgentRow, note: { kind: NoteKind; 
   - The owner's no survives an edit and a merge.
   - **Test 8, lane A's half.** `shownNotesPass` is false after an edit, a vaulting, a delete and an owner no. A note edit racing a post serialises: with `holdThen`, if the post's `for share` comes first the edit waits; if the edit comes first, the post check is false.
   - `shownNotes` reaches the owner only (`HIDDEN_KEYS`).
+- [ ] **Per route (as built in Step 0, ruling: the shared files are row-per-route and append-only):** Step 0 registers no route, so this task adds `PUT /api/agents/:id/note-verdicts` to its plugin file, and in the same edit, for each: its probe row in `tests/fuzz.test.ts` (valid path parameters and a plausible body in `validParams` / `plausibleBody`, so that the deep rule can reach an answer past the checks; the fuzz app runs with the switch on), its `####` heading in the README (turn its 「Planned」 line into the heading, shape kept; `tests/readme.test.ts` wants a heading for every served route and none for another), and, if the path parameter's name is new (`agentId`, `subjectId`, `personId`), its name in the list of `tests/logging.test.ts`. From then on fuzz, logging and readme hold the route in full. Add `tests/fuzz.test.ts tests/logging.test.ts tests/readme.test.ts` to the run line below.
 - [ ] Run → fails. Implement. Run `npx vitest run tests/social-verdicts.test.ts tests/social-notes.test.ts tests/memory-apply.test.ts tests/agents-co-members.test.ts`; commit `feat(memory): the owner's yes and no, the post-time check, shown notes`.
 
 ### Task A7: The batch note judge — Lane A
@@ -1822,7 +1853,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 ### Task I3: README tidy, the run, the switch — Lane I
 
-**Files:** modify `S:README.md` (remove `othersBudget`, `othersSpentToday`, `proactiveSpentToday` from the Agent shape and the prose; describe the `othersBudget` alias and its end; reread every Step 0 shape against the code).
+**Files:** modify `S:README.md` (remove `othersBudget`, `othersSpentToday`, `proactiveSpentToday` from the Agent shape and the prose; describe the `othersBudget` alias and its end; reread every Step 0 shape against the code; **as built in Step 0:** the README's sentence that nobody but the owner receives `othersBudget`, `othersSpentToday`, … gains `othersLimit` and `othersUsedToday`).
 
 - [ ] `npx vitest run tests/readme.test.ts`; typecheck. Push and read the run; merge when green. Rollout 5.
 

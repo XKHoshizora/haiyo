@@ -21,9 +21,11 @@ import { sweepMemoryChanges } from "./memory/sweep.ts";
 import { sweepExpiredSignups } from "./auth/invites.ts";
 import { registerAttachmentRoutes } from "./attachments/routes.ts";
 import { createUploadSlots, type UploadSlots } from "./attachments/slots.ts";
+import { registerOthersRoutes } from "./accounts/others-routes.ts";
 import { registerAccountRoutes } from "./accounts/routes.ts";
 import { leaveGroupsOfDeleted } from "./agents/group-leave.ts";
 import { endMemoryCalls } from "./memory/call.ts";
+import { startNoteJudge, type NoteJudge } from "./memory/judge.ts";
 import { runSummary } from "./agents/summary/job.ts";
 import { runDreamJob } from "./memory/dream.ts";
 import { runCatchUp } from "./memory/catchup.ts";
@@ -52,6 +54,7 @@ import { guardedFetch } from "./providers/guard.ts";
 import { createProviderProbe, PROBE_GUARD, type ProviderProbe } from "./providers/probe.ts";
 import { registerProviderRoutes } from "./providers/routes.ts";
 import { createSocialEvents, type SocialEvents } from "./social/events.ts";
+import { registerAgentContactRoutes } from "./social/agent-contact-routes.ts";
 import { registerSocialRoutes } from "./social/routes.ts";
 import { createConversationEvents, type ConversationEvents } from "./conversations/events.ts";
 import { registerConversationRoutes } from "./conversations/routes.ts";
@@ -148,6 +151,8 @@ declare module "fastify" {
     mailSender: MailSender;
     /** Who a stored message is pushed to, and the push's counters (src/push/notify.ts). */
     push: Notifier;
+    /** The Agent social worker (src/memory/judge.ts): the persona aid, and in ring 1b the notes judge; `runOnce()` does one pass. Does nothing until lane A. */
+    noteJudge: NoteJudge;
   }
 }
 
@@ -215,6 +220,12 @@ export interface BuildOptions {
    * same reason as `heartbeat`.
    */
   pushTimer?: false;
+  /**
+   * The Agent social worker's own timer (src/memory/judge.ts `startNoteJudge`: the persona aid in ring 1a, the notes judge in ring
+   * 1b; default every `OTHERS.judgePollMs`). Tests: `false` turns it off (`app.noteJudge.runOnce()` by hand), as the harness does,
+   * for the same reason as `heartbeat`.
+   */
+  noteJudgeTimer?: false;
 }
 
 /**
@@ -502,7 +513,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
             // the port. Both exist before any message is noted, so before any debounce can end and call this.
             act: (_conversationId, triggered) => {
               if (triggered.notices.length > 0) deps.conversations.publish({ messages: triggered.notices, conversations: [] }, app.log);
-              actOnTriggered(triggered, { announce: (run) => agentPort.announce(run), log: app.log, realtime: app.realtime });
+              actOnTriggered(triggered, { announce: (run) => agentPort.announce(run), log: app.log, realtime: app.realtime, interrupt: (ids) => agentPort.interruptRuns(ids) });
             },
             delayMs: proactiveAsked.delayMs ?? config.proactive.debounceMs,
             perGroupHour: config.proactive.perGroupHour,
@@ -581,6 +592,12 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   agentPort.onQueued(() => agentWorker.wake());
   app.decorate("agentPort", agentPort);
   app.decorate("agentWorker", agentWorker);
+  // Agent social's background worker: a handle that does nothing in Step 0 (lane A fills it in, A8b in ring 1a).
+  const noteJudge = startNoteJudge(
+    { db: deps.db, config, models: deps.models, log: app.log, inFlight: memoryRuns, conversations: deps.conversations, realtime: app.realtime, closing: memoryClosing.signal },
+    options.noteJudgeTimer === false ? { timer: false } : {},
+  );
+  app.decorate("noteJudge", noteJudge);
   // The persona drafts this process is working on, by run id: the stale-run sweep leaves them alone, as it does the
   // worker's runs.
   const draftRuns = new Set<string>();
@@ -624,10 +641,12 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   registerSessionRoutes(app);
   registerPrincipalRoutes(app);
   registerSocialRoutes(app);
+  registerAgentContactRoutes(app);
   registerConversationRoutes(app);
   registerMessageRoutes(app);
   registerAttachmentRoutes(app);
   registerAccountRoutes(app);
+  registerOthersRoutes(app);
   // One budget for an owner's reads of their Agents, providers and replies (GET /api/agents, /api/agents/:id,
   // /api/providers, /api/conversations/:id/run, and a group's /api/conversations/:id/runs): 120 a minute together.
   const ownReads = perPrincipalLimit(app, 120);
@@ -643,7 +662,13 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     // No review starts from here on, and a call under way is told it is abandoned before it is waited for.
     memory?.close();
     memoryClosing.abort();
+    // Agent social's worker is told to stop with the memory calls' signal (its calls are `memoryCall`s, which return at once once it
+    // is aborted) and is waited for as long as they are, before `endMemoryCalls()`.
+    const judgeClosed = within(noteJudge.close(), SHUTDOWN_GRACE_MS).then((ended) => {
+      if (!ended) app.log.warn(`the Agent social worker was not done within ${SHUTDOWN_GRACE_MS} ms of the stop; what it was doing is dropped`);
+    });
     await Promise.all([
+      judgeClosed,
       within(endDrafts(), SHUTDOWN_GRACE_MS).then((ended) => {
         if (!ended) app.log.warn(`persona drafts not ended within ${SHUTDOWN_GRACE_MS} ms of the stop; their runs stay running until the stale-run sweep or the next start releases them`);
       }),

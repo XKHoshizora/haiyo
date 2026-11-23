@@ -9,6 +9,8 @@ function idsIn(e: SystemEvent): string[] {
   if ("newCreatorId" in e && e.newCreatorId) ids.push(e.newCreatorId);
   if ("memberIds" in e) ids.push(...e.memberIds.slice(0, LISTED_NAMES));
   if ("agentId" in e) ids.push(e.agentId);
+  if ("agentIds" in e) ids.push(...e.agentIds);
+  if ("ownerIds" in e) ids.push(...e.ownerIds);
   return ids;
 }
 
@@ -66,6 +68,16 @@ export async function renderNotice(q: Queryable, conversationId: string, e: Syst
       return `「${n(e.agentId)}」今天的额度已用完`;
     case "agent_quieted":
       return `「${n(e.agentId)}」暂时不主动发言，需要时可以 @ 它`;
+    // The disclosure of a social conversation (system UI text, in no Agent's voice): who watches it. Two owners: their names joined by 、.
+    case "social_opened": {
+      const owners = e.ownerIds.map(n).join("、");
+      return `这是${owners}的 Agent。${owners}能看到你们的对话，也可能插话。`;
+    }
+    // Only a title: the card's details travel in the event, to the owner's client alone (ring 1a and 1b).
+    case "note_withheld":
+      return "有一条笔记没有告诉别人";
+    case "persona_fact":
+      return "人格里有一句话可能是事实";
   }
 }
 

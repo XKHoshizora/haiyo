@@ -397,6 +397,109 @@ const whispersSchema = z.strictObject({
   elsewhereTtlHours: positive(24, 168),
 });
 
+/**
+ * Whether Agents can be reached by people other than their owners (`SOCIAL`; README "Agent social"): the operator's site switch.
+ * Off by default. Off, only the social conversations (creating one, writing in one, runs triggered in one) and their entry points
+ * are refused; groups and everything else behave as ever.
+ */
+export interface SocialConfig {
+  enabled: boolean;
+}
+
+const socialSchema = z.strictObject({
+  enabled: z.boolean().default(false),
+});
+
+/**
+ * What bounds an Agent's use by people other than its owner (`OTHERS`; README "Agent social", Numbers): the owner's daily caps, what
+ * one such reply may do, and the notes judge (ring 1b). Constants the controller tunes. Sizes are in weight, times in days or ms.
+ */
+export interface OthersConfig {
+  /** Answers others cause per owner and site day (lanes `others` and `proactive`); an account's own number replaces it. */
+  answersPerDay: number;
+  /** The same in whole points, settled plus held. */
+  pointsPerDay: number;
+  /** Real tool calls in a whole others' reply, all tools together. */
+  toolCalls: number;
+  /** Further calls a whole others' reply may have answered with the over-cap note. */
+  overCapNotes: number;
+  /** The output limit of every call of an others' reply (reasoning is `none`). */
+  outputTokens: number;
+  /** The conversation shown to a social reply, in weight. */
+  contextWeight: number;
+  /** The notes a non-owner reply may be shown, and one judge batch, in weight. */
+  notesWeight: number;
+  /** Notes per judge call. */
+  judgeBatch: number;
+  /** Judge-model calls per owner per site day, the batch judge and the withheld checks together. */
+  judgeCallsPerDay: number;
+  /** The most of those that withheld checks may use (the judge always keeps the rest). */
+  withheldCallsPerDay: number;
+  /** Started judge calls one note version may have without a verdict. */
+  judgeAttemptsPerVersion: number;
+  /** One judge call's input, in bytes. */
+  judgeInputBytes: number;
+  /** One judge call's output limit, reasoning included. */
+  judgeOutputTokens: number;
+  /** Owner decisions shown to one judge call. */
+  judgeOwnerExamples: number;
+  /** How often the worker looks for work, in ms. */
+  judgePollMs: number;
+  /** Owners one poll serves at most. */
+  judgeOwnersPerPoll: number;
+  /** One withheld check's input, in bytes. */
+  withheldInputBytes: number;
+  /** Cards one withheld check posts at most. */
+  withheldCardsMax: number;
+  /** How long a card can be answered, in days. */
+  cardDays: number;
+  /** How long a contact request waits, in days. */
+  requestDays: number;
+  /** Requests refused after a stop (the stopped person) or a decline (on that Agent), in days. */
+  cooldownDays: number;
+}
+
+const othersSchema = z
+  .strictObject({
+    answersPerDay: positive(50, 1000),
+    pointsPerDay: positive(70, 100_000),
+    toolCalls: positive(1, 10),
+    overCapNotes: z.number().int().min(0).max(20).default(3),
+    outputTokens: positive(800, 100_000),
+    contextWeight: positive(4000, 200_000),
+    notesWeight: positive(1000, 20_000),
+    judgeBatch: positive(20, 200),
+    judgeCallsPerDay: positive(5, 1000),
+    withheldCallsPerDay: z.number().int().min(0).max(1000).default(3),
+    judgeAttemptsPerVersion: positive(2, 10),
+    judgeInputBytes: positive(9000, 200_000),
+    judgeOutputTokens: positive(2200, 100_000),
+    judgeOwnerExamples: z.number().int().min(0).max(50).default(4),
+    // At least a second: below it the worker would poll the database in a tight loop.
+    judgePollMs: z.number().int().min(1000).max(3_600_000).default(5000),
+    judgeOwnersPerPoll: positive(10, 1000),
+    withheldInputBytes: positive(6000, 200_000),
+    withheldCardsMax: positive(3, 50),
+    cardDays: positive(7, 365),
+    requestDays: positive(7, 365),
+    cooldownDays: positive(30, 3650),
+  })
+  // The batch judge always keeps `judgeCallsPerDay - withheldCallsPerDay` of the day's calls (2 at the defaults).
+  .refine((o) => o.withheldCallsPerDay < o.judgeCallsPerDay, { message: "withheldCallsPerDay must be less than judgeCallsPerDay (the judge always keeps some of the day's calls)" });
+
+/**
+ * How many judge calls a day the memory allowance affords at a judge model's prices (micro-points per input and output token; input
+ * counted per byte, as the plan's derivation does): half the allowance, over the worst call. At the design's cheapest prices (140 and
+ * 280) that is floor(10 / 1.876) = 5, the default of `OTHERS.judgeCallsPerDay`. A tuning aid: nothing reads it at run time.
+ */
+export function judgeCountAt(
+  price: { input: number; output: number },
+  o: { memoryFreeDailyPoints: number; judgeInputBytes: number; judgeOutputTokens: number },
+): number {
+  const call = o.judgeInputBytes * price.input + o.judgeOutputTokens * price.output;
+  return call <= 0 ? 0 : Math.floor((o.memoryFreeDailyPoints * 1_000_000) / 2 / call);
+}
+
 /** How a reply that failed for a passing reason is tried again by the system (`AGENTS`; README "Agents and runs", Automatic retry). */
 export interface AgentsConfig {
   /**
@@ -439,6 +542,8 @@ export const DEFAULT_WHISPERS: Readonly<WhispersConfig> = Object.freeze(whispers
 export interface MemoryConfig {
   /** The id of the site model the background memory calls use; null: the cheapest free-tier site model (`memoryModel`). */
   model: string | null;
+  /** The id of the site model the notes judge and the withheld check use (Agent social, ring 1b); null: the memory model's. */
+  judgeModel: string | null;
   /** The most the notes of a room hold: about the owner, the Agent's own, and what it heard. */
   roomOwner: number;
   roomSelf: number;
@@ -566,6 +671,8 @@ const renamedReviewWeight = (v: unknown): unknown => {
 
 const memorySchema = z.preprocess(renamedReviewWeight, z.strictObject({
   model: z.string().min(1).max(200).nullable().default(null),
+  // A site model's id: checked against SITE_MODELS in loadConfig.
+  judgeModel: z.string().min(1).max(200).nullable().default(null),
   // At most 3000: the database guards a note at 9000 characters (migration 039), 3 characters to a weight of the shortest kind; and a model's entry at 200 (hearsay: 600 characters).
   roomOwner: positive(2000, 3000),
   roomSelf: positive(3000, 3000),
@@ -764,6 +871,10 @@ const envSchema = z.object({
   ALLOWANCE: jsonVariable(allowanceSchema, allowanceSchema.parse({})),
   /** JSON object of how long whispers stay open (see WhispersConfig); unset or empty: the default. */
   WHISPERS: jsonVariable(whispersSchema, whispersSchema.parse({})),
+  /** JSON object of the Agent social site switch (see SocialConfig); unset or empty: off. */
+  SOCIAL: jsonVariable(socialSchema, socialSchema.parse({})),
+  /** JSON object of the numbers bounding others' use of an Agent (see OthersConfig); every field optional, unset or empty: all defaults. */
+  OTHERS: jsonVariable(othersSchema, othersSchema.parse({})),
   /** JSON object of how failed replies are tried again by the system (see AgentsConfig); unset or empty: the default. */
   AGENTS: jsonVariable(agentsSchema, agentsSchema.parse({})),
   /** JSON object of whether the terms and the privacy policy are required (see LegalConfig); unset or empty: not required. */
@@ -983,6 +1094,10 @@ export interface Config {
   allowance: AllowanceConfig;
   /** How long whispers stay open. */
   whispers: WhispersConfig;
+  /** The Agent social site switch. */
+  social: SocialConfig;
+  /** What bounds others' use of an Agent. */
+  others: OthersConfig;
   /** How a reply that failed for a passing reason is tried again by the system. */
   agents: AgentsConfig;
   /** Whether the terms and the privacy policy are required. */
@@ -1105,6 +1220,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     }
     checkKeyVariable("JUDGE: a channel", channel.apiKeyEnv, new URL(channel.url).hostname, env);
   }
+  if (e.MEMORY.judgeModel !== null && !e.SITE_MODELS.some((m) => m.id === e.MEMORY.judgeModel)) {
+    throw new Error(`Invalid configuration: MEMORY: judgeModel "${e.MEMORY.judgeModel}" is not the id of a site model in SITE_MODELS`);
+  }
   const duplicate = e.SITE_MODELS.find((m, i) => e.SITE_MODELS.findIndex((o) => o.id === m.id) !== i);
   if (duplicate) throw new Error(`Invalid configuration: SITE_MODELS: id "${duplicate.id}" appears more than once`);
   if (e.PROVIDER_DEFAULT_CONTEXT_TOKENS <= e.PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS) {
@@ -1160,6 +1278,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     holds: e.HOLDS,
     allowance: e.ALLOWANCE,
     whispers: e.WHISPERS,
+    social: e.SOCIAL,
+    others: e.OTHERS,
     agents: e.AGENTS,
     legal: e.LEGAL,
     blobDir: e.BLOB_DIR,

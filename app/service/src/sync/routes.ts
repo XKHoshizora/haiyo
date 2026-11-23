@@ -20,7 +20,7 @@ const role = z.enum(["speaker", "observer"]);
 /** One conversation as the caller sees it: an element of `/api/sync`'s `conversations`, and `GET /api/conversations/:id`. */
 const conversationEntry = z.object({
   id: z.string(),
-  type: z.enum(["direct", "group", "agent"]),
+  type: z.enum(["direct", "group", "agent", "agent_social"]),
   title: z.string().nullable(),
   creatorId: z.string().optional(),
   avatarVersion: z.number().optional(),
@@ -30,7 +30,9 @@ const conversationEntry = z.object({
   peerId: z.string().optional(),
   agentId: z.string().optional(),
   agent: z.object({ paused: z.boolean(), deleted: z.boolean() }).optional(),
-  canSend: z.object({ ok: z.boolean(), reason: z.enum(["blocked", "not_friends", "closed", "agent_deleted"]).optional() }),
+  canSend: z.object({ ok: z.boolean(), reason: z.enum(["blocked", "not_friends", "closed", "agent_deleted", "no_access", "agent_unavailable"]).optional() }),
+  // Social conversations only: the two participants and their Agents with their owners (nothing owner-only).
+  social: z.object({ participants: z.tuple([z.string(), z.string()]), agents: z.array(z.object({ id: z.string(), ownerId: z.string() })) }).optional(),
   members: z.array(z.object({ id: z.string(), role, isCreator: z.boolean() })),
   lastSeq: z.number(),
   readSeq: z.number(),
@@ -42,6 +44,8 @@ const conversationEntry = z.object({
 
 const syncResponse = z.object({
   me: z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number(), email: z.string() }),
+  // The site's Agent social switch.
+  social: z.object({ enabled: z.boolean() }),
   conversations: z.array(conversationEntry),
   principals: z.array(syncPrincipalSchema),
   messages: z.array(wireMessageSchema),

@@ -858,6 +858,9 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
   for (const conv of Object.values(model.conversations)) {
     const direct = conv.type === "direct";
     const agentChat = conv.type === "agent";
+    // A social conversation (`agent_social`: Agent social) is its own kind of chat, never mapped as a group; it is read like one
+    // where an Agent's replies are concerned (an owner's own Agents' thinking is kept, a reply in progress has its row).
+    const socialChat = conv.type === "agent_social";
     const held = model.messages[conv.id] ?? [];
     let members = conv.members.map((m) => alias(m.id));
     if (direct) members = [ME, conv.peerId ?? members.find((id) => id !== ME)].filter(Boolean);
@@ -868,7 +871,7 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     // carries, nothing else is): in my Agent's own conversation that Agent's; in a group my own Agents', never someone
     // else's Agent's.
     const keepsOwners = (senderId) =>
-      typeof senderId === "string" && (agentChat ? senderId === conv.agentId : conv.type === "group" && ownsAgent(model, senderId));
+      typeof senderId === "string" && (agentChat ? senderId === conv.agentId : (conv.type === "group" || socialChat) && ownsAgent(model, senderId));
     // Which held messages are replies that are only a persona proposal (what a quote of one says).
     const proposalOnly = new Set(held.filter((m) => m.proposal && !m.text).map((m) => m.seq));
     const viewOf = (m) =>
@@ -900,8 +903,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     const heldRun = model.runs?.[conv.id] ?? null;
     const run = heldRun && !heldRun.unknown ? offerAsOf(heldRun, offersAt) : null;
     const streamed = run && run.status === "running" && !run.posted && !run.joined ? model.streams?.[run.id] : null;
-    // A group: each Agent's reply in progress or failed (never streamed), and whether its Agents are talking.
-    const agentRuns = conv.type === "group" ? groupRunRows(conv, model.groupRuns?.[conv.id], offersAt) : [];
+    // A group, or a social conversation: each Agent's reply in progress or failed (never streamed), and (a group only) whether its Agents are talking.
+    const agentRuns = conv.type === "group" || socialChat ? groupRunRows(conv, model.groupRuns?.[conv.id], offersAt) : [];
     // My whispers here, where they sit (`placeWhispers` interleaves them with the messages shown); an open one past its
     // `openUntil` reads expired (`whisperAsOf`).
     const whispers = Object.values(model.whispers?.[conv.id] ?? {})
@@ -909,7 +912,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
       .map((w) => ({ ...whisperAsOf(w, offersAt), agentId: alias(w.agentId) }));
     convs[conv.id] = {
       id: conv.id,
-      type: direct ? "human" : agentChat ? "agent" : "group",
+      type: direct ? "human" : agentChat ? "agent" : socialChat ? "social" : "group",
+      ...(socialChat ? { social: conv.social ?? null } : {}),
       agentId: conv.agentId ?? null,
       agent: conv.agent ?? null,
       run,
@@ -988,6 +992,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     memoryCatchUp: model.memoryCatchUp ?? null,
     /** principal id (the real one, mine too) → the version in its avatar URL; for an avatar of someone nobody names. */
     avatarVersions: versions,
+    /** The site's Agent social switch (the sync's `social`): nothing of Agent social is shown, and no route of it called, while `enabled` is false. */
+    social: { enabled: model.socialOn === true },
   };
 }
 

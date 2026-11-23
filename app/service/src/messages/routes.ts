@@ -84,14 +84,14 @@ export function registerMessageRoutes(app: FastifyInstance): void {
       // else's Agent whose others' daily budget is spent starts nothing either: the group is told once a day (published
       // after the message) and the Agent's owner is pushed it.
       const { message, duplicate, wire, triggered, lock } = await db.tx(async (t) => {
-        const sent = await sendMessage(t, req.params.id, me.id, req.body);
+        const sent = await sendMessage(t, req.params.id, me.id, req.body, config);
         const [rendered] = await toWireFor(t, me.id, [sent.message], config);
         if (!rendered) throw new Error("sendMessage: sender cannot read the message it just stored");
         const triggered = sent.duplicate ? noneTriggered() : await maybeTrigger(t, sent.lock, sent.message, config);
         return { ...sent, wire: rendered, triggered };
       });
       if (!duplicate) conversations.publish({ messages: [message, ...triggered.notices], conversations: [] }, req.log);
-      actOnTriggered(triggered, { announce: (run) => app.agentPort.announce(run), log: req.log, realtime: app.realtime });
+      actOnTriggered(triggered, { announce: (run) => app.agentPort.announce(run), log: req.log, realtime: app.realtime, interrupt: (ids) => app.agentPort.interruptRuns(ids) });
       // A person's message in a group may be answered unasked: the scheduler waits for people to stop, then has the latest
       // judged (agents/proactive/scheduler.ts); one that called an Agent cancels the wait instead. Without a judgement
       // model there is no scheduler.

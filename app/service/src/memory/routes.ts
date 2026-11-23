@@ -247,9 +247,9 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
       return true;
     }
     if (resolved === null) return true;
-    const found = await loadNotes(db, agent, { conversationId: agent.conversationId, group: false });
+    const { notes: found } = await loadNotes(db, agent, { place: "own" }, config);
     const planned = planRatio(await db.tx((t) => readRatio(t, ratioKey(resolved))));
-    return fitNotes(found, false, config.siteTimezone, ownerName, passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare), planned).fits;
+    return fitNotes(found, "own", config.siteTimezone, ownerName, passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare), planned).fits;
   }
   const mustLive = (agent: { deleted: boolean }): void => {
     if (agent.deleted) throw new AppError(409, "agent_deleted");
