@@ -706,7 +706,9 @@ const textBytes = (call: ModelCall): number =>
  * What `fast` holds for a call of text only: its input at its utf-8 bytes (a token a byte at most; never more than the
  * 95 904 its context leaves beside the output limit) at 1 micro-point a token, and its 4 096 output tokens at 2.
  */
-const fastHold = (call: ModelCall): bigint => BigInt(Math.min(textBytes(call), 100_000 - 4096)) + 4096n * 2n;
+const fastHold = (call: ModelCall, maxOut = 4096): bigint => BigInt(Math.min(textBytes(call), 100_000 - maxOut)) + BigInt(maxOut) * 2n;
+/** A reply a member called for is made at `OTHERS.outputTokens` (800) of output, not the model's 4 096 (lane `others`; plan B2a). */
+const OTHERS_OUT = 800;
 /** `n` messages of 200 characters, numbered. */
 const long = (n: number): string[] => Array.from({ length: n }, (_, i) => `${String(i + 1).padStart(2, "0")}号${"字".repeat(197)}`);
 const FILE_TEXT = "文".repeat(3000);
@@ -753,9 +755,9 @@ describe("how much of the group it is shown", () => {
     // system text comes on top.
     expect(historyTokens(call)).toBeLessThanOrEqual(12_000);
     expect(historyTokens(call) + 200 + MEMBER_LABEL_TOKENS).toBeGreaterThan(12_000);
-    expect(hold).toBe(fastHold(call));
+    expect(hold).toBe(fastHold(call, OTHERS_OUT));
     // At most three bytes a weight: the cap bounds the hold too.
-    expect(hold).toBeLessThanOrEqual(BigInt(3 * (estimateTokens(call.system) + 12_000)) + 4096n * 2n);
+    expect(hold).toBeLessThanOrEqual(BigInt(3 * (estimateTokens(call.system) + 12_000)) + BigInt(OTHERS_OUT) * 2n);
   });
 
   it("at most its latest 80 messages, however few tokens they take; a file among them is shown whole within the cap", async () => {
@@ -778,7 +780,7 @@ describe("how much of the group it is shown", () => {
     expect(JSON.stringify(call.messages)).toContain(`[文件：notes.txt]\\n${FILE_TEXT}`);
     expect(historyTokens(call)).toBeGreaterThan(3000);
     expect(historyTokens(call)).toBeLessThanOrEqual(12_000);
-    expect(hold).toBe(fastHold(call));
+    expect(hold).toBe(fastHold(call, OTHERS_OUT));
   });
 
   it("in its own conversation the same history is not capped: every message, the file's text, more than 12 000 tokens", async () => {

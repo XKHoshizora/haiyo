@@ -879,12 +879,12 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     const lineTokens = estimateTokens(`\n\n${FINAL_LINE}`);
     const definitions = estimateTokens(JSON.stringify(TOOLS), TOOL_TEXT_FACTOR) + TOOL_PREAMBLE_TOKENS;
     /** What `prepared` was planned with, with the conversation's room capped at `cap` (a group's). */
-    const planOf = (prepared: Prepared, cap: number | null) => {
+    const planOf = (prepared: Prepared, cap: number | null, maxOut = MAX_OUT) => {
       const system = { rest: prepared.call.system, passage: "" };
       const capped = (n: number) => (cap === null ? n : Math.min(n, cap));
-      const results = Math.min(Math.ceil(2 * app.deps.config.tools.resultMaxWeight * TOOL_TEXT_FACTOR), Math.floor(capped(contextBudget(CONTEXT, MAX_OUT, system, 1, definitions)) / 3));
+      const results = Math.min(Math.ceil(2 * app.deps.config.tools.resultMaxWeight * TOOL_TEXT_FACTOR), Math.floor(capped(contextBudget(CONTEXT, maxOut, system, 1, definitions)) / 3));
       const reserved = definitions + lineTokens + results;
-      const whole = contextBudget(CONTEXT, MAX_OUT, system, 1, reserved);
+      const whole = contextBudget(CONTEXT, maxOut, system, 1, reserved);
       const toolRun = prepared.toolRun!;
       expect(toolRun.limit).toBe(estimateTokens(prepared.call.system) + reserved + whole);
       // The rounds' room: the results' share, and what the conversation (the planned input less the system text) left
@@ -916,7 +916,8 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     expect(isRunEnd(inGroup)).toBe(false);
     const cap = app.deps.config.agentGroupContextTokens;
     expect(cap).toBe(12_000);
-    const plan = planOf(inGroup, cap);
+    // A member's call: the call's output is `OTHERS.outputTokens`, 800, not the model's 1 000 (lane `others`).
+    const plan = planOf(inGroup, cap, app.deps.config.others.outputTokens);
     expect(plan.results).toBe(4000);
     expect(plan.whole).toBeGreaterThan(cap);
   });

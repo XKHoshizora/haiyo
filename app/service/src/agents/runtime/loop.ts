@@ -13,6 +13,12 @@ export const REPEATED = "这个已经查过了，结果和上次一样。请用�
 export const OVER_CAP = "这类查询这次回复里不能再用了。";
 /** The result of a call that cannot be run: a tool not offered, an input its schema refuses, a call cut short, a tool that failed. */
 export const UNUSABLE = "这个请求无法执行。";
+/**
+ * The most characters of a tool call's id an others' reply's hold counts (README "Agent social", An others' reply): the notes that answer
+ * the calls it does not run carry the id, and the hold is measured with ids of this length. A call whose id is longer makes
+ * its turn one the hold does not cover: the turn is discarded (worker.ts, plan B2b).
+ */
+export const TOOL_CALL_ID_MAX = 64;
 /** The line the system text gains for the last call of a reply that used tools. */
 export const FINAL_LINE = "你已经不能再查了，请用上面查到的内容直接回答。";
 /** What ends a result cut to its weight. */
@@ -43,16 +49,19 @@ export function canonicalJson(value: unknown): string {
  * provider's id (ids repeat, and may be empty). `admit`: the first time a call is seen it runs ("run"), unless its
  * tool has been run as often as `perTool` allows it (looked up as the tool's own entry; a tool with none has only the
  * round cap) — then "over"; a call run before is a "repeat", and one seen a third time ends the tool phase (`mustEnd`).
- * `roundDone` counts a round that called tools; `exhausted` once `maxRounds` have.
+ * `roundDone` counts a round that called tools; `exhausted` once `maxRounds` have. `maxCalls` (an others' reply: one real call,
+ * `OTHERS.toolCalls`) bounds the calls that run in the whole reply, all tools together: the first usable ones run, the
+ * rest are "over" — a repeat is still a repeat.
  */
 export class LoopGuard {
   private readonly seen = new Map<string, number>();
   private readonly ran = new Set<string>();
   private readonly used = new Map<string, number>();
   private rounds = 0;
+  private runs = 0;
   private repeatedThrice = false;
 
-  constructor(private readonly limits: { maxRounds: number; perTool: Readonly<Record<string, number>>; same?: (call: ToolCall) => unknown }) {}
+  constructor(private readonly limits: { maxRounds: number; perTool: Readonly<Record<string, number>>; same?: (call: ToolCall) => unknown; maxCalls?: number }) {}
 
   admit(call: ToolCall): "run" | "repeat" | "over" {
     const key = `${call.name}\u0000${canonicalJson(this.limits.same ? this.limits.same(call) : call.input)}`;
@@ -60,11 +69,13 @@ export class LoopGuard {
     this.seen.set(key, times);
     if (times >= 3) this.repeatedThrice = true;
     if (this.ran.has(key)) return "repeat";
+    if (this.limits.maxCalls !== undefined && this.runs >= this.limits.maxCalls) return "over";
     const cap = Object.hasOwn(this.limits.perTool, call.name) ? this.limits.perTool[call.name] : undefined;
     const used = this.used.get(call.name) ?? 0;
     if (cap !== undefined && used >= cap) return "over";
     this.used.set(call.name, used + 1);
     this.ran.add(key);
+    this.runs++;
     return "run";
   }
 

@@ -111,7 +111,8 @@ describe("a search in a group cannot leave it", () => {
   it("every trick in the arguments — the canary, the other group's title and id, extra keys naming a conversation or 'all' — finds nothing outside, and every search statement names only this group", async () => {
     const w = await world();
     const spy = spyDb(app.deps.db);
-    await say(w.mia, w.a, "@scope_bot 帮我查查蓝鲸计划");
+    // Called by the Agent's owner: an others' reply runs one real call (plan B2a), and here all five are to be tried.
+    await say(w.owner, w.a, "@scope_bot 帮我查查蓝鲸计划");
     gateway
       .callTools([
         { name: SEARCH_MESSAGES, input: { query: CANARY } },
@@ -126,7 +127,7 @@ describe("a search in a group cannot leave it", () => {
     expect(first.tools?.map((t) => t.name)).toContain(SEARCH_MESSAGES);
     const results = outputs(second);
     // The three the schema takes ran and found nothing in this group; the two with keys of their own were not run.
-    const nothing = { results: [], note: "这个群的记录里没找到。" };
+    const nothing = { results: [], note: "这个群的记录里没找到。只有在你和主人的专属会话里才能查所有地方。" };
     expect(results).toEqual([nothing, nothing, nothing, { error: "这个请求无法执行。" }, { error: "这个请求无法执行。" }]);
     const shown = JSON.stringify(second.steps);
     for (const secret of [`${CANARY}：`, "下周三在老地方"]) expect([secret, shown.includes(secret)]).toEqual([secret, false]);
@@ -140,6 +141,27 @@ describe("a search in a group cannot leave it", () => {
     // Nothing the tools sent named the other group as a conversation, anywhere.
     const conversationParams = spy.sent.flatMap((s) => s.params.filter((p) => Array.isArray(p) || (typeof p === "string" && /^[0-9a-f-]{36}$/.test(p))));
     expect(JSON.stringify(conversationParams).includes(w.b)).toBe(false);
+  });
+
+  it("called by a member, whose reply runs one real call: the first trick runs over this group alone, the rest are answered with the note", async () => {
+    const w = await world();
+    const spy = spyDb(app.deps.db);
+    await say(w.mia, w.a, "@scope_bot 帮我查查蓝鲸计划");
+    gateway
+      .callTools([
+        { name: SEARCH_MESSAGES, input: { query: CANARY } },
+        { name: SEARCH_MESSAGES, input: { query: "乙群-秘密" } },
+        { name: SEARCH_MESSAGES, input: { query: "蓝鲸计划", conversationId: w.b } },
+      ])
+      .reply("没查到。");
+    expect(await toolWorker(deps({ db: spy.db })).runOnce()).toBe(true);
+    const second = gateway.calls.at(-1)!;
+    expect(outputs(second)).toEqual([{ results: [], note: "这个群的记录里没找到。" }, { note: "这类查询这次回复里不能再用了。" }, { error: "这个请求无法执行。" }]);
+    const sent = searches(spy.sent);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.params[0]).toBe(w.agent.id);
+    expect(sent[0]!.params[1]).toEqual([w.a]);
+    expect(JSON.stringify(second.steps).includes(`${CANARY}：`)).toBe(false);
   });
 
   it("from the Agent's own conversation the canary is found, with where it was said (the group's title)", async () => {

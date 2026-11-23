@@ -163,6 +163,14 @@ export function othersHold(
 }
 
 /**
+ * The model as an others' reply calls it (plan B2a): every call at most `OTHERS.outputTokens` of output and reasoning
+ * `none`. What admission holds for, what the context plan leaves room beside, and what the call is sent at — one `Resolved`.
+ */
+export function boundedForOthers<R extends Pick<Resolved, "call" | "reasoning">>(resolved: R, outputTokens: number): R {
+  return { ...resolved, reasoning: "none", call: { ...resolved.call, maxOutputTokens: Math.min(resolved.call.maxOutputTokens, outputTokens) } };
+}
+
+/**
  * Takes the account lock itself. Settled others' charges today + the sum of `hold_micro` of every running others' run, THIS ONE
  * INCLUDED (at admission its hold is still 0: `admitRun` writes it after `admit`), + `x` must stay within each of the owner's
  * numbers — and within the Agent's own, and for a proactive reply its proactive budget; at admission the answers too (an

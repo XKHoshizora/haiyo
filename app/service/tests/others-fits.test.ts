@@ -1,15 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createAgentPort, type Toolbox } from "../src/agents/port-impl.ts";
-import { createAgentWorker } from "../src/agents/runtime/worker.ts";
-import type { ToolSpec } from "../src/models/gateway.ts";
 import { admitRun, HeldBack, type Admission } from "../src/metering/admit.ts";
 import { othersFits, othersHold, othersNumbers, othersUsedToday, OthersLimit, type OthersLane } from "../src/metering/others.ts";
 import { maxCostMicro } from "../src/metering/prices.ts";
 import { settle } from "../src/metering/settle.ts";
-import { api, group, signUp, type Actor } from "./helpers/actors.ts";
+import { signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
-import { scriptedGateway } from "./helpers/models.ts";
+import { boxOf, othersKitchen, SEARCH } from "./helpers/others-kitchen.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 import { grant, paidReply, type MeteredAgent } from "./helpers/metering.ts";
 import {
@@ -319,34 +316,7 @@ describe("the points", () => {
   });
 });
 
-const SEARCH: ToolSpec = {
-  name: "search",
-  description: "Search this conversation's messages.",
-  parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
-};
-const BOX: Toolbox = { offer: () => ({ tools: [SEARCH], perTool: { search: 6 }, kinds: { search: "search" } }), run: async () => ({ output: { hits: [] }, activity: "search" }) };
-
-/** A group of the owner, a member and a third, with the owner's Agent `chef` in it; a member's @ call makes a reply in lane `others`. */
-async function kitchen(over: Record<string, unknown> = {}) {
-  const owner = await newOwner();
-  const member = await signUp(app, `mm${++n}x${Math.floor(Math.random() * 1e6)}`);
-  const third = await signUp(app, `tt${++n}x${Math.floor(Math.random() * 1e6)}`);
-  const g = await group(app, owner, "饭搭子", [member, third]);
-  const agent = await mustCreateAgent(app, owner, { handle: "chef", name: "chef", model: FREE_MODEL, persona: "简短地回答。", ...over });
-  await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [g, agent.id]);
-  const gateway = scriptedGateway();
-  const { db: pool, blobs, conversations, reads } = app.deps;
-  const port = createAgentPort({ db: pool, config: config(), blobs, realtime: app.realtime, conversations, reads, log: app.log, toolbox: BOX });
-  const worker = createAgentWorker({ port, models: gateway, runTimeoutMs: config().agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config().tools });
-  const ask = async () => {
-    const sent = await api(app, member, "POST", `/api/conversations/${g}/messages`, { text: "@chef 附近有什么好吃的？", clientTxn: `kt${++n}` });
-    expect(sent.status).toBe(201);
-  };
-  const lastRun = async () =>
-    (await db.query<{ id: string; status: string; hold: string; held_back_by: string[] | null }>("select id, status, hold_micro::text as hold, held_back_by from agent_runs where conversation_id = $1 order by created_at desc limit 1", [g])).rows[0]!;
-  const notices = async () => (await db.query("select 1 from messages where conversation_id = $1 and body ->> 'event' = 'agent_daily_budget_reached'", [g])).rowCount;
-  return { owner, agent, g, gateway, worker, ask, lastRun, notices };
-}
+const kitchen = (over: Record<string, unknown> = {}) => othersKitchen(app, db, { box: boxOf(), agent: over });
 
 describe("a reply someone else called for, as `begin` admits it", () => {
   it("whose with-tools hold does not fit the Agent's number but whose one call does is made without tools, and says so", async () => {

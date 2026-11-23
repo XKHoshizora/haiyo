@@ -620,7 +620,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (kind === "web" && input !== null && typeof input === "object" && typeof input.query === "string") return { ...input, query: queryForm(input.query) };
       return kind === "file" && input !== null && typeof input === "object" && typeof input.file === "string" ? { ...input, file: fileNumber(input.file) } : c.input;
     };
-    const guard = new LoopGuard({ maxRounds: limits.maxRounds, perTool: bounds.perTool, same });
+    const guard = new LoopGuard({ maxRounds: limits.maxRounds, perTool: bounds.perTool, same, ...(bounds.callsCap !== undefined ? { maxCalls: bounds.callsCap } : {}) });
     // No token-shaped string is streamed, as the stored reply keeps none (its citations are beside its text); a reply
     // offered the web search holds its `〔w1〕` too.
     const web = Object.values(bounds.kinds).includes("web");
@@ -851,7 +851,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         ending = { last: { finished: CUT_SHORT, failure: null, why: null }, noAnswer: next === "stop" ? ENDED_ELSEWHERE : BUSY };
         break;
       }
-      final = next === "final" || guard.exhausted() || guard.mustEnd() || unusable || stepsTokens >= room;
+      // An others' reply has one tool round, whatever it ran (plan B2a): the next call is its last.
+      final = next === "final" || guard.exhausted() || guard.mustEnd() || unusable || stepsTokens >= room || bounds.callsCap !== undefined;
     }
 
     quiet();

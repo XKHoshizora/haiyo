@@ -10,7 +10,7 @@ import { providerBody } from "./providers.ts";
  * 3 000 / 15 000 on the paid, an output limit of 800 tokens (so a held reply costs what the plan's figures say), and a free
  * allowance of 3 points a day in Shanghai.
  */
-const model = (id: string, tier: "free" | "paid", input: number, output: number) => ({
+const model = (id: string, tier: "free" | "paid", input: number, output: number, extra: Record<string, unknown> = {}) => ({
   id,
   label: id,
   tier,
@@ -25,16 +25,23 @@ const model = (id: string, tier: "free" | "paid", input: number, output: number)
   vision: false,
   pdf: false,
   reasoning: [],
+  ...extra,
 });
 export const OTHERS_ENV = {
   OTHERS_UPSTREAM_KEY: "not-a-real-key",
   FREE_DAILY_POINTS: "3",
   SITE_TIMEZONE: "Asia/Shanghai",
-  SITE_MODELS: JSON.stringify([model("oth_free", "free", 140, 280), model("oth_paid", "paid", 3000, 15000)]),
+  SITE_MODELS: JSON.stringify([
+    model("oth_free", "free", 140, 280),
+    model("oth_paid", "paid", 3000, 15000),
+    // A model that thinks and writes more than an others' reply may: `OTHERS.outputTokens` and reasoning `none` bound its calls to others.
+    model("oth_big", "free", 140, 280, { maxOutputTokens: 4096, reasoning: ["low", "medium"] }),
+  ]),
 } as const;
 
 export const FREE_MODEL = { source: "site", id: "oth_free" } as const;
 export const PAID_MODEL = { source: "site", id: "oth_paid" } as const;
+export const BIG_MODEL = { source: "site", id: "oth_big" } as const;
 export const POINT = 1_000_000n;
 /** Noon in Shanghai: every admission and settlement of a test is at this instant, so one site day holds all of them. */
 export const NOON = new Date("2026-03-01T04:00:00Z");

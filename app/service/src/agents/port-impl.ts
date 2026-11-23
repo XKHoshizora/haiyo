@@ -7,7 +7,7 @@ import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
-import { OthersLimit } from "../metering/others.ts";
+import { boundedForOthers, OthersLimit } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -691,6 +691,8 @@ export class DbAgentPort implements AgentPort {
         return { end: KEY_UNREADABLE };
       }
       if (!resolved) return { end: MODEL_GONE };
+      // A reply somebody other than its owner called for: every call at most `OTHERS.outputTokens` of output, reasoning `none`.
+      if (state.lane !== "own") resolved = boundedForOthers(resolved, config.others.outputTokens);
       // Whether its name part alone, typed, calls it there (mentions.ts `namePartCalls`: how a send would read it — no
       // message is read): then the system text names both ways it is called. Not for a reply nobody asked for, whose text
       // says nobody called it.
@@ -1002,6 +1004,8 @@ export class DbAgentPort implements AgentPort {
               ? null
               : {
                   perTool: offer.perTool,
+                  // An others' reply: one real call, three notes, one tool round (plan B2a).
+                  ...(state.lane !== "own" ? { callsCap: config.others.toolCalls, overCapNotes: config.others.overCapNotes } : {}),
                   kinds: offer.kinds,
                   acknowledged,
                   contextTokens: resolved.contextTokens,
