@@ -112,11 +112,14 @@ describe("the primitive", () => {
     await settle();
     const before = window.history.state;
     await openIt();
+    expect(document.documentElement.hasAttribute("data-layer-open")).toBe(true);
     // One entry pushed for it, at the same address, over the page's.
     expect(window.history.state).toMatchObject({ index: before.index + 1, prev: `/chat/${C1}#`, path: `/chat/${C1}`, layers: [expect.any(String)] });
     expect(window.location.pathname).toBe(`/chat/${C1}`);
     await back();
     expect(dialogs()).toEqual([]);
+    // (A layer closed by Back lets go of the document lock too.)
+    expect(document.documentElement.hasAttribute("data-layer-open")).toBe(false);
     expect(window.location.pathname).toBe(`/chat/${C1}`);
     expect(drawnPath()).toBe(`/chat/${C1}`);
     expect(window.history.state).toEqual(before);

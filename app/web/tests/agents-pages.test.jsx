@@ -1176,7 +1176,7 @@ describe("别人 @ 每天最多花 (othersBudget)", () => {
 describe("一次接话最多花费 (chainBudget, batch 2C)", () => {
   const LABEL = "一次接话最多花费（点）";
   const box = () => inMain().getByLabelText(LABEL);
-  const HELP = "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。";
+  const HELP = "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。";
   const WRONG = "请填写 1 到 100000 之间的点数（最多 6 位小数）";
   const kv = () => document.querySelector(".main-col .kv").textContent;
 
@@ -1263,6 +1263,9 @@ describe("where an Agent replies (batch 2C)", () => {
     expect(items[0].textContent).toContain("Agent 私聊");
     expect(items[1].textContent).toContain("周末小组");
     expect(items[1].textContent).toContain("群聊");
+    // The group's second line is its counts (the header's component): the people and the Agent in it; never an empty line.
+    expect([...items[1].querySelectorAll(".head-count")].map((el) => el.getAttribute("aria-label"))).toEqual(["2 人", "1 个 Agent"]);
+    for (const p of items[1].querySelectorAll("p")) expect(p.textContent.trim().length > 0 || p.querySelector("[aria-label]") !== null, "no empty paragraph").toBe(true);
     expect(mainText()).not.toContain("另一个群");
     await click(within(items[1]).getByRole("button", { name: "进入查看" }));
     expect(sectionShown()).toContain("消息");
@@ -2484,14 +2487,14 @@ describe("联网搜索 (only while the site offers web search)", () => {
       return [hintOf(CHAIN) ?? inMain().getByLabelText(CHAIN).closest(".field").querySelector(".field-hint").textContent, hintOf(OTHERS), hintOf(AMOUNT)];
     };
     expect(await open(ON_SITE)).toEqual([
-      "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+      "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
       "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
       "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
     ]);
     cleanup();
     // The site offering none: the words as before, to the character.
     expect(await open(MODELS)).toEqual([
-      "两次真人发言之间，它被其他 Agent 叫动所花的点数到了这个数就不再接话。真人 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
+      "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
       "群里别人 @ 它所花的点数，每天到了这个数就不再回复他们。你自己 @ 它不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
       "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。",
     ]);

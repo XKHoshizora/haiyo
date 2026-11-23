@@ -182,7 +182,7 @@ export function ContactCard() {
       <div className="page-body">
         <KV
           rows={[
-            ["这段会话谁能看", `你与${who.name}两个人`],
+            ["这段会话谁能看", `只有你和${who.name}`],
           ]}
         />
 

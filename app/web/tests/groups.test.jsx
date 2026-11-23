@@ -475,7 +475,7 @@ describe("Agents in a group (batch 2C)", () => {
     await openApp({ sync: withAgents([MEMBER(ME_ID, true), MEMBER(AG3)]), social: social(), handlers });
     await openProfile("周末小组", "群设置");
     await click(button("退出本群"));
-    expect(dialog().textContent).toContain("你是群里的最后一位真人，退出后这个群会关闭。你的 Agent 会一起离开。");
+    expect(dialog().textContent).toContain("群里除了 Agent 只剩你了，退出后这个群会关闭。你的 Agent 会一起离开。");
     expect(dialog().textContent).not.toContain("最后一位成员");
   });
 

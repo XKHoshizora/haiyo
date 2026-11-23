@@ -346,6 +346,9 @@ function DeleteModal({ provider, onClose }) {
   );
 }
 
+/** Whether the levels in use are the reported ones (the first option is checked only then; otherwise neither is, and a tap on either decides). */
+const sameLevels = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((level, i) => level === b[i]);
+
 /** One model of the form: what it can do, its context, and the 高级 disclosure to change them. */
 function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }) {
   const panelId = useId();
@@ -362,7 +365,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
       <fieldset className="checks" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
         <legend>思考档位</legend>
         <label>
-          <input type="radio" name={`levels-${panelId}`} checked={model.levels !== null} onChange={() => onChange({ ...model, levels: model.reported })} onClick={() => model.levels !== model.reported && onChange({ ...model, levels: model.reported })} />
+          <input type="radio" name={`levels-${panelId}`} checked={sameLevels(model.levels, model.reported)} onChange={() => onChange({ ...model, levels: model.reported })} onClick={() => !sameLevels(model.levels, model.reported) && onChange({ ...model, levels: model.reported })} />
           <span>这个模型支持的档位（{model.reported.map(levelLabel).join("、")}）</span>
         </label>
         <label>

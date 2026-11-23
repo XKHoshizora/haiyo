@@ -163,7 +163,7 @@ describe("the sentences batch 2A names", () => {
     // 让 Agent 停下 (batch 2C)
     expect(replyErrorText("halt", err("rate_limited", 429))).toBe("叫停太频繁了，请稍等一会儿再试。");
     expect(replyErrorText("halt", err("not_found", 404))).toBe("你已不在这个群聊中。");
-    expect(replyErrorText("halt", err("forbidden", 403))).toBe("只有群里的真人成员可以让 Agent 停下。");
+    expect(replyErrorText("halt", err("forbidden", 403))).toBe("只有群里的人可以让 Agent 停下。");
   });
 
   it("an Agent's reply in a group that was halted, or whose Agent was taken out: why, and nothing to retry", () => {

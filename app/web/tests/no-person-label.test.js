@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 
 const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]));
 const SRC = path.join(import.meta.dirname, "..", "src");
-/** Sentences (rules and help), not labels: kept for the owner to decide. */
-const SENTENCES = ["data/errorTexts.js", "legal/texts/terms.zh.md", "pages/AgentForm.jsx", "pages/GroupModals.jsx"];
+/** The one place that still says it: the versioned legal text (about Agents passed off as people). */
+const SENTENCES = ["legal/texts/terms.zh.md"];
 
 describe("no label calls anyone a person", () => {
   it("真人 occurs only in the listed sentences", () => {

@@ -823,14 +823,19 @@ describe("the models of a provider", () => {
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
+    // The list in use is not the catalogue's: neither option claims to be the choice until one is tapped.
+    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(false);
+    expect(within(group()).getByRole("radio", { name: "全部档位" }).checked).toBe(false);
     await click(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }));
+    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(true);
     expect(modelRow("gpt-x").textContent).toContain("支持思考（低、中、高）");
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
     await flush();
-    expect(group()).toBeTruthy();
+    // (Unticked and ticked again: the levels in use were dropped with it, so every level; the way back to the catalogue's list is still offered.)
+    expect(within(group()).getByRole("radio", { name: "全部档位" }).checked).toBe(true);
     await click(inMain().getByRole("button", { name: "保存" }));
-    expect(app.api.patchProvider).toHaveBeenCalled();
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 }] });
   });
 
   it("the reported levels are sent again when the choice is put back to them", async () => {

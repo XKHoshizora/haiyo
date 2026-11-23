@@ -58,98 +58,19 @@ function settleInert() {
 }
 
 // ───────── the page behind does not scroll
-// `inert` stops focus and taps, not scrolling: on iOS a drag on a layer whose list has little or nothing to scroll is handed to what is behind it, and the
-// pages scroll in boxes of their own (a form, a list), not in the document. So while a layer is open: the document is locked (`html[data-layer-open]`,
-// styles.css), and every touch move or wheel is judged here — it goes on only when it starts inside the top layer (or what was opened from it) on a
-// box that can scroll the way it goes; anything else is stopped, which is also what keeps a drag at a list's end from reaching the page.
-const scrollOf = (el, vertical) => {
-  const style = getComputedStyle(el);
-  const mode = vertical ? style.overflowY : style.overflowX;
-  return (mode === "auto" || mode === "scroll") && (vertical ? el.scrollHeight > el.clientHeight : el.scrollWidth > el.clientWidth);
-};
-/** Whether `target` is in the top layer or in something opened after it (the body's later children). */
-function inLiveRegion(target) {
-  const top = stack.at(-1);
-  if (!top || !(target instanceof Node)) return false;
-  const children = [...document.body.children];
-  const host = hostOf(target instanceof Element ? target : target.parentElement);
-  return host !== null && children.indexOf(host) >= children.indexOf(hostOf(top.node));
-}
-/**
- * Whether a box between `target` and the top layer can scroll by `delta` (positive: down / right) on that axis; with `delta` 0, in either direction.
- */
-function canScroll(target, delta, vertical) {
-  const top = stack.at(-1);
-  for (let el = target instanceof Element ? target : target.parentElement; el && el !== document.body; el = el.parentElement) {
-    if (scrollOf(el, vertical)) {
-      const at = vertical ? el.scrollTop : el.scrollLeft;
-      const max = vertical ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
-      const down = at < max - 0.5;
-      const up = at > 0.5;
-      if (delta > 0 ? down : delta < 0 ? up : down || up) return true;
-    }
-    if (el === top?.node) break;
-  }
-  return false;
-}
-/** A control whose own drag is its job (a slider's thumb, the text in a field, a select): never judged. */
-const ownsItsDrag = (target) => target instanceof Element && target.closest("input, select, textarea") !== null && !(target.closest("textarea") && canScroll(target, 0, true));
-/**
- * Whether a move of the finger or the wheel (`dx`, `dy`: the way the CONTENT is asked to go, positive: down / right) may go on: it starts in the live region
- * and a box there can follow it on either axis, each axis by its own component — never by which one is larger. iOS decides on the first move: a move that
- * is prevented ends the whole touch, and a thumb starts slanted, so a dominant-axis rule would kill a scroll the list could have followed. Only a move that
- * nothing can follow (the page behind, a part that scrolls nothing, a list at its end) is stopped; that is also what keeps it from the page.
- */
-function followed(target, dx, dy) {
-  if (!inLiveRegion(target)) return false;
-  if (ownsItsDrag(target)) return true;
-  if (dx === 0 && dy === 0) return canScroll(target, 0, true) || canScroll(target, 0, false);
-  return (dy !== 0 && canScroll(target, dy, true)) || (dx !== 0 && canScroll(target, dx, false));
-}
-let touchFrom = null;
-const pointOf = (event) => (event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null);
-function onTouchStart(event) {
-  touchFrom = pointOf(event);
-}
-/** A finger left: the one that stays is followed from where it is (a two-finger touch is never judged, the pinch is left alone). */
-function onTouchEnd(event) {
-  touchFrom = pointOf(event);
-}
-function onTouchMove(event) {
-  if (!stack.length || event.defaultPrevented || event.touches.length !== 1) return;
-  const now = pointOf(event);
-  const from = touchFrom ?? now;
-  touchFrom = now;
-  if (followed(event.target, from.x - now.x, from.y - now.y)) return;
-  if (event.cancelable) event.preventDefault();
-}
-function onWheel(event) {
-  if (!stack.length || event.defaultPrevented || event.ctrlKey) return;
-  // Shift+wheel is sideways.
-  const dx = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
-  const dy = event.shiftKey ? 0 : event.deltaY;
-  if (followed(event.target, dx, dy)) return;
-  if (event.cancelable) event.preventDefault();
-}
+// `inert` stops focus and taps, not scrolling: iOS latches a touch onto whatever scroller lies under the finger, even beneath a fixed overlay whose own content
+// cannot scroll. So the scrollers are taken away instead of the gesture being judged (no touchmove or wheel handler anywhere: text fields, sliders, pinch, the
+// edge-swipe Back and selection behave natively): while a layer is open the document is locked (`html[data-layer-open]`, styles.css) and, on a touch screen,
+// every scroller behind it (`body > [inert]`: the page and the layers under the top one) is `overflow: hidden` (styles.css: the list of them, pinned by a
+// test); hiding overflow keeps every scrollTop where it is. Where a pointer is a mouse, an inert subtree is not hit-tested, so a wheel cannot reach it.
 let documentAt = null;
 function lockDocument() {
   documentAt = { x: window.scrollX, y: window.scrollY, path: window.location.pathname };
   document.documentElement.setAttribute("data-layer-open", "");
-  document.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
-  document.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
-  document.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: true });
-  document.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
-  document.addEventListener("wheel", onWheel, { capture: true, passive: false });
 }
 function unlockDocument() {
   document.documentElement.removeAttribute("data-layer-open");
-  document.removeEventListener("touchstart", onTouchStart, { capture: true });
-  document.removeEventListener("touchend", onTouchEnd, { capture: true });
-  document.removeEventListener("touchcancel", onTouchEnd, { capture: true });
-  document.removeEventListener("touchmove", onTouchMove, { capture: true });
-  document.removeEventListener("wheel", onWheel, { capture: true });
-  // Exactly where it was.
-  // (Only on the page it was taken on: a layer that closes with a change of page puts nothing back on the new one.)
+  // Exactly where it was (only on the page it was taken on: a layer that closes with a change of page puts nothing back on the new one).
   if (documentAt && documentAt.path === window.location.pathname && (window.scrollX !== documentAt.x || window.scrollY !== documentAt.y)) window.scrollTo(documentAt.x, documentAt.y);
   documentAt = null;
 }

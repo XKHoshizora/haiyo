@@ -3,12 +3,12 @@ import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { MODEL_GONE } from "../data/errorTexts.js";
 import { formatPoints, pointsReached, proactiveLevelLabel } from "../data/viewmodel.js";
-import { Avatar, ConvAvatar, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
+import { Avatar, ConvAvatar, HeadCounts, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
 import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "./AgentForm.jsx";
 import { levelLabel, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
 import { LabLogo } from "../ui/LabLogo.jsx";
-import { convSubtitle, convTitle, isMyAgent, myAgents } from "../state/selectors.js";
+import { convTitle, groupCounts, isMyAgent, myAgents } from "../state/selectors.js";
 import { refusalText, settled, useAction } from "./useAction.js";
 import { MemoryRoom, useMemoryRoom } from "./MemoryRoom.jsx";
 import { MemoryHearsay } from "./MemoryHearsay.jsx";
@@ -196,7 +196,7 @@ function Conversations({ agent }) {
               <strong>
                 {convTitle(state, c)} <Tag tone="muted">群聊</Tag>
               </strong>
-              <p className="muted">{convSubtitle(state, c)}</p>
+              <p className="muted"><HeadCounts {...groupCounts(state, c)} /></p>
             </div>
             <div className="member-actions">
               <Btn small variant="primary" onClick={() => dispatch({ type: "nav/openConv", convId: c.id })}>进入查看</Btn>

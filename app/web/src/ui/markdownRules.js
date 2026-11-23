@@ -121,7 +121,7 @@ export const APP_CLASSES = new Set(
   row-name row-preview row-sub row-top rows rows-empty rows-label screen screen-bar screen-body screen-human search send
   settings-me share-items side side-body side-col side-head side-hero side-list slim spacer sr-only stack-actions steps
   sync-added sync-failed sync-name sync-others sync-rows sync-tags sync-tools
-  tag tag-human tag-muted tag-ok tag-pending tag-row tag-solid tag-warn task-controls task-list-item text-link theirs thinking
+  tag tag-muted tag-ok tag-pending tag-row tag-solid tag-warn task-controls task-list-item text-link theirs thinking
   thinking-text toast toast-region typed up upload-progress vis-banner
   memory-card memory-chip memory-detail memory-foot memory-hint memory-lines memory-merged msg-memory
   msg-whisper whisper whisper-head whisper-text whisper-actions whisper-done whisper-dot whisper-hits whisper-hit whisper-hit-meta whisper-hit-text whisper-hit-more folded

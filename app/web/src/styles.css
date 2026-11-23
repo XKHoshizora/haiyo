@@ -37,10 +37,17 @@
 *::-webkit-scrollbar-corner { background: transparent; }
 
 html, body, #root { height: 100%; }
-/* While a layer is open (ui/layers.js) the document itself does not scroll; the guard there stops the page's own boxes too. */
-/* (scrollbar-gutter: where the document has a classic scrollbar its room stays, so the page does not shift.) */
-html[data-layer-open] { overflow: hidden; scrollbar-gutter: stable; }
+/* While a layer is open (ui/layers.js) the document itself does not scroll. No scrollbar-gutter here: the shell has no document scrollbar, and a reserved gutter would
+   narrow the whole app while a dialog is open. */
+html[data-layer-open] { overflow: hidden; }
 html[data-layer-open] body { overflow: hidden; }
+/* And, on a touch screen, nothing behind the layer is a scroller: iOS latches a touch onto the scroller under the finger even beneath a fixed overlay, so the
+   candidates are taken away (hiding overflow keeps every scrollTop). `body > [inert]` is the page and the layers under the top one (ui/layers.js makes them inert).
+   The list is every box of the app that scrolls — tests/layers-scroll.test.jsx fails when a new one is not named here. Where a pointer is a mouse an inert subtree is
+   not hit-tested, so nothing is needed. */
+@media (hover: none) and (pointer: coarse) {
+  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page) { overflow: hidden; }
+}
 /* iOS makes its own guesses at text size (it inflated the wider rows of a list and left the narrow ones alone): never. The person's own text size
    still works through the normal mechanisms (Dynamic Type in the native shell, the browser's zoom and minimum font size, rem/em units). */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -195,7 +202,6 @@ li:last-child > .row.slim { box-shadow: none; }
   background: var(--pending-bg); color: #3d2fb3; border: 1px solid rgba(91, 79, 214, 0.25);
 }
 .tag-solid { background: #6f5fe0; color: #fff; border-color: transparent; }
-.tag-human { background: rgba(255, 255, 255, 0.7); color: var(--ink-2); border-color: var(--line-strong); }
 .tag-ok { background: var(--ok-bg); color: var(--ok); border-color: rgba(31, 122, 77, 0.25); }
 .tag-warn { background: var(--warn-bg); color: var(--warn); border-color: rgba(168, 67, 28, 0.25); }
 .tag-pending { background: var(--pending-bg); color: var(--pending); }
@@ -307,6 +313,7 @@ svg.model-brand { color: var(--ink-3); }
 .model-list, .select-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 /* More rows below the edge (ui/moreBelow.js sets data-more): a soft shade over the list's foot, only then, drawn OVER the rows (a sticky strip, so a row with a
    background cannot hide it): a list never ends on a row boundary looking complete. */
+@media (forced-colors: active) { .model-list[data-more], .select-list[data-more] { border-bottom: 1px solid CanvasText; } }
 .model-list[data-more]::after, .select-list[data-more]::after { content: ""; display: block; position: sticky; bottom: 0; height: 18px; margin-top: -18px; pointer-events: none; background: linear-gradient(to bottom, transparent, rgba(40, 32, 80, 0.16)); }
 .model-group-label { position: sticky; top: 0; z-index: 1; padding: 8px 8px 4px; background: #fff; font-size: 12px; color: var(--ink-3); }
 .model-option, .select-option { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 8px; border-radius: 8px; font-size: 14px; cursor: pointer; }

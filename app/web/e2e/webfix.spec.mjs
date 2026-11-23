@@ -204,6 +204,7 @@ for (const [size, viewport] of SHEET_SIZES) {
     const first = await listState(ann.page, `${prefix}-12`);
     expect(first.scrollable).toBe(true);
     expect(first.more, "cue at open").toBe(true);
+    await shot(ann.page, `f3-twelve-open-${size}`);
     const frame = await list.boundingBox();
     for (let i = 0; i < 8; i += 1) await touchScroll(ann.page, frame.x + frame.width / 2, frame.y + frame.height / 2, 400);
     const end = await listState(ann.page, `${prefix}-12`);
@@ -235,6 +236,10 @@ const scrollPositions = (page) =>
       .map((el) => `${el.tagName}.${el.className}:${Math.round(el.scrollTop)}`),
   );
 
+/** The computed overflow-y of every box of the app that scrolls (or did): where the page behind a layer is no scroller any more, all are "hidden". */
+const scrollerModes = (page) =>
+  page.evaluate(() => [...document.querySelectorAll("#root *")].filter((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1).map((el) => `${el.tagName}.${el.className}:${getComputedStyle(el).overflowY}/${getComputedStyle(el).overflowX}`));
+
 test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a sheet open a drag on the list, the search row, the footer and the backdrop does not move the page, and closing puts it back exactly", async ({ people }) => {
   test.skip(!canControlService, "needs the local model stub");
   const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport: { width: 430, height: 560 } } });
@@ -253,9 +258,16 @@ test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a shee
   expect(scrolled, "something on the page behind scrolls").toBe(true);
   const before = await scrollPositions(page);
   expect(before.length).toBeGreaterThan(0);
+  const modesBefore = await scrollerModes(page);
+  expect(modesBefore.some((m) => /auto|scroll/.test(m))).toBe(true);
   await page.getByRole("combobox", { name: /用哪个模型整理记忆/ }).or(page.getByRole("button", { name: /用哪个模型整理记忆/ })).first().click();
   const list = page.getByRole("listbox", { name: "模型" });
   await expect(list).toBeVisible();
+  // Nothing behind the layer is a scroller (touch screen): every box of the app that overflows has hidden overflow, its position unchanged.
+  const modesDuring = await scrollerModes(page);
+  expect(modesDuring.length).toBeGreaterThan(0);
+  for (const mode of modesDuring) expect(mode, "a scroller behind the sheet is not scrollable").toMatch(/:hidden\/hidden$/);
+  expect(await scrollPositions(page)).toEqual(before);
   const search = await page.getByRole("combobox", { name: "搜索模型" }).boundingBox();
   const foot = await page.locator(".model-foot").boundingBox();
   const lst = await list.boundingBox();
@@ -281,7 +293,43 @@ test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a shee
   }
   await expect(list).toBeHidden();
   expect(await scrollPositions(page)).toEqual(before);
+  // Closed: the scrollers are scrollers again.
+  expect(await scrollerModes(page)).toEqual(modesBefore);
   expect(await page.evaluate(() => document.documentElement.hasAttribute("data-layer-open"))).toBe(false);
+});
+
+test("F3 (desktop, mouse and wheel): with a dialog open a wheel over the backdrop and over the page beside it moves nothing behind, and opening it shifts nothing", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { viewport: { width: 1280, height: 420 } } });
+  const page = ann.page;
+  await page.goto("/");
+  await goTo(page, "设置");
+  await expect(page.locator(".settings-me")).toBeVisible();
+  const scrolled = await page.evaluate(() => {
+    const box = [...document.querySelectorAll(".app *")].find((el) => ["auto", "scroll"].includes(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 40);
+    if (box) box.scrollTop = 30;
+    return Boolean(box);
+  });
+  expect(scrolled, "something on the page behind scrolls").toBe(true);
+  const before = await scrollPositions(page);
+  const boxes = () => page.evaluate(() => [...document.querySelectorAll("#root .page-body, #root .side-body, #root .rows, #root .list-col, #root .main-col")].map((el) => Math.round(el.getBoundingClientRect().width * 10) / 10));
+  const widths = await boxes();
+  await page.getByRole("button", { name: "更换头像" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  // Nothing shifted under the backdrop (no scrollbar gutter, no reflow).
+  expect(await boxes()).toEqual(widths);
+  const frame = await dialog.boundingBox();
+  // A wheel over the backdrop, and over the page beside the narrow dialog.
+  for (const [x, y] of [[20, 200], [Math.max(5, frame.x - 40), frame.y + 20], [frame.x + frame.width + 30, frame.y + 30]]) {
+    await page.mouse.move(x, y);
+    await page.mouse.wheel(0, 300);
+    await page.waitForTimeout(150);
+  }
+  expect(await scrollPositions(page)).toEqual(before);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  expect(await scrollPositions(page)).toEqual(before);
+  expect(await boxes()).toEqual(widths);
 });
 
 for (const [size, viewport, options] of [["402x874", { width: 402, height: 874 }, BIG_PHONE], ["360x740", { width: 360, height: 740 }, BIG_PHONE], ["1280x800", { width: 1280, height: 800 }, {}]]) {
@@ -315,8 +363,9 @@ for (const [size, viewport, options] of [["402x874", { width: 402, height: 874 }
     expect((await oneLine()).h).toBeLessThanOrEqual(24);
     await shot(page, `f6-group-header-${size}`);
     // Three-digit numbers: still one line, the header not pushed.
-    await counts.evaluate((el) => el.querySelectorAll("[aria-hidden=true]:not(svg):not(.head-counts-sep)").forEach((n) => (n.textContent = "888")));
+    await counts.evaluate((el) => el.querySelectorAll("[aria-hidden=true]:not(svg):not(.head-counts-sep)").forEach((n) => (n.textContent = "99+")));
     const wide = await oneLine();
+    expect(wide.fits, "the counts fit their room").toBe(true);
     expect(wide.h).toBeLessThanOrEqual(24);
     expect(wide.head).toBe(true);
     await shot(page, `f6-group-header-888-${size}`);
@@ -343,3 +392,18 @@ for (const [size, viewport, options] of [["402x874", { width: 402, height: 874 }
     await shot(page, `f6-group-profile-${size}`);
   });
 }
+
+test("F3 (Chromium only): a long plain choice (the memory language) is cut at its foot with the cue, at 360x740", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { ...BIG_PHONE, viewport: { width: 360, height: 740 } } });
+  const page = ann.page;
+  await page.goto("/");
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /记忆宫殿/ }).click();
+  await page.getByRole("button", { name: /记忆用的语言/ }).first().click();
+  const list = page.getByRole("listbox", { name: /语言/ });
+  await expect(list).toBeVisible();
+  await page.waitForTimeout(350);
+  const scrollable = await list.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+  if (scrollable) await expect(list).toHaveAttribute("data-more", "");
+  await shot(page, "f3-select-long-360x740");
+});

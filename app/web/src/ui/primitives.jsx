@@ -76,13 +76,13 @@ export function Tag({ tone = "agent", children }) {
 
 /**
  * A group's header line: its people and, when it has any, its Agents, each a small icon and a number (the icons of the sidebar: Users, Bot) with a thin divider
- * between. Each count has its own accessible name and a title (「3 人」「1 个 Agent」); no Agent, no second count (never "0"). One line, never wrapped.
+ * between; from 100 on a count reads 99+ (a number is never cut to a different one; its name keeps the whole). Each count has its own accessible name and a title (「3 人」「1 个 Agent」); no Agent, no second count (never "0"). One line, never wrapped.
  */
 export function HeadCounts({ people, agents }) {
   const count = (label, Icon, n) => (
     <span className="head-count" role="img" aria-label={label} title={label}>
       <Icon size={14} aria-hidden="true" />
-      <span aria-hidden="true">{n}</span>
+      <span aria-hidden="true">{n > 99 ? "99+" : n}</span>
     </span>
   );
   return (
