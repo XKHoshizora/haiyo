@@ -39,33 +39,33 @@ final class LifecycleRulesTests: XCTestCase {
     /// with no timer.
     func testTheSharedFileStaysWhileTheSheetOrAnActivityStillNeedsIt() {
         // Dismissed without choosing anything.
-        let plain = ShareCleanup()
+        let plain = ShareCleanup {}
         XCTAssertFalse(plain.activityEnded(), "the callback can come while the sheet is still closing")
         XCTAssertTrue(plain.sheetGone())
 
         // 保存到“文件” → 取消: back on the sheet, the file stays for the next choice; then the sheet is closed.
-        let cancelled = ShareCleanup()
-        cancelled.activityStarted()
+        let cancelled = ShareCleanup {}
+        XCTAssertTrue(cancelled.activityStarted())
         XCTAssertFalse(cancelled.activityEnded(), "the sheet is still open")
         XCTAssertTrue(cancelled.sheetGone())
 
         // 存储图像: the sheet closes as soon as it is chosen, the save ends later.
-        let saving = ShareCleanup()
-        saving.activityStarted()
+        let saving = ShareCleanup {}
+        XCTAssertTrue(saving.activityStarted())
         XCTAssertFalse(saving.sheetGone(), "the activity still reads the file")
         XCTAssertTrue(saving.activityEnded())
 
         // A failed activity (存储图像 without Photos access): the callback first, then the sheet closes.
-        let failed = ShareCleanup()
-        failed.activityStarted()
+        let failed = ShareCleanup {}
+        XCTAssertTrue(failed.activityStarted())
         XCTAssertFalse(failed.activityEnded())
         XCTAssertTrue(failed.sheetGone())
 
         // A cancel, then another activity that outlives the sheet: the earlier callback does not count.
-        let second = ShareCleanup()
-        second.activityStarted()
+        let second = ShareCleanup {}
+        XCTAssertTrue(second.activityStarted())
         XCTAssertFalse(second.activityEnded())
-        second.activityStarted()
+        XCTAssertTrue(second.activityStarted())
         XCTAssertFalse(second.sheetGone(), "the second activity is still running")
         XCTAssertTrue(second.activityEnded())
         XCTAssertFalse(second.activityEnded(), "removed once")
@@ -76,7 +76,7 @@ final class LifecycleRulesTests: XCTestCase {
     @MainActor
     func testTheSharedItemMarksTheActivityBeforeHandingOutTheFile() {
         let file = URL(fileURLWithPath: "/tmp/x.png")
-        let cleanup = ShareCleanup()
+        let cleanup = ShareCleanup {}
         let item = SharedFile(url: file, cleanup: cleanup)
         let sheet = UIActivityViewController(activityItems: [], applicationActivities: nil)
         XCTAssertEqual(item.activityViewControllerPlaceholderItem(sheet) as? URL, file)
@@ -90,10 +90,25 @@ final class LifecycleRulesTests: XCTestCase {
         XCTAssertTrue(cleanup.activityEnded())
     }
 
+    /// The removal runs once, under the cleanup's lock; an activity that asks after it gets no file.
+    @MainActor
+    func testTheFileIsRemovedOnceAndNotHandedOutAfterwards() {
+        var removals = 0
+        let cleanup = ShareCleanup { removals += 1 }
+        let item = SharedFile(url: URL(fileURLWithPath: "/tmp/x.png"), cleanup: cleanup)
+        XCTAssertTrue(cleanup.sheetGone())
+        XCTAssertEqual(removals, 1)
+        let sheet = UIActivityViewController(activityItems: [], applicationActivities: nil)
+        XCTAssertNil(item.activityViewController(sheet, itemForActivityType: .copyToPasteboard), "asked after the removal")
+        XCTAssertFalse(cleanup.activityEnded())
+        XCTAssertFalse(cleanup.sheetGone())
+        XCTAssertEqual(removals, 1)
+    }
+
     /// The placeholder is not a use of the file.
     @MainActor
     func testThePlaceholderDoesNotStartAnActivity() {
-        let cleanup = ShareCleanup()
+        let cleanup = ShareCleanup {}
         let item = SharedFile(url: URL(fileURLWithPath: "/tmp/x.png"), cleanup: cleanup)
         _ = item.activityViewControllerPlaceholderItem(UIActivityViewController(activityItems: [], applicationActivities: nil))
         XCTAssertTrue(cleanup.sheetGone())

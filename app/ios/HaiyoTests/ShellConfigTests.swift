@@ -45,6 +45,10 @@ final class ShellConfigTests: XCTestCase {
         XCTAssertEqual(ApnsEnvironment.name(profile: profile("production"), isSimulator: true), "sandbox")
         XCTAssertEqual(ApnsEnvironment.name(profile: profile(nil), isSimulator: false), "production", "no push entitlement")
         XCTAssertEqual(ApnsEnvironment.name(profile: Data("not a profile".utf8), isSimulator: false), "production")
+        let truncated = profile("development").prefix(120)
+        XCTAssertNil(ApnsEnvironment.entitlements(inProfile: truncated), "an XML start without its end")
+        XCTAssertEqual(ApnsEnvironment.name(profile: truncated, isSimulator: false), "production")
+        XCTAssertNotNil(ApnsEnvironment.entitlements(inProfile: profile(nil)), "readable, without the push entitlement")
     }
 
     /// iPhone and iPad; on iPad every orientation and a resizable window; the iPhone stays portrait for now. Read from

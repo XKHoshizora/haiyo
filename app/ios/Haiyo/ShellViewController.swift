@@ -15,8 +15,6 @@ final class ShellViewController: UIViewController, BridgeHost {
     private let layoutObserver = LayoutObserverView()
     private var layout = LayoutState()
     private var layoutSettle: DispatchWorkItem?
-    /// The `layout` the latest `hello` answer carried, for when it is delivered.
-    private var helloLayout: PageLayout?
     /// Events the page said it handles (`hello`); `open` falls back to loading the URL when the page does not.
     private var pageEvents: Set<String> = []
     private var retryURL: URL?
@@ -313,9 +311,9 @@ final class ShellViewController: UIViewController, BridgeHost {
         BridgePage(generation: pageGeneration, isOwnOrigin: webView.url.map(config.isOwnOrigin) ?? false)
     }
 
-    /// The page's events take effect when the answer is delivered (`bridgeHelloDelivered`), not here: an answer
+    /// The page's events take effect when the answer is delivered (the `delivered` closure), not here: an answer
     /// refused at delivery (the page changed meanwhile) must change nothing.
-    func bridgeHello(events: Set<String>, completion: @escaping ([String: Any]) -> Void) {
+    func bridgeHello(events: Set<String>, completion: @escaping ([String: Any], @escaping () -> Void) -> Void) {
         PushCenter.shared.status { [weak self, config] push in
             var reply: [String: Any] = [
                 "bridge": 1,
@@ -325,19 +323,19 @@ final class ShellViewController: UIViewController, BridgeHost {
                 "push": push,
                 "events": events.sorted(),
             ]
-            // Only for a page that handles `layout`: the values as it will see them, without the stopgap inset.
+            // Only for a page that handles `layout`: the values as it will see them, without the stopgap inset. The
+            // value goes with this answer to its delivery.
+            var replied: PageLayout?
             if events.contains("layout"), let self {
-                let layout = self.layout.layoutForHello
-                self.helloLayout = layout
-                reply["layout"] = layout.json
+                replied = self.layout.layoutForHello
+                reply["layout"] = replied?.json
             }
-            completion(reply)
+            completion(reply) { [weak self] in
+                guard let self else { return }
+                self.pageEvents = events
+                self.apply(self.layout.helloDelivered(events: events, replied: replied))
+            }
         }
-    }
-
-    func bridgeHelloDelivered(events: Set<String>) {
-        pageEvents = events
-        apply(layout.helloDelivered(events: events, replied: events.contains("layout") ? helloLayout : nil))
     }
 
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void) {

@@ -64,20 +64,21 @@ enum LayoutGeometry {
             .first { _, band in !band.isNull && !band.isEmpty }
         if let fold, isFinite(obscured) {
             let (frame, band) = fold
-            let minX = Int(((band.minX - obscured.left) / scale).rounded(.down))
-            let minY = Int(((band.minY - obscured.top) / scale).rounded(.down))
-            let maxX = Int(((band.maxX - obscured.left) / scale).rounded(.up))
-            let maxY = Int(((band.maxY - obscured.top) / scale).rounded(.up))
-            layout.fold = PageLayout.Fold(
-                // The direction of the whole region, not of the part inside the view.
-                axis: frame.height >= frame.width ? .vertical : .horizontal,
-                x: minX, y: minY, width: maxX - minX, height: maxY - minY
-            )
+            if let minX = whole(((band.minX - obscured.left) / scale).rounded(.down)),
+               let minY = whole(((band.minY - obscured.top) / scale).rounded(.down)),
+               let maxX = whole(((band.maxX - obscured.left) / scale).rounded(.up)),
+               let maxY = whole(((band.maxY - obscured.top) / scale).rounded(.up)) {
+                layout.fold = PageLayout.Fold(
+                    // The direction of the whole region, not of the part inside the view.
+                    axis: frame.height >= frame.width ? .vertical : .horizontal,
+                    x: minX, y: minY, width: maxX - minX, height: maxY - minY
+                )
+            }
         }
         let extra = { (adapted: CGFloat, plain: CGFloat) -> Int in
             let points = adapted - plain
             guard points.isFinite, points > 0 else { return 0 }
-            return Int((points / scale).rounded(.up))
+            return whole((points / scale).rounded(.up)) ?? 0
         }
         layout.corner = PageLayout.Corner(
             top: extra(sample.cornerVertical.top, sample.safe.top),
@@ -87,16 +88,27 @@ enum LayoutGeometry {
         return layout
     }
 
+    /// The least extra a top corner must need before it counts as a window control: measured extras are 0–18 pt for
+    /// rounded corners (Duo 16–18, iPad 0 at the top) and 43 pt for the iPad window controls, and fractions must not
+    /// count.
+    static let windowControlsMinimumExtra: CGFloat = 24
+
     /// For a page that does not handle `layout` yet: how far to keep it below the iPad window controls, in points
-    /// (`obscuredContentInsets.top`), or 0. On iPad, the vertically corner-adapted safe area reaches below the plain one
-    /// exactly when a window control is in a top corner (measured: 0 full screen in either orientation, 53 in a window),
-    /// on iPadOS 26.0 and later, whichever side the controls are on. Phones never: the Duo's rounded corners give a
-    /// corner extra too (16–18 pt), and that must not push its page down.
+    /// (`obscuredContentInsets.top`), or 0. On iPad, the vertically corner-adapted safe area reaches well below the plain
+    /// one exactly when a window control is in a top corner (measured: 0 full screen in either orientation, 43 more in
+    /// a window), on iPadOS 26.0 and later, whichever side the controls are on. Phones never: the Duo's rounded corners
+    /// give a corner extra too (16–18 pt), and that must not push its page down.
     static func windowControlsTop(_ sample: LayoutSample) -> CGFloat {
         guard sample.isPad else { return 0 }
         let top = sample.cornerVertical.top
-        guard top.isFinite, sample.safe.top.isFinite, top > sample.safe.top else { return 0 }
+        guard top.isFinite, sample.safe.top.isFinite, top - sample.safe.top >= windowControlsMinimumExtra else { return 0 }
         return top
+    }
+
+    /// A whole number for the page, or nil for a value no screen has (non-finite, or beyond ±1 000 000).
+    private static func whole(_ x: CGFloat) -> Int? {
+        guard x.isFinite, abs(x) <= 1_000_000 else { return nil }
+        return Int(x)
     }
 
     private static func isFinite(_ r: CGRect) -> Bool {

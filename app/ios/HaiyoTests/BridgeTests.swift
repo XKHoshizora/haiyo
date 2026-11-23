@@ -17,14 +17,11 @@ final class FakeHost: BridgeHost {
     var heldHello: (([String: Any]) -> Void)?
     var helloDeliveries: [Set<String>] = []
 
-    func bridgeHello(events: Set<String>, completion: @escaping ([String: Any]) -> Void) {
+    func bridgeHello(events: Set<String>, completion: @escaping ([String: Any], @escaping () -> Void) -> Void) {
         hellos.append(events)
         let reply: [String: Any] = ["bridge": 1, "events": events.sorted(), "push": "notDetermined"]
-        if holdHello { heldHello = { _ in completion(reply) } } else { completion(reply) }
-    }
-
-    func bridgeHelloDelivered(events: Set<String>) {
-        helloDeliveries.append(events)
+        let delivered: () -> Void = { [weak self] in self?.helloDeliveries.append(events) }
+        if holdHello { heldHello = { _ in completion(reply, delivered) } } else { completion(reply, delivered) }
     }
 
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void) {

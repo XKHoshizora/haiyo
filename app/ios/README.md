@@ -65,7 +65,10 @@ identical) and prints the host it builds for.
 
 The app is universal (`TARGETED_DEVICE_FAMILY = 1,2`), and iPad on the App Store is one way. Archiving Store therefore
 also fails while it includes iPad, unless `HAIYO_IPAD_RELEASE=1` is given on purpose, once the owner has decided to ship
-iPad (or set `TARGETED_DEVICE_FAMILY = 1` in `Config/Store.xcconfig`).
+iPad (or set `TARGETED_DEVICE_FAMILY = 1` in `Config/Store.xcconfig`). Give `HAIYO_IPAD_RELEASE=1` on the
+`xcodebuild archive` command line only, never in an xcconfig: written there it stays on for every later archive without
+anyone deciding again. Like the acceptance guard, it checks archives (`ACTION=install`, from Xcode's Product → Archive
+and from `xcodebuild archive`); a build made with `xcodebuild build` and packaged by hand is not checked.
 
 ## Navigation
 
@@ -79,10 +82,16 @@ iPad (or set `TARGETED_DEVICE_FAMILY = 1` in `Config/Store.xcconfig`).
 | `mailto:`, `tel:`, `sms:` | a link activation (not a load, redirect or form) | the system |
 | anything else (`javascript:`, `file:`, other schemes) | — | refused |
 
-What is a file: an `https://<host>/api/…` path as written (`/%61pi/x` is not; the service answers it with a 404). The
-sheet's rule leans on the service too: it shows only images inline (PNG, JPEG, WebP, GIF); every other type is an
-attachment (a download). If an inline type with links is ever added (PDF), a tapped link in it opens the app page in
-the main view, and nothing else in it can.
+What is a file: an `https://<host>/api/…` path as written. `/%61pi/x` is not a file but an app page, so the main view
+loads it and shows what the service answers (a JSON 404); the back swipe returns.
+
+The sheet's rule leans on the service: it shows only images inline (PNG, JPEG, WebP, GIF), and every other type is an
+attachment (a download), so no file in the sheet has links or script. What the shell itself guarantees for a document
+in the sheet: a link activation in it opens an app page in the main view; refreshes, `location` changes, forms and
+`window.open` without one are refused. A script's `element.click()` is reported as a link activation too, so the real
+dependency is that the service never shows a scriptable type (HTML, SVG) inline. Also, should an inline type with
+links appear (PDF): a tapped link to another file whose load is then redirected to the sign-in page (the session ended
+while the sheet was open) is refused, and the sheet stays as it was.
 
 What the `mailto:`/`tel:`/`sms:` rule rests on: WebKit reports a script's `element.click()` as a link activation too
 (measured: both `linkActivated`; a tap carries `buttonNumber` 1, a script click 0). iOS has no public user-gesture flag
@@ -137,19 +146,22 @@ Events the shell dispatches on `window` (only to its own origin's page):
   - The values describe the unzoomed layout viewport: a pinch zoom does not change them.
 
   A page that has not listed `layout` gets no events and no `layout` in `hello`. On iPad only, while a window control
-  is in a top corner (the vertically corner-adapted safe area reaches below the plain one), the shell keeps such a page
+  is in a top corner (the vertically corner-adapted safe area reaches 24 pt or more below the plain one: rounded
+  corners need up to 18, the controls 43), the shell keeps such a page
   below it (`obscuredContentInsets.top`: measured 53 pt in a window mid-screen on iPadOS 27.2, 75 pt in a window at the
   top of the screen on 27.0, 0 full screen in either orientation) and gives the room back once its `hello` with
   `layout` has been delivered. This needs no reserved regions, so it works from iPadOS 26.0; phones are never moved
   (the Duo's rounded corners give a corner extra too). The rule rests on a measured fact: a full-screen iPad reports
   no corner extra at the top, in either orientation (iPad Pro 13-inch, iPad Air 11-inch, iPad mini; `PageLayoutTests`
-  keeps it as a case). An iPad that reported one in full screen would have its unaware page pushed down by that
-  much: check it on the first real iPad. iPadOS 26.x in a window is unmeasured (no 26.x simulator runtime here).
+  keeps it as a case); the 24-pt margin also absorbs fractions. An iPad whose full-screen corner extra reached 24 pt
+  would have its unaware page pushed down: check it on the first real iPad, before any iPad build goes beyond internal
+  testers. iPadOS 26.x in a window is unmeasured (no 26.x simulator runtime here).
 
 Events are hints, not a guarantee: they are fire-and-forget, a page reloaded in the background never hears `pause`,
 and the shell checks the page's origin inside the script. **A page that loads while `document.visibilityState` is
 `"hidden"` must not open its socket**; it connects on `visibilitychange` / `resume`. A page restored from the
-back/forward cache re-sends `hello` on `pageshow`.
+back/forward cache re-sends `hello` on `pageshow`. A `hello` refused with `forbidden` arrived just as the document
+changed; the page sends it again.
 
 The shell appends `HaiyoApp/<version>` to WebKit's own user-agent application name (`Mobile/15E148 HaiyoApp/0.1.0`).
 It marks the shell; it is not an authorization. Both web views use WebKit's mobile content mode: left to

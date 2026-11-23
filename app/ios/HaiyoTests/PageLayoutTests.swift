@@ -126,6 +126,31 @@ final class PageLayoutTests: XCTestCase {
         XCTAssertEqual(LayoutGeometry.windowControlsTop(phoneLikeAWindow), 0, "the phone idiom never")
     }
 
+    /// The stopgap needs a corner extra of 24 pt or more: fractions and rounded corners never count, the window
+    /// controls (43 pt more, mid-screen on 27.2 and at the top of the screen on 27.0) always do.
+    func testOnlyAControlSizedCornerCountsOnIPad() {
+        var fraction = T.iPadFullScreen
+        fraction.cornerVertical.top = 32.3
+        XCTAssertEqual(LayoutGeometry.windowControlsTop(fraction), 0, "a full-screen iPad reporting a fraction more")
+        var rounded = T.iPadFullScreen
+        rounded.cornerVertical.top = 32 + 18
+        XCTAssertEqual(LayoutGeometry.windowControlsTop(rounded), 0, "as much as the Duo's rounded corners")
+        var topOfScreen = T.iPadWindow
+        topOfScreen.safe.top = 32
+        topOfScreen.cornerVertical.top = 75
+        XCTAssertEqual(LayoutGeometry.windowControlsTop(topOfScreen), 75, "a window at the top of the screen (27.0)")
+    }
+
+    /// Finite values no screen has (a vanishing zoom) give nothing rather than trapping in the conversion to Int.
+    func testOutOfRangeValuesGiveNothing() {
+        let tiny = LayoutGeometry.layout(T.duoOpen(fold: true), zoom: 1e-300)
+        XCTAssertNil(tiny.fold)
+        XCTAssertEqual(tiny.corner, PageLayout.Corner(top: 0, leading: 0, trailing: 0))
+        var huge = T.duoOpen(fold: true)
+        huge.cornerVertical.top = 1e300
+        XCTAssertEqual(LayoutGeometry.layout(huge).corner.top, 0)
+    }
+
     func testTheDetailThePageReceives() {
         let none = PageLayout().json
         XCTAssertTrue(none["fold"] is NSNull)

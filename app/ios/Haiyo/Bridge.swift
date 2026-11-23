@@ -11,10 +11,9 @@ struct BridgePage: Equatable {
 /// answers through its completion, at once or later; the bridge decides whether that answer may still be delivered.
 protocol BridgeHost: AnyObject {
     var bridgePage: BridgePage { get }
-    func bridgeHello(events: Set<String>, completion: @escaping ([String: Any]) -> Void)
-    /// The `hello` answer reached the page that asked (it is still the page shown): only now does that page handle
-    /// `events`. Not called when the answer was refused at delivery.
-    func bridgeHelloDelivered(events: Set<String>)
+    /// `completion` gives the answer and what to do once it has reached the page that asked (it is still the page
+    /// shown): only then does that page handle `events`. Not run when the answer is refused at delivery.
+    func bridgeHello(events: Set<String>, completion: @escaping (_ reply: [String: Any], _ delivered: @escaping () -> Void) -> Void)
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void)
     func bridgeBadgeSet(_ n: Int, completion: @escaping ([String: Any]) -> Void)
 }
@@ -71,9 +70,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         }
         switch request {
         case let .hello(events):
-            host.bridgeHello(events: events) { [weak host] value in
-                answer(value) { host?.bridgeHelloDelivered(events: events) }
-            }
+            host.bridgeHello(events: events) { value, delivered in answer(value, delivered) }
         case .pushRegister: host.bridgePushRegister { answer($0, nil) }
         case let .badgeSet(n): host.bridgeBadgeSet(n) { answer($0, nil) }
         }

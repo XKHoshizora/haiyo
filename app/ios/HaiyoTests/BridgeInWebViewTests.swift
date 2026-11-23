@@ -178,12 +178,8 @@ final class WebPageHost: BridgeHost {
         BridgePage(generation: generation, isOwnOrigin: webView?.url.map(testConfig.isOwnOrigin) ?? false)
     }
 
-    func bridgeHello(events: Set<String>, completion: @escaping ([String: Any]) -> Void) {
+    func bridgeHello(events: Set<String>, completion: @escaping ([String: Any], @escaping () -> Void) -> Void) {
         fake.bridgeHello(events: events, completion: completion)
-    }
-
-    func bridgeHelloDelivered(events: Set<String>) {
-        fake.bridgeHelloDelivered(events: events)
     }
 
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void) {

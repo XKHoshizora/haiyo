@@ -8,12 +8,15 @@ import UserNotifications
 enum ApnsEnvironment {
     static let current: String = {
         #if targetEnvironment(simulator)
-        let simulator = true
+        return name(profile: nil, isSimulator: true)
         #else
-        let simulator = false
-        #endif
         let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) }
-        return name(profile: profile, isSimulator: simulator)
+        if let profile, entitlements(inProfile: profile) == nil {
+            // A future profile format would otherwise turn every development build into "production" without a trace.
+            ShellLog.note("apns-profile", ("present", .flag(true)), ("parsed", .flag(false)))
+        }
+        return name(profile: profile, isSimulator: false)
+        #endif
     }()
 
     static func name(profile: Data?, isSimulator: Bool) -> String {
@@ -21,13 +24,18 @@ enum ApnsEnvironment {
         return profile.flatMap(apsEnvironment(inProfile:)) == "development" ? "sandbox" : "production"
     }
 
-    /// The profile is a signed (CMS) envelope around a plain XML property list: `Entitlements` → `aps-environment`.
     static func apsEnvironment(inProfile data: Data) -> String? {
+        entitlements(inProfile: data)?["aps-environment"] as? String
+    }
+
+    /// The profile is a signed (CMS) envelope around a plain XML property list: its `Entitlements`, or nil when the
+    /// file cannot be read that way.
+    static func entitlements(inProfile data: Data) -> [String: Any]? {
         guard let start = data.range(of: Data("<?xml".utf8)),
               let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
-              let plist = try? PropertyListSerialization.propertyList(from: data[start.lowerBound..<end.upperBound], format: nil) as? [String: Any],
-              let entitlements = plist["Entitlements"] as? [String: Any] else { return nil }
-        return entitlements["aps-environment"] as? String
+              let plist = try? PropertyListSerialization.propertyList(from: data[start.lowerBound..<end.upperBound], format: nil) as? [String: Any]
+        else { return nil }
+        return plist["Entitlements"] as? [String: Any]
     }
 }
 
