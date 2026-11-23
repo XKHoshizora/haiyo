@@ -281,6 +281,88 @@ describe("creating an Agent", () => {
     expect(chatTitle()).toBe("MyBot");
   });
 
+  it("the chat it lands in takes the form's entry, also when the conversation arrives a moment later: Back is the Agent list, never the form or the Agent's page", async () => {
+    let app;
+    const createAgent = vi.fn(async () => {
+      app.env.sync = () => syncOf([agentConv(A1, AG1)], [wire(A1, 1, AG1, "你好，我是 MyBot。")], [...PRINCIPALS, agentPrincipal(AG1, "mybot", "MyBot")]);
+      return agentOf(AG1, { handle: "mybot", name: "MyBot", model: SITE_MODEL });
+    });
+    app = await openAgents({ api: { createAgent } });
+    await openCreate();
+    expect(window.location.pathname).toBe("/agents/new");
+    const formIndex = window.history.state.index;
+    type("名称", "MyBot");
+    await chooseModel("小模型 · 免费");
+    await click(createButton());
+    await flush();
+    expect(window.location.pathname).toBe(`/chat/${A1}`);
+    expect(window.history.state.index).toBe(formIndex);
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(60);
+    });
+    await flush();
+    expect(window.location.pathname).toBe("/agents");
+  });
+
+  it("a person who moved on before the conversation arrived keeps the entry they are in: the chat is pushed over it", async () => {
+    const createAgent = vi.fn(async () => agentOf(AG1, { handle: "mybot", name: "MyBot", model: SITE_MODEL }));
+    const app = await openAgents({ api: { createAgent } });
+    await openCreate();
+    type("名称", "MyBot");
+    await chooseModel("小模型 · 免费");
+    await click(createButton());
+    await flush();
+    await click(rail(/^通讯录/));
+    expect(window.location.pathname).toBe("/contacts");
+    const index = window.history.state.index;
+    app.env.sync = () => syncOf([agentConv(A1, AG1)], [wire(A1, 1, AG1, "你好，我是 MyBot。")], [...PRINCIPALS, agentPrincipal(AG1, "mybot", "MyBot")]);
+    await act(async () => app.layer.actions.syncNow());
+    await flush();
+    expect(window.location.pathname).toBe(`/chat/${A1}`);
+    expect(window.history.state.index).toBe(index + 1);
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(60);
+    });
+    await flush();
+    expect(window.location.pathname).toBe("/contacts");
+  });
+
+  it("on a phone: after creating, Back is the Agent list with the tab bar, and 消息 is the conversation list (twice over), not the new chat again", async () => {
+    window.matchMedia = (query) => ({ matches: ["(max-width: 640px)", "(max-width: 860px)", "(pointer: coarse)"].includes(query), media: query, addEventListener() {}, removeEventListener() {} });
+    try {
+      let app;
+      const createAgent = vi.fn(async () => {
+        app.env.sync = () => syncOf([agentConv(A1, AG1)], [wire(A1, 1, AG1, "你好，我是 MyBot。")], [...PRINCIPALS, agentPrincipal(AG1, "mybot", "MyBot")]);
+        return agentOf(AG1, { handle: "mybot", name: "MyBot", model: SITE_MODEL });
+      });
+      app = await openAgents({ api: { createAgent } });
+      await openCreate();
+      type("名称", "MyBot");
+      await chooseModel("小模型 · 免费");
+      await click(createButton());
+      await flush();
+      expect(window.location.pathname).toBe(`/chat/${A1}`);
+      expect(screen.queryByRole("navigation", { name: "主导航" })).toBeNull();
+      await act(async () => {
+        window.history.back();
+        await vi.advanceTimersByTimeAsync(60);
+      });
+      await flush();
+      expect(window.location.pathname).toBe("/agents");
+      for (let i = 0; i < 2; i += 1) {
+        await click(rail(/^消息/));
+        expect(window.location.pathname).toBe("/");
+        expect(document.querySelector(".app").dataset.pane).toBe("list");
+        expect(document.querySelector(".app").dataset.tabbar).toBe("on");
+        expect(rowNames()).toContain("MyBot");
+      }
+    } finally {
+      delete window.matchMedia;
+    }
+  });
+
   it("keeps the create button disabled until a model is chosen, and says why", async () => {
     const createAgent = vi.fn();
     await openAgents({ api: { createAgent } });

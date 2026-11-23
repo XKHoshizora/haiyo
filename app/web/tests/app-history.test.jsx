@@ -413,7 +413,7 @@ describe("the viewer is a key of the entry", () => {
 import { NAV_KEYS } from "../src/state/location.js";
 import { reducer } from "../src/state/reducer.js";
 import { emptyState } from "../src/data/store.jsx";
-import { lastPageOf, forgetSections } from "../src/state/appHistory.js";
+import { lastPageOf, forgetSections, sectionRoot } from "../src/state/appHistory.js";
 
 const ALIVE = { convs: { [C1]: { type: "group" }, [C2]: { type: "group" } }, people: {}, agents: {}, providers: {} };
 
@@ -496,7 +496,7 @@ describe("the page-deciding keys equal their address after every move", () => {
     expect(addressOf(state.nav)).toEqual({ path: `/chat/${C2}`, overlay: null });
   });
 
-  it("N1: a section click goes to the last address seen in it (and to its list when it was left on the list)", async () => {
+  it("N1, where two panes show (wide): a section click goes to the last address seen in it (and to its list when it was left on the list)", async () => {
     forgetSections();
     expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "list", convId: null });
     render(<Probe />);
@@ -509,6 +509,22 @@ describe("the page-deciding keys equal their address after every move", () => {
     expect(at()).toBe(`/chat/${C1}`);
     await go({ pane: "list", convId: null }); // back at the list: that is where the section was left
     expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "list", convId: null });
+  });
+
+  it("N1, where one pane shows (a phone, one column): a section click goes to the section's list, whatever was seen in it last", async () => {
+    forgetSections();
+    render(<Probe />);
+    await settle();
+    await go(chatOf(C1));
+    await go({ section: "agents", pane: "main", agentId: AG, agentView: "detail" });
+    await go({ section: "settings", pane: "main", settingsPage: "providers", providerId: "new" });
+    expect(sectionRoot("chat")).toMatchObject({ section: "chat", pane: "list", convId: null, detailsOpen: false });
+    expect(sectionRoot("contacts")).toMatchObject({ section: "contacts", pane: "list", contactId: null });
+    expect(sectionRoot("agents")).toMatchObject({ section: "agents", pane: "list", agentId: null, agentView: "detail" });
+    expect(sectionRoot("settings")).toMatchObject({ section: "settings", pane: "list", providerId: null });
+    for (const [section, path] of [["chat", "/"], ["contacts", "/contacts"], ["agents", "/agents"], ["settings", "/settings"]]) expect(addressOf({ ...BASE, ...sectionRoot(section) }).path).toBe(path);
+    // (The wide layout's answer is not forgotten by it: the last page of the section is still what was seen.)
+    expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "main", convId: C1 });
   });
 
   it("the providers form is an address: /settings/providers/new and /settings/providers/<id>", () => {

@@ -126,7 +126,8 @@ export function openAgentChat(state, dispatch, actions, conversationId, { replac
     dispatch({ type: "nav/openConv", convId: conversationId, replace });
     return;
   }
-  dispatch({ type: "nav", patch: { opening: { convId: conversationId } } });
+  // (`replace` waits with it: the chat takes the entry of the page that asked, as it would have at once.)
+  dispatch({ type: "nav", patch: { opening: { convId: conversationId, replace } } });
   actions.syncNow();
 }
 

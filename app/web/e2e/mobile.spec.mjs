@@ -553,6 +553,44 @@ test("N1 at 1280: a section is its last address (消息 returns to the open chat
   await expect(fresh.getByText("选择一个会话开始聊天")).toBeVisible();
 });
 
+test("N1 at 390: a tab is its section's list — after creating an Agent, Back is the Agent list with the tab bar, and 消息 is the conversation list, not the new chat again", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { ...PHONE, viewport: { width: 390, height: 844 } } });
+  const page = ann.page;
+  const name = `导航${uniq(4)}`;
+  await bar(page).getByRole("button", { name: "Agent" }).click();
+  await expect(page).toHaveURL(/\/agents$/);
+  // Creating lands in the Agent's chat, which takes the form's entry: no tab bar there (a conversation fills the screen).
+  const chat = await createAgentUi(page, { name });
+  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]+$/);
+  const chatPath = new URL(page.url()).pathname;
+  await expect(bar(page)).toHaveCount(0);
+  // Back (the edge swipe on an iPhone) is the Agent list, not the form and not the Agent's page.
+  await page.goBack();
+  await expect(page).toHaveURL(/\/agents$/);
+  await expect(bar(page)).toBeVisible();
+  // 消息 is the list of conversations with the tab bar; tapped again it stays there.
+  for (let i = 0; i < 2; i += 1) {
+    await bar(page).getByRole("button", { name: /消息$/ }).click();
+    await expect(page).toHaveURL(/\/$/);
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(bar(page)).toBeVisible();
+    await expect(listRow(page, name).first()).toBeVisible();
+    await expect(chat).toBeHidden();
+  }
+  await expect(bar(page).getByRole("button", { name: /消息$/ })).toHaveAttribute("aria-current", "page");
+  // The chat is one tap away, and its 返回列表 is the list again.
+  await listRow(page, name).first().click();
+  expect(new URL(page.url()).pathname).toBe(chatPath);
+  await chat.getByRole("button", { name: "返回列表" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(bar(page)).toBeVisible();
+  // The same from another tab: Agent, then 消息, is the list.
+  await bar(page).getByRole("button", { name: "Agent" }).click();
+  await bar(page).getByRole("button", { name: /消息$/ }).click();
+  expect(new URL(page.url()).pathname).toBe("/");
+  await expect(bar(page)).toBeVisible();
+});
+
 test("N2 at 375: the add form of the providers is a page: Back is the list, Forward the typed form (the key never in the address), a fresh Add is empty", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: PHONE });
   const page = ann.page;
@@ -618,7 +656,9 @@ test("profile-style headers at 320 and 375: the title keeps a sensible width (a 
     await page.getByRole("button", { name: /^返回/ }).first().click();
     // Group info.
     await bar(page).getByRole("button", { name: /消息$/ }).click();
-    await toList(); // (消息 returns to the chat that was open last, the Agent's; a phone shows one page, whose 返回列表 is the way to the list)
+    // (On a phone a tab is its section's list: 消息 is the conversation list with the tab bar, never the chat that was open last.)
+    await expect(page).toHaveURL(/\/$/);
+    await expect(bar(page)).toBeVisible();
     const chat = await openChat(page, groupTitle);
     await chat.getByRole("button", { name: "群资料" }).click();
     await check(page.getByRole("region", { name: "群资料" }).locator(".profile-head"), `group info at ${width}`);
