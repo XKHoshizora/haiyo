@@ -236,6 +236,17 @@ refused with 403 `terms_required` until it is reloaded). Accounts made while it 
 an 18+ declaration); they are asked once, at their next request.),
 `WHISPERS` (how long whispers stay open, JSON, every field optional; Whispers: `elsewhereTtlHours` (a `found_elsewhere`
 whisper expires this many hours after it was made; whole hours 1–168, default 24; other kinds stay open 7 days)),
+`SOCIAL` (the operator's switch for Agent social, JSON; Agent social, Configuration: `enabled` (boolean, default `false`: people
+other than an Agent's owner cannot reach it — no social conversation can be made, written in or run, and no entry point shows —;
+groups and everything that exists today behave as ever)),
+`OTHERS` (the numbers that bound others' use of an Agent, JSON, every field optional; Agent social, Configuration: `answersPerDay`
+(50) and `pointsPerDay` (70) are an owner's daily caps for what others cause, one value each whatever the number of Agents;
+`toolCalls` (1), `overCapNotes` (3), `outputTokens` (800) bound one others' reply; `contextWeight` (4000) and `notesWeight` (1000)
+what it is shown; `judgeBatch` (20), `judgeCallsPerDay` (5), `withheldCallsPerDay` (3, always less than `judgeCallsPerDay`),
+`judgeAttemptsPerVersion` (2), `judgeInputBytes` (9000), `judgeOutputTokens` (2200), `judgeOwnerExamples` (4), `judgePollMs` (5000),
+`judgeOwnersPerPoll` (10), `withheldInputBytes` (6000) and `withheldCardsMax` (3) the notes judge of ring 1b; `cardDays` (7),
+`requestDays` (7) and `cooldownDays` (30) how long a card can be answered, a contact request waits, and a stopped or declined
+request is refused),
 `AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional;
 Replies, Automatic retry: `autoRetryDelaysMs` (the waits before each automatic retry of one original call, in ms; at
 most 2, each 0–600 000; default `[20000, 120000]`; `[]` turns automatic retries off)),
@@ -4499,6 +4510,7 @@ milliseconds.
 | Field | Default (range) | What it does |
 |---|---|---|
 | `model` | none (a site model's `id`) | The site model memory calls use; none: the cheapest free-tier site model (Memory calls) |
+| `judgeModel` | none (a site model's `id`; one that is not in `SITE_MODELS` stops the start) | The site model the notes judge and the withheld check use (Agent social, ring 1b); none: the memory model's |
 | `roomOwner`, `roomSelf`, `roomHearsay` | 2000, 3000, 2000 (1–3000: the database guards a note at 9000 characters) | What the notes about the owner, an Agent's own notes and what it heard may hold, at most, in weight |
 | `modelEntryMax` | 200 (1–200) | The longest an entry a model wrote is, in weight (every model-written note, in a review, a dream, hearsay and a conversion, and every item of a rolling summary, is held to it; the database guard of 600 characters on hearsay covers 200 weight) |
 | `quietMs`, `maxReplies` | 600 000 (1–86 400 000), 8 (1–1 000) | A review of an Agent's own conversation runs after this much quiet, or this many replies since the last |

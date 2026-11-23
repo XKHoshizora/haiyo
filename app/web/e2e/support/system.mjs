@@ -171,9 +171,10 @@ async function freshDatabase() {
 
 /**
  * What a spec may set for the next start of the service (`restart(extra)`): small brakes (`TOOLS`: a reply's tool bounds, JSON),
- * and `LEGAL` (the terms required: legal.spec.mjs runs with them on, every other spec with the default, off), nothing else.
+ * `LEGAL` (the terms required: legal.spec.mjs runs with them on, every other spec with the default, off), and `SOCIAL` (the Agent
+ * social switch: social.spec.mjs runs with it on, every other spec with the default, off), nothing else.
  */
-const ADJUSTABLE = new Set(["AGENT_CHAIN_LIMIT", "MEMORY", "TOOLS", "LEGAL"]);
+const ADJUSTABLE = new Set(["AGENT_CHAIN_LIMIT", "MEMORY", "TOOLS", "LEGAL", "SOCIAL"]);
 
 /**
  * The service process. `start()` spawns it (same environment every time, plus what the last `restart(extra)` set) and

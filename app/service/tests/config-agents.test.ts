@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, loadConfig } from "../src/config.ts";
+import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, judgeCountAt, loadConfig } from "../src/config.ts";
 
 const base = {
   DATABASE_URL: "postgres://x/y",
@@ -640,6 +640,7 @@ describe("the whispers configuration", () => {
 describe("the memory configuration", () => {
   const defaults = {
     model: null,
+    judgeModel: null,
     roomOwner: 2000,
     roomSelf: 3000,
     roomHearsay: 2000,
@@ -771,5 +772,43 @@ describe("the automatic-retry configuration (AGENTS)", () => {
     for (const bad of ['{"autoRetryDelaysMs":[1,2,3]}', '{"autoRetryDelaysMs":[600001]}', '{"autoRetryDelaysMs":[-1]}', '{"autoRetryDelaysMs":[1.5]}', '{"autoRetryDelaysMs":"20000"}', '{"nope":1}', "[]", "nope"]) {
       expect(() => loadConfig({ ...base, AGENTS: bad }), bad).toThrow(/AGENTS/);
     }
+  });
+});
+
+describe("the Agent social configuration (SOCIAL, OTHERS, MEMORY.judgeModel)", () => {
+  test("SOCIAL is off by default and OTHERS holds the plan's numbers", () => {
+    expect(loadConfig({ ...base }).social).toEqual({ enabled: false });
+    expect(loadConfig({ ...base, SOCIAL: "" }).social).toEqual({ enabled: false });
+    expect(loadConfig({ ...base, SOCIAL: '{"enabled":true}' }).social).toEqual({ enabled: true });
+    expect(loadConfig({ ...base }).others).toEqual({
+      answersPerDay: 50, pointsPerDay: 70, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
+      notesWeight: 1000, judgeBatch: 20, judgeCallsPerDay: 5, withheldCallsPerDay: 3, judgeAttemptsPerVersion: 2, judgeInputBytes: 9000,
+      judgeOutputTokens: 2200, judgeOwnerExamples: 4, judgePollMs: 5000, judgeOwnersPerPoll: 10, withheldInputBytes: 6000, withheldCardsMax: 3,
+      cardDays: 7, requestDays: 7, cooldownDays: 30,
+    });
+    expect(loadConfig({ ...base, OTHERS: '{"answersPerDay":10,"pointsPerDay":30}' }).others).toMatchObject({ answersPerDay: 10, pointsPerDay: 30, toolCalls: 1 });
+  });
+
+  test("a number out of range, an unknown key, a wrong type and bad JSON are refused naming the variable", () => {
+    for (const bad of ['{"toolCalls":0}', '{"toolCalls":1.5}', '{"answersPerDay":"50"}', '{"surprise":1}', "[]", "nope"]) expect(() => loadConfig({ ...base, OTHERS: bad }), bad).toThrow(/OTHERS/);
+    for (const bad of ['{"enabled":"yes"}', '{"enabled":1}', '{"surprise":true}', "nope"]) expect(() => loadConfig({ ...base, SOCIAL: bad }), bad).toThrow(/SOCIAL/);
+  });
+
+  test("the withheld checks never take the whole of the judge's daily count (Controller ruling Q2)", () => {
+    expect(() => loadConfig({ ...base, OTHERS: '{"withheldCallsPerDay":5}' })).toThrow(/withheldCallsPerDay/);
+    expect(() => loadConfig({ ...base, OTHERS: '{"judgeCallsPerDay":3}' })).toThrow(/withheldCallsPerDay/);
+    expect(loadConfig({ ...base, OTHERS: '{"judgeCallsPerDay":4,"withheldCallsPerDay":3}' }).others).toMatchObject({ judgeCallsPerDay: 4, withheldCallsPerDay: 3 });
+  });
+
+  test("MEMORY.judgeModel names a site model, or is null", () => {
+    expect(loadConfig({ ...base }).memory.judgeModel).toBeNull();
+    expect(() => loadConfig({ ...base, MEMORY: '{"judgeModel":"no_such_model"}' })).toThrow(/judgeModel/);
+    expect(() => loadConfig({ ...base, MEMORY: '{"judgeModel":""}' })).toThrow(/MEMORY/);
+    expect(loadConfig({ ...withModels([model]), MEMORY: '{"judgeModel":"fast"}' }).memory.judgeModel).toBe("fast");
+  });
+
+  test("the judge's daily count at the design's cheapest prices: 9 000 × 140 + 2 200 × 280 = 1.876 points; ⌊10 / 1.876⌋ = 5", () => {
+    expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 20, judgeInputBytes: 9000, judgeOutputTokens: 2200 })).toBe(5);
+    expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 0, judgeInputBytes: 9000, judgeOutputTokens: 2200 })).toBe(0);
   });
 });

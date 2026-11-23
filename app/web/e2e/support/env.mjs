@@ -94,6 +94,8 @@ const SERVICE_KEYS = [
   "HOLDS",
   "ALLOWANCE",
   "WHISPERS",
+  "SOCIAL",
+  "OTHERS",
   "AGENTS",
   "LEGAL",
   "FREE_DAILY_POINTS",
