@@ -82,6 +82,48 @@ describe("detectLanguage — by script", () => {
     });
   }
 
+  // A message with no real words says nothing of a language (lane thinkfold): hex bytes, numbers, identifiers and encoded
+  // text hold Latin letters, but nobody wrote a sentence with them. The owner's own message was the first row.
+  const wordless: Array<[string, string, "zh" | "ja" | "en" | null]> = [
+    ["hex bytes (我爱你 in UTF-8), as the owner sent them", "E6 88 91 E7 88 B1 E4 BD A0", null],
+    ["hex bytes, lower case, glued", "e68891e788b1e4bda0", null],
+    ["hex bytes with 0x", "0xE6 0x88 0x91", null],
+    ["three hex pairs", "FF 00 AB", null],
+    ["hex pairs of letters only", "FF AB CD EF", null],
+    ["a hex colour", "#ffccee", null],
+    ["a MAC address of letters", "de:ad:be:ef:fa:ce", null],
+    ["words spelt with a–f only read as hex", "deadbeef cafe babe", null],
+    ["…also in capitals", "DEADBEEF", null],
+    ["…but count once a word with another letter stands beside them", "the cafe was bad", "en"],
+    ["…and a hex dump somebody asks about is asked about in English", "what is FF 00 AB", "en"],
+    ["hex bytes and a two-letter word: still under three letters", "E6 88 91 ok", null],
+    ["digits", "12345", null],
+    ["a version", "v2.10.3", null],
+    ["a base64 blob", "SGVsbG8gd29ybGQsIGZyaWVuZA==", null],
+    ["a base64 blob with no digit in it", "dGhlcmUgdGhlcmUgcGxlYXNl", null],
+    ["a token", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGhlcmUgdGhlcmUgbXk", null],
+    ["a camelCase identifier", "getUserProfileById", null],
+    ["a snake_case identifier", "user_profile_id", null],
+    ["a product name with one inner capital is a word", "TypeScript", "en"],
+    ["an identifier in an english question", "why does getUserProfileById return null", "en"],
+    ["single letters", "a b c", null],
+    ["ok: two letters, as before", "ok", null],
+    ["hi: two letters, as before", "hi", null],
+    ["two short words", "I am", "en"],
+    ["a short word spelt with a–f beside another", "be ok", "en"],
+    ["a greeting", "hello", "en"],
+    ["a sentence", "Hello, how are you?", "en"],
+    ["a sentence with numbers in it", "Call me at 3pm on the 2nd, room 12", "en"],
+    ["emphasis marks around a word", "_really_ *good*", "en"],
+    ["hex bytes beside chinese stay chinese", "E6 88 91 是什么意思", "zh"],
+    ["hex bytes beside japanese stay japanese", "E6 88 91 はどういう意味", "ja"],
+  ];
+  for (const [name, text, want] of wordless) {
+    it(`no real words: ${name}: ${JSON.stringify(text.length > 40 ? `${text.slice(0, 40)}…` : text)} → ${want}`, () => {
+      expect(detectLanguage(text)).toBe(want);
+    });
+  }
+
   it("known limit: a Japanese text with no kana at all reads as Chinese", () => {
     expect(detectLanguage("東京都人口")).toBe("zh");
   });
