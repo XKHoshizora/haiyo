@@ -116,6 +116,26 @@ const WHISPER = {
 /** Why my answer to a whisper (告诉他们, 不用) was refused. */
 export const whisperErrorText = (error) => pick(WHISPER, "answer", error);
 
+/**
+ * Why an Agent social action was refused (adding an Agent, an owner's decision, a message or a card answer): the codes of the routes of
+ * app/service/README.md "Agent social", for every action alike. `cooldown` says the day it may be tried again (`availableAt`).
+ */
+const SOCIAL_CODES = {
+  is_yours: "这是你自己的 Agent。",
+  not_requested: "这个申请已经处理过了。",
+  no_access: "你已不能再和它聊天。",
+  agent_unavailable: "这个 Agent 现在不可用。",
+  answered: "这件事已经回答过了。",
+  expired: "这张卡片已经过期了。",
+};
+export function socialErrorText(error) {
+  if (error?.code === "cooldown") {
+    const day = dayText(error.availableAt);
+    return day ? `现在还不能再申请，${day} 以后可以。` : "现在还不能再申请，稍后再试。";
+  }
+  return SOCIAL_CODES[error?.code] ?? COMMON[error?.code] ?? GENERIC;
+}
+
 /** action: lookup | sendRequest | accept | reject | withdraw | unfriend | block | unblock */
 export const friendErrorText = (action, error) => pick(FRIENDS, action, error);
 /** action: create | rename | avatar | add | remove | leave, and addAgent | removeAgent (the member is an Agent) */

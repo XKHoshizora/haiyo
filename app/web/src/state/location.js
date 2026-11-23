@@ -22,7 +22,7 @@ export function canonicalNav(nav) {
 /** The section an address is in. */
 export const sectionOfPath = (path) => (path.startsWith("/contacts") ? "contacts" : path.startsWith("/agents") ? "agents" : path.startsWith("/settings") ? "settings" : "chat");
 
-export const SETTINGS_PAGES = ["profile", "providers", "usage", "memory", "blocks"];
+export const SETTINGS_PAGES = ["profile", "providers", "usage", "memory", "blocks", "others"];
 const ID = "[0-9a-zA-Z_-]{1,64}";
 
 /** `{path, overlay}` of the navigation `nav`; `overlay` is null or "details". */

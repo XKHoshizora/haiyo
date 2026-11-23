@@ -12,6 +12,7 @@ import { convSubtitle, convTitle, isMyAgent, myAgents } from "../state/selectors
 import { refusalText, settled, useAction } from "./useAction.js";
 import { MemoryRoom, useMemoryRoom } from "./MemoryRoom.jsx";
 import { MemoryHearsay } from "./MemoryHearsay.jsx";
+import { AgentOthersTab } from "./AgentOthers.jsx";
 import { Plus, ChevronLeft, Pencil, Pause, Play, Trash2 } from "../icons.js";
 
 const groupMentionsLabel = (agent) => (GROUP_MENTIONS.find(([id]) => id === agent.groupMentions) ?? GROUP_MENTIONS[0])[1];
@@ -262,8 +263,10 @@ function AgentDetail({ agent }) {
   const [deleting, setDeleting] = useState(false);
   const { nav } = state;
   const live = agent.loaded && !agent.deleted;
-  // The memory tab is for a live Agent: one deleted while it is open falls back to the profile, as a tab not offered does.
-  const tab = nav.agentTab === "memory" && !live ? "profile" : (nav.agentTab ?? "profile");
+  // The 「别人」 tab is for a live Agent, and only while the site's Agent social switch is on.
+  const othersOn = live && state.social?.enabled === true;
+  // The memory tab is for a live Agent: one deleted while it is open falls back to the profile, as a tab not offered does (so does 「别人」).
+  const tab = (nav.agentTab === "memory" && !live) || (nav.agentTab === "others" && !othersOn) ? "profile" : (nav.agentTab ?? "profile");
   const note = nav.agentNote?.agentId === agent.id ? nav.agentNote.text : null;
   const toggle = () => run("pause", () => settled(agent.paused ? actions.resumeAgent(agent.id) : actions.pauseAgent(agent.id)), refusalText);
 
@@ -316,6 +319,7 @@ function AgentDetail({ agent }) {
               ["profile", "资料"],
               ["convs", "参与的会话"],
               ...(live ? [["memory", "记忆宫殿"]] : []),
+              ...(othersOn ? [["others", "别人"]] : []),
             ]}
           />
           <div className="page-body">
@@ -358,6 +362,7 @@ function AgentDetail({ agent }) {
             )}
             {tab === "convs" && <Conversations agent={agent} />}
             {tab === "memory" && live && <AgentMemory agent={agent} />}
+            {tab === "others" && othersOn && <AgentOthersTab agent={agent} />}
           </div>
         </>
       )}

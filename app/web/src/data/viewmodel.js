@@ -988,6 +988,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     memoryCatchUp: model.memoryCatchUp ?? null,
     /** principal id (the real one, mine too) → the version in its avatar URL; for an avatar of someone nobody names. */
     avatarVersions: versions,
+    /** The site's Agent social switch (the sync's `social`): nothing of Agent social is shown, and no route of it called, while `enabled` is false. */
+    social: { enabled: model.socialOn === true },
   };
 }
 

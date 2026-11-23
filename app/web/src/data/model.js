@@ -85,6 +85,8 @@ export function initial() {
     refills: {},
     /** The last /api/social answer. */
     social: null,
+    /** The site's Agent social switch, as the last sync said (`sync.social.enabled`); false until it says true. (Not `social`: that is /api/social's.) */
+    socialOn: false,
     /** conversation id → how many times I left it (see `stayOf`). */
     stays: {},
     /** conversation id → detached window {n, messages, hasOlder, focusSeq} (see the header). */
@@ -481,6 +483,7 @@ export function applySync(state, sync) {
     me: sync.me,
     owner: meId,
     synced: true,
+    socialOn: sync.social?.enabled === true,
     principals,
     avatarVersions,
     conversations,

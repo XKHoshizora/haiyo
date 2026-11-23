@@ -1074,6 +1074,23 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     removeFriend: (principalId) => call(() => api.removeFriend(realId(principalId)), socialChanged(realId(principalId)), staleSocial),
     blockPrincipal: (principalId) => call(() => api.blockPrincipal(realId(principalId)), socialChanged(realId(principalId)), staleSocial),
     unblockPrincipal: (principalId) => call(() => api.unblockPrincipal(realId(principalId)), socialChanged(realId(principalId)), staleSocial),
+    // Agent social (lane A, lane B): thin on purpose: the route's answer, or its error as it came (a 401 signs out). What a page
+    // keeps of it is the page's: nothing is held here, and none is called while the site's switch is off (state.social.enabled).
+    listAgentContacts: () => call(() => api.listAgentContacts()),
+    addAgentContact: (agentId) => call(() => api.addAgentContact(agentId)),
+    approveAgentContact: (agentId, subjectId) => call(() => api.approveAgentContact(agentId, subjectId)),
+    declineAgentContact: (agentId, subjectId) => call(() => api.declineAgentContact(agentId, subjectId)),
+    removeAgentContact: (agentId, subjectId) => call(() => api.removeAgentContact(agentId, subjectId)),
+    getAgentContacts: (agentId) => call(() => api.getAgentContacts(agentId)),
+    putContactPolicy: (agentId, body) => call(() => api.putContactPolicy(agentId, body)),
+    putBar: (personId) => call(() => api.putBar(realId(personId))),
+    deleteBar: (personId) => call(() => api.deleteBar(realId(personId))),
+    reportAgent: (body) => call(() => api.reportAgent(body)),
+    putNoteVerdict: (agentId, body) => call(() => api.putNoteVerdict(agentId, body)),
+    answerPersonaFact: (agentId, seq, move) => call(() => api.answerPersonaFact(agentId, seq, move)),
+    getOthersUse: () => call(() => api.getOthersUse()),
+    putOthersLimits: (body) => call(() => api.putOthersLimits(body)),
+    seenOthersNotice: () => call(() => api.seenOthersNotice()),
     /** Asks for a full refresh (a conversation the screen expects is not held yet). */
     syncNow: () => request({ sync: true }),
     /** 立即重试: the connection is tried again now instead of after its back-off. */
