@@ -58,7 +58,8 @@ export function siblingListingUrls(baseUrl: string, table: SiblingTable = SIBLIN
     } catch {
       // not a URL: skipped
     }
-    // Compared as URLs, so another spelling of the same path (`/%76 1`) is the same resource.
+    // Compared as `URL.href` (host case, default port and dot segments are normalised; percent-encoding is NOT decoded, so a
+    // differently encoded spelling of the same path is a different candidate, at worst one more bounded request).
     let href = candidate;
     try {
       href = new URL(candidate).href;

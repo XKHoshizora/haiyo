@@ -250,14 +250,17 @@ describe("listModels with discovery (the probe)", () => {
   });
 
   it("one deadline covers the whole listing: a sibling that never answers ends it, with the base's failure", async () => {
+    // The base answers after 300 ms, the sibling never; the deadline is 400 ms from the START: if each request had its own
+    // timer the end would come at about 700 ms, with one shared deadline at about 400.
     stub.answer((req, res) => {
       if (req.path === "/s1/models") return; // never answers
-      send(res, 404, NOT_SUPPORT);
+      setTimeout(() => send(res, 404, NOT_SUPPORT), 300);
     });
     const probe = createProviderProbe(guardedFetch({ ...PROBE_GUARD, calls: createSlots(8), allowInsecureLocal: true }), loopbackTable(["/s1/models"]), 400);
-    const started = Date.now();
+    const started = performance.now();
     const err = await failure(probe.listModels(target("/a/v1"), { onSibling: () => {} }));
-    expect([err.code, err.upstreamStatus, Date.now() - started < 5000]).toEqual(["provider_unavailable", 404, true]);
+    const took = performance.now() - started;
+    expect([err.code, err.upstreamStatus, took >= 380, took < 650]).toEqual(["provider_unavailable", 404, true, true]);
   });
 
   it("a sibling that fails otherwise (500, an oversize body) is skipped for the next one; both failing: the base's failure, and the one after the bound is not reached", async () => {

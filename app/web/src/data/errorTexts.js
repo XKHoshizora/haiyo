@@ -394,22 +394,24 @@ export function providerErrorText(action, error) {
   if (!WITH_STATUS.has(action)) return text;
   // The sentence only ever names a status number; what else the provider said is shown apart, as 详情 (the `detail` of the answer, Providers.jsx).
   const status = /^\d{3}$/.test(error?.upstreamStatus ?? "") ? error.upstreamStatus : null;
-  if (error?.code === "provider_unavailable") return unavailableText(status) ?? text;
+  if (error?.code === "provider_unavailable") return unavailableText(status, action);
   return status && error?.code === "provider_rejected" ? `${text}（供应商返回的状态码：${status}）` : text;
 }
 
 const BY_HAND = "可以手动添加模型。";
 /**
  * 测试连接 and 同步模型 share this one mapping for `provider_unavailable`, from the provider's HTTP status (null: it gave none: a
- * timeout, an unknown host, a TLS failure, a redirect, an answer cut off): the sentence claims no more than what is known.
+ * timeout, an unknown host, a TLS failure, a redirect, an answer cut off or too large): the sentence claims no more than what is known:
+ * that no answer came to hand.
  */
-function unavailableText(status) {
-  if (status === null) return "没能连上供应商。请检查接口地址，稍后再试。";
+function unavailableText(status, action) {
+  if (status === null) return "没能从供应商得到回答。请检查接口地址，稍后再试。";
   if (status === "404" || status === "405") return `供应商有回应，但这个地址没有模型列表（${status}）。${BY_HAND}`;
-  if (status === "200") return `供应商有回应，但没能读到模型列表。${BY_HAND}`;
+  if (status === "200") return `供应商有回应，但回应里没有模型列表。${BY_HAND}`;
   if (status === "429") return "供应商说请求太频繁（429），请稍后再试。";
   if (status.startsWith("5")) return `供应商那边出了问题（${status}），请稍后再试。`;
-  return `供应商没有给出模型列表（${status}）。${BY_HAND}`;
+  // In the 同步模型 dialog this class is followed by its own "add by hand" line, so it is said once there.
+  return action === "list" ? `供应商没有给出模型列表（${status}）。` : `供应商没有给出模型列表（${status}）。${BY_HAND}`;
 }
 
 /** Whether a failed 测试连接 / 同步模型 says the address has no model list: it answered 404 or 405, or with something that is none (a 200). */

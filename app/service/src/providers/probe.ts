@@ -156,12 +156,11 @@ export function createProviderProbe(fetch: typeof globalThis.fetch, siblings: Si
         first = toProviderCallError(err);
         if (discover === undefined || !notOffered(first)) throw first;
       }
-      if (discover === undefined) return [];
       for (const url of siblingListingUrls(p.baseUrl, siblings)) {
         try {
           const names = namesIn("openai_chat", await get(p, url, { authorization: `Bearer ${p.apiKey}` }, signal)).filter((n): n is string => typeof n === "string");
           if (names.length > 0) {
-            discover.onSibling();
+            discover?.onSibling(); // (always set here: without it the base answered or threw above)
             return names;
           }
         } catch (err) {
