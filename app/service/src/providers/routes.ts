@@ -10,7 +10,7 @@ import { requirePrincipal } from "../session.ts";
 import { providerBaseUrl } from "./base-url.ts";
 import { catalogueModels } from "./catalogue.ts";
 import { KeyUnreadableError } from "./crypto.ts";
-import { modelHints } from "./hints.ts";
+import { abilitiesOf, mediaView, modelHints } from "./hints.ts";
 import { ProviderCallError, toProviderCallError, type ProviderCallCode } from "./probe.ts";
 import { holdsKeyPiece } from "./upstream-detail.ts";
 import {
@@ -89,7 +89,9 @@ const modelView = z.object({
   reasoningLevels: levelsView.optional(),
   /** What the catalogue says the model supports (only on a model that reasons and is known to it): kept apart from `reasoningLevels`, the levels in use. */
   reportedLevels: levelsView.optional(),
+  /** As stored; for an entry that says nothing, `true` when the catalogue knows the model to use tools (`toolsShown`). */
   tools: z.boolean().optional(),
+  ...mediaView,
 });
 const providerView = z.object({
   id: z.string(),
@@ -150,6 +152,9 @@ const listedModel = z.object({
   label: z.string().optional(),
   contextTokens: z.number().optional(),
   reasoningLevels: levelsView.optional(),
+  /** The catalogue's word that the model can use tools: only `true`, only for a model it knows. */
+  tools: z.literal(true).optional(),
+  ...mediaView,
   added: z.boolean(),
 });
 
@@ -162,23 +167,40 @@ const reported = (m: ProviderModel): { reportedLevels?: ModelLevel[] } => {
   return levels === undefined ? {} : { reportedLevels: levels };
 };
 
-/** A provider as its owner sees it (a model's `tools` only when its entry says it). */
+/**
+ * Whether a provider's model can use tools, as its owner is shown it. In this order: its owner's choice or a reply that
+ * failed for lack of them (stored `false`, or `true`; `markToolsOff`) > a reply whose tool call ran (stored `true`,
+ * written only over nothing; `markToolsOn`) > the catalogue (`true` when it knows the model to use tools — read here,
+ * when the model is shown, never stored, so there is nothing to migrate and a catalogue update reaches the page at once)
+ * > unknown (absent). The catalogue never says `false`, and whether a reply is offered tools is not asked here
+ * (models/resolve.ts: every model whose entry does not say `false`).
+ */
+function toolsShown(m: ProviderModel, catalogue: { tools?: true }): { tools?: boolean } {
+  if (m.tools !== undefined) return { tools: m.tools };
+  return catalogue.tools === true ? { tools: true } : {};
+}
+
+/** A provider as its owner sees it: each model as stored, with what the catalogue says of its name (`reported`, `toolsShown`, `mediaView`). */
 const toView = (p: ProviderRow): z.infer<typeof providerView> => ({
   id: p.id,
   name: p.name,
   protocol: p.protocol,
   baseUrl: p.baseUrl,
   keyLast4: p.keyLast4,
-  models: p.models.map((m) => ({
-    name: m.name,
-    vision: m.vision,
-    pdf: m.pdf,
-    reasoning: m.reasoning,
-    contextTokens: m.contextTokens,
-    ...(m.reasoningLevels === undefined ? {} : { reasoningLevels: m.reasoningLevels }),
-    ...reported(m),
-    ...(m.tools === undefined ? {} : { tools: m.tools }),
-  })),
+  models: p.models.map((m) => {
+    const { tools, ...media } = abilitiesOf(modelHints(m.name));
+    return {
+      name: m.name,
+      vision: m.vision,
+      pdf: m.pdf,
+      reasoning: m.reasoning,
+      contextTokens: m.contextTokens,
+      ...(m.reasoningLevels === undefined ? {} : { reasoningLevels: m.reasoningLevels }),
+      ...reported(m),
+      ...toolsShown(m, { tools }),
+      ...media,
+    };
+  }),
 });
 
 /**

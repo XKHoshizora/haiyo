@@ -42,6 +42,33 @@ describe("GET /api/models", () => {
     }
   });
 
+  it("a site model the catalogue knows — by the name it is called by, else by its id — carries what it takes and answers with, only as true; one it does not know carries none", async () => {
+    const [fast, thinker] = app.deps.config.siteModels;
+    const siteModels = [
+      { ...fast!, id: "omni", model: "qwen-omni-turbo" },
+      { ...thinker!, id: "gemini-omni-1.1-flash", model: "omni-upstream-name" },
+      { ...fast!, id: "painter", model: "google/gemini-2.5-flash-image" },
+      { ...fast!, id: "audio-video-wording", model: "house-video-audio-1", tools: false },
+    ];
+    const able = await buildApp({ config: { ...app.deps.config, siteModels }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });
+    try {
+      const owner = await signUp(able, "abilities");
+      const res = await api(able, owner, "GET", "/api/models");
+      const base = { label: "Fast", tier: "free", vision: false, pdf: false, reasoning: [], contextTokens: 100000 };
+      expect(res.json.siteModels).toEqual([
+        { ...base, id: "omni", tools: true, audioIn: true, videoIn: true, audioOut: true },
+        { id: "gemini-omni-1.1-flash", label: "Thinker", tier: "paid", vision: true, pdf: true, reasoning: ["low", "medium"], contextTokens: 200000, tools: true, videoIn: true, videoOut: true },
+        { ...base, id: "painter", tools: true, imageOut: true },
+        // What its configuration says stays the operator's: vision, pdf, reasoning and tools are never the catalogue's.
+        { ...base, id: "audio-video-wording", tools: false },
+      ]);
+      // Never the upstream's name.
+      for (const name of ["qwen-omni-turbo", "omni-upstream-name", "gemini-2.5-flash-image"]) expect([name, JSON.stringify(res.json).includes(name)]).toEqual([name, false]);
+    } finally {
+      await able.close();
+    }
+  });
+
   it("says how far back turning memory on again may look (MEMORY.catchUpDays, MEMORY.catchUpLines), as configured", async () => {
     const memory = { ...app.deps.config.memory, catchUpDays: 7, catchUpLines: 150 };
     const tuned = await buildApp({ config: { ...app.deps.config, memory }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });

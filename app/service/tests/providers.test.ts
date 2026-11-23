@@ -491,6 +491,79 @@ describe("refreshing the model list", () => {
   });
 });
 
+describe("what the catalogue knows of a saved model reaches its owner, read when shown and never stored", () => {
+  const ABILITIES = ["audioIn", "videoIn", "imageOut", "videoOut", "audioOut"];
+  const byName = (models: Array<{ name: string }>) => Object.fromEntries(models.map((m) => [m.name, m as Record<string, unknown>]));
+
+  it("tools: true for a model saved with nothing said that the catalogue knows to use them; an owner's or a learned value always wins; a model it does not know, or knows without tools, says nothing", async () => {
+    const owner = await signUp(app, "tessa");
+    const created = await mustCreate(owner, {
+      baseUrl: stub.baseUrl(),
+      models: [{ name: "deepseek-chat" }, { name: "DeepSeek/deepseek-chat-latest" }, { name: "qwen-max", tools: false }, { name: "qwen-plus", tools: true }, { name: "house-blend-tools" }, { name: "gemini-embedding-001" }],
+    });
+    const check = (models: Array<{ name: string }>) => {
+      const m = byName(models);
+      expect(Object.entries(m).map(([name, e]) => [name, e.tools, "tools" in e])).toEqual([
+        ["deepseek-chat", true, true],
+        ["DeepSeek/deepseek-chat-latest", true, true],
+        ["qwen-max", false, true],
+        ["qwen-plus", true, true],
+        ["house-blend-tools", undefined, false],
+        ["gemini-embedding-001", undefined, false],
+      ]);
+    };
+    check(created.models);
+    check((await api(app, owner, "GET", "/api/providers")).json.providers[0].models);
+    // Not stored: the row says of tools only what its owner said.
+    const stored = (await db.query<{ models: Array<Record<string, unknown>> }>("select models from providers where id = $1", [created.id])).rows[0]!.models;
+    expect(stored.map((m) => [m.name, m.tools])).toEqual([
+      ["deepseek-chat", undefined],
+      ["DeepSeek/deepseek-chat-latest", undefined],
+      ["qwen-max", false],
+      ["qwen-plus", true],
+      ["house-blend-tools", undefined],
+      ["gemini-embedding-001", undefined],
+    ]);
+    // Its owner turns one off: off it reads, whatever the catalogue says.
+    const off = await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: [{ name: "deepseek-chat", tools: false }, { name: "house-blend-tools" }] });
+    expect(off.json.models.map((m: { name: string; tools?: boolean }) => [m.name, m.tools])).toEqual([
+      ["deepseek-chat", false],
+      ["house-blend-tools", undefined],
+    ]);
+    // A refresh that adds a name the catalogue knows shows it able at once.
+    stub.answer(() => ({ status: 200, body: JSON.stringify({ data: [{ id: "deepseek-chat" }, { id: "deepseek-reasoner" }] }) }));
+    const refreshed = await api(app, owner, "POST", `/api/providers/${created.id}/models/refresh`);
+    expect(refreshed.json.provider.models.map((m: { name: string; tools?: boolean }) => [m.name, m.tools])).toEqual([
+      ["deepseek-chat", false],
+      ["house-blend-tools", undefined],
+      ["deepseek-reasoner", true],
+    ]);
+  });
+
+  it("audioIn, videoIn, imageOut, videoOut, audioOut: only as true, only for a model the catalogue knows; never stored, never accepted back", async () => {
+    const owner = await signUp(app, "uma");
+    const created = await mustCreate(owner, {
+      baseUrl: stub.baseUrl(),
+      models: [{ name: "qwen-omni-turbo" }, { name: "gemini-2.5-pro" }, { name: "gemini-omni-1.1-flash" }, { name: "gemini-2.5-flash-image" }, { name: "deepseek-chat" }, { name: "my-audio-video-omni" }],
+    });
+    const m = byName(created.models);
+    const has = (name: string) => ABILITIES.filter((a) => a in m[name]!).map((a) => [a, m[name]![a]]);
+    expect(has("qwen-omni-turbo")).toEqual([["audioIn", true], ["videoIn", true], ["audioOut", true]]);
+    expect(has("gemini-2.5-pro")).toEqual([["audioIn", true], ["videoIn", true]]);
+    expect(has("gemini-omni-1.1-flash")).toEqual([["videoIn", true], ["videoOut", true]]);
+    expect(has("gemini-2.5-flash-image")).toEqual([["imageOut", true]]);
+    expect(has("deepseek-chat")).toEqual([]);
+    // Nothing is guessed from a name's wording.
+    expect(m["my-audio-video-omni"]).toEqual(model("my-audio-video-omni"));
+    expect((await api(app, owner, "GET", "/api/providers")).json.providers[0].models).toEqual(created.models);
+    const stored = (await db.query<{ models: Array<Record<string, unknown>> }>("select models from providers where id = $1", [created.id])).rows[0]!.models;
+    expect(stored.flatMap((e) => ABILITIES.filter((a) => a in e))).toEqual([]);
+    for (const a of ABILITIES) {
+      expect([a, (await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: [{ name: "qwen-omni-turbo", [a]: true }] })).status]).toEqual([a, 400]);
+    }
+  });
+});
+
 describe("listing the provider's models", () => {
   const listed = (name: string, added = false) => ({ ...modelHints(name), name, added });
 
@@ -537,6 +610,7 @@ describe("listing the provider's models", () => {
       label: "Claude Sonnet 5.5",
       contextTokens: 1000000,
       reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      tools: true,
       added: false,
     });
     expect(res.json.listed.map((m: any) => [m.name, m.known, m.chat])).toEqual([
@@ -552,6 +626,18 @@ describe("listing the provider's models", () => {
     expect(await api(app, owner, "GET", "/api/providers")).toEqual(before);
     expect((await api(app, owner, "POST", `/api/providers/${p.id}/models/list`, {})).json.listed).toHaveLength(5);
     expect(await api(app, owner, "GET", "/api/providers")).toEqual(before);
+  });
+
+  it("a listed model the catalogue knows comes with its abilities — tools, and what else it takes and answers with — only as true; an unknown name with none", async () => {
+    const owner = await signUp(app, "abel");
+    const p = await mustCreate(owner, { baseUrl: stub.baseUrl() });
+    stub.answer(() => ({ status: 200, body: JSON.stringify({ data: [{ id: "qwen-omni-turbo" }, { id: "gemini-omni-1.1-flash" }, { id: "gemini-2.5-flash-image" }, { id: "my-tools-audio-model" }] }) }));
+    const able = (await api(app, owner, "POST", `/api/providers/${p.id}/models/list`)).json.listed;
+    expect(able[0]).toEqual({ name: "qwen-omni-turbo", vision: true, pdf: false, reasoning: false, chat: true, known: true, label: "Qwen-Omni Turbo", contextTokens: 32768, tools: true, audioIn: true, videoIn: true, audioOut: true, added: false });
+    expect(able[1]).toMatchObject({ known: true, videoIn: true, videoOut: true });
+    expect(able[1]).not.toHaveProperty("tools");
+    expect(able[2]).toMatchObject({ known: true, imageOut: true });
+    expect(able[3]).toEqual({ name: "my-tools-audio-model", vision: false, pdf: false, reasoning: false, chat: false, known: false, added: false });
   });
 
   it("added follows the saved models; a body that is no object is 400", async () => {
