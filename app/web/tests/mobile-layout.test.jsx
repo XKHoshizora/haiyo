@@ -246,6 +246,69 @@ describe("a section's entry in one column (641 to 860 px: the rail stays on the 
   });
 });
 
+describe("the layout changes with a conversation open (a window made narrower, a phone turned)", () => {
+  let now;
+  let listeners;
+  beforeEach(() => {
+    now = [];
+    listeners = new Set();
+    window.matchMedia = (query) => ({
+      get matches() {
+        return now.includes(query);
+      },
+      media: query,
+      addEventListener: (_type, listener) => listeners.add(listener),
+      removeEventListener: (_type, listener) => listeners.delete(listener),
+    });
+  });
+  const layout = async (queries) => {
+    now = queries;
+    await act(async () => listeners.forEach((listener) => listener()));
+    await flush();
+  };
+
+  it("wide → a phone: the conversation fills the screen without the tab bar, 返回列表 is the list with it, and 消息 from another tab is the list; wide again, 消息 is a section's last page as before", async () => {
+    await openWithAgent();
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    expect(path()).toBe(`/chat/${D1}`);
+    await layout([PHONE_QUERY, COARSE_QUERY, ONE_COLUMN]);
+    // Nothing moved: the same address, drawn as a phone draws it.
+    expect(path()).toBe(`/chat/${D1}`);
+    expect(pane()).toBe("main");
+    expect(bar()).toBeNull();
+    await press(screen.getByRole("button", { name: "返回列表" }));
+    // (The list is the entry below: its own back is the browser's, which answers a moment later.)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+    await flush();
+    expect(path()).toBe("/");
+    expect(bar()).toBeTruthy();
+    await press(tab(/^通讯录/));
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+    // Wide again, with a conversation open and another section visited: 消息 is that conversation.
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await layout([]);
+    expect(path()).toBe(`/chat/${D1}`);
+    await press(tab(/^通讯录/));
+    await press(tab(/^消息/));
+    expect(path()).toBe(`/chat/${D1}`);
+  });
+
+  it("wide → one column with a conversation open: the rail is still beside it, and 消息 there is the list", async () => {
+    await openWithAgent();
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await layout([ONE_COLUMN]);
+    expect(path()).toBe(`/chat/${D1}`);
+    expect(bar()).toBeTruthy();
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+  });
+});
+
 describe("on a tablet or a desktop", () => {
   it("a section's entry is its last page: 消息 returns to the conversation that was open", async () => {
     await openWithAgent();
