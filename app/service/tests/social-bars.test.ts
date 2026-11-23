@@ -562,7 +562,9 @@ describe("unfriending (Owner decision 2026-11-25: just unfriending, as in WeChat
 
     expect((await unfriend(owner, viaFriends)).status).toBe(200);
     expect(await rowState(yFriends.id, viaFriends.id)).toEqual({ state: "ended", endReason: "left" });
-    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: "access_ended" });
+    // A group reply to that person is not touched at all (A-5 review m8: in a group anyone may @ the Agent, friend or not): it is still queued, with its call.
+    expect(await runOf(queued)).toMatchObject({ status: "queued", error: null });
+    expect((await db.query(`select cardinality(call_seqs) n from agent_runs where id = $1`, [queued])).rows[0]!.n).toBe(1);
     expect((await db.query(`select count(*)::int n from access_bars where setter_id = any($1::uuid[]) or other_id = any($1::uuid[])`, [[owner.id, viaFriends.id]])).rows[0]!.n).toBe(0);
     // The one the owner approved by hand is untouched, and so is one with no row.
     expect((await unfriend(owner, approved)).status).toBe(200);
@@ -590,6 +592,22 @@ describe("unfriending (Owner decision 2026-11-25: just unfriending, as in WeChat
     expect((await unfriend(f2, owner)).status).toBe(200);
     expect(await rowState(fAgent.id, owner.id)).toEqual({ state: "ended", endReason: "left" });
     expect((await db.query(`select count(*)::int n from access_bars where setter_id = any($1::uuid[]) or other_id = any($1::uuid[])`, [[owner.id, f2.id]])).rows[0]!.n).toBe(0);
+  });
+});
+
+describe("停止往来 pressed again (A-5 review m3a)", () => {
+  it("is idempotent: the stop row keeps its `since`, so the other person's 30-day cooldown is not restarted", async () => {
+    const o = await signUp(app, "idemo");
+    const v = await signUp(app, "idemv");
+    const y = await newAgent(o, "idemy");
+    expect((await stop(o, v)).status).toBe(200);
+    const since = async () => (await db.query(`select since from access_bars where setter_id = $1 and other_id = $2 and kind = 'stop'`, [o.id, v.id])).rows[0]!.since as Date;
+    await ageBar(o.id, v.id, 31 * DAY);
+    const first = await since();
+    expect((await stop(o, v)).status).toBe(200);
+    expect((await since()).getTime()).toBe(first.getTime());
+    // The cooldown ran out a day ago, and pressing again did not bring it back.
+    expect(await add(v, y.id)).toMatchObject({ status: 202 });
   });
 });
 

@@ -100,16 +100,18 @@ export function supervisorLabel(state, conv, id) {
   if (!isSocialConv(conv)) return null;
   const roles = conv.memberRoles ?? [];
   if (roles.find((m) => m.id === id)?.role !== "observer") return null;
-  return roles.filter((m) => m.role === "observer").length > 1 ? `${nameOf(state, id)}的主人` : "主人";
+  if (roles.filter((m) => m.role === "observer").length <= 1) return "主人";
+  // Two owners: 「{A}的主人」 names the Agent whose owner this is (never the owner's own name).
+  const agent = (conv.social?.agents ?? []).find((a) => aliasOf(state, a.ownerId) === id);
+  return agent ? `${nameOf(state, aliasOf(state, agent.id))}的主人` : "主人";
 }
 
 /** My Agents' contacts between me and `personId` (an Agent of theirs, or them): whether there is a social conversation or a waiting request. */
 export function haveAgentAccess(state, personId) {
   if (!socialOn(state)) return false;
   const convs = Object.values(state.convs).filter(isSocialConv);
-  const real = (id) => id;
   if (
-    convs.some((c) => (c.social?.participants ?? []).some((p) => real(aliasOf(state, p)) === personId) || (c.social?.agents ?? []).some((a) => aliasOf(state, a.ownerId) === personId))
+    convs.some((c) => (c.social?.participants ?? []).some((p) => aliasOf(state, p) === personId) || (c.social?.agents ?? []).some((a) => aliasOf(state, a.ownerId) === personId))
   ) {
     return true;
   }

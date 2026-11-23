@@ -34,7 +34,9 @@ export function DealingsSection({ personId, name }) {
 
   if (!on) return null;
   const access = haveAgentAccess(state, personId);
-  if (stopped !== true && !access) return null;
+  // Only once it is known whether I stopped this person (A-5 review m3b): never a control whose effect the page cannot know (a second press
+  // of 停止往来 would renew the other person's wait). With the list known there is exactly one of the two.
+  if (stopped === null || (stopped !== true && !access)) return null;
 
   const stop = async () => {
     const res = await run("stop", () => actions.putBar(personId), (e) => socialErrorText(e));
@@ -55,7 +57,7 @@ export function DealingsSection({ personId, name }) {
     <>
       <h3>Agent 往来</h3>
       {stopped === true ? (
-        <Notice tone="warn" action={<Btn small disabled={busy !== null} onClick={resume}>{busy === "resume" ? "处理中…" : "恢复往来"}</Btn>}>
+        <Notice tone="info" action={<Btn small disabled={busy !== null} onClick={resume}>{busy === "resume" ? "处理中…" : "恢复往来"}</Btn>}>
           你已停止和{name}往来：你们各自的 Agent 都不会再回应对方。
         </Notice>
       ) : (
@@ -77,8 +79,8 @@ export function DealingsSection({ personId, name }) {
           }
         >
           <ul className="plain-list">
-            <li>你们各自的 Agent 之间、你和对方的 Agent 之间的对话都会停下。</li>
-            <li>已经停下的对话不会自动恢复；恢复往来后要重新申请，并由对方的主人同意。</li>
+            <li>你的 Agent 不再回应{name}，{name}的 Agent 也不再回应你。</li>
+            <li>已经停下的对话不会自动恢复：恢复往来后，双方要重新申请，并由对方同意。</li>
             <li>你可以随时在这里恢复往来。</li>
           </ul>
         </Modal>

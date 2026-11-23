@@ -196,6 +196,27 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
   });
 
+  it("while it is not known whether I stopped them (the list is missing or has not come), the profile offers neither 停止往来 nor 恢复往来 (A-5 review m3b)", async () => {
+    const missing = routes({ getOthersUse: vi.fn(async () => { throw apiError(404, "not_found"); }) });
+    await openCard({ api: missing });
+    expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
+    expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
+    expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
+  });
+
+  it("with the list known, exactly one of the two is offered", async () => {
+    await openCard();
+    expect(inMain().getAllByRole("button", { name: /^(停止|恢复)往来$/ })).toHaveLength(1);
+  });
+
+  it("the stop dialog says both ways and that the other person's asks need the owner's yes again", async () => {
+    await openCard();
+    await click(inMain().getByRole("button", { name: "停止往来" }));
+    expect(inDialog().getByText("你的 Agent 不再回应阿波，阿波的 Agent 也不再回应你。")).toBeTruthy();
+    expect(inDialog().getByText("已经停下的对话不会自动恢复：恢复往来后，双方要重新申请，并由对方同意。")).toBeTruthy();
+    expect(dialog().textContent).not.toContain("对方的主人");
+  });
+
   it("nothing says that the other person has stopped or blocked: with no stop of mine and no access, there is no such section at all", async () => {
     await openCard({ convs: [] });
     expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();

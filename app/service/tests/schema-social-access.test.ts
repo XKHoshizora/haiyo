@@ -161,7 +161,7 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
   });
 
   // 075 is applied to a live site and can never be edited again: on tables with rows, the old code's rows survive it untouched, a
-  // persona saved before the aid counts as checked (attack M11), and the blocks become bars (the pattern of 073's test: Down, the old
+  // persona saved before the aid is NOT marked as checked (A-4 review I2, reversing M11), and the blocks become bars (the pattern of 073's test: Down, the old
   // code's rows, Up, inside one transaction that is rolled back).
   test("on populated tables nothing old changes (down, rows crossing 10 and 100, up; rolled back)", async () => {
     const [up, down] = readFileSync(FILE, "utf8").split("-- Down Migration");

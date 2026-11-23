@@ -1,15 +1,16 @@
 // The contacts page's rows of Agent social (plan A11a): the Agents I let in or asked (聊天, 移除; 「等主人同意」), and the requests waiting on
 // my own Agents (同意, 拒绝). Nothing is drawn while the site's switch is off. What it shows is `state.agentContacts`, which the `social`
 // fetch keeps (data/sync.js); every action asks for that fetch again, so a row's end shows without a reload.
-import React from "react";
+import React, { useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { socialErrorText } from "../data/errorTexts.js";
-import { expiryText } from "../data/viewmodel.js";
+import { untilText } from "./untilText.js";
 import { nameOf, convTitle } from "../state/selectors.js";
 import { agentContactsOf, socialOn } from "../state/social.js";
 import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { useAction, useNow } from "./useAction.js";
 import { openAgentChat } from "./AgentForm.jsx";
+import { LeaveAgentModal } from "./LeaveAgentModal.jsx";
 
 const matches = (text, q) => !q.trim() || text.toLowerCase().includes(q.trim().toLowerCase().replace(/^@/, ""));
 
@@ -18,9 +19,9 @@ export function AgentContactRows({ query }) {
   const { state, dispatch, actions } = useStore();
   const { busy, run } = useAction();
   const now = useNow();
+  const [leaving, setLeaving] = useState(null);
   if (!socialOn(state)) return null;
   const { mine, waiting } = agentContactsOf(state);
-  const myId = state.account?.id;
 
   const nameFor = (row) => {
     const conv = row.conversationId ? state.convs[row.conversationId] : null;
@@ -37,7 +38,7 @@ export function AgentContactRows({ query }) {
 
   return (
     <>
-      {(live.length > 0 || asked.length > 0) && <li className="rows-label">Agent</li>}
+      {(live.length > 0 || asked.length > 0) && <li className="rows-label">我加的 Agent</li>}
       {live.map((r) => (
         <li key={`live:${r.agentId}`} className="social-row">
           <Avatar id={r.agentId} size={48} />
@@ -46,15 +47,10 @@ export function AgentContactRows({ query }) {
               <span className="row-name">{nameFor(r)}</span>
               <Tag>Agent</Tag>
             </span>
-            <span className="row-sub">
-              <span className="row-preview">已是联系人</span>
-            </span>
           </span>
           <span className="social-row-actions">
             <Btn small variant="primary" onClick={() => openAgentChat(state, dispatch, actions, r.conversationId)}>聊天</Btn>
-            <Btn small disabled={busy !== null} onClick={() => go(`remove:${r.agentId}`, () => actions.removeAgentContact(r.agentId, myId), "已移除")}>
-              {busy === `remove:${r.agentId}` ? "处理中…" : "移除"}
-            </Btn>
+            <Btn small onClick={() => setLeaving(r.agentId)}>移除</Btn>
           </span>
         </li>
       ))}
@@ -67,7 +63,7 @@ export function AgentContactRows({ query }) {
               <Tag tone="pending">等主人同意</Tag>
             </span>
             <span className="row-sub">
-              <span className="row-preview">{r.until ? expiryText(r.until, now) : "等主人同意"}</span>
+              <span className="row-preview">{r.until ? untilText(r.until, now) : "等主人同意"}</span>
             </span>
           </span>
         </li>
@@ -84,7 +80,7 @@ export function AgentContactRows({ query }) {
             <span className="row-sub">
               <span className="row-preview">
                 想加 {nameOf(state, w.agentId)}
-                {w.subject.kind === "agent" && w.subject.ownerName ? ` · ${w.subject.ownerName}的 Agent` : ""} · {expiryText(w.until, now)}
+                {w.subject.kind === "agent" && w.subject.ownerName ? ` · ${w.subject.ownerName}的 Agent` : ""} · {untilText(w.until, now)}
               </span>
             </span>
           </span>
@@ -98,6 +94,7 @@ export function AgentContactRows({ query }) {
           </span>
         </li>
       ))}
+      {leaving && <LeaveAgentModal agentId={leaving} onClose={() => setLeaving(null)} />}
     </>
   );
 }

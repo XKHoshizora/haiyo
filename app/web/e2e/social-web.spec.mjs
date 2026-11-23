@@ -12,12 +12,14 @@ import { chatPane, composer, goTo, listRow, messageList, openAgentDetail, openCo
 import { canControlService, restartService } from "./support/control.mjs";
 import { WEB_DIR } from "./support/env.mjs";
 
-const BIG_PHONE = { viewport: { width: 402, height: 874 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 };
+// 402×874 by default; E2E_SHOT_WIDTH=360 runs it at 360×740 (the screens are saved with the suffix -360).
+const SMALL = process.env.E2E_SHOT_WIDTH === "360";
+const BIG_PHONE = { viewport: SMALL ? { width: 360, height: 740 } : { width: 402, height: 874 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 };
 const SHOTS = path.resolve(WEB_DIR, "..", "..", "..", "..", ".superpowers", "sdd", "2026-11-22-polish", "sociala-shots");
 const shot = async (page, name) => {
   mkdirSync(SHOTS, { recursive: true });
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
+  await page.screenshot({ path: path.join(SHOTS, `${name}${SMALL ? "-360" : ""}.png`), animations: "disabled", caret: "hide" });
 };
 const noSideways = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 const tall = async (locator) => {
@@ -170,7 +172,14 @@ test("changing who may add it asks first how many it would end; after it, the vi
   await ann.page.goto("/");
   await openContact(ann.page, bo.displayName);
   const card = ann.page.getByRole("region", { name: "联系人卡片" });
-  await expect(card.getByRole("heading", { name: "Agent 往来" })).toBeVisible();
+  // Whether I stopped them is known only from lane B's use page (`GET /api/me/others-use`): without it (this lane alone) the profile
+  // offers neither 停止往来 nor 恢复往来 (A-5 review m3b). With both lanes merged the section is there, and the rest runs.
+  await ann.page.waitForTimeout(1500);
+  if (!(await card.getByRole("heading", { name: "Agent 往来" }).isVisible())) {
+    await expect(card.getByRole("button", { name: /^(停止|恢复)往来$/ })).toHaveCount(0);
+    await shot(ann.page, "a12b-profile-without-the-stopped-list");
+    return;
+  }
   await card.getByRole("button", { name: "停止往来" }).click();
   const confirm = ann.page.getByRole("dialog");
   await expect(confirm.getByRole("heading", { name: `停止和${bo.displayName}往来` })).toBeVisible();

@@ -127,6 +127,8 @@ describe("a save", () => {
     expect(dialog()).not.toBeNull();
     expect(within(dialog()).getByRole("heading", { name: "这样会让 12 个人不能再和它聊天" })).toBeTruthy();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);
+    // For 不让别人加 nobody can find it or ask again: the body does not promise a new request (A-5 review m1).
+    expect(within(dialog()).getByText("他们现在的对话会停下，也找不到它了。")).toBeTruthy();
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     expect(dialog()).toBeNull();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);

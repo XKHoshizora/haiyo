@@ -35,8 +35,7 @@
 
 @media (pointer: coarse), (max-width: 480px) {
   .social-option { min-height: 44px; }
-  /* (The buttons of the dialogs and of the profile and card panels these screens add: 44px, as the rest of their screens.) */
-  .modal-foot .btn, .stack-actions .btn, .notice .btn, .social-ui .btn, .agent-found .btn, .social-row .btn, .agent-others .btn, .social-note-field textarea { min-height: 44px; }
+  .social-ui .btn, .agent-found .btn, .social-row .btn, .agent-others .btn, .social-note-field textarea { min-height: 44px; }
   .social-row { padding: 8px 12px; flex-wrap: wrap; }
   .social-row-actions { flex: 1 1 100%; justify-content: flex-start; }
 }

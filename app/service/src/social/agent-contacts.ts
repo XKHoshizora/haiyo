@@ -45,12 +45,17 @@ export type GrantScope = { between: readonly [string, string] } | { agentId: str
  * `begin`'s own recheck (runs.ts `dropBlockedCalls`, pinned by agents-block-recheck.test.ts, which keeps its calls until then):
  * the same rule at the moment the reply begins; a reply already in flight is stopped by the block as by any ending.
  */
-export function endGrants(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred"): Promise<EndedRuns & { ended: number }> {
-  return endGrantsIn(t, scope, reason, { eager: true });
+export function endGrants(
+  t: Tx,
+  scope: GrantScope,
+  reason: "left" | "narrowed" | "removed" | "barred",
+  opts: { groups?: boolean } = {},
+): Promise<EndedRuns & { ended: number }> {
+  return endGrantsIn(t, scope, reason, { eager: true, groups: opts.groups !== false });
 }
 
 /** `by`: whose bar ends the rows (`barred` only: a row records it, `agent_contacts.barred_by`, so that lifting a bar relabels only its own rows). */
-async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred", o: { eager: boolean; by?: string }): Promise<EndedRuns & { ended: number }> {
+async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred", o: { eager: boolean; by?: string; groups?: boolean }): Promise<EndedRuns & { ended: number }> {
   const barredBy = reason === "barred" ? (o.by ?? null) : null;
   const agents =
     "between" in scope
@@ -116,7 +121,8 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
   );
   const cancelled: Announced[] = queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) }));
   const stopped = running.rows.map((r) => r.id);
-  const inGroups = await endGroupCalls(t, groupAgents, concernedOf, o.eager);
+  // (`groups: false`, an unfriend: in a group anyone may @ the Agent, friend or not, so no call of anyone is taken out of a group reply.)
+  const inGroups = o.groups === false ? { cancelled: [], running: [] } : await endGroupCalls(t, groupAgents, concernedOf, o.eager);
   return { cancelled: [...cancelled, ...inGroups.cancelled], running: [...stopped, ...inGroups.running], ended: ended.rowCount ?? 0 };
 }
 
@@ -250,7 +256,8 @@ type BarKind = "stop" | "block";
 export async function setBar(t: Tx, setterId: string, otherId: string, kind: BarKind): Promise<EndedRuns & { ended: number }> {
   await lockPair(t, setterId, otherId);
   await t.query(
-    "insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, $3, clock_timestamp()) on conflict (setter_id, other_id, kind) do update set since = clock_timestamp()",
+    // A stop that stands keeps its `since` (pressing 停止往来 again must not restart the other person's wait); a block's is renewed as before.
+    "insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, $3, clock_timestamp()) on conflict (setter_id, other_id, kind) do update set since = case when access_bars.kind = 'stop' then access_bars.since else clock_timestamp() end",
     [setterId, otherId, kind],
   );
   return endGrantsIn(t, { between: [setterId, otherId] }, "barred", { eager: kind !== "block", by: setterId });

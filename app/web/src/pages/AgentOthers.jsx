@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { socialErrorText } from "../data/errorTexts.js";
-import { expiryText } from "../data/viewmodel.js";
+import { untilText } from "./untilText.js";
 import { lastPreview, nameOf } from "../state/selectors.js";
 import { friendIds, isObserved, socialOn } from "../state/social.js";
 import { Avatar, Btn, Modal, Notice, Tag } from "../ui/primitives.jsx";
@@ -151,7 +151,7 @@ export function AgentOthersTab({ agent }) {
               <Avatar id={r.subject.id} size={40} />
               <div className="member-body">
                 <strong>{r.subject.displayName}</strong>
-                <p className="muted">{r.subject.kind === "agent" ? `${r.subject.ownerName ?? ""}的 Agent` : `@${r.subject.handle}`}</p>
+                <p className="muted">{r.subject.kind === "agent" ? (r.subject.ownerName ? `${r.subject.ownerName}的 Agent` : "Agent") : `@${r.subject.handle}`}</p>
               </div>
               <div className="member-actions">
                 <Btn small disabled={busy !== null} onClick={() => act(`remove:${r.subject.id}`, () => actions.removeAgentContact(agent.id, r.subject.id), "已移除")}>
@@ -173,7 +173,7 @@ export function AgentOthersTab({ agent }) {
               <Avatar id={r.subject.id} size={40} />
               <div className="member-body">
                 <strong>{r.subject.displayName}</strong>
-                <p className="muted">{r.until ? expiryText(r.until, now) : ""}</p>
+                <p className="muted">{r.until ? untilText(r.until, now) : ""}</p>
               </div>
               <div className="member-actions">
                 <Btn small variant="primary" disabled={busy !== null} onClick={() => act(`approve:${r.subject.id}`, () => actions.approveAgentContact(agent.id, r.subject.id), "已同意")}>
@@ -230,7 +230,11 @@ export function AgentOthersTab({ agent }) {
             </>
           }
         >
-          <p>他们现在的对话会停下，之后要重新申请，并由你同意。</p>
+          <p>
+            {form.policy === "none"
+              ? `${ask === 1 ? "对方" : "他们"}现在的对话会停下，也找不到它了。`
+              : `${ask === 1 ? "对方" : "这些人"}现在的对话会停下，之后要重新申请，并由你同意。`}
+          </p>
         </Modal>
       )}
     </div>

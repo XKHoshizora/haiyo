@@ -108,8 +108,8 @@ describe("the names, the disclosure, the supervision line and the 主人 label",
     const state = view([two]);
     const conv = state.convs[sid(1)];
     expect(disclosureOf(state, conv)).toBe("这是小安、阿波的 Agent。小安、阿波能看到你们的对话，也可能插话。");
-    expect(supervisorLabel(state, conv, BO)).toBe("阿波的主人");
-    expect(supervisorLabel(state, conv, ANN)).toBe("小安的主人");
+    expect(supervisorLabel(state, conv, BO)).toBe("小帮手的主人");
+    expect(supervisorLabel(state, conv, ANN)).toBe("小助手的主人");
     expect(supervisorLabel(state, conv, ME)).toBeNull();
   });
 
@@ -135,6 +135,7 @@ describe("the composer's reason, by the service's code", () => {
     expect(blockOf("blocked")).toBe("你们之间有拉黑，不能再发送消息。");
     expect(blockOf("agent_deleted")).toBe("这个 Agent 已删除，聊天记录仍可查看");
     expect(blockOf("no_access", watched(2))).toBe("这段对话已结束，不能再发送消息。");
+    expect(blockOf("blocked", watched(2))).toBe("这段对话已结束，不能再发送消息。");
     const open = view([visiting(1)]);
     expect(publishBlock(open, open.convs[sid(1)])).toBeNull();
   });

@@ -172,7 +172,7 @@ export async function unfriend(
   for (const r of friendRows.rows) byAgent.set(r.agent_id, [...(byAgent.get(r.agent_id) ?? []), r.subject_id]);
   const ended: EndedRuns = { cancelled: [], running: [] };
   for (const [agentId, subjectIds] of byAgent) {
-    const done = await endGrants(t, { agentId, subjectIds }, "left");
+    const done = await endGrants(t, { agentId, subjectIds }, "left", { groups: false }); // no group run is touched (A-5 review m8)
     ended.cancelled.push(...done.cancelled);
     ended.running.push(...done.running);
   }

@@ -135,14 +135,15 @@ describe("the add dialog", () => {
     expect(inDialog().getByText("没有找到账号名为 bobby.nothing 的用户或 Agent。")).toBeTruthy();
   });
 
-  it("my own Agent, one I added or asked: the button says why it is no use, and no route is called", async () => {
+  it("my own Agent: said at once, and no route is called", async () => {
     const api = routes({ lookupPrincipal: vi.fn(async () => found({ ownerId: ME_ID, ownerName: "你" })) });
     await open({ api });
     await goContacts();
     await openAdd();
     await lookup("me_one.helper");
-    expect(button("加为联系人").disabled).toBe(true);
+    // (Recognised by its handle before the lookup, which hides it: no "not found", no route.)
     expect(inDialog().getAllByText("这是你自己的 Agent。").length).toBeGreaterThan(0);
+    expect(api.lookupPrincipal).not.toHaveBeenCalled();
     expect(api.addAgentContact).not.toHaveBeenCalled();
   });
 
@@ -172,7 +173,7 @@ describe("the contacts page", () => {
   it("shows the Agents I let in (聊天, 移除), the ones that wait (等主人同意), and the requests waiting on mine (同意, 拒绝); an ended row is not listed", async () => {
     const { api } = await open({ convs: [visiting()], contacts: contacts() });
     await goContacts();
-    expect(screen.getByText("Agent", { selector: ".rows-label" })).toBeTruthy();
+    expect(screen.getByText("我加的 Agent", { selector: ".rows-label" })).toBeTruthy();
     expect(screen.getByText("别人想加你的 Agent", { selector: ".rows-label" })).toBeTruthy();
     const live = within(rowOf("小帮手"));
     expect(live.getByRole("button", { name: "聊天" })).toBeTruthy();
@@ -184,6 +185,8 @@ describe("the contacts page", () => {
     await click(within(rowOf("阿波")).getByRole("button", { name: "拒绝" }));
     expect(api.declineAgentContact).toHaveBeenCalledWith(AG1, BO);
     await click(within(rowOf("小帮手")).getByRole("button", { name: "移除" }));
+    expect(api.removeAgentContact).not.toHaveBeenCalled();
+    await click(within(dialog()).getByRole("button", { name: "确认移除" }));
     expect(api.removeAgentContact).toHaveBeenCalledWith(AGB, ME_ID);
     expect(document.body.textContent).not.toContain("b8");
   });

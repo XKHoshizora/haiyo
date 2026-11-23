@@ -125,10 +125,6 @@ describe("the same through the routes: a third party's folded call survives ever
   type Ending = (w: Awaited<ReturnType<typeof world>>) => Promise<void>;
   const endings: Record<string, Ending> = {
     "停止往来": async (w) => void expect((await api(app, w.owner, "PUT", `/api/bars/${w.v.id}`)).status).toBe(200),
-    unfriend: async (w) => {
-      await befriend(app, w.owner, w.v);
-      expect((await api(app, w.owner, "DELETE", `/api/friends/${w.v.id}`)).status).toBe(200);
-    },
     removal: async (w) => void expect((await api(app, w.owner, "DELETE", `/api/agent-contacts/${w.agent.id}/${w.v.id}`)).status).toBe(200),
     narrowing: async (w) => void expect((await api(app, w.owner, "PUT", `/api/agents/${w.agent.id}/contact-policy`, { policy: "ask", picked: false, picks: [] })).status).toBe(200),
     "a block of the Agent": async (w) => void expect((await api(app, w.v, "PUT", `/api/blocks/${w.agent.id}`)).status).toBe(200),

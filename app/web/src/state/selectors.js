@@ -130,7 +130,7 @@ function socialBlock(conv) {
   const text =
     reason === "agent_deleted" ? AGENT_DELETED_TEXT
     : reason === "agent_unavailable" ? "这个 Agent 现在不可用。"
-    : reason === "blocked" ? "你们之间有拉黑，不能再发送消息。"
+    : reason === "blocked" && !watching ? "你们之间有拉黑，不能再发送消息。"
     : watching ? "这段对话已结束，不能再发送消息。"
     : "你已不能再和它聊天。";
   return { kind: "social", reason, text, pending: [], canRestore: false };
