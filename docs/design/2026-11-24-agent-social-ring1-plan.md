@@ -131,7 +131,21 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 | `OTHERS.cardDays` | 7 | how long a card can be answered |
 | `OTHERS.requestDays` | 7 | how long a contact request waits |
 | `OTHERS.cooldownDays` | 30 | requests refused after a stop (the stopped person) or a decline (on that Agent) |
-| `MEMORY.judgeModel` | `null` | the judge's site model when the owner chose no memory model; null: `MEMORY.model` |
+| `MEMORY.judgeModel` | `null` | the judge's site model when the owner chose no memory model; null: `MEMORY.model`. **As built in Step 0:** it must be the id of a site model in `SITE_MODELS` (`loadConfig` refuses another, naming `judgeModel`) |
+
+**The ranges `OTHERS` enforces (as built in Step 0, `config.ts` `othersSchema`; out of range stops the start naming `OTHERS`, never a silent clamp).** They are the controller's, not a lane's: a lane that needs a wider one stops and reports.
+
+| Key | Range |
+|---|---|
+| `answersPerDay`, `pointsPerDay` | 1–1000 (an account column's range), 1–100 000 |
+| `toolCalls`, `overCapNotes` | 1–10, 0–20 |
+| `outputTokens`, `contextWeight`, `notesWeight` | 1–100 000, 1–200 000, 1–20 000 |
+| `judgeBatch`, `judgeCallsPerDay`, `judgeAttemptsPerVersion` | 1–200, 1–1000, 1–10 |
+| `withheldCallsPerDay` | 0–1000, and strictly below `judgeCallsPerDay` (Q2) |
+| `judgeInputBytes`, `withheldInputBytes`, `judgeOutputTokens` | 1–200 000, 1–200 000, 1–100 000 |
+| `judgeOwnerExamples`, `judgeOwnersPerPoll`, `withheldCardsMax` | 0–50, 1–1000, 1–50 |
+| `judgePollMs` | 1000–3 600 000 (a floor of a second: below it the worker would poll the database in a loop) |
+| `cardDays`, `requestDays`, `cooldownDays` | 1–365, 1–365, 1–3650 |
 
 **Exact copy** (Chinese UI; system text, never the Agent's voice):
 - The question: 「谁可以加它为好友」: 「需要我同意」 (default) / 「我的联系人可以直接加」 (sub-entry 「只让其中一些人」) / 「不让别人加」.
@@ -213,7 +227,7 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `S:migrations/076_social_notes.sql` | A (ring 1b, A6a) | `note_verdicts` (per Agent), `note_judge_days`, `withheld_checked_at` |
 | `S:tests/schema-agents.test.ts` | B (B4) | its :109–128 default (20 points) stays true until 074, which B4 writes with the test's change (G1) |
 | `S:src/config.ts`, `S:.env.example`, `app/deploy/README.md`, `W:e2e/support/env.mjs`, `W:e2e/support/system.mjs` | 0 | `SOCIAL`, `OTHERS`, `MEMORY.judgeModel` |
-| `S:src/app.ts` | 0 | registers both route files; starts the worker (a no-op until A8b in ring 1a; A7 and A8a add to it in ring 1b) |
+| `S:src/app.ts` | 0 | registers both route files; starts the worker (a no-op until A8b in ring 1a; A7 and A8a add to it in ring 1b). **As built in Step 0:** the worker is built with `closing: memoryClosing.signal`, closed in `preClose` right after that signal is aborted and waited for as long as the memory calls (`SHUTDOWN_GRACE_MS`), and `BuildOptions.noteJudgeTimer?: false` (the harness passes it) leaves its timer off in tests |
 | `S:README.md` | 0, then I | every heading of both rings, the shapes, config, metrics |
 | `S:src/social/place.ts` (new) | 0, frozen | `Place`, `placeOf`, `placeOfType`, `groupPlaceSql`, `socialPlaceSql` |
 | `S:src/social/reach.ts` (new) | 0→A | `reach`, `reachSql`, `refusedSql`, `discoverable`, `discoverableSql` |
@@ -243,7 +257,7 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `W:src/styles/social.css` (0→A), `W:src/styles/others.css` (0→B) | | each lane's styles |
 | `W:src/data/model.js` (0→A), `data/sync.js`, `state/selectors.js`, `state/social.js` | A | `agent_social` in the model; supervised conversations out of the main list |
 | `W:src/pages/AddFriendModal.jsx`, `Contacts.jsx`, `ChatList.jsx`, `ChatView.jsx`, `Messages.jsx`, `Composer.jsx`, `BlockModal.jsx`, `DetailsPanel.jsx`, `AgentOthers.jsx` (0→A), `ReportModal.jsx`, `SocialCards.jsx` (the `persona_fact` card in 1a, A8b; `note_withheld` in 1b), `ShownNotes.jsx` (1b) | A | add, chat, tab, report, the persona card; the withheld card and shown notes in 1b |
-| `W:src/pages/Agents.jsx` (0→B), `AgentForm.jsx`, `Settings.jsx`, `Usage.jsx`, `OthersUse.jsx`, `W:src/data/viewmodel.js` | B | numbers, use page, wire |
+| `W:src/pages/Agents.jsx` (0→B), `AgentForm.jsx`, `Settings.jsx`, `Usage.jsx`, `OthersUse.jsx`, `W:src/data/viewmodel.js` (0→B) | B | numbers, use page, wire. **As built in Step 0:** `viewmodel.js` got `state.social = {enabled}` and the whole `agent_social` conversation arm (type `"social"`, `social` kept, an owner's own Agents' thinking kept, the Agent's run rows as a group's; `W:tests/social-view.test.js`), and `data/model.js`'s `metadata` keeps `social` for that type: lane A's A12a needs neither file's conversation mapping again, lane B keeps the rest (`agentView`, the numbers) |
 | `W:e2e/social.spec.mjs` | I | the browser path of each ring |
 
 ---
@@ -294,6 +308,8 @@ export function ensureSocial(t: Tx, subjectId: string, agentId: string): Promise
 // permission(q, type, conversationId, principalId, peerId, opts: { lock: boolean; config: Pick<Config, "social"> }) gains a working
 // `agent_social` arm in Step 0 (attack I4; T0.3): its participants and supervisors by Step 0's `reach`, the Agents' rows `for update`
 // in id order when `lock`. canSend(q, id, principal, config) and assertCanSend(t, lock, config) take the config.
+// As built in Step 0, so do the two writers above them, the config last: sendMessage(t, conversationId, senderId, input, config: Pick<Config, "social">)
+// and insertAttachment(t, a, quotaBytes, config: Pick<Config, "social">).
 
 // ── S:src/messages/model.ts (Step 0) ───────────────────────────────────────────────────
 // SystemEvent gains (errand_result reserved for the errands plan, not declared):
@@ -307,7 +323,7 @@ export type Interruption = "agent_paused" | "agent_deleted" | "agent_removed" | 
 // G4: RunEnd's cancelled error (agents/runtime/port.ts:138) widens to the same eight values (`Interruption` cannot be imported there:
 // runtime/ imports no store), or `recorded()` and `halted()` (port-impl.ts:354–363, :539) stop compiling.
 export function actOnTriggered(triggered: Triggered, to: { announce(run: Announced): void; log: Pick<FastifyBaseLogger, "info">; realtime: Pick<Hub, "pushAgentChanged">; interrupt(runIds: readonly string[]): void }): void;
-// Step 0 updates both callers: messages/routes.ts:94 and port-impl.ts:1233.
+// Step 0 updates all three callers (as built in Step 0): messages/routes.ts:94, port-impl.ts:1233 and app.ts's proactive scheduler `act`.
 
 // ── S:src/agents/runtime/prompt.ts (Step 0: `group: boolean` becomes `place: Place`; "own" = false, "group" = true, "social" throws until B7a) ─
 export function toolsPassage(place: Place, web?: WebPrompt): string;                                          // :94
@@ -322,6 +338,7 @@ export interface SyncSocial {
   agents: Array<{ id: string; ownerId: string }>;
 }
 // SyncConversation gains `social?: SyncSocial` (iff type "agent_social"); myRole "speaker" for a participant, "observer" for a supervising owner.
+// As built in Step 0: `SyncConfig` gains `"social"` (the view says the switch), and the route's zod schemas carry `agent_social`, the two new `canSend` reasons and `social`.
 // SyncView gains `social: { enabled: boolean }`.
 
 // ── S:src/memory/passage.ts (Step 0 signature; social returns no notes until ring 1b, A6a) ─
@@ -342,7 +359,11 @@ export function shownNotesPass(t: Tx, agent: { id: string; ownerId: string; shar
 
 // ── S:src/memory/judge.ts (Step 0: does nothing; lane A: A8b in ring 1a, A7 and A8a in ring 1b) ──
 export interface NoteJudge { runOnce(): Promise<number>; close(): Promise<void> }
-export function startNoteJudge(deps: MemoryCallDeps & { conversations: ConversationEvents; realtime?: Pick<Hub, "pushAgentChanged"> }, opts?: { timer?: false }): NoteJudge;
+export function startNoteJudge(deps: MemoryCallDeps & { conversations: ConversationEvents; realtime?: Pick<Hub, "pushAgentChanged">; closing: AbortSignal }, opts?: { timer?: false }): NoteJudge;
+// As built in Step 0: `closing` is `memoryClosing.signal`, the one every memory call is made with (`memoryCall(deps, ownerId, input, closing)`);
+// app.ts aborts it and calls `close()` in `preClose`, so a call in flight returns at once (`tests/note-judge-stop.test.ts`). `BuildOptions.noteJudgeTimer?: false`
+// turns the timer off in tests (the harness does; `app.noteJudge.runOnce()` by hand). A8b starts its timer one interval late and `unref`s it,
+// because apps a test builds itself do not pass the option.
 
 // ── S:src/metering/others.ts (Step 0: keepsRoom real, othersFits answers ok; lane B, B1) ─
 export type OthersLane = "others" | "proactive";
@@ -378,7 +399,7 @@ Lane A, `social/agent-contact-routes.ts`, `registerAgentContactRoutes(app)`:
 | `DELETE /api/bars/:personId` | 1a | | `{ok: true}` (恢复往来; only the setter, never a block's bar; else 404) |
 | `POST /api/reports` | 1a | `{agentId, reason: "spam" \| "harassment" \| "privacy" \| "other", note?: ≤ 500}` | 201 `{id}` |
 | `PUT /api/agents/:id/note-verdicts` | 1b | `{noteKind, noteId, audienceId, share: boolean, cardSeq?: number}` | `{ok: true}` (a card's answer names its message: attack M7) |
-| `POST /api/agents/:id/persona-facts/:seq` | 1b | `{move: boolean}` | `{ok: true, moved}` · 409 `answered` / `expired` |
+| `POST /api/agents/:id/persona-facts/:seq` | 1a (as built in Step 0: N4 moved the persona aid, its card and this route into ring 1a; A8b writes it) | `{move: boolean}` | `{ok: true, moved}` · 409 `answered` / `expired` |
 
 Lane B, `accounts/others-routes.ts`, `registerOthersRoutes(app)`:
 
@@ -496,6 +517,7 @@ alter table agents drop column others_answers;
 alter table accounts drop column others_notice_seen_at, drop column others_points_micro, drop column others_answers;
 ```
 - [ ] Run the test → passes; `npx vitest run tests/schema.test.ts tests/schema-agents.test.ts` still pass unchanged (a fresh `--tag` database locally). `columnDefault(table, column)` is a five-line helper local to `schema-social.test.ts` that reads `information_schema.columns.column_default`.
+- [ ] **As built in Step 0:** the inertness is proved on populated tables, in the pattern that works whatever migration is the latest (`money-wallet.test.ts`, 066's): `schema-social.test.ts` splits 073 at `-- Down Migration`, and in one rolled-back transaction runs the Down, writes rows crossing 10 and 100 (105 people with accounts, 12 Agents at null, 5 and 20 points, 105 conversations, 105 runs in every lane and with every old interruption), runs the Up, and asserts every old row's hash, the whole shape (columns with defaults, checks, indexes) and the 20-point default are as before, and the new tables and columns empty.
 - [ ] Commit `feat(schema): 073, inert columns and the empty social skeleton (step 0)`.
 
 ### Task 0.2: Config groups `SOCIAL`, `OTHERS`, `MEMORY.judgeModel` — Step 0
@@ -536,7 +558,7 @@ expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 20, ju
   - `messages/model.ts`: the events.
   - `S:src/agents/runs.ts`: `Interruption`; `interruptRuns`' reason type; `Triggered.stopped`; `actOnTriggered`'s `interrupt`.
   - `S:src/agents/runtime/port.ts:138`: `RunEnd`'s `cancelled` error widens to the eight values of `Interruption`, written out as a literal union (runtime/ imports no store), so `recorded()` and `halted()` (port-impl.ts:354–363, :539) still compile (G4). It is the only Step 0 edit to that file, which is lane B's afterwards.
-  - `S:src/messages/routes.ts:94`, `S:src/agents/port-impl.ts:1233`: pass `interrupt`.
+  - `S:src/messages/routes.ts:94`, `S:src/agents/port-impl.ts:1233` and (as built in Step 0, the plan missed it) `S:src/app.ts`'s proactive scheduler `act`: pass `interrupt`.
   - `S:src/sync/read.ts`: types; `SyncView.social`.
   - `S:src/memory/passage.ts`: the signature, with the two overloads of "Step 0 interfaces".
   - `S:src/memory/routes.ts:250`, `:252` and `S:src/agents/port-impl.ts:718`: callers of `loadNotes` and `fitNotes`. memory/routes.ts:250 stays on `db` outside a transaction: the own and group overload takes a `Queryable`; only `social` needs a `Tx` (G6).
@@ -593,7 +615,7 @@ expect(await renderNotice(db, s, { event: "social_opened", actorId: agent.id, ag
   - the sync shape gains `social` and the `agent_social` conversation, and the events;
   - metrics: `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`, `withheld_checks`, `others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback`, `social_post_refused`, `agent_reported`.
 - `S:tests/agents-co-members.test.ts`:
-  - `HIDDEN_KEYS` (:49) gains `shownNotes`, `withheld`, `shown_notes`, `withheld_notes`, `othersLimit`, `othersUsedToday`, `contactPolicy`, `contactPicked`, `picks`, `audienceId`, `noteId`, `ownerShare`, `judgeShare`, `card`;
+  - `HIDDEN_KEYS` (:49) gains `shownNotes`, `withheld`, `shown_notes`, `withheld_notes`, `othersLimit`, `othersUsedToday`, `contactPolicy`, `contactPicked`, `picks`, `audienceId`, `noteId`, `ownerShare`, `judgeShare`, `card`, and (as built in Step 0) `endReason`, `end_reason` (the visitor never learns why access ended, attack M6);
   - the owner-view `toMatchObject` at :252–257 no longer names `othersBudget`, `othersSpentToday`, `proactiveSpentToday` (attack I5), so the test passes before and after B4.
 - `S:tests/proactive-decide.test.ts:1152`: the same `HIDDEN_KEYS` additions.
 
@@ -613,9 +635,9 @@ expect(await renderNotice(db, s, { event: "social_opened", actorId: agent.id, ag
   - `agent_unavailable` 「这个 Agent 现在不可用。」;
   - `answered` 「这件事已经回答过了。」;
   - `expired` 「这张卡片已经过期了。」 (attack M7).
-- `W:src/state/location.js`: `SETTINGS_PAGES` gains `others`.
+- `W:src/state/location.js`: `SETTINGS_PAGES` gains `others`. **As built in Step 0:** it does not, yet: an address the app cannot draw is no address (`/settings/others` would draw the profile page), so B9a adds `others` to `SETTINGS_PAGES` together with the page it draws (`W:tests/social-seams.test.jsx` pins that it is an unknown address until then).
 - `W:src/main.jsx`: imports `styles/social.css` and `styles/others.css`.
-- `W:src/data/model.js`: keeps `sync.social` as `state.social = {enabled}`.
+- `W:src/data/model.js`: keeps `sync.social.enabled` as `model.socialOn` (**as built in Step 0**: `model.social` already holds `GET /api/social`'s answer); `W:src/data/viewmodel.js` says it as the view's `state.social = {enabled}`, which every page reads.
 - `W:src/pages/Agents.jsx`: a pill `["others", "别人"]` while `state.social?.enabled && live`, rendering `<AgentOthersTab agent={agent} />`.
 
 Create `W:src/pages/AgentOthers.jsx` (`export function AgentOthersTab({ agent }) { return null; }`), the two empty stylesheets, and `W:tests/social-seams.test.jsx`.
@@ -818,7 +840,7 @@ expect(Object.keys((await api(app, v, "GET", `/api/principals/lookup?handle=${ow
 **Files:** modify `S:src/conversations/store.ts` (`ensureSocial`; `permission()` :211 with A1's `reach`); create `S:tests/social-conversation.test.ts`.
 
 **Produces:**
-- `ensureSocial(t, subjectId, agentId)`: the caller holds the pair locks (A4's order). One `social_pairs` row per unordered pair. The conversation is `type 'agent_social'`, `creator_id = subjectId`, no title.
+- `ensureSocial(t, subjectId, agentId)`: the caller holds the pair locks (A4's order). One `social_pairs` row per unordered pair. The conversation is `type 'agent_social'`, `creator_id = subjectId`, no title (for an Agent subject too: an Agent's id; as built in Step 0, `seedSocialAgents` writes `creator_id = x`).
   - Memberships: both participants `speaker` from seq 0; each participating Agent's owner `observer` from seq 0, once, never the subject itself.
   - Then `appendSystem(… social_opened …)`.
   - A row equal to `seedSocial`'s (frozen) is the test's fixture.
@@ -1105,7 +1127,7 @@ So it is in ring 1a, and its columns are in 075 (A0).
 ### Task A12a: Web: the social chat — Lane A
 
 **Files:** modify:
-- `W:src/data/model.js`: :205 private fields; :496, :1453, :1465, :1482 group run states for `agent_social`.
+- `W:src/data/model.js`: :205 private fields; :496, :1453, :1465, :1482 group run states for `agent_social`. (As built in Step 0, `data/viewmodel.js`'s conversation arm for `agent_social` and `metadata`'s `social` are done: type `"social"`, the Agent's run rows read as a group's, an owner's own Agents' thinking kept; the model's run-state functions above are still this task's.)
 - `W:src/state/selectors.js` (the unread total), `W:src/pages/ChatList.jsx:88`, `ChatView.jsx`, `Messages.jsx`, `Composer.jsx`.
 
 Create `W:tests/social-chat.test.jsx`, `W:tests/social-list.test.js`.
@@ -1454,7 +1476,7 @@ Create `S:tests/social-begin.test.ts`.
   - a social form of the group's soft line (prompt.ts:846 `secrets`);
   - the persona whole.
 
-  `toolsPassage("social")` speaks of 「这段对话」 and has no 「先说一声」 sentence. Own and group texts stay byte-identical (the sha256 pins of `reply-history.test.ts`).
+  `toolsPassage("social")` speaks of 「这段对话」 and has no 「先说一声」 sentence. Own and group texts stay byte-identical (**as built in Step 0, narrowed**: the sha256 pins of `reply-history.test.ts` cover the texts of replies without tools only; the tools passages are pinned by the literal `TODAY_OWN`/`TODAY_GROUP` of `web-search.test.ts` and, from Step 0, by sha256 pins of the web-offered own and group passages, taken from their bytes at 4476eda).
 
 - [ ] **Failing test:**
 ```ts
@@ -1529,7 +1551,7 @@ expect(labelsIn(call)).toEqual([`〔${mark} ${v.displayName}｜对方〕`, `〔$
 
 ### Task B9a: Web: the use page and its settings row — Lane B
 
-**Files:** modify `W:src/pages/Settings.jsx` (a row 「别人怎么用我的 Agent」 → page `others`), `W:src/pages/Usage.jsx` (a section 「别人的使用」: one line and a link), `W:src/styles/others.css`; create `W:src/pages/OthersUse.jsx`, `W:tests/others-use.test.jsx`.
+**Files:** modify `W:src/state/location.js` (`SETTINGS_PAGES` gains `others` here, with the page: as built in Step 0 it is not there yet), `W:src/pages/Settings.jsx` (a row 「别人怎么用我的 Agent」 → page `others`, and its title in `state/pageTitle.js`), `W:src/pages/Usage.jsx` (a section 「别人的使用」: one line and a link), `W:src/styles/others.css`; create `W:src/pages/OthersUse.jsx`, `W:tests/others-use.test.jsx`.
 
 **Produces:** `OthersUse` (page title 「别人怎么用我的 Agent」):
 - the sentence 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [70] 点」 with both numbers editable in place (saved on Enter or blur);
@@ -1822,7 +1844,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 ### Task I3: README tidy, the run, the switch — Lane I
 
-**Files:** modify `S:README.md` (remove `othersBudget`, `othersSpentToday`, `proactiveSpentToday` from the Agent shape and the prose; describe the `othersBudget` alias and its end; reread every Step 0 shape against the code).
+**Files:** modify `S:README.md` (remove `othersBudget`, `othersSpentToday`, `proactiveSpentToday` from the Agent shape and the prose; describe the `othersBudget` alias and its end; reread every Step 0 shape against the code; **as built in Step 0:** the README's sentence that nobody but the owner receives `othersBudget`, `othersSpentToday`, … gains `othersLimit` and `othersUsedToday`).
 
 - [ ] `npx vitest run tests/readme.test.ts`; typecheck. Push and read the run; merge when green. Rollout 5.
 
