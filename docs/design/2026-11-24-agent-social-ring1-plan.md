@@ -67,6 +67,8 @@ The design said two things about the owner's points number that could not both h
 - **Restored information.** `proactiveSpentToday` is back on the owner's Agent wire (the one definition of "used", lane `proactive`; owner-only, in both `HIDDEN_KEYS`), `used.proactivePoints` on the use route, and `canReply` on each `agents[]` row (false for an Agent with no usable model: the page says so instead of 「0 次 · 正常」). The Agent page shows 「…每天最多花 {N} 点，今天花了 {S} 点」.
 - **The card's tag** stays for `reached` only; the use page states `tight` per Agent.
 
+**Controller ruling 2026-11-25 (B-5 re-review).** N1: the use page's person links and its sentence about 停止往来 stay as built; making them true (the profile draws a person known only by id; the stop control is offered for any person, a group-only caller included) is the integration's job. N2: accepted in writing that code from before 074 reads a NULL others' number as no limit (the deploy overlap, a failed 075, a Down); 074's Down therefore sets every NULL back to 20 and a proactive budget at 70 back to 20; if 075 fails, run 074's Down at once.
+
 ---
 
 ## Global Constraints
@@ -1356,13 +1358,16 @@ update agents set others_budget_micro = null where others_budget_micro = 2000000
 -- reads null.
 alter table agents alter column others_budget_micro drop default;
 -- Controller ruling 2026-11-24 (B-1 review, B-2 dispatch): the proactive budget is a hard sub-cap that counts holds. Rows still at the old
--- default 20 become 70 (the same rule as the others' number: every row at exactly 20 points; a number an owner set below or above 20 stays),
--- and the column default becomes 70 for new Agents.
+-- default 20 become 70 (the same selection as the others' number: every row at exactly 20 points; a number an owner set below or above 20
+-- stays; the result differs: 70 here, none there), and the column default becomes 70 for new Agents.
 update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
 alter table agents alter column proactive_budget_micro set default 70000000;
 -- Down Migration
--- (the clearing and the raise are not undone: a null cannot be told from an owner's own choice of no limit, and a row at 70 not from one an
--- owner set. Agents made after Up keep a null others' number, which code from before 074 reads as no limit, so Down leaves them.)
+-- (Owner decision 2026-11-25, N2: code from before 074 reads a NULL others' number as no limit at all, so Down must not leave one. Every NULL
+-- becomes 20 points again, the old default; this also caps an owner who had chosen no limit, the safe direction for money. A proactive
+-- budget at exactly 70 becomes 20 again; a row at 70 cannot be told from one an owner set, and 20 is the bound the old code was built on.)
+update agents set others_budget_micro = 20000000 where others_budget_micro is null;
+update agents set proactive_budget_micro = 20000000 where proactive_budget_micro = 70000000;
 alter table agents alter column others_budget_micro set default 20000000;
 alter table agents alter column proactive_budget_micro set default 20000000;
 ```
@@ -1946,16 +1951,16 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 
 1. **Gate** (**Controller ruling 2026-11-24 (attack, I9)**; **Controller ruling 2026-11-24 (verification), E2**). The gate starts at the **Step 0 merge**, because the working branch is deployed to the acceptance site after every merge and 073 is on it from then on. The controller cuts the Step 0 lane only after migrations 070, 071 and 072 (lanes storepush, storepages, invites) are on the working branch. So every database 073 reaches already has them, the acceptance site first and then production. The runner's order check would otherwise leave them unrunnable.
 2. **Step 0** merges and deploys with 073, which is **completely inert** (E1/N1): no row or default changes and nothing reads it. Nothing anyone sees changes.
-3. **Ring 1a: lanes A and B together** (**verification, E1/N1**). Lane B's 074 (the step-L raise) and lane A's 075 (bars, the backfill, the persona aid's columns) never deploy alone. Applied without lane B's owner cap, the raise would let others spend 70 points a day per Agent with no owner total (runs.ts:900–903, :1006–1013). And 075 applied before 074 would leave 074 unrunnable. Neither lane merges to the working branch on its own. Lane I's first joint merge brings both, and its deploy applies 074 then 075; every deploy from then on carries both.
+3. **Ring 1a: lanes A and B together** (**verification, E1/N1**). Lane B's 074 (the step-L change) and lane A's 075 (bars, the backfill, the persona aid's columns) never deploy alone. Applied without lane B's owner cap, 074 as edited by Owner decision 2026-11-25 (an Agent's own number of exactly 20 becomes NULL) leaves the old code with NO per-Agent limit on others' use at all, which it reads as 不限 (runs.ts:900–903, :1006–1013), and no owner total. And 075 applied before 074 would leave 074 unrunnable. Neither lane merges to the working branch on its own. Lane I's first joint merge brings both, and its deploy applies 074 then 075; every deploy from then on carries both.
    - **The first trial** may start once the minimum set (Rings table, I15) is in: lane I merges both lanes, runs I1a and I2a's path, and deploys.
    - **Step L**, which every deploy from then on carries whatever the switch says. In groups, others' replies now:
      - make one real tool call at 800 tokens without reasoning;
      - meet two hard, hold-aware numbers per owner;
      - meet the proactive budget as a hard sub-cap.
 
-     Agents at the old default 20 points lose their own number (null; Owner decision 2026-11-25 (cap), D9). Every owner has one 300-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final); Owner decision 2026-11-25). Owners see the one-time notice, whose copy says the limit is now per person and that defaults were raised (N2).
+     Agents at the old default 20 points lose their own number (null; Owner decision 2026-11-25 (cap), D9). Every owner has one 300-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final); Owner decision 2026-11-25). Owners see the one-time notice, whose copy says the limit is now shared by all their Agents, that an Agent's own 20 was cancelled and that the proactive 20 became 70 (N2).
    - **The proactive budget** (**Controller ruling 2026-11-24 (B-1 review)**). 074 also raises an Agent's proactive budget from 20 to 70 points where it still holds the old default, by the same rule as its others' number (every row at exactly 20 points), and sets the column's default to 70 for new Agents (Controller ruling 2026-11-24 (B-2 dispatch); an Agent's others' number, by contrast, keeps a null default: no sub-limit of its own). A paid-tier Agent at 70 can make a proactive reply plain (61.5 points) but not with tools (194.1): this number is the owner's to confirm, with the 70. The proactive judgement asks `othersFits` (the function admission asks, holds counted) before it spends a judgement, so a candidate whose cheapest possible reply cannot be admitted costs no judgement call and leaves no cancelled run. As built (B-1 re-review): "cheapest" is `proactivePlainFloor`, the plain hold through `othersHold` with the input known before the judgement (the tool-less system text as `begin` builds it from the persona, the group and the owner's name, without the conversation, the roster, the mark or the notes) and the others' output limit; the part not known is the conversation shown (at most the group's context cap of input at the model's input price), so a candidate between the floor and the real plain hold still costs one judgement and leaves a cancelled run if admission then refuses it.
-   - **The overlap** (B-2 review, M6): node-pg-migrate commits 074 on its own before 075 runs, and the new container migrates while the old one still serves. For that short window, and for as long as a failed 075 leaves the old container serving, the old code reads the raised 70 as an Agent's own soft budget with no owner cap, and creates Agents with an explicit 20. Accepted for the window; a deploy whose 075 fails is fixed forward at once (rolling the code back would keep 074 applied under the old code: the hazard itself).
+   - **The overlap** (B-2 review, M6): node-pg-migrate commits 074 on its own before 075 runs, and the new container migrates while the old one still serves. For that short window, and for as long as a failed 075 leaves the old container serving, the old code reads the NULL that 074 wrote (an Agent's own number cleared from the old default 20) as NO limit on others' use, with no owner cap, and creates Agents with an explicit 20. **Accepted in writing (Controller ruling 2026-11-25, N2):** the window is the deploy overlap and nothing else; if 075 fails, run 074's Down at once (it puts 20 back on every NULL, and 20 on a proactive budget at 70), and fix forward; rolling the code back without the Down would keep 074 applied under the old code: the hazard itself.
    - **While the switch is off**, the use page's stopped list is empty and no 停止往来 or 恢复往来 control is shown (Controller ruling 2026-11-24 (final); I10).
    - **Check on test.haiyo.org:** a member's @ answers within the numbers; the notice shows once; the use page lists today by person.
    - **The default of 300 points (and 50 answers)** is the owner's decision of 2026-11-25 (it was a proposed 70).
