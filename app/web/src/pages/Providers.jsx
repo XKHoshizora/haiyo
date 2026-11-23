@@ -9,6 +9,7 @@ import { forgetDraft, peekDraft, saveDraft } from "../data/drafts.js";
 import { useUp } from "../state/appHistory.js";
 import { levelLabel } from "./ModelPicker.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
+import { noModelList } from "../data/errorTexts.js";
 
 /** The four interface types (the service's `protocol`), by the names people know them by. Fixed once created. */
 export const PROTOCOLS = [
@@ -86,8 +87,8 @@ const KEY_KEPT = "没有改动，原来的密钥保持不变";
 const CREATE_MODELS_HINT = "保存后从供应商的模型列表里挑选模型。";
 /** In the 同步模型 dialog, after a list request that failed (the sentence of the edit form's hint). */
 const FAILED_BY_HAND = "有的供应商不提供模型列表。关闭这个窗口后，可以在下面手动添加模型。";
-/** In the 同步模型 dialog: the address has no model list (404, 405) and the public catalogue knows none at its host. */
-const NO_LIST_BY_HAND = "这个接口没有模型列表，请关闭后在下面手动添加模型名称。";
+/** In the 同步模型 dialog: the list came from another address of the same provider, which the chat address may not serve. */
+const FROM_SIBLING = "这份模型列表来自这个供应商的另一个地址，不一定都能在当前接口使用。添加后请用测试连接确认。";
 /** In the 同步模型 dialog: the address has no model list, so these come from the public catalogue (models.dev). */
 const FROM_CATALOGUE = "这个接口没有模型列表，以下来自公开的模型目录，请只添加你确实能用的模型。";
 /** Under the address field. */
@@ -237,7 +238,7 @@ function TestResult({ result }) {
         : "连接成功，供应商正常回应。";
     return <p className="field-hint" role="status">{text}</p>;
   }
-  const noList = !result.chat && result.error?.code === "provider_unavailable" && (result.error.upstreamStatus === "404" || result.error.upstreamStatus === "405");
+  const noList = !result.chat && noModelList(result.error);
   return (
     <>
       {noList ? <p className="field-hint" role="status">{result.text}</p> : <p className="field-msg" role="alert">{result.text}</p>}
@@ -499,12 +500,8 @@ function SyncDialog({ provider, models, onAdd, onRemove, onDone, onClose, saving
     setLoad({ status: "loading" });
     const res = await actions.listProviderModels(provider.id);
     if (generation.current !== mine) return;
-    if (res.ok) setLoad({ status: "ok", listed: res.value.listed, catalogue: res.value.source === "catalogue" });
-    else {
-      const status = res.error?.upstreamStatus;
-      const noList = res.error?.code === "provider_unavailable" && (status === "404" || status === "405");
-      setLoad({ status: "failed", text: noList ? NO_LIST_BY_HAND : res.text, noList, detail: res.error?.detail ?? null });
-    }
+    if (res.ok) setLoad({ status: "ok", listed: res.value.listed, catalogue: res.value.source === "catalogue", sibling: res.value.source === "sibling" });
+    else setLoad({ status: "failed", text: res.text, noList: noModelList(res.error), detail: res.error?.detail ?? null });
   }, [actions, provider.id]);
   useEffect(() => {
     fetchList();
@@ -566,6 +563,7 @@ function SyncDialog({ provider, models, onAdd, onRemove, onDone, onClose, saving
       {load.status === "ok" && listed.length > 0 && (
         <>
           {load.catalogue && <p className="muted">{FROM_CATALOGUE}</p>}
+          {load.sibling && <p className="muted">{FROM_SIBLING}</p>}
           <div className="sync-tools">
             <label className="search">
               <Search size={18} aria-hidden="true" />
