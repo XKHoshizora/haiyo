@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
-import { postAsAgent } from "../src/agents/conversation.ts";
+import { postAsAgent, type PostedReply } from "../src/agents/conversation.ts";
 import { NOTHING, type RunTicket } from "../src/agents/runtime/port.ts";
 import { behindAgentMessage, behindMessageSql, triggerFromAgent, type Caller } from "../src/agents/runs.ts";
 import { lockAgent } from "../src/agents/store.ts";
@@ -446,7 +446,7 @@ describe("a run's lane and who called for it", () => {
     const posted = await db.tx((t) =>
       postAsAgent(t, anna.id, w.g, run.rows[0]!.id, { text: "@carlbot 你看看", reasoning: "", stopped: false, truncated: false }, "k7f2ab", app.deps.config),
     );
-    expect(posted?.triggered.runs).toHaveLength(1);
+    expect((posted as PostedReply | null)?.triggered.runs).toHaveLength(1);
     expect(await laneOf(carl.id, w.g)).toEqual([["others", null]]);
   });
 

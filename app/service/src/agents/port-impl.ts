@@ -467,6 +467,17 @@ export class DbAgentPort implements AgentPort {
     return this.flags.get(run.id)?.stop === true;
   }
 
+  /** Ends every queued reply in a social conversation `cancelled`, `access_ended` (the switch is off), and tells each one's owner. */
+  private async endQueuedSocial(): Promise<void> {
+    const { rows } = await this.deps.db.query<RunRow & { owner_id: string; conversation_id: string }>(
+      `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now(), pending_seq = null
+         from conversations c
+        where c.id = r.conversation_id and c.type = 'agent_social' and r.status = 'queued' and r.purpose = 'reply'
+        returning ${RUN_COLUMNS}, r.owner_id, r.conversation_id`,
+    );
+    for (const row of rows) this.announce({ ownerId: row.owner_id, conversationId: row.conversation_id, run: toWireRun(row) });
+  }
+
   /**
    * `AgentPort.claimNext`. A reply held back at admission (`HELD_BACK`; its mark `held_back_by`, `held_back_on`, kept until
    * it is admitted) waits while every call it was held back behind is still running. Until it is admitted — queued, or
@@ -483,6 +494,9 @@ export class DbAgentPort implements AgentPort {
    */
   async claimNext(): Promise<RunTicket | null> {
     const { config } = this.deps;
+    // The site's Agent social switch is off: a queued run in a social conversation is not claimed; it ends `access_ended`, announced to its
+    // owner, and nothing answers an old message when the switch comes back on (M5, M18).
+    if (!config.social.enabled) await this.endQueuedSocial();
     const waiting = (r: string) =>
       `(${r}.held_back_by is not null
         and (select count(*) from agent_runs b where b.id = any(${r}.held_back_by) and b.status = 'running') = cardinality(${r}.held_back_by))`;
@@ -1362,10 +1376,14 @@ export class DbAgentPort implements AgentPort {
    */
   private async posting(run: RunTicket, said: Reply, as: "reply" | "ack"): Promise<"posted" | "refused" | "empty"> {
     const flags = this.flags.get(run.id);
+    // A social conversation has no acknowledgement: what a reply says before it calls a tool stays with the reply (posted, if at all, once).
+    if (as === "ack" && flags?.place === "social") return "empty";
     const mark = flags?.mark ?? null;
     const reply: AgentReply = { ...said, refs: flags?.tools?.refs ?? null };
     try {
       const posted = await this.deps.db.tx((t) => postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as));
+      // The access or a note it was shown ended meanwhile (a social reply): the run was marked in that transaction, which committed.
+      if (posted !== null && "refused" in posted) return "refused";
       if (!posted) return "empty";
       const { message, duplicate, triggered } = posted;
       // In a group, the notices the Agent's message led to follow it; the runs it called for go to their owners, the
@@ -1488,7 +1506,8 @@ export class DbAgentPort implements AgentPort {
       // A refused post of a run in a group whose Agent is no longer a member there ends `agent_removed` (looked up only
       // for a refusal nothing else explains).
       const refused = reply === undefined && state.rows[0].interrupted === null && end.status === "cancelled" && end.error === undefined;
-      const removed = refused && run.conversationId !== agent.conversationId && !(await currentMembership(t, run.conversationId, agent.id));
+      // (Never in a social conversation: its refusals are the run's own marks, `access_ended` and the rest.)
+      const removed = refused && run.conversationId !== agent.conversationId && this.flags.get(run.id)?.place !== "social" && !(await currentMembership(t, run.conversationId, agent.id));
       const final = recorded(end, { posted: reply !== undefined, interrupted: state.rows[0].interrupted, agent, removed });
       const ours = final.status === "failed" && final.error === "busy";
       const settled = await settle(t, config, run.id, usage, fallback, final.status, now, { forgiveAll: ours, log: this.deps.log });
