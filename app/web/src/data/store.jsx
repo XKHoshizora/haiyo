@@ -142,12 +142,16 @@ export function createDataLayer({
       signedOutListeners.add(fn);
       return () => signedOutListeners.delete(fn);
     },
-    start() {
+    /** `paused`: the page loads in the background of the iOS shell, so no socket is opened until `resume()`. */
+    start({ paused = false } = {}) {
       if (engine) return;
       notified = false;
       if (model.synced) model = resetKeepingDrafts(model); // signed out without stop(): start from a first load
-      engine = startSync(tx, { getModel, setModel, timers, now, random, onSignedOut: notifySignedOut, onStatus: setConnection });
+      engine = startSync(tx, { getModel, setModel, timers, now, random, onSignedOut: notifySignedOut, onStatus: setConnection, paused });
     },
+    /** The iOS shell's `haiyo:pause` / `haiyo:resume` (shell/useShell.js): the socket is let go, and comes back by the ordinary reconnect. */
+    pause: () => engine?.pause(),
+    resume: () => engine?.resume(),
     stop() {
       epoch += 1;
       forgetRequests();

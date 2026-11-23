@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CLOSE_STALE, PING_MS, openSocket } from "../src/api/socket.js";
+import { CLOSE_STALE, CONNECT_MS, PING_MS, openSocket } from "../src/api/socket.js";
 import { fakeTimers, settle } from "./fixtures.js";
 
 class FakeWebSocket {
@@ -137,5 +137,40 @@ describe("openSocket", () => {
       onClose() {},
     });
     await expect(opening).rejects.toBe(err);
+  });
+});
+
+describe("a connection that never opens", () => {
+  // README (the iOS shell): an iOS 26 WebSocket can hang in CONNECTING after a resume; the attempt must end so that the caller retries.
+  it("is given up after the connect timeout: the promise rejects, the socket is closed, nothing is left running", async () => {
+    const { timers, opening } = setup();
+    const caught = opening.catch((e) => e);
+    await settle();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    timers.advance(CONNECT_MS + 1);
+    const error = await caught;
+    expect(error.name).toBe("SocketClosedError");
+    expect(FakeWebSocket.instances[0].closedWith).not.toBeNull();
+    expect(timers.pending()).toBe(0);
+  });
+
+  it("an open before the timeout cancels it", async () => {
+    const { timers, opening } = setup();
+    await settle();
+    FakeWebSocket.instances[0].serverOpen();
+    await opening;
+    timers.advance(CONNECT_MS + 1);
+    expect(FakeWebSocket.instances[0].closedWith).toBeNull();
+  });
+});
+
+describe("the connect timeout and a real close", () => {
+  it("a close before the open clears the timeout (nothing left running), and the sync engine plans its back-off retry on the rejection", async () => {
+    const { timers, opening } = setup();
+    const caught = opening.catch((e) => e);
+    await settle();
+    FakeWebSocket.instances[0].serverClose(1006);
+    expect((await caught).name).toBe("SocketClosedError");
+    expect(timers.pending()).toBe(0);
   });
 });

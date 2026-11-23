@@ -83,10 +83,12 @@ const cut = () => {
  * @param {string} method
  * @param {string} path absolute path starting with /api
  * @param {unknown} [body] sent as JSON when given; no body and no content type otherwise
+ * @param {{signal?: AbortSignal}} [options] `signal` ends the request early (the caller that aborts is not waiting for it any more)
  * @returns the parsed JSON body (null when empty)
  */
-export async function request(method, path, body) {
+export async function request(method, path, body, options) {
   const init = { method, credentials: "same-origin", headers: { Accept: "application/json" } };
+  if (options?.signal) init.signal = options.signal;
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);

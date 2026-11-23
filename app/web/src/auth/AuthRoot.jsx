@@ -6,6 +6,8 @@ import { ChunkBoundary } from "../ui/ChunkBoundary.jsx";
 import { AcceptTerms, Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
 import { forgetDrafts } from "../data/drafts.js";
 import { captureResetToken, decide, navigate, parseRoute, rememberReturn, takeReturn, useLocation } from "./router.js";
+import { pushSessionEnded, registerPush, unregisterPush } from "../shell/push.js";
+import { startsInBackground, useOpenWhileSignedOut, useShellSession } from "../shell/useShell.js";
 
 // The terms, the privacy policy and the contact page (src/legal/): a chunk of their own, loaded only when one is opened.
 const LegalPage = lazy(() => import("../legal/LegalPage.jsx"));
@@ -36,6 +38,7 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     // The service closes our socket with 4001 on a deliberate sign-out too; that is not an expiry.
     const wasExpired = expired && !signingOut.current;
     bumpSessionEpoch();
+    pushSessionEnded(); // (In the iOS shell: the badge goes; a no-op in a browser.)
     forgetDrafts(); // (What was typed in a form, an API key among it, does not outlive the session: gone at sign-out, not at the next shell.)
     setSession((s) => (s.status === "out" ? s : { status: "out", expired: wasExpired && s.status === "in" }));
   }, []);
@@ -90,20 +93,24 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     if (!running) return undefined;
     const { layer } = box;
     const off = layer.onSignedOut(() => end(true));
-    layer.start();
+    layer.start({ paused: startsInBackground() });
     return () => {
       off();
       layer.stop();
     };
   }, [running, box, end]);
+  // The iOS shell, when this page is in it (src/shell/): pause and resume of the socket, the phone's push registration.
+  useShellSession({ running, layer: box.layer, api });
 
   const signOut = useCallback(async () => {
     signingOut.current = true;
     try {
+      await unregisterPush(api); // (In the iOS shell: the phone is unbound and the badge cleared while the session still exists.)
       await api.signOut();
     } catch (error) {
       if (error?.status !== 401) {
         signingOut.current = false;
+        registerPush(api); // (A sign-out that failed leaves the person signed in: the phone that was unbound for it is bound again.)
         return { ok: false, error };
       }
     }
@@ -121,6 +128,20 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     if (decision.redirect === "/signin" && route.name === "app" && !wasIn.current) rememberReturn(globalThis.location.pathname);
     navigate(decision.redirect === "/" ? takeReturn() ?? "/" : decision.redirect, { replace: true });
   }, [decision.redirect]);
+
+  // A tapped notification opened while signed out goes on after the sign-in, as a page of the app opened signed out does (a page that had a
+  // signed-in account keeps nothing: the next sign-in may be another person's).
+  useOpenWhileSignedOut(
+    session.status === "out",
+    useCallback((path) => {
+      // Someone half-way through a register, a reset or a verification is not thrown back to the sign-in: the tap is dropped (it is only a
+      // shortcut to a page; they are not signed in yet, and may be another person than the one it was meant for).
+      const where = parseRoute(globalThis.location).name;
+      if (where !== "app" && where !== "signin") return;
+      if (!wasIn.current) rememberReturn(path);
+      if (where !== "signin") navigate("/signin", { replace: true });
+    }, []),
+  );
 
   // A change of account screen (a link from 注册 to 登录) takes the control that was pressed with the old screen: the focus goes to
   // the new screen's heading, which names it. (The first screen of a visit is left alone.)

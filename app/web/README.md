@@ -10,6 +10,11 @@ React 19 + Vite. Talks to `app/service` over same-origin `/api` (cookie session)
 2. `npm install` then `npm run dev` here. Vite serves `http://127.0.0.1:5273` (port is fixed, `strictPort`) and proxies
    `/api`, WebSocket included, to the service with the Host and Origin headers unchanged.
 
+## The socket's connect timeout
+
+A WebSocket that has not opened 15 s after it was made (`src/api/socket.js` `CONNECT_MS`) is given up and tried again with the usual back-off:
+an iOS WebSocket can hang in CONNECTING after the app came back. A network whose upgrade always takes longer than 15 s never connects.
+
 ## Browsers
 
 The bundle needs **Chrome or Edge 111, Firefox 114, Safari or iOS Safari 16.4** or later: the build's target

@@ -117,7 +117,9 @@ function safeClose(socket) {
 
 /**
  * Starts keeping the model in step with the service. Returns a handle:
- * `stop()` (closes the socket, cancels timers; late answers are ignored) and `request({sync, social,
+ * `stop()` (closes the socket, cancels timers; late answers are ignored), `pause()` / `resume()` (the iOS shell's
+ * `haiyo:pause` / `haiyo:resume`: let the socket go quietly, and come back through the ordinary reconnect procedure below;
+ * `paused: true` in the options starts without connecting, for a page that loads in the background) and `request({sync, social,
  * conversation, agents, agent, run, groupRuns})` (ask for fresh state after an action).
  *
  * @param transport {connect({onEvent, onClose}) → Promise<{close()}>, getSync(), catchUp(positions),
@@ -126,9 +128,11 @@ function safeClose(socket) {
  */
 export function start(
   transport,
-  { getModel, setModel, timers = defaultTimers, now = () => Date.now(), random = Math.random, onSignedOut = () => {}, onStatus = () => {} },
+  { getModel, setModel, timers = defaultTimers, now = () => Date.now(), random = Math.random, onSignedOut = () => {}, onStatus = () => {}, paused: startPaused = false },
 ) {
   let alive = true;
+  /** The page is in the background (the shell's pause): no socket, no attempt planned, until `resume()`. */
+  let paused = startPaused;
   /** Incremented per connection; an async step whose connection is no longer current does nothing. */
   let conn = 0;
   let socket = null;
@@ -185,9 +189,10 @@ export function start(
     onStatus(s);
   };
 
-  async function connect() {
+  /** `back`: a return from the background (the shell's resume), which is no failed connection and is not shown as one. */
+  async function connect(back = false) {
     retryTimer = null;
-    if (!alive) return;
+    if (!alive || paused) return;
     const my = ++conn;
     working = false;
     buffering = true;
@@ -210,7 +215,7 @@ export function start(
     agentNeed.models = !modelsLoaded;
     lanes = { conn: my, live: false, agents: false, runs: 0, models: false };
     setModel(clearStreams(getModel()));
-    setStatus(fresh ? "connecting" : "reconnecting");
+    setStatus(fresh || back === true ? "connecting" : "reconnecting");
     let s;
     try {
       s = await transport.connect({
@@ -656,7 +661,7 @@ export function start(
   }
 
   function retry(delay = null) {
-    if (!alive) return;
+    if (!alive || paused) return;
     if (liveSince !== null && now() - liveSince >= STABLE_MS) attempt = 0;
     liveSince = null;
     setStatus("reconnecting");
@@ -683,6 +688,33 @@ export function start(
     working = false;
   }
 
+  /** Lets the socket go and plans nothing: the same as `halt` except that `resume()` can start again. */
+  function pause() {
+    if (!alive || paused) return;
+    paused = true;
+    conn += 1;
+    if (retryTimer !== null) timers.clearTimeout(retryTimer);
+    retryTimer = null;
+    safeClose(socket);
+    socket = null;
+    buffer = [];
+    need = freshNeeds();
+    agentNeed = freshAgentNeeds();
+    lanes = null;
+    clearRunRetries();
+    working = false;
+    liveSince = null;
+    setStatus("idle");
+  }
+
+  /** The ordinary reconnect (`connect`): catch-up from what is held, then sync and social. The back-off starts over. */
+  function resume() {
+    if (!alive || !paused) return;
+    paused = false;
+    attempt = 0;
+    connect(true);
+  }
+
   function signedOut() {
     if (!alive) return;
     halt();
@@ -693,6 +725,8 @@ export function start(
   connect();
 
   return {
+    pause,
+    resume,
     stop() {
       if (!alive) return;
       halt();

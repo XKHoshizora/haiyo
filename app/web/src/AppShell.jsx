@@ -10,6 +10,7 @@ import { ToastRegion } from "./ui/Toast.jsx";
 import { pageTitle } from "./state/pageTitle.js";
 import { addressOf, keyOf } from "./state/location.js";
 import { alive, lastPageOf, useAppHistory, useUp } from "./state/appHistory.js";
+import { useShellOpen } from "./shell/useShell.js";
 import { MessageCircle, Users, Bot, Settings, ChevronLeft } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
 import { ChatView } from "./pages/ChatView.jsx";
@@ -180,6 +181,7 @@ export default function Shell() {
   useCloseWhenRemoved(state, dispatch);
   useOpenWhenPresent(state, dispatch);
   useDropStrayWindows(state, actions);
+  useShellOpen(); // (A tapped notification of the iOS app: nothing in a browser.)
   const { nav } = state;
   const conv = state.convs[nav.convId];
   const phone = usePhone();

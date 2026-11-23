@@ -4,8 +4,12 @@
 export const PING_MS = 25_000;
 /** Reported to `onClose` when nothing at all arrived during a whole ping interval (the network went away). */
 export const CLOSE_STALE = 4900;
+/** A socket that has not opened this long after it was made is given up (an iOS WebSocket can hang in CONNECTING after the app came back). */
+export const CONNECT_MS = 15_000;
 
 const defaultTimers = {
+  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+  clearTimeout: (id) => globalThis.clearTimeout(id),
   setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
   clearInterval: (id) => globalThis.clearInterval(id),
 };
@@ -30,7 +34,7 @@ export class SocketClosedError extends Error {
  * @param {(event: object) => void} o.onEvent
  * @param {(code: number) => void} o.onClose
  */
-export async function openSocket({ requestTicket, urlFor, WebSocketImpl = globalThis.WebSocket, timers = defaultTimers, pingMs = PING_MS, onEvent, onClose }) {
+export async function openSocket({ requestTicket, urlFor, WebSocketImpl = globalThis.WebSocket, timers = defaultTimers, pingMs = PING_MS, connectMs = CONNECT_MS, onEvent, onClose }) {
   const { ticket } = await requestTicket();
   return new Promise((resolve, reject) => {
     const ws = new WebSocketImpl(urlFor(ticket));
@@ -38,9 +42,19 @@ export async function openSocket({ requestTicket, urlFor, WebSocketImpl = global
     let done = false;
     let timer = null;
     let heard = true;
+    // The caller (sync.js) plans the next attempt when this rejects, as for any socket that closed before it opened.
+    const hung = timers.setTimeout(() => {
+      try {
+        ws.close(1000);
+      } catch {
+        /* already closing */
+      }
+      finish(CLOSE_STALE);
+    }, connectMs);
 
     const detach = () => {
       done = true;
+      timers.clearTimeout(hung);
       if (timer !== null) timers.clearInterval(timer);
       timer = null;
       ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
@@ -70,6 +84,7 @@ export async function openSocket({ requestTicket, urlFor, WebSocketImpl = global
     };
 
     ws.onopen = () => {
+      timers.clearTimeout(hung);
       opened = true;
       heard = true;
       timer = timers.setInterval(tick, pingMs);
