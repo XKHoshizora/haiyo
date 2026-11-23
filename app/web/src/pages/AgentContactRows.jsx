@@ -79,8 +79,7 @@ export function AgentContactRows({ query }) {
             </span>
             <span className="row-sub">
               <span className="row-preview">
-                想加 {nameOf(state, w.agentId)}
-                {w.subject.kind === "agent" && w.subject.ownerName ? ` · ${w.subject.ownerName}的 Agent` : ""} · {untilText(w.until, now)}
+                想加你的{nameOf(state, w.agentId)} · {untilText(w.until, now)}
               </span>
             </span>
           </span>

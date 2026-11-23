@@ -266,7 +266,7 @@ export function ContactCard() {
             <Reason>只有你可以解除自己的拉黑。</Reason>
           </div>
         )}
-        <DealingsSection personId={id} name={who.name} />
+        <DealingsSection key={id} personId={id} name={who.name} />
       </div>
       {dialog === "block" && <BlockModal target={id} onClose={() => setDialog(null)} />}
       {dialog === "unfriend" && <UnfriendModal id={id} name={who.name} onClose={() => setDialog(null)} />}

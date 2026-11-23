@@ -25,7 +25,7 @@ export function ReportModal({ agentId, onClose, returnTo }) {
   const name = nameOf(state, agentId);
   const submit = async () => {
     const body = { agentId, reason, ...(note.trim() ? { note: note.trim() } : {}) };
-    const text = (e) => (e?.code === "not_found" ? "现在没法举报它，它可能已经不在了。" : socialErrorText(e));
+    const text = (e) => (e?.code === "not_found" ? "举报没有提交成功，这个 Agent 可能已被删除。" : socialErrorText(e));
     const res = await run("report", () => actions.reportAgent(body), text);
     if (!res.ok) return;
     dispatch({ type: "toast", text: "已提交举报" });

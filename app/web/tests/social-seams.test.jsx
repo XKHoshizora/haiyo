@@ -83,7 +83,7 @@ describe("the thin actions", () => {
 describe("the refusal texts", () => {
   const err = (code, extra = {}) => ({ code, status: 409, reason: null, ...extra });
   it("says each code in the product's words", () => {
-    expect(socialErrorText(err("is_yours"))).toBe("这是你自己的 Agent。");
+    expect(socialErrorText(err("is_yours"))).toBe("你自己的 Agent 不用添加。");
     expect(socialErrorText(err("not_requested"))).toBe("这个申请已经处理过了。");
     expect(socialErrorText(err("no_access"))).toBe("你已不能再和它聊天。");
     expect(socialErrorText(err("agent_unavailable"))).toBe("这个 Agent 现在不可用。");

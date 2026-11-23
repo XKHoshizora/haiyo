@@ -6,6 +6,7 @@ import { Avatar, Btn, Field, Modal, Notice, Reason, Tag } from "../ui/primitives
 import { agentContactsOf, blockedMe, disclosureText, iBlocked, relationOf, socialOn } from "../state/social.js";
 import { useAction } from "./useAction.js";
 import { openAgentChat } from "./AgentForm.jsx";
+import { daysLeft } from "./untilText.js";
 
 /** An Agent's full account name: `<owner's handle>.<name part>`. */
 const AGENT_HANDLE = new RegExp(`^${HANDLE_PATTERN.source.slice(1, -1)}\\.${NAME_PART_PATTERN.source.slice(1, -1)}$`);
@@ -24,7 +25,7 @@ function whyNot(state, person) {
 
 /** What stops me from adding this Agent, or "" when I can (the service decides the rest and says so). */
 function whyNotAgent(state, agent) {
-  if (agent.ownerId === state.account?.id) return "这是你自己的 Agent。";
+  if (agent.ownerId === state.account?.id) return "你自己的 Agent 不用添加。";
   const row = agentContactsOf(state).mine.find((r) => r.agentId === agent.id);
   if (row?.state === "live") return "已经是你的联系人了。";
   if (row?.state === "requested") return "等主人同意。";
@@ -49,13 +50,13 @@ export function AddFriendModal({ onClose, returnTo }) {
     setFound(null);
     setOutcome(null);
     if (!HANDLE_PATTERN.test(handle) && !(agentsToo && AGENT_HANDLE.test(handle))) {
-      setError(agentsToo ? "账号名由 3–24 位小写字母、数字或下划线组成；Agent 的完整账号名中间有一个点。" : "账号名由 3–24 位小写字母、数字或下划线组成。");
+      setError(agentsToo ? "账号名不对。人的账号名像 ann_li，Agent 的像 ann_li.helper。" : "账号名由 3–24 位小写字母、数字或下划线组成。");
       return;
     }
     setError("");
     // (The lookup hides my own Agent as it hides what is not there: said here, before it.)
     if (agentsToo && AGENT_HANDLE.test(handle) && handle.startsWith(`${state.account?.handle}.`)) {
-      setError("这是你自己的 Agent。");
+      setError("你自己的 Agent 不用添加。");
       return;
     }
     const res = await run("lookup", () => actions.lookupPrincipal(handle), () => "");
@@ -77,17 +78,17 @@ export function AddFriendModal({ onClose, returnTo }) {
       onClose();
       openAgentChat(state, dispatch, actions, res.value.conversationId);
     } else {
-      const days = Math.max(1, Math.round((Date.parse(res.value?.until ?? "") - Date.now()) / 86_400_000)) || 7;
-      dispatch({ type: "toast", text: `已发给它的主人，${days} 天内有效` });
-      setOutcome({ days });
+      // The outcome is said twice at most: a short toast, and one notice that says what happens next (the line under the button is left out then).
+      dispatch({ type: "toast", text: "申请已发送" });
+      setOutcome({ days: daysLeft(res.value?.until ?? "", Date.now()) ?? 7 });
     }
   };
 
   const isAgent = agentsToo && found?.kind === "agent";
-  const reason = found ? (isAgent ? whyNotAgent(state, found) : whyNot(state, found)) : "";
+  const reason = found ? (isAgent ? (outcome ? "" : whyNotAgent(state, found)) : whyNot(state, found)) : "";
   const owner = isAgent ? (found.ownerName || state.people[found.ownerId]?.name || "它的主人") : "";
   return (
-    <Modal title="添加好友" onClose={onClose} returnTo={returnTo} locked={busy === "add"} footer={<Btn onClick={onClose}>完成</Btn>}>
+    <Modal title={agentsToo ? "添加好友或 Agent" : "添加好友"} onClose={onClose} returnTo={returnTo} locked={busy === "add"} footer={<Btn disabled={busy === "add"} onClick={onClose}>完成</Btn>}>
       <form onSubmit={search}>
         <Field
           label="对方的账号名"
@@ -131,7 +132,7 @@ export function AddFriendModal({ onClose, returnTo }) {
           <p className="social-disclosure" data-testid="social-disclosure">
             {disclosureText([owner])}
           </p>
-          {outcome && <Notice tone="ok">{`已发给它的主人，${outcome.days} 天内有效`}</Notice>}
+          {outcome && <Notice tone="ok">{`已发给它的主人，等对方同意。${outcome.days} 天没有回应会自动取消。`}</Notice>}
           <div className="agent-found-actions">
             <Btn variant="primary" disabled={Boolean(reason) || outcome !== null || busy !== null} reason={reason} onClick={add}>
               {busy === "add" ? "处理中…" : "加为联系人"}

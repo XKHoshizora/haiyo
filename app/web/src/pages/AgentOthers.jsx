@@ -190,7 +190,7 @@ export function AgentOthersTab({ agent }) {
 
       <h3>它和别人的对话</h3>
       {observed.length === 0 ? (
-        <p className="muted">还没有。</p>
+        <p className="muted">它还没有和别人聊过。</p>
       ) : (
         <ul className="rows social-convs" aria-label="它和别人的对话">
           {observed.map((c) => {
@@ -218,7 +218,7 @@ export function AgentOthersTab({ agent }) {
 
       {ask !== null && (
         <Modal
-          title={`这样会让 ${ask} 个人不能再和它聊天`}
+          title={`这样会影响 ${ask} 个人`}
           onClose={() => setAsk(null)}
           locked={busy === "save"}
           footer={
@@ -232,8 +232,8 @@ export function AgentOthersTab({ agent }) {
         >
           <p>
             {form.policy === "none"
-              ? `${ask === 1 ? "对方" : "他们"}现在的对话会停下，也找不到它了。`
-              : `${ask === 1 ? "对方" : "这些人"}现在的对话会停下，之后要重新申请，并由你同意。`}
+              ? `${ask === 1 ? "对方" : "他们"}不能再和它聊天，也找不到它了。还在等你同意的申请会取消。`
+              : `${ask === 1 ? "对方" : "这些人"}不能再和它聊天，想再聊要重新申请，由你同意。还在等你同意的申请会取消。`}
           </p>
         </Modal>
       )}

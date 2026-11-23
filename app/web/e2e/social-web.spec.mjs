@@ -47,6 +47,8 @@ test("an owner's Agent is found by its full handle, added with the disclosure, l
   const dlg = bo.page.getByRole("dialog");
   await expect(dlg.getByText("人的账号名，或 Agent 的完整账号名，例如 ann_li.helper")).toBeVisible();
   await dlg.getByLabel("对方的账号名").fill(full);
+  await tall(dlg.getByRole("button", { name: "查找" }));
+  await expect(dlg.getByRole("heading", { name: "添加好友或 Agent" })).toBeVisible();
   await dlg.getByRole("button", { name: "查找" }).click();
   const note = dlg.getByTestId("social-disclosure");
   await expect(note).toHaveText(`这是${ann.displayName}的 Agent。${ann.displayName}能看到你们的对话，也可能插话。`);
@@ -56,7 +58,7 @@ test("an owner's Agent is found by its full handle, added with the disclosure, l
   await tall(dlg.getByRole("button", { name: "加为联系人" }));
   await shot(bo.page, "a11a-add-agent-dialog");
   await dlg.getByRole("button", { name: "加为联系人" }).click();
-  await expect(dlg.getByText("已发给它的主人，7 天内有效").first()).toBeVisible();
+  await expect(dlg.getByText("已发给它的主人，等对方同意。7 天没有回应会自动取消。")).toBeVisible();
   await shot(bo.page, "a11a-add-agent-requested");
   await dlg.getByRole("button", { name: "完成" }).click();
 
@@ -112,9 +114,9 @@ test("an owner's Agent is found by its full handle, added with the disclosure, l
   expect(await noSideways(ann.page)).toBe(true);
   await shot(ann.page, "a11b-others-tab");
   await tab.getByRole("list", { name: "它和别人的对话" }).getByRole("button").first().click();
-  const watched = chatPane(ann.page, `${name} · ${bo.displayName}`);
+  const watched = chatPane(ann.page, `${name}和${bo.displayName}`);
   await expect(watched).toBeVisible();
-  await expect(watched.getByTestId("social-note")).toHaveText(`你在旁观${name}和${bo.displayName}的对话，你说的话会标成主人`);
+  await expect(watched.getByTestId("social-note")).toHaveText(`你在旁观${name}和${bo.displayName}的对话。你发言时，对方会看到你是主人。`);
   await expect(messageList(watched).getByText("你好，想问个事")).toBeVisible();
   await composer(watched).fill("我是它的主人，有事问我");
   await composer(watched).press("Enter");
@@ -126,7 +128,7 @@ test("an owner's Agent is found by its full handle, added with the disclosure, l
   // (The conversation is the Agent's page's, not a row of Ann's main list.)
   await ann.page.goto("/");
   await goTo(ann.page, "消息");
-  await expect(listRow(ann.page, `${name} · ${bo.displayName}`)).toHaveCount(0);
+  await expect(listRow(ann.page, `${name}和${bo.displayName}`)).toHaveCount(0);
 
   // ── Bo sees the owner's words marked 主人 too.
   const ownerLine = messageList(chat).locator("li.msg").filter({ hasText: "我是它的主人，有事问我" });
@@ -156,7 +158,7 @@ test("changing who may add it asks first how many it would end; after it, the vi
   await tab.getByRole("radio", { name: "不让别人加" }).check();
   await tab.getByRole("button", { name: "保存" }).click();
   const ask = ann.page.getByRole("dialog");
-  await expect(ask.getByRole("heading", { name: "这样会让 1 个人不能再和它聊天" })).toBeVisible();
+  await expect(ask.getByRole("heading", { name: "这样会影响 1 个人" })).toBeVisible();
   await tall(ask.locator(".modal-foot").getByRole("button"));
   await shot(ann.page, "a11b-dry-run-dialog");
   await ask.getByRole("button", { name: "确定" }).click();
@@ -173,13 +175,16 @@ test("changing who may add it asks first how many it would end; after it, the vi
   await openContact(ann.page, bo.displayName);
   const card = ann.page.getByRole("region", { name: "联系人卡片" });
   // Whether I stopped them is known only from lane B's use page (`GET /api/me/others-use`): without it (this lane alone) the profile
-  // offers neither 停止往来 nor 恢复往来 (A-5 review m3b). With both lanes merged the section is there, and the rest runs.
-  await ann.page.waitForTimeout(1500);
-  if (!(await card.getByRole("heading", { name: "Agent 往来" }).isVisible())) {
+  // offers neither 停止往来 nor 恢复往来 (A-5 review m3b). With both lanes merged the section is there, and the rest runs: decided by whether
+  // the route exists, never by a timer (A-5 re-review m-c).
+  const haveList = (await ann.request.get("/api/me/others-use")).status() !== 404;
+  if (!haveList) {
+    await ann.page.waitForTimeout(1000);
     await expect(card.getByRole("button", { name: /^(停止|恢复)往来$/ })).toHaveCount(0);
     await shot(ann.page, "a12b-profile-without-the-stopped-list");
     return;
   }
+  await expect(card.getByRole("heading", { name: "Agent 往来" })).toBeVisible();
   await card.getByRole("button", { name: "停止往来" }).click();
   const confirm = ann.page.getByRole("dialog");
   await expect(confirm.getByRole("heading", { name: `停止和${bo.displayName}往来` })).toBeVisible();

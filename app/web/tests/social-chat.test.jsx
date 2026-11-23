@@ -90,7 +90,7 @@ describe("the header", () => {
     await click(within(document.querySelector(".list-col")).getByText("小助手", { selector: ".row-name" }));
     await click(inMain().getByRole("tab", { name: "别人" }));
     await click(within(inMain().getByRole("list", { name: "它和别人的对话" })).getAllByRole("button")[0]);
-    expect(screen.getByTestId("social-note").textContent).toBe("你在旁观小助手和小安的对话，你说的话会标成主人");
+    expect(screen.getByTestId("social-note").textContent).toBe("你在旁观小助手和小安的对话。你发言时，对方会看到你是主人。");
     expect(screen.queryByText(/能看到你们的对话/)).toBeNull();
     expect(screen.getByRole("textbox", { name: "消息内容" })).toBeTruthy();
   });
@@ -138,7 +138,7 @@ describe("the composer", () => {
   it.each([
     ["no_access", "你已不能再和它聊天。"],
     ["agent_unavailable", "这个 Agent 现在不可用。"],
-    ["blocked", "你们之间有拉黑，不能再发送消息。"],
+    ["blocked", "你已不能再和它聊天。"],
   ])("%s: the reason is said once and no input is offered", async (reason, text) => {
     await openVisitor(visiting({ canSend: { ok: false, reason } }));
     expect(screen.getAllByText(text)).toHaveLength(1);
@@ -151,9 +151,10 @@ describe("the composer", () => {
     expect(document.querySelector(".main-col").textContent).not.toMatch(/停止往来|拉黑|对方已/);
   });
 
-  it("an open conversation has its composer", async () => {
+  it("an open conversation has its composer; with one Agent there is nobody to @, so it just says to write", async () => {
     await openVisitor();
     expect(screen.getByRole("textbox", { name: "消息内容" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "消息内容" }).getAttribute("placeholder")).toBe("发送消息");
   });
 });
 
@@ -162,7 +163,7 @@ describe("the chat list", () => {
     await openApp2([visiting({ unread: 2 }), watched({ unread: 3 })], [wire(SV, 1, AGB, "嗨"), wire(SO, 1, ANN, "在吗")]);
     const rows = [...document.querySelectorAll(".list-col .rows .row-name")].map((x) => x.textContent);
     expect(rows).toContain("小帮手");
-    expect(rows).not.toContain("小助手 · 小安");
+    expect(rows).not.toContain("小助手和小安");
     expect(rows.filter((r) => r.includes("小安"))).toEqual([]);
     const badges = [...document.querySelectorAll(".tabbar .badge, nav .badge")].map((b) => b.textContent);
     for (const b of badges) expect(Number(b)).toBeLessThanOrEqual(2);

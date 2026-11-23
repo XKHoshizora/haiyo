@@ -81,7 +81,7 @@ export function DetailsPanel({ conv }) {
           {agentChat && <Btn onClick={() => go({ section: "agents", agentId: other, agentView: "detail", agentTab: "profile" })}>管理这个 Agent</Btn>}
           {agentChat && !deleted && <Btn onClick={() => setTopicOpen(true)}>开始新话题</Btn>}
           {visitorOf && <Btn onClick={() => setSocialDialog("report")}>举报</Btn>}
-          {visitorOf && <Btn variant="danger" onClick={() => setSocialDialog("block")}>拉黑</Btn>}
+          {visitorOf && <Btn variant={iBlocked(state, visitorOf) ? "ghost" : "danger"} onClick={() => setSocialDialog("block")}>{iBlocked(state, visitorOf) ? "解除拉黑" : "拉黑"}</Btn>}
           {visitorOf && <Btn onClick={() => setSocialDialog("leave")}>移除</Btn>}
           {watchedAgent && <Btn onClick={() => go({ section: "agents", agentId: watchedAgent, agentView: "detail", agentTab: "others" })}>管理这个 Agent</Btn>}
         </div>

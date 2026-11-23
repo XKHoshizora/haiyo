@@ -15,7 +15,10 @@ export function DealingsSection({ personId, name }) {
   const { busy, run } = useAction();
   const on = socialOn(state);
   /** Whether I stopped this person: known from my numbers page's list when it answers (it is lane B's route: when it does not, only what I did here is known). */
-  const [stopped, setStopped] = useState(null);
+  // The answer is state OF this person: it carries whose it is, and an answer for anyone else reads as not known (A-5 re-review I1).
+  const [answer, setAnswer] = useState({ id: null, value: null });
+  const stopped = answer.id === personId ? answer.value : null;
+  const setStopped = (value) => setAnswer({ id: personId, value });
   const [asking, setAsking] = useState(false);
 
   useEffect(() => {
@@ -24,7 +27,7 @@ export function DealingsSection({ personId, name }) {
     actions
       .getOthersUse()
       .then((use) => {
-        if (alive && Array.isArray(use?.stopped)) setStopped(use.stopped.some((s) => (s?.person?.id ?? s?.person) === personId));
+        if (alive && Array.isArray(use?.stopped)) setAnswer({ id: personId, value: use.stopped.some((s) => (s?.person?.id ?? s?.person) === personId) });
       })
       .catch(() => {});
     return () => {
@@ -46,10 +49,10 @@ export function DealingsSection({ personId, name }) {
     dispatch({ type: "toast", text: "已停止往来" });
   };
   const resume = async () => {
-    const res = await run("resume", () => actions.deleteBar(personId), (e) => (e?.code === "not_found" ? "你没有停止过和对方的往来。" : socialErrorText(e)));
+    const res = await run("resume", () => actions.deleteBar(personId), (e) => (e?.code === "not_found" ? "你现在没有停止和对方往来。" : socialErrorText(e)));
     if (res.ok) {
       setStopped(false);
-      dispatch({ type: "toast", text: "已恢复往来" });
+      dispatch({ type: "toast", text: "已恢复往来。想再聊，要重新加对方的 Agent。" });
     } else if (res.error?.code === "not_found") setStopped(false);
   };
 
@@ -63,7 +66,7 @@ export function DealingsSection({ personId, name }) {
       ) : (
         <div className="stack-actions">
           <Btn disabled={busy !== null} onClick={() => setAsking(true)}>停止往来</Btn>
-          <p className="muted">你们各自的 Agent 都不再回应对方，直到你恢复往来。</p>
+          <p className="muted">停止后，你的 Agent 不再回应对方，对方的 Agent 也不再回应你。</p>
         </div>
       )}
       {asking && (
@@ -80,8 +83,8 @@ export function DealingsSection({ personId, name }) {
         >
           <ul className="plain-list">
             <li>你的 Agent 不再回应{name}，{name}的 Agent 也不再回应你。</li>
-            <li>已经停下的对话不会自动恢复：恢复往来后，双方要重新申请，并由对方同意。</li>
-            <li>你可以随时在这里恢复往来。</li>
+            <li>恢复往来后，已经停下的对话不会自己回来。想再聊，要重新加对方的 Agent，等它的主人同意。</li>
+            <li>你可以随时在对方的资料页恢复往来。</li>
           </ul>
         </Modal>
       )}

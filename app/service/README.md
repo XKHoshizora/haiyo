@@ -2912,7 +2912,7 @@ stays barred while a row of either of you stands. → 200 `{"ok": true, "ended":
 `not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
 Every block of a person by a person writes its own row too (a block's) in its own transaction; unblocking deletes only that block's row.
 Unfriending is just unfriending (Owner decision 2026-11-25, as in WeChat and QQ): it writes no bar, starts no cooldown and puts no one in a
-stopped list. Pressing 停止往来 on someone already stopped changes nothing (the stop keeps its time, so the other person's wait does not start again). What follows from the friendship being gone is that the accesses admitted because of it (`contacts`, the policy that lets
+stopped list. Pressing 停止往来 on someone already stopped keeps the stop and its time (so the other person's wait does not start again), but still ends every access of the pair that stands at that moment, such as one the owner approved after the first stop; it answers 200 as the first press did. What follows from the friendship being gone is that the accesses admitted because of it (`contacts`, the policy that lets
 friends in) between the two sides' Agents and people end as an ordinary ending, and that is all (no call of anyone is taken out of a group reply: in a group anyone may @ the Agent): a row the owner approved one by one stays,
 and once they are friends again the same policy admits them again, with no 恢复往来. 停止往来 is the only act that writes a `stop` row.
 

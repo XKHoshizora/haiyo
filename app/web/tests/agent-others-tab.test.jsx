@@ -106,6 +106,23 @@ describe("the question", () => {
 });
 
 describe("a save", () => {
+  it("the dialog counts everyone it touches, also those whose request still waits, and says what happens to them (A-5 re-review)", async () => {
+    const ends = (n) => ({ putContactPolicy: vi.fn(async () => ({ ends: n })) });
+    await openTab({ api: ends(1) });
+    fireEvent.click(radio("不让别人加"));
+    await flush();
+    await click(button("保存"));
+    expect(within(dialog()).getByRole("heading", { name: "这样会影响 1 个人" })).toBeTruthy();
+    expect(within(dialog()).getByText("对方不能再和它聊天，也找不到它了。还在等你同意的申请会取消。")).toBeTruthy();
+    cleanup();
+    await openTab({ api: ends(3), contacts: contactsOf({ policy: "ask" }) });
+    fireEvent.click(radio("我的联系人可以直接加"));
+    await flush();
+    await click(button("保存"));
+    expect(within(dialog()).getByRole("heading", { name: "这样会影响 3 个人" })).toBeTruthy();
+    expect(within(dialog()).getByText("这些人不能再和它聊天，想再聊要重新申请，由你同意。还在等你同意的申请会取消。")).toBeTruthy();
+  });
+
   it("asks dryRun first; with 0 ends it saves at once, with no dialog", async () => {
     const { lane } = await openTab();
     expect(button("保存").disabled).toBe(true);
@@ -125,10 +142,10 @@ describe("a save", () => {
     await flush();
     await click(button("保存"));
     expect(dialog()).not.toBeNull();
-    expect(within(dialog()).getByRole("heading", { name: "这样会让 12 个人不能再和它聊天" })).toBeTruthy();
+    expect(within(dialog()).getByRole("heading", { name: "这样会影响 12 个人" })).toBeTruthy();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);
     // For 不让别人加 nobody can find it or ask again: the body does not promise a new request (A-5 review m1).
-    expect(within(dialog()).getByText("他们现在的对话会停下，也找不到它了。")).toBeTruthy();
+    expect(within(dialog()).getByText("他们不能再和它聊天，也找不到它了。还在等你同意的申请会取消。")).toBeTruthy();
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     expect(dialog()).toBeNull();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);
@@ -171,6 +188,6 @@ describe("the people, the requests and the conversations", () => {
     await openTab({ contacts: contactsOf({ rows: [] }) });
     expect(inMain().getByText("还没有人加它。")).toBeTruthy();
     expect(inMain().getByText("没有等你同意的申请。")).toBeTruthy();
-    expect(inMain().getByText("还没有。")).toBeTruthy();
+    expect(inMain().getByText("它还没有和别人聊过。")).toBeTruthy();
   });
 });

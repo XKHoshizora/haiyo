@@ -2,7 +2,7 @@ import { ME } from "../data/identities.js";
 import { previewOfMarkdown } from "../ui/markdownPreview.js";
 import { drawnText } from "../ui/drawnText.js";
 import { PROPOSAL_ONLY } from "../data/viewmodel.js";
-import { isObserved, socialEnds } from "./social.js";
+import { iBlocked, isObserved, socialEnds } from "./social.js";
 
 export const entity = (state, id) => state.people[id] || state.agents[id] || null;
 /** Any Agent: mine, or someone else's in a group I am in. */
@@ -39,7 +39,7 @@ export function convTitle(state, conv) {
   // A social conversation: the Agent I talk to (a visitor's), or the two ends I watch (an observing owner's).
   if (conv.type === "social") {
     const { agentId, otherId } = socialEnds(state, conv);
-    if (conv.myRole === "observer") return `${nameOf(state, agentId)} · ${nameOf(state, otherId)}`;
+    if (conv.myRole === "observer") return `${nameOf(state, agentId)}和${nameOf(state, otherId)}`;
     return nameOf(state, agentId ?? otherId);
   }
   return nameOf(state, otherMember(conv));
@@ -57,7 +57,7 @@ export function convSubtitle(state, conv) {
 }
 
 /** A deleted Agent's conversation: read only, said in the frozen-conversation style. */
-export const AGENT_DELETED_TEXT = "这个 Agent 已删除，聊天记录仍可查看";
+export const AGENT_DELETED_TEXT = "这个 Agent 已删除，聊天记录仍可查看。";
 
 /** Whether the Agent of an Agent conversation is deleted (by its record, the conversation's flags or the service's hold). */
 export const agentDeleted = (state, conv) =>
@@ -67,7 +67,7 @@ export const agentDeleted = (state, conv) =>
 // A deleted Agent's conversation reads as such as soon as anything here knows it (its record may arrive first).
 export function publishBlock(state, conv) {
   // A social conversation says why it cannot be written in by the reason the service gave, once (the shared `hold` is for the others).
-  if (conv.type === "social") return socialBlock(conv);
+  if (conv.type === "social") return socialBlock(state, conv);
   if (agentDeleted(state, conv)) return { kind: "agentDeleted", reason: "agent_deleted", text: AGENT_DELETED_TEXT, pending: [], canRestore: false };
   return conv.hold ?? null;
 }
@@ -123,14 +123,14 @@ export function unreadTotal(state) {
 export const listedConvs = (state) => state.order.map((id) => state.convs[id]).filter((c) => c && !isObserved(c));
 
 /** Why a social conversation cannot be written in, by the service's reason (the plan's error texts); null when it can. */
-function socialBlock(conv) {
+function socialBlock(state, conv) {
   if (conv.canSend?.ok !== false) return null;
   const reason = conv.canSend.reason;
   const watching = conv.myRole === "observer";
   const text =
     reason === "agent_deleted" ? AGENT_DELETED_TEXT
     : reason === "agent_unavailable" ? "这个 Agent 现在不可用。"
-    : reason === "blocked" && !watching ? "你们之间有拉黑，不能再发送消息。"
+    : reason === "blocked" && !watching && iBlocked(state, socialEnds(state, conv).agentId) ? "你拉黑了它。解除拉黑后才能再聊。"
     : watching ? "这段对话已结束，不能再发送消息。"
     : "你已不能再和它聊天。";
   return { kind: "social", reason, text, pending: [], canRestore: false };

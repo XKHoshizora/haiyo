@@ -3,7 +3,7 @@
 // site's switch is on; 恢复往来 only where the caller has their own stop, and nothing ever says whether the other person has stopped or blocked.
 import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { A1, AG1, ANN, BO, ME_ID, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, syncOf, usageOf, wire } from "./fixtures.js";
 import { button, click, dialog, flush, goContacts, inMain, installBrowser, openApp, toastText } from "./harness.jsx";
 
@@ -128,7 +128,7 @@ describe("the Agent's card in a social chat", () => {
     await click(within(document.querySelector(".side")).getByRole("button", { name: "举报" }));
     await click(inDialog().getByRole("button", { name: "提交举报" }));
     expect(api.reportAgent).toHaveBeenCalledWith({ agentId: AGB, reason: "spam" });
-    expect(toastText()).toBe("现在没法举报它，它可能已经不在了。");
+    expect(toastText()).toBe("举报没有提交成功，这个 Agent 可能已被删除。");
     expect(dialog()).not.toBeNull();
   });
 
@@ -137,7 +137,8 @@ describe("the Agent's card in a social chat", () => {
     await openVisitorDetails();
     await click(within(document.querySelector(".side")).getByRole("button", { name: "拉黑" }));
     expect(inDialog().getByRole("heading", { name: "拉黑小帮手" })).toBeTruthy();
-    expect(inDialog().getByText("你和它的对话会结束，你让它做的事会停下，已有历史不受影响。")).toBeTruthy();
+    expect(inDialog().getByText("你和它的对话会结束，它不再回你的话。聊天记录还在。")).toBeTruthy();
+    expect(inDialog().getByText("拉黑期间，你找不到它，也不能加它。")).toBeTruthy();
     await click(inDialog().getByRole("button", { name: "确认拉黑" }));
     expect(api.blockPrincipal).toHaveBeenCalledWith(AGB);
     expect(dialog()).toBeNull();
@@ -146,6 +147,15 @@ describe("the Agent's card in a social chat", () => {
     await click(inDialog().getByRole("button", { name: "确认移除" }));
     expect(api.removeAgentContact).toHaveBeenCalledWith(AGB, ME_ID);
     expect(toastText()).toBe("已移除");
+  });
+
+  it("once I have blocked the Agent, the card's button says 解除拉黑 and opens the dialog that lifts it", async () => {
+    await open({ social: { blocked: [person(AGB, "bobby.helper", "小帮手")] } });
+    await openVisitorDetails();
+    const side = within(document.querySelector(".side"));
+    expect(side.queryByRole("button", { name: "拉黑" })).toBeNull();
+    await click(side.getByRole("button", { name: "解除拉黑" }));
+    expect(inDialog().getByRole("heading", { name: "解除对小帮手的拉黑" })).toBeTruthy();
   });
 
   it("switch off: none of the three is offered", async () => {
@@ -168,6 +178,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
   it("where we have Agent access: 停止往来 asks once, writes my stop, and the card then offers 恢复往来", async () => {
     const { api } = await openCard();
     expect(inMain().getByRole("heading", { name: "Agent 往来" })).toBeTruthy();
+    expect(inMain().getByText("停止后，你的 Agent 不再回应对方，对方的 Agent 也不再回应你。")).toBeTruthy();
     await click(inMain().getByRole("button", { name: "停止往来" }));
     expect(inDialog().getByRole("heading", { name: "停止和阿波往来" })).toBeTruthy();
     expect(api.putBar).not.toHaveBeenCalled();
@@ -175,9 +186,11 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     expect(api.putBar).toHaveBeenCalledWith(BO);
     expect(toastText()).toBe("已停止往来");
     expect(inMain().getByRole("button", { name: "恢复往来" })).toBeTruthy();
+    expect(inMain().getByText("你已停止和阿波往来：你们各自的 Agent 都不会再回应对方。")).toBeTruthy();
     expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
     await click(inMain().getByRole("button", { name: "恢复往来" }));
     expect(api.deleteBar).toHaveBeenCalledWith(BO);
+    expect(toastText()).toBe("已恢复往来。想再聊，要重新加对方的 Agent。");
     expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
   });
 
@@ -204,6 +217,77 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
   });
 
+  describe("the answer belongs to one person: opening another profile never shows the previous person's control (A-5 re-review I1)", () => {
+    const both = { friends: [person(BO, "bob", "阿波"), person(ANN, "ann", "小安")] };
+    const profile = (name) => click(screen.getByText(name, { selector: ".list-col .row-name" }));
+    // First asked: the first person's list (answers at once); every later ask is the second person's, held until the test lets it go.
+    const twoProfiles = async (stoppedIds, second) => {
+      const held = [];
+      const getOthersUse = vi.fn(() => {
+        if (getOthersUse.mock.calls.length === 1) return Promise.resolve({ stopped: stoppedIds.map((person) => ({ person, since: "2026-11-16T00:00:00Z" })) });
+        return new Promise((resolve, reject) => held.push({ resolve, reject }));
+      });
+      const app = await open({ api: routes({ getOthersUse }), social: both, convs: [visiting(), watched()] });
+      await goContacts();
+      await profile(second.first);
+      return { held, ...app };
+    };
+    const none = () => {
+      expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
+      expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
+      expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
+    };
+
+    it("after a stopped person, a person who is not stopped: nothing while the answer is slow or fails, then only their own control", async () => {
+      const { held } = await twoProfiles([BO], { first: "阿波" });
+      expect(inMain().getByRole("button", { name: "恢复往来" })).toBeTruthy();
+      await profile("小安");
+      none();
+      await act(async () => held.at(-1).reject(apiError(500, "internal")));
+      none();
+      cleanup();
+      const again = await twoProfiles([BO], { first: "阿波" });
+      await profile("小安");
+      none();
+      await act(async () => again.held.at(-1).resolve({ stopped: [{ person: BO, since: "2026-11-16T00:00:00Z" }] }));
+      expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
+      expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
+    });
+
+    it("the other way round (a stopped person, then another one): no control of the first while the answer is slow or fails", async () => {
+      const { held } = await twoProfiles([ANN], { first: "小安" });
+      expect(inMain().getByRole("button", { name: "恢复往来" })).toBeTruthy();
+      await profile("阿波");
+      none();
+      await act(async () => held.at(-1).reject(apiError(500, "internal")));
+      none();
+    });
+
+    it("an answer that comes late for the previous person is not applied to the one on screen", async () => {
+      const held = [];
+      const getOthersUse = vi.fn(() => new Promise((resolve) => held.push(resolve)));
+      await open({ api: routes({ getOthersUse }), social: both, convs: [visiting(), watched()] });
+      await goContacts();
+      await profile("阿波");
+      await profile("小安");
+      await act(async () => held[0]({ stopped: [{ person: BO, since: "2026-11-16T00:00:00Z" }] }));
+      none();
+      await act(async () => held[1]({ stopped: [] }));
+      expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
+    });
+  });
+
+  it("恢复往来 when there is nothing to lift says so plainly, and the card then offers 停止往来", async () => {
+    const stale = routes({
+      getOthersUse: vi.fn(async () => ({ stopped: [{ person: BO, since: "2026-11-16T00:00:00Z" }] })),
+      deleteBar: vi.fn(async () => { throw apiError(404, "not_found"); }),
+    });
+    await openCard({ api: stale });
+    await click(inMain().getByRole("button", { name: "恢复往来" }));
+    expect(toastText()).toBe("你现在没有停止和对方往来。");
+    expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
+  });
+
   it("with the list known, exactly one of the two is offered", async () => {
     await openCard();
     expect(inMain().getAllByRole("button", { name: /^(停止|恢复)往来$/ })).toHaveLength(1);
@@ -213,7 +297,8 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     await openCard();
     await click(inMain().getByRole("button", { name: "停止往来" }));
     expect(inDialog().getByText("你的 Agent 不再回应阿波，阿波的 Agent 也不再回应你。")).toBeTruthy();
-    expect(inDialog().getByText("已经停下的对话不会自动恢复：恢复往来后，双方要重新申请，并由对方同意。")).toBeTruthy();
+    expect(inDialog().getByText("恢复往来后，已经停下的对话不会自己回来。想再聊，要重新加对方的 Agent，等它的主人同意。")).toBeTruthy();
+    expect(inDialog().getByText("你可以随时在对方的资料页恢复往来。")).toBeTruthy();
     expect(dialog().textContent).not.toContain("对方的主人");
   });
 

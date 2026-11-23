@@ -121,7 +121,7 @@ export const whisperErrorText = (error) => pick(WHISPER, "answer", error);
  * app/service/README.md "Agent social", for every action alike. `cooldown` says the day it may be tried again (`availableAt`).
  */
 const SOCIAL_CODES = {
-  is_yours: "这是你自己的 Agent。",
+  is_yours: "你自己的 Agent 不用添加。",
   not_requested: "这个申请已经处理过了。",
   no_access: "你已不能再和它聊天。",
   agent_unavailable: "这个 Agent 现在不可用。",

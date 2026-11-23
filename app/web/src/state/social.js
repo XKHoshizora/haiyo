@@ -92,7 +92,7 @@ export function socialEnds(state, conv) {
 /** The line an observing owner reads in the header (plan "A12a"). */
 export function supervisionText(state, conv) {
   const { agentId, otherId } = socialEnds(state, conv);
-  return `你在旁观${nameOf(state, agentId)}和${nameOf(state, otherId)}的对话，你说的话会标成主人`;
+  return `你在旁观${nameOf(state, agentId)}和${nameOf(state, otherId)}的对话。你发言时，对方会看到你是主人。`;
 }
 
 /** The label of a speaker who is a supervising owner here (decided by the membership role alone), or null: 「主人」, with two owners 「{A}的主人」. */
