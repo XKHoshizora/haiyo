@@ -465,8 +465,8 @@ describe("each lane's own budget sees the search: before it is spent, and after"
     // After: the chain budget counts what the search was charged.
     const locked = await db.tx((t) => lockAgent(t, agent.id, g));
     const lane = { conversationId: g, lane: "own" as const, coversSeq: human + 1 };
-    expect(await db.tx((t) => budgetReachedWith(t, lane, { ...locked, chainBudgetMicro: PRICE }, 0n, app.deps.config))).toBe(true);
-    expect(await db.tx((t) => budgetReachedWith(t, lane, { ...locked, chainBudgetMicro: PRICE + 1n }, 0n, app.deps.config))).toBe(false);
+    expect(await db.tx((t) => budgetReachedWith(t, lane, { ...locked, chainBudgetMicro: PRICE }, 0n))).toBe(true);
+    expect(await db.tx((t) => budgetReachedWith(t, lane, { ...locked, chainBudgetMicro: PRICE + 1n }, 0n))).toBe(false);
     // Before: the next relay's search, 0.77035 charged + 0.77035 ≥ 1, is refused at the pre-hold.
     await agentSays(other.id, g, `@${agent.handle} 再查一下上海`);
     expect(await searchRun(worker, gateway, ["上海 天气"])).toEqual([{ error: WEB_LANE_BUDGET }]);

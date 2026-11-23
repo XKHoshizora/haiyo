@@ -3,9 +3,12 @@ import { FINAL_LINE, noteBytes, OVER_CAP, REPEATED, UNUSABLE } from "../src/agen
 import { NO_TOOLS } from "../src/agents/runtime/prompt.ts";
 import { TOOL_PREAMBLE_TOKENS } from "../src/metering/tokens.ts";
 import type { ModelCall, ModelGateway, ToolCall } from "../src/models/gateway.ts";
+import { isRunEnd } from "../src/agents/runtime/port.ts";
+import { othersHold } from "../src/metering/others.ts";
+import { signUp } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
-import { BIG_MODEL, FREE_MODEL, OTHERS_ENV, PAID_MODEL, POINT, setOwnerNumbers } from "./helpers/others.ts";
+import { agentsOf, BIG_MODEL, FREE_MODEL, OTHERS_ENV, PAID_MODEL, POINT, setOwnerNumbers } from "./helpers/others.ts";
 import { boxOf, othersKitchen, SEARCH } from "./helpers/others-kitchen.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 
@@ -89,6 +92,7 @@ describe("the bounds of an others' reply (B2a)", () => {
     expect(resultsOf(k.gateway.calls[1]!)).toEqual([{ error: UNUSABLE }, { hits: [] }]);
     expect(box.ran).toHaveLength(1);
     expect(isFinal(k.gateway.calls[1]!)).toBe(true);
+    expect(metric("others_round_raise")).toHaveLength(0);
   });
 
   it("a garbled call alone is the whole tool round: the second request is the last, and calls in it are not run", async () => {
@@ -189,6 +193,8 @@ async function runOthers<G extends Pick<ModelGateway, "stream"> & { calls: Model
   const runId = run.rows[0]!.id;
   const started = Date.now();
   expect(await k.worker.runOnce()).toBe(true);
+  // The round's raise is 0 in every bounded case: the hold covers the last call, so the bug counter stays silent.
+  expect(metric("others_round_raise")).toHaveLength(0);
   return { k, box, probe, runId, tookMs: Date.now() - started, hold: probe.holds[0]!, final: await k.lastRun() };
 }
 
@@ -214,10 +220,27 @@ describe("the hold that covers an others' reply (B2b)", () => {
     }
   });
 
-  it("the design's figures: the longest note is 203 bytes with search_messages, and 50 × 0.85 + 3 × (8.39 + 0.77) = 69.98 within 70 points", () => {
+  it("the design's figures, from the code's values: the longest note is 203 bytes with search_messages; 50 replies' typical cost and three holds with their searches stay within 70 points", async () => {
     expect(noteBytes("search_messages")).toBe(203);
     expect(GROWTH).toBe(14_300 + 3 * noteBytes("search"));
-    expect(50 * 0.85 + 3 * (8.39 + 0.77)).toBeCloseTo(69.98, 2);
+    const owner = await signUp(app, `fig${Math.floor(Math.random() * 1e6)}`);
+    const [free] = await agentsOf(app, db, owner, 1, FREE_MODEL);
+    const hold = othersHold(free!.resolved, 20_900, { growthTokens: 14_909, roomCapTokens: 1_000_000 });
+    expect(hold).toBe(8_387_260n);
+    // 50 answers at 0.85 each, and three replies in flight holding their tools hold and a search of 0.77: within the 70 points.
+    expect(50n * 850_000n + 3n * (hold + 770_000n)).toBeLessThanOrEqual(70n * POINT);
+  });
+
+  it("the round's raise is what the next call could cost beyond the hold: asked of the hold, 0 for a real next call, counted when forced past it", async () => {
+    const k = await othersKitchen(app, db, { box: boxOf() });
+    await k.ask();
+    const ticket = (await k.port.claimNext())!;
+    expect(isRunEnd(await k.port.begin(ticket))).toBe(false);
+    const none = { inputChars: 0, outputChars: 0 };
+    expect(await k.port.extend(ticket, null, none, 5_000)).toBe("final");
+    expect(metric("others_round_raise")).toHaveLength(0);
+    expect(await k.port.extend(ticket, null, none, 99_000)).toBe("final");
+    expect(metric("others_round_raise")).toHaveLength(1);
   });
 
   it("25 calls in the first turn: none runs, no result is built, the turn's text is dropped; one tool-less request finishes the reply, within the hold", async () => {

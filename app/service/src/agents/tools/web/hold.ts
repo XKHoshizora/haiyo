@@ -182,7 +182,7 @@ export async function holdSearch(
   const model = site && hold - reserve - searched > 0n ? hold - reserve - searched : 0n;
   const spent = model + BigInt(row.web_charge) + price;
   if (spent > BigInt(config.tools.maxPoints) * MICRO_PER_POINT) throw new SearchRefused("reply_cap");
-  if (await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent, config)) {
+  if (await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent)) {
     throw new SearchRefused("lane_budget");
   }
   // An others' reply: the owner's numbers (and the Agent's own), counting what is settled today and every running reply's hold, this

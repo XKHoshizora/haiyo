@@ -188,6 +188,21 @@ export async function othersFits(
   now: Date,
 ): Promise<OthersVerdict> {
   await lockAccount(t, run.ownerId);
+  return othersCheck(t, config, run, x, at, now);
+}
+
+/**
+ * The rule of `othersFits` without the lock: what a read that needs no lock asks (the proactive judgement's early check, before a
+ * judgement is spent) — the same function, so the two cannot differ; only `othersFits` decides for good.
+ */
+export async function othersCheck(
+  t: Queryable,
+  config: Pick<Config, "others" | "siteTimezone">,
+  run: { id: string; ownerId: string; agentId: string; lane: OthersLane },
+  x: bigint,
+  at: "admission" | "search" | "round",
+  now: Date,
+): Promise<OthersVerdict> {
   const numbers = await othersNumbers(t, config, run.ownerId, run.agentId);
   if (at === "admission") {
     const owner = await answersToday(t, config, run.ownerId, now, {}, run.id);
@@ -222,15 +237,30 @@ export async function othersReached(
   agentId: string,
   lane: OthersLane,
   now: Date,
+  /** `points: false`: the Agent's model costs nothing (a provider's own): only the answers count, as at admission. */
+  o: { points?: boolean } = {},
 ): Promise<boolean> {
   const numbers = await othersNumbers(q, config, ownerId, agentId);
   const owner = await othersUsedToday(q, config, ownerId, now);
-  if (owner.answers >= numbers.owner.answers || owner.settledMicro + owner.heldMicro >= numbers.owner.pointsMicro) return true;
+  const points = o.points ?? true;
+  if (owner.answers >= numbers.owner.answers || (points && owner.settledMicro + owner.heldMicro >= numbers.owner.pointsMicro)) return true;
   if (numbers.agent.answers !== null && (await othersUsedToday(q, config, ownerId, now, { agentId })).answers >= numbers.agent.answers) return true;
+  if (!points) return false;
   const own = lane === "others" ? numbers.agent.pointsMicro : numbers.proactiveMicro;
   if (own === null) return false;
   const used = await othersUsedToday(q, config, ownerId, now, { agentId, lane });
   return used.settledMicro + used.heldMicro >= own;
+}
+
+/**
+ * The least an others' reply of an Agent on `model` can hold: one call at its output limit, no input — what a candidate must
+ * fit for any reply of it to be admitted (the proactive judgement asks it with `othersFits` before it spends a call). 0 for a
+ * provider's own model (it holds nothing).
+ */
+export function othersLeastHold(config: Pick<Config, "siteModels" | "others">, model: { source: string; id?: string } | null): bigint {
+  if (model?.source !== "site") return 0n;
+  const site = config.siteModels.find((m) => m.id === model.id);
+  return site ? BigInt(site.outputMicroPerToken) * BigInt(Math.min(site.maxOutputTokens, config.others.outputTokens)) : 0n;
 }
 
 /** A run refused by an others' number: which one. */

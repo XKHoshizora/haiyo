@@ -240,6 +240,14 @@ describe("the points", () => {
           try {
             const admission = await admitAs(owner.id, agents[i]!, runs[i]!);
             await check();
+            // Its search (0.77, held on the run as the pre-hold holds it) and its round (a raise of 0), each asked of the same function.
+            const run = { id: runs[i]!, ownerId: owner.id, agentId: agents[i]!.agentId, lane: "others" as const };
+            await db.tx(async (t) => {
+              if ((await othersFits(t, config(), run, 770_000n, "search", NOON)).ok) await t.query("update agent_runs set hold_micro = hold_micro + 770000 where id = $1", [run.id]);
+            });
+            await check();
+            await db.tx((t) => othersFits(t, config(), run, 0n, "round", NOON));
+            await check();
             await new Promise((r) => setTimeout(r, Math.floor(rand() * 10)));
             await settleCheap(runs[i]!);
             await check();

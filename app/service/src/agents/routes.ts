@@ -69,8 +69,8 @@ const DEFAULT_CHAIN_BUDGET = 50n * MICRO_PER_POINT;
  */
 const chainBudget = pointsBetween(CHAIN_BUDGET_MIN, CHAIN_BUDGET_MAX);
 /**
- * `othersBudget`, the most its owner pays in a site day for the Agent's replies other people called for (runs.ts
- * `othersBudgetSpent`): as `chainBudget` (1 to 100 000 points), or `null` for no limit; 20 points unless its owner says
+ * `othersBudget`, the most its owner pays in a site day for the Agent's replies other people called for, settled plus held
+ * (metering/others.ts `othersFits`): as `chainBudget` (1 to 100 000 points), or `null` for no limit; 20 points unless its owner says
  * otherwise.
  */
 const othersBudget = chainBudget.nullable();

@@ -40,7 +40,8 @@ export interface AgentRow {
   chainBudgetMicro: bigint;
   /**
    * The most its owner pays, in micro-points, in a site day for its replies that people other than its owner called for
-   * (lane `others`; `othersBudget`, runs.ts `othersBudgetSpent`); null for no limit. The owner's setting.
+   * (lane `others`; `othersBudget`): a sub-limit inside the owner's own numbers, held to at admission with the hold
+   * (metering/others.ts `othersFits`); null for none of its own. The owner's setting.
    */
   othersBudgetMicro: bigint | null;
   /** Whether it may answer in a group without being called, when the judgement model picks it. The owner's setting. */

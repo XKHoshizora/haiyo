@@ -4,7 +4,7 @@ import { isCount } from "../../metering/prices.ts";
 import { estimateTokens, holdTokens, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR, weightWithin } from "../../metering/tokens.ts";
 import { ModelError, type ModelCall, type ModelGateway, type ToolCall, type ToolResult } from "../../models/gateway.ts";
 import { cleanModelText, hasVisibleText } from "../../schemas.ts";
-import { cutResult, FINAL_LINE, fitsSchema, isRefusal, LoopGuard, OVER_CAP, REPEATED, turnOver, UNUSABLE, withFinalLine } from "./loop.ts";
+import { cutResult, FINAL_LINE, fitsSchema, isRefusal, longestToolName, LoopGuard, OVER_CAP, REPEATED, turnOver, UNUSABLE, withFinalLine } from "./loop.ts";
 import {
   BUSY,
   failedEnd,
@@ -636,7 +636,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     /** An others' reply's first turn was discarded (once at most: `bounds.callsCap`, loop.ts `turnOver`). */
     let discarded = false;
     /** The longest tool name offered: what an others' reply's hold counts its notes' names at. */
-    const longestToolName = tools.reduce((longest, t) => (Buffer.byteLength(t.name, "utf8") > Buffer.byteLength(longest, "utf8") ? t.name : longest), "");
+    const longestName = longestToolName(tools);
     let final = false;
     /** The upstream refused a later round: the reply is asked for once more as one without tools (`prepared.call`). */
     let plain = false;
@@ -758,7 +758,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       // nothing of it is built — no call runs, no result, step, acknowledgement or trace — and its text is dropped; its usage
       // stays metered. The reply is finished by the tool-less path a refused round takes, its cost held first (`extend`,
       // which raises nothing here): whatever calls that request carries are ignored, its text is the answer (plan B2b, C3).
-      if (bounds.callsCap !== undefined && !discarded && turnOver(finished.toolCalls, { callsCap: bounds.callsCap, overCapNotes: bounds.overCapNotes ?? 0, longestToolName })) {
+      if (bounds.callsCap !== undefined && !discarded && turnOver(finished.toolCalls, { callsCap: bounds.callsCap, overCapNotes: bounds.overCapNotes ?? 0, longestToolName: longestName })) {
         discarded = true;
         tally.discarded = true;
         out.restart();

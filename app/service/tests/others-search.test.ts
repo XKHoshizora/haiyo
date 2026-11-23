@@ -6,7 +6,9 @@ import { WEB_LANE_BUDGET } from "../src/agents/tools/web/tool.ts";
 import { lockAgent } from "../src/agents/store.ts";
 import type { Config } from "../src/config.ts";
 import type { ModelCall, ModelGateway } from "../src/models/gateway.ts";
-import { signUp, type Actor } from "./helpers/actors.ts";
+import { api, signUp, type Actor } from "./helpers/actors.ts";
+import { mustCreateAgent } from "./helpers/agents.ts";
+import { providerBody } from "./helpers/providers.ts";
 import { useApp } from "./helpers/harness.ts";
 import { grant, paidReply, type MeteredAgent } from "./helpers/metering.ts";
 import { agentsOf, NOON, OTHERS_ENV, POINT, seedRun, setOwnerNumbers } from "./helpers/others.ts";
@@ -184,6 +186,21 @@ describe("a reply whose search is refused by its owner's number", () => {
 });
 
 describe("the triggers' early check", () => {
+  it("an Agent on its owner's own provider key is not refused at the trigger by the points, as admission lets it through; its answers still count", async () => {
+    const k = await othersKitchen(app, db, { box: undefined, agent: { othersBudget: null } });
+    await setOwnerNumbers(db, k.owner.id, { pointsMicro: 5n * POINT });
+    await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.g, lane: "others", micro: 9n * POINT });
+    const provider = (await api(app, k.owner, "POST", "/api/providers", providerBody({ models: [{ name: "mine" }] }))).json;
+    const byok = await mustCreateAgent(app, k.owner, { handle: "byok", name: "byok", model: { source: "provider", providerId: provider.id as string, model: "mine" }, persona: "简短。" });
+    await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [k.g, byok.id]);
+    await k.ask("@byok 你好");
+    expect((await k.lastRun()).status).toBe("queued");
+    expect(await k.notices()).toBe(0);
+    // The site-model Agent beside it is refused by the same points.
+    await k.ask("@chef 你好");
+    expect(await k.notices()).toBe(1);
+  });
+
   it("a member's call after the owner's points are reached is not called, and the group gets one notice that site day; what is held counts", async () => {
     const k = await othersKitchen(app, db, { box: undefined, agent: { othersBudget: null } });
     await setOwnerNumbers(db, k.owner.id, { pointsMicro: 20n * POINT });

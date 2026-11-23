@@ -8,8 +8,9 @@ import { AppError } from "../../errors.ts";
 import { JudgeError, type Answer, type Judge } from "../../judge/client.ts";
 import type { StoredMessage } from "../../messages/model.ts";
 import { count } from "../../memory/stats.ts";
-import { noneTriggered, overLaneLimit, proactiveBudgetSpent, queueRun, toldSince, type RunLimits, type Triggered } from "../runs.ts";
-import { lockAgent, type AgentRow } from "../store.ts";
+import { othersCheck, othersFits, othersLeastHold } from "../../metering/others.ts";
+import { noneTriggered, overLaneLimit, queueRun, toldSince, type RunLimits, type Triggered } from "../runs.ts";
+import { agentModelOf, lockAgent, type AgentRow } from "../store.ts";
 import { judgeable, judgedAgentIds, mayAnswerUnasked, NOBODY, optionsFor, PICK, quietKey, requestFor, type Flaggable, type JudgeRequest, type Option } from "./candidates.ts";
 import { listenersFor, writeFlags, type MemoryFlag } from "./listeners.ts";
 import { decidedAlready, lockStates, othersSinceSurcharge, saveState, stampJudged } from "./state.ts";
@@ -75,7 +76,7 @@ export async function decideProactive(deps: DecideDeps, conversationId: string, 
 
   const message = await judgeable(db, conversationId, seq);
   if (message === null || (await decidedAlready(db, conversationId, seq))) return noneTriggered();
-  const options = await optionsFor(db, conversationId, seq, message.senderId, config);
+  const options = await affordable(db, await optionsFor(db, conversationId, seq, message.senderId, config), config);
   const listeners = await listenersFor(db, conversationId, seq);
   if (options.length === 0 && listeners.length === 0) return noneTriggered();
   const day = siteDay(new Date(), config.siteTimezone);
@@ -310,6 +311,33 @@ async function lockOptions(t: Tx, conversationId: string, seq: number, ids: read
   return new Map(locked.filter((a) => options.has(a.id)).map((a) => [a.id, a]));
 }
 
+const NO_RUN = "00000000-0000-0000-0000-000000000000";
+
+/**
+ * Whether a proactive reply of `agent` could be admitted at all: `othersFits` — the one function admission asks, holds counted
+ * — at the least such a reply can hold (`othersLeastHold`), the answers too. A candidate that fails spends no judgement (the
+ * options are filtered by it before the model is asked, without a lock or a transaction) and leaves no cancelled run; asked again under the locks where the
+ * pick is acted on (`whyNot`).
+ */
+async function fitsAdmission(q: Queryable, locked: boolean, config: DecideDeps["config"], agent: Pick<AgentRow, "id" | "ownerId" | "model">, now: Date): Promise<boolean> {
+  const verdict = await (locked ? othersFits : othersCheck)(q as Tx, config, { id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "proactive" }, othersLeastHold(config, agent.model), "admission", now);
+  return verdict.ok;
+}
+
+/** `options` less the Agents whose proactive replies could not be admitted now (`fitsAdmission`). */
+async function affordable(db: Db, options: Option[], config: DecideDeps["config"]): Promise<Option[]> {
+  const kept: Option[] = [];
+  for (const option of options) {
+    const { rows } = await db.query<{ owner_id: string } & Parameters<typeof agentModelOf>[0]>(
+      "select p.owner_id, a.model_source, a.site_model_id, a.provider_id, a.provider_model from agents a join principals p on p.id = a.principal_id where a.principal_id = $1",
+      [option.agentId],
+    );
+    const row = rows[0];
+    if (row && (await fitsAdmission(db, false, config, { id: option.agentId, ownerId: row.owner_id, model: agentModelOf(row) }, new Date()))) kept.push(option);
+  }
+  return kept;
+}
+
 /**
  * Why the winner `agent` (pick probability `p`, quiet probability `quiet` for the new messages, its threshold's `state` with
  * the others' messages since its surcharge) does not reply, or null when it does: the message at `seq` already led to a
@@ -350,7 +378,8 @@ async function whyNot(
     [agent.id, conversationId, P.fuse.perSeconds],
   );
   if (fuse.rows[0]!.recent > 0 || fuse.rows[0]!.hour >= P.fuse.perHour) return "fuse";
-  if (await proactiveBudgetSpent(t, agent, config)) return "budget";
   if (await overLaneLimit(t, agent.ownerId, "proactive", config)) return "owner_minute";
+  // Its numbers, asked as admission asks them: under the owner's account lock, after the one above (the lock order's last step).
+  if (!(await fitsAdmission(t, true, config, agent, now))) return "budget";
   return null;
 }

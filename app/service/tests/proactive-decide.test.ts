@@ -17,7 +17,6 @@ import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { byName, nameOf, scriptedJudge, type ScriptedAnswers } from "./helpers/judge.ts";
-import { paidReply } from "./helpers/metering.ts";
 import { closeAllSockets, connect, type Push } from "./helpers/ws.ts";
 
 /**
@@ -927,14 +926,6 @@ describe.each([false, true])("a winner that cannot speak now: nobody replies, no
     ["a reply of it active in the group", "active_run", (w) => say(w.member, w.g, "@anna 你好")],
     ["a proactive reply of it in the group in the last 10 s", "fuse", (w, anna) => runAt(w.g, anna.id, w.owner.id, "proactive", "5 seconds")],
     ["30 proactive replies of it in the group in the last hour", "fuse", (w, anna) => runAt(w.g, anna.id, w.owner.id, "proactive", "30 minutes", 30)],
-    [
-      "its proactive budget spent today",
-      "budget",
-      async (w, anna) => {
-        expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveBudget: "1" })).status).toBe(200);
-        await paidReply(db, { agentId: anna.id, ownerId: w.owner.id, conversationId: anna.conversationId, lane: "proactive", micro: 1_000_000 });
-      },
-    ],
     ["its owner's others' minute full", "owner_minute", (w, anna) => runAt(anna.conversationId, anna.id, w.owner.id, "others", "30 seconds", app.deps.config.agentOthersRunsPerMinute)],
   ])("%s", async (_what, reason, before) => {
     const w = await world();
@@ -950,6 +941,31 @@ describe.each([false, true])("a winner that cannot speak now: nobody replies, no
     expect(await runsOf(bob.id, w.g)).toEqual([]);
     expect(skipped()).toEqual([{ metric: "proactive_skipped", reason, agentId: anna.id, conversationId: w.g }]);
     expect((await stateOf(anna.id, w.g)).surcharge).toBe(0);
+  });
+});
+
+describe.each([false, true])("a proactive budget that cannot hold a reply (memory %s)", (memory) => {
+  beforeEach(() => {
+    memoryOn = memory;
+  });
+
+  it("asks the numbers admission asks (holds counted), before the judgement: no judge call, no run row, whatever the pick would have been", async () => {
+    const w = await world();
+    const anna = await agentOf(w.owner, "anna", w.g);
+    // A point of budget, and a running reply of the Agent in another conversation holding all of it: nothing it can hold fits.
+    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveBudget: "1" })).status).toBe(200);
+    await db.query(
+      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at, source, model, charge_to, hold_micro, money_rule, lane)
+       values ('reply', $1, $2, $3, 'running', 0, now(), 'site', 'fast', 'balance', 1000000, 1, 'proactive')`,
+      [anna.conversationId, anna.id, w.owner.id],
+    );
+    const calls = judge.calls.length;
+    const rowsBefore = (await db.query("select count(*)::int as n from agent_runs where conversation_id = $1", [w.g])).rows[0].n;
+    const asked = await say(w.third, w.g, "有人懂吗？");
+    expect(await decide(w.g, asked, lowBase())).toEqual(noneTriggered());
+    // (With memory on the judge may still be asked to listen for notes; no Agent is an option in it, and no run is written.)
+    if (!memory) expect(judge.calls.length).toBe(calls);
+    expect((await db.query("select count(*)::int as n from agent_runs where conversation_id = $1", [w.g])).rows[0].n).toBe(rowsBefore);
   });
 });
 

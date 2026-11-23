@@ -324,14 +324,12 @@ describe("a search in a group that finds nothing there", () => {
   it("at most one whisper a reply, and at most 3 open for the owner in a group: more are not made", async () => {
     const w = await world();
     const hook = createElsewhere(elsewhereDeps());
-    // A reply a member called for has one tool round and runs one real call (plan B2a): of two searches asked at once the
-    // second is answered with the note, so a reply makes at most one whisper, here as ever.
-    await say(w.mia, w.g, "@olive_bot 两件事");
+    // Called by the Agent's owner: a reply of its own has several tool rounds (a reply a member called for has one, plan B2a), so
+    // two searches that find nothing here in one reply are what the once-a-reply cap is held to.
+    await say(w.owner, w.g, "@olive_bot 两件事");
     gateway
-      .callTools([
-        { name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } },
-        { name: SEARCH_MESSAGES, input: { query: "口令是七七" } },
-      ])
+      .callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }])
+      .callTools([{ name: SEARCH_MESSAGES, input: { query: "口令是七七" } }])
       .reply("都没找到。");
     expect(await toolWorker(toolDeps(hook)).runOnce()).toBe(true);
     await hook.idle();

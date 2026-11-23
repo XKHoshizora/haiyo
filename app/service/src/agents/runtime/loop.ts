@@ -34,6 +34,9 @@ const NOTE_OUTPUT_BYTES = Math.max(
  * `search_messages`. What an others' reply's hold counts for each of its notes (port-impl.ts `begin`).
  */
 export const noteBytes = (longestToolName: string): number => framingBytes("x".repeat(TOOL_CALL_ID_MAX), longestToolName) + NOTE_OUTPUT_BYTES;
+/** The longest tool name of `tools`, in bytes: what an others' reply's notes are measured with (the hold and the discard test alike). */
+export const longestToolName = (tools: ReadonlyArray<{ name: string }>): string =>
+  tools.reduce((longest, t) => (Buffer.byteLength(t.name, "utf8") > Buffer.byteLength(longest, "utf8") ? t.name : longest), "");
 /** What the hold counts, for the one real result, besides the result itself (`roomGrowth`: its id, its name, its JSON). */
 export const RESULT_FRAMING_BYTES = 200;
 

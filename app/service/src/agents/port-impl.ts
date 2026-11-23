@@ -7,7 +7,7 @@ import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
-import { boundedForOthers, keepsRoom, othersFits, OthersLimit } from "../metering/others.ts";
+import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -42,7 +42,7 @@ import {
 } from "./context.ts";
 import { maxCallsOf } from "./replay.ts";
 import { contextBudget, holdsNewest, partText } from "./runtime/context.ts";
-import { FINAL_LINE, noteBytes } from "./runtime/loop.ts";
+import { FINAL_LINE, longestToolName, noteBytes, RESULT_FRAMING_BYTES } from "./runtime/loop.ts";
 import { postAsAgent, standingAcknowledgement, type AgentReply } from "./conversation.ts";
 import { namePartCalls } from "./mentions.ts";
 import type { Reviewer } from "../memory/reviewer.ts";
@@ -197,7 +197,7 @@ interface RunMoney {
  * tokens that a round can pass in bytes (README "Metering", the free allowance's room). What the room for the last call is
  * renewed by (`begin`, `extend`).
  */
-const roomGrowth = (k: number, resultMaxWeight: number, maxOutputTokens: number): number => k * (3 * resultMaxWeight + 200) + 6 * maxOutputTokens + 300;
+const roomGrowth = (k: number, resultMaxWeight: number, maxOutputTokens: number): number => k * (3 * resultMaxWeight + RESULT_FRAMING_BYTES) + 6 * maxOutputTokens + 300;
 
 /** Everything the reply was to answer is before a new topic its owner started: nothing failed, nothing to retry. */
 const STARTED_OVER: RunEnd = { status: "cancelled" };
@@ -922,11 +922,18 @@ export class DbAgentPort implements AgentPort {
           ? 0
           : state.lane !== "own"
             ? roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens) +
-              config.others.overCapNotes * noteBytes(offer.tools.reduce((longest, tool) => (Buffer.byteLength(tool.name, "utf8") > Buffer.byteLength(longest, "utf8") ? tool.name : longest), ""))
+              config.others.overCapNotes * noteBytes(longestToolName(offer.tools))
             : offer.tools.every((tool) => Object.hasOwn(offer.perTool, tool.name))
               ? roomGrowth(Object.values(offer.perTool).reduce((sum, n) => sum + n, 0), config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
               : roomCapTokens;
-      const lastCall = tools.length === 0 ? 0n : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
+      // An others' reply's hold is `othersHold` (call 1 and its last call), the one definition; what `admit` is given as the last-call
+      // part is what it adds to call 1's.
+      const lastCall =
+        tools.length === 0
+          ? 0n
+          : state.lane !== "own"
+            ? othersHold(resolved, held, { growthTokens, roomCapTokens }) - maxCostMicro(resolved, held)
+            : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
       // What an others' reply offered tools holds if its with-tools hold does not fit its owner's number (`admit`, N3): the one
       // call it then makes without them — the text for going without them and the same messages — at its most.
       const plainMicro =
@@ -1156,7 +1163,7 @@ export class DbAgentPort implements AgentPort {
         const searchedCharge = BigInt(row.web_charge);
         // A provider's model costs nothing but the searches its tool held: those count with its lane. An others' reply has had its
         // one tool round: the next call is its last, whatever the money says (plan B2a).
-        if (money.price === null || row.charge_to === null) return state.lane !== "own" ? "final" : (await budgetReachedWith(t, lane, agent, searchedCharge, config)) ? "final" : "ok";
+        if (money.price === null || row.charge_to === null) return state.lane !== "own" ? "final" : (await budgetReachedWith(t, lane, agent, searchedCharge)) ? "final" : "ok";
         const reported = spent !== null && isCount(spent.inputTokens) && isCount(spent.outputTokens);
         const cost = costMicro(money.price, reported ? spent.inputTokens : estimated.inputChars, reported ? spent.outputTokens : estimated.outputChars);
         const held = BigInt(row.hold);
@@ -1175,9 +1182,11 @@ export class DbAgentPort implements AgentPort {
         // a discard or a refused round included. Nothing is raised here; the tool phase has ended, so the answer is "final". What
         // the next call can cost beside what the reply has cost so far passing what is held would be a bug, and is counted.
         if (state.lane !== "own") {
-          const raise = sofar + next > modelHeld ? sofar + next - modelHeld : 0n;
+          // What the hold covers of the model: call 1 and the last call (`held` less the searches' part).
+          const covered = held - searched > 0n ? held - searched : 0n;
+          const raise = sofar + next > covered ? sofar + next - covered : 0n;
           if (raise > 0n) this.deps.log.warn({ metric: "others_round_raise" }, "agent run: an others' reply's next call could cost more than its hold; the hold is not raised");
-          // The number the raise would have to fit (0 by construction): asked all the same, under the account lock; the answer stays "final".
+          // The number the raise would have to fit (0: what the hold covers is what the two calls can cost): asked all the same, under the account lock; the answer stays "final".
           await othersFits(t, config, { id: run.id, ownerId: run.ownerId, agentId: agent.id, lane: state.lane }, raise, "round", new Date());
           return "final";
         }
@@ -1187,7 +1196,7 @@ export class DbAgentPort implements AgentPort {
           reserve === 0n ? 0n : costMicro(money.price, Math.min(nextInputTokens + money.growthTokens, money.roomCapTokens), money.maxOutputTokens);
         const tools =
           sofar + searchedCharge + next <= BigInt(config.tools.maxPoints) * MICRO_PER_POINT &&
-          !(await budgetReachedWith(t, lane, agent, sofar + searchedCharge, config));
+          !(await budgetReachedWith(t, lane, agent, sofar + searchedCharge));
         const answer = await raiseHold(
           t,
           config,

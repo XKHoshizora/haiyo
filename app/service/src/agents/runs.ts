@@ -554,10 +554,10 @@ export async function hearFrom(t: Tx, runId: string, from: number, to: number | 
  * its owner's own when the owner is behind one of them, else the earliest one's — and a person's while a person's call
  * is left (a reply nobody asked for keeps its lane, caller and trigger). The owner's own call is never dropped (nobody has
  * a block with themselves): `begin` asks this of every group run (none in the Agent's own conversation) but a reply
- * `告诉他们` queued, which answers nobody's call (its follow-up holds what was noted on it to the rule). Returns what the run now covers and has noted (empty when nothing was dropped: one query),
+ * `告诉他们` queued, which answers nobody's call (its follow-up holds what was noted on it to the rule). Returns what the run now covers, has noted and its lane now (the caller takes them all: what a reply is bounded to is decided by the lane it has here; empty when nothing was dropped: one query),
  * or null when no call is left — then only its `pending_seq` is cleared, so no follow-up answers a dropped call.
  */
-export async function dropBlockedCalls(t: Tx, runId: string, ownerId: string): Promise<{ covers_seq?: string | null; pending_seq?: string | null } | null> {
+export async function dropBlockedCalls(t: Tx, runId: string, ownerId: string): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane } | null> {
   const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; behind: string | null; blocked: boolean; lane: Lane; caller_blocked: boolean }>(
     `select m.seq::text as seq, p.kind, bh.caller_id as behind, ${blockedEitherWay("$2::uuid", "coalesce(p.owner_id, p.id), bh.caller_id")} as blocked,
             r.lane, ${blockedEitherWay("$2::uuid", "r.caller_id")} as caller_blocked
@@ -584,14 +584,14 @@ export async function dropBlockedCalls(t: Tx, runId: string, ownerId: string): P
         ? callerOf(ownerId, ownerId)
         : callerOf(ownerId, left.find((r) => r.behind !== null)?.behind ?? null);
   const by: TriggeredBy | null = lane === "proactive" ? null : left.some((r) => r.kind === "human") ? "human" : "agent";
-  const updated = await t.query<{ covers_seq: string | null; pending_seq: string | null }>(
+  const updated = await t.query<{ covers_seq: string | null; pending_seq: string | null; lane: Lane }>(
     `update agent_runs set call_seqs = $2::bigint[], covers_seq = least(covers_seq, $3::bigint),
             pending_seq = case when $3::bigint > covers_seq then $3::bigint end,
             asker_ids = case when asker_ids is null then null
                              else array(select x.a from unnest(asker_ids) as x (a) where not ${blockedEitherWay("$4::uuid", "x.a")} order by x.a) end,
             caller_id = case when $5::boolean then $6::uuid else caller_id end, lane = case when $5::boolean then $7::text else lane end,
             triggered_by = coalesce($8::text, triggered_by)
-      where id = $1 returning covers_seq::text as covers_seq, pending_seq::text as pending_seq`,
+      where id = $1 returning covers_seq::text as covers_seq, pending_seq::text as pending_seq, lane`,
     [runId, left.map((r) => Number(r.seq)), Number(left.at(-1)!.seq), ownerId, caller !== null, caller?.id ?? null, caller?.lane ?? null, by],
   );
   return updated.rows[0]!;
@@ -893,46 +893,23 @@ export async function spentTodayOf(
   return new Map(rows.map((r) => [r.id, { others: BigInt(r.others), proactive: BigInt(r.proactive) }]));
 }
 
-/** The lanes with a daily budget of their own: other people's calls (`othersBudget`), replies nobody called for (`proactiveBudget`). */
-type BudgetedLane = "others" | "proactive";
-
 /**
- * Whether Agent `agentId`'s daily budget for its replies in `lane` (`budget`) is spent: what they were charged today
- * (`spentTodayOf`, the site day beginning at `dayStart`) has reached it — never while it is null (no limit; nothing is
- * read then). Replies in the other lanes never count. Settled charges only: a reply being written counts once it is
- * settled, not before — its hold is the most it can cost (its whole output limit), which on a paid model can alone pass
- * a budget it will not come near — so the day's real spend can pass the budget by the replies under way when it is
- * reached.
- */
-async function laneBudgetSpent(q: Queryable, agentId: string, lane: BudgetedLane, budget: bigint | null, dayStart: Date): Promise<boolean> {
-  if (budget === null) return false;
-  return ((await spentTodayOf(q, [agentId], dayStart)).get(agentId)?.[lane] ?? 0n) >= budget;
-}
-
-/**
- * Whether `agent`'s proactive budget (its owner's `proactiveBudget`) is spent today (`laneBudgetSpent`): checked before a
- * reply nobody asked for is queued (agents/proactive/decide.ts) and again as it is admitted (`refusedAtAdmission`).
- */
-export const proactiveBudgetSpent = (q: Queryable, agent: Pick<AgentRow, "id" | "proactiveBudgetMicro">, config: Pick<Config, "siteTimezone">): Promise<boolean> =>
-  laneBudgetSpent(q, agent.id, "proactive", agent.proactiveBudgetMicro, siteToday(config));
-
-/**
- * The others' daily budget of `agent` (its owner's `othersBudget`) for a call on it in `conversationId` by someone other
- * than its owner (lane `others`; the caller checks the lane): spent once what such calls were charged today has reached
- * it (`laneBudgetSpent`, the site day beginning at `dayStart`). The day's real spend can pass it by the replies under
- * way when it is reached: at most the owner's places for others' replies (`agentMaxConcurrentOthersRuns`).
- * Once spent, the conversation is told by an `agent_daily_budget_reached` notice about the Agent,
+ * Whether the numbers an others' call is held to are reached for a call on `agent` in `conversationId` by someone other
+ * than its owner (lane `others`; the caller checks the lane): `othersReached`, the advisory twin of `othersFits` — the
+ * owner's answers and points, the Agent's own, settled today plus what running replies hold; on a provider's own model
+ * the points are left out, as admission leaves them (it costs nothing: only the answers refuse it).
+ * Once reached, the conversation is told by an `agent_daily_budget_reached` notice about the Agent,
  * appended now unless one about it was today already (once a site day per conversation and Agent): `notice` is the one
  * appended, else null. The caller holds the conversation's row lock (`appendSystem`).
  */
 export async function othersBudgetSpent(
   t: Tx,
   conversationId: string,
-  agent: Pick<AgentRow, "id" | "ownerId">,
+  agent: Pick<AgentRow, "id" | "ownerId" | "model">,
   dayStart: Date,
   config: Pick<Config, "others" | "siteTimezone">,
 ): Promise<{ spent: boolean; notice: StoredMessage | null }> {
-  if (!(await othersReached(t, config, agent.ownerId, agent.id, "others", new Date()))) return { spent: false, notice: null };
+  if (!(await othersReached(t, config, agent.ownerId, agent.id, "others", new Date(), { points: agent.model?.source !== "provider" }))) return { spent: false, notice: null };
   return { spent: true, notice: await limitNotice(t, conversationId, agent.id, dayStart) };
 }
 
@@ -957,7 +934,7 @@ export const siteToday = (config: Pick<Config, "siteTimezone">): Date => siteDay
 async function refusedByOthersBudget(
   t: Tx,
   conversationId: string,
-  agent: Pick<AgentRow, "id" | "ownerId">,
+  agent: Pick<AgentRow, "id" | "ownerId" | "model">,
   lane: Lane,
   dayStart: Date,
   told: Told,
@@ -1000,7 +977,6 @@ export async function budgetReachedWith(
   run: { conversationId: string; lane: Lane; coversSeq: number },
   agent: Pick<AgentRow, "id" | "conversationId" | "chainBudgetMicro">,
   extra: bigint,
-  _config: Pick<Config, "siteTimezone">,
 ): Promise<boolean> {
   if (run.conversationId === agent.conversationId) return false;
   if ((await placeOf(t, run.conversationId, agent)) !== "group") return false;
@@ -1015,7 +991,7 @@ export async function budgetReachedWith(
  * as a direct chat reads it: neither of the two calls the other's Agents, nor spends the other's points); each, in id order, is locked (`lockAgent` on the group, whose row the send already holds) and called unless it is
  * deleted, paused or has no model, or only its owner may call it (`groupMentions` `owner`) and this is someone else's
  * message. `replyMode` plays no part in a group. Someone else's message is then held to the Agent's others' daily
- * budget, read under the Agent's row lock (`othersBudgetSpent`): once it is spent the Agent is not called — not even
+ * numbers, read under the Agent's row lock (`othersBudgetSpent`, settled plus held): once they are reached the Agent is not called — not even
  * folded into a reply of its under way — and the group is told once a day (the notice returned, to publish, and the
  * Agent's owner to push it to); the refusal is recorded with the message (`recordRefusedCalls`), so should it lie among
  * what a later follow-up of the Agent answers, it is no call of it (`followUp`). Its owner's message never is. Then
@@ -1157,7 +1133,7 @@ async function chainBudgetSpent(
  *   messages after a person's latest has reached its `chainBudget` → it is not called, and an `agent_budget_reached`
  *   notice about it is appended unless one was since a person last wrote;
  * - the others' daily budget, per Agent the call is not its owner's own on (see below): once it is spent
- *   (`othersBudgetSpent`, read from the row read above, not locked) → it is not called, and an
+ *   (`othersBudgetSpent`, read from the row read above, not locked: settled plus held) → it is not called, and an
  *   `agent_daily_budget_reached` notice about it is appended unless one was today (its owner is returned, to push the
  *   Agent to).
  * Each Agent refused so, or for a block, is recorded with the message (`recordRefusedCalls`): nothing was noted for it,
@@ -1235,7 +1211,7 @@ export async function triggerFromAgent(
   for (const target of targets) {
     const spent = await chainBudgetSpent(t, conversationId, target.id, BigInt(target.budget), human);
     if (spent?.notice) told.notices.push(spent.notice);
-    const agent = { id: target.id, ownerId: target.owner_id, othersBudgetMicro: target.others_budget === null ? null : BigInt(target.others_budget) };
+    const agent = { id: target.id, ownerId: target.owner_id, othersBudgetMicro: target.others_budget === null ? null : BigInt(target.others_budget), model: await modelOfAgent(t, target.id) };
     const by = callerOf(agent.ownerId, behind);
     if (spent || (await refusedByOthersBudget(t, conversationId, agent, by.lane, dayStart, told, config))) {
       refused.push(target.id);
@@ -1288,7 +1264,7 @@ export function followUpOf(run: Announced | null, told: Told = noneTold()): Foll
  * spent (ruling 12, the same rule and notice as for an Agent's mention, `chainBudgetSpent`) — checked again here
  * because the reply that just ended was settled after it was called, so a chain overshoots its budget by at most the
  * one reply that was under way. A follow-up in lane `others` (see below) is not queued either once the Agent's others'
- * daily budget is spent — the same rule and notice as for someone else's mention (`othersBudgetSpent`; the reply that
+ * numbers are reached — the same rule and notice as for someone else's mention (`othersBudgetSpent`; the reply that
  * just ended is settled by now) — and the Agent's owner is returned, to push it to; its owner's own is never held to
  * it. A group's follow-up, a person's or an Agent's, is a reply started like any other, so
  * the owner's replies a minute in its lane decide as for a mention (`overLaneLimit`; its caller's limit does not: what

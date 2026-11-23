@@ -1348,6 +1348,9 @@ expect(gateway.calls[1]!.system).toBe(prepared.call.systemWithoutTools); expect(
 -- Agents they have (plan "Design conflict for the owner").
 update agents set others_budget_micro = 70000000 where others_budget_micro = 20000000;
 alter table agents alter column others_budget_micro set default null;
+-- Controller ruling 2026-11-24 (B-1 review): the proactive budget is a hard sub-cap that counts holds, and its default is 20 points.
+-- The same rule as the line above, for the Agent's proactive budget:
+update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
 -- Down Migration
 -- (the raise is not undone: a row at 70 cannot be told from one an owner set)
 alter table agents alter column others_budget_micro set default 20000000;
@@ -1902,6 +1905,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
      - meet the proactive budget as a hard sub-cap.
 
      Agents at the old default 20 points get 70 as a sub-limit (D9). Every owner has one 70-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final), "Design conflict for the owner"). Owners see the one-time notice, whose copy says the limit is now per person and that defaults were raised (N2).
+   - **The proactive budget** (**Controller ruling 2026-11-24 (B-1 review)**). 074 also raises an Agent's proactive budget from 20 to 70 points where it still holds the old default, by the same rule as its others' number (every row at exactly 20 points; the column's default stays as 027 made it, 20, for new Agents). A paid-tier Agent at 70 can make a proactive reply plain (61.5 points) but not with tools (194.1): this number is the owner's to confirm, with the 70. The proactive judgement asks `othersFits` (the function admission asks, holds counted) before it spends a judgement, so a candidate that cannot be admitted costs no judgement call and leaves no cancelled run.
    - **While the switch is off**, the use page's stopped list is empty and no 停止往来 or 恢复往来 control is shown (Controller ruling 2026-11-24 (final); I10).
    - **Check on test.haiyo.org:** a member's @ answers within the numbers; the notice shows once; the use page lists today by person.
    - **The default of 70 points (and 50 answers) is still the owner's to confirm** before production (I7).
