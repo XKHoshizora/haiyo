@@ -54,7 +54,7 @@ export function parseCss(source) {
         j += 1;
       }
       const body = text.slice(open + 1, j - 1);
-      if (head.startsWith("@media") || head.startsWith("@supports")) walk(open + 1, j - 1, [...conditions, head.replace(/^@\w+\s*/, "").trim()]);
+      if (head.startsWith("@media") || head.startsWith("@supports") || head.startsWith("@container")) walk(open + 1, j - 1, [...conditions, head.replace(/^@\w+\s*/, "").trim()]);
       else if (!head.startsWith("@")) rules.push({ conditions, selectors: splitSelectors(head), body: body.trim(), decl: declarations(body), order: order++ });
       i = j;
     }

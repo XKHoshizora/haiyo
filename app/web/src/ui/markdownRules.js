@@ -128,7 +128,7 @@ export const APP_CLASSES = new Set(
   whisper-folded whisper-summary whisper-top whisper-fold whisper-failed whisper-open
   memory-room memory-head memory-add memory-add-line memory-add-vault memory-rows memory-row memory-body memory-text memory-source memory-actions memory-open memory-stale memory-switches memory-catch-up memory-vault
   model-brand model-trigger model-name model-chevron model-pop model-scrim model-search model-list model-group-label model-option
-  model-note model-check model-reason model-marks model-mark model-mark-free model-mark-paid model-empty model-foot model-scope side-model
+  model-note model-check model-reason model-marks model-marks-row model-mark model-mark-ability model-mark-icon model-mark-text model-mark-free model-mark-paid model-gap model-legend tools-unknown model-empty model-foot model-scope side-model
   select-trigger select-label select-pop select-list select-option
   handle-input handle-prefix
   image-open file-icon file-icon-document file-icon-code file-icon-image file-icon-pdf file-icon-spreadsheet file-icon-slides file-icon-archive file-icon-audio file-icon-video file-icon-other

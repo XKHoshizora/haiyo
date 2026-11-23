@@ -9,6 +9,7 @@ import { forgetDraft, peekDraft, saveDraft } from "../data/drafts.js";
 import { useUp } from "../state/appHistory.js";
 import { levelLabel } from "./ModelPicker.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
+import { ModelMarks, abilityMarks } from "../ui/ModelMarks.jsx";
 import { noModelList } from "../data/errorTexts.js";
 
 /** The four interface types (the service's `protocol`), by the names people know them by. Fixed once created. */
@@ -357,9 +358,10 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   const shownContext = context ?? defaults?.contextTokens ?? null;
   const limit = defaults?.maxOutputTokens ?? null;
   const tooSmall = shownContext !== null && limit !== null && shownContext <= limit;
-  const summary = [model.vision && "能看图片", model.pdf && "能直接读 PDF"].filter(Boolean);
   const after = shownContext !== null ? [`上下文 ${grouped(shownContext)}${context === null ? "（默认）" : ""}`] : [];
-  const thinking = model.reasoning ? (model.reported ? `支持思考（${model.levels ? model.levels.map(levelLabel).join("、") : "全部档位"}）` : "支持思考") : null;
+  // What it can do is the marks' (the picker's own); what they cannot say stays here: the thinking levels it is used with, its context.
+  const thinking = model.reasoning && model.reported ? `思考档位：${model.levels ? model.levels.map(levelLabel).join("、") : "全部"}` : null;
+  const marks = abilityMarks(model);
   // A model the catalogue lists thinking levels for: the choice between those and every level, both ways open until it is saved.
   const levelChoice =
     model.reasoning && model.reported ? (
@@ -376,7 +378,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
         <small id={`${panelId}-levels-hint`} className="muted">档位不对或不全时，选全部档位。</small>
       </fieldset>
     ) : null;
-  const parts = [...summary, thinking, ...after].filter(Boolean);
+  const parts = [model.pdf && "能直接读 PDF", thinking, ...after].filter(Boolean);
   const contextHint = [
     `模型一次能读的内容，以 token 计，${grouped(CONTEXT_MIN)} 到 ${grouped(CONTEXT_MAX)}。`,
     defaults ? `留空时用默认的 ${grouped(defaults.contextTokens)}。` : "留空时用默认值。",
@@ -388,6 +390,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
     <li>
       <div className="member-body">
         <strong><LabLogo lab={labOfModel(model.name)} size={16} />{model.name}</strong>
+        <ModelMarks className="model-marks-row" marks={marks} />
         <p>
           {parts.map((part, i) => (
             <React.Fragment key={i}>
@@ -414,10 +417,20 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
                 <span>支持思考 <small>用它的 Agent 可以选择思考程度</small></span>
               </label>
               <label>
-                {/* Ticked unless its entry says false (the service sets that when the model turns out unable to use them). */}
-                <input type="checkbox" checked={model.tools !== false} onChange={flag("tools")} />
+                {/* As its entry says, the mark's own story: ticked for true, unticked for false, the native mixed box while the entry says nothing (the
+                    service still offers it tools until a reply finds it unable). One click makes it a fact; saving it untouched sends nothing. */}
+                <input
+                  type="checkbox"
+                  checked={model.tools === true}
+                  ref={(el) => {
+                    if (el) el.indeterminate = typeof model.tools !== "boolean";
+                  }}
+                  aria-describedby={typeof model.tools !== "boolean" ? `${panelId}-tools-unknown` : undefined}
+                  onChange={flag("tools")}
+                />
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
+              {typeof model.tools !== "boolean" && <small id={`${panelId}-tools-unknown`} className="tools-unknown">还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。</small>}
             </fieldset>
             {levelChoice}
             <Field label="上下文容量" hint={contextHint} error={error}>
@@ -450,7 +463,8 @@ const ADDED_AT_LIMIT = (n) => `已添加 ${n} 个模型。每个供应商最多 
 /** One model of the provider's own list: its name (and the catalogue's), its hints as tags, and 添加 or 已添加 · 移除. */
 function SyncRow({ model, added, full, onAdd, onRemove }) {
   const label = model.label && model.label.toLowerCase() !== model.name.toLowerCase() ? model.label : null;
-  const tags = [model.vision && "看图", model.reasoning && "思考", model.pdf && "PDF", !model.known && "未收录"].filter(Boolean);
+  // What the provider's list says it can do: the picker's own marks (it does not say whether a model uses tools).
+  const marks = abilityMarks(model);
   return (
     <li>
       <div className="member-body">
@@ -458,11 +472,10 @@ function SyncRow({ model, added, full, onAdd, onRemove }) {
           <strong><LabLogo lab={labOfModel(model.name)} size={16} />{model.name}</strong>
           {label && <span className="muted"> · {label}</span>}
         </span>
-        {tags.length > 0 && (
+        {(marks.length > 0 || !model.known) && (
           <span className="sync-tags">
-            {tags.map((t) => (
-              <Tag key={t} tone="muted">{t}</Tag>
-            ))}
+            <ModelMarks marks={marks} />
+            {!model.known && <Tag tone="muted">未收录</Tag>}
           </span>
         )}
       </div>

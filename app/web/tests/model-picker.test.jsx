@@ -65,7 +65,7 @@ const groups = () =>
   ]);
 const rowOf = (name) => [...listbox().querySelectorAll('[role="option"]')].find((o) => o.querySelector(".model-name")?.textContent === name);
 /** The marks at a row's right, in order. */
-const marksOf = (name) => [...rowOf(name).querySelectorAll(".model-mark")].map((m) => m.textContent).filter(Boolean);
+const marksOf = (name) => [...rowOf(name).querySelectorAll(".model-mark:not(.model-gap)")].map((m) => m.textContent).filter(Boolean);
 const chooseModel = async (name) => {
   await openPicker();
   await click(rowOf(name));
@@ -93,7 +93,7 @@ describe("the model picker", () => {
       ["我的供应商 · 我的 OpenAI", ["gpt-x", "plain", "(tiny)"]],
     ]);
     expect(rowOf("小模型").getAttribute("aria-label")).toBe("小模型 · 免费 · 工具");
-    expect(rowOf("大模型").getAttribute("aria-label")).toBe("大模型 · 需余额 · 思考 · 工具");
+    expect(rowOf("大模型").getAttribute("aria-label")).toBe("大模型 · 需余额 · 看图 · 思考 · 工具");
     expect(rowOf("tiny").getAttribute("aria-label")).toBe("tiny（上下文太小）");
   });
 
@@ -427,7 +427,7 @@ describe("searching", () => {
 });
 
 describe("the marks at a row's right", () => {
-  it("免费 / 需余额 for a site model, 工具 unless its entry says tools: false, 思考 when it can think; nothing else", async () => {
+  it("免费 / 需余额 for a site model, then 看图, 思考 and 工具 only as the model's own fields say true; nothing else", async () => {
     const models = {
       ...MODELS,
       siteModels: [...SITE_MODELS, { id: "quiet-1", label: "安静模型", tier: "free", vision: true, pdf: true, reasoning: [], contextTokens: 32000, tools: false }],
@@ -444,21 +444,23 @@ describe("the marks at a row's right", () => {
     await openForm({ models, providers });
     await openPicker();
     expect(marksOf("小模型")).toEqual(["免费", "工具"]);
-    expect(marksOf("大模型")).toEqual(["需余额", "思考", "工具"]);
-    expect(marksOf("安静模型")).toEqual(["免费"]);
-    expect(marksOf("gpt-x")).toEqual(["思考", "工具"]);
+    expect(marksOf("大模型")).toEqual(["需余额", "看图", "思考", "工具"]);
+    expect(marksOf("安静模型")).toEqual(["免费", "看图"]);
+    expect(marksOf("gpt-x")).toEqual(["看图", "思考", "工具"]);
     expect(marksOf("no-tools")).toEqual(["思考"]);
-    expect(marksOf("plain")).toEqual(["工具"]);
+    // A provider model that says nothing of tools (not known yet) shows none: a mark states a known fact.
+    expect(marksOf("plain")).toEqual([]);
     // Each kind of mark has its own column, so the marks line up from row to row.
-    const columns = (name) => [...rowOf(name).querySelectorAll(".model-mark")].map((m) => m.dataset.col);
-    expect(columns("小模型")).toEqual(["price", "thinking", "tools"]);
-    expect(columns("plain")).toEqual(["price", "thinking", "tools"]);
-    expect(listbox().textContent).not.toMatch(/看图|PDF|联网/);
+    const columns = (name) => [...rowOf(name).querySelectorAll("[data-col]")].map((m) => m.dataset.col);
+    expect(columns("小模型")).toEqual(["price", "vision", "reasoning", "tools"]);
+    // (A provider group has no price, so no room for one.)
+    expect(columns("plain")).toEqual(["vision", "reasoning", "tools"]);
+    expect(listbox().textContent).not.toMatch(/联网/);
   });
 
   it("a list without site models has no price column", async () => {
     await openForm({ models: NO_SITE });
     await openPicker();
-    expect([...rowOf("plain").querySelectorAll(".model-mark")].map((m) => m.dataset.col)).toEqual(["thinking", "tools"]);
+    expect([...rowOf("plain").querySelectorAll("[data-col]")].map((m) => m.dataset.col)).toEqual(["reasoning"]);
   });
 });
