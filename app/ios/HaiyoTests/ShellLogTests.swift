@@ -39,30 +39,30 @@ final class LifecycleRulesTests: XCTestCase {
     /// with no timer.
     func testTheSharedFileStaysWhileTheSheetOrAnActivityStillNeedsIt() {
         // Dismissed without choosing anything.
-        var plain = ShareCleanup()
+        let plain = ShareCleanup()
         XCTAssertFalse(plain.activityEnded(), "the callback can come while the sheet is still closing")
         XCTAssertTrue(plain.sheetGone())
 
         // 保存到“文件” → 取消: back on the sheet, the file stays for the next choice; then the sheet is closed.
-        var cancelled = ShareCleanup()
+        let cancelled = ShareCleanup()
         cancelled.activityStarted()
         XCTAssertFalse(cancelled.activityEnded(), "the sheet is still open")
         XCTAssertTrue(cancelled.sheetGone())
 
         // 存储图像: the sheet closes as soon as it is chosen, the save ends later.
-        var saving = ShareCleanup()
+        let saving = ShareCleanup()
         saving.activityStarted()
         XCTAssertFalse(saving.sheetGone(), "the activity still reads the file")
         XCTAssertTrue(saving.activityEnded())
 
         // A failed activity (存储图像 without Photos access): the callback first, then the sheet closes.
-        var failed = ShareCleanup()
+        let failed = ShareCleanup()
         failed.activityStarted()
         XCTAssertFalse(failed.activityEnded())
         XCTAssertTrue(failed.sheetGone())
 
         // A cancel, then another activity that outlives the sheet: the earlier callback does not count.
-        var second = ShareCleanup()
+        let second = ShareCleanup()
         second.activityStarted()
         XCTAssertFalse(second.activityEnded())
         second.activityStarted()
@@ -71,18 +71,32 @@ final class LifecycleRulesTests: XCTestCase {
         XCTAssertFalse(second.activityEnded(), "removed once")
     }
 
-    /// The share sheet's item tells when an activity asks for the file.
+    /// The share sheet's item marks an activity as started when it asks for the file — at once, also when it asks on
+    /// another thread, so the sheet closing first cannot remove the file.
     @MainActor
-    func testTheSharedItemReportsWhenAnActivityAsksForTheFile() {
+    func testTheSharedItemMarksTheActivityBeforeHandingOutTheFile() {
         let file = URL(fileURLWithPath: "/tmp/x.png")
-        let item = SharedFile(url: file)
-        var asked = 0
-        item.onRequested = { asked += 1 }
+        let cleanup = ShareCleanup()
+        let item = SharedFile(url: file, cleanup: cleanup)
         let sheet = UIActivityViewController(activityItems: [], applicationActivities: nil)
         XCTAssertEqual(item.activityViewControllerPlaceholderItem(sheet) as? URL, file)
-        XCTAssertEqual(asked, 0, "the placeholder is not a use of the file")
-        XCTAssertEqual(item.activityViewController(sheet, itemForActivityType: .copyToPasteboard) as? URL, file)
-        XCTAssertEqual(asked, 1)
+        let asked = expectation(description: "asked off the main thread")
+        DispatchQueue.global().async {
+            _ = item.activityViewController(sheet, itemForActivityType: .copyToPasteboard)
+            asked.fulfill()
+        }
+        wait(for: [asked], timeout: 5)
+        XCTAssertFalse(cleanup.sheetGone(), "the popover closes as the activity starts: the file stays")
+        XCTAssertTrue(cleanup.activityEnded())
+    }
+
+    /// The placeholder is not a use of the file.
+    @MainActor
+    func testThePlaceholderDoesNotStartAnActivity() {
+        let cleanup = ShareCleanup()
+        let item = SharedFile(url: URL(fileURLWithPath: "/tmp/x.png"), cleanup: cleanup)
+        _ = item.activityViewControllerPlaceholderItem(UIActivityViewController(activityItems: [], applicationActivities: nil))
+        XCTAssertTrue(cleanup.sheetGone())
     }
 
     /// iPad: the share popover sits in the middle of the view, with no arrow.

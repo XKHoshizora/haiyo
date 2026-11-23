@@ -1,3 +1,4 @@
+import WebKit
 import XCTest
 @testable import Haiyo
 
@@ -10,7 +11,9 @@ final class ShellConfigTests: XCTestCase {
         XCTAssertEqual(config?.apnsEnvironment, "development")
         XCTAssertEqual(config?.channel, "acceptance")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String, "0.1.0")
-        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String, "3")
+        // The build number changes with every upload (Config/Shared.xcconfig); it must be a positive whole number.
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        XCTAssertTrue((Int(build) ?? 0) > 0, build)
         XCTAssertEqual(Bundle.main.bundleIdentifier, "org.haiyo.app")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String, "Haiyo")
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "ITSAppUsesNonExemptEncryption") as? Bool, false)
@@ -75,6 +78,15 @@ final class ShellConfigTests: XCTestCase {
         XCTAssertTrue(testConfig.isOwnBlob(URL(string: "blob:https://test.haiyo.org/1234")!))
         XCTAssertFalse(testConfig.isOwnBlob(URL(string: "blob:https://example.com/1234")!))
         XCTAssertFalse(testConfig.isOwnBlob(URL(string: "https://test.haiyo.org/1234")!))
+    }
+
+    /// Both web views run in WebKit's mobile content mode: on iPad `.recommended` means a desktop (Macintosh) user agent.
+    @MainActor
+    func testBothWebViewsAreMobile() {
+        let configuration = WebViews.configuration(testConfig)
+        XCTAssertEqual(configuration.defaultWebpagePreferences.preferredContentMode, .mobile)
+        XCTAssertTrue(configuration.applicationNameForUserAgent?.hasSuffix(" HaiyoApp/\(testConfig.version)") ?? false)
+        XCTAssertTrue(configuration.websiteDataStore === WKWebsiteDataStore.default())
     }
 
     func testTheUserAgentMarkIsAppended() {

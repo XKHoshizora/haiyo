@@ -29,10 +29,7 @@ final class SheetViewController: UIViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override func loadView() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        configuration.applicationNameForUserAgent = config.applicationName(appendingTo: configuration.applicationNameForUserAgent)
-        configuration.allowsInlineMediaPlayback = true
+        let configuration = WebViews.configuration(config)
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = navigator
         webView.uiDelegate = navigator

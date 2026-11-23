@@ -46,6 +46,8 @@ final class NavigationPolicyTests: XCTestCase {
             ("https://test.haiyo.org/invite?code=X1#top", .newWindow, .openInApp(path: "/invite?code=X1#top")),
             ("https://test.haiyo.org", .newWindowScript, .openInApp(path: "/")),
             ("https://test.haiyo.org/apiary", .newWindow, .openInApp(path: "/apiary")),
+            // The path as written decides what is a file: `%61pi` is not `api` (the service answers it with a 404).
+            ("https://test.haiyo.org/%61pi/x", .newWindow, .openInApp(path: "/%61pi/x")),
             ("https://example.com/source", .newWindow, .safari(u("https://example.com/source"))),
             // Downloads: own files, own blobs and data URLs are downloaded; other sites' links open in the Safari view.
             ("https://test.haiyo.org/api/files/f/report.pdf", .download, .download),
@@ -76,17 +78,21 @@ final class NavigationPolicyTests: XCTestCase {
     /// The sheet shows the site's files only. A page of the app — a link inside an attachment, a redirect to the
     /// sign-in page, a frame — never loads there: it opens in the main view, or (in a frame) not at all.
     func testTheSheetNeverShowsAnAppPage() {
-        func sheet(_ string: String, main: Bool = true, tapped: Bool = true, newWindow: Bool = false) -> NavigationRoute {
+        func sheet(_ string: String, main: Bool = true, tapped: Bool = true, newWindow: Bool = false, firstLoad: Bool = false) -> NavigationRoute {
             NavigationPolicy.route(NavigationRequest(url: URL(string: string)!, isMainFrame: main, opensNewWindow: newWindow,
-                                                     shouldDownload: false, userActivated: tapped, inSheet: true), config: testConfig)
+                                                     shouldDownload: false, userActivated: tapped, inSheet: true,
+                                                     sheetFirstLoad: firstLoad), config: testConfig)
         }
         let file = "https://test.haiyo.org/api/attachments/a1"
-        XCTAssertEqual(sheet(file, tapped: false), .load, "the sheet's own file")
+        XCTAssertEqual(sheet(file, tapped: false, firstLoad: true), .load, "the sheet's own file")
         XCTAssertEqual(sheet(file), .sheet(u(file)), "another file, tapped: shown in the sheet")
-        XCTAssertEqual(sheet("https://test.haiyo.org/chat/x"), .openInApp(path: "/chat/x"))
-        XCTAssertEqual(sheet("https://test.haiyo.org/login?next=%2Fapi%2Ffiles%2Fa", tapped: false),
-                       .openInApp(path: "/login?next=%2Fapi%2Ffiles%2Fa"), "a redirect to the sign-in page")
+        XCTAssertEqual(sheet("https://test.haiyo.org/chat/x"), .openInApp(path: "/chat/x"), "a tapped link in a file")
+        XCTAssertEqual(sheet("https://test.haiyo.org/login?next=%2Fapi%2Ffiles%2Fa", tapped: false, firstLoad: true),
+                       .openInApp(path: "/login?next=%2Fapi%2Ffiles%2Fa"), "the sheet's load redirected to the sign-in page")
+        XCTAssertEqual(sheet("https://test.haiyo.org/invite?code=X", tapped: false), .refuse,
+                       "after the file is shown, nothing but a tap may steer the main view (a refresh, script)")
         XCTAssertEqual(sheet("https://test.haiyo.org/", newWindow: true), .openInApp(path: "/"))
+        XCTAssertEqual(sheet("https://test.haiyo.org/", tapped: false, newWindow: true), .refuse, "window.open by script")
         XCTAssertEqual(sheet("https://test.haiyo.org/chat/x", main: false), .refuse, "an app page in a frame")
         XCTAssertEqual(sheet(file, main: false), .load, "a file in a frame")
         XCTAssertEqual(sheet("about:blank", main: false), .load)

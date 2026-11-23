@@ -53,10 +53,9 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate, UIPopoverPresenta
             try? FileManager.default.removeItem(at: folder)
             return
         }
-        var cleanup = ShareCleanup()
+        let cleanup = ShareCleanup()
         let remove = { try? FileManager.default.removeItem(at: folder) }
-        let item = SharedFile(url: file)
-        item.onRequested = { cleanup.activityStarted() }
+        let item = SharedFile(url: file, cleanup: cleanup)
         let sheet = ShareSheet(activityItems: [item], applicationActivities: nil)
         sheet.completionWithItemsHandler = { _, completed, _, error in
             // Never the activity (which app received the file) or the error's description (it can hold the path).
@@ -109,42 +108,50 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate, UIPopoverPresenta
 /// of the two comes last, never on a timer. An activity starts when the sheet asks for the file (`SharedFile`) and
 /// ends with the sheet's completion callback; that callback also comes when a chosen activity is cancelled and the
 /// sheet stays (保存到“文件” → 取消), and an activity can still be running after the sheet has closed (存储图像).
-/// Anything left over (a callback that never came) is swept at the next launch.
-struct ShareCleanup {
-    private(set) var activityRunning = false
-    private(set) var isSheetGone = false
-    private(set) var removed = false
+/// Anything left over (a callback that never came) is swept at the next launch. The sheet may ask for the file on
+/// another thread; the mark is taken there, before the file is handed out, so the sheet closing first cannot remove it.
+final class ShareCleanup: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activityRunning = false
+    private var isSheetGone = false
+    private var removed = false
 
-    mutating func activityStarted() {
-        activityRunning = true
+    /// Any thread.
+    func activityStarted() {
+        lock.withLock { activityRunning = true }
     }
 
     /// Returns true when the file should be removed now.
-    mutating func activityEnded() -> Bool {
-        activityRunning = false
-        return removeIfDone()
+    func activityEnded() -> Bool {
+        lock.withLock {
+            activityRunning = false
+            return removeIfDone()
+        }
     }
 
     /// Returns true when the file should be removed now.
-    mutating func sheetGone() -> Bool {
-        isSheetGone = true
-        return removeIfDone()
+    func sheetGone() -> Bool {
+        lock.withLock {
+            isSheetGone = true
+            return removeIfDone()
+        }
     }
 
-    private mutating func removeIfDone() -> Bool {
+    private func removeIfDone() -> Bool {
         guard isSheetGone, !activityRunning, !removed else { return false }
         removed = true
         return true
     }
 }
 
-/// The downloaded file as the share sheet's item: it tells when an activity asks for it.
+/// The downloaded file as the share sheet's item: an activity asking for it marks the start of its use.
 final class SharedFile: NSObject, UIActivityItemSource {
     let url: URL
-    var onRequested: (() -> Void)?
+    private let cleanup: ShareCleanup
 
-    init(url: URL) {
+    init(url: URL, cleanup: ShareCleanup) {
         self.url = url
+        self.cleanup = cleanup
     }
 
     func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
@@ -152,13 +159,7 @@ final class SharedFile: NSObject, UIActivityItemSource {
     }
 
     func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-        if Thread.isMainThread {
-            onRequested?()
-        } else {
-            // Never block here on the main thread (it may be waiting for this item).
-            let onRequested = onRequested
-            DispatchQueue.main.async { onRequested?() }
-        }
+        cleanup.activityStarted()
         return url
     }
 }

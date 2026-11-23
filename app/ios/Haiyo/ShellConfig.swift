@@ -54,9 +54,11 @@ struct ShellConfig: Equatable {
         return url.port == nil || url.port == 443
     }
 
-    /// A file the site serves (`/api/…`: attachments, original images, avatars), as opposed to a page of the app.
+    /// A file the site serves (`/api/…`: attachments, original images, avatars), as opposed to a page of the app. The
+    /// path as written: `/%61pi/x` is not a file (the service answers it with a 404, not a file).
     func isOwnFile(_ url: URL) -> Bool {
-        isOwnOrigin(url) && (url.path == "/api" || url.path.hasPrefix("/api/"))
+        let path = url.path(percentEncoded: true)
+        return isOwnOrigin(url) && (path == "/api" || path.hasPrefix("/api/"))
     }
 
     /// The path, query and fragment of a URL ("/chat/abc?x=1#y"), for `url(forPath:)` and `haiyo:open`.

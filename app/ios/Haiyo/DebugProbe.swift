@@ -228,11 +228,14 @@ enum DebugProbe {
         const top = document.querySelector(".app");
         const t = top ? getComputedStyle(top) : null;
         const topPad = t ? [t.paddingTop, t.paddingLeft, t.paddingBottom, t.paddingRight].map(px) : [-1, -1, -1, -1];
+        const ua = navigator.userAgent;
         return pad.concat([innerWidth, innerHeight, q("(pointer: fine)"), q("(pointer: coarse)"), q("(hover: hover)"),
-                           q("(any-pointer: fine)"), q("(any-hover: hover)")], topPad, [specified]);
+                           q("(any-pointer: fine)"), q("(any-hover: hover)")], topPad, [specified],
+                          [Math.round((window.visualViewport ? visualViewport.scale : 0) * 100), ua.includes("Macintosh") ? 1 : 0,
+                           ua.includes("iPad") ? 1 : 0, ua.includes("HaiyoApp/") ? 1 : 0, document.documentElement.clientWidth]);
         """
         webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { result in
-            guard case let .success(value) = result, let v = value as? [Int], v.count == 16 else {
+            guard case let .success(value) = result, let v = value as? [Int], v.count == 21 else {
                 ShellLog.note("debug-layout-page", ("ran", .flag(false)))
                 return
             }
@@ -243,7 +246,8 @@ enum DebugProbe {
                           ("innerW", .count(v[4])), ("innerH", .count(v[5])), ("pointerFine", .count(v[6])), ("pointerCoarse", .count(v[7])),
                           ("hover", .count(v[8])), ("anyPointerFine", .count(v[9])), ("anyHover", .count(v[10])),
                           ("appT", .count(v[11])), ("appL", .count(v[12])), ("appB", .count(v[13])), ("appR", .count(v[14])),
-                          ("specified", .count(v[15])))
+                          ("specified", .count(v[15])), ("scale100", .count(v[16])), ("uaMac", .count(v[17])),
+                          ("uaIPad", .count(v[18])), ("uaMark", .count(v[19])), ("clientW", .count(v[20])))
         }
     }
 

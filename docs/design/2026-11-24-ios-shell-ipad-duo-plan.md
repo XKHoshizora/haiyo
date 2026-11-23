@@ -49,7 +49,7 @@ Internal TestFlight can carry the universal build earlier for testing.
 | Surface | Today | Plan |
 |---|---|---|
 | Web view, cover | full bleed; the page insets itself | unchanged |
-| Cannot-connect screen (`OfflineView.swift:57-60`) | top/bottom on the safe area, leading/trailing on the view edges — reaches the Duo's status column (measured) | pin all four edges of the scroll view to `layoutGuide(for: .safeArea(cornerAdaptation: .horizontal))`: the safe area plus the corners (iPad window controls, the Duo's corners) |
+| Cannot-connect screen (`OfflineView.swift:57-60`) | top/bottom on the safe area, leading/trailing on the view edges — reaches the Duo's status column (measured) | pin all four edges of the scroll view to `layoutGuide(for: .safeArea(cornerAdaptation: .vertical))` (built; the plan first said `.horizontal`, see "As built"): the safe area plus the corners (iPad window controls, the Duo's corners) |
 | Share sheet (`Downloads.swift:69-70`) | `sourceView` set, no `sourceRect`: on iPad the popover points at the view's origin — the top-leading corner, under the window controls. Not a crash (that needs no anchor at all) | anchor at the centre of the view with `permittedArrowDirections = []` (we do not know where the link was), and re-anchor on size change |
 | File sheet (`SheetViewController`, `.pageSheet`) | its web view uses automatic insets | unchanged: UIKit sheets adapt to the fold and present their bars vertically on the outer display (Preparing your app for iPhone Duo) — check the 完成 button there |
 | In-app Safari view, alert, link menu, file-input pickers | system views | unchanged; check each in the test matrix |
@@ -149,7 +149,7 @@ Measured first with a universal Debug build (`-HaiyoDebugLayout`, iOS 27.2 simul
 
 | Plan | Built | Why (measured) |
 |---|---|---|
-| Fallback: obscured top whenever the vertical corner extra is non-zero | only when an active occlusion in the top-leading corner reaches into the plain safe area (the window controls) | the Duo's rounded corners give a corner extra too (16–18 pt) and would have pushed every Duo page down; its cameras, status column and the iPad status bar lie inside the safe-area insets |
+| Fallback: obscured top whenever the vertical corner extra is non-zero | on iPad only (idiom), whenever the vertical corner extra is non-zero (review round 3; the first build used occlusion regions, which exist only from iOS 27.1) | the Duo's rounded corners give a corner extra too (16–18 pt) and would have pushed every Duo page down; on iPad the rule gives 0 full screen in either orientation, 53 in a window (27.2), 75 in a window at the top of the screen (27.0, no regions) |
 | Coalesce to one send per run-loop turn | send once the geometry has held still for 0.15 s | while closing, UIKit reported the inner display's fold on the 466-pt outer display for a few frames |
 | Cannot-connect screen on `.safeArea(cornerAdaptation: .horizontal)` | `.vertical` | keeps the full width of a narrow (402-pt) window; the controls only cost height |
 
@@ -163,6 +163,11 @@ Measured first with a universal Debug build (`-HaiyoDebugLayout`, iOS 27.2 simul
 WebKit passes a new safe area to the page about a second after load or resize. Pointer queries in the simulator:
 `pointer: coarse`, `hover: none`, `any-pointer: fine`, `any-hover: hover` on both (the Mac's pointer); measure on a
 real iPad with and without a trackpad. Shots: `~/Desktop/Haiyo/qa-ios-shell-v0/r2/`.
+
+Review round 3 (`docs/reviews/2026-11-24-ios-shell-review-round3.md`): both web views use WebKit's mobile content mode.
+Measured in `.recommended` on the iPad mini (A20 Pro) and iPad Air 11-inch, portrait, full screen: a Macintosh user
+agent, `innerWidth` 756 / 820 (the view width), page scale 1. In `.mobile`: an iPad user agent with the mark, the same
+widths, scale 1.
 
 Also in this round (review minors): the share sheet's file is removed when the sheet is gone and no activity uses it
 (no timer); the sheet never shows an app page; the `mailto:`/`tel:`/`sms:` rule and what it rests on (README).

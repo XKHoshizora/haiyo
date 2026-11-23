@@ -45,29 +45,40 @@ struct LayoutSample: Equatable {
     /// The safe area with corners adapted horizontally (`leading`/`trailing` grow) and vertically (`top` grows).
     var cornerHorizontal = NSDirectionalEdgeInsets.zero
     var cornerVertical = NSDirectionalEdgeInsets.zero
-    /// Active division regions (the fold) and active occlusions (cameras, the status column, the window controls).
+    /// Active division regions (the fold; iOS 27.1 and later, empty before).
     var divisions: [CGRect] = []
-    var occlusions: [CGRect] = []
-    var isRightToLeft = false
+    /// The iPad idiom (from the view's trait collection): only iPad scenes have window controls.
+    var isPad = false
 }
 
 enum LayoutGeometry {
     /// The page's layout for a sample. `zoom` is the web view's `pageZoom`; `obscured` its `obscuredContentInsets`
-    /// (they move and scale the layout viewport against the view).
+    /// (they move and scale the layout viewport against the view). Values describe the unzoomed layout viewport: a
+    /// pinch zoom does not change them.
     static func layout(_ sample: LayoutSample, zoom: CGFloat = 1, obscured: UIEdgeInsets = .zero) -> PageLayout {
-        let scale = zoom > 0 ? zoom : 1
+        let scale = zoom.isFinite && zoom > 0 ? zoom : 1
         var layout = PageLayout()
-        if let band = sample.divisions.map({ $0.intersection(sample.bounds) }).first(where: { !$0.isNull && !$0.isEmpty }) {
+        let fold = sample.divisions.lazy
+            .filter { isFinite($0) }
+            .map { ($0, $0.intersection(sample.bounds)) }
+            .first { _, band in !band.isNull && !band.isEmpty }
+        if let fold, isFinite(obscured) {
+            let (frame, band) = fold
             let minX = Int(((band.minX - obscured.left) / scale).rounded(.down))
             let minY = Int(((band.minY - obscured.top) / scale).rounded(.down))
             let maxX = Int(((band.maxX - obscured.left) / scale).rounded(.up))
             let maxY = Int(((band.maxY - obscured.top) / scale).rounded(.up))
             layout.fold = PageLayout.Fold(
-                axis: band.height >= band.width ? .vertical : .horizontal,
+                // The direction of the whole region, not of the part inside the view.
+                axis: frame.height >= frame.width ? .vertical : .horizontal,
                 x: minX, y: minY, width: maxX - minX, height: maxY - minY
             )
         }
-        let extra = { (adapted: CGFloat, plain: CGFloat) in Int((max(0, adapted - plain) / scale).rounded(.up)) }
+        let extra = { (adapted: CGFloat, plain: CGFloat) -> Int in
+            let points = adapted - plain
+            guard points.isFinite, points > 0 else { return 0 }
+            return Int((points / scale).rounded(.up))
+        }
         layout.corner = PageLayout.Corner(
             top: extra(sample.cornerVertical.top, sample.safe.top),
             leading: extra(sample.cornerHorizontal.leading, sample.safe.leading),
@@ -77,24 +88,80 @@ enum LayoutGeometry {
     }
 
     /// For a page that does not handle `layout` yet: how far to keep it below the iPad window controls, in points
-    /// (`obscuredContentInsets.top`), or 0. The controls are an active occlusion in the top-leading corner that reaches
-    /// into the plain safe area; the Duo's cameras and status column, and the iPad's status bar, lie inside the safe
-    /// area's insets (measured), so they never move the page.
+    /// (`obscuredContentInsets.top`), or 0. On iPad, the vertically corner-adapted safe area reaches below the plain one
+    /// exactly when a window control is in a top corner (measured: 0 full screen in either orientation, 53 in a window),
+    /// on iPadOS 26.0 and later, whichever side the controls are on. Phones never: the Duo's rounded corners give a
+    /// corner extra too (16–18 pt), and that must not push its page down.
     static func windowControlsTop(_ sample: LayoutSample) -> CGFloat {
-        let b = sample.bounds
-        let s = sample.safe
-        let safeRect = CGRect(
-            x: b.minX + (sample.isRightToLeft ? s.trailing : s.leading),
-            y: b.minY + s.top,
-            width: b.width - s.leading - s.trailing,
-            height: b.height - s.top - s.bottom
-        )
-        let controls = sample.occlusions.filter { region in
-            let leadingHalf = sample.isRightToLeft ? region.midX > b.midX : region.midX < b.midX
-            return leadingHalf && region.midY < b.midY && region.intersects(safeRect)
-        }
-        guard let bottom = controls.map(\.maxY).max() else { return 0 }
-        return max(bottom, sample.cornerVertical.top) - b.minY
+        guard sample.isPad else { return 0 }
+        let top = sample.cornerVertical.top
+        guard top.isFinite, sample.safe.top.isFinite, top > sample.safe.top else { return 0 }
+        return top
+    }
+
+    private static func isFinite(_ r: CGRect) -> Bool {
+        r.origin.x.isFinite && r.origin.y.isFinite && r.size.width.isFinite && r.size.height.isFinite
+    }
+
+    private static func isFinite(_ i: UIEdgeInsets) -> Bool {
+        i.top.isFinite && i.left.isFinite && i.bottom.isFinite && i.right.isFinite
+    }
+}
+
+/// The shell's layout bookkeeping, apart from UIKit: which layout the page has, whether the shell holds an unaware page
+/// below the window controls, and when an event goes out. The view controller applies each `Output`.
+struct LayoutState {
+    struct Output: Equatable {
+        /// `obscuredContentInsets.top` for the web view.
+        var obscuredTop: CGFloat
+        /// A `haiyo:layout` to send, or nil.
+        var event: PageLayout?
+    }
+
+    private(set) var sample: LayoutSample?
+    /// The page listed `layout` in a `hello` whose answer was delivered.
+    private(set) var pageHandlesLayout = false
+    /// The last layout the page received (event or `hello` answer).
+    private(set) var sent: PageLayout?
+    var zoom: CGFloat = 1
+
+    var obscuredTop: CGFloat {
+        guard !pageHandlesLayout, let sample else { return 0 }
+        return LayoutGeometry.windowControlsTop(sample)
+    }
+
+    /// The layout as a page that handles `layout` sees it (the shell no longer holds it down): what `hello` answers.
+    var layoutForHello: PageLayout {
+        sample.map { LayoutGeometry.layout($0, zoom: zoom) } ?? PageLayout()
+    }
+
+    /// The geometry settled.
+    mutating func settled(_ sample: LayoutSample) -> Output {
+        self.sample = sample
+        return output()
+    }
+
+    /// A new document committed, or the content process died: the page handles nothing until its `hello` is answered.
+    mutating func pageChanged() -> Output {
+        pageHandlesLayout = false
+        sent = nil
+        return output()
+    }
+
+    /// A `hello` answer reached the page that asked; `replied` is the `layout` it carried (nil when not listed).
+    mutating func helloDelivered(events: Set<String>, replied: PageLayout?) -> Output {
+        pageHandlesLayout = events.contains("layout")
+        sent = pageHandlesLayout ? replied : nil
+        return output()
+    }
+
+    private mutating func output() -> Output {
+        let top = obscuredTop
+        guard pageHandlesLayout, let sample else { return Output(obscuredTop: top, event: nil) }
+        let current = LayoutGeometry.layout(sample, zoom: zoom)
+        guard current != sent else { return Output(obscuredTop: top, event: nil) }
+        sent = current
+        return Output(obscuredTop: top, event: current)
     }
 }
 
@@ -139,11 +206,10 @@ final class LayoutObserverView: UIView {
             safe: directionalEdgeInsets(for: .safeArea()),
             cornerHorizontal: directionalEdgeInsets(for: .safeArea(cornerAdaptation: .horizontal)),
             cornerVertical: directionalEdgeInsets(for: .safeArea(cornerAdaptation: .vertical)),
-            isRightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft
+            isPad: traitCollection.userInterfaceIdiom == .pad
         )
         if #available(iOS 27.1, *) {
             sample.divisions = reservedRegions(kind: .division).map(\.frame)
-            sample.occlusions = reservedRegions(kind: .occlusion).map(\.frame)
         }
         return sample
     }

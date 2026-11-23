@@ -32,6 +32,9 @@ struct NavigationRequest: Equatable {
     var userActivated: Bool = true
     /// The request comes from the sheet's web view (a file of the site), not the shell's.
     var inSheet: Bool = false
+    /// In the sheet: its own load has not committed yet, so this is that load or one of its redirects (an expired
+    /// session redirects a file to the sign-in page).
+    var sheetFirstLoad: Bool = false
 }
 
 enum NavigationPolicy {
@@ -51,15 +54,20 @@ enum NavigationPolicy {
         if systemSchemes.contains(scheme) { return request.userActivated ? .system(url) : .refuse }
         if request.opensNewWindow {
             if file { return .sheet(url) }
+            if own, request.inSheet, !request.userActivated { return .refuse }
             if own { return .openInApp(path: config.sitePath(of: url)) }
             return web ? .safari(url) : .refuse
         }
         if request.isMainFrame {
             // A tapped link to a file must not replace the app with the raw file.
             if file, request.userActivated { return .sheet(url) }
-            // The sheet shows files only: a page of the app (a link in an attachment, a redirect to the sign-in page)
-            // opens in the main view, never as a second copy of the app in the sheet.
-            if own, request.inSheet, !file { return .openInApp(path: config.sitePath(of: url)) }
+            // The sheet shows files only: a page of the app opens in the main view, never as a second copy of the app in
+            // the sheet — when the person activated a link, or when the sheet's own load is redirected (the sign-in
+            // page). Anything else a file could start (a refresh, script) is refused: today the service shows only
+            // images inline, and this keeps a future inline type from steering the main view (README "Navigation").
+            if own, request.inSheet, !file {
+                return request.userActivated || request.sheetFirstLoad ? .openInApp(path: config.sitePath(of: url)) : .refuse
+            }
             if own { return .load }
             return web ? .safari(url) : .refuse
         }

@@ -12,6 +12,9 @@ struct BridgePage: Equatable {
 protocol BridgeHost: AnyObject {
     var bridgePage: BridgePage { get }
     func bridgeHello(events: Set<String>, completion: @escaping ([String: Any]) -> Void)
+    /// The `hello` answer reached the page that asked (it is still the page shown): only now does that page handle
+    /// `events`. Not called when the answer was refused at delivery.
+    func bridgeHelloDelivered(events: Set<String>)
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void)
     func bridgeBadgeSet(_ n: Int, completion: @escaping ([String: Any]) -> Void)
 }
@@ -61,25 +64,30 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         }
         let arrival = host.bridgePage
         var answered = false
-        let answer: ([String: Any]) -> Void = { [self] value in
+        let answer: ([String: Any], (() -> Void)?) -> Void = { [self] value, delivered in
             guard !answered else { return }
             answered = true
-            deliver(value, askedBy: arrival, send: send)
+            deliver(value, askedBy: arrival, send: send, delivered: delivered)
         }
         switch request {
-        case let .hello(events): host.bridgeHello(events: events, completion: answer)
-        case .pushRegister: host.bridgePushRegister(completion: answer)
-        case let .badgeSet(n): host.bridgeBadgeSet(n, completion: answer)
+        case let .hello(events):
+            host.bridgeHello(events: events) { [weak host] value in
+                answer(value) { host?.bridgeHelloDelivered(events: events) }
+            }
+        case .pushRegister: host.bridgePushRegister { answer($0, nil) }
+        case let .badgeSet(n): host.bridgeBadgeSet(n) { answer($0, nil) }
         }
     }
 
     /// Every answer passes here, also the ones that come at once: it is delivered only if the page that asked is still
-    /// the page shown (same generation, still the shell's own origin); otherwise `forbidden`.
-    private func deliver(_ value: [String: Any], askedBy arrival: BridgePage, send: (Any?, String?) -> Void) {
+    /// the page shown (same generation, still the shell's own origin); otherwise `forbidden`. `delivered` runs only
+    /// when it went out.
+    private func deliver(_ value: [String: Any], askedBy arrival: BridgePage, send: (Any?, String?) -> Void, delivered: (() -> Void)?) {
         guard let host, host.bridgePage == arrival, arrival.isOwnOrigin else {
             send(nil, BridgeError.forbidden.rawValue)
             return
         }
         send(value, nil)
+        delivered?()
     }
 }

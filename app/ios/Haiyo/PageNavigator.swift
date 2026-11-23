@@ -22,6 +22,8 @@ final class PageNavigator: NSObject, WKNavigationDelegate, WKUIDelegate {
     var onOpenPath: ((String) -> Void)?
     /// The page's content process died (the shell decides when to reload).
     var onContentProcessTerminated: (() -> Void)?
+    /// A document has committed in this web view (the sheet: its file, so later loads are not redirects of it).
+    private var hasCommitted = false
 
     init(config: ShellConfig, role: Role) {
         self.config = config
@@ -48,7 +50,8 @@ final class PageNavigator: NSObject, WKNavigationDelegate, WKUIDelegate {
             opensNewWindow: navigationAction.targetFrame == nil,
             shouldDownload: navigationAction.shouldPerformDownload,
             userActivated: navigationAction.navigationType == .linkActivated,
-            inSheet: role == .sheet
+            inSheet: role == .sheet,
+            sheetFirstLoad: role == .sheet && !hasCommitted
         )
         let policy = perform(NavigationPolicy.route(request, config: config), in: webView)
         MainActor.assumeIsolated { decisionHandler(policy) }
@@ -167,6 +170,7 @@ final class PageNavigator: NSObject, WKNavigationDelegate, WKUIDelegate {
     // MARK: Progress
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        hasCommitted = true
         onCommit?()
     }
 
@@ -196,5 +200,20 @@ final class PageNavigator: NSObject, WKNavigationDelegate, WKUIDelegate {
         } else if webView.url != nil {
             webView.reload()
         }
+    }
+}
+
+/// The configuration both web views start from (the shell's and the sheet's): the default data store (one session),
+/// the `HaiyoApp/<version>` mark, inline media, and WebKit's mobile content mode. Left to `.recommended`, WebKit runs
+/// iPad web views as desktop browsers (measured on the iPad mini and iPad Air 11-inch: a Macintosh user agent instead
+/// of the iPad one); the page should see the iPad it runs on.
+enum WebViews {
+    static func configuration(_ config: ShellConfig) -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        configuration.applicationNameForUserAgent = config.applicationName(appendingTo: configuration.applicationNameForUserAgent)
+        configuration.allowsInlineMediaPlayback = true
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
+        return configuration
     }
 }

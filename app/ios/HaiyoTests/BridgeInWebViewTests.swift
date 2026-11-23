@@ -182,6 +182,10 @@ final class WebPageHost: BridgeHost {
         fake.bridgeHello(events: events, completion: completion)
     }
 
+    func bridgeHelloDelivered(events: Set<String>) {
+        fake.bridgeHelloDelivered(events: events)
+    }
+
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void) {
         fake.bridgePushRegister(completion: completion)
     }

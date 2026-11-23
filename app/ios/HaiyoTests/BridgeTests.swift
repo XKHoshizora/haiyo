@@ -13,9 +13,18 @@ final class FakeHost: BridgeHost {
 
     var bridgePage: BridgePage { page }
 
+    var holdHello = false
+    var heldHello: (([String: Any]) -> Void)?
+    var helloDeliveries: [Set<String>] = []
+
     func bridgeHello(events: Set<String>, completion: @escaping ([String: Any]) -> Void) {
         hellos.append(events)
-        completion(["bridge": 1, "events": events.sorted(), "push": "notDetermined"])
+        let reply: [String: Any] = ["bridge": 1, "events": events.sorted(), "push": "notDetermined"]
+        if holdHello { heldHello = { _ in completion(reply) } } else { completion(reply) }
+    }
+
+    func bridgeHelloDelivered(events: Set<String>) {
+        helloDeliveries.append(events)
     }
 
     func bridgePushRegister(completion: @escaping ([String: Any]) -> Void) {
@@ -168,6 +177,25 @@ final class BridgeHandlingTests: XCTestCase {
         XCTAssertEqual(only(send(["name": "badge.set", "args": ["n": "9"]], from: own, host: host)).1, "malformed")
         XCTAssertEqual(only(send(["name": "exec"], from: own, host: host)).1, "unknown")
         XCTAssertFalse(host.touched)
+    }
+
+    /// The page's events take effect only when its `hello` answer is delivered to it: an answer refused because the page
+    /// changed meanwhile switches nothing on (not `open`, not `layout`, which also lifts the window-control stopgap).
+    func testHelloTakesEffectOnlyWhenItsAnswerIsDelivered() {
+        let host = FakeHost()
+        XCTAssertNil(only(send(["name": "hello", "args": ["events": ["layout", "open"]]], from: own, host: host)).1)
+        XCTAssertEqual(host.helloDeliveries, [["layout", "open"]])
+
+        let late = FakeHost()
+        late.holdHello = true
+        var replies: [(Any?, String?)] = []
+        Bridge(config: testConfig, host: late).handle(source: own, body: ["name": "hello", "args": ["events": ["layout"]]]) {
+            replies.append(($0, $1))
+        }
+        late.page = BridgePage(generation: 2, isOwnOrigin: true)
+        late.heldHello?([:])
+        XCTAssertEqual(replies.first?.1, "forbidden")
+        XCTAssertTrue(late.helloDeliveries.isEmpty, "the new page inherited nothing")
     }
 
     /// C1: an answer that comes after the page changed is not delivered.
