@@ -19,6 +19,42 @@ export const UNUSABLE = "这个请求无法执行。";
  * its turn one the hold does not cover: the turn is discarded (worker.ts, plan B2b).
  */
 export const TOOL_CALL_ID_MAX = 64;
+/**
+ * The bytes of an answer to a call, as every hold measures a part (`partText`, context.ts: `{id, name, output}` as JSON), its
+ * output left out: what a call's answer costs besides what it says — the id and the name it echoes.
+ */
+const framingBytes = (id: string, name: string): number => Buffer.byteLength(JSON.stringify({ id, name, output: null }), "utf8") - Buffer.byteLength("null", "utf8");
+/** The longest of the loop's own answers (the over-cap note, the repeat note, the garbled call's error) as JSON. */
+const NOTE_OUTPUT_BYTES = Math.max(
+  ...[{ note: OVER_CAP }, { note: REPEATED }, { error: UNUSABLE }].map((output) => Buffer.byteLength(JSON.stringify(output), "utf8")),
+);
+/**
+ * The most a call past the first can be answered with, in bytes (`partText` of `{id, name, output}` at its utf-8 bytes): the id
+ * at `TOOL_CALL_ID_MAX` characters, the longest tool name offered and the longest note — `REPEATED`: 203 bytes with
+ * `search_messages`. What an others' reply's hold counts for each of its notes (port-impl.ts `begin`).
+ */
+export const noteBytes = (longestToolName: string): number => framingBytes("x".repeat(TOOL_CALL_ID_MAX), longestToolName) + NOTE_OUTPUT_BYTES;
+/** What the hold counts, for the one real result, besides the result itself (`roomGrowth`: its id, its name, its JSON). */
+export const RESULT_FRAMING_BYTES = 200;
+
+/**
+ * Whether an others' reply's first turn is one its hold does not cover (worker.ts, plan B2b): its calls come to more than
+ * `callsCap` that run and `overCapNotes` that are answered with a note; or a call's id is longer than `TOOL_CALL_ID_MAX`
+ * (the hold counts ids at that length: such a call counts as the whole of the turn's allowance); or the answers it would get,
+ * at the real bytes of their ids and names (an unknown tool's name is the model's own), would pass what the hold counted
+ * for them — `callsCap` results (their framing at `RESULT_FRAMING_BYTES`) and `overCapNotes` notes at the longest offered name.
+ * The results themselves are cut to the same weight in both.
+ */
+export function turnOver(
+  calls: readonly Pick<ToolCall, "id" | "name">[],
+  o: { callsCap: number; overCapNotes: number; longestToolName: string },
+): boolean {
+  if (calls.length > o.callsCap + o.overCapNotes) return true;
+  if (calls.some((c) => c.id.length > TOOL_CALL_ID_MAX)) return true;
+  const framing = calls.reduce((sum, c) => sum + framingBytes(c.id, c.name), 0);
+  const worst = framing + Math.max(0, calls.length - o.callsCap) * NOTE_OUTPUT_BYTES;
+  return worst > o.callsCap * RESULT_FRAMING_BYTES + o.overCapNotes * noteBytes(o.longestToolName);
+}
 /** The line the system text gains for the last call of a reply that used tools. */
 export const FINAL_LINE = "你已经不能再查了，请用上面查到的内容直接回答。";
 /** What ends a result cut to its weight. */

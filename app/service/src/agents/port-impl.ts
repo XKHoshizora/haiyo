@@ -7,10 +7,11 @@ import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
-import { boundedForOthers, OthersLimit } from "../metering/others.ts";
+import { boundedForOthers, keepsRoom, OthersLimit } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
+import { classOf } from "../metering/wallet.ts";
 import { correctedEstimate, estimateTokens, holdTokens, planRatio, ratioKey, readRatio, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR } from "../metering/tokens.ts";
 import { loadNotes } from "../memory/passage.ts";
 import { markRead, type ReadEvents } from "../messages/read.ts";
@@ -41,7 +42,7 @@ import {
 } from "./context.ts";
 import { maxCallsOf } from "./replay.ts";
 import { contextBudget, holdsNewest, partText } from "./runtime/context.ts";
-import { FINAL_LINE } from "./runtime/loop.ts";
+import { FINAL_LINE, noteBytes } from "./runtime/loop.ts";
 import { postAsAgent, standingAcknowledgement, type AgentReply } from "./conversation.ts";
 import { namePartCalls } from "./mentions.ts";
 import type { Reviewer } from "../memory/reviewer.ts";
@@ -913,12 +914,18 @@ export class DbAgentPort implements AgentPort {
       const roomCapTokens = Math.max(0, resolved.contextTokens - resolved.call.maxOutputTokens) + TOOL_PREAMBLE_TOKENS + context.fixedTokens;
       // (A tool offered with no cap of its own has only the round cap: what one round brings back is not bounded below the
       // whole of a call, so the room is that.)
+      // An others' reply (plan B2b) has one real call and at most `OTHERS.overCapNotes` notes, in one tool round: what its last call
+      // can add to the next input is one result and those notes, each at the longest answer a call past the first can get
+      // (`noteBytes`). It replaces the per-tool caps' sum, and nothing is raised after admission (`extend`).
       const growthTokens =
         offer === null
           ? 0
-          : offer.tools.every((tool) => Object.hasOwn(offer.perTool, tool.name))
-            ? roomGrowth(Object.values(offer.perTool).reduce((sum, n) => sum + n, 0), config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
-            : roomCapTokens;
+          : state.lane !== "own"
+            ? roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens) +
+              config.others.overCapNotes * noteBytes(offer.tools.reduce((longest, tool) => (Buffer.byteLength(tool.name, "utf8") > Buffer.byteLength(longest, "utf8") ? tool.name : longest), ""))
+            : offer.tools.every((tool) => Object.hasOwn(offer.perTool, tool.name))
+              ? roomGrowth(Object.values(offer.perTool).reduce((sum, n) => sum + n, 0), config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
+              : roomCapTokens;
       const lastCall = tools.length === 0 ? 0n : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
       // What an others' reply offered tools holds if its with-tools hold does not fit its owner's number (`admit`, N3): the one
       // call it then makes without them — the text for going without them and the same messages — at its most.
@@ -1147,8 +1154,9 @@ export class DbAgentPort implements AgentPort {
         ).rows[0]!;
         // What its searches are charged so far (tools/web/hold.ts: their actual once the engine said it, else their price).
         const searchedCharge = BigInt(row.web_charge);
-        // A provider's model costs nothing but the searches its tool held: those count with its lane.
-        if (money.price === null || row.charge_to === null) return (await budgetReachedWith(t, lane, agent, searchedCharge, config)) ? "final" : "ok";
+        // A provider's model costs nothing but the searches its tool held: those count with its lane. An others' reply has had its
+        // one tool round: the next call is its last, whatever the money says (plan B2a).
+        if (money.price === null || row.charge_to === null) return state.lane !== "own" ? "final" : (await budgetReachedWith(t, lane, agent, searchedCharge, config)) ? "final" : "ok";
         const reported = spent !== null && isCount(spent.inputTokens) && isCount(spent.outputTokens);
         const cost = costMicro(money.price, reported ? spent.inputTokens : estimated.inputChars, reported ? spent.outputTokens : estimated.outputChars);
         const held = BigInt(row.hold);
@@ -1156,12 +1164,20 @@ export class DbAgentPort implements AgentPort {
         // model's, which is what is raised here (0 for a reply that made none: every number as before).
         const searched = BigInt(row.web);
         // The room kept for a last call on `AB` (`RunMoney.reserveMicro`): this call is within it.
-        const reserve = row.charge_to === "free" ? money.reserveMicro : 0n;
+        const reserve = row.charge_to !== "memory" && keepsRoom(classOf(row.charge_to), state.lane) ? money.reserveMicro : 0n;
         // So far is at most what the reply held for its calls: each was held at its most before it was made, so a round
         // reported above that is the upstream's error — forgiven at settlement, never held for.
         const modelHeld = held - reserve - searched > 0n ? held - reserve - searched : 0n;
         const sofar = cost < modelHeld ? cost : modelHeld;
         const next = costMicro(money.price, nextInputTokens, money.maxOutputTokens);
+        // An others' reply: its hold, taken whole at admission — its first call and its last, the latter at the most a one-round
+        // reply can add to its input (`othersGrowth`, `begin`) — covers every request it can make, the tool-less finish after
+        // a discard or a refused round included. Nothing is raised here; the tool phase has ended, so the answer is "final". What
+        // the next call can cost beside what the reply has cost so far passing what is held would be a bug, and is counted.
+        if (state.lane !== "own") {
+          if (sofar + next > modelHeld) this.deps.log.warn({ metric: "others_round_raise" }, "agent run: an others' reply's next call could cost more than its hold; the hold is not raised");
+          return "final";
+        }
         // Another round must keep room for a last call after it: renewed from the next call's input bound and what one
         // round can add, at most the whole of a call (`roomGrowth`); short of it on `AB`, the next call is the last.
         const renewed =

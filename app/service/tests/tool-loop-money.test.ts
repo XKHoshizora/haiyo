@@ -680,7 +680,7 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ source: "provider", cost: "0", free: "0", balance: "0", input: 900_000, output: 9000 }]);
   });
 
-  it("a provider's model in a lane with a daily budget: extend answers ok while the budget is not reached, and final once what is settled reaches it — nothing held either way, its owner's account never waited on", async () => {
+  it("a provider's model in an others' lane: extend answers final whatever the budget says (its one tool round has been made) — nothing held, its owner's account never waited on", async () => {
     const owner = await signUp(app, "ownbudget");
     const member = await signUp(app, "ownbudgetmember");
     const g = await group(app, owner, "饭搭子", [member, await signUp(app, "ownbudgetthird")]);
@@ -712,11 +712,9 @@ describe("the money of a reply that offers tools", () => {
       }
     };
 
-    // The budget not reached: another round.
-    expect(await extend()).toBe("ok");
+    // An others' reply has one tool round (B2a): the next call is the last, the budget reached or not.
+    expect(await extend()).toBe("final");
     expect(await holdOf(ticket.id)).toBe(0n);
-    // An earlier reply of the Agent's to someone else, on a site model, settled today at a point: the budget is reached,
-    // and the next call is the last.
     await paidReply(db, { agentId: agent.id, ownerId: owner.id, conversationId: g, lane: "others", micro: POINT });
     expect(await extend()).toBe("final");
     expect(await holdOf(ticket.id)).toBe(0n);
