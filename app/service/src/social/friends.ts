@@ -1,7 +1,9 @@
+import type { EndedRuns } from "../agents/group-leave.ts";
 import { appendDirectNotice, ensureDirect } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
-import type { PublicPrincipal } from "../principals/store.ts";
+import { handleOf, type PublicPrincipal } from "../principals/store.ts";
+import { endGrants } from "./agent-contacts.ts";
 import { lockPair, orderedPair } from "./pair.ts";
 import { areFriends, blockBetween } from "./relations.ts";
 
@@ -149,13 +151,32 @@ export async function unfriend(
   t: Tx,
   actor: string,
   other: string,
-): Promise<Outcome<{ conversationId: string | null; notices: StoredMessage[] }>> {
+): Promise<Outcome<{ conversationId: string | null; notices: StoredMessage[]; ended: EndedRuns }>> {
   await lockPair(t, actor, other);
   const [lo, hi] = orderedPair(actor, other);
   const del = await t.query("delete from friendships where a_id = $1 and b_id = $2", [lo, hi]);
   if ((del.rowCount ?? 0) === 0) return { ok: false, code: "not_found" };
   const notice = await appendDirectNotice(t, { event: "friendship_ended", actorId: actor, principalId: other });
-  return { ok: true, conversationId: notice?.conversationId ?? null, notices: notice ? [notice] : [] };
+  // Unfriending is just unfriending (Owner decision 2026-11-25): no bar, no cooldown, nothing in anyone's stopped list. What follows from
+  // the friendship being gone: the rows admitted BECAUSE of it (basis `contacts`) between the two sides' Agents and people end, as an
+  // ordinary ending (`left`: the pair may be admitted again by the same policy once they are friends again); a row the owner approved
+  // one by one is not touched. After the notice (the lock order); each Agent in id order, as `endGrants` locks them.
+  const friendRows = await t.query<{ agent_id: string; subject_id: string }>(
+    `select c.agent_id, c.subject_id from agent_contacts c join principals ag on ag.id = c.agent_id
+      where c.state = 'live' and c.basis = 'contacts'
+        and ((ag.owner_id = $1 and c.person_id = $2) or (ag.owner_id = $2 and c.person_id = $1))
+      order by c.agent_id, c.subject_id`,
+    [actor, other],
+  );
+  const byAgent = new Map<string, string[]>();
+  for (const r of friendRows.rows) byAgent.set(r.agent_id, [...(byAgent.get(r.agent_id) ?? []), r.subject_id]);
+  const ended: EndedRuns = { cancelled: [], running: [] };
+  for (const [agentId, subjectIds] of byAgent) {
+    const done = await endGrants(t, { agentId, subjectIds }, "left", { groups: false }); // no group run is touched (A-5 review m8)
+    ended.cancelled.push(...done.cancelled);
+    ended.running.push(...done.running);
+  }
+  return { ok: true, conversationId: notice?.conversationId ?? null, notices: notice ? [notice] : [], ended };
 }
 
 export interface RequestEntry {
@@ -169,7 +190,8 @@ export interface SocialView {
   friends: PublicPrincipal[];
   incoming: RequestEntry[];
   outgoing: RequestEntry[];
-  blocked: PublicPrincipal[];
+  /** Whom the caller blocked: a person or an Agent (`kind`; an Agent by its full handle), never an Agent that is deleted. */
+  blocked: Array<PublicPrincipal & { kind: "human" | "agent" }>;
   blockedBy: PublicPrincipal[];
 }
 
@@ -202,9 +224,10 @@ export async function socialView(db: Queryable, me: string): Promise<SocialView>
     );
   const incoming = await requests("r.to_id", "r.from_id");
   const outgoing = await requests("r.from_id", "r.to_id");
-  const blocked = await db.query<PRow>(
-    `select p.id, p.handle::text as handle, p.display_name, p.avatar_version from blocks b join principals p on p.id = b.blocked_id
-      where b.blocker_id = $1 order by p.handle`,
+  // A deleted Agent is left out: its handle is free to name another Agent (048), and a row under it would point at the wrong one.
+  const blocked = await db.query<PRow & { kind: "human" | "agent" }>(
+    `select p.id, ${handleOf("p")} as handle, p.display_name, p.avatar_version, p.kind from blocks b join principals p on p.id = b.blocked_id
+      where b.blocker_id = $1 and not exists (select 1 from agents ag where ag.principal_id = p.id and ag.deleted_at is not null) order by p.handle`,
     [me],
   );
   const blockedBy = await db.query<PRow>(
@@ -216,7 +239,7 @@ export async function socialView(db: Queryable, me: string): Promise<SocialView>
     friends: friends.rows.map(pub),
     incoming: incoming.rows.map(entry),
     outgoing: outgoing.rows.map(entry),
-    blocked: blocked.rows.map(pub),
+    blocked: blocked.rows.map((r) => ({ ...pub(r), kind: r.kind })),
     blockedBy: blockedBy.rows.map(pub),
   };
 }

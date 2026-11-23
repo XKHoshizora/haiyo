@@ -11,6 +11,7 @@ import { planRatio, ratioKey, readRatio } from "../metering/tokens.ts";
 import { resolveModel } from "../models/resolve.ts";
 import { uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
+import { groupPlaceSql } from "../social/place.ts";
 import { confirmChange, discardChange, undoChange, type FullRoom } from "./apply.ts";
 import { noCallCanStart } from "./call.ts";
 import { loadNotes } from "./passage.ts";
@@ -343,7 +344,7 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
         // (Note for the controller: the notes page and the passage go by the owner's membership, as Task R asks; this, by the Agent's.)
         db.query<{ id: string; title: string | null }>(
           `select c.id, c.title from memberships m join conversations c on c.id = m.conversation_id
-            where m.principal_id = $1 and m.left_seq is null`,
+            where m.principal_id = $1 and m.left_seq is null and ${groupPlaceSql("c")}`,
           [agent.id],
         ),
         db.query<{ id: string; handle: string }>("select id, handle::text as handle from principals where id in (select speaker_id from agent_hearsay where agent_id = $1)", [agent.id]),

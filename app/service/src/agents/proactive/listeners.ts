@@ -1,4 +1,5 @@
 import type { Queryable } from "../../db.ts";
+import { socialPlaceSql } from "../../social/place.ts";
 import { labelName } from "../runtime/prompt.ts";
 
 /**
@@ -100,6 +101,8 @@ export async function writeFlags(q: Queryable, flags: readonly MemoryFlag[], opt
        from unnest($1::uuid[], $2::uuid[], $3::bigint[], $4::text[]) as f (agent_id, conversation_id, seq, kind)
        join agents a on a.principal_id = f.agent_id and a.memory and a.deleted_at is null
        join memberships m on m.principal_id = f.agent_id and m.conversation_id = f.conversation_id and m.left_seq is null
+       -- no social conversation holds a flag, whoever writes (A-4 review m10): scope is enforced by the query
+       join conversations fc on fc.id = f.conversation_id and not ${socialPlaceSql("fc")}
        left join agent_group_state s on s.agent_id = f.agent_id and s.conversation_id = f.conversation_id
        left join memory_catchups cu on cu.agent_id = f.agent_id and cu.conversation_id = f.conversation_id
       where f.seq > greatest(coalesce(s.heard_from_seq, 0), case when $5::boolean then 0 else coalesce(cu.to_seq, 0) end)

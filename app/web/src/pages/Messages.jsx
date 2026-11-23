@@ -2,6 +2,7 @@ import React, { useContext, useLayoutEffect, useMemo, useRef, useState } from "r
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { drawnTextOf, isAgent, isMyAgent, nameOf, ownerOf, publishBlock, senderName } from "../state/selectors.js";
+import { supervisorLabel } from "../state/social.js";
 import { formatSize, namesAgent, replyPoints } from "../data/viewmodel.js";
 import { useShowReplyPoints } from "../data/prefs.js";
 import { failureText, retryHopeless } from "../data/uploadErrors.js";
@@ -18,6 +19,7 @@ import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
 import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits.jsx";
 import { MemoryNotice } from "./MemoryChip.jsx";
+import { PersonaFactCard } from "./SocialCards.jsx";
 import { ReplyLookups } from "./ReplyLookups.jsx";
 import { citingOf, WebSources } from "./WebSources.jsx";
 import { CitesContext } from "../ui/cites.jsx";
@@ -177,6 +179,9 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
   const { state, dispatch, actions } = useStore();
   // The menu of a bubble (long-press, right-click, the context-menu key): ui/BubbleMenu.jsx.
   const bubbleMenu = useBubbleMenu(() => messageActions({ state, dispatch, msg, onReply }));
+  // The persona aid's card (A8b): only in my own conversation with the Agent, and only when the service sent its `card` (to the owner alone).
+  // Before the hidden test: the notice sentence of the event is not worded here (it has no line of its own), the card is the notice.
+  if (msg.kind === "system" && msg.system?.event === "persona_fact") return conv.type === "agent" && msg.system.card ? <PersonaFactCard msg={msg} conv={conv} /> : null;
   // A notice of an event this client does not know shows nothing.
   if (msg.hidden) return null;
   if (msg.kind === "system") {
@@ -196,7 +201,9 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
   // carries); a persona proposal only in the conversation with my own Agent, never in a group. (已停止 and 已截断 show
   // wherever the reply is.)
   const ownChat = agent && conv.type === "agent" && conv.agentId === msg.from;
-  const thinking = ownChat || (agent && conv.type === "group" && isMyAgent(state, msg.from));
+  const thinking = ownChat || (agent && (conv.type === "group" || conv.type === "social") && isMyAgent(state, msg.from));
+  // A supervising owner's words are marked 主人 (Agent social): decided by the membership role of the sender alone, never by a name.
+  const supervisor = supervisorLabel(state, conv, msg.from);
   // Read state in direct chats and in an Agent's (by its marker); "sending" is shown wherever it happens.
   const showReceipt = mine && (conv.type === "human" || conv.type === "agent");
   // Why my message to my own Agent may get no reply (shown after 已发送, nothing else changes): it is paused, or it
@@ -226,6 +233,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
           {/* My own (right-aligned) messages read time then name, so the name stays next to the avatar. */}
           {mine && stamp}
           <strong>{senderName(state, msg.from)}</strong>
+          {supervisor && <Tag tone="muted">{supervisor}</Tag>}
           {agent && <Tag>Agent</Tag>}
           {agent && <span className="owner">主人：{nameOf(state, ownerOf(state, msg.from))}</span>}
           {!mine && stamp}

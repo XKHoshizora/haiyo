@@ -13,6 +13,7 @@ import { listOwnedAgents, lockAgent, setAgentState, type AgentModel } from "./ag
 import { recordAcceptance } from "./legal.ts";
 import { sendMessage } from "./messages/send.ts";
 import { HANDLE_PATTERN } from "./principals/store.ts";
+import { deleteBlock } from "./social/blocks.ts";
 import { orderedPair } from "./social/pair.ts";
 
 /** The reviewer's account unless the operator names others (`--handle`, `--name`). */
@@ -192,7 +193,11 @@ export async function seedDemo(db: Db, config: Config, auth: Auth, input: DemoIn
     // Friends with both, as an accepted request leaves them (a block or an unfriending of a review is undone).
     for (const memberId of memberIds) {
       const [lo, hi] = orderedPair(reviewerId, memberId);
-      await t.query("delete from blocks where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1)", [reviewerId, memberId]);
+      // Through the one unblock path (no notice: a reset leaves nothing in the review's direct chat), so that a block's bar goes with
+      // it; and the reviewer's own 停止往来 of a member goes too (their friendship is restored, so must be their reach).
+      await deleteBlock(t, reviewerId, memberId);
+      await deleteBlock(t, memberId, reviewerId);
+      await t.query("delete from access_bars where setter_id = $1 and other_id = $2 and kind = 'stop'", [reviewerId, memberId]);
       await t.query("insert into friendships (a_id, b_id) values ($1, $2) on conflict do nothing", [lo, hi]);
       await ensureDirect(t, memberId, reviewerId, reviewerId);
     }

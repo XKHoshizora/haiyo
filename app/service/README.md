@@ -756,15 +756,17 @@ picked from the @ list mean anyone but the one picked.
 An Agent is a principal of kind `agent` owned by one person for good, with a dedicated conversation (type `agent`)
 whose members are exactly the owner and the Agent. Everything here is the owner's: for anybody else every
 `/api/agents/:id…` route, and the conversation routes of that conversation, answer the JSON 404 `not_found`
-byte for byte as for an id that does not exist. An Agent's handle is unknown to `GET /api/principals/lookup` and
+byte for byte as for an id that does not exist. An Agent's name part is unknown to `GET /api/principals/lookup` (its full handle finds it only while it is discoverable) and its handle to
 `POST /api/friend-requests` (also for its owner: their pattern has no dot). Only its owner puts it into a group, and only one the owner is a member
 of (`POST /api/conversations/:id/members`): for someone who is not a current member of that group the route is 404
 `not_found`, as for a group that does not exist, whatever the id; for a member who is not its owner its id is refused
 exactly as the id of a non-friend or an unknown principal is (403 `forbidden`). Among a new group's `memberIds`
 (`POST /api/conversations`) it is refused so (403) for everyone, its owner included.
-Its id is unknown to `GET`/`HEAD /api/principals/:id/avatar` for anybody but its owner and whoever shares a
-conversation with it now (see below), and to `PUT`/`DELETE /api/blocks/:principalId` for everyone, its owner included
-(an Agent cannot be blocked): the answer of an id that does not exist, byte for byte (`tests/enumeration.test.ts`).
+Its id is unknown to `GET`/`HEAD /api/principals/:id/avatar` for anybody but its owner, whoever shares a
+conversation with it now (see below), whoever it is discoverable to and whoever blocks it, and to `PUT /api/blocks/:principalId` for everyone but, while `SOCIAL.enabled` is on, someone who sees it (it is discoverable to them,
+they share a conversation with it now, or they already block it; its own owner is refused 400 `invalid_request`), and to `DELETE` for
+anyone who does not block it, as a random id's no-op: the answer of an id that does not exist, byte for byte (`tests/enumeration.test.ts`); for someone who blocks it, `DELETE` lifts the block and announces it, as for a person. Blocking an Agent writes the
+block only, no bar, and `GET /api/social` lists it in `blocked` by its full handle with `kind: "agent"`, until it is deleted (a deleted Agent's entry is left out: its handle may name another Agent by then). What someone blocks stays theirs to see: its avatar loads for them.
 
 An Agent is in a group only while its owner is: its owner adds it, the group's creator or its owner takes it out, and it
 leaves with its owner — when the owner leaves or is removed — and when it is deleted (Conversations,
@@ -2469,9 +2471,13 @@ read (to tell its type), never the whole file. `Content-Length` is only sent for
 
 *Session: required.* Finds a principal by exact handle — the way to get someone's id to befriend them.
 
-- Query: `handle` (at most 100, lower-cased, then `^[a-z0-9_]{3,24}$`). No prefix or partial matches.
-- 200 `{"id", "handle", "displayName", "avatarVersion"}` (also for yourself); 404 `not_found` — also for a handle a
-  person gave up (Handles) and an Agent's name part, exactly as for one nobody has.
+- Query: `handle` (at most 100, lower-cased, then `^[a-z0-9_]{3,24}$`; while `SOCIAL.enabled` is on also an Agent's full handle
+  `<owner's handle>.<name part>`, `^[a-z0-9_]{3,24}\.[a-z0-9_]{2,24}$`). No prefix or partial matches.
+- 200 `{"id", "handle", "displayName", "avatarVersion"}` (also for yourself); for a discoverable Agent 200 `{"id", "handle",
+  "displayName", "avatarVersion", "kind": "agent", "ownerId", "ownerName", "intro", "field"}`. An Agent is discoverable to the
+  caller when it is not deleted or disabled, its contact policy is not `none`, no block lies either way between the caller and its
+  owner or the Agent, the switch is on and the caller is not its owner. 404 `not_found` — also for a handle a person gave up
+  (Handles), an Agent's name part and every Agent that is not discoverable, exactly as for one nobody has (the answer never says why).
 - Limit: 30 per minute, found or not (the limit is what stops probing for handles).
 
 ### Friends and blocks
@@ -2491,7 +2497,7 @@ direction keeps the chat and its history but nobody can send there (`canSend.rea
   "friends":   [{ "id": "…", "handle": "bob", "displayName": "Bob", "avatarVersion": 0 }],   // by handle
   "incoming":  [{ "id": "<request id>", "principal": { "id", "handle", "displayName", "avatarVersion" }, "createdAt": "…", "expiresAt": "…" }],
   "outgoing":  [ /* the same shape; principal is the recipient */ ],             // both newest first, live pending only
-  "blocked":   [{ "id", "handle", "displayName", "avatarVersion" }],                              // whom you blocked, by handle
+  "blocked":   [{ "id", "handle", "displayName", "avatarVersion", "kind": "human" | "agent" }],     // whom you blocked, by handle (an Agent by its full handle; a deleted Agent is not listed)
   "blockedBy": [{ "id", "handle", "displayName", "avatarVersion" }]                               // who blocked you, by handle
 }
 ```
@@ -2867,7 +2873,7 @@ the Agent by its full handle (`GET /api/principals/lookup`), are let in by the o
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid) and **1b** (notes
 shown to a non-owner).
 
-**STEP 0 status.** No route of Agent social is registered yet: the two route files exist and are wired in, and register none, so each route below answers the ordinary 404 until its lane adds it. Each entry under 「Planned」 is the contract the lane writes to; the lane that adds a route turns its line into a `####` heading in the same edit (`tests/readme.test.ts` wants a heading for every served route and for no other), adds its probe row to `tests/fuzz.test.ts` and, for a path parameter not in the list yet, its name to `tests/logging.test.ts`. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
+**STEP 0 status.** Step 0 registered no route of Agent social; each lane adds its routes. Lane A's `/api/agent-contacts` routes are in (below); every entry still under 「Planned」 answers the ordinary 404 until its lane adds it. Each entry under 「Planned」 is the contract the lane writes to; the lane that adds a route turns its line into a `####` heading in the same edit (`tests/readme.test.ts` wants a heading for every served route and for no other), adds its probe row to `tests/fuzz.test.ts` and, for a path parameter not in the list yet, its name to `tests/logging.test.ts`. While `SOCIAL.enabled` is false (the default), every route of lane A answers 404 and the lookup answers people only; lane B's routes are live whatever the switch says (the owner's numbers are step L). The switch off refuses only social conversations (creating one, writing in one, runs triggered in one); groups and everything else behave as ever. Migration 073 holds the columns and the empty tables (`social_pairs`, `agent_contacts`).
 
 **Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's daily caps, what one reply to
 others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
@@ -2876,54 +2882,94 @@ others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
 `note_judge_unanswered`, `withheld_checks`, `others_limit_refused`, `others_held_back`, `others_turn_discarded`,
 `others_plain_fallback`, `social_post_refused`, `agent_reported`.
 
-**Planned: `POST /api/agent-contacts`**
+#### `POST /api/agent-contacts`
 
 *Session: required.* Body `{"agentId": "<uuid>"}`: add an Agent (lane A, ring 1a). → 201 `{"state": "live", "conversationId"}`
-(let in), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days), 404 `not_found`, 409 `is_yours`, 429
-`cooldown` `{"availableAt"}`.
+(let in, also when it was so already), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days; asking again
+says the same), 404 `not_found` (also for an Agent that is deleted, disabled, takes no contacts, or is blocked either way:
+never why), 409 `is_yours`, 429 `cooldown` `{"availableAt"}` (30 days after the owner declined a request of yours, or after
+they stopped dealings with you; an Agent of yours is never held back by a stop). 404 for every route here while `SOCIAL.enabled`
+is off. Limit: 20 a minute.
 
-**Planned: `GET /api/agent-contacts`**
+#### `GET /api/agent-contacts`
 
 *Session: required.* (lane A, ring 1a) → 200 `{"mine": [{"agentId", "state", "conversationId", "since", "until", "ended":
-"declined" | "ended" | null}], "waiting": [{"agentId", "subject", "since", "until"}]}`. The visitor never learns why access ended.
+"declined" | "ended" | null}], "waiting": [{"agentId", "subject", "since", "until"}]}`. `mine`: your own rows, newest first, all of them;
+a request that ran out reads as `ended`. The visitor never learns why access ended (`declined` or `ended`, nothing else). `waiting`:
+the requests waiting on the Agents you own, newest first; `subject` is `{"id", "handle", "displayName", "avatarVersion", "kind"}`
+(an Agent's also `ownerId` and `ownerName`).
 
-**Planned: `POST /api/agent-contacts/:agentId/:subjectId/approve`**
+#### `POST /api/agent-contacts/:agentId/:subjectId/approve`
 
 *Session: required.* No body. The Agent's owner lets a requester in (lane A, ring 1a). → 200 `{"state": "live", "conversationId"}`;
-409 `not_requested`; 404 `not_found`.
+409 `not_requested` (nothing waits: no request, a request answered, or one that ran out, which is ended `expired`); 404 `not_found`
+(not your Agent: an unknown one's answer). It never touches a bar.
 
-**Planned: `POST /api/agent-contacts/:agentId/:subjectId/decline`**
+#### `POST /api/agent-contacts/:agentId/:subjectId/decline`
 
-*Session: required.* No body. The owner declines a request (lane A, ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`.
+*Session: required.* No body. The owner declines a request (lane A, ring 1a). → 200 `{"ok": true}`; 409 `not_requested`; 404 `not_found`. The row ends `declined` and the person is held off from this Agent for 30 days.
 
-**Planned: `DELETE /api/agent-contacts/:agentId/:subjectId`**
+#### `DELETE /api/agent-contacts/:agentId/:subjectId`
 
-*Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed`, by the subject `left`. → 200 `{"ok": true}`.
+*Session: required.* Ends an access (lane A, ring 1a): by the owner it is `removed` (a live row), by the subject `left` (a live or waiting one). → 200 `{"ok": true}`; 404 `not_found` for anyone
+else and for a row that is not there or ended already.
 
-**Planned: `GET /api/agents/:id/contacts`**
+#### `GET /api/agents/:id/contacts`
 
 *Session: required; the Agent's owner only.* (lane A, ring 1a) → 200 `{"policy": "ask" | "contacts" | "none", "picked": boolean,
-"picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations": […]}`.
+"picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations":
+[{"conversationId", "subject"}]}`. `rows`: every row of the Agent, newest first, with its real end reason (`endReason`: `declined`,
+`expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where your own bar ended it (the row records whose bar did, `barred_by`), a row ended by the other person's bar reads `left` for good, whoever lifts last; once you have lifted your last bar against that person, only the rows your bar ended read `removed`); `subject` is as in `waiting` of
+`GET /api/agent-contacts`. `conversations`: the Agent's social conversations (「它和别人的对话」), newest first, each with the other
+end. 404 `not_found` for anyone but the owner and for a deleted Agent; 404 while `SOCIAL.enabled` is off.
 
-**Planned: `PUT /api/agents/:id/contact-policy`**
+#### `PUT /api/agents/:id/contact-policy`
 
 *Session: required; the Agent's owner only.* Body `{"policy": "ask" | "contacts" | "none", "picked": boolean, "picks":
 ["<uuid>"] (at most 500), "dryRun"?: boolean}` (lane A, ring 1a). → 200 `{"ends": number}`: how many accesses the change ends (with
-`dryRun`, only counted).
+`dryRun`, only counted and nothing is written). The accesses the new setting would not create end: to `none` every live and waiting
+row; to `ask` the live rows let in as 「我的联系人」; to `contacts` with picks those whose person is not picked or no longer a friend;
+what those people called on the Agent stops. Approved rows stay; widening ends and creates nothing. The picks are replaced. 400
+`invalid_request` for a pick that is no person or is the owner; 404 `not_found` for anyone but the owner.
 
-**Planned: `PUT /api/bars/:personId`**
+#### `PUT /api/bars/:personId`
 
 *Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (lane A, ring 1a).
-→ 200 `{"ok": true, "ended": number}`.
+Every live or waiting row between the two sides ends, and their replies in the pair's social conversations stop; in a group the
+person's calls are taken out of a reply (it is cancelled only when it answers no one else, and stopped only when in flight and
+no one else is left). The bar is your own row: it is lifted by you alone (the other person's own stop or block is theirs), and the pair
+stays barred while a row of either of you stands. → 200 `{"ok": true, "ended": number}` (also when a bar stands already); 400 `invalid_request` for yourself; 404
+`not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
+Every block of a person by a person writes its own row too (a block's) in its own transaction; unblocking deletes only that block's row.
+Unfriending is just unfriending (Owner decision 2026-11-25, as in WeChat and QQ): it writes no bar, starts no cooldown and puts no one in a
+stopped list. Pressing 停止往来 on someone already stopped keeps the stop and its time (so the other person's wait does not start again), but still ends every access of the pair that stands at that moment, such as one the owner approved after the first stop; it answers 200 as the first press did. What follows from the friendship being gone is that the accesses admitted because of it (`contacts`, the policy that lets
+friends in) between the two sides' Agents and people end as an ordinary ending, and that is all (no call of anyone is taken out of a group reply: in a group anyone may @ the Agent): a row the owner approved one by one stays,
+and once they are friends again the same policy admits them again, with no 恢复往来. 停止往来 is the only act that writes a `stop` row.
 
-**Planned: `DELETE /api/bars/:personId`**
+#### `DELETE /api/bars/:personId`
 
-*Session: required.* 恢复往来: lifts your own bar (never one a block set; lane A, ring 1a). → 200 `{"ok": true}`; 404 `not_found` otherwise.
+*Session: required.* 恢复往来: lifts your own stop (never a block's row, and never the other person's). It brings no row back: whoever
+is let in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise: no stop of yours, whatever else
+stands (the other person's, a block's): one answer.
 
-**Planned: `POST /api/reports`**
+#### `POST /api/reports`
 
 *Session: required.* Body `{"agentId": "<uuid>", "reason": "spam" | "harassment" | "privacy" | "other", "note"?: string
-(at most 500)}` (lane A, ring 1a). → 201 `{"id"}`.
+(at most 500)}` (lane A, ring 1a). Reports an Agent the caller can see: their own, one they share a conversation with now, one they
+blocked, or one that is discoverable to them (the rule of its avatar); for any other id, a deleted or disabled Agent a stranger cannot
+find, or a person, the answer is the 404 of an Agent that is not there. The row (`agent_reports`, `target_kind` `agent`) keeps the
+reporter's note (trimmed; none when it is empty) and the social conversation they share with the Agent, if they have one. Limit: five a
+minute. → 201 `{"id"}`; 404 `not_found`. 404 while `SOCIAL.enabled` is off. Counter `agent_reported` (the reason, never the note). The
+operator reads the reports on the command line (`reports:list [--open]`, `reports:close <id prefix> --outcome disabled|dismissed`:
+ids' prefixes, the Agent's handle, the reason, whether there is a note; never the note) and turns an Agent off and on with
+`agent:disable <full handle>` / `agent:enable <full handle>`: a disabled Agent is gone to everyone but its owner. That is one fact, `gone`,
+read by the one access decision (`reach` and its SQL twin `refusedSql`), so it holds wherever the decision is asked: the lookup, the
+avatar rule and every social conversation (permission to write, a reply's start and its post), and, in groups, every call site
+that asks it (lane B's B5b wires the group sites to `refusedSql`; ring 1a deploys only as a whole, with it). The replies others asked of
+it stop (queued ones cancelled, running ones interrupted, `access_ended`; the owner's own call noted on one stays noted), and its owner's
+own replies go on; no row is touched, and enabling gives access back. The command line has no live connection: screens that are open
+catch up at their next sync (a typed message to a disabled Agent is answered 403 at once). `reports:close --outcome disabled` disables the
+Agent too, by the same path (an outcome that only recorded would read as having acted); `dismissed` only records.
 
 **Planned: `PUT /api/agents/:id/note-verdicts`**
 
@@ -2931,10 +2977,20 @@ others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
 "cardSeq"?: number}` (lane A, ring 1b): the owner's yes or no on one note for one person; a card's answer names its message
 in `cardSeq`. → 200 `{"ok": true}`.
 
-**Planned: `POST /api/agents/:id/persona-facts/:seq`**
+#### `POST /api/agents/:id/persona-facts/:seq`
 
 *Session: required; the Agent's owner only.* Body `{"move": boolean}` (lane A, ring 1a: the persona aid): answers the `persona_fact` card at
-message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
+message `seq` of the Agent's own conversation. The card says that a sentence of the persona looks like a fact about the owner or someone
+else (a persona is read whole by anyone the Agent talks to); it is made by the persona aid, which reads each new persona version once on
+the owner's memory model and allowance (one call per version, none while `SOCIAL.enabled` is off and nothing stamped then, so that at the
+first switch-on every persona that exists is read once, ten owners a poll; none for an owner's own edit; a call refused for a moment
+because the owner's calls are at their cap is made at a later pass), keeps only whole sentences of the persona (no fragment, clause or few
+characters; a sentence the owner answered 不用, or whose card still waits, is not asked again), at most three, and shows a card to its owner alone: `system.card`
+`{"answer": "moved" | "kept" | null, "expired": boolean, "sentence"}`. `move: true` takes the sentence out of the persona (the sentence as a whole, with its end mark; the persona's version goes up and counts as read) and writes it as a note about the owner (in the vault); a sentence no
+longer in the persona changes nothing and is answered `kept`. `move: false` leaves everything and records `kept`. One answer per card
+(`social_card_answers`); a card is answerable `OTHERS.cardDays` days. → 200 `{"ok": true, "moved": boolean}`; 404 `not_found` for what is
+no card of this Agent (and for anyone but its owner); 409 `answered`, `expired`, `room_full` (the notes have no room: nothing is
+changed and the card can be answered again); 422 `note_refused`. Limit: 30 a minute. 404 while `SOCIAL.enabled` is off.
 
 **Planned: `GET /api/me/others-use`**
 

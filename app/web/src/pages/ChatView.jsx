@@ -3,6 +3,7 @@ import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { convTitle, convSubtitle, drawnTextOf, groupCounts, isAgent, nameOf, publishBlock } from "../state/selectors.js";
+import { disclosureOf, isObserved, isSocialConv, pictureConv, supervisionText } from "../state/social.js";
 import { ConvAvatar, Btn, HeadCounts, IconBtn, Notice, Tag } from "../ui/primitives.jsx";
 import { isEscape } from "../ui/keys.js";
 import { AgentModelSwitch } from "./ModelPicker.jsx";
@@ -203,8 +204,10 @@ export function ChatView({ conv }) {
   const rows = placeWhispers(messages, whispers, { complete: !hasOlder, toEnd: !detached, bubble: finishing ? finishing.messageId : replying ? true : null });
   // A group: each Agent's reply being written, my Agent's status line, someone else's 暂时无法回复 — at the end of the
   // list (not under a detached window); and 让 Agent 停下 above the composer while its Agents talk to each other.
-  const groupRows = group && !detached ? conv.agentRuns ?? [] : [];
-  const hasAgents = group && conv.members.some((id) => isAgent(state, id));
+  // (A social conversation reads like a group where its Agent's replies are concerned: a row per Agent, and its state only.)
+  const runsHeld = group || isSocialConv(conv);
+  const groupRows = runsHeld && !detached ? conv.agentRuns ?? [] : [];
+  const hasAgents = runsHeld && (isSocialConv(conv) || conv.members.some((id) => isAgent(state, id)));
   const live = state.connection === "live";
   /** What changes at the end of the list besides messages: the bubble growing, the status lines coming or going. */
   const tail = `${replying ? `${run.id}:${conv.stream?.text.length ?? 0}:${conv.stream?.reasoning.length ?? 0}:${run.activity ?? ""}` : ""}|${finishing ? `finishing:${finishing.runId}` : ""}|${failedRun?.id ?? ""}|${groupRows
@@ -492,11 +495,11 @@ export function ChatView({ conv }) {
     <section className={`chat${dropping ? " dropping" : ""}`} aria-label={convTitle(state, conv)} {...dropHandlers}>
       <header className="chat-head">
         <IconBtn label="返回列表" className="only-mobile" onClick={up}><ChevronLeft size={22} /></IconBtn>
-        <ConvAvatar conv={conv} size={56} />
+        <ConvAvatar conv={pictureConv(state, conv)} size={56} />
         <div className="chat-title">
           <h2>
             {convTitle(state, conv)}
-            {agentChat && (
+            {(agentChat || (isSocialConv(conv) && !isObserved(conv))) && (
               <>
                 {" "}
                 <Tag>Agent</Tag>
@@ -523,6 +526,12 @@ export function ChatView({ conv }) {
         </div>
       </header>
 
+      {isSocialConv(conv) && (
+        // Who watches this conversation (design §2): a participant always reads the disclosure, the supervising owner what their words become.
+        <p className="social-note" role="note" data-testid="social-note">
+          {isObserved(conv) ? supervisionText(state, conv) : disclosureOf(state, conv)}
+        </p>
+      )}
       {searching && (
         <div className="chat-search">
           <Search size={16} aria-hidden="true" />

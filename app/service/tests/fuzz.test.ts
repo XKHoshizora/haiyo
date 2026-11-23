@@ -4,6 +4,8 @@ import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import type { RouteEntry } from "../src/app.ts";
 import { createInvite } from "../src/auth/invites.ts";
+import { lockConversation } from "../src/conversations/store.ts";
+import { appendSystem } from "../src/conversations/system.ts";
 import type { ModelEvent, ModelGateway } from "../src/models/gateway.ts";
 import type { ProviderProbe } from "../src/providers/probe.ts";
 import { api, befriend, group, signUp, TERMS, type Actor } from "./helpers/actors.ts";
@@ -289,6 +291,8 @@ interface Fixture {
   change: string;
   /** A whisper of the fuzzing account's about `agent` in the group, open (src/whispers/). */
   whisper: string;
+  /** The seq of a `persona_fact` card of `agent` in its own conversation (the persona aid, A8b), unanswered. */
+  personaCard: string;
 }
 
 const FAST = { source: "site", id: "fast" } as const;
@@ -358,6 +362,10 @@ async function fixture(): Promise<Fixture> {
      select id, $2, $3, seq, 'found_elsewhere', '{"text": "找到了", "actions": ["tell", "dismiss"]}'::jsonb from conversations where id = $1 returning id`,
     [g, me.id, agent.id],
   );
+  const card = await app.deps.db.tx(async (t) => {
+    await lockConversation(t, agent.conversationId);
+    return appendSystem(t, agent.conversationId, { event: "persona_fact", actorId: agent.id, agentId: agent.id, sentence: "主人住在杭州。", personaVersion: 1, expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
+  });
   return {
     me,
     peer,
@@ -381,6 +389,7 @@ async function fixture(): Promise<Fixture> {
     heardToConfirm: heard.rows[1]!.id,
     change: change.rows[0]!.id,
     whisper: whisper.rows[0]!.id,
+    personaCard: String(card.seq),
   };
 }
 
@@ -406,6 +415,10 @@ function validParams(route: Pick<RouteEntry, "method" | "url">, fx: Fixture): Re
     else if (name === "noteId") out[name] = method === "DELETE" ? fx.doomedNote : fx.note;
     else if (name === "hearsayId") out[name] = url.endsWith("/confirm") ? fx.heardToConfirm : fx.heard;
     else if (name === "changeId") out[name] = fx.change;
+    // Agent social (lane A): the fuzzing account's own Agent, and a person who has no row on it.
+    else if (name === "agentId") out[name] = fx.agent;
+    else if (name === "subjectId") out[name] = fx.peer.id;
+    else if (name === "personId") out[name] = fx.victim.id; // 停止往来 of the one whose removal, unfriending or blocking costs nothing
     else {
       const collection = url.split(`/:${name}`)[0]!.split("/").pop();
       out[name] =
@@ -430,6 +443,8 @@ function validParams(route: Pick<RouteEntry, "method" | "url">, fx: Fixture): Re
                       : randomUUID(); // a route added later: still fuzzed, with an id nobody has
     }
   }
+  // Agent social, lane A (A8b): the persona card's answer names the fixture's real card (a row appended; the shared `seq` line above is as it was).
+  if (url === "/api/agents/:id/persona-facts/:seq") out.seq = fx.personaCard;
   return out;
 }
 
@@ -465,6 +480,14 @@ function plausibleBody(route: RouteEntry, fx: Fixture): Record<string, unknown> 
       return { intro: "fuzz", groupMentions: "members", chainBudget: "12.5" };
     case "POST /api/agents/draft-persona":
       return { name: "Fuzz", model: FAST };
+    case "POST /api/agent-contacts":
+      return { agentId: fx.agent };
+    case "POST /api/reports":
+      return { agentId: fx.agent, reason: "spam" };
+    case "POST /api/agents/:id/persona-facts/:seq":
+      return { move: false };
+    case "PUT /api/agents/:id/contact-policy":
+      return { policy: "ask", picked: false, picks: [], dryRun: true };
     case "POST /api/providers":
       return providerBody({ name: `fz${n}`, models: [{ name: "m", reasoning: true, reasoningLevels: ["low", "high"] }] });
     case "PATCH /api/providers/:id":
@@ -599,6 +622,13 @@ describe("fuzz", () => {
       expect([name, got.some((x) => x.label.endsWith("[signed in]") && !SHALLOW.has(x.status))]).toEqual([name, true]);
     }
     expect(findings).toEqual([]);
+    // Agent social (A4): the add, with the fuzzing account's own Agent in the body (a 409 `is_yours`, past every check), before the
+    // pass below spends the account's twenty adds a minute: Fastify refuses a malformed body before the handler, so only the
+    // probes of a valid shape spend it.
+    const addRoute = routes.find((r) => r.method === "POST" && r.url === "/api/agent-contacts")!;
+    const added = await probeAll(signedInAndOut(probesFor(addRoute, fx, { body: { agentId: fx.agent } }), fx.me.cookie), findings);
+    expect([added.filter((x) => x.label.startsWith("the body given") && x.label.endsWith("[signed in]")).map((x) => x.status)]).toEqual([[409]]);
+    expect(findings).toEqual([]);
 
     const sent = await Promise.all(routes.map((r) => probeAll(signedInAndOut(probesFor(r, fx), fx.me.cookie), findings)));
     expect(findings).toEqual([]);
@@ -642,6 +672,41 @@ describe("fuzz", () => {
       expect([name, deep.length > 0]).toEqual([name, true]);
     }
     expect(wrongBodies).toEqual([]);
+    // Agent social, lane A (A4): the contact routes. A malformed path parameter is a 4xx; and the real ids took one probe past the
+    // checks of shape, session, rate and existence (the delete's row is not there, so it has no deeper answer than its 404; the add's was probed above).
+    const contactRoutes = routes.filter((r) => r.url.startsWith("/api/agent-contacts") && r.method !== "HEAD");
+    expect(contactRoutes.map((r) => `${r.method} ${r.url}`).sort()).toEqual([
+      "DELETE /api/agent-contacts/:agentId/:subjectId",
+      "GET /api/agent-contacts",
+      "POST /api/agent-contacts",
+      "POST /api/agent-contacts/:agentId/:subjectId/approve",
+      "POST /api/agent-contacts/:agentId/:subjectId/decline",
+    ]);
+    for (const route of contactRoutes) {
+      const name = `${route.method} ${route.url}`;
+      const got = sent[routes.indexOf(route)]!;
+      expect([name, got.filter((x) => x.label.startsWith("path ") && (x.status < 400 || x.status >= 500))]).toEqual([name, []]);
+      if (route.method !== "DELETE" && name !== "POST /api/agent-contacts") expect([name, got.some((x) => x.label.endsWith("[signed in]") && !SHALLOW.has(x.status))]).toEqual([name, true]);
+    }
+    // Agent social, lane A (A5b): 停止往来 and 恢复往来. A malformed path parameter is a 4xx; the stop took one probe past the checks (a
+    // 200 with the fixture's victim); the resume's answer depends on whether a stop came first, so it has no deeper answer to demand.
+    const barRoutes = routes.filter((r) => r.url.startsWith("/api/bars") && r.method !== "HEAD");
+    expect(barRoutes.map((r) => `${r.method} ${r.url}`).sort()).toEqual(["DELETE /api/bars/:personId", "PUT /api/bars/:personId"]);
+    for (const route of barRoutes) {
+      const name = `${route.method} ${route.url}`;
+      const got = sent[routes.indexOf(route)]!;
+      expect([name, got.filter((x) => x.label.startsWith("path ") && (x.status < 400 || x.status >= 500))]).toEqual([name, []]);
+      if (route.method === "PUT") expect([name, got.some((x) => x.label.endsWith("[signed in]") && x.status === 200)]).toEqual([name, true]);
+    }
+    // Agent social, lane A (A5c): the owner's view and setting of who may add an Agent; the real Agent took each of them past the checks.
+    const policyRoutes = routes.filter((r) => /^\/api\/agents\/:id\/contact/.test(r.url) && r.method !== "HEAD");
+    expect(policyRoutes.map((r) => `${r.method} ${r.url}`).sort()).toEqual(["GET /api/agents/:id/contacts", "PUT /api/agents/:id/contact-policy"]);
+    // Agent social, lane A (A10): a report; the fuzzing account's own Agent took one probe past the checks (a 201).
+    const reportRoute = routes.find((r) => r.method === "POST" && r.url === "/api/reports")!;
+    expect(reportRoute).toBeDefined();
+    expect(["POST /api/reports", sent[routes.indexOf(reportRoute)]!.some((x) => x.label.endsWith("[signed in]") && x.status === 201)]).toEqual(["POST /api/reports", true]);
+    // Agent social, lane A (A8b): the persona card's answer; the fixture's Agent has one, so a probe got past the checks (the agent-route rule above).
+    expect(routes.some((r) => r.method === "POST" && r.url === "/api/agents/:id/persona-facts/:seq")).toBe(true);
     await stillHealthy();
   });
 

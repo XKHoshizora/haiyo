@@ -1,4 +1,4 @@
-import { VISIBLE_JOIN, type ConversationType } from "../conversations/store.ts";
+import { socialCanSendMany, VISIBLE_JOIN, type ConversationType } from "../conversations/store.ts";
 import type { Config } from "../config.ts";
 import { onSnapshot, type Db, type Tx } from "../db.ts";
 import { MESSAGE_COLUMNS, notAcknowledgement, toStored, type MessageRow, type StoredMessage, type WireMessage } from "../messages/model.ts";
@@ -98,10 +98,33 @@ export interface CatchUp {
 
 
 /**
+ * What every member of a social conversation is shown of it: its two participants (lower id first) and the participating Agents
+ * with their owners, for all `ids` in one statement. Nothing owner-only (no `paused`, no `deleted`: attack I12).
+ */
+async function socialShapes(t: Tx, ids: readonly string[]): Promise<Map<string, SyncSocial>> {
+  const out = new Map<string, SyncSocial>();
+  if (ids.length === 0) return out;
+  const { rows } = await t.query<{ id: string; a_id: string; b_id: string; agent_id: string; owner_id: string }>(
+    `select sp.conversation_id as id, sp.a_id, sp.b_id, p.id as agent_id, p.owner_id
+       from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id) and p.kind = 'agent'
+      where sp.conversation_id = any($1::uuid[])
+      order by sp.conversation_id, p.id`,
+    [ids],
+  );
+  for (const r of rows) {
+    const shape = out.get(r.id) ?? { participants: [r.a_id, r.b_id] as [string, string], agents: [] };
+    shape.agents.push({ id: r.agent_id, ownerId: r.owner_id });
+    out.set(r.id, shape);
+  }
+  return out;
+}
+
+/**
  * The caller's entries for the conversations they are currently in (all of them, or only `onlyId`), in
  * `/api/sync` order: what both `GET /api/sync` and `GET /api/conversations/:id` answer.
  */
-async function conversationEntries(t: Tx, me: string, ttlHours: number, onlyId: string | null = null): Promise<SyncConversation[]> {
+async function conversationEntries(t: Tx, me: string, config: Pick<Config, "whispers" | "social">, onlyId: string | null = null): Promise<SyncConversation[]> {
+  const ttlHours = config.whispers.elsewhereTtlHours;
   const conversations = await t.query<{
     id: string;
     type: ConversationType;
@@ -180,8 +203,14 @@ async function conversationEntries(t: Tx, me: string, ttlHours: number, onlyId: 
     const verdict = peerId ? verdicts.get(peerId) : undefined;
     return verdict === undefined ? "not_friends" : verdict;
   };
+  // A social conversation: who is in it, and the write rule's answer for all of them in one statement (`socialCanSendMany`).
+  const socialIds = conversations.rows.filter((c) => c.type === "agent_social").map((c) => c.id);
+  const socialOf = await socialShapes(t, socialIds);
+  const socialVerdicts = await socialCanSendMany(t, socialIds, config);
   return conversations.rows.map((c) => {
     const verdict = c.type === "direct" ? directVerdict(c.peer_id) : c.agent_deleted ? "agent_deleted" : null;
+    const social = c.type === "agent_social" ? socialOf.get(c.id) : undefined;
+    const socialSend = c.type === "agent_social" ? (socialVerdicts.get(c.id) ?? { ok: false as const, reason: "no_access" as const }) : null;
     return {
       id: c.id,
       type: c.type,
@@ -195,7 +224,8 @@ async function conversationEntries(t: Tx, me: string, ttlHours: number, onlyId: 
       ...(c.type === "agent" && c.agent_id
         ? { agentId: c.agent_id, agent: { paused: c.agent_paused === true, deleted: c.agent_deleted === true } }
         : {}),
-      canSend: c.closed ? { ok: false, reason: "closed" } : verdict ? { ok: false, reason: verdict } : { ok: true },
+      ...(social ? { social } : {}),
+      canSend: c.closed ? { ok: false, reason: "closed" } : socialSend ? socialSend : verdict ? { ok: false, reason: verdict } : { ok: true },
       members: membersOf.get(c.id) ?? [],
       lastSeq: Number(c.seq),
       readSeq: Number(c.read_seq),
@@ -211,14 +241,14 @@ async function conversationEntries(t: Tx, me: string, ttlHours: number, onlyId: 
  * One conversation as the caller's `/api/sync` shows it, or null unless they are a current member (never,
  * left, removed, unknown alike).
  */
-export async function syncConversation(db: Db, me: string, conversationId: string, config: Pick<Config, "whispers">): Promise<SyncConversation | null> {
-  return onSnapshot(db, async (t) => (await conversationEntries(t, me, config.whispers.elsewhereTtlHours, conversationId))[0] ?? null);
+export async function syncConversation(db: Db, me: string, conversationId: string, config: Pick<Config, "whispers" | "social">): Promise<SyncConversation | null> {
+  return onSnapshot(db, async (t) => (await conversationEntries(t, me, config, conversationId))[0] ?? null);
 }
 
 /** Everything the web client loads at start: the caller's current conversations and what they may read of them. */
 export async function syncView(db: Db, me: string, config: SyncConfig): Promise<SyncView> {
   return onSnapshot(db, async (t) => {
-    const out = await conversationEntries(t, me, config.whispers.elsewhereTtlHours);
+    const out = await conversationEntries(t, me, config);
 
     const recent = await t.query<MessageRow>(
       `select ${MESSAGE_COLUMNS}

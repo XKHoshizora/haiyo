@@ -4,6 +4,8 @@ import type { Db, Queryable, Tx } from "../../db.ts";
 import { inSearchBudget, searchRows, type SearchRow } from "../../messages/search.ts";
 import type { Hub } from "../../sync/hub.ts";
 import { createWhisper, foundElsewhereAbout, mayTell, readableHits, roomForFoundElsewhere, whisperOfRun, type HitRow, type Whisper } from "../../whispers/store.ts";
+import { ownOrGroupPlaceSql } from "../../social/memory-places.ts";
+import { groupPlaceSql } from "../../social/place.ts";
 import { QUOTE_MAX_CHARS } from "../runtime/context.ts";
 import { cleanText, foldVertical, labelName, NO_GROUP_TITLE, TOOL_MATERIAL } from "../runtime/prompt.ts";
 import type { Mention } from "../../messages/model.ts";
@@ -116,15 +118,20 @@ export function createElsewhere(deps: ElsewhereDeps, { atOnce = ELSEWHERE_AT_ONC
  */
 async function lookFor(deps: ElsewhereDeps, scope: RunScope, ask: ElsewhereAsk): Promise<void> {
   const { db, config } = deps;
-  const on = await db.query<{ on: boolean }>("select whisper_elsewhere as on from agents where principal_id = $1", [scope.agentId]);
+  // Only a group looks elsewhere, and never into a social conversation (plan A9): a social conversation's question is never searched for, and
+  // none of the Agent's social conversations is a place a lookup can find anything in.
+  const on = await db.query<{ on: boolean }>(
+    `select a.whisper_elsewhere and exists (select 1 from conversations c where c.id = $2 and ${groupPlaceSql("c")}) as on from agents a where a.principal_id = $1`,
+    [scope.agentId, scope.conversationId],
+  );
   if (on.rows[0]?.on !== true) return;
   const room = { ownerId: scope.ownerId, conversationId: scope.conversationId, agentId: scope.agentId, runId: scope.id };
   const ttlHours = config.whispers.elsewhereTtlHours;
   if (!(await roomForFoundElsewhere(db, room, ELSEWHERE_OPEN_MAX, ttlHours))) return;
   const rows = await inSearchBudget(db, config.searchStatementTimeoutMs, async (t) => {
     const { rows: places } = await t.query<{ id: string }>(
-      `select am.conversation_id as id from memberships am
-        where am.principal_id = $1 and am.left_seq is null and am.conversation_id <> $2
+      `select am.conversation_id as id from memberships am join conversations ac on ac.id = am.conversation_id
+        where am.principal_id = $1 and am.left_seq is null and am.conversation_id <> $2 and ${ownOrGroupPlaceSql("ac")}
           and exists (select 1 from memberships om where om.conversation_id = am.conversation_id and om.principal_id = $3 and om.left_seq is null)
         order by am.conversation_id`,
       [scope.agentId, scope.conversationId, scope.ownerId],

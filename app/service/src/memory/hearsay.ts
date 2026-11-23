@@ -11,7 +11,7 @@ import { applyHearsay, type NewHearsay } from "./apply.ts";
 import { allowanceRefuses, memoryCall, type MemoryCallReport } from "./call.ts";
 import { cleanText, modelNote } from "./clean.ts";
 import { parseAnswer, sameKey } from "./ops.ts";
-import { announce, errInfo, inLockedAgent, kindsFor, reviewableAgent, runReview, type PipelineDeps, type ReviewContext } from "./pipeline.ts";
+import { announce, errInfo, inLockedAgent, inSocial, kindsFor, reviewableAgent, runReview, type PipelineDeps, type ReviewContext } from "./pipeline.ts";
 import { shown, UNSPOKEN } from "./review.ts";
 import { languageRule, type MemoryLanguage } from "./language.ts";
 import { nextSiteMidnight } from "../accounts/store.ts";
@@ -284,6 +284,11 @@ export async function runFlags(deps: PipelineDeps, job: FlagsJob, ctx: FlagsCont
   const { agentId, conversationId } = job;
   const agent = await reviewableAgent(db, agentId);
   if (agent === null) {
+    await db.query("delete from memory_flags where agent_id = $1 and conversation_id = $2", [agentId, conversationId]);
+    return;
+  }
+  // A social conversation is never acted on (plan A9): a flag in one is nobody's to act on.
+  if (await inSocial(db, conversationId)) {
     await db.query("delete from memory_flags where agent_id = $1 and conversation_id = $2", [agentId, conversationId]);
     return;
   }

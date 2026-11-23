@@ -49,10 +49,10 @@ html[data-layer-open] body { overflow: hidden; }
    cover the whole window, so a wheel lands on them (checked in Chromium by an e2e), and the locked document does not scroll; a layer opened on a page whose document
    itself scrolls (none today: the public pages open none) would shift that page by its scrollbar's width. */
 @media (hover: none) and (pointer: coarse) {
-  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page) { overflow: hidden; }
+  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page, .social-checklist) { overflow: hidden; }
 }
 @supports (-webkit-touch-callout: none) {
-  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page) { overflow: hidden; }
+  body > [inert] :is(.pills, .rows, .model-list, .select-list, .messages, .whisper.whisper-open .whisper-hits, .md, .md pre, .md-table, .md .katex-display, .composer textarea, textarea, .emoji-grid, .mention-picker, .page-body, .side-body, .modal-body, .auth-page, .social-checklist) { overflow: hidden; }
 }
 /* The only gesture the browser starts inside a layer is scrolling the layer's own scroller: its hosts and the parts that do not scroll take none (a drag there
    cannot pan the page behind, keyboard up or not), the scrollers take the vertical pan. A slider inside a scroller still gets its horizontal drags (pan-y does not claim
@@ -1290,3 +1290,6 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .avatar-zoom input[type="range"] { flex: 1; min-width: 0; height: 44px; accent-color: var(--purple); }
 .avatar-zoom .icon-btn { flex: none; width: 44px; height: 44px; }
 .group-picture .avatar-fallback img { border-radius: 50%; }
+
+/* A touch screen or a narrow one: the buttons of a dialog's foot, of a panel's action stack and of a notice, and a dialog form's own button (the add dialog's 查找), are 44px targets (shared; first asked by Agent social's screens). */
+@media (pointer: coarse), (max-width: 480px) { .modal-foot .btn, .stack-actions .btn, .notice .btn, .modal-body form > .btn { min-height: 44px; } }

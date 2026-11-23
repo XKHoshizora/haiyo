@@ -56,6 +56,12 @@
 import { isMemoryLanguage } from "./memoryLanguages.js";
 import { mentionsIn } from "./mentions.js";
 
+/**
+ * Conversations whose Agents' replies are held per Agent (`groupRuns`) and whose others' Agents lose their private fields: a group, and a
+ * social conversation (Agent social), whose replies read as a group's to everyone but their owner.
+ */
+export const holdsGroupRuns = (type) => type === "group" || type === "agent_social";
+
 /** How many of its newest messages `GET /api/sync` returns per conversation (service: SYNC_MESSAGES_PER_CONVERSATION). */
 export const SYNC_WINDOW = 30;
 
@@ -87,6 +93,8 @@ export function initial() {
     social: null,
     /** The site's Agent social switch, as the last sync said (`sync.social.enabled`); false until it says true. (Not `social`: that is /api/social's.) */
     socialOn: false,
+    /** The last `GET /api/agent-contacts` answer ({mine, waiting}), held only while the site's switch is on; null before and after. */
+    agentContacts: null,
     /** conversation id → how many times I left it (see `stayOf`). */
     stays: {},
     /** conversation id → detached window {n, messages, hasOlder, focusSeq} (see the header). */
@@ -204,7 +212,7 @@ function mergeBySeq(held, incoming) {
  * and `conversations`.
  */
 function withoutOthersPrivate(state, type, wires) {
-  if (type !== "group" || !Array.isArray(wires)) return wires;
+  if (!holdsGroupRuns(type) || !Array.isArray(wires)) return wires;
   let out = wires;
   wires.forEach((m, i) => {
     if (!m || (m.reasoning === undefined && m.via === undefined) || typeof m.senderId !== "string") return;
@@ -498,7 +506,7 @@ export function applySync(state, sync) {
     streams,
     dismissed: filterValues(state.dismissed, (_runId, id) => id in conversations),
     // A group that is gone takes its Agents' replies with it; so does an Agent no longer among its members.
-    groupRuns: filterValues(state.groupRuns, (_slots, id) => conversations[id]?.type === "group"),
+    groupRuns: filterValues(state.groupRuns, (_slots, id) => holdsGroupRuns(conversations[id]?.type)),
     // My whispers: the answered and expired ones of the conversations kept stay; the open ones are this snapshot's.
     whispers: answeredWhispers(state.whispers ?? {}, conversations),
   };
@@ -606,6 +614,12 @@ export function applyConversation(state, entry) {
 export function unknownMembers(state, conversationId) {
   const conv = state.conversations[conversationId];
   return conv ? conv.members.map((m) => m.id).filter((id) => !(id in state.principals)) : [];
+}
+
+/** The answer of `GET /api/agent-contacts` (`mine`, `waiting`), kept as the service said it; anything else is no answer. */
+export function applyAgentContacts(state, contacts) {
+  const ok = contacts && Array.isArray(contacts.mine) && Array.isArray(contacts.waiting);
+  return { ...state, agentContacts: ok ? { mine: contacts.mine, waiting: contacts.waiting } : state.agentContacts };
 }
 
 export function applySocial(state, social) {
@@ -1455,7 +1469,7 @@ function putGroupSlot(state, conversationId, agentId, value, { ordered, since })
  */
 export function applyGroupRun(state, conversationId, agentId, push, { ordered = true, since } = {}) {
   const conv = state.conversations[conversationId];
-  if (!conv || conv.type !== "group" || typeof agentId !== "string" || !push || typeof push !== "object") return state;
+  if (!conv || !holdsGroupRuns(conv.type) || typeof agentId !== "string" || !push || typeof push !== "object") return state;
   const value = slotValue(state, agentId, push);
   return value ? putGroupSlot(state, conversationId, agentId, value, { ordered, since }) : state;
 }
@@ -1467,7 +1481,7 @@ export function applyGroupRun(state, conversationId, agentId, push, { ordered = 
  */
 export function applyGroupRuns(state, conversationId, answer) {
   const conv = state.conversations[conversationId];
-  if (!conv || conv.type !== "group" || !Array.isArray(answer?.runs)) return state;
+  if (!conv || !holdsGroupRuns(conv.type) || !Array.isArray(answer?.runs)) return state;
   if (!answer.runs.every((e) => e && typeof e === "object" && typeof e.agentId === "string")) return state;
   let next = state;
   const listed = new Set();
@@ -1484,7 +1498,7 @@ export function applyGroupRuns(state, conversationId, answer) {
 
 /** I closed the failure notice of my Agent's `runId` in the group: as `dismissRunOf`. */
 export function dismissGroupRunOf(state, conversationId, agentId, runId) {
-  if (state.conversations[conversationId]?.type !== "group" || typeof agentId !== "string" || typeof runId !== "string") return state;
+  if (!holdsGroupRuns(state.conversations[conversationId]?.type) || typeof agentId !== "string" || typeof runId !== "string") return state;
   const slots = state.groupRuns[conversationId] ?? {};
   const held = slots[agentId];
   const slot = held && "run" in held && held.run?.id !== runId ? { ...held, dismissed: runId } : { run: null, joined: true, dismissed: runId };

@@ -5,6 +5,8 @@ import type { Config } from "../config.ts";
 import type { ConversationEvents } from "../conversations/events.ts";
 import { lockConversationKeys } from "../conversations/store.ts";
 import { appendSystem } from "../conversations/system.ts";
+import { ownOrGroupPlaceSql } from "../social/memory-places.ts";
+import { groupPlaceSql, socialPlaceSql } from "../social/place.ts";
 import type { Db, Queryable, Tx } from "../db.ts";
 import type { Judge } from "../judge/client.ts";
 import type { StoredMessage } from "../messages/model.ts";
@@ -79,6 +81,17 @@ export async function reviewableAgent(db: Db, agentId: string): Promise<AgentRow
   return agent && agent.memory ? agent : null;
 }
 
+/**
+ * Whether `conversationId` is a social conversation (an Agent and another party, the owner watching). Memory never works in one
+ * (plan A9): nothing in it is reviewed, flagged, caught up, summarised or given positions, so that nothing the other party says
+ * can reach a note, and nothing the owner says there is taken for what they said to their own Agent. Every entry point of memory
+ * that names a conversation asks this first.
+ */
+export async function inSocial(q: Queryable, conversationId: string): Promise<boolean> {
+  const { rowCount } = await q.query(`select 1 from conversations c where c.id = $1 and ${socialPlaceSql("c")}`, [conversationId]);
+  return (rowCount ?? 0) > 0;
+}
+
 export async function reviewedSeq(db: Queryable, agentId: string, conversationId: string): Promise<number> {
   const { rows } = await db.query<{ s: string }>("select reviewed_seq::text as s from memory_review_state where agent_id = $1 and conversation_id = $2", [agentId, conversationId]);
   return Number(rows[0]?.s ?? 0);
@@ -136,7 +149,7 @@ export async function memorySwitched(
          select $1, c.id, f.from_seq, c.seq, f.from_seq + 1
            from memberships m join conversations c on c.id = m.conversation_id
           cross join lateral (select greatest(m.joined_seq, coalesce((select s.heard_from_seq from agent_group_state s where s.agent_id = $1 and s.conversation_id = c.id), 0)) as from_seq) f
-          where m.principal_id = $1 and m.left_seq is null and c.id <> $2 and c.id = any($3::uuid[]) and c.seq > f.from_seq
+          where m.principal_id = $1 and m.left_seq is null and c.id <> $2 and c.id = any($3::uuid[]) and ${groupPlaceSql("c")} and c.seq > f.from_seq
        on conflict (agent_id, conversation_id) do update
          set from_seq = excluded.from_seq, to_seq = excluded.to_seq, next_seq = excluded.next_seq, token = gen_random_uuid(), created_at = now()`,
       [agent.id, agent.conversationId, held],
@@ -150,7 +163,7 @@ export async function memorySwitched(
     `insert into memory_review_state (agent_id, conversation_id, reviewed_seq)
        select $1, c.id, c.seq from conversations c
         where c.id = $2
-           or (c.id = any($3::uuid[])
+           or (c.id = any($3::uuid[]) and ${groupPlaceSql("c")}
                and (c.id in (select conversation_id from memberships where principal_id = $1 and left_seq is null)
                     or c.id in (select conversation_id from memory_review_state where agent_id = $1)))
      on conflict (agent_id, conversation_id) do update set reviewed_seq = greatest(memory_review_state.reviewed_seq, excluded.reviewed_seq)`,
@@ -159,7 +172,7 @@ export async function memorySwitched(
   await t.query(
     `insert into agent_group_state (agent_id, conversation_id, heard_from_seq)
        select $1, c.id, c.seq from memberships m join conversations c on c.id = m.conversation_id
-        where m.principal_id = $1 and m.left_seq is null and c.id <> $2 and c.id = any($3::uuid[])
+        where m.principal_id = $1 and m.left_seq is null and c.id <> $2 and c.id = any($3::uuid[]) and ${groupPlaceSql("c")}
      on conflict (agent_id, conversation_id) do update set heard_from_seq = greatest(agent_group_state.heard_from_seq, excluded.heard_from_seq)`,
     [agent.id, agent.conversationId, held],
   );
@@ -169,7 +182,8 @@ export async function memorySwitched(
  * SQL, `$1` the Agent: the conversations the memory switch writes state rows in — every group it is a current member of, or has a
  * review position or a group state row (`agent_group_state`) in — and its own conversation.
  */
-const SWITCH_CONVERSATIONS = `select m.conversation_id from memberships m where m.principal_id = $1 and m.left_seq is null
+const SWITCH_CONVERSATIONS = `select m.conversation_id from memberships m join conversations sc on sc.id = m.conversation_id
+                      where m.principal_id = $1 and m.left_seq is null and ${ownOrGroupPlaceSql("sc")}
                      union select s.conversation_id from memory_review_state s where s.agent_id = $1
                      union select g.conversation_id from agent_group_state g where g.agent_id = $1`;
 
@@ -326,6 +340,7 @@ export async function runReview(deps: PipelineDeps, job: ReviewJob, ctx: ReviewC
   const { agentId, conversationId } = job;
   const agent = await reviewableAgent(db, agentId);
   if (agent === null || ctx.closing.aborted) return;
+  if (await inSocial(db, conversationId)) return;
   const group = conversationId !== agent.conversationId;
   const kinds = await kindsFor(db, agent, conversationId, group);
   const { input, seen } = await readReview(db, agent, conversationId, await reviewedSeq(db, agentId, conversationId), { kinds, config, now: new Date(deps.now()) });

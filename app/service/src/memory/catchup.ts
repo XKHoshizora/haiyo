@@ -6,7 +6,8 @@ import { lockConversationKeys } from "../conversations/store.ts";
 import type { Queryable } from "../db.ts";
 import { notAcknowledgement } from "../messages/model.ts";
 import { noCallCanStart } from "./call.ts";
-import { reviewableAgent, type PipelineDeps } from "./pipeline.ts";
+import { groupPlaceSql } from "../social/place.ts";
+import { inSocial, reviewableAgent, type PipelineDeps } from "./pipeline.ts";
 import { count } from "./stats.ts";
 
 /**
@@ -106,6 +107,11 @@ export async function runCatchUp(deps: PipelineDeps, job: CatchUpJob, ctx: Catch
   if (deps.judge === null || config.judge === null) return;
   const row = await rowOf(db, job);
   if (row === null || row.next > row.to) return;
+  // A social conversation is never caught up (plan A9): a row of one (none is written) ends here.
+  if (await inSocial(db, job.conversationId)) {
+    await db.query("delete from memory_catchups where agent_id = $1 and conversation_id = $2", [job.agentId, job.conversationId]);
+    return;
+  }
   // Where the row stands: every step moves it on from there, and only from there.
   let at = row.next;
   // Stopping: the rest of the range is not caught up (the row stays, done, so the range stays the catch-up's).
@@ -130,7 +136,7 @@ export async function runCatchUp(deps: PipelineDeps, job: CatchUpJob, ctx: Catch
       if (!opened && start > row.from) {
         await t.query(
           `insert into agent_group_state (agent_id, conversation_id, heard_from_seq)
-           select $1, $2, $3 where exists (select 1 from memberships where principal_id = $1 and conversation_id = $2 and left_seq is null)
+           select $1, $2, $3 where exists (select 1 from memberships m join conversations c on c.id = m.conversation_id where m.principal_id = $1 and m.conversation_id = $2 and m.left_seq is null and ${groupPlaceSql("c")})
            on conflict (agent_id, conversation_id) do update set heard_from_seq = greatest(agent_group_state.heard_from_seq, excluded.heard_from_seq)`,
           [job.agentId, job.conversationId, start],
         );

@@ -46,7 +46,7 @@ An Agent subject is judged only on its own row; a person's row never grants thei
 
 `reach` is one TS function in new `src/social/agent-contacts.ts`, with an SQL twin `refusedSql` (as runs.ts:399/409, held to the same answers by a test). Both only read.
 
-**A bar** is written by 停止往来 and by the owner's block, always. An unfriend writes one only when it ends at least one row; pairs who never had Agent access keep today's group rules.
+**A bar** is written by 停止往来 and by the owner's block, always. An unfriend writes none (Owner decision 2026-11-25: unfriending is just unfriending; it ends only the accesses admitted because of the friendship, never a group run).
 
 Writing a bar calls `endGrants` on every `live` or `requested` row between the two sides — all Agents of both people, both directions — with reason `barred`, in the same transaction. **An approval never deletes the bar** (R3-I1). It makes only that row live, and only while the row is still `requested` (`update … where state = 'requested'`); that row then passes the bar by step 4.
 

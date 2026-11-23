@@ -1,6 +1,8 @@
+import type { EndedRuns } from "../agents/group-leave.ts";
 import { appendDirectNotice } from "../conversations/store.ts";
 import type { Tx } from "../db.ts";
 import type { StoredMessage } from "../messages/model.ts";
+import { endGrants, liftBlockBar, setBar } from "./agent-contacts.ts";
 import { lockPair } from "./pair.ts";
 
 // The read-only pair questions live in relations.ts (a leaf module conversations can import).
@@ -13,6 +15,8 @@ export interface BlockResult {
   cancelledRequestIds: string[];
   /** The "blocked" notice in the pair's direct conversation, when the block is new and they have one. */
   notices: StoredMessage[];
+  /** The replies a new block stopped (a block of an Agent ends its blocker's row on it, `left`): the caller runs `announceEnded`. */
+  ended: EndedRuns;
 }
 
 const SAME_PAIR =
@@ -44,11 +48,33 @@ export async function blockPrincipal(t: Tx, blocker: string, blocked: string): P
   );
   const created = (ins.rowCount ?? 0) > 0;
   const notice = created ? await appendDirectNotice(t, { event: "blocked", actorId: blocker, principalId: blocked }) : null;
-  return { created, cancelledRequestIds: cancelled.rows.map((r) => r.id), notices: notice ? [notice] : [] };
+  // After the notice (the lock order). Blocking a person writes the bar, through the one writer, in this transaction, and it ends
+  // every row between the two sides. Blocking an Agent ends the blocker's own row on it, `left`, and stops what they called on it;
+  // it writes no bar (a bar is between two people).
+  let ended: EndedRuns = { cancelled: [], running: [] };
+  if (created) {
+    const kind = (await t.query<{ kind: "human" | "agent" }>("select kind from principals where id = $1", [blocked])).rows[0]?.kind;
+    if (kind === "agent") ended = await endGrants(t, { agentId: blocked, subjectIds: [blocker] }, "left");
+    else if (kind === "human") ended = await setBar(t, blocker, blocked, "block");
+  }
+  return { created, cancelledRequestIds: cancelled.rows.map((r) => r.id), notices: notice ? [notice] : [], ended };
 }
 
 /** Whether a block call changed anything others should hear about. */
 export const blockChanged = (r: BlockResult): boolean => r.created || r.cancelledRequestIds.length > 0;
+
+/**
+ * The one way a block goes (the core of `unblockPrincipal`; the demo's reset calls it too, without the notice): the block row and,
+ * in the same transaction, the `block` bar row of this blocker, and nothing else: the other person's block and anybody's stop
+ * stay. Whether a block was removed.
+ */
+export async function deleteBlock(t: Tx, blocker: string, blocked: string): Promise<boolean> {
+  await lockPair(t, blocker, blocked);
+  const del = await t.query("delete from blocks where blocker_id = $1 and blocked_id = $2", [blocker, blocked]);
+  const removed = (del.rowCount ?? 0) > 0;
+  if (removed) await liftBlockBar(t, blocker, blocked);
+  return removed;
+}
 
 /** Restores nothing but the ability to interact. Returns whether a block was removed, and its notice. */
 export async function unblockPrincipal(
@@ -56,9 +82,7 @@ export async function unblockPrincipal(
   blocker: string,
   blocked: string,
 ): Promise<{ removed: boolean; notices: StoredMessage[] }> {
-  await lockPair(t, blocker, blocked);
-  const del = await t.query("delete from blocks where blocker_id = $1 and blocked_id = $2", [blocker, blocked]);
-  const removed = (del.rowCount ?? 0) > 0;
+  const removed = await deleteBlock(t, blocker, blocked);
   const notice = removed ? await appendDirectNotice(t, { event: "unblocked", actorId: blocker, principalId: blocked }) : null;
   return { removed, notices: notice ? [notice] : [] };
 }

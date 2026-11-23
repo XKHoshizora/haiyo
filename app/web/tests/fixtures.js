@@ -255,6 +255,7 @@ export function fakeTransport(handlers = {}) {
         throw apiError(404, "not_found");
       },
       social: () => emptySocial(),
+      agentContacts: () => ({ mine: [], waiting: [] }),
       ticket: () => undefined,
       agents: () => ({ agents: [] }),
       agent: () => {
@@ -315,6 +316,10 @@ export function fakeTransport(handlers = {}) {
     getSocial() {
       t.log.push("social");
       return Promise.resolve().then(() => t.handlers.social());
+    },
+    listAgentContacts() {
+      t.log.push("agent-contacts");
+      return Promise.resolve().then(() => t.handlers.agentContacts());
     },
     listAgents() {
       t.agentLog.push("agents");

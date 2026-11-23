@@ -2,9 +2,11 @@ import React, { useState } from "react";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { agentDeleted, convTitle, isAgent, isMyAgent, TYPE_LABEL, nameOf, otherMember } from "../state/selectors.js";
-import { blockedMe, iBlocked } from "../state/social.js";
+import { blockedMe, iBlocked, isObserved, isSocialConv, pictureConv, socialEnds, socialOn } from "../state/social.js";
 import { Avatar, ConvAvatar, IdentityLine, IconBtn, Btn, Tag, KV, Reason } from "../ui/primitives.jsx";
 import { BlockModal } from "./BlockModal.jsx";
+import { LeaveAgentModal } from "./LeaveAgentModal.jsx";
+import { ReportModal } from "./ReportModal.jsx";
 import { NewTopicModal } from "./AgentChatBits.jsx";
 import { AgentModelSwitch, EVERYWHERE_NOTE } from "./ModelPicker.jsx";
 import { X } from "../icons.js";
@@ -20,6 +22,10 @@ export function DetailsPanel({ conv }) {
   const agentChat = conv.type === "agent";
   const [blockOpen, setBlockOpen] = useState(false);
   const [topicOpen, setTopicOpen] = useState(false);
+  // A social conversation I speak in (the Agent's card): 举报, 拉黑, 移除; its owner (who only watches) gets none of them. Only while the switch is on.
+  const [socialDialog, setSocialDialog] = useState(null);
+  const visitorOf = isSocialConv(conv) && !isObserved(conv) && socialOn(state) ? socialEnds(state, conv).agentId : null;
+  const watchedAgent = isObserved(conv) && socialOn(state) ? socialEnds(state, conv).agentId : null;
   const blocked = conv.type === "human" && iBlocked(state, other);
   const blockedByThem = conv.type === "human" && blockedMe(state, other);
   const deleted = agentChat && agentDeleted(state, conv);
@@ -36,7 +42,7 @@ export function DetailsPanel({ conv }) {
       </header>
       <div className="side-body">
         <div className="side-hero">
-          <ConvAvatar conv={conv} size={64} />
+          <ConvAvatar conv={pictureConv(state, conv)} size={64} />
           <strong>{convTitle(state, conv)}</strong>
           <Tag tone="solid">{TYPE_LABEL[conv.type]}</Tag>
         </div>
@@ -74,10 +80,17 @@ export function DetailsPanel({ conv }) {
           {conv.type === "human" && blockedByThem && <Reason>对方拉黑了你，只能由对方解除。</Reason>}
           {agentChat && <Btn onClick={() => go({ section: "agents", agentId: other, agentView: "detail", agentTab: "profile" })}>管理这个 Agent</Btn>}
           {agentChat && !deleted && <Btn onClick={() => setTopicOpen(true)}>开始新话题</Btn>}
+          {visitorOf && <Btn onClick={() => setSocialDialog("report")}>举报</Btn>}
+          {visitorOf && <Btn variant={iBlocked(state, visitorOf) ? "ghost" : "danger"} onClick={() => setSocialDialog("block")}>{iBlocked(state, visitorOf) ? "解除拉黑" : "拉黑"}</Btn>}
+          {visitorOf && <Btn onClick={() => setSocialDialog("leave")}>移除</Btn>}
+          {watchedAgent && <Btn onClick={() => go({ section: "agents", agentId: watchedAgent, agentView: "detail", agentTab: "others" })}>管理这个 Agent</Btn>}
         </div>
       </div>
       {blockOpen && <BlockModal target={other} onClose={() => setBlockOpen(false)} />}
       {topicOpen && <NewTopicModal conv={conv} onClose={() => setTopicOpen(false)} />}
+      {socialDialog === "report" && visitorOf && <ReportModal agentId={visitorOf} onClose={() => setSocialDialog(null)} />}
+      {socialDialog === "block" && visitorOf && <BlockModal target={visitorOf} onClose={() => setSocialDialog(null)} />}
+      {socialDialog === "leave" && visitorOf && <LeaveAgentModal agentId={visitorOf} onClose={() => setSocialDialog(null)} />}
     </div>
   );
 }

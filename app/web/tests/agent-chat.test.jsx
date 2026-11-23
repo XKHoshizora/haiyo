@@ -54,7 +54,7 @@ const SITE_PAID = { source: "site", id: "paid-1" }; // vision
 const PROVIDER_MODEL = { source: "provider", providerId: P1, model: "gpt-x" }; // no vision
 
 const PAUSE_TEXT = "已暂停全部会话：它不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。";
-const DELETED_TEXT = "这个 Agent 已删除，聊天记录仍可查看";
+const DELETED_TEXT = "这个 Agent 已删除，聊天记录仍可查看。";
 const IMAGE_HINT = "当前模型看不到图片，只会知道文件名";
 
 /** The greeting (seq 1) and my message (seq 2). */

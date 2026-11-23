@@ -20,7 +20,8 @@ applyConnectTuning(); // the sweep reaches an S3 endpoint and every command a da
 const USAGE =
   "usage: cli.ts migrate | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
   "credits:grant --handle <h> --points <n> [--note <text>] | credits:show --handle <h> | tier:set --handle <h> --tier <name> | models:list | memory:stats [--days <n>] | " +
-  "demo:seed --email <address> [--handle <h>] [--name <text>] (password from DEMO_PASSWORD or asked)";
+  "demo:seed --email <address> [--handle <h>] [--name <text>] (password from DEMO_PASSWORD or asked) | " +
+  "agent:disable <full handle> | agent:enable <full handle> | reports:list [--open] | reports:close <id prefix> --outcome disabled|dismissed (disabled also disables the Agent, as agent:disable)";
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -244,6 +245,64 @@ if (command === "migrate") {
     if (!(err instanceof DemoRefused)) throw err;
     console.error(`demo:seed refused: ${err.message}`);
     process.exitCode = 1;
+  } finally {
+    await db.close();
+  }
+} else if (command === "agent:disable" || command === "agent:enable") {
+  // The operator's switch on one Agent (README "Agent social"): by its full handle `<owner>.<name>`. Prints an id prefix and counts, nothing anyone wrote.
+  const handle = args[0];
+  if (handle === undefined || handle.startsWith("--")) throw new Error(`${command} needs the Agent's full handle (<owner>.<name>)`);
+  const { disableAgent, enableAgent } = await import("./social/reports.ts");
+  const db = createDb(databaseUrl());
+  try {
+    if (command === "agent:disable") {
+      const r = await disableAgent(db, handle);
+      if (r === null) throw new Error(`no such Agent: ${handle}`);
+      console.log(`disabled agent ${r.agentId.slice(0, 8)}: ${r.ended.cancelled.length} queued replies cancelled, ${r.ended.running.length} running replies interrupted; its rows are untouched; it is gone to everyone but its owner through the one access decision (refusedSql); groups ask it at every call site once lane B's B5b is in, and ring 1a deploys only with it`);
+    } else {
+      const r = await enableAgent(db, handle);
+      if (r === null) throw new Error(`no such Agent: ${handle}`);
+      console.log(`enabled agent ${r.agentId.slice(0, 8)}`);
+    }
+  } finally {
+    await db.close();
+  }
+} else if (command === "reports:list") {
+  // One line per report: the id's prefix, never the note, a message or the reporter's name (their id's prefix only).
+  const { listReports, REPORT_PREFIX_MIN } = await import("./social/reports.ts");
+  const db = createDb(databaseUrl());
+  try {
+    console.log("id	created	agent	reason	reporter	note	conversation	state");
+    for (const r of await listReports(db, { open: args.includes("--open") })) {
+      console.log(
+        [r.id.slice(0, REPORT_PREFIX_MIN), r.createdAt.toISOString(), r.agentHandle, r.reason, r.reporterId.slice(0, 8), r.hasNote ? "yes" : "no", r.hasConversation ? "yes" : "no", r.outcome ?? "open"].join("	"),
+      );
+    }
+  } finally {
+    await db.close();
+  }
+} else if (command === "reports:close") {
+  const prefix = args[0];
+  if (prefix === undefined || prefix.startsWith("--")) throw new Error("reports:close needs the report's id (the prefix reports:list prints)");
+  const outcome = requiredFlag(args, "--outcome");
+  if (outcome !== "disabled" && outcome !== "dismissed") throw new Error("--outcome must be disabled or dismissed");
+  const { closeReport } = await import("./social/reports.ts");
+  const db = createDb(databaseUrl());
+  try {
+    const r = await closeReport(db, prefix, outcome);
+    if ("refused" in r) {
+      throw new Error(
+        r.refused === "short" ? "give at least 8 characters of the report's id (see reports:list)"
+        : r.refused === "not_found" ? "no report starts with that"
+        : r.refused === "ambiguous" ? "more than one report starts with that; give more of it"
+        : "that report is closed already",
+      );
+    }
+    console.log(
+      r.disabled
+        ? `closed ${r.closed.slice(0, 8)}: ${outcome}; disabled agent ${r.disabled.agentId.slice(0, 8)}: ${r.disabled.ended.cancelled.length} queued replies cancelled, ${r.disabled.ended.running.length} running replies interrupted`
+        : `closed ${r.closed.slice(0, 8)}: ${outcome}`,
+    );
   } finally {
     await db.close();
   }

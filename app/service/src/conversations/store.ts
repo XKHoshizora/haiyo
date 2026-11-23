@@ -5,7 +5,7 @@ import type { PairEvent, StoredMessage } from "../messages/model.ts";
 import { AGENT_PROFILE_COLUMNS, AGENT_PROFILE_JOIN, agentProfile, type AgentProfile, type AgentProfileRow } from "../messages/principals.ts";
 import { handleOf } from "../principals/store.ts";
 import { lockPair, orderedPair } from "../social/pair.ts";
-import { reach, type Reach } from "../social/reach.ts";
+import { reachSql, type Reach, type ReachWhere } from "../social/reach.ts";
 import { canDirectSend } from "../social/relations.ts";
 import { appendSystem } from "./system.ts";
 
@@ -239,38 +239,73 @@ async function permission(
     );
     return rows[0]?.deleted === false ? { ok: true } : { ok: false, reason: "agent_deleted" };
   }
-  if (type === "agent_social") return socialPermission(q, conversationId, principalId, opts);
+  if (type === "agent_social") return socialPermission(q, conversationId, opts);
   const reason = await canDirectSend(q, principalId, peerId!);
   return reason ? { ok: false, reason } : { ok: true };
 }
 
 /**
- * Who may write in a social conversation, by `reach` (social/reach.ts): a person who is a participant, and an owner who supervises
- * it, may write iff `reach(them, the Agent, 'social')` is `ok`; in an Agent-to-Agent conversation a supervising owner may write
- * iff `reach(them, each Agent, 'group')` is. Refusals: `blocked` stays `blocked`; `gone` is `agent_deleted` when the Agent is
- * deleted, else `agent_unavailable`; `barred` and `no_access` are `no_access`.
+ * Who may write in a social conversation (design §2; plan A3a): whoever is let in to it, a participant or a supervising owner,
+ * while its relation is open; the relation is the same for all of them (`socialCanSendMany`).
  */
-async function socialPermission(q: Queryable, conversationId: string, principalId: string, opts: PermissionOptions): Promise<CanSend> {
-  const { rows: parts } = await q.query<{ id: string; kind: "human" | "agent" }>(
-    `select p.id, p.kind from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id) where sp.conversation_id = $1 order by p.id`,
-    [conversationId],
-  );
-  const agentIds = parts.filter((p) => p.kind === "agent").map((p) => p.id);
-  if (agentIds.length === 0) return { ok: false, reason: "no_access" };
+async function socialPermission(q: Queryable, conversationId: string, opts: PermissionOptions): Promise<CanSend> {
   // The Agents' rows, in id order (`lockAgent`'s order), after the conversation row the write already holds.
-  if (opts.lock) await q.query("select principal_id from agents where principal_id = any($1::uuid[]) order by principal_id for update", [agentIds]);
-  const verdicts: Reach[] = [];
-  if (agentIds.length === 1) verdicts.push(await reach(q, principalId, agentIds[0]!, "social", opts.config));
-  else for (const id of agentIds) verdicts.push(await reach(q, principalId, id, "group", opts.config));
-  const refused = verdicts.findIndex((v) => v !== "ok");
-  if (refused < 0) return { ok: true };
-  const why = verdicts[refused]!;
-  if (why === "blocked") return { ok: false, reason: "blocked" };
-  if (why === "gone") {
-    const { rows } = await q.query<{ deleted: boolean }>("select deleted_at is not null as deleted from agents where principal_id = $1", [agentIds[refused]]);
-    return { ok: false, reason: rows[0]?.deleted === true ? "agent_deleted" : "agent_unavailable" };
+  if (opts.lock) {
+    await q.query(
+      `select principal_id from agents
+        where principal_id in (select p.id from social_pairs sp join principals p on p.id in (sp.a_id, sp.b_id) where sp.conversation_id = $1 and p.kind = 'agent')
+        order by principal_id for update`,
+      [conversationId],
+    );
   }
-  return { ok: false, reason: "no_access" };
+  return (await socialCanSendMany(q, [conversationId], opts.config)).get(conversationId) ?? { ok: false, reason: "no_access" };
+}
+
+/**
+ * THE write rule of social conversations, for many at once in ONE statement (the sync asks it for all of a person's): per
+ * conversation, whether its relation is open. Person to Agent: `reach(the person, the Agent, 'social')` is `ok`. Agent to Agent:
+ * the switch is on and `reach(X, Y, 'group')` and `reach(Y, X, 'group')` both. It is the same for a participant and for a supervising owner, so a
+ * removal, a bar, a block or the switch shuts the owner's interjection as it shuts the person's own message. Refusals: `blocked`
+ * stays `blocked`; `gone` is `agent_deleted` when the Agent asked is deleted, else `agent_unavailable`; `barred` and
+ * `no_access` are `no_access`. A conversation that is no social conversation has no entry.
+ */
+export async function socialCanSendMany(q: Queryable, conversationIds: readonly string[], config: Pick<Config, "social">): Promise<Map<string, CanSend>> {
+  const out = new Map<string, CanSend>();
+  if (conversationIds.length === 0) return out;
+  const socialOn = config.social.enabled ? "true" : "false";
+  const rule = (subject: string, agent: string, where: ReachWhere): string => reachSql({ subject, agent, where, socialOn });
+  // `who` asks, `asked` is the Agent asked: the person and their Agent, or the first Agent and the second (then the second asks
+  // the first as well).
+  const { rows } = await q.query<{ id: string; with_person: boolean; r1: Reach; d1: boolean; r2: Reach; d2: boolean }>(
+    `select x.id, x.with_person,
+            case when x.with_person then ${rule("x.who", "x.asked", "social")}
+                 when not (${socialOn}) then 'gone'
+                 else ${rule("x.who", "x.asked", "group")} end as r1,
+            coalesce((select a.deleted_at is not null from agents a where a.principal_id = x.asked), true) as d1,
+            case when x.with_person then 'ok' else ${rule("x.asked", "x.who", "group")} end as r2,
+            coalesce((select a.deleted_at is not null from agents a where a.principal_id = x.who), true) as d2
+       from (select sp.conversation_id as id, (pa.kind = 'human' or pb.kind = 'human') as with_person,
+                    case when pb.kind = 'human' then sp.b_id else sp.a_id end as who,
+                    case when pb.kind = 'human' then sp.a_id else sp.b_id end as asked
+               from social_pairs sp join principals pa on pa.id = sp.a_id join principals pb on pb.id = sp.b_id
+              where sp.conversation_id = any($1::uuid[])) x`,
+    [conversationIds],
+  );
+  for (const r of rows) {
+    // Agent to Agent with the switch off is `gone` from the first side whichever Agent is deleted.
+    const [why, deleted] = r.r1 !== "ok" ? ([r.r1, r.d1 || (!r.with_person && r.d2)] as const) : ([r.r2, r.d2] as const);
+    out.set(
+      r.id,
+      why === "ok"
+        ? { ok: true }
+        : why === "blocked"
+          ? { ok: false, reason: "blocked" }
+          : why === "gone"
+            ? { ok: false, reason: deleted ? "agent_deleted" : "agent_unavailable" }
+            : { ok: false, reason: "no_access" },
+    );
+  }
+  return out;
 }
 
 /**
@@ -339,10 +374,35 @@ export async function ensureDirect(t: Tx, a: string, b: string, creatorId: strin
 
 /**
  * The social conversation of a person (or Agent) `subjectId` with Agent `agentId`, created on first use together with its first
- * message, `social_opened` (the disclosure). Lane A (A3a, ring 1a). STEP 0: throws.
+ * message, `social_opened` (the disclosure). The caller holds the pair locks (A4: `lockPairs` on the subject's person with the
+ * Agent's owner, and the subject with the Agent), so two adds of one pair never both create it. One `social_pairs` row per
+ * unordered pair. Members: both parties `speaker` from seq 0, and each party's owner `observer` from seq 0, once, never the
+ * subject itself. `created` false (and no notice) when the pair has its conversation already.
  */
-export async function ensureSocial(_t: Tx, _subjectId: string, _agentId: string): Promise<{ conversationId: string; created: boolean; notice: StoredMessage | null }> {
-  throw new Error("ring 1: lane A");
+export async function ensureSocial(t: Tx, subjectId: string, agentId: string): Promise<{ conversationId: string; created: boolean; notice: StoredMessage | null }> {
+  const [lo, hi] = orderedPair(subjectId, agentId);
+  const existing = await t.query<{ conversation_id: string }>("select conversation_id from social_pairs where a_id = $1 and b_id = $2", [lo, hi]);
+  if (existing.rows[0]) return { conversationId: existing.rows[0].conversation_id, created: false, notice: null };
+
+  const parties = await t.query<{ id: string; kind: "human" | "agent"; owner_id: string | null }>("select id, kind, owner_id from principals where id = any($1::uuid[])", [[subjectId, agentId]]);
+  const byId = new Map(parties.rows.map((r) => [r.id, r]));
+  const subject = byId.get(subjectId);
+  const agent = byId.get(agentId);
+  if (!subject || !agent || agent.kind !== "agent" || !agent.owner_id) throw new Error("ensureSocial: the second party must be an Agent");
+  const agentIds = subject.kind === "agent" ? [subjectId, agentId] : [agentId];
+  const ownerIds = [...new Set([subject.owner_id, agent.owner_id].filter((o): o is string => o !== null && o !== subjectId))];
+
+  const created = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent_social', $1) returning id", [subjectId]);
+  const conversationId = created.rows[0]!.id;
+  await t.query("insert into social_pairs (conversation_id, a_id, b_id) values ($1, $2, $3)", [conversationId, lo, hi]);
+  await t.query(
+    `insert into memberships (conversation_id, principal_id, role, joined_seq)
+     select $1, p, case when p = any($2::uuid[]) then 'speaker' else 'observer' end, 0 from unnest($3::uuid[]) as p`,
+    [conversationId, [subjectId, agentId], [subjectId, agentId, ...ownerIds]],
+  );
+  await lockConversation(t, conversationId);
+  const notice = await appendSystem(t, conversationId, { event: "social_opened", actorId: agentId, agentIds, ownerIds });
+  return { conversationId, created: true, notice };
 }
 
 /**

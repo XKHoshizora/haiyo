@@ -1078,14 +1078,15 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     // Agent social (lane A, lane B): thin on purpose: the route's answer, or its error as it came (a 401 signs out). What a page
     // keeps of it is the page's: nothing is held here, and none is called while the site's switch is off (state.social.enabled).
     listAgentContacts: () => call(() => api.listAgentContacts()),
-    addAgentContact: (agentId) => call(() => api.addAgentContact(agentId)),
-    approveAgentContact: (agentId, subjectId) => call(() => api.approveAgentContact(agentId, subjectId)),
-    declineAgentContact: (agentId, subjectId) => call(() => api.declineAgentContact(agentId, subjectId)),
-    removeAgentContact: (agentId, subjectId) => call(() => api.removeAgentContact(agentId, subjectId)),
+    // (What these change reaches the held `agentContacts` through the `social` fetch they ask for: nothing is kept here.)
+    addAgentContact: (agentId) => call(() => api.addAgentContact(agentId), () => request({ social: true, sync: true })),
+    approveAgentContact: (agentId, subjectId) => call(() => api.approveAgentContact(agentId, subjectId), () => request({ social: true, sync: true })),
+    declineAgentContact: (agentId, subjectId) => call(() => api.declineAgentContact(agentId, subjectId), () => request({ social: true })),
+    removeAgentContact: (agentId, subjectId) => call(() => api.removeAgentContact(agentId, subjectId), () => request({ social: true, sync: true })),
     getAgentContacts: (agentId) => call(() => api.getAgentContacts(agentId)),
     putContactPolicy: (agentId, body) => call(() => api.putContactPolicy(agentId, body)),
-    putBar: (personId) => call(() => api.putBar(realId(personId))),
-    deleteBar: (personId) => call(() => api.deleteBar(realId(personId))),
+    putBar: (personId) => call(() => api.putBar(realId(personId)), () => request({ social: true, sync: true })),
+    deleteBar: (personId) => call(() => api.deleteBar(realId(personId)), () => request({ social: true })),
     reportAgent: (body) => call(() => api.reportAgent(body)),
     putNoteVerdict: (agentId, body) => call(() => api.putNoteVerdict(agentId, body)),
     answerPersonaFact: (agentId, seq, move) => call(() => api.answerPersonaFact(agentId, seq, move)),

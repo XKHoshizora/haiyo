@@ -139,6 +139,19 @@ export const postingRun = (message: string, run: string): string =>
 /** A memory-change notice (`memory_changed`, written by the reviewer): for its owner alone. */
 const isMemoryNotice = (m: StoredMessage): boolean => m.kind === "system" && m.body.event === "memory_changed";
 
+/** A persona-aid card (`persona_fact`, memory/persona-aid.ts): a sentence of the persona that looks like a fact; for its Agent's owner alone. */
+const isPersonaCard = (m: StoredMessage): boolean => m.kind === "system" && m.body.event === "persona_fact";
+
+/** How each persona card stands, and whose each is: the owners of the Agents the cards speak for, by Agent id, and the answers, by message id. */
+async function personaCardsOf(q: Queryable, msgs: StoredMessage[]): Promise<{ owners: Map<string, string>; answers: Map<string, string> }> {
+  const cards = msgs.filter(isPersonaCard);
+  if (cards.length === 0) return { owners: new Map(), answers: new Map() };
+  const agents = [...new Set(cards.map((m) => m.body.agentId).filter((id): id is string => typeof id === "string" && UUID.test(id)))];
+  const owned = agents.length === 0 ? [] : (await q.query<{ id: string; owner_id: string }>("select id, owner_id from principals where id = any($1::uuid[]) and owner_id is not null", [agents])).rows;
+  const answered = await q.query<{ message_id: string; answer: string }>("select message_id::text, answer from social_card_answers where message_id = any($1::bigint[])", [cards.map((m) => m.id)]);
+  return { owners: new Map(owned.map((r) => [r.id, r.owner_id])), answers: new Map(answered.rows.map((r) => [r.message_id, r.answer])) };
+}
+
 interface ChangeRow {
   id: string;
   owner_id: string;
@@ -291,7 +304,7 @@ export async function toWireForReaders(
 
   const shown = await q.query<{ reader_id: string; id: string; with_reasoning: boolean; with_queries: boolean } & ViaRow>(
     `select r.reader_id, m.id,
-            coalesce(c.type = 'agent' or (c.type = 'group' and sender.owner_id = r.reader_id), false) as with_reasoning,
+            coalesce(c.type = 'agent' or (c.type in ('group', 'agent_social') and sender.owner_id = r.reader_id), false) as with_reasoning,
             coalesce(c.type = 'agent' and sender.owner_id = r.reader_id, false) as with_queries,
             via.source as via_source, via.model as via_model, via.reasoning as via_reasoning, via.points as via_points,
             via.proactive as via_proactive, via.web as via_web
@@ -377,6 +390,7 @@ export async function toWireForReaders(
   };
 
   const { changes, owners } = await memoryChangesOf(q, msgs.filter((m) => shownToAnyone.has(m.id)));
+  const personaCards = await personaCardsOf(q, msgs.filter((m) => shownToAnyone.has(m.id)));
 
   for (const reader of readers) {
     const list = out.get(reader)!;
@@ -410,6 +424,15 @@ export async function toWireForReaders(
             Object.assign(wire.system, told, { count: told.lines.length });
           }
         }
+        list.push(wire);
+        continue;
+      }
+      if (isPersonaCard(m)) {
+        // Only the owner of the Agent the card is about is sent it, with how it stands; no one else, whatever their access.
+        if (personaCards.owners.get(String(m.body.agentId)) !== reader) continue;
+        const wire = toWire(m, null, null, false, null);
+        const expires = typeof m.body.expiresAt === "string" ? Date.parse(m.body.expiresAt) : Number.NaN;
+        wire.system = { ...wire.system!, card: { answer: personaCards.answers.get(m.id) ?? null, expired: !(expires > Date.now()), sentence: String(m.body.sentence ?? "") } };
         list.push(wire);
         continue;
       }
