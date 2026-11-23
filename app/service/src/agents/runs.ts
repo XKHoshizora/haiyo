@@ -930,8 +930,17 @@ export async function othersBudgetSpent(
   dayStart: Date,
 ): Promise<{ spent: boolean; notice: StoredMessage | null }> {
   if (!(await laneBudgetSpent(t, agent.id, "others", agent.othersBudgetMicro, dayStart))) return { spent: false, notice: null };
-  if (await toldSince(t, conversationId, dayStart, "agent_daily_budget_reached", agent.id)) return { spent: true, notice: null };
-  return { spent: true, notice: await appendSystem(t, conversationId, { event: "agent_daily_budget_reached", actorId: agent.id, agentId: agent.id }) };
+  return { spent: true, notice: await limitNotice(t, conversationId, agent.id, dayStart) };
+}
+
+/**
+ * The `agent_daily_budget_reached` notice about `agentId` in `conversationId`, appended now unless one about it was today
+ * already (once a site day per conversation and Agent), else null: what a refused call, or a reply ended at admission by
+ * an others' number (metering/others.ts `othersFits`), tells the conversation. The caller holds the conversation's row lock.
+ */
+export async function limitNotice(t: Tx, conversationId: string, agentId: string, dayStart: Date): Promise<StoredMessage | null> {
+  if (await toldSince(t, conversationId, dayStart, "agent_daily_budget_reached", agentId)) return null;
+  return appendSystem(t, conversationId, { event: "agent_daily_budget_reached", actorId: agentId, agentId });
 }
 
 /** When today began, for the others' daily budget and what its owner is shown of it: the site day's start (`siteDayStart`). */
@@ -961,28 +970,15 @@ async function refusedByOthersBudget(
 
 /**
  * At admission (`DbAgentPort.begin`, in the transaction that admits the call, under the run's conversation row, its
- * Agent's and its own): whether `agent`'s run in `lane` in `conversationId` is refused after all, by what its lane is
- * held to that may have changed while it waited queued — read again there because replies of the Agent's settled since
- * may have spent a budget (settlement, in `finish`, takes the same Agent row lock, so each admission sees what was
- * settled before it): an Agent called, or picked, in several groups at once does not start one more reply in each once
- * the first have spent it.
- * - `others`: its others' daily budget (`othersBudgetSpent`); the group is told as when a call is refused;
- * - `proactive` (a reply nobody asked for): its owner has turned proactive replies off since, or its proactive budget is
- *   spent (`proactiveBudgetSpent`); nobody is told — a notice about a reply nobody asked for would be noise;
- * - `own`: never.
- * Null when it is not refused; else what the refusal told: the notice appended, if any, and the Agent's owner to push it
- * to.
+ * Agent's and its own): whether `agent`'s run in `lane` is refused after all, by what its lane is held to that may have
+ * changed while it waited queued: a reply nobody asked for (`proactive`) finds its owner has turned proactive replies off
+ * since. Nobody is told — a notice about a reply nobody asked for would be noise. The numbers an others' reply is held to
+ * (the owner's two daily numbers, the Agent's own, its proactive budget) are decided at admission itself, with the hold,
+ * under the account lock (metering/others.ts `othersFits`; B1), not here. Null when it is not refused; else what the
+ * refusal told: nothing.
  */
-export async function refusedAtAdmission(
-  t: Tx,
-  conversationId: string,
-  agent: Pick<AgentRow, "id" | "ownerId" | "othersBudgetMicro" | "proactive" | "proactiveBudgetMicro">,
-  lane: Lane,
-  config: Pick<Config, "siteTimezone">,
-): Promise<Told | null> {
-  if (lane === "proactive") return !agent.proactive || (await proactiveBudgetSpent(t, agent, config)) ? noneTold() : null;
-  const told = noneTold();
-  return (await refusedByOthersBudget(t, conversationId, agent, lane, siteToday(config), told)) ? told : null;
+export function refusedAtAdmission(agent: Pick<AgentRow, "proactive">, lane: Lane): Told | null {
+  return lane === "proactive" && !agent.proactive ? noneTold() : null;
 }
 
 /**

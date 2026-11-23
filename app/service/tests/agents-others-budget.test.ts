@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { siteDayStart } from "../src/accounts/store.ts";
-import { isRunEnd, NOTHING, type RunEnd, type RunTicket } from "../src/agents/runtime/port.ts";
+import { NOTHING, type RunEnd, type RunTicket } from "../src/agents/runtime/port.ts";
 import { triggerFromAgent } from "../src/agents/runs.ts";
 import { lockAgent } from "../src/agents/store.ts";
 import { mentionsAtSend } from "../src/agents/mentions.ts";
@@ -312,7 +312,7 @@ describe("the others' daily budget", () => {
     ]);
   });
 
-  it("checked again as a reply is admitted: one queued while there was room ends there once a reply settled meanwhile has reached it, with no call and no charge, and the group is told", async () => {
+  it("checked again as a reply is admitted, with its hold: one queued while there was room ends there when the room left cannot hold it, with no call and no charge, and the group is told", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
     const g2 = await anotherGroup(w, "second");
@@ -326,34 +326,39 @@ describe("the others' daily budget", () => {
       expect.objectContaining({ status: "queued", lane: "others" }),
     ]);
 
-    // The first begins: admitted, it holds more than the micro-point left — and counts for nothing while it is written.
-    const first = await app.agentPort.claimNext();
-    expect(first?.conversationId).toBe(w.g);
-    expect(isRunEnd(await app.agentPort.begin(first!))).toBe(false);
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "1.999999" });
-    // It ends, settled: what it was charged reaches the budget.
-    await app.agentPort.finish(first!, { status: "done" }, { inputTokens: 10, outputTokens: 10 }, NOTHING);
-    const held = await viewOf(w.owner, anna);
-    expect(Number(held.othersSpentToday)).toBeGreaterThanOrEqual(2);
-
-    // The second, as the worker takes it: ended as it is admitted — no model call, nothing charged — and the group told.
+    // The cap is exact (B1, `othersFits`): settled plus what the reply holds must stay within the budget, and the one
+    // micro-point left holds nothing. The first, as the worker takes it, ends as it is admitted — no model call, nothing
+    // charged — and the group is told.
     const pushed = vi.spyOn(app.realtime, "pushAgentChanged");
     const memberSocket = await connect(app, w.member);
     const calls = gateway.calls.length;
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(gateway.calls.length).toBe(calls);
-    const ended = await db.query<{ id: string; status: string; error: string | null; source: string | null }>(
-      "select id, status, error, source from agent_runs where agent_id = $1 and conversation_id = $2",
-      [anna.id, g2],
-    );
-    expect(ended.rows.map(({ status, error, source }) => ({ status, error, source }))).toEqual([{ status: "cancelled", error: null, source: null }]);
-    const charged = await db.query("select coalesce(sum(free_micro + balance_micro), 0)::text as charged from usage_records where run_id = $1", [ended.rows[0]!.id]);
+    const ended = async (conv: string) =>
+      (
+        await db.query<{ id: string; status: string; error: string | null; source: string | null }>(
+          "select id, status, error, source from agent_runs where agent_id = $1 and conversation_id = $2 and status <> 'done' order by created_at desc limit 1",
+          [anna.id, conv],
+        )
+      ).rows;
+    expect((await ended(w.g)).map(({ status, error, source }) => ({ status, error, source }))).toEqual([{ status: "cancelled", error: null, source: null }]);
+    const charged = await db.query("select coalesce(sum(free_micro + balance_micro), 0)::text as charged from usage_records where run_id = $1", [(await ended(w.g))[0]!.id]);
     expect(charged.rows[0].charged).toBe("0");
-    expect((await noticesOf(g2)).map((n) => n.agentId)).toEqual([anna.id]);
+    expect((await noticesOf(w.g)).map((n) => n.agentId)).toEqual([anna.id]);
     const told = await memberSocket.next((x) => x.type === "message" && x.message.system?.event === EVENT);
-    expect(told.message.conversationId).toBe(g2);
+    expect(told.message.conversationId).toBe(w.g);
     expect(pushed.mock.calls).toEqual([[w.owner.id, anna.id]]);
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: held.othersSpentToday });
+
+    // The second, in the other group: the same, with that group's own notice (once a site day per conversation).
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect(gateway.calls.length).toBe(calls);
+    expect((await ended(g2)).map(({ status, error, source }) => ({ status, error, source }))).toEqual([{ status: "cancelled", error: null, source: null }]);
+    expect((await noticesOf(g2)).map((n) => n.agentId)).toEqual([anna.id]);
+    expect(pushed.mock.calls).toEqual([
+      [w.owner.id, anna.id],
+      [w.owner.id, anna.id],
+    ]);
+    expect(await viewOf(w.owner, anna)).toMatchObject({ othersSpentToday: "1.999999" });
   });
 
   it.each([

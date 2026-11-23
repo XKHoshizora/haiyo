@@ -3,6 +3,7 @@ import type { Config } from "../config.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Resolved } from "../models/resolve.ts";
+import { keepsRoom, othersFits, OthersLimit, type OthersLane } from "./others.ts";
 import { extendRound, fitsAllowance, holders, start, type PayClass } from "./pool.ts";
 import { maxCostMicro } from "./prices.ts";
 import { classOf, lockPots, modelPartOf, poolColumns, readParts, rowOf, shareOf, type PoolColumns } from "./wallet.ts";
@@ -74,6 +75,19 @@ export interface Admission {
   reserveMicro?: bigint;
   /** Of `holdMicro`, what was held beyond what the pots could cover (a reply that started alone, or a draft); absent when nothing. */
   overMicro?: bigint;
+  /**
+   * An others' reply offered tools whose with-tools hold did not fit its owner's number but whose one-call hold did: it is
+   * admitted holding the one-call hold, no `reserveMicro`, and makes one call without tools (`begin`; plan B1, N3).
+   */
+  plain?: true;
+}
+
+/** Whose reply `admit` holds to the owner's others' numbers (`othersFits`), and the one-call hold a run offered tools may fall back to. */
+export interface OthersAdmission {
+  agentId: string;
+  lane: OthersLane;
+  /** The one-call hold, in micro-points, for a run offered tools; null for one that is not. */
+  plainMicro: bigint | null;
 }
 
 /** What the owner's running memory calls hold against the memory allowance. */
@@ -159,7 +173,7 @@ async function paidReplyWaits(t: Tx, runId: string): Promise<boolean> {
  */
 export async function admit(
   t: Tx,
-  config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "memory" | "holds">,
+  config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "memory" | "holds" | "others">,
   ownerId: string,
   resolved: Pick<Resolved, "source" | "tier" | "price" | "call">,
   inputTokensEstimate: number,
@@ -167,7 +181,31 @@ export async function admit(
   purpose: "reply" | "draft" | "memory" = "reply",
   lastCallMicro = 0n,
   runId: string | null = null,
+  others: OthersAdmission | null = null,
 ): Promise<Admission> {
+  // Somebody other than the owner called for it: the owner's two daily numbers, decided once under the account lock before
+  // anything else (plan B1, the one money invariant). With tools if the with-tools hold fits what is left, else plain if
+  // the one-call hold fits, else it waits for the replies holding (HeldBack) or ends (OthersLimit).
+  let plain = false;
+  if (purpose === "reply" && others !== null) {
+    if (runId === null) throw new Error("admit: an others' reply is admitted for a run");
+    const run = { id: runId, ownerId, agentId: others.agentId, lane: others.lane };
+    const x = resolved.source === "provider" ? 0n : maxCostMicro(resolved, inputTokensEstimate) + lastCallMicro;
+    let verdict = await othersFits(t, config, run, x, "admission", now);
+    // A points refusal (a wait or a limit alike; never an answers one): the one-call hold, in the same transaction under the same lock.
+    const pointsRefused = !verdict.ok && (!("limit" in verdict) || verdict.limit !== "answers");
+    if (pointsRefused && others.plainMicro !== null) {
+      const again = await othersFits(t, config, run, others.plainMicro, "admission", now);
+      if (again.ok) {
+        plain = true;
+        verdict = again;
+      }
+    }
+    if (!verdict.ok) {
+      if ("heldBackBy" in verdict) throw new HeldBack(verdict.heldBackBy, "any");
+      throw new OthersLimit(verdict.limit);
+    }
+  }
   if (resolved.source === "provider") return { chargeTo: null, holdMicro: 0n };
   if (purpose === "memory") {
     // Memory is paid from its own allowance, whatever the model's tier: not the free allowance, not the balance.
@@ -189,9 +227,10 @@ export async function admit(
     );
   }
   const cls = classOf(chargeTo);
-  // On `AB` a reply offered tools holds room for its last call too (a draft makes one call).
-  const reserveMicro = purpose === "reply" && cls === "AB" ? lastCallMicro : 0n;
-  const holdMicro = maxCostMicro(resolved, inputTokensEstimate) + reserveMicro;
+  // On `AB`, and for every reply somebody other than the owner called for, a reply offered tools holds room for its last
+  // call too (a draft makes one call). A plain admission holds its one call (`OthersAdmission.plainMicro`) and nothing else.
+  const reserveMicro = !plain && purpose === "reply" && keepsRoom(cls, others?.lane ?? "own") ? lastCallMicro : 0n;
+  const holdMicro = plain ? others!.plainMicro! : maxCostMicro(resolved, inputTokensEstimate) + reserveMicro;
   const parts = await readParts(t, ownerId, runId);
   const run = runId ?? "";
   // An older paid reply of the owner waits for the balance (the queue lets a free-tier reply past its mark: review I1): a
@@ -210,6 +249,7 @@ export async function admit(
     holdMicro,
     ...(reserveMicro > 0n ? { reserveMicro } : {}),
     ...(started.part.over > 0n ? { overMicro: started.part.over } : {}),
+    ...(plain ? { plain: true as const } : {}),
   };
 }
 
@@ -225,28 +265,35 @@ export async function admit(
  */
 export async function admitRun(
   t: Tx,
-  config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "memory" | "holds">,
+  config: Pick<Config, "freeDailyMicro" | "siteTimezone" | "memory" | "holds" | "others">,
   runId: string,
   ownerId: string,
   resolved: Pick<Resolved, "source" | "name" | "tier" | "price" | "call" | "reasoning">,
   inputTokensEstimate: number,
   now: Date,
   lastCallMicro = 0n,
+  plainMicro: bigint | null = null,
 ): Promise<Admission> {
-  const { rows } = await t.query<{ owner_id: string; status: string; source: string | null; purpose: "reply" | "draft" | "memory" }>(
-    "select owner_id, status, source, purpose from agent_runs where id = $1 for update",
-    [runId],
-  );
+  const { rows } = await t.query<{
+    owner_id: string;
+    status: string;
+    source: string | null;
+    purpose: "reply" | "draft" | "memory";
+    lane: "own" | "others" | "proactive";
+    agent_id: string | null;
+  }>("select owner_id, status, source, purpose, lane, agent_id from agent_runs where id = $1 for update", [runId]);
   const run = rows[0];
   if (!run || run.owner_id !== ownerId || run.status !== "running") throw new Error(`admitRun: ${runId} is not a running run of ${ownerId}`);
   if (run.source !== null) throw new Error(`admitRun: ${runId} is already admitted`);
   if ((await t.query("select 1 from usage_records where run_id = $1", [runId])).rowCount !== 0) {
     throw new Error(`admitRun: ${runId} is already settled`);
   }
-  const admission = await admit(t, config, ownerId, resolved, inputTokensEstimate, now, run.purpose, lastCallMicro, runId);
+  // A reply somebody other than the Agent's owner called for meets the owner's others' numbers (`othersFits`).
+  const others: OthersAdmission | null = run.lane !== "own" && run.agent_id !== null ? { agentId: run.agent_id, lane: run.lane, plainMicro } : null;
+  const admission = await admit(t, config, ownerId, resolved, inputTokensEstimate, now, run.purpose, lastCallMicro, runId, others);
   await t.query(
     `update agent_runs set source = $2, model = $3, charge_to = $4, hold_micro = $5, hold_over_micro = $6, money_rule = 1, reasoning = $7,
-            held_back_by = null, held_back_on = null
+            held_back_by = null, held_back_on = null, admitted_at = $8
       where id = $1`,
     [
       runId,
@@ -256,6 +303,7 @@ export async function admitRun(
       admission.holdMicro.toString(),
       (admission.overMicro ?? 0n).toString(),
       resolved.reasoning,
+      now,
     ],
   );
   return admission;

@@ -7,6 +7,7 @@ import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
+import { OthersLimit } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -75,12 +76,14 @@ import {
   followUpOf,
   followUpOnEnd,
   hearFrom,
+  limitNotice,
   noneTold,
   pushBudgetReached,
   refusedAtAdmission,
   AUTO_RETRY_WINDOW_MS,
   RUN_COLUMNS,
   scheduleAutoRetry,
+  siteToday,
   transientFailure,
   type AutoRetry,
   withTellable,
@@ -879,20 +882,21 @@ export class DbAgentPort implements AgentPort {
       // reply nobody asked for off. Refused, what step 1 took on (noted on it after its claim — its owner's mention, say)
       // is handed back as noted, so `finish`'s follow-up answers it by the usual rule: its owner's own is queued; someone
       // else's meets the others' budget again and is simply not queued (no second notice that day), so nothing loops.
-      const told = await refusedAtAdmission(t, run.conversationId, agent, state.lane, config);
+      const told = refusedAtAdmission(agent, state.lane);
       if (told) {
         if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
         return { end: ENDED_QUIETLY, told };
       }
       const { resolved, loaded, covers, key, ratio, offer, reserved, withoutTools } = first;
-      // The tools the reply is offered (step 1).
-      const tools = offer?.tools ?? [];
+      // The tools the reply is offered (step 1); none after a plain admission (below).
+      let tools = offer?.tools ?? [];
       // What admission holds for the input: the most it can cost — its text at its utf-8 bytes, at most what the context
       // leaves beside the output limit (`holdTokens`), images and PDFs at their constants — whatever the model's ratio.
       // Offered tools go with the call too: their definitions are held at their bytes as well, and what providers add
       // around them. Every part is held at the bytes of the text the plan weighed it as (`partText`): an earlier reply's
       // replayed calls and results with the rest, once, and never among the images' and PDFs' constants.
-      const texts = [loaded.system.text, ...context.messages.flatMap((m) => m.parts.flatMap((p) => partText(p) ?? []))];
+      const messageTexts = context.messages.flatMap((m) => m.parts.flatMap((p) => partText(p) ?? []));
+      const texts = [loaded.system.text, ...messageTexts];
       const held =
         tools.length === 0
           ? holdTokens(texts, resolved.contextTokens, resolved.call.maxOutputTokens) + context.fixedTokens
@@ -914,10 +918,32 @@ export class DbAgentPort implements AgentPort {
             ? roomGrowth(Object.values(offer.perTool).reduce((sum, n) => sum + n, 0), config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
             : roomCapTokens;
       const lastCall = tools.length === 0 ? 0n : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
+      // What an others' reply offered tools holds if its with-tools hold does not fit its owner's number (`admit`, N3): the one
+      // call it then makes without them — the text for going without them and the same messages — at its most.
+      const plainMicro =
+        tools.length === 0 || withoutTools === null || state.lane === "own"
+          ? null
+          : maxCostMicro(resolved, holdTokens([withoutTools, ...messageTexts], resolved.contextTokens, resolved.call.maxOutputTokens) + context.fixedTokens);
       let admission;
       try {
-        admission = await admitRun(t, config, run.id, run.ownerId, resolved, held, now, lastCall);
+        admission = await admitRun(t, config, run.id, run.ownerId, resolved, held, now, lastCall, plainMicro);
       } catch (err) {
+        if (err instanceof OthersLimit) {
+          // Its owner's number is reached (answers or points) with nothing running to wait for: no call, nothing held or charged.
+          // What step 1 took on is handed back as noted (as above); the conversation is told once a site day (`limitNotice`),
+          // the Agent pushed to its owner; a reply nobody asked for tells nobody.
+          if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
+          const told = noneTold();
+          if (state.lane === "others") {
+            const notice = await limitNotice(t, run.conversationId, agent.id, siteToday(config));
+            if (notice) {
+              told.notices.push(notice);
+              told.budgetReached.push({ ownerId: agent.ownerId, agentId: agent.id });
+            }
+          }
+          log.info({ metric: "others_limit_refused", limit: err.limit }, "agent run: an owner's number for others' use is reached; it ends quietly");
+          return { end: ENDED_QUIETLY, told };
+        }
         if (err instanceof HeldBack) {
           // Back to `queued`, under the account lock admission still holds, so none of the calls it waits for can have
           // ended unseen (each leaves `running` in a transaction that takes that lock): `claimNext` passes it over until
@@ -932,18 +958,25 @@ export class DbAgentPort implements AgentPort {
             [run.id, err.behind, err.on, first.coveredBefore, first.covers],
           );
           const queued = await t.query<RunRow>(`select ${RUN_COLUMNS} from agent_runs r where r.id = $1`, [run.id]);
+          if (state.lane !== "own") log.info({ metric: "others_held_back" }, "agent run: an others' reply waits for its owner's other replies to end");
           return { end: HELD_BACK, queued: { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(queued.rows[0]!) } };
         }
         if (!(err instanceof AppError) || err.code !== "no_quota") throw err;
         const resetsAt = err.details.resetsAt;
         return { end: { status: "failed", error: "no_quota", ...(typeof resetsAt === "string" ? { resetsAt } : {}) } };
       }
+      // Admitted plain (N3): its with-tools hold did not fit, its one-call hold did — it makes one call without the tools it was
+      // offered, as a reply whose tools the upstream refused does (`others_plain_fallback`).
+      if (admission.plain) {
+        log.info({ metric: "others_plain_fallback" }, "agent run: an others' reply made without tools: only its one-call hold fit its owner's number");
+        tools = [];
+      }
       // What settlement learns the ratio from: the estimate at ratio 1 of a call that showed text only (an image's or a
       // PDF's real tokens are not text's), and the ratio's key. A reply that offers tools teaches nothing: its rounds send
       // the tools and the steps, which the estimate does not count, and settle on their summed usage.
       await t.query("update agent_runs set input_estimate = $2, ratio_key = $3 where id = $1", [
         run.id,
-        context.fixedTokens === 0 && tools.length === 0 ? context.inputTokensEstimate : null,
+        context.fixedTokens === 0 && tools.length === 0 && !admission.plain ? context.inputTokensEstimate : null,
         key,
       ]);
       // An automatic retry is counted as run once it is admitted: its call is made now (not at its claim).
@@ -957,7 +990,7 @@ export class DbAgentPort implements AgentPort {
         prepared: {
           call: {
             ...resolved.call,
-            system: loaded.system.text,
+            system: admission.plain && withoutTools !== null ? withoutTools : loaded.system.text,
             ...(tools.length > 0 && withoutTools !== null ? { systemWithoutTools: withoutTools } : {}),
             messages: context.messages,
             reasoning,

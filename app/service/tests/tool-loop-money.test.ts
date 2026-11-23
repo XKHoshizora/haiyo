@@ -535,22 +535,21 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ estimated: false, cost, balance: cost, forgiven: "0" }]);
   });
 
-  it("the Agent's others' daily budget reached mid-run by what the reply has cost: the next call is the last", async () => {
+  it("the Agent's others' daily budget is held for up front (B1): a reply whose hold cannot fit within it, with tools or plain, ends at admission — no call, nothing held or charged, the group told", async () => {
     const owner = await signUp(app, "budgetowner");
     const member = await signUp(app, "budgetmember");
     const g = await group(app, owner, "饭搭子", [member, await signUp(app, "budgetthird")]);
-    // A paid model and a balance of 20 points: nothing but the budget stops a round.
+    // A paid model and a balance of 20 points: nothing but the budget, one point, which not even its one call can be held within.
     const agent = await mustCreateAgent(app, owner, { handle: "chef", name: "chef", model: PAID, persona: "简短地回答。", othersBudget: "1" });
     await grant(db, owner.id, 20n * POINT);
     await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [g, agent.id]);
-    // A point: the budget, reached by the first round alone.
-    const gateway = scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { usage: U(1000, 900) }).reply("就这样。", { usage: U(100, 10) });
+    const gateway = scriptedGateway();
     const { worker } = toolWorker(gateway);
     await say(member, g, "@chef 附近有什么好吃的？");
     expect(await worker.runOnce()).toBe(true);
-    expect(gateway.calls).toHaveLength(2);
-    expect(isFinal(gateway.calls[1]!)).toBe(true);
-    expect(await runOf(owner.id)).toMatchObject({ status: "done", hold: "0" });
+    expect(gateway.calls).toHaveLength(0);
+    expect(await runOf(owner.id)).toMatchObject({ status: "cancelled", hold: "0" });
+    expect((await db.query("select count(*)::int as n from messages where conversation_id = $1 and body ->> 'event' = 'agent_daily_budget_reached'", [g])).rows[0].n).toBe(1);
   });
 
   it("stopped during its third round, which reported nothing: the first two rounds' reported tokens, their hidden reasoning in them, are charged; the third's estimate is added; the raised hold is released", async () => {
