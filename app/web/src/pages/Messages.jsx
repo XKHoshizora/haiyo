@@ -169,8 +169,11 @@ function ReplyVia({ via, agentId = null }) {
   );
 }
 
-/** One message of `conv`; `onJump(conversationId, seq)`: the chat's jump (to a message an Agent's reply found). */
-export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
+/**
+ * One message of `conv`; `onJump(conversationId, seq)`: the chat's jump (to a message an Agent's reply found);
+ * `thinkingOpen`: it takes the place of a bubble whose thinking the reader had open (read when it is first shown).
+ */
+export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkingOpen = false }) {
   const { state, dispatch, actions } = useStore();
   // The menu of a bubble (long-press, right-click, the context-menu key): ui/BubbleMenu.jsx.
   const bubbleMenu = useBubbleMenu(() => messageActions({ state, dispatch, msg, onReply }));
@@ -227,7 +230,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false }) {
           {agent && <span className="owner">主人：{nameOf(state, ownerOf(state, msg.from))}</span>}
           {!mine && stamp}
         </div>
-        {thinking && <Thinking text={msg.reasoning} />}
+        {thinking && <Thinking text={msg.reasoning} startOpen={thinkingOpen} />}
         {/* A reply that is only a persona proposal has no text: its card alone, no empty bubble. */}
         {!(ownChat && msg.proposal && !msg.text && !msg.quote) && <Body msg={msg} agent={agent} onJump={onJump} />}
         {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation). */}

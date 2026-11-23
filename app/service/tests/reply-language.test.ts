@@ -82,6 +82,95 @@ describe("detectLanguage — by script", () => {
     });
   }
 
+  // A message with no real words says nothing of a language (lane thinkfold): hex bytes, numbers, identifiers and encoded
+  // text hold Latin letters, but nobody wrote a sentence with them. The owner's own message was the first row.
+  const wordless: Array<[string, string, "zh" | "ja" | "en" | null]> = [
+    ["hex bytes (我爱你 in UTF-8), as the owner sent them", "E6 88 91 E7 88 B1 E4 BD A0", null],
+    ["hex bytes, lower case, glued", "e68891e788b1e4bda0", null],
+    ["hex bytes with 0x", "0xE6 0x88 0x91", null],
+    ["three hex pairs", "FF 00 AB", null],
+    ["hex pairs of letters only", "FF AB CD EF", null],
+    ["a hex colour", "#ffccee", null],
+    ["a MAC address of letters", "de:ad:be:ef:fa:ce", null],
+    ["words spelt with a–f only read as hex", "deadbeef cafe babe", null],
+    ["…also in capitals", "DEADBEEF", null],
+    ["…but count once a word with another letter stands beside them", "the cafe was bad", "en"],
+    ["…and a hex dump somebody asks about is asked about in English", "what is FF 00 AB", "en"],
+    ["hex bytes and a two-letter word: still under three letters", "E6 88 91 ok", null],
+    ["digits", "12345", null],
+    ["a version", "v2.10.3", null],
+    ["a base64 blob", "SGVsbG8gd29ybGQsIGZyaWVuZA==", null],
+    ["a base64 blob with no digit in it", "dGhlcmUgdGhlcmUgcGxlYXNl", null],
+    ["a token", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGhlcmUgdGhlcmUgbXk", null],
+    ["a camelCase identifier", "getUserProfileById", null],
+    ["a snake_case identifier", "user_profile_id", null],
+    ["a product name with one inner capital is a word", "TypeScript", "en"],
+    ["an identifier in an english question", "why does getUserProfileById return null", "en"],
+    ["single letters", "a b c", null],
+    ["ok: two letters, as before", "ok", null],
+    ["hi: two letters, as before", "hi", null],
+    ["two short words", "I am", "en"],
+    ["a short word spelt with a–f beside another", "be ok", "en"],
+    ["a greeting", "hello", "en"],
+    ["a sentence", "Hello, how are you?", "en"],
+    ["a sentence with numbers in it", "Call me at 3pm on the 2nd, room 12", "en"],
+    ["emphasis marks around a word", "_really_ *good*", "en"],
+    ["hex bytes beside chinese stay chinese", "E6 88 91 是什么意思", "zh"],
+    ["hex bytes beside japanese stay japanese", "E6 88 91 はどういう意味", "ja"],
+    // (Fix round 1.) A piece with a mark inside it that prose does not put inside a word is not prose: @ . / \ = :
+    ["an e-mail address", "bob@example.com", null],
+    ["another e-mail address", "hello@example.com", null],
+    ["a file name", "readme.md", null],
+    ["a file name with two dots", "report.final.docx", null],
+    ["a windows path", "C:\\Users\\bob\\file.txt", null],
+    ["a unix path", "/usr/local/bin", null],
+    ["a relative path", "src/app/main.ts", null],
+    ["a dotted identifier", "com.example.app", null],
+    ["key=value", "key=value", null],
+    ["a short hex colour", "#fff", null],
+    ["a hex colour of an odd length", "#abcde", null],
+    ["an abbreviation with dots alone", "e.g.", null],
+    ["two words glued by a slash, alone (the cost of the rule)", "yes/no", null],
+    ["an address in a sentence: the other words carry it", "mail me at bob@example.com", "en"],
+    ["a file name in a sentence", "what is in readme.md", "en"],
+    ["a word before a colon, a comma, a full stop is a word (marks at the edge)", "Note: fine, thanks.", "en"],
+    // A word of a–f is hex-looking only in pairs and in one case, as bytes are written: the rest is prose.
+    ["a–f prose of odd lengths", "bad dad", "en"],
+    ["a–f prose with a capital", "Add a feed", "en"],
+    ["a capitalised a–f word", "Dead", "en"],
+    ["three capitals of a–f", "ABC", "en"],
+    ["a–f prose that looks exactly like bytes stays null (cannot be told apart by script)", "dead beef", null],
+    ["…and so does this", "cafe babe", null],
+    // A digit-bearing piece or an apostrophe takes nothing from the words beside it.
+    ["a time among words", "see you at 3pm", "en"],
+    ["an apostrophe", "I'm fine", "en"],
+    ["I'm alone: one letter and one letter", "I'm", null],
+    ["a time with one two-letter word: under three letters", "at 3pm", null],
+    ["a word written with a digit", "gr8", null],
+    // Hyphenated English and capitals stay words — and so, known limits, do what looks the same by script.
+    ["a hyphenated word", "well-known", "en"],
+    ["capitals", "USA", "en"],
+    ["known limit: a kebab identifier reads like a hyphenated word", "kebab-case-id", "en"],
+    ["known limit: a key of capitals reads like a word in capitals", "AKIAIOSFODNN", "en"],
+    ["known limit: short base64 with no digit and under two small→capital steps", "QUJD", "en"],
+    ["known limit: an identifier with one inner capital reads like a name", "getUser", "en"],
+    ["known limit: pinyin reads en by script", "ni hao", "en"],
+  ];
+  for (const [name, text, want] of wordless) {
+    it(`no real words: ${name}: ${JSON.stringify(text.length > 40 ? `${text.slice(0, 40)}…` : text)} → ${want}`, () => {
+      expect(detectLanguage(text)).toBe(want);
+    });
+  }
+
+  it("a long run of marks inside one piece costs time in proportion to its length (a message at the 8000-character cap)", () => {
+    const worst = [`a${"!".repeat(7998)}a`, "!".repeat(8000), `${"!".repeat(7999)}a`, `a${"!".repeat(7999)}`];
+    for (const text of worst) expect(detectLanguage(text)).toBeNull();
+    const from = performance.now();
+    for (let i = 0; i < 25; i += 1) for (const text of worst) detectLanguage(text);
+    // (Trimmed by a regular expression with two anchored alternatives this took about 50 ms a message: over a second here.)
+    expect(performance.now() - from).toBeLessThan(300);
+  });
+
   it("known limit: a Japanese text with no kana at all reads as Chinese", () => {
     expect(detectLanguage("東京都人口")).toBe("zh");
   });

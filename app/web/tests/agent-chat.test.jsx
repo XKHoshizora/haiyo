@@ -854,11 +854,11 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     expect(bubbleText()).toContain("正在思考… 1 秒");
     await elapse(1500);
     expect(bubbleText()).toContain("正在思考… 2 秒");
-    // Its thinking streams: the line heads it — the same count, never back to 0; it is open while it comes; the bubble
-    // keeps only the dots.
+    // Its thinking streams: the line heads it — the same count, never back to 0; it is folded from the first moment (only the
+    // reader opens it); the bubble keeps only the dots.
     await deltaPush(transport, { reasoning: "先想一想" });
     expect(thinkingSummary()).toBe("正在思考… 2 秒");
-    expect(bubbleLi().querySelector("details").open).toBe(true);
+    expect(bubbleLi().querySelector("details").open).toBe(false);
     expect(bubbleLi().querySelector("details .thinking-text").textContent).toBe("先想一想");
     expect(bubbleText()).toBe("");
     expect(bubbleLi().querySelector(".bubble .dots")).not.toBeNull();
@@ -867,7 +867,8 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     await deltaPush(transport, { reasoning: "，再想一想" });
     await elapse(2400);
     expect(thinkingSummary()).toBe("正在思考… 5 秒");
-    // The first piece of the reply: the thinking folds by itself under how long it took, from that same start; the text
+    expect(bubbleLi().querySelector("details").open).toBe(false);
+    // The first piece of the reply: the thinking stays folded, under how long it took, from that same start; the text
     // is revealed, the count stops.
     await deltaPush(transport, { text: "答案" });
     expect(thinkingSummary()).toBe("思考了 5 秒");
@@ -898,27 +899,141 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     expect(bubbleLi().querySelector("details").open).toBe(true);
   });
 
-  it("the reader's own open or close while the thinking streams is kept: not reopened, not folded at the text", async () => {
+  it("is folded while it streams; the reader's own open or close is kept: not folded at the text, not opened by more of it", async () => {
     const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
     await runPush(transport, runOf(R1, "running"));
     await deltaPush(transport, { reasoning: "第一步" });
     const details = () => bubbleLi().querySelector("details");
-    expect(details().open).toBe(true);
-    // Closed by the reader: more thinking does not open it again; the text does not change it either.
-    await click(details().querySelector("summary"));
-    await flush();
     expect(details().open).toBe(false);
     await deltaPush(transport, { reasoning: "第二步" });
     await elapse(1000);
     expect(details().open).toBe(false);
-    // Opened again by the reader: the reply's text does not fold it.
+    // (Folded, it has grown all the same: opened, it shows everything at once.)
+    expect(details().querySelector(".thinking-text").textContent).toBe("第一步第二步");
+    // Opened by the reader while it thinks: it shows what came and what comes, under the running count; the reply's text
+    // does not fold it.
     await click(details().querySelector("summary"));
     await flush();
     expect(details().open).toBe(true);
+    await deltaPush(transport, { reasoning: "第三步" });
+    expect(details().open).toBe(true);
+    expect(details().querySelector(".thinking-text").textContent).toBe("第一步第二步第三步");
+    expect(thinkingSummary()).toBe("正在思考… 1 秒");
     await deltaPush(transport, { text: "结论" });
     await revealed();
     expect(details().open).toBe(true);
     expect(thinkingSummary()).toBe("思考了 1 秒");
+    // Closed again by the reader: more of the text does not open it.
+    await click(details().querySelector("summary"));
+    await flush();
+    expect(details().open).toBe(false);
+    await deltaPush(transport, { text: "，就这样" });
+    await revealed();
+    expect(details().open).toBe(false);
+  });
+
+  it("what the reader did with the thinking is kept when the bubble is made again (the conversation left and opened again), while it thinks and after its text started", async () => {
+    const { transport } = await openAgentChat({ agent: { reasoning: "high" }, extra: [direct(D1, ANN)] });
+    await runPush(transport, runOf(R1, "running"));
+    await deltaPush(transport, { reasoning: "第一步" });
+    const details = () => bubbleLi().querySelector("details");
+    const leaveAndReturn = async () => {
+      await click(screen.getByText("小安", { selector: ".list-col .row-name" }));
+      expect(bubbleLi()).toBeNull();
+      await click(screen.getByText("小助手", { selector: ".list-col .row-name" }));
+      await flush();
+    };
+    // Never touched: folded after coming back, too.
+    await leaveAndReturn();
+    expect(details().open).toBe(false);
+    await click(details().querySelector("summary"));
+    await flush();
+    expect(details().open).toBe(true);
+    await leaveAndReturn();
+    expect(details().open).toBe(true);
+    await deltaPush(transport, { text: "结论" });
+    await leaveAndReturn();
+    expect(details().open).toBe(true);
+    // Closed by the reader: closed after coming back.
+    await click(details().querySelector("summary"));
+    await flush();
+    expect(details().open).toBe(false);
+    await leaveAndReturn();
+    expect(details().open).toBe(false);
+  });
+
+  it("thinking the reader has open stays open when the stored reply takes the bubble's place; folded again once the conversation was left", async () => {
+    const { transport } = await openAgentChat({ agent: { reasoning: "high" }, extra: [direct(D1, ANN)] });
+    await runPush(transport, runOf(R1, "running"));
+    await deltaPush(transport, { reasoning: "第一步，第二步" });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    await deltaPush(transport, { text: "结论" });
+    await revealed();
+    expect(bubbleLi().querySelector("details").open).toBe(true);
+    await messagePush(transport, wire(A1, 3, AG1, "结论", { reasoning: "第一步，第二步" }));
+    await runPush(transport, runOf(R1, "done"));
+    expect(bubbleLi()).toBeNull();
+    const stored = () => storedLi(3).querySelector("details");
+    expect(stored().querySelector("summary").textContent).toBe("思考过程");
+    expect(stored().open).toBe(true);
+    expect(stored().querySelector(".thinking-text").textContent).toBe("第一步，第二步");
+    // It stays so while the reader is here (a later message changes nothing), and the reader can fold it.
+    await messagePush(transport, wire(A1, 4, ME_ID, "谢谢"));
+    expect(stored().open).toBe(true);
+    // Left and opened again: folded, like every stored reply's thinking.
+    await click(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await click(screen.getByText("小助手", { selector: ".list-col .row-name" }));
+    await flush();
+    expect(stored().open).toBe(false);
+  });
+
+  it("…also when the bubble finishes revealing before it gives way; thinking the reader left folded, or folded again, stays folded", async () => {
+    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    await runPush(transport, runOf(R1, "running"));
+    await deltaPush(transport, { reasoning: "第一步" });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    // The stored message comes while some of the text is still unrevealed: the bubble finishes first.
+    const BURST = "一二三四五六七八九十".repeat(50);
+    await deltaPush(transport, { text: BURST });
+    await messagePush(transport, wire(A1, 3, AG1, BURST, { reasoning: "第一步" }));
+    await runPush(transport, runOf(R1, "done"));
+    expect(bubbleLi()).not.toBeNull();
+    expect(storedLi(3)).toBeNull();
+    await elapse(5000);
+    expect(bubbleLi()).toBeNull();
+    expect(storedLi(3).querySelector("details").open).toBe(true);
+    // The next reply: opened, then folded again by the reader — its stored thinking is folded; the first stays as it is.
+    const next = `${R1.slice(0, -4)}8${R1.slice(-3)}`;
+    await runPush(transport, runOf(next, "running"));
+    await push(transport, { type: "delta", conversationId: A1, runId: next, reasoning: "又想" });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    await push(transport, { type: "delta", conversationId: A1, runId: next, text: "好" });
+    await revealed();
+    await messagePush(transport, wire(A1, 4, AG1, "好", { reasoning: "又想" }));
+    await runPush(transport, runOf(next, "done"));
+    expect(bubbleLi()).toBeNull();
+    expect(storedLi(4).querySelector("details").open).toBe(false);
+    expect(storedLi(3).querySelector("details").open).toBe(true);
+  });
+
+  it("a new reply's thinking starts folded, whatever the reader did with the one before", async () => {
+    const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
+    await runPush(transport, runOf(R1, "running"));
+    await deltaPush(transport, { reasoning: "第一步" });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    expect(bubbleLi().querySelector("details").open).toBe(true);
+    await messagePush(transport, wire(A1, 3, AG1, "结论", { reasoning: "第一步" }));
+    await runPush(transport, runOf(R1, "done"));
+    const next = `${R1.slice(0, -4)}9${R1.slice(-3)}`;
+    await runPush(transport, runOf(next, "running"));
+    await push(transport, { type: "delta", conversationId: A1, runId: next, reasoning: "又想" });
+    expect(bubbleLi().querySelector("details").open).toBe(false);
   });
 
   it("when the first piece of the text came while the conversation was not shown, the header says 思考过程", async () => {
@@ -967,11 +1082,14 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("the thinking shown open while it streams grows by appending what came to one text node; its whole text is never set again", async () => {
+  it("the thinking a reader opened while it streams grows by appending what came to one text node; its whole text is never set again", async () => {
     const { transport } = await openAgentChat({ agent: { reasoning: "high" } });
     await runPush(transport, runOf(R1, "running"));
     let full = "想".repeat(5000);
     await deltaPush(transport, { reasoning: full });
+    await click(bubbleLi().querySelector("details > summary"));
+    await flush();
+    expect(bubbleLi().querySelector("details").open).toBe(true);
     const host = bubbleLi().querySelector("details .thinking-text");
     const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
     const node = walker.nextNode();
