@@ -8,6 +8,7 @@ import {
   GROUP_AGENTS_NAMED,
   GROUP_PEOPLE_NAMED,
   NO_NOTES,
+  NOTES_SECRET_CLAUSE,
   notesPassage,
   passageBudget,
   SUMMARY_HEADING,
@@ -269,9 +270,10 @@ export const NO_RUN = "00000000-0000-0000-0000-000000000000";
 /**
  * The least an others' reply of an Agent on `model` can hold, given `inputBytes` of input it is sure to send: one call at those
  * bytes (never more than the model's context beside its output) and the others' output limit: `othersHold`, the one definition
- * admission holds by, without a last call. 0 for a provider's own model (it holds nothing).
+ * admission holds by, without a last call. 0 for a provider's own model (it holds nothing). `fixedTokens`: the images' and PDFs'
+ * constants, which admission adds AFTER the clamp (`holdTokens(...) + context.fixedTokens`, port-impl.ts), so they are added after it here too.
  */
-export function othersFloorHold(config: Pick<Config, "siteModels" | "others">, model: { source: string; id?: string } | null, inputBytes: number): bigint {
+export function othersFloorHold(config: Pick<Config, "siteModels" | "others">, model: { source: string; id?: string } | null, inputBytes: number, fixedTokens = 0): bigint {
   if (model?.source !== "site") return 0n;
   const site = config.siteModels.find((m) => m.id === model.id);
   if (!site) return 0n;
@@ -280,7 +282,7 @@ export function othersFloorHold(config: Pick<Config, "siteModels" | "others">, m
     Resolved,
     "price" | "call" | "source"
   >;
-  return othersHold(priced, Math.max(0, Math.min(inputBytes, site.contextTokens - maxOutputTokens)), null);
+  return othersHold(priced, Math.max(0, Math.min(inputBytes, site.contextTokens - maxOutputTokens)) + fixedTokens, null);
 }
 
 /** A run refused by an others' number: which one. */
@@ -402,6 +404,8 @@ const EMPTY_SCENE: GroupScene = { title: null, agents: [], more: false, people: 
  * tool-less system text as `begin` builds it from what is known before any conversation exists: the persona, the owner's name, the
  * date and `scene` (the group's title and Agents when the caller knows the group; none: the smallest scene, so that the result is
  * a lower bound for every group). Never the conversation shown, the roster of speakers, the mark or the notes, which only add bytes.
+ * `lane` picks the text's shape, so that the floor is a lower bound BY CONSTRUCTION: an others' reply's text carries the called
+ * sentence (`unasked` false), the proactive lane's the unasked passage (69 to 113 bytes longer), and each is floored by its own.
  * 0 for a provider's own model. (A social reply's text, B7a, is a separate one; its floor is not claimed here.)
  */
 export async function othersPlainFloor(
@@ -410,6 +414,7 @@ export async function othersPlainFloor(
   agent: { name: string; handle: string; persona: string; ownerId: string; model: AgentModel },
   scene: GroupScene | null,
   now: Date,
+  lane: "others" | "proactive",
 ): Promise<bigint> {
   if (agent.model?.source !== "site") return 0n;
   const owner = await q.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
@@ -420,7 +425,7 @@ export async function othersPlainFloor(
     now,
     config.siteTimezone,
     "",
-    true,
+    lane === "proactive",
     NO_NOTES,
     false,
   ).text;
@@ -459,7 +464,7 @@ function fullScene(): GroupScene {
  * - the conversation: the plan keeps messages (labels, quotes and attachments' estimates counted: `shown`, `ContextPlan`, agents/context.ts)
  *   to at most the place's cap in estimated tokens, an estimate being its weight times a ratio of at least 1 (`planRatio`), so the text
  *   a plan keeps weighs at most the cap and has at most 3 bytes a weight, attachments' constants (`fixedTokens`, a part of that estimate)
- *   included: at most 3 x the cap. The cap is the largest that applies to an others' reply: `AGENT_GROUP_CONTEXT_TOKENS` in a group,
+ *   included: at most 3 x the cap in text bytes and at most the cap in constants (added after the clamp, as admission does). The cap is the largest that applies to an others' reply: `AGENT_GROUP_CONTEXT_TOKENS` in a group,
  *   `OTHERS.contextWeight` in a social conversation (agents/context.ts `loadContext`, port-impl.ts:769).
  * A reply `告诉他们` (toldPassage) is the owner's own, never an others' call. Nothing else is sent: a plain call has no tools, no replayed
  * calls (the Agent's own conversation only), no greeting.
@@ -488,7 +493,11 @@ export async function othersPlainCeiling(
   const notes = Math.min(Buffer.byteLength(stored, "utf8"), 3 * Math.floor(passageBudget(site.contextTokens, maxOutput, config.memory.passageShare)));
   const summary = Buffer.byteLength(`${SUMMARY_HEADING}${SUMMARY_SAID_BY}`, "utf8") + 3 * config.memory.summaryMaxWeight + 16;
   const conversation = 3 * Math.max(config.agentGroupContextTokens, config.others.contextWeight);
-  return othersFloorHold(config, agent.model, Buffer.byteLength(system, "utf8") + (notes > 0 ? notes + 2 : 0) + summary + conversation);
+  // The notes passage, its two separator bytes and the clause the secrets sentence gains with notes (`NOTES_SECRET_CLAUSE`).
+  const noted = notes > 0 ? notes + 2 + Buffer.byteLength(NOTES_SECRET_CLAUSE, "utf8") : 0;
+  // The text clamps at the context beside the output; the images' and PDFs' constants (at most the cap) are added after the clamp.
+  const constants = Math.max(config.agentGroupContextTokens, config.others.contextWeight);
+  return othersFloorHold(config, agent.model, Buffer.byteLength(system, "utf8") + noted + summary + conversation, constants);
 }
 
 /**
@@ -512,7 +521,7 @@ export async function agentRoom(
   if (agent.model === null) return { askable: false, reached: false, tight: false };
   if (agent.model.source === "site" && !config.siteModels.some((m) => m.id === (agent.model as { id: string }).id)) return { askable: false, reached: false, tight: false };
   const run = { id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "others" as const };
-  const floor = await othersCheck(q, config, run, await othersPlainFloor(q, config, agent, null, now), "admission", now);
+  const floor = await othersCheck(q, config, run, await othersPlainFloor(q, config, agent, null, now, "others"), "admission", now);
   const reached = !floor.ok && "limit" in floor;
   if (reached) return { askable: true, reached: true, tight: true };
   const ceiling = await othersCheck(q, config, run, await othersPlainCeiling(q, config, agent, now), "admission", now);

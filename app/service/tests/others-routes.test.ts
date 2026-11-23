@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { stoppedOf, stoppedShape } from "../src/accounts/others-routes.ts";
-import { NO_RUN, othersCheck, othersPlainCeiling, othersPlainFloor, othersUsedByAgents, othersUsedToday, perDayEstimate } from "../src/metering/others.ts";
+import { NO_RUN, othersCheck, othersFloorHold, othersPlainCeiling, othersPlainFloor, othersUsedByAgents, othersUsedToday, perDayEstimate } from "../src/metering/others.ts";
+import { NOTES_SECRET_CLAUSE, notesPassage } from "../src/agents/runtime/prompt.ts";
 import { readOwnedAgent } from "../src/agents/store.ts";
+import { notesFor } from "../src/memory/store.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { createAgent, mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -293,7 +295,7 @@ describe("reached and tight: two one-sided facts, each by the function admission
     owners.set(owner.id, owner);
     const [agent] = await agentsOf(app, db, owner, 1, model);
     const row = (await readOwnedAgent(db, owner.id, agent!.agentId))!;
-    const floor = await othersPlainFloor(db, config(), row, null, new Date());
+    const floor = await othersPlainFloor(db, config(), row, null, new Date(), "others");
     const ceiling = await othersPlainCeiling(db, config(), row, new Date());
     const settled = POINTS_70 - left(floor, ceiling);
     if (settled > 0n) await reply({ agent: agent!, ownerId: owner.id, lane: "others", micro: settled, caller: (await newOwner()).id });
@@ -335,6 +337,43 @@ describe("reached and tight: two one-sided facts, each by the function admission
     expect(await of0()).toBe(base);
   });
 
+  it("R2-M1: the floor is built by lane: an others' reply's own text (the called sentence) is shorter than the proactive text, so its floor is lower", async () => {
+    const w = await world(FREE_MODEL, () => POINTS_70);
+    const others = await othersPlainFloor(db, config(), w.row, null, new Date(), "others");
+    const proactive = await othersPlainFloor(db, config(), w.row, null, new Date(), "proactive");
+    // The unasked passage is 69 to 113 bytes longer; at 140 µpt a byte that is at least 9 660.
+    expect(proactive - others).toBeGreaterThanOrEqual(69n * 140n);
+    expect(proactive - others).toBeLessThanOrEqual(113n * 140n);
+  });
+
+  it("R2-M2: the attachments' constants are added after the clamp: min(text, context - output) + the cap", async () => {
+    const small = { ...config(), siteModels: config().siteModels.map((m) => (m.id === FREE_MODEL.id ? { ...m, contextTokens: 20_000 } : m)) };
+    const site = small.siteModels.find((m) => m.id === FREE_MODEL.id)!;
+    const out = Math.min(site.maxOutputTokens, small.others.outputTokens);
+    const cap = Math.max(small.agentGroupContextTokens, small.others.contextWeight);
+    // The helper: the text clamps, the constants do not.
+    expect(othersFloorHold(small, FREE_MODEL, 10_000_000, 1_500)).toBe(othersFloorHold(small, FREE_MODEL, 20_000 - out) + 1_500n * BigInt(site.inputMicroPerToken));
+    expect(othersFloorHold(small, FREE_MODEL, 1_000, 1_500)).toBe(othersFloorHold(small, FREE_MODEL, 1_000) + 1_500n * BigInt(site.inputMicroPerToken));
+    // The ceiling: a model whose context the text bound reaches holds the clamp plus the most constants a plan can hold.
+    const w = await world(FREE_MODEL, () => POINTS_70);
+    expect(await othersPlainCeiling(db, small, w.row, new Date())).toBe(othersFloorHold(small, FREE_MODEL, 10_000_000, cap));
+  });
+
+  it("R2-M3: the notes clause of the secrets sentence is counted: with notes the ceiling grows by the passage, its two separators and the clause", async () => {
+    const w = await world(FREE_MODEL, () => POINTS_70);
+    const of0 = async () => othersPlainCeiling(db, config(), (await readOwnedAgent(db, w.owner.id, w.agent.agentId))!, new Date());
+    const base = await of0();
+    await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [w.agent.agentId, "一条笔记"]);
+    const row = (await readOwnedAgent(db, w.owner.id, w.agent.agentId))!;
+    const all = await notesFor(db, row, { conversationId: "", group: false });
+    const passage = notesPassage({ owner: all.owner, self: all.self, hearsay: [] }, "group", config().siteTimezone, "");
+    const delta = (await of0()) - base;
+    const bytes = Buffer.byteLength(passage, "utf8");
+    expect(bytes).toBeGreaterThan(0);
+    // 140 µpt a byte, no clamp: the passage, its two separator bytes, and the clause.
+    expect(delta).toBe(BigInt(bytes + 2 + Buffer.byteLength(NOTES_SECRET_CLAUSE, "utf8")) * 140n);
+  });
+
   it("one micro-point below the floor: reached (and tight); at the floor: not reached, tight", async () => {
     const below = await world(FREE_MODEL, (f) => f - 1n);
     expect(await states(below.owner)).toEqual({ owner: [true, true], agents: [[true, true]] });
@@ -370,7 +409,7 @@ describe("reached and tight: two one-sided facts, each by the function admission
     const long = await world(FREE_MODEL, () => 5_000_000n);
     await db.query("update agents set persona = $2 where principal_id = $1", [long.agent.agentId, "汉".repeat(20_000)]);
     const row = (await readOwnedAgent(db, long.owner.id, long.agent.agentId))!;
-    expect(await othersPlainFloor(db, config(), row, null, new Date())).toBeGreaterThan(5_000_000n);
+    expect(await othersPlainFloor(db, config(), row, null, new Date(), "others")).toBeGreaterThan(5_000_000n);
     expect(await states(long.owner)).toEqual({ owner: [true, true], agents: [[true, true]] });
   });
 

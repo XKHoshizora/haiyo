@@ -327,7 +327,7 @@ export async function proactivePlainFloor(q: Queryable, config: DecideDeps["conf
   const scene = await loadGroupScene(q, agent, conversationId);
   if (scene === null) return 0n;
   // The one floor (metering/others.ts `othersPlainFloor`), with this group's own scene.
-  return othersPlainFloor(q, config, agent, withRoster(scene, []), now);
+  return othersPlainFloor(q, config, agent, withRoster(scene, []), now, "proactive");
 }
 
 const proactiveRun = (agent: Pick<AgentRow, "id" | "ownerId">) => ({ id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "proactive" as const });
