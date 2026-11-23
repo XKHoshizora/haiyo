@@ -5,8 +5,10 @@ import { aboutPoints } from "../accounts/store.ts";
 import { siteOffersWebSearch } from "../agents/tools/web/engine.ts";
 import { REASONING_LEVELS } from "../config.ts";
 import { perPrincipalLimit } from "../limits.ts";
-import { abilitiesOf, mediaView, modelHints, type Abilities } from "../providers/hints.ts";
+import { abilitiesOf, abilitiesView, modelHints, type Abilities } from "../providers/hints.ts";
 import { requirePrincipal } from "../session.ts";
+
+const { reportedTools: _reportedTools, ...siteMediaView } = abilitiesView;
 
 const modelsResponse = z.object({
   siteModels: z.array(
@@ -19,7 +21,7 @@ const modelsResponse = z.object({
       reasoning: z.array(z.enum(REASONING_LEVELS)),
       contextTokens: z.number(),
       tools: z.boolean(),
-      ...mediaView,
+      ...siteMediaView,
     }),
   ),
   providerDefaults: z.object({ contextTokens: z.number(), maxOutputTokens: z.number() }),
@@ -33,13 +35,13 @@ const modelsResponse = z.object({
 
 /**
  * What the catalogue says a site model takes and answers with besides what its configuration states (audio and video
- * in; images, video and audio out): of the name it is called by when the catalogue knows that, else of its id when it
- * knows that, else nothing. Never `tools`, `vision`, `pdf` or its thinking levels: those are the operator's.
+ * in; images, video and audio out): of the name it is called by when the catalogue knows that name, else of its id —
+ * in both cases only when that is a catalogue model itself, never a name that merely starts with one (`modelHints`) —
+ * else nothing. Never `reportedTools`, `vision`, `pdf` or its thinking levels: those are the operator's (`tools`).
  */
-function siteMedia(site: { id: string; model: string }): Omit<Abilities, "tools"> {
+function siteMedia(site: { id: string; model: string }): Omit<Abilities, "reportedTools"> {
   const called = modelHints(site.model);
-  const hints = called.known ? called : modelHints(site.id);
-  const { tools: _tools, ...media } = hints.known ? abilitiesOf(hints) : {};
+  const { reportedTools: _tools, ...media } = abilitiesOf(called.known ? called : modelHints(site.id));
   return media;
 }
 
