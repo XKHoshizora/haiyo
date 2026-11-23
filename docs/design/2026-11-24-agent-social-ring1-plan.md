@@ -32,7 +32,7 @@ Each is reported to the controller. "Controller ruling 2026-11-24" marks a rulin
 | D6 | The judge, the withheld check and the persona aid start from a reply, a post and a persona save | Those sites are lane B's files | The worker in `memory/judge.ts` polls. In ring 1a it handles only Agents whose `persona_version` passed `persona_checked_version` (the persona aid, A8b, moved to ring 1a by Controller ruling 2026-11-24 (verification, N4)). In ring 1b it adds queued verdict rows and runs with `withheld_notes` not checked. A reply never waits for it. |
 | D7 | 「谁可以加它为好友」 in web `AgentForm` | `AgentForm.jsx` holds the per-Agent others' number, which lane B rewrites | The setting, picks, contacts, requests and 「它和别人的对话」 live in the tab 「别人」 on the Agent's page (`pages/AgentOthers.jsx`, lane A, ring 1a), mounted by Step 0 in `Agents.jsx`. |
 | D8 | A new `findAgentByHandle` and a lookup | One lookup exists: `GET /api/principals/lookup` (principals/routes.ts:105); it lower-cases the handle (:113) | The same route answers a discoverable Agent by its full handle `<owner>.<name part>`, case-insensitively as people's handles already are (attack M1). A person's answer is byte-for-byte today's. |
-| D9 | `accounts.others_answers` 50, `others_points_micro` 70 | Constants the controller tunes; `agents.others_budget_micro` defaults to 20 points for every Agent (migrations/020_others_budget.sql:9) | Account columns nullable, null reads `OTHERS.answersPerDay` / `OTHERS.pointsPerDay`. **Controller ruling 2026-11-24 (attack, I7):** lane B's 074 (B4; moved out of Step 0 by Controller ruling 2026-11-24 (verification, E1)) raises an Agent's number from 20 to 70 points where it still holds 020's default. A value an owner set to exactly 20 cannot be told from the default, so **every row at exactly 20 points is raised**. New Agents get no number of their own (null: the owner's numbers bind). **Controller ruling 2026-11-24 (final):** the cap is per owner per day, one value each (50 answers, 70 points by default), decided by `othersFits` under the account lock; it never multiplies with the number of Agents. No migration writes an owner number: null reads the config default. An Agent's own number is only a sub-limit inside its owner's, and the raise to 70 (the owner's default) cannot pass it. The design's migration table said otherwise; **Owner decision 2026-11-25** settles it for the shared cap (the section above), which ring 1a implements. Acceptance data is disposable. The 70 default is still the owner's to confirm (Rollout). |
+| D9 | `accounts.others_answers` 50, `others_points_micro` 300 (Owner decision 2026-11-25 (cap); it was 70) | Constants the controller tunes; `agents.others_budget_micro` defaults to 20 points for every Agent (migrations/020_others_budget.sql:9) | Account columns nullable, null reads `OTHERS.answersPerDay` / `OTHERS.pointsPerDay`. **Controller ruling 2026-11-24 (attack, I7):** lane B's 074 (B4; moved out of Step 0 by Controller ruling 2026-11-24 (verification, E1)) raises an Agent's number from 20 to 70 points where it still holds 020's default. A value an owner set to exactly 20 cannot be told from the default, so **every row at exactly 20 points is raised**. New Agents get no number of their own (null: the owner's numbers bind). **Controller ruling 2026-11-24 (final):** the cap is per owner per day, one value each (50 answers, 70 points by default), decided by `othersFits` under the account lock; it never multiplies with the number of Agents. No migration writes an owner number: null reads the config default. An Agent's own number is only a sub-limit inside its owner's, and the raise to 70 (the owner's default) cannot pass it. The design's migration table said otherwise; **Owner decision 2026-11-25** settles it for the shared cap (the section above), which ring 1a implements. Acceptance data is disposable. The 70 default is still the owner's to confirm (Rollout). |
 | D10 | The points cap waits in `HeldBack` | `HeldBack.on` takes `free`, `balance`, `any` (admit.ts:56) | An others' hold-back is `HeldBack(behind, "any")`; the owner's own replies never wait behind it (`olderMarkSql`, admit.ts:130). |
 | D11 | "Tools are offered only when the advisory room covers the hold with tools" | Step 1 of `begin` has the plan, not yet the attachments' bytes | Step 1 estimates the hold with tools from the plan's texts; step 3 decides exactly under the lock. If step 3 refuses a with-tools hold for points while the plain hold fits, the run falls back to a plain call (attack M12). This holds for both kinds of points refusal, a wait or a limit: one money invariant (Controller ruling 2026-11-24 (verification), N3; B1). |
 | D12 | Lanes share nothing after Step 0 | `README.md` headings must match served routes (`tests/readme.test.ts`); `config.ts`, `app.ts`, both `HIDDEN_KEYS` lists, web `api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `state/location.js`, `main.jsx`, `.env.example`, `app/deploy/README.md`, the e2e env lists and `tests/helpers/social.ts` are needed by both | Step 0 writes them once: the route plugins of both rings are wired in `app.ts` and register no route (as built: a stub answering 404 is indistinguishable from no route, and it would need an exemption from the fuzz rule), the README carries the shapes as planned entries, the config groups are complete, `seedSocial` is frozen. Neither lane edits them afterwards; lane I tidies the README. A lane that needs a change there stops and reports. Accepted by the controller. |
@@ -48,12 +48,24 @@ Each is reported to the controller. "Controller ruling 2026-11-24" marks a rulin
 ### Owner decision 2026-11-25: the others' cap is shared (settles the design's two conflicting sentences; replaces the note "Design conflict for the owner")
 
 The design said two things about the owner's points number that could not both hold for an owner with more than one Agent (§0 and §5 "Numbers": one cap per owner; §5 "Migration": the sum of the Agents' numbers). **The owner has decided: the others' cap is SHARED.** 70 points and 50 answers per person per day, across all of that person's Agents. An Agent's own number is only a sub-limit inside it, empty by default for a new Agent. The sum sentence is not implemented and is withdrawn.
-- Every owner has one points number and one answers number per site day (default 70 and 50; null in `accounts` reads the config default).
+- Every owner has one points number and one answers number per site day (default 300 and 50; null in `accounts` reads the config default).
 - `othersFits` enforces both under the account lock, whatever the number of Agents.
 - No migration writes a sum.
 - An Agent's own number (`agents.others_budget_micro`, `agents.others_answers`) is a sub-limit inside its owner's. The I7 raise (20 → 70) sets it to the owner's default, so it can never let the owner's total pass the owner's cap.
-- An owner with three Agents at the old default therefore has 70 points for all three together, not 210.
-- The web says it so (B9a, B9b): the use page's sentence 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {70} 点」 is the owner's one pair for all their Agents; the form's 「它自己的上限（可不填）」 is empty for a new Agent and says that empty means 「和你所有的 Agent 一起用你的总数」.
+- An owner with three Agents at the old default therefore has 300 points for all three together, not 900 (Owner decision 2026-11-25 (cap)).
+- The web says it so (B9a, B9b): the use page's sentence 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {300} 点」 is the owner's one pair for all their Agents; the form's 「它自己的上限（可不填）」 is empty for a new Agent and says that empty means 「和你所有的 Agent 一起用你的总数」.
+
+### Owner decision 2026-11-25 (cap): the per-person cap is 300 points
+
+70 points was inherently tight for a paid-model Agent (its largest plain hold is about 204 points, so it read 「快用完了」 from the first moment). **The per-person daily cap for what others may spend is 300 points; answers stay 50** (`OTHERS.pointsPerDay` 300). At 300 a paid-model Agent with an ordinary persona and nothing used is neither `tight` nor `reached` (its ceiling, 204.2, is under 300; tested). The Agent's OWN number must not bind by accident: **migration 074, applied nowhere yet, is edited so that a row still at migration 020's old default of exactly 20 points becomes NULL (no sub-limit of its own) instead of 70**; the column default stays NULL; a number the owner set to anything else (70 included) is kept. The proactive budget keeps the earlier ruling (exactly 20 → 70, default 70). Where a number below says 70 for the others' cap, this decision wins. Consequences, pinned by tests: three default Agents share 300, never 900; at the design's prices 35 replies offered tools fit in 300 points at once on the free tier (8.387 each) and 1 on the paid tier (194.127), the next paid reply falling back to its plain hold (61.5); `perDay` at 300 is 50 on the free tier and 11 on the paid.
+
+### Controller ruling 2026-11-25 (B-5 review)
+
+- **One place for 停止往来 and 恢复往来 (I1 and I2).** The use page has NO stop and NO restore control. Each person of today, and each person of the stopped list, is a link to that person's profile, where lane A's 停止往来 dialog and 恢复往来 live; the stopped list only shows who is stopped and since when. A stop works both ways and the access it ended does not come back: the stopped list's sentence says so.
+- **The number boxes (I3).** Each box owns its draft; an answer of the service never overwrites a box being edited; saves are serialised (the latest values win, none dropped); what is saved is what is shown; invalid input is refused in place. Tested with a slow fake server.
+- **Copy about money must be true (I4)** (still "copy for the owner to confirm"): tight 「余量不多，较长的回复可能发不出」; reached 「别人今天的额度已用完」 (it is OTHER people's use that is used up; the owner's own chat is unaffected; the card and the pages use the one wording); a per-Agent line 「{name}：只有它在回的话，每天大约能回 {N} 次」 that cannot be summed; the stopped-list sentence 「停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。」.
+- **Restored information.** `proactiveSpentToday` is back on the owner's Agent wire (the one definition of "used", lane `proactive`; owner-only, in both `HIDDEN_KEYS`), `used.proactivePoints` on the use route, and `canReply` on each `agents[]` row (false for an Agent with no usable model: the page says so instead of 「0 次 · 正常」). The Agent page shows 「…每天最多花 {N} 点，今天花了 {S} 点」.
+- **The card's tag** stays for `reached` only; the use page states `tight` per Agent.
 
 ---
 
@@ -103,7 +115,7 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 |---|---|---|
 | `SOCIAL.enabled` | `false` | the operator's site switch |
 | `OTHERS.answersPerDay` | 50 | an owner's daily answers others cause (lanes `others`, `proactive`) |
-| `OTHERS.pointsPerDay` | 70 | the same in points, settled plus held (owner's to confirm, D9) |
+| `OTHERS.pointsPerDay` | 300 | the same in points, settled plus held (owner's to confirm, D9) |
 | `OTHERS.toolCalls` | 1 | real tool calls in a whole others' reply, all tools together |
 | `OTHERS.overCapNotes` | 3 | further calls a whole others' reply may have answered with a note (Controller ruling 2026-11-24, Q1) |
 | `OTHERS.outputTokens` | 800 | output limit of every call of an others' reply; reasoning `none` |
@@ -146,8 +158,8 @@ From the brief (binding corrections of 2026-11-24), as amended by the rulings:
 - `note_withheld` card: 「〈{audience}〉问到了相关的事，这条没有告诉他：〈{note}〉。以后可以告诉他吗？」, buttons 「可以」 / 「不说」.
 - `persona_fact` card: 「人格里这句话像是关于你或别人的事实：〈{sentence}〉。别人问起时可能被说出来。要移到“关于我”吗？」, buttons 「移到“关于我”」 / 「不用」.
 - Shown notes: 「以后别说」.
-- Limits: 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {70} 点」; per Agent 「以这个数，每天大约能回别人 {N} 次」; reached 「别人今天的使用已到上限」; the three states (Controller ruling 2026-11-24 (B-2 re-review, R-I1), copy for the owner to confirm): fits 「正常」, tight 「快用完了，较长的回复可能发不出」, reached 「今天的额度用完了」 (the line above, 「别人今天的使用已到上限」, is the reached wording the design gives; one of the two is kept).
-- The one-time notice (B9b; Controller ruling 2026-11-24 (verification), N2; amended by Controller ruling 2026-11-24 (B-2 review, I4), copy for the owner to confirm): 「别人让你的 Agent 回复，现在按人算：你所有的 Agent 加起来，每天最多回别人 {answers} 次、最多花你 {points} 点，没人叫它时的主动回复也算在里面。Agent 自己的上限和主动回复的上限，原来是 20 点的，都已经提到 70 点。」, button 「知道了」. True of 074: a limit of exactly 20 (the default, or an owner's own choice of 20) was raised in both columns; proactive replies count inside the shared numbers.
+- Limits (Controller ruling 2026-11-25 (B-5 review), copy for the owner to confirm): 「别人每天最多让我的 Agent 回复 {50} 次，最多花我 {300} 点」 (the owner's one pair for all their Agents); per Agent 「{name}：只有它在回的话，每天大约能回别人 {N} 次」 (it cannot be summed); the three states: fits 「正常」, tight 「余量不多，较长的回复可能发不出」, reached 「别人今天的额度已用完」 (one wording on the card and the pages). Stopped list: 「停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。」; a person is a link to their profile (no stop or restore control on the use page).
+- The one-time notice (B9b; Owner decision 2026-11-25 (cap), Controller ruling 2026-11-25 (B-5 review), copy for the owner to confirm): 「别人用你的 Agent，上限的算法变了：不再每个 Agent 各算各的，而是你所有的 Agent 合在一起，每天最多回别人 {answers} 次、最多花你 {points} 点，它们主动说的话也算在里面。原来设成 20 点的 Agent 自己的上限已经取消；原来是 20 点的主动回复上限，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。」, button 「知道了」. True of 074 as edited: an Agent's own number of exactly 20 was cleared, a proactive budget of exactly 20 became 70, proactive replies count inside the shared numbers.
 - Use page: 「停止往来」 / 「恢复往来」. Agent page tab: 「别人」; list 「它和别人的对话」.
 
 **Lock order** (agents/store.ts:177, plus this plan):
@@ -523,7 +535,7 @@ alter table accounts drop column others_notice_seen_at, drop column others_point
 - [ ] **Failing tests:**
 ```ts
 expect(loadConfig({ ...base }).social).toEqual({ enabled: false });
-expect(loadConfig({ ...base }).others).toEqual({ answersPerDay: 50, pointsPerDay: 70, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
+expect(loadConfig({ ...base }).others).toEqual({ answersPerDay: 50, pointsPerDay: 300, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
   notesWeight: 1000, judgeBatch: 20, judgeCallsPerDay: 5, withheldCallsPerDay: 3, judgeAttemptsPerVersion: 2, judgeInputBytes: 9000,
   judgeOutputTokens: 2200, judgeOwnerExamples: 4, judgePollMs: 5000, judgeOwnersPerPoll: 10, withheldInputBytes: 6000, withheldCardsMax: 3,
   cardDays: 7, requestDays: 7, cooldownDays: 30 });
@@ -1333,15 +1345,15 @@ expect(gateway.calls[1]!.system).toBe(prepared.call.systemWithoutTools); expect(
 -- Up Migration
 -- Step L (design §5; plan B4). Deploys only with lane B's code, which makes an Agent's number a sub-limit inside its owner's
 -- (Controller ruling 2026-11-24 (verification), E1/N1).
--- Controller ruling 2026-11-24 (attack, I7): an Agent's number still at migration 020's default (20 points) becomes 70. A value an
--- owner set to exactly 20 cannot be told from the default, so every row at exactly 20 points is raised. New Agents get none of their own.
--- Controller ruling 2026-11-24 (final): 70 is the owner's default, so the raise never lets an Agent pass its owner's cap. The owner's
--- numbers are not written here: null reads OTHERS.answersPerDay (50) and OTHERS.pointsPerDay (70), one value per owner however many
--- Agents they have (plan "Design conflict for the owner").
-update agents set others_budget_micro = 70000000 where others_budget_micro = 20000000;
+-- Controller ruling 2026-11-24 (attack, I7), changed by Owner decision 2026-11-25 (cap): an Agent's number still at migration 020's
+-- default (exactly 20 points) is REMOVED (null: no sub-limit of its own), not raised. A value an owner set to exactly 20 cannot be told from
+-- the default, so every row at exactly 20 points is cleared; a number set to anything else is kept. New Agents get none of their own.
+-- The owner's numbers are not written here: null reads OTHERS.answersPerDay (50) and OTHERS.pointsPerDay (300), one value per owner however
+-- many Agents they have (plan "Owner decision 2026-11-25").
+update agents set others_budget_micro = null where others_budget_micro = 20000000;
 -- Controller ruling 2026-11-24 (B-2 dispatch): the others' number keeps a NULL column default after this migration (a new Agent has no
--- sub-limit of its own; the owner's per-day cap, 70 points and 50 answers, is what applies). The line of the earlier round that set that
--- default to 70 is withdrawn. 074 drops 020's default of 20, so a new row reads null.
+-- sub-limit of its own; the owner's per-day cap, 300 points and 50 answers, is what applies). 074 drops 020's default of 20, so a new row
+-- reads null.
 alter table agents alter column others_budget_micro drop default;
 -- Controller ruling 2026-11-24 (B-1 review, B-2 dispatch): the proactive budget is a hard sub-cap that counts holds. Rows still at the old
 -- default 20 become 70 (the same rule as the others' number: every row at exactly 20 points; a number an owner set below or above 20 stays),
@@ -1349,8 +1361,8 @@ alter table agents alter column others_budget_micro drop default;
 update agents set proactive_budget_micro = 70000000 where proactive_budget_micro = 20000000;
 alter table agents alter column proactive_budget_micro set default 70000000;
 -- Down Migration
--- (the raises are not undone: a row at 70 cannot be told from one an owner set. Agents made after Up keep a null others' number, which
--- code from before 074 reads as no limit, and a null cannot be told from an owner's own choice of no limit, so Down leaves them.)
+-- (the clearing and the raise are not undone: a null cannot be told from an owner's own choice of no limit, and a row at 70 not from one an
+-- owner set. Agents made after Up keep a null others' number, which code from before 074 reads as no limit, so Down leaves them.)
 alter table agents alter column others_budget_micro set default 20000000;
 alter table agents alter column proactive_budget_micro set default 20000000;
 ```
@@ -1376,10 +1388,10 @@ alter table agents alter column proactive_budget_micro set default 20000000;
 
 - [ ] **Failing tests:**
   - `others-migration.test.ts`: 074's Up, in a rolled-back transaction over seeded Agents:
-    - an Agent at 20 points → 70 (I7); one at 35 stays 35; one at null stays null; a new row's default is null;
-    - no `accounts.others_*` value is written: every owner reads 70 points and 50 answers (Controller ruling 2026-11-24 (final));
-    - **M-V1, the price explicit:** an owner with three Agents at the old default, on a scripted model whose every others' reply holds exactly 7 points and settles exactly 7 (usage = hold, no tools). Replies come one after another, spread over the three. After every admission and settle, settled + Σ holds ≤ 70 (N3's invariant, not a count). The 11th reply of the day is refused because 70 settled + 7 > 70, never anywhere near 210;
-    - RF9: a paid-tier owner at the old default answers a member's @ at least once a day (61.5 ≤ 70);
+    - an Agent at 20 points → null (Owner decision 2026-11-25 (cap): no sub-limit of its own; it was 70); one at 35 or at 70 stays; one at null stays null; a new row's default is null;
+    - no `accounts.others_*` value is written: every owner reads 300 points and 50 answers (Owner decision 2026-11-25 (cap));
+    - **M-V1, the price explicit:** an owner with three Agents at the old default, on a scripted model whose every others' reply holds exactly 7 points and settles exactly 7 (usage = hold, no tools). Replies come one after another, spread over the three. After every admission and settle, settled + Σ holds ≤ 300 (N3's invariant, not a count; as built the replies are 29.624 points). The 11th reply of the day is refused because 296.24 settled + 29.624 > 300, never anywhere near 900; the counts of replies with tools that fit are pinned (35 free, 1 paid);
+    - RF9, as ruled by Owner decision 2026-11-25 (cap): at 300 a paid-tier owner's first reply fits with its tools (194.127) and the second falls back to its plain hold (61.5);
     - **M-V2:** an Agent whose owner set its own number below 20 (say 10 points) keeps that number after 074. On a paid-tier model (plain hold 61.5 > 10) it answers no one: no reply of others is admitted, and the use page shows its `perDay` as 0. It is the owner's own number, shown on the form (B9b), which the owner may raise or clear.
   - `others-routes.test.ts`:
     - the wire keys;
@@ -1600,12 +1612,14 @@ Tests: `tests/social-post.test.ts` (preface and answer; preface and nothing; no 
 **Files:** modify `W:src/state/location.js` (`SETTINGS_PAGES` gains `others` here, with the page: as built in Step 0 it is not there yet), `W:src/pages/Settings.jsx` (a row 「别人怎么用我的 Agent」 → page `others`, and its title in `state/pageTitle.js`), `W:src/pages/Usage.jsx` (a section 「别人的使用」: one line and a link), `W:src/styles/others.css`; create `W:src/pages/OthersUse.jsx`, `W:tests/others-use.test.jsx`.
 
 **Produces:** `OthersUse` (page title 「别人怎么用我的 Agent」):
-- the sentence 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [70] 点」 with both numbers editable in place (saved on Enter or blur);
+- the sentence 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [300] 点」 with both numbers editable in place (saved on Enter or blur; Controller ruling 2026-11-25 (B-5 review): each box owns its draft, saves are serialised);
 - per Agent 「{name}：以这个数，每天大约能回别人 {perDay} 次」;
 - today's use, with 「别人今天的使用已到上限」 when reached;
 - today by person.
 
 **Controller ruling 2026-11-24 (attack, I10):** 「停止往来」 on each person and the stopped list with 「恢复往来」 show only while `state.social.enabled`. While the switch is off they are absent.
+
+**Superseded by Controller ruling 2026-11-25 (B-5 review):** the use page has no 停止往来 and no 恢复往来 control (and no bar route call, and no test of one); each person is a link to their profile, where lane A's dialog lives; the stopped list shows who and since when, from the route's `stopped`, with no control.
 
 The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(pointer: coarse)`.
 
@@ -1620,7 +1634,7 @@ The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(point
 - **The one-time notice** at the top of 我的 Agent while `notice`, worded by Exact copy, with 「知道了」 → `seenOthersNotice`. It is web UI, dismissed per account, never a chat event (Controller ruling 2026-11-24, Q5).
   - **Controller ruling 2026-11-24 (verification), N2:** the copy says what changed. The limit is now per person: {answers} answers and {points} points a day, shared by all of the owner's Agents. Each Agent's own number was raised where it still had the old default. No sentence says the numbers are unchanged. {answers} and {points} are the owner's numbers as `GET /api/me/others-use` gives them.
 - **AgentForm** (**verification, M-V4**): 「它自己的上限（可不填）：每天最多回别人 {N} 次，最多花 {M} 点」 sends `othersLimit`.
-  - Both fields show the Agent's own numbers as stored, so a raised 70 shows as 70.
+  - Both fields show the Agent's own numbers as stored, so a number of 70 shows as 70 (Agents at the old 20 now show empty).
   - Emptying a field and saving sends `null` for it, so the Agent then has only its owner's numbers. This is how an owner who raised their own number above 70 lets an Agent with the raised 70 use it.
 
 - [ ] **Failing tests:**
@@ -1939,12 +1953,12 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
      - meet two hard, hold-aware numbers per owner;
      - meet the proactive budget as a hard sub-cap.
 
-     Agents at the old default 20 points get 70 as a sub-limit (D9). Every owner has one 70-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final); Owner decision 2026-11-25). Owners see the one-time notice, whose copy says the limit is now per person and that defaults were raised (N2).
+     Agents at the old default 20 points lose their own number (null; Owner decision 2026-11-25 (cap), D9). Every owner has one 300-point and one 50-answer cap for all their Agents together (Controller ruling 2026-11-24 (final); Owner decision 2026-11-25). Owners see the one-time notice, whose copy says the limit is now per person and that defaults were raised (N2).
    - **The proactive budget** (**Controller ruling 2026-11-24 (B-1 review)**). 074 also raises an Agent's proactive budget from 20 to 70 points where it still holds the old default, by the same rule as its others' number (every row at exactly 20 points), and sets the column's default to 70 for new Agents (Controller ruling 2026-11-24 (B-2 dispatch); an Agent's others' number, by contrast, keeps a null default: no sub-limit of its own). A paid-tier Agent at 70 can make a proactive reply plain (61.5 points) but not with tools (194.1): this number is the owner's to confirm, with the 70. The proactive judgement asks `othersFits` (the function admission asks, holds counted) before it spends a judgement, so a candidate whose cheapest possible reply cannot be admitted costs no judgement call and leaves no cancelled run. As built (B-1 re-review): "cheapest" is `proactivePlainFloor`, the plain hold through `othersHold` with the input known before the judgement (the tool-less system text as `begin` builds it from the persona, the group and the owner's name, without the conversation, the roster, the mark or the notes) and the others' output limit; the part not known is the conversation shown (at most the group's context cap of input at the model's input price), so a candidate between the floor and the real plain hold still costs one judgement and leaves a cancelled run if admission then refuses it.
    - **The overlap** (B-2 review, M6): node-pg-migrate commits 074 on its own before 075 runs, and the new container migrates while the old one still serves. For that short window, and for as long as a failed 075 leaves the old container serving, the old code reads the raised 70 as an Agent's own soft budget with no owner cap, and creates Agents with an explicit 20. Accepted for the window; a deploy whose 075 fails is fixed forward at once (rolling the code back would keep 074 applied under the old code: the hazard itself).
    - **While the switch is off**, the use page's stopped list is empty and no 停止往来 or 恢复往来 control is shown (Controller ruling 2026-11-24 (final); I10).
    - **Check on test.haiyo.org:** a member's @ answers within the numbers; the notice shows once; the use page lists today by person.
-   - **The default of 70 points (and 50 answers) is still the owner's to confirm** before production (I7).
+   - **The default of 300 points (and 50 answers)** is the owner's decision of 2026-11-25 (it was a proposed 70).
    - `SOCIAL` stays `{"enabled": false}` in production until the controller turns it on. The first switch-on waits until every process of the previous deploy has exited.
    - **The trial:** on the acceptance site, the switch on, two test accounts run I2a's path by hand, including the stopped list (M-V6). Visitors see no owner notes in 1a.
    - **The persona aid is in ring 1a** (N4, A8b). It runs from the first switch-on, so production's switch-on may follow ring 1a when the controller says so. A visitor's reply is shown the persona, which the aid has checked for owner facts, and no owner notes until ring 1b.
