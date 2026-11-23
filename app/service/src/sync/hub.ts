@@ -599,7 +599,7 @@ export class Hub {
    * fails; failing again, this delivery is dropped (logged) and the conversation's queue goes on: a client learns the
    * state from the next delivery or `GET …/run` / `…/runs`.
    * - An Agent's own conversation: `{type, conversationId, run}` to its owner, as it always was.
-   * - A group: `{…, agentId, run}` to the Agent's owner — also when they have just left the group with it, so its last
+   * - A group, or a social conversation (its members are its participants and its supervising owners): `{…, agentId, run}` to the Agent's owner — also when they have just left the group with it, so its last
    *   run there ends what their client showed —; `{…, agentId, state}` to every other current member, the Agent's state
    *   there now (wire contract "Run state": never the run, its id, `error`, `retryable` or `resetsAt`); nobody else.
    * - What a running reply's tool is doing (`pushActivity`): `activity` with each of those, the kind only; to the others
@@ -622,7 +622,8 @@ export class Hub {
     }
     if (!audience) return;
     const ownerId = audience.ownerId.toLowerCase();
-    if (audience.type !== "group") {
+    // The Agent's own conversation (`placeOf`): its owner alone. A group and a social conversation: below.
+    if (audience.place === "own") {
       if (run) this.push(ownerId, { type: "run", conversationId, run, ...tool });
       return;
     }

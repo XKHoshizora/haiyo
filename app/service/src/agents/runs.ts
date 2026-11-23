@@ -9,7 +9,8 @@ import { AppError, notFound } from "../errors.ts";
 import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../messages/model.ts";
 import { postingRun } from "../messages/read.ts";
 import { othersReached } from "../metering/others.ts";
-import { placeOf } from "../social/place.ts";
+import { reach } from "../social/reach.ts";
+import { groupPlaceSql, placeOf, placeOfType, socialPlaceSql, type Place } from "../social/place.ts";
 import { blockedEitherWay } from "../social/relations.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
@@ -160,6 +161,17 @@ export function groupRunState(r: (Pick<RunRow, "status" | "dismissed_at"> & { la
 }
 
 /**
+ * The place of a conversation at a run site that names no Agent yet (a route's `:id`): `placeOf`'s rule (`placeOfType`) with the
+ * conversation standing for the Agent's own where it is an Agent's conversation. 404 for a conversation that does not exist or is
+ * a direct chat (an Agent is in none). `own` is then any Agent's own conversation: the caller's ownership is the site's to check.
+ */
+export async function runSitePlace(q: Queryable, conversationId: string): Promise<Place> {
+  const peek = await peekConversation(q, conversationId);
+  if (!peek || peek.type === "direct") throw notFound();
+  return placeOfType(peek.type, conversationId, { conversationId });
+}
+
+/**
  * The run that decides what a group shows of an Agent member: the latest reply run of the member `m` (a `memberships`
  * alias, spliced into SQL: only these literals) in its conversation during that stay — one covering a message after it
  * joined, so a run from before it last left and came back is not it. A `lateral` subquery in the shape of `RunRow`, and
@@ -182,12 +194,12 @@ export interface GroupRunEntry {
 
 /**
  * `GET /api/conversations/:id/runs` for `readerId` (wire contract "Run state"): 404, as for a conversation that does not
- * exist, unless it is a group the reader is a current member of. One entry per current Agent member whose latest run
+ * exist, unless it is a group or a social conversation (`placeOf`) the reader is a current member of (a visitor, a supervising owner). One entry per current Agent member whose latest run
  * there in its current stay (`latestInStay`) has a state for the reader (`groupRunState`), in `agentId` order; the run
  * itself on the reader's own Agents' entries only, `retryable` by the Agent's model as it is now (`retryable`).
  */
 export async function groupRuns(q: Queryable, readerId: string, conversationId: string, config: Pick<Config, "siteModels" | "whispers">): Promise<GroupRunEntry[]> {
-  if ((await peekConversation(q, conversationId))?.type !== "group" || !(await currentMembership(q, conversationId, readerId))) throw notFound();
+  if ((await runSitePlace(q, conversationId)) === "own" || !(await currentMembership(q, conversationId, readerId))) throw notFound();
   const { rows } = await q.query<RunRow & Parameters<typeof agentModelOf>[0] & { agent_id: string; owner_id: string; lane: Lane }>(
     `select m.principal_id as agent_id, p.owner_id, ${RUN_COLUMNS}, r.lane, a.model_source, a.site_model_id, a.provider_id, a.provider_model
        from memberships m
@@ -214,13 +226,14 @@ export async function groupRuns(q: Queryable, readerId: string, conversationId: 
 
 /** Who is told what of a run, read when its push is delivered (`Hub.pushRun`). */
 export interface RunAudience {
-  type: ConversationType;
+  /** `own` (the Agent's conversation with its owner), `group` or `social` (`placeOf`). */
+  place: Place;
   agentId: string;
   /** The run's owner (`agent_runs.owner_id`): the one principal ever pushed the run itself. */
   ownerId: string;
-  /** A group's current members, people and Agents; empty in any other conversation. */
+  /** A group's or a social conversation's current members, people and Agents; empty in the Agent's own conversation. */
   memberIds: string[];
-  /** In a group, what its members other than the run's owner are told: the Agent's state there now. */
+  /** In a group or a social conversation, what its members other than the run's owner are told: the Agent's state there now. */
   state: GroupRunState;
   /** The whisper the run tells (`告诉他们`'s told reply, `agent_runs.whisper_id`), its owner's: pushed to them after the run. */
   whisperId: string | null;
@@ -235,6 +248,7 @@ export interface RunAudience {
 export async function runAudience(q: Queryable, conversationId: string, runId: string): Promise<RunAudience | null> {
   const { rows } = await q.query<{
     type: ConversationType;
+    own_conversation: string | null;
     agent_id: string;
     owner_id: string;
     members: string[] | null;
@@ -244,12 +258,13 @@ export async function runAudience(q: Queryable, conversationId: string, runId: s
     whisper_id: string | null;
   }>(
     `select c.type, a.agent_id, a.owner_id, a.whisper_id,
-            case when c.type = 'group'
+            case when ${groupPlaceSql("c")} or ${socialPlaceSql("c")}
                  then array(select ms.principal_id from memberships ms where ms.conversation_id = c.id and ms.left_seq is null) end as members,
-            r.status, r.dismissed_at, r.lane
+            r.status, r.dismissed_at, r.lane,
+            (select ac.conversation_id from agent_conversations ac where ac.agent_id = a.agent_id) as own_conversation
        from agent_runs a
        join conversations c on c.id = a.conversation_id
-       left join memberships am on c.type = 'group' and am.conversation_id = c.id and am.principal_id = a.agent_id and am.left_seq is null
+       left join memberships am on (${groupPlaceSql("c")} or ${socialPlaceSql("c")}) and am.conversation_id = c.id and am.principal_id = a.agent_id and am.left_seq is null
        left join ${latestInStay("am")} r on true
       where a.id = $1 and a.conversation_id = $2`,
     [runId, conversationId],
@@ -257,7 +272,7 @@ export async function runAudience(q: Queryable, conversationId: string, runId: s
   const row = rows[0];
   if (!row) return null;
   const latest = row.status === null || row.lane === null ? null : { status: row.status, dismissed_at: row.dismissed_at, lane: row.lane };
-  return { type: row.type, agentId: row.agent_id, ownerId: row.owner_id, memberIds: row.members ?? [], state: groupRunState(latest, "member"), whisperId: row.whisper_id };
+  return { place: placeOfType(row.type, conversationId, { conversationId: row.own_conversation ?? "" }), agentId: row.agent_id, ownerId: row.owner_id, memberIds: row.members ?? [], state: groupRunState(latest, "member"), whisperId: row.whisper_id };
 }
 
 /** A run to push to its owner after the transaction that changed it commits. */
@@ -300,7 +315,7 @@ export async function latestRun(q: Queryable, conversationId: string): Promise<R
  * and the site's time zone, whose day the others' daily budget is counted in (`othersBudgetSpent`); and the site's models,
  * by which someone else's call on an Agent whose model is gone is refused as it is made (`reachAgents`).
  */
-export type RunLimits = Pick<Config, "agentRunsPerMinute" | "agentOthersRunsPerMinute" | "agentCallerRunsPerMinute" | "siteTimezone" | "siteModels" | "others">;
+export type RunLimits = Pick<Config, "agentRunsPerMinute" | "agentOthersRunsPerMinute" | "agentCallerRunsPerMinute" | "siteTimezone" | "siteModels" | "others" | "social">;
 
 /**
  * Of `agent_runs`: a reply started in the last minute — not one a limit refused (`rate_limited`), which started nothing
@@ -1278,6 +1293,7 @@ export async function followUp(
 ): Promise<FollowUp> {
   const owners = callerOf(agent.ownerId, agent.ownerId);
   if (conversationId === agent.conversationId) return followUpOf(await queueRun(t, agent, conversationId, pending, "human", owners, [agent.ownerId]));
+  if ((await placeOf(t, conversationId, agent)) === "social") return followUpInSocial(t, agent, conversationId, covers, pending, config);
   // The person behind each message (`behindMessageSql`): its sender; for an Agent's message, the caller of the run that
   // posted it (`postingRun`) unless that run is its owner's own (or there is none: the owner). A message does not count
   // when it was refused for this Agent when it was posted (`refused_agent_calls`), nor when there is a block, either way,
@@ -1331,6 +1347,39 @@ export async function followUp(
   const run = over ? await rateLimitedInGroup(t, agent, conversationId, pending, by, caller, askers) : await queueRun(t, agent, conversationId, pending, by, caller, askers);
   await answersCalls(t, run.run.id, calls.map((r) => Number(r.seq)));
   return followUpOf(run);
+}
+
+/**
+ * `followUp` in a social conversation (B5a): the run that ended was one visitor's (its `caller_id`), and what the visitor wrote
+ * meanwhile (`covers`, `pending`] is that same call again, in lane `others` with the visitor as caller (`callerOf`), answering
+ * the visitor alone. No mention is read: everything a participant writes there calls the Agent. Nothing is queued when there is
+ * no caller or no message of the visitor's in that stretch, when `reach` refuses the visitor now (an ending since: the same rule
+ * as at the trigger), or when the owner's others' numbers are reached (the notice of once a site day: `limitNotice`); over the owner's
+ * minute in the lane the run is recorded `rate_limited`, as a trigger records it. The caller holds the conversation's row and the
+ * Agent's.
+ */
+async function followUpInSocial(t: Tx, agent: AgentRow, conversationId: string, covers: number, pending: number, config: RunLimits): Promise<FollowUp> {
+  const ended = await t.query<{ caller_id: string | null }>(
+    "select caller_id from agent_runs where agent_id = $1 and conversation_id = $2 and purpose = 'reply' order by created_at desc, id desc limit 1",
+    [agent.id, conversationId],
+  );
+  const callerId = ended.rows[0]?.caller_id ?? null;
+  if (callerId === null || callerId === agent.ownerId) return followUpOf(null);
+  if ((await reach(t, callerId, agent.id, "social", config)) !== "ok") return followUpOf(null);
+  const { rows } = await t.query<{ seq: string }>(
+    "select seq::text as seq from messages where conversation_id = $1 and seq > $2 and seq <= $3 and kind <> 'system' and sender_id = $4 order by seq",
+    [conversationId, covers, pending, callerId],
+  );
+  if (rows.length === 0) return followUpOf(null);
+  const caller = callerOf(agent.ownerId, callerId);
+  const told = noneTold();
+  if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told, config)) return followUpOf(null, told);
+  const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
+  const run = over
+    ? await recordRateLimited(t, agent, conversationId, pending, "human", caller, [callerId])
+    : await queueRun(t, agent, conversationId, pending, "human", caller, [callerId]);
+  await answersCalls(t, run.run.id, rows.map((r) => Number(r.seq)));
+  return followUpOf(run, told);
 }
 
 /** What a halt did, to act on after it commits. */
@@ -1508,8 +1557,6 @@ async function latestRunOf(
   );
   return rows[0] ?? null;
 }
-
-const isGroup = async (q: Queryable, conversationId: string): Promise<boolean> => (await peekConversation(q, conversationId))?.type === "group";
 
 /**
  * The one rule for a follow-up (README "Agents and runs", Coalescing): a run that has ended is followed by a reply to
@@ -1723,7 +1770,10 @@ export async function retryRun(
   agentId: string | undefined,
   config: RunLimits & Pick<Config, "siteModels" | "whispers">,
 ): Promise<Announced> {
-  if (await isGroup(t, conversationId)) return retryInGroup(t, ownerId, conversationId, agentId, config);
+  const place = await runSitePlace(t, conversationId);
+  // A social conversation's run is retried by no one: the visitor asks again by writing again.
+  if (place === "social") throw notFound();
+  if (place === "group") return retryInGroup(t, ownerId, conversationId, agentId, config);
   const ownAgentId = await ownedAgentOf(t, ownerId, conversationId);
   if (!ownAgentId) throw notFound();
   const agent = await lockAgent(t, ownAgentId, conversationId);
@@ -1825,8 +1875,8 @@ export async function stopRun(
   runId: string,
   config: RunLimits,
 ): Promise<{ stopped: Announced | null; running: boolean; followed: FollowUp }> {
-  const group = await isGroup(t, conversationId);
-  if (group) await lockForWrite(t, conversationId, ownerId);
+  // A group or a social conversation: the owner is a current member there (an observer in a social one), under its row.
+  if ((await runSitePlace(t, conversationId)) !== "own") await lockForWrite(t, conversationId, ownerId);
   else if (!(await ownedAgentOf(t, ownerId, conversationId))) throw notFound();
   // The run's Agent row before the run's (the lock order): the stop of a queued run may follow up what was noted on it.
   const peek = (await t.query<{ agent_id: string }>("select agent_id from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply'", [runId, conversationId, ownerId])).rows[0];
@@ -1874,7 +1924,7 @@ export interface Dismissed {
  * group since; returns it when this dismissed it, so the other members can be told. Elsewhere `agentId` plays no part.
  */
 export async function dismissRun(t: Tx, ownerId: string, conversationId: string, agentId: string | undefined): Promise<Dismissed | null> {
-  if (await isGroup(t, conversationId)) {
+  if ((await runSitePlace(t, conversationId)) !== "own") {
     const own = await ownAgentInGroup(t, ownerId, conversationId, agentId);
     const { rows } = await t.query<{ id: string }>(
       `update agent_runs set dismissed_at = now()

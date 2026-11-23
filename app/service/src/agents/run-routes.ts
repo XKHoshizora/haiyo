@@ -17,9 +17,10 @@ const agentBody = z.object({ agentId: uuidParam.optional() }).nullish();
 
 /**
  * The owner's view of their Agent's replies, per conversation (README "Replies"). For anyone else, and for a
- * conversation that is not an Agent's or a group, every route answers the JSON 404 exactly as for an id that does not
+ * conversation that is not an Agent's, a group or a social conversation, every route answers the JSON 404 exactly as for an id that does not
  * exist. In a group a run's owner stops, retries and dismisses it (retry and dismiss name the Agent, `agentId`), and
- * every current member reads what they may know of the group's replies (`GET …/runs`). The one route here that is not
+ * every current member reads what they may know of the group's replies (`GET …/runs`). In a social conversation (`placeOf`) the same
+ * but for retry, which is 404: the owner is there as an observer, the visitor reads the state. The one route here that is not
  * about one owner's runs: a group member's halt of Agents calling each other (`…/agents/halt`).
  * `readLimit`: the budget `GET …/run` and `GET …/runs` share with the owner's other reads of their Agents and providers.
  */
