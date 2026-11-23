@@ -300,22 +300,31 @@ test("F3 (Chromium only, it cannot show how iOS hands a gesture on): with a shee
 
 test("F3 (desktop, mouse and wheel): with a dialog open a wheel over the backdrop and over the page beside it moves nothing behind, and opening it shifts nothing", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: { viewport: { width: 1280, height: 420 } } });
+  test.skip(!canControlService, "needs the local model stub");
+  const prefix = `modelx${uniq(3)}`;
+  const provider = await providerWithModels(ann, 12, prefix);
   const page = ann.page;
   await page.goto("/");
   await goTo(page, "设置");
-  await expect(page.locator(".settings-me")).toBeVisible();
+  await page.getByText("模型供应商", { exact: true }).first().click();
+  const row = page.getByRole("list", { name: "我的模型供应商" }).getByRole("listitem").filter({ hasText: provider });
+  await row.getByRole("button", { name: "编辑" }).click();
+  const edit = page.getByRole("region", { name: "编辑模型供应商" });
+  await expect(edit).toBeVisible();
   const scrolled = await page.evaluate(() => {
     const box = [...document.querySelectorAll(".app *")].find((el) => ["auto", "scroll"].includes(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 40);
     if (box) box.scrollTop = 30;
     return Boolean(box);
   });
   expect(scrolled, "something on the page behind scrolls").toBe(true);
-  const before = await scrollPositions(page);
   const boxes = () => page.evaluate(() => [...document.querySelectorAll("#root .page-body, #root .side-body, #root .rows, #root .list-col, #root .main-col")].map((el) => Math.round(el.getBoundingClientRect().width * 10) / 10));
   const widths = await boxes();
-  await page.getByRole("button", { name: "更换头像" }).click();
+  await edit.getByRole("button", { name: "同步模型" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
+  // (The click itself scrolled the form to its button: the positions to keep are those with the dialog open.)
+  const before = await scrollPositions(page);
+  expect(before.length).toBeGreaterThan(0);
   // Nothing shifted under the backdrop (no scrollbar gutter, no reflow).
   expect(await boxes()).toEqual(widths);
   const frame = await dialog.boundingBox();
@@ -359,7 +368,7 @@ for (const [size, viewport, options] of [["402x874", { width: 402, height: 874 }
     await expect(counts.locator('[aria-label="1 个 Agent"]')).toBeVisible();
     await expect(counts.locator('[title="3 人"]')).toHaveCount(1);
     expect(await counts.locator("svg").count()).toBe(2);
-    const oneLine = async () => counts.evaluate((el) => ({ h: el.getBoundingClientRect().height, fits: el.scrollWidth <= el.parentElement.clientWidth + 1, head: document.querySelector(".chat-head").scrollWidth <= document.querySelector(".chat-head").clientWidth + 1 }));
+    const oneLine = async () => counts.evaluate((el) => ({ h: el.getBoundingClientRect().height, fits: el.getBoundingClientRect().right <= el.closest(".chat-title").getBoundingClientRect().right + 1, head: document.querySelector(".chat-head").scrollWidth <= document.querySelector(".chat-head").clientWidth + 1 }));
     expect((await oneLine()).h).toBeLessThanOrEqual(24);
     await shot(page, `f6-group-header-${size}`);
     // Three-digit numbers: still one line, the header not pushed.
@@ -399,11 +408,11 @@ test("F3 (Chromium only): a long plain choice (the memory language) is cut at it
   await page.goto("/");
   await goTo(page, "设置");
   await page.getByRole("button", { name: /记忆宫殿/ }).click();
-  await page.getByRole("button", { name: /记忆用的语言/ }).first().click();
+  await page.locator(".field", { hasText: "记忆用的语言" }).locator(".select-trigger").first().click();
   const list = page.getByRole("listbox", { name: /语言/ });
   await expect(list).toBeVisible();
   await page.waitForTimeout(350);
   const scrollable = await list.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
-  if (scrollable) await expect(list).toHaveAttribute("data-more", "");
+  if (scrollable) await expect(list).toHaveAttribute("data-more", "true");
   await shot(page, "f3-select-long-360x740");
 });
