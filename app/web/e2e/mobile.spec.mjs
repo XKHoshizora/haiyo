@@ -466,7 +466,7 @@ test("history at 375: group info and the details panel are pages; the viewer sur
   await expect(chatPane(page, title)).toBeHidden();
 });
 
-test("history at 375: a new Agent ends in its chat and Back is its page, then the Agents list", async ({ people }) => {
+test("history at 375: a new Agent ends in its chat and Back is the Agents list (the chat took the form's entry)", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: PHONE });
   const page = ann.page;
   await bar(page).getByRole("button", { name: "Agent" }).click();
@@ -479,12 +479,14 @@ test("history at 375: a new Agent ends in its chat and Back is its page, then th
   await createAgentUi(page, { name: `小新${uniq(3)}` });
   await expect(page).toHaveURL(/\/chat\/[0-9a-f-]{36}$/);
   await expect(page.getByRole("region", { name: /^小新/ })).toBeVisible();
-  // Back from its chat is the Agent's own page (the form's entry became it), and Back again the Agents list: never the empty form.
-  await page.goBack();
-  await expect(page).toHaveURL(/\/agents\/[0-9a-f-]{36}$/);
+  // Back from its chat is the Agents list with the tab bar (the chat took the form's entry: history /agents → /chat/<id>): never the
+  // empty form, and not the Agent's page, which the chat replaced.
   await page.goBack();
   await expect(page).toHaveURL(/\/agents$/);
   await expect(bar(page)).toBeVisible();
+  // Forward is the chat again.
+  await page.goForward();
+  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]{36}$/);
 });
 
 test("history at 1280: a conversation is an address, selecting another is a push, Back walks them; a link opens it", async ({ people }) => {
