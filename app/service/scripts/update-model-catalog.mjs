@@ -7,8 +7,9 @@
 // <api.json>` reads saved copies instead. The service itself never fetches the catalogue.
 //
 // Two flags, for the daily update (.github/workflows/catalog-update.yml): `--guard` refuses (exit 1, nothing written) a
-// snapshot that, against the one on disk, shrank by more than 20 % or lost more than 5 % of the ids that had abilities
-// (`guardCatalog`); `--summary=<file>` writes what changed against the one on disk (`catalogSummary`: models added,
+// snapshot that, against the one on disk, shrank by more than 20 %, lost more than 5 % of the ids that had abilities,
+// lost more than 20 % of one ability, or flipped one ability on more than 20 % of the models both have (`guardCatalog`),
+// and a provider list that lost more than 20 % of its providers or model ids (`guardProviders`); `--summary=<file>` writes what changed against the one on disk (`catalogSummary`: models added,
 // removed, abilities changed) to that file, for the commit message.
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -25,7 +26,11 @@ const NOT_CHAT_TYPES = new Set(["embedding", "reranking", "speech", "transcripti
 /** What a model can do, as the snapshot's entry says it: the three it always carries, then the six kept only when true. */
 export const ABILITIES = ["vision", "pdf", "reasoning", "tools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"];
 /** The most an update may shrink the snapshot by, and the most of the previous one's able ids it may lose (`guardCatalog`). */
-export const GUARD = { maxShrink: 0.2, maxAbleLost: 0.05 };
+export const GUARD = { maxShrink: 0.2, maxAbleLost: 0.05, maxAbilityLost: 0.2, maxAbilityFlipped: 0.2, minAbilityCount: 10 };
+/** The longest lab or id kept (as a display name's limit): one short line each, since both are printed in summaries. */
+const MAX_KEY_PART = 100;
+/** How often a download is tried, and how long is waited between tries. */
+const DOWNLOAD = { tries: 3, waitMs: 5_000 };
 /** How many names of each kind a summary lists (`catalogSummary`). */
 const SUMMARY_NAMES = 20;
 const MAX_DOWNLOAD_BYTES = 40 * 1024 * 1024;
@@ -62,8 +67,9 @@ export function reduceCatalog(models, api = {}) {
     if (!isObject(entry)) continue;
     const parts = key.split("/");
     const id = parts[parts.length - 1].trim().toLowerCase();
-    if (!id || CONTROL.test(id)) continue;
     const lab = parts.length > 1 ? parts[0] : "";
+    // Not one short line each: left out (a lab or an id is printed in the update's summary and commit message).
+    if (!id || CONTROL.test(id) || CONTROL.test(lab) || [...id].length > MAX_KEY_PART || [...lab].length > MAX_KEY_PART) continue;
     const input = strings(entry.modalities?.input);
     const output = strings(entry.modalities?.output);
     const label = typeof entry.name === "string" ? entry.name.trim() : "";
@@ -131,7 +137,11 @@ export function catalogSummary(prev, next) {
 /**
  * Refuses (throws) a snapshot an upstream outage or a change of the catalogue's format would leave: one with more than
  * `GUARD.maxShrink` fewer entries than `prev`, or one in which more than `GUARD.maxAbleLost` of the models that had an
- * ability in `prev` are gone or have none left. Nothing to compare with (`prev` empty): passes.
+ * ability in `prev` are gone or have none left; and, ability by ability (`ABILITIES`) — a renamed field upstream takes
+ * one ability away while every model keeps another — one that at least `GUARD.minAbilityCount` models had and more than
+ * `GUARD.maxAbilityLost` of them no longer have (gone or without it), or one that changed either way on more than
+ * `GUARD.maxAbilityFlipped` of the models both snapshots have (a mass gain too). Nothing to compare with (`prev`
+ * empty): passes. A deliberate change of that size (a new ability kept) is run by hand, without `--guard`.
  */
 export function guardCatalog(prev, next) {
   if (prev.length === 0) return;
@@ -143,6 +153,30 @@ export function guardCatalog(prev, next) {
   const lost = able.filter((e) => !is.has(keyOf(e)) || abilitiesOf(is.get(keyOf(e))) === "").length;
   if (lost > able.length * GUARD.maxAbleLost) {
     throw new Error(`${lost} of the ${able.length} models that had abilities are gone or have none left (more than ${GUARD.maxAbleLost * 100} %): not written`);
+  }
+  const both = prev.filter((e) => is.has(keyOf(e)));
+  for (const ability of ABILITIES) {
+    const had = prev.filter((e) => e[ability] === true);
+    const kept = had.filter((e) => is.get(keyOf(e))?.[ability] === true).length;
+    if (had.length >= GUARD.minAbilityCount && had.length - kept > had.length * GUARD.maxAbilityLost) {
+      throw new Error(`${had.length - kept} of the ${had.length} models that had ${ability} no longer have it (more than ${GUARD.maxAbilityLost * 100} %): not written`);
+    }
+    const flipped = both.filter((e) => (e[ability] === true) !== (is.get(keyOf(e))[ability] === true)).length;
+    if (flipped > both.length * GUARD.maxAbilityFlipped) {
+      throw new Error(`${ability} changed on ${flipped} of the ${both.length} models both snapshots have (more than ${GUARD.maxAbilityFlipped * 100} %): not written`);
+    }
+  }
+}
+
+/** The same for provider-catalog.json: refuses one with more than `GUARD.maxShrink` fewer providers, or fewer model ids in all, than `prev` (none: passes). */
+export function guardProviders(prev, next) {
+  if (prev.length === 0) return;
+  if (next.length < prev.length * (1 - GUARD.maxShrink)) {
+    throw new Error(`the provider list shrank from ${prev.length} to ${next.length} providers (more than ${GUARD.maxShrink * 100} %): not written`);
+  }
+  const ids = (list) => list.reduce((n, p) => n + (Array.isArray(p.models) ? p.models.length : 0), 0);
+  if (ids(next) < ids(prev) * (1 - GUARD.maxShrink)) {
+    throw new Error(`the provider list shrank from ${ids(prev)} to ${ids(next)} model ids (more than ${GUARD.maxShrink * 100} %): not written`);
   }
 }
 
@@ -226,17 +260,21 @@ values among \`low\`, \`medium\`, \`high\`, \`xhigh\`, \`max\`, when it has them
 \`true\` (absent: no, or the catalogue does not say): \`tools\` (the catalogue's \`tool_call\`), \`audioIn\` and \`videoIn\`
 (takes audio, video), \`imageOut\`, \`videoOut\` and \`audioOut\` (answers with images, video, audio).
 
-Whether a provider's model may use tools is answered in this order: its owner's choice or a reply that failed for lack
-of them (stored \`tools: false\`, or \`true\`) > a reply whose tool call ran (stored \`tools: true\`) > this catalogue's
-\`tools\` (read when the model is shown, never stored) > unknown (offered tools until a reply fails).
+An ability is answered only for the model itself (its id, or the id without a \`-latest\` or date suffix), never for a
+name that merely starts with an id. This catalogue's \`tools\` reaches a client as \`reportedTools\`, beside the \`tools\` a
+saved provider model stores (its owner's choice, a reply that failed for lack of tools, a reply whose tool call ran);
+the two are never merged by the service. Whoever draws the mark reads them in this order: stored \`false\` > stored
+\`true\` > \`reportedTools\` > unknown (app/service/README.md, "Model providers").
 
 ## Daily update
 
 \`.github/workflows/catalog-update.yml\` runs the script once a day (and by hand: Actions > "Model catalogue update" >
-Run workflow) with \`--guard\`: a snapshot that shrank by more than ${GUARD.maxShrink * 100} % or lost more than ${GUARD.maxAbleLost * 100} % of the ids that had
-abilities in the previous one is refused and nothing is written. A changed snapshot is committed to the development
-branch only after the service type check and the tests that read it pass; the commit message says what was added,
-removed and changed.
+Run workflow, once its trigger is on the default branch: docs/dev/ci.md) with \`--guard\`: nothing is written when,
+against the previous snapshot, the new one shrank by more than ${GUARD.maxShrink * 100} %, lost more than ${GUARD.maxAbleLost * 100} % of the ids that had abilities, lost
+more than ${GUARD.maxAbilityLost * 100} % of one ability, changed one ability on more than ${GUARD.maxAbilityFlipped * 100} % of the models both have, or the provider list lost
+more than ${GUARD.maxShrink * 100} % of its providers or model ids. A changed snapshot is committed to the development branch only
+after the service type check and the tests that read it pass; the commit message says what was added, removed and
+changed.
 
 # provider-catalog.json
 
@@ -250,12 +288,25 @@ as it names them, sorted).
 ${LICENCE}`;
 }
 
-async function download(url) {
+async function downloadOnce(url) {
   const res = await fetch(url, { signal: AbortSignal.timeout(120_000), headers: { accept: "application/json" } });
   if (res.status !== 200) throw new Error(`${url}: HTTP ${res.status}`);
   const text = await res.text();
   if (text.length > MAX_DOWNLOAD_BYTES) throw new Error(`${url}: larger than expected`);
   return text;
+}
+
+/** One download, tried `DOWNLOAD.tries` times in all (a network error, a status other than 200): the last failure is thrown. */
+async function download(url) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await downloadOnce(url);
+    } catch (err) {
+      if (attempt >= DOWNLOAD.tries) throw err;
+      console.error(`${err instanceof Error ? err.message : err}; trying again (${attempt + 1}/${DOWNLOAD.tries})`);
+      await new Promise((done) => setTimeout(done, DOWNLOAD.waitMs));
+    }
+  }
 }
 
 /** The snapshot on disk as a list; none (empty) when there is no file yet. */
@@ -283,8 +334,12 @@ async function main() {
   const fetched = (modelsFile ? statSync(modelsFile).mtime : new Date()).toISOString().slice(0, 10);
   const dir = new URL("../src/providers/", import.meta.url);
   const previous = previousCatalog(new URL("model-catalog.json", dir));
-  if (guard) guardCatalog(previous, entries);
-  const providersBefore = previousCatalog(new URL("provider-catalog.json", dir)).length;
+  const previousProviders = previousCatalog(new URL("provider-catalog.json", dir));
+  if (guard) {
+    guardCatalog(previous, entries);
+    guardProviders(previousProviders, providers);
+  }
+  const providersBefore = previousProviders.length;
   const summary = `${catalogSummary(previous, entries)}\nProviders (provider-catalog.json): ${providersBefore} -> ${providers.length}`;
   if (summaryFile) writeFileSync(summaryFile, `${summary}\n`);
   writeFileSync(new URL("model-catalog.json", dir), formatCatalog(entries));

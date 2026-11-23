@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ABILITIES, catalogReadme, catalogSummary, diffCatalog, formatCatalog, guardCatalog, reduceCatalog, type CatalogEntry } from "../scripts/update-model-catalog.mjs";
+import { ABILITIES, catalogReadme, catalogSummary, diffCatalog, formatCatalog, guardCatalog, guardProviders, reduceCatalog, type CatalogEntry } from "../scripts/update-model-catalog.mjs";
 
 /**
  * The vendored models.dev snapshot (src/providers/model-catalog.json): how the update script reduces the two catalogue
@@ -107,6 +107,21 @@ describe("reduceCatalog (the update script)", () => {
     expect(ABILITIES).toEqual(["vision", "pdf", "reasoning", "tools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"]);
   });
 
+  it("a lab or an id that is not one short line is left out: nothing of the catalogue's can add a line to a summary or a commit message", () => {
+    const fine = { name: "Fine", reasoning: false, modalities: { input: ["text"], output: ["text"] } };
+    const got = reduceCatalog({
+      "acme/fine": fine,
+      "evil\nCo-authored-by: x <x@y>/m": fine,
+      "acme/bad\u0000id": fine,
+      "acme/tab\tid": fine,
+      [`${"l".repeat(101)}/m`]: fine,
+      [`acme/${"i".repeat(101)}`]: fine,
+      [`${"l".repeat(100)}/${"i".repeat(100)}`]: fine,
+    });
+    expect(got.map((e) => [e.lab.length, e.id.length])).toEqual([[4, 4], [100, 100]]);
+    expect(catalogSummary([], got).split("\n")).toHaveLength(5);
+  });
+
   it("writes one entry per line, and a README with the source, date, licence and count", () => {
     const text = formatCatalog(reduced);
     expect(JSON.parse(text)).toEqual(reduced);
@@ -169,8 +184,41 @@ describe("guardCatalog (an upstream outage or format change must not wipe the ca
     // 11 of them lost theirs, the rest kept: refused; 10: passed.
     expect(() => guardCatalog(prev, prev.map((e, i) => (i < 11 ? { ...e, vision: false } : e)))).toThrow(/abilities/);
     expect(() => guardCatalog(prev, prev.map((e, i) => (i < 10 ? { ...e, vision: false } : e)))).not.toThrow();
-    // One ability swapped for another is no loss.
-    expect(() => guardCatalog(prev, prev.map((e) => ({ ...e, vision: false, tools: true as const })))).not.toThrow();
+    // Every model still has an ability, but one ability is gone from all of them: refused for that ability.
+    expect(() => guardCatalog(prev, prev.map((e) => ({ ...e, vision: false, tools: true as const })))).toThrow(/vision/);
+  });
+
+  it("refuses one in which a single ability went missing (its field renamed upstream) though every model kept another", () => {
+    const both = many(200, { tools: true });
+    // Every model still has vision: the loss of tools alone is refused; so is a fifth of it and one more.
+    expect(() => guardCatalog(both, both.map(({ tools: _tools, ...e }) => e))).toThrow(/tools/);
+    expect(() => guardCatalog(both, both.map((e, i) => (i < 41 ? { ...e, tools: undefined } : e)))).toThrow(/tools/);
+    expect(() => guardCatalog(both, both.map((e, i) => (i < 40 ? { ...e, tools: undefined } : e)))).not.toThrow();
+    // An ability too few models had to judge by (fewer than 10) may come and go.
+    const rare = many(200).map((e, i) => (i < 9 ? { ...e, videoOut: true as const } : e));
+    expect(() => guardCatalog(rare, many(200))).not.toThrow();
+    const ten = many(200).map((e, i) => (i < 10 ? { ...e, videoOut: true as const } : e));
+    expect(() => guardCatalog(ten, many(200))).toThrow(/videoOut/);
+  });
+
+  it("refuses one in which an ability flipped on more than 20 % of the models both have — a mass gain too", () => {
+    const plain = many(200);
+    expect(() => guardCatalog(plain, plain.map((e) => ({ ...e, tools: true as const })))).toThrow(/tools/);
+    expect(() => guardCatalog(plain, plain.map((e, i) => (i < 41 ? { ...e, tools: true as const } : e)))).toThrow(/tools/);
+    expect(() => guardCatalog(plain, plain.map((e, i) => (i < 40 ? { ...e, tools: true as const } : e)))).not.toThrow();
+    // New models bring their abilities freely: only models both snapshots have are compared.
+    expect(() => guardCatalog(plain, [...plain, ...many(300, { tools: true }).slice(200)])).not.toThrow();
+  });
+
+  it("guardProviders: refuses a provider list that lost more than 20 % of its providers or of its model ids", () => {
+    const providers = (n: number, ids: number) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 10}`, hosts: [`api.p${i + 10}.example.com`], models: Array.from({ length: ids }, (_, k) => `m${k + 10}`) }));
+    const prev = providers(100, 10);
+    expect(() => guardProviders(prev, prev)).not.toThrow();
+    expect(() => guardProviders([], prev)).not.toThrow();
+    expect(() => guardProviders(prev, prev.slice(20))).not.toThrow();
+    expect(() => guardProviders(prev, prev.slice(21))).toThrow(/providers/);
+    expect(() => guardProviders(prev, providers(100, 8))).not.toThrow();
+    expect(() => guardProviders(prev, providers(100, 7))).toThrow(/model ids/);
   });
 
   it("refuses one that shrank by more than 20 %, whatever its abilities", () => {
