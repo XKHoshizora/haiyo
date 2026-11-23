@@ -5,3 +5,7 @@ CURRENT_PROJECT_VERSION = 2
 
 // The owner's team (it also appears in every signed build and in the site's apple-app-site-association).
 DEVELOPMENT_TEAM = LUW9SF3X94
+
+// iPhone and iPad (1 = iPhone, 2 = iPad). Once a version with iPad is on the App Store, later versions cannot drop it
+// (App Store Connect refuses the upload); internal TestFlight builds do not count. The test target sets the same.
+TARGETED_DEVICE_FAMILY = 1,2

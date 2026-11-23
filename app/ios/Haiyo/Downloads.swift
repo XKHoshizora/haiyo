@@ -2,8 +2,9 @@ import UIKit
 import WebKit
 
 /// Downloads (`<a download>`, attachments) go to a fresh temporary folder, then to the share sheet (保存到“文件”,
-/// 存储图像, 隔空投送…). The folder is removed when the sheet closes, and swept at launch.
-final class DownloadCoordinator: NSObject, WKDownloadDelegate {
+/// 存储图像, 隔空投送…). The folder is removed once the sheet is gone and no activity still uses the file
+/// (`ShareCleanup`), and swept at launch.
+final class DownloadCoordinator: NSObject, WKDownloadDelegate, UIPopoverPresentationControllerDelegate {
     weak var presenter: UIViewController?
     private var destinations: [ObjectIdentifier: URL] = [:]
 
@@ -52,35 +53,125 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
             try? FileManager.default.removeItem(at: folder)
             return
         }
-        let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
-        sheet.completionWithItemsHandler = { [weak sheet] activity, completed, _, error in
+        var cleanup = ShareCleanup()
+        let remove = { try? FileManager.default.removeItem(at: folder) }
+        let item = SharedFile(url: file)
+        item.onRequested = { cleanup.activityStarted() }
+        let sheet = ShareSheet(activityItems: [item], applicationActivities: nil)
+        sheet.completionWithItemsHandler = { _, completed, _, error in
             // Never the activity (which app received the file) or the error's description (it can hold the path).
             ShellLog.note("share-sheet", ("completed", .flag(completed)), ("error", .error(error)))
-            if Self.sheetIsClosing(activityChosen: activity != nil, completed: completed) {
-                try? FileManager.default.removeItem(at: folder)
-                return
-            }
-            // The chosen activity did not complete: cancelled, the sheet stays open; failed (存储图像 without Photos
-            // access), the sheet closes. Look again once it has settled.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak sheet] in
-                if Self.sheetIsGone(sheet) { try? FileManager.default.removeItem(at: folder) }
-            }
+            if cleanup.activityEnded() { remove() }
         }
-        sheet.popoverPresentationController?.sourceView = presenter.view
+        sheet.onGone = {
+            if cleanup.sheetGone() { remove() }
+        }
+        // iPad: a popover needs an anchor. Where the link was is not known here, so the middle of the view, no arrow.
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = presenter.view
+            popover.sourceRect = Self.centre(of: presenter.view.bounds)
+            popover.permittedArrowDirections = []
+            popover.delegate = self
+        }
         presenter.present(sheet, animated: true)
     }
 
-    /// The share sheet calls back also when a chosen activity is cancelled and the sheet stays open (保存到“文件” →
-    /// 取消): the file must stay for the next choice. It is removed when an activity completed or the sheet itself was
-    /// dismissed (no activity); anything left over is swept at the next launch.
-    static func sheetIsClosing(activityChosen: Bool, completed: Bool) -> Bool {
-        completed || !activityChosen
+    #if DEBUG
+    /// `-HaiyoDebugShare`: the share sheet with a small text file, as after a download (no sign-in needed).
+    func shareForDebug() {
+        let folder = Self.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = folder.appendingPathComponent("probe.txt")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("Haiyo share probe\n".utf8).write(to: file)
+        } catch {
+            return
+        }
+        share(file)
+    }
+    #endif
+
+    /// The window was resized or rotated under the popover: keep it in the middle.
+    func popoverPresentationController(
+        _ popoverPresentationController: UIPopoverPresentationController,
+        willRepositionPopoverTo rect: UnsafeMutablePointer<CGRect>,
+        in view: AutoreleasingUnsafeMutablePointer<UIView>
+    ) {
+        rect.pointee = Self.centre(of: view.pointee.bounds)
     }
 
-    /// After a chosen activity ended without completing: the sheet is no longer on screen (released, or out of its
-    /// window), so nobody can choose again.
-    static func sheetIsGone(_ sheet: UIViewController?) -> Bool {
-        sheet?.viewIfLoaded?.window == nil
+    static func centre(of bounds: CGRect) -> CGRect {
+        CGRect(x: bounds.midX, y: bounds.midY, width: 0, height: 0)
+    }
+}
+
+/// When a shared file may be removed: once the sheet is gone for good and no activity still uses the file — whichever
+/// of the two comes last, never on a timer. An activity starts when the sheet asks for the file (`SharedFile`) and
+/// ends with the sheet's completion callback; that callback also comes when a chosen activity is cancelled and the
+/// sheet stays (保存到“文件” → 取消), and an activity can still be running after the sheet has closed (存储图像).
+/// Anything left over (a callback that never came) is swept at the next launch.
+struct ShareCleanup {
+    private(set) var activityRunning = false
+    private(set) var isSheetGone = false
+    private(set) var removed = false
+
+    mutating func activityStarted() {
+        activityRunning = true
+    }
+
+    /// Returns true when the file should be removed now.
+    mutating func activityEnded() -> Bool {
+        activityRunning = false
+        return removeIfDone()
+    }
+
+    /// Returns true when the file should be removed now.
+    mutating func sheetGone() -> Bool {
+        isSheetGone = true
+        return removeIfDone()
+    }
+
+    private mutating func removeIfDone() -> Bool {
+        guard isSheetGone, !activityRunning, !removed else { return false }
+        removed = true
+        return true
+    }
+}
+
+/// The downloaded file as the share sheet's item: it tells when an activity asks for it.
+final class SharedFile: NSObject, UIActivityItemSource {
+    let url: URL
+    var onRequested: (() -> Void)?
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        url
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
+        if Thread.isMainThread {
+            onRequested?()
+        } else {
+            // Never block here on the main thread (it may be waiting for this item).
+            let onRequested = onRequested
+            DispatchQueue.main.async { onRequested?() }
+        }
+        return url
+    }
+}
+
+/// The share sheet; it says when it has left the screen for good (dismissed, not covered by an activity's own view).
+final class ShareSheet: UIActivityViewController {
+    var onGone: (() -> Void)?
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard isBeingDismissed || presentingViewController == nil else { return }
+        onGone?()
+        onGone = nil
     }
 }
 

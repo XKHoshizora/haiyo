@@ -1,8 +1,10 @@
 # Haiyo for iOS (the shell)
 
 A thin native shell: one full-screen `WKWebView` on the live https site, plus what the web cannot do on its own —
-push (APNs), the icon badge, downloads to the share sheet, a cannot-connect screen, universal links and the permission
-strings. Swift and Apple frameworks only; no packages. iPhone only, portrait, iOS 26 and later.
+push (APNs), the icon badge, downloads to the share sheet, a cannot-connect screen, universal links, the permission
+strings, and the window's shape the page cannot see (the iPhone Duo's fold, the iPad window controls). Swift and Apple
+frameworks only; no packages. iPhone (portrait) and iPad (every orientation, resizable windows); iOS 26 and later, the
+fold from iOS 27.1.
 
 Design and the reasons behind it: `docs/design/2026-11-24-store-app-draft.md` (sections 1 and 2).
 
@@ -28,7 +30,10 @@ The unit tests run inside the Debug app (which does not load the site while test
   or replaced by the cannot-connect screen (below).
 - `BridgeMessageTests` — validation of every message and the event scripts.
 - `ShellLogTests` — the logging rule (below).
-- `LifecycleRulesTests` — when a downloaded file is removed; the bound on reloads after a content-process crash.
+- `LifecycleRulesTests` — when a downloaded file is removed (`ShareCleanup`); the bound on reloads after a
+  content-process crash.
+- `PageLayoutTests` — the fold and the corners as the page receives them, and when the window controls keep a page
+  down; the samples are what UIKit reported on the iPhone Duo and iPad simulators.
 - `ShellConfigTests`, `LinksAndFailuresTests` — the build configuration's host and channel, Info.plist keys, paths,
   universal links, notification payloads, load failures, download file names.
 
@@ -62,11 +67,18 @@ identical) and prints the host it builds for.
 |---|---|---|
 | the shell's own origin | main frame | loads in place |
 | a file of the site (`/api/…`: attachment, original image) | new window, or a tapped link in the main frame | a sheet with its own web view, same cookies, no bridge |
-| a page of the app (`/chat/…`, an invite) | new window (`target=_blank`, `window.open`) | the main view (`haiyo:open`, or a load) — never a second copy of the app in the sheet |
+| a page of the app (`/chat/…`, an invite) | new window (`target=_blank`, `window.open`); in the sheet, anything (a link in an attachment, a redirect to the sign-in page) | the main view (`haiyo:open`, or a load) — never a second copy of the app in the sheet; in a frame of the sheet, refused |
 | another `http(s)` site | anything | the in-app Safari view (`SFSafariViewController`) |
-| `<a download>`, `Content-Disposition: attachment`, types WebKit cannot show | — | `WKDownload` to a temporary folder, then the share sheet; the folder is removed when the sheet closes (also after a failed activity, not while a cancelled one returns to the sheet), and at launch |
-| `mailto:`, `tel:`, `sms:` | a tapped link only (never script) | the system |
+| `<a download>`, `Content-Disposition: attachment`, types WebKit cannot show | — | `WKDownload` to a temporary folder, then the share sheet (on iPad a popover in the middle of the view, no arrow); the folder is removed once the sheet is gone for good and no activity still uses the file — whichever comes last, no timer — and at launch |
+| `mailto:`, `tel:`, `sms:` | a link activation (not a load, redirect or form) | the system |
 | anything else (`javascript:`, `file:`, other schemes) | — | refused |
+
+What the `mailto:`/`tel:`/`sms:` rule rests on: WebKit reports a script's `element.click()` as a link activation too
+(measured: both `linkActivated`; a tap carries `buttonNumber` 1, a script click 0). iOS has no public user-gesture flag
+for navigations, and gating on `buttonNumber` would very likely also refuse VoiceOver and keyboard activation (not
+measurable in the Simulator), so the shell does not. What holds instead: only the site's own scripts run (CSP
+`script-src 'self'`); `tel:` asks before calling, `mailto:`/`sms:` open a draft the person sends; loads, redirects and
+forms never reach the system.
 
 A long-pressed link gets WebKit's menu without its preview (the preview loads the link in a separate web view without
 the session, and committing it opens Safari past the rules above); 打开 is then a click on the link and follows the
@@ -87,7 +99,7 @@ The page calls `window.webkit.messageHandlers.haiyo.postMessage({ name, args })`
 
 | `name` | `args` | Reply |
 |---|---|---|
-| `hello` | `{ events?: ["pause", "resume", "open"] }` — the events the page handles | `{ bridge: 1, shell, build, os, push, events }`; `push` is `granted`, `denied` or `notDetermined` (re-register silently when `granted`) |
+| `hello` | `{ events?: ["pause", "resume", "open", "layout"] }` — the events the page handles | `{ bridge: 1, shell, build, os, push, events, layout }`; `push` is `granted`, `denied` or `notDetermined` (re-register silently when `granted`); `layout` as in `haiyo:layout` below, current at the reply |
 | `push.register` | — | asks for notification permission if needed, then `{ token, env }`, `{ denied: true }` or `{ error }` (`timeout` after 30 s, `busy` with 4 waiting) |
 | `badge.set` | `{ n }`, a whole number 0–99999 | `{ ok }`: `false` when the system refused (no badge permission yet) |
 
@@ -101,6 +113,18 @@ Events the shell dispatches on `window` (only to its own origin's page):
 - `haiyo:resume` — the app is coming back (`sceneWillEnterForeground`).
 - `haiyo:open`, `detail: { path }` — a tapped notification, a universal link, or an app link opened from a message.
   If the page did not list `open` in `hello`, or the event cannot be delivered, the shell loads the URL itself.
+- `haiyo:layout`, `detail: { fold, corner }` — only to a page that listed `layout`, when the value changes (after the
+  geometry has held still for 0.15 s). CSS px of the layout viewport:
+  - `fold`: `null`, or `{ axis: "vertical" | "horizontal", x, y, width, height }` — the iPhone Duo's fold while it is
+    partly open, as a band to keep content out of (40 px wide on the simulator: 20 either side of the crease); `null`
+    closed and fully open. `vertical` is book-style (left and right halves), `horizontal` laptop-style.
+  - `corner`: `{ top, leading, trailing }` — room the corners need beyond `env(safe-area-inset-*)`: the iPad window
+    controls in a window (measured 43 top / 66 leading), the rounded corners otherwise (Duo 16–18, iPad 10). Add it to
+    whatever sits in a corner. `env()` itself is the plain safe area (measured equal on the Duo and on iPad).
+
+  A page that has not listed `layout` gets no events; on iPad, while the window controls cover its top-leading corner,
+  the shell keeps it below them (`obscuredContentInsets.top`, 53 pt in a window) and gives the room back as soon as the
+  page lists `layout`.
 
 Events are hints, not a guarantee: they are fire-and-forget, a page reloaded in the background never hears `pause`,
 and the shell checks the page's origin inside the script. **A page that loads while `document.visibilityState` is
@@ -122,6 +146,8 @@ Requests for the web lanes (`docs/design/2026-11-24-store-app-draft.md`, S5, S6 
    repair the gap; add a connect timeout (an iOS 26 WebSocket can hang in CONNECTING after resume).
 4. `haiyo:open` — hand the path to the address-as-truth navigation (`state/location.js`) instead of a reload.
 5. Badge — `badge.set` whenever `unreadTotal` changes.
+6. Layout — list `layout` in `hello`, start from `hello`'s `layout`, follow `haiyo:layout`: keep content out of `fold`
+   (two panes, one each side), and add `corner` to the top-leading controls (audit 2.7.8: `data-fold`, `--fold-*`).
 
 Until then the shell works without them: no events are handled, `open` falls back to loading the URL, and nothing asks
 for notification permission.
@@ -136,6 +162,9 @@ no file names, no paths or URLs with ids, no query strings, no message text, no 
 
 - `age.range` (Declared Age Range API, plan §1.6 / §2) is not built: a store blocker, not needed for internal
   TestFlight.
+- iPad: App Store Connect then requires 13-inch iPad screenshots, and once a version with iPad is on the App Store,
+  later versions cannot drop it (`docs/design/2026-11-24-ios-shell-ipad-duo-plan.md`). Ship iPad with or after the
+  web's size-class layout and its handling of `layout`.
 - App-Bound Domains (`WKAppBoundDomains` = the host, `limitsNavigationsToAppBoundDomains`): not enabled in v0. It
   would make the bridge's origin rule OS-enforced; it also changes how the WebKit tests load other origins, so it gets
   its own measured change.
@@ -154,6 +183,12 @@ Debug builds only (compiled out of Acceptance and Store):
   posted by the page itself; the user-agent mark checked.
 - `-HaiyoDebugC1` — the page asks `push.register` and the shell reloads it before the answer comes: the log must show
   `bridge-reply delivered=no forbidden=yes`.
+- `-HaiyoDebugLayout` — logs the window's geometry whenever it changes (`debug-layout-*`: the plain and corner-adapted
+  safe areas, fold and occlusion regions, what the page sees as `env()`, its viewport and pointer media queries); with
+  `-HaiyoDebugProbe` the probe page lists `layout` and every `haiyo:layout` it receives is logged (`debug-layout-event`).
+  The probe also logs what WebKit reports for a tapped and a script-clicked `mailto:` (`debug-system-link`).
+- `-HaiyoDebugShare` — once the first page is shown, the share sheet with a small text file, as after a download (the
+  popover and the file's removal can be checked without signing in).
 - The web view is inspectable from Safari's Develop menu; the route shape (`/chat/:id`) and whether WebKit can go
   back are logged through `ShellLog`.
 

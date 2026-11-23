@@ -27,8 +27,11 @@ struct NavigationRequest: Equatable {
     let opensNewWindow: Bool
     /// WebKit says this navigation should become a download (`<a download>`).
     let shouldDownload: Bool
-    /// The person tapped a link (`WKNavigationType.linkActivated`), as opposed to script or a redirect.
+    /// WebKit reports a link activation (`WKNavigationType.linkActivated`), as opposed to a load, a redirect or a form.
+    /// A script's `element.click()` is reported the same way, so this is not proof of a tap (README "Navigation").
     var userActivated: Bool = true
+    /// The request comes from the sheet's web view (a file of the site), not the shell's.
+    var inSheet: Bool = false
 }
 
 enum NavigationPolicy {
@@ -54,11 +57,15 @@ enum NavigationPolicy {
         if request.isMainFrame {
             // A tapped link to a file must not replace the app with the raw file.
             if file, request.userActivated { return .sheet(url) }
+            // The sheet shows files only: a page of the app (a link in an attachment, a redirect to the sign-in page)
+            // opens in the main view, never as a second copy of the app in the sheet.
+            if own, request.inSheet, !file { return .openInApp(path: config.sitePath(of: url)) }
             if own { return .load }
             return web ? .safari(url) : .refuse
         }
-        // A sub-frame: only the site's own pages and blank documents.
-        if own || url.absoluteString == "about:blank" || url.absoluteString == "about:srcdoc" { return .load }
+        // A sub-frame: only the site's own pages (in the sheet only its files) and blank documents.
+        if own, !request.inSheet || file { return .load }
+        if url.absoluteString == "about:blank" || url.absoluteString == "about:srcdoc" { return .load }
         return .refuse
     }
 }

@@ -21,7 +21,7 @@ enum BridgeError: String, Error, Equatable {
 }
 
 enum BridgeMessage {
-    static let knownEvents: Set<String> = ["pause", "resume", "open"]
+    static let knownEvents: Set<String> = ["pause", "resume", "open", "layout"]
     static let maxBadge = 99_999
 
     /// Validates the body of `window.webkit.messageHandlers.haiyo.postMessage({ name, args })`.
@@ -62,21 +62,30 @@ enum BridgeEvent: Equatable {
     case pause
     case resume
     case open(path: String)
+    /// The window's shape changed (the fold, the corners); only to a page that listed `layout` in `hello`.
+    case layout(PageLayout)
 
     var name: String {
         switch self {
         case .pause: return "pause"
         case .resume: return "resume"
         case .open: return "open"
+        case .layout: return "layout"
         }
     }
 
     /// The script that dispatches it, only in a document on `origin`; it evaluates to `true` when dispatched. The
     /// origin and the detail are JSON, so nothing in a path can become code.
     func script(origin: URL) -> String {
+        var object: [String: Any]?
+        switch self {
+        case .pause, .resume: object = nil
+        case let .open(path): object = ["path": path]
+        case let .layout(layout): object = layout.json
+        }
         var detail = "null"
-        if case let .open(path) = self,
-           let data = try? JSONSerialization.data(withJSONObject: ["path": path]),
+        if let object,
+           let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
            let json = String(data: data, encoding: .utf8) {
             detail = json
         }

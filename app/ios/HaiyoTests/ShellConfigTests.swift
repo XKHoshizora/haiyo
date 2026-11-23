@@ -20,6 +20,21 @@ final class ShellConfigTests: XCTestCase {
         XCTAssertNotNil(Bundle.main.url(forResource: "PrivacyInfo", withExtension: "xcprivacy"))
     }
 
+    /// iPhone and iPad; on iPad every orientation and a resizable window; the iPhone stays portrait for now. Read from
+    /// the built Info.plist as written (UIKit merges the `~ipad` keys on an iPad).
+    func testTheAppRunsOnIPhoneAndOnIPadInAnyOrientation() throws {
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "Info", withExtension: "plist"))
+        let info = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
+        XCTAssertEqual(info["UIDeviceFamily"] as? [Int], [1, 2])
+        XCTAssertEqual(Set(info["UISupportedInterfaceOrientations~ipad"] as? [String] ?? []), [
+            "UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown",
+            "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight",
+        ])
+        XCTAssertEqual(info["UISupportedInterfaceOrientations"] as? [String], ["UIInterfaceOrientationPortrait"])
+        XCTAssertNil(info["UIRequiresFullScreen"], "deprecated; a full-screen-only iPad app is not what we ship")
+        XCTAssertNotNil(info["UILaunchScreen"])
+    }
+
     func testOnlyBareHostNamesAreAccepted() {
         XCTAssertEqual(ShellConfig.parse(info: ["HaiyoHost": "Test.Haiyo.org"])?.host, "test.haiyo.org")
         // The same rule as the "Check origin" build phase (M6): `_`, non-ASCII, single labels and edge hyphens fail too.

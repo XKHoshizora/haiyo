@@ -44,7 +44,9 @@ final class OfflineView: UIView {
         stack.setCustomSpacing(24, after: messageLabel)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        // Centred when it fits; scrolls at the largest text sizes so the title and 重试 stay reachable.
+        // Centred when it fits; scrolls at the largest text sizes so the title and 重试 stay reachable. It stays inside
+        // the safe area on every side (the Duo's status column is on the right when closed) and below the corners
+        // (the iPad window controls): vertical corner adaptation keeps the full width of a narrow window.
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.alwaysBounceVertical = false
@@ -53,11 +55,12 @@ final class OfflineView: UIView {
         let content = scroll.contentLayoutGuide
         let frame = scroll.frameLayoutGuide
         let fill = content.heightAnchor.constraint(greaterThanOrEqualTo: frame.heightAnchor)
+        let area = layoutGuide(for: .safeArea(cornerAdaptation: .vertical))
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: area.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: area.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: area.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: area.trailingAnchor),
             content.widthAnchor.constraint(equalTo: frame.widthAnchor),
             fill,
             stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),

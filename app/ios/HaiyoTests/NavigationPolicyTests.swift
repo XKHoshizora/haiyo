@@ -72,6 +72,26 @@ final class NavigationPolicyTests: XCTestCase {
             XCTAssertEqual(route(url, kind), expected, "\(url) as \(kind)")
         }
     }
+
+    /// The sheet shows the site's files only. A page of the app — a link inside an attachment, a redirect to the
+    /// sign-in page, a frame — never loads there: it opens in the main view, or (in a frame) not at all.
+    func testTheSheetNeverShowsAnAppPage() {
+        func sheet(_ string: String, main: Bool = true, tapped: Bool = true, newWindow: Bool = false) -> NavigationRoute {
+            NavigationPolicy.route(NavigationRequest(url: URL(string: string)!, isMainFrame: main, opensNewWindow: newWindow,
+                                                     shouldDownload: false, userActivated: tapped, inSheet: true), config: testConfig)
+        }
+        let file = "https://test.haiyo.org/api/attachments/a1"
+        XCTAssertEqual(sheet(file, tapped: false), .load, "the sheet's own file")
+        XCTAssertEqual(sheet(file), .sheet(u(file)), "another file, tapped: shown in the sheet")
+        XCTAssertEqual(sheet("https://test.haiyo.org/chat/x"), .openInApp(path: "/chat/x"))
+        XCTAssertEqual(sheet("https://test.haiyo.org/login?next=%2Fapi%2Ffiles%2Fa", tapped: false),
+                       .openInApp(path: "/login?next=%2Fapi%2Ffiles%2Fa"), "a redirect to the sign-in page")
+        XCTAssertEqual(sheet("https://test.haiyo.org/", newWindow: true), .openInApp(path: "/"))
+        XCTAssertEqual(sheet("https://test.haiyo.org/chat/x", main: false), .refuse, "an app page in a frame")
+        XCTAssertEqual(sheet(file, main: false), .load, "a file in a frame")
+        XCTAssertEqual(sheet("about:blank", main: false), .load)
+        XCTAssertEqual(sheet("https://example.com/"), .safari(u("https://example.com/")))
+    }
 }
 
 final class ResponsePolicyTests: XCTestCase {

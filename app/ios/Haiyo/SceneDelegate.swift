@@ -11,6 +11,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        // The page's own floor (`body { min-width: 320px }`); the system may keep windows larger than this.
+        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 320, height: 480)
         let window = UIWindow(windowScene: windowScene)
         self.window = window
         guard !isRunningTests else {

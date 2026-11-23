@@ -12,6 +12,12 @@ final class ShellViewController: UIViewController, BridgeHost {
     private(set) var webView: WKWebView!
     private let cover = UIView()
     private let offline = OfflineView()
+    private let layoutObserver = LayoutObserverView()
+    /// The latest geometry, the layout it gives, and the last layout the page received (`haiyo:layout` or `hello`).
+    private var layoutSample: LayoutSample?
+    private var currentLayout = PageLayout()
+    private var sentLayout: PageLayout?
+    private var layoutSettle: DispatchWorkItem?
     /// Events the page said it handles (`hello`); `open` falls back to loading the URL when the page does not.
     private var pageEvents: Set<String> = []
     private var retryURL: URL?
@@ -78,7 +84,9 @@ final class ShellViewController: UIViewController, BridgeHost {
         offline.isHidden = true
         offline.onRetry = { [weak self] in self?.retry() }
 
-        for v in [webView, cover, offline] as [UIView] {
+        layoutObserver.onChange = { [weak self] sample in self?.layoutChanged(sample) }
+
+        for v in [webView, layoutObserver, cover, offline] as [UIView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
             NSLayoutConstraint.activate([
@@ -112,6 +120,7 @@ final class ShellViewController: UIViewController, BridgeHost {
         DebugProbe.applyBeforeFirstLoad(to: webView)
         debugObservations = DebugProbe.observeHistory(of: webView)
         bridge?.replyObserver = DebugProbe.logReply
+        DebugProbe.watchLayout(of: view, webView: webView)
         #endif
         load(config.url(forPath: initialPath) ?? config.origin)
     }
@@ -154,6 +163,8 @@ final class ShellViewController: UIViewController, BridgeHost {
     private func pageCommitted() {
         pageGeneration += 1
         pageEvents = []
+        sentLayout = nil
+        applyLayout()
         guard !cover.isHidden else { return }
         coverTimers.forEach { $0.cancel() }
         let lift = DispatchWorkItem { [weak self] in self?.liftCover(after: 0) }
@@ -164,6 +175,7 @@ final class ShellViewController: UIViewController, BridgeHost {
     private func pageShown() {
         #if DEBUG
         DebugProbe.pageShown(webView, config: config)
+        if DebugProbe.shareNow { navigator.downloads.shareForDebug() }
         #endif
         offline.isHidden = true
         // env(safe-area-inset-*) can arrive a moment after load in WKWebView: keep the cover a little longer.
@@ -206,6 +218,7 @@ final class ShellViewController: UIViewController, BridgeHost {
         crashReloadPending = true
         pageGeneration += 1
         pageEvents = []
+        sentLayout = nil
         ShellLog.note("content-process-terminated", ("foreground", .flag(isForeground)))
         guard isForeground else {
             needsReload = true
@@ -275,6 +288,33 @@ final class ShellViewController: UIViewController, BridgeHost {
         if presentedViewController != nil { dismiss(animated: false) }
     }
 
+    // MARK: Layout (iPad windows, the Duo's fold)
+
+    /// Apply the geometry once it has held still for a moment: while the Duo folds, closes or turns, UIKit reports
+    /// in-between states for a few frames (measured: a fold on the closed outer display while closing).
+    private func layoutChanged(_ sample: LayoutSample) {
+        layoutSample = sample
+        layoutSettle?.cancel()
+        let settle = DispatchWorkItem { [weak self] in self?.applyLayout() }
+        layoutSettle = settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: settle)
+    }
+
+    /// A page that does not handle `layout` is kept below the iPad window controls; one that does gets the whole
+    /// view and the event, only when the value changed (`hello` answers with the value itself instead).
+    private func applyLayout(sendingEvent: Bool = true) {
+        guard let sample = layoutSample else { return }
+        let handles = pageEvents.contains("layout")
+        let top = handles ? 0 : LayoutGeometry.windowControlsTop(sample)
+        if webView.obscuredContentInsets.top != top {
+            webView.obscuredContentInsets = UIEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
+        }
+        currentLayout = LayoutGeometry.layout(sample, zoom: webView.pageZoom, obscured: webView.obscuredContentInsets)
+        guard sendingEvent, handles, currentLayout != sentLayout else { return }
+        sentLayout = currentLayout
+        send(.layout(currentLayout))
+    }
+
     // MARK: BridgeHost
 
     var bridgePage: BridgePage {
@@ -283,7 +323,11 @@ final class ShellViewController: UIViewController, BridgeHost {
 
     func bridgeHello(events: Set<String>, completion: @escaping ([String: Any]) -> Void) {
         pageEvents = events
-        PushCenter.shared.status { [config] push in
+        applyLayout(sendingEvent: false)
+        PushCenter.shared.status { [weak self, config] push in
+            // The layout as it is when the answer goes out: a page that handles `layout` hears only later changes.
+            let layout = self?.currentLayout ?? PageLayout()
+            if events.contains("layout") { self?.sentLayout = layout }
             completion([
                 "bridge": 1,
                 "shell": config.version,
@@ -291,6 +335,7 @@ final class ShellViewController: UIViewController, BridgeHost {
                 "os": UIDevice.current.systemVersion,
                 "push": push,
                 "events": events.sorted(),
+                "layout": layout.json,
             ])
         }
     }

@@ -1,6 +1,6 @@
 # iOS shell on iPad and iPhone Duo — plan
 
-2026-11-24 · `app/ios` on `lane/mac-app-shell` · plan only: nothing here is built until the owner says go.
+2026-11-24 · `app/ios` on `lane/mac-app-shell` · built 2026-11-23 after the owner's go (see "As built").
 
 Input: `docs/reviews/2026-11-24-web-quality-and-device-audit.md` Part 2 (on `lane/integ-ui2`), whose Duo facts come from
 the simulator measurements of this shell (iOS 27.2: outer 466×678 pt, inner 951×669 pt, no reloads across postures).
@@ -142,6 +142,30 @@ hinge goes closed → half-open → open → half-open laptop-style.
 2. `haiyo:layout` (fold + corner) and `hello.layout`, with unit tests and the probe; the `obscuredContentInsets` fallback.
 3. Simulator matrix (audit 2.8.8): Duo closed / open / half-open book and laptop / rotated; iPad mini and 13" both
    orientations, windowed halves, thirds, quarters, Slide Over; then an internal TestFlight build with the owner's yes.
+
+## As built (2026-11-23)
+
+Measured first with a universal Debug build (`-HaiyoDebugLayout`, iOS 27.2 simulators), then built as planned except:
+
+| Plan | Built | Why (measured) |
+|---|---|---|
+| Fallback: obscured top whenever the vertical corner extra is non-zero | only when an active occlusion in the top-leading corner reaches into the plain safe area (the window controls) | the Duo's rounded corners give a corner extra too (16–18 pt) and would have pushed every Duo page down; its cameras, status column and the iPad status bar lie inside the safe-area insets |
+| Coalesce to one send per run-loop turn | send once the geometry has held still for 0.15 s | while closing, UIKit reported the inner display's fold on the 466-pt outer display for a few frames |
+| Cannot-connect screen on `.safeArea(cornerAdaptation: .horizontal)` | `.vertical` | keeps the full width of a narrow (402-pt) window; the controls only cost height |
+
+| Measured | Duo closed | Duo open | Duo half-open | half-open, turned | iPad full screen | iPad window 402×675 |
+|---|---|---|---|---|---|---|
+| plain safe area t/l/b/r = page `env()` | 0/0/34/84 | 0/0/34/84 | same | 82/0/34/0 | 32/0/20/0 | 10/0/10/0 |
+| corner extra (top / leading / trailing) | 18/3/0 | 16/16/0 | 16/16/0 | 0/16/16 | 0/10/10 | 43/66/10 |
+| fold (CSS px) | none | none (inactive) | vertical x 455, w 41 | horizontal y 455, h 41 | — | — |
+| window controls (occlusion) | — | — | — | — | — | x 21 y 21, 41×22 → page kept 53 pt down |
+
+WebKit passes a new safe area to the page about a second after load or resize. Pointer queries in the simulator:
+`pointer: coarse`, `hover: none`, `any-pointer: fine`, `any-hover: hover` on both (the Mac's pointer); measure on a
+real iPad with and without a trackpad. Shots: `~/Desktop/Haiyo/qa-ios-shell-v0/r2/`.
+
+Also in this round (review minors): the share sheet's file is removed when the sheet is gone and no activity uses it
+(no timer); the sheet never shows an app page; the `mailto:`/`tel:`/`sms:` rule and what it rests on (README).
 
 ## Sources (read 2026-11-23)
 

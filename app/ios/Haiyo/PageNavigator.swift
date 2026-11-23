@@ -39,12 +39,16 @@ final class PageNavigator: NSObject, WKNavigationDelegate, WKUIDelegate {
             MainActor.assumeIsolated { decisionHandler(.cancel) }
             return
         }
+        #if DEBUG
+        if NavigationPolicy.systemSchemes.contains(url.scheme?.lowercased() ?? "") { DebugProbe.logSystemLink(navigationAction) }
+        #endif
         let request = NavigationRequest(
             url: url,
             isMainFrame: navigationAction.targetFrame?.isMainFrame ?? true,
             opensNewWindow: navigationAction.targetFrame == nil,
             shouldDownload: navigationAction.shouldPerformDownload,
-            userActivated: navigationAction.navigationType == .linkActivated
+            userActivated: navigationAction.navigationType == .linkActivated,
+            inSheet: role == .sheet
         )
         let policy = perform(NavigationPolicy.route(request, config: config), in: webView)
         MainActor.assumeIsolated { decisionHandler(policy) }
@@ -98,7 +102,8 @@ final class PageNavigator: NSObject, WKNavigationDelegate, WKUIDelegate {
                 isMainFrame: false,
                 opensNewWindow: true,
                 shouldDownload: false,
-                userActivated: navigationAction.navigationType == .linkActivated
+                userActivated: navigationAction.navigationType == .linkActivated,
+                inSheet: role == .sheet
             )
             _ = perform(NavigationPolicy.route(request, config: config), in: webView)
         }

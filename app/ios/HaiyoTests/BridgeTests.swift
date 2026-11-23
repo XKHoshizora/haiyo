@@ -90,6 +90,18 @@ final class BridgeMessageTests: XCTestCase {
         XCTAssertTrue(open.contains("{ detail: {\"path\":\"\\/chat\\/x\\\"<\\/script>"), open)
         XCTAssertFalse(open.contains("\"</script>"))
     }
+
+    /// `layout` is an event a page can ask for; its detail is the layout as JSON, keys sorted, `fold` null when none.
+    func testTheLayoutEvent() {
+        XCTAssertEqual(try BridgeMessage.parse(["name": "hello", "args": ["events": ["layout", "resume"]]]).get(),
+                       .hello(events: ["layout", "resume"]))
+        let none = BridgeEvent.layout(PageLayout()).script(origin: testConfig.origin)
+        XCTAssertTrue(none.contains("new CustomEvent(\"haiyo:layout\", { detail: {\"corner\":{\"leading\":0,\"top\":0,\"trailing\":0},\"fold\":null} })"), none)
+        let folded = PageLayout(fold: .init(axis: .vertical, x: 456, y: 0, width: 40, height: 669), corner: .init(top: 16, leading: 16, trailing: 0))
+        let script = BridgeEvent.layout(folded).script(origin: testConfig.origin)
+        XCTAssertTrue(script.hasPrefix("(function () { if (location.origin !== \"https:\\/\\/test.haiyo.org\") return false; "), script)
+        XCTAssertTrue(script.contains("\"fold\":{\"axis\":\"vertical\",\"height\":669,\"width\":40,\"x\":456,\"y\":0}"), script)
+    }
 }
 
 final class BridgeHandlingTests: XCTestCase {

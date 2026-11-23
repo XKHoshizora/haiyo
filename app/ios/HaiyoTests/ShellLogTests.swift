@@ -35,24 +35,60 @@ final class ShellLogTests: XCTestCase {
 }
 
 final class LifecycleRulesTests: XCTestCase {
-    /// I4: a cancelled activity leaves the share sheet open, so the file stays; it goes when the sheet closes.
-    func testTheDownloadedFileStaysWhileTheShareSheetIsOpen() {
-        XCTAssertFalse(DownloadCoordinator.sheetIsClosing(activityChosen: true, completed: false))
-        XCTAssertTrue(DownloadCoordinator.sheetIsClosing(activityChosen: true, completed: true))
-        XCTAssertTrue(DownloadCoordinator.sheetIsClosing(activityChosen: false, completed: false))
+    /// I4: the shared file goes once the sheet is gone and no activity uses it — in whichever order the two come,
+    /// with no timer.
+    func testTheSharedFileStaysWhileTheSheetOrAnActivityStillNeedsIt() {
+        // Dismissed without choosing anything.
+        var plain = ShareCleanup()
+        XCTAssertFalse(plain.activityEnded(), "the callback can come while the sheet is still closing")
+        XCTAssertTrue(plain.sheetGone())
+
+        // 保存到“文件” → 取消: back on the sheet, the file stays for the next choice; then the sheet is closed.
+        var cancelled = ShareCleanup()
+        cancelled.activityStarted()
+        XCTAssertFalse(cancelled.activityEnded(), "the sheet is still open")
+        XCTAssertTrue(cancelled.sheetGone())
+
+        // 存储图像: the sheet closes as soon as it is chosen, the save ends later.
+        var saving = ShareCleanup()
+        saving.activityStarted()
+        XCTAssertFalse(saving.sheetGone(), "the activity still reads the file")
+        XCTAssertTrue(saving.activityEnded())
+
+        // A failed activity (存储图像 without Photos access): the callback first, then the sheet closes.
+        var failed = ShareCleanup()
+        failed.activityStarted()
+        XCTAssertFalse(failed.activityEnded())
+        XCTAssertTrue(failed.sheetGone())
+
+        // A cancel, then another activity that outlives the sheet: the earlier callback does not count.
+        var second = ShareCleanup()
+        second.activityStarted()
+        XCTAssertFalse(second.activityEnded())
+        second.activityStarted()
+        XCTAssertFalse(second.sheetGone(), "the second activity is still running")
+        XCTAssertTrue(second.activityEnded())
+        XCTAssertFalse(second.activityEnded(), "removed once")
     }
 
-    /// A chosen activity that failed (存储图像 without Photos access) closes the sheet: then the file goes too.
+    /// The share sheet's item tells when an activity asks for the file.
     @MainActor
-    func testTheFileGoesWhenTheSheetIsNoLongerOnScreen() {
-        XCTAssertTrue(DownloadCoordinator.sheetIsGone(nil), "released")
-        XCTAssertTrue(DownloadCoordinator.sheetIsGone(UIViewController()), "not in a window")
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
-        let shown = UIViewController()
-        window.rootViewController = shown
-        window.isHidden = false
-        XCTAssertFalse(DownloadCoordinator.sheetIsGone(shown), "still on screen")
-        window.isHidden = true
+    func testTheSharedItemReportsWhenAnActivityAsksForTheFile() {
+        let file = URL(fileURLWithPath: "/tmp/x.png")
+        let item = SharedFile(url: file)
+        var asked = 0
+        item.onRequested = { asked += 1 }
+        let sheet = UIActivityViewController(activityItems: [], applicationActivities: nil)
+        XCTAssertEqual(item.activityViewControllerPlaceholderItem(sheet) as? URL, file)
+        XCTAssertEqual(asked, 0, "the placeholder is not a use of the file")
+        XCTAssertEqual(item.activityViewController(sheet, itemForActivityType: .copyToPasteboard) as? URL, file)
+        XCTAssertEqual(asked, 1)
+    }
+
+    /// iPad: the share popover sits in the middle of the view, with no arrow.
+    func testTheSharePopoverIsAnchoredInTheMiddle() {
+        XCTAssertEqual(DownloadCoordinator.centre(of: CGRect(x: 0, y: 0, width: 402, height: 675)),
+                       CGRect(x: 201, y: 337.5, width: 0, height: 0))
     }
 
     /// I2: at most two reloads after a crash within a minute; the third ends on the cannot-connect screen.
