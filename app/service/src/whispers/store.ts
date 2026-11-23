@@ -467,6 +467,7 @@ export async function createWhisper(
     `insert into whispers (conversation_id, owner_id, agent_id, after_seq, kind, body)
      select $1::uuid, $2::uuid, $3::uuid, $4::bigint, $5::text, $6::jsonb
       where exists (select 1 from memberships me where me.conversation_id = $1 and me.principal_id = $2 and me.left_seq is null)
+        and not exists (select 1 from conversations sc where sc.id = $1 and sc.type = 'agent_social')
         and exists (
           select 1 from memberships am
             join agents a on a.principal_id = am.principal_id
