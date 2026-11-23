@@ -106,3 +106,25 @@ describe("white text on a colour", () => {
     expect(Number(ratio(colour("#fff"), bg(selector)).toFixed(2)), name).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe("the marks of a model row", () => {
+  // The chip over the picker (white), over the keyboard's row, over the provider page's card; its glyph and word are one colour.
+  const grounds = {
+    "a picker": colour("#fff"),
+    "the active row": over(bg(".model-option.active"), colour("#fff")),
+  };
+  it.each(Object.keys(grounds))("an ability's icon reaches 3:1 and its word 4.5:1 on its chip over %s", (name) => {
+    const chip = over(bg(".model-mark"), grounds[name]);
+    const ink = colour(plain(".model-mark").color);
+    expect(Number(ratio(ink, chip).toFixed(2)), name).toBeGreaterThanOrEqual(4.5);
+  });
+  it.each([
+    ["免费", ".model-mark-free"],
+    ["需余额", ".model-mark-paid"],
+  ])("%s reaches 4.5:1 on its chip", (_, selector) => {
+    expect(Number(ratio(colour(plain(selector).color), bg(selector)).toFixed(2))).toBeGreaterThanOrEqual(4.5);
+  });
+  it("the legend's words are the muted ink and reach 4.5:1 on the picker", () => {
+    expect(plain(".model-legend").color).toBe("var(--ink-3)");
+  });
+});

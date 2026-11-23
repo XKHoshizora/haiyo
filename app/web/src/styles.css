@@ -340,16 +340,26 @@ svg.model-brand { color: var(--ink-3); }
 .model-reason { flex: none; font-size: 12px; }
 /* Where a model is switched for an Agent from a group: a quiet line at the list's top says the change is everywhere. */
 .model-scope { flex: none; margin: 0 0 6px; padding: 2px 4px 0; font-size: 12px; color: var(--ink-3); }
-/* The marks: each kind in a column of its own width, so they line up from row to row (an empty one keeps its room). */
-.model-marks { flex: none; display: flex; gap: 4px; }
+/* The marks (src/ui/ModelMarks.jsx): each kind in a column of its own width, so they line up from row to row (a column a model has no mark in is an invisible gap, never
+   a grey mark). Money is text at every width; the abilities are an icon and a word while the list is wide, the icon alone when it is narrow (data-mode, from the list's own
+   width, src/ui/ModelMarks.jsx). A long name gives way first: it is cut with an ellipsis (flex 1, min-width 0), the marks never shrink or wrap. */
+.model-marks { flex: none; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .model-mark {
-  min-width: calc(2em + 10px); height: 18px; padding: 0 5px; border-radius: 5px; font-size: 11.5px; line-height: 18px; text-align: center;
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px; height: 18px; padding: 0 5px; border-radius: 5px; font-size: 11.5px; line-height: 18px;
   white-space: nowrap; background: rgba(120, 116, 143, 0.12); color: var(--ink-2);
 }
+.model-mark svg { flex: none; }
 .model-mark[data-col="price"] { min-width: calc(3em + 10px); }
-.model-mark:empty { visibility: hidden; }
+.model-gap { flex: none; height: 18px; visibility: hidden; }
+.model-marks[data-mode="text"] .model-mark-ability, .model-marks[data-mode="text"] .model-gap:not([data-col="price"]) { width: 52px; }
+.model-marks[data-mode="icons"] .model-mark-ability, .model-marks[data-mode="icons"] .model-gap { width: 24px; padding: 0; }
+.model-marks[data-mode="icons"] .model-mark-text { display: none; }
+.model-gap[data-col="price"] { min-width: calc(3em + 10px); }
 .model-mark-free { background: var(--ok-bg); color: var(--ok); }
 .model-mark-paid { background: var(--warn-bg); color: var(--warn); }
+/* What the icons mean, one quiet line under a narrow list (where there is no word beside an icon). */
+.model-legend { flex: none; display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 4px 0 0; padding: 6px 8px 0; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-3); }
+.model-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .model-empty { margin: 0; padding: 14px 8px; font-size: 13px; color: var(--ink-3); text-align: center; }
 .model-foot { flex: none; display: flex; margin: 6px -6px -6px; padding: 4px 6px; border-top: 1px solid var(--line); }
 @keyframes model-pop-in { from { opacity: 0; transform: translateY(-3px); } }
@@ -1030,7 +1040,9 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .sync-tools > .btn { flex: none; }
 .sync-name { overflow-wrap: anywhere; }
 .sync-name .muted { font-size: 13px; }
-.sync-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.sync-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
+/* On a page row the marks have a line of their own and say their words (the row is not a narrow list); they may wrap rather than push the actions. */
+.model-marks-row { flex-wrap: wrap; margin-top: 4px; }
 .sync-rows li { padding: 7px 2px; gap: 10px; }
 .sync-rows .member-actions { align-items: center; }
 .sync-added { font-size: 13px; }

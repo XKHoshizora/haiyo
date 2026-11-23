@@ -772,7 +772,7 @@ describe("the models of a provider", () => {
     const app = await openProviders({ providers: [levels] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
     // The summary line says which levels are in use; the choice is in 高级.
-    expect(modelRow("gpt-x").textContent).toContain("支持思考（低、高）");
+    expect(modelRow("gpt-x").textContent).toContain("思考档位：低、高");
     expect(within(modelRow("gpt-x")).queryByRole("radiogroup")).toBeNull();
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
@@ -790,7 +790,7 @@ describe("the models of a provider", () => {
     await click(reported());
     expect(reported().checked).toBe(true);
     await click(every());
-    expect(modelRow("gpt-x").textContent).toContain("支持思考（全部档位）");
+    expect(modelRow("gpt-x").textContent).toContain("思考档位：全部");
     await click(within(modelRow("deep")).getByRole("button", { name: /高级/ }));
     fireEvent.click(within(modelRow("deep")).getByLabelText(/支持思考/));
     await flush();
@@ -808,13 +808,35 @@ describe("the models of a provider", () => {
     const saved = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reportedLevels: ["low", "high"] }] });
     const app = await openProviders({ providers: [saved] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
-    expect(modelRow("gpt-x").textContent).toContain("支持思考（全部档位）");
+    expect(modelRow("gpt-x").textContent).toContain("思考档位：全部");
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     expect(within(group).getByRole("radio", { name: "全部档位" }).checked).toBe(true);
     await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+  });
+
+  it("each model row marks what it can do with the picker's own marks (看图, 思考, 工具; none for what it lacks), not in a sentence", async () => {
+    const abilities = providerOf(P1, {
+      models: [
+        { name: "all-four", vision: true, pdf: true, reasoning: true, contextTokens: 64000 },
+        { name: "sees-only", vision: true, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+        { name: "nothing", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+      ],
+    });
+    await openProviders({ providers: [abilities] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    const marks = (name) => [...modelRow(name).querySelectorAll(".model-mark")].map((m) => m.textContent);
+    expect(marks("all-four")).toEqual(["看图", "思考", "工具"]);
+    expect(marks("sees-only")).toEqual(["看图"]);
+    expect(marks("nothing")).toEqual([]);
+    // Read out, each mark is its short word; the sentence keeps what the marks cannot say (the levels, the context).
+    expect(within(modelRow("all-four")).getAllByRole("img").map((m) => m.getAttribute("aria-label"))).toEqual(["看图", "思考", "工具"]);
+    // No chip for PDF: the sentence says it, as before; seeing is the mark's alone.
+    expect(modelRow("all-four").textContent).toContain("能直接读 PDF");
+    expect(modelRow("all-four").textContent).not.toContain("能看图片");
+    expect(modelRow("all-four").textContent).toContain("上下文 64,000");
   });
 
   it("levels in use that differ from the catalogue's can be adopted with one tap on the first option; unticking and ticking 支持思考 again keeps the choice", async () => {
@@ -828,7 +850,7 @@ describe("the models of a provider", () => {
     expect(within(group()).getByRole("radio", { name: "全部档位" }).checked).toBe(false);
     await click(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }));
     expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(true);
-    expect(modelRow("gpt-x").textContent).toContain("支持思考（低、中、高）");
+    expect(modelRow("gpt-x").textContent).toContain("思考档位：低、中、高");
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
     await flush();
@@ -887,7 +909,8 @@ describe("同步模型", () => {
     expect(syncRows().map((li) => li.querySelector("strong").textContent)).toEqual(["gpt-x", "gpt-6-sol", "claude-long", "house-blend", "o3-mini"]);
     const sol = rowOf("gpt-6-sol");
     expect(sol.textContent).toContain("GPT-6 Sol");
-    expect([...sol.querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["看图", "思考", "PDF"]);
+    // The marks are the picker's own (看图, 思考 in their order; this list says nothing of tools).
+    expect([...sol.querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["看图", "思考"]);
     expect([...rowOf("house-blend").querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["未收录"]);
     // The display name is not repeated when it is the id itself.
     expect(rowOf("o3-mini").querySelector(".member-body").textContent).not.toContain("o3-mini · o3-mini");
@@ -947,7 +970,7 @@ describe("同步模型", () => {
     expect(dialog()).toBeNull();
     expect(toastText()).toBe("已保存 6 个模型");
     // Still in the form, which now matches what is saved: 保存 has nothing to send.
-    expect(modelRow("claude-long").textContent).toContain("支持思考（低、高）");
+    expect(modelRow("claude-long").textContent).toContain("思考档位：低、高");
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
   });

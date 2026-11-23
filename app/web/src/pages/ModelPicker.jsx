@@ -3,6 +3,7 @@ import { useStore } from "../data/store.jsx";
 import { MODEL_GONE } from "../data/errorTexts.js";
 import { Btn, Notice, Reason } from "../ui/primitives.jsx";
 import { ModelBrand } from "../ui/ModelBrand.jsx";
+import { abilityMarks } from "../ui/ModelMarks.jsx";
 import { brandOf } from "../ui/modelBrands.js";
 import { ModelSelect } from "./ModelSelect.jsx";
 import { refusalText, settled, useAction } from "./useAction.js";
@@ -56,8 +57,8 @@ const lower = (text) => String(text ?? "").toLowerCase();
  * What can be chosen now: the site's models and each of my providers with its models. Each choice is
  * `{key, model, label, paid, levels, usable}`: `levels` the reasoning levels it allows (`none` first); a provider model whose
  * context is not larger than the output limit its calls get cannot be used (the service refuses it). For the picker's
- * row each also has `name`, `brand`, `marks` (免费 / 需余额 for a site model by its tier, 思考 when it can think, 工具
- * unless its entry says tools: false), `terms` (what a search finds it by: its name, its id or its provider's name) and,
+ * row each also has `name`, `brand`, `marks` (免费 / 需余额 for a site model by its tier, then what the service reports (src/ui/ModelMarks.jsx):
+ * 看图 `vision`, 思考 when it can think, 工具 unless its entry says tools: false), `terms` (what a search finds it by: its name, its id or its provider's name) and,
  * when it cannot be used, `reason`.
  */
 export function modelChoices(state) {
@@ -66,7 +67,7 @@ export function modelChoices(state) {
     const model = { source: "site", id: m.id };
     const paid = m.tier === "paid";
     const name = m.label ?? m.id;
-    const marks = [paid ? "paid" : "free", ...(m.reasoning.length > 0 ? ["thinking"] : []), ...(m.tools !== false ? ["tools"] : [])];
+    const marks = [paid ? "paid" : "free", ...abilityMarks({ vision: m.vision, reasoning: m.reasoning.length > 0, tools: m.tools })];
     return {
       key: modelKey(model),
       model,
@@ -88,7 +89,7 @@ export function modelChoices(state) {
       const tooSmall = Number.isFinite(m.contextTokens) && m.contextTokens <= limit;
       // A model that lists the levels it supports offers those (as a site model does), else every level when it reasons.
       const levels = !m.reasoning ? ["none"] : m.reasoningLevels ? ALL_LEVELS.filter((l) => l === "none" || m.reasoningLevels.includes(l)) : ALL_LEVELS;
-      const marks = [...(m.reasoning ? ["thinking"] : []), ...(m.tools !== false ? ["tools"] : [])];
+      const marks = abilityMarks({ vision: m.vision, reasoning: m.reasoning, tools: m.tools });
       return {
         key: modelKey(model),
         model,

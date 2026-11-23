@@ -33,6 +33,7 @@ export {
   ImageOff,
   Info,
   Laptop,
+  Lightbulb,
   Layers,
   Lock,
   LogOut,
@@ -59,6 +60,7 @@ export {
   User,
   UserPlus,
   Users,
+  Wrench,
   X,
   Zap,
 } from "lucide-react";
