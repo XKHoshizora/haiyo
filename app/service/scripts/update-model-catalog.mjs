@@ -5,7 +5,12 @@
 // `npm run catalog:update`: it downloads https://models.dev/models.json and https://models.dev/api.json, parses them
 // as JSON (nothing in them is ever run) and keeps only what the snapshot needs. `npm run catalog:update -- <models.json>
 // <api.json>` reads saved copies instead. The service itself never fetches the catalogue.
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+//
+// Two flags, for the daily update (.github/workflows/catalog-update.yml): `--guard` refuses (exit 1, nothing written) a
+// snapshot that, against the one on disk, shrank by more than 20 % or lost more than 5 % of the ids that had abilities
+// (`guardCatalog`); `--summary=<file>` writes what changed against the one on disk (`catalogSummary`: models added,
+// removed, abilities changed) to that file, for the commit message.
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export const MODELS_URL = "https://models.dev/models.json";
@@ -17,6 +22,12 @@ export const LEVELS = ["low", "medium", "high", "xhigh", "max"];
  * reranker takes text and answers "text" (numbers), and a realtime model talks over its own socket API.
  */
 const NOT_CHAT_TYPES = new Set(["embedding", "reranking", "speech", "transcription", "image", "video", "realtime"]);
+/** What a model can do, as the snapshot's entry says it: the three it always carries, then the six kept only when true. */
+export const ABILITIES = ["vision", "pdf", "reasoning", "tools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"];
+/** The most an update may shrink the snapshot by, and the most of the previous one's able ids it may lose (`guardCatalog`). */
+export const GUARD = { maxShrink: 0.2, maxAbleLost: 0.05 };
+/** How many names of each kind a summary lists (`catalogSummary`). */
+const SUMMARY_NAMES = 20;
 const MAX_DOWNLOAD_BYTES = 40 * 1024 * 1024;
 const CONTROL = /\p{Cc}/u;
 
@@ -38,8 +49,11 @@ export function levelsOf(entry) {
 
 /**
  * The snapshot: for each canonical model `lab/model-id` of models.json, `{id, lab, name, vision, pdf, reasoning, chat,
- * contextTokens?, reasoningLevels?}`, sorted by id (then lab). `id` is the key's last segment in lower case; two labs
- * may share it (both are kept). `reasoningLevels` comes from the lab's own entry in api.json (`api[lab].models[id]`).
+ * contextTokens?, reasoningLevels?, tools?, audioIn?, videoIn?, imageOut?, videoOut?, audioOut?}`, sorted by id (then
+ * lab). `id` is the key's last segment in lower case; two labs may share it (both are kept). `reasoningLevels` comes
+ * from the lab's own entry in api.json (`api[lab].models[id]`). The last six are there only as `true`: `tools` for the
+ * catalogue's `tool_call: true`, `audioIn` / `videoIn` for audio / video among its input modalities, `imageOut` /
+ * `videoOut` / `audioOut` for image / video / audio among its output modalities (absent: no, or not said).
  */
 export function reduceCatalog(models, api = {}) {
   if (!isObject(models)) throw new Error("models.json: expected an object of models keyed lab/model-id");
@@ -66,9 +80,70 @@ export function reduceCatalog(models, api = {}) {
     if (Number.isInteger(context) && context > 0) reduced.contextTokens = context;
     const levels = reduced.reasoning ? levelsOf(api?.[lab]?.models?.[parts.slice(1).join("/")]) : undefined;
     if (levels) reduced.reasoningLevels = levels;
+    if (entry.tool_call === true) reduced.tools = true;
+    if (input.includes("audio")) reduced.audioIn = true;
+    if (input.includes("video")) reduced.videoIn = true;
+    if (output.includes("image")) reduced.imageOut = true;
+    if (output.includes("video")) reduced.videoOut = true;
+    if (output.includes("audio")) reduced.audioOut = true;
     out.push(reduced);
   }
   return out.sort((a, b) => (a.id === b.id ? (a.lab < b.lab ? -1 : a.lab > b.lab ? 1 : 0) : a.id < b.id ? -1 : 1));
+}
+
+/** A model of the snapshot by what tells it from every other: its lab and id. */
+const keyOf = (e) => `${e.lab}/${e.id}`;
+/** The abilities an entry has, as one string (`ABILITIES` order). */
+const abilitiesOf = (e) => ABILITIES.filter((a) => e[a] === true).join(",");
+const sorted = (list) => list.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+/**
+ * What an update changed, by `lab/id`, each list sorted: the models `next` has and `prev` had not, those it lost, and
+ * those in both whose abilities (`ABILITIES`) differ. A name, a context, the levels or `chat` are no ability.
+ */
+export function diffCatalog(prev, next) {
+  const was = new Map(prev.map((e) => [keyOf(e), e]));
+  const is = new Map(next.map((e) => [keyOf(e), e]));
+  return {
+    added: sorted([...is.keys()].filter((k) => !was.has(k))),
+    removed: sorted([...was.keys()].filter((k) => !is.has(k))),
+    changed: sorted([...is.keys()].filter((k) => was.has(k) && abilitiesOf(was.get(k)) !== abilitiesOf(is.get(k)))),
+  };
+}
+
+/** A summary's line: the count, then at most `SUMMARY_NAMES` names and how many more. */
+const named = (title, keys) =>
+  `${title} (${keys.length}): ${keys.length === 0 ? "none" : keys.slice(0, SUMMARY_NAMES).join(", ")}${keys.length > SUMMARY_NAMES ? `, and ${keys.length - SUMMARY_NAMES} more` : ""}`;
+
+/** What an update's commit message says below its first line: the counts, what `diffCatalog` found, and how many models have each kept ability. */
+export function catalogSummary(prev, next) {
+  const diff = diffCatalog(prev, next);
+  const count = (a) => next.filter((e) => e[a] === true).length;
+  return [
+    `Models: ${prev.length} -> ${next.length}`,
+    named("Added", diff.added),
+    named("Removed", diff.removed),
+    named("Abilities changed", diff.changed),
+    `With tools: ${count("tools")}; audio in: ${count("audioIn")}; video in: ${count("videoIn")}; image out: ${count("imageOut")}; video out: ${count("videoOut")}; audio out: ${count("audioOut")}`,
+  ].join("\n");
+}
+
+/**
+ * Refuses (throws) a snapshot an upstream outage or a change of the catalogue's format would leave: one with more than
+ * `GUARD.maxShrink` fewer entries than `prev`, or one in which more than `GUARD.maxAbleLost` of the models that had an
+ * ability in `prev` are gone or have none left. Nothing to compare with (`prev` empty): passes.
+ */
+export function guardCatalog(prev, next) {
+  if (prev.length === 0) return;
+  if (next.length < prev.length * (1 - GUARD.maxShrink)) {
+    throw new Error(`the snapshot shrank from ${prev.length} to ${next.length} models (more than ${GUARD.maxShrink * 100} %): not written`);
+  }
+  const is = new Map(next.map((e) => [keyOf(e), e]));
+  const able = prev.filter((e) => abilitiesOf(e) !== "");
+  const lost = able.filter((e) => !is.has(keyOf(e)) || abilitiesOf(is.get(keyOf(e))) === "").length;
+  if (lost > able.length * GUARD.maxAbleLost) {
+    throw new Error(`${lost} of the ${able.length} models that had abilities are gone or have none left (more than ${GUARD.maxAbleLost * 100} %): not written`);
+  }
 }
 
 /** A plain DNS name as the URL parser leaves it (lower case, punycode): the service's rule for a host (no `${…}` placeholder, no space; a dot; letters, digits, hyphens). */
@@ -146,8 +221,22 @@ catalogue itself.
 
 Each entry: \`id\` (the model id, lower case), \`lab\`, \`name\` (its display name), \`vision\` (takes images), \`pdf\` (takes
 PDFs), \`reasoning\`, \`chat\` (takes and answers text, and is not an embedding, reranking, speech, transcription, image,
-video or realtime model), \`contextTokens\` (when the catalogue gives one) and \`reasoningLevels\` (the lab's \`effort\`
-values among \`low\`, \`medium\`, \`high\`, \`xhigh\`, \`max\`, when it has them).
+video or realtime model), \`contextTokens\` (when the catalogue gives one), \`reasoningLevels\` (the lab's \`effort\`
+values among \`low\`, \`medium\`, \`high\`, \`xhigh\`, \`max\`, when it has them), and six abilities that are there only as
+\`true\` (absent: no, or the catalogue does not say): \`tools\` (the catalogue's \`tool_call\`), \`audioIn\` and \`videoIn\`
+(takes audio, video), \`imageOut\`, \`videoOut\` and \`audioOut\` (answers with images, video, audio).
+
+Whether a provider's model may use tools is answered in this order: its owner's choice or a reply that failed for lack
+of them (stored \`tools: false\`, or \`true\`) > a reply whose tool call ran (stored \`tools: true\`) > this catalogue's
+\`tools\` (read when the model is shown, never stored) > unknown (offered tools until a reply fails).
+
+## Daily update
+
+\`.github/workflows/catalog-update.yml\` runs the script once a day (and by hand: Actions > "Model catalogue update" >
+Run workflow) with \`--guard\`: a snapshot that shrank by more than ${GUARD.maxShrink * 100} % or lost more than ${GUARD.maxAbleLost * 100} % of the ids that had
+abilities in the previous one is refused and nothing is written. A changed snapshot is committed to the development
+branch only after the service type check and the tests that read it pass; the commit message says what was added,
+removed and changed.
 
 # provider-catalog.json
 
@@ -169,8 +258,21 @@ async function download(url) {
   return text;
 }
 
+/** The snapshot on disk as a list; none (empty) when there is no file yet. */
+function previousCatalog(file) {
+  if (!existsSync(file)) return [];
+  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  return Array.isArray(parsed) ? parsed.filter(isObject) : [];
+}
+
 async function main() {
-  const [modelsFile, apiFile] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const flags = args.filter((a) => a.startsWith("--"));
+  const unknown = flags.filter((f) => f !== "--guard" && !/^--summary=.+/.test(f));
+  if (unknown.length > 0) throw new Error(`unknown option ${unknown[0]} (--guard, --summary=<file>)`);
+  const guard = flags.includes("--guard");
+  const summaryFile = flags.find((f) => f.startsWith("--summary="))?.slice("--summary=".length);
+  const [modelsFile, apiFile] = args.filter((a) => !a.startsWith("--"));
   if (Boolean(modelsFile) !== Boolean(apiFile)) throw new Error("give both saved files (models.json and api.json), or neither");
   const models = JSON.parse(modelsFile ? readFileSync(modelsFile, "utf8") : await download(MODELS_URL));
   const api = JSON.parse(apiFile ? readFileSync(apiFile, "utf8") : await download(API_URL));
@@ -180,11 +282,16 @@ async function main() {
   if (providers.length < 20) throw new Error(`only ${providers.length} providers with an API address: not writing a snapshot that small`);
   const fetched = (modelsFile ? statSync(modelsFile).mtime : new Date()).toISOString().slice(0, 10);
   const dir = new URL("../src/providers/", import.meta.url);
+  const previous = previousCatalog(new URL("model-catalog.json", dir));
+  if (guard) guardCatalog(previous, entries);
+  const summary = catalogSummary(previous, entries);
+  if (summaryFile) writeFileSync(summaryFile, `${summary}\n`);
   writeFileSync(new URL("model-catalog.json", dir), formatCatalog(entries));
   writeFileSync(new URL("provider-catalog.json", dir), formatCatalog(providers));
   writeFileSync(new URL("model-catalog.README.md", dir), catalogReadme({ fetched, count: entries.length, providers: providers.length }));
   console.log(`model-catalog.json: ${entries.length} models (${entries.filter((e) => e.reasoningLevels).length} with their thinking levels), fetched ${fetched}`);
   console.log(`provider-catalog.json: ${providers.length} providers, ${providers.reduce((n, p) => n + p.models.length, 0)} model ids`);
+  console.log(summary);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { catalogReadme, formatCatalog, reduceCatalog } from "../scripts/update-model-catalog.mjs";
+import { ABILITIES, catalogReadme, catalogSummary, diffCatalog, formatCatalog, guardCatalog, reduceCatalog, type CatalogEntry } from "../scripts/update-model-catalog.mjs";
 
 /**
  * The vendored models.dev snapshot (src/providers/model-catalog.json): how the update script reduces the two catalogue
@@ -90,6 +90,23 @@ describe("reduceCatalog (the update script)", () => {
     ]);
   });
 
+  it("abilities: tools from tool_call, audio and video taken, image, video and audio answered — each only when true", () => {
+    const got = reduceCatalog({
+      "acme/all": { name: "All", tool_call: true, reasoning: false, modalities: { input: ["text", "image", "audio", "video"], output: ["text", "image", "audio", "video"] } },
+      "acme/none": { name: "None", tool_call: false, reasoning: false, modalities: { input: ["text"], output: ["text"] } },
+      "acme/odd": { name: "Odd", tool_call: "yes", reasoning: false, modalities: { input: ["text", "Audio"], output: ["text"] } },
+    });
+    expect(got).toEqual([
+      { id: "all", lab: "acme", name: "All", vision: true, pdf: false, reasoning: false, chat: true, tools: true, audioIn: true, videoIn: true, imageOut: true, videoOut: true, audioOut: true },
+      { id: "none", lab: "acme", name: "None", vision: false, pdf: false, reasoning: false, chat: true },
+      { id: "odd", lab: "acme", name: "Odd", vision: false, pdf: false, reasoning: false, chat: true },
+    ]);
+    expect(byKey.get("google/gemini-x")).toMatchObject({ audioIn: true, videoIn: true });
+    expect(byKey.get("acme/painter")).toMatchObject({ imageOut: true });
+    expect(byKey.get("openai/gpt-next")).not.toHaveProperty("tools");
+    expect(ABILITIES).toEqual(["vision", "pdf", "reasoning", "tools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"]);
+  });
+
   it("writes one entry per line, and a README with the source, date, licence and count", () => {
     const text = formatCatalog(reduced);
     expect(JSON.parse(text)).toEqual(reduced);
@@ -99,16 +116,83 @@ describe("reduceCatalog (the update script)", () => {
   });
 });
 
+/** `n` entries m10, m11, … (crossing 100 from 91 on), each with vision unless `more` says otherwise. */
+const many = (n: number, more: Partial<CatalogEntry> = {}): CatalogEntry[] =>
+  Array.from({ length: n }, (_, i) => ({ id: `m${i + 10}`, lab: "acme", name: `M${i + 10}`, vision: true, pdf: false, reasoning: false, chat: true, ...more }));
+
+describe("diffCatalog and catalogSummary (what an update's commit message says)", () => {
+  it("names what was added, removed and whose abilities changed, by lab/id, sorted; chat, name and context are no ability", () => {
+    const prev = many(120);
+    const next: CatalogEntry[] = [
+      ...prev.slice(2).map((e, i) => (i === 0 ? { ...e, tools: true as const } : i === 1 ? { ...e, vision: false } : i === 2 ? { ...e, name: "Renamed", contextTokens: 5, chat: false } : e)),
+      { id: "new", lab: "zeta", name: "New", vision: false, pdf: false, reasoning: false, chat: true },
+    ];
+    const diff = diffCatalog(prev, next);
+    expect(diff).toEqual({ added: ["zeta/new"], removed: ["acme/m10", "acme/m11"], changed: ["acme/m12", "acme/m13"] });
+    expect(diffCatalog(prev, prev)).toEqual({ added: [], removed: [], changed: [] });
+    // The same id under two labs is two models.
+    expect(diffCatalog([{ ...prev[0]!, lab: "a" }], [{ ...prev[0]!, lab: "b" }])).toEqual({ added: ["b/m10"], removed: ["a/m10"], changed: [] });
+    const text = catalogSummary(prev, next);
+    expect(text.split("\n")).toEqual([
+      "Models: 120 -> 119",
+      "Added (1): zeta/new",
+      "Removed (2): acme/m10, acme/m11",
+      "Abilities changed (2): acme/m12, acme/m13",
+      "With tools: 1; audio in: 0; video in: 0; image out: 0; video out: 0; audio out: 0",
+    ]);
+  });
+
+  it("lists at most 20 names of each, and says how many more", () => {
+    const text = catalogSummary([], many(25));
+    const added = text.split("\n")[1]!;
+    expect(added.startsWith("Added (25): acme/m10, acme/m11, ")).toBe(true);
+    expect(added.endsWith("acme/m29, and 5 more")).toBe(true);
+    expect(text).toContain("Removed (0): none");
+  });
+});
+
+describe("guardCatalog (an upstream outage or format change must not wipe the catalogue)", () => {
+  const prev = many(200);
+  it("passes the same catalogue, a grown one, and one that lost up to 20 % of its entries and 5 % of its able ids", () => {
+    expect(() => guardCatalog(prev, prev)).not.toThrow();
+    expect(() => guardCatalog(prev, [...prev, ...many(300).slice(200)])).not.toThrow();
+    // 10 of 200 gone: 5 % of the able ids, 5 % of the entries.
+    expect(() => guardCatalog(prev, prev.slice(10))).not.toThrow();
+    // No previous snapshot: nothing to compare with.
+    expect(() => guardCatalog([], prev)).not.toThrow();
+  });
+
+  it("refuses one that lost more than 5 % of the ids that had abilities — gone, or there with none left", () => {
+    expect(() => guardCatalog(prev, prev.slice(11))).toThrow(/abilities/);
+    // A format change: every id still there, the abilities read as nothing.
+    expect(() => guardCatalog(prev, prev.map((e) => ({ ...e, vision: false })))).toThrow(/abilities/);
+    // 11 of them lost theirs, the rest kept: refused; 10: passed.
+    expect(() => guardCatalog(prev, prev.map((e, i) => (i < 11 ? { ...e, vision: false } : e)))).toThrow(/abilities/);
+    expect(() => guardCatalog(prev, prev.map((e, i) => (i < 10 ? { ...e, vision: false } : e)))).not.toThrow();
+    // One ability swapped for another is no loss.
+    expect(() => guardCatalog(prev, prev.map((e) => ({ ...e, vision: false, tools: true as const })))).not.toThrow();
+  });
+
+  it("refuses one that shrank by more than 20 %, whatever its abilities", () => {
+    const plain = many(200, { vision: false });
+    expect(() => guardCatalog(plain, plain.slice(40))).not.toThrow();
+    expect(() => guardCatalog(plain, plain.slice(41))).toThrow(/shrank/);
+  });
+});
+
 describe("the committed snapshot", () => {
   const text = readFileSync(new URL("../src/providers/model-catalog.json", import.meta.url), "utf8");
   const catalog = JSON.parse(text) as ReturnType<typeof reduceCatalog>;
   const LEVELS = ["low", "medium", "high", "xhigh", "max"];
+  const NEW = ["tools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"] as const;
 
   it("is a sorted list of more than 300 well-formed entries, written as the script writes it", () => {
     expect(catalog.length).toBeGreaterThan(300);
     expect(text).toBe(formatCatalog(catalog));
     for (const [i, e] of catalog.entries()) {
-      expect([i, Object.keys(e).filter((k) => !["id", "lab", "name", "vision", "pdf", "reasoning", "chat", "contextTokens", "reasoningLevels"].includes(k))]).toEqual([i, []]);
+      expect([i, Object.keys(e).filter((k) => !["id", "lab", "name", "vision", "pdf", "reasoning", "chat", "contextTokens", "reasoningLevels", ...NEW].includes(k))]).toEqual([i, []]);
+      // A new ability is there only as `true`.
+      for (const k of NEW) if (k in e) expect([e.id, k, e[k]]).toEqual([e.id, k, true]);
       expect([e.id, e.id === e.id.toLowerCase() && e.id.length > 0, typeof e.name, typeof e.vision, typeof e.pdf, typeof e.reasoning, typeof e.chat]).toEqual([e.id, true, "string", "boolean", "boolean", "boolean", "boolean"]);
       if (e.contextTokens !== undefined) expect([e.id, Number.isInteger(e.contextTokens) && e.contextTokens > 0]).toEqual([e.id, true]);
       if (e.reasoningLevels !== undefined) {
@@ -122,7 +206,12 @@ describe("the committed snapshot", () => {
     const ids = new Set(catalog.map((e) => e.id));
     for (const id of ["gpt-6-sol", "claude-sonnet-5-5", "gemini-2.5-pro"]) expect([id, ids.has(id)]).toEqual([id, true]);
     expect(catalog.find((e) => e.id === "gpt-6-sol")).toMatchObject({ lab: "openai", reasoning: true, reasoningLevels: LEVELS });
+    // The abilities are kept: most chat models use tools, and some take audio or video or answer with images.
+    expect(catalog.find((e) => e.id === "gpt-6-sol")).toMatchObject({ tools: true });
+    expect(catalog.filter((e) => e.tools).length).toBeGreaterThan(catalog.length / 3);
+    for (const k of NEW) expect([k, catalog.some((e) => e[k] === true)]).toEqual([k, true]);
     const readme = readFileSync(new URL("../src/providers/model-catalog.README.md", import.meta.url), "utf8");
+    for (const k of NEW) expect(readme).toContain(`\`${k}\``);
     expect(readme).toContain(`Entries: ${catalog.length}`);
     expect(readme).toContain("Licence: MIT");
   });
