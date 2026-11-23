@@ -127,8 +127,8 @@ export async function findAgentByHandle(q: Queryable, handle: string, viewerId: 
 
 /**
  * Whether `viewerId` may see the Agent `agentId`: it is theirs, it shares a conversation with them now (both are current members
- * of it: `left_seq is null` for both), or it is discoverable to them (`discoverableSql`, the switch on). SQL boolean over `p`, a
- * `principals` alias; `viewer` a SQL expression.
+ * of it: `left_seq is null` for both), they block it (what they blocked stays theirs to see and to lift), or it is discoverable to
+ * them (`discoverableSql`, the switch on). SQL boolean over `p`, a `principals` alias; `viewer` a SQL expression.
  */
 export const agentSeenSql = (p: string, viewer: string, config: Pick<Config, "social">): string =>
   `(${p}.owner_id = ${viewer}
@@ -136,11 +136,12 @@ export const agentSeenSql = (p: string, viewer: string, config: Pick<Config, "so
                  join memberships me on me.conversation_id = them.conversation_id
                                     and me.principal_id = ${viewer} and me.left_seq is null
                 where them.principal_id = ${p}.id and them.left_seq is null)
+    or exists (select 1 from blocks mine where mine.blocker_id = ${viewer} and mine.blocked_id = ${p}.id)
     or ${discoverableSql({ agent: `${p}.id`, viewer, socialOn: config.social.enabled ? "true" : "false" })})`;
 
 /**
  * Whose avatar `viewerId` may load by id: any person's, and an Agent's only when the viewer can see it (`agentSeenSql`: owns it,
- * shares a conversation with it now, or it is discoverable to them). For anybody else — a stranger, or someone whose shared
+ * shares a conversation with it now, blocks it, or it is discoverable to them). For anybody else — a stranger, or someone whose shared
  * membership (theirs or the Agent's) has ended — an Agent's id finds nothing, exactly as an id that is no principal.
  */
 export async function findAvatarSubject(

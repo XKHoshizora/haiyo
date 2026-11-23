@@ -117,8 +117,13 @@ describe("the avatar of a discoverable Agent", () => {
     await db.query(`update agents set contact_policy = 'none' where principal_id = $1`, [agent.id]);
     expect((await get()).status).toBe(404);
     await db.query(`update agents set contact_policy = 'ask' where principal_id = $1`, [agent.id]);
+    // Whoever blocked it still sees it (the block route and the blocked list name it): its avatar loads for them, and for nobody who could not see it.
     await db.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2)`, [v.id, agent.id]);
-    expect((await get()).status).toBe(404);
+    expect((await get()).status).toBe(200);
+    await db.query(`update agents set contact_policy = 'none' where principal_id = $1`, [agent.id]);
+    expect((await get()).status).toBe(200);
+    const stranger = await signUp(app, "avatstr");
+    expect((await api(app, stranger, "GET", `/api/principals/${agent.id}/avatar`)).status).toBe(404);
   });
 });
 
@@ -134,7 +139,7 @@ describe("blocking an Agent", () => {
     expect((await db.query("select 1 from blocks where blocker_id = $1", [v.id])).rowCount).toBe(1);
     // The list of blocked names it by its full handle.
     const social = await api(app, v, "GET", "/api/social");
-    expect(social.json.blocked).toEqual([{ id: agent.id, handle: agent.handle, displayName: expect.any(String), avatarVersion: expect.any(Number) }]);
+    expect(social.json.blocked).toEqual([{ id: agent.id, handle: agent.handle, displayName: expect.any(String), avatarVersion: expect.any(Number), kind: "agent" }]);
     expect((await api(app, v, "DELETE", `/api/blocks/${agent.id}`)).status).toBe(200);
     expect(await reach(db, v.id, agent.id, "social", on)).toBe("ok"); // the row was never touched
     await db.query(`delete from agent_contacts where agent_id = $1`, [agent.id]);
@@ -168,5 +173,39 @@ describe("blocking an Agent", () => {
       (app.deps.config as { social: unknown }).social = social;
     }
     expect((await db.query("select 1 from blocks")).rowCount).toBe(0);
+  });
+});
+
+describe("the blocked list", () => {
+  it("says what each entry is, and leaves out an Agent that is deleted (its handle may now name another)", async () => {
+    const { owner, v, agent } = await world("blkl");
+    const person = await signUp(app, "blklperson");
+    expect((await api(app, v, "PUT", `/api/blocks/${agent.id}`)).status).toBe(200);
+    expect((await api(app, v, "PUT", `/api/blocks/${person.id}`)).status).toBe(200);
+    const before = (await api(app, v, "GET", "/api/social")).json.blocked as Array<{ id: string; kind: string; handle: string }>;
+    expect(new Map(before.map((b) => [b.id, b.kind]))).toEqual(new Map([[agent.id, "agent"], [person.id, "human"]]));
+    expect((await api(app, owner, "DELETE", `/api/agents/${agent.id}`)).status).toBe(200);
+    const reused = (await mustCreateAgent(app, owner, { handle: "blklbot" })) as MadeAgent;
+    expect(reused.handle).toBe(agent.handle);
+    const after = (await api(app, v, "GET", "/api/social")).json.blocked as Array<{ id: string }>;
+    expect(after.map((b) => b.id)).toEqual([person.id]);
+    // The new Agent of that handle is not blocked: it is found, and the old block names only the old id.
+    expect((await lookup(v, reused.handle)).json).toMatchObject({ id: reused.id });
+  });
+});
+
+describe("a name that looks like a handle", () => {
+  it("is never matched: only handles are looked up (Review Focus 1)", async () => {
+    const owner = await signUp(app, "lkowner");
+    const v = await signUp(app, "lkvisitor");
+    const hidden = (await mustCreateAgent(app, owner, { handle: "lkhidden" })) as MadeAgent;
+    await db.query(`update agents set contact_policy = 'none' where principal_id = $1`, [hidden.id]);
+    // A discoverable Agent named exactly the hidden one's full handle, and a person whose display name is it.
+    const decoy = (await mustCreateAgent(app, owner, { handle: "lkdecoy", name: hidden.handle })) as MadeAgent;
+    await db.query(`update principals set display_name = $2 where id = $1`, [v.id, hidden.handle]);
+    const unknown = await lookup(v, "nobody.here");
+    const r = await lookup(v, hidden.handle);
+    expect([r.status, r.json]).toEqual([unknown.status, unknown.json]);
+    expect((await lookup(v, decoy.handle)).json).toMatchObject({ id: decoy.id, displayName: hidden.handle });
   });
 });

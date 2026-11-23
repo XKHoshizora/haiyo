@@ -169,7 +169,8 @@ export interface SocialView {
   friends: PublicPrincipal[];
   incoming: RequestEntry[];
   outgoing: RequestEntry[];
-  blocked: PublicPrincipal[];
+  /** Whom the caller blocked: a person or an Agent (`kind`; an Agent by its full handle), never an Agent that is deleted. */
+  blocked: Array<PublicPrincipal & { kind: "human" | "agent" }>;
   blockedBy: PublicPrincipal[];
 }
 
@@ -202,9 +203,10 @@ export async function socialView(db: Queryable, me: string): Promise<SocialView>
     );
   const incoming = await requests("r.to_id", "r.from_id");
   const outgoing = await requests("r.from_id", "r.to_id");
-  const blocked = await db.query<PRow>(
-    `select p.id, ${handleOf("p")} as handle, p.display_name, p.avatar_version from blocks b join principals p on p.id = b.blocked_id
-      where b.blocker_id = $1 order by p.handle`,
+  // A deleted Agent is left out: its handle is free to name another Agent (048), and a row under it would point at the wrong one.
+  const blocked = await db.query<PRow & { kind: "human" | "agent" }>(
+    `select p.id, ${handleOf("p")} as handle, p.display_name, p.avatar_version, p.kind from blocks b join principals p on p.id = b.blocked_id
+      where b.blocker_id = $1 and not exists (select 1 from agents ag where ag.principal_id = p.id and ag.deleted_at is not null) order by p.handle`,
     [me],
   );
   const blockedBy = await db.query<PRow>(
@@ -216,7 +218,7 @@ export async function socialView(db: Queryable, me: string): Promise<SocialView>
     friends: friends.rows.map(pub),
     incoming: incoming.rows.map(entry),
     outgoing: outgoing.rows.map(entry),
-    blocked: blocked.rows.map(pub),
+    blocked: blocked.rows.map((r) => ({ ...pub(r), kind: r.kind })),
     blockedBy: blockedBy.rows.map(pub),
   };
 }

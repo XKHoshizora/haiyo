@@ -193,8 +193,7 @@ export function registerSocialRoutes(app: FastifyInstance): void {
         const principal = await t.query<{ kind: "human" | "agent"; owner_id: string | null; seen: boolean }>(
           `select p.kind, p.owner_id,
                   (p.kind = 'agent' and ${app.deps.config.social.enabled ? "true" : "false"}
-                   and (${agentSeenSql("p", "$2::uuid", app.deps.config)}
-                        or exists (select 1 from blocks mine where mine.blocker_id = $2 and mine.blocked_id = p.id))) as seen
+                   and ${agentSeenSql("p", "$2::uuid", app.deps.config)}) as seen
              from principals p where p.id = $1`,
           [other, me.id],
         );
@@ -234,7 +233,7 @@ export function registerSocialRoutes(app: FastifyInstance): void {
             friends: z.array(publicPrincipal),
             incoming: z.array(requestEntry),
             outgoing: z.array(requestEntry),
-            blocked: z.array(publicPrincipal),
+            blocked: z.array(publicPrincipal.extend({ kind: z.enum(["human", "agent"]) })),
             blockedBy: z.array(publicPrincipal),
           }),
         },

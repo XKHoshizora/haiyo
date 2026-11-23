@@ -111,6 +111,37 @@ describe("075: access bars, contact policy, reports, the persona aid", () => {
     }
   });
 
+  // M10 of block 1's review: a pair that blocked each other at one instant. The bar's setter is the lower blocker id, in either insert order.
+  test("bars from blocks: a tie in time goes to the lower blocker id", async () => {
+    const sql = readFileSync(FILE, "utf8");
+    const backfill = sql.slice(sql.indexOf("-- bars from blocks begin"), sql.indexOf("-- bars from blocks end"));
+    const client = await db.pool.connect();
+    const one = async (q: string, p: unknown[] = []) => (await client.query(q, p)).rows as Array<Record<string, any>>;
+    try {
+      await client.query("begin");
+      const at = new Date("2026-03-03T03:03:03Z");
+      const pairs: Array<{ lo: string; hi: string }> = [];
+      for (let i = 0; i < 12; i++) {
+        const ids: string[] = [];
+        for (const k of [0, 1]) {
+          await client.query(`insert into "user" (id, name, email, "emailVerified") values ($1::text, $1::text, $1::text || '@example.test', true)`, [`auth-tie_${i}_${k}`]);
+          ids.push((await one(`insert into principals (kind, handle, display_name, auth_user_id) values ('human', $1::citext, $1::text, 'auth-' || $1::text) returning id`, [`tie_${i}_${k}`]))[0]!.id);
+        }
+        const [lo, hi] = ids.sort() as [string, string];
+        pairs.push({ lo, hi });
+        const rows = i % 2 ? [[lo, hi], [hi, lo]] : [[hi, lo], [lo, hi]];
+        for (const [x, y] of rows) await client.query(`insert into blocks (blocker_id, blocked_id, created_at) values ($1, $2, $3)`, [x, y, at]);
+      }
+      await client.query(backfill);
+      for (const { lo, hi } of pairs) {
+        expect((await one(`select set_by, since from access_bars where lo_id = $1 and hi_id = $2`, [lo, hi]))[0]).toEqual({ set_by: lo, since: at });
+      }
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
   test("a report is an Agent report until a later migration widens target_kind", async () => {
     const reporter = await human();
     const owner = await human();

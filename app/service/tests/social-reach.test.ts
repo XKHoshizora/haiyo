@@ -180,6 +180,43 @@ describe("reach", () => {
   });
 });
 
+describe("the twin over Agent subjects (the relay check, I8)", () => {
+  it("agrees with reach over 105 Agents of other people in one statement, whatever their person or they themselves are to the Agent", async () => {
+    const w = await world();
+    // 105 Agents, 15 in each of seven states, each owned by a person of its own; the Agent asked is O's.
+    const states: Array<[string, (a: { agent: string; person: string }) => Promise<void>, Reach, Reach]> = [
+      ["never met", async () => {}, "no_access", "ok"],
+      ["its own row live", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $3, 'live', 'approved')`, [w.agent, a.agent, a.person])), "ok", "ok"],
+      ["only its person's row live", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [w.agent, a.person])), "no_access", "ok"],
+      ["its own row narrowed", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $3, 'ended', 'narrowed')`, [w.agent, a.agent, a.person])), "barred", "barred"],
+      ["its person barred", async (a) => void (await db.query(`insert into access_bars (lo_id, hi_id, reason, set_by) values (least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid), 'stopped', $1)`, [a.person, w.O])), "barred", "barred"],
+      ["O blocks its person", async (a) => void (await block(w.O, a.person)), "blocked", "blocked"],
+      ["it blocks the Agent", async (a) => void (await block(a.agent, w.agent)), "blocked", "blocked"],
+    ];
+    const subjects: Array<{ id: string; social: Reach; group: Reach }> = [];
+    for (let i = 0; i < 105; i++) {
+      const [, make, social, group] = states[i % states.length]!;
+      const person = await human();
+      const agent = await agentOf(person);
+      await make({ agent, person });
+      subjects.push({ id: agent, social, group });
+    }
+    for (const where of ["social", "group"] as const) {
+      const { rows } = await db.query<{ id: string; r: Reach }>(
+        `select s.id::text as id, ${reachSql({ subject: "s.id", agent: "$2::uuid", where, socialOn: "true" })} as r from unnest($1::uuid[]) as s (id)`,
+        [subjects.map((s) => s.id), w.agent],
+      );
+      expect(rows).toHaveLength(105);
+      const got = new Map(rows.map((r) => [r.id, r.r]));
+      for (const s of subjects) expect(got.get(s.id), `${where} ${s.id}`).toBe(s[where]);
+    }
+    for (const s of subjects) {
+      expect(await reach(db, s.id, w.agent, "social", on)).toBe(s.social);
+      expect(await reach(db, s.id, w.agent, "group", on)).toBe(s.group);
+    }
+  });
+});
+
 describe("discoverable", () => {
   async function found(w: World, viewer = w.P, socialOn = "true") {
     const { rows } = await db.query<{ d: boolean }>(`select ${discoverableSql({ agent: "$1::uuid", viewer: "$2::uuid", socialOn })} as d`, [w.agent, viewer]);

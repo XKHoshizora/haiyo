@@ -763,10 +763,10 @@ of (`POST /api/conversations/:id/members`): for someone who is not a current mem
 exactly as the id of a non-friend or an unknown principal is (403 `forbidden`). Among a new group's `memberIds`
 (`POST /api/conversations`) it is refused so (403) for everyone, its owner included.
 Its id is unknown to `GET`/`HEAD /api/principals/:id/avatar` for anybody but its owner, whoever shares a
-conversation with it now (see below) and whoever it is discoverable to, and to `PUT /api/blocks/:principalId` for everyone but, while `SOCIAL.enabled` is on, someone who sees it (it is discoverable to them,
-they share a conversation with it now, or they already block it; its own owner is refused 400 `invalid_request`), and to `DELETE` as a
-random id's no-op: the answer of an id that does not exist, byte for byte (`tests/enumeration.test.ts`). Blocking an Agent writes the
-block only, no bar, and `GET /api/social` lists it in `blocked` by its full handle.
+conversation with it now (see below), whoever it is discoverable to and whoever blocks it, and to `PUT /api/blocks/:principalId` for everyone but, while `SOCIAL.enabled` is on, someone who sees it (it is discoverable to them,
+they share a conversation with it now, or they already block it; its own owner is refused 400 `invalid_request`), and to `DELETE` for
+anyone who does not block it, as a random id's no-op: the answer of an id that does not exist, byte for byte (`tests/enumeration.test.ts`); for someone who blocks it, `DELETE` lifts the block and announces it, as for a person. Blocking an Agent writes the
+block only, no bar, and `GET /api/social` lists it in `blocked` by its full handle with `kind: "agent"`, until it is deleted (a deleted Agent's entry is left out: its handle may name another Agent by then). What someone blocks stays theirs to see: its avatar loads for them.
 
 An Agent is in a group only while its owner is: its owner adds it, the group's creator or its owner takes it out, and it
 leaves with its owner — when the owner leaves or is removed — and when it is deleted (Conversations,
@@ -2442,7 +2442,7 @@ read (to tell its type), never the whole file. `Content-Length` is only sent for
 *Session: required.* Finds a principal by exact handle — the way to get someone's id to befriend them.
 
 - Query: `handle` (at most 100, lower-cased, then `^[a-z0-9_]{3,24}$`; while `SOCIAL.enabled` is on also an Agent's full handle
-  `<owner's handle>.<name part>`, `^[a-z0-9_]{3,24}.[a-z0-9_]{2,24}$`). No prefix or partial matches.
+  `<owner's handle>.<name part>`, `^[a-z0-9_]{3,24}\.[a-z0-9_]{2,24}$`). No prefix or partial matches.
 - 200 `{"id", "handle", "displayName", "avatarVersion"}` (also for yourself); for a discoverable Agent 200 `{"id", "handle",
   "displayName", "avatarVersion", "kind": "agent", "ownerId", "ownerName", "intro", "field"}`. An Agent is discoverable to the
   caller when it is not deleted or disabled, its contact policy is not `none`, no block lies either way between the caller and its
@@ -2467,7 +2467,7 @@ direction keeps the chat and its history but nobody can send there (`canSend.rea
   "friends":   [{ "id": "…", "handle": "bob", "displayName": "Bob", "avatarVersion": 0 }],   // by handle
   "incoming":  [{ "id": "<request id>", "principal": { "id", "handle", "displayName", "avatarVersion" }, "createdAt": "…", "expiresAt": "…" }],
   "outgoing":  [ /* the same shape; principal is the recipient */ ],             // both newest first, live pending only
-  "blocked":   [{ "id", "handle", "displayName", "avatarVersion" }],                              // whom you blocked, by handle
+  "blocked":   [{ "id", "handle", "displayName", "avatarVersion", "kind": "human" | "agent" }],     // whom you blocked, by handle (an Agent by its full handle; a deleted Agent is not listed)
   "blockedBy": [{ "id", "handle", "displayName", "avatarVersion" }]                               // who blocked you, by handle
 }
 ```
