@@ -178,3 +178,69 @@ describe("the owner's interjection", () => {
     expect(runs[0]!.interrupted).toBeNull();
   });
 });
+
+describe("the review's cases", () => {
+  it("m5: runs cancelled by the owner's interjection do not count toward the visitor's minute", async () => {
+    const w = await world();
+    for (let i = 0; i < 10; i++) {
+      await db.query(
+        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, lane, caller_id, triggered_by, finished_at)
+         values ('reply', $1, $2, $3, 'cancelled', 'owner_spoke', 1, 'others', $4, 'human', now())`,
+        [w.conv, w.agent.id, w.owner.id, w.v.id],
+      );
+    }
+    await say(w.v, w.conv, "还在吗");
+    expect((await runsOf(w)).filter((r) => r.status === "queued")).toHaveLength(1);
+  });
+
+  it("m6: the owner's others' minute alone records a rate_limited run; a gone model is model_gone whatever the minute", async () => {
+    const w = await world();
+    for (let i = 0; i < app.deps.config.agentOthersRunsPerMinute; i++) {
+      await db.query(
+        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, triggered_by, finished_at)
+         values ('reply', $1, $2, $3, 'done', 1, 'others', 'human', now())`,
+        [w.conv, w.agent.id, w.owner.id],
+      );
+    }
+    await say(w.v, w.conv, "在吗");
+    expect((await runsOf(w)).filter((r) => r.status === "failed").map((r) => r.error)).toEqual(["rate_limited"]);
+    await db.query("update agent_runs set dismissed_at = now() where status = 'failed'");
+    await db.query("update agents set site_model_id = 'gone' where principal_id = $1", [w.agent.id]);
+    await say(w.v, w.conv, "在吗");
+    expect((await runsOf(w)).filter((r) => r.status === "failed").map((r) => r.error)).toContain("model_gone");
+  });
+
+  it("a deleted Agent calls nobody", async () => {
+    const w = await world();
+    await db.query("update agents set deleted_at = now() where principal_id = $1", [w.agent.id]);
+    const before = (await runsOf(w)).length;
+    await send(w.v, w.conv, "在吗");
+    expect((await runsOf(w)).length).toBe(before);
+  });
+
+  it("m9: the visitor writes while an interrupted run is still running: the follow-up answers it (caller V)", async () => {
+    const w = await world();
+    await say(w.v, w.conv, "你好");
+    const ticket = (await app.agentPort.claimNext())!;
+    await say(w.owner, w.conv, "我来说两句");
+    const second = await say(w.v, w.conv, "那我再问一句");
+    expect((await runsOf(w))[0]).toMatchObject({ status: "running", interrupted: "owner_spoke", pending: String(second) });
+    await app.agentPort.finish(ticket, { status: "cancelled" }, null, { inputChars: 0, outputChars: 0 });
+    const queued = (await runsOf(w)).filter((r) => r.status === "queued");
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ caller_id: w.v.id, lane: "others" });
+  });
+
+  it("I2: a queued social run makes no model call, shows no notes, spends nothing and ends access_ended (until B7a's begin)", async () => {
+    const w = await world();
+    await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [w.agent.id, "主人的笔记 CANARY-OPEN"]);
+    const before = gateway.calls.length;
+    await say(w.v, w.conv, "你好");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect(gateway.calls.length).toBe(before);
+    const [run] = await runsOf(w);
+    expect(run).toMatchObject({ status: "cancelled", error: "access_ended" });
+    expect(Number((await db.query<{ n: string }>("select coalesce(sum(free_micro + balance_micro), 0) as n from usage_records where run_id = $1", [run!.id])).rows[0]!.n)).toBe(0);
+    expect((await db.query<{ hold_micro: string | null }>("select hold_micro::text from agent_runs where id = $1", [run!.id])).rows[0]!.hold_micro ?? "0").toBe("0");
+  });
+});

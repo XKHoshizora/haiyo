@@ -7,6 +7,7 @@ import { currentMembership } from "../conversations/store.ts";
 import type { Db, Tx } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
+import { placeOf } from "../social/place.ts";
 import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
@@ -212,6 +213,8 @@ const NOTHING_LEFT: RunEnd = { status: "cancelled" };
  * charged, no message, nothing to retry.
  */
 const BLOCKED_SINCE: RunEnd = { status: "cancelled" };
+/** A social run before B7a's `begin` exists: ended before any call (`begin`'s guard), `access_ended` as an ended access is. */
+const SOCIAL_UNBUILT: RunEnd = { status: "cancelled", error: "access_ended" };
 /** The model's context cannot hold the owner's newest message (`holdsNewest`): no call is made. */
 const TOO_SMALL: RunEnd = { status: "failed", error: "context_too_small" };
 /** The provider's saved key cannot be opened (`KeyUnreadableError`): as a refused key, its owner must save it again. */
@@ -652,6 +655,10 @@ export class DbAgentPort implements AgentPort {
       if (group) this.flagsOf(run.id).group = true;
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
+      // Default-deny (B-3 review I2): a run whose place is `social` has no social `begin` yet (B7a builds it, arm by arm, and removes
+      // this guard with it): it would run as a group reply, with the owner's open notes, group text and group tools. It ends before any
+      // model call, nothing held (admission is step 3) and nothing charged: `cancelled`, `access_ended`.
+      if (group && (await placeOf(t, run.conversationId, agent)) === "social") return { end: SOCIAL_UNBUILT };
       // In a group: the Agent must still be a member there (nothing else may have marked the run yet).
       const scene = group ? await loadGroupScene(t, agent, run.conversationId) : null;
       if (group && scene === null) return { end: REMOVED };

@@ -13,7 +13,7 @@ import { scriptedGateway } from "./helpers/models.ts";
 
 /**
  * Lane B, B5b: every group site asks `refusedSql` (the one access decision) instead of the block alone, and one rule ends a call in a
- * group: the refused caller's calls are taken out, a run left with no call ends quietly (`cancelled`, no error; lane A ends one `access_ended`: an open decision) and keeps what
+ * group: the refused caller's calls are taken out, a run left with no call ends quietly (`cancelled`, no error: `access_ended` is for social runs) and has nothing left noted; what
  * a third person noted, and nothing is posted to or about a person refused at post time. This branch's `refusedSql` is Step 0's (blocks
  * only): stops, removals and narrowings reach these sites through the same function and are tested in I1a once lane A's is in.
  */
@@ -103,19 +103,15 @@ describe("the sites ask refusedSql", () => {
 });
 
 describe("one rule for the end of a group call", () => {
-  it("a run left with no call ends cancelled (no error: today's pinned outcome), and keeps what a third person noted", async () => {
+  it("a run left with no call ends cancelled with no error and nothing noted on it (a follow-up answers calls only)", async () => {
     const w = await world();
-    const mine = await say(w.mia, w.g, "@anna_bot 在吗？");
+    await say(w.mia, w.g, "@anna_bot 在吗？");
     const noted = await say(w.ned, w.g, "ned 随口说一句");
     await db.query("update agent_runs set pending_seq = $2 where agent_id = $1 and status = 'queued'", [w.anna.id, noted]);
     await block(w.owner, w.mia);
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(gateway.calls.length).toBe(first);
-    const run = await firstRun(w.anna.id, w.g);
-    expect(run).toMatchObject({ status: "cancelled", error: null });
-    expect(mine).toBeGreaterThan(0);
-    // Ned's message is a third person's, noted on the run: it is not dropped (its follow-up reads it).
-    expect(run.pending).toBe(noted);
+    expect(await firstRun(w.anna.id, w.g)).toMatchObject({ status: "cancelled", error: null, pending: null });
   });
 
   it("... and drops what only the refused person noted", async () => {
@@ -138,7 +134,7 @@ describe("one rule for the end of a group call", () => {
     expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
     expect(await textsOf(w.g, w.anna.id)).toEqual([]);
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
-    expect(await firstRun(w.anna.id, w.g)).toMatchObject({ status: "cancelled" });
+    expect(await firstRun(w.anna.id, w.g)).toMatchObject({ status: "cancelled", error: null });
     // Settled once: a second finish changes nothing and adds no usage record.
     const records = async () => Number((await db.query<{ n: string }>("select count(*) as n from usage_records where run_id = (select id from agent_runs where agent_id = $1 order by created_at limit 1)", [w.anna.id])).rows[0]!.n);
     const once = await records();
@@ -162,11 +158,46 @@ describe("one rule for the end of a group call", () => {
     await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
   });
 
+  it("I1: the only ANSWERED caller refused, a third person's call noted while it ran: not posted, the noted call is followed up", async () => {
+    const w = await world();
+    await say(w.mia, w.g, "@anna_bot MIA-ASK 在吗？");
+    const ticket = (await app.agentPort.claimNext())!;
+    expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
+    const noted = await say(w.ned, w.g, "@anna_bot NED-ASK 我也问");
+    expect((await firstRun(w.anna.id, w.g)).pending).toBe(noted);
+    await block(w.owner, w.mia);
+    expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
+    expect(await textsOf(w.g, w.anna.id)).toEqual([]);
+    await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
+    expect(await firstRun(w.anna.id, w.g)).toMatchObject({ status: "cancelled", error: null, pending: noted });
+    const followUp = (await db.query<{ calls: number[]; caller: string }>("select call_seqs::int[] as calls, caller_id as caller from agent_runs where agent_id = $1 and status = 'queued'", [w.anna.id])).rows;
+    expect(followUp).toHaveLength(1);
+    expect(followUp[0]!.calls).toContain(noted);
+    expect(followUp[0]!.caller).toBe(w.ned.id);
+  });
+
+  it("the quote of a refused person's message is dropped at post (the reply goes on for the other caller)", async () => {
+    const w = await world();
+    await say(w.mia, w.g, "@anna_bot MIA-ASK 在吗？");
+    const nedCall = await say(w.ned, w.g, "@anna_bot NED-ASK 我也问");
+    const ticket = (await app.agentPort.claimNext())!;
+    expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
+    expect(await app.agentPort.acknowledge(ticket, { text: "稍等", reasoning: "" })).toBe("posted");
+    await say(w.mia, w.g, "我再插一句");
+    await block(w.owner, w.ned);
+    expect(await app.agentPort.post(ticket, { text: "好的", ...REPLY })).toBe("posted");
+    const replies = (await db.query<{ body: { replyToSeq?: number; ack?: boolean } }>("select body from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [w.g, w.anna.id])).rows;
+    const reply = replies.find((r) => !r.body.ack)!;
+    expect(nedCall).toBeGreaterThan(0);
+    expect(reply.body.replyToSeq).toBeUndefined();
+    await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
+  });
+
   it("a run interrupted `access_ended` is refused at post, not thrown (every interruption is a refusal)", async () => {
     const w = await world();
     await say(w.mia, w.g, "@anna_bot 在吗？");
     const ticket = (await app.agentPort.claimNext())!;
-    for (const why of ["access_ended", "owner_spoke", "notes_changed"]) {
+    for (const why of ["access_ended", "owner_spoke", "notes_changed", "errand_ended"]) {
       await db.query("update agent_runs set interrupted = $2 where id = $1", [ticket.id, why]);
       expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
     }

@@ -9,7 +9,8 @@ import { AppError, notFound } from "../errors.ts";
 import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../messages/model.ts";
 import { postingRun } from "../messages/read.ts";
 import { othersReached } from "../metering/others.ts";
-import { reach, refusedSql } from "../social/reach.ts";
+import { reach } from "../social/reach.ts";
+import { refusedInGroup } from "./refusal.ts";
 import { groupPlaceSql, placeOf, placeOfType, socialPlaceSql, type Place } from "../social/place.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
@@ -320,7 +321,7 @@ export type RunLimits = Pick<Config, "agentRunsPerMinute" | "agentOthersRunsPerM
  * Of `agent_runs`: a reply started in the last minute — not one a limit refused (`rate_limited`), which started nothing
  * (`startedLastMinute`, `calledLastMinute`).
  */
-const STARTED_LAST_MINUTE = "purpose = 'reply' and created_at > now() - interval '1 minute' and error is distinct from 'rate_limited'";
+const STARTED_LAST_MINUTE = "purpose = 'reply' and created_at > now() - interval '1 minute' and error is distinct from 'rate_limited' and error is distinct from 'owner_spoke'";
 
 /**
  * `STARTED_LAST_MINUTE` as an owner's minute counts it (`startedLastMinute`): not a reply whose model was not there to
@@ -555,13 +556,22 @@ export async function hearFrom(t: Tx, runId: string, from: number, to: number | 
   return rows[0]?.askers ?? null;
 }
 
+export { refusedInGroup };
+
 /**
- * SQL: person `subject` (a SQL expression: a column, a parameter with its cast) is refused by the Agent `agent` (SQL) in a group
- * (`refusedSql`: THE access decision: a block, a bar, an ended row, a deleted or disabled Agent). The switch is not asked of a group:
- * `socialOn` is a literal, never a bind parameter (a parameter nothing else uses makes Postgres reject the statement). Every group
- * site asks it, and so does lane A's `endGroupCalls` in the same terms (lane I makes that one call `dropRefusedCalls`).
+ * SQL: the calls run `$1` carries (`call_seqs`; its `covers_seq` when not known), one row each: `r` the run, `m` the call's message, `p`
+ * its sender, `bh.caller_id` the person behind it (`behindMessageSql`: the sender, or for an Agent's message the caller of the run that
+ * posted it). `columns` are spliced after `select`, `order` after the rows. THE reading of a run's calls: `dropRefusedCalls` and
+ * `standingCalls` both ask it (lane A's `endGroupCalls` repeats it until lane I makes it call this).
  */
-export const refusedInGroup = (subject: string, agent: string): string => refusedSql({ subject, agent, where: "group", socialOn: "false" });
+const callRowsSql = (columns: string, order = ""): string =>
+  `select ${columns}
+     from agent_runs r
+     join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
+     join principals p on p.id = m.sender_id
+     left join agent_runs pr on p.kind = 'agent' and ${postingRun("m", "pr")}
+     cross join lateral (select ${behindMessageSql("p", "pr")} as caller_id) bh
+    where r.id = $1${order}`;
 
 /**
  * The rule a call meets when it is made (`triggerInGroup`, `triggerFromAgent`), met again by every call reply run `runId` of an
@@ -576,33 +586,24 @@ export const refusedInGroup = (subject: string, agent: string): string => refuse
  * The owner's own call is never dropped (`refusedInGroup` never refuses the owner): `begin` asks this of every group run but a reply
  * `告诉他们` queued, which answers nobody's call. Returns what the run now covers, has noted and its lane now (the caller takes them
  * all: what a reply is bounded to is decided by the lane it has here; empty when nothing was dropped: one query), or null when no call
- * is left: the run ends (`cancelled`, no error: see `BLOCKED_SINCE`; lane A's `endGroupCalls` ends one `access_ended`), and what a third person noted on it
- * (`pending_seq`) is kept for its follow-up, as theirs, while what only the refused noted is not.
+ * is left: the run ends (`cancelled`, no error: see `BLOCKED_SINCE`; `access_ended` is for social runs), and nothing is left noted on it (a follow-up
+ * answers calls only, and every call it carries is refused).
  */
 export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane } | null> {
   const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; behind: string | null; refused: boolean; lane: Lane; caller_refused: boolean }>(
-    `select m.seq::text as seq, p.kind, bh.caller_id as behind,
+    callRowsSql(
+      `m.seq::text as seq, p.kind, bh.caller_id as behind,
             (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})) as refused,
-            r.lane, (r.caller_id is not null and ${refusedInGroup("r.caller_id", "r.agent_id")}) as caller_refused
-       from agent_runs r
-       join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
-       join principals p on p.id = m.sender_id
-       left join agent_runs pr on p.kind = 'agent' and ${postingRun("m", "pr")}
-       cross join lateral (select ${behindMessageSql("p", "pr")} as caller_id) bh
-      where r.id = $1
-      order by m.seq`,
+            r.lane, (r.caller_id is not null and ${refusedInGroup("r.caller_id", "r.agent_id")}) as caller_refused`,
+      "\n      order by m.seq",
+    ),
     [runId],
   );
   if (!rows.some((r) => r.refused)) return {};
   const left = rows.filter((r) => !r.refused);
   if (left.length === 0) {
-    await t.query(
-      `update agent_runs r set pending_seq = case when exists (select 1 from messages nm join principals np on np.id = nm.sender_id
-                                                                where nm.conversation_id = r.conversation_id and nm.seq > r.covers_seq and nm.seq <= r.pending_seq
-                                                                  and nm.kind <> 'system' and nm.sender_id <> r.agent_id and not ${refusedInGroup("np.id", "r.agent_id")}) then r.pending_seq end
-        where r.id = $1`,
-      [runId],
-    );
+    // Every call it carries, those noted on it too (step 1 of `begin` has taken them on), is refused: none is left to follow up.
+    await t.query("update agent_runs set pending_seq = null where id = $1", [runId]);
     return null;
   }
   const { lane } = rows[0]!;
@@ -629,22 +630,18 @@ export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): P
 /**
  * At post time (`postAsAgent`, under the run's conversation row and its Agent's): the same rule met once more by the calls the run
  * answers, for the window in which a person is refused after `begin` dropped what it dropped (an admitted run keeps its context; its
- * output can be filtered only now). `none`: it answers calls and every one is refused: nothing is to be posted. `refused`: the
- * persons refused now among its calls' senders, the persons behind them and its askers: a reply that goes on for others is not
- * addressed to them (no quote of their message) and mentions none of them. Reads only. A run with no call of its own (`告诉他们`'s)
+ * output can be filtered only now). `none`: it answers calls (those at or before `covers_seq`) and every one is refused: nothing is to
+ * be posted. `refused`: the persons refused now among all its calls' senders, the persons behind them and its askers: a reply that goes
+ * on for others quotes none of their messages and stores no mention of them (the text may still name them). Reads only. A run with no call of its own (`告诉他们`'s)
  * is never refused; the caller leaves those out.
  */
 export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string> }> {
-  const { rows } = await t.query<{ sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean }>(
-    `select p.id as sender, p.kind, bh.caller_id as behind,
+  const { rows } = await t.query<{ sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean; answered: boolean }>(
+    callRowsSql(
+      `p.id as sender, p.kind, bh.caller_id as behind, m.seq <= r.covers_seq as answered,
             ${refusedInGroup("p.id", "r.agent_id")} as sender_refused,
-            (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")}) as behind_refused
-       from agent_runs r
-       join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
-       join principals p on p.id = m.sender_id
-       left join agent_runs pr on p.kind = 'agent' and ${postingRun("m", "pr")}
-       cross join lateral (select ${behindMessageSql("p", "pr")} as caller_id) bh
-      where r.id = $1`,
+            (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")}) as behind_refused`,
+    ),
     [runId],
   );
   const askers = await t.query<{ a: string }>(
@@ -656,7 +653,9 @@ export async function standingCalls(t: Tx, runId: string): Promise<{ none: boole
     if (r.sender_refused && r.kind === "human") refused.add(r.sender);
     if (r.behind_refused && r.behind !== null) refused.add(r.behind);
   }
-  return { none: rows.length > 0 && rows.every((r) => r.sender_refused || r.behind_refused), refused };
+  // The calls it ANSWERS are those at or before what it covers; a call noted on it since (`pending_seq`) is its follow-up's, never a reason to post.
+  const answered = rows.filter((r) => r.answered);
+  return { none: answered.length > 0 && answered.every((r) => r.sender_refused || r.behind_refused), refused };
 }
 
 /** The model of Agent `agentId` as its `agents` row says now (`agentModelOf`); null for none, or no such Agent. */
@@ -1423,7 +1422,7 @@ async function followUpInSocial(t: Tx, agent: AgentRow, conversationId: string, 
   if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told, config)) return followUpOf(null, told);
   const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
   const run = over
-    ? await recordRateLimited(t, agent, conversationId, pending, "human", caller, [callerId])
+    ? await rateLimitedInGroup(t, agent, conversationId, pending, "human", caller, [callerId])
     : await queueRun(t, agent, conversationId, pending, "human", caller, [callerId]);
   await answersCalls(t, run.run.id, rows.map((r) => Number(r.seq)));
   return followUpOf(run, told);
@@ -1604,12 +1603,12 @@ export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMes
   if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told, config)) return { ...noneTriggered(), ...told };
   for (const id of [...new Set([agent.ownerId, sender])].sort()) await lockAccount(t, id);
   const askers = [sender];
-  if ((await calledLastMinute(t, sender)) >= config.agentCallerRunsPerMinute || (await overLaneLimit(t, agent.ownerId, caller.lane, config))) {
-    return { ...noneTriggered(), runs: [await rateLimitedInGroup(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
-  }
-  // The call is someone else's on an Agent whose model is not there to call: recorded failed `model_gone` at once, as in a group.
+  // An Agent whose model is gone is recorded failed `model_gone` at once, and never held to the owner's minute (as `reachAgents` decides).
   if (!(await modelUsable(t, config, { ownerId: agent.ownerId, model: agent.model }))) {
     return { ...noneTriggered(), runs: [await recordRateLimited(t, agent, conversationId, message.seq, "human", caller, askers, "model_gone")], ...told };
+  }
+  if ((await calledLastMinute(t, sender)) >= config.agentCallerRunsPerMinute || (await overLaneLimit(t, agent.ownerId, caller.lane, config))) {
+    return { ...noneTriggered(), runs: [await rateLimitedInGroup(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
   }
   return { ...noneTriggered(), runs: [await queueRun(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
 }

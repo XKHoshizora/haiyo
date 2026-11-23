@@ -4,7 +4,7 @@ import { MAX_CHOICE_OPTIONS, type Question } from "../../judge/client.ts";
 import { modelsUsable } from "../../models/resolve.ts";
 import { notAcknowledgement, type Mention } from "../../messages/model.ts";
 import { handleOf } from "../../principals/store.ts";
-import { refusedSql } from "../../social/reach.ts";
+import { refusedInGroup } from "../refusal.ts";
 import { agentModelOf } from "../store.ts";
 import { labelName, oneLine } from "../runtime/prompt.ts";
 import { heardFromOf, type Listener } from "./listeners.ts";
@@ -119,7 +119,7 @@ export async function namesAnAgent(q: Queryable, mentions: readonly Mention[] | 
 export const mayAnswerUnasked = (seq: string, sender: string): string =>
   `m.left_seq is null and m.joined_seq < ${seq} and p.kind = 'agent'
    and a.proactive and not a.paused and a.deleted_at is null and a.model_source is not null
-   and not ${refusedSql({ subject: sender, agent: "p.id", where: "group", socialOn: "false" })}`;
+   and not ${refusedInGroup(sender, "p.id")}`;
 
 /**
  * The Agents that may answer unasked `senderId`'s message at `seq` in the group (`mayAnswerUnasked`) and whose model is

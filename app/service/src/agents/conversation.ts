@@ -30,6 +30,7 @@ import {
   type RunLimits,
   type Triggered,
 } from "./runs.ts";
+import { refusedInGroup } from "./refusal.ts";
 import { forgetSummaries } from "./summary/store.ts";
 import { askedOf } from "./tools/elsewhere.ts";
 import { cutPlaced, takeCites, trimPlaced, withoutMarkFrom, withoutSpanPlaced, type Placed, type RunRefs } from "./tools/refs.ts";
@@ -321,7 +322,7 @@ export async function postAsAgent(
   if (!own && !(await currentMembership(t, conversationId, agentId))) throw new AppError(409, "agent_removed");
   if (!own && mark === null) throw new Error("a reply in a group is posted only with the mark its run drew");
   // A person refused after `begin` dropped what it dropped (a block, a stop, a removal arriving while the reply was written): the
-  // calls the run answers are asked again. None left: nothing is posted (409 `access_ended`; the run ends cancelled, settled once
+  // calls the run answers are asked again. None left: nothing is posted (409 `access_ended` is only the signal; the run ends cancelled, no error, settled once
   // through `finish`). Otherwise what goes on for the others quotes and mentions nobody refused (below). A told reply answers no call.
   const calls = !own && !run.rows[0].told ? await standingCalls(t, runId) : null;
   if (calls?.none) throw new AppError(409, "access_ended");
@@ -413,7 +414,9 @@ export async function postAsAgent(
     const whisper = await whisperOfRun(t, runId);
     const asked = whisper ? askedOf(whisper.body.detail) : null;
     const seen = asked !== null && (await t.query(`select 1 from messages m ${VISIBLE_JOIN} where m.conversation_id = $2 and m.seq = $3`, [agentId, conversationId, asked])).rowCount !== 0;
-    if (seen) body.replyToSeq = asked;
+    // ... and not a message of someone refused now (the owner's press is no reason to answer them in the group).
+    const askedRefused = seen && !own && (await t.query(`select 1 from messages m where m.conversation_id = $2 and m.seq = $3 and ${refusedInGroup("m.sender_id", "$1::uuid")}`, [agentId, conversationId, asked])).rowCount !== 0;
+    if (seen && !askedRefused) body.replyToSeq = asked;
     else delete body.replyToSeq;
   }
   // What its tools looked up: the counts, and the messages found (each reader is sent only those they can see,
