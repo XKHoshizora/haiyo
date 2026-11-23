@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import { usePushPermission } from "../shell/useShell.js";
 import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
@@ -69,6 +70,8 @@ export function SettingsList() {
   const signOut = useSignOut();
   const self = entity(state, ME) || { name: "", handle: "" };
   const open = (patch) => dispatch({ type: "nav", patch: { pane: "main", ...patch } });
+  // In the iOS app, when the system's notifications are off for it: one quiet line, no banner, no question.
+  const notificationsOff = usePushPermission() === "denied";
   return (
     <>
       <ListHeader title="设置" />
@@ -85,6 +88,7 @@ export function SettingsList() {
         <SettingsRow name={SETTINGS_PAGE_NAMES.usage} note="今日免费额度、余额与最近用量" onOpen={() => open({ settingsPage: "usage" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.memory} note="记住的关于你的事，可以在这里整理" onOpen={() => open({ settingsPage: "memory" })} />
         <SettingsRow name={SETTINGS_PAGE_NAMES.blocks} note="你拉黑的人，可在这里解除" onOpen={() => open({ settingsPage: "blocks" })} />
+        {notificationsOff && <li className="rows-label">通知已关闭。想收到新消息提醒，请在手机的「设置」里找到 Haiyo，打开通知。</li>}
         {/* (A phone has no profile page open beside this list: the way out of the account is here.) */}
         {phone && signOut && (
           <li>

@@ -11,6 +11,7 @@ import { useAppHistory } from "../src/state/appHistory.js";
 import * as bridge from "../src/shell/bridge.js";
 import { pushSessionEnded } from "../src/shell/push.js";
 import { useShellOpen } from "../src/shell/useShell.js";
+import { SettingsList } from "../src/pages/Settings.jsx";
 import { HELLO, fakePushApi, installShell } from "./shell-fake.js";
 
 configure({ asyncUtilTimeout: 5_000 });
@@ -323,5 +324,37 @@ describe("a tapped notification, signed in", () => {
     expect(place()).toBe("/");
     expect(history.length).toBe(length);
     expect(screen.getByTestId("nav").textContent).toBe("-|chat|list");
+  });
+});
+
+describe("settings, when notifications are off for the app", () => {
+  const settings = () => (
+    <StoreProvider initialState={emptyState(ANN)}>
+      <SettingsList />
+    </StoreProvider>
+  );
+  const LINE = /通知已关闭/;
+
+  it("says so in one quiet line (no banner, no dialog) when the system refused them", async () => {
+    await enterShell({ hello: { ...HELLO, push: "denied" } });
+    render(settings());
+    expect(await screen.findByText(LINE)).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it.each(["granted", "notDetermined"])("says nothing when the permission is %s", async (push) => {
+    await enterShell({ hello: { ...HELLO, push } });
+    render(settings());
+    await screen.findByText("设置");
+    await act(async () => {});
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it("says nothing in a browser", async () => {
+    render(settings());
+    await screen.findByText("设置");
+    await act(async () => {});
+    expect(screen.queryByText(LINE)).toBeNull();
   });
 });
