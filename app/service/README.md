@@ -326,6 +326,8 @@ timed for it. `proactive` (tests only): `false` builds none, `{ delayMs }` waits
 
 **Build and start.** See Commands: `npm run build`, `npm run migrate:prod`, `npm start`.
 
+**Migration 074 (others' numbers) and 075 (Agent social).** Code from before 074 reads a NULL per-Agent others' number as NO limit on others' use, and 074 writes NULL for every Agent that still had the old default of 20 points. So the only safe window between 074 and the new code is the deploy overlap itself. If 075 fails, run 074's Down at once: it puts 20 points back on every NULL others' number, puts a proactive budget at exactly 70 back to 20, and restores both column defaults; then fix forward.
+
 **Web client (`WEB_DIST`).** Unset (the default) the service serves only the API, and every other path is
 the JSON 404. Set to the directory of the built web client (`app/web/dist`: `index.html` and `assets/`; start-up
 fails naming `WEB_DIST` if the directory has no `index.html`), the service serves it from the same origin
@@ -812,7 +814,7 @@ nothing there, it looks in its other conversations and whispers what it finds to
 `webSearch` (联网搜索, default true) whether its replies may search the web — there only while the site offers web search
 (`GET /api/models` `webSearchAvailable`; Agents and runs, Web search), absent otherwise. `proactiveBudget` the most you pay, in points (a string as `chainBudget`, `"1"` to `"100000"`, default `"70"`; never
 `null`: a reply nobody asked for always has a limit), in a site day, for those replies: a hard limit that counts what running
-replies hold (migration 074 raised every one still at the old default of `"20"` to `"70"`, and cleared every others' number still at the old `"20"` to none; ops: code from before 074 reads that null as NO limit on others' use, so the window between 074 and the new code is the deploy overlap only, and if the lane's 075 fails 074's Down must be run at once, which puts 20 back). `ownerAppellation`
+replies hold (migration 074 raised every one still at the old default of `"20"` to `"70"`, and cleared every others' number still at the old `"20"` to none). `ownerAppellation`
 is what the Agent calls you (1–20 characters, `null`: it uses your display name); `appellations` is what it calls
 others, the people and Agents you named (`PUT /api/agents/:id/appellations/:principalId`), ordered by handle, each
 with the name and handle they have now (Appellations, below). Like everything here, they are shown to nobody but you.
@@ -2913,7 +2915,7 @@ message `seq`. → 200 `{"ok": true, "moved"}`; 409 `answered` or `expired`.
 
 #### `GET /api/me/others-use`
 
-*Session: required.* Live whatever `SOCIAL.enabled` says (step L). Limit: 60 a minute. → 200 `{"limits": {"answers", "points"}, "used": {"answers", "points", "proactivePoints"},
+*Session: required.* Live whatever `SOCIAL.enabled` says (step L). Limit: 60 a minute. → 200 `{"limits": {"answers", "points"}, "used": {"answers", "points", "proactivePoints", "proactiveAnswers"},
 "reached": boolean, "tight": boolean, "byPerson": [{"person": {"id", "handle", "displayName", "avatarVersion"}, "answers", "points"}], "stopped":
 [{"person": {…}, "since"}], "agents": [{"agentId", "answers", "points", "perDay", "reached", "tight", "canReply"}], "notice": boolean}`: what others' use of your Agents
 has cost today, against your two numbers. Nobody but you is ever shown any of it (a visitor or co-member never learns your numbers, their
@@ -2922,8 +2924,9 @@ use or what is left).
 - `limits`: your own two numbers, else `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` (50 and `"300"`): one pair per owner, shared by
   all your Agents (never multiplied by their number) and by both lanes others call for (calls on your Agents, and replies nobody asked for).
 - `used`: today's answers (distinct retry chains admitted in the site day) and points (settled charges plus what your running replies hold:
-  the sum the cap is decided by); `proactivePoints` is the part of those points that your Agents' proactive replies cost (no caller: in no
-  `byPerson` row).
+  the sum the cap is decided by); `proactivePoints` and `proactiveAnswers` are the parts of those points and answers that your Agents' proactive replies
+  are (same definition of used, scoped to lane `proactive`; no caller: in no `byPerson` row), so `answers` = the people's answers + `proactiveAnswers`
+  (+ callers who have left).
 - `reached` and `tight`, yours and in each `agents[]` row: two one-sided facts about what another person's reply would meet now, each decided by the
   function admission asks (`othersCheck`), because the hold of a future reply is not knowable. `reached: true` ONLY IF every call would be refused:
   your answers are used up, or what is left (holds counted) is below a lower bound of any hold admission can compute for that Agent (its tool-less

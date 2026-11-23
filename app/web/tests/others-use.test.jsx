@@ -27,7 +27,7 @@ const SITE_MODEL = { source: "site", id: "free-1" };
 /** The route's answer for an owner with one Agent; `over` replaces any part. */
 const useOf = (over = {}) => ({
   limits: { answers: 50, points: "300" },
-  used: { answers: 3, points: "12.5", proactivePoints: "0" },
+  used: { answers: 3, points: "12.5", proactivePoints: "0", proactiveAnswers: 0 },
   reached: false,
   tight: false,
   byPerson: [{ person: MEI, answers: 2, points: "8" }, { person: KEN, answers: 1, points: "4.5" }],
@@ -104,7 +104,7 @@ describe("the settings row and the page", () => {
   });
 
   it("the sentence with the owner's two numbers (300 by default); the Agent's line cannot be summed; today's use with the proactive part", async () => {
-    const { calls } = await openPage({ answer: () => useOf({ used: { answers: 3, points: "12.5", proactivePoints: "2" } }) });
+    const { calls } = await openPage({ answer: () => useOf({ used: { answers: 3, points: "12.5", proactivePoints: "2", proactiveAnswers: 1 } }) });
     expect(calls.getOthersUse).toHaveBeenCalled();
     expect(answersBox().value).toBe("50");
     expect(pointsBox().value).toBe("300");
@@ -113,8 +113,9 @@ describe("the settings row and the page", () => {
     // The Agent's line says what ONE Agent alone would give from the whole shared amount: it is not "this Agent's share".
     expect(text).toContain("小助手：只有它在回的话，每天大约能回 41 次");
     expect(text).not.toContain("以这个数");
-    expect(text).toContain("已回别人 3 次（含主动回复），花了 12.5 点（其中主动回复 2 点）");
-    expect(text).toContain("今天回了 3 次（含主动回复），别人叫它花了 12.5 点");
+    // The people below were called twice and once: 3 answers; the proactive reply is counted once, shown, so the numbers add up.
+    expect(text).toContain("已回别人 3 次（含主动回复 1 次），花了 12.5 点（其中主动回复 2 点）");
+    expect(text).toContain("今天回了 3 次（含主动回复），其中别人叫它的花了 12.5 点");
     expect(text).toContain("小美");
     expect(text).toContain("@mei · 回了对方 2 次，花了 8 点");
     expect(text).toContain("阿健");
@@ -367,7 +368,7 @@ describe("the settings row and the page", () => {
   });
 
   it("the proactive part of today's line is left out when it is zero", async () => {
-    await openPage({ answer: () => useOf({ used: { answers: 3, points: "12.5", proactivePoints: "0" } }) });
+    await openPage({ answer: () => useOf({ used: { answers: 3, points: "12.5", proactivePoints: "0", proactiveAnswers: 0 } }) });
     expect(mainText()).toContain("已回别人 3 次（含主动回复），花了 12.5 点");
     expect(mainText()).not.toContain("其中主动回复");
   });
@@ -379,11 +380,49 @@ describe("the settings row and the page", () => {
     expect(sinceText("nonsense", now)).toBe("");
   });
 
-  it("the shared read is forgotten when the session ends: nothing of it is shown under the next one", async () => {
+  it("the shared read is forgotten when the session ends: the layer's stop() does it, nothing of it is shown under the next one", async () => {
     const { app } = await openPage();
     expect(storeOf(app.layer.actions).use).not.toBeNull();
-    forgetOthersUse(app.layer.actions);
+    app.layer.stop();
     expect(storeOf(app.layer.actions).use).toBeNull();
+    // (and the function itself)
+    forgetOthersUse(app.layer.actions);
+  });
+
+  it("the page's save asks for its reload AFTER anything in flight: the numbers the save changed are the ones shown", async () => {
+    let limits = { answers: 50, points: "300" };
+    let perDay = 41;
+    const gates = [];
+    const get = vi.fn(() => {
+      const gate = deferred();
+      const sent = { limits: structuredClone(limits), perDay };
+      gates.push(() => gate.resolve(useOf({ limits: sent.limits, agents: [{ agentId: AG1, answers: 3, points: "12.5", perDay: sent.perDay, reached: false, tight: false, canReply: true }] })));
+      return gate.promise;
+    });
+    const put = vi.fn(async (body) => {
+      limits = body;
+      perDay = 7;
+      return body;
+    });
+    const { app } = await openWith({ api: { getOthersUse: get, putOthersLimits: put } });
+    await goSettings();
+    await click(inList().getByText(NAME, { selector: ".row-name" }));
+    gates[0]();
+    await flush();
+    // A second read is in flight (sent before the save) when the owner saves.
+    const stale = readOthersUse(app.layer.actions, storeOf(app.layer.actions));
+    typeInto(answersBox(), "20");
+    enter(answersBox());
+    await flush();
+    // The page did not take the older read as its reload: it starts a request of its own only after that one answers.
+    const sentBefore = get.mock.calls.length;
+    gates[gates.length - 1]();
+    await stale;
+    await flush();
+    expect(get.mock.calls.length).toBe(sentBefore + 1);
+    for (const g of gates) g();
+    await flush();
+    expect(mainText()).toContain("每天大约能回 7 次");
   });
 
   it("an owner with no Agent is told so; nobody used them today: it says so; the numbers still show", async () => {
@@ -409,15 +448,28 @@ describe("the settings row and the page", () => {
   });
 });
 
-describe("people on the page: links to their profile; the page stops and resumes nobody", () => {
-  it("a person of today is a link to their profile; no 停止往来 or 恢复往来 button on the page, with the switch off or on, and no bar route is called", async () => {
-    for (const social of [undefined, { enabled: false }, { enabled: true }]) {
+describe("people on the page: links to their profile only while Agent social is on; the page stops and resumes nobody", () => {
+  it("switch on: a person of today is a link to their profile and the sentence says where to stop; no 停止往来 or 恢复往来 button, no bar route called", async () => {
+    const { calls } = await openPage({ social: { enabled: true }, answer: () => useOf({ stopped: [{ person: KEN, since: "2026-11-20T04:00:00.000Z" }] }) });
+    const link = within(mainEl().querySelector(".others-people")).getByRole("link", { name: "小美" });
+    expect(link.getAttribute("href")).toBe(`/contacts/${MEI.id}`);
+    expect(mainText()).toContain("点名字，到对方的资料页，可以在那里停止往来。");
+    expect(inMain().queryByRole("button", { name: /停止往来|恢复往来/ })).toBeNull();
+    expect(calls.putBar).not.toHaveBeenCalled();
+    expect(calls.deleteBar).not.toHaveBeenCalled();
+  });
+
+  it("switch off (or not said): the rows are listed as plain names, no link to a profile with no stop control, and the sentence is not drawn", async () => {
+    for (const social of [undefined, { enabled: false }]) {
       const { calls } = await openPage({ social, answer: () => useOf({ stopped: [{ person: KEN, since: "2026-11-20T04:00:00.000Z" }] }) });
-      const link = within(mainEl().querySelector(".others-people")).getByRole("link", { name: "小美" });
-      expect(link.getAttribute("href")).toBe(`/contacts/${MEI.id}`);
+      const people = mainEl().querySelector(".others-people");
+      expect(people.textContent).toContain("小美");
+      expect(within(people).queryByRole("link")).toBeNull();
+      expect(mainEl().querySelector(".others-stopped").textContent).toContain("阿健");
+      expect(within(mainEl().querySelector(".others-stopped")).queryByRole("link")).toBeNull();
+      expect(mainText()).not.toContain("点名字");
       expect(inMain().queryByRole("button", { name: /停止往来|恢复往来/ })).toBeNull();
       expect(calls.putBar).not.toHaveBeenCalled();
-      expect(calls.deleteBar).not.toHaveBeenCalled();
       cleanup();
     }
   });
@@ -425,7 +477,7 @@ describe("people on the page: links to their profile; the page stops and resumes
   it("the link opens the person's page (the profile where the act lives)", async () => {
     // (A person this client knows: the profile is drawn for those it knows.)
     const known = { id: ANN, handle: "ann", displayName: "小安", avatarVersion: 0 };
-    await openPage({ answer: () => useOf({ byPerson: [{ person: known, answers: 1, points: "1" }] }) });
+    await openPage({ social: { enabled: true }, answer: () => useOf({ byPerson: [{ person: known, answers: 1, points: "1" }] }) });
     await click(within(mainEl().querySelector(".others-people")).getByRole("link", { name: "小安" }));
     expect(window.location.pathname).toBe(`/contacts/${ANN}`);
   });
@@ -476,7 +528,7 @@ describe("the Agent's card and page", () => {
       await goAgents();
       expect(listText().includes("别人今天的额度已用完"), words).toBe(card);
       await click(inList().getByText("小助手", { selector: ".row-name" }));
-      expect(document.querySelector(".main-col .kv").textContent, words).toContain(`别人今天的使用已回 1 次，花了 1 点 · ${words}`);
+      expect(document.querySelector(".main-col .kv").textContent, words).toContain(`别人今天的使用已回 1 次（含主动回复），别人叫它的花了 1 点 · ${words}`);
       cleanup();
     }
   });
@@ -521,7 +573,7 @@ describe("the Agent's card and page", () => {
 });
 
 describe("the one-time notice at the top of 我的 Agent", () => {
-  const NOTICE = "别人用你的 Agent，每天的上限变了：以前每个 Agent 各有 20 点，现在你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点，它们主动说的话也算在里面。每个 Agent 原来的 20 点上限已取消；主动回复的上限原来是 20 点的，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。";
+  const NOTICE = "别人用你的 Agent，每天的上限变了：以前每个 Agent 默认各有 20 点，现在你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点，它们主动说的话也算在里面。还是默认 20 点的 Agent，自己的上限已取消；你改过的不变。主动回复的上限原来是 20 点的，已改成 70 点。可以在“设置 › 别人怎么用我的 Agent”里改。";
   const noticeEl = () => document.querySelector(".others-notice");
 
   it("its text is exactly the copy, with the owner's two numbers; it says what changed (the shared cap, the cleared own limit, the proactive 70) and where to change it, and never says it stayed the same", async () => {
@@ -529,7 +581,7 @@ describe("the one-time notice at the top of 我的 Agent", () => {
     await goAgents();
     expect(noticeEl().textContent).toContain(NOTICE);
     expect(othersNoticeText({ answers: 50, points: "300" })).toBe(NOTICE);
-    expect(noticeEl().textContent).not.toContain("不变");
+    expect(noticeEl().textContent).not.toContain("没有变");
     for (const word of ["按人算", "算法", "原来设成"]) expect(noticeEl().textContent).not.toContain(word);
     expect(within(noticeEl()).getByRole("button", { name: "知道了" })).toBeTruthy();
     // System UI in the list column of 我的 Agent: nothing of a conversation holds it (no open chat is on screen).
@@ -554,6 +606,34 @@ describe("the one-time notice at the top of 我的 Agent", () => {
     cleanup();
     await openWith({ answer: () => useOf({ notice: false }) });
     await goAgents();
+    expect(noticeEl()).toBeNull();
+  });
+
+  it("知道了 is a write like a save: a read already in flight when it is pressed does not bring the notice back", async () => {
+    let notice = true;
+    const gates = [];
+    const get = vi.fn(() => {
+      const gate = deferred();
+      const sent = notice;
+      gates.push(() => gate.resolve(useOf({ notice: sent })));
+      return gate.promise;
+    });
+    const { app } = await openWith({ api: { getOthersUse: get, seenOthersNotice: vi.fn(async () => ((notice = false), { ok: true })) } });
+    await goAgents();
+    gates[0]();
+    await flush();
+    expect(noticeEl()).not.toBeNull();
+    // A read is in flight (sent while the notice was still on) when 知道了 is pressed.
+    const inFlight = readOthersUse(app.layer.actions, storeOf(app.layer.actions));
+    await click(within(noticeEl()).getByRole("button", { name: "知道了" }));
+    expect(noticeEl()).toBeNull();
+    gates[1](); // the older read answers with notice: true (it was sent before the write)
+    await inFlight;
+    await flush();
+    // The reload after the write is its own request, sent after that one: its answer (notice false) is what stays.
+    expect(gates).toHaveLength(3);
+    gates[2]();
+    await flush();
     expect(noticeEl()).toBeNull();
   });
 

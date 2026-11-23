@@ -61,7 +61,7 @@ describe("an Agent's wire", () => {
     const got = (await api(app, owner, "GET", `/api/agents/${a!.agentId}`)).json;
     expect([got.proactiveSpentToday, got.othersUsedToday.points]).toEqual(["1.65", "5"]);
     // Owner-only: the same Agent seen by anyone else carries neither field (agents-co-members / proactive-decide HIDDEN_KEYS).
-    expect((await use(owner)).json.used).toMatchObject({ points: "6.65", proactivePoints: "1.65" });
+    expect((await use(owner)).json.used).toMatchObject({ points: "6.65", proactivePoints: "1.65", proactiveAnswers: 2 });
   });
 
   it("creates with othersLimit or the one-release alias othersBudget; both in one body is a 400", async () => {
@@ -161,7 +161,7 @@ describe("GET /api/me/others-use", () => {
     const owner = await newOwner();
     expect(await use(owner)).toEqual({
       status: 200,
-      json: { limits: { answers: 50, points: "300" }, used: { answers: 0, points: "0", proactivePoints: "0" }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false },
+      json: { limits: { answers: 50, points: "300" }, used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false },
     });
   });
 
@@ -173,7 +173,7 @@ describe("GET /api/me/others-use", () => {
     await reply({ agent: a!, ownerId: owner.id, lane: "proactive", micro: 1_000_000n });
     await reply({ agent: a!, ownerId: owner.id, lane: "own", micro: 50_000_000n, caller: owner.id });
     await seedRun(db, { ownerId: owner.id, agent: a!, lane: "others", hold: 500_000n, admittedAt: new Date() });
-    expect((await use(owner)).json).toMatchObject({ limits: { answers: 50, points: "300" }, used: { answers: 3, points: "4.5", proactivePoints: "1" }, reached: false });
+    expect((await use(owner)).json).toMatchObject({ limits: { answers: 50, points: "300" }, used: { answers: 3, points: "4.5", proactivePoints: "1", proactiveAnswers: 1 }, reached: false });
     const put = await api(app, owner, "PUT", "/api/me/others-limits", { answers: 7, points: "4.2" });
     expect([put.status, put.json]).toEqual([200, { answers: 7, points: "4.2" }]);
     // Settled 4 plus held 0.5 is over the number, but the Agent's reply holds some of it: another reply would wait behind it, not be refused.
@@ -231,7 +231,7 @@ describe("GET /api/me/others-use", () => {
     // Ties are really in it: two callers at exactly 100 points with one answer each.
     expect(order.filter((r) => r.points === 100_000_000n && r.answers === 1)).toHaveLength(2);
     // The owner's own total counts the proactive reply too, which no row names.
-    expect(got.used).toEqual({ answers: answers.reduce((x, y) => x + y, 0) + 1, points: pointsText(sums.reduce((x, y) => x + y, 0n) + 2_000_000n), proactivePoints: "2" });
+    expect(got.used).toEqual({ answers: answers.reduce((x, y) => x + y, 0) + 1, points: pointsText(sums.reduce((x, y) => x + y, 0n) + 2_000_000n), proactivePoints: "2", proactiveAnswers: 1 });
   });
 
   it("agents: each live Agent's day and its perDay (50 free tier, 11 paid at 300, the answers number on a provider's model, 0 for a number below one plain hold); a deleted Agent is not listed", async () => {
@@ -479,7 +479,7 @@ describe("reached and tight: two one-sided facts, each by the function admission
     expect((await use(owner)).json.reached).toBe(false);
     await reply({ agent: b!, ownerId: owner.id, lane: "others", micro: 1n, caller });
     const got = (await use(owner)).json;
-    expect([got.used, got.reached, got.tight, got.agents.map((x: { reached: boolean }) => x.reached)]).toEqual([{ answers: 2, points: "0.000002", proactivePoints: "0" }, true, true, [true, true]]);
+    expect([got.used, got.reached, got.tight, got.agents.map((x: { reached: boolean }) => x.reached)]).toEqual([{ answers: 2, points: "0.000002", proactivePoints: "0", proactiveAnswers: 0 }, true, true, [true, true]]);
   });
 
   it("an Agent with no model answers nobody: its row is not reached, not tight, perDay 0, and it does not stop the owner's reached", async () => {

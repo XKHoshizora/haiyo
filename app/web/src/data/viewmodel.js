@@ -193,7 +193,7 @@ export function noticeText(system, fallback, nameOf, where = {}) {
       text = `${n(system.agentId)}已达到本次接话的点数上限，有人发言后继续。`;
       break;
     case "agent_daily_budget_reached":
-      text = `「${n(system.agentId)}」今天不再回复其他人了`;
+      text = `「${n(system.agentId)}」今天只回复它的主人了`;
       break;
     case "agent_quieted":
       text = `「${n(system.agentId)}」暂时不主动发言，需要时可以 @ 它`;

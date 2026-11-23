@@ -34,7 +34,7 @@ function othersRows(agent, row) {
         : [own.answers === null ? null : `每天最多回别人 ${own.answers} 次`, own.points === null ? null : `最多花 ${formatPoints(own.points)} 点`].filter(Boolean).join("，");
   const used = agent.othersUsedToday;
   const state = row && row.canReply !== false ? ` · ${othersStateText(row)}` : row ? " · 现在没有可用的模型，不回别人" : "";
-  const usedText = used === undefined ? null : `已回 ${used.answers} 次，花了 ${formatPoints(used.points)} 点${state}`;
+  const usedText = used === undefined ? null : `已回 ${used.answers} 次（含主动回复），别人叫它的花了 ${formatPoints(used.points)} 点${state}`;
   return [...(ownText === null ? [] : [["它自己的上限", ownText]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
 }
 
@@ -96,7 +96,7 @@ const excerpt = (text, max = 200) => {
  * in the web, never a message of an Agent's, dismissed for good with 「知道了」 (`POST /api/me/others-limits/seen`; the notice stays if that
  * fails, and says so).
  */
-function OthersNotice({ use, settle }) {
+function OthersNotice({ use, settle, reload }) {
   const { dispatch, actions } = useStore();
   const [pending, setPending] = useState(false);
   if (!use?.notice) return null;
@@ -106,6 +106,8 @@ function OthersNotice({ use, settle }) {
     try {
       await actions.seenOthersNotice();
       settle({ ...use, notice: false });
+      // A write like a save: a read already in flight may have been sent before it, so the next read starts after that one.
+      reload({ afterWrite: true });
     } catch (err) {
       dispatch({ type: "toast", text: commonErrorText(err) });
     } finally {
@@ -124,7 +126,7 @@ function OthersNotice({ use, settle }) {
 export function AgentsList() {
   const { state, dispatch, actions } = useStore();
   const { nav } = state;
-  const { use, settle } = useOthersUse({ maxAge: 10_000 });
+  const { use, settle, reload } = useOthersUse({ maxAge: 10_000 });
   /** This Agent's entry of the use route: its numbers and its state today. */
   const useOf = (id) => use?.agents?.find((a) => a.agentId === id) ?? null;
   const agents = myAgents(state);
@@ -155,7 +157,7 @@ export function AgentsList() {
           </IconBtn>
         }
       />
-      <OthersNotice use={use} settle={settle} />
+      <OthersNotice use={use} settle={settle} reload={reload} />
       <p className="list-note">这里只列出你拥有的 Agent。</p>
       <ul className="rows">
         {[...live, ...(goneOpen ? gone : [])].map((a) => (

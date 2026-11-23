@@ -147,8 +147,10 @@ export function sinceText(iso, now = new Date()) {
  * A person on this page: their name is a link to their profile, where 停止往来 and 恢复往来 live (one place for that act, with its question
  * and its words). This page has no such control of its own.
  */
-function PersonLink({ person }) {
+function PersonLink({ person, linked }) {
   const { dispatch } = useStore();
+  // With the site's Agent social switch off there is no stop control anywhere: the person is a plain name, not a link to a profile that has none.
+  if (!linked) return <>{person.displayName}</>;
   const open = (event) => {
     event.preventDefault();
     dispatch({ type: "nav", patch: { section: "contacts", contactId: person.id, pane: "main" } });
@@ -190,6 +192,8 @@ export function OthersUsePage({ back }) {
     const agents = Array.isArray(use.agents) ? use.agents : [];
     const nameOfAgent = (id) => state.agents[id]?.name ?? "Agent";
     const proactive = use.used.proactivePoints;
+    const proactiveCount = use.used.proactiveAnswers;
+    const social = state.social?.enabled === true;
     body = (
       <>
         {failed && (
@@ -201,9 +205,9 @@ export function OthersUsePage({ back }) {
 
         <h3>今天</h3>
         <p className="others-today">
-          已回别人 {use.used.answers} 次（含主动回复），花了 {formatPoints(use.used.points)} 点
+          已回别人 {use.used.answers} 次（含主动回复{typeof proactiveCount === "number" && proactiveCount > 0 ? ` ${proactiveCount} 次` : ""}），花了 {formatPoints(use.used.points)} 点
           {typeof proactive === "string" && formatPoints(proactive) !== "0" && `（其中主动回复 ${formatPoints(proactive)} 点）`}
-          <span className={`others-state others-state-${othersStateOf(use)}`}> · {othersStateText(use)}</span>
+          <span className={`others-state others-state-${othersStateOf(use)}`}> <span className="others-keep">· {othersStateText(use)}</span></span>
         </p>
 
         <h3>每个 Agent</h3>
@@ -219,8 +223,8 @@ export function OthersUsePage({ back }) {
                     {a.canReply === false ? "：现在没有可用的模型，不回别人" : `：只有它在回的话，每天大约能回 ${a.perDay} 次`}
                   </p>
                   <p className="muted">
-                    今天回了 {a.answers} 次（含主动回复），别人叫它花了 {formatPoints(a.points)} 点
-                    {a.canReply !== false && <span className={`others-state others-state-${othersStateOf(a)}`}> · {othersStateText(a)}</span>}
+                    今天回了 {a.answers} 次（含主动回复），其中别人叫它的花了 {formatPoints(a.points)} 点
+                    {a.canReply !== false && <span className={`others-state others-state-${othersStateOf(a)}`}> <span className="others-keep">· {othersStateText(a)}</span></span>}
                   </p>
                 </div>
               </li>
@@ -233,13 +237,13 @@ export function OthersUsePage({ back }) {
           <p className="muted">今天还没有别人用过你的 Agent。</p>
         ) : (
           <>
-            <p className="muted">点名字，到对方的资料页，可以在那里停止往来。</p>
+            {social && <p className="muted">点名字，到对方的资料页，可以在那里停止往来。</p>}
             <ul className="member-rows others-people" aria-label="今天用过你的 Agent 的人">
               {byPerson.map((row) => (
                 <li key={row.person.id}>
                   <Avatar id={row.person.id} size={40} />
                   <div className="member-body">
-                    <strong><PersonLink person={row.person} /></strong>
+                    <strong><PersonLink person={row.person} linked={social} /></strong>
                     <p className="muted">@{row.person.handle} · 回了对方 {row.answers} 次，花了 {formatPoints(row.points)} 点</p>
                   </div>
                 </li>
@@ -260,7 +264,7 @@ export function OthersUsePage({ back }) {
                   <li key={row.person.id}>
                     <Avatar id={row.person.id} size={40} />
                     <div className="member-body">
-                      <strong><PersonLink person={row.person} /></strong>
+                      <strong><PersonLink person={row.person} linked={social} /></strong>
                       <p className="muted">@{row.person.handle} · {sinceText(row.since)}停止</p>
                     </div>
                   </li>

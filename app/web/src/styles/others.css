@@ -11,6 +11,7 @@
 .others-number[aria-invalid="true"] { border-color: var(--warn); border-width: 2px; }
 .others-limit-sentence .field-hint, .others-limit-sentence .field-msg { margin-top: 6px; }
 .others-use h3 { margin: 20px 0 8px; }
+.others-keep { white-space: nowrap; }
 .others-today { line-height: 1.5; }
 
 /* The state of a use: said in words (正常 / 余量不多… / 别人今天的额度已用完), the colour only follows it. */

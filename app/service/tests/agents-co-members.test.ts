@@ -73,6 +73,7 @@ const HIDDEN_KEYS = [
   "othersLimit",
   "othersUsedToday",
   "proactivePoints",
+  "proactiveAnswers",
   "canReply",
   // The use page's own keys (plan B4): the owner's numbers per person and per Agent.
   "byPerson",

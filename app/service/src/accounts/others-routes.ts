@@ -18,7 +18,7 @@ const pointsNumber = pointsBetween(MICRO_PER_POINT, 100_000n * MICRO_PER_POINT);
 const person = z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number() });
 const useResponse = z.object({
   limits: z.object({ answers: z.number(), points: z.string() }),
-  used: z.object({ answers: z.number(), points: z.string(), proactivePoints: z.string() }),
+  used: z.object({ answers: z.number(), points: z.string(), proactivePoints: z.string(), proactiveAnswers: z.number() }),
   reached: z.boolean(),
   tight: z.boolean(),
   byPerson: z.array(z.object({ person, answers: z.number(), points: z.string() })),
@@ -119,7 +119,7 @@ export function registerOthersRoutes(app: FastifyInstance): void {
       const tight = reached || asked.some((r) => r.tight);
       return {
         limits: { answers: owner.answers, points: formatPoints(owner.pointsMicro) },
-        used: { answers: used.answers, points: formatPoints(usedPoints), proactivePoints: formatPoints(proactive.settledMicro + proactive.heldMicro) },
+        used: { answers: used.answers, points: formatPoints(usedPoints), proactivePoints: formatPoints(proactive.settledMicro + proactive.heldMicro), proactiveAnswers: proactive.answers },
         reached,
         tight,
         byPerson: byPerson.map((r) => ({ person: r.person, answers: r.answers, points: formatPoints(r.pointsMicro) })),
