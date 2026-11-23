@@ -254,7 +254,7 @@ The four in bold are the ones the verifier named beyond the slice. The rest of r
 | `S:tests/helpers/social.ts` (new, T0.3) | 0, frozen (attack M8) | `seedSocial`, `seedSocialAgents`, `SOCIAL_ON` |
 | `S:tests/helpers/others.ts` (new) | B | lane B's money fixtures |
 | `S:tests/agents-co-members.test.ts`, `tests/proactive-decide.test.ts`, `tests/config-agents.test.ts` | 0 | hidden keys; the three old wire fields out of :252–257 (attack I5); config |
-| `W:src/api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `main.jsx` | 0 | routes, thin actions, error texts, the two stylesheets |
+| `W:src/api/routes.js`, `data/actions.js`, `data/errorTexts.js`, `main.jsx` | 0 | routes, thin actions, error texts, the two stylesheets. **Edited by lane A afterwards (Controller ruling 2026-11-25 (A-5 review), m10): `data/actions.js:1081–1084, 1087–1088`, the six actions `addAgentContact`, `approveAgentContact`, `declineAgentContact`, `removeAgentContact`, `putBar`, `deleteBar`, each with an `after` that calls `request({ social: true[, sync: true] })`; lane I expects it (lane B edits other lines).** `tests/fixtures.js` (a `listAgentContacts` handler), `store.jsx` (`state.agentContacts`) and `agents/proactive/listeners.ts` (the flag writer refuses a social conversation) are small lane A edits of files with no owner |
 | `W:src/state/location.js` | 0→B | untouched by Step 0 in the end (as built: `others` is not an address until the page is drawn); B9a adds `others` to `SETTINGS_PAGES` with the page |
 | `W:src/styles/social.css` (0→A), `W:src/styles/others.css` (0→B) | | each lane's styles |
 | `W:src/data/model.js` (0→A), `data/sync.js`, `state/selectors.js`, `state/social.js` | A | `agent_social` in the model; supervised conversations out of the main list |
@@ -1602,6 +1602,14 @@ The inputs wrap with the sentence at 360 px; actions are ≥ 44 px under `(point
 
 Branch `lane/social-i1a` from the merge of both lanes, made as soon as the minimum for the first trial is in (Rings table; Controller ruling 2026-11-24 (verification), I15). This first joint merge brings 074 and 075 to the working branch together, and they are applied in order in one deploy. The rest of ring 1a merges in after it. Neither lane merges to the working branch before it, and later merges of either lane carry no new migration. A test below whose task is not yet in is marked `todo` until that task merges.
 
+### Lane I: the persona card as unread (Controller ruling 2026-11-25 (A-5 review), I1)
+
+Done at integration because the unread rule is shared with lane B. The `persona_fact` card is, for the Agent's OWNER in that Agent's own conversation, a message that counts as unread and moves the conversation up the list, as any message would; no push (`countsForPush` stays false for it).
+- Service: `app/service/src/sync/read.ts:156`, the `unread` count: `m.kind <> 'system'` becomes `(m.kind <> 'system' or (m.body ->> 'event' = 'persona_fact' and c.type = 'agent'))`. Only the owner has a membership in that conversation and the card is never sent to anyone else (`read.ts` hides `card` from others), so no one else's count moves. `push/notify.ts:60` `countsForPush` is NOT changed.
+- Web: `app/web/src/data/model.js:239` `countsAsUnread` takes the same exception (`m.system?.event === "persona_fact" && m.system.card`), and `data/viewmodel.js` `noticeText` (lane B's file, which hides the event today; `Messages.jsx:181` draws the card) must stop treating it as hidden for the activity time that orders the list, and give `lastPreview` a line for it: 「人格里有一句话可能是事实」 (the service's own sentence).
+- Test: a persona version with a fact gives the owner `unread` 1 for the Agent's own conversation, first in the list; no push is made (a `social-push`-style spy); another member's unread is unchanged; answering the card does not lower it by itself, reading does (`markRead`).
+- Expiry: it stays from the card's creation (`expiresAt` is written by the service, `OTHERS.cardDays`); starting it at first sight would need a stored "shown at" moment and a change of `answerPersonaFact`. With the card unread and first in the list, 7 days is enough to notice it.
+
 ### Task I1a: Tests that need both lanes — Lane I
 
 **Files:** create `S:tests/social-ring1a.test.ts`.
@@ -1916,7 +1924,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
    - no 「别人」 tab and no 停止往来 anywhere;
    - the lookup finds people only, and the add dialog says 「目前还不能添加 Agent 为好友。」;
    - every lane-A route but the lookup answers 404;
-   - no judge, withheld or persona call is made (the worker stamps personas checked without a call, A8b);
+   - no judge, withheld or persona call is made (the worker claims, calls and stamps nothing while the switch is off; superseded wording: A-4 review I2, A8b);
    - queued social runs end (`access_ended`) instead of answering later (M18).
 
    What they do see is step L: the use page, the use section, each Agent's numbers, the one-time notice.
@@ -1971,6 +1979,12 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
   - **m1.** `reports:close --outcome disabled` also disables the Agent, through the same path as `agent:disable` (the plan's A10 says the report's outcome is "disabled"; the outcome that records without acting is the trap).
   - **m10, m12.** The summary leg of the memory-isolation canary must be able to fail; shared test files get appended rows only.
 - **Owner decision 2026-11-25 (on the A-4 review's n1)**: unfriending is just unfriending, as in WeChat / QQ. An unfriend writes no `stop` row, sets no bar, starts no 30-day cooldown and puts no one in the unfriender's stopped list; the person can send a friend request again as before. It still ends, through `endGrants` as an ordinary ending (`left`, not `barred`), the grant rows whose basis is `contacts` between the two sides; rows approved one by one are untouched, nothing is announced beyond what unfriending shows today, and re-friending restores the contacts policy's reach without 恢复往来. 停止往来 stays the only act that writes a `stop` row and the only one with the cooldown; block stays block (A5b, File map, README).
+- **Controller ruling 2026-11-25 (A-5 review)** (lane A block 5's review, `sociala-b5-review.md`):
+  - **m8.** An unfriend touches no group run at all: in a group anyone may @ the Agent, friend or not. It ends only `contacts`-basis rows and what depends on those rows (a social conversation whose only basis was that row: its run stops as any ended row's does); no call is taken out of any group run (`endGrants` with `groups: false`).
+  - **m3.** (a) 停止往来 on a person already stopped is idempotent: the `stop` row keeps its `since`, the other person's 30-day wait is not restarted. (b) With the caller's stopped list unknown (lane B's route absent or failing) the profile offers neither 停止往来 nor 恢复往来; with it known, exactly one.
+  - **m1, m2 and the copy:** every string the review flags as false or unclear is fixed; the owner gets the table of all of lane A's web strings.
+  - **I1.** The persona card must be noticeable: see "Lane I: the persona card as unread" before Task I1a. The card's 7-day expiry stays from its creation (the service writes `expiresAt`; starting it at first sight would need a new stored moment), said in that section.
+  - **m10.** `data/actions.js` was edited by lane A: the lines are in the File map.
 - **Accepted as proposed:** `reach` in `social/reach.ts` (D2); separate owner and judge columns (D4); shared files written once in Step 0 (D12).
 - **Controller ruling 2026-11-24 (final):**
   - the two-part hold, the three-part ruling withdrawn, spend ≤ hold proved for its four cases (B2b);
@@ -2003,7 +2017,7 @@ for (const answer of ['{"n1":true,"n9":true}', '{"n1":true,"n1":false}', '{"n1":
 - **M8** Fixed: `tests/helpers/social.ts` is frozen (File map).
 - **M9** Fixed: `loadNotes` takes a `Tx` and writes in (kind, id) order (Step 0, A6a).
 - **M10** Fixed: versions are compared in `exactTs` form (memory/write.ts:30; the attack cited :43–54, where it is used, not defined).
-- **M11** Fixed: 075 stamps existing personas checked (ring 1a, with A8b after the verification's N4); the switch-off stamps without a call; the move stamps in its transaction (A8b).
+- **M11** Superseded by Controller ruling 2026-11-24 (A-4 review), I2: 075 marks no persona as checked and the switch-off stamps nothing (it first read: 075 stamps existing personas checked, the switch-off stamps without a call); the move stamps in its transaction (A8b).
 - **M12** Fixed: the plain fallback at admission (B1), for a wait and a limit alike (verification N3); its tests assert the sum invariant and the rule's order, never a count of admitted replies.
 - **M13** Recorded as a deliberate deferral (D20).
 - **M14** Fixed: `setBar`/`endGrants` run after the direct chat's notice (A5b, Lock order). `postAsAgent`'s order (notes `for share`, then the run row's update) matches the stated order.
