@@ -101,7 +101,7 @@ test("the chats', contacts' and groups' dialogs at 402 px: inert page, focus in 
   await page.getByRole("button", { name: "关闭", exact: true }).click();
 
   // The picture viewer.
-  await sendFile(page, bo.displayName, { name: "风景.png", mimeType: "image/png", buffer: png(640, 480) }, "选择图片");
+  await sendFile(page, bo.displayName, { name: "风景.png", mimeType: "image/png", buffer: png(640, 480) }, "选择图片或视频");
   const picture = chatPane(page, bo.displayName).locator("button[data-image]").first();
   await contract(page, { open: () => picture.click(), dialog: page.getByRole("dialog", { name: "风景.png" }), opener: picture, shot: "dialog-viewer-402", tabs: 4 });
 

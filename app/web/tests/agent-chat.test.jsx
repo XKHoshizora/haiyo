@@ -1489,7 +1489,7 @@ describe("the proposal card", () => {
 
 describe("the image hint", () => {
   const pick = async (files) => {
-    fireEvent.change(screen.getByLabelText("选择图片"), { target: { files } });
+    fireEvent.change(screen.getByLabelText("选择图片或视频"), { target: { files } });
     await flush();
   };
   const hint = () => screen.queryByText(IMAGE_HINT);

@@ -321,11 +321,11 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
   // The same file input can pick the same file again; the pick is handed over and forgotten.
   const picked = e => { const list = [...e.target.files]; e.target.value = ""; sendFiles(list); };
   const paste = e => {
-    const images = [...(e.clipboardData?.files ?? [])].filter(f => f.type.startsWith("image/"));
-    if (images.length === 0) return;
+    const media = [...(e.clipboardData?.files ?? [])].filter(f => f.type.startsWith("image/") || f.type.startsWith("video/"));
+    if (media.length === 0) return;
     // Text on the clipboard as well (copied from a page or a document): it still pastes into the box.
     if (!e.clipboardData.getData?.("text/plain")) e.preventDefault();
-    sendFiles(images);
+    sendFiles(media);
   };
   const sendNote = tooLong ? `消息最多 ${TEXT_LIMIT} 字，当前 ${length} 字，请删减后再发送` : invisible ? "消息里没有看得见的文字，无法发送" : null;
   // Sending is impossible (a deleted Agent, a group left, a block, ...: `block`): the reason is said once, by the notice above the messages, and nothing
@@ -342,9 +342,9 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
           <div className="emoji-grid">{EMOJI[category].map(emoji=><button key={emoji} type="button" aria-label={`插入表情 ${emoji}`} onClick={()=>replace(emoji)}>{emoji}</button>)}</div>
         </div>}
       </div>
-      <IconBtn label="发送图片" disabled={disabled} onClick={()=>imagePicker.current?.click()}><Image size={22}/></IconBtn>
+      <IconBtn label="发送图片或视频" disabled={disabled} onClick={()=>imagePicker.current?.click()}><Image size={22}/></IconBtn>
       <IconBtn label="发送文件" disabled={disabled} onClick={()=>filePicker.current?.click()}><Paperclip size={22}/></IconBtn>
-      <input ref={imagePicker} type="file" accept="image/*" multiple hidden tabIndex={-1} aria-label="选择图片" onChange={picked}/>
+      <input ref={imagePicker} type="file" accept="image/*,video/*" multiple hidden tabIndex={-1} aria-label="选择图片或视频" onChange={picked}/>
       <input ref={filePicker} type="file" multiple hidden tabIndex={-1} aria-label="选择文件" onChange={picked}/>
       {people.length>0 && <IconBtn label="@ 会话成员" disabled={disabled} aria-expanded={Boolean(mention)} onClick={openMentions}><AtSign size={22}/></IconBtn>}
     </div>
