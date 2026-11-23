@@ -359,7 +359,7 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   // A model that reports which thinking levels it supports: the choice between those and every level, both ways open until it is saved.
   const levelChoice =
     model.reasoning && model.reported ? (
-      <fieldset className="checks level-choice" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
+      <fieldset className="checks" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
         <legend>思考档位</legend>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={model.levels !== null} onChange={() => onChange({ ...model, levels: model.reported })} />
