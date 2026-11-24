@@ -17,9 +17,9 @@ on:
         description: "The development branch: checked out, tested, and the only branch the snapshot is pushed to"
         required: true
         type: string
-  # By hand, on the branch chosen in "Run workflow" (GitHub offers the button only for a workflow file that is also on
-  # the default branch; until then use the trigger's button, or run the generator locally: docs/dev/ci.md).
-  workflow_dispatch:
+# Nothing else starts it — on purpose no "Run workflow" button of its own: once this file reaches the default branch
+# through an ordinary merge, such a button would run it there and commit a snapshot straight to that branch. The button
+# is the trigger's; before the trigger is installed the update is run locally (docs/dev/ci.md).
 
 # Nothing by default: the one job below asks for what it needs.
 permissions: {}
@@ -38,8 +38,9 @@ jobs:
       group: catalog-update
       cancel-in-progress: false
     env:
-      # Named by the caller; for a run by hand, the branch it was started on. No branch name is written in this file.
-      DEV_BRANCH: ${{ inputs.branch || github.ref_name }}
+      # Named by the caller, and by nothing else: never the branch the run was started on (inside a called workflow
+      # that is the caller's, the default branch). No branch name is written in this file.
+      DEV_BRANCH: ${{ inputs.branch }}
       # The throwaway database the tests use (see "Start Postgres"), as in ci.yml.
       TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/af_test
     defaults:
@@ -47,7 +48,9 @@ jobs:
         working-directory: app/service
     steps:
       # persist-credentials: false — the token is NOT left in .git/config: the install scripts, the type check and the
-      # tests below run without any right to push. Only the last step is handed it.
+      # tests below cannot read it there, and only the last step names it. (A limit, not a wall: those steps run on the
+      # same machine and could leave something behind for the last step — a git hook, a line in the git config or in
+      # $GITHUB_ENV / $GITHUB_PATH — and the two actions get the token by default. The dependencies are the lock file's.)
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEV_BRANCH }}
@@ -106,7 +109,7 @@ jobs:
 
       # Reached only when everything above passed: a failed check or test fails the run and commits nothing. The push
       # is an ordinary one to the one branch: a branch that moved meanwhile refuses it, the run is red, and tomorrow's
-      # run tries again. The token is in this step's environment only.
+      # run tries again. The token is named in this step's environment only (see the limit at the checkout).
       - name: Commit the snapshot
         if: steps.diff.outputs.changed == 'true'
         env:

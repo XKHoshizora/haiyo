@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ABILITIES, catalogReadme, catalogSummary, diffCatalog, formatCatalog, guardCatalog, guardProviders, reduceCatalog, type CatalogEntry } from "../scripts/update-model-catalog.mjs";
 
@@ -233,13 +233,30 @@ describe("the daily update: the job (.github/workflows/catalog-update.yml) and i
   const trigger = readFileSync(new URL("../../../docs/dev/catalog-update-trigger.master.yml", import.meta.url), "utf8");
   /** A file's lines that are not comments. */
   const code = (text: string) => text.split("\n").filter((line) => !/^\s*#/.test(line));
+  /**
+   * What is wrong with the workflow files `files` (name → text) as far as the trigger goes: a file named as the installed
+   * trigger must be the copy under docs/dev/ (`stub`); no other file runs on a schedule or calls the job.
+   */
+  const installedTriggerProblems = (stub: string, files: Record<string, string>): string[] => {
+    const unix = (text: string) => text.replace(/\r\n/g, "\n");
+    return Object.entries(files).flatMap(([name, text]) => {
+      if (name === "catalog-update-trigger.yml") return unix(text) === unix(stub) ? [] : [`${name} is not docs/dev/catalog-update-trigger.master.yml`];
+      const lines = code(unix(text)).join("\n");
+      return [...(/^\s*schedule:|^\s*-?\s*cron:/m.test(lines) ? [`${name} runs on a schedule`] : []), ...(/uses:.*catalog-update\.yml/.test(lines) ? [`${name} calls the job`] : [])];
+    });
+  };
 
-  it("the job is a reusable workflow that names no branch: called with one, or run by hand on one; it passes the guard and asks for contents: write alone", () => {
-    expect(workflow).toMatch(/^on:\n  workflow_call:\n    inputs:\n      branch:\n(?:        .*\n)*?        required: true\n        type: string\n(?:\s+#.*\n)*  workflow_dispatch:\n/m);
+  it("the job is a reusable workflow that names no branch and runs only when called with one: no button of its own, no branch taken from where it was started; it passes the guard and asks for contents: write alone", () => {
+    // `on:` is the call alone, with the one required input.
+    const on = workflow.slice(workflow.indexOf("\non:\n") + 1, workflow.indexOf("\npermissions:"));
+    expect(code(on).filter((line) => line.trim() !== "" && !/^ {6,}/.test(line))).toEqual(["on:", "  workflow_call:", "    inputs:"]);
+    expect(on).toMatch(/^on:\n  workflow_call:\n    inputs:\n      branch:\n(?:        .*\n)*?        required: true\n        type: string\n/);
+    // Started by hand on the default branch it would commit there: the trigger has the button, and the branch is only what the caller says.
+    expect(code(workflow).join("\n")).not.toMatch(/workflow_dispatch|ref_name|github\.ref\b|head_ref|default_branch|\|\|/);
     // No schedule here (GitHub runs one only from the default branch) and no branch name: both are the trigger's.
     expect(code(workflow).join("\n")).not.toMatch(/schedule:|cron:/);
     expect(workflow).not.toMatch(/claude\/|agent-family-review/);
-    expect(workflow).toContain("      DEV_BRANCH: ${{ inputs.branch || github.ref_name }}");
+    expect(workflow).toContain("      DEV_BRANCH: ${{ inputs.branch }}\n");
     expect(workflow).toContain("ref: ${{ env.DEV_BRANCH }}");
     expect(workflow).toMatch(/node scripts\/update-model-catalog\.mjs --guard --summary=/);
     // Nothing by default; the one job asks for contents: write and nothing else.
@@ -278,9 +295,24 @@ describe("the daily update: the job (.github/workflows/catalog-update.yml) and i
     for (const file of ["tests/model-catalog.test.ts", ...named]) expect([file, existsSync(new URL(`../${file}`, import.meta.url))]).toEqual([file, true]);
   });
 
-  it("the trigger is not a workflow on this branch; it says when, grants contents: write, and calls the job at the development branch it names twice, on adjacent lines", () => {
-    // Under docs/, so nothing runs from it here; nothing else under .github/workflows/ runs on a schedule.
-    expect(existsSync(new URL("../../../.github/workflows/catalog-update-trigger.yml", import.meta.url))).toBe(false);
+  it("under .github/workflows/ the trigger may only be the installed copy of the one under docs/dev/, and nothing else there runs on a schedule or calls the job", () => {
+    // Under docs/ nothing runs from it. Once the owner has put it on the default branch, a merge of that branch brings
+    // .github/workflows/catalog-update-trigger.yml here too (where it does nothing: schedules run from the default branch
+    // only): that file is allowed, as the very text kept under docs/dev/ (line ends aside).
+    expect(installedTriggerProblems(trigger, { "catalog-update.yml": workflow, "ci.yml": "on:\n  push:\n" })).toEqual([]);
+    expect(installedTriggerProblems(trigger, { "catalog-update-trigger.yml": trigger.replace(/\n/g, "\r\n"), "catalog-update.yml": workflow })).toEqual([]);
+    expect(installedTriggerProblems(trigger, { "catalog-update-trigger.yml": trigger.replace("17 3", "17 4") })).toEqual(["catalog-update-trigger.yml is not docs/dev/catalog-update-trigger.master.yml"]);
+    expect(installedTriggerProblems(trigger, { "catalog-update-trigger.yml": trigger, "nightly.yml": trigger })).toEqual(["nightly.yml runs on a schedule", "nightly.yml calls the job"]);
+    expect(installedTriggerProblems(trigger, { "other.yaml": "on:\n  workflow_dispatch:\njobs:\n  x:\n    uses: ./.github/workflows/catalog-update.yml\n" })).toEqual(["other.yaml calls the job"]);
+    expect(installedTriggerProblems(trigger, { "ci.yml": "# no schedule: here\non:\n  schedule:\n    - cron: '1 1 * * *'\n" })).toEqual(["ci.yml runs on a schedule"]);
+    // What is there now.
+    const dir = new URL("../../../.github/workflows/", import.meta.url);
+    const files = Object.fromEntries(readdirSync(dir).map((name) => [name, readFileSync(new URL(name, dir), "utf8")]));
+    expect(Object.keys(files)).toContain("catalog-update.yml");
+    expect(installedTriggerProblems(trigger, files)).toEqual([]);
+  });
+
+  it("the trigger says when, grants contents: write, and calls the job at the development branch it names twice, on adjacent lines", () => {
     expect(trigger).toMatch(/^on:\n  schedule:\n(?:\s+#.*\n)*\s+- cron: "\d+ \d+ \* \* \*"\n  workflow_dispatch:\n/m);
     expect(trigger).toMatch(/^permissions:\n  contents: write\n/m);
     const lines = code(trigger).filter((line) => line.trim() !== "");
