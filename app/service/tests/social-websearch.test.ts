@@ -11,6 +11,7 @@ import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { grant, paidReply } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
+import { providerBody } from "./helpers/providers.ts";
 import { committedMicro, FREE_MODEL, OTHERS_ENV, POINT } from "./helpers/others.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
@@ -23,7 +24,7 @@ import { closeAllSockets } from "./helpers/ws.ts";
  * take the search, no search is made and the reply goes on without it.
  */
 const lines: string[] = [];
-const { app, db } = useApp({ env: { ...OTHERS_ENV, AGENT_RUNS_PER_MINUTE: "100" }, agentWorker: false, config: SOCIAL_ON, logStream: { write: (line) => void lines.push(line) } });
+const { app, db } = useApp({ env: { ...OTHERS_ENV, AGENT_RUNS_PER_MINUTE: "100" }, agentWorker: false, config: SOCIAL_ON, logStream: { write: (line) => void lines.push(line) }, providerProbe: { test: async () => {}, listModels: async () => ["pm", "pm2"] } });
 afterEach(async () => {
   await closeAllSockets();
   lines.length = 0;
@@ -54,11 +55,11 @@ function fakeEngine(during: () => Promise<void> = async () => {}) {
 
 let n = 0;
 /** An owner with points and an Agent, a visitor let in, and a port and worker of their own with the web search offered. */
-async function world(engine: WebEngine, gateway: Pick<ModelGateway, "stream">) {
+async function world(engine: WebEngine, gateway: Pick<ModelGateway, "stream">, modelOf: (owner: Actor) => Promise<unknown> = async () => FREE_MODEL) {
   const tag = `${++n}x${Math.floor(Math.random() * 1e6)}`;
   const [owner, visitor] = [await signUp(app, `wso${tag}`), await signUp(app, `wsv${tag}`)];
   await grant(db, owner.id, 10_000n * POINT);
-  const agent = (await mustCreateAgent(app, owner, { handle: `wsy${tag}`, name: "wsy", model: FREE_MODEL, persona: "简短地回答。" })) as { id: string; conversationId: string };
+  const agent = (await mustCreateAgent(app, owner, { handle: `wsy${tag}`, name: "wsy", model: await modelOf(owner), persona: "简短地回答。" })) as { id: string; conversationId: string };
   const { conversationId: conv } = await seedSocial(app, { owner, agentId: agent.id, visitor });
   const config = webConfig();
   const { db: pool, blobs, searches, conversations, reads } = app.deps;
@@ -167,5 +168,50 @@ describe("a visitor's reply searches the web on the owner's numbers", () => {
     expect((await committedMicro(db, w.owner.id)) <= 300n * POINT).toBe(true);
     const read = (await api(app, w.visitor, "GET", `/api/conversations/${w.conv}/messages`)).json;
     expect(JSON.stringify(read)).not.toContain("lane_budget");
+  });
+});
+
+/**
+ * The merge with the working branch (learned success, `AgentPort.toolsWorked`): a provider's model whose entry says nothing of tools is
+ * stored `tools: true` after a reply whose tool call ran. A VISITOR's turn may teach the owner's model that one fact and nothing else.
+ */
+describe("a visitor's turn on the owner's provider model whose entry says nothing of tools", () => {
+  it("its tool call ran: `tools: true` is stored on that model alone, on the owner's own row; nothing of the visitor or of the call is stored, told or logged, and the visitor reads no provider", async () => {
+    const CANARY = "暗号-canary-5528";
+    const engine = fakeEngine();
+    const gateway = scriptedGateway().callTools([{ name: SEARCH_WEB, input: { query: CANARY } }], { usage: { inputTokens: 900, outputTokens: 40 } }).reply("查到了。", { usage: { inputTokens: 1200, outputTokens: 20 } });
+    const made = { providerId: "" };
+    const w = await world(engine, gateway, async (owner) => {
+      const res = await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "pm" }, { name: "pm2" }] }));
+      expect(res.status).toBe(201);
+      made.providerId = res.json.id as string;
+      return { source: "provider", providerId: made.providerId, model: "pm" };
+    });
+    const stored = async () => (await db.query<{ models: Array<Record<string, unknown>> }>("select models from providers where id = $1", [made.providerId])).rows[0]!.models;
+    const before = await stored();
+    expect(before.map((m) => [m.name, m.tools])).toEqual([["pm", undefined], ["pm2", undefined]]);
+    const whispers = async () => Number((await db.query<{ n: string }>("select count(*) n from whispers")).rows[0]!.n);
+    const whispersBefore = await whispers();
+    await w.say(w.visitor, "帮我查一下。");
+    expect(await w.worker.runOnce()).toBe(true);
+    expect(engine.queries).toEqual([CANARY]);
+    expect(await w.posted()).toEqual(["查到了。"]);
+    expect(await w.run()).toMatchObject({ status: "done", lane: "others", caller: w.visitor.id });
+    // The whole change of the provider's row: the one fact, on the model that ran.
+    const after = await stored();
+    expect(after.map((m) => [m.name, m.tools])).toEqual([["pm", true], ["pm2", undefined]]);
+    const rest = (models: Array<Record<string, unknown>>) => models.map(({ tools: _tools, ...other }) => other);
+    expect(rest(after)).toEqual(rest(before));
+    const row = JSON.stringify((await db.query("select * from providers where id = $1", [made.providerId])).rows[0]);
+    expect(row).not.toContain(w.visitor.id);
+    expect(row).not.toContain("canary");
+    // Nobody is told, and the visitor has no provider to read it on.
+    expect(await whispers()).toBe(whispersBefore);
+    expect((await api(app, w.visitor, "GET", "/api/providers")).json.providers).toEqual([]);
+    expect(JSON.stringify((await api(app, w.visitor, "GET", `/api/conversations/${w.conv}/messages`)).json)).not.toContain("canary");
+    // Nothing of the call is logged.
+    expect(lines.join(" ")).not.toContain("canary");
+    // The visitor pays nothing for it.
+    expect((await db.query("select 1 from usage_records where owner_id = $1", [w.visitor.id])).rowCount).toBe(0);
   });
 });
