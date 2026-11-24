@@ -65,7 +65,7 @@ export async function renderNotice(q: Queryable, conversationId: string, e: Syst
     case "agent_budget_reached":
       return `${n(e.agentId)} 已达到本次接话的点数上限，有人发言后继续。`;
     case "agent_daily_budget_reached":
-      return `「${n(e.agentId)}」今天的额度已用完`;
+      return `「${n(e.agentId)}」今天不再回复别人了，明天恢复。`;
     case "agent_quieted":
       return `「${n(e.agentId)}」暂时不主动发言，需要时可以 @ 它`;
     // The disclosure of a social conversation (system UI text, in no Agent's voice): who watches it. Two owners: their names joined by 、.
