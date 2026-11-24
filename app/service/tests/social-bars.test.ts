@@ -748,5 +748,6 @@ describe("blocks (Controller ruling Q4, per setter)", () => {
       expect(rows).toContain("C>D stop");
       expect(rows.includes("C>D block")).toBe((await blocksBetween(c, d)).length === 1);
     }
-  });
+    // (36 sign-ups, each with a password hash: close to the suite's default limit on a busy machine.)
+  }, 45_000);
 });

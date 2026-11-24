@@ -294,7 +294,8 @@ describe("the queue's prediction is admission's own class rule (V3.6, review M1)
         }
       }
     }
-  });
+    // (36 sign-ups, each with a password hash: about 15 s on the development machine, the suite's default limit.)
+  }, 45_000);
 });
 
 describe("two connections (V3.6)", () => {
