@@ -224,7 +224,7 @@ describe("editing", () => {
     // "o3-mini" reasons and the catalogue lists its levels; it is saved with NO levels (every level): the choice made.
     const created = await mustCreate(owner, {
       baseUrl: stub.baseUrl(),
-      models: [{ name: "o3-mini", reasoning: true }, { name: "my-own-think", reasoning: true }, { name: "o3-mini-plain" }, { name: "gpt-x" }],
+      models: [{ name: "o3-mini", reasoning: true }, { name: "my-own-think", reasoning: true }, { name: "o3-mini-plain" }, { name: "gpt-x" }, { name: "o1-mini", reasoning: true }, { name: "o3-mini-2026-01-31", reasoning: true }],
     });
     const byName = Object.fromEntries(created.models.map((m: { name: string }) => [m.name, m]));
     expect(byName["o3-mini"].reasoningLevels).toBeUndefined();
@@ -232,6 +232,14 @@ describe("editing", () => {
     // Not known to the catalogue, or not reasoning: nothing is reported.
     expect(byName["my-own-think"]).not.toHaveProperty("reportedLevels");
     expect(byName["gpt-x"]).not.toHaveProperty("reportedLevels");
+    // Only for the model itself (as it is, or without its date), like everything else shown as the catalogue's: a name that
+    // merely starts with a known id is reported no levels (`o1-mini` is not told `o1`'s).
+    expect(entryOf("o1").reasoningLevels).toBeDefined();
+    expect(byName["o1-mini"]).not.toHaveProperty("reportedLevels");
+    expect(byName["o3-mini-2026-01-31"].reportedLevels).toEqual(["low", "medium", "high"]);
+    stub.answer(() => ({ status: 200, body: JSON.stringify({ data: [{ id: "o1-mini" }, { id: "o3-mini" }] }) }));
+    const offered = (await api(app, owner, "POST", `/api/providers/${created.id}/models/list`)).json.listed as Array<Record<string, unknown>>;
+    expect(offered.map((m) => [m.name, m.known, m.reasoning, m.reasoningLevels])).toEqual([["o1-mini", true, true, undefined], ["o3-mini", true, true, ["low", "medium", "high"]]]);
     // The same after a reload (GET), and after the choice is put back to the levels it reports.
     const listed = (await api(app, owner, "GET", "/api/providers")).json.providers[0].models;
     expect(listed.find((m: { name: string }) => m.name === "o3-mini").reportedLevels).toEqual(["low", "medium", "high"]);
@@ -524,8 +532,11 @@ describe("what the catalogue knows of a saved model reaches its owner beside wha
     expect(read((await api(app, owner, "GET", "/api/providers")).json.providers[0].models)).toEqual(expected);
     // Not stored: the row says of tools only what its owner said, and nothing of what the catalogue reports.
     expect((await storedOf(created.id)).map((m) => [m.name, m.tools, "reportedTools" in m])).toEqual(expected.map(([name, tools]) => [name, tools, false]));
-    // Never accepted back.
+    // Never accepted back: not in an edit, not when a provider is created.
     expect((await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: [{ name: unsaid, reportedTools: true }] })).status).toBe(400);
+    expect((await create(owner, { name: "plain second", baseUrl: stub.baseUrl(), models: [{ name: unsaid }] })).status).toBe(201);
+    for (const key of ABILITIES) expect([key, (await create(owner, { name: `with ${key}`, baseUrl: stub.baseUrl(), models: [{ name: unsaid, [key]: true }] })).status]).toEqual([key, 400]);
+    expect((await api(app, owner, "GET", "/api/providers")).json.providers).toHaveLength(2);
     // A refresh that adds a name the catalogue knows: reported at once, nothing stored of tools.
     stub.answer(() => ({ status: 200, body: JSON.stringify({ data: [{ id: unsaid }, { id: "deepseek-reasoner" }] }) }));
     const refreshed = await api(app, owner, "POST", `/api/providers/${created.id}/models/refresh`);
@@ -536,9 +547,8 @@ describe("what the catalogue knows of a saved model reaches its owner beside wha
     const owner = await signUp(app, "echo");
     const created = await mustCreate(owner, { baseUrl: stub.baseUrl(), models: [{ name: able[0]! }, { name: able[1]! }, { name: "house-blend" }] });
     const before = await storedOf(created.id);
-    /** What the web form sends of a model it read (app/web/src/pages/Providers.jsx `wireModel`): the flags, the context, `tools` only when the view carried a boolean. */
-    const echo = (models: Array<Record<string, unknown>>) =>
-      models.map((m) => ({ name: m.name, vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, contextTokens: m.contextTokens, ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}) }));
+    /** What the web form sends of a model it read and whose box was left alone (app/web/src/pages/Providers.jsx `wireModel`): the flags, the context — never `tools`. */
+    const echo = (models: Array<Record<string, unknown>>) => models.map((m) => ({ name: m.name, vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, contextTokens: m.contextTokens }));
     const page = (await api(app, owner, "GET", "/api/providers")).json.providers[0].models as Array<Record<string, unknown>>;
     expect(page.map((m) => [m.reportedTools, "tools" in m])).toEqual([[true, false], [true, false], [undefined, false]]);
     expect((await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: echo(page) })).status).toBe(200);
@@ -550,6 +560,23 @@ describe("what the catalogue knows of a saved model reaches its owner beside wha
     // The failure found stays, shown as stored, with the catalogue's word beside it.
     expect((await storedOf(created.id)).map((m) => [m.name, m.tools])).toEqual([[able[0], false], [able[1], undefined], ["house-blend", undefined]]);
     expect(saved.json.models.map((m: Record<string, unknown>) => [m.tools, m.reportedTools])).toEqual([[false, true], [undefined, true], [undefined, undefined]]);
+  });
+
+  it("a save that says nothing of a model's tools keeps what is stored: a page read while it said true does not undo a failure found later, and a stored false stays false", async () => {
+    const owner = await signUp(app, "stale");
+    const created = await mustCreate(owner, { baseUrl: stub.baseUrl(), models: [{ name: able[0]!, tools: true }, { name: able[1]!, tools: false }, { name: able[2]!, tools: true }] });
+    const page = (await api(app, owner, "GET", "/api/providers")).json.providers[0].models as Array<Record<string, unknown>>;
+    expect(page.map((m) => m.tools)).toEqual([true, false, true]);
+    // The page stays open; a reply finds the first model unable after all.
+    expect(await db.tx((t) => markToolsOff(t, owner.id, created.id, able[0]!))).toBe(true);
+    // The page is saved for another change, with no word of tools (the boxes were not clicked).
+    const untouched = page.map((m) => ({ name: m.name, vision: true, pdf: m.pdf, reasoning: m.reasoning, contextTokens: m.contextTokens }));
+    const saved = await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: untouched });
+    expect(saved.status).toBe(200);
+    expect((await storedOf(created.id)).map((m) => [m.vision, m.tools])).toEqual([[true, false], [true, false], [true, true]]);
+    // A click is a word of its own: it is stored as sent.
+    const clicked = await api(app, owner, "PATCH", `/api/providers/${created.id}`, { models: untouched.map((m, i) => (i === 1 ? { ...m, tools: true } : m)) });
+    expect(clicked.json.models.map((m: Record<string, unknown>) => m.tools)).toEqual([false, true, true]);
   });
 
   it("a name that only starts with a known model's id is reported nothing: not reportedTools, not what it takes and answers with", async () => {

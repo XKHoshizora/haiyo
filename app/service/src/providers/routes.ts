@@ -87,7 +87,7 @@ const modelView = z.object({
   reasoning: z.boolean(),
   contextTokens: z.number(),
   reasoningLevels: levelsView.optional(),
-  /** What the catalogue says the model supports (only on a model that reasons and is known to it): kept apart from `reasoningLevels`, the levels in use. */
+  /** What the catalogue says the model supports (only on a model that reasons and that it lists itself — as named, or without its date — never by a prefix): kept apart from `reasoningLevels`, the levels in use. */
   reportedLevels: levelsView.optional(),
   /** Only what is stored (its owner's choice, a failure found, a success found); the catalogue's word is `reportedTools`. */
   tools: z.boolean().optional(),

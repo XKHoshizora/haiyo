@@ -57,7 +57,7 @@ export interface ModelHints extends NameHints, Abilities {
   label?: string;
   /** The catalogue's context, when it gives one (known models only; it need not lie within what a model may be saved with). */
   contextTokens?: number;
-  /** The levels the model's own lab offers, when the catalogue has them (known models only). */
+  /** The levels the model's own lab offers, when the catalogue has them (only for the model itself, like the abilities: not by prefix). */
   reasoningLevels?: ModelLevel[];
 }
 
@@ -149,11 +149,13 @@ for (const entry of CATALOG) index(undated(entry.id), entry);
  * by the longest id it starts with, followed by `-` (`claude-sonnet-5-5-thinking` is `claude-sonnet-5-5`) — unless the
  * name rules call it no chat model (`gpt-4o-mini-tts` is not `gpt-4o-mini`). Not found: the name rules, `known: false`.
  *
- * The abilities (`ABILITY_KEYS`) are answered only for the model itself — the name as it is, or without its `-latest`
- * and date — never for a name that merely starts with an id: `vision`, `reasoning` and the context of a prefix are
- * prefills its owner sees and edits, while an ability is shown as the catalogue's fact and is never stored, and nothing
- * says a variant has its base's (`o1-mini` never called tools as `o1` does; a relay's `gpt-4-all` is its own thing).
- * Such a model's tools are learned from its replies instead (providers/store.ts `markToolsOn`, `markToolsOff`).
+ * The abilities (`ABILITY_KEYS`) and the levels (`reasoningLevels`) are answered only for the model itself — the name as
+ * it is, or without its `-latest` and date — never for a name that merely starts with an id: `vision`, `pdf`, `reasoning`,
+ * the label and the context of a prefix are prefills its owner sees and edits, while an ability or the levels are shown as
+ * the catalogue's fact (the levels as `reportedLevels`, read each time a saved model is shown), and nothing says a variant
+ * has its base's (`o1-mini` never called tools as `o1` does, nor took its levels; a relay's `gpt-4-all` is its own thing).
+ * So whatever a page calls the catalogue's word is one kind of match. Such a model's tools are learned from its replies
+ * instead (providers/store.ts `markToolsOn`, `markToolsOff`), and it is offered every level.
  */
 export function modelHints(raw: string): ModelHints {
   const lower = raw.trim().toLowerCase();
@@ -175,7 +177,7 @@ export function modelHints(raw: string): ModelHints {
     known: true,
     label: entry.name,
     ...(entry.contextTokens === undefined ? {} : { contextTokens: entry.contextTokens }),
-    ...(entry.reasoningLevels === undefined ? {} : { reasoningLevels: entry.reasoningLevels }),
+    ...(itself?.reasoningLevels === undefined ? {} : { reasoningLevels: itself.reasoningLevels }),
     ...(itself === undefined ? {} : ABLE.get(itself.id)),
   };
 }

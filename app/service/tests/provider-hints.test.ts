@@ -12,8 +12,9 @@ import { expectLinear, LOADED_TIMEOUT_MS } from "./helpers/linear.ts";
 // What the snapshot's own entry says (tests/helpers/catalog.ts), not values copied from it: the catalogue is updated daily.
 const GPT_6_SOL = hintsOf(entryOf("gpt-6-sol"));
 const SONNET = hintsOf(entryOf("claude-sonnet-5-5"));
-/** The hints of a known model without what only an exact or undated match answers: what a variant by prefix gets. */
-const withoutAbilities = (hints: Record<string, unknown>) => Object.fromEntries(Object.entries(hints).filter(([key]) => !(ABILITY_KEYS as readonly string[]).includes(key)));
+/** The hints of a known model without what only an exact or undated match answers (the abilities, the levels): what a variant by prefix gets. */
+const withoutAbilities = (hints: Record<string, unknown>) =>
+  Object.fromEntries(Object.entries(hints).filter(([key]) => key !== "reasoningLevels" && !(ABILITY_KEYS as readonly string[]).includes(key)));
 
 describe("modelHints: the catalogue first", () => {
   it("an exact id, also behind a vendor prefix, in any case, with spaces around it", () => {
@@ -37,7 +38,8 @@ describe("modelHints: the catalogue first", () => {
   });
 
   it("else the longest id the name starts with, followed by - (a variant of a known model)", () => {
-    // The hints its owner edits are the known model's; what is shown as the catalogue's fact (the abilities) is not: see below.
+    // The hints its owner edits are the known model's; what is shown as the catalogue's fact (the abilities, the levels) is not: see below.
+    expect(SONNET.reasoningLevels).toBeDefined();
     expect(modelHints("claude-sonnet-5-5-thinking")).toEqual(withoutAbilities(SONNET));
     expect(modelHints("gpt-6-sol-free-20261101")).toEqual(withoutAbilities(GPT_6_SOL));
     // Only at a -: gpt-6-solar is not gpt-6-sol.
@@ -107,6 +109,20 @@ describe("modelHints: the catalogue first", () => {
       expect([name, hints.known, hints.label]).toEqual([name, true, entryOf(base).name]);
       // … and none of the abilities.
       expect([name, ABILITY_KEYS.filter((key) => key in hints)]).toEqual([name, []]);
+    }
+  });
+
+  it("the levels need the model itself too: o1-mini gets none from o1, so what is shown as the catalogue's (资料) means one kind of match", () => {
+    // Exact and undated: the entry's levels.
+    expect(entryOf("o1").reasoningLevels).toEqual(["low", "medium", "high"]);
+    for (const name of ["o1", "openai/O1", "o1-latest", "o1-2026-11-01"]) expect([name, modelHints(name).reasoningLevels]).toEqual([name, entryOf("o1").reasoningLevels]);
+    for (const name of ["claude-sonnet-5-5-20261101", "anthropic/claude-sonnet-5-5-latest"]) expect([name, modelHints(name).reasoningLevels]).toEqual([name, entryOf("claude-sonnet-5-5").reasoningLevels]);
+    // A prefix: the base lists levels, the variant is told none — while the older hints its owner edits still come from the base.
+    for (const [name, base] of [["o1-mini", "o1"], ["o1-preview", "o1"], ["o3-mini-high", "o3-mini"], ["claude-sonnet-5-5-thinking", "claude-sonnet-5-5"], ["openrouter/openai/gpt-6-sol-free", "gpt-6-sol"]] as const) {
+      const [hints, entry] = [modelHints(name), entryOf(base)];
+      expect([name, SNAPSHOT.some((e) => e.id === name.slice(name.lastIndexOf("/") + 1)), entry.reasoningLevels !== undefined]).toEqual([name, false, true]);
+      expect([name, "reasoningLevels" in hints]).toEqual([name, false]);
+      expect([name, hints.known, hints.label, hints.vision, hints.reasoning, hints.contextTokens]).toEqual([name, true, entry.name, entry.vision, entry.reasoning, entry.contextTokens]);
     }
   });
 

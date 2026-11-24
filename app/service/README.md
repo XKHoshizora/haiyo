@@ -1845,7 +1845,8 @@ Agent cannot be pointed at their provider (400).
   them (checked when the Agent is created or edited; a run sends the saved level, see Replies). Removing a model from the
   list, or narrowing its levels, does not change the Agents that use it.
   `reportedLevels` (read only, never accepted: a body that has it is 400): the levels the catalogue lists for this model (`modelHints`)
-  when it reasons and the catalogue knows it; absent otherwise. It is read when the provider is shown, not stored, so a model set to every
+  when it reasons and the catalogue lists the model itself (the name as it is, or without its `-latest` and date — never a name that
+  merely starts with a known id: `o1-mini` is not reported `o1`'s levels, see Hints, From the catalogue); absent otherwise. It is read when the provider is shown, not stored, so a model set to every
   level (no `reasoningLevels`) still shows what the catalogue lists for it and can be put back to it, also after a reload.
   `tools` (optional, a boolean): whether its replies may be offered tools (Agents and runs, Tools in a reply). Absent: not
   known yet, so they are — every model is given them until it is found unable. The service writes `false` itself the first
@@ -2025,10 +2026,12 @@ speech, image or video model…).
   turns thinking on and off or sets a token budget instead: then every level is right); and six abilities, each present
   only as `true` (absent: no, or the catalogue does not say): `reportedTools` (the catalogue's `tool_call`: its replies
   can call tools), `audioIn` and `videoIn` (audio, video among what it takes), `imageOut`, `videoOut` and `audioOut`
-  (images, video, audio among what it answers with). **These six are answered only for the model itself** — the name as
-  it is, or without its `-latest` and date — never for a name that merely starts with an id: `o1-mini` is not given
-  `o1`'s, a relay's `gpt-4-all` not `gpt-4`'s, `qwen-plus-anything` not `qwen-plus`'s (the hints above are still the
-  base model's: those are prefills its owner edits, an ability is shown as the catalogue's fact). An id two labs list
+  (images, video, audio among what it answers with). **These six and `reasoningLevels` are answered only for the model
+  itself** — the name as it is, or without its `-latest` and date — never for a name that merely starts with an id:
+  `o1-mini` is not given `o1`'s (neither its tools nor its levels), a relay's `gpt-4-all` not `gpt-4`'s,
+  `qwen-plus-anything` not `qwen-plus`'s (`vision`, `pdf`, `reasoning`, `chat`, `label` and `contextTokens` are still the
+  base model's: those are prefills its owner edits, while an ability or the levels are shown as the catalogue's fact —
+  so what a page calls the catalogue's word is always this one kind of match). An id two labs list
   has an ability only when both entries say so. A client adding a listed model does not save `tools` from
   `reportedTools`: the saved model shows `reportedTools` again by itself (Models, above), and its `tools` is learned
   from its replies.
@@ -2043,8 +2046,9 @@ speech, image or video model…).
 | `reasoning` | `gpt-5`, `gpt-6`, `gemini-2.5`, `gemini-3`, `thinking`, `reason`, `deepseek-r`, `qwq`, `-m2` or `-m3` (MiniMax's M series); or it starts with `o1`, `o3` or `o4` (so does its last `/` part: `openai/o3`); or `claude`, except `claude-2`, `claude-3-haiku`, `claude-3-opus`, `claude-3-sonnet`, `claude-3-5`, `claude-3.5` and `claude-instant` |
 
 **The daily catalogue update**: two files. The job is `.github/workflows/catalog-update.yml` on the development
-branch, a reusable workflow ("Model catalogue update (job)": `workflow_call` with the input `branch`, and
-`workflow_dispatch`); it names no branch itself. What starts it every day is a trigger on the default branch —
+branch, a reusable workflow ("Model catalogue update (job)": `workflow_call` with the required input `branch`, and no
+other way to start it — no button of its own, so it can never be started on, and commit to, the default branch); it
+names no branch itself and works on the one it is given. What starts it every day is a trigger on the default branch —
 `schedule` and `workflow_dispatch`, `permissions: contents: write`, one job that calls the job's file at the
 development branch and passes that branch's name — kept as `docs/dev/catalog-update-trigger.master.yml` until the
 owner puts it on `master` (`docs/dev/ci.md` says how, and how to run the update by hand meanwhile). The job checks out
@@ -2063,7 +2067,9 @@ committed. When one did: the service type check (`npx tsc --noEmit`) and the tes
 snapshot is committed to that branch — an ordinary push, never forced: a branch that moved meanwhile refuses it and the
 next day's run tries again —, the message's body saying what changed (`catalogSummary`: the counts, and up to 20 names
 each of the models added, removed and with changed abilities); when they fail, nothing is committed and the run fails.
-It uses the run's own `GITHUB_TOKEN` (`contents: write`, handed to the push step alone) and no other secret.
+It uses the run's own `GITHUB_TOKEN` (`contents: write`, named in the push step alone; the steps before it run on the
+same machine, so this keeps the token out of their reach as it is, not out of the reach of what they could leave behind
+for that step: `docs/dev/ci.md`, Limits) and no other secret.
 
 #### `POST /api/providers/:id/models/refresh`
 
