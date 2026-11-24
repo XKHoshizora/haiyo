@@ -326,6 +326,17 @@ describe("model and reasoning", () => {
     expect((await api(app, owner, "PATCH", `/api/agents/${id}`, { model: some, reasoning: "high" })).json).toMatchObject({ model: some, reasoning: "high" });
     expect(await api(app, owner, "PATCH", `/api/agents/${id}`, { reasoning: "medium" })).toEqual({ status: 400, json: { error: "invalid_request" } });
     expect((await api(app, owner, "PATCH", `/api/agents/${id}`, { reasoning: "low" })).json.reasoning).toBe("low");
+
+    // The model's list narrowed under a saved level: the saved level stays as it is (no read rewrites it), an edit of something
+    // else is taken, its runs are made at the nearest listed level below (models/resolve.ts `callLevel`, tests/models-resolve.test.ts), and an edit that names
+    // the level or the model is checked against the list again.
+    expect((await api(app, owner, "PATCH", `/api/agents/${id}`, { reasoning: "high" })).json.reasoning).toBe("high");
+    await db.query(`update providers set models = $2::jsonb where id = $1`, [mine, JSON.stringify([{ name: "some", vision: false, pdf: false, reasoning: true, contextTokens: 4000, reasoningLevels: ["low", "medium"] }])]);
+    expect((await api(app, owner, "GET", `/api/agents/${id}`)).json.reasoning).toBe("high");
+    expect((await api(app, owner, "PATCH", `/api/agents/${id}`, { intro: "another field" })).json).toMatchObject({ intro: "another field", reasoning: "high" });
+    expect(await api(app, owner, "PATCH", `/api/agents/${id}`, { reasoning: "high" })).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect(await api(app, owner, "PATCH", `/api/agents/${id}`, { model: some })).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect((await api(app, owner, "PATCH", `/api/agents/${id}`, { reasoning: "medium" })).json.reasoning).toBe("medium");
   });
 });
 

@@ -3153,7 +3153,8 @@ member of the group, the owner of another Agent there, anybody — gets the mess
   `SITE_MODELS` when the message is read, its `id` when it is no longer configured; never its upstream model name,
   address, key variable or prices. A provider model is `{"source": "provider", "model"}`: the model name you saved (no
   provider id, no address).
-- `reasoning`: the level the call was sent at — the Agent's when the model took it, else `none` (Calling a model) —,
+- `reasoning`: the level the call was sent at — the Agent's effective level: its saved one when the model listed it,
+  else the nearest listed level below it (Calling a model) —,
   recorded on the run when the call was admitted, so a later change to the Agent does not change it.
 - `points`: what you were charged for that run, a decimal string of points as money is on the wire: from the free
   allowance plus the balance, as `GET /api/usage` counts it (not what was forgiven); `"0"` on a provider model.
@@ -3918,10 +3919,14 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
   summary. With it, when the
   newest message would no longer fit whole, the passage is dropped first (the conversation part still starts after what it
   covers).
-- The reasoning level is the Agent's when the model allows it, else `none`. A provider model flagged `reasoning`
-  allows every level here, whatever its `reasoningLevels`: an Agent saved with a level its model has since stopped
-  listing keeps answering with that level (the run is not failed) until the Agent is edited, when the level is checked
-  again.
+- The reasoning level is the Agent's *effective* level (`callLevel`): its saved level when the model lists it, else the
+  nearest level below it that the model lists (order `none` < `low` < `medium` < `high` < `xhigh` < `max`), `none` when
+  there is none — `none` is always listed. One rule for site and provider models: a site model lists `none` and its
+  configured `reasoning`; a provider model `none` only, unless flagged `reasoning`: then `none` and its
+  `reasoningLevels` (every level when it lists none). So an Agent saved with a level its model has since stopped listing
+  keeps answering (the run is not failed), at a level the model lists, never at the one it dropped. The saved level is
+  not rewritten by a run or by a read: `GET /api/agents` shows what was saved, the app shows the effective level beside
+  the model's list, and an edit that names the model or the level is checked against the list again (400 otherwise).
 
 A reply's input estimate counts all of the above, attachments at their estimate. What settlement falls back on when no
 usage is reported is that estimate with its text corrected by the model's learned ratio (Metering, Token estimates); a

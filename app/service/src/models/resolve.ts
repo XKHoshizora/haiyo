@@ -17,9 +17,9 @@ export interface Resolved {
   contextTokens: number;
   vision: boolean;
   pdf: boolean;
-  /** The levels the model takes, `none` always among them; the call is sent `none` for any other. */
+  /** The levels the model lists, `none` always among them (a provider model's `reasoningLevels`; every level when it lists none). */
   reasoningAllowed: readonly ReasoningLevel[];
-  /** The level the call's output limit is sized for: the Agent's when the model takes it, else `none` (`callLevel`). */
+  /** The Agent's effective level (`callLevel`): what the call is sent at and its output limit is sized for. */
   reasoning: ReasoningLevel;
   /** Site models only. */
   price?: { inputMicroPerToken: number; outputMicroPerToken: number };
@@ -73,9 +73,15 @@ export async function modelUsable(q: Queryable, config: Pick<Config, "siteModels
   return (await modelsUsable(q, config, agent.ownerId, [agent.model]))[0]!;
 }
 
-/** The level a call is made at: `wanted` when the model takes it, else `none`. */
+/**
+ * An Agent's effective level, the one a call is made at: `wanted` (its saved level) when the model lists it, else the
+ * nearest listed level below it in `REASONING_LEVELS` order, `none` when none is — `none` is always there. The one rule,
+ * for site and provider models alike; the web shows the same (app/web/src/pages/ModelPicker.jsx `effectiveLevel`). The saved
+ * level is never rewritten by it.
+ */
 export function callLevel(allowed: readonly ReasoningLevel[], wanted: ReasoningLevel): ReasoningLevel {
-  return allowed.includes(wanted) ? wanted : "none";
+  for (let i = REASONING_LEVELS.indexOf(wanted); i > 0; i -= 1) if (allowed.includes(REASONING_LEVELS[i]!)) return REASONING_LEVELS[i]!;
+  return "none";
 }
 
 /**
@@ -147,7 +153,7 @@ export async function resolveModel(
   const provider = await loadProviderForCall(q, agent.ownerId, choice.providerId, config.providerKeySecret);
   const listed = provider ? listedOn(provider.models, choice.model) : undefined;
   if (!provider || !listed) return null;
-  const reasoningAllowed: readonly ReasoningLevel[] = listed.reasoning ? [...REASONING_LEVELS] : ["none"];
+  const reasoningAllowed: readonly ReasoningLevel[] = listed.reasoning ? REASONING_LEVELS.filter((level) => level === "none" || ((listed.reasoningLevels as readonly ReasoningLevel[] | undefined)?.includes(level) ?? true)) : ["none"];
   const reasoning = callLevel(reasoningAllowed, wanted);
   return {
     source: "provider",

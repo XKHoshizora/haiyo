@@ -11,7 +11,7 @@ import { ChevronLeft, Lock } from "../icons.js";
 import { AgentAppellations } from "./AgentAppellations.jsx";
 import { AvatarEditor } from "./AvatarEditor.jsx";
 import { useDecision } from "./AgentChatBits.jsx";
-import { LEVELS, ModelPicker, choiceList, modelKey, useModelSources } from "./ModelPicker.jsx";
+import { LEVELS, ModelPicker, choiceList, effectiveLevel, modelKey, useModelSources } from "./ModelPicker.jsx";
 import { refusalText, settled, useAction } from "./useAction.js";
 
 /** The prototype's two private-reply choices, by the service's `replyMode`. */
@@ -126,7 +126,8 @@ export function openAgentChat(state, dispatch, actions, conversationId, { replac
     dispatch({ type: "nav/openConv", convId: conversationId, replace });
     return;
   }
-  dispatch({ type: "nav", patch: { opening: { convId: conversationId } } });
+  // (`replace` waits with it: the chat takes the entry of the page that asked, as it would have at once.)
+  dispatch({ type: "nav", patch: { opening: { convId: conversationId, replace } } });
   actions.syncNow();
 }
 
@@ -286,7 +287,8 @@ export function AgentForm({ agent = null }) {
   const options = choiceList(sources, agent?.model ?? null, agent?.reasoning ?? "none");
   const choice = sources.status === "ready" ? options.find((o) => o.key === f.model) ?? null : null;
   const levels = choice?.levels ?? ["none"];
-  const reasoning = levels.includes(f.reasoning) ? f.reasoning : "none";
+  // The level shown is the one it runs at (`effectiveLevel`); the saved one (`f.reasoning`) is kept until I pick another.
+  const reasoning = effectiveLevel(levels, f.reasoning);
 
   // 主动参与群聊 is offered (and sent) only while the site has a judgement model; its level and amount only while it is on.
   // Without one, an Agent that has it on still shows the switch alone, saying why, so that it can be turned off: never on.
@@ -379,12 +381,11 @@ export function AgentForm({ agent = null }) {
     if (refusal?.code === "handle_taken") setRefusal(null);
   };
   const setModel = (key) => {
-    const next = options.find((o) => o.key === key);
-    const level = next?.levels.includes(f.reasoning) ? f.reasoning : "none";
     edited.current.add("model");
-    // A level the new model does not take is reset, and that is a change of mine too.
-    if (level !== f.reasoning) edited.current.add("reasoning");
-    setF((cur) => ({ ...cur, model: key, reasoning: level }));
+    // The level is not touched by it: `f.reasoning` stays the one saved or picked, and what shows (and is sent with a new model) is
+    // the level that runs on the model chosen now (`effectiveLevel`, above). So a model picked and the first picked again changes
+    // nothing, and the level I picked comes back on a model that lists it.
+    setF((cur) => ({ ...cur, model: key }));
   };
   const setPersona = (event) => {
     const value = event.target.value;
@@ -582,7 +583,7 @@ export function AgentForm({ agent = null }) {
             id={agent ? agent.id : null}
             onPick={pickAvatar}
             disabled={busy !== null}
-            hint={agent ? "支持 PNG、JPEG、WebP，不超过 20 MB；选好后可以拖动和缩放，保存后生效。" : undefined}
+            hint={agent ? "支持常见图片格式，不超过 20 MB；选好后可以拖动和缩放，保存后生效。" : undefined}
           />
           {avatarError && <p className="field-msg" role="alert">{avatarError}</p>}
         </div>

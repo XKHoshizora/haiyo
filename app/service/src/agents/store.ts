@@ -254,7 +254,8 @@ export async function countLiveAgents(q: Queryable, ownerId: string): Promise<nu
  * larger than the output limit its calls get (`providerDefaultMaxOutputTokens`; a site model's is checked when the
  * configuration loads), and allows `none` only, unless its `reasoning` flag is set: then `none` and its
  * `reasoningLevels` (every level when it lists none). With no model chosen yet any level is accepted (it is checked when
- * a model is chosen). A run does not check again (models/resolve.ts): a level its model no longer lists is still sent.
+ * a model is chosen). A run does not check again and never fails for it: it is made at the Agent's effective level
+ * (models/resolve.ts `callLevel`) — the saved one when the model still lists it, else the nearest listed level below it.
  */
 export async function assertModelChoice(
   q: Queryable,

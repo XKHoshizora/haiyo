@@ -197,7 +197,20 @@ const world2 = (alive) => () =>
     [...PRINCIPALS, agentPrincipal(AG1, "helper", "小助手")],
   );
 
-describe("a wider random walk keeps the same promises, and the drawn page is always the address", () => {
+/** The layouts a walk runs in: the media queries that match (none: wide, two panes). On a phone a tab is its section's list. */
+const LAYOUTS = [
+  ["two panes (wide)", []],
+  ["one column", ["(max-width: 860px)"]],
+  ["a phone", ["(max-width: 640px)", "(max-width: 860px)", "(pointer: coarse)"]],
+];
+describe.each(LAYOUTS)("a wider random walk keeps the same promises, and the drawn page is always the address: %s", (_layout, queries) => {
+  beforeEach(() => {
+    if (queries.length > 0) window.matchMedia = (query) => ({ matches: queries.includes(query), media: query, addEventListener() {}, removeEventListener() {} });
+  });
+  afterEach(() => {
+    delete window.matchMedia;
+  });
+
   const random = (seed) => {
     let x = seed;
     return () => {
@@ -217,7 +230,11 @@ describe("a wider random walk keeps the same promises, and the drawn page is alw
       api: { listProviders: vi.fn(async () => ({ providers: [providerOf(P1)] })), removeMember: vi.fn(async () => ({ ok: true })) },
       handlers: { agents: () => ({ agents: [agentOf(AG1)] }), models: () => MODELS },
     });
-    const rail = (name) => within(screen.getByRole("navigation", { name: "主导航" })).queryByRole("button", { name });
+    // (On a phone the tab bar is there on the lists only.)
+    const rail = (name) => {
+      const nav = screen.queryByRole("navigation", { name: "主导航" });
+      return nav ? within(nav).queryByRole("button", { name }) : null;
+    };
     const press = async (el) => {
       if (!el) return;
       fireEvent.click(el);
@@ -235,12 +252,15 @@ describe("a wider random walk keeps the same promises, and the drawn page is alw
     globalThis.__trail = trail;
     for (let i = 0; i < 16; i += 1) {
       const pick = Math.floor(rand() * 14);
+      let pressedTab = null;
       trail.push(`${pick}@${path()}`);
       if (pick <= 1) await press(screen.queryByText(["周末小组", "第二群", "小安"][Math.floor(rand() * 3)], { selector: ".list-col .row-name" }));
       else if (pick === 2) await press(screen.queryByRole("button", { name: "会话资料" }));
       else if (pick === 3) await press(screen.queryByRole("button", { name: "群资料" }));
-      else if (pick === 4) await press(rail([/^消息/, /^通讯录/, /^Agent/, /^设置/][Math.floor(rand() * 4)]) ?? null);
-      else if (pick === 5 && alive.size > 1) await remove(app, alive, [...alive][Math.floor(rand() * alive.size)]);
+      else if (pick === 4) {
+        pressedTab = rail([/^消息/, /^通讯录/, /^Agent/, /^设置/][Math.floor(rand() * 4)]);
+        await press(pressedTab);
+      } else if (pick === 5 && alive.size > 1) await remove(app, alive, [...alive][Math.floor(rand() * alive.size)]);
       else if (pick === 6) await back();
       else if (pick === 7) await forward();
       else if (pick === 8) await press(CLOSERS.map((re) => screen.queryByRole("button", { name: re })).find(Boolean) ?? within(document.querySelector(".side-col") ?? document.body).queryByRole("button", { name: "关闭" }));
@@ -259,6 +279,8 @@ describe("a wider random walk keeps the same promises, and the drawn page is alw
         }
       }
       drawnIsTheAddress();
+      // Where one pane shows, a tab pressed is its section's list, whatever was seen in that section before.
+      if (queries.length > 0 && pick === 4 && pressedTab) expect(["/", "/contacts", "/agents", "/settings"], `a tab leads to a list (${trail.join(" ")})`).toContain(path());
     }
     // Forward never lands on a page that is gone, and Back always ends at the first entry without growing the stack.
     for (let i = 0; i < 6; i += 1) {

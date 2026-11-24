@@ -20,6 +20,16 @@ export const LEVELS = [
 const ALL_LEVELS = LEVELS.map(([id]) => id);
 export const levelLabel = (level) => LEVELS.find(([id]) => id === level)?.[1] ?? level;
 
+/**
+ * An Agent's effective level on a model that lists `levels`: `wanted` (its saved level) when listed, else the nearest listed
+ * level below it, 不思考 when none is. The service's rule (app/service/src/models/resolve.ts `callLevel`: what a reply runs at),
+ * said once here for everything that shows or carries a level: the Agent's page, its form, and a model switched in a chat.
+ */
+export function effectiveLevel(levels, wanted) {
+  for (let i = ALL_LEVELS.indexOf(wanted); i > 0; i -= 1) if (levels.includes(ALL_LEVELS[i])) return ALL_LEVELS[i];
+  return "none";
+}
+
 export const PRIVACY_TEXT = "你与它的对话内容，包括发给它的图片和文件，会发送给所选模型的服务商。";
 
 /** A model choice as a `<select>` value: the same choice always gives the same key ("" for none). */
@@ -49,6 +59,17 @@ export function modelName(state, model) {
   if (model?.source === "site") return state.siteModels.find((m) => m.id === model.id)?.label ?? model.id;
   if (model?.source === "provider") return model.model;
   return null;
+}
+
+/**
+ * The level an Agent runs at, for its page: `effectiveLevel` on what its model lists as far as this client holds (the site's
+ * models; my providers once read) — its saved level while that is not known (a model that is gone, providers not read yet).
+ */
+export function agentLevel(state, agent) {
+  const { site, providers } = modelChoices(state);
+  const key = modelKey(agent.model);
+  const listed = key === "" ? null : [...site, ...providers.flatMap((p) => p.models)].find((c) => c.key === key);
+  return listed ? effectiveLevel(listed.levels, agent.reasoning) : agent.reasoning;
 }
 
 const lower = (text) => String(text ?? "").toLowerCase();
@@ -350,7 +371,7 @@ export function AgentModelSwitch({ agentId, shown = null, note = null }) {
   const choose = async (key) => {
     const next = options.find((o) => o.key === key && !o.stale);
     if (!next) return;
-    const reasoning = next.levels.includes(agent.reasoning) ? agent.reasoning : "none";
+    const reasoning = effectiveLevel(next.levels, agent.reasoning);
     setSaving(next.model);
     await run("model", () => settled(actions.patchAgent(agentId, { model: next.model, reasoning })), refusalText);
     setSaving(null);

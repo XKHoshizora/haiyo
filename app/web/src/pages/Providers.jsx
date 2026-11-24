@@ -160,7 +160,8 @@ const contextProblem = (text) => {
 /**
  * A model of the provider as the form holds it: the context as text ("" means the service's default), `levels` the
  * thinking levels it is offered with (null: every level), `reported` the levels the catalogue lists for it (what `levels` goes back to: the service
- * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too), and `tools` whether its replies may be offered tools as its entry says it
+ * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too; null for a model the catalogue does not
+ * know, whose levels its owner ticks one by one — its saved levels are its owner's word, never shown as the catalogue's), and `tools` whether its replies may be offered tools as its entry says it
  * (undefined: it says nothing — not known yet, so they are; the service may set it false when the model turns out unable).
  * `loadedTools` is that `tools` as the form read it (absent when the entry said nothing), never changed afterwards: `tools` is sent only
  * when it differs from it (`wireModel`).
@@ -175,7 +176,7 @@ const formModel = (m) => ({
   reasoning: Boolean(m.reasoning),
   context: Number.isFinite(m.contextTokens) ? String(m.contextTokens) : "",
   levels: m.reasoning ? modelLevels(m.reasoningLevels) : null,
-  reported: m.reasoning ? (modelLevels(m.reportedLevels) ?? modelLevels(m.reasoningLevels)) : null,
+  reported: m.reasoning ? modelLevels(m.reportedLevels) : null,
   ...(typeof m.tools === "boolean" ? { tools: m.tools, loadedTools: m.tools } : {}),
   ...reportedOf(m),
 });
@@ -366,6 +367,9 @@ function DeleteModal({ provider, onClose }) {
   );
 }
 
+/** The levels a model that thinks may list, in the service's order (不思考 is not one: it is always offered). */
+const LEVEL_IDS = ["low", "medium", "high", "xhigh", "max"];
+
 /** Whether the levels in use are the reported ones (the first option is checked only then; otherwise neither is, and a tap on either decides). */
 const sameLevels = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((level, i) => level === b[i]);
 
@@ -378,24 +382,56 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   const tooSmall = shownContext !== null && limit !== null && shownContext <= limit;
   const after = shownContext !== null ? [`上下文 ${grouped(shownContext)}${context === null ? "（默认）" : ""}`] : [];
   // What it can do is the marks' (the picker's own); what they cannot say stays here: the thinking levels it is used with, its context.
-  const thinking = model.reasoning && model.reported ? `思考档位：${model.levels ? model.levels.map(levelLabel).join("、") : "全部"}` : null;
+  const thinking = model.reasoning ? `思考档位：${model.levels ? model.levels.map(levelLabel).join("、") : "全部"}` : null;
   const marks = abilityMarks(model);
-  // A model the catalogue lists thinking levels for: the choice between those and every level, both ways open until it is saved.
-  const levelChoice =
-    model.reasoning && model.reported ? (
+  // A box of the unknown model's levels: ticked while the level is in use (no list: every level). All five ticked is every level again
+  // (nothing stored); the last ticked one stays (a model that thinks has a level — none at all is 支持思考 unticked).
+  const levelUsed = (level) => model.levels === null || model.levels.includes(level);
+  const toggleLevel = (level) => {
+    const next = LEVEL_IDS.filter((l) => (l === level ? !levelUsed(l) : levelUsed(l)));
+    if (next.length === 0) return;
+    onChange({ ...model, levels: next.length === LEVEL_IDS.length ? null : next });
+  };
+  // 思考档位, for every model that thinks. One the catalogue lists levels for: the choice between those and every level, both ways open
+  // until it is saved. One it does not know: every level by default, and a box for each to say otherwise (不思考 is always offered).
+  const levelChoice = !model.reasoning ? null : model.reported ? (
       <fieldset className="checks" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
         <legend>思考档位</legend>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={sameLevels(model.levels, model.reported)} onChange={() => onChange({ ...model, levels: model.reported })} onClick={() => !sameLevels(model.levels, model.reported) && onChange({ ...model, levels: model.reported })} />
-          <span>这个模型支持的档位（{model.reported.map(levelLabel).join("、")}）</span>
+          <span>资料里的档位</span>
         </label>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={model.levels === null} onChange={() => onChange({ ...model, levels: null })} />
           <span>全部档位</span>
         </label>
-        <small id={`${panelId}-levels-hint`} className="muted">档位不对或不全时，选全部档位。</small>
+        {/* The levels are named once, here. Levels in use that are neither choice (ticked by hand before the catalogue knew the model, or
+            the catalogue's list changed since) are named too: neither radio is chosen then, and the choice must not look lost. */}
+        <small id={`${panelId}-levels-hint`} className="muted">
+          {model.levels !== null && !sameLevels(model.levels, model.reported) && `现在用的是：${model.levels.map(levelLabel).join("、")}。`}
+          资料显示支持：{model.reported.map(levelLabel).join("、")}。档位不对或不全时，选全部档位。
+        </small>
       </fieldset>
-    ) : null;
+    ) : (
+      <fieldset className="checks level-checks" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
+        <legend>思考档位</legend>
+        {/* (It says nothing of the catalogue: for a model not saved as thinking the form does not know what the catalogue holds.) */}
+        <small id={`${panelId}-levels-hint`} className="muted">默认全部档位可选。这个模型不支持的，可以取消。</small>
+        <div className="level-boxes">
+          {LEVEL_IDS.map((level) => {
+            // The last one ticked stays: it says so itself (`aria-disabled`, described by the line), and still takes the focus.
+            const last = model.levels?.length === 1 && model.levels[0] === level;
+            return (
+              <label key={level}>
+                <input type="checkbox" checked={levelUsed(level)} aria-disabled={last || undefined} aria-describedby={last ? `${panelId}-levels-last` : undefined} onChange={() => toggleLevel(level)} />
+                <span>{levelLabel(level)}</span>
+              </label>
+            );
+          })}
+        </div>
+        {model.levels?.length === 1 && <small id={`${panelId}-levels-last`} className="muted">至少保留一个档位。不需要思考时，取消上面的「支持思考」。</small>}
+      </fieldset>
+    );
   const parts = [model.pdf && "能直接读 PDF", thinking, ...after].filter(Boolean);
   const contextHint = [
     `模型一次能读的内容，以 token 计，${grouped(CONTEXT_MIN)} 到 ${grouped(CONTEXT_MAX)}。`,

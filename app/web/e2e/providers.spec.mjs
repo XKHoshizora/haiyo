@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { test, expect } from "./support/fixtures.mjs";
 import { uniq } from "./support/accounts.mjs";
-import { createAgentUi, expectStored, goTo, sendText } from "./support/app.mjs";
+import { chooseModelUi, createAgentUi, expectStored, goTo, sendText } from "./support/app.mjs";
 import { canControlService } from "./support/control.mjs";
 import { STUB_MODELS, modelStub } from "./support/model-stub.mjs";
 import { capture } from "./support/shots.mjs";
@@ -180,4 +180,104 @@ test("keys typed into the form are sent once and kept nowhere; a save refused wi
   await ann.page.reload();
   await openProviders(ann.page);
   for (const key of keys) expect(await leftovers(ann.page)).not.toContain(key);
+});
+
+/** Where this run's pictures of the 高级 section go (`WEBNAV_SHOTS`: a folder outside the repository); none without it. */
+const LEVEL_SHOTS = process.env.WEBNAV_SHOTS?.trim() || null;
+
+test("思考档位 under 高级 for every model that thinks: one the catalogue does not know has five boxes, all ticked; two unticked and saved, the Agent form offers exactly the rest; one it knows has the reported set or 全部档位", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const page = ann.page;
+  const name = `档位供应商${uniq(4)}`;
+  const section = await openProviders(page);
+  await section.getByRole("button", { name: "添加供应商" }).click();
+  const add = page.getByRole("region", { name: "添加模型供应商" });
+  await add.getByLabel("名称", { exact: true }).fill(name);
+  await add.getByLabel("接口地址", { exact: true }).fill(NEVER_CALLED);
+  await add.getByLabel("密钥", { exact: true }).fill(fakeKey());
+  await add.getByRole("button", { name: "保存并选择模型", exact: true }).click();
+  const form = editForm(page);
+  // (The address is never called: the model list that opens by itself fails; the models are added by hand.)
+  const listing = page.getByRole("dialog");
+  await expect(listing).toBeVisible();
+  await listing.getByRole("button", { name: "关闭" }).click();
+  await expect(listing).toBeHidden();
+  for (const model of ["house-think", "o3-mini"]) {
+    await form.getByLabel("模型名称", { exact: true }).fill(model);
+    await form.getByRole("button", { name: "添加模型" }).click();
+  }
+  const rowOf = (model) => form.getByRole("list", { name: "模型列表" }).getByRole("listitem").filter({ hasText: model });
+  const thinks = (model) => rowOf(model).getByRole("checkbox", { name: /支持思考/ });
+  /** The row at 360 and at 1280: nothing sideways, and a picture of each when asked for. */
+  const shoot = async (model, label) => {
+    const before = page.viewportSize();
+    for (const width of [360, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      await rowOf(model).scrollIntoViewIfNeeded();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+      const box = await rowOf(model).locator(".model-panel").boundingBox();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+      if (LEVEL_SHOTS) await rowOf(model).screenshot({ path: `${LEVEL_SHOTS}/levels-${label}-${width}.png` });
+    }
+    await page.setViewportSize(before);
+  };
+
+  // A model the catalogue does not know, not thinking: no control. Ticked 支持思考: the line and five boxes, all ticked.
+  await rowOf("house-think").getByRole("button", { name: "高级设置：house-think" }).click();
+  const levels = rowOf("house-think").getByRole("group", { name: "思考档位：house-think" });
+  if (await thinks("house-think").isChecked()) await thinks("house-think").uncheck();
+  await expect(levels).toHaveCount(0);
+  await thinks("house-think").check();
+  await expect(levels).toContainText("默认全部档位可选。这个模型不支持的，可以取消。");
+  await expect(levels.getByRole("checkbox")).toHaveCount(5);
+  for (const label of ["低", "中", "高", "很高", "最高"]) await expect(levels.getByRole("checkbox", { name: label, exact: true })).toBeChecked();
+  // Each box's label is a 44 px target, at 360 too.
+  await page.setViewportSize({ width: 360, height: 800 });
+  for (const label of await levels.locator(".level-boxes label").all()) {
+    const box = await label.boundingBox();
+    expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(44);
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await shoot("house-think", "unknown-all");
+  await levels.getByRole("checkbox", { name: "很高", exact: true }).uncheck();
+  await levels.getByRole("checkbox", { name: "最高", exact: true }).uncheck();
+  await expect(rowOf("house-think")).toContainText("思考档位：低、中、高");
+  await shoot("house-think", "unknown-three");
+  await rowOf("o3-mini").getByRole("button", { name: "高级设置：o3-mini" }).click();
+  if (!(await thinks("o3-mini").isChecked())) await thinks("o3-mini").check();
+  await form.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(toast(page, "供应商已保存")).toBeVisible();
+
+  // Saved: the boxes are as they were left; the model the catalogue knows offers its reported levels (named) or every level.
+  await providerRow(section, name).getByRole("button", { name: "编辑" }).click();
+  await rowOf("house-think").getByRole("button", { name: "高级设置：house-think" }).click();
+  for (const [label, on] of [["低", true], ["中", true], ["高", true], ["很高", false], ["最高", false]]) {
+    expect(await levels.getByRole("checkbox", { name: label, exact: true }).isChecked()).toBe(on);
+  }
+  await rowOf("o3-mini").getByRole("button", { name: "高级设置：o3-mini" }).click();
+  const known = rowOf("o3-mini").getByRole("radiogroup", { name: "思考档位：o3-mini" });
+  await expect(known).toContainText("资料显示支持：低、中、高。");
+  await expect(known.getByRole("radio", { name: "资料里的档位", exact: true })).not.toBeChecked();
+  await expect(known.getByRole("radio", { name: "全部档位" })).toBeChecked();
+  await expect(rowOf("o3-mini").getByRole("checkbox", { name: "很高", exact: true })).toHaveCount(0);
+  await shoot("o3-mini", "known");
+  await form.getByRole("button", { name: "返回" }).click();
+
+  // The Agent form offers exactly what is left ticked (and 不思考), and every level for the model saved with 全部档位.
+  await goTo(page, "Agent");
+  await page.getByRole("button", { name: "创建 Agent", exact: true }).click();
+  const agentForm = page.getByRole("region", { name: "创建 Agent" });
+  const offered = async () => {
+    await agentForm.getByLabel("思考程度", { exact: true }).click();
+    const list = page.getByRole("listbox", { name: "思考程度", exact: true });
+    const texts = await list.getByRole("option").allTextContents();
+    await page.keyboard.press("Escape");
+    await expect(list).toBeHidden();
+    return texts.map((t) => t.trim());
+  };
+  await chooseModelUi(page, agentForm, "house-think");
+  expect(await offered()).toEqual(["不思考", "低", "中", "高"]);
+  await chooseModelUi(page, agentForm, "o3-mini");
+  expect(await offered()).toEqual(["不思考", "低", "中", "高", "很高", "最高"]);
 });

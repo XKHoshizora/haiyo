@@ -120,7 +120,7 @@ function GroupSettings({ conv }) {
             canRemove={Boolean(conv.avatar)}
             removedText="群头像已移除"
             removeErrorText={(e) => groupErrorText("avatar", e)}
-            hint="只有创建者可以修改。支持 PNG、JPEG、WebP，不超过 20 MB；不设置时显示成员头像的拼图。"
+            hint="只有创建者可以修改。支持常见图片格式，不超过 20 MB；不设置时显示成员头像的拼图。"
           />
         </>
       )}

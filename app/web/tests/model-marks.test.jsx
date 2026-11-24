@@ -97,6 +97,13 @@ describe("the price column", () => {
     const rules = parseCss(read("src/styles.css"));
     const decl = Object.assign({}, ...rulesFor(rules, '.model-mark[data-col="price"]::after', null).map((r) => r.decl));
     expect(decl).toMatchObject({ content: "attr(data-sizer)", visibility: "hidden" });
+    // The word is an element in the same grid cell as the sizer (a bare text node would fall to a second row under it: the chip empty, the word below).
+    const word = container.querySelector('.model-mark-free[data-col="price"] > .model-price-word');
+    expect(word?.textContent).toBe("免费");
+    // No price chip holds a bare text node (only an element can be given the cell).
+    for (const chip of container.querySelectorAll('[data-col="price"]')) expect([...chip.childNodes].filter((n) => n.nodeType === 3)).toEqual([]);
+    expect(Object.assign({}, ...rulesFor(rules, '.model-mark[data-col="price"] > .model-price-word', null).map((r) => r.decl))).toMatchObject({ "grid-area": "1 / 1" });
+    expect(Object.assign({}, ...rulesFor(rules, '.model-mark[data-col="price"]::after', null).map((r) => r.decl))).toMatchObject({ "grid-area": "1 / 1" });
     // (And no minimum width of its own to stand in for it.)
     expect(read("src/styles.css")).not.toMatch(/data-col="price"\][^{]*\{[^}]*min-width/);
   });

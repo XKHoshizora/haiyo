@@ -914,8 +914,8 @@ describe("the models of a provider", () => {
   it("a model that lists thinking levels offers a choice: the levels it reports, or every level; both ways are open before saving; unticking 支持思考 clears them", async () => {
     const levels = providerOf(P1, {
       models: [
-        { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] },
-        { name: "deep", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["max"] },
+        { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"], reportedLevels: ["low", "high"] },
+        { name: "deep", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["max"], reportedLevels: ["max"] },
       ],
     });
     const app = await openProviders({ providers: [levels] });
@@ -925,12 +925,12 @@ describe("the models of a provider", () => {
     expect(within(modelRow("gpt-x")).queryByRole("radiogroup")).toBeNull();
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
-    const reported = () => within(group()).getByRole("radio", { name: "这个模型支持的档位（低、高）" });
+    const reported = () => within(group()).getByRole("radio", { name: "资料里的档位" });
     const every = () => within(group()).getByRole("radio", { name: "全部档位" });
     expect(reported().checked).toBe(true);
     expect(every().checked).toBe(false);
     // What each means, in one line, and when to want every level.
-    expect(group().textContent).toContain("档位不对或不全时，选全部档位");
+    expect(group().textContent).toContain("资料显示支持：低、高。档位不对或不全时，选全部档位。");
     // No bare button that only goes one way.
     expect(within(modelRow("gpt-x")).queryByRole("button", { name: /全部档位/ })).toBeNull();
     await click(every());
@@ -961,7 +961,7 @@ describe("the models of a provider", () => {
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     expect(within(group).getByRole("radio", { name: "全部档位" }).checked).toBe(true);
-    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
+    await click(within(group).getByRole("radio", { name: "资料里的档位" }));
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
   });
@@ -1003,10 +1003,13 @@ describe("the models of a provider", () => {
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     // The list in use is not the catalogue's: neither option claims to be the choice until one is tapped.
-    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(false);
+    expect(within(group()).getByRole("radio", { name: "资料里的档位" }).checked).toBe(false);
     expect(within(group()).getByRole("radio", { name: "全部档位" }).checked).toBe(false);
-    await click(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }));
-    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(true);
+    // What is in use then is said in the control itself, not only in the row's summary: the choice was not lost.
+    expect(group().textContent).toContain("现在用的是：低、高。资料显示支持：低、中、高。档位不对或不全时，选全部档位。");
+    await click(within(group()).getByRole("radio", { name: "资料里的档位" }));
+    expect(group().textContent).not.toContain("现在用的是");
+    expect(within(group()).getByRole("radio", { name: "资料里的档位" }).checked).toBe(true);
     expect(modelRow("gpt-x").textContent).toContain("思考档位：低、中、高");
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
@@ -1018,18 +1021,106 @@ describe("the models of a provider", () => {
   });
 
   it("the reported levels are sent again when the choice is put back to them", async () => {
-    const levels = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+    const levels = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"], reportedLevels: ["low", "high"] }] });
     const app = await openProviders({ providers: [levels] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     await click(within(group).getByRole("radio", { name: "全部档位" }));
-    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
+    await click(within(group).getByRole("radio", { name: "资料里的档位" }));
     // (Something else changed too, so that there is something to save.)
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/能看图片/));
     await flush();
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: true, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+  });
+
+  describe("思考档位 of a model the catalogue does not know (no reportedLevels)", () => {
+    const unknown = (extra = {}) => providerOf(P1, { models: [{ name: "house-think", vision: false, pdf: false, reasoning: true, contextTokens: 64000, ...extra }, { name: "plain", vision: false, pdf: false, reasoning: false, contextTokens: 16000 }] });
+    const openForm = async (provider) => {
+      const app = await openProviders({ providers: [provider] });
+      await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+      await click(within(modelRow("house-think")).getByRole("button", { name: /高级/ }));
+      return app;
+    };
+    const group = () => within(modelRow("house-think")).getByRole("group", { name: "思考档位：house-think" });
+    const boxes = () => within(group()).getAllByRole("checkbox");
+    const ticked = () => boxes().filter((b) => b.checked).map((b) => b.closest("label").textContent);
+    const box = (name) => within(group()).getByRole("checkbox", { name });
+    const sent = (app) => app.api.patchProvider.mock.calls.at(-1)[1].models[0];
+
+    it("高级 always shows 思考档位: a plain line and five boxes 低 中 高 很高 最高, all ticked (every level); the ones left ticked are saved exactly", async () => {
+      const app = await openForm(unknown());
+      expect(within(modelRow("house-think")).queryByRole("radiogroup")).toBeNull();
+      // (The line claims nothing about the catalogue: the form cannot know what it holds for a model not saved as thinking.)
+      expect(group().textContent).toContain("默认全部档位可选。这个模型不支持的，可以取消。");
+      expect(group().textContent).not.toContain("资料");
+      expect(boxes().map((b) => b.closest("label").textContent)).toEqual(["低", "中", "高", "很高", "最高"]);
+      expect(ticked()).toEqual(["低", "中", "高", "很高", "最高"]);
+      expect(modelRow("house-think").textContent).toContain("思考档位：全部");
+      await click(box("很高"));
+      await click(box("最高"));
+      expect(ticked()).toEqual(["低", "中", "高"]);
+      expect(modelRow("house-think").textContent).toContain("思考档位：低、中、高");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(sent(app)).toEqual({ name: "house-think", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "medium", "high"] });
+    });
+
+    it("saved untouched it sends no levels; a saved subset shows as ticked, and all five ticked again is every level (no reasoningLevels)", async () => {
+      const app = await openForm(unknown({ reasoningLevels: ["low", "max"] }));
+      expect(ticked()).toEqual(["低", "最高"]);
+      // (A saved subset is not called the catalogue's: no 资料显示支持, no radios.)
+      expect(group().textContent).not.toContain("资料");
+      expect(within(modelRow("house-think")).queryByRole("radiogroup")).toBeNull();
+      await click(box("中"));
+      expect(ticked()).toEqual(["低", "中", "最高"]);
+      await click(box("高"));
+      await click(box("很高"));
+      expect(modelRow("house-think").textContent).toContain("思考档位：全部");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(sent(app)).toEqual({ name: "house-think", vision: false, pdf: false, reasoning: true, contextTokens: 64000 });
+    });
+
+    it("the last ticked level stays ticked, and a line says why", async () => {
+      const app = await openForm(unknown({ reasoningLevels: ["low", "high"] }));
+      expect(group().textContent).not.toContain("至少保留一个档位");
+      expect(boxes().map((b) => b.getAttribute("aria-disabled"))).toEqual([null, null, null, null, null]);
+      await click(box("低"));
+      expect(ticked()).toEqual(["高"]);
+      expect(group().textContent).toContain("至少保留一个档位。不需要思考时，取消上面的「支持思考」。");
+      // The one left says it cannot be unticked, and why, to whoever cannot see the line: it is its description.
+      expect(box("高").getAttribute("aria-disabled")).toBe("true");
+      expect(document.getElementById(box("高").getAttribute("aria-describedby")).textContent).toBe("至少保留一个档位。不需要思考时，取消上面的「支持思考」。");
+      expect(box("低").getAttribute("aria-disabled")).toBeNull();
+      await click(box("高"));
+      expect(ticked()).toEqual(["高"]);
+      // (It stays focusable and the others can be ticked again, which frees it.)
+      expect(box("高").disabled).toBe(false);
+      await click(box("中"));
+      expect(box("高").getAttribute("aria-disabled")).toBeNull();
+      await click(box("中"));
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(sent(app).reasoningLevels).toEqual(["high"]);
+    });
+
+    it("unticking 支持思考 hides it (and sends no levels); ticking a model that did not think shows it, every level ticked", async () => {
+      const app = await openForm(unknown({ reasoningLevels: ["low"] }));
+      fireEvent.click(within(modelRow("house-think")).getByLabelText(/支持思考/));
+      await flush();
+      expect(within(modelRow("house-think")).queryByRole("group", { name: "思考档位：house-think" })).toBeNull();
+      expect(modelRow("house-think").textContent).not.toContain("思考档位");
+      await click(within(modelRow("plain")).getByRole("button", { name: /高级/ }));
+      expect(within(modelRow("plain")).queryByRole("group", { name: "思考档位：plain" })).toBeNull();
+      fireEvent.click(within(modelRow("plain")).getByLabelText(/支持思考/));
+      await flush();
+      const plain = within(modelRow("plain")).getByRole("group", { name: "思考档位：plain" });
+      expect(within(plain).getAllByRole("checkbox").map((b) => b.checked)).toEqual([true, true, true, true, true]);
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(app.api.patchProvider.mock.calls.at(-1)[1].models).toEqual([
+        { name: "house-think", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "plain", vision: false, pdf: false, reasoning: true, contextTokens: 16000 },
+      ]);
+    });
   });
 });
 

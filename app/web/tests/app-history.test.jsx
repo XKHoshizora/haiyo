@@ -4,7 +4,9 @@
 // width is no input. First the mapping (a table), then every transition of the review's C1, C2, I1, I2, I3 on jsdom's history.
 import React, { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { A1, AG1, ANN, D1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, direct, syncOf, wire } from "./fixtures.js";
+import { flush, installBrowser, openApp } from "./harness.jsx";
 import { PAGE_KEYS, addressOf, keyOf, navOfAddress, parentOf } from "../src/state/location.js";
 import { goUp, useAppHistory } from "../src/state/appHistory.js";
 import { Modal } from "../src/ui/primitives.jsx";
@@ -413,7 +415,7 @@ describe("the viewer is a key of the entry", () => {
 import { NAV_KEYS } from "../src/state/location.js";
 import { reducer } from "../src/state/reducer.js";
 import { emptyState } from "../src/data/store.jsx";
-import { lastPageOf, forgetSections } from "../src/state/appHistory.js";
+import { lastPageOf, forgetSections, sectionRoot } from "../src/state/appHistory.js";
 
 const ALIVE = { convs: { [C1]: { type: "group" }, [C2]: { type: "group" } }, people: {}, agents: {}, providers: {} };
 
@@ -496,7 +498,7 @@ describe("the page-deciding keys equal their address after every move", () => {
     expect(addressOf(state.nav)).toEqual({ path: `/chat/${C2}`, overlay: null });
   });
 
-  it("N1: a section click goes to the last address seen in it (and to its list when it was left on the list)", async () => {
+  it("N1, where two panes show (wide): a section click goes to the last address seen in it (and to its list when it was left on the list)", async () => {
     forgetSections();
     expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "list", convId: null });
     render(<Probe />);
@@ -509,6 +511,22 @@ describe("the page-deciding keys equal their address after every move", () => {
     expect(at()).toBe(`/chat/${C1}`);
     await go({ pane: "list", convId: null }); // back at the list: that is where the section was left
     expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "list", convId: null });
+  });
+
+  it("N1, where one pane shows (a phone, one column): `sectionRoot` is each section's list, and does not forget what was seen in it last", async () => {
+    forgetSections();
+    render(<Probe />);
+    await settle();
+    await go(chatOf(C1));
+    await go({ section: "agents", pane: "main", agentId: AG, agentView: "detail" });
+    await go({ section: "settings", pane: "main", settingsPage: "providers", providerId: "new" });
+    expect(sectionRoot("chat")).toMatchObject({ section: "chat", pane: "list", convId: null, detailsOpen: false });
+    expect(sectionRoot("contacts")).toMatchObject({ section: "contacts", pane: "list", contactId: null });
+    expect(sectionRoot("agents")).toMatchObject({ section: "agents", pane: "list", agentId: null, agentView: "detail" });
+    expect(sectionRoot("settings")).toMatchObject({ section: "settings", pane: "list", providerId: null });
+    for (const [section, path] of [["chat", "/"], ["contacts", "/contacts"], ["agents", "/agents"], ["settings", "/settings"]]) expect(addressOf({ ...BASE, ...sectionRoot(section) }).path).toBe(path);
+    // (The wide layout's answer is not forgotten by it: the last page of the section is still what was seen.)
+    expect(lastPageOf("chat", ALIVE)).toMatchObject({ pane: "main", convId: C1 });
   });
 
   it("the providers form is an address: /settings/providers/new and /settings/providers/<id>", () => {
@@ -528,5 +546,98 @@ describe("a dialog does not outlive the page that is not drawn", () => {
     rects.mockReturnValue([]);
     act(() => window.dispatchEvent(new Event("resize")));
     expect(close).toHaveBeenCalledTimes(1);
+  });
+});
+
+// N1 on the real shell (the rail and the tab bar themselves, not the helper they call): every section is left on a page of its own in
+// the wide layout — where a tab answers that page, which the test checks first — and then the window narrows. A tab that still opened
+// the last page there fails here.
+describe("N1 on the real rail: the same sections, wide and then narrowed", () => {
+  const ONE_COLUMN = "(max-width: 860px)";
+  let narrow;
+  beforeEach(() => {
+    installBrowser();
+    forgetSections();
+    // A window whose media queries answer from a list that can change, telling whoever listens.
+    let on = [];
+    const listeners = new Set();
+    window.matchMedia = (query) => ({
+      get matches() {
+        return on.includes(query);
+      },
+      media: query,
+      addEventListener: (_type, listener) => listeners.add(listener),
+      removeEventListener: (_type, listener) => listeners.delete(listener),
+    });
+    narrow = async (queries) => {
+      on = queries;
+      await act(async () => listeners.forEach((listener) => listener()));
+      await flush();
+    };
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    delete window.matchMedia;
+  });
+
+  const sync = () =>
+    syncOf(
+      [direct(D1, ANN, { lastSeq: 1, readSeq: 1 }), agentConv(A1, AG1)],
+      [wire(D1, 1, ANN, "早"), wire(A1, 1, AG1, "你好")],
+      [...PRINCIPALS, agentPrincipal(AG1, "helper", "小助手")],
+    );
+  const nav = () => screen.getByRole("navigation", { name: "主导航" });
+  const tab = (name) => within(nav()).getByRole("button", { name });
+  const press = async (el) => {
+    fireEvent.click(el);
+    await flush();
+  };
+  const row = (name) => screen.getByText(name, { selector: ".list-col .row-name" });
+  const here = () => window.location.pathname;
+  const pane = () => document.querySelector(".app").dataset.pane;
+
+  /** Wide: a conversation, an Agent's page and a settings page are open in their sections; the person is on 通讯录. */
+  const leaveEachSectionOnAPage = async () => {
+    await openApp({ sync, handlers: { agents: () => ({ agents: [agentOf(AG1)] }), models: () => MODELS } });
+    await press(row("小安"));
+    expect(here()).toBe(`/chat/${D1}`);
+    await press(tab(/^Agent/));
+    await press(row("小助手"));
+    expect(here()).toBe(`/agents/${AG1}`);
+    await press(tab(/^设置/));
+    await press(row("模型供应商"));
+    expect(here()).toBe("/settings/providers");
+    await press(tab(/^通讯录/));
+    expect(here()).toBe("/contacts");
+  };
+  const LAST = [[/消息$/, `/chat/${D1}`], [/^Agent/, `/agents/${AG1}`], [/^设置/, "/settings/providers"]];
+  const LISTS = [[/消息$/, "/"], [/^Agent/, "/agents"], [/^设置/, "/settings"], [/^通讯录/, "/contacts"]];
+
+  it("wide: each tab answers the page its section was left on (the control: these are the pages a narrow layout must not open)", async () => {
+    await leaveEachSectionOnAPage();
+    for (const [name, path] of LAST) {
+      await press(tab(name));
+      expect(here(), String(name)).toBe(path);
+      expect(pane()).toBe("main");
+      await press(tab(/^通讯录/));
+    }
+  });
+
+  it.each([
+    ["a phone", ["(max-width: 640px)", "(pointer: coarse)", ONE_COLUMN]],
+    ["one column", [ONE_COLUMN]],
+  ])("narrowed to %s: each tab answers its section's list, with the navigation still there, and tapped again stays", async (_name, queries) => {
+    await leaveEachSectionOnAPage();
+    await narrow(queries);
+    for (const [name, path] of LISTS) {
+      await press(tab(name));
+      expect(here(), String(name)).toBe(path);
+      expect(pane(), String(name)).toBe("list");
+      expect(tab(name).getAttribute("aria-current")).toBe("page");
+      const index = window.history.state.index;
+      await press(tab(name));
+      expect(here()).toBe(path);
+      expect(window.history.state.index).toBe(index);
+    }
   });
 });

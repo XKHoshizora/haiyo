@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ANN, BO, D1, G1, ME, ME_ID, apiError, deferred, direct, emptySocial, fakeFile, group, syncOf, wire } from "./fixtures.js";
 import { decodeAvatar, fake, resetFake } from "./avatar-fake.js";
-import { DORA, NOW, PEOPLE, button, click, dialog, flush, goContacts, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
+import { DORA, NOW, PEOPLE, button, click, dialog, elapse, flush, goContacts, inMain, installBrowser, mainText, openApp, toastText } from "./harness.jsx";
 
 beforeEach(() => {
   resetFake();
@@ -219,31 +219,75 @@ describe("avatar", () => {
     await flush();
   };
 
-  it("refuses a file that is not PNG, JPEG or WebP, or is over 20 MB, without a dialog or a request", async () => {
+  it("refuses a file that is not a picture, or is over 20 MB, without a dialog or a request — in the line under the buttons and in a notice nobody can miss", async () => {
     const uploadAvatar = vi.fn(async () => ({ ok: true }));
     await openApp({ sync: baseSync, api: { uploadAvatar } });
     await goSettings();
-    await choose(fakeFile("a.gif", 100, "image/gif"));
-    expect(screen.getByText("头像需要是 PNG、JPEG 或 WebP 格式的图片。")).toBeTruthy();
-    await choose(fakeFile("a.svg", 100, "image/svg+xml"));
-    expect(screen.getByText("头像需要是 PNG、JPEG 或 WebP 格式的图片。")).toBeTruthy();
+    const line = () => document.querySelector(".avatar-editor .field-msg");
+    expect(line()).toBeNull();
+    await choose(fakeFile("a.pdf", 100, "application/pdf"));
+    expect(line().textContent).toBe("这个文件不是图片，请换一张。");
+    // (Read out once: the notice speaks; the line that stays is not a second alert.)
+    expect(line().getAttribute("role")).toBeNull();
+    expect(toastText()).toBe("这个文件不是图片，请换一张。");
+    // The same file picked again is refused again where it cannot be missed: a new notice, not the old one left standing.
+    const first = document.querySelector(".toast");
+    await elapse(60_000);
+    expect(document.querySelector(".toast")).toBeNull();
+    expect(line().textContent).toBe("这个文件不是图片，请换一张。");
+    await choose(fakeFile("a.pdf", 100, "application/pdf"));
+    expect(toastText()).toBe("这个文件不是图片，请换一张。");
+    expect(document.querySelector(".toast")).not.toBe(first);
+    expect(line().textContent).toBe("这个文件不是图片，请换一张。");
+    await choose(fakeFile("notes.txt", 100, ""));
+    expect(line().textContent).toBe("这个文件不是图片，请换一张。");
     await choose(fakeFile("big.png", 20 * 1024 * 1024 + 1, "image/png"));
-    expect(screen.getByText("图片不能超过 20 MB。")).toBeTruthy();
+    expect(line().textContent).toBe("图片不能超过 20 MB。");
+    expect(toastText()).toBe("图片不能超过 20 MB。");
+    await choose(fakeFile("IMG_0101.HEIC", 20 * 1024 * 1024 + 1, "image/heic"));
+    expect(line().textContent).toBe("图片不能超过 20 MB。");
     expect(dialogOf()).toBeNull();
     expect(decodeAvatar).not.toHaveBeenCalled();
     expect(uploadAvatar).not.toHaveBeenCalled();
+    // A picture picked after a refusal opens the dialog, and the refusal is gone from the line.
+    await choose(png());
+    expect(dialogOf()).toBeTruthy();
+    expect(line()).toBeNull();
   });
 
-  it("opens the adjust dialog for PNG, JPEG and WebP up to exactly 20 MB, and a file whose type is unknown but whose name says so", async () => {
+  it("the picker offers every picture (an iPhone's photos are HEIC) and the line under it says what is true", async () => {
     await openApp({ sync: baseSync, api: { uploadAvatar: vi.fn() } });
     await goSettings();
-    for (const file of [png(20 * 1024 * 1024), fakeFile("a.jpg", 10, "image/jpeg"), fakeFile("a.webp", 10, "image/webp"), fakeFile("a.JPEG", 10, "")]) {
+    expect(fileBox().getAttribute("accept")).toBe("image/*");
+    expect(document.querySelector(".avatar-editor .field-hint").textContent).toBe("支持常见图片格式，不超过 20 MB；选好后可以拖动和缩放。");
+  });
+
+  it("opens the adjust dialog at the first pick for any picture up to exactly 20 MB — PNG, JPEG, WebP, an iPhone's HEIC, a GIF — and a file whose type is unknown but whose name says so", async () => {
+    await openApp({ sync: baseSync, api: { uploadAvatar: vi.fn() } });
+    await goSettings();
+    const files = [png(20 * 1024 * 1024), fakeFile("a.jpg", 10, "image/jpeg"), fakeFile("a.webp", 10, "image/webp"), fakeFile("a.JPEG", 10, ""), fakeFile("IMG_0101.HEIC", 10, "image/heic"), fakeFile("IMG_0102.heif", 10, "image/heif"), fakeFile("IMG_0103.HEIC", 10, ""), fakeFile("a.gif", 10, "image/gif")];
+    for (const file of files) {
       await choose(file);
-      expect(dialogOf()).toBeTruthy();
+      expect(dialogOf(), file.name).toBeTruthy();
+      expect(decodeAvatar).toHaveBeenLastCalledWith(file);
       await click(dialogButton("取消"));
       expect(dialogOf()).toBeNull();
     }
-    expect(decodeAvatar).toHaveBeenCalledTimes(4);
+    expect(decodeAvatar).toHaveBeenCalledTimes(files.length);
+  });
+
+  it("a picture this browser cannot read (a HEIC outside Safari): the dialog says so, and another can be picked", async () => {
+    await openApp({ sync: baseSync, api: { uploadAvatar: vi.fn() } });
+    await goSettings();
+    fake.fail = "这张图片无法读取，请换一张。";
+    await choose(fakeFile("IMG_0101.HEIC", 10, "image/heic"));
+    expect(within(dialog()).getByRole("alert").textContent).toBe("这张图片无法读取，请换一张。");
+    await click(dialogButton("知道了"));
+    expect(dialogOf()).toBeNull();
+    fake.fail = null;
+    await choose(png());
+    expect(dialogOf()).toBeTruthy();
+    expect(within(dialog()).queryByRole("alert")).toBeNull();
   });
 
   it("uploads what the dialog saved, never the picked file, and gives my avatar a new version", async () => {
