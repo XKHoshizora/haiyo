@@ -175,6 +175,8 @@ const agentView = z.object({
   proactiveBudget: z.string(),
   /** What its proactive replies cost today (settled plus held, decimal points): the owner's view only. */
   proactiveSpentToday: z.string(),
+  /** The site's operator turned it off (`agent:disable`): it answers nobody but its owner until it is turned on again. The owner's view only. */
+  operatorDisabled: z.boolean(),
   memory: z.boolean(),
   memoryAsk: z.boolean(),
   sharedNotes: z.boolean(),
@@ -224,6 +226,7 @@ const toView = (a: AgentRow, used: { answers: number; pointsMicro: bigint; proac
   proactiveLevel: a.proactiveLevel,
   proactiveBudget: formatPoints(a.proactiveBudgetMicro),
   proactiveSpentToday: formatPoints(used.proactiveMicro),
+  operatorDisabled: a.operatorDisabled,
   memory: a.memory,
   memoryAsk: a.memoryAsk,
   sharedNotes: a.sharedNotes,

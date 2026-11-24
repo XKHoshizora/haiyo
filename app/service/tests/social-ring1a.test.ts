@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { optionsFor } from "../src/agents/proactive/candidates.ts";
 import { NOTHING } from "../src/agents/runtime/port.ts";
 import { disableAgent } from "../src/social/reports.ts";
+import { createWhisper } from "../src/whispers/store.ts";
 import { reach } from "../src/social/reach.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { markOf, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -467,10 +468,54 @@ describe("I1a.6: the switch off leaves groups byte for byte as they are, and ref
       const sync = (await api(app, w.owner, "GET", "/api/sync")).json;
       expect(sync.social).toEqual({ enabled: false });
       expect((await api(app, w.owner, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
+      // Nobody stopped anybody here: there is nothing to resume, and no new stop can be made.
+      expect((await resume(w.owner, w.v)).status).toBe(404);
     });
     // On again: nothing answers the old message.
     expect(await app.agentPort.claimNext()).toBeNull();
     expect(await textsOf(w.conv, w.agent.id)).toEqual([]);
+  });
+});
+
+describe("fix round 1, I4: a stop its setter made can always be seen and undone by them, whatever the switch says", () => {
+  it("switch on, 停止往来; switch off: it still refuses in the group, the setter still reads it and lifts it (恢复往来), no new stop can be made, and nothing else of Agent social answers", async () => {
+    const w = await grouped();
+    expect((await stop(w.owner, w.v)).status).toBe(200);
+    await switchedOff(async () => {
+      // The stop is the person's own protective act: it holds while it exists.
+      await say(w.v, w.g, `${w.at} 在吗`);
+      expect((await runsOf(w.y.id, w.g)).length).toBe(0);
+      // Its setter reads it; the stopped person reads nothing of it.
+      const listed = (await api(app, w.owner, "GET", "/api/me/others-use")).json.stopped as Array<{ person: { id: string; handle: string }; since: string }>;
+      expect(listed.map((r) => r.person.id)).toEqual([w.v.id]);
+      expect((await api(app, w.v, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
+      // No NEW stop while the switch is off, by anyone; and the rest of Agent social stays shut.
+      expect((await stop(w.owner, w.w)).status).toBe(404);
+      expect((await stop(w.v, w.owner)).status).toBe(404);
+      expect((await add(w.w, w.y.id)).status).toBe(404);
+      expect((await api(app, w.owner, "GET", `/api/agents/${w.y.id}/contacts`)).status).toBe(404);
+      expect((await api(app, w.owner, "GET", "/api/sync")).json.social).toEqual({ enabled: false });
+      // Only the setter lifts it; then it is gone from the list, a second lift has nothing to lift, and the person is answered again.
+      expect((await resume(w.v, w.owner)).status).toBe(404);
+      expect((await resume(w.owner, w.v)).status).toBe(200);
+      expect((await api(app, w.owner, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
+      expect((await resume(w.owner, w.v)).status).toBe(404);
+      await say(w.v, w.g, `${w.at} 现在呢`);
+      expect((await runsOf(w.y.id, w.g)).length).toBe(1);
+      gateway.reply("在的");
+      expect(await app.agentWorker.runOnce()).toBe(true);
+    });
+  });
+});
+
+describe("fix round 1, m17: no whisper can be made in a social conversation", () => {
+  it("createWhisper stores nothing and answers null there, for the owner who watches (the same call in the Agent's own conversation makes one)", async () => {
+    const w = await visited();
+    const body = { text: "只给主人", actions: ["dismiss"] as const };
+    const made = (conversationId: string) => db.tx((t) => createWhisper(t, { conversationId, ownerId: w.owner.id, agentId: w.agent.id, kind: "tools_off", body: { ...body, actions: [...body.actions] } }));
+    expect(await made(w.conv)).toBeNull();
+    expect((await db.query("select 1 from whispers where conversation_id = $1", [w.conv])).rowCount).toBe(0);
+    expect(await made(w.agent.conversationId)).not.toBeNull();
   });
 });
 
@@ -489,8 +534,7 @@ describe("I1a.7: the stopped list end to end (M-V6)", () => {
     expect(((await api(app, w.owner, "GET", "/api/me/others-use")).json.stopped as typeof listed)[0]!.since).toBe(listed[0]!.since);
     const refused = await add(w.v, w.agent.id);
     expect([refused.status, refused.json.error]).toEqual([429, "cooldown"]);
-    expect((await switchedOff(() => api(app, w.owner, "GET", "/api/me/others-use"))).json.stopped).toEqual([]);
-
+    // (With the switch off the owner still reads their own stop: the test below.)
     expect((await resume(w.owner, w.v)).status).toBe(200);
     expect((await api(app, w.owner, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
     expect((await resume(w.owner, w.v)).status).toBe(404);

@@ -172,6 +172,9 @@ describe("the operator's disable and enable", () => {
     expect(await reach(db, w.visitor.id, w.agent.id, "group", on)).toBe("gone");
     expect(await reach(db, w.owner.id, w.agent.id, "social", on)).toBe("ok");
     expect((await api(app, w.stranger, "GET", `/api/principals/lookup?handle=${handle}`)).status).toBe(404);
+    // m5 (fix round 1): its owner is told, on the owner's own shape of the Agent; nobody else is sent the key.
+    expect((await api(app, w.owner, "GET", `/api/agents/${w.agent.id}`)).json.operatorDisabled).toBe(true);
+    expect(JSON.stringify((await api(app, w.visitor, "GET", "/api/sync")).json)).not.toContain("operatorDisabled");
     expect(await runOf(r.socialRunning)).toMatchObject({ status: "running", interrupted: "access_ended" });
     // (In a group a reply that ends so ends quietly, with no error: `access_ended` is a social run's.)
     expect(await runOf(r.groupQueued)).toMatchObject({ status: "cancelled", error: null });
@@ -235,6 +238,24 @@ describe("what the README says of a disable (A-4 review I1; the integration: tes
     expect(text).toContain("answers nobody but its owner, in a group too");
     expect(text).toContain("with no error in a group");
     expect(text).not.toContain("B5b");
+  });
+});
+
+describe("one open report per reporter and Agent (fix round 1, m7)", () => {
+  it("reporting the same Agent again while the first report is open makes no second row and answers with the first one's id; another person's is its own; after it is closed a new one is made", async () => {
+    const w = await world();
+    const first = await report(w.visitor, { agentId: w.agent.id, reason: "spam", note: "一" });
+    expect(first.status).toBe(201);
+    const again = await report(w.visitor, { agentId: w.agent.id, reason: "harassment", note: "二" });
+    expect([again.status, again.json.id]).toEqual([201, first.json.id]);
+    expect((await reports(w.agent.id)).map((r) => [r.reporter_id, r.reason, r.note])).toEqual([[w.visitor.id, "spam", "一"]]);
+    expect((await report(w.owner, { agentId: w.agent.id, reason: "other" })).status).toBe(201);
+    expect(await reports(w.agent.id)).toHaveLength(2);
+    await db.query("update agent_reports set handled_at = now(), outcome = 'dismissed' where id = $1", [first.json.id]);
+    const later = await report(w.visitor, { agentId: w.agent.id, reason: "privacy" });
+    expect(later.status).toBe(201);
+    expect(later.json.id).not.toBe(first.json.id);
+    expect(await reports(w.agent.id)).toHaveLength(3);
   });
 });
 

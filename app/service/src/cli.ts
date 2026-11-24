@@ -12,13 +12,13 @@ import { CHANGE_KEEP_DAYS, sweepMemoryChanges } from "./memory/sweep.ts";
 import { expireWhispers, removeOldWhispers, WHISPER_KEEP_DAYS, WHISPER_OPEN_DAYS } from "./whispers/store.ts";
 import { deliverReminders } from "./metering/reminders.ts";
 import { askHidden } from "./prompt.ts";
-import { runMigrations, undoMigration } from "./migrate.ts";
+import { CONFIRM_FLAG, DOWN_REMOVES, PRODUCTION_FLAG, runMigrations, undoMigration } from "./migrate.ts";
 
 loadDotenv({ quiet: true });
 applyConnectTuning(); // the sweep reaches an S3 endpoint and every command a database: the same allowance as the service
 
 const USAGE =
-  "usage: cli.ts migrate | migrate:down --name <the last migration applied, e.g. 074_others_step_l> | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
+  "usage: cli.ts migrate | migrate:down --name <the last migration applied> [--i-understand-this-deletes-data] [--in-production] (the take-back of a deploy: README, Deployment) | invite:create [--ttl-hours <n>] [--uses <n>] | invite:list | invite:revoke --prefix <hash prefix> | inbox:list [--to <email>] | mail:status | attachments:sweep [--older-than <minutes>] | " +
   "credits:grant --handle <h> --points <n> [--note <text>] | credits:show --handle <h> | tier:set --handle <h> --tier <name> | models:list | memory:stats [--days <n>] | " +
   "demo:seed --email <address> [--handle <h>] [--name <text>] (password from DEMO_PASSWORD or asked) | " +
   "agent:disable <full handle> | agent:enable <full handle> | reports:list [--open] | reports:close <id prefix> --outcome disabled|dismissed (disabled also disables the Agent, as agent:disable)";
@@ -70,7 +70,9 @@ if (command === "migrate") {
   // The operator's way back from a deploy that went wrong (README, Deployment): one migration, the last, and only the one named.
   const name = flag(args, "--name");
   if (!name || !/^[0-9]{3}_[a-z0-9_]+$/.test(name)) throw new Error("--name must be a migration's name, such as 074_others_step_l");
-  await undoMigration(databaseUrl(), name);
+  // What it removes is said first, whatever follows; without the operator's confirmation nothing is undone (and in production, without a second one).
+  console.log(DOWN_REMOVES[name] ?? `what ${name}'s Down removes is not declared here: read the Down part of migrations/${name}.sql before going on`);
+  await undoMigration(databaseUrl(), name, { confirmed: args.includes(CONFIRM_FLAG), nodeEnv: process.env.NODE_ENV, inProduction: args.includes(PRODUCTION_FLAG) });
   console.log(`undone: ${name}`);
 } else if (command === "invite:create") {
   const ttlHours = Number(flag(args, "--ttl-hours") ?? 72);

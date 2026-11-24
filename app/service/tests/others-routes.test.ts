@@ -266,10 +266,15 @@ describe("GET /api/me/others-use", () => {
 
   it("notice: true while the owner has an Agent, has not seen it and the account is older than 074; POST seen ends it for good, even for an Agent made later; a new owner is told nothing", async () => {
     const old = async (who: Actor) => void (await db.query("update accounts set created_at = '2000-01-01T00:00:00Z' where principal_id = $1", [who.id]));
+    /** The Agent, too, is one from before 074. */
+    const oldAgent = async (id: string) => void (await db.query("update agents set created_at = '2000-01-02T00:00:00Z' where principal_id = $1", [id]));
     const owner = await newOwner();
     expect((await use(owner)).json.notice).toBe(false);
-    await mustCreateAgent(app, owner, {});
+    const first = await mustCreateAgent(app, owner, {});
     await old(owner); // (an Agent's creation makes the account row)
+    // m2 (fix round 1): an account older than the change (a grant made its row) whose first Agent was made AFTER it is told nothing.
+    expect((await use(owner)).json.notice).toBe(false);
+    await oldAgent(first.id);
     expect((await use(owner)).json.notice).toBe(true);
     expect(await api(app, owner, "POST", "/api/me/others-limits/seen")).toEqual({ status: 200, json: { ok: true } });
     expect((await use(owner)).json.notice).toBe(false);
@@ -280,6 +285,7 @@ describe("GET /api/me/others-use", () => {
     const other = await newOwner();
     const only = await mustCreateAgent(app, other, {});
     await old(other);
+    await oldAgent(only.id);
     await api(app, other, "DELETE", `/api/agents/${only.id}`);
     expect((await use(other)).json.notice).toBe(false);
     // An owner who joined after the change (their account is newer than 074) is told nothing about a change they never had.
@@ -599,9 +605,9 @@ describe("the stopped list: its output shape and its one query over migration 07
   });
 });
 
-describe("the stopped list on the route follows the site's switch", () => {
+describe("the stopped list on the route is the caller's own, whatever the site's switch says", () => {
   const social = useApp({ env, agentWorker: false, config: SOCIAL_ON });
-  it("switch on: the route lists the caller's own stop; switch off: the same owner reads [] (no 停止往来 exists anywhere then)", async () => {
+  it("the route lists the caller's own stop with the switch on AND off (what a person set they can always see and lift: fix round 1, I4); nobody else's", async () => {
     const tag = `sw${++n}x${Math.floor(Math.random() * 1e6)}`;
     const [owner, other] = [await signUp(social.app, `${tag}a`), await signUp(social.app, `${tag}b`)];
     await social.db.query("insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')", [owner.id, other.id]);
@@ -613,7 +619,8 @@ describe("the stopped list on the route follows the site's switch", () => {
     const before = config.social;
     config.social = { enabled: false };
     try {
-      expect((await api(social.app, owner, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
+      expect((await api(social.app, owner, "GET", "/api/me/others-use")).json.stopped.map((r: { person: { id: string } }) => r.person.id)).toEqual([other.id]);
+      expect((await api(social.app, other, "GET", "/api/me/others-use")).json.stopped).toEqual([]);
     } finally {
       config.social = before;
     }

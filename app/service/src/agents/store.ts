@@ -74,6 +74,8 @@ export interface AgentRow {
   model: AgentModel;
   paused: boolean;
   deleted: boolean;
+  /** The site's operator turned it off (`agents.disabled_at`): to everyone but its owner it is gone. */
+  operatorDisabled: boolean;
   /** The Agent's dedicated conversation with its owner (`agent_conversations`). */
   conversationId: string;
   createdAt: Date;
@@ -111,6 +113,7 @@ interface AgentDbRow {
   provider_model: string | null;
   paused: boolean;
   deleted: boolean;
+  operator_disabled: boolean;
   conversation_id: string;
   created_at: Date;
 }
@@ -118,7 +121,7 @@ interface AgentDbRow {
 const SELECT = `select p.id, p.owner_id, ${handleOf("p")} as handle, p.handle::text as name_part, p.display_name as name, p.avatar_version, a.intro, a.field, a.persona,
        a.persona_version, a.reply_mode, a.group_mentions, a.chain_budget_micro::text,
        a.others_budget_micro::text, a.others_answers, a.proactive, a.proactive_level, a.proactive_budget_micro::text, a.memory, a.memory_ask, a.shared_notes, a.whisper_elsewhere, a.web_search, a.owner_appellation, a.reasoning, a.model_source, a.site_model_id, a.provider_id, a.provider_model,
-       a.paused, a.deleted_at is not null as deleted, ac.conversation_id, a.created_at
+       a.paused, a.deleted_at is not null as deleted, a.disabled_at is not null as operator_disabled, ac.conversation_id, a.created_at
   from agents a
   join principals p on p.id = a.principal_id
   join agent_conversations ac on ac.agent_id = a.principal_id`;
@@ -167,6 +170,7 @@ function toAgent(r: AgentDbRow): AgentRow {
     model,
     paused: r.paused,
     deleted: r.deleted,
+    operatorDisabled: r.operator_disabled,
     conversationId: r.conversation_id,
     createdAt: r.created_at,
   };

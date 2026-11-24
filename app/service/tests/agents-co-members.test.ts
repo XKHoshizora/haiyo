@@ -47,6 +47,8 @@ const HIDDEN = {
 };
 /** Keys of an Agent's configuration, state and runs: no response to anyone but its owner carries one, at any depth. */
 const HIDDEN_KEYS = [
+  // Whether the site's operator turned an Agent off: its owner's view alone (fix round 1, m5).
+  "operatorDisabled",
   // When a person may change their handle again: `GET /api/me` alone (family names).
   "handleChangeAvailableAt",
   // Whether a message asked an Agent it could not name (Task M fix round 1): read by the proactive judgement only.

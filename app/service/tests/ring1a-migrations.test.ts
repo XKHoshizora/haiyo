@@ -9,13 +9,16 @@ import { useApp } from "./helpers/harness.ts";
  * Ring 1a's two migrations together, through the REAL runner on this database (the integration's proof; plan Rollout 3, B-5 re-review N2):
  * 074 (the step-L numbers) and 075 (access) deploy together, 074 first. On data in production's shape (Agents at the old default of 20
  * points, at none, at other numbers; blocks between people and of an Agent; personas): Down for both in reverse, the old values written,
- * Up for both; then the deploy that goes wrong — 075 fails after 074 was committed — taken back with the operator's command
- * (`migrate:down --name 074_others_step_l`, `undoMigration`), and fixed forward. The files run one after another on one database
+ * Up for both, in ONE transaction (fix round 1, I2: the pending migrations of a deploy commit together or not at all); then the deploys
+ * that go wrong: 075 fails (074 is then NOT applied either: nothing is left half-way), and both applied with a new container that never
+ * serves (the old code on the new schema: taken back with `migrate:down`, 075 then 074, each confirmed), and fixed forward. The files run one after another on one database
  * (`fileParallelism: false`), and whatever happens the last step puts every migration back.
  */
 const { app, db } = useApp({ env: SITE_ENV, agentWorker: false });
 const url = testDatabaseUrl();
 const quiet = { quiet: true } as const;
+/** The operator's confirmation of a Down (`--i-understand-this-deletes-data`). */
+const sure = { quiet: true, confirmed: true } as const;
 afterAll(async () => {
   await db.query("drop table if exists access_bars_in_the_way");
   await db.query("do $$ begin if to_regclass('public.access_bars') is not null and not exists (select 1 from pgmigrations where name = '075_agent_social_access') then drop table access_bars; end if; end $$");
@@ -44,7 +47,7 @@ const defaults = async () =>
   );
 
 describe("074 and 075 through the runner, on rows in production's shape", () => {
-  it("Down for both in reverse, Up for both; a failed 075 is taken back by 074's Down and fixed forward: every row ends where the first Up put it", async () => {
+  it("Down for both in reverse, Up for both in one transaction; a failed 075 leaves 074 unapplied; both applied and taken back (075's Down, then 074's); fixed forward: every row ends where the first Up put it", async () => {
     // Production's shape: owners with Agents, friends, a block between two people (both ways for one pair), a block of an Agent.
     const [ann, bo, cy] = [await signUp(app, "mg_ann"), await signUp(app, "mg_bo"), await signUp(app, "mg_cy")];
     // What each Agent held BEFORE 074, written below once the old columns are back: [others' number, proactive budget] in points.
@@ -69,9 +72,12 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
 
     // ── Down for both, in reverse. The command refuses anything but the last one applied.
     expect((await applied()).slice(-2)).toEqual(["074_others_step_l", "075_agent_social_access"]);
-    await expect(undoMigration(url, "074_others_step_l", quiet)).rejects.toThrow(/last migration applied is 075_agent_social_access/);
-    await undoMigration(url, "075_agent_social_access", quiet);
-    await undoMigration(url, "074_others_step_l", quiet);
+    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 075_agent_social_access/);
+    // Not without the operator's word that data goes: nothing is undone.
+    await expect(undoMigration(url, "075_agent_social_access", quiet)).rejects.toThrow(/--i-understand-this-deletes-data/);
+    expect((await applied()).at(-1)).toBe("075_agent_social_access");
+    await undoMigration(url, "075_agent_social_access", sure);
+    await undoMigration(url, "074_others_step_l", sure);
     expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
     expect(await defaults()).toEqual({ others_budget_micro: "20000000", proactive_budget_micro: "20000000" });
     expect((await db.query<{ t: string | null }>("select to_regclass('public.access_bars')::text as t")).rows[0]!.t).toBeNull();
@@ -104,29 +110,42 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     expect(agents).toHaveLength(6);
     for (const a of agents) expect(a).toEqual({ due: true, contact_policy: "ask", disabled: false });
 
-    // ── The deploy that goes wrong: 074 is committed on its own, then 075 fails (here: a table in its way).
-    await undoMigration(url, "075_agent_social_access", quiet);
-    await undoMigration(url, "074_others_step_l", quiet);
-    for (const [tag, [others, proactive]] of Object.entries(before)) {
-      await db.query("update agents set others_budget_micro = $2, proactive_budget_micro = $3 where principal_id = $1", [ids[tag], others === null ? null : (BigInt(others) * P).toString(), (BigInt(proactive) * P).toString()]);
-    }
+    // ── A deploy that goes wrong, first way: 075 fails (here: a table in its way). Both were pending in one transaction, so 074 is not
+    // applied either: the old code keeps serving on exactly the schema it had, and nothing has to be taken back.
+    await undoMigration(url, "075_agent_social_access", sure);
+    await undoMigration(url, "074_others_step_l", sure);
+    const writeOld = async () => {
+      for (const [tag, [others, proactive]] of Object.entries(before)) {
+        await db.query("update agents set others_budget_micro = $2, proactive_budget_micro = $3 where principal_id = $1", [ids[tag], others === null ? null : (BigInt(others) * P).toString(), (BigInt(proactive) * P).toString()]);
+      }
+    };
+    await writeOld();
     await db.query("create table access_bars (in_the_way int)");
     await expect(runMigrations(url, quiet)).rejects.toThrow();
-    expect((await applied()).at(-1)).toBe("074_others_step_l");
-    // The hazard the Down exists for: the old code would read these NULLs as no limit at all.
-    expect(Object.values(await numbers()).filter(([others]) => others === null)).toHaveLength(2);
+    expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
+    expect(await numbers()).toEqual(before);
+    expect(await defaults()).toEqual({ others_budget_micro: "20000000", proactive_budget_micro: "20000000" });
+    await db.query("alter table access_bars rename to access_bars_in_the_way");
 
-    // ── Taken back at once: 074's Down, by the operator's command.
-    await undoMigration(url, "074_others_step_l", quiet);
+    // ── Second way: both applied, and the new container never serves; the old code is what answers, on the new schema. It reads the
+    // numbers 074 cleared as "no limit": the state to leave at once.
+    await runMigrations(url, quiet);
+    expect(await numbers()).toEqual(first);
+    expect(Object.values(await numbers()).filter(([others]) => others === null)).toHaveLength(2);
+    // The take-back is 075's Down and THEN 074's: the other order is refused and undoes nothing.
+    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 075_agent_social_access/);
+    expect((await applied()).slice(-2)).toEqual(["074_others_step_l", "075_agent_social_access"]);
+    await undoMigration(url, "075_agent_social_access", sure);
+    await undoMigration(url, "074_others_step_l", sure);
     expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
     const back = await numbers();
     expect(Object.values(back).filter(([others]) => others === null)).toHaveLength(0);
     // Every NULL is 20 again (also the owner's 不限: the safe direction), a proactive budget at exactly 70 is 20 again, nothing else moved.
     expect(back).toEqual({ olddefault: [20, 20], nolimit: [20, 20], chosen: [35, 50], seventy: [70, 20], small: [5, 9], big: [150, 101] });
     expect(await defaults()).toEqual({ others_budget_micro: "20000000", proactive_budget_micro: "20000000" });
+    expect((await db.query<{ t: string | null }>("select to_regclass('public.access_bars')::text as t")).rows[0]!.t).toBeNull();
 
-    // ── Fixed forward: the thing in the way is gone, both run; every row is where the first Up put it.
-    await db.query("alter table access_bars rename to access_bars_in_the_way");
+    // ── Fixed forward: both run again; every row is where the first Up put it.
     await runMigrations(url, quiet);
     expect((await applied()).slice(-2)).toEqual(["074_others_step_l", "075_agent_social_access"]);
     expect(await numbers()).toEqual(first);

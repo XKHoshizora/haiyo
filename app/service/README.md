@@ -30,7 +30,7 @@ Development (TypeScript run directly by `tsx`; tests by vitest):
 ```
 npm install
 npm run migrate      # node-pg-migrate up against DATABASE_URL
-npm run migrate:down -- --name <migration>   # undoes ONE migration, the last one applied, only when it is the one named (Deployment)
+npm run migrate:down -- --name <migration> [--i-understand-this-deletes-data] [--in-production]   # the take-back of a deploy only (Deployment): prints what the Down removes; undoes the LAST migration applied, when it is the one named and the loss is confirmed
 npm run dev          # tsx watch src/server.ts
 npm test             # vitest, against TEST_DATABASE_URL
 npm run typecheck    # tsc --noEmit (src and tests)
@@ -54,7 +54,7 @@ no TypeScript at run time; a production install `npm ci --omit=dev` is enough):
 ```
 npm run build                    # tsc -p tsconfig.build.json: src/ → dist/ (git-ignored), with source maps
 npm run migrate:prod             # node dist/cli.js migrate (finds migrations/ next to dist/)
-node dist/cli.js migrate:down --name <migration>   # the same undo on a built service (Deployment)
+node dist/cli.js migrate:down --name <migration> [--i-understand-this-deletes-data] [--in-production]   # the same on a built service (Deployment)
 npm start                        # node dist/server.js
 npm run invite:create:prod -- [--ttl-hours <n>] [--uses <n>]   # likewise invite:list:prod, invite:revoke:prod
 npm run inbox:list:prod -- [--to <email>]
@@ -328,37 +328,66 @@ timed for it. `proactive` (tests only): `false` builds none, `{ delayMs }` waits
 
 **Build and start.** See Commands: `npm run build`, `npm run migrate:prod`, `npm start`.
 
-**Migration 074 (others' numbers) and 075 (Agent social): one deploy.** The two are ring 1a's and are applied in that order
-by the same start (the container's `migrate`, each in its own transaction). What to know before deploying them:
+**Migration 074 (others' numbers) and 075 (Agent social): one deploy, one transaction.** The two are ring 1a's. `migrate`
+applies every pending migration in ONE transaction, so on a database that has 073 the two commit together or not at all:
+074 can never be applied without 075.
 
-- *The window.* 074 clears an Agent's own others' number where it still held the old default of 20 points (NULL: no number
-  of its own; its owner's one pair of daily numbers applies) and raises a proactive budget at exactly 20 to 70. Code from
-  BEFORE 074 reads that NULL as NO limit on others' use, and has no owner total. So between the moment 074 commits and the
-  moment only the new code serves, an old process still serving has no bound on what others spend on those Agents. Keep that
-  window to the deploy's own overlap: stop the old container before the new one starts (a short outage) where that is
-  possible; where the new one starts first, do not leave the old one serving once the new one is healthy.
-- *If 075 fails,* the new container stops before it serves anything (a failed migration ends the start), 074 stays applied,
-  and the old code, if it is what serves, runs without that bound. Take 074 back at once, with the new image and the site's
-  environment:
+What 074 changes for the code that was serving before: it clears an Agent's own others' number where it still held the old
+default of 20 points (NULL: no number of its own; its owner's one pair of daily numbers applies) and raises a proactive
+budget at exactly 20 to 70. Code from BEFORE 074 reads that NULL as NO limit on others' use, and has no owner total. So an
+old process serving on the new schema has no per-Agent bound on what others spend on those Agents (it is still held by the
+caller's own minute, the owner's concurrency and the owner's balance): acceptable for the minutes of a deploy, not for hours.
+The old code knows none of 075's tables and columns and never reads them.
 
-  ```
-  docker run --rm --env-file agent-family.env agent-family node dist/cli.js migrate:down --name 074_others_step_l
-  ```
+On this platform a deploy that does not become healthy leaves the OLD deployment serving. Before deploying: take a database
+backup; where a short outage is acceptable, stop the old container before the new one starts (there is then no window at
+all). Watch the deploy until the new container is healthy and the old one has exited. The three ways it can go wrong:
 
-  (`npm run migrate:down -- --name 074_others_step_l` from a checkout.) It undoes one migration, the last one applied, and
-  only when that is the one named; it prints `undone: 074_others_step_l`. 074's Down puts 20 points back on EVERY Agent with
-  no number of its own (also one whose owner had chosen no limit before: the safe direction for money), puts a proactive
-  budget at exactly 70 back to 20, and restores both column defaults (20). Check that no Agent is left without a number
-  (`select count(*) from agents where others_budget_micro is null` is 0), start the old code, then fix 075 and deploy again:
-  the next Up puts every row where the first one did (20 → none, a proactive 20 → 70; a number an owner set to anything else
-  is never touched). Rolling the code back WITHOUT the Down keeps 074 applied under the old code: the hazard itself.
-- *After it.* Every owner has one 300-point and one 50-answer cap a day for all their Agents together, and owners whose
-  account is older than 074 see the one-time notice. `SOCIAL` stays `{"enabled": false}` until it is turned on: with it off
-  nothing of Agent social's access is reachable (Agent social, "While `SOCIAL.enabled` is off"). Turn it on only once every
-  process of the previous deploy has exited; from then the persona aid reads each existing persona once, ten owners a poll.
+1. *074 fails.* Nothing is applied (one transaction). The new container stops before it serves; the old code keeps serving
+   on the schema it knows. Nothing to take back: fix and deploy again.
+2. *075 fails.* The same: 074 is rolled back with it, nothing is applied, nothing to take back. (A database left with 074
+   and without 075 cannot come from `migrate` any more.)
+3. *Both applied, and the new container never becomes healthy* (a configuration value it refuses, a crash at start, a health
+   check that times out). The old code is now serving on the new schema, with the NULLs above. Do not wait:
+   - first try to get the NEW container healthy (the usual cause is configuration); if that takes more than a few minutes,
+     take both migrations back, in this order, with the new image and the site's environment. The old container may keep
+     serving while you do it (it reads nothing of 075, and 074's Down only gives it back the numbers it expects):
 
-The whole path (Down for both, the old rows, Up for both, a failed 075, 074's Down, the fix forward) is run through the real
-runner by `tests/ring1a-migrations.test.ts`.
+     ```
+     node dist/cli.js migrate:down --name 075_agent_social_access --i-understand-this-deletes-data --in-production
+     node dist/cli.js migrate:down --name 074_others_step_l --i-understand-this-deletes-data --in-production
+     ```
+
+     (as `docker run --rm --env-file agent-family.env agent-family node dist/cli.js …`, or the platform's one-off command.)
+     The other order is refused: 074 is not the last migration applied while 075 is.
+   - then check `select count(*) from agents where others_budget_micro is null` is 0 and
+     `select name from pgmigrations order by run_on desc, id desc limit 1` is `073_others_columns_and_social_skeleton`;
+   - fix the new image and deploy again: the Up puts every row where the first one did (20 → none, a proactive 20 → 70; a
+     number an owner set to anything else is never touched).
+   Rolling the code back WITHOUT the two Downs keeps 074 applied under the old code: the hazard itself.
+
+**`migrate:down`** is the tool for exactly that take-back and for nothing else. It undoes ONE migration: the last one applied,
+and only when it is the one named. It first prints what that migration's Down removes, and then refuses unless
+`--i-understand-this-deletes-data` is given; with `NODE_ENV=production` it also wants `--in-production`. What the two Downs do:
+074's deletes no row (it writes 20 points on EVERY Agent with no number of its own, also one whose owner had chosen no limit:
+the safe direction for money, and puts a proactive 70 back to 20). 075's DELETES for good every 停止往来, every report of an
+Agent, every Agent's contact policy and every operator's disable. On the first deploy those tables are empty, so nothing is
+lost; once Agent social has been on, 075's Down is a loss of people's own decisions (people who were stopped can reach those
+Agents again) and must not be used as a way of "turning the feature off": the switch does that.
+
+After a good deploy: every owner has one 300-point and one 50-answer cap a day for all their Agents together (unless the
+site's `OTHERS` says otherwise: a pinned `pointsPerDay` wins over the default), and owners who had an Agent before it see the
+one-time notice. A browser tab left open across the deploy still runs the old client, whose create form sends an own limit of
+20 points for a new Agent: such an Agent has an own number of 20 (shown and editable on its page). `SOCIAL` stays
+`{"enabled": false}` until it is turned on. Turning it on is a restart: stop every process that runs with the switch off
+BEFORE starting one with it on (a process still running with it off ends every queued reply of a social conversation at each
+claim, so a visitor's first message during an overlap would go unanswered). From then the persona aid reads each existing
+persona once, ten owners a poll.
+
+The whole path (Down for both, the old rows, Up for both in one transaction, a failed 075 leaving 074 unapplied, both applied
+and taken back, the fix forward) is run through the real runner by `tests/ring1a-migrations.test.ts`; the command's refusals by
+`tests/migrate-down.test.ts`. Every test database is made from nothing by the same `migrate`: the whole chain of migrations
+applies in one transaction.
 
 **Web client (`WEB_DIST`).** Unset (the default) the service serves only the API, and every other path is
 the JSON 404. Set to the directory of the built web client (`app/web/dist`: `index.html` and `assets/`; start-up
@@ -821,7 +850,7 @@ push or error. Fellow members see a changed name, intro or field the next time t
 principals, as for people; a changed avatar, or a handle its owner's rename changed, is pushed to them (`principal`).
 
 **Agent** (owner only): `{"id", "handle", "name", "avatarVersion", "intro", "field", "persona", "personaVersion", "replyMode":
-"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersLimit": {"answers": number | null, "points": string | null}, "othersUsedToday": {"answers": number, "points": string}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
+"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersLimit": {"answers": number | null, "points": string | null}, "othersUsedToday": {"answers": number, "points": string}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "operatorDisabled": boolean, "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
 "xhigh" | "max", "model": {"source": "site", "id"} | {"source": "provider", "providerId", "model"} | null, "modelUsable", "paused",
 "deleted", "conversationId", "createdAt"}`. `conversationId` is the Agent's dedicated conversation. `modelUsable` is
 false when its model is not there to call any more — taken off its provider's list, or a site model the site no longer
@@ -838,7 +867,7 @@ numbers). They are sub-limits inside yours, never added to them: all your Agents
 50 answers a day unless you set others), whatever their number. `othersUsedToday` is what others' use of this Agent has taken since the site
 day began, against its own numbers: `answers` (replies admitted, counting both calls and replies nobody asked for, as its own
 answers number does) and `points` (a string: settled charges plus what running replies hold, calls only: what its own points
-number holds; a reply nobody asked for has `proactiveBudget`). `proactiveSpentToday` (the owner's view only) is what its proactive
+number holds; a reply nobody asked for has `proactiveBudget`). `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
 replies cost today (a string: settled plus held, the same definition of "used"), against `proactiveBudget`. `proactive` says
 whether it may reply in a group to a message that called no Agent, when the judgement model picks it (Proactive replies;
 default false); `proactiveLevel` how readily (`less`, `normal` — the default —, `more`: the threshold it starts from);
@@ -2922,12 +2951,22 @@ routes below are, and **1b** (notes shown to a non-owner), which is not built: i
 - *Access* (the `agent_social` conversation, who may add an Agent, 停止往来 and 恢复往来, blocking an Agent, reports, the
   persona aid). All of it is behind `SOCIAL.enabled` (`{"enabled": false}` by default).
 
-**While `SOCIAL.enabled` is off:** every route of this section but the three under `/api/me/others-…` answers 404; the lookup
-finds people only; no social conversation is created or written in, and a reply queued in one ends (`access_ended`) instead of
-answering later; the persona aid reads nothing and stamps nothing; `stopped` in `GET /api/me/others-use` is `[]`; `/api/sync`
-says `"social": {"enabled": false}` and the web draws none of it. Groups behave exactly as with it on (the same model call, the
-same posted message, the same frames: tests/social-ring1a.test.ts). Turning it off later is safe at any time: nothing is deleted
-and history stays readable.
+**While `SOCIAL.enabled` is off:** every route of this section answers 404, but the three under `/api/me/others-…` and
+`DELETE /api/bars/:personId` (below); the lookup finds people only (an Agent's dotted handle is 400, as a malformed one);
+no social conversation is created or written in, and a reply queued in one ends (`access_ended`) instead of answering later;
+the persona aid reads nothing and stamps nothing; `/api/sync` says `"social": {"enabled": false}` and the web draws none of
+it. Groups behave exactly as with it on (the same model call, the same posted message, the same frames:
+tests/social-ring1a.test.ts; an app started with it off: tests/social-off.test.ts). What still happens with it off: a person's
+block of a person writes its bar row (and stops a group reply in flight that answers only the blocked person, where it used
+to be refused at its post); the operator's `agent:disable`, `agent:enable` and `reports:close` work, and a disabled Agent
+answers nobody but its owner, who is told on the Agent's own shape (`operatorDisabled`).
+
+**What a person set, they can always undo.** A 停止往来 made while the switch was on keeps refusing in groups after it is
+turned off (it is that person's own protective act, and the group decision never asks the switch). So its setter keeps
+seeing it and can lift it whatever the switch says: `stopped` in `GET /api/me/others-use` is the caller's own stops, on or
+off, and `DELETE /api/bars/:personId` is never behind the switch. With it off no NEW stop can be made (`PUT` is 404), so for
+everyone who never made one the list is empty and nothing shows. Turning the switch off is otherwise safe at any time:
+nothing is deleted and history stays readable.
 
 **One access decision.** Whether a person (or an Agent of theirs) may reach an Agent is `reach` (social/reach.ts) and its SQL
 twin `refusedSql`: the Agent deleted or disabled, a block either way (of the person, of the Agent), a bar (停止往来, either
@@ -2966,7 +3005,7 @@ change of the numbers; 075 is access (`access_bars`, the bars made from existing
 (let in, also when it was so already), 202 `{"state": "requested", "until"}` (waiting for the owner, 7 days; asking again
 says the same), 404 `not_found` (also for an Agent that is deleted, disabled, takes no contacts, or is blocked either way:
 never why), 409 `is_yours`, 429 `cooldown` `{"availableAt"}` (30 days after the owner declined a request of yours, or after
-they stopped dealings with you; an Agent of yours is never held back by a stop). 404 for every route here while `SOCIAL.enabled`
+they stopped dealings with you: this answer is the one place where a stopped person can tell that they were, by design; an Agent of yours is never held back by a stop). 404 for every route here while `SOCIAL.enabled`
 is off. Limit: 20 a minute.
 
 #### `GET /api/agent-contacts`
@@ -3027,8 +3066,8 @@ and once they are friends again the same policy admits them again, with no 恢�
 
 #### `DELETE /api/bars/:personId`
 
-*Session: required.* 恢复往来: lifts your own stop (never a block's row, and never the other person's). It brings no row back: whoever
-is let in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise: no stop of yours, whatever else
+*Session: required.* 恢复往来: lifts your own stop (never a block's row, and never the other person's). Not behind `SOCIAL.enabled`: what a
+person set they can always lift. It brings no row back: whoever is let in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise: no stop of yours, whatever else
 stands (the other person's, a block's): one answer.
 
 #### `POST /api/reports`
@@ -3037,7 +3076,8 @@ stands (the other person's, a block's): one answer.
 (at most 500)}` (ring 1a). Reports an Agent the caller can see: their own, one they share a conversation with now, one they
 blocked, or one that is discoverable to them (the rule of its avatar); for any other id, a deleted or disabled Agent a stranger cannot
 find, or a person, the answer is the 404 of an Agent that is not there. The row (`agent_reports`, `target_kind` `agent`) keeps the
-reporter's note (trimmed; none when it is empty) and the social conversation they share with the Agent, if they have one. Limit: five a
+reporter's note (trimmed; none when it is empty) and the social conversation they share with the Agent, if they have one. One open report per
+reporter and Agent: reporting it again while the first waits for the operator adds no row and answers with that report's `id`. Limit: five a
 minute. → 201 `{"id"}`; 404 `not_found`. 404 while `SOCIAL.enabled` is off. Counter `agent_reported` (the reason, never the note). The
 operator reads the reports on the command line (`reports:list [--open]`, `reports:close <id prefix> --outcome disabled|dismissed`:
 ids' prefixes, the Agent's handle, the reason, whether there is a note; never the note) and turns an Agent off and on with
@@ -3100,9 +3140,10 @@ use or what is left).
 - `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then answers, then id, `points` as
   `used`'s (settled plus held). A reply nobody asked for, and one whose caller has left, are in `used` and in no row.
 - `stopped`: the people you stopped contact with (停止往来) and have not since resumed, newest first: your own `stop` rows of `access_bars`,
-  never a block's row and never a stop somebody else set about you. Empty while `SOCIAL.enabled` is off; the web shows no 停止往来 or
-  恢复往来 control then, and lists the people of `byPerson` as plain names. With it on, each person of `byPerson` and `stopped` is a link to
-  that person's profile, the one place where 停止往来 and 恢复往来 are (the page itself has neither).
+  never a block's row and never a stop somebody else set about you. It is yours whatever `SOCIAL.enabled` says (a stop made while it was
+  on can always be seen and lifted by its setter); with the switch off no stop can be made, so it is empty unless you made one before.
+  Each person of `stopped` is a link to that person's profile, where 恢复往来 is; with the switch on the people of `byPerson` are links
+  too and the profile also offers 停止往来 (with it off they are plain names, and no profile offers a new stop). The page itself has neither control.
 - `agents`: each of your live Agents' day (as `othersUsedToday` of its shape: so the rows' `points` leave out replies nobody asked for,
   which `used` counts) and `perDay`, about how many replies a site day it can give
   others: 0 when the numbers that bind it (yours, or its own where lower) do not cover one plain reply's hold (one call at 16 500 input
@@ -3110,8 +3151,8 @@ use or what is left).
   (5 000 input and 500 output tokens at its model's price); a provider's own model costs you nothing, so it gets the answers number; no
   model, 0. On the design's sites that is 50 on the free tier at 300 points and 11 on the paid. It is what the WHOLE shared amount would buy with this
   Agent's model if only it were used, so the rows of several Agents are never added together.
-- `notice`: true while you have a live Agent, have not seen the one-time notice (`POST /api/me/others-limits/seen`) and your account row is older
-  than the moment migration 074 ran (the row is made at your first Agent, metered reply or grant, not at sign-up; an owner who joined after the change is
+- `notice`: true while you have a live Agent that was made before migration 074 ran, have not seen the one-time notice (`POST /api/me/others-limits/seen`) and your account row is older
+  than that moment (the row is made at your first Agent, metered reply or grant, not at sign-up; an owner who joined after the change is
   told nothing about a change they never had).
 
 #### `PUT /api/me/others-limits`

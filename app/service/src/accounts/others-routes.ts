@@ -45,7 +45,8 @@ export const stoppedShape = (rows: readonly StoppedRow[]): StoppedPerson[] =>
 /**
  * The one query for the stopped list, over migration 075's `access_bars(setter_id, other_id, kind in ('stop', 'block'), since)`, one
  * row per (setter, other, kind). The caller's OWN `stop` rows only, newest first: not a block's row, not a row somebody else set about
- * them (nobody is ever shown that another person stopped them).
+ * them. (No list or page ever shows a person that someone stopped them. One answer does let them infer it, by design: adding an Agent of
+ * someone who stopped them is refused with the day they may ask again, `cooldown`, plan I11.)
  */
 async function readStopped(q: Queryable, ownerId: string): Promise<StoppedRow[]> {
   const { rows } = await q.query<StoppedRow>(
@@ -82,8 +83,11 @@ export function registerOthersRoutes(app: FastifyInstance): void {
       // session's zone; it is read here in the database's own TimeZone, so a changed default misplaces only the accounts made within that
       // offset's hours around the deploy. A missing `pgmigrations` row fails closed (no notice).
       const notice = await t.query<{ notice: boolean }>(
-        `select $2::boolean and coalesce((select a.others_notice_seen_at is null and a.created_at < (select m.run_on from pgmigrations m where m.name = '074_others_step_l')
-                                            from accounts a where a.principal_id = $1), false) as notice`,
+        // (And only an owner who had an Agent then: an account a grant made, whose first Agent came after the change, never had what changed.)
+        `select $2::boolean and coalesce((select a.others_notice_seen_at is null and a.created_at < m.run_on
+                                                 and exists (select 1 from agents ag join principals ap on ap.id = ag.principal_id
+                                                              where ap.owner_id = $1 and ag.deleted_at is null and ag.created_at < m.run_on)
+                                            from accounts a, (select run_on from pgmigrations where name = '074_others_step_l') m where a.principal_id = $1), false) as notice`,
         [me.id, agents.length > 0],
       );
       // One connection, one query at a time.
@@ -116,8 +120,10 @@ export function registerOthersRoutes(app: FastifyInstance): void {
         reached,
         tight,
         byPerson: byPerson.map((r) => ({ person: r.person, answers: r.answers, points: formatPoints(r.pointsMicro) })),
-        // Read only while the site has Agent social on: off, there is no 停止往来 anywhere and the list reads empty (plan Rollout 3, I10).
-        stopped: config.social.enabled ? await stoppedOf(t, me.id) : [],
+        // The caller's own stops, whatever the switch says (fix round 1, I4): a stop made while it was on keeps refusing in groups while it
+        // is off, so its setter must still see it and be able to lift it. With the switch off no new stop can be made, so the list is
+        // empty for everyone who never made one.
+        stopped: await stoppedOf(t, me.id),
         agents: rows,
         notice: notice.rows[0]!.notice,
       };

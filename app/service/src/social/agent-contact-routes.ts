@@ -187,7 +187,8 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
     { schema: { params: z.object({ personId: uuidParam }), querystring: empty, response: { 200: ok } } },
     async (req) => {
       const me = await requirePrincipal(req);
-      requireSocial();
+      // NOT behind the switch (fix round 1, I4): what a person set they can always lift. With it off no stop can be made (`PUT` is 404), and
+      // for someone who has none this answers the same 404 as ever.
       await barLimit(req, me.id);
       const other = req.params.personId;
       // Only the caller's own stop: every other case (none, the other person's, a block's) is the same 404. Nothing of the other

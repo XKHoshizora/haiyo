@@ -197,6 +197,7 @@ export async function createAgent(
     model: input.model,
     paused: false,
     deleted: false,
+    operatorDisabled: false,
     conversationId,
     createdAt: created.rows[0]!.created_at,
   };
