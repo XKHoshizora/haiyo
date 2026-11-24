@@ -153,7 +153,9 @@ export async function resolveModel(
   const provider = await loadProviderForCall(q, agent.ownerId, choice.providerId, config.providerKeySecret);
   const listed = provider ? listedOn(provider.models, choice.model) : undefined;
   if (!provider || !listed) return null;
-  const reasoningAllowed: readonly ReasoningLevel[] = listed.reasoning ? REASONING_LEVELS.filter((level) => level === "none" || ((listed.reasoningLevels as readonly ReasoningLevel[] | undefined)?.includes(level) ?? true)) : ["none"];
+  // The levels it lists (every level when it lists none), `none` always among them; a model that does not reason has `none` alone.
+  const lists: readonly ReasoningLevel[] | undefined = listed.reasoningLevels;
+  const reasoningAllowed: readonly ReasoningLevel[] = !listed.reasoning ? ["none"] : REASONING_LEVELS.filter((level) => level === "none" || !lists || lists.includes(level));
   const reasoning = callLevel(reasoningAllowed, wanted);
   return {
     source: "provider",

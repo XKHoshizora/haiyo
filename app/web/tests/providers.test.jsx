@@ -1242,6 +1242,26 @@ describe("同步模型", () => {
     // (The service's answer is the mock's echo of what was sent: the mark here is the form's own row, before any reload.)
   });
 
+  it("a listed model the catalogue knows only by a prefix of its name (o1-mini: o1's hints, no levels) is added with every level and shows the five boxes, not the catalogue's choice; the model itself (o3-mini) is added with its levels", async () => {
+    // As the service lists them: levels only for the model itself; a name that merely starts with a known id has the base's flags and label, no levels.
+    const listing = [entry("o1-mini", { known: true, label: "o1", vision: true, pdf: true, reasoning: true, contextTokens: 200000 }), LISTING.find((m) => m.name === "o3-mini")];
+    const app = await openSync({ api: { listProviderModels: listOf(listing) } });
+    for (const name of ["o1-mini", "o3-mini"]) await click(within(rowOf(name)).getByRole("button", { name: `添加：${name}` }));
+    await done();
+    const sent = Object.fromEntries(app.api.patchProvider.mock.calls.at(-1)[1].models.map((m) => [m.name, m]));
+    expect(sent["o1-mini"]).toEqual({ name: "o1-mini", vision: true, pdf: true, reasoning: true, contextTokens: 200000 });
+    expect(sent["o3-mini"].reasoningLevels).toEqual(["low", "medium", "high"]);
+    expect(modelRow("o1-mini").textContent).toContain("思考档位：全部");
+    await click(within(modelRow("o1-mini")).getByRole("button", { name: /高级/ }));
+    expect(within(modelRow("o1-mini")).queryByRole("radiogroup")).toBeNull();
+    const group = within(modelRow("o1-mini")).getByRole("group", { name: "思考档位：o1-mini" });
+    expect(group.textContent).toContain("默认全部档位可选。这个模型不支持的，可以取消。");
+    expect(group.textContent).not.toContain("资料");
+    expect(within(group).getAllByRole("checkbox").map((b) => [b.closest("label").textContent, b.checked])).toEqual([["低", true], ["中", true], ["高", true], ["很高", true], ["最高", true]]);
+    // Nothing is reported of its tools either: the mixed box with the plain helper.
+    expect(modelRow("o1-mini").textContent).toContain("还不确定，会先让它试着用。");
+  });
+
   it("never changes whether a model may use tools: a model marked tools: false keeps it through 完成, a model added says nothing of it", async () => {
     const marked = providerOf(P1, {
       models: [
