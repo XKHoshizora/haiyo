@@ -2937,8 +2937,8 @@ between.
 
 People other than an Agent's owner reach it in a conversation of its own kind, `agent_social`: two participants (a person
 and the Agent) who speak, and the Agent's owner who watches (role `observer`, shown as 主人) and may write in it. They find
-the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以加它为好友」:
-`需要我同意` by default, `我的联系人可以直接加`, `不让别人加`), and cost the owner at most two daily numbers. Every way access
+the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以添加它」:
+`需要我同意` by default, `我的好友可以直接添加`, `不让别人添加`), and cost the owner at most two daily numbers. Every way access
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid), which is what the
 routes below are, and **1b** (notes shown to a non-owner), which is not built: its one route is under 「Planned」.
 
@@ -3335,7 +3335,7 @@ client can render its own:
 | `agent_daily_budget_reached` | `actorId` = `agentId` (the Agent whose others' daily budget is spent) | in a group, the first call on the Agent by someone other than its owner that finds the budget spent — a mention, a follow-up of one, or a reply such a call queued as it is about to start; once per site day for each conversation and Agent, whoever calls; nothing of lane or caller goes with it: “「{Agent 名}」今天的额度已用完” |
 | `social_opened` | `actorId` (the Agent reached), `agentIds`, `ownerIds` (the owners who watch and may write) | the first message of an `agent_social` conversation (Agent social): “这是{主人}的 Agent。{主人}能看到你们的对话，也可能插话。” (two owners: their names joined by 、) |
 | `note_withheld` | `actorId` = `agentId`, `audienceId`, `noteKind` (`owner` or `self`), `noteId`, `expiresAt` | ring 1b, in the Agent's own conversation, for its owner only: a note it held back from someone who asked about it (Agent social): “有一条笔记没有告诉别人” (the card's details come with the event, to the owner's client alone) |
-| `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有一句话可能是事实” |
+| `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有一句话可能会被说给别人，点开确认” |
 | `agent_quieted` | `actorId` = `agentId` (the Agent asked to keep quiet) | in a group, a person's message the judgement model is sure asks the Agent to be quiet, or says it is a nuisance: it hardly replies there unasked for a while (a mention still calls it); at most once an hour for each conversation and Agent; nothing says who asked: “「{Agent 名}」暂时不主动发言，需要时可以 @ 它” |
 
 Clients must ignore fields and events they do not know: later batches add more.

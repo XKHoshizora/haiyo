@@ -77,7 +77,7 @@ export async function renderNotice(q: Queryable, conversationId: string, e: Syst
     case "note_withheld":
       return "有一条笔记没有告诉别人";
     case "persona_fact":
-      return "人格里有一句话可能是事实";
+      return "人格里有一句话可能会被说给别人，点开确认";
   }
 }
 

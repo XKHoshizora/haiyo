@@ -101,7 +101,7 @@ describe("add", () => {
     expect(await kinds(approved.json.conversationId)).toEqual(await kinds(seeded.conversationId));
   });
 
-  it("under 我的联系人可以直接加 a friend is let in at once, a stranger asks, and with picks only a picked friend is let in", async () => {
+  it("under 我的好友可以直接添加 a friend is let in at once, a stranger asks, and with picks only a picked friend is let in", async () => {
     const { owner, agent } = await world("con");
     await policy(agent.id, "contacts");
     const friend = await signUp(app, "confriend");
