@@ -1,7 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "./data/store.jsx";
 import { entity, isMyAgent, unreadTotal } from "./state/selectors.js";
-import { socialOn } from "./state/social.js";
 import { readOthersUse, storeOf } from "./data/othersUseCache.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark, IconBtn, LoadingRow } from "./ui/primitives.jsx";
@@ -215,20 +214,20 @@ export default function Shell() {
     if (nav.section === "chat" && nav.view === "profile" && conv && conv.type !== "group") fall({ view: "chat" }, null);
     else if (nav.section === "contacts" && nav.contactId && !entity(state, nav.contactId)) {
       // A person this client has not heard of may be one my use page lists (someone who called my Agent, someone I stopped: their profile is
-      // where 停止往来 and 恢复往来 live). While Agent social is on, that list is read once for the address before it is given up: the read
+      // where 停止往来 and 恢复往来 live). That list is read once for the address before it is given up, whatever the switch says: the read
       // puts its people into the model (data/actions.js `getOthersUse`), and this effect runs again with them.
       const asked = askedPeople.current;
-      if (socialOn(state) && asked.id !== nav.contactId) {
+      if (asked.id !== nav.contactId) {
         asked.id = nav.contactId;
         asked.done = false;
         readOthersUse(actions, storeOf(actions)).then(() => {
           asked.done = true;
           setPeopleRead((n) => n + 1);
         });
-      } else if (!socialOn(state) || asked.done) fall({ contactId: null, pane: "list" }, was ? null : "找不到这位联系人");
+      } else if (asked.done) fall({ contactId: null, pane: "list" }, was ? null : "找不到这位联系人");
     }
     else if (nav.section === "agents" && nav.agentView !== "create" && nav.agentId && !isMyAgent(state, nav.agentId)) fall({ agentId: null, agentView: "detail", pane: "list" }, was ? null : "找不到这个 Agent");
-  }, [state.loaded, state.convs, state.agents, state.people, conv, nav.section, nav.pane, nav.convId, nav.view, nav.contactId, nav.agentId, nav.agentView, nav.opening, dispatch, actions, state.social, peopleRead]);
+  }, [state.loaded, state.convs, state.agents, state.people, conv, nav.section, nav.pane, nav.convId, nav.view, nav.contactId, nav.agentId, nav.agentView, nav.opening, dispatch, actions, peopleRead]);
   const noteScroll = useKeepListScroll(pane, nav.section);
   const oneColumn = useMediaQuery(`(max-width: ${ONE_COLUMN_MAX}px)`);
   let list = null;

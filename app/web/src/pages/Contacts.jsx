@@ -188,11 +188,14 @@ export function ContactCard() {
         </div>
       </header>
       <div className="page-body">
-        <KV
-          rows={[
-            ["这段会话谁能看", `只有你和${who.name}`],
-          ]}
-        />
+        {/* (Only where there is a conversation with them: a person reached from the use page may be no friend at all.) */}
+        {directConvWith(state, id) && (
+          <KV
+            rows={[
+              ["这段会话谁能看", `只有你和${who.name}`],
+            ]}
+          />
+        )}
 
         <h3>联系与申请</h3>
         {!rel && <p className="muted">你们还没有建立联系。</p>}

@@ -92,7 +92,8 @@ describe("the header", () => {
     await click(within(inMain().getByRole("list", { name: "它和别人的对话" })).getAllByRole("button")[0]);
     expect(screen.getByTestId("social-note").textContent).toBe("你在旁观小助手和小安的对话。你发言时，对方会看到你是主人。");
     expect(screen.queryByText(/能看到你们的对话/)).toBeNull();
-    expect(screen.getByRole("textbox", { name: "消息内容" })).toBeTruthy();
+    // (Nobody to @ in a two-party conversation: the hint says in whose name the owner writes.)
+    expect(screen.getByRole("textbox", { name: "消息内容" }).getAttribute("placeholder")).toBe("以主人的身份发言");
   });
 });
 
@@ -136,9 +137,9 @@ describe("the Agent replying", () => {
 
 describe("the composer", () => {
   it.each([
-    ["no_access", "你已不能再和它聊天。"],
+    ["no_access", "你现在不能和它聊天了。"],
     ["agent_unavailable", "这个 Agent 现在不可用。"],
-    ["blocked", "你已不能再和它聊天。"],
+    ["blocked", "你现在不能和它聊天了。"],
   ])("%s: the reason is said once and no input is offered", async (reason, text) => {
     await openVisitor(visiting({ canSend: { ok: false, reason } }));
     expect(screen.getAllByText(text)).toHaveLength(1);

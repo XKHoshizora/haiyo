@@ -1,7 +1,8 @@
 // 停止往来 and 恢复往来 on a person's profile (plan A12b; Controller ruling 2026-11-25 (B-5 review): the profile is the ONE place for them). A stop is the caller's own
 // act: no access between the two of them, in either direction, for any Agent of either, until the caller lifts it. Only the caller's own stop
 // is ever shown, and only as theirs: nothing here says whether the other person has stopped or blocked them (to them it only reads
-// "unavailable"). Nothing is drawn, and no route called, while the site's Agent social switch is off.
+// "unavailable"; the one answer that lets them infer it is the add's cooldown date, by design). While the site's Agent social switch is off
+// no 停止往来 is offered; a stop made earlier still shows its 恢复往来: what a person set they can always undo.
 import React, { useEffect, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { socialErrorText } from "../data/errorTexts.js";
@@ -30,7 +31,7 @@ export function DealingsSection({ personId, name }) {
   const [asking, setAsking] = useState(false);
 
   useEffect(() => {
-    if (!on) return undefined;
+    // (Read with the switch off too: a stop I made while it was on is still mine to lift. The route is live whatever the switch says.)
     let alive = true;
     const store = storeOf(actions);
     readOthersUse(actions, store).then(() => {
@@ -41,10 +42,9 @@ export function DealingsSection({ personId, name }) {
     };
   }, [on, actions, personId]);
 
-  if (!on) return null;
   // Only once it is known whether I stopped this person (A-5 review m3b): never a control whose effect the page cannot know. With the list
-  // known there is exactly one of the two.
-  if (stopped === null) return null;
+  // known there is exactly one of the two; with the switch off only 恢复往来, for a person I stopped (fix round 1, I4): no NEW stop is offered.
+  if (stopped === null || (!on && stopped !== true)) return null;
 
   // A stop and a resume are writes the shared read must hear of (the use page and the list of my Agents show the same answer): read again,
   // after anything in flight.
@@ -58,11 +58,11 @@ export function DealingsSection({ personId, name }) {
     dispatch({ type: "toast", text: "已停止往来" });
   };
   const resume = async () => {
-    const res = await run("resume", () => actions.deleteBar(personId), (e) => (e?.code === "not_found" ? "你现在没有停止和对方往来。" : socialErrorText(e)));
+    const res = await run("resume", () => actions.deleteBar(personId), (e) => (e?.code === "not_found" ? "你没有停止和对方往来，不用恢复。" : socialErrorText(e)));
     if (res.ok) {
       setStopped(false);
       told();
-      dispatch({ type: "toast", text: "已恢复往来。想再聊，要重新加对方的 Agent。" });
+      dispatch({ type: "toast", text: "已恢复往来。想再聊，需要重新添加对方的 Agent。" });
     } else if (res.error?.code === "not_found") {
       setStopped(false);
       told();
@@ -71,7 +71,7 @@ export function DealingsSection({ personId, name }) {
 
   return (
     <>
-      <h3>Agent 往来</h3>
+      <h3>和对方的 Agent 往来</h3>
       {stopped === true ? (
         <Notice tone="info" action={<Btn small disabled={busy !== null} onClick={resume}>{busy === "resume" ? "处理中…" : "恢复往来"}</Btn>}>
           你已停止和{name}往来：你们各自的 Agent 都不会再回应对方。
@@ -96,8 +96,9 @@ export function DealingsSection({ personId, name }) {
         >
           <ul className="plain-list">
             <li>你的 Agent 不再回应{name}，{name}的 Agent 也不再回应你。</li>
-            <li>恢复往来后，已经停下的对话不会自己回来。想再聊，要重新加对方的 Agent，等它的主人同意。</li>
-            <li>想恢复时，到对方的资料页点“恢复往来”。已停止往来的人列在“设置 › 别人怎么用我的 Agent”里。</li>
+            <li>恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。</li>
+            <li>以后想恢复：在“设置 › 别人怎么用我的 Agent”里找到对方，进入资料页点“恢复往来”。</li>
+            <li>不会通知对方；对方只会发现你的 Agent 不再回应。</li>
           </ul>
         </Modal>
       )}

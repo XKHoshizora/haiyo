@@ -140,6 +140,6 @@ function socialBlock(state, conv) {
     : reason === "agent_unavailable" ? "这个 Agent 现在不可用。"
     : reason === "blocked" && !watching && iBlocked(state, socialEnds(state, conv).agentId) ? "你拉黑了它。解除拉黑后才能再聊。"
     : watching ? "这段对话已结束，不能再发送消息。"
-    : "你已不能再和它聊天。";
+    : "你现在不能和它聊天了。";
   return { kind: "social", reason, text, pending: [], canRestore: false };
 }

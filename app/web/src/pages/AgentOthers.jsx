@@ -11,13 +11,13 @@ import { Avatar, Btn, Modal, Notice, Tag } from "../ui/primitives.jsx";
 import { useAction, useNow } from "./useAction.js";
 
 /** The one question and its three answers, word for word (plan "Exact copy"). */
-export const POLICY_QUESTION = "谁可以加它为好友";
+export const POLICY_QUESTION = "谁可以添加它";
 export const POLICY_OPTIONS = [
   ["ask", "需要我同意"],
-  ["contacts", "我的联系人可以直接加"],
-  ["none", "不让别人加"],
+  ["contacts", "我的好友可以直接添加"],
+  ["none", "不让别人添加"],
 ];
-const PICKED_LABEL = "只让其中一些人";
+const PICKED_LABEL = "只让其中几位好友";
 
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
 
@@ -119,7 +119,7 @@ export function AgentOthersTab({ agent }) {
               <span>{PICKED_LABEL}</span>
             </label>
             {form.picked && (
-              <ul className="social-checklist" aria-label="可以直接加的联系人">
+              <ul className="social-checklist" aria-label="可以直接添加的好友">
                 {friends.length === 0 && <li className="muted">你还没有好友。</li>}
                 {friends.map((id) => (
                   <li key={id}>
@@ -141,11 +141,11 @@ export function AgentOthersTab({ agent }) {
         </div>
       </fieldset>
 
-      <h3>联系人</h3>
+      <h3>已添加它的人</h3>
       {people.length === 0 ? (
-        <p className="muted">还没有人加它。</p>
+        <p className="muted">还没有人添加它。</p>
       ) : (
-        <ul className="member-rows" aria-label="联系人">
+        <ul className="member-rows" aria-label="已添加它的人">
           {people.map((r) => (
             <li key={r.subject.id}>
               <Avatar id={r.subject.id} size={40} />
@@ -233,7 +233,7 @@ export function AgentOthersTab({ agent }) {
           <p>
             {form.policy === "none"
               ? `${ask === 1 ? "对方" : "他们"}不能再和它聊天，也找不到它了。还在等你同意的申请会取消。`
-              : `${ask === 1 ? "对方" : "这些人"}不能再和它聊天，想再聊要重新申请，由你同意。还在等你同意的申请会取消。`}
+              : `${ask === 1 ? "对方" : "这些人"}不能再和它聊天，在群里 @ 它也不会回。想再聊要重新申请，由你同意。`}
           </p>
         </Modal>
       )}

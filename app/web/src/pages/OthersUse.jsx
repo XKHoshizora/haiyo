@@ -150,7 +150,7 @@ export function sinceText(iso, now = new Date()) {
  */
 function PersonLink({ person, linked }) {
   const { dispatch } = useStore();
-  // With the site's Agent social switch off there is no stop control anywhere: the person is a plain name, not a link to a profile that has none.
+  // With the site's Agent social switch off no NEW stop can be made: a person of today is a plain name, not a link to a profile that offers none.
   if (!linked) return <>{person.displayName}</>;
   const open = (event) => {
     event.preventDefault();
@@ -164,8 +164,8 @@ function PersonLink({ person, linked }) {
 }
 
 /**
- * Settings › 别人怎么用我的 Agent: my two daily numbers (edited in place), today's use against them with its state (正常 / 余量不多… / 别人今天的
- * 额度已用完, the service's `reached` and `tight`, worded in data/othersCopy.js), each Agent's own line, who used them today and who is
+ * Settings › 别人怎么用我的 Agent: my two daily numbers (edited in place), today's use against them with its state (正常 / 快用完了… / 今天给别人的
+ * 额度用完了, the service's `reached` and `tight`, worded in data/othersCopy.js), each Agent's own line, who used them today and who is
  * stopped. Nothing here is computed: every number, state and list is what `GET /api/me/others-use` says, and the page exists for its owner alone.
  * It never stops or resumes anyone: that is done on the person's profile.
  */
@@ -199,14 +199,14 @@ export function OthersUsePage({ back }) {
       <>
         {failed && (
           <Reason>
-            没能读取最新的，下面是上次读到的。 <Btn small onClick={reload}>重试</Btn>
+            没读到最新的数据，下面是上次的。 <Btn small onClick={reload}>重试</Btn>
           </Reason>
         )}
         <LimitSentence limits={use.limits} onSave={save} />
 
         <h3>今天</h3>
         <p className="others-today">
-          已回别人 {use.used.answers} 次（含主动回复{typeof proactiveCount === "number" && proactiveCount > 0 ? ` ${proactiveCount} 次` : ""}），花了 {formatPoints(use.used.points)} 点
+          已回别人 {use.used.answers} 次{typeof proactiveCount === "number" && proactiveCount > 0 ? `（其中主动回复 ${proactiveCount} 次）` : ""}，花了 {formatPoints(use.used.points)} 点
           {typeof proactive === "string" && formatPoints(proactive) !== "0" && `（其中主动回复 ${formatPoints(proactive)} 点）`}
           <span className={`others-state others-state-${othersStateOf(use)}`}> <span className="others-keep">· {othersStateText(use)}</span></span>
         </p>
@@ -221,10 +221,10 @@ export function OthersUsePage({ back }) {
                 <div className="member-body">
                   <p>
                     <strong>{nameOfAgent(a.agentId)}</strong>
-                    {a.canReply === false ? "：现在没有可用的模型，不回别人" : `：只有它在回的话，每天大约能回 ${a.perDay} 次`}
+                    {a.canReply === false ? "：没有可用的模型，暂时不能回复" : `：额度全给它用的话，每天大约能回 ${a.perDay} 次`}
                   </p>
                   <p className="muted">
-                    今天回了 {a.answers} 次（含主动回复），其中别人叫它的花了 {formatPoints(a.points)} 点
+                    今天回了别人 {a.answers} 次（含主动回复），别人 @ 它花了 {formatPoints(a.points)} 点
                     {a.canReply !== false && <span className={`others-state others-state-${othersStateOf(a)}`}> <span className="others-keep">· {othersStateText(a)}</span></span>}
                   </p>
                 </div>
@@ -233,12 +233,12 @@ export function OthersUsePage({ back }) {
           </ul>
         )}
 
-        <h3>今天谁用了</h3>
+        <h3>今天谁用过</h3>
         {byPerson.length === 0 ? (
           <p className="muted">今天还没有别人用过你的 Agent。</p>
         ) : (
           <>
-            {social && <p className="muted">点名字，到对方的资料页，可以在那里停止往来。</p>}
+            {social && <p className="muted">点名字进入对方的资料页，可以在那里停止往来。</p>}
             <ul className="member-rows others-people" aria-label="今天用过你的 Agent 的人">
               {byPerson.map((row) => (
                 <li key={row.person.id}>
@@ -256,7 +256,7 @@ export function OthersUsePage({ back }) {
         {(social || stopped.length > 0) && (
           <>
             <h3>已停止往来的人</h3>
-            <p className="muted">停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。在对方的资料页可以恢复往来。</p>
+            <p className="muted">停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。</p>
             {stopped.length === 0 ? (
               <p className="muted">现在没有停止往来的人。</p>
             ) : (
@@ -265,7 +265,8 @@ export function OthersUsePage({ back }) {
                   <li key={row.person.id}>
                     <Avatar id={row.person.id} size={40} />
                     <div className="member-body">
-                      <strong><PersonLink person={row.person} linked={social} /></strong>
+                      {/* Always a link: a stop I made can be lifted on that person's profile whatever the switch says (fix round 1, I4). */}
+                      <strong><PersonLink person={row.person} linked /></strong>
                       <p className="muted">@{row.person.handle} · {sinceText(row.since)}停止</p>
                     </div>
                   </li>
@@ -284,7 +285,8 @@ export function OthersUsePage({ back }) {
       <header className="profile-head">
         <div>
           <h2>{SETTINGS_PAGE_NAMES.others}</h2>
-          <p className="muted">别人和你的 Agent 聊天、在群里叫它，花的点都算在你这里。</p>
+          {/* (With the site's Agent social switch off nobody chats with someone else's Agent: only what does happen is said.) */}
+          <p className="muted">{socialOn(state) ? "别人和你的 Agent 聊天、在群里 @ 它，花的点都算在你这里。" : "别人在群里 @ 你的 Agent，花的点都算在你这里。"}</p>
         </div>
       </header>
       <div className="page-body">{body}</div>

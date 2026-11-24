@@ -14,7 +14,7 @@
 .others-keep { white-space: nowrap; }
 .others-today { line-height: 1.5; }
 
-/* The state of a use: said in words (正常 / 余量不多… / 别人今天的额度已用完), the colour only follows it. */
+/* The state of a use: said in words (正常 / 快用完了… / 今天给别人的额度用完了), the colour only follows it. */
 .others-state-tight { color: var(--warn); }
 .others-state-reached { color: var(--warn); font-weight: 600; }
 
@@ -36,4 +36,17 @@ fieldset.others-limit legend { padding: 0; margin-bottom: 6px; font-weight: 600;
   .others-use .btn, .others-use .back, .others-notice .btn, .others-usage .text-link { min-height: 44px; }
   .others-number { height: 44px; }
   fieldset.others-limit input { min-height: 44px; }
+}
+
+/* When my day for others is used up: said once, above the list (the cap is one for all my Agents). */
+.others-reached { color: var(--warn); font-weight: 600; }
+/* An Agent's name in my list is never squeezed to two characters by the tags beside it: it keeps room for six (and still ends in … when
+   longer); the tags give way first. */
+.agent-rows .row-top .row-name { flex: 0 1 auto; min-width: 6em; }
+.agent-rows .row-top .tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The one-time notice on a narrow screen: its button under the text, not a column squeezed beside it. */
+@media (max-width: 480px) {
+  .others-notice .notice { flex-wrap: wrap; }
+  .others-notice .notice .notice-body { flex: 1 1 calc(100% - 40px); }
+  .others-notice .notice > .btn { margin-left: auto; }
 }

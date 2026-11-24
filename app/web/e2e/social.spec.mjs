@@ -35,7 +35,7 @@ const openUsePage = async (page) => {
   await page.goto("/settings/others");
   const main = page.getByRole("region", { name: USE });
   await expect(main.getByRole("heading", { name: USE })).toBeVisible();
-  await expect(main.getByText("今天谁用了")).toBeVisible();
+  await expect(main.getByText("今天谁用过")).toBeVisible();
   return main;
 };
 /**
@@ -115,11 +115,11 @@ for (const [size, contextOptions] of SIZES) {
 
     // ── The use page: both people of today are links; nothing here stops anyone.
     let main = await openUsePage(ann.page);
-    await expect(main.getByText("点名字，到对方的资料页，可以在那里停止往来。")).toBeVisible();
+    await expect(main.getByText("点名字进入对方的资料页，可以在那里停止往来。")).toBeVisible();
     const peopleList = main.getByRole("list", { name: "今天用过你的 Agent 的人" });
     await expect(peopleList.getByRole("link", { name: bo.displayName })).toBeVisible();
     await expect(peopleList.getByRole("link", { name: dan.displayName })).toBeVisible();
-    await expect(main.getByText("已回别人 2 次（含主动回复），花了").first()).toBeVisible();
+    await expect(main.getByText("已回别人 2 次，花了").first()).toBeVisible();
     await expect(main.getByText("现在没有停止往来的人。")).toBeVisible();
     await expect(main.getByRole("button", { name: /停止往来|恢复往来/ })).toHaveCount(0);
     await expect(main.locator("h2")).toHaveCount(1);
@@ -134,7 +134,7 @@ for (const [size, contextOptions] of SIZES) {
     await expect(card.getByRole("heading", { level: 2 })).toContainText(dan.displayName);
     expect(new URL(ann.page.url()).pathname).toBe(`/contacts/${dan.id}`);
     await expect(card.getByText("你们还没有建立联系。")).toBeVisible();
-    await expect(card.getByRole("heading", { name: "Agent 往来" })).toBeVisible();
+    await expect(card.getByRole("heading", { name: "和对方的 Agent 往来" })).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "21-profile-of-a-group-only-caller", { show: card.getByRole("button", { name: "停止往来" }) });
     // The address alone draws the same profile (a reload: nothing but the id is known at first).
@@ -162,12 +162,12 @@ for (const [size, contextOptions] of SIZES) {
     const stoppedList = main.getByRole("list", { name: "已停止往来的人" });
     await expect(stoppedList.getByRole("link", { name: dan.displayName })).toBeVisible();
     await expect(stoppedList).toContainText(/\d{4}年\d+月\d+日停止/);
-    await expect(main.getByText("停止往来后，你们各自的 Agent 都不再回应对方。恢复往来后，已经停下的对话不会自己回来，想再聊要重新申请。在对方的资料页可以恢复往来。")).toBeVisible();
+    await expect(main.getByText("停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。")).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);
     await targetsAre44(main);
     await shot(ann.page, "22-use-page-stopped-list", { show: stoppedList });
 
-    // ── The three states are the service's: 余量不多 when a longer reply may not fit, 已用完 when nothing more is answered today.
+    // ── The three states are the service's: 快用完了 when a longer reply may not fit, 已用完 when nothing more is answered today.
     // (Which points number leaves "a longer reply may not fit" depends on the model's prices: the service says, the test asks until it does.)
     let tight = null;
     const seen = [];
@@ -180,25 +180,30 @@ for (const [size, contextOptions] of SIZES) {
     }
     expect(tight, `a points number at which the day is tight and not reached (${seen.join(" ")})`).not.toBeNull();
     main = await openUsePage(ann.page);
-    await expect(main.getByText("余量不多，较长的回复可能发不出").first()).toBeVisible();
+    await expect(main.getByText("快用完了，长一点的回复可能发不出").first()).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "23-use-page-tight");
     // Three answers were given today: a number of three is used up.
     await limits(ann, 3, "300");
     expect((await useOf(ann)).reached).toBe(true);
     main = await openUsePage(ann.page);
-    await expect(main.getByText("别人今天的额度已用完").first()).toBeVisible();
+    await expect(main.getByText("今天给别人的额度用完了，明天零点恢复").first()).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "24-use-page-reached");
     // The card of the Agent says it too, and its page says its three rows.
     await ann.page.goto("/agents");
     const row = ann.page.getByRole("button").filter({ has: ann.page.getByText(name, { exact: true }) }).first();
-    await expect(row).toContainText("别人今天的额度已用完");
-    await shot(ann.page, "25-agent-card-reached");
+    // I3: the cap is one for all the owner's Agents, so it is said ONCE above the list; no card carries it, and the name is whole.
+    const wholeName = async (r) => expect(await r.locator(".row-name").evaluate((el) => el.scrollWidth <= el.clientWidth), "the Agent's name is not cut").toBe(true);
+    await expect(ann.page.locator(".list-col .others-reached")).toHaveText("今天给别人的额度用完了，明天零点恢复");
+    await expect(row).not.toContainText("用完");
+    await wholeName(row);
+    expect(await noSideways(ann.page)).toBe(true);
+    await shot(ann.page, "25-agents-list-day-used-up");
     const detail = await openAgentDetail(ann.page, name);
-    await expect(detail).toContainText("它自己的上限");
+    await expect(detail).toContainText("别人用它的上限");
     await expect(detail).toContainText("别人今天的使用");
-    await expect(detail).toContainText("别人今天的额度已用完");
+    await expect(detail).toContainText("今天给别人的额度用完了，明天零点恢复");
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "26-agent-page-rows", { show: detail.getByText("别人今天的使用") });
     // In the group, the next person who calls it is told once that it answers only its owner today.
@@ -208,6 +213,20 @@ for (const [size, contextOptions] of SIZES) {
       expect(texts).toContain("agent_daily_budget_reached");
     }).toPass({ timeout: 15_000 });
     await limits(ann, 50, "300");
+    // Only this Agent's OWN number used up (the owner's day is not, and another Agent of theirs can still answer): its card says so in
+    // three characters, beside its status, and its name is still whole at this width.
+    const other = await agentRead(ann, { name: `厨子${uniq(4)}` });
+    expect((await ann.request.patch(`/api/agents/${agent.id}`, { data: { othersLimit: { answers: 3, points: null } } })).status()).toBe(200);
+    await ann.page.goto("/agents");
+    const mine = ann.page.locator(".list-col .rows");
+    const usedUp = mine.getByRole("button").filter({ has: ann.page.getByText(name, { exact: true }) }).first();
+    await expect(usedUp.locator(".tag", { hasText: "已用完" })).toBeVisible();
+    await expect(ann.page.locator(".list-col .others-reached")).toHaveCount(0);
+    await wholeName(usedUp);
+    await wholeName(mine.getByRole("button").filter({ has: ann.page.getByText(other.name, { exact: true }) }).first());
+    expect(await noSideways(ann.page)).toBe(true);
+    await shot(ann.page, "25b-agent-card-own-number-used-up");
+    expect((await ann.request.patch(`/api/agents/${agent.id}`, { data: { othersLimit: null } })).status()).toBe(200);
 
     // ── 恢复往来, from the stopped list's link: the list empties, and Dan is answered again.
     main = await openUsePage(ann.page);
@@ -233,7 +252,7 @@ for (const [size, contextOptions] of SIZES) {
     await ann.page.goto("/");
     await goTo(ann.page, "消息");
     const row = listRow(ann.page, name).first();
-    await expect(row).toContainText("人格里有一句话可能是事实", { timeout: 40_000 });
+    await expect(row).toContainText("人格里有一句话可能会被说给别人，点开确认", { timeout: 40_000 });
     await expect(row.locator(".badge")).toHaveText("1");
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "30-persona-card-unread-in-list");
@@ -254,8 +273,12 @@ for (const [size, contextOptions] of SIZES) {
     await ann.page.goto("/agents");
     const list = ann.page.locator(".list-col");
     const notice = list.locator(".others-notice");
-    await expect(notice).toContainText("别人用你的 Agent，每天的上限变了：以前每个 Agent 默认各有 20 点，现在你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点");
-    await expect(notice).toContainText("可以在“设置 › 别人怎么用我的 Agent”里改。");
+    await expect(notice).toContainText("别人用你的 Agent，每天的上限改了。现在你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点");
+    await expect(notice).toContainText("原来设为“不限”的，现在也按这个总数算。");
+    await expect(notice).toContainText("可在“设置 › 别人怎么用我的 Agent”里修改。");
+    // (On a narrow screen the button sits under the text, not beside a squeezed column.)
+    const [textBox, buttonBox] = [await notice.locator(".notice-body").boundingBox(), await notice.getByRole("button", { name: "知道了" }).boundingBox()];
+    expect(buttonBox.y).toBeGreaterThanOrEqual(textBox.y + textBox.height - 1);
     expect((await notice.getByRole("button", { name: "知道了" }).boundingBox()).height).toBeGreaterThanOrEqual(43.5);
     await expect(list.getByText(name, { exact: true }).first()).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);

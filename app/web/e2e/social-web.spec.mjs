@@ -47,11 +47,11 @@ test(`${size}: an owner's Agent is found by its full handle, added with the disc
   const note = dlg.getByTestId("social-disclosure");
   await expect(note).toHaveText(`这是${ann.displayName}的 Agent。${ann.displayName}能看到你们的对话，也可能插话。`);
   await expect(dlg.getByText(`主人：${ann.displayName}`)).toBeVisible();
-  await expect(dlg.getByRole("button", { name: "加为联系人" })).toBeVisible();
+  await expect(dlg.getByRole("button", { name: "添加它" })).toBeVisible();
   expect(await noSideways(bo.page)).toBe(true);
-  await tall(dlg.getByRole("button", { name: "加为联系人" }));
+  await tall(dlg.getByRole("button", { name: "添加它" }));
   await shot(bo.page, "01-add-agent-dialog");
-  await dlg.getByRole("button", { name: "加为联系人" }).click();
+  await dlg.getByRole("button", { name: "添加它" }).click();
   await expect(dlg.getByText("已发给它的主人，等对方同意。7 天没有回应会自动取消。")).toBeVisible();
   await shot(bo.page, "02-add-agent-requested");
   await dlg.getByRole("button", { name: "完成" }).click();
@@ -121,8 +121,8 @@ test(`${size}: an owner's Agent is found by its full handle, added with the disc
   await openAgentDetail(ann.page, name);
   await ann.page.getByRole("tab", { name: "别人" }).click();
   const tab = ann.page.getByRole("region", { name: "Agent 管理" });
-  await expect(tab.getByRole("group", { name: "谁可以加它为好友" })).toBeVisible();
-  for (const label of ["需要我同意", "我的联系人可以直接加", "不让别人加"]) await expect(tab.getByRole("radio", { name: label })).toBeVisible();
+  await expect(tab.getByRole("group", { name: "谁可以添加它" })).toBeVisible();
+  for (const label of ["需要我同意", "我的好友可以直接添加", "不让别人添加"]) await expect(tab.getByRole("radio", { name: label })).toBeVisible();
   await tall(tab.getByRole("radio").locator(".."));
   expect(await noSideways(ann.page)).toBe(true);
   await shot(ann.page, "11-agent-others-tab");
@@ -168,7 +168,7 @@ test(`${size}: changing who may add it asks first how many it would end; after i
   await openAgentDetail(ann.page, name);
   await ann.page.getByRole("tab", { name: "别人" }).click();
   const tab = ann.page.getByRole("region", { name: "Agent 管理" });
-  await tab.getByRole("radio", { name: "不让别人加" }).check();
+  await tab.getByRole("radio", { name: "不让别人添加" }).check();
   await tab.getByRole("button", { name: "保存" }).click();
   const ask = ann.page.getByRole("dialog");
   await expect(ask.getByRole("heading", { name: "这样会影响 1 个人" })).toBeVisible();
@@ -178,7 +178,7 @@ test(`${size}: changing who may add it asks first how many it would end; after i
   await expect(ask).toBeHidden();
 
   // Bo: no input, the reason once, nothing about who or why.
-  await expect(chat.getByText("你已不能再和它聊天。")).toHaveCount(1);
+  await expect(chat.getByText("你现在不能和它聊天了。")).toHaveCount(1);
   await expect(composer(chat)).toHaveCount(0);
   await expect(chat.locator(".social-note")).toBeVisible();
   await shot(bo.page, "14-social-chat-refused");
@@ -190,14 +190,15 @@ test(`${size}: changing who may add it asks first how many it would end; after i
   // Whether I stopped them comes from my own list (`GET /api/me/others-use`): the section must be there once it has answered (never
   // skipped by a timer: a slow or missing route fails here).
   expect((await ann.request.get("/api/me/others-use")).status()).toBe(200);
-  await expect(card.getByRole("heading", { name: "Agent 往来" })).toBeVisible();
+  await expect(card.getByRole("heading", { name: "和对方的 Agent 往来" })).toBeVisible();
   await tall(card.getByRole("button", { name: "停止往来" }));
   expect(await noSideways(ann.page)).toBe(true);
   await shot(ann.page, "15-profile-stop", { show: card.getByRole("button", { name: "停止往来" }) });
   await card.getByRole("button", { name: "停止往来" }).click();
   const confirm = ann.page.getByRole("dialog");
   await expect(confirm.getByRole("heading", { name: `停止和${bo.displayName}往来` })).toBeVisible();
-  await expect(confirm).toContainText("已停止往来的人列在“设置 › 别人怎么用我的 Agent”里。");
+  await expect(confirm).toContainText("以后想恢复：在“设置 › 别人怎么用我的 Agent”里找到对方，进入资料页点“恢复往来”。");
+  await expect(confirm).toContainText("不会通知对方；对方只会发现你的 Agent 不再回应。");
   await tall(confirm.locator(".modal-foot").getByRole("button"));
   expect(await noSideways(ann.page)).toBe(true);
   await shot(ann.page, "16-stop-dialog");
@@ -209,7 +210,7 @@ test(`${size}: changing who may add it asks first how many it would end; after i
   // Her use page lists him as stopped.
   expect((await (await ann.request.get("/api/me/others-use")).json()).stopped.map((x) => x.person.id)).toEqual([bo.id]);
   // Bo's side says nothing of it: the same one sentence.
-  await expect(chat.getByText("你已不能再和它聊天。")).toHaveCount(1);
+  await expect(chat.getByText("你现在不能和它聊天了。")).toHaveCount(1);
   await card.getByRole("button", { name: "恢复往来" }).click();
   await expect(card.getByRole("button", { name: "停止往来" })).toBeVisible();
 });

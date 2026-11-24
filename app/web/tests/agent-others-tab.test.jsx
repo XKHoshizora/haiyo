@@ -76,27 +76,27 @@ async function openTab({ contacts = contactsOf(), convs = [], api = {}, friends 
 const radio = (name) => within(inMain().getByRole("group", { name: POLICY_QUESTION })).getByRole("radio", { name });
 
 describe("the question", () => {
-  it("is 「谁可以加它为好友」 with the three answers worded as the plan has them, the service's setting chosen", async () => {
+  it("is 「谁可以添加它」 with the three answers worded as the plan has them, the service's setting chosen", async () => {
     await openTab({ contacts: contactsOf({ policy: "contacts" }) });
-    expect(POLICY_QUESTION).toBe("谁可以加它为好友");
-    expect(POLICY_OPTIONS.map(([, label]) => label)).toEqual(["需要我同意", "我的联系人可以直接加", "不让别人加"]);
-    for (const label of ["需要我同意", "我的联系人可以直接加", "不让别人加"]) expect(radio(label)).toBeTruthy();
-    expect(radio("我的联系人可以直接加").checked).toBe(true);
+    expect(POLICY_QUESTION).toBe("谁可以添加它");
+    expect(POLICY_OPTIONS.map(([, label]) => label)).toEqual(["需要我同意", "我的好友可以直接添加", "不让别人添加"]);
+    for (const label of ["需要我同意", "我的好友可以直接添加", "不让别人添加"]) expect(radio(label)).toBeTruthy();
+    expect(radio("我的好友可以直接添加").checked).toBe(true);
     expect(radio("需要我同意").checked).toBe(false);
   });
 
-  it("under 「我的联系人可以直接加」, 「只让其中一些人」 opens the checklist of my friends; the picks are sent", async () => {
+  it("under 「我的好友可以直接添加」, 「只让其中几位好友」 opens the checklist of my friends; the picks are sent", async () => {
     const friends = [
       { id: ANN, handle: "ann", displayName: "小安", avatarVersion: 0 },
       { id: BO, handle: "bob", displayName: "阿波", avatarVersion: 0 },
     ];
     const { lane } = await openTab({ friends });
-    expect(screen.queryByLabelText("只让其中一些人")).toBeNull();
-    fireEvent.click(radio("我的联系人可以直接加"));
+    expect(screen.queryByLabelText("只让其中几位好友")).toBeNull();
+    fireEvent.click(radio("我的好友可以直接添加"));
     await flush();
-    fireEvent.click(screen.getByLabelText("只让其中一些人"));
+    fireEvent.click(screen.getByLabelText("只让其中几位好友"));
     await flush();
-    const list = screen.getByRole("list", { name: "可以直接加的联系人" });
+    const list = screen.getByRole("list", { name: "可以直接添加的好友" });
     fireEvent.click(within(list).getByLabelText("小安"));
     await flush();
     await click(button("保存"));
@@ -109,24 +109,24 @@ describe("a save", () => {
   it("the dialog counts everyone it touches, also those whose request still waits, and says what happens to them (A-5 re-review)", async () => {
     const ends = (n) => ({ putContactPolicy: vi.fn(async () => ({ ends: n })) });
     await openTab({ api: ends(1) });
-    fireEvent.click(radio("不让别人加"));
+    fireEvent.click(radio("不让别人添加"));
     await flush();
     await click(button("保存"));
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 1 个人" })).toBeTruthy();
     expect(within(dialog()).getByText("对方不能再和它聊天，也找不到它了。还在等你同意的申请会取消。")).toBeTruthy();
     cleanup();
     await openTab({ api: ends(3), contacts: contactsOf({ policy: "ask" }) });
-    fireEvent.click(radio("我的联系人可以直接加"));
+    fireEvent.click(radio("我的好友可以直接添加"));
     await flush();
     await click(button("保存"));
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 3 个人" })).toBeTruthy();
-    expect(within(dialog()).getByText("这些人不能再和它聊天，想再聊要重新申请，由你同意。还在等你同意的申请会取消。")).toBeTruthy();
+    expect(within(dialog()).getByText("这些人不能再和它聊天，在群里 @ 它也不会回。想再聊要重新申请，由你同意。")).toBeTruthy();
   });
 
   it("asks dryRun first; with 0 ends it saves at once, with no dialog", async () => {
     const { lane } = await openTab();
     expect(button("保存").disabled).toBe(true);
-    fireEvent.click(radio("不让别人加"));
+    fireEvent.click(radio("不让别人添加"));
     await flush();
     await click(button("保存"));
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(2);
@@ -138,13 +138,13 @@ describe("a save", () => {
 
   it("with 12 ends it asks first, in a dialog titled with the number, and nothing is written until 确定; 取消 writes nothing", async () => {
     const { lane } = await openTab({ api: { putContactPolicy: vi.fn(async (_id, body) => (body.dryRun ? { ends: 12 } : { ends: 12 })) } });
-    fireEvent.click(radio("不让别人加"));
+    fireEvent.click(radio("不让别人添加"));
     await flush();
     await click(button("保存"));
     expect(dialog()).not.toBeNull();
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 12 个人" })).toBeTruthy();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);
-    // For 不让别人加 nobody can find it or ask again: the body does not promise a new request (A-5 review m1).
+    // For 不让别人添加 nobody can find it or ask again: the body does not promise a new request (A-5 review m1).
     expect(within(dialog()).getByText("他们不能再和它聊天，也找不到它了。还在等你同意的申请会取消。")).toBeTruthy();
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     expect(dialog()).toBeNull();
@@ -160,7 +160,7 @@ describe("a save", () => {
 describe("the people, the requests and the conversations", () => {
   it("lists who is in (移除) and the requests that wait (同意, 拒绝); an ended row is in neither", async () => {
     const { lane } = await openTab();
-    const people = within(inMain().getByRole("list", { name: "联系人" }));
+    const people = within(inMain().getByRole("list", { name: "已添加它的人" }));
     expect(people.getByText("小安")).toBeTruthy();
     expect(people.queryByText("旧人")).toBeNull();
     await click(people.getByRole("button", { name: "移除" }));
@@ -186,7 +186,7 @@ describe("the people, the requests and the conversations", () => {
 
   it("with nothing yet, it says so; nothing of this is asked while the switch is off (the pill is not even there)", async () => {
     await openTab({ contacts: contactsOf({ rows: [] }) });
-    expect(inMain().getByText("还没有人加它。")).toBeTruthy();
+    expect(inMain().getByText("还没有人添加它。")).toBeTruthy();
     expect(inMain().getByText("没有等你同意的申请。")).toBeTruthy();
     expect(inMain().getByText("它还没有和别人聊过。")).toBeTruthy();
   });

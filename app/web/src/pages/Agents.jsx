@@ -3,7 +3,7 @@ import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { MODEL_GONE, commonErrorText } from "../data/errorTexts.js";
 import { formatPoints, proactiveLevelLabel } from "../data/viewmodel.js";
-import { OTHERS_NOTICE_BUTTON, OTHERS_STATES, othersNoticeText, othersStateOf, othersStateText } from "../data/othersCopy.js";
+import { OTHERS_NOTICE_BUTTON, OTHERS_REACHED_SHORT, OTHERS_STATES, othersNoticeText, othersStateOf, othersStateText } from "../data/othersCopy.js";
 import { useOthersUse } from "./useOthersUse.js";
 import { Avatar, ConvAvatar, HeadCounts, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
@@ -34,9 +34,9 @@ function othersRows(agent, row) {
         ? "没有单独设置，和其他 Agent 共用你的每天上限"
         : [own.answers === null ? null : `每天最多回别人 ${own.answers} 次`, own.points === null ? null : `最多花 ${formatPoints(own.points)} 点`].filter(Boolean).join("，");
   const used = agent.othersUsedToday;
-  const state = row && row.canReply !== false ? ` · ${othersStateText(row)}` : row ? " · 现在没有可用的模型，不回别人" : "";
-  const usedText = used === undefined ? null : `已回 ${used.answers} 次（含主动回复），别人叫它的花了 ${formatPoints(used.points)} 点${state}`;
-  return [...(ownText === null ? [] : [["它自己的上限", ownText]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
+  const state = row && row.canReply !== false ? ` · ${othersStateText(row)}` : row ? " · 没有可用的模型，暂时不能回复" : "";
+  const usedText = used === undefined ? null : `今天回了别人 ${used.answers} 次（含主动回复），别人 @ 它花了 ${formatPoints(used.points)} 点${state}`;
+  return [...(ownText === null ? [] : [["别人用它的上限", ownText]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
 }
 
 /** 主动参与群聊 with its level and daily budget: only in the owner's view, and only while it is on. */
@@ -80,6 +80,8 @@ function StatusTag({ agent, long = false, action = false }) {
   if (agent.deleted) return <Tag tone="muted">已删除</Tag>;
   if (agent.paused) return <Tag tone="pending">{long ? "已暂停全部会话" : "已暂停"}</Tag>;
   if (!agent.loaded) return null;
+  // (The site's operator turned it off: it answers nobody but its owner, who is told here and on its page.)
+  if (agent.operatorDisabled) return <Tag tone="warn">已被停用</Tag>;
   if (!agent.model) return <Tag tone="warn">未选模型</Tag>;
   // (Its model is not there to call any more: it cannot reply, and its page says why.)
   if (!agent.modelUsable) return <ModelGoneTag agent={agent} plain={!action} />;
@@ -159,8 +161,10 @@ export function AgentsList() {
         }
       />
       <OthersNotice use={use} settle={settle} reload={reload} />
+      {/* The cap is one for all my Agents: when the day is used up it is said ONCE here, not on every card (fix round 1, I3). */}
+      {othersStateOf(use) === "reached" && <p className="list-note others-reached" role="status">{OTHERS_STATES.reached}</p>}
       <p className="list-note">这里只列出你拥有的 Agent。</p>
-      <ul className="rows">
+      <ul className="rows agent-rows">
         {[...live, ...(goneOpen ? gone : [])].map((a) => (
           <li key={a.id}>
             <button
@@ -173,7 +177,8 @@ export function AgentsList() {
                 <span className="row-top">
                   <span className="row-name">{a.name}</span>
                   <StatusTag agent={a} />
-                  {!a.deleted && othersStateOf(useOf(a.id)) === "reached" && <Tag tone="warn">{OTHERS_STATES.reached}</Tag>}
+                  {/* Only an Agent whose OWN number is used up while my day is not: three characters, so its name keeps its room. */}
+                  {!a.deleted && othersStateOf(use) !== "reached" && othersStateOf(useOf(a.id)) === "reached" && <Tag tone="warn">{OTHERS_REACHED_SHORT}</Tag>}
                 </span>
                 <span className="row-sub">
                   <span className="row-preview">{a.loaded ? (
@@ -379,6 +384,7 @@ function AgentDetail({ agent }) {
               </Notice>
             )}
             {agent.deleted && <Notice tone="info">这个 Agent 已删除：它不再回复，聊天记录会保留，只能查看。</Notice>}
+            {!agent.deleted && agent.operatorDisabled && <Notice tone="warn">管理员停用了这个 Agent：它现在只回复你，不回复别人。</Notice>}
             {!agent.deleted && agent.paused && (
               <Notice tone="pause">已暂停全部会话：它不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。</Notice>
             )}

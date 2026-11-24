@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// B9b: an Agent's own limit on what others cause, in its form (「它自己的上限（可不填）」), on its page, and the proactive budget's new
+// B9b: an Agent's own limit on what others cause, in its form (「别人用它的上限（可不填）」), on its page, and the proactive budget's new
 // default (70). The form sends `othersLimit` and never `othersBudget`; emptying both fields sends null (the Agent then has only its
 // owner's two numbers); a raised 70 shows as 70; the old fields of the wire are read nowhere.
 import "./markdown-ready.js";
@@ -224,18 +224,18 @@ describe("the Agent's page", () => {
   };
 
   it("says its own limit (none by default) and what others used of it today, as the service says them", async () => {
-    expect(await show({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } })).toContain("它自己的上限没有单独设置，和其他 Agent 共用你的每天上限");
+    expect(await show({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } })).toContain("别人用它的上限没有单独设置，和其他 Agent 共用你的每天上限");
     cleanup();
     const text = await show({ othersLimit: { answers: 5, points: "35.5" }, othersUsedToday: { answers: 2, points: "3.5" } });
-    expect(text).toContain("它自己的上限每天最多回别人 5 次，最多花 35.5 点");
-    expect(text).toContain("别人今天的使用已回 2 次（含主动回复），别人叫它的花了 3.5 点");
+    expect(text).toContain("别人用它的上限每天最多回别人 5 次，最多花 35.5 点");
+    expect(text).toContain("别人今天的使用今天回了别人 2 次（含主动回复），别人 @ 它花了 3.5 点");
     cleanup();
-    expect(await show({ othersLimit: { answers: null, points: "70" }, othersUsedToday: { answers: 0, points: "0" } })).toContain("它自己的上限最多花 70 点");
+    expect(await show({ othersLimit: { answers: null, points: "70" }, othersUsedToday: { answers: 0, points: "0" } })).toContain("别人用它的上限最多花 70 点");
   });
 
   it("says nothing of them when the service says nothing, and never the old 别人 @ 每天最多花 rows", async () => {
     const text = await show({});
-    expect(text).not.toContain("它自己的上限");
+    expect(text).not.toContain("别人用它的上限");
     expect(text).not.toContain("别人今天的使用");
     expect(text).not.toContain("别人 @");
     cleanup();

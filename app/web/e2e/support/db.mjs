@@ -67,12 +67,14 @@ export function pushDevicesOf(principalId) {
 }
 
 /**
- * Makes `principalId`'s account as old as one from before migration 074 and not yet told of the change: the one-time notice about others'
+ * Makes `principalId`'s account, and their Agents, as old as ones from before migration 074 and not yet told of the change: the one-time notice about others'
  * use is then theirs to see (a new account never sees it). Resolves with how many rows changed (0: the person has no account row yet).
  */
 export function accountFromBeforeStepL(principalId) {
   return withDatabase(async (client) => {
     const { rowCount } = await client.query("update accounts set created_at = '2020-01-01T00:00:00Z', others_notice_seen_at = null where principal_id = $1", [principalId]);
+    // (The notice is for an owner who had an Agent then: their Agents are from before it too.)
+    await client.query("update agents set created_at = '2020-01-02T00:00:00Z' where principal_id in (select id from principals where owner_id = $1)", [principalId]);
     return rowCount;
   });
 }

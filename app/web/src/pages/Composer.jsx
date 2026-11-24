@@ -372,7 +372,7 @@ export function Composer({ conv, block, replyTo, setReplyTo, sendFiles: sendThro
                 (after a final space that hangs past the edge, the character would start a line the textarea does not have). */}
             {text.endsWith("\n") && "\u200b"}
           </div>
-          <textarea ref={inputRef} rows={1} value={text} style={{height}} disabled={disabled} placeholder={disabled?"当前无法发送新消息":conv.type==="social"&&conv.myRole!=="observer"?"发送消息":"发送消息，或 @ 会话成员"} aria-label="消息内容" aria-autocomplete="list" aria-controls={mention?"mention-picker":undefined} aria-expanded={Boolean(mention)} aria-activedescendant={mention&&matches[selected]?`mention-${matches[selected]}`:undefined} aria-describedby={tags.length>0?tagsId:undefined}
+          <textarea ref={inputRef} rows={1} value={text} style={{height}} disabled={disabled} placeholder={disabled?"当前无法发送新消息":conv.type==="social"?(conv.myRole==="observer"?"以主人的身份发言":"发送消息"):"发送消息，或 @ 会话成员"} aria-label="消息内容" aria-autocomplete="list" aria-controls={mention?"mention-picker":undefined} aria-expanded={Boolean(mention)} aria-activedescendant={mention&&matches[selected]?`mention-${matches[selected]}`:undefined} aria-describedby={tags.length>0?tagsId:undefined}
             onChange={e=>{const kept=changed(e.target.value,e.nativeEvent?.inputType);const caret=kept===e.target.value?e.target.selectionStart:caretAfter.current;const end=kept===e.target.value?e.target.selectionEnd:caret;detect(kept,caret,end,current.current.tags);}}
             onSelect={e=>{selection.current={start:e.target.selectionStart,end:e.target.selectionEnd};}}
             onMouseUp={e=>settleCaret(e.currentTarget)}

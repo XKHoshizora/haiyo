@@ -21,7 +21,7 @@ const BASE = [wire(A1, 1, AG1, "你好，我是小助手"), wire(A1, 2, ME_ID, "
 
 /** The `persona_fact` event of the wire contract at `seq`, with the `card` the service sends to the owner alone. */
 const fact = (seq, card = { answer: null, expired: false, sentence: SENTENCE }, extra = {}) =>
-  notice(A1, seq, "人格里有一句话可能是事实", {
+  notice(A1, seq, "人格里有一句话可能会被说给别人，点开确认", {
     event: "persona_fact",
     actorId: AG1,
     agentId: AG1,
@@ -140,7 +140,7 @@ describe("the persona_fact card as unread", () => {
     await push(transport, { type: "message", message: late(fact(3)) });
     expect(names()[0]).toBe("小助手");
     expect(row("小助手").querySelector(".badge").textContent).toBe("1");
-    expect(row("小助手").textContent).toContain("人格里有一句话可能是事实");
+    expect(row("小助手").textContent).toContain("人格里有一句话可能会被说给别人，点开确认");
   });
 
   it("another notice there still counts nothing; a `persona_fact` event without my `card` counts nothing", async () => {
@@ -155,6 +155,6 @@ describe("the persona_fact card as unread", () => {
     await push(transport, { type: "message", message: late(fact(3)) });
     expect(row("小助手").querySelector(".badge")).toBeNull();
     expect(names()[0]).toBe("小安");
-    expect(row("小助手").textContent).not.toContain("人格里有一句话可能是事实");
+    expect(row("小助手").textContent).not.toContain("人格里有一句话可能会被说给别人，点开确认");
   });
 });

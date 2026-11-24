@@ -85,7 +85,7 @@ describe("the refusal texts", () => {
   it("says each code in the product's words", () => {
     expect(socialErrorText(err("is_yours"))).toBe("你自己的 Agent 不用添加。");
     expect(socialErrorText(err("not_requested"))).toBe("这个申请已经处理过了。");
-    expect(socialErrorText(err("no_access"))).toBe("你已不能再和它聊天。");
+    expect(socialErrorText(err("no_access"))).toBe("你现在不能和它聊天了。");
     expect(socialErrorText(err("agent_unavailable"))).toBe("这个 Agent 现在不可用。");
     expect(socialErrorText(err("answered"))).toBe("这件事已经回答过了。");
     expect(socialErrorText(err("expired"))).toBe("这张卡片已经过期了。");
@@ -184,6 +184,6 @@ describe("the tab", () => {
   it("is a component of its own (lane A's A11b), not the Step 0 stub", async () => {
     const { AgentOthersTab, POLICY_QUESTION } = await import("../src/pages/AgentOthers.jsx");
     expect(typeof AgentOthersTab).toBe("function");
-    expect(POLICY_QUESTION).toBe("谁可以加它为好友");
+    expect(POLICY_QUESTION).toBe("谁可以添加它");
   });
 });

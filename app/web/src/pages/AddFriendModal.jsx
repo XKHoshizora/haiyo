@@ -27,8 +27,8 @@ function whyNot(state, person) {
 function whyNotAgent(state, agent) {
   if (agent.ownerId === state.account?.id) return "你自己的 Agent 不用添加。";
   const row = agentContactsOf(state).mine.find((r) => r.agentId === agent.id);
-  if (row?.state === "live") return "已经是你的联系人了。";
-  if (row?.state === "requested") return "等主人同意。";
+  if (row?.state === "live") return "你已经添加过它了。";
+  if (row?.state === "requested") return "已经申请过了，在等它的主人同意。";
   return "";
 }
 
@@ -50,7 +50,7 @@ export function AddFriendModal({ onClose, returnTo }) {
     setFound(null);
     setOutcome(null);
     if (!HANDLE_PATTERN.test(handle) && !(agentsToo && AGENT_HANDLE.test(handle))) {
-      setError(agentsToo ? "账号名不对。人的账号名像 ann_li，Agent 的像 ann_li.helper。" : "账号名由 3–24 位小写字母、数字或下划线组成。");
+      setError(agentsToo ? "账号名的格式不对。人的账号名形如 ann_li，Agent 的形如 ann_li.helper。" : "账号名由 3–24 位小写字母、数字或下划线组成。");
       return;
     }
     setError("");
@@ -74,7 +74,7 @@ export function AddFriendModal({ onClose, returnTo }) {
     const res = await run("add", () => actions.addAgentContact(found.id), (e) => socialErrorText(e));
     if (!res.ok) return;
     if (res.value?.state === "live") {
-      dispatch({ type: "toast", text: "已加为联系人" });
+      dispatch({ type: "toast", text: "已添加" });
       onClose();
       openAgentChat(state, dispatch, actions, res.value.conversationId);
     } else {
@@ -135,7 +135,7 @@ export function AddFriendModal({ onClose, returnTo }) {
           {outcome && <Notice tone="ok">{`已发给它的主人，等对方同意。${outcome.days} 天没有回应会自动取消。`}</Notice>}
           <div className="agent-found-actions">
             <Btn variant="primary" disabled={Boolean(reason) || outcome !== null || busy !== null} reason={reason} onClick={add}>
-              {busy === "add" ? "处理中…" : "加为联系人"}
+              {busy === "add" ? "处理中…" : "添加它"}
             </Btn>
           </div>
         </section>

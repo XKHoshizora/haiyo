@@ -193,13 +193,13 @@ export function noticeText(system, fallback, nameOf, where = {}) {
       text = `${n(system.agentId)}已达到本次接话的点数上限，有人发言后继续。`;
       break;
     case "agent_daily_budget_reached":
-      text = `「${n(system.agentId)}」今天只回复它的主人了`;
+      text = `「${n(system.agentId)}」今天不再回复别人了，明天恢复。`;
       break;
     case "persona_fact":
       // The persona aid's card (pages/SocialCards.jsx draws it): for its Agent's owner alone (`card`), in that Agent's own conversation, while the
       // site's Agent social switch is on. It is activity there and previews as the service's own sentence; anywhere else it shows nothing.
       if (!where.agentId || !where.social || !system.card) return null;
-      text = "人格里有一句话可能是事实";
+      text = "人格里有一句话可能会被说给别人，点开确认";
       break;
     case "agent_quieted":
       text = `「${n(system.agentId)}」暂时不主动发言，需要时可以 @ 它`;
@@ -751,6 +751,8 @@ function agentView(a, version, loaded) {
     model: a.model ?? null,
     /** False when the service says its model is not there to call any more (then MODEL_GONE's words, errorTexts.js); true otherwise. */
     modelUsable: a.modelUsable !== false,
+    /** The site's operator turned it off (the owner's view only says so). */
+    operatorDisabled: a.operatorDisabled === true,
     reasoning: a.reasoning ?? "none",
     paused: Boolean(a.paused),
     deleted: Boolean(a.deleted),

@@ -188,7 +188,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
 
   it("where we have Agent access: 停止往来 asks once, writes my stop, and the card then offers 恢复往来", async () => {
     const { api } = await openCard();
-    expect(inMain().getByRole("heading", { name: "Agent 往来" })).toBeTruthy();
+    expect(inMain().getByRole("heading", { name: "和对方的 Agent 往来" })).toBeTruthy();
     expect(inMain().getByText("停止后，你的 Agent 不再回应对方，对方的 Agent 也不再回应你。")).toBeTruthy();
     await click(inMain().getByRole("button", { name: "停止往来" }));
     expect(inDialog().getByRole("heading", { name: "停止和阿波往来" })).toBeTruthy();
@@ -201,7 +201,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
     await click(inMain().getByRole("button", { name: "恢复往来" }));
     expect(api.deleteBar).toHaveBeenCalledWith(BO);
-    expect(toastText()).toBe("已恢复往来。想再聊，要重新加对方的 Agent。");
+    expect(toastText()).toBe("已恢复往来。想再聊，需要重新添加对方的 Agent。");
     expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
   });
 
@@ -217,7 +217,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
 
   it("停止往来 is offered for ANY person, also one with no Agent access between us (a group-only caller): the profile is where the act lives", async () => {
     const { api } = await openCard({ convs: [] });
-    expect(inMain().getByRole("heading", { name: "Agent 往来" })).toBeTruthy();
+    expect(inMain().getByRole("heading", { name: "和对方的 Agent 往来" })).toBeTruthy();
     await click(inMain().getByRole("button", { name: "停止往来" }));
     await click(inDialog().getByRole("button", { name: "停止往来" }));
     expect(api.putBar).toHaveBeenCalledWith(BO);
@@ -244,7 +244,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     await openCard({ api: missing });
     expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
     expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
-    expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
+    expect(inMain().queryByRole("heading", { name: "和对方的 Agent 往来" })).toBeNull();
   });
 
   describe("the answer belongs to one person: opening another profile never shows the previous person's control (A-5 re-review I1)", () => {
@@ -265,7 +265,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     const none = () => {
       expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
       expect(inMain().queryByRole("button", { name: "恢复往来" })).toBeNull();
-      expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
+      expect(inMain().queryByRole("heading", { name: "和对方的 Agent 往来" })).toBeNull();
     };
 
     it("after a stopped person, a person who is not stopped: nothing while the answer is slow or fails, then only their own control", async () => {
@@ -320,7 +320,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     });
     await openCard({ api: stale });
     await click(inMain().getByRole("button", { name: "恢复往来" }));
-    expect(toastText()).toBe("你现在没有停止和对方往来。");
+    expect(toastText()).toBe("你没有停止和对方往来，不用恢复。");
     expect(inMain().getByRole("button", { name: "停止往来" })).toBeTruthy();
   });
 
@@ -333,8 +333,8 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     await openCard();
     await click(inMain().getByRole("button", { name: "停止往来" }));
     expect(inDialog().getByText("你的 Agent 不再回应阿波，阿波的 Agent 也不再回应你。")).toBeTruthy();
-    expect(inDialog().getByText("恢复往来后，已经停下的对话不会自己回来。想再聊，要重新加对方的 Agent，等它的主人同意。")).toBeTruthy();
-    expect(inDialog().getByText("想恢复时，到对方的资料页点“恢复往来”。已停止往来的人列在“设置 › 别人怎么用我的 Agent”里。")).toBeTruthy();
+    expect(inDialog().getByText("恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。")).toBeTruthy();
+    expect(inDialog().getByText("以后想恢复：在“设置 › 别人怎么用我的 Agent”里找到对方，进入资料页点“恢复往来”。")).toBeTruthy();
     expect(dialog().textContent).not.toContain("对方的主人");
   });
 
@@ -344,10 +344,28 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     expect(document.querySelector(".main-col").textContent).not.toMatch(/对方停止|对方已停止|他停止/);
   });
 
-  it("switch off: nothing of it is drawn and no route is called", async () => {
+  it("switch off: no 停止往来 is offered and nothing of the section is drawn for a person I did not stop", async () => {
     const { api } = await openCard({ on: false });
-    expect(inMain().queryByRole("heading", { name: "Agent 往来" })).toBeNull();
-    expect(api.getOthersUse).not.toHaveBeenCalled();
+    expect(inMain().queryByRole("heading", { name: "和对方的 Agent 往来" })).toBeNull();
+    expect(inMain().queryByRole("button", { name: /^(停止|恢复)往来$/ })).toBeNull();
     expect(api.putBar).not.toHaveBeenCalled();
+  });
+
+  it("I4: switch off, a person I stopped while it was on: 恢复往来 is there and works, 停止往来 is not offered again afterwards", async () => {
+    const { api } = await openCard({ on: false, api: routes({ getOthersUse: vi.fn(async () => useOf([BO])) }) });
+    expect(inMain().getByText("你已停止和阿波往来：你们各自的 Agent 都不会再回应对方。")).toBeTruthy();
+    expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
+    await click(inMain().getByRole("button", { name: "恢复往来" }));
+    expect(api.deleteBar).toHaveBeenCalledWith(BO);
+    expect(toastText()).toBe("已恢复往来。想再聊，需要重新添加对方的 Agent。");
+    expect(inMain().queryByRole("button", { name: /^(停止|恢复)往来$/ })).toBeNull();
+    expect(inMain().queryByRole("heading", { name: "和对方的 Agent 往来" })).toBeNull();
+    expect(api.putBar).not.toHaveBeenCalled();
+  });
+
+  it("the stop dialog also says the other person is not told", async () => {
+    await openCard();
+    await click(inMain().getByRole("button", { name: "停止往来" }));
+    expect(inDialog().getByText("不会通知对方；对方只会发现你的 Agent 不再回应。")).toBeTruthy();
   });
 });

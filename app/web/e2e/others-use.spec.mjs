@@ -47,10 +47,11 @@ for (const [size, contextOptions] of SIZES) {
     await expect(answers).toHaveValue("50");
     await expect(points).toHaveValue("300");
     // The Agent's line and today's use: the service's numbers, a state in words.
-    await expect(main.getByText(/只有它在回的话，每天大约能回 \d+ 次/)).toBeVisible();
-    await expect(main.getByText("已回别人 0 次（含主动回复），花了 0 点").first()).toBeVisible();
-    await expect(main.getByText(/正常|余量不多，较长的回复可能发不出|别人今天的额度已用完/).first()).toBeVisible();
-    // Agent social is off on this site: no 停止往来, no 恢复往来, no list of the stopped.
+    await expect(main.getByText(/额度全给它用的话，每天大约能回 \d+ 次/)).toBeVisible();
+    await expect(main.getByText("已回别人 0 次，花了 0 点").first()).toBeVisible();
+    await expect(main.getByText(/正常|快用完了，长一点的回复可能发不出|今天给别人的额度用完了，明天零点恢复/).first()).toBeVisible();
+    await expect(main.getByText("别人在群里 @ 你的 Agent，花的点都算在你这里。")).toBeVisible();
+    // Agent social is off on this site: no 停止往来, no 恢复往来, no list of the stopped (this owner stopped nobody).
     await expect(main).not.toContainText("停止往来");
     await expect(main).not.toContainText("恢复往来");
     await integShot(page, "40-use-page-switch-off", { fullPage: true });
@@ -79,7 +80,7 @@ for (const [size, contextOptions] of SIZES) {
     await page.goto("/settings/usage");
     const usage = page.getByRole("region", { name: "用量与余额" });
     await usage.getByRole("link", { name: NAME }).scrollIntoViewIfNeeded();
-    await expect(usage.getByRole("heading", { name: "别人的使用" })).toBeVisible();
+    await expect(usage.getByRole("heading", { name: "别人用我的 Agent" })).toBeVisible();
     await expect(usage.getByText(/今天已回别人 0 次，花了 0 点 · /)).toBeVisible();
     await integShot(page, "42-usage-page-section");
     await usage.getByRole("link", { name: NAME }).click();
@@ -118,7 +119,7 @@ for (const [size, contextOptions] of SIZES) {
     // Its page says the limit; editing it away sends none.
     await page.goto("/agents");
     const detail = await openAgentDetail(page, name);
-    await expect(detail).toContainText("它自己的上限每天最多回别人 12 次，最多花 35.5 点");
+    await expect(detail).toContainText("别人用它的上限每天最多回别人 12 次，最多花 35.5 点");
     await detail.getByRole("button", { name: /编辑/ }).click();
     await page.getByLabel("每天最多回别人（次）").fill("");
     await page.getByLabel("每天最多花（点）").fill("");

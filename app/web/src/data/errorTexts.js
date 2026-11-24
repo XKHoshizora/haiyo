@@ -123,7 +123,7 @@ export const whisperErrorText = (error) => pick(WHISPER, "answer", error);
 const SOCIAL_CODES = {
   is_yours: "你自己的 Agent 不用添加。",
   not_requested: "这个申请已经处理过了。",
-  no_access: "你已不能再和它聊天。",
+  no_access: "你现在不能和它聊天了。",
   agent_unavailable: "这个 Agent 现在不可用。",
   answered: "这件事已经回答过了。",
   expired: "这张卡片已经过期了。",

@@ -89,7 +89,7 @@ function ReplyPointsSwitch() {
 }
 
 /**
- * 别人的使用: one line of what others' use of my Agents has cost today (the service's numbers and state: `GET /api/me/others-use`) and the
+ * 别人用我的 Agent: one line of what others' use of my Agents has cost today (the service's numbers and state: `GET /api/me/others-use`) and the
  * way to the page where it is read in full and its two numbers are set. Without the line (not read yet, or not readable), the link alone.
  */
 function OthersUseSection() {
@@ -100,8 +100,8 @@ function OthersUseSection() {
     dispatch({ type: "nav", patch: { settingsPage: "others", pane: "main" } });
   };
   return (
-    <section className="others-usage" aria-label="别人的使用">
-      <h3>别人的使用</h3>
+    <section className="others-usage" aria-label="别人用我的 Agent">
+      <h3>别人用我的 Agent</h3>
       {use && (
         <p>
           今天已回别人 {use.used.answers} 次，花了 {formatPoints(use.used.points)} 点 · {othersStateText(use)}
