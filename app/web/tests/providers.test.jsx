@@ -52,7 +52,12 @@ async function openProviders({ providers = [providerOf()], api = {}, models = MO
       const at = env.providers.findIndex((p) => p.id === id);
       const { apiKey, ...rest } = patch;
       const next = { ...env.providers[at], ...rest, ...(apiKey ? { keyLast4: apiKey.slice(-4) } : {}) };
-      if (rest.models) next.models = stored(id, { models: rest.models }).models;
+      // As the service does: a model that does not name `tools` keeps what is stored for its name.
+      const keptTools = (m) => {
+        const kept = env.providers[at].models.find((before) => before.name === m.name)?.tools;
+        return m.tools === undefined && typeof kept === "boolean" ? { ...m, tools: kept } : m;
+      };
+      if (rest.models) next.models = stored(id, { models: rest.models.map(keptTools) }).models;
       env.providers[at] = next;
       return structuredClone(next);
     }),
@@ -768,12 +773,13 @@ describe("the models of a provider", () => {
     const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
     for (const name of names) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
     expect(names.map((name) => [box(name).checked, box(name).indeterminate])).toEqual([[false, true], [false, false], [true, false], [false, true], [false, true]]);
-    const REPORTED = "资料显示它会用工具，会先让它试着用。确定不会就取消。";
+    const REPORTED = "资料显示它会用工具，会先让它试着用。确定不会就点一下取消。";
     const UNKNOWN = "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。";
     const helper = (name) => [REPORTED, UNKNOWN].filter((text) => within(modelRow(name)).queryByText(text));
     expect(names.map(helper)).toEqual([[REPORTED], [], [], [UNKNOWN], [REPORTED]]);
     expect(box("deepseek-chat").getAttribute("aria-describedby")).toBe(within(modelRow("deepseek-chat")).getByText(REPORTED).id);
-    // Another change, the boxes left alone: nothing of tools is sent for the unknown ones, and never what the catalogue reports.
+    // Another change, the boxes left alone: nothing of tools is sent — not for the unknown ones, not the stored false and true the
+    // form loaded (the service keeps what it has, also what it learned since this page was read) — and never what the catalogue reports.
     fireEvent.click(within(modelRow("house-blend")).getByLabelText(/能看图片/));
     await flush();
     await click(inMain().getByRole("button", { name: "保存" }));
@@ -781,29 +787,92 @@ describe("the models of a provider", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
       models: [
         { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
-        { name: "qwen-plus", vision: false, pdf: false, reasoning: true, contextTokens: 64000, tools: false },
-        { name: "qwen-vl-max", vision: true, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+        { name: "qwen-plus", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
+        { name: "qwen-vl-max", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
         { name: "house-blend", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
         { name: "qwen-omni-turbo", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
       ],
     });
-    expect(JSON.stringify(app.api.patchProvider.mock.calls)).not.toMatch(/reportedTools|audioIn|videoIn|audioOut/);
+    expect(JSON.stringify(app.api.patchProvider.mock.calls)).not.toMatch(/tools|reportedTools|audioIn|videoIn|audioOut/);
   });
 
-  it("会用工具 on a reported model: one click on the mixed box says yes (stored true), a second says no (stored false, and the mark goes)", async () => {
-    const reported = providerOf(P1, { models: [{ name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true }] });
+  it("会用工具 on a reported model: the mixed box's first click says no (unticked, stored false, the mark goes: what the helper names), the second says yes; a model nothing is reported of goes to yes first", async () => {
+    const reported = providerOf(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true },
+        { name: "qwen-max", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true },
+        { name: "house-blend", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+      ],
+    });
     const app = await openProviders({ providers: [reported] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
-    const marks = () => [...modelRow("deepseek-chat").querySelectorAll(".model-mark")].map((m) => m.querySelector(".model-mark-text")?.textContent ?? m.textContent);
-    const box = () => within(modelRow("deepseek-chat")).getByLabelText("会用工具（查聊天记录、看文件）");
-    await click(within(modelRow("deepseek-chat")).getByRole("button", { name: /高级/ }));
-    await click(box());
-    expect([box().checked, box().indeterminate, marks()]).toEqual([true, false, ["工具"]]);
-    await click(box());
-    expect([box().checked, box().indeterminate, marks()]).toEqual([false, false, []]);
+    const marks = (name) => [...modelRow(name).querySelectorAll(".model-mark")].map((m) => m.querySelector(".model-mark-text")?.textContent ?? m.textContent);
+    const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
+    const seen = (name) => [box(name).checked, box(name).indeterminate, marks(name)];
+    for (const name of ["deepseek-chat", "qwen-max", "house-blend"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    // mixed → unticked → ticked → unticked: the order a keyboard and a screen reader meet too (it is the native box).
+    expect(seen("deepseek-chat")).toEqual([false, true, ["工具"]]);
+    await click(box("deepseek-chat"));
+    expect(seen("deepseek-chat")).toEqual([false, false, []]);
     expect(modelRow("deepseek-chat").textContent).not.toContain("资料显示");
+    expect(box("deepseek-chat").getAttribute("aria-describedby")).toBeNull();
+    await click(box("deepseek-chat"));
+    expect(seen("deepseek-chat")).toEqual([true, false, ["工具"]]);
+    await click(box("deepseek-chat"));
+    expect(seen("deepseek-chat")).toEqual([false, false, []]);
+    // Two clicks on another reported one: yes. One click on a model nothing is reported of: yes at once, as before.
+    await click(box("qwen-max"));
+    await click(box("qwen-max"));
+    expect(seen("qwen-max")).toEqual([true, false, ["工具"]]);
+    await click(box("house-blend"));
+    expect(seen("house-blend")).toEqual([true, false, ["工具"]]);
     await click(inMain().getByRole("button", { name: "保存" }));
-    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false }] });
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+        { name: "qwen-max", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+        { name: "house-blend", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+      ],
+    });
+  });
+
+  it("tools is sent only where the owner's click changed what the form loaded: a stored true or false left alone, or clicked and clicked back, is not sent — and alone is nothing to save", async () => {
+    const stored = providerOf(P1, {
+      models: [
+        { name: "learned", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true, reportedTools: true },
+        { name: "off", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+        { name: "on", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+        { name: "back", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+      ],
+    });
+    const app = await openProviders({ providers: [stored] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
+    for (const name of ["learned", "off", "on", "back"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    // Clicked and clicked back: as loaded again.
+    await click(box("back"));
+    expect(box("back").checked).toBe(false);
+    await click(box("back"));
+    expect(box("back").checked).toBe(true);
+    // Only that: the form has nothing to send (a page left open cannot write its old true over what the service learned since).
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).not.toHaveBeenCalled();
+    // The owner turns one off: that model's word is sent, and no other's.
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    for (const name of ["off", "on"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    await click(box("on"));
+    await click(box("off"));
+    await click(box("off"));
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
+      models: [
+        { name: "learned", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "off", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "on", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+        { name: "back", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+      ],
+    });
   });
 
   it("an untouched unknown stays unknown: the box open and left alone, saved for another change, sends no tools and is still the mixed box", async () => {
@@ -821,7 +890,7 @@ describe("the models of a provider", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: true, pdf: false, reasoning: true, contextTokens: 64000 }] });
   });
 
-  it("a model marked tools: false keeps it when the list is saved for another change; one whose entry says nothing sends nothing of it", async () => {
+  it("a model marked tools: false is left to the service when the list is saved for another change (nothing of tools is sent: an edit that does not name it keeps what is stored); one whose entry says nothing sends nothing of it either", async () => {
     const marked = providerOf(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
@@ -837,7 +906,7 @@ describe("the models of a provider", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
-        { name: "plain", vision: true, pdf: false, reasoning: false, contextTokens: 16000, tools: false },
+        { name: "plain", vision: true, pdf: false, reasoning: false, contextTokens: 16000 },
       ],
     });
   });
@@ -1096,13 +1165,14 @@ describe("同步模型", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
-        { name: "plain", vision: false, pdf: false, reasoning: false, contextTokens: 16000, tools: false },
+        { name: "plain", vision: false, pdf: false, reasoning: false, contextTokens: 16000 },
         { name: "house-blend", vision: false, pdf: false, reasoning: false },
       ],
     });
     // The form now holds what was saved: plain still unticked.
     await click(within(modelRow("plain")).getByRole("button", { name: /高级/ }));
-    expect(within(modelRow("plain")).getByLabelText("会用工具（查聊天记录、看文件）").checked).toBe(false);
+    const plainBox = within(modelRow("plain")).getByLabelText("会用工具（查聊天记录、看文件）");
+    expect([plainBox.checked, plainBox.indeterminate]).toEqual([false, false]);
   });
 
   it("移除 takes a model off the form's list, a saved one too; with nothing changed 完成 only closes", async () => {

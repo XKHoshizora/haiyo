@@ -55,6 +55,7 @@
 
 import { isMemoryLanguage } from "./memoryLanguages.js";
 import { mentionsIn } from "./mentions.js";
+import { reportedOf } from "./reported.js";
 
 /** How many of its newest messages `GET /api/sync` returns per conversation (service: SYNC_MESSAGES_PER_CONVERSATION). */
 export const SYNC_WINDOW = 30;
@@ -1506,9 +1507,7 @@ export function markGroupRunsUnknown(state, conversationId) {
 
 // ───────── providers, usage, the site's models
 
-/** What the catalogue reports of a model, as the marks read it (the same list as ui/ModelMarks.jsx `REPORTED`, kept here so the data layer imports no component). */
-const REPORTED_FIELDS = ["reportedTools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"];
-const reportedOf = (m) => Object.fromEntries(REPORTED_FIELDS.filter((key) => m?.[key] === true).map((key) => [key, true]));
+/** A site model keeps what the catalogue reports of it (`reportedOf`) without `reportedTools`: its tools are the operator's word. */
 const siteReported = (m) => {
   const { reportedTools: _reportedTools, ...media } = reportedOf(m);
   return media;

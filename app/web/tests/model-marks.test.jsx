@@ -154,6 +154,22 @@ describe("the table of marks", () => {
     expect(abilityMarks({ tools: false, reportedTools: true, vision: true })).toEqual(["vision"]);
   });
 
+  it("the names of what the catalogue reports are one list (data/reported.js): the table, the provider's models, the site's and a listed row all read it, and none spells the names again", async () => {
+    const shared = await import("../src/data/reported.js");
+    const marks = await import("../src/ui/ModelMarks.jsx");
+    expect(shared.REPORTED).toEqual(["reportedTools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"]);
+    expect(Object.isFrozen(shared.REPORTED)).toBe(true);
+    expect(marks.REPORTED).toBe(shared.REPORTED);
+    expect(marks.reportedOf).toBe(shared.reportedOf);
+    expect(shared.reportedOf({ reportedTools: true, audioIn: "true", videoOut: true, tools: true, name: "m" })).toEqual({ reportedTools: true, videoOut: true });
+    expect(shared.reportedOf(undefined)).toEqual({});
+    // The two data files that keep the fields import the list; a seventh name is added in one place.
+    for (const file of ["src/data/model.js", "src/data/actions.js"]) {
+      const text = read(file);
+      expect([file, /from "\.\/reported\.js"/.test(text), /"(?:audioIn|videoIn|imageOut|videoOut|audioOut)"/.test(text)]).toEqual([file, true, false]);
+    }
+  });
+
   it("the reserved rows read the fields the service now carries (audioIn, videoIn, pdf, imageOut, videoOut, audioOut) and are still not drawn", () => {
     const MEDIA = { audioIn: "audioIn", videoIn: "videoIn", pdf: "pdf", imageOut: "imageOut", videoOut: "videoOut", audioOut: "audioOut" };
     for (const [kind, field] of Object.entries(MEDIA)) {

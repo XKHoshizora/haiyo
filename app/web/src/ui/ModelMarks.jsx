@@ -34,10 +34,8 @@ const PRICE_SIZER = Object.values(PRICE_TEXT).reduce((a, b) => (b.length > a.len
  * may then wrap to two lines. The hidden column copies (`.model-gap`) are fine at three columns; replace them (a grid with shared column
  * tracks) before many rows are on.
  */
-/** What the catalogue reports of a model (the service sends each only as true): the fields a list carries along untouched for the table to read. Never sent back. */
-export const REPORTED = ["reportedTools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"];
-/** Those of `model` that are exactly true, and nothing else of it. */
-export const reportedOf = (model) => Object.fromEntries(REPORTED.filter((key) => model?.[key] === true).map((key) => [key, true]));
+/** What the catalogue reports of a model: the fields a list carries along untouched for the table to read. The one list is the data layer's (data/reported.js). */
+export { REPORTED, reportedOf } from "../data/reported.js";
 
 export const ABILITIES = [
   { kind: "vision", text: "看图", title: "能看图片", Icon: Eye, from: (m) => m.vision === true, shown: true },

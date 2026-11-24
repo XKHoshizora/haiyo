@@ -231,7 +231,7 @@ const CATALOGUE_MODELS = [
   // Not in the catalogue: nothing is reported, nothing is marked.
   { name: "house-blend-1", contextTokens: 64000 },
 ];
-const REPORTED_HELPER = "资料显示它会用工具，会先让它试着用。确定不会就取消。";
+const REPORTED_HELPER = "资料显示它会用工具，会先让它试着用。确定不会就点一下取消。";
 const UNKNOWN_HELPER = "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。";
 
 test("what the catalogue reports: a provider model with nothing stored is marked 工具 in the picker (430 and 1280), on its provider row and in the sync list; a stored false hides it everywhere; the box tells the same story", async ({ people }) => {
@@ -307,9 +307,28 @@ test("what the catalogue reports: a provider model with nothing stored is marked
   await expect(box("house-blend-1")).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
   await expect(row("house-blend-1").getByText(UNKNOWN_HELPER)).toBeVisible();
 
-  // What the real service says of them, and what it stores when the list is sent back as the form sends it (the flags, the context, `tools`
-  // only where the entry says it — the form itself cannot be saved here: the stub's address is not https, which the form refuses; the form's
-  // own save is pinned in tests/providers.test.jsx): nothing of tools for a reported model, and nothing the catalogue reports is accepted.
+  // By keyboard, the order a screen reader meets too. A reported model: mixed → not checked (what its helper names: the mark goes with it) →
+  // checked (the mark is back). A model nothing is reported of: mixed → checked.
+  const boxState = (name) => box(name).evaluate((el) => [el.checked, el.indeterminate]);
+  expect(await boxState("deepseek-chat")).toEqual([false, true]);
+  await box("deepseek-chat").focus();
+  await page.keyboard.press("Space");
+  expect(await boxState("deepseek-chat")).toEqual([false, false]);
+  await expect(box("deepseek-chat")).toBeFocused();
+  await expect(row("deepseek-chat").locator(".model-mark")).toHaveCount(0);
+  await expect(row("deepseek-chat").getByText(REPORTED_HELPER)).toHaveCount(0);
+  await page.keyboard.press("Space");
+  expect(await boxState("deepseek-chat")).toEqual([true, false]);
+  await expect(row("deepseek-chat").locator(".model-mark")).toHaveText(["工具"]);
+  await box("house-blend-1").focus();
+  await page.keyboard.press("Space");
+  expect(await boxState("house-blend-1")).toEqual([true, false]);
+  await expect(row("house-blend-1").locator(".model-mark")).toHaveText(["工具"]);
+
+  // What the real service says of them, and what it stores when the list is sent back as the form sends it with its boxes left alone (the
+  // flags and the context; never `tools`, not even a stored one: the service keeps what it has — the form itself cannot be saved here: the
+  // stub's address is not https, which the form refuses; the form's own save is pinned in tests/providers.test.jsx): the stored false stays,
+  // nothing of tools is stored for a reported model, and nothing the catalogue reports is accepted.
   const read = async () => (await (await ann.request.get("/api/providers")).json()).providers[0];
   const provider = await read();
   const state = (models) => models.map((m) => [m.name, m.tools, m.reportedTools]);
@@ -321,7 +340,8 @@ test("what the catalogue reports: a provider model with nothing stored is marked
     ["house-blend-1", undefined, undefined],
   ];
   expect(state(provider.models)).toEqual(expected);
-  const echo = provider.models.map((m) => ({ name: m.name, vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, contextTokens: m.contextTokens, ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}) }));
+  const echo = provider.models.map((m) => ({ name: m.name, vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, contextTokens: m.contextTokens }));
+  expect(echo.some((m) => "tools" in m)).toBe(false);
   expect((await ann.request.patch(`/api/providers/${provider.id}`, { data: { models: echo } })).status()).toBe(200);
   expect(state((await read()).models)).toEqual(expected);
   expect((await ann.request.patch(`/api/providers/${provider.id}`, { data: { models: echo.map((m) => ({ ...m, reportedTools: true })) } })).status()).toBe(400);

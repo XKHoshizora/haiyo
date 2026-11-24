@@ -162,8 +162,11 @@ const contextProblem = (text) => {
  * thinking levels it is offered with (null: every level), `reported` the levels the catalogue lists for it (what `levels` goes back to: the service
  * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too), and `tools` whether its replies may be offered tools as its entry says it
  * (undefined: it says nothing — not known yet, so they are; the service may set it false when the model turns out unable).
+ * `loadedTools` is that `tools` as the form read it (absent when the entry said nothing), never changed afterwards: `tools` is sent only
+ * when it differs from it (`wireModel`).
  * It also carries what the catalogue reports of the model (`reportedOf`: `reportedTools` and what it takes and answers with),
- * for its row's marks and the box's helper only: none of it is ever sent (`wireModel`).
+ * for its row's marks and the box's helper only: none of it is ever sent (`wireModel`). (The form's `reported` is the LEVELS the
+ * catalogue lists, an older name; the keys of `reportedOf` are other names and do not meet it.)
  */
 const formModel = (m) => ({
   name: m.name,
@@ -173,13 +176,15 @@ const formModel = (m) => ({
   context: Number.isFinite(m.contextTokens) ? String(m.contextTokens) : "",
   levels: m.reasoning ? modelLevels(m.reasoningLevels) : null,
   reported: m.reasoning ? (modelLevels(m.reportedLevels) ?? modelLevels(m.reasoningLevels)) : null,
-  ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
+  ...(typeof m.tools === "boolean" ? { tools: m.tools, loadedTools: m.tools } : {}),
   ...reportedOf(m),
 });
 /**
- * As it is sent: the flags always, the context only when one is given, the levels only on a model that reasons, `tools`
- * only when the entry says it or its owner ticked or unticked it (left out, the service keeps what it has) — never because
- * the catalogue reports it, and never `reportedTools` or anything else the catalogue reports (the service refuses them).
+ * As it is sent: the flags always, the context only when one is given, the levels only on a model that reasons, and `tools`
+ * ONLY when its owner's click left it other than the form loaded it (`loadedTools`). A stored true or false that was not
+ * touched — or was clicked and clicked back — is not sent: left out, the service keeps what it has, so a page left open can
+ * never write the value it read over one the service learned since (a model found unable, or able). Never because the
+ * catalogue reports it, and never `reportedTools` or anything else the catalogue reports (the service refuses them).
  */
 const wireModel = (m) => {
   const n = contextNumber(m.context);
@@ -190,11 +195,16 @@ const wireModel = (m) => {
     reasoning: m.reasoning,
     ...(n === null ? {} : { contextTokens: n }),
     ...(m.reasoning && m.levels ? { reasoningLevels: m.levels } : {}),
-    ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
+    ...(typeof m.tools === "boolean" && m.tools !== m.loadedTools ? { tools: m.tools } : {}),
   };
 };
-const modelsKey = (list) =>
-  JSON.stringify(list.map((m) => [m.name, m.vision, m.pdf, m.reasoning, m.contextTokens ?? null, m.reasoningLevels ?? null, m.tools ?? null]));
+const modelsKey = (list) => JSON.stringify(list.map((m) => [m.name, m.vision, m.pdf, m.reasoning, m.contextTokens ?? null, m.reasoningLevels ?? null]));
+/**
+ * Whether the list as it would be sent (`wire`: `wireModel` of each) says anything the saved one does not: a model more or
+ * fewer, a flag, a context, the levels — or a `tools`, which is on the wire only where its box was changed. The saved
+ * list's own `tools` are not compared: they may have changed since the form read them, and that is not the form's edit.
+ */
+const listChanged = (wire, saved) => modelsKey(wire) !== modelsKey(saved) || wire.some((m) => "tools" in m);
 /**
  * A model from the provider's own list (同步模型) as the form adds it: its hints as flags, a known model's context and levels.
  * Nothing of `tools`: adding stores none (its mark comes from what the catalogue reports, carried along for the row).
@@ -394,6 +404,11 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   ].join("");
   // Not reasoning any more: the levels it listed go too.
   const flag = (key) => (event) => onChange({ ...model, [key]: event.target.checked, ...(key === "reasoning" && !event.target.checked ? { levels: null } : {}) });
+  // 会用工具: a box that says yes or no flips. The mixed one (the entry says nothing) goes first to the word its owner can add to
+  // what the row already shows: for a model the catalogue reports — marked 工具 as it is — that word is "it cannot" (unticked,
+  // as its helper says), and yes on the click after; for a model nothing is reported of it is yes. By mouse, touch or Space alike.
+  const toolsKnown = typeof model.tools === "boolean";
+  const clickTools = () => onChange({ ...model, tools: toolsKnown ? !model.tools : model.reportedTools !== true });
   return (
     <li>
       <div className="member-body">
@@ -427,21 +442,22 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
               <label>
                 {/* As its entry says, the mark's own story: ticked for true, unticked for false, the native mixed box while the entry says nothing (the
                     service still offers it tools until a reply finds it unable) — also when the catalogue reports the model uses them: that is not
-                    stored, so the box stays mixed and only the helper differs. One click makes it a fact; saving it untouched sends nothing. */}
+                    stored, so the box stays mixed and only the helper differs, and its first click unticks it (`clickTools`). One click makes it a
+                    fact; saving it untouched sends nothing. The native mixed state is what a screen reader hears (mixed, then not checked, then checked). */}
                 <input
                   type="checkbox"
                   checked={model.tools === true}
                   ref={(el) => {
-                    if (el) el.indeterminate = typeof model.tools !== "boolean";
+                    if (el) el.indeterminate = !toolsKnown;
                   }}
-                  aria-describedby={typeof model.tools !== "boolean" ? `${panelId}-tools-unknown` : undefined}
-                  onChange={flag("tools")}
+                  aria-describedby={toolsKnown ? undefined : `${panelId}-tools-unknown`}
+                  onChange={clickTools}
                 />
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
-              {typeof model.tools !== "boolean" && (
+              {!toolsKnown && (
                 <small id={`${panelId}-tools-unknown`} className="tools-unknown">
-                  {model.reportedTools === true ? "资料显示它会用工具，会先让它试着用。确定不会就取消。" : "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。"}
+                  {model.reportedTools === true ? "资料显示它会用工具，会先让它试着用。确定不会就点一下取消。" : "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。"}
                 </small>
               )}
             </fieldset>
@@ -797,7 +813,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
     if (name !== provider.name) patch.name = name;
     if (addressChanged) patch.baseUrl = address;
     const list = models.map(wireModel);
-    if (modelsKey(list) !== modelsKey(provider.models)) patch.models = list;
+    if (listChanged(list, provider.models)) patch.models = list;
     const apiKey = keyRef.current.value.trim();
     if (apiKey) patch.apiKey = apiKey;
     if (Object.keys(patch).length === 0) {
@@ -835,7 +851,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
 
   const openSync = () => {
     setSyncError(null);
-    setSync({ dirtyBefore: modelsKey(latestModels.current.map(wireModel)) !== modelsKey(provider.models) });
+    setSync({ dirtyBefore: listChanged(latestModels.current.map(wireModel), provider.models) });
   };
   const closeSync = () => {
     setSync(null);
@@ -847,7 +863,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
    */
   const finishSync = async () => {
     const list = latestModels.current.map(wireModel);
-    const changed = modelsKey(list) !== modelsKey(provider.models);
+    const changed = listChanged(list, provider.models);
     const otherChanges = sync.dirtyBefore || f.name.trim() !== provider.name || unsaved || keyCleared;
     if (!changed || otherChanges) return closeSync();
     setSyncError(null);
