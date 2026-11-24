@@ -1855,7 +1855,9 @@ Agent cannot be pointed at their provider (400).
   `这个模型不支持查东西，已改为普通聊天。可以在模型设置里重新打开再试。`, no button); from the next reply on it is
   offered none and replies as a model without tools always did. You can turn it on again (`true`); if it is again found
   unable, it is turned off again and you are told again. An edit whose model does not
-  name `tools` keeps what is stored for that name, and a refresh (`…/models/refresh`) never changes it.
+  name `tools` keeps what is stored for that name, and a refresh (`…/models/refresh`) never changes it. (So a client
+  names `tools` only where its user changed it, as the web form does: a page read earlier then cannot write the value
+  it read over one found since.)
   The other half: after a reply in which the model made a tool call that ran, the service stores `true` on a model whose
   entry says nothing (`markToolsOn`) — once, never over a `false` or a `true` already there, never for a site model, and
   nobody is told; a reply of a model whose entry says either writes nothing.
