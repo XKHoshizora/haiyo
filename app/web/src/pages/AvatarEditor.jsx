@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useStore } from "../data/store.jsx";
 import { ME } from "../data/identities.js";
 import { Avatar, Btn } from "../ui/primitives.jsx";
-import { PICK_TYPES, pickProblem } from "../ui/avatarCrop.js";
+import { PICK_ACCEPT, pickProblem } from "../ui/avatarCrop.js";
 import { AvatarDialog } from "./AvatarDialog.jsx";
 import { useAction } from "./useAction.js";
 
@@ -84,7 +84,11 @@ export function AvatarEditor({
     if (!file) return;
     const problem = pickProblem(file);
     setError(problem);
-    if (!problem) setPicked(file);
+    // A refusal is shown twice: in the line under the buttons, which stays, and as a notice — on a phone the line is small and, coming
+    // back from the photo picker, easy to take for "nothing happened" (and to pick again). It is read out once: by the notice (the
+    // line is no alert of its own), every time, also for the same file picked again.
+    if (problem) dispatch({ type: "toast", text: problem });
+    else setPicked(file);
   };
 
   /** What the dialog's 保存 does with the crop: "" when taken, else the sentence to show in the dialog. */
@@ -130,7 +134,7 @@ export function AvatarEditor({
     </>
   );
 
-  const limits = "支持 PNG、JPEG、WebP，不超过 20 MB；选好后可以拖动和缩放。";
+  const limits = "支持常见图片格式，不超过 20 MB；选好后可以拖动和缩放。";
   return (
     <div className="avatar-editor" ref={rootRef}>
       {held ? (
@@ -143,10 +147,10 @@ export function AvatarEditor({
         current ?? <Avatar id={id} size={84} />
       )}
       <div className="stack-actions row-actions">
-        <input ref={inputRef} type="file" accept={PICK_TYPES.join(",")} hidden aria-label="选择头像图片" onChange={choose} />
+        <input ref={inputRef} type="file" accept={PICK_ACCEPT} hidden aria-label="选择头像图片" onChange={choose} />
         {buttons}
       </div>
-      <p className={error ? "field-msg" : "field-hint"} role={error ? "alert" : undefined}>
+      <p className={error ? "field-msg" : "field-hint"}>
         {error || hint || (holding ? `${limits}不选择则使用默认头像。` : limits)}
       </p>
       {/* In the body, not inside a form around this (Enter on the slider would submit it). */}

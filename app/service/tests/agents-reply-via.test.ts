@@ -253,7 +253,7 @@ describe("which model and thinking level a reply used: its Agent's owner's only"
     });
   });
 
-  it("a level its model no longer takes is sent as none, and via says none, whatever the Agent's own setting", async () => {
+  it("a level its model no longer lists is sent as the nearest listed level below it, and via says that level, whatever the Agent's own setting", async () => {
     const owner = await signUp(app, "olga");
     const agent = await mustCreateAgent(app, owner, { handle: "high_bot", name: "高高", model: { source: "site", id: SOL.id }, reasoning: "high", persona: "你好。" });
     const config = app.deps.config as { siteModels: typeof app.deps.config.siteModels };
@@ -265,10 +265,10 @@ describe("which model and thinking level a reply used: its Agent's owner's only"
     } finally {
       config.siteModels = kept;
     }
-    expect(gateway.calls.at(-1)!.reasoning).toBe("none");
+    expect(gateway.calls.at(-1)!.reasoning).toBe("low");
     expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json.reasoning).toBe("high");
     const reply = (await api(app, owner, "GET", `/api/conversations/${agent.conversationId}/messages`)).json.messages.at(-1);
-    expect([reply.text, reply.via]).toEqual(["HIGH-q9x 你好。", { model: { source: "site", id: SOL.id, label: SOL.label }, reasoning: "none", points: "0.02" }]);
+    expect([reply.text, reply.via]).toEqual(["HIGH-q9x 你好。", { model: { source: "site", id: SOL.id, label: SOL.label }, reasoning: "low", points: "0.02" }]);
   });
 
   it("a site model taken out of the configuration since is named by its id; a run without its level recorded, or without its usage record, gives no via", async () => {

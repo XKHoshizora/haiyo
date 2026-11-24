@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.ts";
 import { api, signUp } from "./helpers/actors.ts";
 import { SITE_ENV } from "./helpers/agents.ts";
+import { mediaIn, pick } from "./helpers/catalog.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
 
 /**
@@ -39,6 +40,41 @@ describe("GET /api/models", () => {
       expect(await api(bare, owner, "GET", "/api/models")).toEqual({ status: 200, json: { siteModels: [], providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 }, proactiveAvailable: false, memoryCatchUp: { days: 30, lines: 200 } } });
     } finally {
       await bare.close();
+    }
+  });
+
+  it("a site model the catalogue knows — by the name it is called by, else by its id, exactly — carries what it takes and answers with, only as true; never the catalogue's word on tools; one it does not know carries none", async () => {
+    const [fast, thinker] = app.deps.config.siteModels;
+    const hears = pick("takes audio and uses tools", (e) => e.audioIn === true && e.tools === true);
+    const films = pick("answers with video", (e) => e.videoOut === true);
+    const paints = pick("answers with images", (e) => e.imageOut === true);
+    const siteModels = [
+      { ...fast!, id: "omni", model: hears.id },
+      { ...thinker!, id: films.id, model: "omni-upstream-name" },
+      { ...fast!, id: "painter", model: `somehost/${paints.id}` },
+      { ...fast!, id: "audio-video-wording", model: "house-video-audio-1", tools: false },
+      // An operator's label that only starts with a known id, and an upstream name that only starts with one: nothing.
+      { ...fast!, id: `${hears.id}-fast`, model: `${films.id}-house-variant` },
+    ];
+    const able = await buildApp({ config: { ...app.deps.config, siteModels }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });
+    try {
+      const owner = await signUp(able, "abilities");
+      const res = await api(able, owner, "GET", "/api/models");
+      const base = { label: "Fast", tier: "free", vision: false, pdf: false, reasoning: [], contextTokens: 100000 };
+      expect(res.json.siteModels).toEqual([
+        { ...base, id: "omni", tools: true, ...mediaIn(hears) },
+        { id: films.id, label: "Thinker", tier: "paid", vision: true, pdf: true, reasoning: ["low", "medium"], contextTokens: 200000, tools: true, ...mediaIn(films) },
+        { ...base, id: "painter", tools: true, ...mediaIn(paints) },
+        // What its configuration says stays the operator's: vision, pdf, reasoning and tools are never the catalogue's.
+        { ...base, id: "audio-video-wording", tools: false },
+        { ...base, id: `${hears.id}-fast`, tools: true },
+      ]);
+      expect(mediaIn(hears).audioIn).toBe(true);
+      expect(JSON.stringify(res.json)).not.toContain("reportedTools");
+      // Never the upstream's name.
+      for (const name of ["omni-upstream-name", "somehost", "house-variant"]) expect([name, JSON.stringify(res.json).includes(name)]).toEqual([name, false]);
+    } finally {
+      await able.close();
     }
   });
 

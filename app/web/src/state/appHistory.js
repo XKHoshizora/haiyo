@@ -215,8 +215,14 @@ export function layerLeftByBack(id, held) {
   settleAfterPopstate();
 }
 
-/** The last address seen in each section (without an overlay): a click on a section goes there, as a push. */
+/**
+ * The last address seen in each section (without an overlay). Where two panes show (the wide layout) a click on a section goes there,
+ * as a push; where one pane shows at a time (a phone, one column) it goes to the section's list (`sectionRoot`): a page there fills
+ * the screen, and a tab that answered a conversation opened from another section would leave its list out of reach.
+ */
 const ROOTS = { chat: "/", contacts: "/contacts", agents: "/agents", settings: "/settings" };
+/** The page keys of `section`'s list (its root address). */
+export const sectionRoot = (section) => navOfAddress({ path: ROOTS[section], overlay: null });
 const lastOf = { ...ROOTS };
 const remember = (address) => {
   lastOf[sectionOfPath(address.path)] = address.path;
@@ -238,7 +244,7 @@ export function lastPageOf(section, state) {
   const page = navOfAddress({ path: lastOf[section] ?? ROOTS[section], overlay: null });
   if (alive(state, page)) return page;
   lastOf[section] = ROOTS[section];
-  return navOfAddress({ path: ROOTS[section], overlay: null });
+  return sectionRoot(section);
 }
 /** Forgets where each section was (a different account signs in). */
 export const forgetSections = () => Object.assign(lastOf, ROOTS);

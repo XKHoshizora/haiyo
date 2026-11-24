@@ -8,7 +8,7 @@ import { useOthersUse } from "./useOthersUse.js";
 import { Avatar, ConvAvatar, HeadCounts, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
 import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "./AgentForm.jsx";
-import { levelLabel, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
+import { agentLevel, levelLabel, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
 import { LabLogo } from "../ui/LabLogo.jsx";
 import { convTitle, groupCounts, isMyAgent, myAgents } from "../state/selectors.js";
 import { socialOn } from "../state/social.js";
@@ -324,6 +324,12 @@ function AgentDetail({ agent }) {
   const tab = (nav.agentTab === "memory" && !live) || (nav.agentTab === "others" && !othersOn) ? "profile" : (nav.agentTab ?? "profile");
   const note = nav.agentNote?.agentId === agent.id ? nav.agentNote.text : null;
   const toggle = () => run("pause", () => settled(agent.paused ? actions.resumeAgent(agent.id) : actions.pauseAgent(agent.id)), refusalText);
+  // 思考程度 is the level it runs at, which depends on what its model lists: a provider's model is looked up in my providers, read
+  // once when they are not held here (its saved level shows until then, and stays when the provider is gone).
+  const providerNeeded = agent.model?.source === "provider" && !state.providers[agent.model.providerId] ? agent.model.providerId : null;
+  useEffect(() => {
+    if (providerNeeded) actions.loadProviders();
+  }, [providerNeeded, actions]);
 
   return (
     <section className="page" aria-label="Agent 管理">
@@ -396,7 +402,7 @@ function AgentDetail({ agent }) {
                     ["主人", "你（不可修改）"],
                     ["擅长领域", agent.field || "未填写"],
                     ["模型", <><LabLogo lab={modelLab(state, agent.model)} size={16} />{modelLabel(state, agent.model) ?? "未选择"}{agent.model && !agent.modelUsable && <Reason>{MODEL_GONE.sentence}</Reason>}</>],
-                    ["思考程度", levelLabel(agent.reasoning)],
+                    ["思考程度", levelLabel(agentLevel(state, agent))],
                     ["人格文档", agent.persona ? excerpt(agent.persona) : "未填写（它会先在会话里问你几个问题）"],
                     ["私聊回复方式", agent.privateReply],
                     ["群里谁可以叫它", groupMentionsLabel(agent)],

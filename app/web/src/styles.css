@@ -354,7 +354,8 @@ svg.model-brand { color: var(--ink-3); }
 /* The price column is as wide as its longest word whichever word a row has (a hidden copy of it, overlaid: grid area 1/1), so it never depends on the row or the font. */
 .model-mark[data-col="price"] { display: inline-grid; justify-items: center; }
 .model-mark[data-col="price"]::after { content: attr(data-sizer); grid-area: 1 / 1; visibility: hidden; user-select: none; }
-.model-mark[data-col="price"] > * { grid-area: 1 / 1; }
+/* The word is an element of its own (a bare text node cannot be placed in the grid cell, it would drop to a second row under the hidden sizer). */
+.model-mark[data-col="price"] > .model-price-word { grid-area: 1 / 1; }
 .model-gap { visibility: hidden; user-select: none; }
 .model-mark-free { background: var(--ok-bg); color: var(--ok); }
 .model-mark-paid { background: var(--warn-bg); color: var(--warn); }
@@ -972,6 +973,11 @@ form.page-body .notice { max-width: var(--field-w); box-sizing: border-box; }
 .checks label { display: flex; align-items: center; gap: 10px; font-size: 15px; }
 .checks small { color: var(--ink-3); margin-left: 6px; }
 .checks[role="radiogroup"] > small { margin-left: 0; }
+.checks.level-checks > small { margin-left: 0; }
+/* The five level boxes: one row that wraps, each a 44 px target. */
+.level-boxes { display: flex; flex-wrap: wrap; gap: 0 14px; }
+.level-boxes label { min-width: 44px; min-height: 44px; white-space: nowrap; }
+.model-panel .level-boxes label span { flex: none; }
 .checks > .tools-unknown { margin: -4px 0 0 26px; font-size: 13px; }
 .radio-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 760px; }
 .radio-cards label {

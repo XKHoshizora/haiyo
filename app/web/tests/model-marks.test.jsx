@@ -27,6 +27,10 @@ const STATE = {
       models: [
         { name: "deepseek-v4-flash-vision-exp", vision: true, pdf: false, reasoning: true, contextTokens: 64000, tools: true },
         { name: "deepseek-v4-flash", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        // What the catalogue reports beside what is stored (the service's `reportedTools`, and what the model takes and answers with).
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true },
+        { name: "qwen-plus", vision: false, pdf: false, reasoning: true, contextTokens: 64000, tools: false, reportedTools: true },
+        { name: "qwen-omni-turbo", vision: true, pdf: false, reasoning: false, contextTokens: 64000, tools: true, reportedTools: true, audioIn: true, videoIn: true, audioOut: true },
       ],
     },
   },
@@ -93,6 +97,13 @@ describe("the price column", () => {
     const rules = parseCss(read("src/styles.css"));
     const decl = Object.assign({}, ...rulesFor(rules, '.model-mark[data-col="price"]::after', null).map((r) => r.decl));
     expect(decl).toMatchObject({ content: "attr(data-sizer)", visibility: "hidden" });
+    // The word is an element in the same grid cell as the sizer (a bare text node would fall to a second row under it: the chip empty, the word below).
+    const word = container.querySelector('.model-mark-free[data-col="price"] > .model-price-word');
+    expect(word?.textContent).toBe("免费");
+    // No price chip holds a bare text node (only an element can be given the cell).
+    for (const chip of container.querySelectorAll('[data-col="price"]')) expect([...chip.childNodes].filter((n) => n.nodeType === 3)).toEqual([]);
+    expect(Object.assign({}, ...rulesFor(rules, '.model-mark[data-col="price"] > .model-price-word', null).map((r) => r.decl))).toMatchObject({ "grid-area": "1 / 1" });
+    expect(Object.assign({}, ...rulesFor(rules, '.model-mark[data-col="price"]::after', null).map((r) => r.decl))).toMatchObject({ "grid-area": "1 / 1" });
     // (And no minimum width of its own to stand in for it.)
     expect(read("src/styles.css")).not.toMatch(/data-col="price"\][^{]*\{[^}]*min-width/);
   });
@@ -127,6 +138,55 @@ describe("the table of marks", () => {
       expect(a.from({ [a.kind]: true }), `${a.kind} true`).toBe(true);
     }
     expect(abilityMarks({ tools: true })).toEqual(["tools"]);
+  });
+
+  it("工具, the one rule, here and nowhere else: stored true, yes; stored false, never; nothing stored, what the catalogue reports", () => {
+    const tools = ABILITIES.find((a) => a.kind === "tools").from;
+    const cases = [
+      [{ tools: true }, true],
+      [{ tools: true, reportedTools: true }, true],
+      [{ tools: false }, false],
+      // A failure found, or its owner's word, wins over the catalogue.
+      [{ tools: false, reportedTools: true }, false],
+      [{ reportedTools: true }, true],
+      [{}, false],
+      // Only exactly true reports: the service sends `reportedTools` as true or not at all.
+      [{ reportedTools: false }, false],
+      [{ reportedTools: "true" }, false],
+      [{ reportedTools: 1 }, false],
+      [{ reportedTools: null }, false],
+    ];
+    for (const [model, shown] of cases) expect([JSON.stringify(model), tools(model)]).toEqual([JSON.stringify(model), shown]);
+    expect(abilityMarks({ reportedTools: true })).toEqual(["tools"]);
+    expect(abilityMarks({ tools: false, reportedTools: true, vision: true })).toEqual(["vision"]);
+  });
+
+  it("the names of what the catalogue reports are one list (data/reported.js): the table, the provider's models, the site's and a listed row all read it, and none spells the names again", async () => {
+    const shared = await import("../src/data/reported.js");
+    const marks = await import("../src/ui/ModelMarks.jsx");
+    expect(shared.REPORTED).toEqual(["reportedTools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"]);
+    expect(Object.isFrozen(shared.REPORTED)).toBe(true);
+    expect(marks.REPORTED).toBe(shared.REPORTED);
+    expect(marks.reportedOf).toBe(shared.reportedOf);
+    expect(shared.reportedOf({ reportedTools: true, audioIn: "true", videoOut: true, tools: true, name: "m" })).toEqual({ reportedTools: true, videoOut: true });
+    expect(shared.reportedOf(undefined)).toEqual({});
+    // The two data files that keep the fields import the list; a seventh name is added in one place.
+    for (const file of ["src/data/model.js", "src/data/actions.js"]) {
+      const text = read(file);
+      expect([file, /from "\.\/reported\.js"/.test(text), /"(?:audioIn|videoIn|imageOut|videoOut|audioOut)"/.test(text)]).toEqual([file, true, false]);
+    }
+  });
+
+  it("the reserved rows read the fields the service now carries (audioIn, videoIn, pdf, imageOut, videoOut, audioOut) and are still not drawn", () => {
+    const MEDIA = { audioIn: "audioIn", videoIn: "videoIn", pdf: "pdf", imageOut: "imageOut", videoOut: "videoOut", audioOut: "audioOut" };
+    for (const [kind, field] of Object.entries(MEDIA)) {
+      const row = ABILITIES.find((a) => a.kind === kind);
+      expect([kind, row.shown, row.from({ [field]: true }), row.from({})]).toEqual([kind, false, true, false]);
+    }
+    const everything = { audioIn: true, videoIn: true, pdf: true, imageOut: true, videoOut: true, audioOut: true, reportedTools: true };
+    expect(abilityMarks(everything)).toEqual(["tools"]);
+    const { container } = render(<ModelMarks marks={abilityMarks(everything)} />);
+    expect(wordsOf(container)).toEqual(["工具"]);
   });
 
   it("a reserved row never renders and is never in the legend, even when the model's data says it is true", () => {
@@ -164,6 +224,35 @@ describe("the picker's rows", () => {
     expect(wordsOf(row("deepseek-v4-flash"))).toEqual([]);
     expect(row("deepseek-v4-flash-vision-exp").getAttribute("aria-label")).toBe("deepseek-v4-flash-vision-exp · 看图 · 思考 · 工具");
     expect(row("deepseek-v4-flash").getAttribute("aria-label")).toBe("deepseek-v4-flash");
+  });
+
+  it("a provider model with nothing stored that the catalogue reports is marked 工具; one stored false is not, whatever is reported; what it takes and answers with reaches the row and draws nothing yet", () => {
+    openPicker();
+    expect(wordsOf(row("deepseek-chat"))).toEqual(["工具"]);
+    expect(row("deepseek-chat").getAttribute("aria-label")).toBe("deepseek-chat · 工具");
+    expect(wordsOf(row("qwen-plus"))).toEqual(["思考"]);
+    expect(wordsOf(row("qwen-omni-turbo"))).toEqual(["看图", "工具"]);
+    // The fields are carried to the marks' table (a reserved row turned on would draw them): flip one and it is there.
+    const audio = ABILITIES.find((a) => a.kind === "audioIn");
+    audio.shown = true;
+    try {
+      const omni = modelChoices(STATE).providers[0].models.find((c) => c.name === "qwen-omni-turbo");
+      expect(omni.marks).toEqual(["vision", "tools", "audioIn"]);
+    } finally {
+      audio.shown = false;
+    }
+  });
+
+  it("a site model keeps its own boolean tools (the operator's word); what the catalogue knows it to take reaches its row too, undrawn", () => {
+    const state = { ...STATE, siteModels: [{ id: "omni", label: "Omni", tier: "free", vision: true, pdf: false, reasoning: [], tools: false, audioIn: true, videoOut: true }], providers: {} };
+    expect(modelChoices(state).site[0].marks).toEqual(["free", "vision"]);
+    const video = ABILITIES.find((a) => a.kind === "videoOut");
+    video.shown = true;
+    try {
+      expect(modelChoices(state).site[0].marks).toEqual(["free", "vision", "videoOut"]);
+    } finally {
+      video.shown = false;
+    }
   });
 
   it("工具 only where the model's own field says true: a site model the operator says can, yes; one saying false or nothing, no", () => {

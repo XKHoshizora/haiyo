@@ -5,7 +5,10 @@ import { aboutPoints } from "../accounts/store.ts";
 import { siteOffersWebSearch } from "../agents/tools/web/engine.ts";
 import { REASONING_LEVELS } from "../config.ts";
 import { perPrincipalLimit } from "../limits.ts";
+import { abilitiesOf, abilitiesView, modelHints, type Abilities } from "../providers/hints.ts";
 import { requirePrincipal } from "../session.ts";
+
+const { reportedTools: _reportedTools, ...siteMediaView } = abilitiesView;
 
 const modelsResponse = z.object({
   siteModels: z.array(
@@ -18,6 +21,7 @@ const modelsResponse = z.object({
       reasoning: z.array(z.enum(REASONING_LEVELS)),
       contextTokens: z.number(),
       tools: z.boolean(),
+      ...siteMediaView,
     }),
   ),
   providerDefaults: z.object({ contextTokens: z.number(), maxOutputTokens: z.number() }),
@@ -30,8 +34,21 @@ const modelsResponse = z.object({
 });
 
 /**
+ * What the catalogue says a site model takes and answers with besides what its configuration states (audio and video
+ * in; images, video and audio out): of the name it is called by when the catalogue knows that name, else of its id —
+ * in both cases only when that is a catalogue model itself, never a name that merely starts with one (`modelHints`) —
+ * else nothing. Never `reportedTools`, `vision`, `pdf` or its thinking levels: those are the operator's (`tools`).
+ */
+function siteMedia(site: { id: string; model: string }): Omit<Abilities, "reportedTools"> {
+  const called = modelHints(site.model);
+  const { reportedTools: _tools, ...media } = abilitiesOf(called.known ? called : modelHints(site.id));
+  return media;
+}
+
+/**
  * `GET /api/models` (README "Calling a model"): what a client's model picker reads. The site models in configuration
- * order, each with what its owner chooses by and whether its replies may be offered tools (`tools`) — never where it is
+ * order, each with what its owner chooses by, whether its replies may be offered tools (`tools`) and what else the
+ * catalogue knows it to take and answer with (`siteMedia`) — never where it is
  * called (`baseUrl`, `protocol`), by what upstream name, with which key (`apiKeyEnv`, the key) or at what price — the
  * defaults a provider model gets, and whether proactive replies can be turned on (`proactiveAvailable`: the judgement
  * model is configured), that the site offers web search (`webSearchAvailable`, only when it does) and about what a search costs (`webSearchPoints`), and how far back turning an Agent's memory on again may look (`memoryCatchUp`: `MEMORY.catchUpDays`
@@ -59,6 +76,7 @@ export function registerModelRoutes(app: FastifyInstance): void {
           reasoning: m.reasoning,
           contextTokens: m.contextTokens,
           tools: m.tools,
+          ...siteMedia(m),
         })),
         providerDefaults: { contextTokens: config.providerDefaultContextTokens, maxOutputTokens: config.providerDefaultMaxOutputTokens },
         proactiveAvailable: config.judge !== null,

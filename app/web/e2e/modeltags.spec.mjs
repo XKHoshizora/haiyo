@@ -37,10 +37,11 @@ const SITE = [
   { id: "e2e-sol", label: "GPT-6 Sol", tier: "paid", vision: false, pdf: false, reasoning: ["low", "high"], contextTokens: 128000, tools: false },
   { id: "e2e-sonnet", label: "Claude Sonnet 5.5 with a rather long label to be cut", tier: "paid", vision: true, pdf: true, reasoning: ["high"], contextTokens: 128000, tools: true },
 ];
-// My provider's (the owner's kind of list): one that sees, one that thinks and says nothing of tools, one with a very long name.
+// My provider's (the owner's kind of list): one that sees, one that thinks and says nothing of tools — under a name the service's model
+// catalogue does not know, so nothing is reported of it either —, one with a very long name.
 const PROVIDER_MODELS = [
   { name: "deepseek-flash", vision: false, reasoning: false, contextTokens: 64000 },
-  { name: "deepseek-v4-flash", vision: false, reasoning: true, contextTokens: 64000 },
+  { name: "derpseek-v4-flash", vision: false, reasoning: true, contextTokens: 64000 },
   { name: "deepseek-v4-flash-vision-exp", vision: true, reasoning: true, contextTokens: 64000, tools: true },
   { name: LONG, vision: true, reasoning: true, contextTokens: 64000, tools: true },
 ];
@@ -51,7 +52,7 @@ const PHONES = [
 ];
 
 /** A person with the owner's kind of list; `keepReal`: the site's own models stay in it too (for an Agent that must be created). */
-async function setup(people, { keepReal = false } = {}) {
+async function setup(people, { keepReal = false, models = PROVIDER_MODELS } = {}) {
   const ann = await people.member("Ann");
   const { page } = ann;
   await page.route("**/api/models", async (route) => {
@@ -60,7 +61,7 @@ async function setup(people, { keepReal = false } = {}) {
     await route.fulfill({ response: res, json: { ...json, siteModels: keepReal ? [...json.siteModels, ...SITE] : SITE } });
   });
   const res = await ann.request.post("/api/providers", {
-    data: { name: `DerpSeek${uniq(3)}`, protocol: "openai_chat", baseUrl: modelStub.baseUrl, apiKey: `sk-e2e-${uniq(8)}-not-real`, models: PROVIDER_MODELS },
+    data: { name: `DerpSeek${uniq(3)}`, protocol: "openai_chat", baseUrl: modelStub.baseUrl, apiKey: `sk-e2e-${uniq(8)}-not-real`, models },
   });
   expect(res.status(), await res.text()).toBe(201);
   // The provider was added behind the page's back: read again.
@@ -91,8 +92,43 @@ async function expectOneOfEach(scope, narrow) {
   for (const s of seen) expect(s, "a mark shows its word or its icon, never both").toEqual(narrow ? { word: false, icon: true } : { word: true, icon: false });
 }
 
+/**
+ * Defines `window.markDrawn(chip)` in the page: the box of what a mark really DRAWS — its text as the browser lays it out (a range over its rendered text
+ * nodes, wherever they are: a bare text node counts) joined with its visible icon — or null when it draws nothing. The earlier checks measured the chip's own
+ * box and the `.model-mark-text` / `svg` elements inside it; a money chip had neither (its word was a bare text node), so for it they compared nothing and
+ * passed while the word was drawn under the chip.
+ */
+const defineMarkDrawn = () => {
+  window.markDrawn = (chip) => {
+    const rects = [];
+    const walker = document.createTreeWalker(chip, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.textContent.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      rects.push(...[...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0));
+    }
+    for (const svg of chip.querySelectorAll("svg")) {
+      const r = svg.getBoundingClientRect();
+      if (getComputedStyle(svg).display !== "none" && r.width > 0) rects.push(r);
+    }
+    if (rects.length === 0) return null;
+    return { left: Math.min(...rects.map((r) => r.left)), right: Math.max(...rects.map((r) => r.right)), top: Math.min(...rects.map((r) => r.top)), bottom: Math.max(...rects.map((r) => r.bottom)) };
+  };
+  window.boxInside = (t, c, slack = 0.5) => Boolean(t) && t.left >= c.left - slack && t.right <= c.right + slack && t.top >= c.top - slack && t.bottom <= c.bottom + slack;
+};
+
+/** On a page (provider rows, sync rows: no option rows there): every mark of `scope` draws something, inside its own chip. */
+async function expectMarksDrawn(page, scope) {
+  await page.evaluate(defineMarkDrawn);
+  const out = await scope.locator(".model-mark:not(.model-gap)").evaluateAll((chips) => chips.filter((c) => !window.boxInside(window.markDrawn(c), c.getBoundingClientRect())).map((c) => c.textContent));
+  expect(await scope.locator(".model-mark:not(.model-gap)").count()).toBeGreaterThan(0);
+  expect(out, "what each mark draws lies inside its chip").toEqual([]);
+}
+
 /** Geometry of a list's rows: marks inside their row on one line, one line high, no sideways scroll; the rows as the page sees them. */
 async function expectRowsFit(page, list) {
+  await page.evaluate(defineMarkDrawn);
   const rows = await list.getByRole("option").evaluateAll((options) =>
     options.map((o) => {
       const box = o.getBoundingClientRect();
@@ -107,6 +143,13 @@ async function expectRowsFit(page, list) {
         const pad = parseFloat(getComputedStyle(chip).paddingLeft) + parseFloat(getComputedStyle(chip).paddingRight);
         return Math.abs(c.width - (r.width + pad)) > 1 || chip.scrollWidth > chip.clientWidth;
       });
+      // What every mark DRAWS (window.markDrawn: its text as laid out, or its icon) lies inside its own chip and inside the row, and there is something drawn
+      // (a mark that draws nothing, or whose word is under its chip over the next row, fails here). A money chip (免费 / 需余额) is one line high: as high
+      // as an ability chip of the same list (18 px).
+      const live = [...o.querySelectorAll(".model-marks .model-mark:not(.model-gap)")];
+      const drawnOut = live.filter((c) => !window.boxInside(window.markDrawn(c), c.getBoundingClientRect()) || !window.boxInside(window.markDrawn(c), box)).map((c) => c.dataset.col);
+      const abilityHeight = o.closest('[role="listbox"]').querySelector(".model-mark-ability:not(.model-gap)")?.getBoundingClientRect().height ?? 18;
+      const priceHeights = live.filter((c) => c.dataset.col === "price").map((c) => c.getBoundingClientRect().height - abilityHeight);
       // The name keeps at least its first six characters' width (a probe in the name's own font).
       const probe = document.createElement("span");
       probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(name).font}`;
@@ -120,6 +163,8 @@ async function expectRowsFit(page, list) {
         inside: marks ? marks.right <= box.right + 0.5 && marks.left >= box.left : true,
         chipHeights: chips.map((c) => Math.round(c.height)),
         spill,
+        drawnOut,
+        priceHeights,
         floor: name.clientWidth + 0.5 >= six,
         cut: name.scrollWidth > name.clientWidth,
         nameWidth: name.clientWidth,
@@ -132,6 +177,8 @@ async function expectRowsFit(page, list) {
     expect(new Set(r.chipHeights).size, `${r.label}: chips on one line`).toBeLessThanOrEqual(1);
     expect(r.spill, `${r.label}: every word exactly fills its chip`).toBe(false);
     expect(r.floor, `${r.label}: at least the first six characters of the name are left`).toBe(true);
+    expect(r.drawnOut, `${r.label}: what each mark draws (the money word too) lies inside its chip and its row`).toEqual([]);
+    for (const d of r.priceHeights) expect(Math.abs(d), `${r.label}: the money chip is one line, as high as an ability chip`).toBeLessThanOrEqual(0.5);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await list.evaluate((l) => l.scrollWidth <= l.clientWidth + 1)).toBe(true);
@@ -157,7 +204,7 @@ for (const size of [...PHONES, { name: "1280", width: 1280, height: 860 }]) {
 
     // deepseek-v4-flash-vision-exp: 看图, its name read once, in order; one that says nothing of tools has no 工具; a model with no ability has no mark.
     await expect(list.getByRole("option", { name: /^deepseek-v4-flash-vision-exp · / })).toHaveAttribute("aria-label", "deepseek-v4-flash-vision-exp · 看图 · 思考 · 工具");
-    await expect(list.getByRole("option", { name: /^deepseek-v4-flash · / })).toHaveAttribute("aria-label", "deepseek-v4-flash · 思考");
+    await expect(list.getByRole("option", { name: /^derpseek-v4-flash · / })).toHaveAttribute("aria-label", "derpseek-v4-flash · 思考");
     await expect(list.getByRole("option", { name: "GPT-6 Sol · 需余额 · 思考" })).toBeVisible();
     // Every icon keeps a name and a title.
     for (const mark of await list.locator('.model-mark[role="img"]').all()) {
@@ -190,12 +237,13 @@ test("the provider page's rows carry the same marks, as words, at 360 and 1280 (
     await expect(seeing.locator(".model-mark")).toHaveText(["看图", "思考", "工具"]);
     // Words on a page, at any width, and no icon.
     await expectOneOfEach(rows, false);
+    await expectMarksDrawn(page, rows);
     // A model that says nothing of tools has no 工具 (here, in the picker and in the sync list alike).
-    await expect(rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash" }).first().locator(".model-mark")).toHaveText(["思考"]);
+    await expect(rows.getByRole("listitem").filter({ hasText: "derpseek-v4-flash" }).first().locator(".model-mark")).toHaveText(["思考"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     // The form tells the mark's story: a model whose entry says nothing of tools has the mixed box (a screen reader says so), with its helper.
     if (width === 1280) {
-      const unknown = rows.getByRole("listitem").filter({ hasText: "deepseek-v4-flash" }).first();
+      const unknown = rows.getByRole("listitem").filter({ hasText: "derpseek-v4-flash" }).first();
       await unknown.getByRole("button", { name: /高级/ }).click();
       const box = unknown.getByLabel("会用工具（查聊天记录、看文件）");
       await expect(box).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
@@ -208,6 +256,142 @@ test("the provider page's rows carry the same marks, as words, at 360 and 1280 (
     await rows.scrollIntoViewIfNeeded();
     await shot(page, `providers-${width}`);
   }
+});
+
+// What the service's model catalogue reports of a model it knows (`reportedTools`, beside the stored `tools`): REAL catalogue ids on the
+// real service, nothing mocked but the site's list. The one rule (ModelMarks.jsx): stored true, yes; stored false, never; nothing stored,
+// what the catalogue reports. Screenshots go to CATALOG_SHOTS (when set).
+const CATALOG_SHOTS = process.env.CATALOG_SHOTS ?? "";
+const catalogShot = async (page, name) => {
+  if (!CATALOG_SHOTS) return;
+  mkdirSync(CATALOG_SHOTS, { recursive: true });
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: path.join(CATALOG_SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
+};
+const CATALOGUE_MODELS = [
+  // Nothing stored of tools: the catalogue's word draws the mark.
+  { name: "deepseek-chat", contextTokens: 64000 },
+  { name: "qwen-vl-max", vision: true, contextTokens: 64000 },
+  // Stored false (its owner's word, or a reply that failed): never marked, whatever the catalogue reports.
+  { name: "qwen-plus", reasoning: true, contextTokens: 64000, tools: false },
+  { name: "gpt-4o-mini", vision: true, contextTokens: 64000, tools: false },
+  // Not in the catalogue: nothing is reported, nothing is marked.
+  { name: "house-blend-1", contextTokens: 64000 },
+];
+const REPORTED_HELPER = "资料显示它会用工具，会先让它试着用。确定不会就点一下取消。";
+const UNKNOWN_HELPER = "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。";
+
+test("what the catalogue reports: a provider model with nothing stored is marked 工具 in the picker (430 and 1280), on its provider row and in the sync list; a stored false hides it everywhere; the box tells the same story", async ({ people }) => {
+  const ann = await setup(people, { models: CATALOGUE_MODELS });
+  const page = ann.page;
+
+  // The picker, icons at 430 and words at 1280.
+  for (const [width, height] of [[430, 932], [1280, 860]]) {
+    await page.setViewportSize({ width, height });
+    // (The form stays open from one width to the next: the second time only its picker is opened again.)
+    const form = page.getByRole("region", { name: "创建 Agent" });
+    let list;
+    if (await form.isVisible()) {
+      await form.getByLabel("模型", { exact: true }).click();
+      list = page.getByRole("listbox", { name: "模型" });
+      await expect(list.getByRole("option")).toHaveCount(SITE.length + CATALOGUE_MODELS.length);
+    } else list = await openFormPicker(page, SITE.length + CATALOGUE_MODELS.length);
+    const label = (name) => list.getByRole("option", { name: new RegExp(`^${name}( · |$)`) });
+    await expect(label("deepseek-chat")).toHaveAttribute("aria-label", "deepseek-chat · 工具");
+    await expect(label("qwen-vl-max")).toHaveAttribute("aria-label", "qwen-vl-max · 看图 · 工具");
+    await expect(label("qwen-plus")).toHaveAttribute("aria-label", "qwen-plus · 思考");
+    await expect(label("gpt-4o-mini")).toHaveAttribute("aria-label", "gpt-4o-mini · 看图");
+    await expect(label("house-blend-1")).toHaveAttribute("aria-label", "house-blend-1");
+    await expectOneOfEach(list, width < 1280);
+    await expectRowsFit(page, list);
+    await catalogShot(page, `picker-${width}`);
+    await page.keyboard.press("Escape");
+  }
+
+  // The provider's rows, at 360 (from the start page: the form left open would cover a phone's navigation).
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.goto("/");
+  await goTo(page, "设置");
+  await page.getByRole("button", { name: /模型供应商/ }).click();
+  const section = page.getByRole("region", { name: "模型供应商" });
+  const rows = page.getByRole("list", { name: "模型列表" });
+  if (!(await rows.isVisible())) await section.getByRole("list", { name: "我的模型供应商" }).getByRole("listitem").first().getByRole("button", { name: "编辑" }).click();
+  const row = (name) => rows.getByRole("listitem").filter({ has: page.locator("strong", { hasText: new RegExp(`^${name}$`) }) });
+  await expect(row("deepseek-chat").locator(".model-mark")).toHaveText(["工具"]);
+  await expect(row("qwen-vl-max").locator(".model-mark")).toHaveText(["看图", "工具"]);
+  await expect(row("qwen-plus").locator(".model-mark")).toHaveText(["思考"]);
+  await expect(row("gpt-4o-mini").locator(".model-mark")).toHaveText(["看图"]);
+  await expect(row("house-blend-1").locator(".model-mark")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await rows.scrollIntoViewIfNeeded();
+  await catalogShot(page, "providers-360");
+
+  // The sync list (the provider's own, read by the real service): a row the catalogue reports is marked; one already saved with tools off is not.
+  await page.getByRole("button", { name: "同步模型", exact: true }).click();
+  const sync = page.getByRole("dialog", { name: /的模型（/ });
+  await expect(sync).toBeVisible();
+  const listed = (name) => sync.getByRole("list", { name: "供应商的模型" }).getByRole("listitem").filter({ has: page.locator("strong", { hasText: new RegExp(`^${name}$`) }) });
+  await expect(listed("claude-sonnet-5-5").locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(1);
+  await expect(listed("gpt-4o-mini")).toContainText("已添加");
+  await expect(listed("gpt-4o-mini").locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(0);
+  await expect(listed("stub-chat").locator(".model-mark")).toHaveCount(0);
+  await expect(listed("stub-chat")).toContainText("未收录");
+  expect(await sync.locator(".modal-body").evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await catalogShot(page, "sync-360");
+  await sync.getByRole("button", { name: "完成" }).click();
+  await expect(sync).toBeHidden();
+
+  // The box: reported and nothing stored — still mixed, with the helper that says where the mark comes from; stored false — unticked;
+  // unknown and unreported — mixed with the plain helper. Nothing was changed, so nothing is offered to save.
+  await page.setViewportSize({ width: 1280, height: 860 });
+  const box = (name) => row(name).getByLabel("会用工具（查聊天记录、看文件）");
+  for (const name of ["deepseek-chat", "qwen-plus", "house-blend-1"]) await row(name).getByRole("button", { name: /高级/ }).click();
+  await expect(box("deepseek-chat")).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
+  await expect(row("deepseek-chat").getByText(REPORTED_HELPER)).toBeVisible();
+  await expect(box("qwen-plus")).not.toBeChecked();
+  await expect(box("qwen-plus")).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）"');
+  await expect(row("qwen-plus").getByText(REPORTED_HELPER)).toHaveCount(0);
+  await expect(box("house-blend-1")).toMatchAriaSnapshot('- checkbox "会用工具（查聊天记录、看文件）" [checked=mixed]');
+  await expect(row("house-blend-1").getByText(UNKNOWN_HELPER)).toBeVisible();
+
+  // By keyboard, the order a screen reader meets too. A reported model: mixed → not checked (what its helper names: the mark goes with it) →
+  // checked (the mark is back). A model nothing is reported of: mixed → checked.
+  const boxState = (name) => box(name).evaluate((el) => [el.checked, el.indeterminate]);
+  expect(await boxState("deepseek-chat")).toEqual([false, true]);
+  await box("deepseek-chat").focus();
+  await page.keyboard.press("Space");
+  expect(await boxState("deepseek-chat")).toEqual([false, false]);
+  await expect(box("deepseek-chat")).toBeFocused();
+  await expect(row("deepseek-chat").locator(".model-mark")).toHaveCount(0);
+  await expect(row("deepseek-chat").getByText(REPORTED_HELPER)).toHaveCount(0);
+  await page.keyboard.press("Space");
+  expect(await boxState("deepseek-chat")).toEqual([true, false]);
+  await expect(row("deepseek-chat").locator(".model-mark")).toHaveText(["工具"]);
+  await box("house-blend-1").focus();
+  await page.keyboard.press("Space");
+  expect(await boxState("house-blend-1")).toEqual([true, false]);
+  await expect(row("house-blend-1").locator(".model-mark")).toHaveText(["工具"]);
+
+  // What the real service says of them, and what it stores when the list is sent back as the form sends it with its boxes left alone (the
+  // flags and the context; never `tools`, not even a stored one: the service keeps what it has — the form itself cannot be saved here: the
+  // stub's address is not https, which the form refuses; the form's own save is pinned in tests/providers.test.jsx): the stored false stays,
+  // nothing of tools is stored for a reported model, and nothing the catalogue reports is accepted.
+  const read = async () => (await (await ann.request.get("/api/providers")).json()).providers[0];
+  const provider = await read();
+  const state = (models) => models.map((m) => [m.name, m.tools, m.reportedTools]);
+  const expected = [
+    ["deepseek-chat", undefined, true],
+    ["qwen-vl-max", undefined, true],
+    ["qwen-plus", false, true],
+    ["gpt-4o-mini", false, true],
+    ["house-blend-1", undefined, undefined],
+  ];
+  expect(state(provider.models)).toEqual(expected);
+  const echo = provider.models.map((m) => ({ name: m.name, vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, contextTokens: m.contextTokens }));
+  expect(echo.some((m) => "tools" in m)).toBe(false);
+  expect((await ann.request.patch(`/api/providers/${provider.id}`, { data: { models: echo } })).status()).toBe(200);
+  expect(state((await read()).models)).toEqual(expected);
+  expect((await ann.request.patch(`/api/providers/${provider.id}`, { data: { models: echo.map((m) => ({ ...m, reportedTools: true })) } })).status()).toBe(400);
 });
 
 test("the sync dialog (a list read from a sibling address) shows the marks (the provider's hints: no 工具) AND the sibling line, at 360 and 1280", async ({ people }) => {
@@ -245,6 +429,7 @@ test("the sync dialog (a list read from a sibling address) shows the marks (the 
     await expect(known.locator(".model-mark").first()).toBeVisible();
     await expect(known.locator(".model-mark").filter({ hasText: "工具" })).toHaveCount(0);
     await expectOneOfEach(sync, false);
+    await expectMarksDrawn(page, sync);
     expect(await sync.evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true);
     // The dialog lies inside the screen with its 20 px gutter on both sides (at 360 it used to run to the right edge), and its body does not scroll sideways.
     const box = await sync.boundingBox();
@@ -355,6 +540,7 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
       { width, strip: strip[key] ?? strip[620], long: LONG },
     );
     const rows = page.locator(".model-option");
+    await page.evaluate(defineMarkDrawn);
     const geometry = await rows.evaluateAll((els) =>
       els.map((o) => {
         const box = o.getBoundingClientRect();
@@ -366,7 +552,10 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
           // The visible word or icon fills its chip exactly (the chip is as wide as it and its padding): able to fail on a width too wide or too narrow.
           const cs = getComputedStyle(c);
           const exact = !visible || c.classList.contains("model-gap") || Math.abs(r.width - (visible.width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight))) <= 1;
-          return { col: c.dataset.col, left: r.left, right: r.right, inside: exact && (!visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5)), shown: Boolean(visible) };
+          // What the mark draws (its text as laid out — a bare text node counts — or its icon) lies inside the chip, and the chip is one line (18 px) high.
+          const drawn = c.classList.contains("model-gap") ? null : window.markDrawn(c);
+          const drawnOk = c.classList.contains("model-gap") || (window.boxInside(drawn, r) && Math.abs(r.height - 18) <= 0.5);
+          return { col: c.dataset.col, drawnOk, drawnBelow: drawn ? drawn.bottom - r.bottom : 0, left: r.left, right: r.right, inside: exact && (!visible || (visible.left >= r.left - 0.5 && visible.right <= r.right + 0.5)), shown: Boolean(visible) };
         });
         const marks = o.querySelector(".model-marks");
         const probe = document.createElement("span");
@@ -388,6 +577,7 @@ test("every reserved mark turned on: each word stays inside its own chip, the co
       // limit is known and only something of the name is asked for.
       if (key === "360-three") expect(g.nameWidth + 0.5, "the first six characters of the name are left").toBeGreaterThanOrEqual(g.six);
       else expect(g.nameWidth, "some of the name is left").toBeGreaterThan(20);
+      for (const c of g.cells) expect(c.drawnOk, `${c.col}: what the mark draws lies inside its one-line chip (its bottom is ${c.drawnBelow} px under the chip's)`).toBe(true);
       for (const c of g.cells) expect(c.inside, `${c.col}: the ${narrow ? "icon" : "word"} inside its chip`).toBe(true);
     }
     // In row `all` every ability cell shows exactly its word (wide) or its icon (narrow); a row with fewer marks keeps every column where it was.

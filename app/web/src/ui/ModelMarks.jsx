@@ -18,8 +18,14 @@ const PRICE_SIZER = Object.values(PRICE_TEXT).reduce((a, b) => (b.length > a.len
  * A row: `kind` (its key and column), `text` (the short word, also its accessible name), `title` (the whole sentence),
  * `Icon`, `from(model)` (whether the model has it: true only when its own field is exactly true; `model`: an object of the
  * fields the service reports, any of them absent: an unknown is not shown),
- * `shown`. Today the wire carries `vision`, `reasoning` (a boolean here), `tools` and `pdf`; `audioIn`, `videoIn`, `imageOut`,
- * `videoOut` and `audioOut` are the names the service will carry.
+ * `shown`. The wire carries `vision`, `reasoning` (a boolean here), `tools`, `pdf`, and — what the service's model catalogue
+ * reports of a model it knows, each only as true — `reportedTools`, `audioIn`, `videoIn`, `imageOut`, `videoOut`, `audioOut`
+ * (`REPORTED`: the names a list keeps of a model so that `from` can read them).
+ *
+ * 工具, THE ONE RULE (here and nowhere else; every list draws it through `abilityMarks`): `tools` is only what is stored of a
+ * model — its owner's choice, or what its replies taught the service — and `reportedTools` is the catalogue's word beside it.
+ * Stored true: yes. Stored false: never, whatever is reported. Nothing stored: what the catalogue reports. A site model always
+ * has its boolean `tools` (the operator's word); a row of a provider's own list (同步模型) has only `reportedTools`.
  *
  * BEFORE ANY RESERVED ROW IS TURNED ON the design needs three more things (turning a row on is one line in code, but past four marks it is not
  * one line of design: nine abilities and the price take about 300 px of icons, or 490 px of words, leaving the name a few characters):
@@ -28,10 +34,13 @@ const PRICE_SIZER = Object.values(PRICE_TEXT).reduce((a, b) => (b.length > a.len
  * may then wrap to two lines. The hidden column copies (`.model-gap`) are fine at three columns; replace them (a grid with shared column
  * tracks) before many rows are on.
  */
+/** What the catalogue reports of a model: the fields a list carries along untouched for the table to read. The one list is the data layer's (data/reported.js). */
+export { REPORTED, reportedOf } from "../data/reported.js";
+
 export const ABILITIES = [
   { kind: "vision", text: "看图", title: "能看图片", Icon: Eye, from: (m) => m.vision === true, shown: true },
   { kind: "reasoning", text: "思考", title: "支持思考", Icon: Lightbulb, from: (m) => m.reasoning === true, shown: true },
-  { kind: "tools", text: "工具", title: "会用工具（查聊天记录、看文件）", Icon: Wrench, from: (m) => m.tools === true, shown: true },
+  { kind: "tools", text: "工具", title: "会用工具（查聊天记录、看文件）", Icon: Wrench, from: (m) => m.tools === true || (typeof m.tools !== "boolean" && m.reportedTools === true), shown: true },
   // Reserved (the product passes no such content to or from a model yet; a PDF goes as it is, but the owner wants no chip for it).
   { kind: "audioIn", text: "听语音", title: "能听语音", Icon: AudioLines, from: (m) => m.audioIn === true, shown: false },
   { kind: "videoIn", text: "看视频", title: "能看视频", Icon: Video, from: (m) => m.videoIn === true, shown: false },
@@ -76,7 +85,7 @@ export const ModelMarks = memo(
           if (col === "price") {
             return kind ? (
               <span key={col} data-col={col} data-sizer={PRICE_SIZER} className={`model-mark model-mark-${kind}`}>
-                {PRICE_TEXT[kind]}
+                <span className="model-price-word">{PRICE_TEXT[kind]}</span>
               </span>
             ) : (
               <span key={col} data-col={col} data-sizer={PRICE_SIZER} className="model-mark model-gap" aria-hidden="true" />

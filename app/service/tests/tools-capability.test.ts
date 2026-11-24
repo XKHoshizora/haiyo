@@ -5,7 +5,7 @@ import { groupSystemText, HOW_TOLD, NO_NOTES, NO_TOOLS, REPLY_LANGUAGE, systemTe
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import type { Config } from "../src/config.ts";
 import type { ModelCall, ToolSpec } from "../src/models/gateway.ts";
-import { markToolsOff } from "../src/providers/store.ts";
+import { markToolsOff, markToolsOn } from "../src/providers/store.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -18,7 +18,8 @@ import { closeAllSockets, connect, type Push, type TestSocket } from "./helpers/
  * site model unless its configuration says `tools: false` (the operator's, never rewritten), a provider's model unless its
  * owner's list says `tools: false`, which the service writes itself the first time a reply finds the model cannot use
  * them (the upstream refused them, or it called them garbled twice), telling its owner once with a whisper in the reply's
- * conversation. Its owner can turn it on again; nothing else changes it. A reply whose model is not offered tools is the
+ * conversation. Its owner can turn it on again; nothing else changes it. The other half: a provider's model whose entry
+ * says nothing of tools is stored `tools: true`, once, after a reply in which it made a tool call that ran. A reply whose model is not offered tools is the
  * reply it always was, its system text saying it has none; one that is offered them is not told it has none. On the
  * real port, hub and database, with a toolbox the test gives the port.
  */
@@ -361,6 +362,121 @@ describe("a provider's model: given tools until it is found unable, then marked 
     for (const verb of ["accept", "decline"]) {
       expect(await api(app, owner, "POST", `/api/whispers/${told[0].id}/${verb}`)).toEqual({ status: 409, json: { error: "stale_whisper" } });
     }
+  });
+});
+
+describe("a provider's model found able: stored `tools: true` once, after a reply whose tool call ran", () => {
+  /** The provider's row version: changes with every write of it. */
+  const version = async (providerId: string) => (await db.query<{ v: string }>("select xmin::text as v from providers where id = $1", [providerId])).rows[0]!.v;
+
+  it("unknown, and its reply's tool call ran: that model alone is stored `tools: true`, nobody is told, and its owner reads it; later replies write nothing", async () => {
+    const { owner, providerId, own } = await providerAgent("hana");
+    const socket = await connect(app, owner);
+    await say(owner, own, "上次说的那家店叫什么？");
+    gateway.callTools([{ name: "search", input: { query: "店" } }]);
+    gateway.reply("叫蜀香。");
+    await work();
+    expect((await storedModels(providerId)).map((m) => [m.name, m.tools])).toEqual([
+      ["pm", true],
+      ["pm2", undefined],
+    ]);
+    expect(await wireModel(owner, providerId, "pm")).toMatchObject({ name: "pm", tools: true });
+    expect(await wireModel(owner, providerId, "pm2")).not.toHaveProperty("tools");
+    // A success is not news: no whisper, no frame.
+    expect(await whispersOf(owner.id)).toEqual([]);
+    expect(whisperFrames(socket)).toEqual([]);
+    // Once: the next replies — with a tool call, and without — leave the provider's row as it is.
+    const before = await version(providerId);
+    await say(owner, own, "再查一次。");
+    gateway.callTools([{ name: "search", input: { query: "再" } }]);
+    gateway.reply("还是蜀香。");
+    await work();
+    await say(owner, own, "谢谢。");
+    gateway.reply("不客气。");
+    await work();
+    expect(await version(providerId)).toBe(before);
+    expect(gateway.calls.at(-1)!.tools).toEqual([SEARCH]);
+  });
+
+  it("a reply that called no tool, or whose only calls could not be run, stores nothing", async () => {
+    const { owner, providerId, own } = await providerAgent("ines");
+    const before = await version(providerId);
+    await say(owner, own, "你好。");
+    gateway.reply("你好。");
+    await work();
+    await say(owner, own, "查一下。");
+    gateway.callTools([{ name: "no_such_tool", input: {} }]);
+    gateway.reply("我直接说吧。");
+    await work();
+    expect(await version(providerId)).toBe(before);
+    expect(await wireModel(owner, providerId, "pm")).not.toHaveProperty("tools");
+  });
+
+  it("its owner's word is never overwritten: a model already `true` is not written again, and one turned off while the reply ran stays off", async () => {
+    const owner = await signUp(app, "jun");
+    const providerId = await provider(owner, [{ name: "pm", tools: true }, { name: "pm2" }]);
+    const agent = await mustCreateAgent(app, owner, { model: onProvider(providerId), persona: "简短地回答。" });
+    const before = await version(providerId);
+    await say(owner, agent.conversationId, "查一下。");
+    gateway.callTools([{ name: "search", input: { query: "查" } }]);
+    gateway.reply("查到了。");
+    await work();
+    expect(await version(providerId)).toBe(before);
+
+    // Unknown when the reply began, turned off by its owner before its tool call ran: off it stays.
+    const other = await mustCreateAgent(app, owner, { model: onProvider(providerId, "pm2"), persona: "乙。" });
+    await say(owner, other.conversationId, "问乙");
+    const { port } = toolWorker();
+    const run = await port.claimNext();
+    expect(isRunEnd(await port.begin(run!))).toBe(false);
+    expect((await api(app, owner, "PATCH", `/api/providers/${providerId}`, { models: [{ name: "pm", tools: true }, { name: "pm2", tools: false }] })).status).toBe(200);
+    await port.toolsWorked(run!);
+    expect((await storedModels(providerId)).map((m) => [m.name, m.tools])).toEqual([
+      ["pm", true],
+      ["pm2", false],
+    ]);
+    await port.release(run!);
+  });
+
+  it("a failure wins over a success: a reply whose tool call ran and that then called them garbled twice leaves the model off, its owner told", async () => {
+    const { owner, providerId, own } = await providerAgent("kira");
+    await say(owner, own, "查一下。");
+    gateway.callTools([{ name: "search", input: { query: "查" } }]);
+    gateway.callTools([
+      { name: "no_such_tool", input: {} },
+      { name: "search", input: { query: 42 } },
+    ]);
+    gateway.reply("我直接说吧。");
+    await work();
+    expect((await storedModels(providerId)).find((m) => m.name === "pm")!.tools).toBe(false);
+    expect((await whispersOf(owner.id)).map((w) => w.kind)).toEqual(["tools_off"]);
+  });
+
+  it("markToolsOn writes only an entry that says nothing: not one marked either way, not a model off the list, not another person's provider", async () => {
+    const owner = await signUp(app, "lars");
+    const stranger = await signUp(app, "mona");
+    const providerId = await provider(owner, [{ name: "a" }, { name: "off", tools: false }, { name: "on", tools: true }]);
+    expect(await db.tx((t) => markToolsOn(t, owner.id, providerId, "off"))).toBe(false);
+    expect(await db.tx((t) => markToolsOn(t, owner.id, providerId, "on"))).toBe(false);
+    expect(await db.tx((t) => markToolsOn(t, owner.id, providerId, "nope"))).toBe(false);
+    expect(await db.tx((t) => markToolsOn(t, stranger.id, providerId, "a"))).toBe(false);
+    expect((await storedModels(providerId)).map((m) => [m.name, m.tools])).toEqual([["a", undefined], ["off", false], ["on", true]]);
+    expect(await db.tx((t) => markToolsOn(t, owner.id, providerId, "a"))).toBe(true);
+    expect(await db.tx((t) => markToolsOn(t, owner.id, providerId, "a"))).toBe(false);
+    // A failure found afterwards still marks it off.
+    expect(await db.tx((t) => markToolsOff(t, owner.id, providerId, "a"))).toBe(true);
+    expect((await storedModels(providerId)).map((m) => [m.name, m.tools])).toEqual([["a", false], ["off", false], ["on", true]]);
+  });
+
+  it("a site model's reply whose tool call ran changes nothing and logs no tool input or output", async () => {
+    const owner = await signUp(app, "nico");
+    const agent = await mustCreateAgent(app, owner, { model: FAST, persona: "简短地回答。" });
+    await say(owner, agent.conversationId, "查一下暗号。");
+    gateway.callTools([{ name: "search", input: { query: "暗号-canary-7391" } }]);
+    gateway.reply("查到了。");
+    await work();
+    expect((await lastRun(agent.id)).status).toBe("done");
+    expect(logLines.join("\n")).not.toContain("canary-7391");
   });
 });
 

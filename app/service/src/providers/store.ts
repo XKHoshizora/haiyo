@@ -38,7 +38,8 @@ export interface ProviderModel {
   reasoningLevels?: ModelLevel[];
   /**
    * Whether its replies may be offered tools: `false` once it was found unable to use them (`markToolsOff`) or its owner
-   * said so; `true` when its owner turned them on; absent: not known yet, so offered (README "Model providers").
+   * said so; `true` when its owner turned them on, or once a reply's tool call ran while nothing was said
+   * (`markToolsOn`); absent: not known yet, so offered (README "Model providers").
    */
   tools?: boolean;
 }
@@ -250,7 +251,22 @@ export async function mergeListedModels(t: Tx, ownerId: string, id: string, name
  * written. Nothing that holds a conversation's or an Agent's row then takes a provider's other than `for key share`
  * (`lockProviderModels`), which this does not wait for: it may come first in a transaction.
  */
-export async function markToolsOff(t: Tx, ownerId: string, providerId: string, model: string): Promise<boolean> {
+export function markToolsOff(t: Tx, ownerId: string, providerId: string, model: string): Promise<boolean> {
+  return markTools(t, ownerId, providerId, model, false, (stored) => stored !== false);
+}
+
+/**
+ * The other half: stores `tools: true` on the owner's provider model `model` after a reply in which it made a tool call
+ * that ran (agents/port-impl.ts `toolsWorked`) — only when its entry says nothing of tools. An entry that says `false`
+ * (its owner's word, or a failure found) or `true` is never written: what was said or learned wins. Otherwise as
+ * `markToolsOff`: theirs, on the list, under the provider's row, true when this wrote it.
+ */
+export function markToolsOn(t: Tx, ownerId: string, providerId: string, model: string): Promise<boolean> {
+  return markTools(t, ownerId, providerId, model, true, (stored) => stored === undefined);
+}
+
+/** Writes `tools: value` on that model's entry when `writable` says so of what it stores (`markToolsOff`, `markToolsOn`). */
+async function markTools(t: Tx, ownerId: string, providerId: string, model: string, value: boolean, writable: (stored: boolean | undefined) => boolean): Promise<boolean> {
   const { rows } = await t.query<{ models: unknown }>("select models from providers where id = $1 and owner_id = $2 for no key update", [providerId, ownerId]);
   const stored = rows[0]?.models;
   if (!Array.isArray(stored)) return false;
@@ -258,8 +274,8 @@ export async function markToolsOff(t: Tx, ownerId: string, providerId: string, m
   for (const [i, entry] of stored.entries()) {
     const parsed = storedModel.safeParse(entry);
     if (!parsed.success || parsed.data.name !== model) continue;
-    if (parsed.data.tools === false) return false;
-    const models = stored.map((e, j) => (j === i ? { ...(e as Record<string, unknown>), tools: false } : e));
+    if (!writable(parsed.data.tools)) return false;
+    const models = stored.map((e, j) => (j === i ? { ...(e as Record<string, unknown>), tools: value } : e));
     await t.query("update providers set models = $2::jsonb where id = $1", [providerId, JSON.stringify(models)]);
     return true;
   }

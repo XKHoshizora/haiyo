@@ -364,6 +364,11 @@ export interface AgentPort {
    */
   toolsUnusable(run: RunTicket, why: "refused" | "garbled"): Promise<void>;
   /**
+   * The reply's model can use the tools: a call it made ran. Told at most once a reply, after the first round in which
+   * one ran — never in a round that found it unable (`toolsUnusable` "garbled"). Nothing of the call is handed over.
+   */
+  toolsWorked(run: RunTicket): Promise<void>;
+  /**
    * Ends a run that will not be finished here (the service is closing) exactly as recovery at start-up ends one: its
    * reply posted → `done` (`stopped` when its message says so); interrupted by its Agent's pause, delete or removal from
    * the run's conversation → `cancelled`; else `failed`, `provider_unavailable`, retryable — its hold released by a

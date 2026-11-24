@@ -1,0 +1,127 @@
+name: Model catalogue update (job)
+
+# Refreshes the vendored models.dev snapshot (app/service/src/providers/model-catalog.json and provider-catalog.json)
+# on the development branch. A changed snapshot is committed only after the service type check and the tests that
+# read it pass; a snapshot that looks like an outage or a format change is refused by the generator (--guard).
+#
+# This file is the JOB, a reusable workflow, and lives on the development branch — so the copy that is tested here
+# (tests/model-catalog.test.ts) is the copy that runs. What starts it every day is a small trigger on the default
+# branch, kept as docs/dev/catalog-update-trigger.master.yml until the owner puts it there; it calls this file at the
+# development branch and says which branch that is (`branch`). Plain-words guide: docs/dev/ci.md; details:
+# app/service/README.md, "Model providers". Needs no secret beyond the job's own GITHUB_TOKEN.
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: "The development branch: checked out, tested, and the only branch the snapshot is pushed to"
+        required: true
+        type: string
+# Nothing else starts it — on purpose no "Run workflow" button of its own: once this file reaches the default branch
+# through an ordinary merge, such a button would run it there and commit a snapshot straight to that branch. The button
+# is the trigger's; before the trigger is installed the update is run locally (docs/dev/ci.md).
+
+# Nothing by default: the one job below asks for what it needs.
+permissions: {}
+
+jobs:
+  update:
+    name: refresh the snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The only scope, for the last step's push. A caller must grant at least this (permissions pass down and can only
+    # be kept or narrowed), or the push is refused.
+    permissions:
+      contents: write
+    # One update at a time; a second waits for the first rather than cancelling it mid-push.
+    concurrency:
+      group: catalog-update
+      cancel-in-progress: false
+    env:
+      # Named by the caller, and by nothing else: never the branch the run was started on (inside a called workflow
+      # that is the caller's, the default branch). No branch name is written in this file.
+      DEV_BRANCH: ${{ inputs.branch }}
+      # The throwaway database the tests use (see "Start Postgres"), as in ci.yml.
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/af_test
+    defaults:
+      run:
+        working-directory: app/service
+    steps:
+      # persist-credentials: false — the token is NOT left in .git/config: the install scripts, the type check and the
+      # tests below cannot read it there, and only the last step names it. (A limit, not a wall: those steps run on the
+      # same machine and could leave something behind for the last step — a git hook, a line in the git config or in
+      # $GITHUB_ENV / $GITHUB_PATH — and the two actions get the token by default. The dependencies are the lock file's.)
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEV_BRANCH }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/service/package-lock.json
+
+      # Downloads https://models.dev/models.json and api.json (public, no key; tried three times). --guard: exit 1,
+      # nothing written, when the new snapshot looks broken against the one on disk (it shrank by more than 20 %, lost
+      # more than 5 % of the ids that had abilities, lost or flipped one ability on more than 20 %, or the provider list
+      # shrank by more than 20 %). The script needs no installed package.
+      - name: Generate the snapshot
+        run: node scripts/update-model-catalog.mjs --guard --summary="$RUNNER_TEMP/catalog-summary.txt"
+
+      # The README's "Fetched" date changes on every run: only the two JSON files say whether anything changed.
+      - name: Did the snapshot change?
+        id: diff
+        run: |
+          if git diff --quiet -- src/providers/model-catalog.json src/providers/provider-catalog.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The snapshot is unchanged: nothing to commit." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            { echo '```'; git diff --stat -- src/providers; cat "$RUNNER_TEMP/catalog-summary.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - if: steps.diff.outputs.changed == 'true'
+        run: npm ci
+      - name: Service type check
+        if: steps.diff.outputs.changed == 'true'
+        run: npx tsc --noEmit
+      # The same throwaway Postgres as ci.yml's service job: the suite's global setup runs the migrations on it.
+      - name: Start Postgres
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          docker run -d --name pg -p 5432:5432 --tmpfs /var/lib/postgresql \
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=af_test \
+            postgres:18 -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 60); do docker exec pg pg_isready -h 127.0.0.1 -U postgres -d af_test && exit 0; sleep 1; done
+          docker logs pg; exit 1
+      # The tests that read the catalogue: the snapshot's own shape, the provider catalogue, the hints, the provider
+      # routes that answer them, the site models' route, and the build (which copies the JSON files).
+      - name: Tests that read the catalogue
+        if: steps.diff.outputs.changed == 'true'
+        run: >-
+          npx vitest run
+          tests/model-catalog.test.ts
+          tests/provider-catalog.test.ts
+          tests/provider-hints.test.ts
+          tests/providers.test.ts
+          tests/models-route.test.ts
+          tests/build.test.ts
+
+      # Reached only when everything above passed: a failed check or test fails the run and commits nothing. The push
+      # is an ordinary one to the one branch: a branch that moved meanwhile refuses it, the run is red, and tomorrow's
+      # run tries again. The token is named in this step's environment only (see the limit at the checkout).
+      - name: Commit the snapshot
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/providers/model-catalog.json src/providers/provider-catalog.json src/providers/model-catalog.README.md
+          {
+            echo "chore(catalog): daily models.dev snapshot update ($(date -u +%F))"
+            echo
+            cat "$RUNNER_TEMP/catalog-summary.txt"
+          } > "$RUNNER_TEMP/catalog-commit.txt"
+          git commit -F "$RUNNER_TEMP/catalog-commit.txt"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${DEV_BRANCH}"

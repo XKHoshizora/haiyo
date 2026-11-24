@@ -10,7 +10,7 @@ import { useRouteFocus } from "./ui/routeFocus.js";
 import { ToastRegion } from "./ui/Toast.jsx";
 import { pageTitle } from "./state/pageTitle.js";
 import { addressOf, keyOf } from "./state/location.js";
-import { alive, lastPageOf, useAppHistory, useUp } from "./state/appHistory.js";
+import { alive, lastPageOf, sectionRoot, useAppHistory, useUp } from "./state/appHistory.js";
 import { useShellOpen } from "./shell/useShell.js";
 import { MessageCircle, Users, Bot, Settings, ChevronLeft } from "./icons.js";
 import { ChatList } from "./pages/ChatList.jsx";
@@ -31,12 +31,15 @@ const NAV = [
  * The main navigation. On a wide screen the rail down the left edge (the brand mark, my avatar, the entries); on a phone
  * (`phone`) the same entries as the tab bar along the bottom, where the brand mark is left out (the list header says the
  * name) and so is my avatar (its one use is 设置, a tab of the bar; the settings list shows it).
+ * `onePane`: the layout shows one pane at a time (a phone, one column).
  */
-function Rail({ phone }) {
+function Rail({ phone, onePane }) {
   const { state, dispatch } = useStore();
   const unread = unreadTotal(state);
-  // A section is the last address seen in it (its list if it was left on the list): a push like any other, and the address says what is drawn.
-  const go = (section) => dispatch({ type: "nav", patch: lastPageOf(section, state) });
+  // Where two panes show, a section is the last address seen in it (its list if it was left on the list). Where one pane shows, it is
+  // always its list: the page last seen there may be a conversation opened from another section, which fills the screen and has no
+  // tab bar — a tab that opened it again would keep the list out of reach. A push like any other; the address says what is drawn.
+  const go = (section) => dispatch({ type: "nav", patch: onePane ? sectionRoot(section) : lastPageOf(section, state) });
   return (
     <nav className="rail" aria-label="主导航">
       {!phone && <BrandMark size={38} />}
@@ -102,11 +105,18 @@ function useCloseWhenRemoved(state, dispatch) {
 export const OPENING_WAIT_MS = 8000;
 
 /**
- * `nav.opening` ({convId} or {peerId}) names a conversation the screen wants to show as soon as it is in state
- * (created or accepted a moment ago). It opens it, or gives up after OPENING_WAIT_MS.
+ * `nav.opening` ({convId} or {peerId}; `replace` as the move that asked would have had) names a conversation the screen wants to show
+ * as soon as it is in state (created or accepted a moment ago). It opens it, or gives up after OPENING_WAIT_MS. A `replace` is kept
+ * only while the person is still on the page that asked: once they have moved on, the entry they are in is theirs, and the chat is a push.
  */
 function useOpenWhenPresent(state, dispatch) {
   const { opening } = state.nav;
+  const here = addressOf(state.nav).path;
+  const askedAt = useRef(null);
+  useEffect(() => {
+    askedAt.current = opening ? here : null;
+    // (The page at the moment it was asked, not every page after: `here` is not a dependency.)
+  }, [opening]);
   const target = opening
     ? opening.convId
       ? state.convs[opening.convId]
@@ -115,7 +125,7 @@ function useOpenWhenPresent(state, dispatch) {
   const targetId = target?.id ?? null;
   useEffect(() => {
     if (!opening || !targetId) return;
-    dispatch({ type: "nav/openConv", convId: targetId, patch: { opening: null } });
+    dispatch({ type: "nav/openConv", convId: targetId, replace: opening.replace === true && askedAt.current === here, patch: { opening: null } });
   }, [opening, targetId, dispatch]);
   useEffect(() => {
     if (!opening) return undefined;
@@ -265,12 +275,12 @@ export default function Shell() {
 
   return (
     <div className="app" data-pane={pane} data-side={side ? "open" : "closed"} data-tabbar={tabbar ? "on" : "off"}>
-      {!phone && <Rail phone={false} />}
+      {!phone && <Rail phone={false} onePane={oneColumn} />}
       <aside className="list-col" onScrollCapture={noteScroll}>{list}</aside>
       <main className="main-col" inert={covered || undefined}>{main}</main>
       {side && pane === "main" && <aside className="side-col">{side}</aside>}
       {/* (On a phone the tab bar comes after the pages, in the page's order as well as on screen.) */}
-      {tabbar && <Rail phone />}
+      {tabbar && <Rail phone onePane />}
       <p className="sr-only" aria-live="polite" data-route-announcer="" ref={announcer} />
       <ToastRegion />
     </div>

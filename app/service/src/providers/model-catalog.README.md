@@ -6,15 +6,33 @@ A reduced snapshot of the [models.dev](https://models.dev) model catalogue (repo
 catalogue itself.
 
 - Source: https://models.dev/models.json (the canonical models) and https://models.dev/api.json (each lab's own entry, for its thinking levels; and each provider's API address and model ids, for provider-catalog.json)
-- Fetched: 2026-11-17
+- Fetched: 2026-11-23
 - Licence: MIT (below)
-- Entries: 631
-- Providers (provider-catalog.json): 292
+- Entries: 640
+- Providers (provider-catalog.json): 294
 
 Each entry: `id` (the model id, lower case), `lab`, `name` (its display name), `vision` (takes images), `pdf` (takes
 PDFs), `reasoning`, `chat` (takes and answers text, and is not an embedding, reranking, speech, transcription, image,
-video or realtime model), `contextTokens` (when the catalogue gives one) and `reasoningLevels` (the lab's `effort`
-values among `low`, `medium`, `high`, `xhigh`, `max`, when it has them).
+video or realtime model), `contextTokens` (when the catalogue gives one), `reasoningLevels` (the lab's `effort`
+values among `low`, `medium`, `high`, `xhigh`, `max`, when it has them), and six abilities that are there only as
+`true` (absent: no, or the catalogue does not say): `tools` (the catalogue's `tool_call`), `audioIn` and `videoIn`
+(takes audio, video), `imageOut`, `videoOut` and `audioOut` (answers with images, video, audio).
+
+An ability is answered only for the model itself (its id, or the id without a `-latest` or date suffix), never for a
+name that merely starts with an id. This catalogue's `tools` reaches a client as `reportedTools`, beside the `tools` a
+saved provider model stores (its owner's choice, a reply that failed for lack of tools, a reply whose tool call ran);
+the two are never merged by the service. Whoever draws the mark reads them in this order: stored `false` > stored
+`true` > `reportedTools` > unknown (app/service/README.md, "Model providers").
+
+## Daily update
+
+`.github/workflows/catalog-update.yml` runs the script once a day (and by hand: Actions > "Model catalogue update" >
+Run workflow, once its trigger is on the default branch: docs/dev/ci.md) with `--guard`: nothing is written when,
+against the previous snapshot, the new one shrank by more than 20 %, lost more than 5 % of the ids that had abilities, lost
+more than 20 % of one ability, changed one ability on more than 20 % of the models both have, or the provider list lost
+more than 20 % of its providers or model ids. A changed snapshot is committed to the development branch only
+after the service type check and the tests that read it pass; the commit message says what was added, removed and
+changed.
 
 # provider-catalog.json
 

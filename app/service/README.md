@@ -45,7 +45,7 @@ npm run credits:show -- --handle <h>                # a person's tier and points
 npm run tier:set -- --handle <h> --tier <name>      # a tier named in AGENT_TIERS
 npm run models:list                                 # the site models: id, label, tier, protocol, prices (never the key)
 npm run demo:seed -- --email <address> [--handle <h>] [--name <text>]   # the App Review account, made or put back; asks for its password (Demo account, below)
-npm run catalog:update [-- <models.json> <api.json>] # downloads models.dev (or reads saved copies) into src/providers/model-catalog.json; commit it
+npm run catalog:update [-- <models.json> <api.json>] # downloads models.dev (or reads saved copies) into src/providers/model-catalog.json; commit it (CI does it daily once its trigger is on master: Model providers, The daily catalogue update)
 ```
 
 Production: build once with the dev dependencies installed, then run plain Node on the build (no `tsx`,
@@ -1886,7 +1886,7 @@ A provider is a person's own account at a model service, which their Agents can 
 Agent cannot be pointed at their provider (400).
 
 **Provider** (owner only): `{"id", "name", "protocol": "openai_chat" | "openai_responses" | "anthropic" | "gemini",
-"baseUrl", "keyLast4", "models": [{"name", "vision", "pdf", "reasoning", "contextTokens", "reasoningLevels"?, "reportedLevels"?, "tools"?}]}`.
+"baseUrl", "keyLast4", "models": [{"name", "vision", "pdf", "reasoning", "contextTokens", "reasoningLevels"?, "reportedLevels"?, "tools"?, "reportedTools"?, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?}]}`.
 
 - **The API key** is sealed when saved (AES-256-GCM, a key derived from `PROVIDER_KEY_SECRET` with HKDF-SHA-256,
   `src/providers/crypto.ts`) and never shown again: no answer, push, error or log line carries it; `keyLast4` is its
@@ -1916,7 +1916,8 @@ Agent cannot be pointed at their provider (400).
   them (checked when the Agent is created or edited; a run sends the saved level, see Replies). Removing a model from the
   list, or narrowing its levels, does not change the Agents that use it.
   `reportedLevels` (read only, never accepted: a body that has it is 400): the levels the catalogue lists for this model (`modelHints`)
-  when it reasons and the catalogue knows it; absent otherwise. It is read when the provider is shown, not stored, so a model set to every
+  when it reasons and the catalogue lists the model itself (the name as it is, or without its `-latest` and date — never a name that
+  merely starts with a known id: `o1-mini` is not reported `o1`'s levels, see Hints, From the catalogue); absent otherwise. It is read when the provider is shown, not stored, so a model set to every
   level (no `reasoningLevels`) still shows what the catalogue lists for it and can be put back to it, also after a reload.
   `tools` (optional, a boolean): whether its replies may be offered tools (Agents and runs, Tools in a reply). Absent: not
   known yet, so they are — every model is given them until it is found unable. The service writes `false` itself the first
@@ -1924,8 +1925,29 @@ Agent cannot be pointed at their provider (400).
   only, and tells you once with a whisper in that reply's conversation (Whispers: kind `tools_off`, the text
   `这个模型不支持查东西，已改为普通聊天。可以在模型设置里重新打开再试。`, no button); from the next reply on it is
   offered none and replies as a model without tools always did. You can turn it on again (`true`); if it is again found
-  unable, it is turned off again and you are told again. Shown only when the entry says it. An edit whose model does not
-  name `tools` keeps what is stored for that name, and a refresh (`…/models/refresh`) never changes it.
+  unable, it is turned off again and you are told again. An edit whose model does not
+  name `tools` keeps what is stored for that name, and a refresh (`…/models/refresh`) never changes it. (So a client
+  names `tools` only where its user changed it, as the web form does: a page read earlier then cannot write the value
+  it read over one found since.)
+  The other half: after a reply in which the model made a tool call that ran, the service stores `true` on a model whose
+  entry says nothing (`markToolsOn`) — once, never over a `false` or a `true` already there, never for a site model, and
+  nobody is told; a reply of a model whose entry says either writes nothing.
+  `tools` on the wire is only ever what is stored. Shown only when the entry says it.
+  `reportedTools` (read only, never accepted: a body that has it is 400): `true` when the catalogue (below) knows the
+  model itself to use tools, present whatever `tools` stores, absent otherwise — the catalogue never says `false`. Like
+  `reportedLevels` it is read when the provider is shown and never stored, so an old row has it too and a catalogue
+  update reaches the page at once; and because the service never merges it into `tools`, a client that sends back what
+  it read cannot turn the catalogue's word into a stored one, nor undo a failure found since.
+  **Whoever draws the mark for "can use tools" applies this order, in one place**: stored `tools: false` → no; stored
+  `tools: true` → yes; else `reportedTools` → yes; else unknown. (Stored `false`/`true` is your choice or a failure
+  found; stored `true` may also be a success found.) A client sends `tools` only when its owner chose it, never because
+  `reportedTools` was there. Whether a reply is offered tools is as before and does not look at the catalogue: every
+  model whose entry does not say `false`.
+  `audioIn`, `videoIn`, `imageOut`, `videoOut`, `audioOut` (read only, never accepted: a body that has one is 400):
+  what the catalogue knows the model to take (audio, video) and answer with (images, video, audio), each present only
+  as `true` and only for a model the catalogue knows itself (`modelHints`; nothing is guessed from a name's wording).
+  Read when the provider is shown, not stored — nothing of them is ever stored, which is why they need no `reported`
+  twin. Nothing is done with them yet beyond showing them.
 
 **The address guard** (`src/providers/guard.ts`), at every call to a provider, before any connection: the URL must pass
 the `baseUrl` rules; the host name is looked up once, and the call is refused with `address_not_allowed` if any address
@@ -2024,7 +2046,7 @@ nothing of an upstream's answer but its status (Calling a model), so there `deta
 test without a model, and the names in its answer read as refresh reads them (below: the first 1 000 entries; names
 that would not be accepted as a model name — trimmed first —, any containing the key, and repeats skipped). **Nothing
 is stored.** → 200 `{"ok": true, "listed": [{"name", "vision", "pdf", "reasoning", "chat", "known", "label"?,
-"contextTokens"?, "reasoningLevels"?, "added"}], "source": "upstream" | "sibling" | "catalogue"}` in the provider's order, at most 500 entries;
+"contextTokens"?, "reasoningLevels"?, "reportedTools"?, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?, "added"}], "source": "upstream" | "sibling" | "catalogue"}` in the provider's order, at most 500 entries;
 or a failure exactly as the test answers it, `detail` included: `{"ok": false, "error", "upstreamStatus"?, "detail"?}`,
 with the code refresh would answer. `added`: the provider's saved `models` already has that name.
 
@@ -2065,7 +2087,7 @@ speech, image or video model…).
   `src/providers/model-catalog.json`, written by `npm run catalog:update` (`scripts/update-model-catalog.mjs`, run by hand:
   it downloads the catalogue and keeps per model only its id, lab, display name, what it takes and answers, its context and
   its lab's thinking levels — and, in `provider-catalog.json`, per catalogue provider its API host and model ids;
-  `model-catalog.README.md` says when). The service never fetches the catalogue. The name is
+  `model-catalog.README.md` says when; The daily catalogue update, below). The service never fetches the catalogue. The name is
   trimmed and lower-cased and only its last `/` part counts (`openai/gpt-6-sol`); it is looked up as it is, then without a
   trailing `-latest` and date (`-20251101`, `-2025-11-01`; the catalogue's own dated ids are found without their date too),
   then as the longest catalogue id it starts with followed by `-` (`claude-sonnet-5-5-thinking` is `claude-sonnet-5-5`) —
@@ -2074,8 +2096,20 @@ speech, image or video model…).
   speech, transcription, image, video or realtime model) are the catalogue's; `label` is its display name;
   `contextTokens` its context when it gives one (it may lie outside what a model can be saved with, 1 000–2 000 000);
   `reasoningLevels` the levels of the model's `effort` option in its lab's own entry, among ours (absent when the lab
-  turns thinking on and off or sets a token budget instead: then every level is right).
-- **From the name** (`known: false`, no `label`, `contextTokens` or `reasoningLevels`): ignoring case, by substrings:
+  turns thinking on and off or sets a token budget instead: then every level is right); and six abilities, each present
+  only as `true` (absent: no, or the catalogue does not say): `reportedTools` (the catalogue's `tool_call`: its replies
+  can call tools), `audioIn` and `videoIn` (audio, video among what it takes), `imageOut`, `videoOut` and `audioOut`
+  (images, video, audio among what it answers with). **These six and `reasoningLevels` are answered only for the model
+  itself** — the name as it is, or without its `-latest` and date — never for a name that merely starts with an id:
+  `o1-mini` is not given `o1`'s (neither its tools nor its levels), a relay's `gpt-4-all` not `gpt-4`'s,
+  `qwen-plus-anything` not `qwen-plus`'s (`vision`, `pdf`, `reasoning`, `chat`, `label` and `contextTokens` are still the
+  base model's: those are prefills its owner edits, while an ability or the levels are shown as the catalogue's fact —
+  so what a page calls the catalogue's word is always this one kind of match). An id two labs list
+  has an ability only when both entries say so. A client adding a listed model does not save `tools` from
+  `reportedTools`: the saved model shows `reportedTools` again by itself (Models, above), and its `tools` is learned
+  from its replies.
+- **From the name** (`known: false`, no `label`, `contextTokens`, `reasoningLevels` or any of the six abilities — those
+  are never guessed from a name's wording): ignoring case, by substrings:
 
 | Hint | `true` when the name contains |
 |---|---|
@@ -2083,6 +2117,32 @@ speech, image or video model…).
 | `vision` | `gpt-4o`, `gpt-4.1`, `gpt-5`, `gpt-6`, `claude`, `gemini`, `vision`, `-vl`, `llava`, `pixtral`, `glm-4v` or `qvq` |
 | `pdf` | `gpt-4o`, `gpt-4.1`, `gpt-5`, `gpt-6`, `claude` or `gemini` |
 | `reasoning` | `gpt-5`, `gpt-6`, `gemini-2.5`, `gemini-3`, `thinking`, `reason`, `deepseek-r`, `qwq`, `-m2` or `-m3` (MiniMax's M series); or it starts with `o1`, `o3` or `o4` (so does its last `/` part: `openai/o3`); or `claude`, except `claude-2`, `claude-3-haiku`, `claude-3-opus`, `claude-3-sonnet`, `claude-3-5`, `claude-3.5` and `claude-instant` |
+
+**The daily catalogue update**: two files. The job is `.github/workflows/catalog-update.yml` on the development
+branch, a reusable workflow ("Model catalogue update (job)": `workflow_call` with the required input `branch`, and no
+other way to start it — no button of its own, so it can never be started on, and commit to, the default branch); it
+names no branch itself and works on the one it is given. What starts it every day is a trigger on the default branch —
+`schedule` and `workflow_dispatch`, `permissions: contents: write`, one job that calls the job's file at the
+development branch and passes that branch's name — kept as `docs/dev/catalog-update-trigger.master.yml` until the
+owner puts it on `master` (`docs/dev/ci.md` says how, and how to run the update by hand meanwhile). The job checks out
+`branch` without leaving the token on disk (`persist-credentials: false`) and runs
+`scripts/update-model-catalog.mjs --guard --summary=<file>` (each download tried three times). `--guard` refuses —
+exit 1, nothing written — when, against the snapshot on disk: the new one shrank by more than 20 %; more than 5 % of
+the models that had an ability (`vision`, `pdf`, `reasoning`, or one of the six above, there named `tools`) are gone or
+have none left; one ability that at least 10 models had is gone from more than 20 % of them (a field renamed upstream);
+one ability changed, either way, on more than 20 % of the models both snapshots have (a mass gain too); or the provider
+list lost more than 20 % of its providers or of its model ids — an outage or a change of the catalogue's format must
+not wipe it. (A deliberate change of that size, such as keeping a new ability, is run by hand without `--guard`.) A lab
+or model id that is not one line of at most 100 characters is left out. When neither JSON file changed, nothing is
+committed. When one did: the service type check (`npx tsc --noEmit`) and the tests that read the catalogue
+(`tests/model-catalog.test.ts`, `tests/provider-catalog.test.ts`, `tests/provider-hints.test.ts`,
+`tests/providers.test.ts`, `tests/models-route.test.ts`, `tests/build.test.ts`) run, and only when they pass the
+snapshot is committed to that branch — an ordinary push, never forced: a branch that moved meanwhile refuses it and the
+next day's run tries again —, the message's body saying what changed (`catalogSummary`: the counts, and up to 20 names
+each of the models added, removed and with changed abilities); when they fail, nothing is committed and the run fails.
+It uses the run's own `GITHUB_TOKEN` (`contents: write`, named in the push step alone; the steps before it run on the
+same machine, so this keeps the token out of their reach as it is, not out of the reach of what they could leave behind
+for that step: `docs/dev/ci.md`, Limits) and no other secret.
 
 #### `POST /api/providers/:id/models/refresh`
 
@@ -2241,13 +2301,17 @@ Stopping a call (its abort signal) ends it at once and closes the upstream conne
 
 *Session: required.* What a client's model picker reads: the models the site offers and the defaults a provider model
 gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision", "pdf", "reasoning": [levels],
-"contextTokens", "tools": boolean}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true,
+"contextTokens", "tools": boolean, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true,
 "webSearchPoints"?: string, "memoryCatchUp": {"days", "lines"}}`.
 
 - `siteModels`: `SITE_MODELS` in configuration order (`[]` when none is configured). `id` is what an Agent's
   `{"source": "site", "id"}` names; `reasoning` the levels the model takes besides `none`, which every model takes (an
   empty list: `none` only); `tools` whether its replies may be offered tools (its configuration's `tools`, true unless
-  the operator said false). Nothing else of a site model is shown: never where it is called (`baseUrl`, `protocol`), the
+  the operator said false); `audioIn`, `videoIn`, `imageOut`, `videoOut`, `audioOut`: what the model catalogue (Model
+  providers, From the catalogue) knows the model to take and answer with, each present only as `true` — looked up by the
+  name the model is called by when the catalogue knows that name, else by its `id`, in both cases only when that is a
+  catalogue model itself (never a name that merely starts with one), else absent (`vision`, `pdf`, `reasoning` and
+  `tools` are always the configuration's; a site model has no `reportedTools`). Nothing else of a site model is shown: never where it is called (`baseUrl`, `protocol`), the
   upstream model name, its key or the name of the variable holding it, or its prices.
 - `proactiveAvailable`: whether the judgement model is configured (`JUDGE`); turning an Agent's `proactive` on is refused (409 `proactive_unavailable`) when it is not.
 - `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there, and `TOOLS.enabled`; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
@@ -3300,7 +3364,8 @@ member of the group, the owner of another Agent there, anybody — gets the mess
   `SITE_MODELS` when the message is read, its `id` when it is no longer configured; never its upstream model name,
   address, key variable or prices. A provider model is `{"source": "provider", "model"}`: the model name you saved (no
   provider id, no address).
-- `reasoning`: the level the call was sent at — the Agent's when the model took it, else `none` (Calling a model) —,
+- `reasoning`: the level the call was sent at — the Agent's effective level: its saved one when the model listed it,
+  else the nearest listed level below it (Calling a model) —,
   recorded on the run when the call was admitted, so a later change to the Agent does not change it.
 - `points`: what you were charged for that run, a decimal string of points as money is on the wire: from the free
   allowance plus the balance, as `GET /api/usage` counts it (not what was forgiven); `"0"` on a provider model.
@@ -4065,10 +4130,14 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
   summary. With it, when the
   newest message would no longer fit whole, the passage is dropped first (the conversation part still starts after what it
   covers).
-- The reasoning level is the Agent's when the model allows it, else `none`. A provider model flagged `reasoning`
-  allows every level here, whatever its `reasoningLevels`: an Agent saved with a level its model has since stopped
-  listing keeps answering with that level (the run is not failed) until the Agent is edited, when the level is checked
-  again.
+- The reasoning level is the Agent's *effective* level (`callLevel`): its saved level when the model lists it, else the
+  nearest level below it that the model lists (order `none` < `low` < `medium` < `high` < `xhigh` < `max`), `none` when
+  there is none — `none` is always listed. One rule for site and provider models: a site model lists `none` and its
+  configured `reasoning`; a provider model `none` only, unless flagged `reasoning`: then `none` and its
+  `reasoningLevels` (every level when it lists none). So an Agent saved with a level its model has since stopped listing
+  keeps answering (the run is not failed), at a level the model lists, never at the one it dropped. The saved level is
+  not rewritten by a run or by a read: `GET /api/agents` shows what was saved, the app shows the effective level beside
+  the model's list, and an edit that names the model or the level is checked against the list again (400 otherwise).
 
 A reply's input estimate counts all of the above, attachments at their estimate. What settlement falls back on when no
 usage is reported is that estimate with its text corrected by the model's learned ratio (Metering, Token estimates); a

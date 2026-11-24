@@ -52,7 +52,12 @@ async function openProviders({ providers = [providerOf()], api = {}, models = MO
       const at = env.providers.findIndex((p) => p.id === id);
       const { apiKey, ...rest } = patch;
       const next = { ...env.providers[at], ...rest, ...(apiKey ? { keyLast4: apiKey.slice(-4) } : {}) };
-      if (rest.models) next.models = stored(id, { models: rest.models }).models;
+      // As the service does: a model that does not name `tools` keeps what is stored for its name.
+      const keptTools = (m) => {
+        const kept = env.providers[at].models.find((before) => before.name === m.name)?.tools;
+        return m.tools === undefined && typeof kept === "boolean" ? { ...m, tools: kept } : m;
+      };
+      if (rest.models) next.models = stored(id, { models: rest.models.map(keptTools) }).models;
       env.providers[at] = next;
       return structuredClone(next);
     }),
@@ -750,6 +755,126 @@ describe("the models of a provider", () => {
     expect([box("gpt-x").checked, box("plain").checked]).toEqual([true, true]);
   });
 
+  it("会用工具 when the catalogue reports the model: still the mixed box (nothing is stored), another helper, the 工具 mark on its row; saved untouched it sends neither tools nor reportedTools; a stored false is unticked and unmarked whatever is reported", async () => {
+    const reported = providerOf(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true },
+        { name: "qwen-plus", vision: false, pdf: false, reasoning: true, contextTokens: 64000, tools: false, reportedTools: true },
+        { name: "qwen-vl-max", vision: true, pdf: false, reasoning: false, contextTokens: 64000, tools: true, reportedTools: true },
+        { name: "house-blend", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "qwen-omni-turbo", vision: true, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true, audioIn: true, videoIn: true, audioOut: true },
+      ],
+    });
+    const app = await openProviders({ providers: [reported] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    const names = ["deepseek-chat", "qwen-plus", "qwen-vl-max", "house-blend", "qwen-omni-turbo"];
+    const marks = (name) => [...modelRow(name).querySelectorAll(".model-mark")].map((m) => m.querySelector(".model-mark-text")?.textContent ?? m.textContent);
+    expect(names.map(marks)).toEqual([["工具"], ["思考"], ["看图", "工具"], [], ["看图", "工具"]]);
+    const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
+    for (const name of names) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    expect(names.map((name) => [box(name).checked, box(name).indeterminate])).toEqual([[false, true], [false, false], [true, false], [false, true], [false, true]]);
+    const REPORTED = "资料显示它会用工具，会先让它试着用。确定不会就点一下取消。";
+    const UNKNOWN = "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。";
+    const helper = (name) => [REPORTED, UNKNOWN].filter((text) => within(modelRow(name)).queryByText(text));
+    expect(names.map(helper)).toEqual([[REPORTED], [], [], [UNKNOWN], [REPORTED]]);
+    expect(box("deepseek-chat").getAttribute("aria-describedby")).toBe(within(modelRow("deepseek-chat")).getByText(REPORTED).id);
+    // Another change, the boxes left alone: nothing of tools is sent — not for the unknown ones, not the stored false and true the
+    // form loaded (the service keeps what it has, also what it learned since this page was read) — and never what the catalogue reports.
+    fireEvent.click(within(modelRow("house-blend")).getByLabelText(/能看图片/));
+    await flush();
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "qwen-plus", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
+        { name: "qwen-vl-max", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "house-blend", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "qwen-omni-turbo", vision: true, pdf: false, reasoning: false, contextTokens: 64000 },
+      ],
+    });
+    expect(JSON.stringify(app.api.patchProvider.mock.calls)).not.toMatch(/tools|reportedTools|audioIn|videoIn|audioOut/);
+  });
+
+  it("会用工具 on a reported model: the mixed box's first click says no (unticked, stored false, the mark goes: what the helper names), the second says yes; a model nothing is reported of goes to yes first", async () => {
+    const reported = providerOf(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true },
+        { name: "qwen-max", vision: false, pdf: false, reasoning: false, contextTokens: 64000, reportedTools: true },
+        { name: "house-blend", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+      ],
+    });
+    const app = await openProviders({ providers: [reported] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    const marks = (name) => [...modelRow(name).querySelectorAll(".model-mark")].map((m) => m.querySelector(".model-mark-text")?.textContent ?? m.textContent);
+    const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
+    const seen = (name) => [box(name).checked, box(name).indeterminate, marks(name)];
+    for (const name of ["deepseek-chat", "qwen-max", "house-blend"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    // mixed → unticked → ticked → unticked: the order a keyboard and a screen reader meet too (it is the native box).
+    expect(seen("deepseek-chat")).toEqual([false, true, ["工具"]]);
+    await click(box("deepseek-chat"));
+    expect(seen("deepseek-chat")).toEqual([false, false, []]);
+    expect(modelRow("deepseek-chat").textContent).not.toContain("资料显示");
+    expect(box("deepseek-chat").getAttribute("aria-describedby")).toBeNull();
+    await click(box("deepseek-chat"));
+    expect(seen("deepseek-chat")).toEqual([true, false, ["工具"]]);
+    await click(box("deepseek-chat"));
+    expect(seen("deepseek-chat")).toEqual([false, false, []]);
+    // Two clicks on another reported one: yes. One click on a model nothing is reported of: yes at once, as before.
+    await click(box("qwen-max"));
+    await click(box("qwen-max"));
+    expect(seen("qwen-max")).toEqual([true, false, ["工具"]]);
+    await click(box("house-blend"));
+    expect(seen("house-blend")).toEqual([true, false, ["工具"]]);
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
+      models: [
+        { name: "deepseek-chat", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+        { name: "qwen-max", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+        { name: "house-blend", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+      ],
+    });
+  });
+
+  it("tools is sent only where the owner's click changed what the form loaded: a stored true or false left alone, or clicked and clicked back, is not sent — and alone is nothing to save", async () => {
+    const stored = providerOf(P1, {
+      models: [
+        { name: "learned", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true, reportedTools: true },
+        { name: "off", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+        { name: "on", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+        { name: "back", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: true },
+      ],
+    });
+    const app = await openProviders({ providers: [stored] });
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    const box = (name) => within(modelRow(name)).getByLabelText("会用工具（查聊天记录、看文件）");
+    for (const name of ["learned", "off", "on", "back"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    // Clicked and clicked back: as loaded again.
+    await click(box("back"));
+    expect(box("back").checked).toBe(false);
+    await click(box("back"));
+    expect(box("back").checked).toBe(true);
+    // Only that: the form has nothing to send (a page left open cannot write its old true over what the service learned since).
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).not.toHaveBeenCalled();
+    // The owner turns one off: that model's word is sent, and no other's.
+    await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+    for (const name of ["off", "on"]) await click(within(modelRow(name)).getByRole("button", { name: `高级设置：${name}` }));
+    await click(box("on"));
+    await click(box("off"));
+    await click(box("off"));
+    await click(inMain().getByRole("button", { name: "保存" }));
+    expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
+    expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
+      models: [
+        { name: "learned", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "off", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "on", vision: false, pdf: false, reasoning: false, contextTokens: 64000, tools: false },
+        { name: "back", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+      ],
+    });
+  });
+
   it("an untouched unknown stays unknown: the box open and left alone, saved for another change, sends no tools and is still the mixed box", async () => {
     const unknown = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 }] });
     const app = await openProviders({ providers: [unknown] });
@@ -765,7 +890,7 @@ describe("the models of a provider", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: true, pdf: false, reasoning: true, contextTokens: 64000 }] });
   });
 
-  it("a model marked tools: false keeps it when the list is saved for another change; one whose entry says nothing sends nothing of it", async () => {
+  it("a model marked tools: false is left to the service when the list is saved for another change (nothing of tools is sent: an edit that does not name it keeps what is stored); one whose entry says nothing sends nothing of it either", async () => {
     const marked = providerOf(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
@@ -781,7 +906,7 @@ describe("the models of a provider", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
-        { name: "plain", vision: true, pdf: false, reasoning: false, contextTokens: 16000, tools: false },
+        { name: "plain", vision: true, pdf: false, reasoning: false, contextTokens: 16000 },
       ],
     });
   });
@@ -789,8 +914,8 @@ describe("the models of a provider", () => {
   it("a model that lists thinking levels offers a choice: the levels it reports, or every level; both ways are open before saving; unticking 支持思考 clears them", async () => {
     const levels = providerOf(P1, {
       models: [
-        { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] },
-        { name: "deep", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["max"] },
+        { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"], reportedLevels: ["low", "high"] },
+        { name: "deep", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["max"], reportedLevels: ["max"] },
       ],
     });
     const app = await openProviders({ providers: [levels] });
@@ -800,12 +925,12 @@ describe("the models of a provider", () => {
     expect(within(modelRow("gpt-x")).queryByRole("radiogroup")).toBeNull();
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
-    const reported = () => within(group()).getByRole("radio", { name: "这个模型支持的档位（低、高）" });
+    const reported = () => within(group()).getByRole("radio", { name: "资料里的档位" });
     const every = () => within(group()).getByRole("radio", { name: "全部档位" });
     expect(reported().checked).toBe(true);
     expect(every().checked).toBe(false);
     // What each means, in one line, and when to want every level.
-    expect(group().textContent).toContain("档位不对或不全时，选全部档位");
+    expect(group().textContent).toContain("资料显示支持：低、高。档位不对或不全时，选全部档位。");
     // No bare button that only goes one way.
     expect(within(modelRow("gpt-x")).queryByRole("button", { name: /全部档位/ })).toBeNull();
     await click(every());
@@ -836,7 +961,7 @@ describe("the models of a provider", () => {
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     expect(within(group).getByRole("radio", { name: "全部档位" }).checked).toBe(true);
-    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
+    await click(within(group).getByRole("radio", { name: "资料里的档位" }));
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
   });
@@ -878,10 +1003,13 @@ describe("the models of a provider", () => {
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = () => within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     // The list in use is not the catalogue's: neither option claims to be the choice until one is tapped.
-    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(false);
+    expect(within(group()).getByRole("radio", { name: "资料里的档位" }).checked).toBe(false);
     expect(within(group()).getByRole("radio", { name: "全部档位" }).checked).toBe(false);
-    await click(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }));
-    expect(within(group()).getByRole("radio", { name: "这个模型支持的档位（低、中、高）" }).checked).toBe(true);
+    // What is in use then is said in the control itself, not only in the row's summary: the choice was not lost.
+    expect(group().textContent).toContain("现在用的是：低、高。资料显示支持：低、中、高。档位不对或不全时，选全部档位。");
+    await click(within(group()).getByRole("radio", { name: "资料里的档位" }));
+    expect(group().textContent).not.toContain("现在用的是");
+    expect(within(group()).getByRole("radio", { name: "资料里的档位" }).checked).toBe(true);
     expect(modelRow("gpt-x").textContent).toContain("思考档位：低、中、高");
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/支持思考/));
@@ -893,18 +1021,106 @@ describe("the models of a provider", () => {
   });
 
   it("the reported levels are sent again when the choice is put back to them", async () => {
-    const levels = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+    const levels = providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"], reportedLevels: ["low", "high"] }] });
     const app = await openProviders({ providers: [levels] });
     await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
     await click(within(modelRow("gpt-x")).getByRole("button", { name: /高级/ }));
     const group = within(modelRow("gpt-x")).getByRole("radiogroup", { name: "思考档位：gpt-x" });
     await click(within(group).getByRole("radio", { name: "全部档位" }));
-    await click(within(group).getByRole("radio", { name: "这个模型支持的档位（低、高）" }));
+    await click(within(group).getByRole("radio", { name: "资料里的档位" }));
     // (Something else changed too, so that there is something to save.)
     fireEvent.click(within(modelRow("gpt-x")).getByLabelText(/能看图片/));
     await flush();
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, { models: [{ name: "gpt-x", vision: true, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high"] }] });
+  });
+
+  describe("思考档位 of a model the catalogue does not know (no reportedLevels)", () => {
+    const unknown = (extra = {}) => providerOf(P1, { models: [{ name: "house-think", vision: false, pdf: false, reasoning: true, contextTokens: 64000, ...extra }, { name: "plain", vision: false, pdf: false, reasoning: false, contextTokens: 16000 }] });
+    const openForm = async (provider) => {
+      const app = await openProviders({ providers: [provider] });
+      await click(inRow("我的 OpenAI").getByRole("button", { name: "编辑" }));
+      await click(within(modelRow("house-think")).getByRole("button", { name: /高级/ }));
+      return app;
+    };
+    const group = () => within(modelRow("house-think")).getByRole("group", { name: "思考档位：house-think" });
+    const boxes = () => within(group()).getAllByRole("checkbox");
+    const ticked = () => boxes().filter((b) => b.checked).map((b) => b.closest("label").textContent);
+    const box = (name) => within(group()).getByRole("checkbox", { name });
+    const sent = (app) => app.api.patchProvider.mock.calls.at(-1)[1].models[0];
+
+    it("高级 always shows 思考档位: a plain line and five boxes 低 中 高 很高 最高, all ticked (every level); the ones left ticked are saved exactly", async () => {
+      const app = await openForm(unknown());
+      expect(within(modelRow("house-think")).queryByRole("radiogroup")).toBeNull();
+      // (The line claims nothing about the catalogue: the form cannot know what it holds for a model not saved as thinking.)
+      expect(group().textContent).toContain("默认全部档位可选。这个模型不支持的，可以取消。");
+      expect(group().textContent).not.toContain("资料");
+      expect(boxes().map((b) => b.closest("label").textContent)).toEqual(["低", "中", "高", "很高", "最高"]);
+      expect(ticked()).toEqual(["低", "中", "高", "很高", "最高"]);
+      expect(modelRow("house-think").textContent).toContain("思考档位：全部");
+      await click(box("很高"));
+      await click(box("最高"));
+      expect(ticked()).toEqual(["低", "中", "高"]);
+      expect(modelRow("house-think").textContent).toContain("思考档位：低、中、高");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(sent(app)).toEqual({ name: "house-think", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "medium", "high"] });
+    });
+
+    it("saved untouched it sends no levels; a saved subset shows as ticked, and all five ticked again is every level (no reasoningLevels)", async () => {
+      const app = await openForm(unknown({ reasoningLevels: ["low", "max"] }));
+      expect(ticked()).toEqual(["低", "最高"]);
+      // (A saved subset is not called the catalogue's: no 资料显示支持, no radios.)
+      expect(group().textContent).not.toContain("资料");
+      expect(within(modelRow("house-think")).queryByRole("radiogroup")).toBeNull();
+      await click(box("中"));
+      expect(ticked()).toEqual(["低", "中", "最高"]);
+      await click(box("高"));
+      await click(box("很高"));
+      expect(modelRow("house-think").textContent).toContain("思考档位：全部");
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(sent(app)).toEqual({ name: "house-think", vision: false, pdf: false, reasoning: true, contextTokens: 64000 });
+    });
+
+    it("the last ticked level stays ticked, and a line says why", async () => {
+      const app = await openForm(unknown({ reasoningLevels: ["low", "high"] }));
+      expect(group().textContent).not.toContain("至少保留一个档位");
+      expect(boxes().map((b) => b.getAttribute("aria-disabled"))).toEqual([null, null, null, null, null]);
+      await click(box("低"));
+      expect(ticked()).toEqual(["高"]);
+      expect(group().textContent).toContain("至少保留一个档位。不需要思考时，取消上面的「支持思考」。");
+      // The one left says it cannot be unticked, and why, to whoever cannot see the line: it is its description.
+      expect(box("高").getAttribute("aria-disabled")).toBe("true");
+      expect(document.getElementById(box("高").getAttribute("aria-describedby")).textContent).toBe("至少保留一个档位。不需要思考时，取消上面的「支持思考」。");
+      expect(box("低").getAttribute("aria-disabled")).toBeNull();
+      await click(box("高"));
+      expect(ticked()).toEqual(["高"]);
+      // (It stays focusable and the others can be ticked again, which frees it.)
+      expect(box("高").disabled).toBe(false);
+      await click(box("中"));
+      expect(box("高").getAttribute("aria-disabled")).toBeNull();
+      await click(box("中"));
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(sent(app).reasoningLevels).toEqual(["high"]);
+    });
+
+    it("unticking 支持思考 hides it (and sends no levels); ticking a model that did not think shows it, every level ticked", async () => {
+      const app = await openForm(unknown({ reasoningLevels: ["low"] }));
+      fireEvent.click(within(modelRow("house-think")).getByLabelText(/支持思考/));
+      await flush();
+      expect(within(modelRow("house-think")).queryByRole("group", { name: "思考档位：house-think" })).toBeNull();
+      expect(modelRow("house-think").textContent).not.toContain("思考档位");
+      await click(within(modelRow("plain")).getByRole("button", { name: /高级/ }));
+      expect(within(modelRow("plain")).queryByRole("group", { name: "思考档位：plain" })).toBeNull();
+      fireEvent.click(within(modelRow("plain")).getByLabelText(/支持思考/));
+      await flush();
+      const plain = within(modelRow("plain")).getByRole("group", { name: "思考档位：plain" });
+      expect(within(plain).getAllByRole("checkbox").map((b) => b.checked)).toEqual([true, true, true, true, true]);
+      await click(inMain().getByRole("button", { name: "保存" }));
+      expect(app.api.patchProvider.mock.calls.at(-1)[1].models).toEqual([
+        { name: "house-think", vision: false, pdf: false, reasoning: false, contextTokens: 64000 },
+        { name: "plain", vision: false, pdf: false, reasoning: true, contextTokens: 16000 },
+      ]);
+    });
   });
 });
 
@@ -914,7 +1130,7 @@ describe("同步模型", () => {
   const ALL = ["low", "medium", "high", "xhigh", "max"];
   const LISTING = [
     entry("gpt-x", { known: true, label: "GPT X", reasoning: true, added: true }),
-    entry("gpt-6-sol", { known: true, label: "GPT-6 Sol", vision: true, pdf: true, reasoning: true, contextTokens: 1050000, reasoningLevels: ALL }),
+    entry("gpt-6-sol", { known: true, label: "GPT-6 Sol", vision: true, pdf: true, reasoning: true, contextTokens: 1050000, reasoningLevels: ALL, reportedTools: true, audioIn: true }),
     entry("claude-long", { known: true, label: "Claude Long", vision: true, pdf: true, reasoning: true, contextTokens: 10000000, reasoningLevels: ["low", "high"] }),
     entry("house-blend"),
     entry("o3-mini", { known: true, label: "o3-mini", reasoning: true, contextTokens: 200000, reasoningLevels: ["low", "medium", "high"] }),
@@ -941,8 +1157,11 @@ describe("同步模型", () => {
     expect(syncRows().map((li) => li.querySelector("strong").textContent)).toEqual(["gpt-x", "gpt-6-sol", "claude-long", "house-blend", "o3-mini"]);
     const sol = rowOf("gpt-6-sol");
     expect(sol.textContent).toContain("GPT-6 Sol");
-    // The marks are the picker's own (看图, 思考 in their order; this list says nothing of tools).
-    expect([...sol.querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["看图", "思考"]);
+    // The marks are the picker's own, in their order; 工具 is what the catalogue reports of the model (a listed row stores nothing).
+    expect([...sol.querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["看图", "思考", "工具"]);
+    // A row the catalogue reports nothing of has no 工具: o3-mini here, and a guess never has.
+    expect([...rowOf("o3-mini").querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["思考"]);
+    expect([...rowOf("house-blend").querySelectorAll(".model-mark")]).toEqual([]);
     expect([...rowOf("house-blend").querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["未收录"]);
     // The display name is not repeated when it is the id itself.
     expect(rowOf("o3-mini").querySelector(".member-body").textContent).not.toContain("o3-mini · o3-mini");
@@ -1007,6 +1226,42 @@ describe("同步模型", () => {
     expect(app.api.patchProvider).toHaveBeenCalledTimes(1);
   });
 
+  it("a listed model that is already saved with tools: false has no 工具 in its row either, whatever the catalogue reports: stored false hides it everywhere", async () => {
+    const off = providerOf(P1, { models: [{ name: "gpt-6-sol", vision: true, pdf: true, reasoning: true, contextTokens: 64000, tools: false, reportedTools: true }] });
+    await openSync({ providers: [off] });
+    expect(rowOf("gpt-6-sol").textContent).toContain("已添加");
+    expect([...rowOf("gpt-6-sol").querySelectorAll(".model-mark")].map((t) => t.textContent)).toEqual(["看图", "思考"]);
+  });
+
+  it("a model added from the list stores no tools, whatever the catalogue reports: its row is marked 工具 at once and its box is the mixed one", async () => {
+    const app = await openSync();
+    await click(within(rowOf("gpt-6-sol")).getByRole("button", { name: "添加：gpt-6-sol" }));
+    await done();
+    const sent = app.api.patchProvider.mock.calls.at(-1)[1].models.find((m) => m.name === "gpt-6-sol");
+    expect(Object.keys(sent).filter((key) => ["tools", "reportedTools", "audioIn"].includes(key))).toEqual([]);
+    // (The service's answer is the mock's echo of what was sent: the mark here is the form's own row, before any reload.)
+  });
+
+  it("a listed model the catalogue knows only by a prefix of its name (o1-mini: o1's hints, no levels) is added with every level and shows the five boxes, not the catalogue's choice; the model itself (o3-mini) is added with its levels", async () => {
+    // As the service lists them: levels only for the model itself; a name that merely starts with a known id has the base's flags and label, no levels.
+    const listing = [entry("o1-mini", { known: true, label: "o1", vision: true, pdf: true, reasoning: true, contextTokens: 200000 }), LISTING.find((m) => m.name === "o3-mini")];
+    const app = await openSync({ api: { listProviderModels: listOf(listing) } });
+    for (const name of ["o1-mini", "o3-mini"]) await click(within(rowOf(name)).getByRole("button", { name: `添加：${name}` }));
+    await done();
+    const sent = Object.fromEntries(app.api.patchProvider.mock.calls.at(-1)[1].models.map((m) => [m.name, m]));
+    expect(sent["o1-mini"]).toEqual({ name: "o1-mini", vision: true, pdf: true, reasoning: true, contextTokens: 200000 });
+    expect(sent["o3-mini"].reasoningLevels).toEqual(["low", "medium", "high"]);
+    expect(modelRow("o1-mini").textContent).toContain("思考档位：全部");
+    await click(within(modelRow("o1-mini")).getByRole("button", { name: /高级/ }));
+    expect(within(modelRow("o1-mini")).queryByRole("radiogroup")).toBeNull();
+    const group = within(modelRow("o1-mini")).getByRole("group", { name: "思考档位：o1-mini" });
+    expect(group.textContent).toContain("默认全部档位可选。这个模型不支持的，可以取消。");
+    expect(group.textContent).not.toContain("资料");
+    expect(within(group).getAllByRole("checkbox").map((b) => [b.closest("label").textContent, b.checked])).toEqual([["低", true], ["中", true], ["高", true], ["很高", true], ["最高", true]]);
+    // Nothing is reported of its tools either: the mixed box with the plain helper.
+    expect(modelRow("o1-mini").textContent).toContain("还不确定，会先让它试着用。");
+  });
+
   it("never changes whether a model may use tools: a model marked tools: false keeps it through 完成, a model added says nothing of it", async () => {
     const marked = providerOf(P1, {
       models: [
@@ -1021,13 +1276,14 @@ describe("同步模型", () => {
     expect(app.api.patchProvider).toHaveBeenCalledWith(P1, {
       models: [
         { name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },
-        { name: "plain", vision: false, pdf: false, reasoning: false, contextTokens: 16000, tools: false },
+        { name: "plain", vision: false, pdf: false, reasoning: false, contextTokens: 16000 },
         { name: "house-blend", vision: false, pdf: false, reasoning: false },
       ],
     });
     // The form now holds what was saved: plain still unticked.
     await click(within(modelRow("plain")).getByRole("button", { name: /高级/ }));
-    expect(within(modelRow("plain")).getByLabelText("会用工具（查聊天记录、看文件）").checked).toBe(false);
+    const plainBox = within(modelRow("plain")).getByLabelText("会用工具（查聊天记录、看文件）");
+    expect([plainBox.checked, plainBox.indeterminate]).toEqual([false, false]);
   });
 
   it("移除 takes a model off the form's list, a saved one too; with nothing changed 完成 only closes", async () => {

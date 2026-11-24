@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { inferModelHints, modelHints } from "../src/providers/hints.ts";
+import { ABILITY_KEYS, abilitiesOf, inferModelHints, mergedAbilities, modelHints } from "../src/providers/hints.ts";
+import { abilitiesIn, entryOf, hintsOf, pick, SNAPSHOT } from "./helpers/catalog.ts";
 import { expectLinear, LOADED_TIMEOUT_MS } from "./helpers/linear.ts";
 
 /**
@@ -8,9 +9,12 @@ import { expectLinear, LOADED_TIMEOUT_MS } from "./helpers/linear.ts";
  * name it fits and one it does not.
  */
 
-const ALL_LEVELS = ["low", "medium", "high", "xhigh", "max"];
-const GPT_6_SOL = { vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "GPT-6 Sol", contextTokens: 1050000, reasoningLevels: ALL_LEVELS };
-const SONNET = { vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "Claude Sonnet 5.5", contextTokens: 1000000, reasoningLevels: ALL_LEVELS };
+// What the snapshot's own entry says (tests/helpers/catalog.ts), not values copied from it: the catalogue is updated daily.
+const GPT_6_SOL = hintsOf(entryOf("gpt-6-sol"));
+const SONNET = hintsOf(entryOf("claude-sonnet-5-5"));
+/** The hints of a known model without what only an exact or undated match answers (the abilities, the levels): what a variant by prefix gets. */
+const withoutAbilities = (hints: Record<string, unknown>) =>
+  Object.fromEntries(Object.entries(hints).filter(([key]) => key !== "reasoningLevels" && !(ABILITY_KEYS as readonly string[]).includes(key)));
 
 describe("modelHints: the catalogue first", () => {
   it("an exact id, also behind a vendor prefix, in any case, with spaces around it", () => {
@@ -19,7 +23,8 @@ describe("modelHints: the catalogue first", () => {
     expect(modelHints("  OpenRouter/OpenAI/GPT-6-Sol ")).toEqual(GPT_6_SOL);
     expect(modelHints("claude-sonnet-5-5")).toEqual(SONNET);
     // The lab's levels when it has them; a model whose levels are a toggle or a token budget has none listed.
-    expect(modelHints("gemini-2.5-pro")).toEqual({ vision: true, pdf: true, reasoning: true, chat: true, known: true, label: "Gemini 2.5 Pro", contextTokens: 1048576 });
+    expect(modelHints("gemini-2.5-pro")).toEqual(hintsOf(entryOf("gemini-2.5-pro")));
+    expect(modelHints("gemini-2.5-pro")).not.toHaveProperty("reasoningLevels");
     expect(modelHints("o3-mini")).toMatchObject({ known: true, reasoning: true, reasoningLevels: ["low", "medium", "high"] });
     expect(modelHints("minimax/MiniMax-M3")).toMatchObject({ known: true, label: "MiniMax-M3", reasoning: true });
     expect(modelHints("minimax/MiniMax-M3")).not.toHaveProperty("reasoningLevels");
@@ -33,14 +38,106 @@ describe("modelHints: the catalogue first", () => {
   });
 
   it("else the longest id the name starts with, followed by - (a variant of a known model)", () => {
-    expect(modelHints("claude-sonnet-5-5-thinking")).toEqual(SONNET);
-    expect(modelHints("gpt-6-sol-free-20261101")).toEqual(GPT_6_SOL);
+    // The hints its owner edits are the known model's; what is shown as the catalogue's fact (the abilities, the levels) is not: see below.
+    expect(SONNET.reasoningLevels).toBeDefined();
+    expect(modelHints("claude-sonnet-5-5-thinking")).toEqual(withoutAbilities(SONNET));
+    expect(modelHints("gpt-6-sol-free-20261101")).toEqual(withoutAbilities(GPT_6_SOL));
     // Only at a -: gpt-6-solar is not gpt-6-sol.
     expect(modelHints("gpt-6-solar").label).not.toBe("GPT-6 Sol");
     // Not a variant the name rules call no chat model: a speech or transcription model is not the chat model it starts with.
     for (const name of ["gpt-4o-mini-tts", "gpt-4o-transcribe", "gpt-4o-audio-preview"]) {
       expect([name, modelHints(name)]).toEqual([name, { vision: false, pdf: false, reasoning: false, chat: false, known: false }]);
     }
+  });
+
+  it("abilities: reportedTools, audio and video in, image, video and audio out — only as true, only from the catalogue", () => {
+    const tools = pick("uses tools", (e) => e.chat && e.tools === true);
+    const hears = pick("takes audio", (e) => e.audioIn === true);
+    const paints = pick("answers with images", (e) => e.imageOut === true);
+    const films = pick("answers with video", (e) => e.videoOut === true);
+    const speaks = pick("answers with audio", (e) => e.audioOut === true);
+    for (const e of [tools, hears, paints, films, speaks]) {
+      expect([e.id, abilitiesOf(modelHints(e.id))]).toEqual([e.id, abilitiesIn(e)]);
+      expect([e.id, abilitiesOf(modelHints(`SomeHost/${e.id.toUpperCase()}`))]).toEqual([e.id, abilitiesIn(e)]);
+    }
+    expect(modelHints(tools.id).reportedTools).toBe(true);
+    // The catalogue's word travels as `reportedTools`: a hint never says `tools`, which is what a saved model stores.
+    for (const e of SNAPSHOT.slice(0, 120)) expect([e.id, "tools" in modelHints(e.id)]).toEqual([e.id, false]);
+    // What the catalogue does not say is absent, never false: a known model without tool support …
+    const plain = pick("has no ability", (e) => Object.keys(abilitiesIn(e)).length === 0);
+    const hints = modelHints(plain.id);
+    expect(hints.known).toBe(true);
+    for (const key of ABILITY_KEYS) expect([key, key in hints]).toEqual([key, false]);
+    // … and nothing is guessed from a name's wording: a name the catalogue does not know says none of them.
+    for (const name of ["my-tools-model", "acme/function-calling-audio-video-omni", "gpt-6", "o4-ultra-custom", "vision-video-in-image-out"]) {
+      const unknown = modelHints(name);
+      expect([name, unknown.known, ABILITY_KEYS.filter((key) => key in unknown)]).toEqual([name, false, []]);
+      expect([name, abilitiesOf(unknown)]).toEqual([name, {}]);
+    }
+    expect(ABILITY_KEYS).toEqual(["reportedTools", "audioIn", "videoIn", "imageOut", "videoOut", "audioOut"]);
+  });
+
+  it("abilities need the model itself: an exact id, or one without its date or -latest — never a mere prefix", () => {
+    // Exact and undated: the entry's abilities.
+    const dated = entryOf("claude-3-5-haiku-20241022");
+    for (const name of ["claude-sonnet-5-5", "claude-sonnet-5-5-20261101", "claude-sonnet-5-5-2026-11-01", "anthropic/claude-sonnet-5-5-latest"]) {
+      expect([name, abilitiesOf(modelHints(name))]).toEqual([name, abilitiesIn(entryOf("claude-sonnet-5-5"))]);
+    }
+    for (const name of ["claude-3-5-haiku-20241022", "claude-3-5-haiku", "claude-3-5-haiku-latest"]) expect([name, abilitiesOf(modelHints(name))]).toEqual([name, abilitiesIn(dated)]);
+    expect(abilitiesIn(entryOf("claude-sonnet-5-5")).reportedTools).toBe(true);
+    // A prefix: a name the catalogue does not list, starting with an id it does. The base model uses tools; nothing says
+    // the variant does (o1-mini never did; a search-preview model calls none; a relay's `gpt-4-all` is its own thing).
+    const variants: Array<[string, string]> = [
+      ["o1-mini", "o1"],
+      ["o1-preview", "o1"],
+      ["gpt-4-all", "gpt-4"],
+      ["gpt-4-gizmo-g-abc123", "gpt-4"],
+      ["gpt-4o-search-preview", "gpt-4o"],
+      ["gpt-4o-mini-search-preview", "gpt-4o-mini"],
+      ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash"],
+      ["qwen-plus-anything", "qwen-plus"],
+      ["qwen-max-longcontext", "qwen-max"],
+      ["claude-sonnet-5-5-thinking", "claude-sonnet-5-5"],
+      ["deepseek-chat-free-20261101", "deepseek-chat"],
+      ["openrouter/openai/gpt-6-sol-free", "gpt-6-sol"],
+    ];
+    for (const [name, base] of variants) {
+      // The table's premise: the variant is not listed itself, and its base says it uses tools.
+      expect([name, SNAPSHOT.some((e) => e.id === name.slice(name.lastIndexOf("/") + 1)), entryOf(base).tools]).toEqual([name, false, true]);
+      const hints = modelHints(name);
+      // Still known by its base for the hints its owner edits (label, vision, reasoning, context) …
+      expect([name, hints.known, hints.label]).toEqual([name, true, entryOf(base).name]);
+      // … and none of the abilities.
+      expect([name, ABILITY_KEYS.filter((key) => key in hints)]).toEqual([name, []]);
+    }
+  });
+
+  it("the levels need the model itself too: o1-mini gets none from o1, so what is shown as the catalogue's (资料) means one kind of match", () => {
+    // Exact and undated: the entry's levels.
+    expect(entryOf("o1").reasoningLevels).toEqual(["low", "medium", "high"]);
+    for (const name of ["o1", "openai/O1", "o1-latest", "o1-2026-11-01"]) expect([name, modelHints(name).reasoningLevels]).toEqual([name, entryOf("o1").reasoningLevels]);
+    for (const name of ["claude-sonnet-5-5-20261101", "anthropic/claude-sonnet-5-5-latest"]) expect([name, modelHints(name).reasoningLevels]).toEqual([name, entryOf("claude-sonnet-5-5").reasoningLevels]);
+    // A prefix: the base lists levels, the variant is told none — while the older hints its owner edits still come from the base.
+    for (const [name, base] of [["o1-mini", "o1"], ["o1-preview", "o1"], ["o3-mini-high", "o3-mini"], ["claude-sonnet-5-5-thinking", "claude-sonnet-5-5"], ["openrouter/openai/gpt-6-sol-free", "gpt-6-sol"]] as const) {
+      const [hints, entry] = [modelHints(name), entryOf(base)];
+      expect([name, SNAPSHOT.some((e) => e.id === name.slice(name.lastIndexOf("/") + 1)), entry.reasoningLevels !== undefined]).toEqual([name, false, true]);
+      expect([name, "reasoningLevels" in hints]).toEqual([name, false]);
+      expect([name, hints.known, hints.label, hints.vision, hints.reasoning, hints.contextTokens]).toEqual([name, true, entry.name, entry.vision, entry.reasoning, entry.contextTokens]);
+    }
+  });
+
+  it("an id two labs share has an ability only when every lab's entry says so (mergedAbilities)", () => {
+    const merged = mergedAbilities([
+      { id: "twin", tools: true, audioIn: true },
+      { id: "twin", tools: true, videoOut: true },
+      { id: "solo", tools: true, imageOut: true },
+      { id: "mute" },
+      { id: "half", tools: true },
+      { id: "half" },
+    ]);
+    expect(Object.fromEntries(merged)).toEqual({ twin: { reportedTools: true }, solo: { reportedTools: true, imageOut: true }, mute: {}, half: {} });
+    // In the committed snapshot each id's merged abilities are what the hints answer.
+    for (const e of SNAPSHOT.slice(0, 60)) expect([e.id, abilitiesOf(modelHints(e.id))]).toEqual([e.id, mergedAbilities(SNAPSHOT).get(e.id)]);
   });
 
   it("a model the catalogue lists as no chat model is known as such", () => {

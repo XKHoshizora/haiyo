@@ -9,7 +9,7 @@ import { forgetDraft, peekDraft, saveDraft } from "../data/drafts.js";
 import { useUp } from "../state/appHistory.js";
 import { levelLabel } from "./ModelPicker.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
-import { ModelMarks, abilityMarks } from "../ui/ModelMarks.jsx";
+import { ModelMarks, abilityMarks, reportedOf } from "../ui/ModelMarks.jsx";
 import { noModelList } from "../data/errorTexts.js";
 
 /** The four interface types (the service's `protocol`), by the names people know them by. Fixed once created. */
@@ -160,8 +160,14 @@ const contextProblem = (text) => {
 /**
  * A model of the provider as the form holds it: the context as text ("" means the service's default), `levels` the
  * thinking levels it is offered with (null: every level), `reported` the levels the catalogue lists for it (what `levels` goes back to: the service
- * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too), and `tools` whether its replies may be offered tools as its entry says it
+ * reads them beside the stored `levels`, `reportedLevels`, so the way back is there after a save too; null for a model the catalogue does not
+ * know, whose levels its owner ticks one by one — its saved levels are its owner's word, never shown as the catalogue's), and `tools` whether its replies may be offered tools as its entry says it
  * (undefined: it says nothing — not known yet, so they are; the service may set it false when the model turns out unable).
+ * `loadedTools` is that `tools` as the form read it (absent when the entry said nothing), never changed afterwards: `tools` is sent only
+ * when it differs from it (`wireModel`).
+ * It also carries what the catalogue reports of the model (`reportedOf`: `reportedTools` and what it takes and answers with),
+ * for its row's marks and the box's helper only: none of it is ever sent (`wireModel`). (The form's `reported` is the LEVELS the
+ * catalogue lists, an older name; the keys of `reportedOf` are other names and do not meet it.)
  */
 const formModel = (m) => ({
   name: m.name,
@@ -170,12 +176,16 @@ const formModel = (m) => ({
   reasoning: Boolean(m.reasoning),
   context: Number.isFinite(m.contextTokens) ? String(m.contextTokens) : "",
   levels: m.reasoning ? modelLevels(m.reasoningLevels) : null,
-  reported: m.reasoning ? (modelLevels(m.reportedLevels) ?? modelLevels(m.reasoningLevels)) : null,
-  ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
+  reported: m.reasoning ? modelLevels(m.reportedLevels) : null,
+  ...(typeof m.tools === "boolean" ? { tools: m.tools, loadedTools: m.tools } : {}),
+  ...reportedOf(m),
 });
 /**
- * As it is sent: the flags always, the context only when one is given, the levels only on a model that reasons, `tools`
- * only when the entry says it or its owner ticked or unticked it (left out, the service keeps what it has).
+ * As it is sent: the flags always, the context only when one is given, the levels only on a model that reasons, and `tools`
+ * ONLY when its owner's click left it other than the form loaded it (`loadedTools`). A stored true or false that was not
+ * touched — or was clicked and clicked back — is not sent: left out, the service keeps what it has, so a page left open can
+ * never write the value it read over one the service learned since (a model found unable, or able). Never because the
+ * catalogue reports it, and never `reportedTools` or anything else the catalogue reports (the service refuses them).
  */
 const wireModel = (m) => {
   const n = contextNumber(m.context);
@@ -186,12 +196,20 @@ const wireModel = (m) => {
     reasoning: m.reasoning,
     ...(n === null ? {} : { contextTokens: n }),
     ...(m.reasoning && m.levels ? { reasoningLevels: m.levels } : {}),
-    ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
+    ...(typeof m.tools === "boolean" && m.tools !== m.loadedTools ? { tools: m.tools } : {}),
   };
 };
-const modelsKey = (list) =>
-  JSON.stringify(list.map((m) => [m.name, m.vision, m.pdf, m.reasoning, m.contextTokens ?? null, m.reasoningLevels ?? null, m.tools ?? null]));
-/** A model from the provider's own list (同步模型) as the form adds it: its hints as flags, a known model's context and levels. */
+const modelsKey = (list) => JSON.stringify(list.map((m) => [m.name, m.vision, m.pdf, m.reasoning, m.contextTokens ?? null, m.reasoningLevels ?? null]));
+/**
+ * Whether the list as it would be sent (`wire`: `wireModel` of each) says anything the saved one does not: a model more or
+ * fewer, a flag, a context, the levels — or a `tools`, which is on the wire only where its box was changed. The saved
+ * list's own `tools` are not compared: they may have changed since the form read them, and that is not the form's edit.
+ */
+const listChanged = (wire, saved) => modelsKey(wire) !== modelsKey(saved) || wire.some((m) => "tools" in m);
+/**
+ * A model from the provider's own list (同步模型) as the form adds it: its hints as flags, a known model's context and levels.
+ * Nothing of `tools`: adding stores none (its mark comes from what the catalogue reports, carried along for the row).
+ */
 const syncedModel = (m) => ({
   name: m.name,
   vision: m.vision,
@@ -201,6 +219,7 @@ const syncedModel = (m) => ({
   context: Number.isInteger(m.contextTokens) ? String(Math.min(CONTEXT_MAX, Math.max(CONTEXT_MIN, m.contextTokens))) : "",
   levels: m.reasoning ? (m.reasoningLevels ?? null) : null,
   reported: m.reasoning ? (m.reasoningLevels ?? null) : null,
+  ...reportedOf(m),
 });
 
 /**
@@ -348,6 +367,9 @@ function DeleteModal({ provider, onClose }) {
   );
 }
 
+/** The levels a model that thinks may list, in the service's order (不思考 is not one: it is always offered). */
+const LEVEL_IDS = ["low", "medium", "high", "xhigh", "max"];
+
 /** Whether the levels in use are the reported ones (the first option is checked only then; otherwise neither is, and a tap on either decides). */
 const sameLevels = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((level, i) => level === b[i]);
 
@@ -360,24 +382,56 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   const tooSmall = shownContext !== null && limit !== null && shownContext <= limit;
   const after = shownContext !== null ? [`上下文 ${grouped(shownContext)}${context === null ? "（默认）" : ""}`] : [];
   // What it can do is the marks' (the picker's own); what they cannot say stays here: the thinking levels it is used with, its context.
-  const thinking = model.reasoning && model.reported ? `思考档位：${model.levels ? model.levels.map(levelLabel).join("、") : "全部"}` : null;
+  const thinking = model.reasoning ? `思考档位：${model.levels ? model.levels.map(levelLabel).join("、") : "全部"}` : null;
   const marks = abilityMarks(model);
-  // A model the catalogue lists thinking levels for: the choice between those and every level, both ways open until it is saved.
-  const levelChoice =
-    model.reasoning && model.reported ? (
+  // A box of the unknown model's levels: ticked while the level is in use (no list: every level). All five ticked is every level again
+  // (nothing stored); the last ticked one stays (a model that thinks has a level — none at all is 支持思考 unticked).
+  const levelUsed = (level) => model.levels === null || model.levels.includes(level);
+  const toggleLevel = (level) => {
+    const next = LEVEL_IDS.filter((l) => (l === level ? !levelUsed(l) : levelUsed(l)));
+    if (next.length === 0) return;
+    onChange({ ...model, levels: next.length === LEVEL_IDS.length ? null : next });
+  };
+  // 思考档位, for every model that thinks. One the catalogue lists levels for: the choice between those and every level, both ways open
+  // until it is saved. One it does not know: every level by default, and a box for each to say otherwise (不思考 is always offered).
+  const levelChoice = !model.reasoning ? null : model.reported ? (
       <fieldset className="checks" role="radiogroup" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
         <legend>思考档位</legend>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={sameLevels(model.levels, model.reported)} onChange={() => onChange({ ...model, levels: model.reported })} onClick={() => !sameLevels(model.levels, model.reported) && onChange({ ...model, levels: model.reported })} />
-          <span>这个模型支持的档位（{model.reported.map(levelLabel).join("、")}）</span>
+          <span>资料里的档位</span>
         </label>
         <label>
           <input type="radio" name={`levels-${panelId}`} checked={model.levels === null} onChange={() => onChange({ ...model, levels: null })} />
           <span>全部档位</span>
         </label>
-        <small id={`${panelId}-levels-hint`} className="muted">档位不对或不全时，选全部档位。</small>
+        {/* The levels are named once, here. Levels in use that are neither choice (ticked by hand before the catalogue knew the model, or
+            the catalogue's list changed since) are named too: neither radio is chosen then, and the choice must not look lost. */}
+        <small id={`${panelId}-levels-hint`} className="muted">
+          {model.levels !== null && !sameLevels(model.levels, model.reported) && `现在用的是：${model.levels.map(levelLabel).join("、")}。`}
+          资料显示支持：{model.reported.map(levelLabel).join("、")}。档位不对或不全时，选全部档位。
+        </small>
       </fieldset>
-    ) : null;
+    ) : (
+      <fieldset className="checks level-checks" aria-label={`思考档位：${model.name}`} aria-describedby={`${panelId}-levels-hint`}>
+        <legend>思考档位</legend>
+        {/* (It says nothing of the catalogue: for a model not saved as thinking the form does not know what the catalogue holds.) */}
+        <small id={`${panelId}-levels-hint`} className="muted">默认全部档位可选。这个模型不支持的，可以取消。</small>
+        <div className="level-boxes">
+          {LEVEL_IDS.map((level) => {
+            // The last one ticked stays: it says so itself (`aria-disabled`, described by the line), and still takes the focus.
+            const last = model.levels?.length === 1 && model.levels[0] === level;
+            return (
+              <label key={level}>
+                <input type="checkbox" checked={levelUsed(level)} aria-disabled={last || undefined} aria-describedby={last ? `${panelId}-levels-last` : undefined} onChange={() => toggleLevel(level)} />
+                <span>{levelLabel(level)}</span>
+              </label>
+            );
+          })}
+        </div>
+        {model.levels?.length === 1 && <small id={`${panelId}-levels-last`} className="muted">至少保留一个档位。不需要思考时，取消上面的「支持思考」。</small>}
+      </fieldset>
+    );
   const parts = [model.pdf && "能直接读 PDF", thinking, ...after].filter(Boolean);
   const contextHint = [
     `模型一次能读的内容，以 token 计，${grouped(CONTEXT_MIN)} 到 ${grouped(CONTEXT_MAX)}。`,
@@ -386,6 +440,11 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
   ].join("");
   // Not reasoning any more: the levels it listed go too.
   const flag = (key) => (event) => onChange({ ...model, [key]: event.target.checked, ...(key === "reasoning" && !event.target.checked ? { levels: null } : {}) });
+  // 会用工具: a box that says yes or no flips. The mixed one (the entry says nothing) goes first to the word its owner can add to
+  // what the row already shows: for a model the catalogue reports — marked 工具 as it is — that word is "it cannot" (unticked,
+  // as its helper says), and yes on the click after; for a model nothing is reported of it is yes. By mouse, touch or Space alike.
+  const toolsKnown = typeof model.tools === "boolean";
+  const clickTools = () => onChange({ ...model, tools: toolsKnown ? !model.tools : model.reportedTools !== true });
   return (
     <li>
       <div className="member-body">
@@ -418,19 +477,25 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
               </label>
               <label>
                 {/* As its entry says, the mark's own story: ticked for true, unticked for false, the native mixed box while the entry says nothing (the
-                    service still offers it tools until a reply finds it unable). One click makes it a fact; saving it untouched sends nothing. */}
+                    service still offers it tools until a reply finds it unable) — also when the catalogue reports the model uses them: that is not
+                    stored, so the box stays mixed and only the helper differs, and its first click unticks it (`clickTools`). One click makes it a
+                    fact; saving it untouched sends nothing. The native mixed state is what a screen reader hears (mixed, then not checked, then checked). */}
                 <input
                   type="checkbox"
                   checked={model.tools === true}
                   ref={(el) => {
-                    if (el) el.indeterminate = typeof model.tools !== "boolean";
+                    if (el) el.indeterminate = !toolsKnown;
                   }}
-                  aria-describedby={typeof model.tools !== "boolean" ? `${panelId}-tools-unknown` : undefined}
-                  onChange={flag("tools")}
+                  aria-describedby={toolsKnown ? undefined : `${panelId}-tools-unknown`}
+                  onChange={clickTools}
                 />
                 <span>会用工具（查聊天记录、看文件）</span>
               </label>
-              {typeof model.tools !== "boolean" && <small id={`${panelId}-tools-unknown`} className="tools-unknown">还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。</small>}
+              {!toolsKnown && (
+                <small id={`${panelId}-tools-unknown`} className="tools-unknown">
+                  {model.reportedTools === true ? "资料显示它会用工具，会先让它试着用。确定不会就点一下取消。" : "还不确定，会先让它试着用。确定会用就勾上，确定不会就取消。"}
+                </small>
+              )}
             </fieldset>
             {levelChoice}
             <Field label="上下文容量" hint={contextHint} error={error}>
@@ -461,10 +526,11 @@ const SHOWN_ROWS = 200;
 const ADDED_AT_LIMIT = (n) => `已添加 ${n} 个模型。每个供应商最多 ${MAX_MODELS} 个模型，其余的没有添加。`;
 
 /** One model of the provider's own list: its name (and the catalogue's), its hints as tags, and 添加 or 已添加 · 移除. */
-function SyncRow({ model, added, full, onAdd, onRemove }) {
+function SyncRow({ model, added, stored, full, onAdd, onRemove }) {
   const label = model.label && model.label.toLowerCase() !== model.name.toLowerCase() ? model.label : null;
-  // What the provider's list says it can do: the picker's own marks (it does not say whether a model uses tools).
-  const marks = abilityMarks(model);
+  // What the list says the model can do: the picker's own marks (工具 here is only what the catalogue reports: a listed row stores nothing).
+  // One it is already saved as (`stored`: the form's model) adds what is stored of its tools, so a model turned off shows no 工具 here either.
+  const marks = abilityMarks(typeof stored?.tools === "boolean" ? { ...model, tools: stored.tools } : model);
   return (
     <li>
       <div className="member-body">
@@ -543,7 +609,7 @@ function SyncDialog({ provider, models, onAdd, onRemove, onDone, onClose, saving
     setNote(taken.length < toAdd.length ? ADDED_AT_LIMIT(taken.length) : null);
   };
   const rows = (list) =>
-    list.map((m) => <SyncRow key={m.name} model={m} added={have.has(m.name)} full={full} onAdd={onAdd} onRemove={onRemove} />);
+    list.map((m) => <SyncRow key={m.name} model={m} added={have.has(m.name)} stored={models.find((s) => s.name === m.name)} full={full} onAdd={onAdd} onRemove={onRemove} />);
   const more = (n) => n > 0 && <p className="muted">还有 {n} 个，请用搜索缩小范围</p>;
 
   return (
@@ -783,7 +849,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
     if (name !== provider.name) patch.name = name;
     if (addressChanged) patch.baseUrl = address;
     const list = models.map(wireModel);
-    if (modelsKey(list) !== modelsKey(provider.models)) patch.models = list;
+    if (listChanged(list, provider.models)) patch.models = list;
     const apiKey = keyRef.current.value.trim();
     if (apiKey) patch.apiKey = apiKey;
     if (Object.keys(patch).length === 0) {
@@ -821,7 +887,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
 
   const openSync = () => {
     setSyncError(null);
-    setSync({ dirtyBefore: modelsKey(latestModels.current.map(wireModel)) !== modelsKey(provider.models) });
+    setSync({ dirtyBefore: listChanged(latestModels.current.map(wireModel), provider.models) });
   };
   const closeSync = () => {
     setSync(null);
@@ -833,7 +899,7 @@ function ProviderForm({ provider = null, created = false, draftKey, onBack, onCr
    */
   const finishSync = async () => {
     const list = latestModels.current.map(wireModel);
-    const changed = modelsKey(list) !== modelsKey(provider.models);
+    const changed = listChanged(list, provider.models);
     const otherChanges = sync.dirtyBefore || f.name.trim() !== provider.name || unsaved || keyCleared;
     if (!changed || otherChanges) return closeSync();
     setSyncError(null);

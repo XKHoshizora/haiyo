@@ -4,7 +4,7 @@
 import React, { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { ANN, D1, G1, apiError, deferred, direct, fakeTimers, fakeTransport, group, syncOf, wire } from "./fixtures.js";
+import { A1, AG1, ANN, D1, G1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, deferred, direct, fakeTimers, fakeTransport, group, syncOf, wire } from "./fixtures.js";
 import Shell from "../src/AppShell.jsx";
 import { StoreProvider, createDataLayer } from "../src/data/store.jsx";
 import { elapse, flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
@@ -167,7 +167,158 @@ describe("on a phone", () => {
   });
 });
 
+// A tab is its section's list wherever one pane shows at a time (a phone, one column); where two show, it is the section's last page.
+const ONE_COLUMN = "(max-width: 860px)";
+const syncWithAgent = () =>
+  syncOf(
+    [direct(D1, ANN, { lastSeq: 1, readSeq: 1 }), agentConv(A1, AG1)],
+    [wire(D1, 1, ANN, "早"), wire(A1, 1, AG1, "你好")],
+    [...PRINCIPALS, agentPrincipal(AG1, "helper", "小助手")],
+  );
+const openWithAgent = () => openApp({ sync: syncWithAgent, handlers: { agents: () => ({ agents: [agentOf(AG1)] }), models: () => MODELS } });
+const tab = (name) => within(bar()).getByRole("button", { name });
+const press = async (el) => {
+  fireEvent.click(el);
+  await flush();
+};
+const back = async () => {
+  await act(async () => {
+    window.history.back();
+    await vi.advanceTimersByTimeAsync(60);
+  });
+  await flush();
+};
+const path = () => window.location.pathname;
+const pane = () => document.querySelector(".app").dataset.pane;
+const listNames = () => [...document.querySelectorAll(".list-col .row-name")].map((x) => x.textContent);
+
+describe("a tab on a phone is its section's list", () => {
+  beforeEach(() => media([PHONE_QUERY, COARSE_QUERY, ONE_COLUMN]));
+
+  it("a chat opened from the Agent section: Back twice is the Agent list with the tab bar, and 消息 is the conversation list — not that chat again", async () => {
+    await openWithAgent();
+    await press(tab(/^Agent/));
+    await press(screen.getByText("小助手", { selector: ".list-col .row-name" }));
+    expect(path()).toBe(`/agents/${AG1}`);
+    await press(screen.getByRole("tab", { name: "参与的会话" }));
+    await press(screen.getByRole("button", { name: "进入查看" }));
+    expect(path()).toBe(`/chat/${A1}`);
+    expect(bar()).toBeNull();
+    await back();
+    await back();
+    expect(path()).toBe("/agents");
+    expect(bar()).toBeTruthy();
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+    expect(bar()).toBeTruthy();
+    expect(listNames()).toEqual(expect.arrayContaining(["小安", "小助手"]));
+    expect(tab(/^消息/).getAttribute("aria-current")).toBe("page");
+    // Tapped again: still the list, and no new entry.
+    const index = window.history.state.index;
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+    expect(window.history.state.index).toBe(index);
+    // One Back is the Agent list it was tapped from.
+    await back();
+    expect(path()).toBe("/agents");
+    expect(bar()).toBeTruthy();
+  });
+});
+
+describe("a section's entry in one column (641 to 860 px: the rail stays on the left)", () => {
+  beforeEach(() => media([ONE_COLUMN]));
+
+  it("消息 is the conversation list, from another section and from inside a conversation", async () => {
+    await openWithAgent();
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    expect(path()).toBe(`/chat/${D1}`);
+    await press(tab(/^通讯录/));
+    expect(path()).toBe("/contacts");
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+  });
+});
+
+describe("the layout changes with a conversation open (a window made narrower, a phone turned)", () => {
+  let now;
+  let listeners;
+  beforeEach(() => {
+    now = [];
+    listeners = new Set();
+    window.matchMedia = (query) => ({
+      get matches() {
+        return now.includes(query);
+      },
+      media: query,
+      addEventListener: (_type, listener) => listeners.add(listener),
+      removeEventListener: (_type, listener) => listeners.delete(listener),
+    });
+  });
+  const layout = async (queries) => {
+    now = queries;
+    await act(async () => listeners.forEach((listener) => listener()));
+    await flush();
+  };
+
+  it("wide → a phone: the conversation fills the screen without the tab bar, 返回列表 is the list with it, and 消息 from another tab is the list; wide again, 消息 is a section's last page as before", async () => {
+    await openWithAgent();
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    expect(path()).toBe(`/chat/${D1}`);
+    await layout([PHONE_QUERY, COARSE_QUERY, ONE_COLUMN]);
+    // Nothing moved: the same address, drawn as a phone draws it.
+    expect(path()).toBe(`/chat/${D1}`);
+    expect(pane()).toBe("main");
+    expect(bar()).toBeNull();
+    await press(screen.getByRole("button", { name: "返回列表" }));
+    // (The list is the entry below: its own back is the browser's, which answers a moment later.)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+    await flush();
+    expect(path()).toBe("/");
+    expect(bar()).toBeTruthy();
+    await press(tab(/^通讯录/));
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+    // Wide again, with a conversation open and another section visited: 消息 is that conversation.
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await layout([]);
+    expect(path()).toBe(`/chat/${D1}`);
+    await press(tab(/^通讯录/));
+    await press(tab(/^消息/));
+    expect(path()).toBe(`/chat/${D1}`);
+  });
+
+  it("wide → one column with a conversation open: the rail is still beside it, and 消息 there is the list", async () => {
+    await openWithAgent();
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await layout([ONE_COLUMN]);
+    expect(path()).toBe(`/chat/${D1}`);
+    expect(bar()).toBeTruthy();
+    await press(tab(/^消息/));
+    expect(path()).toBe("/");
+    expect(pane()).toBe("list");
+  });
+});
+
 describe("on a tablet or a desktop", () => {
+  it("a section's entry is its last page: 消息 returns to the conversation that was open", async () => {
+    await openWithAgent();
+    await press(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await press(tab(/^通讯录/));
+    await press(tab(/^消息/));
+    expect(path()).toBe(`/chat/${D1}`);
+    expect(pane()).toBe("main");
+  });
+
   it("nothing changes: the rail with the brand mark and the avatar stays, also inside a conversation", async () => {
     media([COARSE_QUERY]); // a touch tablet: wide
     await openApp({ sync });

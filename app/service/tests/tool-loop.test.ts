@@ -52,6 +52,8 @@ interface Fake {
   extends: Array<{ spent: Usage | null; estimated: Estimated; next: number }>;
   activities: Array<Activity | null>;
   unusable: Array<"refused" | "garbled">;
+  /** How many times the worker said the reply's tools worked (`AgentPort.toolsWorked`). */
+  worked: number;
   released: number;
   /** What each release said the worker knew: whether the reply had produced anything (`AgentPort.release`). */
   releasedWith: boolean[];
@@ -125,6 +127,7 @@ function fakePort(options: FakeOptions = {}): Fake {
     extends: [],
     activities: [],
     unusable: [],
+    worked: 0,
     released: 0,
     releasedWith: [],
     progressed: 0,
@@ -162,6 +165,7 @@ function fakePort(options: FakeOptions = {}): Fake {
       },
       activity: (_run, activity) => void fake.activities.push(activity),
       toolsUnusable: async (_run, why) => void fake.unusable.push(why),
+      toolsWorked: async () => void fake.worked++,
     },
   };
   return fake;
@@ -282,6 +286,38 @@ describe("a reply that offers tools", () => {
     // What the tool did, then the end of the tool phase.
     expect(fake.activities).toEqual(["search", null]);
     expect(fake.unusable).toEqual([]);
+    // Its tool call ran: the port is told the model can use them.
+    expect(fake.worked).toBe(1);
+  });
+
+  it("the port is told the tools worked once a reply, after the first round in which a call ran — never for a reply that called none, and its failure only reaches the log", async () => {
+    const three = fakePort();
+    await runOn(
+      three,
+      scriptedGateway()
+        .callTools([{ name: "search", input: { query: "一" } }, { name: "search", input: { query: "二" } }])
+        .callTools([{ name: "search", input: { query: "三" } }])
+        .reply("好。"),
+    );
+    expect(three.tools).toHaveLength(3);
+    expect(three.worked).toBe(1);
+
+    const none = fakePort();
+    await runOn(none, scriptedGateway().reply("不用查。"));
+    expect(none.worked).toBe(0);
+
+    const failing = fakePort();
+    failing.port.toolsWorked = async () => {
+      throw new Error("no database");
+    };
+    const log = recordingLog();
+    await runOn(failing, scriptedGateway().callTools([{ name: "search", input: { query: "川菜-canary" } }]).reply("去吃川菜吧。"), { log });
+    expect(failing.posted.map((p) => p.text)).toEqual(["去吃川菜吧。"]);
+    expect(failing.finished.map((f) => f.end)).toEqual([{ status: "done" }]);
+    const said = log.lines.filter((l) => JSON.stringify(l).includes("can use the tools"));
+    expect(said).toHaveLength(1);
+    // Never a tool's input or output.
+    expect(JSON.stringify(log.lines)).not.toContain("canary");
   });
 
   it("text written before a tool call is posted at once as the reply's acknowledgement, with its reasoning, before the tool runs; the answer is what comes after it; both streamed as they came", async () => {
@@ -405,6 +441,20 @@ describe("a reply that offers tools", () => {
     expect(fake.posted[0]!.lookups).toEqual({ search: 2, file: 1 });
   });
 
+  it("a tool whose answer cannot be handed to the model (not JSON) counts as failed, not as run: the model is not called able for it", async () => {
+    const loop: Record<string, unknown> = {};
+    loop.self = loop;
+    const fake = fakePort({ tool: async () => ({ output: loop }) });
+    const log = recordingLog();
+    const gateway = scriptedGateway().callTools([{ name: "search", input: { query: "川菜" } }]).reply("好。");
+    await runOn(fake, gateway, { log });
+    expect(fake.tools).toHaveLength(1);
+    expect(outputsOf(gateway.calls[1]!, 0)).toEqual([{ error: UNUSABLE }]);
+    const tally = log.lines.map((l) => (l as { details: Record<string, unknown> }).details).find((d) => d.metric === "tool_rounds")!;
+    expect([tally.ran, tally.failed]).toEqual([0, 1]);
+    expect(fake.worked).toBe(0);
+  });
+
   it("two garbled calls (an unknown tool, an input its schema refuses) are never run: the fixed error each, the tools marked unusable, then the last call", async () => {
     const gateway = scriptedGateway()
       .callTools([{ name: "web_search", input: { query: "川菜" } }])
@@ -418,6 +468,7 @@ describe("a reply that offers tools", () => {
     // Answered with the call's own id and name, the unknown one's too.
     expect(resultsOf(gateway.calls[2]!, 0)[0]!.name).toBe("web_search");
     expect(fake.unusable).toEqual(["garbled"]);
+    expect(fake.worked).toBe(0);
     expect(isFinal(gateway.calls[1]!)).toBe(false);
     expect(isFinal(gateway.calls[2]!)).toBe(true);
     expect(fake.posted.map((p) => p.text)).toEqual(["不用工具也能回答。"]);
@@ -439,6 +490,8 @@ describe("a reply that offers tools", () => {
     expect(fake.tools.map((c) => c.input)).toEqual([{ query: "ok", limit: 2 }]);
     expect(outputsOf(gateway.calls[1]!, 0).slice(0, 5)).toEqual(Array(5).fill({ error: UNUSABLE }));
     expect(fake.unusable).toEqual(["garbled"]);
+    // Found unable in the very round one call ran: it is not also called able.
+    expect(fake.worked).toBe(0);
     expect(isFinal(gateway.calls[1]!)).toBe(true);
   });
 

@@ -365,6 +365,7 @@ describe("stopping, pausing, failing", () => {
         extend: (run, spent, estimated, next) => port.extend(run, spent, estimated, next),
         activity: (run, activity) => port.activity(run, activity),
         toolsUnusable: (run, why) => port.toolsUnusable(run, why),
+        toolsWorked: (run) => port.toolsWorked(run),
       };
     };
     const charged = async (runId: string) =>

@@ -3,7 +3,7 @@ import { useStore } from "../data/store.jsx";
 import { MODEL_GONE } from "../data/errorTexts.js";
 import { Btn, Notice, Reason } from "../ui/primitives.jsx";
 import { ModelBrand } from "../ui/ModelBrand.jsx";
-import { abilityMarks } from "../ui/ModelMarks.jsx";
+import { abilityMarks, reportedOf } from "../ui/ModelMarks.jsx";
 import { brandOf } from "../ui/modelBrands.js";
 import { ModelSelect } from "./ModelSelect.jsx";
 import { refusalText, settled, useAction } from "./useAction.js";
@@ -19,6 +19,16 @@ export const LEVELS = [
 ];
 const ALL_LEVELS = LEVELS.map(([id]) => id);
 export const levelLabel = (level) => LEVELS.find(([id]) => id === level)?.[1] ?? level;
+
+/**
+ * An Agent's effective level on a model that lists `levels`: `wanted` (its saved level) when listed, else the nearest listed
+ * level below it, 不思考 when none is. The service's rule (app/service/src/models/resolve.ts `callLevel`: what a reply runs at),
+ * said once here for everything that shows or carries a level: the Agent's page, its form, and a model switched in a chat.
+ */
+export function effectiveLevel(levels, wanted) {
+  for (let i = ALL_LEVELS.indexOf(wanted); i > 0; i -= 1) if (levels.includes(ALL_LEVELS[i])) return ALL_LEVELS[i];
+  return "none";
+}
 
 export const PRIVACY_TEXT = "你与它的对话内容，包括发给它的图片和文件，会发送给所选模型的服务商。";
 
@@ -51,6 +61,17 @@ export function modelName(state, model) {
   return null;
 }
 
+/**
+ * The level an Agent runs at, for its page: `effectiveLevel` on what its model lists as far as this client holds (the site's
+ * models; my providers once read) — its saved level while that is not known (a model that is gone, providers not read yet).
+ */
+export function agentLevel(state, agent) {
+  const { site, providers } = modelChoices(state);
+  const key = modelKey(agent.model);
+  const listed = key === "" ? null : [...site, ...providers.flatMap((p) => p.models)].find((c) => c.key === key);
+  return listed ? effectiveLevel(listed.levels, agent.reasoning) : agent.reasoning;
+}
+
 const lower = (text) => String(text ?? "").toLowerCase();
 
 /**
@@ -58,7 +79,7 @@ const lower = (text) => String(text ?? "").toLowerCase();
  * `{key, model, label, paid, levels, usable}`: `levels` the reasoning levels it allows (`none` first); a provider model whose
  * context is not larger than the output limit its calls get cannot be used (the service refuses it). For the picker's
  * row each also has `name`, `brand`, `marks` (免费 / 需余额 for a site model by its tier, then what the service reports (src/ui/ModelMarks.jsx):
- * 看图 `vision`, 思考 when it can think, 工具 unless its entry says tools: false), `terms` (what a search finds it by: its name, its id or its provider's name) and,
+ * 看图 `vision`, 思考 when it can think, 工具 by the table's one rule — a site model's own `tools`; a provider model's stored `tools`, else what the catalogue reports), `terms` (what a search finds it by: its name, its id or its provider's name) and,
  * when it cannot be used, `reason`.
  */
 export function modelChoices(state) {
@@ -67,7 +88,7 @@ export function modelChoices(state) {
     const model = { source: "site", id: m.id };
     const paid = m.tier === "paid";
     const name = m.label ?? m.id;
-    const marks = [paid ? "paid" : "free", ...abilityMarks({ vision: m.vision, reasoning: m.reasoning.length > 0, tools: m.tools })];
+    const marks = [paid ? "paid" : "free", ...abilityMarks({ ...reportedOf(m), reportedTools: undefined, vision: m.vision, pdf: m.pdf, reasoning: m.reasoning.length > 0, tools: m.tools })];
     return {
       key: modelKey(model),
       model,
@@ -89,7 +110,7 @@ export function modelChoices(state) {
       const tooSmall = Number.isFinite(m.contextTokens) && m.contextTokens <= limit;
       // A model that lists the levels it supports offers those (as a site model does), else every level when it reasons.
       const levels = !m.reasoning ? ["none"] : m.reasoningLevels ? ALL_LEVELS.filter((l) => l === "none" || m.reasoningLevels.includes(l)) : ALL_LEVELS;
-      const marks = abilityMarks({ vision: m.vision, reasoning: m.reasoning, tools: m.tools });
+      const marks = abilityMarks({ ...reportedOf(m), vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, tools: m.tools });
       return {
         key: modelKey(model),
         model,
@@ -350,7 +371,7 @@ export function AgentModelSwitch({ agentId, shown = null, note = null }) {
   const choose = async (key) => {
     const next = options.find((o) => o.key === key && !o.stale);
     if (!next) return;
-    const reasoning = next.levels.includes(agent.reasoning) ? agent.reasoning : "none";
+    const reasoning = effectiveLevel(next.levels, agent.reasoning);
     setSaving(next.model);
     await run("model", () => settled(actions.patchAgent(agentId, { model: next.model, reasoning })), refusalText);
     setSaving(null);

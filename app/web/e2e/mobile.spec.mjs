@@ -466,7 +466,7 @@ test("history at 375: group info and the details panel are pages; the viewer sur
   await expect(chatPane(page, title)).toBeHidden();
 });
 
-test("history at 375: a new Agent ends in its chat and Back is its page, then the Agents list", async ({ people }) => {
+test("history at 375: a new Agent ends in its chat and Back is the Agents list (the chat took the form's entry)", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: PHONE });
   const page = ann.page;
   await bar(page).getByRole("button", { name: "Agent" }).click();
@@ -479,12 +479,14 @@ test("history at 375: a new Agent ends in its chat and Back is its page, then th
   await createAgentUi(page, { name: `小新${uniq(3)}` });
   await expect(page).toHaveURL(/\/chat\/[0-9a-f-]{36}$/);
   await expect(page.getByRole("region", { name: /^小新/ })).toBeVisible();
-  // Back from its chat is the Agent's own page (the form's entry became it), and Back again the Agents list: never the empty form.
-  await page.goBack();
-  await expect(page).toHaveURL(/\/agents\/[0-9a-f-]{36}$/);
+  // Back from its chat is the Agents list with the tab bar (the chat took the form's entry: history /agents → /chat/<id>): never the
+  // empty form, and not the Agent's page, which the chat replaced.
   await page.goBack();
   await expect(page).toHaveURL(/\/agents$/);
   await expect(bar(page)).toBeVisible();
+  // Forward is the chat again.
+  await page.goForward();
+  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]{36}$/);
 });
 
 test("history at 1280: a conversation is an address, selecting another is a push, Back walks them; a link opens it", async ({ people }) => {
@@ -553,6 +555,74 @@ test("N1 at 1280: a section is its last address (消息 returns to the open chat
   await expect(fresh.getByText("选择一个会话开始聊天")).toBeVisible();
 });
 
+test("N1 at 390: a tab is its section's list — after creating an Agent, Back is the Agent list with the tab bar, and 消息 is the conversation list, not the new chat again", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { ...PHONE, viewport: { width: 390, height: 844 } } });
+  const page = ann.page;
+  const name = `导航${uniq(4)}`;
+  await bar(page).getByRole("button", { name: "Agent" }).click();
+  await expect(page).toHaveURL(/\/agents$/);
+  // Creating lands in the Agent's chat, which takes the form's entry: no tab bar there (a conversation fills the screen).
+  const chat = await createAgentUi(page, { name });
+  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]+$/);
+  const chatPath = new URL(page.url()).pathname;
+  await expect(bar(page)).toHaveCount(0);
+  // Back (the edge swipe on an iPhone) is the Agent list, not the form and not the Agent's page.
+  await page.goBack();
+  await expect(page).toHaveURL(/\/agents$/);
+  await expect(bar(page)).toBeVisible();
+  // 消息 is the list of conversations with the tab bar; tapped again it stays there.
+  for (let i = 0; i < 2; i += 1) {
+    await bar(page).getByRole("button", { name: /消息$/ }).click();
+    await expect(page).toHaveURL(/\/$/);
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(bar(page)).toBeVisible();
+    await expect(listRow(page, name).first()).toBeVisible();
+    await expect(chat).toBeHidden();
+  }
+  await expect(bar(page).getByRole("button", { name: /消息$/ })).toHaveAttribute("aria-current", "page");
+  // The chat is one tap away, and its 返回列表 is the list again.
+  await listRow(page, name).first().click();
+  expect(new URL(page.url()).pathname).toBe(chatPath);
+  await chat.getByRole("button", { name: "返回列表" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(bar(page)).toBeVisible();
+  // The same from another tab: Agent, then 消息, is the list.
+  await bar(page).getByRole("button", { name: "Agent" }).click();
+  await bar(page).getByRole("button", { name: /消息$/ }).click();
+  expect(new URL(page.url()).pathname).toBe("/");
+  await expect(bar(page)).toBeVisible();
+});
+
+test("an avatar on a phone (390): the picker offers every picture; a GIF opens the adjust dialog at the first pick and is saved; a file that is no picture is refused where it cannot be missed", async ({ people }) => {
+  const ann = await people.member("Ann", { contextOptions: { ...PHONE, viewport: { width: 390, height: 844 } } });
+  const page = ann.page;
+  await bar(page).getByRole("button", { name: "设置" }).click();
+  await page.getByText("我的资料", { exact: true }).first().click();
+  await expect(page.getByLabel("选择头像图片")).toHaveAttribute("accept", "image/*");
+  await expect(page.locator(".avatar-editor .field-hint")).toHaveText("支持常见图片格式，不超过 20 MB；选好后可以拖动和缩放。");
+  // A file that is no picture: the line under the buttons, and the notice (on screen, whatever the page's scroll).
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "更换头像", exact: true }).click();
+  await (await chooser).setFiles({ name: "notes.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4") });
+  await expect(page.locator(".avatar-editor .field-msg")).toHaveText("这个文件不是图片，请换一张。");
+  const toast = page.locator(".toast");
+  await expect(toast).toHaveText("这个文件不是图片，请换一张。");
+  const box = await toast.boundingBox();
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(844);
+  await expect(page.getByRole("dialog", { name: "调整头像" })).toHaveCount(0);
+  // A picture that was not on the old list (a 1 × 1 GIF): one pick opens the dialog, and its crop is saved.
+  const gif = Buffer.from("R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
+  const uploads = [];
+  page.on("request", (r) => r.method() === "PUT" && r.url().includes("/avatar") && uploads.push(r.url()));
+  const dialog = await pickAvatarUi(page, "更换头像", { name: "dot.gif", mimeType: "image/gif", buffer: gif });
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("status").filter({ hasText: "头像已更新" })).toBeVisible();
+  expect(uploads).toHaveLength(1);
+  expect(await noSideways(page)).toBe(true);
+});
+
 test("N2 at 375: the add form of the providers is a page: Back is the list, Forward the typed form (the key never in the address), a fresh Add is empty", async ({ people }) => {
   const ann = await people.member("Ann", { contextOptions: PHONE });
   const page = ann.page;
@@ -618,7 +688,9 @@ test("profile-style headers at 320 and 375: the title keeps a sensible width (a 
     await page.getByRole("button", { name: /^返回/ }).first().click();
     // Group info.
     await bar(page).getByRole("button", { name: /消息$/ }).click();
-    await toList(); // (消息 returns to the chat that was open last, the Agent's; a phone shows one page, whose 返回列表 is the way to the list)
+    // (On a phone a tab is its section's list: 消息 is the conversation list with the tab bar, never the chat that was open last.)
+    await expect(page).toHaveURL(/\/$/);
+    await expect(bar(page)).toBeVisible();
     const chat = await openChat(page, groupTitle);
     await chat.getByRole("button", { name: "群资料" }).click();
     await check(page.getByRole("region", { name: "群资料" }).locator(".profile-head"), `group info at ${width}`);

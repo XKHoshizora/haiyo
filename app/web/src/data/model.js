@@ -55,6 +55,7 @@
 
 import { isMemoryLanguage } from "./memoryLanguages.js";
 import { mentionsIn } from "./mentions.js";
+import { reportedOf } from "./reported.js";
 
 /**
  * Conversations whose Agents' replies are held per Agent (`groupRuns`) and whose others' Agents lose their private fields: a group, and a
@@ -1525,6 +1526,12 @@ export function markGroupRunsUnknown(state, conversationId) {
 
 // ───────── providers, usage, the site's models
 
+/** A site model keeps what the catalogue reports of it (`reportedOf`) without `reportedTools`: its tools are the operator's word. */
+const siteReported = (m) => {
+  const { reportedTools: _reportedTools, ...media } = reportedOf(m);
+  return media;
+};
+
 /** A provider's public fields, and nothing else: whatever an answer carries, no key is ever kept (or passed on). */
 export function publicProvider(answer) {
   const p = answer ?? {};
@@ -1548,6 +1555,8 @@ export function publicProvider(answer) {
         ...(reported ? { reportedLevels: reported } : {}),
         // Whether its replies may be offered tools, only when its entry says it (absent: not known yet, so they are).
         ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
+        // What the catalogue reports of it (read only, each only as true; never sent back): for the marks (ui/ModelMarks.jsx).
+        ...reportedOf(m),
       };
     }),
   };
@@ -1601,6 +1610,8 @@ export function applyModels(state, answer) {
       contextTokens: m.contextTokens,
       // Whether its replies may be offered tools (the service says it; absent: not said, so they are).
       ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
+      // What the catalogue knows it to take and answer with (never `reportedTools`: a site model's tools are the operator's word).
+      ...siteReported(m),
     }));
   const d = answer.providerDefaults;
   const providerDefaults = d && typeof d === "object" ? { contextTokens: d.contextTokens, maxOutputTokens: d.maxOutputTokens } : state.providerDefaults;

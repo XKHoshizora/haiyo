@@ -10,7 +10,7 @@ import { requirePrincipal } from "../session.ts";
 import { providerBaseUrl } from "./base-url.ts";
 import { catalogueModels } from "./catalogue.ts";
 import { KeyUnreadableError } from "./crypto.ts";
-import { modelHints } from "./hints.ts";
+import { abilitiesOf, abilitiesView, modelHints } from "./hints.ts";
 import { ProviderCallError, toProviderCallError, type ProviderCallCode } from "./probe.ts";
 import { holdsKeyPiece } from "./upstream-detail.ts";
 import {
@@ -87,9 +87,11 @@ const modelView = z.object({
   reasoning: z.boolean(),
   contextTokens: z.number(),
   reasoningLevels: levelsView.optional(),
-  /** What the catalogue says the model supports (only on a model that reasons and is known to it): kept apart from `reasoningLevels`, the levels in use. */
+  /** What the catalogue says the model supports (only on a model that reasons and that it lists itself — as named, or without its date — never by a prefix): kept apart from `reasoningLevels`, the levels in use. */
   reportedLevels: levelsView.optional(),
+  /** Only what is stored (its owner's choice, a failure found, a success found); the catalogue's word is `reportedTools`. */
   tools: z.boolean().optional(),
+  ...abilitiesView,
 });
 const providerView = z.object({
   id: z.string(),
@@ -150,6 +152,8 @@ const listedModel = z.object({
   label: z.string().optional(),
   contextTokens: z.number().optional(),
   reasoningLevels: levelsView.optional(),
+  /** The catalogue's abilities (`reportedTools` its word that the model can use tools): a listed row never says `tools`. */
+  ...abilitiesView,
   added: z.boolean(),
 });
 
@@ -162,7 +166,19 @@ const reported = (m: ProviderModel): { reportedLevels?: ModelLevel[] } => {
   return levels === undefined ? {} : { reportedLevels: levels };
 };
 
-/** A provider as its owner sees it (a model's `tools` only when its entry says it). */
+/**
+ * A provider as its owner sees it: each model as stored, and beside it what the catalogue says of its name, read when
+ * it is shown and never stored (so there is nothing to migrate and a catalogue update reaches the page at once):
+ * `reportedLevels` (`reported`) and the abilities (hints.ts `abilitiesView`).
+ *
+ * `tools` is only what is stored — its owner's choice or a reply that failed for lack of them (`false`, or `true`;
+ * `markToolsOff`), or a reply whose tool call ran (`true`, written only over nothing; `markToolsOn`) — and
+ * `reportedTools: true` is the catalogue's word, present whatever is stored. Nothing is merged here, so a client that
+ * sends back what it read can never turn the catalogue's word into a stored one. Whoever DRAWS the mark applies the
+ * order: stored `false` → no; stored `true` → yes; else `reportedTools` → yes; else unknown (README "Model providers").
+ * Whether a reply is offered tools is not asked here and has not changed (models/resolve.ts: every model whose entry
+ * does not say `false`).
+ */
 const toView = (p: ProviderRow): z.infer<typeof providerView> => ({
   id: p.id,
   name: p.name,
@@ -178,6 +194,7 @@ const toView = (p: ProviderRow): z.infer<typeof providerView> => ({
     ...(m.reasoningLevels === undefined ? {} : { reasoningLevels: m.reasoningLevels }),
     ...reported(m),
     ...(m.tools === undefined ? {} : { tools: m.tools }),
+    ...abilitiesOf(modelHints(m.name)),
   })),
 });
 

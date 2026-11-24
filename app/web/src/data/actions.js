@@ -9,6 +9,7 @@ import * as routes from "../api/routes.js";
 import { hasVisibleText, messageText } from "../auth/validation.js";
 import { ME } from "./identities.js";
 import { cleanWithMentions } from "./mentions.js";
+import { reportedOf } from "./reported.js";
 import { agentErrorText, commonErrorText, profileErrorText, providerErrorText, replyErrorText, whisperErrorText } from "./errorTexts.js";
 import {
   applyAgent,
@@ -716,6 +717,8 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
       ...(known && typeof m.label === "string" && m.label !== "" ? { label: m.label } : {}),
       ...(known && Number.isInteger(m.contextTokens) && m.contextTokens > 0 ? { contextTokens: m.contextTokens } : {}),
       ...(levels ? { reasoningLevels: levels } : {}),
+      // What the catalogue reports of a model it knows (`reportedTools`, what it takes and answers with), each only as true: for the row's marks.
+      ...(known ? reportedOf(m) : {}),
       added: m.added === true,
     };
   };

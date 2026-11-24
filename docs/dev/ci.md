@@ -41,6 +41,85 @@ the one the acceptance database runs (`docs/acceptance/batch1/README.md` says a 
 Actions tab, "Verify", "Run workflow", tick "Also run the browser suite in WebKit". (The button exists once this
 file is on the default branch.)
 
+## The daily model catalogue update
+
+Once a day the list of models the service knows about (which can see pictures, think, use tools…) is refreshed from
+the public models.dev catalogue. It is made of two files:
+
+- **The job** — `.github/workflows/catalog-update.yml`, on the development branch. It checks out the development
+  branch, downloads the catalogue and rewrites `app/service/src/providers/model-catalog.json` (and
+  `provider-catalog.json`). If nothing changed, it stops. If something changed, it runs the service type check and the
+  tests that read the catalogue, and only when they pass commits the new files to the development branch, with a
+  message saying which models were added, removed or changed. If the download looks broken (the list shrank by more
+  than a fifth, many models lost what they could do, one whole ability vanished or appeared everywhere), it refuses,
+  the run is red, and nothing is committed.
+- **The trigger** — `docs/dev/catalog-update-trigger.master.yml`. A dozen lines: run every day at 03:17 UTC (and from
+  a button), allow writing to the repository, call the job at the development branch. It is kept under `docs/` so that
+  it does nothing where it is.
+
+**What the owner approves, once: one file on `master`.** GitHub only runs schedules (and only shows the Run button)
+for workflow files on the default branch. To switch the daily update on, copy
+`docs/dev/catalog-update-trigger.master.yml` to `master` as `.github/workflows/catalog-update-trigger.yml` — that file
+and nothing else. From then on the steps, the guards and the list of tests are changed on the development branch like
+any other code (the copy that is tested is the copy that runs); `master` is not touched again for them.
+
+**When the development branch changes**: the branch is named in the trigger only, on two adjacent lines (after `@` in
+`uses:`, and as `branch:`) — GitHub accepts no variable after `@`, so it cannot be one line. Change both to the new
+name, in the copy on `master` and in the copy under `docs/dev/` (a test checks the two lines agree). The job's file
+names no branch. The new branch must contain the job's file.
+
+**Running it by hand.** Once the trigger is on `master`: Actions tab, "Model catalogue update", "Run workflow" (or
+`gh workflow run catalog-update-trigger.yml`). That is the only button: the job has none of its own, on purpose — once
+its file reaches `master` through an ordinary merge, a button there would run it on `master` and commit a snapshot
+straight to it. Until the trigger is on `master`, run the update locally, from `app/service` on the development branch
+(Postgres running, as for any service test):
+
+    npm run catalog:update -- --guard
+    npx tsc --noEmit
+    npx vitest run tests/model-catalog.test.ts tests/provider-catalog.test.ts tests/provider-hints.test.ts tests/providers.test.ts tests/models-route.test.ts tests/build.test.ts
+
+and, if the checks pass, commit the three files it wrote under `src/providers/` (`model-catalog.json`,
+`provider-catalog.json`, `model-catalog.README.md`) to the development branch. If the first command says the snapshot
+is unchanged apart from the date in `model-catalog.README.md`, there is nothing to commit: put that file back
+(`git checkout -- src/providers/model-catalog.README.md`).
+
+**After the trigger is on `master`**, a later merge of `master` into the development branch brings
+`.github/workflows/catalog-update-trigger.yml` along. That is expected and harmless (GitHub runs a schedule only from
+the default branch). A test allows exactly that file there, as long as it is the same text as the copy under
+`docs/dev/`; any other workflow file that runs on a schedule or calls the job fails the test.
+
+**Who looks at a red run.** Nobody is paged: a failed run shows red in the Actions tab and GitHub mails whoever last
+edited the trigger (for scheduled runs). A red run is always safe — nothing was committed — and has one of three
+causes: models.dev was unreachable three times in a row (tomorrow's run fixes itself); the guard refused the download
+(look at the run's log: it says which number moved; if the catalogue really changed that much, run it by hand without
+`--guard` and commit); or a test failed because the catalogue changed something a test relies on (fix the test on the
+development branch). Until someone does, the snapshot simply stays as it is.
+
+**Limits worth knowing** (GitHub's rules, checked against its documentation for reusable workflows):
+
+- `uses:` takes no variable or expression, and inside the called job GitHub's own "current branch" is the caller's
+  (`master`), not the development branch — which is why the trigger passes `branch`.
+- Permissions pass from the trigger down to the job and can only stay the same or shrink there: the trigger must grant
+  `contents: write`, and no secret needs to be passed. If the repository or organisation forbids workflows to write,
+  or the development branch gets protection rules, the push is refused and the run is red.
+- Calling the job "at the development branch" means whatever that branch contains at that moment runs with the right
+  to push to the repository — the same people who can push to the development branch already decide what its code is.
+  The token is not on disk while packages are installed and tests run, and only the last step names it. That keeps
+  it from being read by those steps; it does not stop them from leaving something on the same machine that the last
+  step then runs (a git hook, a line in the git settings or in the runner's environment files), and the two GitHub
+  actions receive the token anyway. The packages installed are exactly the lock file's. A real wall would be a second
+  job that receives only the three files; not built, because nothing here runs code from outside the branch.
+- The guard counts per ability, and two abilities are on few models (video out on about 10, audio out on about 20):
+  three or four of those retired upstream in one day refuse the whole update. Expect that red run now and then; the
+  answer is the one above (run it by hand without `--guard`, look at the summary, commit).
+- A commit the job pushes does not start "Verify" (GitHub does not start workflows from a workflow's own push); the
+  next ordinary push does. The job itself has run the type check and the six test files.
+- On a public repository GitHub switches a schedule off after 60 days without any repository activity.
+- The actions (`actions/checkout@v4`, `actions/setup-node@v4`) and the Postgres image are pinned by major version, as
+  in `ci.yml`, not by commit hash.
+
+Details: `app/service/README.md`, "Model providers", The daily catalogue update.
+
 ## Re-run one shard on your own machine
 
 From `app/service`, with your usual `.env`:
