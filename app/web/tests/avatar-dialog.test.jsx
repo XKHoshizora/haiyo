@@ -59,10 +59,10 @@ describe("opening", () => {
   });
 
   it("a picture that cannot be decoded: the message, no stage and no 保存, and 知道了 closes", async () => {
-    fake.fail = "图片太大（超过 3 亿像素），请换一张。";
+    fake.fail = "图片太大（超过 1 亿像素），请换一张。";
     const onSave = vi.fn();
     const { onCancel } = await open({ onSave });
-    expect(screen.getByRole("alert").textContent).toBe("图片太大（超过 3 亿像素），请换一张。");
+    expect(screen.getByRole("alert").textContent).toBe("图片太大（超过 1 亿像素），请换一张。");
     expect(screen.queryByRole("group", { name: "头像取景框" })).toBeNull();
     expect(screen.queryByRole("button", { name: "保存" })).toBeNull();
     fireEvent.click(button("知道了"));

@@ -17,8 +17,8 @@ export const QUALITY_STEPS = [0.92, 0.85, 0.78, 0.7, 0.6, 0.5, 0.4, 0.3];
  * What the client accepts to start from: any picture this browser can decode, up to 20 MB. The file picker is offered every picture
  * (`PICK_ACCEPT`): a phone's photos are HEIC as often as JPEG, and whether one can be read is the decoder's answer (avatarImage.js),
  * not a list's — the original never leaves the device, only the 512 × 512 crop made from it. No side is too long: a large photo is
- * decoded at a working size (`decodeResize`). The one size refused is a picture of more pixels than any camera makes
- * (`MAX_PICK_PIXELS`), which a 20 MB file can still claim and no device could hold.
+ * decoded at a working size (`decodeResize`). The one size refused is a picture of more pixels than a phone can decode
+ * (`MAX_PICK_PIXELS`), which a 20 MB file can still claim.
  */
 export const PICK_ACCEPT = "image/*";
 /** The names of pictures, for a file the browser gives no type for (or types as plain bytes). */
@@ -26,8 +26,11 @@ const PICTURE_NAME = /\.(png|jpe?g|webp|heic|heif|avif|gif|bmp|tiff?)$/i;
 /** The types that say nothing of what the file is: the name is asked then. */
 const NO_TYPE = ["", "application/octet-stream"];
 export const MAX_PICK_BYTES = 20 * 1024 * 1024;
-/** More pixels than this are not decoded (a phone's largest photo is 200 megapixels). */
-export const MAX_PICK_PIXELS = 300_000_000;
+/**
+ * More pixels than this are not decoded: a decode holds the whole picture for a moment (4 bytes a pixel — 400 MB here) whatever
+ * working size is asked for, and beyond this a phone's web process may end instead of answering. A 48 megapixel photo is half of it.
+ */
+export const MAX_PICK_PIXELS = 100_000_000;
 /** What the service accepts as an avatar (it decides by the bytes): the saved result must fit. */
 export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
@@ -47,7 +50,7 @@ export const mayBeUnknownFormat = (file) => /^image\/(hei[cf]|avif|tiff)/i.test(
 /** The reason a picture of `width` × `height` pixels cannot be worked with, or "". */
 export function sizeProblem(width, height) {
   if (!(width >= 1 && height >= 1)) return "这张图片无法读取，请换一张。";
-  if (width * height > MAX_PICK_PIXELS) return "图片太大（超过 3 亿像素），请换一张。";
+  if (width * height > MAX_PICK_PIXELS) return "图片太大（超过 1 亿像素），请换一张。";
   return "";
 }
 
@@ -235,7 +238,24 @@ export function containerSize(bytes) {
 }
 
 /**
- * The stored size `{width, height}` of a PNG, JPEG or WebP read from its first bytes, without decoding it, or null when the
+ * Whether such a container asks for its picture to be turned on its side: an `irot` property (its type, then one byte whose low two
+ * bits count quarter turns) of one or three quarters, anywhere in its first bytes. An iPhone stores a portrait photo as a landscape
+ * with this turn. A hint for which shape to try first — a thumbnail may carry a turn of its own — and it is checked against the
+ * shape the decode gives (avatarImage.js `decodeContainer`); only for a nearly square picture, whose two shapes look alike, is it
+ * taken at its word.
+ */
+export function containerTurns(bytes) {
+  const n = bytes.length;
+  const ascii = (at, text) => at + text.length <= n && [...text].every((c, i) => bytes[at + i] === c.charCodeAt(0));
+  if (!ascii(4, "ftyp")) return false;
+  for (let at = 8; at + 5 <= n; at += 1) {
+    if (bytes[at] === 0x69 && ascii(at, "irot") && (bytes[at + 4] & 1) === 1) return true;
+  }
+  return false;
+}
+
+/**
+ * The stored size `{width, height}` of a PNG, JPEG, WebP, GIF or BMP read from its first bytes, without decoding it, or null when the
  * header is not there (a format not known, cut off, damaged, a JPEG whose frame header lies beyond the bytes given). The
  * decode is sized by it (`decodeResize`), and the pixel bound is checked on it before a picture is decoded: a 20 MB file can
  * claim a far larger picture than a device can hold.
@@ -245,7 +265,20 @@ export function imageSize(bytes) {
   const be16 = (at) => (bytes[at] << 8) | bytes[at + 1];
   const le16 = (at) => bytes[at] | (bytes[at + 1] << 8);
   const le24 = (at) => bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16);
+  const le32 = (at) => bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16) | (bytes[at + 3] << 24); // signed
   const ascii = (at, text) => at + text.length <= n && [...text].every((c, i) => bytes[at + i] === c.charCodeAt(0));
+  // GIF: the signature, then the canvas as two 16-bit little-endian numbers.
+  if (n >= 10 && (ascii(0, "GIF87a") || ascii(0, "GIF89a"))) {
+    const w = le16(6);
+    const h = le16(8);
+    return w > 0 && h > 0 ? { width: w, height: h } : null;
+  }
+  // BMP: "BM", the file header, then an info header of 40 bytes or more: width, and height (negative when stored top-down).
+  if (n >= 26 && ascii(0, "BM") && le32(14) >= 40) {
+    const w = le32(18);
+    const h = Math.abs(le32(22));
+    return w > 0 && h > 0 ? { width: w, height: h } : null;
+  }
   // PNG: the signature, then IHDR first: width and height as 32-bit big-endian numbers.
   if (n >= 24 && bytes[0] === 0x89 && ascii(1, "PNG") && ascii(12, "IHDR")) {
     const w = ((bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]) >>> 0;

@@ -5,6 +5,7 @@ import {
   OUTPUT_SIZE,
   QUALITY_STEPS,
   containerSize,
+  containerTurns,
   cropTransform,
   decodeResize,
   exifOrientation,
@@ -59,7 +60,7 @@ async function bitmapOf(file) {
   try {
     return await createImageBitmap(file);
   } catch {
-    throw new AvatarProblem(mayBeUnknownFormat(file) ? "这个浏览器打不开这张图片，请换成 JPG 或 PNG 格式。" : "这张图片无法读取，请换一张。");
+    throw new AvatarProblem(mayBeUnknownFormat(file) ? "这张图片打不开，请换成 JPG 或 PNG 格式的图片。" : "这张图片无法读取，请换一张。");
   }
 }
 
@@ -96,17 +97,19 @@ async function decodeKnown(file, full) {
 
 /**
  * A picture in a container (HEIC, HEIF, AVIF), whose header says its size before the turn the file asks for — which the browser
- * applies. So the working-size decode is tried for the stated shape and, when the bitmap that comes back is the other way up, for
- * the turned one (the first try is released). Resolves `{bitmap, full}`: `full` the upright picture's own size; the whole picture
- * when it is small, or when neither try fits (no resize options here, or a size that was not the whole picture's).
+ * applies. So the working-size decode is tried first for the shape the header points to — turned when it names a quarter turn
+ * (`sideways`: an iPhone's portrait photo, decoded once), as stated otherwise — and, when the bitmap that comes back is the other
+ * way up, for the other shape (the first try is released). Resolves `{bitmap, full}`: `full` the upright picture's own size; the
+ * whole picture when it is small, or when neither try fits (no resize options here, or a size that was not the whole picture's).
  */
-async function decodeContainer(file, stated) {
+async function decodeContainer(file, stated, sideways) {
   const turned = { width: stated.height, height: stated.width };
-  for (const full of [stated, turned]) {
+  const shapes = sideways ? [turned, stated] : [stated, turned];
+  for (const full of shapes) {
     const made = await workingBitmap(file, full);
     if (!made) break;
     if (!made.wrong) return { bitmap: made, full };
-    const other = full === stated && sameShape(made.wrong, turned);
+    const other = full === shapes[0] && sameShape(made.wrong, shapes[1]);
     made.wrong.close?.();
     if (!other) break;
   }
@@ -122,10 +125,10 @@ async function decodeContainer(file, stated) {
  * A large picture is never refused for its sides: it is decoded at a working size (`decodeResize`: the saved picture is 512 × 512,
  * so a short side of 2560 is all that can ever be seen), and everything after — the view, the crop — is still reckoned in the
  * original's pixels: the working bitmap is drawn over the original's size (`draw`). The size is read from the file's header: a
- * PNG's, a JPEG's, a WebP's (`imageSize`), and a HEIC's, HEIF's or AVIF's (`containerSize`: a phone's photo). A format whose
- * header is not read (a GIF, a BMP) is decoded whole. What is refused: more pixels than any camera makes (`sizeProblem`, from the
- * header, before anything is decoded), and a decode the browser gives up on (too large for this device, damaged, or a format it
- * does not know).
+ * PNG's, a JPEG's, a WebP's, a GIF's, a BMP's (`imageSize`), and a HEIC's, HEIF's or AVIF's (`containerSize`: a phone's photo). A
+ * format whose header is not read (a TIFF) is decoded whole. What is refused: more pixels than a phone can decode (`sizeProblem`,
+ * from the header, before anything is decoded), and a decode the browser gives up on (too large for this device, damaged, or a
+ * format it does not know).
  * The picture's turn: a JPEG's EXIF orientation is read here and applied unless the browser already did (`browserTurnsPictures`);
  * any other format is decoded by `createImageBitmap` with its default (`imageOrientation: "from-image"`), so the browser turns it.
  * Rejects with an `AvatarProblem`.
@@ -149,7 +152,7 @@ export async function decodeAvatar(file) {
     full = turns ? orientedSize(header.width, header.height, tagged) : header;
     bitmap = await decodeKnown(file, full);
   } else if (container) {
-    ({ bitmap, full } = await decodeContainer(file, container));
+    ({ bitmap, full } = await decodeContainer(file, container, containerTurns(head)));
   } else {
     bitmap = await bitmapOf(file);
     full = { width: bitmap.width, height: bitmap.height };

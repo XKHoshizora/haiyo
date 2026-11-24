@@ -130,7 +130,7 @@ test("the picture's EXIF orientation is respected: a sideways photo is saved upr
   expect(bottom[1], "more blue at the bottom than at the top").toBeGreaterThan(top[1] + 80);
 });
 
-test("no side is too long: a picture 8064 px wide (an iPhone's 48 MP photo is) is worked with; only one of more pixels than any camera makes is refused by its header; a large one is saved", async ({ people }) => {
+test("no side is too long: a picture 8064 px wide (an iPhone's 48 MP photo is) is worked with; only one of more than 100 million pixels is refused by its header; a large one is saved", async ({ people }) => {
   const ann = await people.member("Ann");
   await goTo(ann.page, "设置");
   const uploads = [];
@@ -141,7 +141,7 @@ test("no side is too long: a picture 8064 px wide (an iPhone's 48 MP photo is) i
   const claimed = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from("IHDR"), Buffer.from([0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20, 8, 2, 0, 0, 0])]);
   await (await chooser).setFiles({ name: "huge.png", mimeType: "image/png", buffer: claimed });
   const refused = ann.page.getByRole("dialog", { name: "调整头像" });
-  await expect(refused.getByRole("alert")).toHaveText("图片太大（超过 3 亿像素），请换一张。");
+  await expect(refused.getByRole("alert")).toHaveText("图片太大（超过 1 亿像素），请换一张。");
   await refused.getByRole("button", { name: "知道了" }).click();
   await expect(refused).toBeHidden();
   expect(uploads).toEqual([]);
