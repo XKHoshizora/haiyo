@@ -21,6 +21,7 @@ const quiet = { quiet: true } as const;
 const sure = { quiet: true, confirmed: true } as const;
 afterAll(async () => {
   await db.query("drop table if exists access_bars_in_the_way");
+  if ((await db.query("select 1 from pg_class where relname = 'agent_reports_one_open_idx' and relkind = 'r'")).rowCount) await db.query("drop table agent_reports_one_open_idx");
   await db.query("do $$ begin if to_regclass('public.access_bars') is not null and not exists (select 1 from pgmigrations where name = '075_agent_social_access') then drop table access_bars; end if; end $$");
   await runMigrations(url, quiet);
 });
@@ -30,6 +31,11 @@ const P = 1_000_000n;
 const RING = ["074_others_step_l", "075_agent_social_access", "076_others_reasoning"];
 const levelColumns = async () =>
   (await db.query<{ c: string }>("select column_name as c from information_schema.columns where table_name = 'agents' and column_name in ('others_reasoning', 'proactive_reasoning') order by 1")).rows.map((r) => r.c);
+/** Each Agent's [own level, level for others, proactive level], by its name part. */
+const levels = async () =>
+  Object.fromEntries(
+    (await db.query<{ tag: string; r: string; o: string; p: string }>("select p.handle::text as tag, a.reasoning as r, a.others_reasoning as o, a.proactive_reasoning as p from agents a join principals p on p.id = a.principal_id order by 1")).rows.map((x) => [x.tag, [x.r, x.o, x.p]]),
+  );
 const applied = async () => (await db.query<{ name: string }>("select name from pgmigrations where name >= '073' order by name")).rows.map((r) => r.name);
 /** Each Agent's two numbers in points, by the name part it was made with. */
 const numbers = async () =>
@@ -95,11 +101,19 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     }
 
     expect(await levelColumns()).toEqual([]);
+    // The deployed code runs a co-member's call and a proactive reply at the Agent's OWN level: rows of every kind of level.
+    await db.query("update agents set reasoning = 'high' where principal_id = $1", [ids.chosen]);
+    await db.query("update agents set reasoning = 'low' where principal_id = $1", [ids.small]);
+    await db.query("update agents set reasoning = 'max' where principal_id = $1", [ids.big]);
 
     // ── Up for all three, as a deploy runs them.
     await runMigrations(url, quiet);
     expect(await levelColumns()).toEqual(["others_reasoning", "proactive_reasoning"]);
-    expect((await db.query("select distinct others_reasoning, proactive_reasoning from agents")).rows).toEqual([{ others_reasoning: "none", proactive_reasoning: "none" }]);
+    // 076 (fix round 3, point 6): an EXISTING Agent's two new levels are its own level (what such replies run at today); none stays none.
+    expect(await levels()).toEqual({ olddefault: ["none", "none", "none"], nolimit: ["none", "none", "none"], chosen: ["high", "high", "high"], seventy: ["none", "none", "none"], small: ["low", "low", "low"], big: ["max", "max", "max"] });
+    // A NEW Agent has none for both, whatever its own level (the column defaults).
+    await db.query("update agents set others_reasoning = default, proactive_reasoning = default where principal_id = $1", [ids.seventy]);
+    expect((await levels()).seventy).toEqual(["none", "none", "none"]);
     await expect(db.query("update agents set others_reasoning = 'loud'")).rejects.toThrow(/check/);
     const first = await numbers();
     expect(first).toEqual({ olddefault: [null, 70], nolimit: [null, 70], chosen: [35, 50], seventy: [70, 70], small: [5, 9], big: [150, 101] });
@@ -140,6 +154,17 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     expect(await numbers()).toEqual(before);
     expect(await defaults()).toEqual({ others_budget_micro: "20000000", proactive_budget_micro: "20000000" });
     await db.query("alter table access_bars rename to access_bars_in_the_way");
+
+    // ── The same when the LAST of the three fails (fix round 3): 076 meets a relation named as its index, after 074 and 075 have
+    // run in the same transaction. Nothing of the three is applied: no bars, no cleared number, no new column.
+    await db.query("create table agent_reports_one_open_idx (in_the_way int)");
+    await expect(runMigrations(url, quiet)).rejects.toThrow(/agent_reports_one_open_idx/);
+    expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
+    expect(await numbers()).toEqual(before);
+    expect(await defaults()).toEqual({ others_budget_micro: "20000000", proactive_budget_micro: "20000000" });
+    expect((await db.query<{ t: string | null }>("select to_regclass('public.access_bars')::text as t")).rows[0]!.t).toBeNull();
+    expect(await levelColumns()).toEqual([]);
+    await db.query("drop table agent_reports_one_open_idx");
 
     // ── Second way: both applied, and the new container never serves; the old code is what answers, on the new schema. It reads the
     // numbers 074 cleared as "no limit": the state to leave at once.

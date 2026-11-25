@@ -2,8 +2,8 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
-import { DOWN_REMOVES, undoMigration } from "../src/migrate.ts";
+import { describe, expect, it, vi } from "vitest";
+import { runMigrations, DOWN_REMOVES, undoMigration } from "../src/migrate.ts";
 import { testDatabaseUrl } from "./helpers/env.ts";
 import { useApp } from "./helpers/harness.ts";
 
@@ -68,6 +68,44 @@ describe("the command", () => {
     const wrong = await cli(["migrate:down", "--name", "074_others_step_l", "--i-understand-this-deletes-data"]);
     expect(wrong.code).not.toBe(0);
     expect(wrong.stderr).toContain("the last migration applied is 076_others_reasoning");
+    expect(await last()).toBe(LAST);
+  }, 120_000);
+});
+
+describe("two operators at once (fix round 3, point 5)", () => {
+  it("both name the last migration and both confirm: exactly one Down runs, the other is refused once its turn comes, and the migration under it is still applied", async () => {
+    expect(await last()).toBe(LAST);
+    // The interleaving that matters: the second operator's check ("076 is the last") is made BEFORE the first one's Down, and its
+    // own Down would start AFTER it. Held there by its first connection's close, which is where the old command stood between its
+    // check and its Down (a check on one connection, the Down on another).
+    const pg = await import("pg");
+    const end = pg.default.Client.prototype.end;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let ends = 0;
+    const spy = vi.spyOn(pg.default.Client.prototype, "end").mockImplementation(async function (this: unknown, ...args: unknown[]) {
+      if (++ends === 1) await gate;
+      return (end as (...a: unknown[]) => Promise<void>).apply(this, args);
+    } as never);
+    const second = undoMigration(url, LAST, { quiet: true, confirmed: true });
+    second.catch(() => {});
+    // (Until the second one stands at its first connection's close.)
+    for (let i = 0; i < 200 && ends === 0; i++) await new Promise((r) => setTimeout(r, 25));
+    const first = undoMigration(url, LAST, { quiet: true, confirmed: true });
+    first.catch(() => {});
+    await Promise.race([first.then(() => {}, () => {}), new Promise((r) => setTimeout(r, 4000))]);
+    release();
+    const both = await Promise.allSettled([first, second]);
+    spy.mockRestore();
+    try {
+      expect(both.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+      const refused = both.find((r) => r.status === "rejected") as PromiseRejectedResult;
+      expect(String(refused.reason)).toMatch(/last migration applied is 075_agent_social_access, not 076_others_reasoning/);
+      expect(await last()).toBe(ACCESS);
+      expect((await db.query<{ t: string | null }>("select to_regclass('public.access_bars')::text as t")).rows[0]!.t).toBe("access_bars");
+    } finally {
+      await runMigrations(url, { quiet: true });
+    }
     expect(await last()).toBe(LAST);
   }, 120_000);
 });
