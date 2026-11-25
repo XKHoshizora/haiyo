@@ -207,6 +207,8 @@ export interface ToolsConfig {
   /**
    * How long a reply that offers tools may take in all, its rounds and its tools, in ms (each model call and each tool
    * also within `AGENT_RUN_TIMEOUT_MS`); a reply that offers none is held to `AGENT_RUN_TIMEOUT_MS` alone, as before.
+   * For a model that may think (models/gateway.ts `mayThink`) it bounds the tools' time only: the time its model calls
+   * take is not counted, and the reply as a whole ends at `MODEL_CALL_CEILING_MS`.
    */
   runTimeoutMs: number;
   /** The web search (`search_web`, src/agents/tools/web/; `TOOLS.web`): off unless the operator turns it on. */
@@ -841,8 +843,18 @@ const envSchema = z.object({
   AGENT_OTHERS_RUNS_PER_MINUTE: wholeNumber(20, 1, 10_000),
   /** Replies one person, themselves or through their Agents, may call for per minute on other people's Agents. */
   AGENT_CALLER_RUNS_PER_MINUTE: wholeNumber(5, 1, 10_000),
-  /** A reply still running after this long is ended (and so is the reading of its attachments). */
+  /**
+   * A reply still running after this long is ended (and so is the reading of its attachments) — when its model cannot be
+   * thinking. No clock judges a call to a model that may think (models/gateway.ts `mayThink`): see `MODEL_CALL_CEILING_MS`.
+   */
   AGENT_RUN_TIMEOUT_MS: wholeNumber(120_000, 1_000, 3_600_000),
+  /**
+   * The far safety ceiling of a reply whose model may think, all its calls together (30 minutes). NOT a product rule and
+   * not how long thinking "should" take: such a call ends when it finishes, its connection dies, it is stopped, or its
+   * token limits run out. The ceiling is there only so that a peer which keeps its connection alive and never answers
+   * cannot hold a call slot and a run for ever; a reply that reaches it fails `took_too_long`.
+   */
+  MODEL_CALL_CEILING_MS: wholeNumber(1_800_000, 60_000, 86_400_000),
   /** A provider model's context window when its owner does not give one, in tokens. */
   PROVIDER_DEFAULT_CONTEXT_TOKENS: wholeNumber(16_000, 1_000, 2_000_000),
   /** The output limit every call to a provider model gets, in tokens. */
@@ -1058,6 +1070,8 @@ export interface Config {
   agentCallerRunsPerMinute: number;
   /** A reply still running after this long is ended; also the most the reading of its attachments may take. */
   agentRunTimeoutMs: number;
+  /** `MODEL_CALL_CEILING_MS`: the far safety ceiling of a reply whose model may think. */
+  modelCallCeilingMs: number;
   /** For a provider model that does not say: its context window and its maximum output, in tokens. */
   providerDefaultContextTokens: number;
   providerDefaultMaxOutputTokens: number;
@@ -1154,6 +1168,17 @@ export interface Config {
 export const DRAFT_SOCKET_MARGIN_MS = 10_000;
 /** The least a persona draft is given; a connection timeout that leaves less fails start-up. */
 export const MIN_DRAFT_DEADLINE_MS = 10_000;
+
+/**
+ * The model gateway's own ceiling (models/gateway.ts `GatewayOptions.ceilingMs`: how long a stream that may be thinking
+ * may be silent before the guard itself gives it up): `MODEL_CALL_CEILING_MS`, but never less than
+ * `AGENT_RUN_TIMEOUT_MS` — the most a call with a total of its own may take (a memory call; a persona draft, at most
+ * that) — so a ceiling set low never shortens such a call: its own deadline ends it. A reply is ended at
+ * `MODEL_CALL_CEILING_MS` itself, by its worker.
+ */
+export function gatewayCeilingMs(config: Pick<Config, "modelCallCeilingMs" | "agentRunTimeoutMs">): number {
+  return Math.max(config.modelCallCeilingMs, config.agentRunTimeoutMs);
+}
 
 /**
  * How long a persona draft's model call may take (`POST /api/agents/draft-persona`): `agentRunTimeoutMs`, but always
@@ -1264,6 +1289,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     agentOthersRunsPerMinute: e.AGENT_OTHERS_RUNS_PER_MINUTE,
     agentCallerRunsPerMinute: e.AGENT_CALLER_RUNS_PER_MINUTE,
     agentRunTimeoutMs: e.AGENT_RUN_TIMEOUT_MS,
+    modelCallCeilingMs: e.MODEL_CALL_CEILING_MS,
     providerDefaultContextTokens: e.PROVIDER_DEFAULT_CONTEXT_TOKENS,
     providerDefaultMaxOutputTokens: e.PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS,
     reasoningAllowanceTokens: e.REASONING_ALLOWANCE_TOKENS,

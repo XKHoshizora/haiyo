@@ -179,11 +179,12 @@ function recordingLog(): WorkerLog & { lines: unknown[] } {
 }
 
 /** Runs the fake's one run to its end on `gateway`. */
-async function runOn(fake: Fake, gateway: Pick<ModelGateway, "stream">, over: { runTimeoutMs?: number; tools?: Partial<ToolLimits>; log?: WorkerLog } = {}) {
+async function runOn(fake: Fake, gateway: Pick<ModelGateway, "stream">, over: { runTimeoutMs?: number; callCeilingMs?: number; tools?: Partial<ToolLimits>; log?: WorkerLog } = {}) {
   const worker = createAgentWorker({
     port: fake.port,
     models: gateway,
     runTimeoutMs: over.runTimeoutMs ?? 120_000,
+    ...(over.callCeilingMs === undefined ? {} : { callCeilingMs: over.callCeilingMs }),
     maxRunsInFlight: 1,
     background: false,
     log: over.log ?? recordingLog(),
@@ -737,7 +738,7 @@ describe("a reply that offers tools", () => {
     const acked = fakePort({ tool: () => new Promise((resolve) => setTimeout(() => resolve({ output: "晚了", activity: "search" }), 3_000)) });
     await runOn(acked, scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" }), { tools: { runTimeoutMs: 1_000 } });
     // (Its acknowledgement was posted: the reply had produced something, so its time out is not passing.)
-    expect([acked.acks.map((a) => a.text), acked.posted, finishedAs(acked)]).toEqual([["我先查一下。"], [], [{ status: "failed", error: "provider_unavailable" }]]);
+    expect([acked.acks.map((a) => a.text), acked.posted, finishedAs(acked)]).toEqual([["我先查一下。"], [], [{ status: "failed", error: "took_too_long" }]]);
 
     // Past it between two rounds (the port took long to answer about money): no next call.
     const later = scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" });
@@ -752,7 +753,88 @@ describe("a reply that offers tools", () => {
     await runOn(silent, mute, { tools: { runTimeoutMs: 1_000 } });
     expect(silent.posted).toEqual([]);
     // (A tool round had completed: the reply had done something, so its time out is not passing.)
-    expect(finishedAs(silent)).toEqual([{ status: "failed", error: "provider_unavailable" }]);
+    expect(finishedAs(silent)).toEqual([{ status: "failed", error: "took_too_long" }]);
+  });
+
+  it("a model that may think: neither a call's time nor the reply's cuts its calls — only the ceiling does; its tools' time is still the reply's", async () => {
+    const THINKS = { thinks: true } as const;
+    // Each call takes 700 ms: more than a call's time (300 ms) and than the tool reply's in all (400 ms).
+    const slowly = () => scriptedGateway().callTools([{ name: "search", input: { query: "a" } }]).reply("想好了。", { delayMsPerChunk: 700 });
+    const fake = fakePort({ call: THINKS });
+    await runOn(fake, slowly(), { runTimeoutMs: 300, callCeilingMs: 10_000, tools: { runTimeoutMs: 400 } });
+    expect([fake.posted.map((p) => [p.text, p.truncated]), finishedAs(fake)]).toEqual([[["想好了。", false]], [{ status: "done" }]]);
+    // A reply offered no tools: the same by its one call.
+    const plain = fakePort({ tools: [], call: THINKS });
+    await runOn(plain, scriptedGateway().reply("想好了。", { delayMsPerChunk: 700 }), { runTimeoutMs: 300, callCeilingMs: 10_000 });
+    expect([plain.posted.map((p) => [p.text, p.truncated]), finishedAs(plain)]).toEqual([[["想好了。", false]], [{ status: "done" }]]);
+    // The same calls to a model that cannot be thinking are cut as ever.
+    const hasty = fakePort({ tools: [] });
+    await runOn(hasty, scriptedGateway().reply("想好了。", { delayMsPerChunk: 700 }), { runTimeoutMs: 300, callCeilingMs: 10_000 });
+    expect(finishedAs(hasty)).toEqual([{ status: "failed", error: "took_too_long" }]);
+
+    // Never answering: the ceiling, counted over the whole reply, ends it — took_too_long, not passing.
+    for (const offered of [true, false]) {
+      const stuck = fakePort({ ...(offered ? {} : { tools: [] }), call: THINKS });
+      const gateway = scriptedGateway();
+      gateway.hang();
+      const began = Date.now();
+      await runOn(stuck, gateway, { runTimeoutMs: 300, callCeilingMs: 900, tools: { runTimeoutMs: 400 } });
+      expect(Date.now() - began).toBeGreaterThanOrEqual(850);
+      expect(Date.now() - began).toBeLessThan(3_000);
+      expect(finishedAs(stuck)).toEqual([{ status: "failed", error: "took_too_long" }]);
+    }
+
+    // The ceiling is the whole reply's: a second round that hangs is ended when the FIRST clock is up (900 ms from the
+    // reply's start, 500 of them its tool's), not 900 ms after it was called.
+    const second = fakePort({ call: THINKS, acknowledge: async () => "refused", tool: () => new Promise((resolve) => setTimeout(() => resolve({ output: "查到了", activity: "search" }), 500)) });
+    const later = scriptedGateway().callTools([{ name: "search", input: { query: "a" } }]);
+    later.hang();
+    const from = Date.now();
+    await runOn(second, later, { runTimeoutMs: 5_000, callCeilingMs: 900, tools: { runTimeoutMs: 5_000 } });
+    expect(later.calls).toHaveLength(2);
+    expect(Date.now() - from).toBeGreaterThanOrEqual(850);
+    expect(Date.now() - from).toBeLessThan(1_300);
+    expect(finishedAs(second)).toEqual([{ status: "failed", error: "took_too_long" }]);
+
+    // Its tools' time is bounded as before (400 ms in all): a tool that takes 3 s is not waited for.
+    const tooled = fakePort({ call: THINKS, tool: () => new Promise((resolve) => setTimeout(() => resolve({ output: "晚了", activity: "search" }), 3_000)) });
+    const began = Date.now();
+    await runOn(tooled, scriptedGateway().callTools([{ name: "search", input: { query: "a" } }]), { runTimeoutMs: 5_000, callCeilingMs: 10_000, tools: { runTimeoutMs: 400 } });
+    expect(Date.now() - began).toBeLessThan(2_000);
+    expect(finishedAs(tooled)).toEqual([{ status: "failed", error: "took_too_long" }]);
+  });
+
+  it("a reply the ceiling ends is always a failure, took_too_long, whatever it had produced: nothing is posted as its answer (thinking alone is no reply); a stop keeps what it said", async () => {
+    const THINKS = { thinks: true } as const;
+    for (const [before, thought] of [
+      ["", "我想想……"],
+      ["说到一半", ""],
+      ["说到一半", "我想想……"],
+    ] as const) {
+      for (const offered of [true, false]) {
+        const fake = fakePort({ ...(offered ? {} : { tools: [] }), call: THINKS });
+        const gateway = scriptedGateway();
+        gateway.hangAfter(before, thought);
+        await runOn(fake, gateway, { runTimeoutMs: 300, callCeilingMs: 600, tools: { runTimeoutMs: 400 } });
+        expect([before, thought, offered, fake.posted, finishedAs(fake)]).toEqual([before, thought, offered, [], [{ status: "failed", error: "took_too_long" }]]);
+      }
+    }
+    // A reply whose model cannot be thinking, ended by its own time (not the ceiling): what it said is posted as cut, as ever.
+    const hasty = fakePort({ tools: [] });
+    const cut = scriptedGateway();
+    cut.hangAfter("说到一半");
+    await runOn(hasty, cut, { runTimeoutMs: 300, callCeilingMs: 600 });
+    expect([hasty.posted.map((p) => [p.text, p.truncated]), finishedAs(hasty)]).toEqual([[["说到一半", true]], [{ status: "done" }]]);
+    // The owner's stop of a thinking model's reply: what it said is posted, stopped, as ever.
+    const stopped = fakePort({ tools: [], call: THINKS });
+    const held = scriptedGateway();
+    const hold = held.hangAfter("说到一半");
+    const running = runOn(stopped, held, { runTimeoutMs: 300, callCeilingMs: 5_000 });
+    await hold.reached;
+    await new Promise((wake) => setTimeout(wake, 100));
+    stopped.stop();
+    await running;
+    expect([stopped.posted.map((p) => [p.text, p.stopped]), finishedAs(stopped)]).toEqual([[["说到一半", true]], [{ status: "stopped" }]]);
   });
 
   it("a long result is cut to resultMaxWeight with the fixed mark; any other value is cut as its JSON text and sent as a string", async () => {
@@ -1146,8 +1228,10 @@ describe("whether a failed reply is passing is decided by the reply as a whole (
     await runOn(fake, gateway, { tools: { runTimeoutMs: ms } });
     const [end] = finishedAs(fake);
     const passing = (end as { transient?: true }).transient === true;
-    expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
-    if (state === "nothing yet") expect(end).toMatchObject({ status: "failed", error: "provider_unavailable" });
+    // The reply's own time running out is never passing (`took_too_long`): the owner gets 重试 at once.
+    expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet" && kind !== "timeout"]);
+    // And it is said as that: its provider was not unreachable.
+    if (state === "nothing yet") expect(end).toMatchObject({ status: "failed", error: kind === "timeout" ? "took_too_long" : "provider_unavailable" });
     expect(gateway.pending()).toBe(0);
   });
 
@@ -1158,7 +1242,7 @@ describe("whether a failed reply is passing is decided by the reply as a whole (
         const fake = fakePort({ tools: [] });
         await runOn(fake, gateway, { tools: { runTimeoutMs: 300 }, runTimeoutMs: 300 });
         const passing = (finishedAs(fake)[0] as { transient?: true }).transient === true;
-        expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
+        expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet" && kind !== "timeout"]);
       }
     }
   });

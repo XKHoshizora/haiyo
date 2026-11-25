@@ -253,7 +253,7 @@ describe("the sentences batch 2A names", () => {
 
   it("every error a failed run can carry has its own sentence (none falls back to the generic one)", () => {
     const failed = (error) => ({ id: "r", status: "failed", error, retryable: true });
-    const codes = ["no_quota", "provider_rejected", "provider_unavailable", "address_not_allowed", "context_too_small", "thinking_exhausted", "busy", "rate_limited", "agent_paused", "agent_deleted", "model_gone"];
+    const codes = ["no_quota", "provider_rejected", "provider_unavailable", "address_not_allowed", "context_too_small", "thinking_exhausted", "took_too_long", "busy", "rate_limited", "agent_paused", "agent_deleted", "model_gone"];
     const texts = codes.map((code) => runFailureText(failed(code), NOW));
     for (const [i, text] of texts.entries()) expect(text, codes[i]).not.toBe("这次没有回复成功。");
     expect(new Set(texts).size).toBe(codes.length);
@@ -268,6 +268,13 @@ describe("the sentences batch 2A names", () => {
     expect(runFailureText(run, NOW)).toBe("模型把这次的输出额度都用在了思考上，没有写出回答。可以重试，或把思考程度调低。");
     expect(runFailureText(run, NOW, "site")).toBe(runFailureText(run, NOW, "provider"));
     expect(agentErrorText("draft", { code: "thinking_exhausted", status: 502 })).toBe("模型把输出额度都用在了思考上，没有写出内容。可以再试一次，或把思考程度调低。");
+  });
+
+  it("took_too_long: the reply's own time ran out while the model was still working — never 连不上, whoever's model it is", () => {
+    const run = { id: "r", status: "failed", error: "took_too_long", retryable: true };
+    expect(runFailureText(run, NOW)).toBe("这次想得太久，没有等到回复。可以重试，或把思考程度调低一些。");
+    expect(runFailureText(run, NOW, "site")).toBe(runFailureText(run, NOW, "provider"));
+    expect(runFailureText(run, NOW)).not.toContain("连不上");
   });
 
   it("a site model's key or address is not the owner's to check: its own sentence; a provider's (or unknown) as before", () => {

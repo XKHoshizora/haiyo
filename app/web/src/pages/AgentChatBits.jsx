@@ -84,8 +84,11 @@ const ACTIVITY_LINES = { search: "正在查聊天记录…", file: "正在看文
 /** The line for `activity` (`search`, `file`, `time`, `web`), or null for none — or for a kind this page does not know. */
 export const activityLine = (activity) => (typeof activity === "string" && Object.hasOwn(ACTIVITY_LINES, activity) ? ACTIVITY_LINES[activity] : null);
 
-/** What a reply that thinks says before its text: 正在思考…, then the whole seconds it has been thinking. */
-export const thinkingLine = (seconds) => (seconds > 0 ? `正在思考… ${seconds} 秒` : "正在思考…");
+/** Whole seconds as the thinking lines say them: `59 秒`, and from a minute on `2 分 05 秒` (a model may think for many). */
+const secondsText = (seconds) => (seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, "0")} 秒`);
+
+/** What a reply that thinks says before its text: 正在思考…, then how long it has been thinking (`secondsText`). */
+export const thinkingLine = (seconds) => (seconds > 0 ? `正在思考… ${secondsText(seconds)}` : "正在思考…");
 
 /**
  * The whole seconds since `since` (a time, ms), kept current once a second (at each whole second) while `counting`;
@@ -108,8 +111,8 @@ export function useThinkingSeconds(since, counting) {
   return Math.max(0, Math.floor((now - since) / 1000));
 }
 
-/** What the thinking section of a reply that is done thinking says: 思考了 and its whole seconds (at least 1). */
-export const thoughtFor = (ms) => `思考了 ${Math.max(1, Math.floor(ms / 1000))} 秒`;
+/** What the thinking section of a reply that is done thinking says: 思考了 and how long (`secondsText`; at least 1 秒). */
+export const thoughtFor = (ms) => `思考了 ${secondsText(Math.max(1, Math.floor(ms / 1000)))}`;
 
 /**
  * When this page saw each reply's moments (by run id), for its thinking seconds — one clock a reply, from its start to

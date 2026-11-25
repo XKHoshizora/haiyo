@@ -1,7 +1,7 @@
 import type { LookupAddress } from "node:dns";
 import dns from "node:dns/promises";
 import net from "node:net";
-import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
+import { Agent, buildConnector, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
 import { AppError } from "../errors.ts";
 import type { Slots } from "../slots.ts";
 
@@ -187,10 +187,19 @@ export interface GuardOptions {
   /** The response body may be at most this long (after decoding); one byte more aborts the request. */
   maxResponseBytes: number;
   /**
-   * The request is aborted when this long passes without progress: until the headers, then from the headers to the
-   * first body chunk and between body chunks. The total duration is the caller's to bound (`init.signal`).
+   * The request is aborted when this long passes without progress: from its start until the headers (the lookup and
+   * the connection included, unless `connectTimeoutMs` gives those a budget of their own), then from the headers to
+   * the first body chunk and between body chunks. The total duration is the caller's to bound (`init.signal`).
    */
   timeoutMs: number;
+  /**
+   * One budget, from the request's start, for finding the address and connecting to it (the lookup, TCP and TLS
+   * together), for a guard whose `timeoutMs` is long because what it calls may rightly be silent for long (a model that
+   * may think: models/gateway.ts): an address that cannot be reached is still given up on after this, and once
+   * connected the wait for the answer is `timeoutMs`. Absent: no budget apart — `timeoutMs` runs from the request's
+   * start to its first response (lookup, connection and the wait for the headers together), as it always did.
+   */
+  connectTimeoutMs?: number;
   /**
    * Where calls in flight are counted, one slot each from before the name lookup until the call is over (body read,
    * cancelled, failed, aborted or timed out); a call that finds no slot is `provider_unavailable` at once. In the app:
@@ -204,6 +213,18 @@ export interface GuardOptions {
    */
   allowInsecureLocal?: boolean;
 }
+
+/**
+ * TCP keepalive on every outbound connection: after this long without a byte either way the system starts probing the
+ * peer, and a peer that no longer answers ends the connection (the call then fails `provider_unavailable`, as any
+ * connection that dies). It is what finds a silently dead peer while a model that may think is rightly silent, where no
+ * no-progress timer applies (models/gateway.ts). Node exposes the idle time alone (`net` `keepAlive` /
+ * `keepAliveInitialDelay`, `socket.setKeepAlive`, which undici's connector takes); how often and how many times the
+ * system probes after it is libuv's, fixed: on Linux ten more seconds of probes in all (ten a second apart, or one after
+ * ten seconds, by libuv's version), so a dead peer is found about 40 s after its last byte. A proxy in between answers the probes itself: then only the ceiling ends
+ * a call that never answers.
+ */
+export const KEEPALIVE_IDLE_MS = 30_000;
 
 export const addressNotAllowed = (): AppError => new AppError(400, "address_not_allowed");
 export const providerUnavailable = (): AppError => new AppError(502, "provider_unavailable");
@@ -292,8 +313,8 @@ const NULL_BODY_STATUS = new Set([204, 205]);
  * `provider_unavailable` at once); the host is resolved once and every address checked (`checkedAddresses`); the
  * connection is made to exactly those addresses (the name stays the Host and TLS SNI); redirects are never followed
  * (any 3xx is `provider_unavailable`); the request is aborted after `timeoutMs` without progress (re-armed when the
- * headers arrive and at every body chunk) and when the body passes `maxResponseBytes` (`provider_unavailable`, as
- * `GuardGaveUp` saying which).
+ * headers arrive and at every body chunk; until the address is found and connected to, after `connectTimeoutMs` when
+ * that is given) and when the body passes `maxResponseBytes` (`provider_unavailable`, as `GuardGaveUp` saying which).
  * Refusals are `AppError(400, "address_not_allowed")` and happen before any connection. Errors never carry the
  * upstream's body or headers, nor the request's. An abort by the caller's own `signal` passes through as that abort
  * and closes the connection at once, whether or not the body is being read.
@@ -302,6 +323,8 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
   const resolve: Resolve = opts.resolve ?? ((hostname, options) => dns.lookup(hostname, options));
   const local = opts.allowInsecureLocal === true;
   const { calls } = opts;
+  /** The lookup's and the connection's budget, in all: its own (`connectTimeoutMs`), else the one clock to the first response. */
+  const connectTimeoutMs = opts.connectTimeoutMs ?? opts.timeoutMs;
 
   async function guarded(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
     if (typeof input !== "string" && !(input instanceof URL)) throw new TypeError("guardedFetch takes a URL or a string, not a Request");
@@ -325,15 +348,15 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
       if (agent) void agent.destroy().catch(() => {});
       calls.release(SITE);
     };
-    /** (Re)starts the "no progress for timeoutMs" timer. */
-    const arm = () => {
+    /** (Re)starts the "no progress for timeoutMs" timer (`ms`: for another wait than `timeoutMs`). */
+    const arm = (ms = opts.timeoutMs) => {
       if (finished) return;
       clearTimeout(timer);
       timer = setTimeout(() => {
         timedOut = true;
         own.abort();
         finish();
-      }, opts.timeoutMs);
+      }, ms);
     };
     /**
      * The caller's own abort stays that abort; the guard's errors stay; no progress in time is `GuardGaveUp` `stalled`;
@@ -376,18 +399,35 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
       );
     };
 
-    arm();
+    // ONE clock from here: the lookup, TCP and TLS share it, and — unless they have a budget of their own — the wait
+    // for the first response too. It is not started again when the address is found.
+    const startedAt = Date.now();
+    arm(connectTimeoutMs);
     // An abort (the caller's, or the timer's) ends the call at once, even while nobody reads the body.
     signal.addEventListener("abort", finish, { once: true });
     try {
       const addresses = await checkedAddresses(url, resolve, local, signal);
       signal.throwIfAborted();
+      // The connector has what is left of that clock (the timer above ends it too), and says when the connection is made
+      // (TCP, and TLS where there is one): with a budget of their own spent, the wait for the answer begins — `timeoutMs`.
+      const connector = buildConnector({
+        lookup: pinnedLookup(addresses),
+        timeout: Math.max(1, connectTimeoutMs - (Date.now() - startedAt)),
+        keepAlive: true,
+        keepAliveInitialDelay: KEEPALIVE_IDLE_MS,
+        allowH2: false,
+      });
       agent = new Agent({
         allowH2: false,
         connections: 1,
         headersTimeout: 0, // the guard's own timer governs
         bodyTimeout: 0,
-        connect: { lookup: pinnedLookup(addresses), timeout: opts.timeoutMs },
+        connect: (options, callback) =>
+          connector(options, (err, socket) => {
+            if (err === null && opts.connectTimeoutMs !== undefined) arm();
+            // (undici's two overloads of the callback, one call.)
+            (callback as (e: Error | null, s: typeof socket) => void)(err, socket);
+          }),
       });
       const res = await undiciFetch(url.href, { ...(init as UndiciRequestInit), signal, redirect: "manual", dispatcher: agent });
       arm(); // the headers are progress: the first body chunk gets a full `timeoutMs`

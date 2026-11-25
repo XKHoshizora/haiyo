@@ -2,7 +2,7 @@ import { DEFAULT_TOOLS, type ToolsConfig } from "../../config.ts";
 import { LookedUp, type LookupFields } from "../../messages/lookups.ts";
 import { isCount } from "../../metering/prices.ts";
 import { estimateTokens, holdTokens, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR, weightWithin } from "../../metering/tokens.ts";
-import { ModelError, type ModelCall, type ModelGateway, type ToolCall, type ToolResult } from "../../models/gateway.ts";
+import { mayThink, ModelError, type ModelCall, type ModelGateway, type ToolCall, type ToolResult } from "../../models/gateway.ts";
 import { cleanModelText, hasVisibleText } from "../../schemas.ts";
 import { cutResult, FINAL_LINE, fitsSchema, isRefusal, LoopGuard, OVER_CAP, REPEATED, UNUSABLE, withFinalLine } from "./loop.ts";
 import {
@@ -72,8 +72,17 @@ export interface WorkerLog {
 export interface WorkerOptions {
   port: AgentPort;
   models: Pick<ModelGateway, "stream">;
-  /** A reply still streaming after this long is ended: posted as truncated if it said something, else failed. */
+  /**
+   * A reply still streaming after this long is ended: posted as truncated if it said something, else failed
+   * (`AGENT_RUN_TIMEOUT_MS`) — a reply whose model cannot be thinking. Also the most one tool may take.
+   */
   runTimeoutMs: number;
+  /**
+   * The far ceiling of a reply whose model may think (models/gateway.ts `mayThink`), all its calls and tools together
+   * (`MODEL_CALL_CEILING_MS`): no other clock cuts its model calls — they end when they finish, their connection dies,
+   * they are stopped or their token limits run out. Absent: `runTimeoutMs`.
+   */
+  callCeilingMs?: number;
   /**
    * Replies the background loop runs at once in the whole service (`AGENT_MAX_RUNS_IN_FLIGHT`): each holds its
    * attachments in memory and an outbound call (see the guard's own cap). `runOnce` is not counted against it.
@@ -89,7 +98,8 @@ export interface WorkerOptions {
 /**
  * The site's bounds of a reply's tool rounds: at most `maxRounds` rounds that call tools, each result cut to
  * `resultMaxWeight`, the whole reply within `runTimeoutMs` (each model call and each tool also within `runTimeoutMs` of
- * `WorkerOptions`, `AGENT_RUN_TIMEOUT_MS`).
+ * `WorkerOptions`, `AGENT_RUN_TIMEOUT_MS`) — for a model that may think, its tools' time only: its calls are bounded by
+ * `WorkerOptions.callCeilingMs` alone, over the whole reply.
  */
 export type ToolLimits = Pick<ToolsConfig, "maxRounds" | "resultMaxWeight" | "runTimeoutMs">;
 
@@ -249,6 +259,7 @@ function gapAfter(so: string): string {
 
 export function createAgentWorker(opts: WorkerOptions): AgentWorker {
   const { port, models, log, maxRunsInFlight } = opts;
+  const ceilingMs = opts.callCeilingMs ?? opts.runTimeoutMs;
   const inFlight = new Set<Promise<void>>();
   /** Per run being worked on: aborts when the service closes. */
   const shutdowns = new Map<string, AbortController>();
@@ -480,7 +491,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
   async function conclude(
     run: RunTicket,
     out: ReplyStream,
-    last: Pick<Round, "finished" | "failure" | "why" | "status"> & { progress?: boolean },
+    last: Pick<Round, "finished" | "failure" | "why" | "status"> & { progress?: boolean; ceiling?: boolean },
     usage: Usage | null,
     fallback: Estimated,
     failedFallback: Estimated,
@@ -503,6 +514,10 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
     // The upstream ended the stream without its finish (cut off midway).
     if (finished === null && why === null) return failed(failedEnd("provider_unavailable", { kind: "cut", progress: last.progress === true }));
+    // The far ceiling ended it (`last.ceiling`: a reply whose model may think): ALWAYS the failure `took_too_long`, whatever
+    // it had produced — thinking alone, or half an answer after half an hour, is no reply. As with any failed reply,
+    // what it had said is discarded and nothing is posted; its owner has 重试 (never tried again by itself).
+    if (finished === null && why === "timeout" && last.ceiling === true) return failed(failedEnd("took_too_long", { kind: "timeout", progress: last.progress === true }));
 
     const text = cleanModelText(out.text);
     const reasoning = cleanModelText(out.reasoning);
@@ -519,14 +534,21 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (posted === "empty") return finish(run, { status: "stopped" }, usage, fallback);
       return finish(run, ended(posted, { status: "stopped" }), usage, fallback);
     }
-    // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — passing only when the
-    // reply's time ran out before anything came; an answer that finished with nothing in it is the provider's answer.
-    if (!said) return failed(noAnswer === UNAVAILABLE ? failedEnd("provider_unavailable", finished === null ? { kind: "timeout", progress: last.progress === true } : { kind: "nothing" }) : noAnswer);
+    // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — an answer that
+    // finished with nothing in it is the provider's answer (`provider_unavailable`); the reply's time running out is said
+    // as that (`took_too_long`: its model was reached, and still working), which is never passing (`passingEnding`).
+    const nothing = (): RunEnd =>
+      noAnswer !== UNAVAILABLE
+        ? noAnswer
+        : finished === null
+          ? failedEnd("took_too_long", { kind: "timeout", progress: last.progress === true })
+          : failedEnd("provider_unavailable", { kind: "nothing" });
+    if (!said) return failed(nothing());
     const toolCalls = finished !== null && trace.length > 0 ? { toolCalls: trace } : {};
     const posted = await post(run, { text, reasoning, stopped: false, truncated: finished === null || finished.truncated, ...looked, ...toolCalls });
     // All it said was inside a persona block that a limit cut off (in a group, also: it only thought, or said only the
-    // mark and labels): as an answer that said nothing.
-    if (posted === "empty") return failed(noAnswer);
+    // mark and labels): as an answer that said nothing — it had produced something, so it is never passing.
+    if (posted === "empty") return failed(finished === null && noAnswer === UNAVAILABLE ? failedEnd("took_too_long", { kind: "timeout", progress: true }) : noAnswer);
     return finish(run, ended(posted, { status: "done" }), usage, fallback);
   }
 
@@ -560,13 +582,15 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
 
     // A reply that offers no tools: one call, as before tools existed.
     const out = new ReplyStream((delta) => port.emit(run, delta));
-    const round = await call(run, prepared.call, (kind, delta) => out.add(kind, delta), shutdown, opts.runTimeoutMs);
+    // Its one call: within a reply's time, or, to a model that may think, only within the far ceiling.
+    const round = await call(run, prepared.call, (kind, delta) => out.add(kind, delta), shutdown, mayThink(prepared.call) ? ceilingMs : opts.runTimeoutMs);
     const usage = round.finished?.usage ?? null;
     // A call never made (a stop or pause landed between `begin` and it) costs nothing, not even its input.
     const fallback = round.opened ? { inputChars: prepared.inputChars, outputChars: out.outputChars() } : NOTHING;
     // A failed call is charged only what the upstream reported: what it said is discarded and not counted. Whether the reply
     // had produced anything (port.ts `passingEnding`): what its one call streamed.
-    return conclude(run, out, { ...round, progress: round.said }, usage, fallback, { ...fallback, outputChars: 0 });
+    // Ended by time, a model that may think was ended by the far ceiling (its only clock): always a failure (`conclude`).
+    return conclude(run, out, { ...round, progress: round.said, ceiling: round.why === "timeout" && mayThink(prepared.call) }, usage, fallback, { ...fallback, outputChars: 0 });
   }
 
   /**
@@ -607,7 +631,15 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
    */
   async function toolReply(run: RunTicket, prepared: Prepared, bounds: ToolRun, shutdown: AbortSignal): Promise<void> {
     const limits = opts.tools ?? DEFAULT_TOOLS;
-    const deadline = Date.now() + limits.runTimeoutMs;
+    /**
+     * The reply's time. A model that cannot be thinking: `runTimeoutMs` in all, each call also within a call's time. A
+     * model that may think (`patient`): no clock on its calls but the far ceiling, counted from here over the whole reply;
+     * `deadline` then bounds its tools' time alone — the time each call took is given back to it.
+     */
+    const patient = mayThink(prepared.call);
+    let deadline = Date.now() + limits.runTimeoutMs;
+    const ceiling = Date.now() + ceilingMs;
+    const timeUp = (): boolean => Date.now() >= deadline || (patient && Date.now() >= ceiling);
     const tools = [...prepared.tools];
     // The ordinary call, made once after a later round its upstream refused: no tools, so the text for going without
     // them (`ModelCall.systemWithoutTools`) when the call has one.
@@ -661,7 +693,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     };
     /** What ends the reply now, between two rounds or two tool calls. */
     const interrupted = (): Interruption | null =>
-      shutdown.aborted ? "shutdown" : port.shouldStop(run) ? "stop" : Date.now() >= deadline ? "timeout" : null;
+      shutdown.aborted ? "shutdown" : port.shouldStop(run) ? "stop" : timeUp() ? "timeout" : null;
     /** The port's word on the next call, whose input is held at `nextInput`; failing to get it is our trouble (`BUSY`). */
     const extend = async (nextInput: number): Promise<"ok" | "final" | "stop" | "busy"> => {
       try {
@@ -671,7 +703,9 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         return "busy";
       }
     };
-    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status">; noAnswer?: RunEnd };
+    /** `ceiling`: time ended it, and it was the far ceiling (not its tools' time): `conclude` fails it whatever it wrote. */
+    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status"> & { ceiling?: boolean }; noAnswer?: RunEnd };
+    const atCeiling = (): boolean => patient && Date.now() >= ceiling;
     /**
      * ONE fact about the reply as a whole, set once and never reset (port.ts `passingEnding`): it has produced something —
      * text or thinking received in any round, its acknowledgement posted, a tool round completed.
@@ -681,7 +715,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     for (;;) {
       const now = interrupted();
       if (now !== null) {
-        ending = { last: { finished: null, failure: null, why: now } };
+        ending = { last: { finished: null, failure: null, why: now, ceiling: now === "timeout" && atCeiling() } };
         break;
       }
       // The model is called again: no tool is running.
@@ -698,6 +732,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       const carried = plain ? 0 : steps.length;
       const said = { text: "", reasoning: "" };
       const gap = { text: gapAfter(out.text), reasoning: gapAfter(out.reasoning) };
+      const calledAt = Date.now();
       const round = await call(
         run,
         request,
@@ -708,8 +743,9 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
           out.add(kind, delta);
         },
         shutdown,
-        Math.max(0, Math.min(opts.runTimeoutMs, deadline - Date.now())),
+        Math.max(0, patient ? ceiling - Date.now() : Math.min(opts.runTimeoutMs, deadline - Date.now())),
       );
+      if (patient) deadline += Date.now() - calledAt;
       const { finished } = round;
       if (round.said) progress = true;
       const input = plain
@@ -736,7 +772,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (finished === null) {
         // Interrupted (stop, time, close: what it wrote counts), or cut off by the upstream (failed: nothing does).
         if (round.why !== null && round.opened) meter.add(null, input, estimateTokens(said.text) + estimateTokens(said.reasoning));
-        ending = { last: round };
+        // (The only clock on a call of a model that may think is the ceiling.)
+        ending = { last: { ...round, ceiling: round.why === "timeout" && patient } };
         break;
       }
       const calls = finished.toolCalls.length > 0 ? estimateTokens(JSON.stringify(finished.toolCalls)) : 0;
@@ -795,7 +832,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
               shown = kind;
               port.activity(run, kind);
             }
-            const ran = await runTool(run, toolCall, shutdown, deadline);
+            const ran = await runTool(run, toolCall, shutdown, patient ? Math.min(deadline, ceiling) : deadline);
             if (ran.interrupted !== null) {
               cut = ran.interrupted;
               break;
@@ -836,7 +873,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         left -= estimateTokens(JSON.stringify(result), toolRatio);
       }
       if (cut !== null) {
-        ending = { last: { finished: null, failure: null, why: cut } };
+        ending = { last: { finished: null, failure: null, why: cut, ceiling: cut === "timeout" && atCeiling() } };
         break;
       }
       const step = { assistant: finished.assistant, results };
