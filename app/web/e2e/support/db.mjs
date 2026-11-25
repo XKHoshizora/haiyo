@@ -46,14 +46,15 @@ export function forgetTermsAcceptance(principalId) {
 /**
  * Gives an Agent's stored reply `seq` of `conversationId` what a reply whose run searched the web keeps beside its text
  * (`webSources`, `webCites`; the service's agents/tools/web), straight in its body: how a spec shows such a reply without
- * turning the web search on for the shared service (and without any engine). Resolves once it is written.
+ * turning the web search on for the shared service (and without any engine). `more`: other keys of its body to set (its
+ * search words, `queries`). Resolves once it is written.
  */
-export function addWebSources(conversationId, seq, webSources, webCites = []) {
+export function addWebSources(conversationId, seq, webSources, webCites = [], more = {}) {
   if (!Number.isSafeInteger(seq) || !Array.isArray(webSources)) throw new Error("a message seq and a list of sources");
   return withDatabase(async (client) => {
     const { rowCount } = await client.query(
-      "update messages set body = body || jsonb_build_object('webSources', $3::jsonb, 'webCites', $4::jsonb, 'lookups', '{\"web\": 1}'::jsonb) where conversation_id = $1 and seq = $2",
-      [conversationId, seq, JSON.stringify(webSources), JSON.stringify(webCites)],
+      "update messages set body = body || jsonb_build_object('webSources', $3::jsonb, 'webCites', $4::jsonb, 'lookups', '{\"web\": 1}'::jsonb) || $5::jsonb where conversation_id = $1 and seq = $2",
+      [conversationId, seq, JSON.stringify(webSources), JSON.stringify(webCites), JSON.stringify(more)],
     );
     if (rowCount !== 1) throw new Error("no such message");
   });

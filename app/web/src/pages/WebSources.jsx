@@ -5,13 +5,52 @@
 // the page in a new tab (`rel="noopener noreferrer nofollow"`). The numbers are the ones the reply's chips say
 // (ui/cites.jsx): a chip opens its page itself, so reading on never needs the list. In such a reply nothing else opens:
 // its Markdown links show as plain text (Markdown.jsx). A long list opens at its first SOURCES_FIRST rows, with a row
-// that shows them all.
-import React, { useLayoutEffect, useRef, useState } from "react";
+// that shows them all. What the reader chose for a reply (opened, all of them) is kept for the visit of its conversation
+// (`sourcesChoice`): a row taken away and shown again within it (a jump to an older message and back) is as it was left.
+import React, { useLayoutEffect, useRef } from "react";
 import { TextLink } from "../ui/primitives.jsx";
 import { withoutBidiControls } from "../ui/markdownRules.js";
 
 /** How many rows a long list opens with. A list of one more is shown whole: a row to show one row saves nothing. */
 export const SOURCES_FIRST = 5;
+
+/**
+ * What the reader chose for each reply's pages, by conversation and message id: `{ open, all }`, for the newest
+ * SOURCES_CHOICES_KEPT replies they touched — while the conversation is shown (ChatView forgets it on leaving,
+ * `forgetSourcesChoices`), as a reply's run record keeps whether its thinking is open (AgentChatBits.jsx `runClock`).
+ */
+const choices = new Map();
+const SOURCES_CHOICES_KEPT = 50;
+const NO_CHOICE = Object.freeze({ open: false, all: false });
+const choiceKey = (conversationId, messageId) => `${conversationId}\n${messageId}`;
+
+/** What the reader chose for that reply's pages; folded and short when nothing. Makes no record. */
+export const sourcesChoice = (conversationId, messageId) => choices.get(choiceKey(conversationId, messageId)) ?? NO_CHOICE;
+
+/** Notes a choice of the reader (`{ open }` or `{ all }`) for that reply's pages; resolves with the whole choice. */
+export function noteSourcesChoice(conversationId, messageId, change) {
+  const key = choiceKey(conversationId, messageId);
+  const next = { ...(choices.get(key) ?? NO_CHOICE), ...change };
+  choices.delete(key);
+  choices.set(key, next);
+  if (choices.size > SOURCES_CHOICES_KEPT) choices.delete(choices.keys().next().value);
+  return next;
+}
+
+/** The conversation is not shown any more: every reply of it is folded when it is shown again. */
+export function forgetSourcesChoices(conversationId) {
+  for (const key of [...choices.keys()]) if (key.startsWith(`${conversationId}\n`)) choices.delete(key);
+}
+
+/**
+ * How far the chat scrolls down when a reply's pages are opened (0: not at all), from where things are on the screen
+ * (`top` and `bottom` of the chat's scroller `view`, of the `toggle`, of the block's `first` row and of the `block`):
+ * only when the first row is not in sight; then by what shows the whole block, but never so far that the button leaves.
+ */
+export function openingScroll({ view, toggle, first, block }) {
+  if (first.bottom <= view.bottom) return 0;
+  return Math.max(0, Math.min(block.bottom - view.bottom, toggle.top - view.top));
+}
 
 /**
  * What an Agent's message hands its text (ui/cites.jsx `CitesContext`), or null for nothing: its message citations when
@@ -29,26 +68,28 @@ export function citingOf(msg, onJump) {
 }
 
 /**
- * `sources` (a view message's `webSources`: `[{n, shown, url, host, title}]`) as the list (`id`: what its button
- * controls), or nothing when there are none. It is shown because the reader opened it: it comes into view if it opened
- * below the edge (the nearest way; nothing moves when it is in view already). More than SOURCES_FIRST + 1 rows: the first
- * SOURCES_FIRST and 显示全部 N 个, which shows the rest and hands the keyboard the first of them; opened again, it is
- * short again.
+ * `sources` (a view message's `webSources`: `[{n, shown, url, host, title}]`) as the list, or nothing when there are
+ * none. More than SOURCES_FIRST + 1 rows and not `all`: the first SOURCES_FIRST and 显示全部 N 个, which asks for the rest
+ * (`onAll`) and, once they are there, hands the keyboard the first of them (only then: a list shown again whole takes no
+ * focus).
  */
-export function WebSources({ sources, id }) {
-  const [all, setAll] = useState(false);
+export function WebSources({ sources, all = false, onAll }) {
   const list = useRef(null);
+  const asked = useRef(false);
   const count = Array.isArray(sources) ? sources.length : 0;
   useLayoutEffect(() => {
-    list.current?.scrollIntoView?.({ block: "nearest" });
-  }, []);
-  useLayoutEffect(() => {
-    if (all) list.current?.querySelectorAll("a")[SOURCES_FIRST]?.focus();
+    if (!all || !asked.current) return;
+    asked.current = false;
+    list.current?.querySelectorAll("a")[SOURCES_FIRST]?.focus();
   }, [all]);
   if (count === 0) return null;
   const bounded = !all && count > SOURCES_FIRST + 1;
+  const showAll = () => {
+    asked.current = true;
+    onAll?.();
+  };
   return (
-    <ol className="web-sources" id={id} ref={list} aria-label="网页来源">
+    <ol className="web-sources" ref={list} aria-label="网页来源">
       {(bounded ? sources.slice(0, SOURCES_FIRST) : sources).map((s) => {
         const title = withoutBidiControls(s.title).trim();
         return (
@@ -69,7 +110,7 @@ export function WebSources({ sources, id }) {
       })}
       {bounded && (
         <li className="web-sources-more">
-          <button type="button" onClick={() => setAll(true)}>
+          <button type="button" onClick={showAll}>
             显示全部 {count} 个
           </button>
         </li>

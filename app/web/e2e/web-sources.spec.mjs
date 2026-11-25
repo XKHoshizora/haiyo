@@ -5,28 +5,29 @@
 // nothing — its link and its bare address are plain text — and only its sources list and its chip open pages, in a new tab
 // with rel="noopener noreferrer nofollow"; a reply without sources keeps its link as a link. The list is folded: one button
 // at the end of the reply's lookup line (查了 1 次网页 · 12 个来源) opens it in place, five rows first and 显示全部 12 个 —
-// at 1280 and at 390 wide, by the keyboard too, without widening the column. With E2E_SHOTS=1 the second test leaves
-// screenshots of each state (SRCFOLD_SHOTS, else the review folder of the checkout this lane lives in).
+// at 1280 and at 390 wide, by the keyboard too, without widening the column; in its owner's conversation the words it
+// searched for head the opened list; the button's enlarged target on a narrow page never takes a press meant for 回复.
+// Screenshots of each state are taken only when SRCFOLD_SHOTS names the folder to put them in (nothing is written
+// otherwise, and never outside it).
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { test, expect } from "./support/fixtures.mjs";
-import { WEB_DIR } from "./support/env.mjs";
-import { uniq } from "./support/accounts.mjs";
+import { befriend, uniq } from "./support/accounts.mjs";
 import { agentMessagesWith, chatPane, openChat, sendText } from "./support/app.mjs";
 import { canControlService } from "./support/control.mjs";
 import { addWebSources } from "./support/db.mjs";
 import { modelStub } from "./support/model-stub.mjs";
-import { agentApi } from "./support/tools.mjs";
+import { addApi, agentApi, groupApi } from "./support/tools.mjs";
 
 test.beforeEach(async () => {
   test.skip(!canControlService, "needs the local service, its model stub and its database");
   await modelStub.reset();
 });
 
-const SHOTS = process.env.SRCFOLD_SHOTS ?? path.resolve(WEB_DIR, "..", "..", "..", "..", ".superpowers", "sdd", "2026-11-22-polish", "srcfold-shots");
-/** A screenshot for the report (only with E2E_SHOTS=1). */
+const SHOTS = (process.env.SRCFOLD_SHOTS ?? "").trim();
+/** A screenshot for the report: only when SRCFOLD_SHOTS names a folder. */
 async function shot(page, name) {
-  if (process.env.E2E_SHOTS !== "1") return;
+  if (SHOTS === "") return;
   mkdirSync(SHOTS, { recursive: true });
   await page.waitForTimeout(250);
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
@@ -120,7 +121,7 @@ test("twelve sources are one folded line under the reply; opened in place they a
   const seq = await replySeq(ann, agent.id, agent.conversationId, tag);
   const titles = ["北京明天晴", "气象台：明天降温", "Max Verstappen wins the Las Vegas Grand Prix for the third time in four seasons after a late safety car", "一个特别特别长的中文标题，用来看一行放不下时是不是被省略号截断而不是把整列撑宽，再长一点再长一点"];
   const twelve = Array.from({ length: 12 }, (_, i) => ({ n: i + 1, url: `https://${i === 2 ? "a-rather-long-host-name.news" : "site"}${i + 1}.example.com/p/${i + 1}`, title: titles[i] ?? `第 ${i + 1} 个网页的标题` }));
-  await addWebSources(agent.conversationId, seq, twelve, [{ at: 1, n: 2 }]);
+  await addWebSources(agent.conversationId, seq, twelve, [{ at: 1, n: 2 }], { queries: ["北京 明天 天气", "明天 降温"] });
 
   for (const [name, size] of [["1280", { width: 1280, height: 860 }], ["390", { width: 390, height: 844 }]]) {
     await page.setViewportSize(size);
@@ -152,10 +153,14 @@ test("twelve sources are one folded line under the reply; opened in place they a
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(list.locator("a")).toHaveCount(5);
     await expect(list).toBeInViewport({ ratio: 1 });
+    await expect(toggle).toBeInViewport({ ratio: 1 });
+    // Its owner's conversation: the words it searched for head the block.
+    await expect(web.locator(".sources-block > *").first()).toHaveText("搜索词：北京 明天 天气、明天 降温");
     const more = list.getByRole("button", { name: "显示全部 12 个" });
     await expect(more).toBeVisible();
     await expectNoSideways(page, `opened at ${name}`);
     await shot(page, `srcfold-${name}-2-open`);
+    if (size.width < 700) await shot(page, "srcfold-390-4-owner-words");
 
     // Tab walks the rows to 显示全部; pressed, the rest are there and the first of them has the focus.
     for (let i = 0; i < 6; i += 1) await page.keyboard.press("Tab");
@@ -176,4 +181,50 @@ test("twelve sources are one folded line under the reply; opened in place they a
     await expect(list).toHaveCount(0);
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
   }
+});
+
+test("on a narrow page the button's enlarged target leaves 回复 its own presses: a press on that button's top edge replies, and the sources stay folded (390)", async ({ people }) => {
+  // A member reads someone else's Agent's reply in a group: no model line under it, the footer follows the lookup line.
+  const ann = await people.member("Ann", { open: false });
+  const bo = await people.member("Bo");
+  const cy = await people.member("Cy", { open: false });
+  await befriend(ann, bo);
+  await befriend(ann, cy);
+  const agent = await agentApi(ann, { name: `边缘${uniq(4)}` });
+  const { id: groupId, title } = await groupApi(ann, [bo, cy]);
+  await addApi(ann, groupId, agent.id);
+  const page = bo.page;
+  const tag = uniq(6);
+  await page.reload();
+  const chat = await openChat(page, title);
+  await modelStub.reply(`明天晴。${tag}`);
+  await sendText(page, title, `@${agent.handle} 明天天气？${tag}`);
+  await expect(agentMessagesWith(chat, `明天晴。${tag}`)).toHaveCount(1);
+  const seq = await replySeq(bo, agent.id, groupId, `明天晴。${tag}`);
+  await addWebSources(groupId, seq, SOURCES, [], { queries: ["明天 天气"] });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(chatPane(page, title)).toBeVisible();
+  const web = agentMessagesWith(chatPane(page, title), `明天晴。${tag}`);
+  const toggle = web.locator(".msg-lookups button.sources-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(web.locator(".msg-via")).toHaveCount(0);
+  await web.locator(".bubble").hover();
+  const reply = web.getByRole("button", { name: "回复" });
+  await expect(reply).toBeVisible();
+  const [box, above] = [await reply.boundingBox(), await toggle.boundingBox()];
+  // The case this guards: the top of 回复 is within the 13px the target reaches below the line.
+  expect(box.y - (above.y + above.height), "回复 starts inside the target's reach").toBeLessThan(13);
+  expect(box.x, "回复 is under the button").toBeLessThan(above.x + above.width);
+  await page.mouse.click(box.x + box.width / 2, box.y + 1);
+  await expect(chatPane(page, title).locator(".reply-chip")).toContainText(`回复 ${agent.name}`);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(web.locator("ol.web-sources")).toHaveCount(0);
+  // And the button's own line still opens the sources.
+  await page.mouse.click(above.x + above.width / 2, above.y + above.height / 2);
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  // A member is shown the pages, never the words.
+  await expect(web.locator("ol.web-sources a")).toHaveCount(2);
+  await expect(web.locator(".lookup-words")).toHaveCount(0);
+  await expect(chatPane(page, title)).not.toContainText("搜索词");
 });

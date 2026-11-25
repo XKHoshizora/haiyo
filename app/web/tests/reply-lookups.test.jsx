@@ -539,7 +539,6 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     await click(toggle(3));
     expect(toggle(3).getAttribute("aria-expanded")).toBe("true");
     expect(list(3).getAttribute("aria-label")).toBe("网页来源");
-    expect(toggle(3).getAttribute("aria-controls")).toBe(list(3).id);
     // Each row the title and the address's real host, opening a new tab; an http source is not listed.
     const rows = [...list(3).querySelectorAll("li")];
     expect(rows.map((li) => li.textContent)).toEqual(["1北京明天晴news.example.com", "2气象台：降温xn--bcher-kva.example"]);
@@ -551,13 +550,15 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     }
     // Right under the lookup line, a part of the message's column like it.
     const parts = [...storedLi(3).querySelector(".msg-main").children];
-    expect(parts.indexOf(list(3))).toBe(parts.indexOf(lookupLine(3)) + 1);
+    expect(parts.indexOf(list(3).parentElement)).toBe(parts.indexOf(lookupLine(3)) + 1);
+    expect(list(3).parentElement.className).toBe("sources-block");
+    expect(toggle(3).getAttribute("aria-controls")).toBe(list(3).parentElement.id);
     await click(toggle(3));
     expect(list(3)).toBeNull();
     expect(toggle(3).getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("the count is the real number; opened, a long list shows its first 5 rows and 显示全部 12 个, which shows the rest and hands the focus to the first of them", async () => {
+  it("the count is the real number; opened, a long list shows its first 5 rows and 显示全部 12 个, which shows the rest (for the visit) and hands the focus to the first of them", async () => {
     await openChats({
       messages: [...BASE, webReply(3, { lookups: { web: 2 }, webSources: many(12), webCites: [] }), webReply(4, { webSources: many(6), webCites: [] }), webReply(5, { webSources: many(5), webCites: [] })],
     });
@@ -572,10 +573,10 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     expect(links.map((link) => link.getAttribute("href"))).toEqual(many(12).map((source) => source.url));
     expect([...list(3).querySelectorAll(".web-source-n")].map((n) => n.textContent)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]);
     expect(document.activeElement).toBe(links[5]);
-    // Folded and opened again, it is bounded again.
+    // Folded and opened again in this visit, it is as the reader left it: all of them.
     await click(toggle(3));
     await click(toggle(3));
-    expect(list(3).querySelectorAll("a")).toHaveLength(5);
+    expect(list(3).querySelectorAll("a")).toHaveLength(12);
     // Hiding a single row would save nothing: 6 are all shown; 5 too.
     for (const [seq, count] of [[4, 6], [5, 5]]) {
       await click(toggle(seq));
@@ -650,6 +651,128 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     expect(li.querySelector("ol.web-sources")).toBeNull();
     await click(button);
     expect(li.querySelectorAll("ol.web-sources a")).toHaveLength(5);
+  });
+
+  it("the words it searched for are its owner's, with the pages: the first line of the opened list in my Agent's own conversation — once, not with the messages found too — and never in a group", async () => {
+    const getMessage = vi.fn(async () => ({ message: wire(A1, 2, ME_ID, "在吗"), principals: {} }));
+    const queries = ["北京 明天 天气", "降温"];
+    await openChats({
+      messages: [
+        ...BASE,
+        webReply(3, { webSources: many(12), webCites: [], queries }),
+        webReply(4, { lookups: { search: 1, web: 1 }, found: [{ conversationId: A1, seq: 2 }], webCites: [], queries }),
+        webReply(5, { lookups: { search: 1, web: 1 }, webCites: [], queries }),
+      ],
+      groupMessages: [wire(G1, 1, AG1, TEXT, { lookups: { web: 1 }, webSources: many(12), queries })],
+      api: { getMessage },
+    });
+    // Its only lookup was the web: the words open with the pages.
+    expect(storedLi(3).textContent).not.toContain("搜索词");
+    await click(toggle(3));
+    const block = list(3).parentElement;
+    expect([...block.children].map((el) => el.className)).toEqual(["lookup-words", "web-sources"]);
+    expect(block.firstElementChild.textContent).toBe("搜索词：北京 明天 天气、降温");
+    // Messages found too: their button opens them without the words; the words are with the pages, once.
+    const [messages, pages] = [...lookupLine(4).querySelectorAll("button")];
+    await click(messages);
+    await flush();
+    expect(lookupLine(4).querySelector(".lookup-rows")).not.toBeNull();
+    expect(storedLi(4).querySelectorAll(".lookup-words")).toHaveLength(0);
+    await click(pages);
+    expect(storedLi(4).querySelectorAll(".lookup-words")).toHaveLength(1);
+    expect(list(4).parentElement.firstElementChild.textContent).toBe("搜索词：北京 明天 天气、降温");
+    // Another lookup that found nothing to open: plain text, and the words still with the pages.
+    expect(lookupLine(5).querySelectorAll("button")).toHaveLength(1);
+    await click(toggle(5));
+    expect(list(5).parentElement.firstElementChild.textContent).toBe("搜索词：北京 明天 天气、降温");
+    // In a group, my own Agent's reply too: the pages, no words.
+    await click(screen.getByText("周末小组", { selector: ".list-col .row-name" }));
+    const li = [...timeline().querySelectorAll("li.msg")].at(-1);
+    await click(li.querySelector(".msg-lookups button.sources-toggle"));
+    expect(li.querySelectorAll("ol.web-sources a")).toHaveLength(5);
+    expect(li.textContent).not.toContain("搜索词");
+    expect(li.querySelector(".lookup-words")).toBeNull();
+  });
+
+  it("the choice — opened, and 显示全部 — outlives the reply's row within the visit: a jump to an older message takes the row away, 回到最新消息 brings it back as the reader left it; the conversation opened again folds it", async () => {
+    const old = wire(A1, 10, ME_ID, "很早的一条");
+    const getMessage = vi.fn(async () => ({ message: old, principals: {} }));
+    const listMessages = vi.fn(async () => ({ messages: [9, 10, 11].map((seq) => (seq === 10 ? old : wire(A1, seq, AG1, `旧回答${seq}`))), nextBefore: 9, principals: {} }));
+    await openChats({
+      messages: [wire(A1, 101, ME_ID, "明天呢"), webReply(102, { lookups: { search: 1, web: 1 }, webSources: many(12), webCites: [], found: [{ conversationId: A1, seq: 10 }] })],
+      api: { getMessage, listMessages },
+    });
+    await click(toggle(102));
+    await click(more(102));
+    expect(list(102).querySelectorAll("a")).toHaveLength(12);
+    const focused = vi.spyOn(HTMLElement.prototype, "focus");
+    // To the old message it found: the window around it holds none of the newest rows.
+    await click(lookupLine(102).querySelector("button"));
+    await flush();
+    await click(within(lookupLine(102).querySelector(".lookup-rows")).getByRole("button"));
+    await flush();
+    expect(storedLi(10)).not.toBeNull();
+    expect(storedLi(102)).toBeNull();
+    focused.mockClear();
+    await click(screen.getByRole("button", { name: "回到最新消息" }));
+    expect(toggle(102).getAttribute("aria-expanded")).toBe("true");
+    expect(list(102).querySelectorAll("a")).toHaveLength(12);
+    expect(list(102).querySelector("li.web-sources-more")).toBeNull();
+    // Shown again as it was left — not opened again: the focus is not taken to row 6.
+    expect(focused.mock.instances.some((el) => el.closest?.("ol.web-sources"))).toBe(false);
+    // Folded and opened again within the visit: still all of them.
+    await click(toggle(102));
+    await click(toggle(102));
+    expect(list(102).querySelectorAll("a")).toHaveLength(12);
+    // The conversation left and opened again: folded, and short when opened.
+    await click(screen.getByText("周末小组", { selector: ".list-col .row-name" }));
+    await click(screen.getByText("小助手", { selector: ".list-col .row-name" }));
+    expect(toggle(102).getAttribute("aria-expanded")).toBe("false");
+    expect(list(102)).toBeNull();
+    await click(toggle(102));
+    expect(list(102).querySelectorAll("a")).toHaveLength(5);
+  });
+
+  it("folding it while the focus is inside it hands the focus to its button, never to nothing", async () => {
+    await openChats({ messages: [...BASE, webReply(3, { webSources: many(12), webCites: [] })] });
+    await click(toggle(3));
+    await click(more(3));
+    expect(list(3).contains(document.activeElement)).toBe(true);
+    // (A pointer press that does not focus the button, as in Safari: jsdom's click does not either.)
+    await click(toggle(3));
+    expect(list(3)).toBeNull();
+    expect(document.activeElement).toBe(toggle(3));
+  });
+
+  it("opening it moves the chat only when its first row would be out of sight, and never so far that its button leaves", async () => {
+    await openChats({ messages: [...BASE, webReply(3, { webSources: many(12), webCites: [] })] });
+    const scroller = timeline();
+    const rect = (top, bottom) => ({ top, bottom, left: 0, right: 300, width: 300, height: bottom - top, x: 0, y: top });
+    let now = {};
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function measured() {
+      if (this === scroller) return rect(0, 600);
+      if (this.classList.contains("sources-toggle")) return now.toggle;
+      if (this.classList.contains("sources-block")) return now.block;
+      if (this.parentElement?.classList.contains("sources-block")) return now.first;
+      return rect(0, 0);
+    });
+    const opened = async (rects) => {
+      now = rects;
+      scroller.scrollTop = 1000;
+      await click(toggle(3));
+      const moved = scroller.scrollTop - 1000;
+      await click(toggle(3));
+      return moved;
+    };
+    // In sight already (all of it, or its first row): nothing moves.
+    expect(await opened({ toggle: rect(100, 118), block: rect(120, 400), first: rect(120, 164) })).toBe(0);
+    expect(await opened({ toggle: rect(400, 418), block: rect(420, 700), first: rect(420, 464) })).toBe(0);
+    // Its first row below the edge: up by what it takes to show it all.
+    expect(await opened({ toggle: rect(560, 578), block: rect(580, 860), first: rect(580, 624) })).toBe(260);
+    // A long list of messages found lies open between the button and the pages: only as far as the button stays in sight.
+    expect(await opened({ toggle: rect(120, 138), block: rect(2140, 2420), first: rect(2140, 2184) })).toBe(120);
+    // The button already above the edge: nothing moves further.
+    expect(await opened({ toggle: rect(-40, -22), block: rect(900, 1180), first: rect(900, 944) })).toBe(0);
   });
 
   it("its chips open the page they cite (a number it was not handed shows none); its own links and bare addresses are plain text", async () => {
