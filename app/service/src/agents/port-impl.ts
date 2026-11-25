@@ -1816,13 +1816,15 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
 }
 
 /**
- * How long a run must have been `running` before the stale-run sweep may release it: twice the longer of a call's time
- * limit (`AGENT_RUN_TIMEOUT_MS`) and a reply's with tools (`TOOLS.runTimeoutMs`) — the reading of its attachments, then
- * its call or its rounds — and a minute for posting and recording. With the defaults 2 × max(120 s, 300 s) + 60 s: 11
- * minutes.
+ * How long a run must have been `running` before the stale-run sweep may release it: longer than any live run can be —
+ * twice the longer of a call's time limit (`AGENT_RUN_TIMEOUT_MS`) and a reply's tools' (`TOOLS.runTimeoutMs`: the
+ * reading of its attachments, then its call or its tools), the far ceiling of a reply whose model may think
+ * (`MODEL_CALL_CEILING_MS`: no clock but that one cuts its calls), and a minute for posting and recording. With the
+ * defaults 2 × max(120 s, 300 s) + 30 min + 60 s: 41 minutes. (Only a run of ANOTHER process waits for it: this
+ * process's own are never swept, and a process that starts recovers what the one before it left at once.)
  */
-export const staleAfterMs = (config: { agentRunTimeoutMs: number; tools: Pick<Config["tools"], "runTimeoutMs"> }): number =>
-  2 * Math.max(config.agentRunTimeoutMs, config.tools.runTimeoutMs) + 60_000;
+export const staleAfterMs = (config: { agentRunTimeoutMs: number; tools: Pick<Config["tools"], "runTimeoutMs">; modelCallCeilingMs: number }): number =>
+  2 * Math.max(config.agentRunTimeoutMs, config.tools.runTimeoutMs) + config.modelCallCeilingMs + 60_000;
 
 /**
  * The stale-run sweep (README "Agents and runs", Recovery): every run — reply or draft — that is `running`, has been

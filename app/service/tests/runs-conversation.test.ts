@@ -208,7 +208,7 @@ describe("recovery of a run in another conversation", () => {
 
   it("by the stale-run sweep: released in its own conversation, its owner told there, the follow-up queued there", async () => {
     const s = await setup("sven");
-    const runId = await insertRun(s, s.other, "running", { covers: 1, pending: 2, startedMinutesAgo: 12 });
+    const runId = await insertRun(s, s.other, "running", { covers: 1, pending: 2, startedMinutesAgo: 42 });
     await postedIn(s, s.other, runId);
     const socket = await connect(app, s.owner);
 

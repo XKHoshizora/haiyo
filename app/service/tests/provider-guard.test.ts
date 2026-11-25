@@ -1,9 +1,9 @@
 import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../src/errors.ts";
-import { guardedFetch, isPublicAddress, normaliseBaseUrl, type Resolve } from "../src/providers/guard.ts";
+import { guardedFetch, isPublicAddress, KEEPALIVE_IDLE_MS, normaliseBaseUrl, type Resolve } from "../src/providers/guard.ts";
 import { createSlots } from "../src/slots.ts";
 
 /**
@@ -456,6 +456,57 @@ describe("guardedFetch answers", () => {
     took = Date.now() - started;
     expect(took).toBeGreaterThanOrEqual(200);
     expect(took).toBeLessThan(3000);
+  });
+
+  it("the outbound socket asks the system to probe a silent peer: TCP keepalive, first probe after 30 s idle", async () => {
+    // What a unit test can prove: the knob is set on the socket the request goes out on. That the kernel then probes
+    // and ends a dead connection is the system's doing (Linux: one probe 10 s later, libuv's fixed interval and count).
+    expect(KEEPALIVE_IDLE_MS).toBe(30_000);
+    const set = vi.spyOn(net.Socket.prototype, "setKeepAlive");
+    try {
+      const server = await listener((_req, res) => void res.end("ok"));
+      const f = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 1000, allowInsecureLocal: true });
+      expect(await (await f(`http://127.0.0.1:${server.port}/`)).text()).toBe("ok");
+      expect(set.mock.calls).toContainEqual([true, KEEPALIVE_IDLE_MS]);
+    } finally {
+      set.mockRestore();
+    }
+  });
+
+  it("one clock from the request's start to its first response: a slow lookup does not buy the answer a fresh limit", async () => {
+    // The name takes 400 ms to find and the server 400 ms to answer: 800 ms in all, past the 600 ms allowed.
+    const slowly = (ms: number): Resolve => async () => {
+      await new Promise((wake) => setTimeout(wake, ms));
+      return [{ address: "127.0.0.1", family: 4 }];
+    };
+    const server = await listener((_req, res) => void setTimeout(() => res.end("late"), 400));
+    const plain = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 600, allowInsecureLocal: true, resolve: slowly(400) });
+    const started = Date.now();
+    expect(await settle(plain(`http://models.test:${server.port}/`))).toMatchObject(unavailable);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(550);
+    expect(Date.now() - started).toBeLessThan(790);
+    // Within it, the answer is taken.
+    const quick = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 600, allowInsecureLocal: true, resolve: slowly(50) });
+    expect(await (await quick(`http://models.test:${server.port}/`)).text()).toBe("late");
+    // A guard with a connection budget of its own (a call that may be thinking): found and connected within it, the answer
+    // is then waited for by `timeoutMs` alone.
+    const patient = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 5_000, connectTimeoutMs: 600, allowInsecureLocal: true, resolve: slowly(400) });
+    expect(await (await patient(`http://models.test:${server.port}/`)).text()).toBe("late");
+  });
+
+  it("connectTimeoutMs: a guard that waits long for an answer still gives up early on an address it cannot find", async () => {
+    const hangs: Resolve = () => new Promise(() => {});
+    const patient = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 5_000, connectTimeoutMs: 300, allowInsecureLocal: true, resolve: hangs });
+    let started = Date.now();
+    expect(await settle(patient("https://models.example/v1"))).toMatchObject(unavailable);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    expect(Date.now() - started).toBeLessThan(3000);
+
+    // The address found, the wait for the answer is `timeoutMs`: headers that come after `connectTimeoutMs` are waited for.
+    const server = await listener((_req, res) => void setTimeout(() => res.end("late but whole"), 700));
+    started = Date.now();
+    expect(await (await patient(`http://127.0.0.1:${server.port}/`)).text()).toBe("late but whole");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(650);
   });
 
   it("the time limit is between bytes: a slow but steady body is delivered", async () => {

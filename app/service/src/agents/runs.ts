@@ -1757,7 +1757,7 @@ export const AUTO_RETRY_WINDOW_MS = 600_000;
 /**
  * Whether a run that ended `end` failed for a reason that clears by itself: tagged so by THE classifier
  * (runtime/port.ts `passingEnding`, through `failedEnd`) — only an explicit signal (the upstream's 5xx, 408, 429; a call
- * error, a cut stream or the reply's time out before anything was said; the service losing the run mid-call). The system
+ * error or a cut stream before anything was said; the service losing the run mid-call; never `took_too_long`). The system
  * may then try it again by itself (`scheduleAutoRetry`).
  */
 export const transientFailure = (end: { status: string; transient?: true }): boolean => end.status === "failed" && end.transient === true;

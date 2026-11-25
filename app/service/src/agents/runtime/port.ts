@@ -118,7 +118,9 @@ export interface Estimated {
  * run's lane (`agentRunsPerMinute` for their own, `agentOthersRunsPerMinute` for everyone else's); the run was recorded
  * failed by the trigger (runs.ts), never by the worker, and nothing was called.
  * `thinking_exhausted`: the model stopped at its output limit having only thought, no answer (charged what the
- * upstream reported). `model_gone`: the Agent's model is not there to call any more — its provider model off the
+ * upstream reported). `took_too_long`: the reply's own time ran out (`AGENT_RUN_TIMEOUT_MS`, `TOOLS.runTimeoutMs`) before
+ * it had anything to post — the model was reached and was still working (thinking, most often); charged only what an
+ * upstream reported. `model_gone`: the Agent's model is not there to call any more — its provider model off the
  * provider's list, its provider gone, a site model no longer configured (models/resolve.ts `resolveModel` null); no
  * call is made, and only choosing another model helps.
  */
@@ -131,6 +133,7 @@ export type RunErrorCode =
   | "context_too_small"
   | "rate_limited"
   | "thinking_exhausted"
+  | "took_too_long"
   | "model_gone";
 
 /**
@@ -186,9 +189,11 @@ export type Ending =
 /**
  * THE classifier of a passing (transient) ending (README "Replies", Automatic retry, table 1): only an explicit signal,
  * and only while the reply as a whole has produced nothing yet (`progress` false) — the upstream's 5xx, 408 or 429; a call
- * error with no status, a cut stream or the reply's time out; or the service losing the run mid-call. After anything was
- * produced nothing is passing: the reply already spent and did things, and repeating them unattended is not acceptable.
- * Never an answer that finished with nothing in it, another status, or an error of another kind.
+ * error with no status or a cut stream; or the service losing the run mid-call. After anything was produced nothing is
+ * passing: the reply already spent and did things, and repeating them unattended is not acceptable. Never the reply's
+ * own time running out (`took_too_long`: its model was reached and was still working, so another attempt would most
+ * likely wait as long again, and its owner's provider may bill each attempt's thinking — the owner gets 重试 at once),
+ * an answer that finished with nothing in it, another status, or an error of another kind.
  */
 export function passingEnding(e: Ending): boolean {
   switch (e.kind) {
@@ -196,9 +201,9 @@ export function passingEnding(e: Ending): boolean {
       if (e.progress || e.code !== "provider_unavailable") return false;
       return e.status === undefined || e.status >= 500 || e.status === 408 || e.status === 429;
     case "cut":
-    case "timeout":
     case "lost":
       return !e.progress;
+    case "timeout":
     case "nothing":
       return false;
   }

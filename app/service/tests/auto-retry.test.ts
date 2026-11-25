@@ -54,7 +54,7 @@ function instance(config: Config = app.deps.config, tools = false): { port: DbAg
   const { db: pool, conversations, reads, searches } = app.deps;
   const toolbox = tools ? createToolbox({ db: pool, blobs, searches, config, log: app.log }) : null;
   const port = createAgentPort({ db: pool, config, blobs, realtime: app.realtime, conversations, reads, log: app.log, now, toolbox });
-  const worker = createAgentWorker({ port, models: gateway, runTimeoutMs: config.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools });
+  const worker = createAgentWorker({ port, models: gateway, runTimeoutMs: config.agentRunTimeoutMs, callCeilingMs: config.modelCallCeilingMs, maxRunsInFlight: 1, background: false, log: app.log, tools: config.tools });
   return { port, worker };
 }
 const metrics = (name: string, also = "") => lines.filter((l) => l.includes(`"metric":"${name}"`) && l.includes(also)).length;
@@ -115,7 +115,8 @@ describe("THE classifier of passing endings: every ending kind × whether the re
     ["address refused", (progress) => ({ kind: "upstream", code: "address_not_allowed", progress }), false],
     ["thinking exhausted", (progress) => ({ kind: "upstream", code: "thinking_exhausted", progress }), false],
     ["stream cut", (progress) => ({ kind: "cut", progress }), true],
-    ["the reply's time out", (progress) => ({ kind: "timeout", progress }), true],
+    // `took_too_long`: its model was reached and still working; another unattended attempt would only wait as long again.
+    ["the reply's time out", (progress) => ({ kind: "timeout", progress }), false],
     ["finished with nothing in it", () => ({ kind: "nothing" }), false],
     ["lost mid-call", (progress) => ({ kind: "lost", progress }), true],
   ];
@@ -196,6 +197,67 @@ describe("a run lost after its reply produced something is not passing: the row 
       ["queued", 1],
     ]);
     await db.query("update agent_runs set status = 'cancelled' where conversation_id = $1 and status = 'queued'", [quiet.conv]);
+  });
+
+  it("the reply's time runs out with nothing said: one attempt only, took_too_long shown at once with 重试, and the owner's retry answers", async () => {
+    const { owner, agent, conv } = await own("ar_too_long");
+    const config = { ...app.deps.config, agentRunTimeoutMs: 1_000 };
+    const { worker } = instance(config);
+    await say(owner, conv, "这道题想一想");
+    const thinking = gateway.hang();
+    expect(await worker.runOnce()).toBe(true);
+    expect((await thinking.reached).signal.aborted).toBe(true);
+    // Nothing is queued behind it, however long anyone waits: the system does not try it again.
+    expect((await runsOf(conv)).map((r) => [r.status, r.error, r.auto_attempt])).toEqual([["failed", "took_too_long", 0]]);
+    expect(await slot(owner, conv)).toMatchObject({ status: "failed", error: "took_too_long", retryable: true });
+    advance(600_000);
+    expect(await worker.runOnce()).toBe(false);
+    expect(metrics("auto_retry")).toBe(0);
+    // 重试 is the owner's: an ordinary reply, answered.
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).status).toBe(201);
+    gateway.reply("想好了。");
+    expect(await worker.runOnce()).toBe(true);
+    expect((await runsOf(conv)).map((r) => [r.status, r.error, r.owner_retry])).toEqual([
+      ["failed", "took_too_long", false],
+      ["done", null, true],
+    ]);
+    expect(await agentSaid(owner, conv, agent.id)).toEqual(["想好了。"]);
+  });
+
+  it("a model that may think is not cut by the reply's time: silent far past AGENT_RUN_TIMEOUT_MS it still answers; one that never answers ends at the ceiling — took_too_long, once", async () => {
+    const { owner, agent, conv } = await own("ar_ceiling");
+    // The Agent's model is marked as one that may think; a call's time is 300 ms, the far ceiling 1.5 s.
+    const config = {
+      ...app.deps.config,
+      siteModels: app.deps.config.siteModels.map((m) => (m.id === FAST.id ? { ...m, reasoning: ["low" as const] } : m)),
+      agentRunTimeoutMs: 300,
+      modelCallCeilingMs: 1_500,
+    };
+    const { worker } = instance(config);
+    await say(owner, conv, "这道题想一想");
+    const thinking = gateway.hang();
+    const running = worker.runOnce();
+    const call = await thinking.reached;
+    expect(call.thinks).toBe(true);
+    await new Promise((wake) => setTimeout(wake, 900)); // three times a call's time, in silence
+    expect(call.signal.aborted).toBe(false);
+    thinking.release("想好了。");
+    expect(await running).toBe(true);
+    expect(await agentSaid(owner, conv, agent.id)).toEqual(["想好了。"]);
+
+    // Never answering, its connection alive: the ceiling ends it, and the system does not try it again.
+    await say(owner, conv, "再想一道");
+    const stuck = gateway.hang();
+    const began = Date.now();
+    expect(await worker.runOnce()).toBe(true);
+    expect(Date.now() - began).toBeGreaterThanOrEqual(1_400);
+    expect((await stuck.reached).signal.aborted).toBe(true);
+    expect((await runsOf(conv)).map((r) => [r.status, r.error, r.auto_attempt])).toEqual([
+      ["done", null, 0],
+      ["failed", "took_too_long", 0],
+    ]);
+    expect(await slot(owner, conv)).toMatchObject({ status: "failed", error: "took_too_long", retryable: true });
+    expect(metrics("auto_retry")).toBe(0);
   });
 
   it("thinking received is recorded the same", async () => {

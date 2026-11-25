@@ -431,6 +431,8 @@ const RUN_FAILED = {
   address_not_allowed: "模型的接口地址不被允许，这次没有回复。请到设置里检查地址。",
   context_too_small: "人格文档太长或模型的上下文太小，放不下你的消息。请缩短人格文档或换一个模型。",
   thinking_exhausted: "模型把这次的输出额度都用在了思考上，没有写出回答。可以重试，或把思考程度调低。",
+  // The reply's own time ran out while its model was still working (most often thinking): it was reached, so never 连不上.
+  took_too_long: "这次想得太久，没有等到回复。可以重试，或把思考程度调低一些。",
   busy: "服务出了点问题，这次没有回复，也没有扣费。可以重试。",
   rate_limited: "发得太快了，请稍后重试。",
   agent_paused: "它已暂停，这次没有回复。",

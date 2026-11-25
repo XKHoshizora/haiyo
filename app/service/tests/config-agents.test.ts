@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, judgeCountAt, loadConfig } from "../src/config.ts";
+import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, gatewayCeilingMs, judgeCountAt, loadConfig } from "../src/config.ts";
 
 const base = {
   DATABASE_URL: "postgres://x/y",
@@ -45,6 +45,7 @@ describe("agent and metering configuration", () => {
       agentOthersRunsPerMinute: 20,
       agentCallerRunsPerMinute: 5,
       agentRunTimeoutMs: 120_000,
+      modelCallCeilingMs: 1_800_000,
       providerDefaultContextTokens: 16_000,
       providerDefaultMaxOutputTokens: 2048,
       providerMaxConcurrentCalls: 64,
@@ -78,6 +79,7 @@ describe("agent and metering configuration", () => {
       ["AGENT_OTHERS_RUNS_PER_MINUTE", "agentOthersRunsPerMinute", [["1", 1], ["10000", 10_000], ["", 20]], ["0", "10001", "-5", "2.5", "lots"]],
       ["AGENT_CALLER_RUNS_PER_MINUTE", "agentCallerRunsPerMinute", [["1", 1], ["10000", 10_000], ["", 5]], ["0", "10001", "-1", "1.5", "five"]],
       ["AGENT_RUN_TIMEOUT_MS", "agentRunTimeoutMs", [["1000", 1000], ["3600000", 3_600_000], ["", 120_000]], ["999", "3600001", "0", "60s"]],
+      ["MODEL_CALL_CEILING_MS", "modelCallCeilingMs", [["60000", 60_000], ["86400000", 86_400_000], ["", 1_800_000]], ["59999", "86400001", "0", "30m"]],
       ["PROVIDER_DEFAULT_CONTEXT_TOKENS", "providerDefaultContextTokens", [["2049", 2049], ["2000000", 2_000_000], ["", 16_000]], ["999", "2000001", "16k"]],
       ["PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS", "providerDefaultMaxOutputTokens", [["1", 1], ["15999", 15_999], ["", 2048]], ["0", "-1", "1.5"]],
       ["PROVIDER_MAX_CONCURRENT_CALLS", "providerMaxConcurrentCalls", [["1", 1], ["1000", 1000], ["", 64]], ["0", "1001", "many"]],
@@ -134,6 +136,11 @@ describe("agent and metering configuration", () => {
     const config = loadConfig({ ...short, HTTP_CONNECTION_TIMEOUT_MS: "20000" });
     expect(draftDeadlineMs(config)).toBe(10_000);
     expect(draftDeadlineMs(loadConfig(base))).toBe(110_000); // the defaults: 120 s connection, 120 s runs
+    // The gateway's own ceiling never shortens a call that has a total of its own (a memory call, a draft: at most
+    // AGENT_RUN_TIMEOUT_MS): a ceiling set below that leaves those calls their time.
+    expect(gatewayCeilingMs(loadConfig(base))).toBe(1_800_000);
+    expect(gatewayCeilingMs(loadConfig({ ...base, MODEL_CALL_CEILING_MS: "60000" }))).toBe(120_000);
+    expect(gatewayCeilingMs(loadConfig({ ...base, MODEL_CALL_CEILING_MS: "60000", AGENT_RUN_TIMEOUT_MS: "30000" }))).toBe(60_000);
     expect(draftDeadlineMs(loadConfig({ ...base, AGENT_RUN_TIMEOUT_MS: "30000" }))).toBe(30_000);
     expect(draftDeadlineMs(loadConfig({ ...base, AGENT_RUN_TIMEOUT_MS: "1000" }))).toBe(1_000);
   });

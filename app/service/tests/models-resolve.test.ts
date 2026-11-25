@@ -50,6 +50,7 @@ describe("resolveModel", () => {
         model: "think-1",
         maxOutputTokens: 8192 + 6000,
         thinkingSwitch: false,
+        thinks: true,
         upstreamId: "site:thinker",
       },
       contextTokens: 200000,
@@ -104,6 +105,7 @@ describe("resolveModel", () => {
         model: "deep",
         maxOutputTokens: config().providerDefaultMaxOutputTokens + 23_976,
         thinkingSwitch: true,
+        thinks: true,
         upstreamId: `provider:${provider.id}@https://api.example.com/v1`,
       },
       contextTokens: 50000,
@@ -127,7 +129,7 @@ describe("resolveModel", () => {
       pdf: true,
       reasoningAllowed: ["none"],
       reasoning: "none",
-      call: { maxOutputTokens: config().providerDefaultMaxOutputTokens, thinkingSwitch: false },
+      call: { maxOutputTokens: config().providerDefaultMaxOutputTokens, thinkingSwitch: false, thinks: false },
     });
 
     // Its levels narrowed after the Agent chose one (xhigh): the run is not failed, and it is made at the nearest level
@@ -219,6 +221,14 @@ describe("resolveModel", () => {
     const switched = { ...config(), siteModels: config().siteModels.map((m) => (m.id === "fast" ? { ...m, thinkingSwitch: true } : m)) };
     expect((await resolveModel(db, switched, { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinkingSwitch).toBe(true);
     expect((await resolveModel(db, config(), { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinkingSwitch).toBe(false);
+    // Whether the model may think (`ModelCall.thinks`: how long its calls may be silent) is the model's, whatever level is
+    // asked: a site model that lists a level or takes the switch; one that lists none and takes none does not.
+    expect((await thinker("none"))?.call.thinks).toBe(true);
+    expect((await resolveModel(db, switched, { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinks).toBe(true);
+    expect((await resolveModel(db, config(), { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinks).toBe(false);
+    // `none` is no thinking level: a site model configured with it alone is not one that may think.
+    const noneOnly = { ...config(), siteModels: config().siteModels.map((m) => (m.id === "fast" ? { ...m, reasoning: ["none" as const] } : m)) };
+    expect((await resolveModel(db, noneOnly, { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinks).toBe(false);
   });
 
   it("whether its replies may be offered tools: a site model's configuration; a provider model's entry unless it says false", async () => {
