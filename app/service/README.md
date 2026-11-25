@@ -377,8 +377,19 @@ until the new container is healthy and the old one has exited. The three ways it
      `select name from pgmigrations order by run_on desc, id desc limit 1` is `073_others_columns_and_social_skeleton`. If
      the old deployment was stopped by the platform, redeploy the PREVIOUS image now.
    - Fix the new image and deploy again: the Up puts every row where the first one did (20 → none, a proactive 20 → 70; a
-     number an owner set to anything else is never touched; both thinking levels `none`).
+     number an owner set to anything else is never touched; each existing Agent's two new levels its own level).
    Rolling the code back WITHOUT the Downs keeps 074 applied under the old code: the hazard itself.
+
+**What 076 does to existing Agents, and what it costs.** The code deployed before ring 1a makes a co-member's call and a
+proactive reply at the Agent's OWN thinking level. 076 keeps that: every existing Agent's `othersReasoning` and
+`proactiveReasoning` are set to its own level (a new Agent has `none` for both). Such replies are now priced at that level
+against the owner's daily numbers and the proactive budget, and at a high level on a paid model that is a lot. With the
+design's paid prices (3 000 and 15 000 micro-points a token) and the default allowance of 12 000 tokens at 高: a plain reply
+holds 16 500 x 3 000 + (800 + 12 000) x 15 000 = 241.5 points (61.5 at 不思考). Under the default 300 points a day one such
+reply can be held at a time and the page's estimate reads 1 a day (11 at 不思考); under the default proactive budget of 70
+points NO proactive reply of such an Agent is admitted (241.5 > 70; at 不思考 one is). On a free-tier model (140 and 280) the
+same reply holds 5.9 points instead of 2.5. An owner sees both levels on the Agent's page and can lower them in its form; the
+controller should look at which existing Agents think at 高 or above on a paid model before the deploy.
 
 **Rehearse before the deploy**, against the site's database, from where the take-back would be run:
 `node dist/cli.js migrate:down --name 076_others_reasoning` with NO confirmation flag must print what 076's Down removes and
@@ -386,14 +397,17 @@ then answer "the last migration applied is 073_others_columns_and_social_skeleto
 undone". That proves the command, the image and the database connection without changing anything.
 
 **`migrate:down`** is the tool for exactly that take-back and for nothing else. It undoes ONE migration: the last one applied,
-and only when it is the one named. It first prints what that migration's Down removes, and then refuses unless
+and only when it is the one named. The check and the Down are one act: one connection, under a lock of the command's own held
+from before the check until after the Down, so two operators who both name the last migration take turns and the second is
+refused ("the last migration applied is 075_…, not 076_…") instead of removing the one under it. It first prints what that migration's Down removes, and then refuses unless
 `--i-understand-this-deletes-data` is given; with `NODE_ENV=production` it also wants `--in-production`. That second guard
 reads the `NODE_ENV` of the process the operator runs, not the database: run from a laptop with only `DATABASE_URL` set, the
 one flag is enough, so look at which database the URL names before confirming. What the Downs do: 076's drops every owner's
-two chosen thinking levels (replies for others and proactive ones run without thinking again). 075's DELETES for good every
+two thinking levels, the ones 076 copied from its own level and any an owner chose since (under the image from before 074,
+which is what serves after the three Downs, such replies run at the Agent's OWN level again, as they did). 075's DELETES for good every
 停止往来, every report of an Agent, every Agent's contact policy and every operator's disable. 074's deletes no row (it writes
 20 points on EVERY Agent with no number of its own, also one whose owner had chosen no limit: the safe direction for money,
-and puts a proactive 70 back to 20). On the first deploy 075's tables are empty and nobody has chosen a level, so nothing is
+and puts a proactive 70 back to 20). On the first deploy 075's tables are empty and every level is still the copy 076 made, so nothing is
 lost; once Agent social has been on, 075's Down is a loss of people's own decisions (people who were stopped can reach those
 Agents again) and must not be used as a way of "turning the feature off": the switch does that.
 
@@ -889,7 +903,7 @@ numbers). They are sub-limits inside yours, never added to them: all your Agents
 50 answers a day unless you set others), whatever their number. `othersUsedToday` is what others' use of this Agent has taken since the site
 day began, against its own numbers: `answers` (replies admitted, counting both calls and replies nobody asked for, as its own
 answers number does) and `points` (a string: settled charges plus what running replies hold, calls only: what its own points
-number holds; a reply nobody asked for has `proactiveBudget`). `othersReasoning` and `proactiveReasoning` (the owner's view only; each one of `reasoning`'s levels, default `none`; Owner decision 2026-11-26, migration 076) are the thinking levels of a reply somebody other than the owner called for (a co-member's @ in a group, a visitor's message) and of a reply nobody asked for. Any level is accepted whatever the model: a reply runs at the setting's effective level on the Agent's model (the level itself when the model lists it, else the nearest listed one below, `none` when there is none: `callLevel`), and the others' numbers hold for the level actually run. `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
+number holds; a reply nobody asked for has `proactiveBudget`). `othersReasoning` and `proactiveReasoning` (the owner's view only; each one of `reasoning`'s levels; `none` for a new Agent, and for an Agent that existed before migration 076 its own level, which is what such replies ran at before; Owner decision 2026-11-26) are the thinking levels of a reply somebody other than the owner called for (a co-member's @ in a group, a visitor's message) and of a reply nobody asked for. Any level is accepted whatever the model: a reply runs at the setting's effective level on the Agent's model (the level itself when the model lists it, else the nearest listed one below, `none` when there is none: `callLevel`; and where the model's protocol has no such level, the one it is sent, `sentLevel`: Chat Completions and Gemini send `xhigh` for `max`, and then `xhigh` is what the hold is sized for and what the owner's line under the reply says), and the others' numbers hold for the level actually run. `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
 replies cost today (a string: settled plus held, the same definition of "used"), against `proactiveBudget`. `proactive` says
 whether it may reply in a group to a message that called no Agent, when the judgement model picks it (Proactive replies;
 default false); `proactiveLevel` how readily (`less`, `normal` — the default —, `more`: the threshold it starts from);
@@ -1633,12 +1647,19 @@ Raising a number above today's use answers calls again at once; lowering it belo
 points, so for such an Agent only the answers number holds. Others' replies are bounded: one real tool call, three further calls answered
 with a note, 800 output tokens of their own, one tool round (`OTHERS.*`); the hold covers every request a reply can make, so spent never
 passes held. Their thinking level is the owner's setting per Agent (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`;
-both `none` by default, Owner decision 2026-11-26): the reply runs at the setting's effective level on the model, with that level's
-thinking allowance on top of the 800 (`othersOutputLimit`, the one definition), and everything money follows the level actually run:
+`none` for a new Agent, Owner decision 2026-11-26): the reply runs at the setting's effective level on the model, with that level's
+thinking allowance on top of the 800 (`othersOutputLimit`, the one definition; the upstream is given the one sum as its limit, so
+at a level the ANSWER is held to the 800 when it is posted: cut there and marked cut, as a reply over its length is), and everything money follows the level actually run:
 the hold at admission (`boundedForOthers`, then `othersFits` under the account lock), the floor and the ceiling the use page's
 `reached` and `tight` are computed from, the proactive lane's early check, and the per-day estimate (`perDay`, which also counts
 half of the allowance as thought in each plain reply). A higher level makes each reply cost more: the estimate drops and `tight` or
-`reached` may show sooner.
+`reached` may show sooner. `reached` (the page's 用完了, the card's tag, and the group's line 「今天只回复它的主人，明天恢复。」) is said
+only when EVERY reply for others would be refused: a call at its level and, while the Agent makes them, a reply nobody asked for
+at its own. A call that cannot be afforded while a shorter or cheaper reply still fits is `tight`, ends quietly, and tells the
+group nothing. Whose reply a group reply is (its lane, its caller, its level and its bounds) is read from the calls it still
+answers when it begins, after the calls refused since were dropped: a reply only a member's call is left on is a reply for
+others whoever first called it, and one only its owner's call is left on is the owner's own. The site day the numbers are read
+for is the day it is under the owner's account lock when the hold is placed, not the day the reply began to be prepared.
 
 The owner's other limits hold throughout, for every reply in a group — called by a person's mention, an Agent's, or a
 follow-up of what was noted while a reply ran: replies started a minute, counted per lane (`AGENT_RUNS_PER_MINUTE` for
@@ -3117,7 +3138,9 @@ the requests waiting on the Agents you own, newest first; `subject` is `{"id", "
 
 *Session: required.* No body. The Agent's owner lets a requester in (ring 1a). → 200 `{"state": "live", "conversationId"}`;
 409 `not_requested` (nothing waits: no request, a request answered, or one that ran out, which is ended `expired`); 404 `not_found`
-(not your Agent: an unknown one's answer). It never touches a bar.
+(not your Agent: an unknown one's answer). The approval is also how an owner lifts a 停止往来 THEY set on that person: it is deleted
+by this act (one state: nobody is both stopped and let in). A stop the OTHER person set is not the owner's to lift and nothing
+passes it: the approval is then answered 409 `not_requested`, as for a block made since, and nothing changes.
 
 #### `POST /api/agent-contacts/:agentId/:subjectId/decline`
 
@@ -3157,14 +3180,14 @@ stays barred while a row of either of you stands. → 200 `{"ok": true, "ended":
 `not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
 Every block of a person by a person writes its own row too (a block's) in its own transaction; unblocking deletes only that block's row.
 Unfriending is just unfriending (Owner decision 2026-11-25, as in WeChat and QQ): it writes no bar, starts no cooldown and puts no one in a
-stopped list. Pressing 停止往来 on someone already stopped keeps the stop and its time (so the other person's wait does not start again), but still ends every access of the pair that stands at that moment, such as one the owner approved after the first stop; it answers 200 as the first press did. What follows from the friendship being gone is that the accesses admitted because of it (`contacts`, the policy that lets
+stopped list. Pressing 停止往来 on someone already stopped keeps the stop and its time (so the other person's wait does not start again), but still ends every access of the pair that stands at that moment, (none can have been made since: an approval lifts the approver's own stop, and nothing passes the other person's); it answers 200 as the first press did. What follows from the friendship being gone is that the accesses admitted because of it (`contacts`, the policy that lets
 friends in) between the two sides' Agents and people end as an ordinary ending, and that is all (no call of anyone is taken out of a group reply: in a group anyone may @ the Agent): a row the owner approved one by one stays,
 and once they are friends again the same policy admits them again, with no 恢复往来. 停止往来 is the only act that writes a `stop` row.
 
 #### `DELETE /api/bars/:personId`
 
 *Session: required.* 恢复往来: lifts your own stop (never a block's row, and never the other person's). Not behind `SOCIAL.enabled`: what a
-person set they can always lift. It brings no row back: whoever is let in again needs a request approved after it. → 200 `{"ok": true}`; 404 `not_found` otherwise: no stop of yours, whatever else
+person set they can always lift. It brings no row back: whoever is let in again to the conversation needs a new request approved (in a group nothing is needed: only what stands refuses there). → 200 `{"ok": true}`; 404 `not_found` otherwise: no stop of yours, whatever else
 stands (the other person's, a block's): one answer.
 
 #### `POST /api/reports`

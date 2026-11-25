@@ -178,8 +178,12 @@ for (const [size, contextOptions] of SIZES) {
       const got = await (await ann.request.get(`/api/agents/${agent.id}`)).json();
       expect(got).toMatchObject({ othersReasoning: "medium", proactiveReasoning: "low", reasoning: "none" });
     }).toPass();
-    await page.goto("/agents");
-    const after = await openAgentDetail(page, name);
+    // The form leaves by itself once the save has answered (one step back in history, to the Agent's page): the page is read THERE. A
+    // `goto` here would start a second navigation while that one is under way, and one of the two is aborted (the cloud run's
+    // net::ERR_ABORTED at 360).
+    const after = page.getByRole("region", { name: "Agent 管理" });
+    await expect(after.getByRole("heading", { name })).toBeVisible();
+    await expect(page.getByRole("region", { name: "编辑 Agent" })).toHaveCount(0);
     await expect(after).toContainText("回应别人时思考：中");
     await expect(after).toContainText("主动回复时思考：低");
     expect(await noSideways(page)).toBe(true);
