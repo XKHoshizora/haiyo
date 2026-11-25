@@ -50,7 +50,7 @@ import { afterProactive, afterQuiet, thresholdNow, type GroupState } from "./thr
 export interface DecideDeps {
   db: Db;
   judge: Judge | null;
-  config: RunLimits & Pick<Config, "judge" | "proactive" | "memory" | "siteModels">;
+  config: RunLimits & Pick<Config, "judge" | "proactive" | "memory" | "siteModels" | "reasoningAllowanceTokens">;
   log: Pick<FastifyBaseLogger, "info" | "debug">;
   /** Called as the judgement model is asked, once (the scheduler counts its hourly caps by it); not when it is not. */
   onAsk?: () => void;

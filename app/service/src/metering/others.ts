@@ -18,7 +18,8 @@ import {
 } from "../agents/runtime/prompt.ts";
 import { AGENT_NAME_MAX, DISPLAY_NAME_MAX } from "../schemas.ts";
 import { notesFor } from "../memory/store.ts";
-import type { Resolved } from "../models/resolve.ts";
+import { REASONING_LEVELS, type ReasoningLevel } from "../config.ts";
+import { callLevel, outputLimit, type Resolved } from "../models/resolve.ts";
 import { maxCostMicro } from "./prices.ts";
 import type { PayClass } from "./pool.ts";
 
@@ -182,12 +183,40 @@ export function othersHold(
   return room === null ? first : first + maxCostMicro(resolved, Math.min(heldTokens + room.growthTokens, room.roomCapTokens));
 }
 
+/** What the level rules of a reply for others need of the configuration. */
+type LevelConfig = Pick<Config, "others" | "reasoningAllowanceTokens">;
+
 /**
- * The model as an others' reply calls it (plan B2a): every call at most `OTHERS.outputTokens` of output and reasoning
- * `none`. What admission holds for, what the context plan leaves room beside, and what the call is sent at — one `Resolved`.
+ * The output limit of every call of a reply for others at `level`: the reply's own part is at most `OTHERS.outputTokens`, and at a
+ * level its thinking allowance comes on top, exactly as for any call (models/resolve.ts `outputLimit`: upstreams count thinking
+ * inside the output limit). ONE definition: what the call is sent at, what admission holds for, and what the owner's page computes
+ * the floor, the ceiling and the estimate from.
  */
-export function boundedForOthers<R extends Pick<Resolved, "call" | "reasoning">>(resolved: R, outputTokens: number): R {
-  return { ...resolved, reasoning: "none", call: { ...resolved.call, maxOutputTokens: Math.min(resolved.call.maxOutputTokens, outputTokens) } };
+export function othersOutputLimit(config: LevelConfig, replyLimit: number, contextTokens: number, level: ReasoningLevel): number {
+  return outputLimit(Math.min(replyLimit, config.others.outputTokens), contextTokens, level, config.reasoningAllowanceTokens);
+}
+
+/** The level a site model runs `wanted` at: the effective level (models/resolve.ts `callLevel`) over what the site lists for it. */
+export const siteLevel = (site: { reasoning: readonly ReasoningLevel[] }, wanted: ReasoningLevel): ReasoningLevel =>
+  callLevel(REASONING_LEVELS.filter((level) => level === "none" || site.reasoning.includes(level)), wanted);
+
+/**
+ * The level setting that applies to a reply of `lane` that is not the owner's own (Owner decision 2026-11-26): the Agent's
+ * `proactiveReasoning` for a reply nobody asked for, its `othersReasoning` for every other (a co-member's call, a visitor's).
+ */
+export const othersWanted = (agent: { othersReasoning: ReasoningLevel; proactiveReasoning: ReasoningLevel }, lane: string): ReasoningLevel =>
+  lane === "proactive" ? agent.proactiveReasoning : agent.othersReasoning;
+
+/**
+ * The model as a reply for others calls it (plan B2a; Owner decision 2026-11-26): every call's own output at most
+ * `OTHERS.outputTokens`, at the EFFECTIVE level of `wanted` (the owner's setting for such replies: `othersWanted`) on this model,
+ * with that level's thinking allowance. What admission holds for, what the context plan leaves room beside, and what the call is
+ * sent at — one `Resolved`, so the hold is always priced at the level actually run.
+ */
+export function boundedForOthers<R extends Pick<Resolved, "call" | "reasoning" | "reasoningAllowed" | "contextTokens" | "replyLimit">>(resolved: R, config: LevelConfig, wanted: ReasoningLevel): R {
+  const reasoning = callLevel(resolved.reasoningAllowed, wanted);
+  const maxOutputTokens = othersOutputLimit(config, resolved.replyLimit ?? resolved.call.maxOutputTokens, resolved.contextTokens, reasoning);
+  return { ...resolved, reasoning, call: { ...resolved.call, maxOutputTokens } };
 }
 
 /**
@@ -293,11 +322,18 @@ export const NO_RUN = "00000000-0000-0000-0000-000000000000";
  * admission holds by, without a last call. 0 for a provider's own model (it holds nothing). `fixedTokens`: the images' and PDFs'
  * constants, which admission adds AFTER the clamp (`holdTokens(...) + context.fixedTokens`, port-impl.ts), so they are added after it here too.
  */
-export function othersFloorHold(config: Pick<Config, "siteModels" | "others">, model: { source: string; id?: string } | null, inputBytes: number, fixedTokens = 0): bigint {
+export function othersFloorHold(
+  config: Pick<Config, "siteModels"> & LevelConfig,
+  model: { source: string; id?: string } | null,
+  inputBytes: number,
+  fixedTokens = 0,
+  /** The level setting of the reply (`othersWanted`); the hold is for its effective level on the model, as `boundedForOthers` sizes the call. */
+  wanted: ReasoningLevel = "none",
+): bigint {
   if (model?.source !== "site") return 0n;
   const site = config.siteModels.find((m) => m.id === model.id);
   if (!site) return 0n;
-  const maxOutputTokens = Math.min(site.maxOutputTokens, config.others.outputTokens);
+  const maxOutputTokens = othersOutputLimit(config, site.maxOutputTokens, site.contextTokens, siteLevel(site, wanted));
   const priced = { source: "site", price: { inputMicroPerToken: site.inputMicroPerToken, outputMicroPerToken: site.outputMicroPerToken }, call: { maxOutputTokens } } as unknown as Pick<
     Resolved,
     "price" | "call" | "source"
@@ -401,9 +437,11 @@ const PLAIN_COST_OUTPUT_TOKENS = 500;
  * model, or a site model the site no longer has: 0.
  */
 export function perDayEstimate(
-  config: Pick<Config, "siteModels" | "others">,
+  config: Pick<Config, "siteModels"> & LevelConfig,
   model: AgentModel,
   numbers: { owner: OthersNumbers; agent: { answers: number | null; pointsMicro: bigint | null } },
+  /** The Agent's `othersReasoning`: the estimate is for the level its replies for others run at. */
+  wanted: ReasoningLevel = "none",
 ): number {
   if (model === null) return 0;
   const answers = BigInt(Math.min(numbers.owner.answers, numbers.agent.answers ?? Number.MAX_SAFE_INTEGER));
@@ -411,9 +449,11 @@ export function perDayEstimate(
   const site = config.siteModels.find((m) => m.id === model.id);
   if (!site) return 0;
   const points = numbers.agent.pointsMicro !== null && numbers.agent.pointsMicro < numbers.owner.pointsMicro ? numbers.agent.pointsMicro : numbers.owner.pointsMicro;
-  const plainHold = othersFloorHold(config, model, PLAIN_REPLY_INPUT_TOKENS);
+  const plainHold = othersFloorHold(config, model, PLAIN_REPLY_INPUT_TOKENS, 0, wanted);
   if (points < plainHold) return 0;
-  const plainCost = BigInt(PLAIN_COST_INPUT_TOKENS) * BigInt(site.inputMicroPerToken) + BigInt(PLAIN_COST_OUTPUT_TOKENS) * BigInt(site.outputMicroPerToken);
+  // At a level a plain reply also thinks: counted as half of the level's allowance on this model (what the limit grows by, halved).
+  const thinking = Math.floor((othersOutputLimit(config, site.maxOutputTokens, site.contextTokens, siteLevel(site, wanted)) - othersOutputLimit(config, site.maxOutputTokens, site.contextTokens, "none")) / 2);
+  const plainCost = BigInt(PLAIN_COST_INPUT_TOKENS) * BigInt(site.inputMicroPerToken) + BigInt(PLAIN_COST_OUTPUT_TOKENS + thinking) * BigInt(site.outputMicroPerToken);
   const replies = plainCost === 0n ? answers : 1n + (points - plainHold) / plainCost;
   return Number(replies < answers ? replies : answers);
 }
@@ -437,8 +477,8 @@ const EMPTY_SCENE: GroupScene = { title: null, agents: [], more: false, people: 
  */
 export async function othersPlainFloor(
   q: Queryable,
-  config: Pick<Config, "siteModels" | "others" | "siteTimezone">,
-  agent: { name: string; handle: string; persona: string; ownerId: string; model: AgentModel },
+  config: Pick<Config, "siteModels" | "siteTimezone"> & LevelConfig,
+  agent: { name: string; handle: string; persona: string; ownerId: string; model: AgentModel; othersReasoning: ReasoningLevel; proactiveReasoning: ReasoningLevel },
   scene: GroupScene | null,
   now: Date,
   lane: "others" | "proactive",
@@ -468,7 +508,7 @@ export async function othersPlainFloor(
       "utf8",
     );
   const bytes = lane === "proactive" || place === "group" ? grouped() : place === "social" ? social() : Math.min(grouped(), social());
-  return othersFloorHold(config, agent.model, bytes);
+  return othersFloorHold(config, agent.model, bytes, 0, othersWanted(agent, lane));
 }
 
 /** A string of `n` four-byte characters: the most bytes a name or a line of that many characters can have. */
@@ -511,8 +551,8 @@ function fullScene(): GroupScene {
  */
 export async function othersPlainCeiling(
   q: Queryable,
-  config: Pick<Config, "siteModels" | "others" | "siteTimezone" | "memory" | "agentGroupContextTokens">,
-  agent: { id: string; name: string; handle: string; persona: string; ownerId: string; memory: boolean; sharedNotes: boolean; model: AgentModel },
+  config: Pick<Config, "siteModels" | "siteTimezone" | "memory" | "agentGroupContextTokens"> & LevelConfig,
+  agent: { id: string; name: string; handle: string; persona: string; ownerId: string; memory: boolean; sharedNotes: boolean; model: AgentModel; othersReasoning: ReasoningLevel; proactiveReasoning: ReasoningLevel },
   now: Date,
 ): Promise<bigint> {
   if (agent.model?.source !== "site") return 0n;
@@ -533,7 +573,8 @@ export async function othersPlainCeiling(
     false,
   ).text;
   const system = Buffer.byteLength(grouped, "utf8") >= Buffer.byteLength(social, "utf8") ? grouped : social;
-  const maxOutput = Math.min(site.maxOutputTokens, config.others.outputTokens);
+  // (The output limit at the level such replies run at: what `begin` leaves room beside, so what the notes' budget is computed with.)
+  const maxOutput = othersOutputLimit(config, site.maxOutputTokens, site.contextTokens, siteLevel(site, agent.othersReasoning));
   // Notes: a superset of any place's (the owner's whole view: everything), shown in the group's form.
   const all = await notesFor(q, agent, { conversationId: "", group: false });
   const everything = { owner: all.owner, self: all.self, hearsay: all.hearsay.map((h) => ({ speakerName: h.speakerName, text: h.text, saidAt: h.saidAt, group: "" })) };
@@ -548,7 +589,7 @@ export async function othersPlainCeiling(
   const noted = notes > 0 ? notes + 2 + Buffer.byteLength(NOTES_SECRET_CLAUSE, "utf8") : 0;
   // The text clamps at the context beside the output; the images' and PDFs' constants (at most the cap) are added after the clamp.
   const constants = Math.max(config.agentGroupContextTokens, config.others.contextWeight);
-  return othersFloorHold(config, agent.model, Buffer.byteLength(system, "utf8") + noted + summary + conversation, constants);
+  return othersFloorHold(config, agent.model, Buffer.byteLength(system, "utf8") + noted + summary + conversation, constants, agent.othersReasoning);
 }
 
 /**
@@ -565,8 +606,8 @@ export async function othersPlainCeiling(
  */
 export async function agentRoom(
   q: Queryable,
-  config: Pick<Config, "others" | "siteTimezone" | "siteModels" | "memory" | "agentGroupContextTokens">,
-  agent: { id: string; ownerId: string; name: string; handle: string; persona: string; memory: boolean; sharedNotes: boolean; model: AgentModel },
+  config: Pick<Config, "siteTimezone" | "siteModels" | "memory" | "agentGroupContextTokens"> & LevelConfig,
+  agent: { id: string; ownerId: string; name: string; handle: string; persona: string; memory: boolean; sharedNotes: boolean; model: AgentModel; othersReasoning: ReasoningLevel; proactiveReasoning: ReasoningLevel },
   now: Date,
 ): Promise<{ askable: boolean; reached: boolean; tight: boolean }> {
   if (agent.model === null) return { askable: false, reached: false, tight: false };

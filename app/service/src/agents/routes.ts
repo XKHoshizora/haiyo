@@ -153,6 +153,9 @@ const agentSettings = {
   webSearch: z.boolean().optional(),
   ownerAppellation: ownerAppellation.optional(),
   reasoning: reasoning.optional(),
+  /** The level of its replies for others, and of its proactive replies (Owner decision 2026-11-26): any level; the effective one runs. */
+  othersReasoning: reasoning.optional(),
+  proactiveReasoning: reasoning.optional(),
   model: model.optional(),
 };
 
@@ -194,6 +197,9 @@ const agentView = z.object({
     }),
   ),
   reasoning,
+  /** The owner's view only: the saved levels for others' replies and for proactive ones (the effective level is what runs). */
+  othersReasoning: reasoning,
+  proactiveReasoning: reasoning,
   model: modelChoice(z.string()),
   modelUsable: z.boolean(),
   paused: z.boolean(),
@@ -235,6 +241,8 @@ const toView = (a: AgentRow, used: { answers: number; pointsMicro: bigint; proac
   ownerAppellation: a.ownerAppellation,
   appellations,
   reasoning: a.reasoning,
+  othersReasoning: a.othersReasoning,
+  proactiveReasoning: a.proactiveReasoning,
   model: a.model,
   modelUsable,
   paused: a.paused,
@@ -320,6 +328,8 @@ export function registerAgentRoutes(
         webSearch: b.webSearch ?? true,
         ownerAppellation: b.ownerAppellation ?? null,
         reasoning: b.reasoning ?? "none",
+        othersReasoning: b.othersReasoning ?? "none",
+        proactiveReasoning: b.proactiveReasoning ?? "none",
         model: b.model ?? null,
       };
       const { agent, change, greeting: greets } = await db.tx((t) => createAgent(t, me.id, input, config, greeting));

@@ -9,7 +9,7 @@ import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { placeOf, type Place } from "../social/place.ts";
 import { reach } from "../social/reach.ts";
-import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit, othersRoomAdvisory, type OthersLane } from "../metering/others.ts";
+import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit, othersRoomAdvisory, othersWanted, type OthersLane } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -763,8 +763,9 @@ export class DbAgentPort implements AgentPort {
         return { end: KEY_UNREADABLE };
       }
       if (!resolved) return { end: MODEL_GONE };
-      // A reply somebody other than its owner called for: every call at most `OTHERS.outputTokens` of output, reasoning `none`.
-      if (bounded) resolved = boundedForOthers(resolved, config.others.outputTokens);
+      // A reply somebody other than its owner called for: its own output at most `OTHERS.outputTokens`, at the effective level of the
+      // owner's setting for such replies (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`), the hold priced at it.
+      if (bounded) resolved = boundedForOthers(resolved, config, othersWanted(agent, state.lane));
       // Whether its name part alone, typed, calls it there (mentions.ts `namePartCalls`: how a send would read it — no
       // message is read): then the system text names both ways it is called. Not for a reply nobody asked for, whose text
       // says nobody called it.

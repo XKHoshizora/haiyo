@@ -102,7 +102,7 @@ export function registerOthersRoutes(app: FastifyInstance): void {
       const askable: boolean[] = [];
       for (const a of agents) {
         const u = perAgent.get(a.id) ?? { answers: 0, pointsMicro: 0n };
-        const perDay = perDayEstimate(config, a.model, { owner, agent: { answers: a.othersAnswers, pointsMicro: a.othersBudgetMicro } });
+        const perDay = perDayEstimate(config, a.model, { owner, agent: { answers: a.othersAnswers, pointsMicro: a.othersBudgetMicro } }, a.othersReasoning);
         const room = await agentRoom(t, config, a, now);
         askable.push(room.askable);
         rows.push({ agentId: a.id, answers: u.answers, points: formatPoints(u.pointsMicro), perDay, reached: room.reached, tight: room.tight, canReply: room.askable });

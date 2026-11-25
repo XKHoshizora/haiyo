@@ -83,6 +83,9 @@ export interface NewAgent {
   webSearch?: boolean;
   ownerAppellation: string | null;
   reasoning: ReasoningLevel;
+  /** The levels of its replies for others and of its proactive replies (migration 076); absent: `none`. */
+  othersReasoning?: ReasoningLevel;
+  proactiveReasoning?: ReasoningLevel;
   model: AgentModel;
 }
 
@@ -127,8 +130,9 @@ export async function createAgent(
   const created = await t.query<{ created_at: Date }>(
     `insert into agents (principal_id, intro, field, persona, persona_version, reply_mode, group_mentions, reasoning,
                          model_source, site_model_id, provider_id, provider_model, chain_budget_micro, others_budget_micro, owner_appellation,
-                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search, others_answers)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) returning created_at`,
+                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search, others_answers,
+                         others_reasoning, proactive_reasoning)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) returning created_at`,
     [
       id,
       input.intro,
@@ -151,6 +155,8 @@ export async function createAgent(
       input.whisperElsewhere,
       input.webSearch ?? true,
       input.othersAnswers ?? null,
+      input.othersReasoning ?? "none",
+      input.proactiveReasoning ?? "none",
     ],
   );
   const conversation = await t.query<{ id: string }>("insert into conversations (type, creator_id) values ('agent', $1) returning id", [ownerId]);
@@ -194,6 +200,8 @@ export async function createAgent(
     webSearch: input.webSearch ?? true,
     ownerAppellation: input.ownerAppellation,
     reasoning: input.reasoning,
+    othersReasoning: input.othersReasoning ?? "none",
+    proactiveReasoning: input.proactiveReasoning ?? "none",
     model: input.model,
     paused: false,
     deleted: false,

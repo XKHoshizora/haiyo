@@ -25,7 +25,7 @@ export async function runMigrations(databaseUrl: string, opts: { quiet?: boolean
 
 /**
  * What a migration's Down removes, in words an operator can weigh before running it (`migrate:down` prints it). Declared for the
- * migrations a deploy may have to take back; for any other the operator is told to read the file's Down.
+ * migrations a deploy may have to take back (ring 1a's three, 074 to 076, deploy together, and 073 under them); for any other the operator is told to read the file's Down.
  */
 export const DOWN_REMOVES: Readonly<Record<string, string>> = {
   "073_others_columns_and_social_skeleton":
@@ -34,6 +34,8 @@ export const DOWN_REMOVES: Readonly<Record<string, string>> = {
     "074's Down writes 20 points on EVERY Agent that has no others' number of its own (also one whose owner chose no limit before), puts a proactive budget at exactly 70 back to 20 (also one an owner set to 70), and restores both column defaults (20). No row is deleted. It is the state the code from before 074 needs.",
   "075_agent_social_access":
     "075's Down DELETES, for good: every 停止往来 (the stop rows of access_bars) and the bars made from blocks, every report of an Agent (agent_reports), every Agent's contact policy and picks (agents.contact_policy, contact_picked, agent_contact_picks), every operator's disable (agents.disabled_at), every answer to a persona card (social_card_answers), whose bar ended an access (agent_contacts.barred_by) and which personas were read (agents.persona_checked_version). People who were stopped can reach those Agents again, and a later Up brings back only the bars that come from blocks.",
+  "076_others_reasoning":
+    "076's Down drops agents.others_reasoning and agents.proactive_reasoning: every owner's chosen thinking level for replies to other people and for proactive replies. No other row changes; the code before 076 makes such replies without thinking. It must be undone before 075 and 074 can be.",
 };
 
 export const CONFIRM_FLAG = "--i-understand-this-deletes-data";

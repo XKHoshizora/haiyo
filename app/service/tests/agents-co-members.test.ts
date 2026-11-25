@@ -49,6 +49,11 @@ const HIDDEN = {
 const HIDDEN_KEYS = [
   // Whether the site's operator turned an Agent off: its owner's view alone (fix round 1, m5).
   "operatorDisabled",
+  // The levels of its replies for others and of its proactive replies: its owner's settings (fix round 2, migration 076).
+  "othersReasoning",
+  "proactiveReasoning",
+  "others_reasoning",
+  "proactive_reasoning",
   // When a person may change their handle again: `GET /api/me` alone (family names).
   "handleChangeAvailableAt",
   // Whether a message asked an Agent it could not name (Task M fix round 1): read by the proactive judgement only.

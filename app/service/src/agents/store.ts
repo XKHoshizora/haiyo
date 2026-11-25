@@ -71,6 +71,13 @@ export interface AgentRow {
   /** What it calls its owner (1–20 characters, one line); null: by name. The owner's setting. */
   ownerAppellation: string | null;
   reasoning: ReasoningLevel;
+  /**
+   * The level a reply somebody other than its owner called for is made at (a co-member's @, a visitor's message), and the level of a
+   * reply nobody asked for (Owner decision 2026-11-26; migration 076). The owner's settings, `none` by default; a run is made at each
+   * one's effective level on the model (models/resolve.ts `callLevel`), and the others' numbers hold for that level.
+   */
+  othersReasoning: ReasoningLevel;
+  proactiveReasoning: ReasoningLevel;
   model: AgentModel;
   paused: boolean;
   deleted: boolean;
@@ -107,6 +114,8 @@ interface AgentDbRow {
   web_search: boolean;
   owner_appellation: string | null;
   reasoning: ReasoningLevel;
+  others_reasoning: ReasoningLevel;
+  proactive_reasoning: ReasoningLevel;
   model_source: "site" | "provider" | null;
   site_model_id: string | null;
   provider_id: string | null;
@@ -120,7 +129,7 @@ interface AgentDbRow {
 
 const SELECT = `select p.id, p.owner_id, ${handleOf("p")} as handle, p.handle::text as name_part, p.display_name as name, p.avatar_version, a.intro, a.field, a.persona,
        a.persona_version, a.reply_mode, a.group_mentions, a.chain_budget_micro::text,
-       a.others_budget_micro::text, a.others_answers, a.proactive, a.proactive_level, a.proactive_budget_micro::text, a.memory, a.memory_ask, a.shared_notes, a.whisper_elsewhere, a.web_search, a.owner_appellation, a.reasoning, a.model_source, a.site_model_id, a.provider_id, a.provider_model,
+       a.others_budget_micro::text, a.others_answers, a.proactive, a.proactive_level, a.proactive_budget_micro::text, a.memory, a.memory_ask, a.shared_notes, a.whisper_elsewhere, a.web_search, a.owner_appellation, a.reasoning, a.others_reasoning, a.proactive_reasoning, a.model_source, a.site_model_id, a.provider_id, a.provider_model,
        a.paused, a.deleted_at is not null as deleted, a.disabled_at is not null as operator_disabled, ac.conversation_id, a.created_at
   from agents a
   join principals p on p.id = a.principal_id
@@ -167,6 +176,8 @@ function toAgent(r: AgentDbRow): AgentRow {
     webSearch: r.web_search,
     ownerAppellation: r.owner_appellation,
     reasoning: r.reasoning,
+    othersReasoning: r.others_reasoning,
+    proactiveReasoning: r.proactive_reasoning,
     model,
     paused: r.paused,
     deleted: r.deleted,
@@ -309,6 +320,8 @@ export interface AgentPatch {
   webSearch?: boolean;
   ownerAppellation?: string | null;
   reasoning?: ReasoningLevel;
+  othersReasoning?: ReasoningLevel;
+  proactiveReasoning?: ReasoningLevel;
   model?: AgentModel;
 }
 
@@ -321,7 +334,7 @@ export async function updateAgent(t: Tx, current: AgentRow, patch: AgentPatch): 
             reasoning = $8, model_source = $9, site_model_id = $10, provider_id = $11, provider_model = $12, chain_budget_micro = $13,
             others_budget_micro = $14, owner_appellation = $15, proactive = $16, proactive_level = $17,
             proactive_budget_micro = $18, memory = $19, memory_ask = $20, shared_notes = $21, whisper_elsewhere = $22, web_search = $23,
-            others_answers = $24
+            others_answers = $24, others_reasoning = $25, proactive_reasoning = $26
       where principal_id = $1`,
     [
       current.id,
@@ -345,6 +358,8 @@ export async function updateAgent(t: Tx, current: AgentRow, patch: AgentPatch): 
       next.whisperElsewhere,
       next.webSearch,
       next.othersAnswers,
+      next.othersReasoning,
+      next.proactiveReasoning,
     ],
   );
   if (next.name !== current.name) await t.query("update principals set display_name = $2 where id = $1", [current.id, next.name]);

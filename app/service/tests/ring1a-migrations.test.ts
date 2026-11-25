@@ -26,6 +26,10 @@ afterAll(async () => {
 });
 
 const P = 1_000_000n;
+/** Ring 1a's three migrations, which deploy together: the step-L numbers, access, and the two thinking levels (fix round 2). */
+const RING = ["074_others_step_l", "075_agent_social_access", "076_others_reasoning"];
+const levelColumns = async () =>
+  (await db.query<{ c: string }>("select column_name as c from information_schema.columns where table_name = 'agents' and column_name in ('others_reasoning', 'proactive_reasoning') order by 1")).rows.map((r) => r.c);
 const applied = async () => (await db.query<{ name: string }>("select name from pgmigrations where name >= '073' order by name")).rows.map((r) => r.name);
 /** Each Agent's two numbers in points, by the name part it was made with. */
 const numbers = async () =>
@@ -71,11 +75,15 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     const messagesBefore = (await db.query<{ n: number }>("select count(*)::int as n from messages")).rows[0]!.n;
 
     // ── Down for both, in reverse. The command refuses anything but the last one applied.
-    expect((await applied()).slice(-2)).toEqual(["074_others_step_l", "075_agent_social_access"]);
-    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 075_agent_social_access/);
+    expect((await applied()).slice(-3)).toEqual(RING);
+    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 076_others_reasoning/);
     // Not without the operator's word that data goes: nothing is undone.
-    await expect(undoMigration(url, "075_agent_social_access", quiet)).rejects.toThrow(/--i-understand-this-deletes-data/);
-    expect((await applied()).at(-1)).toBe("075_agent_social_access");
+    await expect(undoMigration(url, "075_agent_social_access", sure)).rejects.toThrow(/last migration applied is 076_others_reasoning/);
+    await expect(undoMigration(url, "076_others_reasoning", quiet)).rejects.toThrow(/--i-understand-this-deletes-data/);
+    expect((await applied()).at(-1)).toBe("076_others_reasoning");
+    // 076's rows before its Down: an owner's two choices (lost by the Down, `none` again after the Up: the defaults).
+    await db.query("update agents set others_reasoning = 'high', proactive_reasoning = 'low' where principal_id = $1", [ids.chosen]);
+    await undoMigration(url, "076_others_reasoning", sure);
     await undoMigration(url, "075_agent_social_access", sure);
     await undoMigration(url, "074_others_step_l", sure);
     expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
@@ -86,8 +94,13 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
       await db.query("update agents set others_budget_micro = $2, proactive_budget_micro = $3 where principal_id = $1", [ids[tag], others === null ? null : (BigInt(others) * P).toString(), (BigInt(proactive) * P).toString()]);
     }
 
-    // ── Up for both, as a deploy runs them.
+    expect(await levelColumns()).toEqual([]);
+
+    // ── Up for all three, as a deploy runs them.
     await runMigrations(url, quiet);
+    expect(await levelColumns()).toEqual(["others_reasoning", "proactive_reasoning"]);
+    expect((await db.query("select distinct others_reasoning, proactive_reasoning from agents")).rows).toEqual([{ others_reasoning: "none", proactive_reasoning: "none" }]);
+    await expect(db.query("update agents set others_reasoning = 'loud'")).rejects.toThrow(/check/);
     const first = await numbers();
     expect(first).toEqual({ olddefault: [null, 70], nolimit: [null, 70], chosen: [35, 50], seventy: [70, 70], small: [5, 9], big: [150, 101] });
     expect(await defaults()).toEqual({ others_budget_micro: null, proactive_budget_micro: "70000000" });
@@ -112,6 +125,7 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
 
     // ── A deploy that goes wrong, first way: 075 fails (here: a table in its way). Both were pending in one transaction, so 074 is not
     // applied either: the old code keeps serving on exactly the schema it had, and nothing has to be taken back.
+    await undoMigration(url, "076_others_reasoning", sure);
     await undoMigration(url, "075_agent_social_access", sure);
     await undoMigration(url, "074_others_step_l", sure);
     const writeOld = async () => {
@@ -133,8 +147,9 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     expect(await numbers()).toEqual(first);
     expect(Object.values(await numbers()).filter(([others]) => others === null)).toHaveLength(2);
     // The take-back is 075's Down and THEN 074's: the other order is refused and undoes nothing.
-    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 075_agent_social_access/);
-    expect((await applied()).slice(-2)).toEqual(["074_others_step_l", "075_agent_social_access"]);
+    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 076_others_reasoning/);
+    expect((await applied()).slice(-3)).toEqual(RING);
+    await undoMigration(url, "076_others_reasoning", sure);
     await undoMigration(url, "075_agent_social_access", sure);
     await undoMigration(url, "074_others_step_l", sure);
     expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
@@ -147,7 +162,7 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
 
     // ── Fixed forward: both run again; every row is where the first Up put it.
     await runMigrations(url, quiet);
-    expect((await applied()).slice(-2)).toEqual(["074_others_step_l", "075_agent_social_access"]);
+    expect((await applied()).slice(-3)).toEqual(RING);
     expect(await numbers()).toEqual(first);
     expect((await db.query("select setter_id, other_id, kind from access_bars order by 1, 2")).rows).toEqual(pairs);
     // And the service, on what the migrations left, answers as ever.
