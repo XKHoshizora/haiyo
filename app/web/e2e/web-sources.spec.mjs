@@ -25,12 +25,12 @@ test.beforeEach(async () => {
 });
 
 const SHOTS = (process.env.SRCFOLD_SHOTS ?? "").trim();
-/** A screenshot for the report: only when SRCFOLD_SHOTS names a folder. */
-async function shot(page, name) {
+/** A screenshot for the report: only when SRCFOLD_SHOTS names a folder — of the page, or of `part` of it alone. */
+async function shot(page, name, part = page) {
   if (SHOTS === "") return;
   mkdirSync(SHOTS, { recursive: true });
   await page.waitForTimeout(250);
-  await page.screenshot({ path: path.join(SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
+  await part.screenshot({ path: path.join(SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
 }
 
 /** The message scroller and the page do not scroll sideways. */
@@ -88,7 +88,9 @@ test("a web reply's own link and bare address are plain text; only its sources a
   // Its one chip opens the page it cites.
   const chip = web.locator(".bubble a.cite-link");
   await expect(chip).toHaveCount(1);
-  await expect(chip).toHaveText("网2");
+  // Its number alone, no word of any language (told from a message's citation by its box).
+  await expect(chip).toHaveText(/^\d+$/);
+  await expect(chip).toHaveText("2");
   await expect(chip).toHaveAttribute("href", SOURCES[1].url);
   await expect(chip).toHaveAttribute("target", "_blank");
   await expect(chip).toHaveAttribute("rel", "noopener noreferrer nofollow");
@@ -107,6 +109,66 @@ test("a web reply's own link and bare address are plain text; only its sources a
   await expect(plain.locator(".bubble .md")).toHaveCount(1);
   await expect(plain.locator('.bubble a[href="https://evil.example/?d=1"]')).toHaveCount(1);
   await expect(plain.locator("ol.web-sources")).toHaveCount(0);
+  // Each link's real host after it, in ASCII brackets after one space — no mark of any one language — plain in the web
+  // reply, after the link in the other.
+  for (const reply of [web, plain]) {
+    await expect(reply.locator(".bubble .md-host")).toHaveText(["(evil.example)", "(bare.example)"]);
+    await expect(reply.locator(".bubble")).toContainText("详情 (evil.example) 或 https://bare.example/x (bare.example) 。");
+  }
+  await shot(ann.page, "srcfold-1280-link-host", plain);
+});
+
+test("a chip in a narrow, deeply nested list stays one line: 12 keeps its 16px box, and its line is as tall as a line without a chip (360)", async ({ people }) => {
+  const ann = await people.member("Ann");
+  const page = ann.page;
+  const agent = await agentApi(ann, { name: `嵌套${uniq(4)}` });
+  const tag = uniq(6);
+  const chat = await openChat(page, agent.name);
+  // Fourteen levels of list; at the deepest, two items alike but for the chip after the first.
+  const levels = Array.from({ length: 14 }, (_, i) => `${"  ".repeat(i)}- ${i === 0 ? `第1层 ${tag}` : `第${i + 1}层`}`);
+  const deep = "  ".repeat(14);
+  const text = [...levels, `${deep}- 晴`, `${deep}- 晴`].join("\n");
+  await modelStub.reply(text);
+  await sendText(page, agent.name, `明天天气？${tag}`);
+  await expect(agentMessagesWith(chat, tag)).toHaveCount(1);
+  const seq = await replySeq(ann, agent.id, agent.conversationId, tag);
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ n: i + 1, url: `https://site${i + 1}.example.com/p`, title: `第 ${i + 1} 个网页` }));
+  await addWebSources(agent.conversationId, seq, twelve, [{ at: text.indexOf("- 晴") + 3, n: 12 }]);
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.reload();
+  const web = agentMessagesWith(chatPane(page, agent.name), tag);
+  await expect(web.locator(".bubble .md")).toHaveCount(1);
+  const chip = web.locator(".bubble .md li a.cite-link");
+  await expect(chip).toHaveText("12");
+  const m = await chip.evaluate((a) => {
+    const li = a.closest("li");
+    const twin = li.nextElementSibling;
+    // The chip's own width on one line, measured apart from the list.
+    const alone = a.closest("sup").cloneNode(true);
+    li.closest(".md").append(alone);
+    const natural = alone.querySelector("a").getBoundingClientRect().width;
+    alone.remove();
+    const style = getComputedStyle(li);
+    return {
+      room: li.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      natural,
+      box: a.querySelector(":scope > span").getBoundingClientRect().height,
+      link: a.getBoundingClientRect().height,
+      line: parseFloat(style.lineHeight),
+      item: li.getBoundingClientRect().height,
+      twin: twin.getBoundingClientRect().height,
+    };
+  });
+  // The case this guards: the item is narrower than the chip on one line.
+  expect(m.room, `the deepest item's room against the chip's ${m.natural}px`).toBeLessThan(m.natural);
+  expect(m.box, "the number's box is one 16px line").toBeCloseTo(16, 0);
+  expect(m.link, "the chip is as tall as the text's line").toBeCloseTo(m.line, 0);
+  // The item without a chip is whole lines of the text; so is the one with it (its chip on a line of its own or not).
+  const whole = (height) => Math.max(1, Math.round(height / m.line)) * m.line;
+  expect(m.twin, `the item without a chip, in lines of ${m.line}px`).toBeCloseTo(whole(m.twin), 0);
+  expect(m.item, `the item with the chip, in lines of ${m.line}px`).toBeCloseTo(whole(m.item), 0);
+  await chip.scrollIntoViewIfNeeded();
+  await shot(page, "srcfold-360-nested-chip");
 });
 
 test("twelve sources are one folded line under the reply; opened in place they are five rows and 显示全部 12 个 — at 1280 and at 390, by the keyboard, never wider than the column", async ({ people }) => {
@@ -178,6 +240,8 @@ test("twelve sources are one folded line under the reply; opened in place they a
     expect(line.height, "the button is one line of small text").toBeLessThanOrEqual(22);
     expect(line.parent, "the line is one line").toBeLessThanOrEqual(22);
     if (size.width <= 480) expect([line.above, line.below], "a 44px target on a narrow screen").toEqual([true, true]);
+    // The reply itself, its chip in its text (its number alone, in its box) — on a phone's width too.
+    await shot(page, `srcfold-${name}-0-chip`, web);
     if (name !== "360") await shot(page, `srcfold-${name}-1-folded`);
 
     // Opened by the keyboard, in place: five rows and the row that shows them all.

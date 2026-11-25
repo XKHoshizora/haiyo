@@ -119,7 +119,11 @@ test("an Agent's reply renders its heading, code, table and maths through the wo
   // Every link is followed by its real host, whatever its text says.
   const docs = body.getByRole("link", { name: "https://docs.example.com/guide" });
   await expect(docs).toHaveAttribute("href", "https://evil.example.net/steal");
-  await expect(body.locator(".md-host")).toHaveText([`（${IMAGE_HOST}）`, "（evil.example.net）"]);
+  await expect(body.locator(".md-host")).toHaveText([`(${IMAGE_HOST})`, "(evil.example.net)"]);
+  // …after one space, in ASCII brackets (no mark of any one language).
+  await expect(body.locator(".md-link").filter({ has: ann.page.getByRole("link", { name: "https://docs.example.com/guide" }) })).toHaveText(
+    "https://docs.example.com/guide (evil.example.net)",
+  );
   // Raw HTML is not markup: no <script> in the page from it, and it never ran.
   await expect(chat.locator("script")).toHaveCount(0);
   expect(await ann.page.evaluate(() => window.__markdownScript)).toBeUndefined();

@@ -150,7 +150,7 @@ describe("RichTree", () => {
     expect(validateTree(tree).ok).toBe(true);
     const { container } = render(<RichTree tree={tree} />);
     expect(container.querySelector(".md > p > .md-link > a").getAttribute("title")).toBe("https://docs.example/a");
-    expect(container.querySelector(".md-host").textContent).toBe("（docs.example）");
+    expect(container.querySelector(".md-host").textContent).toBe("(docs.example)");
     expect(container.querySelector(".md-table td").getAttribute("style")).toBe("text-align: right;");
     expect(container.querySelector(".katex .mord").getAttribute("style")).toBe("height: 1em; vertical-align: -0.2em;");
   });

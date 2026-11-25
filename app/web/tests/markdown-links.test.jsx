@@ -64,7 +64,7 @@ describe("every link shows its real host, whatever its text says", () => {
       const host = a.nextElementSibling?.matches(".md-host") ? a.nextElementSibling.textContent : null;
       // (The review's 1 (i), its override gone, shows exactly the address it opens: it has its note like any link.)
       if (label.startsWith("(i) a bidi override as a character reference")) expect(a.textContent).toBe(href);
-      expect(host, `${a.textContent} → ${href}`).toBe(`（${shownHost(href)}）`);
+      expect(host, `${a.textContent} → ${href}`).toBe(`(${shownHost(href)})`);
       // The host shown is the parsed target's, Punycode, never more than 40 characters.
       expect(host.length).toBeLessThanOrEqual(42);
       expect(a.getAttribute("title")).toBe(href);
@@ -82,13 +82,13 @@ describe("every link shows its real host, whatever its text says", () => {
     const bubble = await show("[bank.example](https://bаnk.example/) https://аррlе.com/login");
     const punycode = ["https://bаnk.example/", "https://аррlе.com/"].map((url) => new URL(url).host);
     expect(punycode.every((host) => host.startsWith("xn--"))).toBe(true);
-    expect([...bubble.querySelectorAll(".md-host")].map((el) => el.textContent)).toEqual(punycode.map((host) => `（${host}）`));
+    expect([...bubble.querySelectorAll(".md-host")].map((el) => el.textContent)).toEqual(punycode.map((host) => `(${host})`));
   });
 
   it("a long target host shows its end, where its registrable part is", async () => {
     const host = "bank.example.secure-login.account-verify.session-0123456789.evil.example";
     const bubble = await show(`[bank.example](https://${host}/)`);
-    expect(bubble.querySelector(".md-host").textContent).toBe(`（…${host.slice(-39)}）`);
+    expect(bubble.querySelector(".md-host").textContent).toBe(`(…${host.slice(-39)})`);
     expect(host.slice(-39)).toMatch(/evil\.example$/);
   });
 });
@@ -105,21 +105,21 @@ describe("no exception: a link whose text is exactly its address has its host af
   ])("%s", async (_label, text, shown) => {
     const bubble = await show(text);
     expect(bubble.querySelector("a").textContent).toBe(shown);
-    expect(bubble.querySelector(".md-host").textContent).toBe("（example.com）");
+    expect(bubble.querySelector(".md-host").textContent).toBe("(example.com)");
   });
 
   it("two exact links glued together: each is followed by its own host, so the run cannot read as one address", async () => {
     const bubble = await show("https://accounts.google.com/signin?continue=<https://evil.example/>");
-    expect(bubble.textContent).toBe("https://accounts.google.com/signin?continue=（accounts.google.com）https://evil.example/（evil.example）");
+    expect(bubble.textContent).toBe("https://accounts.google.com/signin?continue= (accounts.google.com)https://evil.example/ (evil.example)");
     expect([...bubble.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["https://accounts.google.com/signin?continue=", "https://evil.example/"]);
   });
 
   it("plain text or a code span directly in front of an exact link: the link's host follows it", async () => {
     const plain = await show("accounts.google.com/signin?continue=https://evil.example/");
-    expect(plain.textContent).toBe("accounts.google.com/signin?continue=https://evil.example/（evil.example）");
+    expect(plain.textContent).toBe("accounts.google.com/signin?continue=https://evil.example/ (evil.example)");
     cleanup();
     const code = await show("`https://accounts.google.com/`https://evil.example/");
-    expect(code.textContent).toBe("https://accounts.google.com/https://evil.example/（evil.example）");
+    expect(code.textContent).toBe("https://accounts.google.com/https://evil.example/ (evil.example)");
     expect(code.querySelectorAll("a")).toHaveLength(1);
   });
 });
@@ -149,7 +149,7 @@ describe("a link's content is one plain text", () => {
     }
     const bubble = await show(long);
     expect([...bubble.querySelector("a").textContent]).toHaveLength(201);
-    expect(bubble.querySelector(".md-host").textContent).toBe("（a.example）");
+    expect(bubble.querySelector(".md-host").textContent).toBe("(a.example)");
   });
 
   it("a text that shows nothing is the address itself", () => {
@@ -219,7 +219,7 @@ describe("the main thread's check of a link", () => {
     const { container } = render(<RichTree tree={tree} />);
     expect(container.innerHTML).not.toMatch(BIDI);
     expect(container.querySelector("a").textContent).toBe("https://evil.example/moc.elgoog");
-    expect(container.querySelector(".md-host").textContent).toBe("（evil.example）");
+    expect(container.querySelector(".md-host").textContent).toBe("(evil.example)");
   });
 
   it("repeats the worker's rule on a link's text: separators collapsed, trimmed, cut at 200 characters", () => {
@@ -239,7 +239,7 @@ describe("the main thread's check of a link", () => {
     // Shown the same way even from a tree that was never checked.
     const { container } = render(<RichTree tree={a(`甲${nbsp.repeat(300)}乙${"丙".repeat(400)}`)} />);
     expect(container.querySelector("a").textContent).toBe(`甲 乙${"丙".repeat(197)}…`);
-    expect(container.querySelector(".md-host").textContent).toBe("（a.example）");
+    expect(container.querySelector(".md-host").textContent).toBe("(a.example)");
   });
 
   it("a worker's tree with a link holding elements is shown plain with the note, none of it rendered", async () => {

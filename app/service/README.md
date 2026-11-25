@@ -3454,8 +3454,8 @@ characters, its host in ASCII) and its title as cleaned; no snippet is kept — 
 are public pages). `plainLinks: true` whenever the stored reply has any web source at all, decided from what is stored
 (even when none of them passes the read's checks). `lookups.web` counts the searches that brought results back. A client shows the sources as a list
 under the lookup line, each row the title and the address's real host (`new URL(url).hostname`, never a site name), and
-a chip at each of `webCites` (`网2`); in a reply with `plainLinks` it shows the text's own links and bare addresses as plain
-text, so that only the sources open anything (the web client also shows every reply being written so while the site
+a chip at each of `webCites` (its number alone, `2`, in a box that tells it from a message's citation); in a reply with
+`plainLinks` it shows the text's own links and bare addresses as plain text, so that only the sources open anything (the web client also shows every reply being written so while the site
 offers web search). `via.webSearches` (owner only, only when above 0): how many searches its `points`
 include. None of these keys exists while the site offers no web search.
 

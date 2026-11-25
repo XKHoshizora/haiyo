@@ -15,20 +15,24 @@ import "katex/dist/katex.min.css";
 
 /**
  * A link: its text (one plain text, by the tree's check; put on one short line once more here), then where it really
- * goes, always. Without a safe address it is its text alone.
+ * goes, always: one space and the real host in ASCII brackets, `文档 (docs.example)` — no mark of any one language (the
+ * text is trimmed, so the space is the only one). The link, the space and the note are one isolated wrapper. Without a
+ * safe address it is its text alone.
  */
 function Link({ href, text, plain = false }) {
   const safe = safeHref(href);
   const cleaned = linkTextShown(withoutMarks(text));
   if (!safe) return cleaned;
+  const host = (
+    <span className="md-host" dir="auto">
+      ({withoutBidiControls(shownHost(safe))})
+    </span>
+  );
   // A reply whose run searched the web: its text and real host as plain text, nothing to open (its sources list is).
   if (plain) {
     return (
       <span className="md-link md-link-plain" dir="auto">
-        {cleaned || safe}
-        <span className="md-host" dir="auto">
-          （{withoutBidiControls(shownHost(safe))}）
-        </span>
+        {cleaned || safe} {host}
       </span>
     );
   }
@@ -36,10 +40,8 @@ function Link({ href, text, plain = false }) {
     <span className="md-link" dir="auto">
       <a href={safe} title={safe} target="_blank" rel="noopener noreferrer nofollow" dir="auto">
         {cleaned || safe}
-      </a>
-      <span className="md-host" dir="auto">
-        （{withoutBidiControls(shownHost(safe))}）
-      </span>
+      </a>{" "}
+      {host}
     </span>
   );
 }
