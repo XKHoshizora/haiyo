@@ -50,7 +50,7 @@ const PAID3 = {
   contextTokens: 100000,
   vision: false,
   pdf: false,
-  reasoning: [],
+  reasoning: ["low", "high"],
 };
 const ENV = { ...SITE_ENV, SITE_MODELS: JSON.stringify([...JSON.parse(SITE_ENV.SITE_MODELS), PAID3]) };
 const { app, db } = useApp({ env: ENV, judge, agentWorker: false, config: { judge: JUDGE } });
@@ -1018,6 +1018,32 @@ describe.each([false, true])("a proactive budget that cannot hold a reply (memor
 
     // Just over: the floor fits, so the judgement is asked and the pick is queued (admission, with the whole hold, decides after).
     await setBudget(anna.id, floor + 1n);
+    judge.answer(byName({ anna: 0.9 }));
+    const again = await say(w.third, w.g, "有人知道吗？");
+    expect((await decide(w.g, again, lowBase())).runs).toHaveLength(1);
+    expect(optionIn(calls, "anna")).toBe(true);
+  });
+
+  it("a proactive level that is not the default: the floor is the hold at THAT level, so a budget that covers a reply at none and not at the level set never reaches the judge; back at none it does (fix round 3, point 11)", async () => {
+    const w = await world();
+    const anna = await agentOf(w.owner, "anna", w.g, { model: { source: "site", id: "paid3" }, proactiveReasoning: "high" });
+    const atLevel = await floorOf(w, anna.id);
+    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveReasoning: "none" })).status).toBe(200);
+    const atNone = await floorOf(w, anna.id);
+    // The level's thinking allowance, at the model's output price, is what the floor grows by.
+    expect(atLevel - atNone).toBe(BigInt(app.deps.config.reasoningAllowanceTokens.high) * 15_000n);
+    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveReasoning: "high" })).status).toBe(200);
+    await setBudget(anna.id, atLevel - 1n);
+    expect(atLevel - 1n).toBeGreaterThan(atNone);
+    const calls = judge.calls.length;
+    const rowsBefore = await rowsIn(w.g);
+    const asked = await say(w.third, w.g, "有人懂吗？");
+    expect(await decide(w.g, asked, lowBase())).toEqual(noneTriggered());
+    if (!memory) expect(judge.calls.length).toBe(calls);
+    expect(optionIn(calls, "anna")).toBe(false);
+    expect(await rowsIn(w.g)).toBe(rowsBefore);
+    // The same budget, the level back at none: the floor fits, the judgement is asked and the pick is queued.
+    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveReasoning: "none" })).status).toBe(200);
     judge.answer(byName({ anna: 0.9 }));
     const again = await say(w.third, w.g, "有人知道吗？");
     expect((await decide(w.g, again, lowBase())).runs).toHaveLength(1);

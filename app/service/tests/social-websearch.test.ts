@@ -12,9 +12,9 @@ import { useApp } from "./helpers/harness.ts";
 import { grant, paidReply } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { providerBody } from "./helpers/providers.ts";
-import { committedMicro, FREE_MODEL, OTHERS_ENV, POINT } from "./helpers/others.ts";
+import { BIG_MODEL, committedMicro, FREE_MODEL, OTHERS_ENV, POINT } from "./helpers/others.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
-import { closeAllSockets } from "./helpers/ws.ts";
+import { closeAllSockets, connect } from "./helpers/ws.ts";
 
 /**
  * Fix round 1, I6 (review `integ1a-review.md`): web search by a VISITOR, through a social conversation, on the real port, toolbox,
@@ -55,11 +55,11 @@ function fakeEngine(during: () => Promise<void> = async () => {}) {
 
 let n = 0;
 /** An owner with points and an Agent, a visitor let in, and a port and worker of their own with the web search offered. */
-async function world(engine: WebEngine, gateway: Pick<ModelGateway, "stream">, modelOf: (owner: Actor) => Promise<unknown> = async () => FREE_MODEL) {
+async function world(engine: WebEngine, gateway: Pick<ModelGateway, "stream">, modelOf: (owner: Actor) => Promise<unknown> = async () => FREE_MODEL, over: Record<string, unknown> = {}) {
   const tag = `${++n}x${Math.floor(Math.random() * 1e6)}`;
   const [owner, visitor] = [await signUp(app, `wso${tag}`), await signUp(app, `wsv${tag}`)];
   await grant(db, owner.id, 10_000n * POINT);
-  const agent = (await mustCreateAgent(app, owner, { handle: `wsy${tag}`, name: "wsy", model: await modelOf(owner), persona: "简短地回答。" })) as { id: string; conversationId: string };
+  const agent = (await mustCreateAgent(app, owner, { handle: `wsy${tag}`, name: "wsy", model: await modelOf(owner), persona: "简短地回答。", ...over })) as { id: string; conversationId: string };
   const { conversationId: conv } = await seedSocial(app, { owner, agentId: agent.id, visitor });
   const config = webConfig();
   const { db: pool, blobs, searches, conversations, reads } = app.deps;
@@ -220,5 +220,64 @@ describe("a visitor's turn on the owner's provider model whose entry says nothin
     expect(lines.join(" ")).not.toContain("canary");
     // The visitor pays nothing for it.
     expect((await db.query("select 1 from usage_records where owner_id = $1", [w.visitor.id])).rowCount).toBe(0);
+  });
+});
+
+/**
+ * Fix round 3, point 10: the level an owner sets for replies to others is also a VISITOR's reply's level, in the conversation with the
+ * Agent. Through the hold, the call, the settlement and what the visitor is sent.
+ */
+describe("a visitor's reply at the level the owner set for others", () => {
+  it("held for the level before the call, sent at it, settled on the owner within the hold; the owner reads the level and the thinking, the visitor neither (read, sync and socket)", async () => {
+    const THOUGHT = "THINKING-canary-7719";
+    const allowance = app.deps.config.reasoningAllowanceTokens.medium;
+    const inner = scriptedGateway().reply("周三下午可以。", { reasoning: THOUGHT, usage: { inputTokens: 900, outputTokens: 2500 } });
+    const ctx = { conv: "" };
+    let held = -1n;
+    const gateway = Object.create(inner) as ModelGateway & typeof inner;
+    gateway.stream = ((call: ModelCall) => {
+      const events = inner.stream(call);
+      return (async function* () {
+        held = BigInt((await db.query<{ h: string }>("select hold_micro::text as h from agent_runs where conversation_id = $1 order by created_at desc limit 1", [ctx.conv])).rows[0]!.h);
+        yield* events;
+      })();
+    }) as ModelGateway["stream"];
+    const w = await world(fakeEngine(), gateway, async () => BIG_MODEL, { othersReasoning: "medium", reasoning: "low" });
+    ctx.conv = w.conv;
+    const socket = await connect(app, w.visitor);
+    await w.say(w.visitor, "周三有空吗？");
+    expect(await w.worker.runOnce()).toBe(true);
+    // The call: the others' level (not the Agent's own low), the others' 800 with the level's allowance on top.
+    expect(inner.calls[0]).toMatchObject({ reasoning: "medium", maxOutputTokens: 800 + allowance });
+    // Held before the call for exactly that output (280 micro-points a token on this model) and its input.
+    expect(held >= BigInt(800 + allowance) * 280n).toBe(true);
+    // (Offered the web search, it holds for its last call too: at most twice that, and a few points of input.)
+    expect(held <= 2n * (BigInt(800 + allowance) * 280n + 5n * POINT)).toBe(true);
+    const run = await w.run();
+    expect(run).toMatchObject({ status: "done", lane: "others", caller: w.visitor.id, hold: "0" });
+    expect((await db.query<{ reasoning: string }>("select reasoning from agent_runs where id = $1", [run.id])).rows[0]!.reasoning).toBe("medium");
+    // Settled on the owner, once, within what was held; nothing for the visitor.
+    const records = (await db.query<{ owner_id: string; total: string }>("select owner_id, (free_micro + balance_micro)::text as total from usage_records where run_id = $1", [run.id])).rows;
+    expect(records).toHaveLength(1);
+    expect(records[0]!.owner_id).toBe(w.owner.id);
+    expect(BigInt(records[0]!.total) > 0n && BigInt(records[0]!.total) <= held).toBe(true);
+    expect((await db.query("select 1 from usage_records where owner_id = $1", [w.visitor.id])).rowCount).toBe(0);
+    // The owner, watching, reads the level under the reply and the thinking; the visitor is sent neither, anywhere.
+    const of = async (who: Actor) => ((await api(app, who, "GET", `/api/conversations/${w.conv}/messages`)).json.messages as Array<Record<string, unknown>>).find((m) => m.senderId === w.agent.id)!;
+    const owners = await of(w.owner);
+    expect(owners.via).toMatchObject({ reasoning: "medium" });
+    expect(owners.reasoning).toBe(THOUGHT);
+    const visitors = await of(w.visitor);
+    expect(visitors.text).toBe("周三下午可以。");
+    expect(visitors).not.toHaveProperty("via");
+    expect(visitors).not.toHaveProperty("reasoning");
+    const sync = JSON.stringify((await api(app, w.visitor, "GET", "/api/sync")).json);
+    const frames = JSON.stringify(socket.events);
+    for (const text of [sync, frames]) {
+      expect(text).not.toContain(THOUGHT);
+      expect(text).not.toContain("othersReasoning");
+      expect(text).not.toContain('"via"');
+    }
+    expect(frames).toContain("周三下午可以。");
   });
 });
