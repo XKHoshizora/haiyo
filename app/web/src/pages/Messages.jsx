@@ -21,7 +21,7 @@ import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits
 import { MemoryNotice } from "./MemoryChip.jsx";
 import { PersonaFactCard } from "./SocialCards.jsx";
 import { ReplyLookups } from "./ReplyLookups.jsx";
-import { citingOf, WebSources } from "./WebSources.jsx";
+import { citingOf } from "./WebSources.jsx";
 import { CitesContext } from "../ui/cites.jsx";
 import { Reply, RotateCw, FileText, Check, CircleAlert } from "../icons.js";
 
@@ -241,9 +241,9 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
         {thinking && <Thinking text={msg.reasoning} startOpen={thinkingOpen} />}
         {/* A reply that is only a persona proposal has no text: its card alone, no empty bubble. */}
         {!(ownChat && msg.proposal && !msg.text && !msg.quote) && <Body msg={msg} agent={agent} onJump={onJump} />}
-        {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation). */}
+        {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation);
+            the web pages it was handed open from it (folded until the reader opens them). */}
         {agent && <ReplyLookups key={`${conv.id}:${msg.id}`} msg={msg} conv={conv} onJump={onJump} />}
-        {agent && <WebSources sources={msg.webSources} />}
         {ownChat && msg.proposal && <ProposalCard msg={msg} conv={conv} />}
         {thinking && msg.via && <ReplyVia via={msg.via} agentId={!ownChat && state.agents[msg.from]?.loaded ? msg.from : null} />}
         <div className="msg-foot">

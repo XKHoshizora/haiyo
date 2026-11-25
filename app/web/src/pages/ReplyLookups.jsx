@@ -1,45 +1,112 @@
 // What an Agent's reply looked up with its tools, under the reply (design rule 15): one quiet line — 查了 n 次聊天记录,
-// 看了 n 个文件, joined with ，; time lookups never in it — that opens, when there is something to open, the words its
-// searches were for (in my Agent's own conversation only) and the messages it found that I can see (the service sends
-// no more), each loaded as any one message is (`actions.foundMessage`, GET …/messages/:seq) and each jumping to its
+// 看了 n 个文件, 查了 n 次网页, joined with ，; time lookups never in it — that opens, when there is something to open, the
+// words its searches were for (in my Agent's own conversation only) and the messages it found that I can see (the service
+// sends no more), each loaded as any one message is (`actions.foundMessage`, GET …/messages/:seq) and each jumping to its
 // place (`onJump`: the chat's own useJumpTo, which outlives this list when the jump opens another conversation — the
 // chat scrolls to the message and it flashes). A row loaded (or found gone) is kept while the reply is shown, so opening
 // the line again loads nothing again; a row that failed for any other reason says so and is tried again next time. A
 // reply that looked nothing up, or only at the time, shows nothing here.
-import React, { useEffect, useRef, useState } from "react";
+//
+// The web pages a reply was handed (`msg.webSources`, WebSources.jsx) are folded: the web part of the line is then a
+// button of its own, at the line's end — 查了 2 次网页 · 12 个来源 and a chevron — that opens their list in place, right
+// under the line, and folds it again. For whoever reads the reply, as the list always was. With pages, the words are
+// with them (their owner's still, in its own conversation only): the first line of the opened block, and not with the
+// messages found too. What the reader chose (opened, 显示全部) is kept for the visit of the conversation
+// (WebSources.jsx `sourcesChoice`): the row taken away and shown again within it is as it was left; the conversation
+// opened again shows it folded. A reply being written has no pages yet (they come with the stored reply). Opening
+// moves the chat only when the block's first row would be out of sight, and never so far that the button leaves
+// (`openingScroll`); folding while the focus is inside the block hands it to the button.
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
-import { lookupLine, searchHitView } from "../data/viewmodel.js";
+import { lookupLine, searchHitView, sourcesLine } from "../data/viewmodel.js";
 import { ChatHitRow } from "./SearchHits.jsx";
+import { noteSourcesChoice, openingScroll, sourcesChoice, WebSources } from "./WebSources.jsx";
+import { ChevronDown } from "../icons.js";
 
 /** The line under `msg` (a view message) in `conv`, or nothing; `onJump(conversationId, seq)` opens a message found. */
 export function ReplyLookups({ msg, conv, onJump }) {
   const [open, setOpen] = useState(false);
+  const [choice, setChoice] = useState(() => sourcesChoice(conv.id, msg.id));
+  const pagesId = useId();
+  const toggle = useRef(null);
+  const block = useRef(null);
+  /** The reader opened the pages in this render (not: shown again open). */
+  const opening = useRef(false);
   /** What each row found loaded as, by `conversationId:seq`: kept across closing and opening the line. */
   const loaded = useRef(new Map());
-  const line = lookupLine(msg.lookups);
-  if (!line) return null;
+  const pagesOpen = choice.open;
+  useLayoutEffect(() => {
+    if (!opening.current) return;
+    opening.current = false;
+    const scroller = toggle.current?.closest(".messages");
+    // Its first row: the words when they head it, else the first page (not the list, which runs on below).
+    const row = block.current?.querySelector(".lookup-words, .web-sources > li");
+    if (!scroller || !row) return;
+    const [view, at, first, whole] = [scroller, toggle.current, row, block.current].map((el) => el.getBoundingClientRect());
+    const down = openingScroll({ view, toggle: at, first, block: whole });
+    if (down > 0) scroller.scrollTop += down;
+  }, [pagesOpen]);
+  const pages = Array.isArray(msg.webSources) ? msg.webSources : [];
+  const listed = pages.length > 0;
+  // With pages to list, the web part of the line is their button; the rest of the line is as ever.
+  const line = lookupLine(listed ? { ...msg.lookups, web: 0 } : msg.lookups);
+  if (!line && !listed) return null;
   // The words are its owner's, in its own conversation: never shown in a group, whatever the message carries.
   const words = conv.type === "agent" ? msg.queries ?? [] : [];
+  const wordsLine = words.length > 0 ? <p className="lookup-words">搜索词：{words.join("、")}</p> : null;
   const found = msg.found ?? [];
-  if (found.length === 0 && words.length === 0) return <p className="msg-lookups">{line}</p>;
+  // (The words open with the pages when there are pages: one place.)
+  const opens = line !== null && (found.length > 0 || (!listed && words.length > 0));
+  if (!opens && !listed) return <p className="msg-lookups">{line}</p>;
+  // What is shown is this state; the record only says how a row shown again starts (it may have dropped this reply since).
+  const note = (change) => {
+    const next = { ...choice, ...change };
+    setChoice(next);
+    noteSourcesChoice(conv.id, msg.id, next);
+  };
+  const togglePages = () => {
+    opening.current = !pagesOpen;
+    // Folded with the focus inside the block: the button has it, not nothing.
+    if (pagesOpen && block.current?.contains(document.activeElement)) toggle.current?.focus();
+    note({ open: !pagesOpen });
+  };
   return (
-    <div className="msg-lookups">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((was) => !was)}>
-        {line}
-      </button>
-      {open && (
-        <>
-          {words.length > 0 && <p className="lookup-words">搜索词：{words.join("、")}</p>}
-          {found.length > 0 && (
-            <ul className="lookup-rows">
-              {found.map((ref) => (
-                <FoundRow key={`${ref.conversationId}:${ref.seq}`} found={ref} onJump={onJump} kept={loaded.current} />
-              ))}
-            </ul>
-          )}
-        </>
+    <>
+      <div className="msg-lookups">
+        {opens ? (
+          <button type="button" aria-expanded={open} onClick={() => setOpen((was) => !was)}>
+            {line}
+          </button>
+        ) : (
+          line
+        )}
+        {line && listed && "，"}
+        {listed && (
+          <button type="button" ref={toggle} className="sources-toggle" aria-expanded={pagesOpen} aria-controls={pagesOpen ? pagesId : undefined} onClick={togglePages}>
+            {sourcesLine(msg.lookups, pages.length)}
+            <ChevronDown size={12} aria-hidden="true" />
+          </button>
+        )}
+        {opens && open && (
+          <>
+            {!listed && wordsLine}
+            {found.length > 0 && (
+              <ul className="lookup-rows">
+                {found.map((ref) => (
+                  <FoundRow key={`${ref.conversationId}:${ref.seq}`} found={ref} onJump={onJump} kept={loaded.current} />
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
+      {listed && pagesOpen && (
+        <div className="sources-block" id={pagesId} ref={block}>
+          {wordsLine}
+          <WebSources sources={pages} all={choice.all} onAll={() => note({ all: true })} />
+        </div>
       )}
-    </div>
+    </>
   );
 }
 

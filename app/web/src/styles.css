@@ -645,14 +645,57 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 @media (hover: hover) { .cite-link:hover > span { border-color: var(--purple-dark); } }
 .cite-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
 /* The web pages a reply was handed, under its lookup line: quiet numbered rows, each its title and the address's real host. */
-.web-sources { margin: 2px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--ink-3); max-width: 100%; min-width: 0; }
+.web-sources { margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--ink-3); max-width: 100%; min-width: 0; }
 .web-sources > li { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
-.web-source-n { flex: none; min-width: 1.2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-3); }
-.web-sources .text-link { flex: 1 1 auto; font-size: 12px; font-weight: 400; min-width: 0; max-width: 100%; gap: 6px; margin: 0; }
+/* (Up to 20 rows: the numbers' column is two digits wide, so the titles of rows 10 and after start where the others do.) */
+.web-source-n { flex: none; min-width: max(1.2em, 2ch); text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-3); }
+/* Dense: one line a row (--source-row), nothing between rows — a list of links, not a column of standalone controls
+   (docs/dev/lane-rules.md): each link is as long as its row, so the target is long, and no row reaches into another. */
+.web-sources .text-link { flex: 1 1 auto; font-size: 12px; font-weight: 400; min-width: 0; max-width: 100%; min-height: var(--source-row); gap: 6px; margin: 0; }
+.web-sources .text-link:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; text-decoration: none; }
 .web-source-title, .web-source-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; unicode-bidi: isolate; }
 .web-source-title { flex: 0 1 auto; }
 /* The title gives way first (an ellipsis); the host keeps its own width, up to 45% of the row. */
 .web-source-host { flex: 0 0 auto; max-width: 45%; color: var(--ink-3); }
+/* The list is folded until the reader opens it from the lookup line: the web part of that line is a button with a chevron
+   (查了 2 次网页 · 12 个来源), one line of the line's own text — a relative of the folded thinking's header. */
+.msg-lookups > .sources-toggle { display: inline-flex; align-items: center; gap: 2px; border-radius: 4px; text-decoration: none; vertical-align: bottom; }
+.sources-toggle > svg { flex: none; opacity: 0.7; transition: transform 0.15s ease; }
+.sources-toggle[aria-expanded="true"] > svg { transform: rotate(180deg); }
+/* Opened, right under the line: the words it searched for (its owner only), then the pages. */
+.sources-block { --source-row: 28px; font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+@media (pointer: coarse), (max-width: 480px) { .sources-block { --source-row: 32px; } }
+/* (The words: a line of the rows' rhythm, starting where the titles do.) */
+.sources-block > .lookup-words { display: flex; align-items: center; min-height: var(--source-row); margin: 0; padding-left: calc(max(1.2em, 2ch) + 12px); }
+/* A 44px target on a touch screen or a narrow one that takes no room, as the thinking's header has: it reaches 13px up
+   (the gap and the bubble's own padding — none of its text) and 13px down. Whatever can be pressed there lies over it
+   and keeps its own taps: the opened list, the messages found, the model under my Agent's reply, a proposal's card, and
+   回复 wherever it is drawn: for a mouse on a narrow page, and for the keyboard's focus on a touch screen (which draws
+   none otherwise — the bubble's menu has it; not drawn it is positioned already, so only its level is set). Plain text there
+   (the model's name, the footer's tags) stays under it. */
+@media (pointer: coarse), (max-width: 480px) {
+  .msg-lookups > .sources-toggle { position: relative; z-index: 1; }
+  .msg-lookups > .sources-toggle::before { content: ""; position: absolute; left: 0; right: -12px; top: 50%; height: 44px; transform: translateY(-50%); }
+  .web-sources, .msg-lookups > .lookup-rows, .msg-via .model-trigger, .msg-main > .proposal-card { position: relative; z-index: 2; }
+}
+@media (pointer: coarse), (max-width: 480px) {
+  .msg.theirs .msg-action { z-index: 2; }
+  .msg.theirs .msg-action:focus-visible { position: relative; }
+}
+@media (max-width: 480px) and (pointer: fine) { .msg.theirs .msg-action { position: relative; } }
+@media (prefers-reduced-motion: reduce) { .sources-toggle > svg { transition: none; } }
+/* A long list opens at its first rows; the row after them shows them all: a quiet button in line with the titles. */
+.web-sources-more > button {
+  display: inline-flex; align-items: center; min-height: var(--source-row); margin-left: calc(max(1.2em, 2ch) + 6px); padding: 0 6px; border: 0; border-radius: 6px;
+  background: none; font: inherit; color: var(--purple-dark); cursor: pointer;
+}
+.web-sources-more > button:focus-visible { outline-offset: -2px; }
+/* A row of the rows' height; its 44px target (a touch screen, a narrow page) reaches down from its top, off the rows above. */
+@media (pointer: coarse), (max-width: 480px) {
+  .web-sources-more > button { position: relative; }
+  .web-sources-more > button::before { content: ""; position: absolute; left: 0; right: -12px; top: 0; height: 44px; }
+}
+@media (hover: hover) { .web-sources-more > button:hover { text-decoration: underline; text-underline-offset: 3px; } }
 /* A link of a reply whose run searched the web: shown as its text and host, nothing to open. */
 .md-link-plain { color: inherit; }
 /* A deleted Agent's model where a live one's is switched (its conversation's header, the details panel): a plain label. */

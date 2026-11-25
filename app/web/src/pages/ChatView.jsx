@@ -25,6 +25,7 @@ import {
   seesImages,
   thinkingLeftOpen,
 } from "./AgentChatBits.jsx";
+import { forgetSourcesChoices } from "./WebSources.jsx";
 import { ChatHitRow, SearchFooter } from "./SearchHits.jsx";
 import { useJumpTo } from "./useJumpTo.js";
 import { useMessageSearch } from "./useMessageSearch.js";
@@ -176,6 +177,8 @@ export function ChatView({ conv }) {
   /** The reply whose bubble was shown at the last commit: `{ convId, runId }`, or null. */
   const bubbleShown = useRef(null);
   const showing = finishing ? finishing.runId : replying ? run.id : null;
+  // What the reader chose for the web pages of this conversation's replies lasts for this visit (WebSources.jsx).
+  useEffect(() => () => forgetSourcesChoices(conv.id), [conv.id]);
   // The bubble gives way in this render, and the reader had its thinking open: the stored reply that takes its place
   // starts with its thinking open (MessageItem `thinkingOpen`), so nothing moves under the reader. Known only in this one
   // render — the stored reply shown again later (the conversation left and opened again, a reload) is folded like any.

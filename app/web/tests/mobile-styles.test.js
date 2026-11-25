@@ -299,6 +299,29 @@ describe("M: the composite group avatar is one component whose layout depends on
   });
 });
 
+describe("the folded sources' enlarged target (a touch screen, a narrow page) leaves 回复 its presses", () => {
+  const TARGET = "(pointer: coarse), (max-width: 480px)";
+  const under = (selector) => merged(rules.filter((r) => r.conditions.length === 1 && r.conditions[0] === TARGET && r.selectors.includes(selector)));
+
+  it("the target exists only there, 44px high", () => {
+    expect(under(".msg-lookups > .sources-toggle::before").height).toBe("44px");
+    expect(rules.filter((r) => r.selectors.some((s) => s.includes(".sources-toggle::before"))).every((r) => r.conditions[0] === TARGET)).toBe(true);
+  });
+
+  it("回复 under a reply lies over it wherever the target is, whatever the pointer: drawn (a mouse, or the keyboard's focus on a touch screen) it is positioned and raised", () => {
+    // Raised wherever the target is; on a touch screen it is positioned already (not drawn, absolute), so only its level is set.
+    expect(under(".msg.theirs .msg-action")["z-index"]).toBe("2");
+    expect(under(".msg.theirs .msg-action").position).toBeUndefined();
+    // Drawn by the keyboard's focus (a touch screen makes it `static` then, which takes no level): positioned.
+    expect(under(".msg.theirs .msg-action:focus-visible").position).toBe("relative");
+    // Drawn for a mouse on a narrow page: positioned.
+    const fine = merged(rules.filter((r) => r.conditions.length === 1 && r.conditions[0] === "(max-width: 480px) and (pointer: fine)" && r.selectors.includes(".msg.theirs .msg-action")));
+    expect(fine.position).toBe("relative");
+    // The rule it must beat on a touch screen, so this is not dead.
+    expect(merged(rulesFor(rules, ".msg-action:focus-visible", COARSE)).position).toBe("static");
+  });
+});
+
 describe("P: nothing makes the chat column wider than the screen", () => {
   it("iOS never inflates text on its own: the root fixes the text size adjustment (both properties)", () => {
     const html = plain("html");
