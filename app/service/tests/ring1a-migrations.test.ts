@@ -36,6 +36,20 @@ const levels = async () =>
   Object.fromEntries(
     (await db.query<{ tag: string; r: string; o: string; p: string }>("select p.handle::text as tag, a.reasoning as r, a.others_reasoning as o, a.proactive_reasoning as p from agents a join principals p on p.id = a.principal_id order by 1")).rows.map((x) => [x.tag, [x.r, x.o, x.p]]),
   );
+/** Whether `agent_runs.owner_call_seqs` is there (076, fix round 4). */
+const ownerCallsColumn = async () => (await db.query("select 1 from information_schema.columns where table_name = 'agent_runs' and column_name = 'owner_call_seqs'")).rowCount === 1;
+/** A run of the Agent `agentId` in its own conversation as the code before 076 left it (no `owner_call_seqs`): `caller` its owner, somebody else, or nobody. */
+const oldRun = async (agentId: string, status: string, lane: string, caller: "owner" | "other" | null, covers: number, calls: number[] | null) =>
+  (
+    await db.query<{ id: string }>(
+      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane, call_seqs, caller_id)
+       select 'reply', ac.conversation_id, p.id, p.owner_id, $2, $3, 'human', $4, $5::bigint[],
+              case $6::text when 'owner' then p.owner_id when 'other' then (select o.id from principals o where o.kind = 'human' and o.id <> p.owner_id order by o.id limit 1) end
+         from principals p join agent_conversations ac on ac.agent_id = p.id where p.id = $1 returning id`,
+      [agentId, status, covers, lane, calls, caller],
+    )
+  ).rows[0]!.id;
+const ownerCalls = async (runId: string) => (await db.query<{ c: number[] }>("select owner_call_seqs::int[] as c from agent_runs where id = $1", [runId])).rows[0]!.c;
 const applied = async () => (await db.query<{ name: string }>("select name from pgmigrations where name >= '073' order by name")).rows.map((r) => r.name);
 /** Each Agent's two numbers in points, by the name part it was made with. */
 const numbers = async () =>
@@ -89,7 +103,10 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     expect((await applied()).at(-1)).toBe("076_others_reasoning");
     // 076's rows before its Down: an owner's two choices (lost by the Down, `none` again after the Up: the defaults).
     await db.query("update agents set others_reasoning = 'high', proactive_reasoning = 'low' where principal_id = $1", [ids.chosen]);
+    expect(await ownerCallsColumn()).toBe(true);
     await undoMigration(url, "076_others_reasoning", sure);
+    // (076's Down drops it: the code before 076 reads whose reply a run is from its lane alone.)
+    expect(await ownerCallsColumn()).toBe(false);
     await undoMigration(url, "075_agent_social_access", sure);
     await undoMigration(url, "074_others_step_l", sure);
     expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
@@ -106,9 +123,27 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     await db.query("update agents set reasoning = 'low' where principal_id = $1", [ids.small]);
     await db.query("update agents set reasoning = 'max' where principal_id = $1", [ids.big]);
 
+    // Runs the old code left, queued, under way and ended (fix round 4, R1: whose reply a run is, is written from now on).
+    const legacy = {
+      ownQueued: await oldRun(ids.chosen!, "queued", "own", "owner", 7, [5, 7]),
+      ownFailedNoCalls: await oldRun(ids.nolimit!, "failed", "own", "owner", 4, null),
+      ownNobody: await oldRun(ids.seventy!, "queued", "own", null, 2, [2]),
+      othersRunning: await oldRun(ids.small!, "running", "others", "other", 3, [3]),
+      unasked: await oldRun(ids.big!, "queued", "proactive", null, 9, [9]),
+    };
+
     // ── Up for all three, as a deploy runs them.
     await runMigrations(url, quiet);
     expect(await levelColumns()).toEqual(["others_reasoning", "proactive_reasoning"]);
+    // 076 (fix round 4, R1): a run from before has NO owner call, except one that is its owner's own already (lane own, its caller
+    // the owner): its calls are taken as the owner's (what it covers, when its calls were never recorded). Nothing is guessed from
+    // who wrote a message: a reply for others, one nobody asked for, and one in the owner's lane with no caller have none.
+    expect(await ownerCalls(legacy.ownQueued)).toEqual([5, 7]);
+    expect(await ownerCalls(legacy.ownFailedNoCalls)).toEqual([4]);
+    expect(await ownerCalls(legacy.ownNobody)).toEqual([]);
+    expect(await ownerCalls(legacy.othersRunning)).toEqual([]);
+    expect(await ownerCalls(legacy.unasked)).toEqual([]);
+    await db.query("delete from agent_runs where id = any($1::uuid[])", [Object.values(legacy)]);
     // 076 (fix round 3, point 6): an EXISTING Agent's two new levels are its own level (what such replies run at today); none stays none.
     expect(await levels()).toEqual({ olddefault: ["none", "none", "none"], nolimit: ["none", "none", "none"], chosen: ["high", "high", "high"], seventy: ["none", "none", "none"], small: ["low", "low", "low"], big: ["max", "max", "max"] });
     // A NEW Agent has none for both, whatever its own level (the column defaults).

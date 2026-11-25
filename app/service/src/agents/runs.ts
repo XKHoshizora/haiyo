@@ -8,14 +8,14 @@ import type { Queryable, Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
 import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../messages/model.ts";
 import { postingRun } from "../messages/read.ts";
-import { othersReached } from "../metering/others.ts";
+import { agentRoom, othersReached } from "../metering/others.ts";
 import { reach } from "../social/reach.ts";
 import { refusedInGroup } from "./refusal.ts";
 import { groupPlaceSql, placeOf, placeOfType, socialPlaceSql, type Place } from "../social/place.ts";
 import type { Hub } from "../sync/hub.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
 import type { RunEnd } from "./runtime/port.ts";
-import { agentModelOf, lockAgent, type AgentRow } from "./store.ts";
+import { agentModelOf, lockAgent, readOwnedAgent, type AgentRow } from "./store.ts";
 import { mayTell, tellableRuns } from "../whispers/store.ts";
 
 /**
@@ -315,7 +315,21 @@ export async function latestRun(q: Queryable, conversationId: string): Promise<R
  * and the site's time zone, whose day the others' daily budget is counted in (`othersBudgetSpent`); and the site's models,
  * by which someone else's call on an Agent whose model is gone is refused as it is made (`reachAgents`).
  */
-export type RunLimits = Pick<Config, "agentRunsPerMinute" | "agentOthersRunsPerMinute" | "agentCallerRunsPerMinute" | "siteTimezone" | "siteModels" | "others" | "social">;
+export type RunLimits = Pick<
+  Config,
+  | "agentRunsPerMinute"
+  | "agentOthersRunsPerMinute"
+  | "agentCallerRunsPerMinute"
+  | "siteTimezone"
+  | "siteModels"
+  | "others"
+  | "social"
+  // (What `agentRoom` reads: whether a refused call may tell the group the Agent answers only its owner today.)
+  | "memory"
+  | "agentGroupContextTokens"
+  | "judge"
+  | "reasoningAllowanceTokens"
+>;
 
 /**
  * Of `agent_runs`: a reply started in the last minute — not one a limit refused (`rate_limited`), which started nothing
@@ -406,6 +420,27 @@ export type Caller = { id: string | null; lane: Lane };
  */
 export function callerOf(ownerId: string, personId: string | null): Caller {
   return { id: personId, lane: personId === ownerId ? "own" : "others" };
+}
+
+/**
+ * THE decision of whose reply a run is (fix round 4, R2): its lane and its caller, from what was WRITTEN as each of its calls was
+ * accepted — never from who wrote a message. Every writer of `agent_runs.lane` and `caller_id` of a reply asks it: a queue
+ * (`queueRun`, `recordRateLimited`), a call folded into a reply (`settleLane`: `reachAgents`, `rateLimitedInGroup`), calls taken
+ * out of one (`dropRefusedCalls`, and through it social/agent-contacts.ts `endGroupCalls` and `begin` up to admission), a follow-up
+ * (`followUp`) and an automatic retry (`scheduleAutoRetry`).
+ * - `unasked`: a reply nobody asked for that no call has taken over — `proactive`, nobody's. The message it was queued on is no
+ *   call of anyone, whoever wrote it (the Agent's owner too), and a call noted on it while it runs is its follow-up's.
+ * - `own`, the owner its caller: the owner's own 重试 (`ownerRetry`), or one of `calls` — the calls it still has — was accepted as
+ *   its owner's own (`ownerCall`: `agent_runs.owner_call_seqs`: the owner's own message calling it, or an Agent's message the
+ *   owner was behind when it was sent).
+ * - else `others`: the earliest of `calls` somebody is behind names its caller (`behind`: `behindMessageSql`); nobody when none does.
+ * (A reply `告诉他们` queued, a new Agent's greeting and every reply in the Agent's own conversation are their owner's by what they
+ * are; they carry nobody else's call and are never decided again.)
+ */
+export function laneOf(ownerId: string, run: { ownerRetry: boolean; unasked: boolean }, calls: readonly { ownerCall: boolean; behind: string | null }[]): Caller {
+  if (run.unasked) return { id: null, lane: "proactive" };
+  if (run.ownerRetry || calls.some((call) => call.ownerCall)) return { id: ownerId, lane: "own" };
+  return { id: calls.find((call) => call.behind !== null)?.behind ?? null, lane: "others" };
 }
 
 /**
@@ -574,6 +609,35 @@ const callRowsSql = (columns: string, order = ""): string =>
      cross join lateral (select ${behindMessageSql("p", "pr")} as caller_id) bh
     where r.id = $1${order}`;
 
+/** What THE decision reads of each call of a run (`callRowsSql` with `CALL_COLUMNS`), and of the run itself. */
+interface CallRow {
+  seq: string;
+  kind: "human" | "agent";
+  behind: string | null;
+  /** Accepted as its owner's own (`owner_call_seqs`). */
+  owner_call: boolean;
+  lane: Lane;
+  owner_retry: boolean;
+}
+const CALL_COLUMNS = "m.seq::text as seq, p.kind, bh.caller_id as behind, m.seq = any(r.owner_call_seqs) as owner_call, r.lane, r.owner_retry";
+const callOf = (row: CallRow): { ownerCall: boolean; behind: string | null } => ({ ownerCall: row.owner_call, behind: row.behind });
+
+/**
+ * After a call was recorded on run `runId` of an Agent of `ownerId` (`call_seqs`, and `owner_call_seqs` when it was the owner's
+ * own): its lane and caller by THE decision (`laneOf`) over all its calls. `tookCall`: the call was taken on by a queued reply — one
+ * nobody had asked for is then that call's (no longer unasked). `accepted`: the call just recorded and the person behind it, as its
+ * trigger decided when it was made.
+ */
+async function settleLane(t: Tx, runId: string, ownerId: string, tookCall: boolean, accepted?: { seq: number; behind: string | null }): Promise<void> {
+  const { rows } = await t.query<CallRow>(callRowsSql(CALL_COLUMNS, "\n      order by m.seq"), [runId]);
+  const run = rows[0] ?? (await t.query<{ lane: Lane; owner_retry: boolean }>("select lane, owner_retry from agent_runs where id = $1", [runId])).rows[0];
+  if (!run) return;
+  // (The call just accepted is whose its trigger decided it is, as it was made; the others are read as `dropRefusedCalls` reads them.)
+  const calls = rows.map((row) => (accepted !== undefined && Number(row.seq) === accepted.seq ? { ownerCall: row.owner_call, behind: accepted.behind } : callOf(row)));
+  const caller = laneOf(ownerId, { ownerRetry: run.owner_retry, unasked: run.lane === "proactive" && !tookCall }, calls);
+  await t.query("update agent_runs set lane = $2, caller_id = $3 where id = $1 and (lane, caller_id) is distinct from ($2::text, $3::uuid)", [runId, caller.lane, caller.id]);
+}
+
 /**
  * The rule a call meets when it is made (`triggerInGroup`, `triggerFromAgent`), met again by every call reply run `runId` of an
  * Agent of `ownerId` answers as it begins (reverse-paths audit A12; B5b), whatever the run's lane: a call (`call_seqs`; its
@@ -582,20 +646,25 @@ const callRowsSql = (columns: string, order = ""): string =>
  * the calls the run answers and nobody refused is among its askers; what the run covers ends at the latest call left (`covers_seq`,
  * or `pending_seq` when that call was noted after its claim), so what came after that call is heard by the usual rule as the run
  * begins (`hearFrom`: someone refused who wrote there is heard, as anyone is, and counts toward its line, never as a call). A run that
- * lost a call becomes the remaining calls' by `followUp`'s rule, whoever its recorded caller was — its owner's own when the owner is behind one of them, else
- * the earliest one's — and a person's while a person's call is left (a reply nobody asked for keeps its lane, caller and trigger).
+ * lost a call becomes the remaining calls' by THE decision (`laneOf`), whoever its recorded caller was — its owner's own while a call
+ * accepted as the owner's own is left (`owner_call_seqs`, kept to the calls left) or it is the owner's 重试, else the earliest one's — and
+ * a person's while a person's call is left (a reply nobody asked for keeps its lane, caller and trigger). Asked only of a reply that is
+ * not admitted yet: once a reply is admitted its lane and caller are frozen (port-impl.ts `begin`, step 3).
  * The owner's own call is never dropped (`refusedInGroup` never refuses the owner): `begin` asks this of every group run but a reply
  * `告诉他们` queued, which answers nobody's call. Returns what the run now covers, has noted and its lane now (the caller takes them
  * all: what a reply is bounded to is decided by the lane it has here; empty when nothing was dropped: one query), or null when no call
  * is left: the run ends (`cancelled`, no error: see `BLOCKED_SINCE`; `access_ended` is for social runs), and nothing is left noted on it (a follow-up
  * answers calls only, and every call it carries is refused).
  */
-export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane } | null> {
-  const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; behind: string | null; refused: boolean; lane: Lane; run_caller: string | null }>(
+export async function dropRefusedCalls(
+  t: Tx,
+  runId: string,
+  ownerId: string,
+): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane; caller_id?: string | null; call_seqs?: string[] | null } | null> {
+  const { rows } = await t.query<CallRow & { refused: boolean }>(
     callRowsSql(
-      `m.seq::text as seq, p.kind, bh.caller_id as behind,
-            (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})) as refused,
-            r.lane, r.caller_id as run_caller`,
+      `${CALL_COLUMNS},
+            (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})) as refused`,
       "\n      order by m.seq",
     ),
     [runId],
@@ -608,27 +677,21 @@ export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): P
     return null;
   }
   const { lane } = rows[0]!;
-  // Whose reply it is now is read from the calls that are LEFT, whoever its caller was recorded as (fix round 3, point 1): the
-  // recorded caller may be the person behind a call just dropped without being refused themselves (the owner behind a relay by an
-  // Agent whose owner is now blocked), and a reply that only a member's call is left on must not keep the owner's own lane.
-  const caller: Caller | null =
-    // (Kept as it is: a reply nobody asked for; and a reply that is its owner's own for a reason other than a call of theirs — the
-    // owner's retry of someone else's call — which no dropped call made theirs and none takes from them.)
-    lane === "proactive" || (rows[0]!.run_caller === ownerId && !rows.some((r) => r.behind === ownerId))
-      ? null
-      : left.some((r) => r.behind === ownerId)
-        ? callerOf(ownerId, ownerId)
-        : callerOf(ownerId, left.find((r) => r.behind !== null)?.behind ?? null);
+  // Whose reply it is now: THE decision (`laneOf`), over the calls that are LEFT and what was written of each as it was accepted.
+  // A reply nobody asked for stays that; the owner's 重试 stays the owner's own; an owner call left keeps it the owner's own; and a
+  // reply only somebody else's call is left on is theirs, whoever its caller was recorded as.
+  const caller = laneOf(ownerId, { ownerRetry: rows[0]!.owner_retry, unasked: lane === "proactive" }, left.map(callOf));
   const by: TriggeredBy | null = lane === "proactive" ? null : left.some((r) => r.kind === "human") ? "human" : "agent";
-  const updated = await t.query<{ covers_seq: string | null; pending_seq: string | null; lane: Lane }>(
+  const updated = await t.query<{ covers_seq: string | null; pending_seq: string | null; lane: Lane; caller_id: string | null; call_seqs: string[] | null }>(
     `update agent_runs set call_seqs = $2::bigint[], covers_seq = least(covers_seq, $3::bigint),
+            owner_call_seqs = array(select s from unnest(owner_call_seqs) as x (s) where s = any($2::bigint[]) order by s),
             pending_seq = case when $3::bigint > covers_seq then $3::bigint end,
             asker_ids = case when asker_ids is null then null
                              else array(select x.a from unnest(asker_ids) as x (a) where not ${refusedInGroup("x.a", "agent_runs.agent_id")} order by x.a) end,
-            caller_id = case when $4::boolean then $5::uuid else caller_id end, lane = case when $4::boolean then $6::text else lane end,
-            triggered_by = coalesce($7::text, triggered_by)
-      where id = $1 returning covers_seq::text as covers_seq, pending_seq::text as pending_seq, lane`,
-    [runId, left.map((r) => Number(r.seq)), Number(left.at(-1)!.seq), caller !== null, caller?.id ?? null, caller?.lane ?? null, by],
+            caller_id = $4::uuid, lane = $5::text,
+            triggered_by = coalesce($6::text, triggered_by)
+      where id = $1 returning covers_seq::text as covers_seq, pending_seq::text as pending_seq, lane, caller_id, call_seqs::text[] as call_seqs`,
+    [runId, left.map((r) => Number(r.seq)), Number(left.at(-1)!.seq), caller.id, caller.lane, by],
   );
   return updated.rows[0]!;
 }
@@ -689,10 +752,25 @@ async function answersCalls(t: Tx, runId: string, seqs: readonly number[]): Prom
 }
 
 /**
+ * The calls a new run records as its owner's own (`owner_call_seqs`) when the call that queues it is `caller`'s at `seq`: that one
+ * when it is the owner's own (`callerOf`, `behindAgentMessage`: decided as the call is accepted), none otherwise.
+ */
+const ownerCallsOf = (caller: Caller, seq: number): number[] => (caller.lane === "own" ? [seq] : []);
+
+/**
+ * A new run's lane and caller as it is queued, by THE decision (`laneOf`): the call that queues it is `caller`'s — nobody's for a
+ * reply nobody asked for — and `ownerCalls` are those of its calls accepted as its owner's own. (The owner's with none of them: the
+ * owner's own by what it is — their 重试, a tell, a greeting — which its caller marks on the row right after.)
+ */
+const queuedAs = (ownerId: string, caller: Caller, ownerCalls: readonly number[]): Caller =>
+  laneOf(ownerId, { ownerRetry: caller.lane === "own" && ownerCalls.length === 0, unasked: caller.lane === "proactive" }, [{ ownerCall: ownerCalls.length > 0, behind: caller.id }]);
+
+/**
  * Queues a reply of the Agent in `conversationId` answering up to `coversSeq` (a seq of that conversation), called for
  * by a person's message unless `triggeredBy` says an Agent's, by `caller` and in its lane, answering `askers` (every
  * caller says whose; null only where they cannot be told) and the call at `coversSeq` (`call_seqs`; a follow-up or a
- * retry adds the others it answers, `answersCalls`). Under that conversation's row lock, which every writer of the
+ * retry adds the others it answers, `answersCalls`); `ownerCalls`: those of them accepted as its owner's own (by default the call
+ * at `coversSeq` when `caller` is the owner; a follow-up says which, a tell and a greeting none). Under that conversation's row lock, which every writer of the
  * Agent's runs there holds: the Agent has no active run there (`agent_runs_one_active_per_agent_conversation` would
  * refuse a second).
  */
@@ -704,11 +782,13 @@ export async function queueRun(
   triggeredBy: TriggeredBy,
   caller: Caller,
   askers: Askers,
+  ownerCalls: readonly number[] = ownerCallsOf(caller, coversSeq),
 ): Promise<Announced> {
+  const who = queuedAs(agent.ownerId, caller, ownerCalls);
   const { rows } = await t.query<RunRow>(
-    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane, asker_ids, call_seqs)
-     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, array[$4::bigint]) returning ${RUN_COLUMNS}`,
-    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, caller.id, caller.lane, askersParam(askers)],
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane, asker_ids, call_seqs, owner_call_seqs)
+     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, array[$4::bigint], $9::bigint[]) returning ${RUN_COLUMNS}`,
+    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, who.id, who.lane, askersParam(askers), ownerCalls],
   );
   return { ownerId: agent.ownerId, conversationId, run: toWireRun(rows[0]!) };
 }
@@ -730,29 +810,33 @@ async function recordRateLimited(
   caller: Caller,
   askers: Askers,
   error: "rate_limited" | "model_gone" = "rate_limited",
+  ownerCalls: readonly number[] = ownerCallsOf(caller, coversSeq),
 ): Promise<Announced> {
+  const who = queuedAs(agent.ownerId, caller, ownerCalls);
   const { rows } = await t.query<RunRow>(
-    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, finished_at, triggered_by, caller_id, lane, asker_ids, call_seqs)
-     values ('reply', $1, $2, $3, 'failed', $9, $4, now(), $5, $6, $7, $8, array[$4::bigint]) returning ${RUN_COLUMNS}`,
-    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, caller.id, caller.lane, askersParam(askers), error],
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, finished_at, triggered_by, caller_id, lane, asker_ids, call_seqs, owner_call_seqs)
+     values ('reply', $1, $2, $3, 'failed', $9, $4, now(), $5, $6, $7, $8, array[$4::bigint], $10::bigint[]) returning ${RUN_COLUMNS}`,
+    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, who.id, who.lane, askersParam(askers), error, ownerCalls],
   );
   return { ownerId: agent.ownerId, conversationId, run: toWireRun(rows[0]!) };
 }
 
 /**
- * SQL `set` items: what a run takes on of a call recorded on it (folded in, or covered by a reused `rate_limited` run),
- * when `when` (SQL) holds: whose message called (`triggeredBy`, a parameter position) — a person's makes it a person's —
- * and who (`lane`, `caller`) — an `own` call makes it its owner's own, that caller its caller —, else it keeps them. So a
- * member's call relayed through one of the owner's Agents does not make it the owner's. But any call makes a reply
- * nobody had called for (`proactive`) wholly that call's: whose message called, its lane and its caller (it is no longer
- * unasked: not held to the proactive budget or the fuse; a halt ends it only when an Agent's message called for it, as
- * any such reply). `lane` on the right of each item is the run's lane before this update — SQL reads every right-hand
- * side from the row as it was — so the three items agree on whether it was a proactive reply.
+ * SQL `set` items: what a run records of a call at `seq` (a parameter position) recorded on it — folded in, or covered by a
+ * reused `rate_limited` run; `when` (SQL): it TAKES the call on (a queued reply; a running one only notes it). Whose message
+ * called (`triggeredBy`, a parameter position): a person's makes it a person's, and any call makes a reply nobody had called for
+ * that call's. The call among its calls (`call_seqs`) — and for a reply nobody had called for that takes it on, INSTEAD of the
+ * message it was queued on, which was no call of anyone and is none now (fix round 4, R1). And, when the call is its owner's own
+ * as it is accepted (`lane`, a parameter position holding the call's lane: the owner's own message, or an Agent's the owner is
+ * behind), among its owner calls (`owner_call_seqs`). The run's own `lane` and `caller_id` are NOT written here: `settleLane`
+ * decides them right after, from what this recorded. `lane` on the right of an item is the run's lane before this update — SQL
+ * reads every right-hand side from the row as it was.
  */
-const takesOnCall = (when: string, triggeredBy: string, lane: string, caller: string): string =>
+const takesOnCall = (when: string, triggeredBy: string, seq: string, lane: string): string =>
   `triggered_by = case when ${when} and (${triggeredBy} = 'human' or lane = 'proactive') then ${triggeredBy}::text else triggered_by end,
-   lane = case when ${when} and (${lane} = 'own' or lane = 'proactive') then ${lane}::text else lane end,
-   caller_id = case when ${when} and (${lane} = 'own' or lane = 'proactive') then ${caller}::uuid else caller_id end`;
+   call_seqs = case when ${when} and lane = 'proactive' then array[${seq}::bigint]
+                    else array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || ${seq}::bigint) as x (s) order by s) end,
+   owner_call_seqs = case when ${lane} = 'own' then array(select distinct s from unnest(owner_call_seqs || ${seq}::bigint) as x (s) order by s) else owner_call_seqs end`;
 
 /**
  * `recordRateLimited` in a group (plan ruling 7): one such run per Agent there, not one per mention. When the Agent's
@@ -770,6 +854,7 @@ async function rateLimitedInGroup(
   triggeredBy: TriggeredBy,
   caller: Caller,
   askers: Askers,
+  ownerCalls: readonly number[] = ownerCallsOf(caller, coversSeq),
 ): Promise<Announced> {
   const latest = await t.query<{ id: string; reusable: boolean }>(
     `select id, (status = 'failed' and error is not distinct from 'rate_limited' and dismissed_at is null) as reusable
@@ -777,15 +862,17 @@ async function rateLimitedInGroup(
     [agent.id, conversationId],
   );
   const row = latest.rows[0];
-  if (!row?.reusable) return recordRateLimited(t, agent, conversationId, coversSeq, triggeredBy, caller, askers);
+  if (!row?.reusable) return recordRateLimited(t, agent, conversationId, coversSeq, triggeredBy, caller, askers, "rate_limited", ownerCalls);
   const { rows } = await t.query<RunRow>(
     `update agent_runs as r
-        set covers_seq = greatest(r.covers_seq, $2), finished_at = now(), ${takesOnCall("true", "$3", "$4", "$5")},
-            asker_ids = ${withAskers("$6", heardIn("r.conversation_id", "r.covers_seq", "$2::bigint"))},
-            call_seqs = array(select distinct s from unnest(coalesce(r.call_seqs, array[r.covers_seq]) || $2::bigint) as x (s) order by s)
+        set covers_seq = greatest(r.covers_seq, $2), finished_at = now(), ${takesOnCall("true", "$3", "$2", "'others'")},
+            asker_ids = ${withAskers("$4", heardIn("r.conversation_id", "r.covers_seq", "$2::bigint"))}
       where r.id = $1 returning ${RUN_COLUMNS}`,
-    [row.id, coversSeq, triggeredBy, caller.lane, caller.id, askersParam(askers)],
+    [row.id, coversSeq, triggeredBy, askersParam(askers)],
   );
+  // (Its owner calls are said by the caller: `ownerCalls`, which a follow-up names among what it answers.)
+  if (ownerCalls.length > 0) await t.query("update agent_runs set owner_call_seqs = array(select distinct s from unnest(owner_call_seqs || $2::bigint[]) as x (s) order by s) where id = $1", [row.id, ownerCalls]);
+  await settleLane(t, row.id, agent.ownerId, true, { seq: coversSeq, behind: caller.id });
   return { ownerId: agent.ownerId, conversationId, run: toWireRun(rows[0]!) };
 }
 
@@ -907,16 +994,18 @@ async function reachAgents(
   // lane but `own`): that call is counted for its caller.
   const unfolded: Array<Call & { othersCaller: string | null }> = [];
   for (const { agent, by, askers } of calls) {
-    const folded = await t.query(
+    const folded = await t.query<{ id: string; took: boolean }>(
       `update agent_runs
           set covers_seq = case when status = 'queued' and whisper_id is null then greatest(covers_seq, $3) else covers_seq end,
               pending_seq = case when status = 'running' or whisper_id is not null then greatest(pending_seq, $3) else pending_seq end,
-              ${takesOnCall("status = 'queued' and whisper_id is null", "$4", "$5", "$6")},
-              asker_ids = case when whisper_id is null then ${withAskers("$7", heardIn("$2::uuid", "agent_runs.covers_seq", "$3::bigint"))} else asker_ids end,
-              call_seqs = array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || $3::bigint) as x (s) order by s)
-        where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')`,
-      [agent.id, conversationId, seq, triggeredBy, by.lane, by.id, askersParam(askers)],
+              ${takesOnCall("status = 'queued' and whisper_id is null", "$4", "$3", "$5")},
+              asker_ids = case when whisper_id is null then ${withAskers("$6", heardIn("$2::uuid", "agent_runs.covers_seq", "$3::bigint"))} else asker_ids end
+        where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')
+        returning id, status = 'queued' and whisper_id is null as took`,
+      [agent.id, conversationId, seq, triggeredBy, by.lane, askersParam(askers)],
     );
+    // A queued reply that took the call on: whose it is now (`laneOf`). One that only noted it stays as it is.
+    for (const row of folded.rows) if (row.took) await settleLane(t, row.id, agent.ownerId, true, { seq, behind: by.id });
     if (!folded.rowCount) unfolded.push({ agent, by, askers, othersCaller: by.lane === "own" ? null : by.id });
   }
   const accounts = unfolded.flatMap(({ agent, othersCaller }) => (othersCaller === null ? [agent.ownerId] : [agent.ownerId, othersCaller]));
@@ -949,7 +1038,8 @@ async function reachAgents(
  * than its owner (lane `others`; the caller checks the lane): `othersReached`, the advisory twin of `othersFits` — the
  * owner's answers and points, the Agent's own, settled today plus what running replies hold; on a provider's own model
  * the points are left out, as admission leaves them (it costs nothing: only the answers refuse it).
- * Once reached, the conversation is told by an `agent_daily_budget_reached` notice about the Agent,
+ * Once reached, the call is refused (`spent`); and when the Agent can answer nobody but its owner for the rest of the day
+ * (metering/others.ts `agentRoom`'s `reached`) the conversation is told by an `agent_daily_budget_reached` notice about the Agent,
  * appended now unless one about it was today already (once a site day per conversation and Agent): `notice` is the one
  * appended, else null. The caller holds the conversation's row lock (`appendSystem`).
  */
@@ -958,9 +1048,16 @@ export async function othersBudgetSpent(
   conversationId: string,
   agent: Pick<AgentRow, "id" | "ownerId" | "model">,
   dayStart: Date,
-  config: Pick<Config, "others" | "siteTimezone">,
+  config: RunLimits,
 ): Promise<{ spent: boolean; notice: StoredMessage | null }> {
-  if (!(await othersReached(t, config, agent.ownerId, agent.id, "others", new Date(), { points: agent.model?.source !== "provider" }))) return { spent: false, notice: null };
+  const now = new Date();
+  if (!(await othersReached(t, config, agent.ownerId, agent.id, "others", now, { points: agent.model?.source !== "provider" }))) return { spent: false, notice: null };
+  // The call is refused; the group is told 「今天只回复它的主人，明天恢复」 only when that is TRUE (fix round 4, F5): by the one decision
+  // the owner's page and a refusal at admission use (`agentRoom`'s `reached`: every reply for others would be refused — a call's, and
+  // while the Agent makes them a reply nobody asked for — for good today). Not while a reply nobody asked for still fits, and not
+  // while only another reply's hold is in the way (that is over when the reply ends, not tomorrow).
+  const whole = await readOwnedAgent(t, agent.ownerId, agent.id);
+  if (whole === null || !(await agentRoom(t, config, whole, now)).reached) return { spent: true, notice: null };
   return { spent: true, notice: await limitNotice(t, conversationId, agent.id, dayStart) };
 }
 
@@ -989,7 +1086,7 @@ async function refusedByOthersBudget(
   lane: Lane,
   dayStart: Date,
   told: Told,
-  config: Pick<Config, "others" | "siteTimezone">,
+  config: RunLimits,
 ): Promise<boolean> {
   if (lane !== "others") return false;
   const { spent, notice } = await othersBudgetSpent(t, conversationId, agent, dayStart, config);
@@ -1327,7 +1424,8 @@ export function followUpOf(run: Announced | null, told: Told = noneTold()): Foll
  * or another Agent's while its `groupMentions` lets members call it (with no block, either way, between the Agent's
  * owner and that Agent's owner, nor the person behind that message), which is the call of the person behind it by the rule of
  * `behindAgentMessage` (the caller of the run that posted it — the run its `client_txn` names — when that run is not its
- * owner's own, else that Agent's owner) — make it its owner's own when the owner is behind one of them, else the
+ * owner's own, else that Agent's owner) — make it its owner's own when one of them was recorded as its owner's own as it was
+ * noted (`ownerCallSeqs`: `laneOf`), else the
  * earliest caller's (a message nobody is behind, relayed from a reply nobody called for, names no one: the earliest that
  * names someone). When none of them is left (a block since, or the Agent no longer lets members call it) it is others',
  * with no caller: a call its owner no longer allows does not ride the owner's own lane. A mention of it that was refused
@@ -1347,6 +1445,7 @@ export async function followUp(
   covers: number,
   pending: number,
   callSeqs: readonly (number | string)[] | null,
+  ownerCallSeqs: readonly (number | string)[],
   config: RunLimits,
 ): Promise<FollowUp> {
   const owners = callerOf(agent.ownerId, agent.ownerId);
@@ -1380,10 +1479,12 @@ export async function followUp(
     (r) => (agent.groupMentions === "members" || (r.kind === "human" && r.sender_id === agent.ownerId)) && noted.has(Number(r.seq)),
   );
   const asked = calls.some((r) => r.kind === "human");
-  // None of them (or none that names someone): others', with no caller.
-  const caller: Caller = calls.some((r) => r.caller_id === agent.ownerId)
-    ? owners
-    : callerOf(agent.ownerId, calls.find((r) => r.caller_id !== null)?.caller_id ?? null);
+  // Whose it is: THE decision (`laneOf`) over those calls — the owner's own only for a call the ended run recorded as its owner's
+  // own when it was noted (`ownerCallSeqs`, its `owner_call_seqs`), never because the owner wrote a message in between; else the
+  // earliest caller's; none of them (or none that names someone): others', with no caller.
+  const ownersOwn = new Set(ownerCallSeqs.map(Number));
+  const ownerCalls = calls.map((r) => Number(r.seq)).filter((seq) => ownersOwn.has(seq));
+  const caller = laneOf(agent.ownerId, { ownerRetry: false, unasked: false }, calls.map((r) => ({ ownerCall: ownersOwn.has(Number(r.seq)), behind: r.caller_id })));
   // And everyone who wrote in what it now covers (fix round 2: whoever it hears from, `heardIn`).
   const heard = (await t.query<{ ids: string[] | null }>(`select ${heardIn("$1::uuid", "$2::bigint", "$3::bigint")} as ids`, [conversationId, covers, pending]))
     .rows[0]!.ids;
@@ -1402,7 +1503,9 @@ export async function followUp(
   if (await refusedByOthersBudget(t, conversationId, agent, caller.lane, siteToday(config), told, config)) return followUpOf(null, told);
   const by: TriggeredBy = asked ? "human" : "agent";
   const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
-  const run = over ? await rateLimitedInGroup(t, agent, conversationId, pending, by, caller, askers) : await queueRun(t, agent, conversationId, pending, by, caller, askers);
+  const run = over
+    ? await rateLimitedInGroup(t, agent, conversationId, pending, by, caller, askers, ownerCalls)
+    : await queueRun(t, agent, conversationId, pending, by, caller, askers, ownerCalls);
   await answersCalls(t, run.run.id, calls.map((r) => Number(r.seq)));
   return followUpOf(run);
 }
@@ -1481,12 +1584,12 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
   );
   const agents = new Map<string, AgentRow>();
   for (const { agent_id } of noting.rows) agents.set(agent_id, await lockAgent(t, agent_id, conversationId));
-  const queued = await t.query<RunRow & { owner_id: string; agent_id: string; covers: string | null; pending: string | null; calls: string[] | null; told: boolean; greets: boolean }>(
+  const queued = await t.query<RunRow & { owner_id: string; agent_id: string; covers: string | null; pending: string | null; calls: string[] | null; owner_calls: string[]; told: boolean; greets: boolean }>(
     `update agent_runs as r set status = 'cancelled', error = 'halted', finished_at = now()
-      from (select id, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls from agent_runs
+      from (select id, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls, owner_call_seqs::text[] as owner_calls from agent_runs
              where conversation_id = $1 and status = 'queued' and (triggered_by = 'agent' or lane = 'proactive')) before
       where r.id = before.id
-      returning ${RUN_COLUMNS}, r.owner_id, r.agent_id, before.covers, before.pending, before.calls, r.whisper_id is not null as told, r.greets`,
+      returning ${RUN_COLUMNS}, r.owner_id, r.agent_id, before.covers, before.pending, before.calls, before.owner_calls, r.whisper_id is not null as told, r.greets`,
     [conversationId],
   );
   const running = await t.query<{ id: string }>(
@@ -1503,7 +1606,7 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
     const agent = agents.get(r.agent_id);
     const next = agent ? followUpOnEnd({ covers_seq: r.covers, pending_seq: r.pending, told: r.told, greets: r.greets }, agent, { status: "cancelled", error: "halted" }, { recovered: false, retried: false }) : null;
     if (agent === undefined || next === null) continue;
-    const { run, ...told } = await followUp(t, agent, conversationId, Number(r.covers ?? 0), next, r.calls, config);
+    const { run, ...told } = await followUp(t, agent, conversationId, Number(r.covers ?? 0), next, r.calls, r.owner_calls, config);
     if (run) cancelled.push(run);
     followed.notices.push(...told.notices);
     followed.budgetReached.push(...told.budgetReached);
@@ -1687,13 +1790,13 @@ async function latestRunOf(
   agentId: string,
   conversationId: string,
 ): Promise<
-  (RunRow & { covers: string | null; answers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; calls: string[] | null; whisper_id: string | null }) | null
+  (RunRow & { covers: string | null; answers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; calls: string[] | null; owner_calls: string[]; whisper_id: string | null }) | null
 > {
   const { rows } = await q.query<
-    RunRow & { covers: string | null; answers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; calls: string[] | null; whisper_id: string | null }
+    RunRow & { covers: string | null; answers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; calls: string[] | null; owner_calls: string[]; whisper_id: string | null }
   >(
     `select ${RUN_COLUMNS}, r.covers_seq::text as covers, greatest(r.covers_seq, coalesce(r.pending_seq, 0))::text as answers, r.triggered_by, r.asker_ids,
-            r.call_seqs::text[] as calls, r.whisper_id
+            r.call_seqs::text[] as calls, r.owner_call_seqs::text[] as owner_calls, r.whisper_id
        from agent_runs r
       where r.agent_id = $1 and r.conversation_id = $2 and r.purpose = 'reply' order by r.created_at desc, r.id desc limit 1`,
     [agentId, conversationId],
@@ -1767,6 +1870,8 @@ export interface EndedRun {
   covers_seq: string | null;
   pending_seq: string | null;
   call_seqs: string[] | null;
+  /** Those of its calls accepted as its owner's own (`owner_call_seqs`). */
+  owner_call_seqs: string[];
 }
 
 /**
@@ -1838,8 +1943,8 @@ export async function scheduleAutoRetry(
   const pending = Number(ended.pending_seq ?? 0);
   const queued = await t.query<RunRow>(
     `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, caller_id, lane,
-                                  asker_ids, call_seqs, whisper_id, greets, retry_of, auto_attempt, not_before)
-     values ('reply', $1, $2, $3, 'queued', $4, null, $5, $6, $7, $8, $9::bigint[], null, false, $10, $11, $12) returning ${RUN_COLUMNS}`,
+                                  asker_ids, call_seqs, whisper_id, greets, retry_of, auto_attempt, not_before, owner_call_seqs)
+     values ('reply', $1, $2, $3, 'queued', $4, null, $5, $6, $7, $8, $9::bigint[], null, false, $10, $11, $12, $13::bigint[]) returning ${RUN_COLUMNS}`,
     [
       conversationId,
       agent.id,
@@ -1853,8 +1958,12 @@ export async function scheduleAutoRetry(
       run.original,
       attempt,
       notBefore,
+      ended.owner_call_seqs.map(Number),
     ],
   );
+  // It answers what was noted on the failed run too: whose it is over all of them (`laneOf`: an owner call noted on a member's
+  // reply makes its retry the owner's own; a member's call stays the member's).
+  if (run.lane !== "own") await settleLane(t, queued.rows[0]!.id, agent.ownerId, false);
   return { retry: { ownerId: agent.ownerId, conversationId, run: toWireRun(queued.rows[0]!) }, attempt };
 }
 
@@ -1891,7 +2000,7 @@ export async function tellFromWhisper(
   if (await overLaneLimit(t, whisper.ownerId, "own", config)) throw new AppError(429, "rate_limited");
   const latest = await t.query<{ seq: string }>("select seq::text from conversations where id = $1", [whisper.conversationId]);
   const owner = callerOf(whisper.ownerId, whisper.ownerId);
-  const queued = await queueRun(t, agent, whisper.conversationId, Number(latest.rows[0]!.seq), "human", owner, [whisper.ownerId]);
+  const queued = await queueRun(t, agent, whisper.conversationId, Number(latest.rows[0]!.seq), "human", owner, [whisper.ownerId], []);
   // It answers no call: what it covers is no call of it, and its `call_seqs` will hold the calls noted on it, nothing else.
   await t.query("update agent_runs set whisper_id = $2, call_seqs = '{}' where id = $1", [queued.run.id, whisper.id]);
   return queued;
@@ -1976,7 +2085,8 @@ async function retryInGroup(
   }
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
   if (latest.whisper_id === null) {
-    const queued = await queueRun(t, agent, conversationId, Number(latest.answers), latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids);
+    // The owner's own by its 重试 (`owner_retry`: `laneOf`), whoever's calls it answers; which of them were the owner's own is kept.
+    const queued = await queueRun(t, agent, conversationId, Number(latest.answers), latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids, latest.owner_calls.map(Number));
     await answersCalls(t, queued.run.id, (latest.calls ?? [latest.covers]).map(Number));
     await ownersRetry(t, queued.run.id);
     return queued;
@@ -1985,7 +2095,7 @@ async function retryInGroup(
   // covers what it covered and answers no call. What was noted on it went to a follow-up as it ended (port-impl.ts
   // `keepsNothingNoted`, round 2 N-3), so it carries nothing noted — but for a row that ended before that, whose noted calls
   // (up to its `pending_seq`, in its `call_seqs`) stay noted, for the retry's follow-up to answer.
-  const queued = await queueRun(t, agent, conversationId, covers, latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids);
+  const queued = await queueRun(t, agent, conversationId, covers, latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids, []);
   const answers = Number(latest.answers);
   await t.query("update agent_runs set whisper_id = $2, call_seqs = $3::bigint[], pending_seq = $4, owner_retry = true where id = $1", [
     queued.run.id,
@@ -2025,8 +2135,8 @@ export async function stopRun(
   const peek = (await t.query<{ agent_id: string }>("select agent_id from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply'", [runId, conversationId, ownerId])).rows[0];
   if (!peek) throw notFound();
   const agent = await lockAgent(t, peek.agent_id, conversationId);
-  const { rows } = await t.query<{ status: RunStatus; covers: string | null; pending: string | null; calls: string[] | null; told: boolean; greets: boolean }>(
-    "select status, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls, whisper_id is not null as told, greets from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply' for update",
+  const { rows } = await t.query<{ status: RunStatus; covers: string | null; pending: string | null; calls: string[] | null; owner_calls: string[]; told: boolean; greets: boolean }>(
+    "select status, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls, owner_call_seqs::text[] as owner_calls, whisper_id is not null as told, greets from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply' for update",
     [runId, conversationId, ownerId],
   );
   const status = rows[0]?.status;
@@ -2051,7 +2161,7 @@ export async function stopRun(
   // (whispers/store.ts) — but not those, which get their ordinary follow-up at once (port-impl.ts `keepsNothingNoted`).
   const row = rows[0]!;
   const next = followUpOnEnd({ covers_seq: row.covers, pending_seq: row.pending, told: row.told, greets: row.greets }, agent, { status: "stopped" }, { recovered: false, retried: false });
-  const followed = next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(row.covers ?? 0), next, row.calls, config);
+  const followed = next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(row.covers ?? 0), next, row.calls, row.owner_calls, config);
   return { stopped: ended, running: false, followed };
 }
 

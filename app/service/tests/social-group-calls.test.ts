@@ -55,8 +55,10 @@ async function run(o: RunSpec): Promise<{ id: string; seqs: number[] }> {
   for (const who of o.calls) seqs.push(await say(o.group, who));
   const noted = o.noted ? await say(o.group, o.noted) : null;
   const { rows } = await db.query<{ id: string }>(
-    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, call_seqs, pending_seq, triggered_by, lane, caller_id, started_at, asker_ids, model, source)
-     values ('reply', $1, $2, (select owner_id from principals where id = $2), $3, $4, $5::bigint[], $6, 'human', 'others', $7, case when $3 = 'running' then now() end, $8::uuid[], $9, case when $9::text is not null then 'provider' end) returning id`,
+    // (`owner_call_seqs`: the calls among them that the Agent's owner wrote, as the trigger records an owner's own call when it is made.)
+    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, call_seqs, pending_seq, triggered_by, lane, caller_id, started_at, asker_ids, model, source, owner_call_seqs)
+     values ('reply', $1, $2, (select owner_id from principals where id = $2), $3, $4, $5::bigint[], $6, 'human', 'others', $7, case when $3 = 'running' then now() end, $8::uuid[], $9, case when $9::text is not null then 'provider' end,
+             (select coalesce(array_agg(m.seq order by m.seq), '{}') from messages m where m.conversation_id = $1 and m.seq = any($5::bigint[]) and m.sender_id = (select owner_id from principals where id = $2))) returning id`,
     [o.group, o.agentId, o.status, seqs.at(-1), noted !== null && o.notedIsCall !== false ? [...seqs, noted] : seqs, noted, o.caller === undefined ? o.calls[0] : o.caller, o.askers ?? [...new Set(o.calls)], o.admitted ? "fast" : null],
   );
   return { id: rows[0]!.id, seqs };

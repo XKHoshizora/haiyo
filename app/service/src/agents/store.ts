@@ -1,9 +1,10 @@
 import type { Config } from "../config.ts";
-import { REASONING_LEVELS, type ProactiveLevel, type ReasoningLevel } from "../config.ts";
+import { REASONING_LEVELS, type ProactiveLevel, type Protocol, type ReasoningLevel } from "../config.ts";
 import { lockConversation } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { AppError, notFound } from "../errors.ts";
 import { handleOf } from "../principals/store.ts";
+import { sendableLevels } from "../models/resolve.ts";
 import { lockProviderModels } from "../providers/store.ts";
 import { forgetSummaries } from "./summary/store.ts";
 
@@ -276,28 +277,52 @@ export async function countLiveAgents(q: Queryable, ownerId: string): Promise<nu
  * `reasoningLevels` (every level when it lists none). With no model chosen yet any level is accepted (it is checked when
  * a model is chosen). A run does not check again and never fails for it: it is made at the Agent's effective level
  * (models/resolve.ts `callLevel`) — the saved one when the model still lists it, else the nearest listed level below it.
+ *
+ * The levels a save accepts are EXACTLY the ones the picker offers (fix round 4, F4): `none` and the levels the model can RUN at
+ * (models/resolve.ts `sendableLevels`: each level it lists as its protocol sends it — a Chat Completions or Gemini model that
+ * lists `max` offers `xhigh`, and `max` itself is no choice). Each of `levels` is held to that: the Agent's own level and its two
+ * levels for others (`othersReasoning`, `proactiveReasoning`). One exception, so that nothing saved before stops being saveable:
+ * a level sent back UNCHANGED for an Agent whose model is unchanged (`saved`) is accepted as it stands — the Agent's own when the
+ * model's own list has it (`max` there: it runs as `xhigh`), a level for others always (they were not held to the model before).
  */
 export async function assertModelChoice(
   q: Queryable,
   ownerId: string,
   model: AgentModel,
-  reasoning: ReasoningLevel,
+  levels: ReasoningLevel | readonly LevelAsked[],
   config: Pick<Config, "siteModels" | "providerDefaultMaxOutputTokens">,
 ): Promise<void> {
   if (model === null) return;
-  let allowed: readonly ReasoningLevel[];
+  let listed: readonly ReasoningLevel[];
+  let protocol: Protocol;
   if (model.source === "site") {
     const site = config.siteModels.find((m) => m.id === model.id);
     if (!site) throw new AppError(400, "invalid_request");
-    allowed = site.reasoning;
+    listed = site.reasoning;
+    protocol = site.protocol;
   } else {
     // Locked `for key share` (in the caller's transaction): a concurrent delete of the provider waits or has happened.
-    const models = await lockProviderModels(q, ownerId, model.providerId);
-    const listed = models?.find((m) => m.name === model.model);
-    if (!listed || listed.contextTokens <= config.providerDefaultMaxOutputTokens) throw new AppError(400, "invalid_request");
-    allowed = listed.reasoning ? (listed.reasoningLevels ?? REASONING_LEVELS) : [];
+    const provider = await lockProviderModels(q, ownerId, model.providerId);
+    const entry = provider?.models.find((m) => m.name === model.model);
+    if (!provider || !entry || entry.contextTokens <= config.providerDefaultMaxOutputTokens) throw new AppError(400, "invalid_request");
+    listed = entry.reasoning ? (entry.reasoningLevels ?? REASONING_LEVELS) : [];
+    protocol = provider.protocol;
   }
-  if (reasoning !== "none" && !allowed.includes(reasoning)) throw new AppError(400, "invalid_request");
+  const offered = sendableLevels(protocol, listed);
+  for (const asked of typeof levels === "string" ? [{ level: levels } as LevelAsked] : levels) {
+    if (offered.includes(asked.level)) continue;
+    if (asked.saved === asked.level && (asked.forOthers === true || listed.includes(asked.level))) continue;
+    throw new AppError(400, "invalid_request");
+  }
+}
+
+/** A level a save names (`assertModelChoice`). */
+export interface LevelAsked {
+  level: ReasoningLevel;
+  /** The level stored now, for an Agent whose model this save does not change: sent back unchanged it is accepted. */
+  saved?: ReasoningLevel;
+  /** One of the two levels for others (accepted unchanged whatever the model lists). */
+  forOthers?: boolean;
 }
 
 export interface AgentPatch {

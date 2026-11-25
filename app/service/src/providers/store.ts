@@ -309,13 +309,13 @@ export async function deleteProvider(t: Tx, ownerId: string, id: string): Promis
 }
 
 /**
- * The models of the owner's provider, or null when there is no such provider of theirs. Takes a `for key share`
+ * The models of the owner's provider and the protocol it speaks, or null when there is no such provider of theirs. Takes a `for key share`
  * lock: inside a transaction that is about to point an Agent at it, a concurrent delete waits until it is done (and
  * is then refused), or has already removed it (and this finds nothing).
  */
-export async function lockProviderModels(q: Queryable, ownerId: string, providerId: string): Promise<ProviderModel[] | null> {
-  const { rows } = await q.query<{ models: unknown }>("select models from providers where id = $1 and owner_id = $2 for key share", [providerId, ownerId]);
-  return rows[0] ? parseModels(rows[0].models) : null;
+export async function lockProviderModels(q: Queryable, ownerId: string, providerId: string): Promise<{ models: ProviderModel[]; protocol: Protocol } | null> {
+  const { rows } = await q.query<{ models: unknown; protocol: Protocol }>("select models, protocol from providers where id = $1 and owner_id = $2 for key share", [providerId, ownerId]);
+  return rows[0] ? { models: parseModels(rows[0].models), protocol: rows[0].protocol } : null;
 }
 
 /**

@@ -811,6 +811,22 @@ describe("in a group", () => {
     expect(o2.events.filter((e: Push) => e.type === "run" && e.run?.status === "failed")).toEqual([]);
   });
 
+  it("the owner's call noted on a member's reply that then fails for a passing reason: the retry answers both calls and is the owner's own (whose it is: the calls it has, as each was accepted — fix round 4, R2)", async () => {
+    const w = await scene("ar_gc");
+    const { worker, port } = instance();
+    const asked = await say(w.mia, w.g, `${w.call} 打印机的维修电话？`);
+    const ticket = (await port.claimNext())!;
+    const own = await say(w.owner, w.g, `${w.call} 我也想知道`);
+    await port.finish(ticket, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
+    const [failed, retry] = await runsOf(w.g);
+    expect(failed).toMatchObject({ status: "failed", lane: "others" });
+    expect(retry).toMatchObject({ status: "queued", lane: "own", auto_attempt: 1, calls: [String(asked), String(own)] });
+    expect((await db.query<{ c: string[]; caller: string }>("select owner_call_seqs::text[] as c, caller_id as caller from agent_runs where conversation_id = $1 and status = 'queued'", [w.g])).rows).toEqual([{ c: [String(own)], caller: w.owner.id }]);
+    advance(20_000);
+    gateway.reply("12345。");
+    expect(await worker.runOnce()).toBe(true);
+  });
+
   it("a 503 after an acknowledgement and a tool round is no passing failure (the reply had done things): shown at once; the owner's 重试 posts no second acknowledgement", async () => {
     const w = await scene("ar_ack");
     const { worker } = instance(app.deps.config, true);

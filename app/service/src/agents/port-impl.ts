@@ -248,6 +248,23 @@ const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
  */
 const HELD_BACK: RunEnd = Object.freeze({ status: "cancelled" });
 
+/** `beginOnce`: the plan it made is not for the reply the row is at admission; nothing of it was sent or held (`begin` plans again). */
+const STALE_PLAN = Symbol("stale plan");
+
+/** What a plan of `begin` was made for: whose reply the run was (its lane and caller) and the calls it answers (those it covers). */
+interface PlanBasis {
+  lane: Lane;
+  caller: string | null;
+  calls: string;
+}
+const basisOf = (state: Pick<RunState, "lane" | "caller_id" | "call_seqs">, covers: number): PlanBasis => ({
+  lane: state.lane,
+  caller: state.caller_id,
+  // (A call noted on it since — after what it covers — is its follow-up's: no part of the plan.)
+  calls: (state.call_seqs ?? []).map(Number).filter((seq) => seq <= covers).sort((a, b) => a - b).join(","),
+});
+const sameBasis = (a: PlanBasis, b: PlanBasis): boolean => a.lane === b.lane && a.caller === b.caller && a.calls === b.calls;
+
 /** Why `postAsAgent` refuses a run's reply (409): the Agent's state, or what interrupted the run. */
 const REFUSED: ReadonlySet<string> = new Set(["agent_paused", "agent_deleted", "agent_removed", "halted", "owner_spoke", "access_ended", "notes_changed", "errand_ended"]);
 
@@ -263,6 +280,8 @@ interface RunState {
    * answers of what was noted. A told reply's hold the calls noted on it only.
    */
   call_seqs: string[] | null;
+  /** Those of them accepted as its owner's own, each as it was made (`owner_call_seqs`): what makes a reply, or its follow-up, the owner's own. */
+  owner_call_seqs: string[];
   /** It was held back at an earlier attempt and is not admitted yet (`held_back_by`). */
   marked: boolean;
   /** Its owner asked it to stop while it ran (runs.ts `stopRun`). */
@@ -291,7 +310,7 @@ interface RunState {
   social: boolean;
 }
 const RUN_STATE =
-  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
+  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, owner_call_seqs::text[] as owner_call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
   "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at, " +
   "coalesce((select sc.type = 'agent_social' from conversations sc where sc.id = agent_runs.conversation_id), false) as social";
 
@@ -341,6 +360,11 @@ const quietGreeting = (end: RunEnd, state: Pick<RunState, "greets">): RunEnd => 
  * forgotten the run.
  */
 interface RunFlags {
+  /**
+   * The lane this attempt has met the owner's replies at a time for (`claimNext`'s check, or `begin`'s own when the lane changed
+   * since): a reply that is no longer the owner's own as it begins meets the others' limit before anything is prepared.
+   */
+  lane?: Lane;
   /** Its owner asked it to stop, or its Agent's pause, delete or leaving the run's group interrupted it. */
   stop: boolean;
   /** Its Agent's pause, delete or leaving the run's group interrupted it: nothing more of it is pushed. */
@@ -365,11 +389,14 @@ interface RunFlags {
   /** What its context left out (context.ts `LoadedContext.leftOut`), from `begin` once the call is admitted; null until then, or none. */
   leftOut: LeftOut | null;
   /**
-   * A reply for others made at a thinking level: the most its ANSWER may weigh (the others' output limit, in the weight its model's
-   * tokens are estimated by). The call's one limit is that plus the level's allowance, so the upstream cannot hold the answer to it;
-   * `post` does (fix round 3, point 3a). Null for every other reply: at `none` the upstream's limit is the bound itself.
+   * A reply for others: the ONE budget for every text of it the conversation reads (fix round 4, F3) — `most`, the others' output
+   * limit in the weight its model's tokens are estimated by; `used`, what its acknowledgement took of it (the text it wrote before
+   * a tool call, posted at once as a message of its own: at most half, so the answer always has room); `always`: made at a thinking
+   * level, where the call's one limit is that plus the level's allowance and the upstream cannot hold the answer to it, so `post`
+   * does (fix round 3, point 3a). At `none` with no acknowledgement the upstream's limit is the bound itself and nothing is cut
+   * here. Null for the owner's own reply.
    */
-  answerWeight?: number | null;
+  othersText?: { most: number; used: number; always: boolean } | null;
   /**
    * A reply offered tools, from `begin` once the call is admitted: the numbers it gave the model (refs.ts — its context's
    * file labels, then what its tools hand over) and how far its conversation had come when it began (`RunScope.heardTo`).
@@ -572,7 +599,7 @@ export class DbAgentPort implements AgentPort {
     const row = rows[0];
     if (!row) return null;
     const run: RunTicket = { id: row.id, agentId: row.agent_id, ownerId: row.owner_id, conversationId: row.conversation_id };
-    this.flags.set(run.id, freshFlags());
+    this.flags.set(run.id, { ...freshFlags(), lane: row.lane as Lane });
     if (row.again) {
       this.deps.realtime.pushRunToOwner(run.conversationId, toWireRun(row));
     } else if (row.auto_attempt > 0) {
@@ -687,13 +714,44 @@ export class DbAgentPort implements AgentPort {
    *    calls are priced by is kept for `extend` (`RunFlags.money`).
    */
   async begin(run: RunTicket, closing?: AbortSignal): Promise<Prepared | RunEnd> {
+    // A plan that the row no longer agrees with at admission (step 3: whose reply it is changed while its attachments were read) is
+    // thrown away whole — no call was made, nothing held — and made again from the row as it is. Changes are few (each takes a call
+    // out of the reply): after three plans it goes back to the queue instead, to be claimed and begun afresh.
+    for (let plan = 0; plan < 3; plan += 1) {
+      const begun = await this.beginOnce(run, closing);
+      if (begun !== STALE_PLAN) return begun;
+    }
+    const queued = await this.deps.db.tx(async (t) => {
+      await this.lockRun(t, run);
+      return this.backToQueue(t, run);
+    });
+    return this.heldBack(run, queued, this.flagsOf(run.id));
+  }
+
+  /** The run back to `queued`, unadmitted and holding nothing, to be claimed again (the claim meets the limits of the lane it has now). */
+  private async backToQueue(t: Tx, run: RunTicket): Promise<Announced> {
+    const queued = await t.query<RunRow>(`update agent_runs as r set status = 'queued', started_at = null where r.id = $1 returning ${RUN_COLUMNS}`, [run.id]);
+    return { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(queued.rows[0]!) };
+  }
+
+  /** This attempt put its run back to `queued` (`HELD_BACK`): its owner is told; its flags go, unless a later attempt has its own already. */
+  private heldBack(run: RunTicket, queued: Announced, mine: RunFlags): RunEnd {
+    this.deps.realtime.pushRunToOwner(run.conversationId, queued.run);
+    if (this.flags.get(run.id) === mine) this.flags.delete(run.id);
+    this.wakeWorker();
+    return HELD_BACK;
+  }
+
+  private async beginOnce(run: RunTicket, closing?: AbortSignal): Promise<Prepared | RunEnd | typeof STALE_PLAN> {
     const { db, config, blobs, log } = this.deps;
     const now = new Date();
     // This attempt's flags (`claimNext` started them): a later attempt of the same run has flags of its own.
     const mine = this.flagsOf(run.id);
     const first = await db.tx(async (t): Promise<
-      | { end: RunEnd }
+      | { end: RunEnd; queued?: Announced }
       | {
+          /** Whose reply the plan was made for (the row after step 1): step 3 admits it only for the same. */
+          basis: PlanBasis;
           resolved: Resolved;
           loaded: LoadedContext;
           covers: number;
@@ -739,6 +797,16 @@ export class DbAgentPort implements AgentPort {
         const kept = await dropRefusedCalls(t, run.id, agent.ownerId);
         if (kept === null) return { end: BLOCKED_SINCE };
         Object.assign(state, kept);
+      }
+      // The lane it has now is not the one its claim met the owner's replies at a time for (a call was taken out since — just now, or
+      // by an ending of access): a reply that is no longer the owner's own meets the others' limit here, before anything is prepared
+      // (fix round 4, R3). Over it, it goes back to the queue, where the claim holds it to that limit.
+      if (mine.lane !== undefined && mine.lane !== state.lane) {
+        if (state.lane !== "own") {
+          const others = await t.query<{ n: number }>("select count(*)::int as n from agent_runs where owner_id = $1 and status = 'running' and lane <> 'own' and id <> $2", [run.ownerId, run.id]);
+          if (others.rows[0]!.n >= config.agentMaxConcurrentOthersRuns) return { end: HELD_BACK, queued: await this.backToQueue(t, run) };
+        }
+        mine.lane = state.lane;
       }
       // Bounded as another person's reply is: every social run (its caller is never the owner: `runAccess`), and any other run not
       // in lane `own`. Decided here by the place, so no social run can be unbounded whatever its row says; and AFTER the calls
@@ -956,9 +1024,9 @@ export class DbAgentPort implements AgentPort {
       // And whether it answers its owner's own call: only then do the owner's typed words exempt a query (review M6).
       const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: state.lane === "own" && state.triggered_by === "human" } : {};
       const tools = heard === null || refs === null ? null : { refs, heardTo: Number(heard.rows[0]?.seq ?? 0), ...shown };
-      return { resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, bounded, social: socialNotes };
+      return { basis: basisOf(state, covers), resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, bounded, social: socialNotes };
     });
-    if ("end" in first) return first.end;
+    if ("end" in first) return first.end === HELD_BACK && first.queued ? this.heldBack(run, first.queued, mine) : first.end;
 
     const deadline = AbortSignal.timeout(config.agentRunTimeoutMs);
     let context: BuiltContext;
@@ -977,10 +1045,31 @@ export class DbAgentPort implements AgentPort {
 
     const result = await db.tx(async (
       t,
-    ): Promise<{ end: RunEnd; told?: Told; queued?: Announced } | { prepared: Prepared; read: number | null; money: RunMoney; wasMarked: boolean }> => {
+    ): Promise<{ end: RunEnd; told?: Told; queued?: Announced } | { stale: true } | { prepared: Prepared; read: number | null; money: RunMoney; wasMarked: boolean; ackWeight: number }> => {
       const { agent, state } = await this.lockRun(t, run);
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
+      // ADMISSION (fix round 4, R3). The terms a reply is made on — its model and level, its output limit, its tool caps, the hold
+      // and the numbers it is counted against — are decided ONCE, here, from the row as it is NOW, under its locks (the
+      // conversation's, the Agent's and the run's: `lockRun`; every writer of a run's calls holds the Agent's row) and, in
+      // `admitRun`, its owner's account lock. Step 1 prepared a plan for whoever the reply was then; the attachments were read with
+      // no lock. So first the calls are held to the access decision once more (`dropRefusedCalls`: a block since), and then the row
+      // is compared with what the plan was made for (`basisOf`: its lane, its caller, the calls it answers). Any difference: the
+      // plan is STALE — nothing of it is sent, nothing is held — and `begin` makes a new one from the row (`STALE_PLAN`).
+      // BOUNDARY: once `admitRun` below has written the hold, the run's lane, caller and money terms are FROZEN. A later ending of
+      // access never rewrites them and never requeues the reply (its calls would be made, and charged, twice): it is ended as a
+      // whole when no call it answers is left (social/agent-contacts.ts `endGroupCalls`, `standingCalls`), else it goes on, and
+      // its post leaves out whoever is refused by then (`postAsAgent`).
+      if (this.flags.get(run.id)?.place === "group" && !first.told) {
+        const kept = await dropRefusedCalls(t, run.id, agent.ownerId);
+        if (kept === null) return { end: BLOCKED_SINCE };
+        Object.assign(state, kept);
+      }
+      if (!sameBasis(first.basis, basisOf(state, first.covers))) {
+        if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
+        log.info({ metric: "stale_plan" }, "agent run: whose reply it is changed while it was prepared; its plan is made again");
+        return { stale: true };
+      }
       // A social run: its visitor may still reach the Agent now, after the attachments were read outside any transaction (B-4 review m1).
       if (this.flags.get(run.id)?.place === "social" && (await runAccess(t, agent, state, this.deps.config)) !== "ok") return { end: ACCESS_ENDED };
       // Too late to start (it crossed the bound while its attachments were read): what step 1 took on is handed back as
@@ -1124,7 +1213,13 @@ export class DbAgentPort implements AgentPort {
       const reasoning = resolved.reasoning;
       const planned = planRatio(ratio);
       // An acknowledgement already stands for what it answers (an earlier attempt's: a retry): it posts none.
-      const acknowledged = tools.length > 0 && (await standingAcknowledgement(t, run.conversationId, run.agentId, run.id)) !== null;
+      const standing = tools.length > 0 ? await standingAcknowledgement(t, run.conversationId, run.agentId, run.id) : null;
+      const acknowledged = standing !== null;
+      // (A reply for others: what that acknowledgement took of its one budget of text, `RunFlags.othersText`.)
+      const ackWeight =
+        bounded && standing !== null
+          ? weight((await t.query<{ text: string | null }>("select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2", [run.conversationId, standing])).rows[0]?.text ?? "")
+          : 0;
       return {
         prepared: {
           call: {
@@ -1161,16 +1256,16 @@ export class DbAgentPort implements AgentPort {
         read: marked && marked.readSeq > marked.previous ? marked.readSeq : null,
         money: { price: resolved.price ?? null, maxOutputTokens: resolved.call.maxOutputTokens, reserveMicro: admission.reserveMicro ?? 0n, roomCapTokens, growthTokens },
         wasMarked: state.marked,
+        ackWeight,
       };
     });
+    if ("stale" in result) return STALE_PLAN;
     if ("end" in result) {
       // Held back: its owner is told it is queued again (the other members of a group, told it is replying, nothing more);
       // this attempt's flags go, unless a later attempt has flags of its own already; it is counted.
       if (result.end === HELD_BACK && result.queued) {
-        this.deps.realtime.pushRunToOwner(run.conversationId, result.queued.run);
-        if (this.flags.get(run.id) === mine) this.flags.delete(run.id);
         log.info({ metric: "run_held_back" }, "agent run: held back until a call of its owner ends");
-        return HELD_BACK;
+        return this.heldBack(run, result.queued, mine);
       }
       // The others' daily budget's notice, if the admission's refusal appended it, goes to the group; the Agent to its owner.
       if (result.told) this.tell(result.told);
@@ -1184,7 +1279,7 @@ export class DbAgentPort implements AgentPort {
     flags.mark = first.loaded.mark;
     flags.money = result.money;
     flags.leftOut = first.loaded.leftOut;
-    flags.answerWeight = first.bounded && first.resolved.reasoning !== "none" ? weightWithin(config.others.outputTokens, first.ratio) : null;
+    flags.othersText = first.bounded ? { most: weightWithin(config.others.outputTokens, first.ratio), used: result.ackWeight, always: first.resolved.reasoning !== "none" } : null;
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name, toolsUnknown: resolved.toolsUnknown === true };
     // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
@@ -1428,8 +1523,11 @@ export class DbAgentPort implements AgentPort {
     // no stop flag (only the catch below does). If nothing follows the tool round, that text is the reply.
     if (as === "ack" && flags?.place === "social") return "refused";
     const mark = flags?.mark ?? null;
-    // A reply for others at a thinking level: its answer is cut at the others' output limit, as a reply over its length is cut (marked).
-    const most = as === "reply" ? (flags?.answerWeight ?? null) : null;
+    // A reply for others: what the conversation reads of it is held to the others' output limit as ONE budget (`RunFlags.othersText`)
+    // — its acknowledgement to half of it, its answer to what the acknowledgement left — each cut as a reply over its length is cut
+    // (marked `truncated`).
+    const budget = flags?.othersText ?? null;
+    const most = budget === null ? null : as === "ack" ? Math.floor(budget.most / 2) : budget.always || budget.used > 0 ? budget.most - budget.used : null;
     const over = most !== null && weight(said.text) > most;
     const reply: AgentReply = { ...said, ...(over ? { text: cutToWeight(said.text, most), truncated: true } : {}), refs: flags?.tools?.refs ?? null };
     try {
@@ -1450,6 +1548,7 @@ export class DbAgentPort implements AgentPort {
       // The group moved on: a judgement waiting there for a person's message is dropped (the decision would refuse that
       // message now). Nothing ever waits in the Agent's own conversation.
       if (!duplicate) this.deps.proactive?.cancelled(run.conversationId);
+      if (as === "ack" && budget !== null) budget.used += weight(reply.text);
       return "posted";
     } catch (err) {
       if (err instanceof AppError && REFUSED.has(err.code)) {
@@ -1590,7 +1689,7 @@ export class DbAgentPort implements AgentPort {
       const retried = transientFailure(final) && !state.rows[0].stop_asked ? await scheduleAutoRetry(t, run.id, agent, run.conversationId, state.rows[0], now, config) : null;
       const next = followUpOnEnd(state.rows[0], agent, final, { recovered: false, retried: retried !== null && "retry" in retried });
       const followed =
-        next === null ? followUpOf(null) : await followUp(t, agent, run.conversationId, Number(state.rows[0].covers_seq ?? 0), next, state.rows[0].call_seqs, config);
+        next === null ? followUpOf(null) : await followUp(t, agent, run.conversationId, Number(state.rows[0].covers_seq ?? 0), next, state.rows[0].call_seqs, state.rows[0].owner_call_seqs, config);
       return {
         ended,
         followed,
@@ -1806,7 +1905,7 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
   // calls, which were never part of what failed, are followed up at once (`keepsNothingNoted`).
   const next = followUpOnEnd(state, agent, end, { recovered: true, retried: retried !== null && "retry" in retried });
   const { run: followed, ...told } =
-    next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(state.covers_seq ?? 0), next, state.call_seqs, config);
+    next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(state.covers_seq ?? 0), next, state.call_seqs, state.owner_call_seqs, config);
   return {
     runs: followed ? [ended, followed] : [ended],
     told,

@@ -48,7 +48,7 @@ function watching(conv: () => string) {
 async function scene(model: typeof THINK | typeof PLAIN, own: string, others: string, ceilingMs: number) {
   let g = "";
   const w = watching(() => g);
-  const k: Kitchen = await othersKitchen(app, db, { agent: { model, reasoning: own, othersReasoning: others }, gateway: w.gateway as never, onGroup: (id) => (g = id) });
+  const k: Kitchen = await othersKitchen(app, db, { agent: { model }, stored: { reasoning: own, othersReasoning: others }, gateway: w.gateway as never, onGroup: (id) => (g = id) });
   const worker = createAgentWorker({ port: k.port, models: w.gateway, runTimeoutMs: 300, callCeilingMs: ceilingMs, maxRunsInFlight: 1, background: false, log: app.log, tools: app.deps.config.tools });
   /** Nothing of the owner's is held any more, by a run in any state. */
   const heldNow = async () => BigInt((await db.query<{ n: string }>("select coalesce(sum(hold_micro), 0)::text as n from agent_runs where owner_id = $1", [k.owner.id])).rows[0]!.n);

@@ -394,7 +394,7 @@ describe("the others' daily budget", () => {
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "done", lane: "own", covers: asked });
   });
 
-  it("a reply being written counts by what it holds (B3): its owner's own does not; another's under way, holding more than the budget, refuses the next call and the group is told once; the spend shown is what is settled", async () => {
+  it("a reply being written counts by what it holds (B3): its owner's own does not; another's under way, holding more than the budget, refuses the next call, and the group is NOT told it answers only its owner until tomorrow (a hold is over when its reply ends: fix round 4, F5); the spend shown is what is settled", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
     const g2 = await anotherGroup(w, "second");
@@ -407,15 +407,16 @@ describe("the others' daily budget", () => {
     await settleAll();
 
     // Another member's reply under way in the second group, holding the same: it is held against the budget (it will be charged
-    // at most that), so the next call, in either group, is refused and the group told; a mention is not noted on it.
+    // at most that), so the next call, in either group, is refused; a mention is not noted on it. The group is told nothing: nothing
+    // is used up for the day (the same decision the owner's page shows, `agentRoom`), and the call below is answered once it ends.
     await holding(anna, g2, "others", 50 * POINT);
     const before = await runsOf(anna.id, w.g);
     await say(w.third, w.g, "@anna 二");
     expect(await runsOf(anna.id, w.g)).toEqual(before);
-    expect(await noticesOf(w.g)).toHaveLength(1);
+    expect(await noticesOf(w.g)).toHaveLength(0);
     await say(w.third, g2, "@anna 三");
     expect(await runsOf(anna.id, g2)).toEqual([expect.objectContaining({ status: "running", pending: null })]);
-    expect(await noticesOf(g2)).toHaveLength(1);
+    expect(await noticesOf(g2)).toHaveLength(0);
     // Others' use counts what the reply being written holds (the number is decided by settled plus held).
     expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "50" } });
 

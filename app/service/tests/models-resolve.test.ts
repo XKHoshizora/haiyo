@@ -150,7 +150,8 @@ describe("resolveModel", () => {
     expect(await narrowed(["max"])).toMatchObject({ reasoningAllowed: ["none", "xhigh"], reasoning: "xhigh" });
     // Fix round 3, point 3b: this provider speaks Gemini, which has no `max` level (the call is sent `xhigh`: gateway.ts
     // REASONING_PARAMS). The level resolved IS the level sent: what the hold is sized for and what the owner's line says.
-    expect((await api(app, owner, "PATCH", `/api/agents/${deep.id}`, { reasoning: "max" })).status).toBe(200);
+    // (`max` is no choice on it: a save takes what the picker offers. An Agent saved with it before is read here.)
+    expect((await api(app, owner, "PATCH", `/api/agents/${deep.id}`, { reasoning: "max" })).status).toBe(400);
     const top = { ...deep, reasoning: "max" as const };
     const sent = await (async () => {
       expect((await api(app, owner, "PATCH", `/api/providers/${provider.id}`, { models })).status).toBe(200);

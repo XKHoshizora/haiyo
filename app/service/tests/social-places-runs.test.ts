@@ -145,7 +145,7 @@ describe("a follow-up keeps its caller", () => {
     await db.query("update agent_runs set covers_seq = 1, call_seqs = '{}' where id = $1", [ended.id]);
     const followed = await db.tx(async (t) => {
       const agent = await lockAgent(t, w.agent.id, w.conv);
-      return followUp(t, agent, w.conv, 1, seq, [], app.deps.config);
+      return followUp(t, agent, w.conv, 1, seq, [], [], app.deps.config);
     });
     expect(followed.run).not.toBeNull();
     const queued = await rowOf(followed.run!.run.id);
@@ -166,7 +166,7 @@ describe("a follow-up keeps its caller", () => {
     const ended = await seedRun(w, { status: "done" as RunStatus, pending: seq, caller: w.v.id });
     await db.query("update agent_runs set covers_seq = 1 where id = $1", [ended.id]);
     await db.query(`update agent_contacts set state = 'ended', basis = null, end_reason = 'removed' where agent_id = $1 and subject_id = $2`, [w.agent.id, w.v.id]);
-    const followed = await db.tx(async (t) => followUp(t, await lockAgent(t, w.agent.id, w.conv), w.conv, 1, seq, [], app.deps.config));
+    const followed = await db.tx(async (t) => followUp(t, await lockAgent(t, w.agent.id, w.conv), w.conv, 1, seq, [], [], app.deps.config));
     expect(followed.run).toBeNull();
   });
 });

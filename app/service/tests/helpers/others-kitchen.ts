@@ -56,7 +56,15 @@ let counter = 0;
 export async function othersKitchen<G extends Pick<ModelGateway, "stream"> = ScriptedGateway>(
   app: FastifyInstance,
   db: Db,
-  o: { agent?: Record<string, unknown>; box?: Toolbox; config?: Config; gateway?: G; /** Reads the group's id once it exists (for a gateway that looks at the run). */ onGroup?: (conversationId: string) => void } = {},
+  o: {
+    agent?: Record<string, unknown>;
+    /** Levels as they stand in its row from before a save was held to what its model offers (set past the route, as an older save left them). */
+    stored?: { reasoning?: string; othersReasoning?: string; proactiveReasoning?: string };
+    box?: Toolbox; config?: Config;
+    gateway?: G;
+    /** Reads the group's id once it exists (for a gateway that looks at the run). */
+    onGroup?: (conversationId: string) => void;
+  } = {},
 ) {
   const tag = `${++counter}x${Math.floor(Math.random() * 1e6)}`;
   const owner = await signUp(app, `oo${tag}`);
@@ -65,6 +73,14 @@ export async function othersKitchen<G extends Pick<ModelGateway, "stream"> = Scr
   const third = await signUp(app, `tt${tag}`);
   const g = await group(app, owner, "饭搭子", [member, third]);
   const agent = await mustCreateAgent(app, owner, { handle: "chef", name: "chef", model: FREE_MODEL, persona: "简短地回答。", ...o.agent });
+  if (o.stored) {
+    await db.query("update agents set reasoning = coalesce($2, reasoning), others_reasoning = coalesce($3, others_reasoning), proactive_reasoning = coalesce($4, proactive_reasoning) where principal_id = $1", [
+      agent.id,
+      o.stored.reasoning ?? null,
+      o.stored.othersReasoning ?? null,
+      o.stored.proactiveReasoning ?? null,
+    ]);
+  }
   await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [g, agent.id]);
   o.onGroup?.(g);
   const gateway = (o.gateway ?? scriptedGateway()) as G;

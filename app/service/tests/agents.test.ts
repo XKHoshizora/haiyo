@@ -322,7 +322,10 @@ describe("model and reasoning", () => {
     const some = { source: "provider", providerId: mine, model: "some" };
     for (const reasoning of ["medium", "xhigh", "max"]) expect([reasoning, (await createAgent(app, owner, { model: some, reasoning })).status]).toEqual([reasoning, 400]);
     for (const reasoning of ["none", "low", "high"]) expect([reasoning, (await createAgent(app, owner, { model: some, reasoning })).status]).toEqual([reasoning, 201]);
-    const onAll = await createAgent(app, owner, { model: { source: "provider", providerId: mine, model: "all" }, reasoning: "max" });
+    // (Every level its interface has: this provider speaks Chat Completions, which has no `max` — it would be sent `xhigh`, so
+    // `xhigh` is its top and `max` is no choice: fix round 4, F4.)
+    expect((await createAgent(app, owner, { model: { source: "provider", providerId: mine, model: "all" }, reasoning: "max" })).status).toBe(400);
+    const onAll = await createAgent(app, owner, { model: { source: "provider", providerId: mine, model: "all" }, reasoning: "xhigh" });
     expect(onAll.status).toBe(201);
     const id = onAll.json.id;
     expect(await api(app, owner, "PATCH", `/api/agents/${id}`, { model: some })).toEqual({ status: 400, json: { error: "invalid_request" } });

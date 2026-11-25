@@ -28,6 +28,7 @@ import {
   appellationEntriesOf,
   assertModelChoice,
   GROUP_MENTIONS,
+  type LevelAsked,
   listOwnedAgents,
   lockOwnedAgent,
   readOwnedAgent,
@@ -455,7 +456,14 @@ export function registerAgentRoutes(
           ...(proactiveBudgetPoints === undefined ? {} : { proactiveBudgetMicro: proactiveBudgetPoints }),
         };
         const next = { ...current, ...patch };
-        if ("model" in patch || "reasoning" in patch) await assertModelChoice(t, me.id, next.model, next.reasoning, config);
+        // The levels this save names, and the Agent's own whenever its model is named: each one the picker offers on the model it
+        // will have, or the one stored now sent back unchanged for a model that stays (`assertModelChoice`).
+        const sameModel = JSON.stringify(next.model) === JSON.stringify(current.model);
+        const asked: LevelAsked[] = [
+          ...("model" in patch || "reasoning" in patch ? [{ level: next.reasoning, ...(sameModel ? { saved: current.reasoning } : {}) }] : []),
+          ...(["othersReasoning", "proactiveReasoning"] as const).flatMap((key) => (key in patch ? [{ level: next[key], forOthers: true, ...(sameModel ? { saved: current[key] } : {}) }] : [])),
+        ];
+        if (asked.length > 0) await assertModelChoice(t, me.id, next.model, asked, config);
         const updated = await updateAgent(t, current, patch);
         if (switching) await memorySwitched(t, current, req.body.memory === true, catchUp === true, { groups: groups ?? [], wait: last });
         return { agent: updated, switched: switching ? { lookBack: req.body.memory === true && catchUp === true } : null };

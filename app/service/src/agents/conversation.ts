@@ -111,7 +111,7 @@ export async function createAgent(
 ): Promise<{ agent: AgentRow; change: Change; greeting: Announced | null }> {
   const account = await lockAccount(t, ownerId);
   if ((await countLiveAgents(t, ownerId)) >= agentLimit(config, account.tier)) throw new AppError(403, "agent_limit");
-  await assertModelChoice(t, ownerId, input.model, input.reasoning, config);
+  await assertModelChoice(t, ownerId, input.model, [{ level: input.reasoning }, { level: input.othersReasoning ?? "none" }, { level: input.proactiveReasoning ?? "none" }], config);
 
   const named = await t.query<{ owner_handle: string; taken: boolean }>(
     `select o.handle::text as owner_handle,
@@ -170,7 +170,7 @@ export async function createAgent(
   // Its first reply, which greets its owner (no persona yet: it then asks who it is to be), is its model's own: queued.
   const greeting =
     greet && input.persona === "" && input.model !== null && !(await overLaneLimit(t, ownerId, "own", config))
-      ? await queueRun(t, { id, ownerId }, conversationId, 0, "human", callerOf(ownerId, ownerId), [ownerId])
+      ? await queueRun(t, { id, ownerId }, conversationId, 0, "human", callerOf(ownerId, ownerId), [ownerId], [])
       : null;
   if (greeting) await t.query("update agent_runs set greets = true, call_seqs = '{}' where id = $1", [greeting.run.id]);
 
