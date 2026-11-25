@@ -93,6 +93,8 @@ test("hostile content in every kind of message never makes the column wider than
   await addWebSources(agent.conversationId, stored.seq, sources, [{ at: 1, n: 2 }]);
   await page.reload();
   await expect(chatPane(page, agent.name)).toBeVisible();
+  // The sources are folded until the reader opens them (web-sources.spec.mjs).
+  await page.locator(".msg-lookups .sources-toggle").click();
   await expect(page.locator("ol.web-sources li")).toHaveCount(4);
   for (const width of WIDTHS) {
     await page.setViewportSize({ width, height: 800 });

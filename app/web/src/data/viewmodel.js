@@ -371,6 +371,14 @@ export function lookupLine(lookups) {
   return parts.length > 0 ? parts.join("，") : null;
 }
 
+/**
+ * What the button that opens a reply's web pages says (pages/ReplyLookups.jsx): how often it searched, when that is known,
+ * and how many pages it can list (`count`, above 0) — 查了 2 次网页 · 12 个来源.
+ */
+export function sourcesLine(lookups, count) {
+  return [lookupLine({ web: lookups?.web }), `${count} 个来源`].filter(Boolean).join(" · ");
+}
+
 /** The most web pages and web citations a reply keeps (the service's `WEB_SOURCES_MAX`, `WEB_CITES_MAX`). */
 const WEB_MAX = 20;
 

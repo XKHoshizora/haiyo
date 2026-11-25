@@ -1,11 +1,17 @@
-// The web pages an Agent's reply was handed by its web search (the service's `webSources`; lane websearch), under the
-// reply's lookup line (查了 1 次网页): a quiet numbered list, for whoever reads the reply. Each row is the page's title and
-// the real host of its address (`new URL(url).hostname`, a punycode host in its ASCII form — never the engine's site
-// name), and opens the page in a new tab (`rel="noopener noreferrer nofollow"`). The numbers are the ones the reply's
-// chips say (ui/cites.jsx). In such a reply nothing else opens: its Markdown links show as plain text (Markdown.jsx).
-import React from "react";
+// The web pages an Agent's reply was handed by its web search (the service's `webSources`; lane websearch): a quiet
+// numbered list, for whoever reads the reply — folded until the reader opens it from the reply's lookup line
+// (ReplyLookups.jsx: 查了 1 次网页 · 2 个来源), then right under that line. Each row is the page's title and the real host
+// of its address (`new URL(url).hostname`, a punycode host in its ASCII form — never the engine's site name), and opens
+// the page in a new tab (`rel="noopener noreferrer nofollow"`). The numbers are the ones the reply's chips say
+// (ui/cites.jsx): a chip opens its page itself, so reading on never needs the list. In such a reply nothing else opens:
+// its Markdown links show as plain text (Markdown.jsx). A long list opens at its first SOURCES_FIRST rows, with a row
+// that shows them all.
+import React, { useLayoutEffect, useRef, useState } from "react";
 import { TextLink } from "../ui/primitives.jsx";
 import { withoutBidiControls } from "../ui/markdownRules.js";
+
+/** How many rows a long list opens with. A list of one more is shown whole: a row to show one row saves nothing. */
+export const SOURCES_FIRST = 5;
 
 /**
  * What an Agent's message hands its text (ui/cites.jsx `CitesContext`), or null for nothing: its message citations when
@@ -22,12 +28,28 @@ export function citingOf(msg, onJump) {
   return { cites, onJump, ...(plainLinks ? { plainLinks: true } : {}) };
 }
 
-/** `sources` (a view message's `webSources`: `[{n, shown, url, host, title}]`) as the list, or nothing when there are none. */
-export function WebSources({ sources }) {
-  if (!Array.isArray(sources) || sources.length === 0) return null;
+/**
+ * `sources` (a view message's `webSources`: `[{n, shown, url, host, title}]`) as the list (`id`: what its button
+ * controls), or nothing when there are none. It is shown because the reader opened it: it comes into view if it opened
+ * below the edge (the nearest way; nothing moves when it is in view already). More than SOURCES_FIRST + 1 rows: the first
+ * SOURCES_FIRST and 显示全部 N 个, which shows the rest and hands the keyboard the first of them; opened again, it is
+ * short again.
+ */
+export function WebSources({ sources, id }) {
+  const [all, setAll] = useState(false);
+  const list = useRef(null);
+  const count = Array.isArray(sources) ? sources.length : 0;
+  useLayoutEffect(() => {
+    list.current?.scrollIntoView?.({ block: "nearest" });
+  }, []);
+  useLayoutEffect(() => {
+    if (all) list.current?.querySelectorAll("a")[SOURCES_FIRST]?.focus();
+  }, [all]);
+  if (count === 0) return null;
+  const bounded = !all && count > SOURCES_FIRST + 1;
   return (
-    <ol className="web-sources" aria-label="网页来源">
-      {sources.map((s) => {
+    <ol className="web-sources" id={id} ref={list} aria-label="网页来源">
+      {(bounded ? sources.slice(0, SOURCES_FIRST) : sources).map((s) => {
         const title = withoutBidiControls(s.title).trim();
         return (
           <li key={s.n}>
@@ -45,6 +67,13 @@ export function WebSources({ sources }) {
           </li>
         );
       })}
+      {bounded && (
+        <li className="web-sources-more">
+          <button type="button" onClick={() => setAll(true)}>
+            显示全部 {count} 个
+          </button>
+        </li>
+      )}
     </ol>
   );
 }

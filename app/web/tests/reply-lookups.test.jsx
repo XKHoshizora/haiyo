@@ -522,22 +522,134 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
   const TEXT = "明天晴，见[详情](https://evil.example/?d=1)，或 https://bare.example/x 。";
   const webReply = (seq, extra = {}) => wire(A1, seq, AG1, TEXT, { lookups: { web: 1 }, webSources: SOURCES, webCites: [{ at: 3, n: 3 }, { at: 3, n: 9 }], ...extra });
 
-  it("a quiet numbered list under its lookup line: each row the title and the address's real host, opening a new tab; an http source is not listed", async () => {
+  /** `count` sources numbered from 1, each its own address and title. */
+  const many = (count) => Array.from({ length: count }, (_, i) => ({ n: i + 1, url: `https://site${i + 1}.example.com/p`, title: `第 ${i + 1} 页` }));
+  const toggle = (seq) => storedLi(seq).querySelector(".msg-lookups button.sources-toggle");
+  const list = (seq) => storedLi(seq).querySelector("ol.web-sources");
+  const more = (seq) => list(seq).querySelector("li.web-sources-more button");
+
+  it("folded until the reader opens it: one button under the reply — how often it searched and how many pages — that opens the numbered list in place, and folds it again", async () => {
     await openChats({ messages: [...BASE, webReply(3)] });
-    expect(lookupLine(3).textContent).toBe("查了 1 次网页");
-    const list = storedLi(3).querySelector("ol.web-sources");
-    expect(list.getAttribute("aria-label")).toBe("网页来源");
-    const rows = [...list.querySelectorAll("li")];
+    expect(list(3)).toBeNull();
+    expect(lookupLine(3).textContent).toBe("查了 1 次网页 · 2 个来源");
+    expect(toggle(3).textContent).toBe("查了 1 次网页 · 2 个来源");
+    expect(toggle(3).getAttribute("type")).toBe("button");
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("false");
+    expect(toggle(3).querySelector("svg").getAttribute("aria-hidden")).toBe("true");
+    await click(toggle(3));
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("true");
+    expect(list(3).getAttribute("aria-label")).toBe("网页来源");
+    expect(toggle(3).getAttribute("aria-controls")).toBe(list(3).id);
+    // Each row the title and the address's real host, opening a new tab; an http source is not listed.
+    const rows = [...list(3).querySelectorAll("li")];
     expect(rows.map((li) => li.textContent)).toEqual(["1北京明天晴news.example.com", "2气象台：降温xn--bcher-kva.example"]);
-    for (const [i, a] of [...list.querySelectorAll("a")].entries()) {
-      expect(a.getAttribute("href")).toBe(SOURCES[i].url);
-      expect(a.getAttribute("target")).toBe("_blank");
-      expect(a.getAttribute("rel")).toBe("noopener noreferrer nofollow");
-      expect(a.classList.contains("text-link")).toBe(true);
+    for (const [i, link] of [...list(3).querySelectorAll("a")].entries()) {
+      expect(link.getAttribute("href")).toBe(SOURCES[i].url);
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+      expect(link.classList.contains("text-link")).toBe(true);
     }
-    // Under the lookup line.
+    // Right under the lookup line, a part of the message's column like it.
     const parts = [...storedLi(3).querySelector(".msg-main").children];
-    expect(parts.indexOf(list)).toBe(parts.indexOf(lookupLine(3)) + 1);
+    expect(parts.indexOf(list(3))).toBe(parts.indexOf(lookupLine(3)) + 1);
+    await click(toggle(3));
+    expect(list(3)).toBeNull();
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("the count is the real number; opened, a long list shows its first 5 rows and 显示全部 12 个, which shows the rest and hands the focus to the first of them", async () => {
+    await openChats({
+      messages: [...BASE, webReply(3, { lookups: { web: 2 }, webSources: many(12), webCites: [] }), webReply(4, { webSources: many(6), webCites: [] }), webReply(5, { webSources: many(5), webCites: [] })],
+    });
+    expect([3, 4, 5].map((seq) => toggle(seq).textContent)).toEqual(["查了 2 次网页 · 12 个来源", "查了 1 次网页 · 6 个来源", "查了 1 次网页 · 5 个来源"]);
+    await click(toggle(3));
+    expect([...list(3).querySelectorAll("li:not(.web-sources-more)")].map((li) => li.querySelector(".web-source-n").textContent)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(more(3).textContent).toBe("显示全部 12 个");
+    expect(more(3).getAttribute("type")).toBe("button");
+    await click(more(3));
+    expect(list(3).querySelector("li.web-sources-more")).toBeNull();
+    const links = [...list(3).querySelectorAll("a")];
+    expect(links.map((link) => link.getAttribute("href"))).toEqual(many(12).map((source) => source.url));
+    expect([...list(3).querySelectorAll(".web-source-n")].map((n) => n.textContent)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]);
+    expect(document.activeElement).toBe(links[5]);
+    // Folded and opened again, it is bounded again.
+    await click(toggle(3));
+    await click(toggle(3));
+    expect(list(3).querySelectorAll("a")).toHaveLength(5);
+    // Hiding a single row would save nothing: 6 are all shown; 5 too.
+    for (const [seq, count] of [[4, 6], [5, 5]]) {
+      await click(toggle(seq));
+      expect(list(seq).querySelectorAll("a")).toHaveLength(count);
+      expect(list(seq).querySelector("li.web-sources-more")).toBeNull();
+    }
+  });
+
+  it("the other lookups on the line stay as they are — text, or the button that opens the messages found — and each opens by itself; pages without a count read N 个来源", async () => {
+    const found = wire(A1, 2, ME_ID, "在吗");
+    await openChats({
+      messages: [
+        ...BASE,
+        webReply(3, { lookups: { search: 1, file: 2, web: 2 }, webSources: many(12), webCites: [] }),
+        webReply(4, { lookups: { search: 1, web: 1 }, found: [{ conversationId: A1, seq: 2 }], webCites: [] }),
+        wire(A1, 5, AG1, TEXT, { webSources: many(1) }),
+      ],
+      api: { foundMessage: vi.fn(async () => ({ ok: true, message: found })) },
+    });
+    expect(lookupLine(3).textContent).toBe("查了 1 次聊天记录，看了 2 个文件，查了 2 次网页 · 12 个来源");
+    expect(lookupLine(3).querySelectorAll("button")).toHaveLength(1);
+    // Two buttons on one line: the messages found, and the pages.
+    const [messages, pages] = [...lookupLine(4).querySelectorAll("button")];
+    expect([messages.textContent, pages.textContent]).toEqual(["查了 1 次聊天记录", "查了 1 次网页 · 2 个来源"]);
+    expect(lookupLine(4).textContent).toBe("查了 1 次聊天记录，查了 1 次网页 · 2 个来源");
+    await click(messages);
+    await flush();
+    expect([messages.getAttribute("aria-expanded"), pages.getAttribute("aria-expanded")]).toEqual(["true", "false"]);
+    expect(storedLi(4).querySelector(".lookup-rows")).not.toBeNull();
+    expect(list(4)).toBeNull();
+    await click(pages);
+    expect([messages.getAttribute("aria-expanded"), pages.getAttribute("aria-expanded")]).toEqual(["true", "true"]);
+    expect(storedLi(4).querySelector(".lookup-rows")).not.toBeNull();
+    expect(list(4).querySelectorAll("a")).toHaveLength(2);
+    expect(toggle(5).textContent).toBe("1 个来源");
+  });
+
+  it("the reader's choice holds for that reply while the conversation is open — through the bubble giving way to the stored reply and whatever arrives after — and is folded again on coming back", async () => {
+    const { transport } = await openChats();
+    await runPush(transport);
+    await push(transport, { type: "delta", conversationId: A1, runId: R1, text: "明天晴。" });
+    await elapse(REVEAL_MAX_LAG_MS + 100);
+    // Being written, it has no pages to list yet: nothing to open.
+    expect(timeline().querySelector("li.streaming .sources-toggle")).toBeNull();
+    expect(timeline().querySelector("li.streaming ol.web-sources")).toBeNull();
+    await push(transport, { type: "message", message: wire(A1, 3, AG1, "明天晴。", { lookups: { web: 1 }, webSources: many(12) }) });
+    await push(transport, { type: "run", conversationId: A1, run: runOf(R1, "done") });
+    await elapse(2000);
+    expect(timeline().querySelector("li.streaming")).toBeNull();
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("false");
+    expect(list(3)).toBeNull();
+    await click(toggle(3));
+    await click(more(3));
+    // More arrives: it stays as the reader left it.
+    await push(transport, { type: "message", message: wire(A1, 4, ME_ID, "谢谢") });
+    await push(transport, { type: "message", message: wire(A1, 5, AG1, "不客气。") });
+    await elapse(2000);
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("true");
+    expect(list(3).querySelectorAll("a")).toHaveLength(12);
+    // Left and opened again: folded.
+    await click(screen.getByText("周末小组", { selector: ".list-col .row-name" }));
+    await click(screen.getByText("小助手", { selector: ".list-col .row-name" }));
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("false");
+    expect(list(3)).toBeNull();
+  });
+
+  it("a member reading someone else's Agent's reply in a group has the same button and the same list", async () => {
+    await openChats({ open: "周末小组", groupMessages: [wire(G1, 1, ANN, "明天呢"), wire(G1, 2, OAG, TEXT, { lookups: { web: 1 }, webSources: many(12) })] });
+    const li = [...timeline().querySelectorAll("li.msg")].at(-1);
+    const button = li.querySelector(".msg-lookups button.sources-toggle");
+    expect(button.textContent).toBe("查了 1 次网页 · 12 个来源");
+    expect(li.querySelector("ol.web-sources")).toBeNull();
+    await click(button);
+    expect(li.querySelectorAll("ol.web-sources a")).toHaveLength(5);
   });
 
   it("its chips open the page they cite (a number it was not handed shows none); its own links and bare addresses are plain text", async () => {
@@ -561,6 +673,7 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     await openChats({ messages: [...BASE, wire(A1, 3, AG1, TEXT)] });
     await elapse(2000);
     expect(storedLi(3).querySelector("ol.web-sources")).toBeNull();
+    expect(storedLi(3).querySelector(".sources-toggle")).toBeNull();
     expect([...storedLi(3).querySelectorAll(".bubble a")].map((a) => a.getAttribute("href"))).toContain("https://evil.example/?d=1");
   });
 
@@ -579,7 +692,9 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
       expect(storedLi(seq).querySelectorAll(".bubble a")).toHaveLength(0);
       expect(storedLi(seq).querySelector(".bubble").textContent).toContain("evil.example");
     }
+    for (const seq of [3, 4]) expect(toggle(seq)).toBeNull();
     // A long title is shown (cut by the service's one rule; the client never drops it), the links still plain.
+    await click(toggle(5));
     expect(storedLi(5).querySelectorAll("ol.web-sources li")).toHaveLength(1);
     expect(storedLi(5).querySelectorAll(".bubble a")).toHaveLength(0);
   });
