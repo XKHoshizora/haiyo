@@ -87,6 +87,7 @@ import {
   AUTO_RETRY_WINDOW_MS,
   RUN_COLUMNS,
   scheduleAutoRetry,
+  settleLane,
   siteToday,
   transientFailure,
   type AutoRetry,
@@ -797,10 +798,17 @@ export class DbAgentPort implements AgentPort {
         const kept = await dropRefusedCalls(t, run.id, agent.ownerId);
         if (kept === null) return { end: BLOCKED_SINCE };
         Object.assign(state, kept);
+        // The calls noted on it since its claim are taken on below (`covers`): whose reply it is, is decided over every call it will
+        // answer, as for calls folded into it while it was queued (runs.ts `settleLane`; fix round 5) — a member's call taken on so
+        // makes the owner's own reply a reply for others; the owner's taken on by a member's reply leaves it the member's.
+        if (Number(state.pending_seq ?? 0) > Number(state.covers_seq ?? 0)) {
+          const settled = await settleLane(t, run.id, agent.ownerId, false);
+          if (settled !== null) Object.assign(state, { lane: settled.lane, caller_id: settled.id });
+        }
       }
       // The lane it has now is not the one its claim met the owner's replies at a time for (a call was taken out since — just now, or
-      // by an ending of access): a reply that is no longer the owner's own meets the others' limit here, before anything is prepared
-      // (fix round 4, R3). Over it, it goes back to the queue, where the claim holds it to that limit.
+      // by an ending of access — or one noted on it is taken on now): a reply that is no longer the owner's own meets the others' limit
+      // here, before anything is prepared (fix round 4, R3). Over it, it goes back to the queue, where the claim holds it to that limit.
       if (mine.lane !== undefined && mine.lane !== state.lane) {
         if (state.lane !== "own") {
           const others = await t.query<{ n: number }>("select count(*)::int as n from agent_runs where owner_id = $1 and status = 'running' and lane <> 'own' and id <> $2", [run.ownerId, run.id]);

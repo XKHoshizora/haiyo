@@ -423,24 +423,30 @@ export function callerOf(ownerId: string, personId: string | null): Caller {
 }
 
 /**
- * THE decision of whose reply a run is (fix round 4, R2): its lane and its caller, from what was WRITTEN as each of its calls was
- * accepted — never from who wrote a message. Every writer of `agent_runs.lane` and `caller_id` of a reply asks it: a queue
- * (`queueRun`, `recordRateLimited`), a call folded into a reply (`settleLane`: `reachAgents`, `rateLimitedInGroup`), calls taken
- * out of one (`dropRefusedCalls`, and through it social/agent-contacts.ts `endGroupCalls` and `begin` up to admission), a follow-up
- * (`followUp`) and an automatic retry (`scheduleAutoRetry`).
+ * THE decision of whose reply a run is (fix round 4, R2; fix round 5): its lane and its caller, from what was WRITTEN as each of its
+ * calls was accepted — never from who wrote a message. Every writer of `agent_runs.lane` and `caller_id` of a reply asks it, with
+ * EVERY call the run answers or has noted (`calls`): a queue (`queueRun`, `recordRateLimited`), a call folded into a reply
+ * (`settleLane`: `reachAgents`, `rateLimitedInGroup`), calls taken out of one (`dropRefusedCalls`, and through it
+ * social/agent-contacts.ts `endGroupCalls` and `begin` up to admission), the calls noted on a claimed reply as it takes them on
+ * (`settleLane`: port-impl.ts `begin`), a follow-up (`followUp`) and an automatic retry (`scheduleAutoRetry`).
  * - `unasked`: a reply nobody asked for that no call has taken over — `proactive`, nobody's. The message it was queued on is no
  *   call of anyone, whoever wrote it (the Agent's owner too), and a call noted on it while it runs is its follow-up's.
- * - `own`, the owner its caller: the owner's own 重试 (`ownerRetry`), or one of `calls` — the calls it still has — was accepted as
- *   its owner's own (`ownerCall`: `agent_runs.owner_call_seqs`: the owner's own message calling it, or an Agent's message the
- *   owner was behind when it was sent).
- * - else `others`: the earliest of `calls` somebody is behind names its caller (`behind`: `behindMessageSql`); nobody when none does.
+ * - `own`, the owner its caller: the owner's own by what it is (`ownerRetry`: their 重试; so are a tell and a greeting, which
+ *   carry no call), or it has a call and EVERY one of `calls` was accepted as its owner's own (`ownerCall`:
+ *   `agent_runs.owner_call_seqs`: the owner's own message calling it, or an Agent's message the owner was behind when it was
+ *   sent). Conservative (fix round 5, reversing round 3's rule A): one call somebody else is behind makes the reply a reply for
+ *   others — bounded, at the level for others, counted — even beside the owner's own; a call taken out again (`dropRefusedCalls`)
+ *   can make it the owner's own again, before it is admitted.
+ * - else `others`: its caller the person behind the earliest of `calls` somebody other than the owner is behind (`behind`:
+ *   `behindMessageSql`); failing that, as before, the earliest somebody is behind; nobody when none is.
  * (A reply `告诉他们` queued, a new Agent's greeting and every reply in the Agent's own conversation are their owner's by what they
  * are; they carry nobody else's call and are never decided again.)
  */
 export function laneOf(ownerId: string, run: { ownerRetry: boolean; unasked: boolean }, calls: readonly { ownerCall: boolean; behind: string | null }[]): Caller {
   if (run.unasked) return { id: null, lane: "proactive" };
-  if (run.ownerRetry || calls.some((call) => call.ownerCall)) return { id: ownerId, lane: "own" };
-  return { id: calls.find((call) => call.behind !== null)?.behind ?? null, lane: "others" };
+  if (run.ownerRetry || (calls.length > 0 && calls.every((call) => call.ownerCall))) return { id: ownerId, lane: "own" };
+  const behind = calls.find((call) => call.behind !== null && call.behind !== ownerId) ?? calls.find((call) => call.behind !== null);
+  return { id: behind?.behind ?? null, lane: "others" };
 }
 
 /**
@@ -623,19 +629,30 @@ const CALL_COLUMNS = "m.seq::text as seq, p.kind, bh.caller_id as behind, m.seq 
 const callOf = (row: CallRow): { ownerCall: boolean; behind: string | null } => ({ ownerCall: row.owner_call, behind: row.behind });
 
 /**
- * After a call was recorded on run `runId` of an Agent of `ownerId` (`call_seqs`, and `owner_call_seqs` when it was the owner's
- * own): its lane and caller by THE decision (`laneOf`) over all its calls. `tookCall`: the call was taken on by a queued reply — one
- * nobody had asked for is then that call's (no longer unasked). `accepted`: the call just recorded and the person behind it, as its
- * trigger decided when it was made.
+ * Run `runId`'s lane and caller by THE decision (`laneOf`) over ALL its calls (`callRowsSql`: those it answers and those noted on
+ * it), read only. `tookCall`: a call was just taken on by a queued reply — one nobody had asked for is then that call's (no longer
+ * unasked). `accepted`: the call just recorded and the person behind it, as its trigger decided when it was made. Null: no such run.
  */
-async function settleLane(t: Tx, runId: string, ownerId: string, tookCall: boolean, accepted?: { seq: number; behind: string | null }): Promise<void> {
+async function decideLane(t: Tx, runId: string, ownerId: string, tookCall: boolean, accepted?: { seq: number; behind: string | null }): Promise<Caller | null> {
   const { rows } = await t.query<CallRow>(callRowsSql(CALL_COLUMNS, "\n      order by m.seq"), [runId]);
   const run = rows[0] ?? (await t.query<{ lane: Lane; owner_retry: boolean }>("select lane, owner_retry from agent_runs where id = $1", [runId])).rows[0];
-  if (!run) return;
+  if (!run) return null;
   // (The call just accepted is whose its trigger decided it is, as it was made; the others are read as `dropRefusedCalls` reads them.)
   const calls = rows.map((row) => (accepted !== undefined && Number(row.seq) === accepted.seq ? { ownerCall: row.owner_call, behind: accepted.behind } : callOf(row)));
-  const caller = laneOf(ownerId, { ownerRetry: run.owner_retry, unasked: run.lane === "proactive" && !tookCall }, calls);
+  return laneOf(ownerId, { ownerRetry: run.owner_retry, unasked: run.lane === "proactive" && !tookCall }, calls);
+}
+
+/**
+ * After a call was recorded on run `runId` of an Agent of `ownerId` (`call_seqs`, and `owner_call_seqs` when it was the owner's
+ * own) — or, as a claimed reply begins, after it takes on the calls noted on it since its claim (port-impl.ts `begin`, step 1: the
+ * same calls weighed as if they had been folded into it while it was queued) —: its lane and caller by THE decision over all its
+ * calls (`decideLane`), written, and returned (null: no such run).
+ */
+export async function settleLane(t: Tx, runId: string, ownerId: string, tookCall: boolean, accepted?: { seq: number; behind: string | null }): Promise<Caller | null> {
+  const caller = await decideLane(t, runId, ownerId, tookCall, accepted);
+  if (caller === null) return null;
   await t.query("update agent_runs set lane = $2, caller_id = $3 where id = $1 and (lane, caller_id) is distinct from ($2::text, $3::uuid)", [runId, caller.lane, caller.id]);
+  return caller;
 }
 
 /**
@@ -646,9 +663,9 @@ async function settleLane(t: Tx, runId: string, ownerId: string, tookCall: boole
  * the calls the run answers and nobody refused is among its askers; what the run covers ends at the latest call left (`covers_seq`,
  * or `pending_seq` when that call was noted after its claim), so what came after that call is heard by the usual rule as the run
  * begins (`hearFrom`: someone refused who wrote there is heard, as anyone is, and counts toward its line, never as a call). A run that
- * lost a call becomes the remaining calls' by THE decision (`laneOf`), whoever its recorded caller was — its owner's own while a call
- * accepted as the owner's own is left (`owner_call_seqs`, kept to the calls left) or it is the owner's 重试, else the earliest one's — and
- * a person's while a person's call is left (a reply nobody asked for keeps its lane, caller and trigger). Asked only of a reply that is
+ * lost a call becomes the remaining calls' by THE decision (`laneOf`), whoever its recorded caller was — its owner's own while every
+ * call left was accepted as the owner's own (`owner_call_seqs`, kept to the calls left) or it is the owner's 重试, else the earliest
+ * other person's — and a person's while a person's call is left (a reply nobody asked for keeps its lane, caller and trigger). Asked only of a reply that is
  * not admitted yet: once a reply is admitted its lane and caller are frozen (port-impl.ts `begin`, step 3).
  * The owner's own call is never dropped (`refusedInGroup` never refuses the owner): `begin` asks this of every group run but a reply
  * `告诉他们` queued, which answers nobody's call. Returns what the run now covers, has noted and its lane now (the caller takes them
@@ -678,8 +695,9 @@ export async function dropRefusedCalls(
   }
   const { lane } = rows[0]!;
   // Whose reply it is now: THE decision (`laneOf`), over the calls that are LEFT and what was written of each as it was accepted.
-  // A reply nobody asked for stays that; the owner's 重试 stays the owner's own; an owner call left keeps it the owner's own; and a
-  // reply only somebody else's call is left on is theirs, whoever its caller was recorded as.
+  // A reply nobody asked for stays that; the owner's 重试 stays the owner's own; owner calls alone left make it the owner's own (a
+  // member's refused out of it: the owner's own again); and a reply somebody else's call is left on is theirs, whoever its caller was
+  // recorded as.
   const caller = laneOf(ownerId, { ownerRetry: rows[0]!.owner_retry, unasked: lane === "proactive" }, left.map(callOf));
   const by: TriggeredBy | null = lane === "proactive" ? null : left.some((r) => r.kind === "human") ? "human" : "agent";
   const updated = await t.query<{ covers_seq: string | null; pending_seq: string | null; lane: Lane; caller_id: string | null; call_seqs: string[] | null }>(
@@ -759,11 +777,13 @@ const ownerCallsOf = (caller: Caller, seq: number): number[] => (caller.lane ===
 
 /**
  * A new run's lane and caller as it is queued, by THE decision (`laneOf`): the call that queues it is `caller`'s — nobody's for a
- * reply nobody asked for — and `ownerCalls` are those of its calls accepted as its owner's own. (The owner's with none of them: the
- * owner's own by what it is — their 重试, a tell, a greeting — which its caller marks on the row right after.)
+ * reply nobody asked for — and the owner's own exactly when `caller` is (a trigger's call as it is accepted, `callerOf`; a follow-up's
+ * caller is THE decision over every call it answers already, `followUp`); `ownerCalls` are those of its calls accepted as its owner's
+ * own. (The owner's with none of them: the owner's own by what it is — their 重试, a tell, a greeting — which its caller marks on the
+ * row right after.)
  */
 const queuedAs = (ownerId: string, caller: Caller, ownerCalls: readonly number[]): Caller =>
-  laneOf(ownerId, { ownerRetry: caller.lane === "own" && ownerCalls.length === 0, unasked: caller.lane === "proactive" }, [{ ownerCall: ownerCalls.length > 0, behind: caller.id }]);
+  laneOf(ownerId, { ownerRetry: caller.lane === "own" && ownerCalls.length === 0, unasked: caller.lane === "proactive" }, [{ ownerCall: caller.lane === "own", behind: caller.id }]);
 
 /**
  * Queues a reply of the Agent in `conversationId` answering up to `coversSeq` (a seq of that conversation), called for
@@ -841,8 +861,8 @@ const takesOnCall = (when: string, triggeredBy: string, seq: string, lane: strin
 /**
  * `recordRateLimited` in a group (plan ruling 7): one such run per Agent there, not one per mention. When the Agent's
  * latest run in the group is a `rate_limited` failure its owner has not dismissed, that run now covers `coversSeq` too
- * (and is announced again) — a person's once a person's message is recorded on it, its owner's own once its owner's
- * call is (else it keeps its caller and lane, `takesOnCall`) and answers `askers` and the call too (`withAskers`,
+ * (and is announced again) — a person's once a person's message is recorded on it, and whose it is decided over all its calls
+ * (`settleLane`: its owner's own only while every one is the owner's own) — and answers `askers` and the call too (`withAskers`,
  * `call_seqs`), and everyone who wrote in the stretch it now covers besides (`heardIn`); otherwise a new one is recorded.
  * So repeated mentions over the limit show one line.
  */
@@ -961,9 +981,10 @@ interface Call {
  * In a group, under its row lock: the message at `seq` reaches the Agent of each of `calls` (in id order; whether each
  * may be called is decided already, the others' daily budget included), called for by its `by`. It is folded into the
  * Agent's active run in the group — a queued one now covers it, becomes a person's when a person's message is folded
- * in, and its owner's own (`lane` `own`, the owner its caller) when the call is its owner's own (the owner's message, or
- * an Agent's message the owner is behind, `behindAgentMessage`), else keeps its caller and lane — so a member's call
- * relayed through one of the owner's Agents does not make it the owner's — unless nobody had called for it (lane
+ * in, and whose it is is decided over all its calls (`settleLane`): its owner's own (`lane` `own`, the owner its caller) only
+ * while every call it holds is its owner's own (the owner's message, or an Agent's message the owner is behind,
+ * `behindAgentMessage`; fix round 5), else a reply for others — so neither the owner's call folded into a member's reply nor a
+ * member's call relayed through one of the owner's Agents makes it the owner's — unless nobody had called for it (lane
  * `proactive`): then it is this call's, in its lane (`takesOnCall`); a running one notes it (`pending_seq`), and
  * stays as it is: its follow-up answers what was noted, in a lane of its own (`followUp`). A told reply (`whisper_id`:
  * 告诉他们 queued it, Task 8), queued or running, takes on no call: it only notes it, as a running reply does — the seq
@@ -1424,10 +1445,9 @@ export function followUpOf(run: Announced | null, told: Told = noneTold()): Foll
  * or another Agent's while its `groupMentions` lets members call it (with no block, either way, between the Agent's
  * owner and that Agent's owner, nor the person behind that message), which is the call of the person behind it by the rule of
  * `behindAgentMessage` (the caller of the run that posted it — the run its `client_txn` names — when that run is not its
- * owner's own, else that Agent's owner) — make it its owner's own when one of them was recorded as its owner's own as it was
- * noted (`ownerCallSeqs`: `laneOf`), else the
- * earliest caller's (a message nobody is behind, relayed from a reply nobody called for, names no one: the earliest that
- * names someone). When none of them is left (a block since, or the Agent no longer lets members call it) it is others',
+ * owner's own, else that Agent's owner) — make it its owner's own only when every one of them was recorded as its owner's own as
+ * it was noted (`ownerCallSeqs`: `laneOf`, fix round 5), else the earliest other person's (a message nobody is behind, relayed from
+ * a reply nobody called for, names no one: the earliest that names someone). When none of them is left (a block since, or the Agent no longer lets members call it) it is others',
  * with no caller: a call its owner no longer allows does not ride the owner's own lane. A mention of it that was refused
  * when it was posted — an Agent's for the group's halt, the chain limit, its chain budget, its others' daily budget or a
  * block (`triggerFromAgent`), a person's for its others' daily budget (`triggerInGroup`) — is no call at all
@@ -1479,9 +1499,9 @@ export async function followUp(
     (r) => (agent.groupMentions === "members" || (r.kind === "human" && r.sender_id === agent.ownerId)) && noted.has(Number(r.seq)),
   );
   const asked = calls.some((r) => r.kind === "human");
-  // Whose it is: THE decision (`laneOf`) over those calls — the owner's own only for a call the ended run recorded as its owner's
-  // own when it was noted (`ownerCallSeqs`, its `owner_call_seqs`), never because the owner wrote a message in between; else the
-  // earliest caller's; none of them (or none that names someone): others', with no caller.
+  // Whose it is: THE decision (`laneOf`) over those calls — the owner's own only when every one is a call the ended run recorded as
+  // its owner's own when it was noted (`ownerCallSeqs`, its `owner_call_seqs`), never because the owner wrote a message in between;
+  // else the earliest other person's; none of them (or none that names someone): others', with no caller.
   const ownersOwn = new Set(ownerCallSeqs.map(Number));
   const ownerCalls = calls.map((r) => Number(r.seq)).filter((seq) => ownersOwn.has(seq));
   const caller = laneOf(agent.ownerId, { ownerRetry: false, unasked: false }, calls.map((r) => ({ ownerCall: ownersOwn.has(Number(r.seq)), behind: r.caller_id })));
@@ -1507,6 +1527,8 @@ export async function followUp(
     ? await rateLimitedInGroup(t, agent, conversationId, pending, by, caller, askers, ownerCalls)
     : await queueRun(t, agent, conversationId, pending, by, caller, askers, ownerCalls);
   await answersCalls(t, run.run.id, calls.map((r) => Number(r.seq)));
+  // A reused `rate_limited` record holds its earlier calls too, and now every one of these: whose it is, over all of them.
+  if (over) await settleLane(t, run.run.id, agent.ownerId, true);
   return followUpOf(run);
 }
 
@@ -1892,11 +1914,13 @@ export type AutoRetry = { retry: Announced; attempt: number } | { gaveUp: "attem
  * `AGENTS.autoRetryDelaysMs` is empty. Each original call is tried again at most once per wait in that list
  * (`auto_attempt`, carried on the chain, `retry_of`), the n-th retry `delays[n-1]` after this end (by the port's clock,
  * `now`), and never one scheduled to start more than `AUTO_RETRY_WINDOW_MS` after the original call was made (nor started
- * later: port-impl.ts `begin`); the owner's replies a minute in the run's lane are met as for any reply queued
+ * later: port-impl.ts `begin`); the owner's replies a minute in the retry's lane are met as for any reply queued
  * (`overLaneLimit`). The retry is an ordinary queued reply that is not claimed before its `not_before` (port-impl.ts
  * `claimNext`) and is admitted as any (`begin`: pause, membership, blocks, budgets, money) — and it answers the same calls:
- * what the failed run covered and what was noted on it (the greater of the two), its calls, askers, whose message called
- * and in which lane by whom (a member's call stays the member's). Being queued, it holds the Agent's one active run there:
+ * what the failed run covered and what was noted on it (the greater of the two), its calls, askers and whose message called.
+ * Its lane and caller are THE decision (`laneOf`) over all those calls, made BEFORE the minute is met (fix round 5): a member's
+ * call noted on the owner's own reply makes its retry a reply for others, held to the others' minute; a member's call stays the
+ * member's. (In the Agent's own conversation it is its owner's, as every reply there.) Being queued, it holds the Agent's one active run there:
  * whatever calls it meanwhile is folded into it, and the owner's 重试 is `busy_run`.
  */
 export async function scheduleAutoRetry(
@@ -1938,7 +1962,9 @@ export async function scheduleAutoRetry(
   // Something else holds the Agent's one active run there already: it answers whatever comes; nothing is queued beside it.
   const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [agent.id, conversationId]);
   if (active.rowCount !== 0) return null;
-  if (await overLaneLimit(t, agent.ownerId, run.lane, config)) return { gaveUp: "rate_limited" };
+  // Whose it is: THE decision over every call the failed run had — those it answered and those noted on it, which the retry answers.
+  const caller: Caller = conversationId === agent.conversationId ? { id: run.caller_id, lane: run.lane } : ((await decideLane(t, runId, agent.ownerId, false)) ?? { id: run.caller_id, lane: run.lane });
+  if (await overLaneLimit(t, agent.ownerId, caller.lane, config)) return { gaveUp: "rate_limited" };
   const covers = Number(ended.covers_seq ?? 0);
   const pending = Number(ended.pending_seq ?? 0);
   const queued = await t.query<RunRow>(
@@ -1951,8 +1977,8 @@ export async function scheduleAutoRetry(
       agent.ownerId,
       Math.max(covers, pending),
       run.triggered_by,
-      run.caller_id,
-      run.lane,
+      caller.id,
+      caller.lane,
       run.asker_ids,
       ended.call_seqs === null ? null : ended.call_seqs.map(Number),
       run.original,
@@ -1961,9 +1987,6 @@ export async function scheduleAutoRetry(
       ended.owner_call_seqs.map(Number),
     ],
   );
-  // It answers what was noted on the failed run too: whose it is over all of them (`laneOf`: an owner call noted on a member's
-  // reply makes its retry the owner's own; a member's call stays the member's).
-  if (run.lane !== "own") await settleLane(t, queued.rows[0]!.id, agent.ownerId, false);
   return { retry: { ownerId: agent.ownerId, conversationId, run: toWireRun(queued.rows[0]!) }, attempt };
 }
 

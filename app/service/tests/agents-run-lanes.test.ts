@@ -159,24 +159,32 @@ describe("a run's lane and who called for it", () => {
     ]);
   });
 
-  it("folding: the owner's mention makes a queued others run own; another member's leaves it others with the first caller", async () => {
+  it("folding: a queued run is its owner's own only while every call it holds is the owner's own (fix round 5); else others, its caller the earliest other person's", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const carl = await agentOf(w.owner, "carlbot", w.g);
     await say(w.member, w.g, "@anna 一");
     await say(w.third, w.g, "@anna 二");
     expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
+    // The owner's mention folded in leaves it a reply for others: a member's call is still in it.
     await say(w.owner, w.g, "@anna 三");
-    expect(await laneOf(anna.id, w.g)).toEqual([["own", w.owner.id]]);
-    // Own it stays, whoever's mention is folded in next.
+    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
     await say(w.third, w.g, "@anna 四");
-    expect(await laneOf(anna.id, w.g)).toEqual([["own", w.owner.id]]);
+    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
 
-    // An Agent of the owner's folds in as the owner does.
+    // An Agent of the owner's folds in as the owner does: a member's call is in it, so others.
     await settleAll();
     await say(w.member, w.g, "@anna 五");
     await agentSays(carl.id, w.g, "@anna 补充");
+    expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.member.id]);
+
+    // The owner's calls only, themselves and through their Agent: own; a member's folded in after makes it the member's.
+    await settleAll();
+    await say(w.owner, w.g, "@anna 八");
+    await agentSays(carl.id, w.g, "@anna 也看看");
     expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["own", w.owner.id]);
+    await say(w.third, w.g, "@anna 九");
+    expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.third.id]);
 
     // A running run is not folded into: the owner's mention is noted for its follow-up, and the run stays the member's.
     await settleAll();
@@ -192,7 +200,9 @@ describe("a run's lane and who called for it", () => {
     const carl = await agentOf(w.owner, "carlbot", w.g);
     const beta = await agentOf(w.third, "beta", w.g);
 
-    // A member's reply under way; its owner mentions it meanwhile: the follow-up is the owner's own.
+    // A member's reply under way; its owner mentions it meanwhile, and so does the member: the follow-up answers both — a reply for
+    // others, the member's (fix round 5). Only the owner's mention meanwhile: the follow-up is the owner's own. (The first callers
+    // take turns: one person's calls on someone else's Agent are held to a few a minute, AGENT_CALLER_RUNS_PER_MINUTE.)
     await say(w.member, w.g, "@anna 一");
     const one = await claim(anna.id, w.g);
     await say(w.owner, w.g, "@anna 我也问");
@@ -200,6 +210,15 @@ describe("a run's lane and who called for it", () => {
     await finish(one);
     expect(await laneOf(anna.id, w.g)).toEqual([
       ["others", w.member.id],
+      ["others", w.member.id],
+    ]);
+    await settleAll();
+    await say(w.third, w.g, "@anna 一又一");
+    const oneMore = await claim(anna.id, w.g);
+    await say(w.owner, w.g, "@anna 我也问");
+    await finish(oneMore);
+    expect((await laneOf(anna.id, w.g)).slice(2)).toEqual([
+      ["others", w.third.id],
       ["own", w.owner.id],
     ]);
 
@@ -209,7 +228,7 @@ describe("a run's lane and who called for it", () => {
     const two = await claim(anna.id, w.g);
     await say(w.member, w.g, "@anna 再问");
     await finish(two);
-    expect((await laneOf(anna.id, w.g)).slice(2)).toEqual([
+    expect((await laneOf(anna.id, w.g)).slice(4)).toEqual([
       ["others", w.member.id],
       ["others", w.member.id],
     ]);
@@ -221,20 +240,30 @@ describe("a run's lane and who called for it", () => {
     await agentSays(beta.id, w.g, "@anna 补充");
     await say(w.member, w.g, "@anna 再问");
     await finish(three);
-    expect((await laneOf(anna.id, w.g)).slice(4)).toEqual([
+    expect((await laneOf(anna.id, w.g)).slice(6)).toEqual([
       ["others", w.member.id],
       ["others", w.third.id],
     ]);
 
-    // One of the owner's Agents among them: own.
+    // One of the owner's Agents among them, beside another's call: others, the other's.
     await settleAll();
-    await say(w.member, w.g, "@anna 四");
+    await say(w.third, w.g, "@anna 四");
     const four = await claim(anna.id, w.g);
-    await say(w.third, w.g, "@anna 我问");
+    await say(w.member, w.g, "@anna 我问");
     await agentSays(carl.id, w.g, "@anna 也看看");
     await finish(four);
-    expect((await laneOf(anna.id, w.g)).slice(6)).toEqual([
+    expect((await laneOf(anna.id, w.g)).slice(8)).toEqual([
+      ["others", w.third.id],
       ["others", w.member.id],
+    ]);
+    // One of the owner's Agents alone: own.
+    await settleAll();
+    await say(w.third, w.g, "@anna 五");
+    const five = await claim(anna.id, w.g);
+    await agentSays(carl.id, w.g, "@anna 也看看");
+    await finish(five);
+    expect((await laneOf(anna.id, w.g)).slice(10)).toEqual([
+      ["others", w.third.id],
       ["own", w.owner.id],
     ]);
   });
@@ -268,11 +297,12 @@ describe("a run's lane and who called for it", () => {
     await say(w.member, w.g, "@anna 一");
     expect(await errors(w.g)).toEqual(["rate_limited"]);
     expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
-    // The same record covers the next mentions: another member's leaves it the first caller's, the owner's makes it own.
+    // The same record covers the next mentions: another member's leaves it the first caller's, and so does the owner's (a member's
+    // call is in it: fix round 5).
     await say(w.third, w.g, "@anna 二");
     expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
     await say(w.owner, w.g, "@anna 三");
-    expect(await laneOf(anna.id, w.g)).toEqual([["own", w.owner.id]]);
+    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
     expect(await errors(w.g)).toEqual(["rate_limited"]);
 
     // In its own conversation: own.

@@ -811,7 +811,7 @@ describe("in a group", () => {
     expect(o2.events.filter((e: Push) => e.type === "run" && e.run?.status === "failed")).toEqual([]);
   });
 
-  it("the owner's call noted on a member's reply that then fails for a passing reason: the retry answers both calls and is the owner's own (whose it is: the calls it has, as each was accepted — fix round 4, R2)", async () => {
+  it("the owner's call noted on a member's reply that then fails for a passing reason: the retry answers both calls and is a reply for others, the member's (whose it is: the calls it has, as each was accepted — fix round 4, R2; every one the owner's for own — fix round 5)", async () => {
     const w = await scene("ar_gc");
     const { worker, port } = instance();
     const asked = await say(w.mia, w.g, `${w.call} 打印机的维修电话？`);
@@ -820,11 +820,40 @@ describe("in a group", () => {
     await port.finish(ticket, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
     const [failed, retry] = await runsOf(w.g);
     expect(failed).toMatchObject({ status: "failed", lane: "others" });
-    expect(retry).toMatchObject({ status: "queued", lane: "own", auto_attempt: 1, calls: [String(asked), String(own)] });
-    expect((await db.query<{ c: string[]; caller: string }>("select owner_call_seqs::text[] as c, caller_id as caller from agent_runs where conversation_id = $1 and status = 'queued'", [w.g])).rows).toEqual([{ c: [String(own)], caller: w.owner.id }]);
+    expect(retry).toMatchObject({ status: "queued", lane: "others", auto_attempt: 1, calls: [String(asked), String(own)] });
+    expect((await db.query<{ c: string[]; caller: string }>("select owner_call_seqs::text[] as c, caller_id as caller from agent_runs where conversation_id = $1 and status = 'queued'", [w.g])).rows).toEqual([{ c: [String(own)], caller: w.mia.id }]);
     advance(20_000);
     gateway.reply("12345。");
     expect(await worker.runOnce()).toBe(true);
+  });
+
+  it("a member's call noted on the owner's own reply that then fails for a passing reason: the retry is a reply for others, the member's — and is held to the owner's replies a minute for others, not their own (fix round 5)", async () => {
+    const w = await scene("ar_gd");
+    const { port } = instance();
+    const own = await say(w.owner, w.g, `${w.call} 打印机的维修电话？`);
+    const ticket = (await port.claimNext())!;
+    const asked = await say(w.mia, w.g, `${w.call} 我也想知道`);
+    await port.finish(ticket, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
+    const [failed, retry] = await runsOf(w.g);
+    expect(failed).toMatchObject({ status: "failed", lane: "own" });
+    expect(retry).toMatchObject({ status: "queued", lane: "others", auto_attempt: 1, calls: [String(own), String(asked)] });
+    expect((await db.query<{ caller: string }>("select caller_id as caller from agent_runs where id = $1", [retry!.id])).rows[0]!.caller).toBe(w.mia.id);
+    await db.query("delete from agent_runs where id = $1", [retry!.id]);
+
+    // The same with the owner's replies a minute for others used up (their own lane free): no retry is made, it gives up.
+    const v = await scene("ar_ge");
+    const second = instance();
+    await say(v.owner, v.g, `${v.call} 打印机的维修电话？`);
+    const t2 = (await second.port.claimNext())!;
+    await say(v.mia, v.g, `${v.call} 我也想知道`);
+    await db.query(
+      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, created_at, finished_at, lane)
+       select 'reply', $1, $2, $3, 'done', 0, now() - interval '30 seconds', now() - interval '29 seconds', 'others' from generate_series(1, $4)`,
+      [v.g, v.agent.id, v.owner.id, app.deps.config.agentOthersRunsPerMinute],
+    );
+    await second.port.finish(t2, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
+    expect((await runsOf(v.g)).filter((r) => r.status === "queued")).toEqual([]);
+    expect(metrics("auto_retry_gave_up", "rate_limited")).toBe(1);
   });
 
   it("a 503 after an acknowledgement and a tool round is no passing failure (the reply had done things): shown at once; the owner's 重试 posts no second acknowledgement", async () => {

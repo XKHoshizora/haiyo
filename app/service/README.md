@@ -1205,8 +1205,10 @@ past that (by admission, by the owner's other running replies, or queued while t
 — it ends as the ordinary failure, with 重试 for its owner and 暂时无法回复 for the others. The retry is an ordinary queued
 run (`not_before`): the worker claims it once due (`for update skip locked`: one instance only), so it survives a
 restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held back or refused, it is not
-forced), charged as any, held to the owner's replies a minute in its lane, and answers the same calls in the same lane
-by the same caller (a member's call stays the member's). Whatever calls the Agent while it waits is folded into it and
+forced), charged as any, and answers the same calls — those the failed run answered and those noted on it — in the lane and
+by the caller THE decision gives over all of them (Whose reply a reply is, below: a member's call stays the member's, and a
+member's call noted on the owner's own reply makes its retry a reply for others), held to the owner's replies a minute in that
+lane. Whatever calls the Agent while it waits is folded into it and
 waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. A chain never holds an
 acknowledgement (one posted makes the failure not passing), and it makes no second found-elsewhere whisper about the same
 asking message (a run lost between its whisper and its round's record is tried again). While it
@@ -1687,15 +1689,21 @@ the limit, and the answer after it has what is left; each is cut and marked cut 
 
 **Whose reply a reply is** (its lane and caller, and so its level, its bounds and whose numbers it counts against) is WRITTEN,
 never read back from who wrote a message (`agent_runs.owner_call_seqs`, migration 076; `src/agents/runs.ts` `laneOf`, the one
-decision every writer of a run's lane asks: a queue, a call folded in, calls taken out, a follow-up, an automatic retry):
+decision every writer of a run's lane asks, with every call the reply has: a queue, a call folded in, calls taken out, the calls
+noted on a claimed reply as it takes them on, a follow-up, an automatic retry):
 - each call a run records is marked the owner's own AT THE MOMENT IT IS ACCEPTED, when it is: the owner's own @ or message to
   their Agent, or another Agent's message the owner is behind then. Nothing later makes a call the owner's;
-- a reply is the owner's own (`own`) while one of the calls it still has is so marked, or when it is the owner's 重试
-  (`owner_retry`); a reply nobody asked for that no call has taken over is `proactive` — the message it was queued on is no call
-  of anyone, whoever wrote it, the owner too, and when a call takes such a reply over that message leaves its calls; anything
-  else is a reply for others, its caller the person behind the earliest call left;
-- so a reply only a member's call is left on is a reply for others whoever first called it — bounded, at the level for others,
-  counted — and a call refused since is taken out before it begins; with no call left it ends quietly, with no model call.
+- a reply is the owner's own (`own`) when it is the owner's own by what it is — their 重试 (`owner_retry`), a tell, a greeting —
+  or when it has a call and EVERY call it has is so marked (fix round 5: conservative; it reverses round 3's rule that one owner
+  call kept a reply the owner's own); a reply nobody asked for that no call has taken over is `proactive` — the message it was
+  queued on is no call of anyone, whoever wrote it, the owner too, and when a call takes such a reply over that message leaves
+  its calls; anything else is a reply for others, its caller the person behind the earliest call somebody other than the owner
+  is behind;
+- so the owner's @ and a member's @ folded into one reply make a reply for others — bounded, at the level for others, held to the
+  others' numbers and counted for the member — whichever came first, and so does a member's call noted on the owner's own reply
+  before it begins (taken on as it begins), its follow-up and its automatic retry; a call refused since is taken out before it
+  begins, so a reply only the owner's calls are left on is the owner's own again, and with no call left it ends quietly, with
+  no model call.
 
 **The terms are those of the row at admission.** `begin` prepares a plan (model and level, bounds, tool caps, the context) in a
 first step, reads attachments with no lock, and admits in a third. At admission, under the run's locks, the calls are held to

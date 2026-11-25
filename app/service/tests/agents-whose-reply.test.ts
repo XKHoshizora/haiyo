@@ -18,7 +18,7 @@ vi.mock("../src/agents/context.ts", async (original) => {
 import { queueRun } from "../src/agents/runs.ts";
 import { lockConversation } from "../src/conversations/store.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
-import { NOTHING } from "../src/agents/runtime/port.ts";
+import { isRunEnd, NOTHING } from "../src/agents/runtime/port.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -29,7 +29,9 @@ import { scriptedGateway } from "./helpers/models.ts";
  * Fix round 4, R1 to R3: whose reply a run is, is WRITTEN when each call is accepted (`agent_runs.owner_call_seqs`, `owner_retry`) and
  * never read back from who wrote a message; one function decides the lane from it (agents/runs.ts `laneOf`); and the terms a reply is
  * made on (model level, bounds, tool caps, the hold) are the terms of the row as it is at admission, under its locks — a plan
- * prepared for another lane makes no call and takes no hold. Through the real routes, the real port, a scripted gateway.
+ * prepared for another lane makes no call and takes no hold. Fix round 5: that one function is conservative — a reply is the owner's
+ * own only while EVERY call it answers is the owner's own (or by what it is: their 重试), so one call somebody else is behind makes it a
+ * reply for others. Through the real routes, the real port, a scripted gateway.
  */
 
 const gateway = scriptedGateway();
@@ -119,7 +121,8 @@ describe("R1: a call is the owner's own only when it was accepted as one", () =>
     const member = await say(w.mia, w.g, `${w.at} 在吗？`);
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ lane: "others", caller: w.mia.id, calls: [member], owner_calls: [] });
     const own = await say(w.owner, w.g, `${w.at} 我也问一句`);
-    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ lane: "own", caller: w.owner.id, calls: [member, own], owner_calls: [own] });
+    // (Written as the owner's own call; the reply holds a member's call too, so it is a reply for others: fix round 5.)
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ lane: "others", caller: w.mia.id, calls: [member, own], owner_calls: [own] });
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
     const seed = await say(w.owner, w.g, "今晚谁做饭？");
     await queueUnasked(w, seed, w.owner);
@@ -210,70 +213,68 @@ describe("R2: the round-3 rules hold by what is written", () => {
 });
 
 describe("R3: the terms of a reply are those of its row at admission", () => {
-  it("an owner-backed relay and a member's call in one reply, the relay refused while its attachments are read: the plan made for the owner makes no call and takes no hold; it is admitted as the member's, level, limit, hold and count agreeing", async () => {
+  it("the owner's @ and a member's @ in one reply, the member's call refused while its attachments are read: the plan made for others makes no call and takes no hold; it is admitted as the owner's own, level, limit and count agreeing", async () => {
     const w = await world();
-    const relay = await ownerBackedRelay(w);
-    const kept = await say(w.ned, w.g, `${w.at} NED-ASK 我也问一句`);
-    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [relay, kept], owner_calls: [relay] });
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问一句`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.mia.id, calls: [member, own], owner_calls: [own] });
 
     const seen: Array<{ lane: string; hold: string }> = [];
     between.run = async () => {
-      // Prepared as the owner's own; now the owner blocks the relaying Agent's owner.
+      // Prepared as a reply for others; now the owner blocks the member.
       const before = await latest(w.agent.id as string, w.g);
       seen.push({ lane: before.lane, hold: before.hold });
       await block(w.owner, w.mia);
     };
     const before = callsHere().length;
-    gateway.reply("（回答 ned）");
+    gateway.reply("（回答主人）");
     while (await app.agentWorker.runOnce());
-    expect(seen).toEqual([{ lane: "own", hold: "0" }]);
-    // One request, and it is the one for others: never the plan prepared at the owner's level.
+    expect(seen).toEqual([{ lane: "others", hold: "0" }]);
+    // One request, and it is the owner's own: never the plan prepared at the level for others.
     const made = callsHere().slice(before);
-    expect(made.map((c) => [c.reasoning, c.maxOutputTokens])).toEqual([["low", othersLimit() + allowance().low]]);
+    expect(made.map((c) => c.reasoning)).toEqual(["medium"]);
+    expect(made[0]!.maxOutputTokens).toBeGreaterThan(othersLimit() + allowance().medium);
     const run = await latest(w.agent.id as string, w.g);
-    expect(run).toMatchObject({ status: "done", error: null, lane: "others", caller: w.ned.id, calls: [kept], reasoning: "low", hold: "0" });
-    expect(await answersForOthers(w.owner)).toBe(1);
-    // What was charged is within what a reply for others may hold: its output limit at the level for others.
-    const charged = BigInt((await db.query<{ n: string }>("select coalesce(sum(free_micro + balance_micro), 0)::text as n from usage_records where run_id = $1", [run.id])).rows[0]!.n);
-    expect(charged > 0n).toBe(true);
+    expect(run).toMatchObject({ status: "done", error: null, lane: "own", caller: w.owner.id, calls: [own], reasoning: "medium", hold: "0" });
+    expect(await answersForOthers(w.owner)).toBe(0);
   });
 
-  it("the same with the owner's numbers for others used up: it ends quietly at the cap — no call, no hold, nothing posted", async () => {
+  it("the same with the owner's numbers for others used up meanwhile: admitted as the owner's own, which those numbers never refuse — one call, answered", async () => {
     const w = await world();
-    const relay = await ownerBackedRelay(w);
-    const kept = await say(w.ned, w.g, `${w.at} NED-ASK 我也问一句`);
-    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ lane: "own", calls: [relay, kept] });
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问一句`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ lane: "others", calls: [member, own] });
     between.run = async () => {
       await block(w.owner, w.mia);
       // All of the owner's points a day for others are used by another reply for others, settled now.
       await paidReply(db, { agentId: w.agent.id as string, ownerId: w.owner.id, conversationId: w.agent.conversationId as string, lane: "others", micro: 300n * 1_000_000n, at: new Date() });
     };
     const before = callsHere().length;
+    gateway.reply("（回答主人）");
     while (await app.agentWorker.runOnce());
-    expect(callsHere().slice(before)).toEqual([]);
-    const run = await latest(w.agent.id as string, w.g);
-    expect(run).toMatchObject({ status: "cancelled", error: null, lane: "others", hold: "0" });
-    expect(await posted(w.agent.id as string, w.g)).toEqual([]);
+    expect(callsHere().slice(before).map((c) => c.reasoning)).toEqual(["medium"]);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "done", error: null, lane: "own", caller: w.owner.id, calls: [own] });
+    expect(await posted(w.agent.id as string, w.g)).toEqual(["（回答主人）"]);
   });
 
-  it("AFTER admission the terms are frozen: the relay's person is blocked once the owner's reply holds its money — it is not requeued, its lane and caller stay, and it goes on for the member's call", async () => {
+  it("AFTER admission the terms are frozen: the member is blocked once the reply for others holds its money — it is not requeued, its lane and caller stay, and it goes on for the owner's call", async () => {
     const w = await world();
-    const relay = await ownerBackedRelay(w);
-    const kept = await say(w.ned, w.g, `${w.at} NED-ASK 我也问一句`);
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问一句`);
     const ticket = (await app.agentPort.claimNext())!;
     const prepared = await app.agentPort.begin(ticket);
     expect("call" in prepared).toBe(true);
     const admitted = await latest(w.agent.id as string, w.g);
-    expect(admitted).toMatchObject({ status: "running", lane: "own", caller: w.owner.id, calls: [relay, kept], reasoning: "medium" });
+    expect(admitted).toMatchObject({ status: "running", lane: "others", caller: w.mia.id, calls: [member, own], reasoning: "low" });
     expect(BigInt(admitted.hold) > 0n).toBe(true);
     await block(w.owner, w.mia);
     const after = await latest(w.agent.id as string, w.g);
-    expect(after).toMatchObject({ id: ticket.id, status: "running", lane: "own", caller: w.owner.id, hold: admitted.hold });
+    expect(after).toMatchObject({ id: ticket.id, status: "running", lane: "others", caller: w.mia.id, hold: admitted.hold });
     expect((await db.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2", [w.agent.id, w.g])).rowCount).toBe(1);
     await app.agentPort.releaseRun(ticket.id);
   });
 
-  it("a fourth reply that became a reply for others after its claim is not started over the owner's three at a time: it waits, and starts when one of them ends", async () => {
+  it("a fourth reply that became a reply for others after its claim (a member's call noted on it, taken on as it begins) is not started over the owner's three at a time: it waits, and starts when one of them ends", async () => {
     const w = await world();
     // Three replies for others of this owner under way, in three other groups.
     const tickets = [];
@@ -284,23 +285,146 @@ describe("R3: the terms of a reply are those of its row at admission", () => {
       tickets.push((await app.agentPort.claimNext())!);
     }
     expect(tickets.every((t) => t !== null)).toBe(true);
-    const relay = await ownerBackedRelay(w);
+    // The owner's own reply, the fourth of four: claimed (the owner's own is not held to the three for others).
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我先问`);
+    const ticket = (await app.agentPort.claimNext())!;
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ id: ticket.id, status: "running", lane: "own" });
+    // A member's call noted on it before it begins: it takes the call on as it begins, and so is a reply for others — over three, not begun.
     const kept = await say(w.ned, w.g, `${w.at} NED-ASK 我也问一句`);
-    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "own", calls: [relay, kept] });
-    await block(w.owner, w.mia);
-
-    // Claimed as the owner's own (the fourth of four), it is the member's as it begins: over three for others, so not begun.
     const before = callsHere().length;
-    gateway.reply("（回答 ned）");
-    expect(await app.agentWorker.runOnce()).toBe(true);
+    const begun = await app.agentPort.begin(ticket);
+    expect(isRunEnd(begun)).toBe(true);
     expect(callsHere().slice(before)).toEqual([]);
-    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.ned.id, calls: [kept], hold: "0" });
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.ned.id, calls: [own, kept], hold: "0" });
     // Not claimed while three are under way.
     expect(await app.agentPort.claimNext()).toBeNull();
     await app.agentPort.releaseRun(tickets[0]!.id);
+    gateway.reply("（回答两位）");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(callsHere().slice(before).map((c) => c.reasoning)).toEqual(["low"]);
-    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "done", lane: "others", caller: w.ned.id });
+    expect(callsHere().slice(before).map((c) => [c.reasoning, c.maxOutputTokens])).toEqual([["low", othersLimit() + allowance().low]]);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "done", lane: "others", caller: w.ned.id, calls: [own, kept] });
     for (const t of tickets.slice(1)) await app.agentPort.releaseRun(t.id);
+  });
+});
+
+describe("fix round 5: a reply is the owner's own only while EVERY call it answers is the owner's own", () => {
+  /** The run claimed and begun by hand: the call it is made with, and the row as admitted. */
+  const begun = async (w: World) => {
+    const ticket = (await app.agentPort.claimNext())!;
+    const prepared = await app.agentPort.begin(ticket);
+    expect("call" in prepared).toBe(true);
+    return { ticket, call: (prepared as unknown as { call: ModelCall }).call, admitted: await latest(w.agent.id as string, w.g) };
+  };
+  const byPerson = async (owner: Actor) =>
+    ((await api(app, owner, "GET", "/api/me/others-use")).json.byPerson as Array<{ person: { id: string }; answers: number }>).map((p) => [p.person.id, p.answers]);
+
+  it("(a) the owner's @ and a member's @ folded into one queued reply: a reply for others — at the level for others, the others' limit, its hold taken, counted for the member", async () => {
+    const w = await world();
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问一句`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.mia.id, calls: [member, own], owner_calls: [own] });
+    const { ticket, call, admitted } = await begun(w);
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
+    expect(admitted).toMatchObject({ status: "running", lane: "others", caller: w.mia.id, calls: [member, own], reasoning: "low" });
+    expect(BigInt(admitted.hold) > 0n).toBe(true);
+    expect(await answersForOthers(w.owner)).toBe(1);
+    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
+    await app.agentPort.releaseRun(ticket.id);
+  });
+
+  it("(a, the other order) a member's @ folded into the owner's queued reply: the same — a reply for others, the member its caller", async () => {
+    const w = await world();
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 在吗？`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id });
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 我也问一句`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.mia.id, calls: [own, member], owner_calls: [own] });
+    const { ticket, call } = await begun(w);
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
+    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
+    await app.agentPort.releaseRun(ticket.id);
+  });
+
+  it("(b) a member's reply already claimed, the owner's call noted before it begins and taken on: it stays the member's — bounded, at the level for others, counted for the member", async () => {
+    const w = await world();
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
+    const ticket = (await app.agentPort.claimNext())!;
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问一句`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ id: ticket.id, status: "running", lane: "others", caller: w.mia.id, calls: [member, own], owner_calls: [own] });
+    const prepared = await app.agentPort.begin(ticket);
+    const call = (prepared as unknown as { call: ModelCall }).call;
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
+    const admitted = await latest(w.agent.id as string, w.g);
+    expect(admitted).toMatchObject({ status: "running", lane: "others", caller: w.mia.id, calls: [member, own], reasoning: "low" });
+    expect(BigInt(admitted.hold) > 0n).toBe(true);
+    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
+    await app.agentPort.releaseRun(ticket.id);
+  });
+
+  it("(b, the other order) the owner's reply already claimed, a member's call noted before it begins and taken on: it becomes the member's — bounded, at the level for others, counted for the member", async () => {
+    const w = await world();
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 在吗？`);
+    const ticket = (await app.agentPort.claimNext())!;
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 我也问一句`);
+    // Noted on the reply under way: whose it is, is decided as it takes the call on.
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ id: ticket.id, status: "running", lane: "own", calls: [own, member] });
+    const prepared = await app.agentPort.begin(ticket);
+    const call = (prepared as unknown as { call: ModelCall }).call;
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
+    const admitted = await latest(w.agent.id as string, w.g);
+    expect(admitted).toMatchObject({ status: "running", lane: "others", caller: w.mia.id, calls: [own, member], reasoning: "low" });
+    expect(BigInt(admitted.hold) > 0n).toBe(true);
+    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
+    await app.agentPort.releaseRun(ticket.id);
+  });
+
+  it("(c) the member's call refused before it begins, only the owner's left: the owner's own again — at the owner's level, not counted", async () => {
+    const w = await world();
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问一句`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", calls: [member, own] });
+    await block(w.owner, w.mia);
+    const { ticket, call, admitted } = await begun(w);
+    expect(call.reasoning).toBe("medium");
+    expect(call.maxOutputTokens).toBeGreaterThan(othersLimit() + allowance().medium);
+    expect(admitted).toMatchObject({ status: "running", lane: "own", caller: w.owner.id, calls: [own], reasoning: "medium" });
+    expect(await answersForOthers(w.owner)).toBe(0);
+    await app.agentPort.releaseRun(ticket.id);
+  });
+
+  it("(d) the owner's calls only (two of them, folded): the owner's own — at the owner's level, not counted", async () => {
+    const w = await world();
+    const one = await say(w.owner, w.g, `${w.at} OWNER-ASK 在吗？`);
+    const two = await say(w.owner, w.g, `${w.at} OWNER-ASK 还有一件事`);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [one, two], owner_calls: [one, two] });
+    const { ticket, call, admitted } = await begun(w);
+    expect(call.reasoning).toBe("medium");
+    expect(admitted).toMatchObject({ lane: "own", caller: w.owner.id });
+    expect(await answersForOthers(w.owner)).toBe(0);
+    await app.agentPort.releaseRun(ticket.id);
+  });
+
+  it("(e) the owner's 重试 of a member's call: the owner's own — at the owner's level, not counted", async () => {
+    const w = await world();
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
+    await db.query("update agent_runs set status = 'failed', error = 'busy', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [member], owner_calls: [] });
+    const { ticket, call, admitted } = await begun(w);
+    expect(call.reasoning).toBe("medium");
+    expect(call.maxOutputTokens).toBeGreaterThan(othersLimit() + allowance().medium);
+    expect(admitted).toMatchObject({ lane: "own", caller: w.owner.id, calls: [member] });
+    expect(await answersForOthers(w.owner)).toBe(0);
+    await app.agentPort.releaseRun(ticket.id);
+  });
+
+  it("a follow-up answering the owner's call and a member's, both noted on a reply under way: a reply for others, the member its caller", async () => {
+    const w = await world();
+    await say(w.ned, w.g, `${w.at} NED-ASK 在吗？`);
+    const ticket = (await app.agentPort.claimNext())!;
+    const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问`);
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 还有我`);
+    await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
+    expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.mia.id, calls: [own, member], owner_calls: [own] });
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
   });
 });

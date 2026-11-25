@@ -125,13 +125,14 @@ describe("a block made after a call, as the reply begins", () => {
     expect((await db.query("select 1 from agent_runs where agent_id = $1 and status in ('queued', 'running')", [w.agent.id])).rowCount).toBe(0);
   });
 
-  it("the owner's own call taking over a queued reply that holds a blocked member's call: that member's call is not answered", async () => {
+  it("the owner's own call folded into a queued reply that holds a blocked member's call: that member's call is not answered, and the reply is the owner's own again", async () => {
     const w = await world();
     await samJoins(w);
     const theirs = await say(w.sam, w.g, "@helper_bot SAM-ASK-r3 帮我看看");
     await block(w.owner, w.sam);
     const own = await say(w.owner, w.g, "@helper_bot OWNER-ASK-r3 你也看看");
-    expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [theirs, own] });
+    // Queued with sam's call still in it: a reply for others, sam's (fix round 5); the block is met as it begins.
+    expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.sam.id, calls: [theirs, own] });
 
     gateway.reply("（回答主人）");
     expect(await app.agentWorker.runOnce()).toBe(true);
@@ -237,9 +238,9 @@ describe("a block made after a call, as the reply begins", () => {
     gateway.reply("@helper_bot MIA-RELAY-r9 主人让我问你");
     expect(await app.agentWorker.runOnce()).toBe(true);
     const mine = await say(w.ned, w.g, "@helper_bot NED-ASK-r9 我也问一句");
-    // Folded into the owner's reply: still the owner's own, with both calls.
+    // Folded into the owner's reply: a reply for others now, ned's — not every call it answers is the owner's (fix round 5).
     const queued = await latest(w.agent.id, w.g);
-    expect(queued).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id });
+    expect(queued).toMatchObject({ status: "queued", lane: "others", caller: w.ned.id });
     expect(queued.calls).toHaveLength(2);
     expect(queued.calls!.at(-1)).toBe(mine);
     await block(w.owner, w.mia);
@@ -256,30 +257,30 @@ describe("a block made after a call, as the reply begins", () => {
     expect((await api(app, w.owner, "GET", "/api/me/others-use")).json.used.answers).toBe(1);
   });
 
-  // Fix round 3, ruling 1 (accepted as kept): two rules, each named by its own test so neither is an accident.
+  // Fix round 3, ruling 1, its first rule as fix round 5 changed it: two rules, each named by its own test so neither is an accident.
   describe("after a drop, whose reply it is (ruling 1)", () => {
     const othersLimit = () => app.deps.config.others.outputTokens;
     const answersForOthers = async (owner: Actor) => (await api(app, owner, "GET", "/api/me/others-use")).json.used.answers as number;
 
-    it("rule A — a reply that still holds the owner's own call is the owner's own: with a member's call left beside it after another is dropped, it stays lane own, caller the owner, not bounded, and no reply for others is counted", async () => {
+    it("rule A — a reply is the owner's own only while EVERY call it has left is the owner's own (fix round 5): with a member's call left beside the owner's after another is dropped, it is that member's — lane others, bounded, counted as a reply for others", async () => {
       const w = await world();
       await samJoins(w);
       const dropped = await say(w.sam, w.g, "@helper_bot SAM-ASK-rA 帮我看看");
       const kept = await say(w.mia, w.g, "@helper_bot MIA-ASK-rA 我也问一句");
       const own = await say(w.owner, w.g, "@helper_bot OWNER-ASK-rA 你也看看");
-      expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [dropped, kept, own] });
+      expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.sam.id, calls: [dropped, kept, own] });
       await block(w.owner, w.sam);
 
       gateway.reply("（回答主人和米娅）");
       expect(await app.agentWorker.runOnce()).toBe(true);
       const run = await latest(w.agent.id, w.g);
-      expect(run).toMatchObject({ status: "done", error: null, lane: "own", caller: w.owner.id, calls: [kept, own] });
+      expect(run).toMatchObject({ status: "done", error: null, lane: "others", caller: w.mia.id, calls: [kept, own] });
       expect(run.askers).not.toContain(w.sam.id);
       const call = callsHere()[0]!;
       expect(shownText(call)).toContain("OWNER-ASK-rA");
-      // The owner's own reply: the model's own output limit, not the one a reply for others is cut to.
-      expect(call.maxOutputTokens).toBeGreaterThan(othersLimit());
-      expect(await answersForOthers(w.owner)).toBe(0);
+      // A reply for others: the output limit such a reply is held to.
+      expect(call.maxOutputTokens).toBe(othersLimit());
+      expect(await answersForOthers(w.owner)).toBe(1);
     });
 
     it("rule B — the owner's retry is the owner's own: retrying a reply to two other people's calls, one of them dropped since, it keeps lane own with the call left, not bounded, and no reply for others is counted", async () => {
