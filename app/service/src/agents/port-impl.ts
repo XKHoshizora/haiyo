@@ -723,9 +723,6 @@ export class DbAgentPort implements AgentPort {
       if (group && scene === null) return { end: REMOVED };
       const socialScene = social ? await loadSocialScene(t, agent, run.conversationId) : null;
       if (social && socialScene === null) return { end: REMOVED };
-      // Bounded as another person's reply is: every social run (its caller is never the owner: `runAccess`), and any other run not
-      // in lane `own`. Decided here by the place, so no social run can be unbounded whatever its row says.
-      const bounded = social || state.lane !== "own";
       // A block made since a call, either way, between the Agent's owner and whoever made it: that call is dropped, as it
       // would be refused now (runs.ts `dropRefusedCalls`, every lane, every group run: one of the owner's own may carry a
       // call relayed by someone else's Agent); with no call left the reply ends quietly. Not asked (no query) in the
@@ -737,6 +734,10 @@ export class DbAgentPort implements AgentPort {
         if (kept === null) return { end: BLOCKED_SINCE };
         Object.assign(state, kept);
       }
+      // Bounded as another person's reply is: every social run (its caller is never the owner: `runAccess`), and any other run not
+      // in lane `own`. Decided here by the place, so no social run can be unbounded whatever its row says; and AFTER the calls
+      // refused since were dropped, by the lane the reply has now (the calls left decide it: runs.ts `dropRefusedCalls`).
+      const bounded = social || state.lane !== "own";
       // A reply `告诉他们` queued (Task 8): what its whisper found elsewhere, read now as its owner may read it now
       // (Redesign D: a hit she can no longer read is left out), shown to it as material in its system text
       // (tools/elsewhere.ts `toldPassage`); it answers no call, and is offered no tools. Its whisper gone (deleted 30 days
@@ -1046,7 +1047,8 @@ export class DbAgentPort implements AgentPort {
           : maxCostMicro(resolved, holdTokens([withoutTools, ...messageTexts], resolved.contextTokens, resolved.call.maxOutputTokens) + context.fixedTokens);
       let admission;
       try {
-        admission = await admitRun(t, config, run.id, run.ownerId, resolved, held, now, lastCall, plainMicro);
+        // (The day its owner's numbers are read for is the day it is under the account lock, not the day `begin` started on.)
+        admission = await admitRun(t, config, run.id, run.ownerId, resolved, held, () => new Date(), lastCall, plainMicro);
       } catch (err) {
         if (err instanceof OthersLimit) {
           // Its owner's number is reached (answers or points) with nothing running to wait for: no call, nothing held or charged.

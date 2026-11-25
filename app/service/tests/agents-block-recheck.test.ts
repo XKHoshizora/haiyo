@@ -4,6 +4,7 @@ import type { ModelCall } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
+import { grant } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 
 /**
@@ -188,6 +189,9 @@ describe("a block made after a call, as the reply begins", () => {
 
   it("the owner's own call noted after the claim, the first caller blocked since: the reply becomes the owner's own (lane own, caller the owner)", async () => {
     const w = await world();
+    // (A model that thinks, at the owner's own level; replies for others are set to none: what the call is prepared at tells whose it is.)
+    await grant(db, w.owner.id, 1_000n * 1_000_000n);
+    expect((await api(app, w.owner, "PATCH", `/api/agents/${w.agent.id}`, { model: { source: "site", id: "thinker" }, reasoning: "low", othersReasoning: "none" })).status).toBe(200);
     await say(w.mia, w.g, "@helper_bot MIA-ASK-r7 在吗？");
     const ticket = (await app.agentPort.claimNext())!;
     const own = await say(w.owner, w.g, "@helper_bot OWNER-ASK-r7 我也问一句");
@@ -198,6 +202,12 @@ describe("a block made after a call, as the reply begins", () => {
     const prepared = await app.agentPort.begin(ticket);
     expect("call" in prepared).toBe(true);
     expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "running", lane: "own", caller: w.owner.id, calls: [own] });
+    // The owner's own reply: its own level and its model's own output limit (with the level's allowance), not the bounds of a reply for others.
+    const call = (prepared as unknown as { call: ModelCall }).call;
+    expect(call.reasoning).toBe("low");
+    expect(call.maxOutputTokens).toBeGreaterThan(app.deps.config.others.outputTokens + app.deps.config.reasoningAllowanceTokens.low);
+    const recorded = (await db.query<{ reasoning: string }>("select reasoning from agent_runs where id = $1", [ticket.id])).rows[0]!;
+    expect(recorded.reasoning).toBe("low");
     expect((await latest(w.agent.id, w.g)).askers).not.toContain(w.mia.id);
     await app.agentPort.releaseRun(ticket.id);
   });
@@ -217,5 +227,32 @@ describe("a block made after a call, as the reply begins", () => {
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(callsHere()).toHaveLength(before);
     expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "cancelled", error: null });
+  });
+
+  it("the owner's chain relayed by someone else's Agent with a member's call folded in, the relay dropped since: the reply is the member's (lane others, caller the member), bounded and counted as a reply for others", async () => {
+    const w = await world();
+    const theirs = await mustCreateAgent(app, w.mia, { handle: "mia_bot", name: "米娅的助手", model: FAST, persona: "你是米娅的助手。" });
+    expect((await api(app, w.mia, "POST", `/api/conversations/${w.g}/members`, { principalId: theirs.id })).status).toBe(201);
+    await say(w.owner, w.g, "@mia_bot 帮我问问小助手");
+    gateway.reply("@helper_bot MIA-RELAY-r9 主人让我问你");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const mine = await say(w.ned, w.g, "@helper_bot NED-ASK-r9 我也问一句");
+    // Folded into the owner's reply: still the owner's own, with both calls.
+    const queued = await latest(w.agent.id, w.g);
+    expect(queued).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id });
+    expect(queued.calls).toHaveLength(2);
+    expect(queued.calls!.at(-1)).toBe(mine);
+    await block(w.owner, w.mia);
+
+    const before = callsHere().length;
+    gateway.reply("（回答 ned）");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    // Only ned's call survived: the reply is his, in the lane somebody other than the owner calls for.
+    expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "done", lane: "others", caller: w.ned.id, calls: [mine] });
+    const call = callsHere()[before]!;
+    expect(shownText(call)).toContain("NED-ASK-r9");
+    expect(call.maxOutputTokens).toBe(app.deps.config.others.outputTokens);
+    // It counts against the owner's numbers for others: one answer today.
+    expect((await api(app, w.owner, "GET", "/api/me/others-use")).json.used.answers).toBe(1);
   });
 });

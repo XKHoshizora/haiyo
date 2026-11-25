@@ -270,7 +270,12 @@ export async function admitRun(
   ownerId: string,
   resolved: Pick<Resolved, "source" | "name" | "tier" | "price" | "call" | "reasoning">,
   inputTokensEstimate: number,
-  now: Date,
+  /**
+   * The moment of admission, which decides the site day the owner's numbers and allowances are read for. A function (what `begin`
+   * passes: the wall clock) is asked UNDER the owner's account lock, once the run's turn has come: a reply prepared before the
+   * site's midnight and admitted after it is held against the new day (fix round 3, point 2). A date is taken as given (tests).
+   */
+  now: Date | (() => Date),
   lastCallMicro = 0n,
   plainMicro: bigint | null = null,
 ): Promise<Admission> {
@@ -290,7 +295,8 @@ export async function admitRun(
   }
   // A reply somebody other than the Agent's owner called for meets the owner's others' numbers (`othersFits`).
   const others: OthersAdmission | null = run.lane !== "own" && run.agent_id !== null ? { agentId: run.agent_id, lane: run.lane, plainMicro } : null;
-  const admission = await admit(t, config, ownerId, resolved, inputTokensEstimate, now, run.purpose, lastCallMicro, runId, others);
+  const at = typeof now === "function" ? (await lockAccount(t, ownerId), now()) : now;
+  const admission = await admit(t, config, ownerId, resolved, inputTokensEstimate, at, run.purpose, lastCallMicro, runId, others);
   await t.query(
     `update agent_runs set source = $2, model = $3, charge_to = $4, hold_micro = $5, hold_over_micro = $6, money_rule = 1, reasoning = $7,
             held_back_by = null, held_back_on = null, admitted_at = $8
@@ -303,7 +309,7 @@ export async function admitRun(
       admission.holdMicro.toString(),
       (admission.overMicro ?? 0n).toString(),
       resolved.reasoning,
-      now,
+      at,
     ],
   );
   return admission;

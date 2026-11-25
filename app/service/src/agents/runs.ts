@@ -581,8 +581,8 @@ const callRowsSql = (columns: string, order = ""): string =>
  * that Agent as a subject and the person behind it (`behindMessageSql`), as `followUp` reads them — is dropped: it is no longer among
  * the calls the run answers and nobody refused is among its askers; what the run covers ends at the latest call left (`covers_seq`,
  * or `pending_seq` when that call was noted after its claim), so what came after that call is heard by the usual rule as the run
- * begins (`hearFrom`: someone refused who wrote there is heard, as anyone is, and counts toward its line, never as a call). A run whose
- * caller is dropped becomes the remaining calls' by `followUp`'s rule — its owner's own when the owner is behind one of them, else
+ * begins (`hearFrom`: someone refused who wrote there is heard, as anyone is, and counts toward its line, never as a call). A run that
+ * lost a call becomes the remaining calls' by `followUp`'s rule, whoever its recorded caller was — its owner's own when the owner is behind one of them, else
  * the earliest one's — and a person's while a person's call is left (a reply nobody asked for keeps its lane, caller and trigger).
  * The owner's own call is never dropped (`refusedInGroup` never refuses the owner): `begin` asks this of every group run but a reply
  * `告诉他们` queued, which answers nobody's call. Returns what the run now covers, has noted and its lane now (the caller takes them
@@ -591,11 +591,11 @@ const callRowsSql = (columns: string, order = ""): string =>
  * answers calls only, and every call it carries is refused).
  */
 export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane } | null> {
-  const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; behind: string | null; refused: boolean; lane: Lane; caller_refused: boolean }>(
+  const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; behind: string | null; refused: boolean; lane: Lane; run_caller: string | null }>(
     callRowsSql(
       `m.seq::text as seq, p.kind, bh.caller_id as behind,
             (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})) as refused,
-            r.lane, (r.caller_id is not null and ${refusedInGroup("r.caller_id", "r.agent_id")}) as caller_refused`,
+            r.lane, r.caller_id as run_caller`,
       "\n      order by m.seq",
     ),
     [runId],
@@ -608,8 +608,13 @@ export async function dropRefusedCalls(t: Tx, runId: string, ownerId: string): P
     return null;
   }
   const { lane } = rows[0]!;
+  // Whose reply it is now is read from the calls that are LEFT, whoever its caller was recorded as (fix round 3, point 1): the
+  // recorded caller may be the person behind a call just dropped without being refused themselves (the owner behind a relay by an
+  // Agent whose owner is now blocked), and a reply that only a member's call is left on must not keep the owner's own lane.
   const caller: Caller | null =
-    lane === "proactive" || !rows[0]!.caller_refused
+    // (Kept as it is: a reply nobody asked for; and a reply that is its owner's own for a reason other than a call of theirs — the
+    // owner's retry of someone else's call — which no dropped call made theirs and none takes from them.)
+    lane === "proactive" || (rows[0]!.run_caller === ownerId && !rows.some((r) => r.behind === ownerId))
       ? null
       : left.some((r) => r.behind === ownerId)
         ? callerOf(ownerId, ownerId)
