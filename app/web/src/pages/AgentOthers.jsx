@@ -17,6 +17,8 @@ export const POLICY_OPTIONS = [
   ["contacts", "我的好友可以直接添加"],
   ["none", "不让别人添加"],
 ];
+/** Who may add it governs the conversation with it only: who may @ it in a group is the Agent's own setting 群里谁可以叫它 (and bars). */
+const GROUPS_UNCHANGED = "这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。";
 const PICKED_LABEL = "只让其中几位好友";
 
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
@@ -232,8 +234,8 @@ export function AgentOthersTab({ agent }) {
         >
           <p>
             {form.policy === "none"
-              ? `${ask === 1 ? "对方" : "他们"}不能再和它聊天，也找不到它了。还在等你同意的申请会取消。`
-              : `${ask === 1 ? "对方" : "他们"}不能再和它聊天。想再聊要重新申请，由你同意。`}
+              ? `${ask === 1 ? "对方" : "他们"}不能再和它聊天，也找不到它了。还在等你同意的申请会取消。${GROUPS_UNCHANGED}`
+              : `${ask === 1 ? "对方" : "他们"}不能再和它聊天。想再聊要重新申请，由你同意。${GROUPS_UNCHANGED}`}
           </p>
         </Modal>
       )}

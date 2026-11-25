@@ -113,14 +113,14 @@ describe("a save", () => {
     await flush();
     await click(button("保存"));
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 1 个人" })).toBeTruthy();
-    expect(within(dialog()).getByText("对方不能再和它聊天，也找不到它了。还在等你同意的申请会取消。")).toBeTruthy();
+    expect(within(dialog()).getByText("对方不能再和它聊天，也找不到它了。还在等你同意的申请会取消。这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。")).toBeTruthy();
     cleanup();
     await openTab({ api: ends(3), contacts: contactsOf({ policy: "ask" }) });
     fireEvent.click(radio("我的好友可以直接添加"));
     await flush();
     await click(button("保存"));
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 3 个人" })).toBeTruthy();
-    expect(within(dialog()).getByText("他们不能再和它聊天。想再聊要重新申请，由你同意。")).toBeTruthy();
+    expect(within(dialog()).getByText("他们不能再和它聊天。想再聊要重新申请，由你同意。这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。")).toBeTruthy();
   });
 
   it("asks dryRun first; with 0 ends it saves at once, with no dialog", async () => {
@@ -145,7 +145,7 @@ describe("a save", () => {
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 12 个人" })).toBeTruthy();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);
     // For 不让别人添加 nobody can find it or ask again: the body does not promise a new request (A-5 review m1).
-    expect(within(dialog()).getByText("他们不能再和它聊天，也找不到它了。还在等你同意的申请会取消。")).toBeTruthy();
+    expect(within(dialog()).getByText("他们不能再和它聊天，也找不到它了。还在等你同意的申请会取消。这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。")).toBeTruthy();
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     expect(dialog()).toBeNull();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);

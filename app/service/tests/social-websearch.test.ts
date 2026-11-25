@@ -134,6 +134,13 @@ describe("a visitor's reply searches the web on the owner's numbers", () => {
     const reply = read.find((m) => m.senderId === w.agent.id)!;
     expect(reply.text).toBe("今天多云。");
     expect(reply).not.toHaveProperty("queries");
+    // The pages it read are part of the reply for everyone who reads it; the search words are the owner's in the Agent's OWN conversation
+    // only (plan, Global Constraints), so the owner watching this conversation as its observer is not sent them either.
+    const watched = ((await api(app, w.owner, "GET", `/api/conversations/${w.conv}/messages`)).json.messages as Array<Record<string, unknown>>).find((m) => m.senderId === w.agent.id)!;
+    expect(watched).not.toHaveProperty("queries");
+    expect(JSON.stringify(watched)).not.toContain(QUERY);
+    expect(Array.isArray(reply.webSources) && (reply.webSources as unknown[]).length).toBe(3);
+    expect(watched.webSources).toEqual(reply.webSources);
     expect(lines.join(" ")).not.toContain("天气");
   });
 
