@@ -123,7 +123,40 @@ test("twelve sources are one folded line under the reply; opened in place they a
   const twelve = Array.from({ length: 12 }, (_, i) => ({ n: i + 1, url: `https://${i === 2 ? "a-rather-long-host-name.news" : "site"}${i + 1}.example.com/p/${i + 1}`, title: titles[i] ?? `第 ${i + 1} 个网页的标题` }));
   await addWebSources(agent.conversationId, seq, twelve, [{ at: 1, n: 2 }], { queries: ["北京 明天 天气", "明天 降温"] });
 
-  for (const [name, size] of [["1280", { width: 1280, height: 860 }], ["390", { width: 390, height: 844 }]]) {
+  /** The opened block as it is laid out: its height, each row's box and its link's, the words line, 显示全部 when it is there. */
+  const layout = (block) =>
+    block.evaluate((el) => {
+      const box = (node) => {
+        const r = node.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height };
+      };
+      const more = el.querySelector(".web-sources-more > button");
+      const words = el.querySelector(".lookup-words");
+      return {
+        height: box(el).height,
+        rows: [...el.querySelectorAll("ol > li:not(.web-sources-more)")].map((li) => ({ row: box(li), link: box(li.querySelector("a")), title: box(li.querySelector(".web-source-title")) })),
+        words: { ...box(words), text: box(words).left + parseFloat(getComputedStyle(words).paddingLeft) },
+        more: more && { ...box(more), text: box(more).left + parseFloat(getComputedStyle(more).paddingLeft), low: document.elementFromPoint(box(more).left + 20, box(more).top + 41) === more },
+      };
+    });
+  /** Dense rows: one line each (a phone's a little taller), no room between them, the link as long as the row. */
+  const expectDense = (m, narrow, what) => {
+    const [least, most] = narrow ? [32, 34] : [28, 30];
+    for (const [i, { row, link }] of m.rows.entries()) {
+      expect(row.height, `${what}: row ${i + 1} is one dense line`).toBeGreaterThanOrEqual(least);
+      expect(row.height, `${what}: row ${i + 1} is one dense line`).toBeLessThanOrEqual(most);
+      expect(link.height, `${what}: row ${i + 1}'s link is the row's height`).toBeCloseTo(row.height, 0);
+      expect(link.right, `${what}: row ${i + 1}'s link reaches the row's end`).toBeGreaterThanOrEqual(row.right - 1);
+      if (i > 0) expect(Math.abs(row.top - m.rows[i - 1].row.bottom), `${what}: row ${i + 1} follows row ${i} with nothing between, and no overlap`).toBeLessThanOrEqual(0.5);
+    }
+    // The words head the rows in the same rhythm, in line with the titles.
+    expect(m.words.height, `${what}: the words line`).toBeGreaterThanOrEqual(least);
+    expect(m.words.height, `${what}: the words line`).toBeLessThanOrEqual(most);
+    expect(Math.abs(m.words.text - m.rows[0].title.left), `${what}: the words start where the titles do`).toBeLessThanOrEqual(1);
+    expect(Math.abs(m.rows[0].row.top - m.words.bottom), `${what}: the first row follows the words`).toBeLessThanOrEqual(0.5);
+  };
+
+  for (const [name, size] of [["1280", { width: 1280, height: 860 }], ["390", { width: 390, height: 844 }], ["360", { width: 360, height: 780 }]]) {
     await page.setViewportSize(size);
     // Shown again (a reload), the list is folded — whatever the reader did before.
     await page.reload();
@@ -145,7 +178,7 @@ test("twelve sources are one folded line under the reply; opened in place they a
     expect(line.height, "the button is one line of small text").toBeLessThanOrEqual(22);
     expect(line.parent, "the line is one line").toBeLessThanOrEqual(22);
     if (size.width <= 480) expect([line.above, line.below], "a 44px target on a narrow screen").toEqual([true, true]);
-    await shot(page, `srcfold-${name}-1-folded`);
+    if (name !== "360") await shot(page, `srcfold-${name}-1-folded`);
 
     // Opened by the keyboard, in place: five rows and the row that shows them all.
     await toggle.focus();
@@ -159,8 +192,16 @@ test("twelve sources are one folded line under the reply; opened in place they a
     const more = list.getByRole("button", { name: "显示全部 12 个" });
     await expect(more).toBeVisible();
     await expectNoSideways(page, `opened at ${name}`);
-    await shot(page, `srcfold-${name}-2-open`);
-    if (size.width < 700) await shot(page, "srcfold-390-4-owner-words");
+    const narrow = size.width <= 480;
+    const short = await layout(web.locator(".sources-block"));
+    expectDense(short, narrow, `five rows at ${name}`);
+    // 显示全部: a row of the same rhythm in line with the titles; narrow, its target is still 44px (it reaches down, off the rows).
+    expect(short.more.height, "显示全部 is a row like the others").toBeLessThanOrEqual(narrow ? 34 : 30);
+    expect(Math.abs(short.more.text - short.rows[0].title.left), "显示全部 starts where the titles do").toBeLessThanOrEqual(1);
+    expect(Math.abs(short.more.top - short.rows[4].row.bottom), "显示全部 follows row 5").toBeLessThanOrEqual(0.5);
+    if (narrow) expect(short.more.low, "显示全部 keeps a 44px target").toBe(true);
+    if (name !== "360") await shot(page, `srcfold-${name}-2-open`);
+    if (name === "390") await shot(page, "srcfold-390-4-owner-words");
 
     // Tab walks the rows to 显示全部; pressed, the rest are there and the first of them has the focus.
     for (let i = 0; i < 6; i += 1) await page.keyboard.press("Tab");
@@ -171,9 +212,14 @@ test("twelve sources are one folded line under the reply; opened in place they a
     await expect(list.locator("a").nth(5)).toBeFocused();
     await expect(list.locator("li").nth(11)).toContainText("12");
     await expectNoSideways(page, `all twelve at ${name}`);
+    const whole = await layout(web.locator(".sources-block"));
+    expect(whole.rows).toHaveLength(12);
+    expectDense(whole, narrow, `twelve rows at ${name}`);
+    // Twelve rows and the words: thirteen dense lines and next to nothing around them.
+    expect(whole.height, `the opened block of twelve at ${name}`).toBeLessThanOrEqual(13 * (narrow ? 34 : 30) + 6);
     const rows = await list.locator("li").evaluateAll((els) => els.map((li) => ({ right: li.querySelector("a").getBoundingClientRect().right, colRight: li.closest(".msg-main").getBoundingClientRect().right })));
     for (const row of rows) expect(row.right, `a source row ends inside the column at ${name}`).toBeLessThanOrEqual(row.colRight + 1);
-    await shot(page, `srcfold-${name}-3-all`);
+    if (name !== "360") await shot(page, `srcfold-${name}-3-all`);
 
     // The chip in the text opens its page itself, folded or not.
     await expect(web.locator(".bubble a.cite-link")).toHaveAttribute("href", twelve[1].url);
