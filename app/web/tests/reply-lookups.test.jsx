@@ -803,8 +803,25 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     const chip = anchors[0];
     expect(chip.closest("sup").classList.contains("cite-web")).toBe(true);
     expect(chip.classList.contains("cite-link")).toBe(true);
-    // Told apart from a message's citation by its visible text too.
-    expect(chip.textContent).toBe("网2");
+    // Its visible text is its number alone, no letter of any script (a reader may not read Chinese): it is told apart from
+    // a message's citation by its class only, the box `.cite-link` draws around it.
+    expect(chip.textContent).toMatch(/^\d+$/);
+    expect(chip.textContent).toBe("2");
+    // That box, as the cascade picks it (jsdom has no layout; the e2e web-sources spec shows it): the chip is never
+    // underlined (the Markdown tree's rule for a link does not win); its number's box is 16px tall at the top of a line it
+    // does not move, never narrower than that (one digit a square), its digits all one width (10 to 20 alike).
+    const winner = cascadeOf(readFileSync("src/styles.css", "utf8"));
+    const box = chip.querySelector(":scope > span");
+    expect(winner(chip, "text-decoration")).toBe("none");
+    expect([winner(chip.closest("sup"), "line-height"), winner(chip.closest("sup"), "vertical-align")]).toEqual(["inherit", "baseline"]);
+    expect(["display", "min-width", "line-height", "vertical-align", "text-align", "font-variant-numeric"].map((p) => winner(box, p))).toEqual([
+      "inline-block",
+      "16px",
+      "14px",
+      "top",
+      "center",
+      "tabular-nums",
+    ]);
     expect([chip.getAttribute("target"), chip.getAttribute("rel")]).toEqual(["_blank", "noopener noreferrer nofollow"]);
     expect(chip.getAttribute("aria-label")).toBe("来源 2：气象台：降温（xn--bcher-kva.example）");
     expect(bubble.textContent).toContain("详情");

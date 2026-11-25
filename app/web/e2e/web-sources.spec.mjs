@@ -25,12 +25,12 @@ test.beforeEach(async () => {
 });
 
 const SHOTS = (process.env.SRCFOLD_SHOTS ?? "").trim();
-/** A screenshot for the report: only when SRCFOLD_SHOTS names a folder. */
-async function shot(page, name) {
+/** A screenshot for the report: only when SRCFOLD_SHOTS names a folder — of the page, or of `part` of it alone. */
+async function shot(page, name, part = page) {
   if (SHOTS === "") return;
   mkdirSync(SHOTS, { recursive: true });
   await page.waitForTimeout(250);
-  await page.screenshot({ path: path.join(SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
+  await part.screenshot({ path: path.join(SHOTS, `${name}.png`), animations: "disabled", caret: "hide" });
 }
 
 /** The message scroller and the page do not scroll sideways. */
@@ -88,7 +88,9 @@ test("a web reply's own link and bare address are plain text; only its sources a
   // Its one chip opens the page it cites.
   const chip = web.locator(".bubble a.cite-link");
   await expect(chip).toHaveCount(1);
-  await expect(chip).toHaveText("网2");
+  // Its number alone, no word of any language (told from a message's citation by its box).
+  await expect(chip).toHaveText(/^\d+$/);
+  await expect(chip).toHaveText("2");
   await expect(chip).toHaveAttribute("href", SOURCES[1].url);
   await expect(chip).toHaveAttribute("target", "_blank");
   await expect(chip).toHaveAttribute("rel", "noopener noreferrer nofollow");
@@ -178,6 +180,8 @@ test("twelve sources are one folded line under the reply; opened in place they a
     expect(line.height, "the button is one line of small text").toBeLessThanOrEqual(22);
     expect(line.parent, "the line is one line").toBeLessThanOrEqual(22);
     if (size.width <= 480) expect([line.above, line.below], "a 44px target on a narrow screen").toEqual([true, true]);
+    // The reply itself, its chip in its text (its number alone, in its box) — on a phone's width too.
+    await shot(page, `srcfold-${name}-0-chip`, web);
     if (name !== "360") await shot(page, `srcfold-${name}-1-folded`);
 
     // Opened by the keyboard, in place: five rows and the row that shows them all.
