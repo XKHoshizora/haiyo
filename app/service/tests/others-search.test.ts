@@ -201,7 +201,7 @@ describe("the triggers' early check", () => {
     expect(await k.notices()).toBe(1);
   });
 
-  it("a member's call after the owner's points are reached is not called, and the group gets one notice that site day; what is held counts", async () => {
+  it("a member's call after the owner's points are reached is not called (what is held counts); the group gets its one notice that site day once the points are USED, not while only a hold is in the way", async () => {
     const k = await othersKitchen(app, db, { box: undefined, agent: { othersBudget: null } });
     await setOwnerNumbers(db, k.owner.id, { pointsMicro: 20n * POINT });
     // 12 points settled and 8 held by a running reply of another Agent: 20 reached.
@@ -209,6 +209,14 @@ describe("the triggers' early check", () => {
     const other = (await agentsOf(app, db, k.owner, 1))[0]!;
     await seedRun(db, { ownerId: k.owner.id, agent: other, lane: "others", hold: 8n * POINT, admittedAt: new Date() });
     await k.ask();
+    expect((await db.query("select 1 from agent_runs where conversation_id = $1 and status = 'queued'", [k.g])).rowCount).toBe(0);
+    // Refused, and the group is told nothing yet: 8 of the 20 are only HELD, and come back when that reply ends (fix round 4, F5:
+    // 「明天恢复」 is said only when it is so, by the decision the owner's page shows).
+    expect(await k.notices()).toBe(0);
+    // Now they are used: that reply has ended, and what it held is settled.
+    await db.query("update agent_runs set status = 'done', hold_micro = 0, finished_at = now() where owner_id = $1 and status = 'running'", [k.owner.id]);
+    await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.g, lane: "others", micro: 8n * POINT });
+    await k.ask("@chef 还在吗");
     expect((await db.query("select 1 from agent_runs where conversation_id = $1 and status = 'queued'", [k.g])).rowCount).toBe(0);
     expect(await k.notices()).toBe(1);
     await k.ask("@chef 再问一次");
