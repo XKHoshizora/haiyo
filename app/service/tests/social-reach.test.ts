@@ -86,7 +86,8 @@ const cases: Array<[name: string, setup: Setup, social: Reach, group: Reach]> = 
   ["block wins over a live row", async (w) => void (await liveRow("approved")(w), await block(w.O, w.P)), "blocked", "blocked"],
   ["bar, no row", (w) => bar(w).then(() => {}), "barred", "barred"],
   ["bar, row approved before the bar", async (w) => void (await row(w, w.P, "live", { since: T1 }), await bar(w, T2)), "barred", "barred"],
-  ["bar, row approved after the bar", async (w) => void (await bar(w, T1), await row(w, w.P, "live", { since: T2 })), "ok", "ok"],
+  // (Fix round 3, point 8: no row passes a standing bar, in either place. An owner's approval of someone THEY stopped lifts their stop instead: agent-contacts.ts `approveContact`.)
+  ["bar, row approved after the bar", async (w) => void (await bar(w, T1), await row(w, w.P, "live", { since: T2 })), "barred", "barred"],
   ["bar, row on the contacts basis after the bar", async (w) => void (await bar(w, T1), await row(w, w.P, "live", { basis: "contacts", since: T2 })), "barred", "barred"],
   ["bar, approved row of P's Agent, P asks", async (w) => void (await bar(w, T1), await row(w, w.pAgent, "live", { since: T2 })), "barred", "barred"],
   ["bar, the owner asks", async (w) => void ((w.subject = w.O), await bar(w)), "ok", "ok"],
@@ -152,8 +153,8 @@ describe("reach", () => {
           await db.query(`insert into access_bars (setter_id, other_id, kind, since) values ($1, $2, 'stop', $3)`, [p, w.O, T1]);
           await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis, since) values ($1, $2, $2, 'live', 'approved', $3)`, [w.agent, p, T2]);
         },
-        "ok",
-        "ok",
+        "barred",
+        "barred",
       ],
       ["blocked", async (p) => void (await block(w.O, p)), "blocked", "blocked"],
     ];

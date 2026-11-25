@@ -10,8 +10,9 @@ import { blockedEitherWay } from "./relations.ts";
 //   1. the Agent is deleted (or is no Agent) -> gone; disabled, or (social and the switch off), with P not O -> gone;
 //   2. P is O -> ok;
 //   3. a block either way between P and O, P and the Agent, the subject and the Agent, or the subject and O -> blocked;
-//   4. a bar between P and O (either one's: any row of `access_bars` either way) -> barred, unless the subject's own row on the Agent is
-//      live, approved and newer than the latest bar;
+//   4. a bar between P and O (either one's: any row of `access_bars` either way) -> barred. No row passes a bar that stands (fix
+//      round 3, point 8): an owner who approves a person they stopped lifts their own stop by that act (`approveContact`), which is
+//      one state, not an exception here; the other person's stop is nobody else's to lift;
 //   5. the subject's own row: live -> ok; in a social conversation, ended narrowed, removed or barred -> barred;
 //   6. otherwise group -> ok, social -> no_access. In a GROUP only what stands now refuses (steps 1, 3 and 4): access there comes from
 //      membership, so a row that ended (by a narrowing, a removal, or a stop since lifted) refuses nobody, and a co-member is answered
@@ -61,11 +62,8 @@ export function reachSql(o: ReachSqlOptions): string {
   // The person behind the subject: an Agent's owner, or the subject itself.
   const P = `coalesce((select rchs.owner_id from principals rchs where rchs.id = ${S}), ${S})`;
   const own = (cond: string): string => `exists (select 1 from agent_contacts rchc where rchc.agent_id = ${A} and rchc.subject_id = ${S} and ${cond})`;
-  // Barred while any bar stands between P and O, either way, unless the subject's own row is live, approved and newer than the
-  // latest of them (an approval passes the bars, and only that row).
-  const lastBar = `(select max(rchb.since) from ${standingBarsSql(P, O, "rchb")})`;
-  const bar = `(${lastBar} is not null and not exists (select 1 from agent_contacts rchc
-                                           where rchc.agent_id = ${A} and rchc.subject_id = ${S} and rchc.state = 'live' and rchc.basis = 'approved' and rchc.since > ${lastBar}))`;
+  // Barred while any bar stands between P and O, either way: nothing passes it.
+  const bar = `exists (select 1 from ${standingBarsSql(P, O, "rchb")})`;
   const unavailable = o.where === "social" ? `rcha.disabled_at is not null or not (${o.socialOn})` : `rcha.disabled_at is not null`;
   return `(case
     when coalesce((select rcha.deleted_at is not null from agents rcha where rcha.principal_id = ${A}), true) then 'gone'

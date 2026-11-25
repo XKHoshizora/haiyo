@@ -274,15 +274,24 @@ describe("decline, the cooldown, and a stop", () => {
     expect(await add(w, agent.id)).toMatchObject({ status: 201, json: { state: "live" } });
   });
 
-  it("after a bar an approval lets in again, and only from that moment (the approved row is newer than the bar)", async () => {
+  it("a stop the PERSON set is not passed by the owner's approval (409, nothing lifted); a stop the OWNER set is lifted by the owner's own approval (fix round 3, point 8)", async () => {
     const { owner, agent } = await world("bar");
     const v = await signUp(app, "barvisitor");
     await stop(owner.id, v.id, { by: v.id });
     expect(await add(v, agent.id)).toMatchObject({ status: 202 });
     expect(await reach(db, v.id, agent.id, "social", on)).toBe("barred");
-    expect((await approve(owner, agent.id, v)).status).toBe(200);
-    expect(await reach(db, v.id, agent.id, "social", on)).toBe("ok");
-    expect((await db.query(`select count(*)::int n from access_bars`)).rows[0]!.n).toBe(1);
+    expect((await approve(owner, agent.id, v)).status).toBe(409);
+    expect(await reach(db, v.id, agent.id, "social", on)).toBe("barred");
+    expect((await db.query(`select count(*)::int n from access_bars where setter_id = $1`, [v.id])).rows[0]!.n).toBe(1);
+    // The owner's own stop on another person who then asks: approving is lifting it.
+    const u = await signUp(app, "barvisitor2");
+    await stop(owner.id, u.id);
+    await ageBar(owner.id, u.id, 40 * 86_400_000);
+    expect(await add(u, agent.id)).toMatchObject({ status: 202 });
+    expect(await reach(db, u.id, agent.id, "social", on)).toBe("barred");
+    expect((await approve(owner, agent.id, u)).status).toBe(200);
+    expect(await reach(db, u.id, agent.id, "social", on)).toBe("ok");
+    expect((await db.query(`select count(*)::int n from access_bars where setter_id = $1`, [owner.id])).rows[0]!.n).toBe(0);
   });
 
   it("a row ended narrowed, removed or barred makes the next add a request, even for a friend of a contacts Agent", async () => {

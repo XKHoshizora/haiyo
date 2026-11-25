@@ -499,7 +499,11 @@ export async function addContact(t: Tx, config: Pick<Config, "social" | "others"
 /**
  * The Agent's owner lets a requester in: the row becomes `live`, basis `approved`, since now. `not_found` when the Agent is not
  * the caller's (or is deleted): the answer of an Agent that does not exist; `not_requested` when nothing waits (no row, another
- * state, or a request that ran out, which is ended `expired` here). It never touches a bar.
+ * state, or a request that ran out, which is ended `expired` here). The approval is also the owner's own way of lifting a stop THEY
+ * set on that person (fix round 3, point 8: 恢复往来 by another door; the stop is theirs, so is the act): it is deleted here, under the
+ * pair's lock, and the row is then live with no bar of the owner's standing. A stop the OTHER person set is not the owner's to lift:
+ * while it stands the approval lets nobody in and changes nothing, and is answered as a request that is no longer there (as for a
+ * block made since: nothing tells the owner which).
  */
 export async function approveContact(t: Tx, ownerId: string, agentId: string, subjectId: string): Promise<{ conversationId: string } | { refused: "not_found" | "not_requested" }> {
   if (!(await isOwner(t, ownerId, agentId))) return { refused: "not_found" };
@@ -507,9 +511,16 @@ export async function approveContact(t: Tx, ownerId: string, agentId: string, su
   if (!locked) return { refused: "not_requested" };
   if (await expireIfLate(t, agentId, subjectId, locked.row)) return { refused: "not_requested" };
   if (locked.row?.state !== "requested" || locked.subjectDeleted) return { refused: "not_requested" };
-  // A block made after the request, either way, or an Agent gone since, ends the wait (a bar does not: an approval passes it).
+  // A block made after the request, either way, or an Agent gone since, ends the wait.
   const standing = await reach(t, subjectId, agentId, "social", { social: { enabled: true } });
   if (standing === "blocked" || standing === "gone") return { refused: "not_requested" };
+  // The other person's own stop stands: not the owner's to lift, and nobody is let through it.
+  await lockPair(t, ownerId, locked.personId);
+  const theirs = ((await t.query("select 1 from access_bars where setter_id = $1 and other_id = $2 and kind = 'stop'", [locked.personId, ownerId])).rowCount ?? 0) > 0;
+  if (theirs) return { refused: "not_requested" };
+  // The owner's own stop on this person, if any: lifted by this approval.
+  await t.query("delete from access_bars where setter_id = $1 and other_id = $2 and kind = 'stop'", [ownerId, locked.personId]);
+  await settleLifted(t, ownerId, locked.personId);
   await upsertLive(t, agentId, subjectId, locked.personId, "approved");
   return { conversationId: (await ensureSocial(t, subjectId, agentId)).conversationId };
 }

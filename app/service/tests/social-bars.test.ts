@@ -89,7 +89,7 @@ async function queuedRun(agentId: string, conversationId: string, callerId: stri
 const runOf = async (id: string) => (await db.query(`select status, error, interrupted, pending_seq from agent_runs where id = $1`, [id])).rows[0] as { status: string; error: string | null; interrupted: string | null; pending_seq: string | null };
 
 describe("停止往来 and 恢复往来 (design test 6)", () => {
-  it("a stop ends every row between the two sides; one approved request of the person's Agent passes exactly that row; the bar stays; only the setter lifts it", async () => {
+  it("a stop ends every row between the two sides; no row passes it while it stands (an approval by the OTHER side is refused); only the setter lifts it", async () => {
     const owner = await signUp(app, "stpowner");
     const v = await signUp(app, "stpv");
     const y1 = await newAgent(owner, "stpy1");
@@ -106,11 +106,7 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
     expect(await rowState(y1.id, v.id)).toEqual({ state: "ended", endReason: "barred" });
     expect(await rowState(y3.id, v.id)).toEqual({ state: "ended", endReason: "barred" });
     expect(await barRows(owner, v, { [owner.id]: "O", [v.id]: "V" })).toEqual(["O>V stop"]);
-    // V's Agent VA asks Y1 through addContact directly (the route takes only the caller): a request, not a cooldown (I11); approved, it passes.
-    expect(await direct(va, y1.id)).toMatchObject({ state: "requested" });
-    expect((await approve(owner, y1.id, va)).status).toBe(200);
-    expect(await reach(db, va, y1.id, "social", on)).toBe("ok");
-    expect(await barRows(owner, v)).toHaveLength(1);
+    // (An approval by the SETTER of someone they stopped lifts their stop: fix round 3, point 8, tests/social-ring1a.test.ts.)
     // V itself: the stop's cooldown; after it a request, never live under contacts; and so for an Agent made later.
     expect(await add(v, y2.id)).toMatchObject({ status: 429 });
     await ageBar(owner.id, v.id, 31 * DAY);
@@ -118,9 +114,11 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
     const y4 = await newAgent(owner, "stpy4");
     await policy(y4.id, "contacts");
     expect(await add(v, y4.id)).toMatchObject({ status: 202 });
-    // The owner as a subject of V's Agent, approved by V: the bar is not touched.
+    // The owner as a subject of V's Agent, approved by V: the stop is the OWNER's, not V's to lift. V's approval lets nobody through
+    // it and is answered as a request that is no longer there; the bar is not touched.
     expect(await direct(owner.id, va)).toMatchObject({ state: "requested" });
-    expect((await approve(v, va, owner)).status).toBe(200);
+    expect((await approve(v, va, owner)).status).toBe(409);
+    expect(await reach(db, owner.id, va, "social", on)).toBe("barred");
     expect(await barRows(owner, v)).toHaveLength(1);
     // Only the setter lifts it; and lifting brings no row back.
     expect((await resume(v, owner)).status).toBe(404);
@@ -464,7 +462,7 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
     expect(await rows(o2, y2.id)).toEqual([[v2.id, "barred"]]);
   });
 
-  it("a bar's and a row's time follow the lock order: an approval whose transaction began before a bar but ran after it is newer than it (n6)", async () => {
+  it("an approval whose transaction began before the owner's stop but ran after it: it is the later act, and lifts that stop (the lock order decides, n6; fix round 3, point 8)", async () => {
     const owner = await signUp(app, "n6owner");
     const v = await signUp(app, "n6v");
     const y = await newAgent(owner, "n6y");
@@ -486,14 +484,10 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
     await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, until) values ($1, $2, $2, 'requested', now() + interval '7 days')`, [y.id, v.id]);
     release();
     expect(await approving).toMatchObject({ conversationId: expect.any(String) });
-    // The owner sees the row live; it must pass the bar it is newer than.
+    // The owner sees the row live, and their own stop is gone with that approval: one state.
     expect(await rowState(y.id, v.id)).toEqual({ state: "live", endReason: null });
     expect(await reach(db, v.id, y.id, "social", on)).toBe("ok");
-    const [bar, row] = await Promise.all([
-      db.query<{ since: Date }>(`select since from access_bars where setter_id = $1`, [owner.id]),
-      db.query<{ since: Date }>(`select since from agent_contacts where agent_id = $1 and subject_id = $2`, [y.id, v.id]),
-    ]);
-    expect(row.rows[0]!.since.getTime()).toBeGreaterThan(bar.rows[0]!.since.getTime());
+    expect((await db.query(`select 1 from access_bars where setter_id = $1`, [owner.id])).rowCount).toBe(0);
   });
 
   it("the other side is not told: no frame to the other person unless something of theirs ended, and none on a lift", async () => {

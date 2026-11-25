@@ -564,6 +564,50 @@ describe("fix round 2, N2: in a group only a standing bar refuses", () => {
   });
 });
 
+describe("fix round 3, point 8: a standing stop refuses everywhere; an approval is the owner's own way of lifting THEIR stop, never the other person's", () => {
+  const approve = (w: Awaited<ReturnType<typeof grouped>>) => api(app, w.owner, "POST", `/api/agent-contacts/${w.y.id}/${w.v.id}/approve`);
+  const stoppedBy = async (who: Actor) => ((await api(app, who, "GET", "/api/me/others-use")).json.stopped as Array<{ person: { id: string } }>).map((r) => r.person.id);
+  /** The wait a stop puts on the stopped person's next request is over. */
+  const waited = (setter: Actor, other: Actor) => db.query("update access_bars set since = since - interval '40 days' where setter_id = $1 and other_id = $2", [setter.id, other.id]);
+
+  it("the owner stopped the person, the person asks again, the owner approves: the owner's stop is lifted by that act (one state: no stop is left listed), and the person is answered in the conversation and in the group", async () => {
+    const w = await grouped();
+    expect((await stop(w.owner, w.v)).status).toBe(200);
+    await waited(w.owner, w.v);
+    expect((await add(w.v, w.y.id)).status).toBe(202);
+    // While the stop stands nothing passes it, the waiting request included.
+    expect(await reach(db, w.v.id, w.y.id, "group", { social: { enabled: true } })).toBe("barred");
+    expect((await approve(w)).status).toBe(200);
+    expect(await stoppedBy(w.owner)).toEqual([]);
+    expect((await db.query("select 1 from access_bars where setter_id = $1 and other_id = $2", [w.owner.id, w.v.id])).rowCount).toBe(0);
+    expect(await reach(db, w.v.id, w.y.id, "social", { social: { enabled: true } })).toBe("ok");
+    expect(await reach(db, w.v.id, w.y.id, "group", { social: { enabled: true } })).toBe("ok");
+    await say(w.v, w.g, `${w.at} 在吗`);
+    expect((await runsOf(w.y.id, w.g)).length).toBe(1);
+    gateway.reply("在的");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+  });
+
+  it("the PERSON stopped the owner and then asks: the owner's approval lets nobody through and lifts nothing; the owner is answered as for a request that is no longer there, and the person's stop keeps refusing in the group and in the conversation", async () => {
+    const w = await grouped();
+    expect((await stop(w.v, w.owner)).status).toBe(200);
+    expect((await add(w.v, w.y.id)).status).toBe(202);
+    const answer = await approve(w);
+    expect([answer.status, answer.json.error]).toEqual([409, "not_requested"]);
+    expect(JSON.stringify(answer.json)).not.toMatch(/stop|bar/);
+    expect(await stoppedBy(w.v)).toEqual([w.owner.id]);
+    expect(await stoppedBy(w.owner)).toEqual([]);
+    expect(await reach(db, w.v.id, w.y.id, "social", { social: { enabled: true } })).toBe("barred");
+    expect(await reach(db, w.v.id, w.y.id, "group", { social: { enabled: true } })).toBe("barred");
+    await say(w.v, w.g, `${w.at} 在吗`);
+    expect((await runsOf(w.y.id, w.g)).length).toBe(0);
+    // Both stopped each other: the owner's approval lifts neither while the person's stands.
+    expect((await stop(w.owner, w.v)).status).toBe(200);
+    expect((await approve(w)).status).toBe(409);
+    expect(await stoppedBy(w.owner)).toEqual([w.v.id]);
+  });
+});
+
 describe("fix round 1, m17: no whisper can be made in a social conversation", () => {
   it("createWhisper stores nothing and answers null there, for the owner who watches (the same call in the Agent's own conversation makes one)", async () => {
     const w = await visited();
