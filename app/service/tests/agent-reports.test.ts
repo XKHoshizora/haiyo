@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { reach } from "../src/social/reach.ts";
+import { reportAgent } from "../src/social/reports.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { testDatabaseUrl } from "./helpers/env.ts";
@@ -312,5 +313,28 @@ describe("reports:list and reports:close", () => {
     expect(new Set(both.map((r) => r.json.id)).size).toBe(1);
     expect((await db.query("select 1 from agent_reports where reporter_id = $1 and agent_id = $2", [visitor.id, agent.id])).rowCount).toBe(1);
     await expect(db.query("insert into agent_reports (reporter_id, target_kind, agent_id, reason) values ($1, 'agent', $2, 'spam')", [visitor.id, agent.id])).rejects.toThrow(/agent_reports_one_open_idx/);
+  });
+
+  it("a report that loses to one made at the same moment, which the operator closes before this one is answered: answered with the report that stood, never as an Agent that is not there (fix round 3, point 9)", async () => {
+    const owner = await signUp(app, "rpt3o");
+    const visitor = await signUp(app, "rpt3v");
+    const agent = (await mustCreateAgent(app, owner, { handle: "rpt3y", name: "rpt3y" })) as { id: string };
+    await seedSocial(app, { owner, agentId: agent.id, visitor });
+    // The interleaving, statement by statement: this call reads (no open report yet); the other request's report commits; this
+    // call's insert meets it; the operator closes that report; this call is answered.
+    let n = 0;
+    let other = "";
+    const stepped = {
+      query: (async (text: string, params?: unknown[]) => {
+        n++;
+        const result = await db.query(text, params as never);
+        if (n === 1) other = (await db.query<{ id: string }>("insert into agent_reports (reporter_id, target_kind, agent_id, reason) values ($1, 'agent', $2, 'spam') returning id", [visitor.id, agent.id])).rows[0]!.id;
+        if (n === 2) await db.query("update agent_reports set handled_at = now(), outcome = 'dismissed' where id = $1", [other]);
+        return result;
+      }) as typeof db.query,
+    };
+    const answered = await reportAgent(stepped as never, on, visitor.id, agent.id, "harassment", null);
+    expect(answered).toBe(other);
+    expect((await db.query("select 1 from agent_reports where reporter_id = $1 and agent_id = $2", [visitor.id, agent.id])).rowCount).toBe(1);
   });
 });

@@ -46,15 +46,14 @@ export async function reportAgent(
             $3::text, $4::text
        from principals p
       where p.id = $2::uuid and p.kind = 'agent' and ${agentSeenSql("p", "$1::uuid", config)}
-     on conflict (reporter_id, agent_id) where handled_at is null do nothing
+     on conflict (reporter_id, agent_id) where handled_at is null do update set reason = agent_reports.reason
      returning id`,
     [reporterId, agentId, reason, note],
   );
-  if (rows[0]) return rows[0].id;
-  // Nothing inserted: the Agent is not one the reporter can see, or another request of theirs made the open report a moment ago
-  // (`agent_reports_one_open_idx`, migration 076): that one is the answer.
-  // (asked by the same guarded read, so an Agent the reporter cannot see answers nothing).
-  return (await openReport()).rows[0]?.id ?? null;
+  // One statement decides and answers (fix round 3, point 9): the row it inserted, or the open report it met (`agent_reports_one_open_idx`,
+  // migration 076; the conflict's own row, returned by the same statement, so nothing can close it between the meeting and the answer:
+  // there is no second read). No row: the Agent is not one the reporter can see.
+  return rows[0]?.id ?? null;
 }
 
 /** The id of the live (not deleted) Agent with this full handle, `<owner's handle>.<name part>`, case ignored; null for anything else. */
