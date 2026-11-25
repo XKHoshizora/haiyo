@@ -1,9 +1,9 @@
 import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../src/errors.ts";
-import { guardedFetch, isPublicAddress, normaliseBaseUrl, type Resolve } from "../src/providers/guard.ts";
+import { guardedFetch, isPublicAddress, KEEPALIVE_IDLE_MS, normaliseBaseUrl, type Resolve } from "../src/providers/guard.ts";
 import { createSlots } from "../src/slots.ts";
 
 /**
@@ -456,6 +456,21 @@ describe("guardedFetch answers", () => {
     took = Date.now() - started;
     expect(took).toBeGreaterThanOrEqual(200);
     expect(took).toBeLessThan(3000);
+  });
+
+  it("the outbound socket asks the system to probe a silent peer: TCP keepalive, first probe after 30 s idle", async () => {
+    // What a unit test can prove: the knob is set on the socket the request goes out on. That the kernel then probes
+    // and ends a dead connection is the system's doing (Linux: one probe 10 s later, libuv's fixed interval and count).
+    expect(KEEPALIVE_IDLE_MS).toBe(30_000);
+    const set = vi.spyOn(net.Socket.prototype, "setKeepAlive");
+    try {
+      const server = await listener((_req, res) => void res.end("ok"));
+      const f = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 1000, allowInsecureLocal: true });
+      expect(await (await f(`http://127.0.0.1:${server.port}/`)).text()).toBe("ok");
+      expect(set.mock.calls).toContainEqual([true, KEEPALIVE_IDLE_MS]);
+    } finally {
+      set.mockRestore();
+    }
   });
 
   it("connectTimeoutMs: a guard that waits long for an answer still gives up early on an address it cannot find", async () => {

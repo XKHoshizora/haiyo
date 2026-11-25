@@ -632,10 +632,10 @@ describe("the money of a reply that offers tools", () => {
     expect(await balanceOf(c.owner.id)).toBe(20n * POINT);
   });
 
-  it("a crashed run with a raised hold is swept after 2 × max(AGENT_RUN_TIMEOUT_MS, TOOLS.runTimeoutMs) + 1 minute, and its hold released", async () => {
-    // 2 × max(300 000, 600 000) + 60 000 = 1 260 000 ms: 21 minutes.
-    expect(staleAfterMs(app.deps.config)).toBe(1_260_000);
-    expect(staleAfterMs({ agentRunTimeoutMs: 600_000, tools: { runTimeoutMs: 300_000 } })).toBe(2 * 600_000 + 60_000);
+  it("a crashed run with a raised hold is swept after 2 × max(AGENT_RUN_TIMEOUT_MS, TOOLS.runTimeoutMs) + MODEL_CALL_CEILING_MS + 1 minute, and its hold released", async () => {
+    // 2 × max(120 000, 300 000) + 1 800 000 + 60 000 = 2 460 000 ms: 41 minutes — no live call, however long it thinks, is that old.
+    expect(staleAfterMs(app.deps.config)).toBe(2_460_000);
+    expect(staleAfterMs({ agentRunTimeoutMs: 600_000, tools: { runTimeoutMs: 300_000 }, modelCallCeilingMs: 900_000 })).toBe(2 * 600_000 + 900_000 + 60_000);
 
     const { port } = toolWorker(scriptedGateway());
     const { owner, conv } = await owned("crashed", PAID);
@@ -652,9 +652,9 @@ describe("the money of a reply that offers tools", () => {
     expect(await holdOf(ticket.id)).not.toBe(admitted);
 
     const age = (minutes: number) => db.query("update agent_runs set started_at = now() - make_interval(mins => $2) where id = $1", [ticket.id, minutes]);
-    await age(20);
+    await age(40);
     expect(await app.staleRunSweep.run()).toBe(0);
-    await age(22);
+    await age(42);
     expect(await app.staleRunSweep.run()).toBe(1);
     expect(await runOf(owner.id)).toMatchObject({ status: "failed", error: "provider_unavailable", hold: "0" });
     expect(await recordsOf(ticket.id)).toMatchObject([{ cost: "0", free: "0", balance: "0" }]);

@@ -359,7 +359,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     uploads: overrides.uploads ?? createUploadSlots(),
     searches: overrides.searches ?? createSlots(MAX_CONCURRENT_SEARCHES, MAX_SEARCHES_IN_FLIGHT),
     providerProbe: overrides.providerProbe ?? createProviderProbe(guardedFetch({ ...PROBE_GUARD, ...insecureLocal, calls: providerCalls })),
-    models: overrides.models ?? createModelGateway({ ...insecureLocal, calls: providerCalls, thinkingIdleTimeoutMs: Math.max(config.agentRunTimeoutMs, config.tools.runTimeoutMs) }),
+    models: overrides.models ?? createModelGateway({ ...insecureLocal, calls: providerCalls, ceilingMs: config.modelCallCeilingMs }),
     judge: overrides.judge !== undefined ? overrides.judge : config.judge ? createJudge(config.judge, insecureLocal) : null,
     // Built with the reply worker's port, below.
     proactive: null,
@@ -586,6 +586,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
     port: agentPort,
     models: deps.models,
     runTimeoutMs: config.agentRunTimeoutMs,
+    callCeilingMs: config.modelCallCeilingMs,
     maxRunsInFlight: config.agentMaxRunsInFlight,
     background: options.agentWorker !== false,
     log: app.log,

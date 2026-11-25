@@ -30,7 +30,7 @@ import {
 } from "./fixtures.js";
 import { click, dialog, elapse, flush, installBrowser, mainText, openApp, push, toastText } from "./harness.jsx";
 import { useWorkers } from "./markdown-worker.js";
-import { forgetRevealed, thinkingLine, useThinkingSeconds } from "../src/pages/AgentChatBits.jsx";
+import { forgetRevealed, thinkingLine, thoughtFor, useThinkingSeconds } from "../src/pages/AgentChatBits.jsx";
 import { REPLY_POINTS_KEY, setShowReplyPoints } from "../src/data/prefs.js";
 import { REVEAL_FINISH_MS, REVEAL_MAX_LAG_MS, setRevealFrames } from "../src/ui/reveal.js";
 
@@ -1077,6 +1077,26 @@ describe("thinking (an Agent whose reasoning level is not none)", () => {
     await elapse(3000);
     await click(screen.getByText("小助手", { selector: ".list-col .row-name" }));
     expect(bubbleText()).toContain("正在思考… 5 秒");
+  });
+
+  it("past a minute the count reads in minutes and seconds, however long the model thinks: 正在思考… 2 分 05 秒, 思考了 12 分 00 秒", async () => {
+    expect([0, 1, 59, 60, 61, 125, 600, 3725].map(thinkingLine)).toEqual([
+      "正在思考…",
+      "正在思考… 1 秒",
+      "正在思考… 59 秒",
+      "正在思考… 1 分 00 秒",
+      "正在思考… 1 分 01 秒",
+      "正在思考… 2 分 05 秒",
+      "正在思考… 10 分 00 秒",
+      "正在思考… 62 分 05 秒",
+    ]);
+    expect([0, 999, 59_999, 60_000, 125_400, 720_000].map(thoughtFor)).toEqual(["思考了 1 秒", "思考了 1 秒", "思考了 59 秒", "思考了 1 分 00 秒", "思考了 2 分 05 秒", "思考了 12 分 00 秒"]);
+    // In the page: the same reply, still thinking after two minutes, with 停止生成 there all the while.
+    const { transport } = await openAgentChat({ agent: { model: SITE_PAID, reasoning: "low" } });
+    await runPush(transport, runOf(R1, "running"));
+    await elapse(125_000);
+    expect(bubbleText()).toContain("正在思考… 2 分 05 秒");
+    expect(within(bubbleLi()).getByRole("button", { name: "停止生成" }).disabled).toBe(false);
   });
 
   it("the line's timer runs only while counting, and none is left once it stops or goes", async () => {

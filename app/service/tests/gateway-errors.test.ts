@@ -160,18 +160,18 @@ describe("upstream refusals and failures become ModelError codes", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
-  describe("a call that thinks may stay silent for as long as a reply may take (the owner's report: a provider that streams nothing while it thinks)", () => {
-    // Scaled down: 200 ms stands for the 60 s a call that does not think may be silent, 3 s for a reply's own time.
+  describe("no clock judges a call that may be thinking: silent, it is waited for while its connection lives (the owner's report: a provider that streams nothing while it thinks)", () => {
+    // Scaled down: 200 ms stands for the 60 s a call that cannot be thinking may be silent, 10 s for the far ceiling.
     const IDLE = 200;
-    const patient = () => createModelGateway({ calls: createSlots(64), allowInsecureLocal: true, idleTimeoutMs: IDLE, thinkingIdleTimeoutMs: 3_000 });
-    /** Silent for three idle limits, then the protocol's plain answer: after its headers (`headersFirst`), or before any. */
+    const patient = () => createModelGateway({ calls: createSlots(64), allowInsecureLocal: true, idleTimeoutMs: IDLE, ceilingMs: 10_000 });
+    /** Silent for ten idle limits, then the protocol's plain answer: after its headers (`headersFirst`), or before any. */
     const thinksSilently = (headersFirst: boolean): StubHandler => (req, res) => {
       const protocol = protocolOfPath(req.path)!;
       if (headersFirst) res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       setTimeout(() => {
         if (headersFirst) res.end(cannedStream(protocol, "text"));
         else answerCanned(req, res);
-      }, IDLE * 3);
+      }, IDLE * 10);
     };
 
     it.each(["openai_chat", "anthropic"] as const)("%s at a thinking level: silent after its headers for longer than the idle limit, then the answer — it arrives whole", async (protocol) => {
@@ -203,12 +203,23 @@ describe("upstream refusals and failures become ModelError codes", () => {
         stub.answer(thinksSilently(headersFirst));
         const started = Date.now();
         expectModelError((await run(patient().stream(call("openai_chat")))).error, "provider_unavailable");
-        expect(Date.now() - started).toBeLessThan(IDLE * 3);
+        expect(Date.now() - started).toBeLessThan(IDLE * 10);
       }
     });
 
-    it("never unbounded: a thinking call silent past its own allowance is provider_unavailable too", async () => {
-      const bounded = createModelGateway({ calls: createSlots(64), allowInsecureLocal: true, idleTimeoutMs: IDLE, thinkingIdleTimeoutMs: IDLE * 2 });
+    it("its connection dying while it is silent ends it at once: provider_unavailable, long before any ceiling", async () => {
+      stub.answer((_req, res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" }).flushHeaders();
+        setTimeout(() => res.socket?.destroy(), IDLE * 3);
+      });
+      const started = Date.now();
+      expectModelError((await run(patient().stream(call("anthropic", { reasoning: "none", thinks: true })))).error, "provider_unavailable");
+      expect(Date.now() - started).toBeGreaterThanOrEqual(IDLE * 3 - 50);
+      expect(Date.now() - started).toBeLessThan(3_000);
+    });
+
+    it("never for ever: the gateway's own backstop gives a call silent for the whole ceiling up (its caller's deadline, the same ceiling, comes first in a reply)", async () => {
+      const bounded = createModelGateway({ calls: createSlots(64), allowInsecureLocal: true, idleTimeoutMs: IDLE, ceilingMs: IDLE * 2 });
       stub.answer((_req, res) => void res.writeHead(200, { "content-type": "text/event-stream" }).flushHeaders());
       const started = Date.now();
       expectModelError((await run(bounded.stream(call("anthropic", { reasoning: "high" })))).error, "provider_unavailable");
@@ -216,7 +227,7 @@ describe("upstream refusals and failures become ModelError codes", () => {
       expect(Date.now() - started).toBeLessThan(2_500);
     });
 
-    it("the caller's abort still cuts a silent thinking call at once: its reason is thrown, long before any allowance", async () => {
+    it("the caller's abort still cuts a silent thinking call at once: its reason is thrown, long before any ceiling", async () => {
       stub.answer(() => {}); // never answers
       const controller = new AbortController();
       const reason = new Error("the reply's time is up");

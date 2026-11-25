@@ -207,7 +207,8 @@ export interface ToolsConfig {
   /**
    * How long a reply that offers tools may take in all, its rounds and its tools, in ms (each model call and each tool
    * also within `AGENT_RUN_TIMEOUT_MS`); a reply that offers none is held to `AGENT_RUN_TIMEOUT_MS` alone, as before.
-   * Default 10 minutes, twice the default of one call: one slow call does not use up the reply's rounds.
+   * For a model that may think (models/gateway.ts `mayThink`) it bounds the tools' time only: the time its model calls
+   * take is not counted, and the reply as a whole ends at `MODEL_CALL_CEILING_MS`.
    */
   runTimeoutMs: number;
   /** The web search (`search_web`, src/agents/tools/web/; `TOOLS.web`): off unless the operator turns it on. */
@@ -352,7 +353,7 @@ const toolsSchema = z.strictObject({
   filePerReply: positive(4, 1000),
   timePerReply: positive(1, 1000),
   resultMaxWeight: positive(3000, 100_000),
-  runTimeoutMs: z.number().int().min(1000).max(3_600_000).default(600_000),
+  runTimeoutMs: z.number().int().min(1000).max(3_600_000).default(300_000),
   web: webSearchSchema.prefault({} as never),
 });
 
@@ -843,11 +844,17 @@ const envSchema = z.object({
   /** Replies one person, themselves or through their Agents, may call for per minute on other people's Agents. */
   AGENT_CALLER_RUNS_PER_MINUTE: wholeNumber(5, 1, 10_000),
   /**
-   * A reply still running after this long is ended (and so is the reading of its attachments). 5 minutes: a model that
-   * thinks hard may rightly take minutes, saying nothing meanwhile (a call that does not think and goes silent is given
-   * up on after 60 s all the same: models/gateway.ts `silenceAllowed`).
+   * A reply still running after this long is ended (and so is the reading of its attachments) — when its model cannot be
+   * thinking. No clock judges a call to a model that may think (models/gateway.ts `mayThink`): see `MODEL_CALL_CEILING_MS`.
    */
-  AGENT_RUN_TIMEOUT_MS: wholeNumber(300_000, 1_000, 3_600_000),
+  AGENT_RUN_TIMEOUT_MS: wholeNumber(120_000, 1_000, 3_600_000),
+  /**
+   * The far safety ceiling of a reply whose model may think, all its calls together (30 minutes). NOT a product rule and
+   * not how long thinking "should" take: such a call ends when it finishes, its connection dies, it is stopped, or its
+   * token limits run out. The ceiling is there only so that a peer which keeps its connection alive and never answers
+   * cannot hold a call slot and a run for ever; a reply that reaches it fails `took_too_long`.
+   */
+  MODEL_CALL_CEILING_MS: wholeNumber(1_800_000, 60_000, 86_400_000),
   /** A provider model's context window when its owner does not give one, in tokens. */
   PROVIDER_DEFAULT_CONTEXT_TOKENS: wholeNumber(16_000, 1_000, 2_000_000),
   /** The output limit every call to a provider model gets, in tokens. */
@@ -1063,6 +1070,8 @@ export interface Config {
   agentCallerRunsPerMinute: number;
   /** A reply still running after this long is ended; also the most the reading of its attachments may take. */
   agentRunTimeoutMs: number;
+  /** `MODEL_CALL_CEILING_MS`: the far safety ceiling of a reply whose model may think. */
+  modelCallCeilingMs: number;
   /** For a provider model that does not say: its context window and its maximum output, in tokens. */
   providerDefaultContextTokens: number;
   providerDefaultMaxOutputTokens: number;
@@ -1269,6 +1278,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     agentOthersRunsPerMinute: e.AGENT_OTHERS_RUNS_PER_MINUTE,
     agentCallerRunsPerMinute: e.AGENT_CALLER_RUNS_PER_MINUTE,
     agentRunTimeoutMs: e.AGENT_RUN_TIMEOUT_MS,
+    modelCallCeilingMs: e.MODEL_CALL_CEILING_MS,
     providerDefaultContextTokens: e.PROVIDER_DEFAULT_CONTEXT_TOKENS,
     providerDefaultMaxOutputTokens: e.PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS,
     reasoningAllowanceTokens: e.REASONING_ALLOWANCE_TOKENS,

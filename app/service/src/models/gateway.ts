@@ -128,7 +128,7 @@ export interface ModelCall {
   /**
    * The model is marked as one that may think (models/resolve.ts: a provider model's `reasoning`, a site model that
    * lists a level or takes the switch). Such a model may think whatever level it is asked for — some cannot switch it
-   * off — so its calls may be silent for long at every level (`silenceAllowed`). Absent or false: not marked.
+   * off — so its calls may be silent for long at every level (`mayThink`). Absent or false: not marked.
    */
   thinks?: boolean;
   /**
@@ -438,17 +438,30 @@ function providerOptionsFor(call: ModelCall, left: ReadonlySet<OptionalField>): 
 /** A model's answer may be long: the guard's size limit for one model stream. */
 const MODEL_STREAM_MAX_BYTES = 8 * 1024 * 1024;
 /**
- * How long a model stream may be silent (before its headers, or between its bytes) before it is given up on — THE rule
- * (`silenceAllowed`): a call that cannot be thinking — `reasoning` `none`, to a model not marked as one that may think
- * (`ModelCall.thinks`) — 60 s; a call that may be — any other level, or a model so marked at any level — for as long as
- * a reply may take (`GatewayOptions.thinkingIdleTimeoutMs`), because an upstream that does not stream its thinking sends
- * nothing at all until it has thought, and what bounds such a call is its caller's signal (a reply's own time, a
- * memory call's or a draft's deadline, the provider test's 15 s). Whichever it is, an address that cannot be found or
- * connected to is given up on after the 60 s.
+ * How a model call ends — one of five ways, and no clock judges one that may be thinking:
+ * (a) it finished;
+ * (b) its connection died: closed or reset by the peer, or silently dead and found so by TCP keepalive
+ *     (providers/guard.ts `KEEPALIVE_IDLE_MS`) — `provider_unavailable`;
+ * (c) its caller stopped it (`ModelCall.signal`: the owner's stop, a pause, the service closing, a caller's own deadline);
+ * (d) its budget ran out: the output limit sent with it (`maxOutputTokens`, thinking included) — a finish, `truncated`,
+ *     or `thinking_exhausted`;
+ * (e) the far ceiling (`GatewayOptions.ceilingMs`, `MODEL_CALL_CEILING_MS`): a reply's worker ends it there
+ *     (`took_too_long`), and the guard gives up a stream silent for all of it (`provider_unavailable`).
+ * What keeps a short limit: finding and connecting to the address, 60 s for every call; and a call that cannot be
+ * thinking (`mayThink` false), which has no reason to be silent and is given up on after 60 s without a byte, before its
+ * headers or between its bytes (`MODEL_IDLE_TIMEOUT_MS`). Progress is counted as ever (headers, any body byte); it is
+ * only not required of a call that may be thinking while its connection lives.
  */
 const MODEL_IDLE_TIMEOUT_MS = 60_000;
-/** The silence a thinking call is allowed when the gateway is not told how long a reply may take: 5 minutes. */
-const MODEL_THINKING_IDLE_TIMEOUT_MS = 300_000;
+/** The ceiling when the gateway is not told one: `MODEL_CALL_CEILING_MS`'s default, 30 minutes. */
+const MODEL_CALL_CEILING_MS = 1_800_000;
+
+/**
+ * THE rule of whether a call may be thinking, and so may rightly be silent for long: it asks for a level other than
+ * `none`, or its model is marked as one that may think (`ModelCall.thinks`: some think whatever they are asked). Read
+ * by the gateway (which guard the call goes through) and by a reply's worker (which deadline bounds it).
+ */
+export const mayThink = (call: Pick<ModelCall, "reasoning" | "thinks">): boolean => call.reasoning !== "none" || call.thinks === true;
 
 export interface GatewayOptions {
   /** Where its calls are counted: the app's one count of calls through the guard (`GuardOptions.calls`). */
@@ -458,10 +471,10 @@ export interface GatewayOptions {
   /** Default 60 s; tests shorten it. */
   idleTimeoutMs?: number;
   /**
-   * How long a call that thinks may be silent: the longest a reply may take (the app: the longer of
-   * `AGENT_RUN_TIMEOUT_MS` and `TOOLS.runTimeoutMs`), never less than `idleTimeoutMs`. Default 5 minutes.
+   * The far ceiling of a call that may be thinking (`MODEL_CALL_CEILING_MS`; never less than `idleTimeoutMs`): a stream
+   * silent for all of it is given up on. Default 30 minutes.
    */
-  thinkingIdleTimeoutMs?: number;
+  ceilingMs?: number;
 }
 
 /**
@@ -475,9 +488,9 @@ export function createModelGateway(options: GatewayOptions): ModelGateway {
   const idleMs = options.idleTimeoutMs ?? MODEL_IDLE_TIMEOUT_MS;
   const sized = { ...guard, maxResponseBytes: MODEL_STREAM_MAX_BYTES };
   const fetch = guardedFetch({ ...sized, timeoutMs: idleMs });
-  const patient = guardedFetch({ ...sized, timeoutMs: Math.max(idleMs, options.thinkingIdleTimeoutMs ?? MODEL_THINKING_IDLE_TIMEOUT_MS), connectTimeoutMs: idleMs });
-  /** THE rule of how long a call may be silent (`MODEL_IDLE_TIMEOUT_MS`): by whether it may be thinking. */
-  const silenceAllowed = (call: ModelCall): typeof globalThis.fetch => (call.reasoning !== "none" || call.thinks === true ? patient : fetch);
+  const patient = guardedFetch({ ...sized, timeoutMs: Math.max(idleMs, options.ceilingMs ?? MODEL_CALL_CEILING_MS), connectTimeoutMs: idleMs });
+  /** Which guard a call goes through (`MODEL_IDLE_TIMEOUT_MS`): no no-progress limit short of the ceiling when it may be thinking. */
+  const silenceAllowed = (call: ModelCall): typeof globalThis.fetch => (mayThink(call) ? patient : fetch);
   const probe = createProviderProbe(guardedFetch({ ...guard, ...PROBE_GUARD }));
   const refusals = new Refusals();
   return {

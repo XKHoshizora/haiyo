@@ -192,9 +192,9 @@ export interface GuardOptions {
    */
   timeoutMs: number;
   /**
-   * How long finding the address and connecting to it may take, for a guard whose `timeoutMs` is long because what it
-   * calls may rightly be silent for long (a model that thinks: models/gateway.ts): an address that cannot be reached is
-   * still given up on after this. Default `timeoutMs`.
+   * How long finding the address and connecting to it (TCP and TLS) may take, for a guard whose `timeoutMs` is long
+   * because what it calls may rightly be silent for long (a model that may think: models/gateway.ts): an address that
+   * cannot be reached is still given up on after this. Default `timeoutMs`.
    */
   connectTimeoutMs?: number;
   /**
@@ -210,6 +210,18 @@ export interface GuardOptions {
    */
   allowInsecureLocal?: boolean;
 }
+
+/**
+ * TCP keepalive on every outbound connection: after this long without a byte either way the system starts probing the
+ * peer, and a peer that no longer answers ends the connection (the call then fails `provider_unavailable`, as any
+ * connection that dies). It is what finds a silently dead peer while a model that may think is rightly silent, where no
+ * no-progress timer applies (models/gateway.ts). Node exposes the idle time alone (`net` `keepAlive` /
+ * `keepAliveInitialDelay`, `socket.setKeepAlive`, which undici's connector takes); how often and how many times the
+ * system probes after it is libuv's: on Linux `TCP_KEEPINTVL` 10 s and `TCP_KEEPCNT` 1 (libuv 1.50, Node 24), so a dead
+ * peer is found about 40 s after its last byte. A proxy in between answers the probes itself: then only the ceiling ends
+ * a call that never answers.
+ */
+export const KEEPALIVE_IDLE_MS = 30_000;
 
 export const addressNotAllowed = (): AppError => new AppError(400, "address_not_allowed");
 export const providerUnavailable = (): AppError => new AppError(502, "provider_unavailable");
@@ -395,7 +407,7 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
         connections: 1,
         headersTimeout: 0, // the guard's own timer governs
         bodyTimeout: 0,
-        connect: { lookup: pinnedLookup(addresses), timeout: connectTimeoutMs },
+        connect: { lookup: pinnedLookup(addresses), timeout: connectTimeoutMs, keepAlive: true, keepAliveInitialDelay: KEEPALIVE_IDLE_MS },
       });
       const res = await undiciFetch(url.href, { ...(init as UndiciRequestInit), signal, redirect: "manual", dispatcher: agent });
       arm(); // the headers are progress: the first body chunk gets a full `timeoutMs`
