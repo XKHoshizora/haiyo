@@ -427,6 +427,36 @@ describe("the settings row and the page", () => {
     expect(mainText()).toContain("每天大约能回 7 次");
   });
 
+  it("a read sent before a save that fails after the save's answer: the page says nothing of stale data (review 5, item 8)", async () => {
+    const gates = [];
+    const get = vi.fn(() => {
+      const gate = deferred();
+      gates.push(gate);
+      return gate.promise;
+    });
+    const put = vi.fn(async (body) => body);
+    const { app } = await openWith({ api: { getOthersUse: get, putOthersLimits: put } });
+    await goSettings();
+    await click(inList().getByText(NAME, { selector: ".row-name" }));
+    gates[0].resolve(useOf());
+    await flush();
+    // A read is in flight (sent before the save) when the owner saves.
+    const stale = readOthersUse(app.layer.actions, storeOf(app.layer.actions));
+    typeInto(answersBox(), "20");
+    enter(answersBox());
+    await flush();
+    expect(put).toHaveBeenCalledTimes(1);
+    // That older read fails now: the save's answer is newer than anything it could have said.
+    gates[gates.length - 1].reject(apiError(503, "unavailable"));
+    await stale.catch(() => {});
+    await flush();
+    expect(mainText()).not.toContain("没读到最新的数据");
+    expect(answersBox().value).toBe("20");
+    for (const g of gates) g.resolve(useOf({ limits: { answers: 20, points: "300" } }));
+    await flush();
+    expect(mainText()).not.toContain("没读到最新的数据");
+  });
+
   it("an owner with no Agent is told so; nobody used them today: it says so; the numbers still show", async () => {
     await openPage({ answer: () => useOf({ agents: [], byPerson: [] }) });
     expect(mainText()).toContain("你还没有可以回复别人的 Agent。");

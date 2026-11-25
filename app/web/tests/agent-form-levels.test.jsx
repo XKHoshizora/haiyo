@@ -290,4 +290,39 @@ describe("fix round 4, F5: the state an Agent's page shows of its room for other
     await again;
     expect(store.use).toBe(later);
   });
+
+  it("an older read that FAILS after a newer answer was settled says nothing of it: the newer answer stands, not marked stale (review 5, item 8)", async () => {
+    let reject = () => {};
+    const actions = { getOthersUse: vi.fn(() => new Promise((_, r) => (reject = r))) };
+    const store = storeOf(actions);
+    const reading = readOthersUse(actions, store);
+    const newer = USE({ limits: { answers: 9, points: "9" } });
+    settleOthersUse(store, newer);
+    reject(new Error("offline"));
+    await reading;
+    expect([store.use, store.failed]).toEqual([newer, false]);
+    // A read of its own that fails is still said.
+    const own = readOthersUse(actions, store);
+    reject(new Error("offline"));
+    await own;
+    expect([store.use, store.failed]).toEqual([newer, true]);
+  });
+
+  it("an older read that fails after a newer read answered (a reload asked for after a change) leaves that answer unmarked", async () => {
+    const answers = [];
+    const actions = { getOthersUse: vi.fn(() => new Promise((resolve, reject) => answers.push({ resolve, reject }))) };
+    const store = storeOf(actions);
+    const older = readOthersUse(actions, store);
+    const after = readOthersUse(actions, store, { afterWrite: true });
+    answers[0].reject(new Error("offline"));
+    await older;
+    await Promise.resolve();
+    // The older read's failure is no news: the reload after the change is the read that counts.
+    expect(store.failed).toBe(false);
+    await flush();
+    const fresh = USE({ limits: { answers: 5, points: "5" } });
+    answers[1].resolve(fresh);
+    await after;
+    expect([store.use, store.failed]).toEqual([fresh, false]);
+  });
 });
