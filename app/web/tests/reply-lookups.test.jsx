@@ -55,21 +55,49 @@ const runPush = (transport, fields = {}) => push(transport, { type: "run", conve
 /** A reply's citation as the service sends it: where it stands in the text, the message it points to. */
 const cite = (at, conversationId, seq, kind = "m") => ({ at, kind, ref: { conversationId, seq } });
 
-/** A selector's specificity as [ids, classes, elements] (`:is`/`:not`/`:has` count their most specific argument, `:where` none). */
+/**
+ * A selector's specificity as [ids, classes, elements] (`:is`/`:not`/`:has` count their most specific argument, `:where`
+ * none — nor anything nested inside it).
+ */
 function specificity(selector) {
-  let s = selector;
   const total = [0, 0, 0];
   const more = (a, b) => {
     const i = a.findIndex((n, k) => n !== b[k]);
     return i >= 0 && a[i] > b[i];
   };
-  // Functional pseudo-classes first, innermost out: each counts as the most specific of its arguments (`:where` as nothing).
-  for (let m = /:(is|not|has|where)\(([^()]*)\)/.exec(s); m; m = /:(is|not|has|where)\(([^()]*)\)/.exec(s)) {
-    if (m[1] !== "where") {
-      const best = m[2].split(",").map((a) => specificity(a.trim())).reduce((x, y) => (more(y, x) ? y : x));
-      best.forEach((n, i) => (total[i] += n));
+  // Functional pseudo-classes first, each read whole, its parentheses balanced: it counts as the most specific of its
+  // arguments (split at their own top-level commas), `:where` as nothing.
+  let s = "";
+  for (let i = 0; i < selector.length; ) {
+    const fn = /^:(is|not|has|where)\(/.exec(selector.slice(i));
+    if (!fn) {
+      s += selector[i];
+      i += 1;
+      continue;
     }
-    s = `${s.slice(0, m.index)} ${s.slice(m.index + m[0].length)}`;
+    const from = i + fn[0].length;
+    let end = from;
+    for (let depth = 1; end < selector.length; end += 1) {
+      depth += selector[end] === "(" ? 1 : selector[end] === ")" ? -1 : 0;
+      if (depth === 0) break;
+    }
+    if (fn[1] !== "where") {
+      const args = [];
+      let depth = 0;
+      let start = from;
+      for (let k = from; k <= end; k += 1) {
+        if (selector[k] === "(") depth += 1;
+        else if (selector[k] === ")" && k < end) depth -= 1;
+        else if ((selector[k] === "," && depth === 0) || k === end) {
+          args.push(selector.slice(start, k).trim());
+          start = k + 1;
+        }
+      }
+      const best = args.map(specificity).reduce((x, y) => (more(y, x) ? y : x));
+      best.forEach((n, k) => (total[k] += n));
+    }
+    s += " ";
+    i = end + 1;
   }
   s = s.replace(/::[\w-]+/g, () => ((total[2] += 1), " "));
   s = s.replace(/:[\w-]+/g, () => ((total[1] += 1), " "));
@@ -794,25 +822,22 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     expect(await opened({ toggle: rect(-40, -22), block: rect(900, 1180), first: rect(900, 944) })).toBe(0);
   });
 
-  it("its chips open the page they cite (a number it was not handed shows none); its own links and bare addresses are plain text", async () => {
-    await openChats({ messages: [...BASE, webReply(3)] });
-    await elapse(2000);
-    const bubble = storedLi(3).querySelector(".bubble");
-    const anchors = [...bubble.querySelectorAll("a")];
-    expect(anchors.map((a) => a.getAttribute("href"))).toEqual([SOURCES[1].url]);
-    const chip = anchors[0];
+  /**
+   * A chip as it is drawn: its visible text its number alone, no letter of any script (a reader may not read Chinese) —
+   * told apart from a message's citation by its class only, the box `.cite-link > span` draws. That box, as the cascade
+   * picks it (jsdom has no layout; the e2e web-sources spec measures it): never underlined, never broken across lines (12
+   * stays one line in the narrowest list item), a visible 1px edge (its colour: contrast.test.js), 16px tall at the top of
+   * a line it does not move, never narrower than that (one digit a square), its digits all one width (10 to 20 alike).
+   */
+  const expectChip = (chip, n) => {
     expect(chip.closest("sup").classList.contains("cite-web")).toBe(true);
     expect(chip.classList.contains("cite-link")).toBe(true);
-    // Its visible text is its number alone, no letter of any script (a reader may not read Chinese): it is told apart from
-    // a message's citation by its class only, the box `.cite-link` draws around it.
     expect(chip.textContent).toMatch(/^\d+$/);
-    expect(chip.textContent).toBe("2");
-    // That box, as the cascade picks it (jsdom has no layout; the e2e web-sources spec shows it): the chip is never
-    // underlined (the Markdown tree's rule for a link does not win); its number's box is 16px tall at the top of a line it
-    // does not move, never narrower than that (one digit a square), its digits all one width (10 to 20 alike).
+    expect(chip.textContent).toBe(n);
     const winner = cascadeOf(readFileSync("src/styles.css", "utf8"));
     const box = chip.querySelector(":scope > span");
-    expect(winner(chip, "text-decoration")).toBe("none");
+    expect([winner(chip, "text-decoration"), winner(chip, "white-space")]).toEqual(["none", "nowrap"]);
+    expect(winner(box, "border")).toMatch(/^1px solid var\(--[\w-]+\)$/);
     expect([winner(chip.closest("sup"), "line-height"), winner(chip.closest("sup"), "vertical-align")]).toEqual(["inherit", "baseline"]);
     expect(["display", "min-width", "line-height", "vertical-align", "text-align", "font-variant-numeric"].map((p) => winner(box, p))).toEqual([
       "inline-block",
@@ -823,9 +848,39 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
       "tabular-nums",
     ]);
     expect([chip.getAttribute("target"), chip.getAttribute("rel")]).toEqual(["_blank", "noopener noreferrer nofollow"]);
+  };
+
+  it("its chips open the page they cite (a number it was not handed shows none); its own links and bare addresses are plain text", async () => {
+    await openChats({ messages: [...BASE, webReply(3)] });
+    await elapse(2000);
+    const bubble = storedLi(3).querySelector(".bubble");
+    const anchors = [...bubble.querySelectorAll("a")];
+    expect(anchors.map((a) => a.getAttribute("href"))).toEqual([SOURCES[1].url]);
+    // The reply as the Markdown tree renders it: the chip inside `.md`.
+    const chip = bubble.querySelector(".md a.cite-link");
+    expect(chip).toBe(anchors[0]);
+    expectChip(chip, "2");
     expect(chip.getAttribute("aria-label")).toBe("来源 2：气象台：降温（xn--bcher-kva.example）");
-    expect(bubble.textContent).toContain("详情");
-    expect(bubble.textContent).toContain("evil.example");
+    // The Markdown tree's rule for its links never matches the chip, and keeps the specificity it always had (0,1,1), so
+    // that no other rule that wins over it today loses tomorrow.
+    const linkRule = /^(\.md a[^{,]*)\{[^}]*text-decoration: underline/m.exec(readFileSync("src/styles.css", "utf8"))?.[1].trim();
+    expect(chip.matches(linkRule)).toBe(false);
+    expect(specificity(linkRule)).toEqual([0, 1, 1]);
+    // Its own link and bare address: plain text, each with its real host after one space in ASCII brackets, in its isolated wrapper.
+    expect([...bubble.querySelectorAll(".md-link-plain")].map((w) => w.textContent)).toEqual(["详情 (evil.example)", "https://bare.example/x (bare.example)"]);
+  });
+
+  it("a reply shown as plain text (too long to render, with the note) keeps its chip, drawn the same", async () => {
+    const long = `明天晴${"很长的一段话。".repeat(8000)}`;
+    await openChats({ messages: [...BASE, wire(A1, 3, AG1, long, { lookups: { web: 1 }, webSources: SOURCES, webCites: [{ at: 3, n: 3 }] })] });
+    await elapse(2000);
+    const bubble = storedLi(3).querySelector(".bubble");
+    expect(bubble.querySelector(".md-note")).not.toBeNull();
+    expect(bubble.querySelector(".md")).toBeNull();
+    const chips = [...bubble.querySelectorAll("a.cite-link")];
+    expect(chips).toHaveLength(1);
+    expectChip(chips[0], "2");
+    expect(bubble.textContent.startsWith("明天晴2很长的一段话。")).toBe(true);
   });
 
   it("a reply that did not search the web keeps its links as links, and shows no list", async () => {

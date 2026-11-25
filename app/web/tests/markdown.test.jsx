@@ -199,7 +199,7 @@ describe("what an Agent's Markdown renders to", () => {
   it("autolinked www. and bare URLs are links like any other, each with its host after it", async () => {
     const bubble = await show("见 www.example.com 和 https://bare.example/path 以及 <https://angle.example>");
     expect(hrefs(bubble)).toEqual(["http://www.example.com/", "https://bare.example/path", "https://angle.example/"]);
-    expect([...bubble.querySelectorAll("a")].map(hostAfter)).toEqual(["（example.com）", "（bare.example）", "（angle.example）"]);
+    expect([...bubble.querySelectorAll("a")].map(hostAfter)).toEqual(["(example.com)", "(bare.example)", "(angle.example)"]);
     expectSafe(bubble);
   });
 
@@ -452,9 +452,12 @@ describe("every link shows where it goes", () => {
     const bubble = await show("看 [文档](https://www.docs.example/a/b?c=1) 和 [登录](https://evil.example:8443/x)");
     const [docs, login] = bubble.querySelectorAll("a");
     expect(docs.textContent).toBe("文档");
-    expect(hostAfter(docs)).toBe("（docs.example）");
-    expect(hostAfter(login)).toBe("（evil.example:8443）");
-    expect(bubble.textContent).toBe("看 文档（docs.example） 和 登录（evil.example:8443）");
+    expect(hostAfter(docs)).toBe("(docs.example)");
+    expect(hostAfter(login)).toBe("(evil.example:8443)");
+    expect(bubble.textContent).toBe("看 文档 (docs.example) 和 登录 (evil.example:8443)");
+    // The host note is in ASCII brackets after one space — no mark of one language — and the link, the space and the note
+    // are all inside the link's isolated wrapper.
+    expect([...bubble.querySelectorAll(".md-link")].map((w) => w.textContent)).toEqual(["文档 (docs.example)", "登录 (evil.example:8443)"]);
     expectSafe(bubble);
   });
 
@@ -464,7 +467,7 @@ describe("every link shows where it goes", () => {
     ["a bare autolink", "https://example.com/docs"],
   ])("a link whose text is exactly its address has its host after it all the same: %s", async (_, text) => {
     const bubble = await show(text);
-    expect(hostAfter(bubble.querySelector("a"))).toBe("（example.com）");
+    expect(hostAfter(bubble.querySelector("a"))).toBe("(example.com)");
   });
 
   // (Round 4: these showed no host before. Round 5: no link is exempt.)
@@ -476,7 +479,7 @@ describe("every link shows where it goes", () => {
     ["the address with its path unencoded", "[https://example.com/文档](https://example.com/文档)"],
   ])("a link whose text only resembles its address shows its host: %s", async (_, text) => {
     const bubble = await show(text);
-    expect(hostAfter(bubble.querySelector("a"))).toBe("（example.com）");
+    expect(hostAfter(bubble.querySelector("a"))).toBe("(example.com)");
   });
 
   it("a link whose text shows nothing is labelled by its address", async () => {
@@ -484,7 +487,7 @@ describe("every link shows where it goes", () => {
     const [a, b] = bubble.querySelectorAll("a");
     expect(a.textContent).toBe("https://evil.example/x");
     expect(b.textContent).toBe("https://evil.example/y");
-    expect(hostAfter(a)).toBe("（evil.example）");
+    expect(hostAfter(a)).toBe("(evil.example)");
     expectSafe(bubble);
   });
 
@@ -492,13 +495,13 @@ describe("every link shows where it goes", () => {
     const host = `${"a".repeat(63)}.${"b".repeat(63)}.example`;
     const bubble = await show(`[x.example](https://${host}/)`);
     const shown = hostAfter(bubble.querySelector("a"));
-    expect(shown).toBe(`（…${host.slice(-39)}）`);
+    expect(shown).toBe(`(…${host.slice(-39)})`);
     expect(shown.length).toBe(42);
   });
 
   it("bidirectional controls are taken out before anything is shown, plain or rich", async () => {
     const bubble = await show("请访问 [\u202Eelpmaxe.knab](https://evil.example/) \u2067看\u2069 \u200F。");
-    expect(bubble.textContent).toBe("请访问 elpmaxe.knab（evil.example） 看 。");
+    expect(bubble.textContent).toBe("请访问 elpmaxe.knab (evil.example) 看 。");
     expect(bubble.textContent).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/);
     cleanup();
     useWorkers(() => {
@@ -578,8 +581,8 @@ describe("what an Agent's Markdown never renders", () => {
   it("an image becomes a link labelled by its alt text (or its URL), never an <img>", async () => {
     const bubble = await show("![一张图](https://evil.example/p.png) ![](https://evil.example/q.png)");
     expect([...bubble.querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href"), hostAfter(a)])).toEqual([
-      ["一张图", "https://evil.example/p.png", "（evil.example）"],
-      ["https://evil.example/q.png", "https://evil.example/q.png", "（evil.example）"],
+      ["一张图", "https://evil.example/p.png", "(evil.example)"],
+      ["https://evil.example/q.png", "https://evil.example/q.png", "(evil.example)"],
     ]);
     expect(bubble.querySelector("img")).toBeNull();
   });
@@ -1000,7 +1003,7 @@ describe("whose messages are Markdown", () => {
     expect(agents.querySelector("h1").textContent).toBe("标题");
     expect(agents.querySelector("strong").textContent).toBe("粗体");
     expect(agents.querySelector("a").getAttribute("href")).toBe("https://a.example/");
-    expect(hostAfter(agents.querySelector("a"))).toBe("（a.example）");
+    expect(hostAfter(agents.querySelector("a"))).toBe("(a.example)");
     // Its thinking and its proposal's persona are plain text too.
     const li = document.querySelector('li[data-msg="m3"]');
     expect(li.querySelector(".thinking-text").textContent).toBe("**想** `一下`");

@@ -130,3 +130,25 @@ describe("the marks of a model row", () => {
     expect(Number(ratio(ink, over(bg(".model-pop"), darkest)).toFixed(2))).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe("the box of a web page's chip in a reply", () => {
+  // The chip's number alone (ui/cites.jsx) is told apart from a message's citation, a bare number too, by its box only: the
+  // box's edge is a mark that must be seen, 3:1 (WCAG 1.4.11), and no louder than the number in it. Its grounds: an Agent's
+  // reply is never "mine" (pages/Messages.jsx), so the bubble of others' messages, and a table's header cell in it; at the
+  // darkest point of the page (the app has one theme).
+  const bubble = over(bg(".bubble"), darkest);
+  const grounds = { "a message bubble": bubble, "a table's header cell in a reply": over(bg(".md th"), bubble) };
+  const box = plain(".cite-link > span");
+  const edge = () => colour(/^1px solid (.+)$/.exec(box.border ?? "")?.[1] ?? "none");
+
+  it("has a solid 1px edge of one colour", () => {
+    expect(box.border).toMatch(/^1px solid var\(--[\w-]+\)$/);
+  });
+
+  it.each(Object.keys(grounds))("its edge reaches 3:1 on %s and stays quieter than its number", (name) => {
+    const ground = grounds[name];
+    const number = colour(plain(".cite-link").color);
+    expect(Number(ratio(over(edge(), ground), ground).toFixed(2)), name).toBeGreaterThanOrEqual(3);
+    expect(ratio(over(edge(), ground), ground), name).toBeLessThan(ratio(number, ground));
+  });
+});

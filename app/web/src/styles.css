@@ -636,12 +636,14 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 /* A web page a reply cites (`webCites`, pages/WebSources.jsx): the same superscript, a link that opens the page — its
    number alone, in a bordered box, which is all that tells it apart from a message's (both can read 2). The box is 16px
    tall at the line's top (its own 14px line and its border: the sup still moves no line) and never narrower than that,
-   so one digit is a square whatever the font's own digits; its digits are tabular, so 10 to 20 are one width. */
+   so one digit is a square whatever the font's own digits; its digits are tabular, so 10 to 20 are one width; it never
+   breaks between them, however narrow the list item. Being the one cue, its edge reaches 3:1 on the bubble and stays
+   quieter than the number (--purple under --purple-dark; tests/contrast.test.js); hovered or focused it darkens. */
 .cite-link {
-  display: inline-block; padding: 0 2px; color: var(--purple-dark); text-decoration: none; border-radius: 4px;
+  display: inline-block; padding: 0 2px; color: var(--purple-dark); text-decoration: none; border-radius: 4px; white-space: nowrap;
 }
 .cite-link > span {
-  display: inline-block; min-width: 16px; padding: 0 3px; border: 1px solid var(--line-strong); border-radius: 4px;
+  display: inline-block; min-width: 16px; padding: 0 3px; border: 1px solid var(--purple); border-radius: 4px;
   font-size: 11px; line-height: 14px; vertical-align: top; text-align: center; font-variant-numeric: tabular-nums;
 }
 .cite-link:focus-visible > span { border-color: var(--purple-dark); }
@@ -734,8 +736,9 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
   color: var(--ink-2); font-size: inherit;
 }
 .md hr { border: 0; border-top: 1px solid var(--line-strong); }
-/* (A web page's chip in a reply, `.cite-link`, is drawn as its box above and never underlined.) */
-.md a:not(.cite-link) { color: var(--purple-dark); text-decoration: underline; text-underline-offset: 2px; }
+/* (A web page's chip in a reply, `.cite-link`, is drawn as its box above and never underlined; `:where` keeps this rule's
+   specificity what it always was.) */
+.md a:where(:not(.cite-link)) { color: var(--purple-dark); text-decoration: underline; text-underline-offset: 2px; }
 /* A link and the real host after it: each isolated, so the text around them cannot reorder them. */
 .md-link, .md-link > a, .md-host { unicode-bidi: isolate; }
 .md-host { color: var(--ink-3); font-size: 0.875em; overflow-wrap: anywhere; }
