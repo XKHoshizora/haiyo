@@ -606,7 +606,7 @@ describe("the money of a reply that offers tools", () => {
     expect(raised).toBeGreaterThan(costOf(U(1000, 50)));
     await timing;
     const timedOut = await runOf(b.owner.id);
-    expect(timedOut).toMatchObject({ status: "failed", error: "provider_unavailable", hold: "0" });
+    expect(timedOut).toMatchObject({ status: "failed", error: "took_too_long", hold: "0" });
     const said = (await api(app, b.owner, "GET", `/api/conversations/${b.conv}/messages`)).json.messages.filter((m: any) => m.senderId === b.agent.id);
     expect(said).toMatchObject([{ text: "我先查一下。", ack: true }]);
     const [timedRecord] = await recordsOf(timedOut.id);
