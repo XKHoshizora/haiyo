@@ -1674,7 +1674,7 @@ with a note, 800 output tokens of their own, one tool round (`OTHERS.*`); the ho
 passes held. Their thinking level is the owner's setting per Agent (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`;
 `none` for a new Agent, Owner decision 2026-11-26): the reply runs at the setting's effective level on the model, with that level's
 thinking allowance on top of the 800 (`othersOutputLimit`, the one definition; the upstream is given the one sum as its limit, so
-the ANSWER is held to the 800 when it is posted — at every level, `none` too — cut there and marked cut, as a reply over its length is), and everything money follows the level actually run:
+at a level the ANSWER is held to the 800 when it is posted: cut there and marked cut, as a reply over its length is), and everything money follows the level actually run:
 the hold at admission (`boundedForOthers`, then `othersFits` under the account lock), the floor and the ceiling the use page's
 `reached` and `tight` are computed from, the proactive lane's early check, and the per-day estimate (`perDay`, which also counts
 half of the allowance as thought in each plain reply). A higher level makes each reply cost more: the estimate drops and `tight` or
@@ -1686,9 +1686,11 @@ group is told only when `reached` holds — not while a reply nobody asked for s
 is in the way (that ends with the reply, not tomorrow). The others' output limit is ONE budget for everything of a reply the
 conversation reads: the text a reply writes before a tool call is posted at once as its acknowledgement, cut to at most half of
 the limit, and the answer after it has what is left; each is cut and marked cut as a reply over its length is. The final post is
-held to the limit less the acknowledgement that stands for the reply, read from what is STORED when it is posted, at every
-level, `none` too: a text that holds two rounds — an acknowledgement that could not be posted stays with the reply; a social
-reply keeps its preface in its one message — is held to the one limit like any other.
+held to the limit less the acknowledgement that stands for the reply, read from what is STORED when it is posted, whenever its
+text may hold more than one call's: at a level, once its text before a tool call was handed over as an acknowledgement (posted,
+or not — a social reply keeps its preface in its one message, and one whose write failed stays with the reply), or when an
+acknowledgement stands for it (an earlier attempt's). So a text that holds two rounds is cut and marked like any over-long
+answer, at `none` too; one call at `none` with nothing before it is bounded by its upstream's limit and not cut here.
 
 **Whose reply a reply is** (its lane and caller, and so its level, its bounds and whose numbers it counts against) is WRITTEN,
 never read back from who wrote a message (`agent_runs.owner_call_seqs`, migration 076; `src/agents/runs.ts` `laneOf`, the one

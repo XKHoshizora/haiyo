@@ -1,4 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+/** Set by a test: the next acknowledgement's write fails inside its transaction, as a database that went away makes it fail. */
+const failingAck = vi.hoisted(() => ({ next: false }));
+vi.mock("../src/agents/conversation.ts", async (original) => {
+  const real = await original<typeof import("../src/agents/conversation.ts")>();
+  return {
+    ...real,
+    postAsAgent: async (...args: Parameters<typeof real.postAsAgent>) => {
+      if (args[7] === "ack" && failingAck.next) {
+        failingAck.next = false;
+        throw new Error("the database went away");
+      }
+      return real.postAsAgent(...args);
+    },
+  };
+});
+
 import { readOwnedAgent } from "../src/agents/store.ts";
 import { boundedForOthers, othersFloorHold, othersHold, othersOutputLimit, othersPlainCeiling, perDayEstimate } from "../src/metering/others.ts";
 import { queueRun } from "../src/agents/runs.ts";
@@ -34,7 +51,7 @@ const SITE_MODELS = [
 const JUDGE = { model: "jev-1", channels: [{ url: "https://judge-a.example.test/v1/systemone", apiKeyEnv: "OTHERS_UPSTREAM_KEY" }], timeoutMs: 4000, dailyLimit: 20_000 };
 const { app, db } = useApp({ env: { ...OTHERS_ENV, SITE_MODELS: JSON.stringify(SITE_MODELS) }, agentWorker: false, config: { judge: JUDGE } });
 afterEach(async () => {
-  vi.restoreAllMocks();
+  failingAck.next = false;
   await closeAllSockets();
 });
 
@@ -306,27 +323,17 @@ describe("fix round 4, F3: the others' output limit is ONE budget for everything
     expect(answer!).toBeGreaterThanOrEqual(limit() / 2 - 2);
   });
 
-  it("at none, one call whose upstream wrote past the limit it was given: what is posted is held to the limit all the same, cut and marked (the final post holds the one budget, whatever the level)", async () => {
-    const k = await othersKitchen(app, db, { agent: { model: THINK, othersReasoning: "none" } });
-    k.gateway.reply("好".repeat(3000), { usage: { inputTokens: 900, outputTokens: 3000 } });
-    await k.ask();
-    expect(await k.worker.runOnce()).toBe(true);
-    const posted = await texts(k);
-    expect(posted.map((p) => [p.ack === true, p.truncated])).toEqual([[false, true]]);
-    expect(weight(posted[0]!.text)).toBeLessThanOrEqual(limit());
-    expect(weight(posted[0]!.text)).toBeGreaterThan(limit() - 2);
-  });
-
   it("at none, the acknowledgement's write fails: what it said stays with the reply, and the ONE stored message — both rounds — is held to the whole limit, cut and marked as a reply over its length is (review 5, item 8)", async () => {
     const k = await othersKitchen(app, db, { box: boxOf(), agent: { model: THINK, othersReasoning: "none" } });
     expect((await api(app, k.owner, "PUT", "/api/me/others-limits", { answers: 50, points: "5000" })).status).toBe(200);
     const first = "好".repeat(700); // each round under the limit (a weight of 700 of 800), the two together far over it
     const second = "行".repeat(700);
     k.gateway.callTools([{ name: "search", input: { query: "a" } }], { text: first, usage: { inputTokens: 900, outputTokens: 700 } }).reply(second, { usage: { inputTokens: 1300, outputTokens: 700 } });
-    const failing = vi.spyOn(k.port, "acknowledge").mockRejectedValueOnce(new Error("the database went away"));
+    // The acknowledgement's transaction fails (its write is rolled back): the worker keeps its text with the reply.
+    failingAck.next = true;
     await k.ask();
     expect(await k.worker.runOnce()).toBe(true);
-    expect(failing).toHaveBeenCalledTimes(1);
+    expect(failingAck.next).toBe(false);
     const posted = await texts(k);
     expect(posted.map((p) => [p.ack === true, p.truncated])).toEqual([[false, true]]);
     expect(posted[0]!.text.startsWith("好")).toBe(true);
