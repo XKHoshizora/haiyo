@@ -137,7 +137,8 @@ export async function resolveModel(
         model: site.model,
         maxOutputTokens: outputLimit(site.maxOutputTokens, site.contextTokens, reasoning, config.reasoningAllowanceTokens),
         thinkingSwitch: site.thinkingSwitch === true,
-        thinks: site.reasoning.length > 0 || site.thinkingSwitch === true,
+        // It lists a level other than `none` (which is no thinking level), or takes the thinking switch.
+        thinks: site.reasoning.some((level) => level !== "none") || site.thinkingSwitch === true,
         upstreamId: `site:${site.id}`,
       },
       contextTokens: site.contextTokens,

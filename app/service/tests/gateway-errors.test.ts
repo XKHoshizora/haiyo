@@ -167,7 +167,9 @@ describe("upstream refusals and failures become ModelError codes", () => {
     /** Silent for ten idle limits, then the protocol's plain answer: after its headers (`headersFirst`), or before any. */
     const thinksSilently = (headersFirst: boolean): StubHandler => (req, res) => {
       const protocol = protocolOfPath(req.path)!;
-      if (headersFirst) res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      // Flushed: the headers are on the wire now (Node would hold them back until the first body byte), so the silence
+      // that follows is after the headers, not before them.
+      if (headersFirst) res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" }).flushHeaders();
       setTimeout(() => {
         if (headersFirst) res.end(cannedStream(protocol, "text"));
         else answerCanned(req, res);

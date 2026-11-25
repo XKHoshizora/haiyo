@@ -1108,8 +1108,9 @@ an owner's own key: that owner learns why after the retries (about 2.3 minutes).
 reported; retry, or choose a lower reasoning level —, `took_too_long` — the reply's own time ran out before it had anything to post
 (`AGENT_RUN_TIMEOUT_MS`, with tools `TOOLS.runTimeoutMs` in all, for a model that cannot be thinking; the far ceiling
 `MODEL_CALL_CEILING_MS` for one that may; or its tools took `TOOLS.runTimeoutMs`): its model was reached and was still
-working; charged only what an upstream reported, so as a rule nothing; never
-tried again by itself (Automatic retry); retry, or choose a lower reasoning level —, `model_gone` — the Agent's model is not there to call any more (someone else's call on it is recorded so at once, queuing nothing; your own call queues a reply that ends so as it begins)
+working; a reply of one call is charged only what its upstream reported, so as a rule nothing, and a reply with tools
+what its finished rounds reported and, for the round that was under way, its input as estimated and what it had
+written (Metering); never tried again by itself (Automatic retry); retry, or choose a lower reasoning level —, `model_gone` — the Agent's model is not there to call any more (someone else's call on it is recorded so at once, queuing nothing; your own call queues a reply that ends so as it begins)
 (`modelUsable` false, Agent): no call was made; choose another model —, or
 `busy`: the service's own trouble — the reply could not be started or stored, its attachments could not be read, or
 there was nothing to answer — which costs you nothing; `provider_unavailable` is also what a reply that was under way
@@ -2207,7 +2208,7 @@ What follows for a person choosing a model and a level:
 - A Gemini key that is wrong is answered 400 by Google, so it reads as `provider_unavailable`, not
   `provider_rejected` (the same in the provider test route).
 - No clock judges a model that is thinking (How a call ends, below): a model marked as one that may think (a provider
-  model's `reasoning`; a site model that lists a level or has `thinkingSwitch`), or any call at a level other than
+  model's `reasoning`; a site model that lists a level other than `none` or has `thinkingSwitch`), or any call at a level other than
   `none`, may send nothing for minutes — an upstream that does not stream its thinking sends nothing at all until it
   has thought. A model not so marked has no reason to be silent and is given up on after 60 s without a byte
   (`provider_unavailable`); if such a model does think, mark it (`reasoning`).
@@ -2239,8 +2240,8 @@ resolved), or it asks for a level other than `none` — ends in one of five ways
 1. It finished.
 2. Its connection died: the peer closed or reset it, or went silently dead and the system's TCP keepalive found it so —
    every outbound connection is probed after 30 s without a byte either way (`KEEPALIVE_IDLE_MS`; Node sets the idle
-   time alone, the rest is libuv's: on Linux one probe 10 s later, so a dead peer is found about 40 s after its last
-   byte). `provider_unavailable`. A proxy between the service and the model answers the probes itself: then only the
+   time alone, the rest is libuv's and fixed: on Linux ten more seconds of probes, so a dead peer is found about 40 s
+   after its last byte). `provider_unavailable`. A proxy between the service and the model answers the probes itself: then only the
    ceiling (5) ends a call that never answers.
 3. Its caller stopped it: the owner's 停止生成, a pause or delete, the service closing — at once, silent or not.
 4. Its budget ran out: every call is sent an output limit (`maxOutputTokens`: the reply's limit, and at a level other
@@ -2249,12 +2250,17 @@ resolved), or it asks for a level other than `none` — ends in one of five ways
    then finishes `truncated`, or fails `thinking_exhausted`. No protocol is sent a separate thinking budget; an
    upstream that counts its thinking apart from the limit (some OpenAI-compatible ones do) is bounded by 5 alone.
 5. The far ceiling, `MODEL_CALL_CEILING_MS` (30 minutes): a safety bound, not a product rule, so that a peer which keeps
-   its connection alive and never answers cannot hold a call slot for ever. A reply ends there `took_too_long` (what it
-   had said is posted as cut), counted over all its calls and tools together; it is never tried again by itself.
+   its connection alive and never answers cannot hold a call slot for ever. A reply ends there `took_too_long`, always
+   — whatever it had produced by then (thinking alone, or half an answer) is discarded as any failed reply's is, nothing
+   is posted, and its owner has 重试 —, counted over all its calls and tools together from its first call; it is never
+   tried again by itself. (A stop by its owner posts what it had said, as ever.) The gateway's own guard gives up a
+   stream silent for the ceiling, or for `AGENT_RUN_TIMEOUT_MS` when that is longer (`gatewayCeilingMs`), so that a
+   ceiling set low never shortens a call with a total of its own.
 
-What keeps a short limit: finding and connecting to the address (DNS, TCP, TLS), 60 s for every call; a call that
-cannot be thinking, given up on after 60 s without a byte (before its headers or between its bytes) and held to
-`AGENT_RUN_TIMEOUT_MS` in a reply; and the calls with a deadline of their own, whatever their model — a memory call
+What keeps a short limit: finding and connecting to the address — one budget of 60 s from the request's start for
+the lookup, TCP and TLS together, for every call; a call that cannot be thinking, whose first response must come
+within 60 s of the request's start (lookup and connection included: one clock, never started again) and whose bytes
+may then be at most 60 s apart, and which is held to `AGENT_RUN_TIMEOUT_MS` in a reply; and the calls with a deadline of their own, whatever their model — a memory call
 (`AGENT_RUN_TIMEOUT_MS`), a persona draft (that, at most 110 s), a judgement (its channels' own `timeoutMs`), the provider test
 (15 s). Progress counts as ever — headers, any byte of the body, an SSE comment —; it is only not required of a call
 that may be thinking while its connection lives. A long call holds one of the `PROVIDER_MAX_CONCURRENT_CALLS` (64)
@@ -4593,7 +4599,7 @@ language (measured, fix round 2). So, in the Agent's own conversation only:
 | Everything it was to answer is before a new topic (started while it was queued, or a retry after one) | none, no call made | `cancelled` with no error, not retryable; charged nothing; what the owner wrote meanwhile gets the follow-up |
 | The model's context cannot hold the owner's newest message (or 200 tokens of it) after the system text | none, no call made | `failed`, `context_too_small`, not retryable; charged nothing |
 | Nothing to answer otherwise, or its attachments could not be read (two reads failed before any succeeded, or reading took longer than `AGENT_RUN_TIMEOUT_MS`) | none, no call made | `failed`, `busy`, retryable; charged nothing |
-| `AGENT_RUN_TIMEOUT_MS` (2 minutes) passed, or for a reply with tools `TOOLS.runTimeoutMs` (5 minutes) in all; for a model that may think, `MODEL_CALL_CEILING_MS` (30 minutes) in all, or its tools took `TOOLS.runTimeoutMs` | what had been said, `truncated: true`, without what follows an unfinished proposal block's `<af-` (nothing said, or nothing before that: `failed`, `took_too_long`, retryable, charged only what the upstream reported — never tried again by itself, Automatic retry) | `done` |
+| `AGENT_RUN_TIMEOUT_MS` (2 minutes) passed, or for a reply with tools `TOOLS.runTimeoutMs` (5 minutes) in all; for a model that may think, `MODEL_CALL_CEILING_MS` (30 minutes) in all, or its tools took `TOOLS.runTimeoutMs` | what had been said, `truncated: true`, without what follows an unfinished proposal block's `<af-` (nothing said, or nothing before that — and ALWAYS when it was `MODEL_CALL_CEILING_MS` that passed, whatever had been said, which is then discarded: `failed`, `took_too_long`, retryable, never tried again by itself (Automatic retry); a reply of one call charged only what its upstream reported, one with tools what its finished rounds reported and the unfinished round's estimated input and what it had written) | `done` |
 | The service closed during the call, or while its attachments were read | none | ended by the closing service itself as recovery ends one (Shutdown, below): `failed`, `provider_unavailable`, retryable; charged nothing. Only if that cannot be written (or the process died): left `running`, then recovered at the next start, or by the stale-run sweep of an instance still running |
 
 Failures are never messages: no seq, not in search or unread counts, never shown to a model. The owner sees them on the

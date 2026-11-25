@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, judgeCountAt, loadConfig } from "../src/config.ts";
+import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, gatewayCeilingMs, judgeCountAt, loadConfig } from "../src/config.ts";
 
 const base = {
   DATABASE_URL: "postgres://x/y",
@@ -136,6 +136,11 @@ describe("agent and metering configuration", () => {
     const config = loadConfig({ ...short, HTTP_CONNECTION_TIMEOUT_MS: "20000" });
     expect(draftDeadlineMs(config)).toBe(10_000);
     expect(draftDeadlineMs(loadConfig(base))).toBe(110_000); // the defaults: 120 s connection, 120 s runs
+    // The gateway's own ceiling never shortens a call that has a total of its own (a memory call, a draft: at most
+    // AGENT_RUN_TIMEOUT_MS): a ceiling set below that leaves those calls their time.
+    expect(gatewayCeilingMs(loadConfig(base))).toBe(1_800_000);
+    expect(gatewayCeilingMs(loadConfig({ ...base, MODEL_CALL_CEILING_MS: "60000" }))).toBe(120_000);
+    expect(gatewayCeilingMs(loadConfig({ ...base, MODEL_CALL_CEILING_MS: "60000", AGENT_RUN_TIMEOUT_MS: "30000" }))).toBe(60_000);
     expect(draftDeadlineMs(loadConfig({ ...base, AGENT_RUN_TIMEOUT_MS: "30000" }))).toBe(30_000);
     expect(draftDeadlineMs(loadConfig({ ...base, AGENT_RUN_TIMEOUT_MS: "1000" }))).toBe(1_000);
   });

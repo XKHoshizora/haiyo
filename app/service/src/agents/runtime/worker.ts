@@ -491,7 +491,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
   async function conclude(
     run: RunTicket,
     out: ReplyStream,
-    last: Pick<Round, "finished" | "failure" | "why" | "status"> & { progress?: boolean },
+    last: Pick<Round, "finished" | "failure" | "why" | "status"> & { progress?: boolean; ceiling?: boolean },
     usage: Usage | null,
     fallback: Estimated,
     failedFallback: Estimated,
@@ -514,6 +514,10 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
     // The upstream ended the stream without its finish (cut off midway).
     if (finished === null && why === null) return failed(failedEnd("provider_unavailable", { kind: "cut", progress: last.progress === true }));
+    // The far ceiling ended it (`last.ceiling`: a reply whose model may think): ALWAYS the failure `took_too_long`, whatever
+    // it had produced — thinking alone, or half an answer after half an hour, is no reply. As with any failed reply,
+    // what it had said is discarded and nothing is posted; its owner has 重试 (never tried again by itself).
+    if (finished === null && why === "timeout" && last.ceiling === true) return failed(failedEnd("took_too_long", { kind: "timeout", progress: last.progress === true }));
 
     const text = cleanModelText(out.text);
     const reasoning = cleanModelText(out.reasoning);
@@ -585,7 +589,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     const fallback = round.opened ? { inputChars: prepared.inputChars, outputChars: out.outputChars() } : NOTHING;
     // A failed call is charged only what the upstream reported: what it said is discarded and not counted. Whether the reply
     // had produced anything (port.ts `passingEnding`): what its one call streamed.
-    return conclude(run, out, { ...round, progress: round.said }, usage, fallback, { ...fallback, outputChars: 0 });
+    // Ended by time, a model that may think was ended by the far ceiling (its only clock): always a failure (`conclude`).
+    return conclude(run, out, { ...round, progress: round.said, ceiling: round.why === "timeout" && mayThink(prepared.call) }, usage, fallback, { ...fallback, outputChars: 0 });
   }
 
   /**
@@ -698,7 +703,9 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         return "busy";
       }
     };
-    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status">; noAnswer?: RunEnd };
+    /** `ceiling`: time ended it, and it was the far ceiling (not its tools' time): `conclude` fails it whatever it wrote. */
+    let ending: { last: Pick<Round, "finished" | "failure" | "why" | "status"> & { ceiling?: boolean }; noAnswer?: RunEnd };
+    const atCeiling = (): boolean => patient && Date.now() >= ceiling;
     /**
      * ONE fact about the reply as a whole, set once and never reset (port.ts `passingEnding`): it has produced something —
      * text or thinking received in any round, its acknowledgement posted, a tool round completed.
@@ -708,7 +715,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     for (;;) {
       const now = interrupted();
       if (now !== null) {
-        ending = { last: { finished: null, failure: null, why: now } };
+        ending = { last: { finished: null, failure: null, why: now, ceiling: now === "timeout" && atCeiling() } };
         break;
       }
       // The model is called again: no tool is running.
@@ -765,7 +772,8 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (finished === null) {
         // Interrupted (stop, time, close: what it wrote counts), or cut off by the upstream (failed: nothing does).
         if (round.why !== null && round.opened) meter.add(null, input, estimateTokens(said.text) + estimateTokens(said.reasoning));
-        ending = { last: round };
+        // (The only clock on a call of a model that may think is the ceiling.)
+        ending = { last: { ...round, ceiling: round.why === "timeout" && patient } };
         break;
       }
       const calls = finished.toolCalls.length > 0 ? estimateTokens(JSON.stringify(finished.toolCalls)) : 0;
@@ -865,7 +873,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
         left -= estimateTokens(JSON.stringify(result), toolRatio);
       }
       if (cut !== null) {
-        ending = { last: { finished: null, failure: null, why: cut } };
+        ending = { last: { finished: null, failure: null, why: cut, ceiling: cut === "timeout" && atCeiling() } };
         break;
       }
       const step = { assistant: finished.assistant, results };

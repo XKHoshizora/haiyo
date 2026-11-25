@@ -473,6 +473,27 @@ describe("guardedFetch answers", () => {
     }
   });
 
+  it("one clock from the request's start to its first response: a slow lookup does not buy the answer a fresh limit", async () => {
+    // The name takes 400 ms to find and the server 400 ms to answer: 800 ms in all, past the 600 ms allowed.
+    const slowly = (ms: number): Resolve => async () => {
+      await new Promise((wake) => setTimeout(wake, ms));
+      return [{ address: "127.0.0.1", family: 4 }];
+    };
+    const server = await listener((_req, res) => void setTimeout(() => res.end("late"), 400));
+    const plain = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 600, allowInsecureLocal: true, resolve: slowly(400) });
+    const started = Date.now();
+    expect(await settle(plain(`http://models.test:${server.port}/`))).toMatchObject(unavailable);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(550);
+    expect(Date.now() - started).toBeLessThan(790);
+    // Within it, the answer is taken.
+    const quick = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 600, allowInsecureLocal: true, resolve: slowly(50) });
+    expect(await (await quick(`http://models.test:${server.port}/`)).text()).toBe("late");
+    // A guard with a connection budget of its own (a call that may be thinking): found and connected within it, the answer
+    // is then waited for by `timeoutMs` alone.
+    const patient = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 5_000, connectTimeoutMs: 600, allowInsecureLocal: true, resolve: slowly(400) });
+    expect(await (await patient(`http://models.test:${server.port}/`)).text()).toBe("late");
+  });
+
   it("connectTimeoutMs: a guard that waits long for an answer still gives up early on an address it cannot find", async () => {
     const hangs: Resolve = () => new Promise(() => {});
     const patient = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 5_000, connectTimeoutMs: 300, allowInsecureLocal: true, resolve: hangs });

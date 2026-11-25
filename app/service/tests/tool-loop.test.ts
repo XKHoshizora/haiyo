@@ -784,12 +784,57 @@ describe("a reply that offers tools", () => {
       expect(finishedAs(stuck)).toEqual([{ status: "failed", error: "took_too_long" }]);
     }
 
+    // The ceiling is the whole reply's: a second round that hangs is ended when the FIRST clock is up (900 ms from the
+    // reply's start, 500 of them its tool's), not 900 ms after it was called.
+    const second = fakePort({ call: THINKS, acknowledge: async () => "refused", tool: () => new Promise((resolve) => setTimeout(() => resolve({ output: "查到了", activity: "search" }), 500)) });
+    const later = scriptedGateway().callTools([{ name: "search", input: { query: "a" } }]);
+    later.hang();
+    const from = Date.now();
+    await runOn(second, later, { runTimeoutMs: 5_000, callCeilingMs: 900, tools: { runTimeoutMs: 5_000 } });
+    expect(later.calls).toHaveLength(2);
+    expect(Date.now() - from).toBeGreaterThanOrEqual(850);
+    expect(Date.now() - from).toBeLessThan(1_300);
+    expect(finishedAs(second)).toEqual([{ status: "failed", error: "took_too_long" }]);
+
     // Its tools' time is bounded as before (400 ms in all): a tool that takes 3 s is not waited for.
     const tooled = fakePort({ call: THINKS, tool: () => new Promise((resolve) => setTimeout(() => resolve({ output: "晚了", activity: "search" }), 3_000)) });
     const began = Date.now();
     await runOn(tooled, scriptedGateway().callTools([{ name: "search", input: { query: "a" } }]), { runTimeoutMs: 5_000, callCeilingMs: 10_000, tools: { runTimeoutMs: 400 } });
     expect(Date.now() - began).toBeLessThan(2_000);
     expect(finishedAs(tooled)).toEqual([{ status: "failed", error: "took_too_long" }]);
+  });
+
+  it("a reply the ceiling ends is always a failure, took_too_long, whatever it had produced: nothing is posted as its answer (thinking alone is no reply); a stop keeps what it said", async () => {
+    const THINKS = { thinks: true } as const;
+    for (const [before, thought] of [
+      ["", "我想想……"],
+      ["说到一半", ""],
+      ["说到一半", "我想想……"],
+    ] as const) {
+      for (const offered of [true, false]) {
+        const fake = fakePort({ ...(offered ? {} : { tools: [] }), call: THINKS });
+        const gateway = scriptedGateway();
+        gateway.hangAfter(before, thought);
+        await runOn(fake, gateway, { runTimeoutMs: 300, callCeilingMs: 600, tools: { runTimeoutMs: 400 } });
+        expect([before, thought, offered, fake.posted, finishedAs(fake)]).toEqual([before, thought, offered, [], [{ status: "failed", error: "took_too_long" }]]);
+      }
+    }
+    // A reply whose model cannot be thinking, ended by its own time (not the ceiling): what it said is posted as cut, as ever.
+    const hasty = fakePort({ tools: [] });
+    const cut = scriptedGateway();
+    cut.hangAfter("说到一半");
+    await runOn(hasty, cut, { runTimeoutMs: 300, callCeilingMs: 600 });
+    expect([hasty.posted.map((p) => [p.text, p.truncated]), finishedAs(hasty)]).toEqual([[["说到一半", true]], [{ status: "done" }]]);
+    // The owner's stop of a thinking model's reply: what it said is posted, stopped, as ever.
+    const stopped = fakePort({ tools: [], call: THINKS });
+    const held = scriptedGateway();
+    const hold = held.hangAfter("说到一半");
+    const running = runOn(stopped, held, { runTimeoutMs: 300, callCeilingMs: 5_000 });
+    await hold.reached;
+    await new Promise((wake) => setTimeout(wake, 100));
+    stopped.stop();
+    await running;
+    expect([stopped.posted.map((p) => [p.text, p.stopped]), finishedAs(stopped)]).toEqual([[["说到一半", true]], [{ status: "stopped" }]]);
   });
 
   it("a long result is cut to resultMaxWeight with the fixed mark; any other value is cut as its JSON text and sent as a string", async () => {

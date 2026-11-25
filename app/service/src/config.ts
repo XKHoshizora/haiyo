@@ -1170,6 +1170,17 @@ export const DRAFT_SOCKET_MARGIN_MS = 10_000;
 export const MIN_DRAFT_DEADLINE_MS = 10_000;
 
 /**
+ * The model gateway's own ceiling (models/gateway.ts `GatewayOptions.ceilingMs`: how long a stream that may be thinking
+ * may be silent before the guard itself gives it up): `MODEL_CALL_CEILING_MS`, but never less than
+ * `AGENT_RUN_TIMEOUT_MS` — the most a call with a total of its own may take (a memory call; a persona draft, at most
+ * that) — so a ceiling set low never shortens such a call: its own deadline ends it. A reply is ended at
+ * `MODEL_CALL_CEILING_MS` itself, by its worker.
+ */
+export function gatewayCeilingMs(config: Pick<Config, "modelCallCeilingMs" | "agentRunTimeoutMs">): number {
+  return Math.max(config.modelCallCeilingMs, config.agentRunTimeoutMs);
+}
+
+/**
  * How long a persona draft's model call may take (`POST /api/agents/draft-persona`): `agentRunTimeoutMs`, but always
  * `DRAFT_SOCKET_MARGIN_MS` below the server's connection idle timeout — the request waits for the model with nothing
  * on the wire, and the server would close its connection before it could answer.

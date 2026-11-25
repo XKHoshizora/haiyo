@@ -203,6 +203,9 @@ describe("resolveModel", () => {
     expect((await thinker("none"))?.call.thinks).toBe(true);
     expect((await resolveModel(db, switched, { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinks).toBe(true);
     expect((await resolveModel(db, config(), { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinks).toBe(false);
+    // `none` is no thinking level: a site model configured with it alone is not one that may think.
+    const noneOnly = { ...config(), siteModels: config().siteModels.map((m) => (m.id === "fast" ? { ...m, reasoning: ["none" as const] } : m)) };
+    expect((await resolveModel(db, noneOnly, { model: { source: "site", id: "fast" }, ownerId: owner.id }))?.call.thinks).toBe(false);
   });
 
   it("whether its replies may be offered tools: a site model's configuration; a provider model's entry unless it says false", async () => {
