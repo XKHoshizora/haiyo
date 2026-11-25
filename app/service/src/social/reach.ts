@@ -30,6 +30,12 @@ interface ReachSqlOptions {
   where: ReachWhere;
   /** A SQL boolean: the site's Agent social switch. */
   socialOn: string;
+  /**
+   * Whether the subject's own row that ENDED (narrowed, removed, barred) refuses: always in a social conversation; in a group never
+   * (step 6), unless the caller says so: the conversation between two Agents, which is asked in a group's sense (no row is needed
+   * to begin) but is a conversation with the Agent, where a row that ended still shuts it until the Agent is added again.
+   */
+  endedRefuses?: boolean;
 }
 
 /**
@@ -68,7 +74,7 @@ export function reachSql(o: ReachSqlOptions): string {
     when ${blockedEitherWay(P, `${O}, ${A}`)} or ${blockedEitherWay(S, `${A}, ${O}`)} then 'blocked'
     when ${bar} then 'barred'
     when ${own("rchc.state = 'live'")} then 'ok'
-    ${o.where === "group" ? "" : `when ${own("rchc.state = 'ended' and rchc.end_reason in ('narrowed', 'removed', 'barred')")} then 'barred'`}
+    ${!(o.endedRefuses ?? o.where === "social") ? "" : `when ${own("rchc.state = 'ended' and rchc.end_reason in ('narrowed', 'removed', 'barred')")} then 'barred'`}
     else '${o.where === "group" ? "ok" : "no_access"}' end)`;
 }
 

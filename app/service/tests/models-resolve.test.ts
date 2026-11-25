@@ -57,6 +57,7 @@ describe("resolveModel", () => {
       pdf: true,
       reasoningAllowed: ["none", "low", "medium"],
       reasoning: "medium",
+      replyLimit: 8192,
       price: { inputMicroPerToken: 3, outputMicroPerToken: 6 },
       tier: "paid",
       tools: true,
@@ -110,6 +111,7 @@ describe("resolveModel", () => {
       pdf: false,
       reasoningAllowed: REASONING_LEVELS,
       reasoning: "xhigh",
+      replyLimit: 2048,
       // The provider's row: what the model's learned token ratio is kept under (metering/tokens.ts `ratioKey`).
       providerId: provider.id,
       // Its entry says nothing of tools: not known yet, so its replies may be offered them.

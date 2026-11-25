@@ -273,7 +273,8 @@ export async function socialCanSendMany(q: Queryable, conversationIds: readonly 
   const out = new Map<string, CanSend>();
   if (conversationIds.length === 0) return out;
   const socialOn = config.social.enabled ? "true" : "false";
-  const rule = (subject: string, agent: string, where: ReachWhere): string => reachSql({ subject, agent, where, socialOn });
+  // (Between two Agents the rule is the group's, but this is a conversation with the Agent: a row that ended still shuts it.)
+  const rule = (subject: string, agent: string, where: ReachWhere): string => reachSql({ subject, agent, where, socialOn, endedRefuses: true });
   // `who` asks, `asked` is the Agent asked: the person and their Agent, or the first Agent and the second (then the second asks
   // the first as well).
   const { rows } = await q.query<{ id: string; with_person: boolean; r1: Reach; d1: boolean; r2: Reach; d2: boolean }>(
