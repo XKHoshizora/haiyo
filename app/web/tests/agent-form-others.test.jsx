@@ -228,7 +228,7 @@ describe("the Agent's page", () => {
     cleanup();
     const text = await show({ othersLimit: { answers: 5, points: "35.5" }, othersUsedToday: { answers: 2, points: "3.5" } });
     expect(text).toContain("别人用它的上限每天最多回别人 5 次，最多花 35.5 点");
-    expect(text).toContain("别人今天的使用今天回了别人 2 次（含主动回复），别人 @ 它花了 3.5 点");
+    expect(text).toContain("别人今天的使用今天回了别人 2 次（含主动回复），回应别人花了 3.5 点");
     cleanup();
     expect(await show({ othersLimit: { answers: null, points: "70" }, othersUsedToday: { answers: 0, points: "0" } })).toContain("别人用它的上限最多花 70 点");
   });

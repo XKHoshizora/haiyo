@@ -38,7 +38,7 @@ export function AgentContactRows({ query }) {
 
   return (
     <>
-      {(live.length > 0 || asked.length > 0) && <li className="rows-label">我加的 Agent</li>}
+      {(live.length > 0 || asked.length > 0) && <li className="rows-label">我添加的 Agent</li>}
       {live.map((r) => (
         <li key={`live:${r.agentId}`} className="social-row">
           <Avatar id={r.agentId} size={48} />
@@ -68,7 +68,7 @@ export function AgentContactRows({ query }) {
           </span>
         </li>
       ))}
-      {incoming.length > 0 && <li className="rows-label">别人想加你的 Agent</li>}
+      {incoming.length > 0 && <li className="rows-label">别人想添加我的 Agent</li>}
       {incoming.map((w) => (
         <li key={`wait:${w.agentId}:${w.subject.id}`} className="social-row">
           <Avatar id={w.subject.id} size={48} />

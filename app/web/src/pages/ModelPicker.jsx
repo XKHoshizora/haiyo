@@ -65,12 +65,21 @@ export function modelName(state, model) {
  * The level an Agent runs at, for its page: `effectiveLevel` on what its model lists as far as this client holds (the site's
  * models; my providers once read) — its saved level while that is not known (a model that is gone, providers not read yet).
  */
-export function agentLevel(state, agent) {
+export function agentLevel(state, agent, wanted = agent.reasoning) {
+  const levels = agentLevels(state, agent);
+  return levels ? effectiveLevel(levels, wanted) : wanted;
+}
+
+/** The levels an Agent's model lists, as far as this client holds them (`none` first); null while that is not known. */
+export function agentLevels(state, agent) {
   const { site, providers } = modelChoices(state);
   const key = modelKey(agent.model);
   const listed = key === "" ? null : [...site, ...providers.flatMap((p) => p.models)].find((c) => c.key === key);
-  return listed ? effectiveLevel(listed.levels, agent.reasoning) : agent.reasoning;
+  return listed ? listed.levels : null;
 }
+
+/** A level as the line under a reply says it: 不思考, or 思考：中. */
+export const levelPhrase = (level) => (level === "none" ? "不思考" : `思考：${levelLabel(level)}`);
 
 const lower = (text) => String(text ?? "").toLowerCase();
 

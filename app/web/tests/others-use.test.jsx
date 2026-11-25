@@ -83,10 +83,10 @@ const typeInto = (box, value) => fireEvent.change(box, { target: { value } });
 
 describe("the three states, in one place", () => {
   it("normal, tight and reached, as the owner confirms them; reached first, as it implies tight; the third says it is OTHERS' use", () => {
-    expect(OTHERS_STATES).toEqual({ ok: "正常", tight: "快用完了，长一点的回复可能发不出", reached: "今天给别人的额度用完了，明天零点恢复" });
+    expect(OTHERS_STATES).toEqual({ ok: "正常", tight: "快用完了，长一点的回复可能发不出", reached: "今天给别人的额度用完了，明天恢复" });
     // The third says whose quota it is (what is given to OTHERS) and when it is back.
     expect(OTHERS_STATES.reached).toContain("给别人");
-    expect(OTHERS_STATES.reached).toContain("明天零点恢复");
+    expect(OTHERS_STATES.reached).toContain("明天恢复");
     expect(othersStateOf({ reached: false, tight: false })).toBe("ok");
     expect(othersStateOf({ reached: false, tight: true })).toBe("tight");
     expect(othersStateOf({ reached: true, tight: true })).toBe("reached");
@@ -116,7 +116,7 @@ describe("the settings row and the page", () => {
     expect(text).not.toContain("以这个数");
     // The people below were called twice and once: 3 answers; the proactive reply is counted once, shown, so the numbers add up.
     expect(text).toContain("已回别人 3 次（其中主动回复 1 次），花了 12.5 点（其中主动回复 2 点）");
-    expect(text).toContain("今天回了别人 3 次（含主动回复），别人 @ 它花了 12.5 点");
+    expect(text).toContain("今天回了别人 3 次（含主动回复），回应别人花了 12.5 点");
     expect(text).toContain("小美");
     expect(text).toContain("@mei · 回了对方 2 次，花了 8 点");
     expect(text).toContain("阿健");
@@ -356,7 +356,7 @@ describe("the settings row and the page", () => {
     const states = [
       [{ reached: false, tight: false }, "正常"],
       [{ reached: false, tight: true }, "快用完了，长一点的回复可能发不出"],
-      [{ reached: true, tight: true }, "今天给别人的额度用完了，明天零点恢复"],
+      [{ reached: true, tight: true }, "今天给别人的额度用完了，明天恢复"],
     ];
     for (const [flags, words] of states) {
       // Used far over the limit with `reached` false, and the other way: the words follow the flags alone.
@@ -471,6 +471,9 @@ describe("people on the page: links to their profile only while Agent social is 
       // I4 (fix round 1): a stop I made is still listed, as a link to the profile where I can lift it.
       expect(within(mainEl().querySelector(".others-stopped")).getByRole("link", { name: "阿健" }).getAttribute("href")).toBe(`/contacts/${KEN.id}`);
       expect(mainText()).not.toContain("可以在那里停止往来");
+      // (Nothing can be added while it is off: the paragraph says how to resume and stops there. Review 2, n3.)
+      expect(mainText()).toContain("停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。");
+      expect(mainText()).not.toContain("重新添加");
       // m3: with the switch off nobody chats with someone else's Agent: the page says what does happen.
       expect(mainText()).toContain("别人在群里 @ 你的 Agent，花的点都算在你这里。");
       expect(mainText()).not.toContain("聊天");
@@ -579,7 +582,7 @@ describe("the Agent's card and page", () => {
     await openWith({ answer: () => useOf({ reached: true, tight: true, agents: [reached] }) });
     await goAgents();
     const top = document.querySelector(".list-col .others-reached");
-    expect(top.textContent).toBe("今天给别人的额度用完了，明天零点恢复");
+    expect(top.textContent).toBe("今天给别人的额度用完了，明天恢复");
     expect(document.querySelector(".list-col .rows").textContent).not.toContain("用完");
     expect(document.querySelectorAll(".list-col .rows .tag-warn")).toHaveLength(0);
     cleanup();
@@ -587,7 +590,7 @@ describe("the Agent's card and page", () => {
     await openWith({ answer: () => useOf({ reached: false, tight: false, agents: [reached] }) });
     await goAgents();
     expect(document.querySelector(".list-col .others-reached")).toBeNull();
-    expect(within(document.querySelector(".list-col .rows")).getByText("已用完", { selector: ".tag" })).toBeTruthy();
+    expect(within(document.querySelector(".list-col .rows")).getByText("别人已用完", { selector: ".tag" })).toBeTruthy();
     cleanup();
     // Nothing used up: neither.
     await openWith({});
@@ -602,7 +605,7 @@ describe("the Agent's card and page", () => {
       await openWith({ answer: () => useOf({ agents: [{ agentId: AG1, answers: 1, points: "1", perDay: 41, canReply: true, ...flags }] }), agentFields: { othersUsedToday: { answers: 1, points: "1" } } });
       await goAgents();
       await click(inList().getByText("小助手", { selector: ".row-name" }));
-      expect(document.querySelector(".main-col .kv").textContent, words).toContain(`别人今天的使用今天回了别人 1 次（含主动回复），别人 @ 它花了 1 点 · ${words}`);
+      expect(document.querySelector(".main-col .kv").textContent, words).toContain(`别人今天的使用今天回了别人 1 次（含主动回复），回应别人花了 1 点 · ${words}`);
       cleanup();
     }
   });

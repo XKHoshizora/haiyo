@@ -8,7 +8,7 @@ import { useOthersUse } from "./useOthersUse.js";
 import { Avatar, ConvAvatar, HeadCounts, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
 import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "./AgentForm.jsx";
-import { agentLevel, levelLabel, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
+import { agentLevel, agentLevels, levelLabel, levelPhrase, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
 import { LabLogo } from "../ui/LabLogo.jsx";
 import { convTitle, groupCounts, isMyAgent, myAgents } from "../state/selectors.js";
 import { socialOn } from "../state/social.js";
@@ -25,7 +25,7 @@ const groupMentionsLabel = (agent) => (GROUP_MENTIONS.find(([id]) => id === agen
  * what others used of it today, with the state the service says it is in (`row`: this Agent's entry of `GET /api/me/others-use`, null
  * until that is read). Only when the service says them; nothing is compared or counted here.
  */
-function othersRows(agent, row) {
+function othersRows(agent, row, level) {
   const own = agent.othersLimit;
   const ownText =
     own === undefined
@@ -35,19 +35,22 @@ function othersRows(agent, row) {
         : [own.answers === null ? null : `每天最多回别人 ${own.answers} 次`, own.points === null ? null : `最多花 ${formatPoints(own.points)} 点`].filter(Boolean).join("，");
   const used = agent.othersUsedToday;
   const state = row && row.canReply !== false ? ` · ${othersStateText(row)}` : row ? " · 没有可用的模型，暂时不能回复" : "";
-  const usedText = used === undefined ? null : `今天回了别人 ${used.answers} 次（含主动回复），别人 @ 它花了 ${formatPoints(used.points)} 点${state}`;
-  return [...(ownText === null ? [] : [["别人用它的上限", ownText]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
+  const usedText = used === undefined ? null : `今天回了别人 ${used.answers} 次（含主动回复），回应别人花了 ${formatPoints(used.points)} 点${state}`;
+  // The level a reply for others runs at (the owner's setting, as it runs on this model): said only where the model can think at all.
+  const levelText = level === null ? "" : ` · 别人 @ 它时${levelPhrase(level)}`;
+  return [...(ownText === null ? [] : [["别人用它的上限", `${ownText}${levelText}`]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
 }
 
 /** 主动参与群聊 with its level and daily budget: only in the owner's view, and only while it is on. */
-function proactiveRows(agent) {
+function proactiveRows(agent, thinking) {
   if (agent.proactive !== true) return [];
   const level = proactiveLevelLabel(agent.proactiveLevel);
+  const thinks = thinking === null ? "" : ` · 主动回复时${levelPhrase(thinking)}`;
   // The budget is always said by the service; if it somehow is not, the level alone is shown.
-  if (agent.proactiveBudget === undefined) return [["主动参与群聊", level]];
+  if (agent.proactiveBudget === undefined) return [["主动参与群聊", `${level}${thinks}`]];
   // Today's spend is the service's (`proactiveSpentToday`, owner only); said beside the daily budget, never compared with it here.
   const spent = typeof agent.proactiveSpentToday === "string" ? `，今天花了 ${formatPoints(agent.proactiveSpentToday)} 点` : "";
-  return [["主动参与群聊", `${level} · 每天最多花 ${formatPoints(agent.proactiveBudget)} 点${spent}`]];
+  return [["主动参与群聊", `${level} · 每天最多花 ${formatPoints(agent.proactiveBudget)} 点${spent}${thinks}`]];
 }
 
 /** 它怎么称呼你 and how many others it has an appellation for: only in the owner's view of the Agent (mine), when set. */
@@ -330,6 +333,8 @@ function AgentDetail({ agent }) {
   useEffect(() => {
     if (providerNeeded) actions.loadProviders();
   }, [providerNeeded, actions]);
+  // Whether its model can think at all (more than 不思考 listed): only then are the levels of its replies for others said.
+  const thinks = (agentLevels(state, agent)?.length ?? 0) > 1;
 
   return (
     <section className="page" aria-label="Agent 管理">
@@ -407,8 +412,8 @@ function AgentDetail({ agent }) {
                     ["私聊回复方式", agent.privateReply],
                     ["群里谁可以叫它", groupMentionsLabel(agent)],
                     ["一次接话最多花费", `${formatPoints(agent.chainBudget ?? CHAIN_BUDGET_DEFAULT)} 点`],
-                    ...othersRows(agent, use?.agents?.find((a) => a.agentId === agent.id) ?? null),
-                    ...proactiveRows(agent),
+                    ...othersRows(agent, use?.agents?.find((a) => a.agentId === agent.id) ?? null, thinks ? agentLevel(state, agent, agent.othersReasoning) : null),
+                    ...proactiveRows(agent, thinks ? agentLevel(state, agent, agent.proactiveReasoning) : null),
                     ...appellationRows(agent),
                   ]}
                 />

@@ -120,7 +120,7 @@ describe("a save", () => {
     await flush();
     await click(button("保存"));
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 3 个人" })).toBeTruthy();
-    expect(within(dialog()).getByText("这些人不能再和它聊天，在群里 @ 它也不会回。想再聊要重新申请，由你同意。")).toBeTruthy();
+    expect(within(dialog()).getByText("他们不能再和它聊天。想再聊要重新申请，由你同意。")).toBeTruthy();
   });
 
   it("asks dryRun first; with 0 ends it saves at once, with no dialog", async () => {

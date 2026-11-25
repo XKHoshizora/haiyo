@@ -5,7 +5,9 @@
 // (support/shots.mjs `integShot`).
 import { test, expect } from "./support/fixtures.mjs";
 import { uniq } from "./support/accounts.mjs";
-import { createAgentUi, goTo, openAgentDetail } from "./support/app.mjs";
+import { chooseOptionUi, createAgentUi, goTo, openAgentDetail } from "./support/app.mjs";
+import { canControlService } from "./support/control.mjs";
+import { modelStub } from "./support/model-stub.mjs";
 import { integShot } from "./support/shots.mjs";
 import { agentApi } from "./support/tools.mjs";
 
@@ -49,7 +51,7 @@ for (const [size, contextOptions] of SIZES) {
     // The Agent's line and today's use: the service's numbers, a state in words.
     await expect(main.getByText(/额度全给它用的话，每天大约能回 \d+ 次/)).toBeVisible();
     await expect(main.getByText("已回别人 0 次，花了 0 点").first()).toBeVisible();
-    await expect(main.getByText(/正常|快用完了，长一点的回复可能发不出|今天给别人的额度用完了，明天零点恢复/).first()).toBeVisible();
+    await expect(main.getByText(/正常|快用完了，长一点的回复可能发不出|今天给别人的额度用完了，明天恢复/).first()).toBeVisible();
     await expect(main.getByText("别人在群里 @ 你的 Agent，花的点都算在你这里。")).toBeVisible();
     // Agent social is off on this site: no 停止往来, no 恢复往来, no list of the stopped (this owner stopped nobody).
     await expect(main).not.toContainText("停止往来");
@@ -128,5 +130,58 @@ for (const [size, contextOptions] of SIZES) {
       const got = await (await ann.request.get(`/api/agents/${made.id}`)).json();
       expect(got.othersLimit).toEqual({ answers: null, points: null });
     }).toPass();
+  });
+
+  test(`the two thinking levels at ${size}: 别人 @ 它时的思考程度 with the others' limit, 主动回复时的思考程度 with the proactive budget; each offers the model's levels, saves alone, and the Agent's page says both`, async ({ people }) => {
+    test.skip(!canControlService, "needs the model stub as a provider's address");
+    const ann = await people.member("Ann", { contextOptions });
+    const page = ann.page;
+    const tag = uniq(6);
+    // A model of her own provider that can think (the site's two demo models list no level, so the form shows neither select for them).
+    const made = await ann.request.post("/api/providers", {
+      data: { name: `想${tag}`, protocol: "anthropic", baseUrl: modelStub.baseUrl, apiKey: `sk-e2e-${tag}-not-real`, models: [{ name: `think-${tag}`, reasoning: true }] },
+    });
+    expect(made.status(), await made.text()).toBe(201);
+    const provider = await made.json();
+    const name = `小想${uniq(4)}`;
+    const created = await ann.request.post("/api/agents", {
+      data: { namePart: `ag_${uniq(10)}`, name, persona: "你是一个乐于助人的助手。", model: { source: "provider", providerId: provider.id, model: `think-${tag}` }, proactive: true },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+    const agent = await created.json();
+    expect(agent).toMatchObject({ othersReasoning: "none", proactiveReasoning: "none" });
+
+    await page.goto("/agents");
+    const detail = await openAgentDetail(page, name);
+    await expect(detail).toContainText("别人 @ 它时不思考");
+    await expect(detail).toContainText("主动回复时不思考");
+    await detail.getByRole("button", { name: /编辑/ }).click();
+    const form = page.getByRole("region", { name: "编辑 Agent" });
+    const others = form.getByLabel("别人 @ 它时的思考程度", { exact: true });
+    const proactive = form.getByLabel("主动回复时的思考程度", { exact: true });
+    await expect(others).toBeVisible();
+    await expect(proactive).toBeVisible();
+    // Each sits in its own group, with its one line of help.
+    await expect(form.locator("fieldset.others-limit")).toContainText("思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。");
+    await expect(form).toContainText("思考越多，回复越慢，花的额度也越多。");
+    await chooseOptionUi(page, form, "别人 @ 它时的思考程度", "中");
+    await chooseOptionUi(page, form, "主动回复时的思考程度", "低");
+    await others.scrollIntoViewIfNeeded();
+    expect(await noSideways(page)).toBe(true);
+    await targetsAre44(form.locator("fieldset.others-limit"));
+    await integShot(page, "44-agent-form-others-thinking-level");
+    await proactive.scrollIntoViewIfNeeded();
+    expect((await proactive.boundingBox()).height).toBeGreaterThanOrEqual(43.5);
+    await integShot(page, "45-agent-form-proactive-thinking-level");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(async () => {
+      const got = await (await ann.request.get(`/api/agents/${agent.id}`)).json();
+      expect(got).toMatchObject({ othersReasoning: "medium", proactiveReasoning: "low", reasoning: "none" });
+    }).toPass();
+    const after = await openAgentDetail(page, name);
+    await expect(after).toContainText("别人 @ 它时思考：中");
+    await expect(after).toContainText("主动回复时思考：低");
+    expect(await noSideways(page)).toBe(true);
+    await integShot(page, "46-agent-page-thinking-levels", { show: after.getByText("别人用它的上限") });
   });
 }

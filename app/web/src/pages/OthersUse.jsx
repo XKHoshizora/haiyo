@@ -130,7 +130,7 @@ function LimitSentence({ limits, onSave }) {
         </span>
       </p>
       {error.text && <p className="field-msg" role="alert">{error.text}</p>}
-      <p id={hintId} className="field-hint">你所有的 Agent 合在一起算，它们主动说的话也算。每天零点重新算。</p>
+      <p id={hintId} className="field-hint">你所有的 Agent 合在一起算，它们主动回复的也算。每天零点（站点时间）重新算。</p>
     </div>
   );
 }
@@ -224,7 +224,7 @@ export function OthersUsePage({ back }) {
                     {a.canReply === false ? "：没有可用的模型，暂时不能回复" : `：额度全给它用的话，每天大约能回 ${a.perDay} 次`}
                   </p>
                   <p className="muted">
-                    今天回了别人 {a.answers} 次（含主动回复），别人 @ 它花了 {formatPoints(a.points)} 点
+                    今天回了别人 {a.answers} 次（含主动回复），回应别人花了 {formatPoints(a.points)} 点
                     {a.canReply !== false && <span className={`others-state others-state-${othersStateOf(a)}`}> <span className="others-keep">· {othersStateText(a)}</span></span>}
                   </p>
                 </div>
@@ -256,7 +256,11 @@ export function OthersUsePage({ back }) {
         {(social || stopped.length > 0) && (
           <>
             <h3>已停止往来的人</h3>
-            <p className="muted">停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。</p>
+            <p className="muted">
+              停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。
+              {/* (Adding again is only possible, and only needed for a conversation with the Agent, while the switch is on.) */}
+              {social && "恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。"}
+            </p>
             {stopped.length === 0 ? (
               <p className="muted">现在没有停止往来的人。</p>
             ) : (

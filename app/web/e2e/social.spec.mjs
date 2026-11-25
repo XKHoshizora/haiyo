@@ -187,7 +187,7 @@ for (const [size, contextOptions] of SIZES) {
     await limits(ann, 3, "300");
     expect((await useOf(ann)).reached).toBe(true);
     main = await openUsePage(ann.page);
-    await expect(main.getByText("今天给别人的额度用完了，明天零点恢复").first()).toBeVisible();
+    await expect(main.getByText("今天给别人的额度用完了，明天恢复").first()).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "24-use-page-reached");
     // The card of the Agent says it too, and its page says its three rows.
@@ -195,7 +195,7 @@ for (const [size, contextOptions] of SIZES) {
     const row = ann.page.getByRole("button").filter({ has: ann.page.getByText(name, { exact: true }) }).first();
     // I3: the cap is one for all the owner's Agents, so it is said ONCE above the list; no card carries it, and the name is whole.
     const wholeName = async (r) => expect(await r.locator(".row-name").evaluate((el) => el.scrollWidth <= el.clientWidth), "the Agent's name is not cut").toBe(true);
-    await expect(ann.page.locator(".list-col .others-reached")).toHaveText("今天给别人的额度用完了，明天零点恢复");
+    await expect(ann.page.locator(".list-col .others-reached")).toHaveText("今天给别人的额度用完了，明天恢复");
     await expect(row).not.toContainText("用完");
     await wholeName(row);
     expect(await noSideways(ann.page)).toBe(true);
@@ -203,7 +203,7 @@ for (const [size, contextOptions] of SIZES) {
     const detail = await openAgentDetail(ann.page, name);
     await expect(detail).toContainText("别人用它的上限");
     await expect(detail).toContainText("别人今天的使用");
-    await expect(detail).toContainText("今天给别人的额度用完了，明天零点恢复");
+    await expect(detail).toContainText("今天给别人的额度用完了，明天恢复");
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "26-agent-page-rows", { show: detail.getByText("别人今天的使用") });
     // In the group, the next person who calls it is told once that it answers only its owner today.
@@ -220,7 +220,7 @@ for (const [size, contextOptions] of SIZES) {
     await ann.page.goto("/agents");
     const mine = ann.page.locator(".list-col .rows");
     const usedUp = mine.getByRole("button").filter({ has: ann.page.getByText(name, { exact: true }) }).first();
-    await expect(usedUp.locator(".tag", { hasText: "已用完" })).toBeVisible();
+    await expect(usedUp.locator(".tag", { hasText: "别人已用完" })).toBeVisible();
     await expect(ann.page.locator(".list-col .others-reached")).toHaveCount(0);
     await wholeName(usedUp);
     await wholeName(mine.getByRole("button").filter({ has: ann.page.getByText(other.name, { exact: true }) }).first());
@@ -252,7 +252,7 @@ for (const [size, contextOptions] of SIZES) {
     await ann.page.goto("/");
     await goTo(ann.page, "消息");
     const row = listRow(ann.page, name).first();
-    await expect(row).toContainText("人格里有一句话可能会被说给别人，点开确认", { timeout: 40_000 });
+    await expect(row).toContainText("人格里有句话可能被说给别人", { timeout: 40_000 });
     await expect(row.locator(".badge")).toHaveText("1");
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "30-persona-card-unread-in-list");

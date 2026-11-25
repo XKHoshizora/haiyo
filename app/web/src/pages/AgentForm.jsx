@@ -186,6 +186,9 @@ const recordFields = (a) => ({
   memoryAsk: a?.memoryAsk === true,
   sharedNotes: a?.sharedNotes !== false,
   reasoning: a?.reasoning ?? "none",
+  // The levels of its replies for others and of its proactive replies (the owner's settings; 不思考 unless said).
+  othersReasoning: a?.othersReasoning ?? "none",
+  proactiveReasoning: a?.proactiveReasoning ?? "none",
   model: modelKey(a?.model ?? null),
 });
 
@@ -194,6 +197,12 @@ const recordFields = (a) => ({
  * (`othersLimit`), which the form holds as two fields. Whether I changed a setting, whether it changed elsewhere and whether it is
  * sent are decided per setting, never per key.
  */
+/** The two thinking levels of replies made for others (Owner decision 2026-11-26): one plain question each, beside the numbers it belongs to. */
+export const OTHERS_LEVEL_LABEL = "别人 @ 它时的思考程度";
+export const OTHERS_LEVEL_HINT = "思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。";
+export const PROACTIVE_LEVEL_LABEL = "主动回复时的思考程度";
+export const PROACTIVE_LEVEL_HINT = "思考越多，回复越慢，花的额度也越多。";
+
 const OTHERS_KEYS = ["othersAnswers", "othersPoints"];
 const settingOf = (key) => (OTHERS_KEYS.includes(key) ? "othersLimit" : key);
 const keysOf = (setting) => (setting === "othersLimit" ? OTHERS_KEYS : [setting]);
@@ -298,6 +307,11 @@ export function AgentForm({ agent = null }) {
   const levels = choice?.levels ?? ["none"];
   // The level shown is the one it runs at (`effectiveLevel`); the saved one (`f.reasoning`) is kept until I pick another.
   const reasoning = effectiveLevel(levels, f.reasoning);
+  // The same for the two levels of replies it makes for others: what shows, and is sent, is the level that would run on this model.
+  const othersReasoning = effectiveLevel(levels, f.othersReasoning);
+  const proactiveReasoning = effectiveLevel(levels, f.proactiveReasoning);
+  const levelOptions = LEVELS.filter(([id]) => levels.includes(id)).map(([id, label]) => ({ value: id, label }));
+  const thinks = Boolean(choice) && levels.length > 1;
 
   // 主动参与群聊 is offered (and sent) only while the site has a judgement model; its level and amount only while it is on.
   // Without one, an Agent that has it on still shows the switch alone, saying why, so that it can be turned off: never on.
@@ -434,6 +448,9 @@ export function AgentForm({ agent = null }) {
     // Said only when it has a limit of its own (otherwise the Agent has none: only its owner's two numbers bind).
     const own = othersLimitOf(f);
     if (own && (own.answers !== null || own.points !== null)) body.othersLimit = own;
+    // Said only when it is not 不思考 (the service's default).
+    if (thinks && othersReasoning !== "none") body.othersReasoning = othersReasoning;
+    if (thinks && proactiveAsked && proactiveReasoning !== "none") body.proactiveReasoning = proactiveReasoning;
     // Said only when it is on (off is the service's default).
     if (proactiveAsked) Object.assign(body, { proactive: true, proactiveLevel: f.proactiveLevel, proactiveBudget: budgetOf(f.proactiveBudget) });
     if (ownerAppellation) body.ownerAppellation = ownerAppellation;
@@ -500,6 +517,9 @@ export function AgentForm({ agent = null }) {
     const modelChanged = mine("model") && !choice.stale;
     if (modelChanged) patch.model = choice.model;
     if (modelChanged || (edited.current.has("reasoning") && reasoning !== record.reasoning)) patch.reasoning = reasoning;
+    // The two levels of replies for others: sent only when I picked one (the service runs the effective level of what is saved).
+    if (thinks && edited.current.has("othersReasoning") && othersReasoning !== record.othersReasoning) patch.othersReasoning = othersReasoning;
+    if (thinks && proactiveAsked && edited.current.has("proactiveReasoning") && proactiveReasoning !== record.proactiveReasoning) patch.proactiveReasoning = proactiveReasoning;
     const changes = Object.keys(patch).length > 0;
     if (!changes && !avatarFile) {
       back();
@@ -686,6 +706,11 @@ export function AgentForm({ agent = null }) {
             </Field>
           </div>
           <p id={`${othersId}-hint`} className="field-hint">{OTHERS_LIMIT_HINT}</p>
+          {thinks && (
+            <Field label={OTHERS_LEVEL_LABEL} hint={OTHERS_LEVEL_HINT}>
+              <Select value={othersReasoning} onChange={setValue("othersReasoning")} listLabel={OTHERS_LEVEL_LABEL} options={levelOptions} />
+            </Field>
+          )}
         </fieldset>
         {(proactiveOffered || proactiveOffOnly) && (
           <>
@@ -704,6 +729,11 @@ export function AgentForm({ agent = null }) {
                 >
                   {budgetBox("proactiveBudget")}
                 </Field>
+                {thinks && (
+                  <Field label={PROACTIVE_LEVEL_LABEL} hint={PROACTIVE_LEVEL_HINT}>
+                    <Select value={proactiveReasoning} onChange={setValue("proactiveReasoning")} listLabel={PROACTIVE_LEVEL_LABEL} options={levelOptions} />
+                  </Field>
+                )}
               </>
             )}
           </>

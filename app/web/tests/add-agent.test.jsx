@@ -205,8 +205,8 @@ describe("the contacts page", () => {
   it("shows the Agents I let in (聊天, 移除), the ones that wait (等主人同意), and the requests waiting on mine (同意, 拒绝); an ended row is not listed", async () => {
     const { api } = await open({ convs: [visiting()], contacts: contacts() });
     await goContacts();
-    expect(screen.getByText("我加的 Agent", { selector: ".rows-label" })).toBeTruthy();
-    expect(screen.getByText("别人想加你的 Agent", { selector: ".rows-label" })).toBeTruthy();
+    expect(screen.getByText("我添加的 Agent", { selector: ".rows-label" })).toBeTruthy();
+    expect(screen.getByText("别人想添加我的 Agent", { selector: ".rows-label" })).toBeTruthy();
     const live = within(rowOf("小帮手"));
     expect(live.getByRole("button", { name: "聊天" })).toBeTruthy();
     expect(screen.getByText("等主人同意")).toBeTruthy();
@@ -226,7 +226,7 @@ describe("the contacts page", () => {
   it("switch off: none of those rows, and the contacts list is not asked for", async () => {
     const { api, transport } = await open({ on: false, convs: [], contacts: contacts() });
     await goContacts();
-    expect(screen.queryByText("别人想加你的 Agent")).toBeNull();
+    expect(screen.queryByText("别人想添加我的 Agent")).toBeNull();
     expect(screen.queryByText("等主人同意")).toBeNull();
     expect(transport.log).not.toContain("agent-contacts");
     expect(laneACalls(api)).toEqual([]);

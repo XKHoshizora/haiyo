@@ -230,7 +230,7 @@ describe("messages", () => {
     );
     const v = toView(M.applySync(M.initial(), sync), { now: NOW });
     expect(v.convs[G1].messages.map((m) => [m.text, Boolean(m.hidden)])).toEqual([
-      ["「安的助手」今天不再回复别人了，明天恢复。", false],
+      ["「安的助手」今天只回复它的主人，明天恢复。", false],
       ["不认识的 Agent", false],
     ]);
   });

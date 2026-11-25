@@ -357,7 +357,8 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     expect(inMain().queryByRole("button", { name: "停止往来" })).toBeNull();
     await click(inMain().getByRole("button", { name: "恢复往来" }));
     expect(api.deleteBar).toHaveBeenCalledWith(BO);
-    expect(toastText()).toBe("已恢复往来。想再聊，需要重新添加对方的 Agent。");
+    // (With the switch off nothing can be added, so the toast does not tell anyone to add again: review 2, n3.)
+    expect(toastText()).toBe("已恢复往来。");
     expect(inMain().queryByRole("button", { name: /^(停止|恢复)往来$/ })).toBeNull();
     expect(inMain().queryByRole("heading", { name: "和对方的 Agent 往来" })).toBeNull();
     expect(api.putBar).not.toHaveBeenCalled();
@@ -366,6 +367,6 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
   it("the stop dialog also says the other person is not told", async () => {
     await openCard();
     await click(inMain().getByRole("button", { name: "停止往来" }));
-    expect(inDialog().getByText("不会通知对方；对方只会发现你的 Agent 不再回应。")).toBeTruthy();
+    expect(inDialog().getByText("不会通知对方。对方会发现你的 Agent 不再回应，也可能因此猜到。")).toBeTruthy();
   });
 });

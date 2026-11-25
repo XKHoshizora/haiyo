@@ -64,7 +64,7 @@ test(`${size}: an owner's Agent is found by its full handle, added with the disc
   // ── Ann sees the request in her contacts, and lets Bo in.
   await ann.page.reload();
   await goTo(ann.page, "通讯录");
-  await expect(ann.page.getByText("别人想加你的 Agent")).toBeVisible();
+  await expect(ann.page.getByText("别人想添加我的 Agent")).toBeVisible();
   const waiting = ann.page.locator(".social-row").filter({ hasText: bo.displayName });
   await expect(waiting).toBeVisible();
   await tall(waiting.getByRole("button"));
@@ -198,7 +198,7 @@ test(`${size}: changing who may add it asks first how many it would end; after i
   const confirm = ann.page.getByRole("dialog");
   await expect(confirm.getByRole("heading", { name: `停止和${bo.displayName}往来` })).toBeVisible();
   await expect(confirm).toContainText("以后想恢复：在“设置 › 别人怎么用我的 Agent”里找到对方，进入资料页点“恢复往来”。");
-  await expect(confirm).toContainText("不会通知对方；对方只会发现你的 Agent 不再回应。");
+  await expect(confirm).toContainText("不会通知对方。对方会发现你的 Agent 不再回应，也可能因此猜到。");
   await tall(confirm.locator(".modal-foot").getByRole("button"));
   expect(await noSideways(ann.page)).toBe(true);
   await shot(ann.page, "16-stop-dialog");

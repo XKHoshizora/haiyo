@@ -145,7 +145,8 @@ describe("the reviews' hostile texts: what the worker's pipeline makes of each",
     if (outcome === "no-maths") expect(typesets).not.toHaveBeenCalled();
     if (outcome === "no-highlight") expect(highlights).not.toHaveBeenCalled();
     expect(errors).not.toHaveBeenCalled();
-  });
+    // (Its own limit: the longest of these, `rr3_md_lists_flat`, takes about 5 s when the whole suite runs in parallel.)
+  }, 30_000);
 });
 
 describe("a slow text: the main thread gives up on it", () => {

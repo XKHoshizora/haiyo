@@ -42,12 +42,13 @@ test.beforeEach(async () => {
 const FREE = { source: "site", id: "e2e-free" };
 
 /** An Agent of `owner`'s made through the API (its handle is `<owner handle>.<namePart>`); resolves with the owner's view of it (`id`, `handle`, `name`…). */
-async function agentApi(owner, { name, intro, field, persona, model = FREE, reasoning }) {
+async function agentApi(owner, { name, intro, field, persona, model = FREE, reasoning, othersReasoning }) {
   const data = { namePart: `ag_${uniq(10)}`, name, model };
   if (intro) data.intro = intro;
   if (field) data.field = field;
   if (persona) data.persona = persona;
   if (reasoning) data.reasoning = reasoning;
+  if (othersReasoning) data.othersReasoning = othersReasoning;
   const res = await owner.request.post("/api/agents", { data });
   expect(res.status(), await res.text()).toBe(201);
   return res.json();
@@ -299,6 +300,8 @@ test("a member never receives the Agent's persona, its model or its thinking: no
     persona: `你是阿岚，说话很短。暗号 ${personaMark}。`,
     model: { source: "provider", providerId: provider.id, model: modelName },
     reasoning: "medium",
+    // Bo is not its owner: his call runs at the level Ann set for replies to others (Owner decision 2026-11-26), not at the Agent's own.
+    othersReasoning: "medium",
   });
   const { id: groupId, title } = await groupApi(ann, [bo, cy]);
   await addApi(ann, groupId, agent.id);
@@ -316,13 +319,34 @@ test("a member never receives the Agent's persona, its model or its thinking: no
   await annThinking.locator("summary").click();
   await expect(annThinking.locator(".thinking-text")).toHaveText(thought);
   await expect(agentMessagesWith(boChat, answerMark).locator("details.thinking")).toHaveCount(0);
-  // Which model and thinking level the reply used: a line under it for Ann (once its run is charged), none for Bo.
+  // Which model and thinking level the reply used: a line under it for Ann (once its run is charged), none for Bo. The level is the one
+  // Ann set for replies to others (`othersReasoning`), which is what Bo's call ran at.
   await expect(agentMessagesWith(annChat, answerMark).locator(".msg-via")).toHaveText(`${modelName} · 思考：中`);
   await expect(agentMessagesWith(boChat, answerMark).locator(".msg-via")).toHaveCount(0);
+  expect((await modelStub.calls())[0].body.thinking).toBeTruthy();
   // The persona and the model were really in play: the model was given the persona, by that name, and it thought.
   const [call] = await modelStub.calls();
   expect(JSON.stringify(call.body)).toContain(personaMark);
   expect(call.body.model).toBe(modelName);
+
+  // With the default (不思考 for others), the same call is made without thinking, and Ann's line says so; Bo is still sent nothing of it.
+  // Ann's own call in the same group runs at the Agent's own level whatever she set for others.
+  expect((await ann.request.patch(`/api/agents/${agent.id}`, { data: { othersReasoning: "none" } })).status()).toBe(200);
+  const plainMark = `PLAIN${tag}`;
+  await modelStub.script({ text: `还是我。${plainMark}`, chunkSize: 6 });
+  await sendText(bo.page, title, `@${agent.handle} 再说一次 ${tag}`);
+  for (const chat of [annChat, boChat]) await expect(agentMessagesWith(chat, plainMark)).toHaveCount(1);
+  await expect(agentMessagesWith(annChat, plainMark).locator(".msg-via")).toHaveText(`${modelName} · 不思考`);
+  await expect(agentMessagesWith(boChat, plainMark).locator(".msg-via")).toHaveCount(0);
+  await expect(agentMessagesWith(boChat, plainMark).locator("details.thinking")).toHaveCount(0);
+  expect((await modelStub.calls()).at(-1).body.thinking?.type ?? "disabled").toBe("disabled");
+  const ownMark = `OWN${tag}`;
+  await modelStub.script({ reasoning: thought, text: `在。${ownMark}`, chunkSize: 6 });
+  await sendText(ann.page, title, `@${agent.handle} 你在吗 ${tag}`);
+  for (const chat of [annChat, boChat]) await expect(agentMessagesWith(chat, ownMark)).toHaveCount(1);
+  await expect(agentMessagesWith(annChat, ownMark).locator(".msg-via")).toHaveText(`${modelName} · 思考：中`);
+  await expect(agentMessagesWith(boChat, ownMark).locator(".msg-via")).toHaveCount(0);
+  await expect(agentMessagesWith(boChat, ownMark).locator("details.thinking")).toHaveCount(0);
 
   const secrets = [personaMark, thinkingMark, modelName, providerName, apiKey];
   const onPage = async () => {
@@ -349,7 +373,7 @@ test("a member never receives the Agent's persona, its model or its thinking: no
   await bo.page.keyboard.press("Escape");
   // A fresh load: the service's answers (/api/sync) carry the reply to Bo's browser too, and are looked at below.
   await bo.page.reload();
-  await expect(bo.page.locator(".list-col .row-preview").filter({ hasText: answerMark })).toBeVisible();
+  await expect(bo.page.locator(".list-col .row-preview").filter({ hasText: ownMark })).toBeVisible();
 
   // Everything Bo's browser received: the reply came (the recording works), none of the secrets did.
   const received = await traffic.all();

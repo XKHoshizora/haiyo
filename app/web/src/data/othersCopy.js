@@ -11,7 +11,7 @@ import { formatPoints } from "./viewmodel.js";
 export const OTHERS_STATES = {
   ok: "正常",
   tight: "快用完了，长一点的回复可能发不出",
-  reached: "今天给别人的额度用完了，明天零点恢复",
+  reached: "今天给别人的额度用完了，明天恢复",
 };
 
 /** Which of the three states a use row says (`agents[]`, or the owner's own): `reached` first (it implies `tight`), then `tight`. */
@@ -36,4 +36,4 @@ export const othersNoticeText = (limits) =>
   `别人用你的 Agent，每天的上限改了。现在你所有的 Agent 合在一起，每天最多回别人 ${limits.answers} 次、最多花你 ${formatPoints(limits.points)} 点，它们主动回复的也算在内。原来每个 Agent 默认的 20 点上限已取消。你单独给某个 Agent 设过的上限还在，但不会超过这个总数；原来设为“不限”的，现在也按这个总数算。主动回复的上限原来是 20 点的，已改成 70 点。可在“设置 › 别人怎么用我的 Agent”里修改。`;
 
 /** On an Agent's card, when only that Agent's own number is used up (the owner's day is not): three characters, so the name keeps its room. */
-export const OTHERS_REACHED_SHORT = "已用完";
+export const OTHERS_REACHED_SHORT = "别人已用完";
