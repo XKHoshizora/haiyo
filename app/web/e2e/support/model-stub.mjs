@@ -359,6 +359,29 @@ export const modelStub = {
    * answers nothing worth keeping (`{"ops":[]}` / `{"entries":[],"drop":[]}`).
    */
   memoryAnswer: (kind, when, text, options = {}) => call("memory", { kind, when, text, options }),
+  /**
+   * Waits until no streaming call has arrived for `ms`; resolves with how many arrived while it waited. For the suites that turn the
+   * Agent social switch on: at the switch-on the persona aid reads EVERY persona that exists once (the service's own rule: 10 owners
+   * a poll, a poll every 5 s), and by then the suite has made a few hundred Agents. Each read is a model call that is counted among
+   * `calls()` and takes the next scripted step: a spec that counts calls, or scripts a reply, while that backlog is still being read
+   * is counting the backlog's (fix round 4: `social.spec.mjs` saw 18 calls where it waited for 11).
+   */
+  async quiet(ms = 12_000, timeout = 300_000) {
+    const started = Date.now();
+    const first = (await call("state")).requests.length;
+    let seen = first;
+    let since = Date.now();
+    while (Date.now() - since < ms) {
+      if (Date.now() - started > timeout) throw new Error(`the model stub was never quiet for ${ms} ms (${seen - first} calls in ${timeout} ms)`);
+      await new Promise((r) => setTimeout(r, 500));
+      const now = (await call("state")).requests.length;
+      if (now !== seen) {
+        seen = now;
+        since = Date.now();
+      }
+    }
+    return seen - first;
+  },
   /** Waits until `n` calls are holding. */
   async holding(n = 1) {
     await expect.poll(async () => (await call("state")).holding, { message: `${n} model call(s) holding`, timeout: 20_000 }).toBe(n);

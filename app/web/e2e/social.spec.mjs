@@ -55,7 +55,13 @@ const agentTexts = async (person, conversationId, agentId) =>
   (await (await person.request.get(`/api/conversations/${conversationId}/messages`)).json()).messages.filter((m) => m.senderId === agentId && m.kind === "text").map((m) => m.text);
 
 test.beforeAll(async () => {
-  if (canControlService) await restartService({ SOCIAL: JSON.stringify({ enabled: true }) });
+  if (!canControlService) return;
+  await restartService({ SOCIAL: JSON.stringify({ enabled: true }) });
+  // The switch just came on: the persona aid now reads every Agent the suite has made so far, each read a model call. Nothing here
+  // starts before that is over (`modelStub.quiet`), or those calls would be counted, and would take the replies, as this spec's own.
+  test.setTimeout(360_000);
+  const backlog = await modelStub.quiet();
+  console.log(`[social.spec.mjs] the persona aid's backlog at the switch-on: ${backlog} model call(s) before the stub was quiet`);
 });
 test.afterAll(async () => {
   if (canControlService) await restartService({});
