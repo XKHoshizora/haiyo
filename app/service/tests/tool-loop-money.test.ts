@@ -535,7 +535,7 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ estimated: false, cost, balance: cost, forgiven: "0" }]);
   });
 
-  it("the Agent's others' daily budget is held for up front (B1): a reply whose hold cannot fit within it, with tools or plain, ends at admission — no call, nothing held or charged, the group told", async () => {
+  it("the Agent's others' daily budget is held for up front (B1): a reply whose hold cannot fit within it, with tools or plain, ends at admission — no call, nothing held or charged; the group is told only when NO reply for others could fit (fix round 3, point 4)", async () => {
     const owner = await signUp(app, "budgetowner");
     const member = await signUp(app, "budgetmember");
     const g = await group(app, owner, "饭搭子", [member, await signUp(app, "budgetthird")]);
@@ -549,7 +549,21 @@ describe("the money of a reply that offers tools", () => {
     expect(await worker.runOnce()).toBe(true);
     expect(gateway.calls).toHaveLength(0);
     expect(await runOf(owner.id)).toMatchObject({ status: "cancelled", hold: "0" });
-    expect((await db.query("select count(*)::int as n from messages where conversation_id = $1 and body ->> 'event' = 'agent_daily_budget_reached'", [g])).rows[0].n).toBe(1);
+    // One point still covers the least a reply of it can hold (its system text and the others' output: under a point on this model): this
+    // call did not fit, a shorter one could. The Agent is tight, not used up, and the group is not told it answers only its owner today.
+    const notices = async () => (await db.query("select count(*)::int as n from messages where conversation_id = $1 and body ->> 'event' = 'agent_daily_budget_reached'", [g])).rows[0].n;
+    expect(await notices()).toBe(0);
+    const row = async () => (await api(app, owner, "GET", "/api/me/others-use")).json.agents.find((a: { agentId: string }) => a.agentId === agent.id);
+    expect(await row()).toMatchObject({ reached: false, tight: true });
+    // The owner's own answers number used up (one answer a day, and one counted): now every reply for others is refused, and the group is told, once.
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { answers: 1, points: "300" })).status).toBe(200);
+    await db.query("update agent_runs set admitted_at = now(), lane = 'others', status = 'done', finished_at = now() where owner_id = $1", [owner.id]);
+    await say(member, g, "@chef 再问一次？");
+    // (Refused where the call is made, or as its reply begins: either way no call of the model.)
+    await worker.runOnce();
+    expect(gateway.calls).toHaveLength(0);
+    expect((await row()).reached).toBe(true);
+    expect(await notices()).toBe(1);
   });
 
   it("stopped during its third round, which reported nothing: the first two rounds' reported tokens, their hidden reasoning in them, are charged; the third's estimate is added; the raised hold is released", async () => {
