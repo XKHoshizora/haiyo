@@ -396,15 +396,25 @@ points NO proactive reply of such an Agent is admitted (241.5 > 70; at 不思考
 same reply holds 5.9 points instead of 2.5. An owner sees both levels on the Agent's page and can lower them in its form; the
 controller should look at which existing Agents think at 高 or above on a paid model before the deploy.
 
+**What 076 does to replies queued or under way at the deploy.** 076 also adds `agent_runs.owner_call_seqs` (which of a reply's
+calls were accepted as its owner's own; "Whose reply a reply is"). A run from before the column has NO owner call, except one
+that is its owner's own already (lane `own`, its caller the owner): its calls are taken as the owner's. Nothing is guessed from
+who wrote a message. So a reply for others that had the owner's call noted on it at the deploy is followed up as a reply for
+others (bounded and counted), never the other way; a reply already admitted keeps its terms.
+
 **Rehearse before the deploy**, against the site's database, from where the take-back would be run:
 `node dist/cli.js migrate:down --name 076_others_reasoning` with NO confirmation flag must print what 076's Down removes and
 then answer "the last migration applied is 073_others_columns_and_social_skeleton, not 076_others_reasoning: nothing was
 undone". That proves the command, the image and the database connection without changing anything.
 
 **`migrate:down`** is the tool for exactly that take-back and for nothing else. It undoes ONE migration: the last one applied,
-and only when it is the one named. The check and the Down are one act: one connection, under a lock of the command's own held
-from before the check until after the Down, so two operators who both name the last migration take turns and the second is
-refused ("the last migration applied is 075_…, not 076_…") instead of removing the one under it. It first prints what that migration's Down removes, and then refuses unless
+and only when it is the one named. The check and the Down are one act: one connection, under THE migration lock — the one
+every Up takes too (the runner's advisory lock) — held from before the check until after the Down. So two operators who both
+name the last migration take turns and the second is
+refused ("the last migration applied is 075_…, not 076_…") instead of removing the one under it; and a deploy cannot apply a
+migration between the check and the Down: a service that starts meanwhile fails its migration step ("Another migration is
+already running") and applies nothing, and a Down started while a deploy migrates waits for it and then checks against what it
+left. It first prints what that migration's Down removes, and then refuses unless
 `--i-understand-this-deletes-data` is given; with `NODE_ENV=production` it also wants `--in-production`. That second guard
 reads the `NODE_ENV` of the process the operator runs, not the database: run from a laptop with only `DATABASE_URL` set, the
 one flag is enough, so look at which database the URL names before confirming. What the Downs do: 076's drops every owner's
@@ -908,7 +918,7 @@ numbers). They are sub-limits inside yours, never added to them: all your Agents
 50 answers a day unless you set others), whatever their number. `othersUsedToday` is what others' use of this Agent has taken since the site
 day began, against its own numbers: `answers` (replies admitted, counting both calls and replies nobody asked for, as its own
 answers number does) and `points` (a string: settled charges plus what running replies hold, calls only: what its own points
-number holds; a reply nobody asked for has `proactiveBudget`). `othersReasoning` and `proactiveReasoning` (the owner's view only; each one of `reasoning`'s levels; `none` for a new Agent, and for an Agent that existed before migration 076 its own level, which is what such replies ran at before; Owner decision 2026-11-26) are the thinking levels of a reply somebody other than the owner called for (a co-member's @ in a group, a visitor's message) and of a reply nobody asked for. Any level is accepted whatever the model: a reply runs at the setting's effective level on the Agent's model (the level itself when the model lists it, else the nearest listed one below, `none` when there is none: `callLevel`; and where the model's protocol has no such level, the one it is sent, `sentLevel`: Chat Completions and Gemini send `xhigh` for `max`, and then `xhigh` is what the hold is sized for and what the owner's line under the reply says), and the others' numbers hold for the level actually run. `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
+number holds; a reply nobody asked for has `proactiveBudget`). `othersReasoning` and `proactiveReasoning` (the owner's view only; each one of `reasoning`'s levels; `none` for a new Agent, and for an Agent that existed before migration 076 its own level, which is what such replies ran at before; Owner decision 2026-11-26) are the thinking levels of a reply somebody other than the owner called for (a co-member's @ in a group, a visitor's message) and of a reply nobody asked for. A save accepts exactly the levels the picker offers on the Agent's model — `none` and the levels it can run at (`sendableLevels`: on Chat Completions and Gemini a model that lists `max` offers `xhigh`, and `max` itself is no choice), for the Agent's own level and these two alike, on create and on edit (400 `invalid_request` otherwise; with the model changed in the same save, the new model's) — and a level stored before that is sent back unchanged for an unchanged model stays as it is. A reply runs at the setting's effective level on the Agent's model (the level itself when the model lists it, else the nearest listed one below, `none` when there is none: `callLevel`; and where the model's protocol has no such level, the one it is sent, `sentLevel`: Chat Completions and Gemini send `xhigh` for `max`, and then `xhigh` is what the hold is sized for and what the owner's line under the reply says), and the others' numbers hold for the level actually run. `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
 replies cost today (a string: settled plus held, the same definition of "used"), against `proactiveBudget`. `proactive` says
 whether it may reply in a group to a message that called no Agent, when the judgement model picks it (Proactive replies;
 default false); `proactiveLevel` how readily (`less`, `normal` — the default —, `more`: the threshold it starts from);
@@ -1669,9 +1679,33 @@ half of the allowance as thought in each plain reply). A higher level makes each
 `reached` may show sooner. `reached` (the page's 用完了, the card's tag, and the group's line 「今天只回复它的主人，明天恢复。」) is said
 only when EVERY reply for others would be refused: a call at its level and, while the Agent makes them, a reply nobody asked for
 at its own. A call that cannot be afforded while a shorter or cheaper reply still fits is `tight`, ends quietly, and tells the
-group nothing. Whose reply a group reply is (its lane, its caller, its level and its bounds) is read from the calls it still
-answers when it begins, after the calls refused since were dropped: a reply only a member's call is left on is a reply for
-others whoever first called it, and one only its owner's call is left on is the owner's own. The site day the numbers are read
+group nothing. The same decision is asked when a call is refused AS IT IS MADE (`othersBudgetSpent`): the call is refused, and the
+group is told only when `reached` holds — not while a reply nobody asked for still fits, and not while only another reply's hold
+is in the way (that ends with the reply, not tomorrow). The others' output limit is ONE budget for everything of a reply the
+conversation reads: the text a reply writes before a tool call is posted at once as its acknowledgement, cut to at most half of
+the limit, and the answer after it has what is left; each is cut and marked cut as a reply over its length is.
+
+**Whose reply a reply is** (its lane and caller, and so its level, its bounds and whose numbers it counts against) is WRITTEN,
+never read back from who wrote a message (`agent_runs.owner_call_seqs`, migration 076; `src/agents/runs.ts` `laneOf`, the one
+decision every writer of a run's lane asks: a queue, a call folded in, calls taken out, a follow-up, an automatic retry):
+- each call a run records is marked the owner's own AT THE MOMENT IT IS ACCEPTED, when it is: the owner's own @ or message to
+  their Agent, or another Agent's message the owner is behind then. Nothing later makes a call the owner's;
+- a reply is the owner's own (`own`) while one of the calls it still has is so marked, or when it is the owner's 重试
+  (`owner_retry`); a reply nobody asked for that no call has taken over is `proactive` — the message it was queued on is no call
+  of anyone, whoever wrote it, the owner too, and when a call takes such a reply over that message leaves its calls; anything
+  else is a reply for others, its caller the person behind the earliest call left;
+- so a reply only a member's call is left on is a reply for others whoever first called it — bounded, at the level for others,
+  counted — and a call refused since is taken out before it begins; with no call left it ends quietly, with no model call.
+
+**The terms are those of the row at admission.** `begin` prepares a plan (model and level, bounds, tool caps, the context) in a
+first step, reads attachments with no lock, and admits in a third. At admission, under the run's locks, the calls are held to
+the access decision once more and the row is compared with what the plan was made for (lane, caller, the calls it answers). Any
+difference: the plan is thrown away — no upstream call, no hold — and made again from the row (three times at most, then the
+reply goes back to the queue). A reply that is no longer the owner's own as it begins meets the others' limit of replies at a
+time before anything is prepared (`AGENT_MAX_CONCURRENT_OTHERS_RUNS`; over it, back to the queue). ONCE ADMITTED the lane,
+caller and money terms are frozen: a later ending of access never rewrites them and never requeues the reply (its calls would be
+made and charged twice) — it is ended as a whole when no call it answers is left, else it goes on and its post leaves out
+whoever is refused by then. The site day the numbers are read
 for is the day it is under the owner's account lock when the hold is placed, not the day the reply began to be prepared.
 
 The owner's other limits hold throughout, for every reply in a group — called by a person's mention, an Agent's, or a
