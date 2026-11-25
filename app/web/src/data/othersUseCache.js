@@ -6,7 +6,9 @@ const stores = new WeakMap();
 export function storeOf(actions) {
   let store = stores.get(actions);
   if (!store) {
-    store = { use: null, failed: false, listeners: new Set(), pending: null, at: 0, forgotten: false };
+    // `newest`: counts every answer that is newer than any read sent before it (a save's answer; a read asked for after a change).
+    // A read keeps its answer only while the count is what it was when the read was SENT: an older read never overwrites a newer answer.
+    store = { use: null, failed: false, listeners: new Set(), pending: null, at: 0, forgotten: false, newest: 0 };
     stores.set(actions, store);
   }
   return store;
@@ -33,11 +35,14 @@ export function forgetOthersUse(actions) {
 export function readOthersUse(actions, store, { afterWrite = false } = {}) {
   if (store.pending && !afterWrite) return store.pending;
   const before = store.pending;
+  // (A read asked for after a change: whatever is in flight was sent before it, and its answer is not kept.)
+  if (afterWrite) store.newest += 1;
   const mine = (async () => {
     if (before) await before.catch(() => {});
     try {
+      const sentAt = store.newest;
       const answer = await actions.getOthersUse();
-      if (store.forgotten) return;
+      if (store.forgotten || store.newest !== sentAt) return;
       if (answer && typeof answer === "object" && answer.limits) {
         store.use = answer;
         store.failed = false;
@@ -54,3 +59,12 @@ export function readOthersUse(actions, store, { afterWrite = false } = {}) {
   return mine;
 }
 
+
+/** A newer answer of the same shape than any read can bring (a save's own answer, a dismissed notice): a read still in flight does not replace it. */
+export function settleOthersUse(store, next) {
+  store.newest += 1;
+  store.use = next;
+  store.failed = false;
+  store.at = Date.now();
+  store.listeners.forEach((fn) => fn());
+}

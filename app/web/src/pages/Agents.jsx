@@ -313,13 +313,15 @@ function AgentDetail({ agent }) {
   const live = agent.loaded && !agent.deleted;
   const { use, reload } = useOthersUse({ maxAge: 10_000 });
   // The numbers of the row come from the Agent's record and its state from the use route: when the record's change, the route is read again.
-  // (Its model and the two levels of its replies for others too: they decide what a reply costs, so the state the route says.)
-  const usedKey = JSON.stringify([agent.othersUsedToday, agent.othersLimit, agent.model, agent.othersReasoning, agent.proactiveReasoning]);
+  // (Its model and the two levels of its replies for others too: they decide what a reply costs, so the state the route says. And whether
+  // it makes replies nobody asked for, and their budget: while one still fits it is not used up for others.)
+  const usedKey = JSON.stringify([agent.othersUsedToday, agent.othersLimit, agent.model, agent.othersReasoning, agent.proactiveReasoning, agent.proactive, agent.proactiveBudget]);
   const firstKey = useRef(usedKey);
   useEffect(() => {
     if (firstKey.current !== usedKey) {
       firstKey.current = usedKey;
-      reload();
+      // After the change: a read already in flight may have been sent before it, so this one is made after it and is the one kept.
+      reload({ afterWrite: true });
     }
   }, [usedKey, reload]);
   // The 「别人」 tab is for a live Agent, and only while the site's Agent social switch is on.

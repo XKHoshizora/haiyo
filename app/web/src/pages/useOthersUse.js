@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
-import { readOthersUse, storeOf } from "../data/othersUseCache.js";
+import { readOthersUse, settleOthersUse, storeOf } from "../data/othersUseCache.js";
 
 /**
  * One read of `GET /api/me/others-use` shared by everything on the screen that shows it (the list of my Agents and an Agent's page, which are
@@ -29,12 +29,6 @@ export function useOthersUse({ maxAge = 0 } = {}) {
   }, [actions, store, maxAge]);
   const reload = useCallback((options) => readOthersUse(actions, store, options), [actions, store]);
   /** A newer answer of the same shape (a save's, a dismissed notice). */
-  const settle = useCallback(
-    (next) => {
-      store.use = next;
-      store.listeners.forEach((fn) => fn());
-    },
-    [store],
-  );
+  const settle = useCallback((next) => settleOthersUse(store, next), [store]);
   return { use: store.use, failed: store.failed, reload, settle };
 }

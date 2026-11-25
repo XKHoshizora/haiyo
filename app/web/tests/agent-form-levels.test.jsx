@@ -10,6 +10,7 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { AG1, MODELS, P1, PRINCIPALS, agentConv, agentOf, agentPrincipal, providerOf, syncOf, usageOf } from "./fixtures.js";
 import { click, flush, inMain, installBrowser, mainText, openApp, push } from "./harness.jsx";
 import { optionsOf, pickOption } from "./select-helpers.js";
+import { readOthersUse, settleOthersUse, storeOf } from "../src/data/othersUseCache.js";
 
 beforeEach(() => {
   installBrowser();
@@ -223,5 +224,70 @@ describe("fix round 3, ruling 5: no level is offered or shown that no reply runs
       expect([label, levels(label)]).toEqual([label, [...UP_TO_XHIGH, "最高"]]);
       expect([label, box(label).value]).toEqual([label, "max"]);
     }
+  });
+});
+
+describe("fix round 4, F5: the state an Agent's page shows of its room for others is never left from before a change", () => {
+  const USE = (fields = {}) => ({ limits: { answers: 50, points: "300" }, used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false, ...fields });
+  const record = agentOf(AG1, { model: PAID, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "none", proactiveReasoning: "none", proactive: false, proactiveBudget: "70" });
+
+  it("its proactive switch or its proactive budget changed elsewhere: the use route is read again (both decide whether it is used up)", async () => {
+    const getOthersUse = vi.fn(async () => USE());
+    const app = await openAgents({ agents: [record], api: { getOthersUse } });
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    const before = getOthersUse.mock.calls.length;
+    const elsewhere = async (fields) => {
+      app.transport.handlers.agent = () => ({ ...record, ...fields });
+      await push(app.transport, { type: "agent", id: AG1 });
+      await flush();
+    };
+    await elsewhere({ proactive: true });
+    expect(getOthersUse.mock.calls.length).toBe(before + 1);
+    await elsewhere({ proactive: true, proactiveBudget: "20" });
+    expect(getOthersUse.mock.calls.length).toBe(before + 2);
+  });
+
+  it("a change while a read is still in flight: that read may be from before the change, so another is made after it and its answer is the one kept", async () => {
+    let answer = null;
+    const waiting = [];
+    const getOthersUse = vi.fn(() => (answer === null ? new Promise((resolve) => waiting.push(resolve)) : Promise.resolve(answer)));
+    answer = USE();
+    const app = await openAgents({ agents: [record], api: { getOthersUse } });
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    const before = getOthersUse.mock.calls.length;
+    const elsewhere = async (fields) => {
+      app.transport.handlers.agent = () => ({ ...record, ...fields });
+      await push(app.transport, { type: "agent", id: AG1 });
+      await flush();
+    };
+    // The first change's read does not answer yet.
+    answer = null;
+    await elsewhere({ othersReasoning: "high" });
+    expect(getOthersUse.mock.calls.length).toBe(before + 1);
+    // A second change meanwhile: the read in flight was sent before it.
+    await elsewhere({ othersReasoning: "high", proactive: true });
+    answer = USE({ reached: true, tight: true });
+    waiting.splice(0).forEach((resolve) => resolve(USE()));
+    await flush();
+    await flush();
+    expect(getOthersUse.mock.calls.length).toBe(before + 2);
+  });
+
+  it("a newer answer settled while an older read is in flight is not overwritten by that read", async () => {
+    let resolve = () => {};
+    const actions = { getOthersUse: () => new Promise((r) => (resolve = r)) };
+    const store = storeOf(actions);
+    const reading = readOthersUse(actions, store);
+    const newer = USE({ limits: { answers: 9, points: "9" } });
+    settleOthersUse(store, newer);
+    resolve(USE());
+    await reading;
+    expect(store.use).toBe(newer);
+    // And the next read is taken as ever.
+    const later = USE({ limits: { answers: 3, points: "3" } });
+    const again = readOthersUse(actions, store);
+    resolve(later);
+    await again;
+    expect(store.use).toBe(later);
   });
 });
