@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NOTHING } from "../src/agents/runtime/port.ts";
+import { weight } from "../src/metering/tokens.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -92,6 +93,22 @@ describe("a social reply is posted once", () => {
     expect(text.startsWith("我查一下。")).toBe(true);
     expect(text.indexOf("没查到。")).toBeGreaterThan(text.indexOf("我查一下。"));
     expect(await runOf(w)).toMatchObject({ status: "done", error: null });
+  });
+
+  it("the preface and the answer are ONE text for the visitor and so ONE budget (review 5, item 8): two rounds each under the others' limit come out cut to it, and marked cut", async () => {
+    const w = await world("onebudget");
+    await say(w.v, w.conv, "帮我查查");
+    const first = "好".repeat(700); // a weight of 700 each, of a limit of 800
+    gateway.callTools([{ name: "search_messages", input: { query: "不存在的词语" } }], { text: first }).reply("行".repeat(700));
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const messages = await posted(w);
+    expect(messages).toHaveLength(1);
+    const text = messages[0]!.body.text as string;
+    expect(text.startsWith(first)).toBe(true);
+    expect(text).toContain("行");
+    expect(weight(text)).toBeLessThanOrEqual(app.deps.config.others.outputTokens);
+    expect(weight(text)).toBeGreaterThan(app.deps.config.others.outputTokens - 2);
+    expect(messages[0]!.body.truncated).toBe(true);
   });
 
   it("I1: preface, a tool call, then nothing: the preface is the reply, one message, the run done", async () => {

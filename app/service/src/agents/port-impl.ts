@@ -250,6 +250,18 @@ const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
  */
 const HELD_BACK: RunEnd = Object.freeze({ status: "cancelled" });
 
+/**
+ * What of a reply's one budget of text (`RunFlags.othersText`) the acknowledgement that stands for it took — its own, or an earlier
+ * attempt's at the same question (conversation.ts `standingAcknowledgement`) — by the text STORED; 0 when none stands (none was
+ * posted, its write failed, or it is a social reply, which posts none: its preface is in its one message).
+ */
+async function acknowledgedWeight(t: Tx, run: RunTicket): Promise<number> {
+  const seq = await standingAcknowledgement(t, run.conversationId, run.agentId, run.id);
+  if (seq === null) return 0;
+  const { rows } = await t.query<{ text: string | null }>("select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2", [run.conversationId, seq]);
+  return weight(rows[0]?.text ?? "");
+}
+
 /** `beginOnce`: the plan it made is not for the reply the row is at admission; nothing of it was sent or held (`begin` plans again). */
 const STALE_PLAN = Symbol("stale plan");
 
@@ -391,14 +403,15 @@ interface RunFlags {
   /** What its context left out (context.ts `LoadedContext.leftOut`), from `begin` once the call is admitted; null until then, or none. */
   leftOut: LeftOut | null;
   /**
-   * A reply for others: the ONE budget for every text of it the conversation reads (fix round 4, F3) — `most`, the others' output
-   * limit in the weight its model's tokens are estimated by; `used`, what its acknowledgement took of it (the text it wrote before
-   * a tool call, posted at once as a message of its own: at most half, so the answer always has room); `always`: made at a thinking
-   * level, where the call's one limit is that plus the level's allowance and the upstream cannot hold the answer to it, so `post`
-   * does (fix round 3, point 3a). At `none` with no acknowledgement the upstream's limit is the bound itself and nothing is cut
-   * here. Null for the owner's own reply.
+   * A reply for others: the ONE budget for every text of it the conversation reads (fix round 4, F3; review 5, item 8) — `most`, the
+   * others' output limit in the weight its model's tokens are estimated by. Its acknowledgement (the text it wrote before a tool call,
+   * posted at once as a message of its own) is held to half of it, so the answer always has room; its final post to what is left of it
+   * once the acknowledgement that stands for it is taken out — read at the post from what is STORED (`acknowledgedWeight`), never
+   * from what the worker could tell or a counter a failed write would leave behind — at every level (`none` too: a text that holds
+   * two rounds, an acknowledgement that could not be posted or a social reply's preface, is more than one call's limit). Null for the
+   * owner's own reply.
    */
-  othersText?: { most: number; used: number; always: boolean } | null;
+  othersText?: { most: number } | null;
   /**
    * A reply offered tools, from `begin` once the call is admitted: the numbers it gave the model (refs.ts — its context's
    * file labels, then what its tools hand over) and how far its conversation had come when it began (`RunScope.heardTo`).
@@ -1057,7 +1070,7 @@ export class DbAgentPort implements AgentPort {
 
     const result = await db.tx(async (
       t,
-    ): Promise<{ end: RunEnd; told?: Told; queued?: Announced } | { stale: true } | { prepared: Prepared; read: number | null; money: RunMoney; wasMarked: boolean; ackWeight: number }> => {
+    ): Promise<{ end: RunEnd; told?: Told; queued?: Announced } | { stale: true } | { prepared: Prepared; read: number | null; money: RunMoney; wasMarked: boolean }> => {
       const { agent, state } = await this.lockRun(t, run);
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
@@ -1224,14 +1237,10 @@ export class DbAgentPort implements AgentPort {
       const marked = await markRead(t, agent.id, run.conversationId, covers);
       const reasoning = resolved.reasoning;
       const planned = planRatio(ratio);
-      // An acknowledgement already stands for what it answers (an earlier attempt's: a retry): it posts none.
+      // An acknowledgement already stands for what it answers (an earlier attempt's: a retry): it posts none. (A reply for others: what
+      // it took of the one budget of text is read at the post, `RunFlags.othersText`.)
       const standing = tools.length > 0 ? await standingAcknowledgement(t, run.conversationId, run.agentId, run.id) : null;
       const acknowledged = standing !== null;
-      // (A reply for others: what that acknowledgement took of its one budget of text, `RunFlags.othersText`.)
-      const ackWeight =
-        bounded && standing !== null
-          ? weight((await t.query<{ text: string | null }>("select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2", [run.conversationId, standing])).rows[0]?.text ?? "")
-          : 0;
       return {
         prepared: {
           call: {
@@ -1268,7 +1277,6 @@ export class DbAgentPort implements AgentPort {
         read: marked && marked.readSeq > marked.previous ? marked.readSeq : null,
         money: { price: resolved.price ?? null, maxOutputTokens: resolved.call.maxOutputTokens, reserveMicro: admission.reserveMicro ?? 0n, roomCapTokens, growthTokens },
         wasMarked: state.marked,
-        ackWeight,
       };
     });
     if ("stale" in result) return STALE_PLAN;
@@ -1291,7 +1299,7 @@ export class DbAgentPort implements AgentPort {
     flags.mark = first.loaded.mark;
     flags.money = result.money;
     flags.leftOut = first.loaded.leftOut;
-    flags.othersText = first.bounded ? { most: weightWithin(config.others.outputTokens, first.ratio), used: result.ackWeight, always: first.resolved.reasoning !== "none" } : null;
+    flags.othersText = first.bounded ? { most: weightWithin(config.others.outputTokens, first.ratio) } : null;
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name, toolsUnknown: resolved.toolsUnknown === true };
     // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
@@ -1536,14 +1544,16 @@ export class DbAgentPort implements AgentPort {
     if (as === "ack" && flags?.place === "social") return "refused";
     const mark = flags?.mark ?? null;
     // A reply for others: what the conversation reads of it is held to the others' output limit as ONE budget (`RunFlags.othersText`)
-    // — its acknowledgement to half of it, its answer to what the acknowledgement left — each cut as a reply over its length is cut
-    // (marked `truncated`).
+    // — its acknowledgement to half of it, its final post to what the acknowledgement that stands for it left, as STORED (read here, in
+    // the post's own transaction) — each cut as a reply over its length is cut (marked `truncated`), at every level.
     const budget = flags?.othersText ?? null;
-    const most = budget === null ? null : as === "ack" ? Math.floor(budget.most / 2) : budget.always || budget.used > 0 ? budget.most - budget.used : null;
-    const over = most !== null && weight(said.text) > most;
-    const reply: AgentReply = { ...said, ...(over ? { text: cutToWeight(said.text, most), truncated: true } : {}), refs: flags?.tools?.refs ?? null };
     try {
-      const posted = await this.deps.db.tx((t) => postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as));
+      const posted = await this.deps.db.tx(async (t) => {
+        const most = budget === null ? null : as === "ack" ? Math.floor(budget.most / 2) : Math.max(0, budget.most - (await acknowledgedWeight(t, run)));
+        const over = most !== null && weight(said.text) > most;
+        const reply: AgentReply = { ...said, ...(over ? { text: cutToWeight(said.text, most), truncated: true } : {}), refs: flags?.tools?.refs ?? null };
+        return postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as);
+      });
       // The access or a note it was shown ended meanwhile (a social reply): the run was marked in that transaction, which committed.
       if (posted !== null && "refused" in posted) {
         this.deps.log.info({ metric: "social_post_refused", reason: posted.refused }, "agent run: a social reply was not posted (its access, or a note it was shown, ended before the post)");
@@ -1560,7 +1570,6 @@ export class DbAgentPort implements AgentPort {
       // The group moved on: a judgement waiting there for a person's message is dropped (the decision would refuse that
       // message now). Nothing ever waits in the Agent's own conversation.
       if (!duplicate) this.deps.proactive?.cancelled(run.conversationId);
-      if (as === "ack" && budget !== null) budget.used += weight(reply.text);
       return "posted";
     } catch (err) {
       if (err instanceof AppError && REFUSED.has(err.code)) {
