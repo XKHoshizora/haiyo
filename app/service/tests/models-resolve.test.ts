@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readOwnedAgent } from "../src/agents/store.ts";
 import { REASONING_LEVELS, type ReasoningLevel } from "../src/config.ts";
 import { REASONING_PARAMS, type ModelEvent } from "../src/models/gateway.ts";
-import { callLevel, outputLimit, resolveModel, sentLevel } from "../src/models/resolve.ts";
+import { callLevel, outputLimit, resolveModel, sendableLevels, sentLevel } from "../src/models/resolve.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -109,7 +109,8 @@ describe("resolveModel", () => {
       contextTokens: 50000,
       vision: true,
       pdf: false,
-      reasoningAllowed: REASONING_LEVELS,
+      // (Gemini has no `max` level: what it is sent for it is `xhigh`, so the levels it can run at end there. Fix round 3, ruling 5.)
+      reasoningAllowed: ["none", "low", "medium", "high", "xhigh"],
       reasoning: "xhigh",
       replyLimit: 2048,
       // The provider's row: what the model's learned token ratio is kept under (metering/tokens.ts `ratioKey`).
@@ -139,9 +140,12 @@ describe("resolveModel", () => {
     const room = Math.floor((50000 - config().providerDefaultMaxOutputTokens) / 2);
     const at = (level: "low" | "medium" | "high") => config().providerDefaultMaxOutputTokens + Math.min(config().reasoningAllowanceTokens[level], room);
     expect(await narrowed(["low"])).toMatchObject({ name: "deep", reasoningAllowed: ["none", "low"], reasoning: "low", call: { maxOutputTokens: at("low"), thinkingSwitch: true } });
-    expect(await narrowed(["low", "medium", "max"])).toMatchObject({ reasoningAllowed: ["none", "low", "medium", "max"], reasoning: "medium", call: { maxOutputTokens: at("medium") } });
+    // (Listed `max` on this protocol is run, and so listed, as `xhigh`: the saved `xhigh` runs at it.)
+    expect(await narrowed(["low", "medium", "max"])).toMatchObject({ reasoningAllowed: ["none", "low", "medium", "xhigh"], reasoning: "xhigh" });
+    expect(await narrowed(["low", "medium"])).toMatchObject({ reasoningAllowed: ["none", "low", "medium"], reasoning: "medium", call: { maxOutputTokens: at("medium") } });
     expect(await narrowed(["high", "xhigh"])).toMatchObject({ reasoningAllowed: ["none", "high", "xhigh"], reasoning: "xhigh" });
-    expect(await narrowed(["max"])).toMatchObject({ reasoningAllowed: ["none", "max"], reasoning: "none", call: { maxOutputTokens: config().providerDefaultMaxOutputTokens } });
+    expect(await narrowed(["high"])).toMatchObject({ reasoningAllowed: ["none", "high"], reasoning: "high" });
+    expect(await narrowed(["max"])).toMatchObject({ reasoningAllowed: ["none", "xhigh"], reasoning: "xhigh" });
     // Fix round 3, point 3b: this provider speaks Gemini, which has no `max` level (the call is sent `xhigh`: gateway.ts
     // REASONING_PARAMS). The level resolved IS the level sent: what the hold is sized for and what the owner's line says.
     expect((await api(app, owner, "PATCH", `/api/agents/${deep.id}`, { reasoning: "max" })).status).toBe(200);
@@ -154,12 +158,15 @@ describe("resolveModel", () => {
     for (const protocol of ["openai_chat", "openai_responses", "anthropic", "gemini"] as const) {
       for (const level of REASONING_LEVELS) expect([protocol, level, REASONING_PARAMS[protocol][sentLevel(protocol, level)]]).toEqual([protocol, level, REASONING_PARAMS[protocol][level]]);
     }
+    expect(sendableLevels("gemini", ["low", "max"])).toEqual(["none", "low", "xhigh"]);
+    expect(sendableLevels("openai_chat", REASONING_LEVELS)).toEqual(["none", "low", "medium", "high", "xhigh"]);
+    expect(sendableLevels("anthropic", REASONING_LEVELS)).toEqual([...REASONING_LEVELS]);
     expect([sentLevel("openai_chat", "max"), sentLevel("gemini", "max"), sentLevel("anthropic", "max"), sentLevel("openai_responses", "max")]).toEqual(["xhigh", "xhigh", "max", "max"]);
     await api(app, owner, "PATCH", `/api/agents/${deep.id}`, { reasoning: "xhigh" });
     // The Agent's own level is not rewritten by any of it.
     expect((await readOwnedAgent(db, owner.id, deep.id))?.reasoning).toBe("xhigh");
     // Every level again (no list): the saved level is the one sent.
-    expect(await narrowed(undefined)).toMatchObject({ reasoningAllowed: REASONING_LEVELS, reasoning: "xhigh" });
+    expect(await narrowed(undefined)).toMatchObject({ reasoningAllowed: ["none", "low", "medium", "high", "xhigh"], reasoning: "xhigh" });
 
     // Its address changed: another upstream, so what the old one refused (src/models/gateway.ts `Refusals`) is not
     // carried over to it.

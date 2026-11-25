@@ -95,6 +95,14 @@ export const sentLevel = (protocol: ModelCall["protocol"], level: ReasoningLevel
   level === "max" && (protocol === "openai_chat" || protocol === "gemini") ? "xhigh" : level;
 
 /**
+ * The levels a model on `protocol` that lists `levels` can RUN at, `none` first (ruling 5 of fix round 3): each listed level as the
+ * protocol sends it, once. This is the list everything shows and chooses from (a form's options, the effective level, `GET /api/models`),
+ * so nothing offers a level no reply will be made at: a Chat Completions or Gemini model that lists `max` shows `xhigh` as its top.
+ */
+export const sendableLevels = (protocol: ModelCall["protocol"], levels: readonly ReasoningLevel[]): ReasoningLevel[] =>
+  REASONING_LEVELS.filter((level) => level === "none" || levels.some((listed) => listed !== "none" && sentLevel(protocol, listed) === level));
+
+/**
  * The output limit a call at `level` is sent and held for: the reply's own limit (`replyLimit`: a site model's
  * `maxOutputTokens`, `PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS` for a provider model), and at any level but `none` the
  * level's thinking allowance on top (`REASONING_ALLOWANCE_TOKENS`) — upstreams count thinking inside the output limit.
@@ -135,8 +143,8 @@ export async function resolveModel(
     const callable = siteCallable(config, choice.id);
     if (!callable) return null;
     const { site, apiKey } = callable;
-    const reasoningAllowed = REASONING_LEVELS.filter((level) => level === "none" || site.reasoning.includes(level));
-    const reasoning = sentLevel(site.protocol, callLevel(reasoningAllowed, wanted));
+    const reasoningAllowed = sendableLevels(site.protocol, site.reasoning);
+    const reasoning = callLevel(reasoningAllowed, wanted);
     return {
       source: "site",
       name: site.id,
@@ -166,8 +174,8 @@ export async function resolveModel(
   if (!provider || !listed) return null;
   // The levels it lists (every level when it lists none), `none` always among them; a model that does not reason has `none` alone.
   const lists: readonly ReasoningLevel[] | undefined = listed.reasoningLevels;
-  const reasoningAllowed: readonly ReasoningLevel[] = !listed.reasoning ? ["none"] : REASONING_LEVELS.filter((level) => level === "none" || !lists || lists.includes(level));
-  const reasoning = sentLevel(provider.protocol, callLevel(reasoningAllowed, wanted));
+  const reasoningAllowed: readonly ReasoningLevel[] = !listed.reasoning ? ["none"] : sendableLevels(provider.protocol, lists ?? REASONING_LEVELS);
+  const reasoning = callLevel(reasoningAllowed, wanted);
   return {
     source: "provider",
     name: listed.name,

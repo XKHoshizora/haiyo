@@ -655,7 +655,8 @@ describe("帮我起草", () => {
 
 describe("思考程度", () => {
   it("lists only the levels the chosen model allows, and is hidden for a model that allows none", async () => {
-    await openAgents();
+    // (A provider whose interface has 最高: on Chat Completions and Gemini the list ends at 很高, tests/agent-form-levels.test.jsx.)
+    await openAgents({ providers: [providerOf(undefined, { protocol: "anthropic" })] });
     await openCreate();
     expect(inMain().queryByLabelText("思考程度")).toBeNull();
     await chooseModel("小模型 · 免费");
@@ -680,6 +681,7 @@ describe("思考程度", () => {
 
   it("a provider model that lists its reasoningLevels offers 不思考 and those only", async () => {
     const listing = providerOf(undefined, {
+      protocol: "anthropic",
       models: [
         { name: "some-levels", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["low", "high", "max"] },
         { name: "all-levels", vision: false, pdf: false, reasoning: true, contextTokens: 64000 },

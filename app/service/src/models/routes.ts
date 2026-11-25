@@ -7,6 +7,7 @@ import { REASONING_LEVELS } from "../config.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { abilitiesOf, abilitiesView, modelHints, type Abilities } from "../providers/hints.ts";
 import { requirePrincipal } from "../session.ts";
+import { sendableLevels } from "./resolve.ts";
 
 const { reportedTools: _reportedTools, ...siteMediaView } = abilitiesView;
 
@@ -73,7 +74,8 @@ export function registerModelRoutes(app: FastifyInstance): void {
           tier: m.tier,
           vision: m.vision,
           pdf: m.pdf,
-          reasoning: m.reasoning,
+          // (The levels it can run at: a level its protocol sends as another is listed as that one. models/resolve.ts `sendableLevels`.)
+          reasoning: sendableLevels(m.protocol, m.reasoning).filter((level) => level !== "none"),
           contextTokens: m.contextTokens,
           tools: m.tools,
           ...siteMedia(m),

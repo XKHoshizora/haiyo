@@ -26,6 +26,8 @@ const BIG = { source: "site", id: "oth_big" } as const;
 const SITE_MODELS = [
   ...(JSON.parse(OTHERS_ENV.SITE_MODELS) as Array<Record<string, unknown>>),
   { ...(JSON.parse(OTHERS_ENV.SITE_MODELS) as Array<Record<string, unknown>>)[1], id: "oth_think", label: "oth_think", model: "upstream-oth_think", reasoning: ["low", "high"] },
+  // On Chat Completions, listing `max`: a level this protocol sends as `xhigh`.
+  { ...(JSON.parse(OTHERS_ENV.SITE_MODELS) as Array<Record<string, unknown>>)[1], id: "oth_top", label: "oth_top", model: "upstream-oth_top", reasoning: ["high", "max"] },
 ];
 /** The judgement model configured (never called here): without it no reply nobody asked for is made at all. */
 const JUDGE = { model: "jev-1", channels: [{ url: "https://judge-a.example.test/v1/systemone", apiKeyEnv: "OTHERS_UPSTREAM_KEY" }], timeoutMs: 4000, dailyLimit: 20_000 };
@@ -251,5 +253,21 @@ describe("fix round 3, point 4: used up is said only of what admission would ref
     expect((await row()).tight).toBe(true);
     await set(atHigh);
     expect(await row()).toMatchObject({ reached: false, tight: false });
+  });
+});
+
+describe("fix round 3, ruling 5: no list offers a level no reply runs at", () => {
+  it("a Chat Completions model that lists max is listed with xhigh as its top (GET /api/models), and a reply set to max is sent, held and recorded at xhigh", async () => {
+    const k = await othersKitchen(app, db, { agent: { model: { source: "site", id: "oth_top" }, othersReasoning: "max" } });
+    const listed = ((await api(app, k.owner, "GET", "/api/models")).json.siteModels as Array<{ id: string; reasoning: string[] }>).find((m) => m.id === "oth_top")!;
+    expect(listed.reasoning).toEqual(["high", "xhigh"]);
+    // (Room for a paid reply held at xhigh.)
+    expect((await api(app, k.owner, "PUT", "/api/me/others-limits", { answers: 50, points: "2000" })).status).toBe(200);
+    k.gateway.reply("好。", { usage: { inputTokens: 900, outputTokens: 30 } });
+    await k.ask();
+    expect(await k.worker.runOnce()).toBe(true);
+    expect(k.gateway.calls[0]).toMatchObject({ reasoning: "xhigh", maxOutputTokens: 800 + allowance().xhigh });
+    const reply = ((await api(app, k.owner, "GET", `/api/conversations/${k.g}/messages`)).json.messages as Array<Record<string, unknown>>).find((m) => m.senderId === k.agent.id)!;
+    expect(reply.via).toMatchObject({ reasoning: "xhigh" });
   });
 });

@@ -30,6 +30,18 @@ export function effectiveLevel(levels, wanted) {
   return "none";
 }
 
+/**
+ * The levels a provider model on `protocol` that lists `listed` can RUN at, 不思考 first: each listed level as its protocol sends it,
+ * once. Chat Completions and Gemini have no 最高 (it is sent as 很高), so there the top offered and shown is 很高. The service's rule
+ * (app/service/src/models/resolve.ts `sendableLevels`; a site model's list arrives already so from `GET /api/models`): nothing here
+ * offers or shows a level no reply is made at.
+ */
+const NO_MAX = ["openai_chat", "gemini"];
+export function sendableLevels(protocol, listed) {
+  const sent = listed.map((level) => (level === "max" && NO_MAX.includes(protocol) ? "xhigh" : level));
+  return ALL_LEVELS.filter((l) => l === "none" || sent.includes(l));
+}
+
 export const PRIVACY_TEXT = "你与它的对话内容，包括发给它的图片和文件，会发送给所选模型的服务商。";
 
 /** A model choice as a `<select>` value: the same choice always gives the same key ("" for none). */
@@ -118,7 +130,7 @@ export function modelChoices(state) {
       const model = { source: "provider", providerId: p.id, model: m.name };
       const tooSmall = Number.isFinite(m.contextTokens) && m.contextTokens <= limit;
       // A model that lists the levels it supports offers those (as a site model does), else every level when it reasons.
-      const levels = !m.reasoning ? ["none"] : m.reasoningLevels ? ALL_LEVELS.filter((l) => l === "none" || m.reasoningLevels.includes(l)) : ALL_LEVELS;
+      const levels = !m.reasoning ? ["none"] : sendableLevels(p.protocol, m.reasoningLevels ?? ALL_LEVELS);
       const marks = abilityMarks({ ...reportedOf(m), vision: m.vision, pdf: m.pdf, reasoning: m.reasoning, tools: m.tools });
       return {
         key: modelKey(model),

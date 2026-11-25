@@ -7,7 +7,7 @@ import "./markdown-ready.js";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
-import { AG1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, providerOf, syncOf, usageOf } from "./fixtures.js";
+import { AG1, MODELS, P1, PRINCIPALS, agentConv, agentOf, agentPrincipal, providerOf, syncOf, usageOf } from "./fixtures.js";
 import { click, flush, inMain, installBrowser, mainText, openApp, push } from "./harness.jsx";
 import { optionsOf, pickOption } from "./select-helpers.js";
 
@@ -106,7 +106,7 @@ describe("creating", () => {
 
   it("a model that lacks the level picked shows the level that would run, and that one is sent", async () => {
     const createAgent = vi.fn(async () => agentOf(AG1));
-    await openCreate({ createAgent });
+    await openCreate({ createAgent, listProviders: vi.fn(async () => ({ providers: [providerOf(P1, { protocol: "anthropic" })] })) });
     await chooseModel("gpt-x");
     pickOption(box(OTHERS), "max");
     await chooseModel("大模型 · 需余额");
@@ -184,5 +184,44 @@ describe("fix round 3, point 4", () => {
   it("the others' select says whom it is for (a call in a group, a visitor) and what it counts against", async () => {
     await openEdit({});
     expect(box(OTHERS).closest(".field").textContent).toContain("别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。");
+  });
+});
+
+describe("fix round 3, ruling 5: no level is offered or shown that no reply runs at", () => {
+  // The service sends 最高 as 很高 on Chat Completions and Gemini (models/resolve.ts `sentLevel`): there the top of every list is 很高.
+  const GPT = { source: "provider", providerId: P1, model: "gpt-x" };
+  const edit = async (provider) => {
+    const record = agentOf(AG1, { model: GPT, reasoning: "max", othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "max", proactive: true, proactiveBudget: "70", proactiveReasoning: "max" });
+    await openAgents({ agents: [record], api: { listProviders: vi.fn(async () => ({ providers: [provider] })) } });
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    const page = mainText();
+    await click(inMain().getByRole("button", { name: /编辑/ }));
+    return page;
+  };
+  const UP_TO_XHIGH = ["不思考", "低", "中", "高", "很高"];
+
+  it.each([["openai_chat"], ["gemini"]])("a model of a %s provider: the Agent's own level and both selects end at 很高, a saved 最高 is shown as 很高, on its page too", async (protocol) => {
+    const page = await edit(providerOf(P1, { protocol }));
+    expect(page).toContain("回应别人时思考：很高");
+    expect(page).toContain("主动回复时思考：很高");
+    expect(page).not.toContain("最高");
+    for (const label of ["思考程度", OTHERS, PROACTIVE]) {
+      expect([label, levels(label)]).toEqual([label, UP_TO_XHIGH]);
+      expect([label, box(label).value]).toEqual([label, "xhigh"]);
+    }
+  });
+
+  it("a model that lists 高 and 最高 there is offered 高 and 很高", async () => {
+    await edit(providerOf(P1, { models: [{ name: "gpt-x", vision: false, pdf: false, reasoning: true, contextTokens: 64000, reasoningLevels: ["high", "max"] }] }));
+    for (const label of ["思考程度", OTHERS, PROACTIVE]) expect([label, levels(label)]).toEqual([label, ["不思考", "高", "很高"]]);
+  });
+
+  it.each([["anthropic"], ["openai_responses"]])("a model of a %s provider keeps 最高: it is sent as it is", async (protocol) => {
+    const page = await edit(providerOf(P1, { protocol }));
+    expect(page).toContain("回应别人时思考：最高");
+    for (const label of ["思考程度", OTHERS, PROACTIVE]) {
+      expect([label, levels(label)]).toEqual([label, [...UP_TO_XHIGH, "最高"]]);
+      expect([label, box(label).value]).toEqual([label, "max"]);
+    }
   });
 });
