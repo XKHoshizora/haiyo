@@ -162,9 +162,9 @@ describe("the others' daily budget", () => {
     const before = await runsOf(anna.id, w.g);
     await say(w.member, w.g, "@anna 再问");
     expect(await runsOf(anna.id, w.g)).toEqual(before);
-    expect(await noticesOf(w.g)).toEqual([{ event: EVENT, actorId: anna.id, agentId: anna.id, text: "「安娜」今天不再回复别人了，明天恢复。" }]);
+    expect(await noticesOf(w.g)).toEqual([{ event: EVENT, actorId: anna.id, agentId: anna.id, text: "「安娜」今天只回复它的主人，明天恢复。" }]);
     const told = await thirdSocket.next((x) => x.type === "message" && x.message.system?.event === EVENT);
-    expect(told.message).toMatchObject({ senderId: null, text: "「安娜」今天不再回复别人了，明天恢复。", system: { event: EVENT, actorId: anna.id, agentId: anna.id } });
+    expect(told.message).toMatchObject({ senderId: null, text: "「安娜」今天只回复它的主人，明天恢复。", system: { event: EVENT, actorId: anna.id, agentId: anna.id } });
     expect(pushed.mock.calls).toEqual([[w.owner.id, anna.id]]);
 
     // Another member's call the same day: refused too, with no second notice and no second push.
@@ -232,7 +232,7 @@ describe("the others' daily budget", () => {
 
     const refused = await agentSays(mia.id, w.g, "@anna 你看看");
     expect([refused.runs, refused.callerLimited, refused.budgetReached]).toEqual([[], [], [{ ownerId: w.owner.id, agentId: anna.id }]]);
-    expect(refused.notices.map((n) => [n.seq, n.body])).toEqual([[refused.message.seq + 1, { event: EVENT, actorId: anna.id, agentId: anna.id, text: "「anna」今天不再回复别人了，明天恢复。" }]]);
+    expect(refused.notices.map((n) => [n.seq, n.body])).toEqual([[refused.message.seq + 1, { event: EVENT, actorId: anna.id, agentId: anna.id, text: "「anna」今天只回复它的主人，明天恢复。" }]]);
     // Once a day in the group.
     const again = await agentSays(mia.id, w.g, "@anna 还在吗");
     expect([again.runs, again.notices, again.budgetReached]).toEqual([[], [], []]);

@@ -90,16 +90,18 @@ const cases: Array<[name: string, setup: Setup, social: Reach, group: Reach]> = 
   ["bar, row on the contacts basis after the bar", async (w) => void (await bar(w, T1), await row(w, w.P, "live", { basis: "contacts", since: T2 })), "barred", "barred"],
   ["bar, approved row of P's Agent, P asks", async (w) => void (await bar(w, T1), await row(w, w.pAgent, "live", { since: T2 })), "barred", "barred"],
   ["bar, the owner asks", async (w) => void ((w.subject = w.O), await bar(w)), "ok", "ok"],
-  ["row ended narrowed", ended("narrowed"), "barred", "barred"],
-  ["row ended removed", ended("removed"), "barred", "barred"],
-  ["row ended barred", ended("barred"), "barred", "barred"],
+  // (Fix round 2, N2: in a group only what stands now refuses; a row that ended refuses nobody there, access comes from membership.)
+  ["row ended narrowed", ended("narrowed"), "barred", "ok"],
+  ["row ended removed", ended("removed"), "barred", "ok"],
+  ["row ended barred", ended("barred"), "barred", "ok"],
+  ["row ended barred and the bar still stands", async (w) => void (await ended("barred")(w), await bar(w)), "barred", "barred"],
   ["row ended declined", ended("declined"), "no_access", "ok"],
   ["row ended expired", ended("expired"), "no_access", "ok"],
   ["row ended left", ended("left"), "no_access", "ok"],
   ["row requested", (w) => row(w, w.P, "requested").then(() => {}), "no_access", "ok"],
   ["person's live row, P's Agent asks", async (w) => void ((w.subject = w.pAgent), await row(w, w.P, "live")), "no_access", "ok"],
   ["P's Agent's own live row", async (w) => void ((w.subject = w.pAgent), await row(w, w.pAgent, "live", { basis: "contacts" })), "ok", "ok"],
-  ["P's Agent's row ended narrowed", async (w) => void ((w.subject = w.pAgent), await row(w, w.pAgent, "ended", { reason: "narrowed" })), "barred", "barred"],
+  ["P's Agent's row ended narrowed", async (w) => void ((w.subject = w.pAgent), await row(w, w.pAgent, "ended", { reason: "narrowed" })), "barred", "ok"],
 ];
 
 describe("reach", () => {
@@ -142,7 +144,7 @@ describe("reach", () => {
       ["never met", async () => {}, "no_access", "ok"],
       ["live", async (p) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [w.agent, p])), "ok", "ok"],
       ["requested", async (p) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, until) values ($1, $2, $2, 'requested', now() + interval '1 day')`, [w.agent, p])), "no_access", "ok"],
-      ["narrowed", async (p) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $2, 'ended', 'narrowed')`, [w.agent, p])), "barred", "barred"],
+      ["narrowed", async (p) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $2, 'ended', 'narrowed')`, [w.agent, p])), "barred", "ok"],
       ["barred, no row", async (p) => void (await db.query(`insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')`, [p, w.O])), "barred", "barred"],
       [
         "barred, then approved",
@@ -187,7 +189,7 @@ describe("the twin over Agent subjects (the relay check, I8)", () => {
       ["never met", async () => {}, "no_access", "ok"],
       ["its own row live", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $3, 'live', 'approved')`, [w.agent, a.agent, a.person])), "ok", "ok"],
       ["only its person's row live", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [w.agent, a.person])), "no_access", "ok"],
-      ["its own row narrowed", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $3, 'ended', 'narrowed')`, [w.agent, a.agent, a.person])), "barred", "barred"],
+      ["its own row narrowed", async (a) => void (await db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, end_reason) values ($1, $2, $3, 'ended', 'narrowed')`, [w.agent, a.agent, a.person])), "barred", "ok"],
       ["its person barred", async (a) => void (await db.query(`insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')`, [a.person, w.O])), "barred", "barred"],
       ["O blocks its person", async (a) => void (await block(w.O, a.person)), "blocked", "blocked"],
       ["it blocks the Agent", async (a) => void (await block(a.agent, w.agent)), "blocked", "blocked"],

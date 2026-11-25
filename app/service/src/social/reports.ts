@@ -30,12 +30,14 @@ export async function reportAgent(
   // One open report per reporter and Agent (fix round 1, m7): reporting again while the first waits for the operator adds no row and is
   // answered with that report (its reason and note stay the first ones). Once it is handled, a new report is a new row.
   // (Only for an Agent the reporter can see now: for any other the answer stays the one of an Agent that is not there.)
-  const open = await q.query<{ id: string }>(
+  const openReport = () =>
+    q.query<{ id: string }>(
     `select r.id from agent_reports r join principals p on p.id = r.agent_id
       where r.reporter_id = $1::uuid and r.agent_id = $2::uuid and r.handled_at is null and p.kind = 'agent' and ${agentSeenSql("p", "$1::uuid", config)}
       order by r.created_at limit 1`,
     [reporterId, agentId],
-  );
+    );
+  const open = await openReport();
   if (open.rows[0]) return open.rows[0].id;
   const { rows } = await q.query<{ id: string }>(
     `insert into agent_reports (reporter_id, target_kind, agent_id, conversation_id, reason, note)
@@ -44,10 +46,15 @@ export async function reportAgent(
             $3::text, $4::text
        from principals p
       where p.id = $2::uuid and p.kind = 'agent' and ${agentSeenSql("p", "$1::uuid", config)}
+     on conflict (reporter_id, agent_id) where handled_at is null do nothing
      returning id`,
     [reporterId, agentId, reason, note],
   );
-  return rows[0]?.id ?? null;
+  if (rows[0]) return rows[0].id;
+  // Nothing inserted: the Agent is not one the reporter can see, or another request of theirs made the open report a moment ago
+  // (`agent_reports_one_open_idx`, migration 076): that one is the answer.
+  // (asked by the same guarded read, so an Agent the reporter cannot see answers nothing).
+  return (await openReport()).rows[0]?.id ?? null;
 }
 
 /** The id of the live (not deleted) Agent with this full handle, `<owner's handle>.<name part>`, case ignored; null for anything else. */

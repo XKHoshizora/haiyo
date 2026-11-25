@@ -690,8 +690,10 @@ describe("blocks (Controller ruling Q4, per setter)", () => {
     expect((await unblock(v, owner)).status).toBe(200);
     expect(await barRows(owner, v)).toEqual([]);
     expect(await rowState(y.id, v.id)).toEqual({ state: "ended", endReason: "barred" });
-    // No bar is left, but the row that the block ended is `barred` and stays so until a request is approved.
-    expect(await reach(db, v.id, y.id, "group", on)).toBe("barred");
+    // No bar is left. The row the block ended is `barred` and keeps the social conversation shut until a request is approved; in a
+    // group nothing stands any more, so the person is answered there again (fix round 2, N2).
+    expect(await reach(db, v.id, y.id, "social", on)).toBe("barred");
+    expect(await reach(db, v.id, y.id, "group", on)).toBe("ok");
   });
 
   it("open screens are told: a block, an unblock and an unfriend publish the pair's social conversations to their people", async () => {
@@ -748,6 +750,6 @@ describe("blocks (Controller ruling Q4, per setter)", () => {
       expect(rows).toContain("C>D stop");
       expect(rows.includes("C>D block")).toBe((await blocksBetween(c, d)).length === 1);
     }
-    // (36 sign-ups, each with a password hash: close to the suite's default limit on a busy machine.)
+    // (24 sign-ups, each with a password hash, and about 150 requests: close to the suite's default limit on a busy machine.)
   }, 45_000);
 });

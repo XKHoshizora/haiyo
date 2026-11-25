@@ -508,6 +508,62 @@ describe("fix round 1, I4: a stop its setter made can always be seen and undone 
   });
 });
 
+describe("fix round 2, N2: in a group only a standing bar refuses", () => {
+  /** A co-member who added the Agent and was let in, then stopped by its owner: their contact row is ended by the stop. */
+  async function addedThenStopped() {
+    const w = await grouped();
+    expect((await add(w.v, w.y.id)).status).toBe(202);
+    expect((await api(app, w.owner, "POST", `/api/agent-contacts/${w.y.id}/${w.v.id}/approve`)).status).toBe(200);
+    expect((await stop(w.owner, w.v)).status).toBe(200);
+    const row = (await db.query<{ state: string; end_reason: string | null }>("select state, end_reason from agent_contacts where agent_id = $1 and subject_id = $2", [w.y.id, w.v.id])).rows[0]!;
+    expect(row).toEqual({ state: "ended", end_reason: "barred" });
+    return w;
+  }
+  const answered = async (w: Awaited<ReturnType<typeof grouped>>, text: string, runs: number) => {
+    await say(w.v, w.g, `${w.at} ${text}`);
+    expect((await runsOf(w.y.id, w.g)).length).toBe(runs);
+  };
+
+  it("switch on: a co-member whose contact row the stop ended is refused in the group while the stop stands, and answered again after 恢复往来 without adding again; the social conversation still needs a new add", async () => {
+    const w = await addedThenStopped();
+    await answered(w, "在吗", 0);
+    expect(await reach(db, w.v.id, w.y.id, "group", { social: { enabled: true } })).toBe("barred");
+    expect((await resume(w.owner, w.v)).status).toBe(200);
+    // The row stays ended (now `removed`): in the group that refuses nobody, access there comes from membership.
+    expect(await reach(db, w.v.id, w.y.id, "group", { social: { enabled: true } })).toBe("ok");
+    expect(await reach(db, w.v.id, w.y.id, "social", { social: { enabled: true } })).not.toBe("ok");
+    await answered(w, "现在呢", 1);
+    gateway.reply("在的");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+  });
+
+  it("switch off: the same; nothing has to be added (nothing can be) for the group to answer again", async () => {
+    const w = await addedThenStopped();
+    await switchedOff(async () => {
+      await answered(w, "在吗", 0);
+      expect((await resume(w.owner, w.v)).status).toBe(200);
+      expect((await add(w.v, w.y.id)).status).toBe(404);
+      await answered(w, "现在呢", 1);
+      gateway.reply("在的");
+      expect(await app.agentWorker.runOnce()).toBe(true);
+    });
+  });
+
+  it("a row ended by a narrowing or a removal refuses nobody in the group either (it never was a bar); a block still does", async () => {
+    const w = await grouped();
+    expect((await add(w.v, w.y.id)).status).toBe(202);
+    expect((await api(app, w.owner, "POST", `/api/agent-contacts/${w.y.id}/${w.v.id}/approve`)).status).toBe(200);
+    expect((await api(app, w.owner, "DELETE", `/api/agent-contacts/${w.y.id}/${w.v.id}`)).status).toBe(200);
+    expect(await reach(db, w.v.id, w.y.id, "group", { social: { enabled: true } })).toBe("ok");
+    expect(await reach(db, w.v.id, w.y.id, "social", { social: { enabled: true } })).toBe("barred");
+    await answered(w, "在吗", 1);
+    gateway.reply("在的");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect((await api(app, w.owner, "PUT", `/api/blocks/${w.v.id}`)).status).toBe(200);
+    expect(await reach(db, w.v.id, w.y.id, "group", { social: { enabled: true } })).toBe("blocked");
+  });
+});
+
 describe("fix round 1, m17: no whisper can be made in a social conversation", () => {
   it("createWhisper stores nothing and answers null there, for the owner who watches (the same call in the Agent's own conversation makes one)", async () => {
     const w = await visited();

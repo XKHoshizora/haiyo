@@ -219,10 +219,11 @@ describe("inside the app", () => {
   it("a run that is still waiting when the app closes never happens", async () => {
     await unsentUpload();
     await db.query("update attachments set created_at = now() - interval '61 minutes'");
-    const sweeping = await buildApp({ config: { ...app.deps.config, sweepIntervalMinutes: 15 }, db, blobs }, { sweepInitialDelayMs: 100 });
+    // (The first sweep waits long enough for the app to be ready and closed on a busy machine; then the wait is outlived: review 2, n6.)
+    const sweeping = await buildApp({ config: { ...app.deps.config, sweepIntervalMinutes: 15 }, db, blobs }, { sweepInitialDelayMs: 2500 });
     await sweeping.ready();
     await sweeping.close();
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 3000));
     expect((await db.query("select 1 from attachments")).rowCount).toBe(1);
   });
 });

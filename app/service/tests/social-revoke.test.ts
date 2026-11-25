@@ -70,7 +70,12 @@ const live = (agentId: string, subjectId: string, personId: string = subjectId) 
   db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $3, 'live', 'approved')`, [agentId, subjectId, personId]);
 const requested = (agentId: string, subjectId: string, personId: string = subjectId) =>
   db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, until) values ($1, $2, $3, 'requested', now() + interval '3 days')`, [agentId, subjectId, personId]);
-const grants = (scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred") => db.tx((t) => endGrants(t, scope, reason));
+/** `endGrants` as its callers call it: a `barred` ending between two people comes with its standing bar (`setBar` writes it first). */
+const grants = (scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred") =>
+  db.tx(async (t) => {
+    if (reason === "barred" && "between" in scope) await t.query("insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')", [scope.between[0], scope.between[1]]);
+    return endGrants(t, scope, reason);
+  });
 let txn = 0;
 const send = (who: Actor, conv: string, text: string) => api(app, who, "POST", `/api/conversations/${conv}/messages`, { text, clientTxn: `rv${++txn}` });
 
@@ -124,7 +129,7 @@ describe("endGrants: what it ends", () => {
 });
 
 describe("endGrants: what it stops", () => {
-  it("the queued reply is cancelled and the running one interrupted, in the pair's conversation and in groups the person called; not a group someone else called", async () => {
+  it("a removal: the running reply of the pair's conversation is interrupted; a group's replies are left alone, whoever called (in a group only a standing bar refuses: fix round 2, N2)", async () => {
     const { owner, agent, v } = await world("st");
     const w = await signUp(app, "stw");
     const s = (await seedSocial(app, { owner, agentId: agent.id, visitor: v })).conversationId;
@@ -140,11 +145,11 @@ describe("endGrants: what it stops", () => {
     const result = await grants({ agentId: agent.id, subjectIds: [v.id] }, "removed");
     expect(result.ended).toBe(1);
     expect(result.running).toEqual([running]);
-    expect(result.cancelled).toHaveLength(1);
-    expect(result.cancelled[0]).toMatchObject({ ownerId: owner.id, conversationId: g1, run: { id: queued, status: "cancelled" } });
+    expect(result.cancelled).toHaveLength(0);
     expect(await runOf(running)).toMatchObject({ status: "running", ...ended });
-    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
-    expect((await db.query(`select finished_at from agent_runs where id = $1`, [queued])).rows[0]!.finished_at).not.toBeNull();
+    // The group reply V called is not refused by a row that ended: it stays queued, to be answered.
+    expect(await runOf(queued)).toMatchObject({ status: "queued", ...untouched });
+    expect(g1).toBeTruthy();
     // A group run someone else called, V only among its askers (the design says the caller, attack M5), stays; so does everything of W's.
     expect(await runOf(callerElse)).toMatchObject({ status: "running", ...untouched });
     expect(await runOf(otherSocial)).toMatchObject({ status: "queued", ...untouched });
@@ -270,7 +275,8 @@ describe("what takes it over", () => {
     expect(await rowOf(agent.id, w.id)).toMatchObject({ state: "live" });
     expect(await rowOf(agent.id, wAgent)).toMatchObject({ state: "requested" });
     expect(await runOf(running)).toMatchObject({ status: "running", ...ended });
-    expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
+    // (The group reply the person called stays: a removal is no bar, and in a group only a standing bar refuses.)
+    expect(await runOf(queued)).toMatchObject({ status: "queued", error: null });
     // A waiting request is not removed by the owner (decline it): as before.
     expect((await api(app, owner, "DELETE", `/api/agent-contacts/${agent.id}/${wAgent}`)).status).toBe(404);
     expect(await rowOf(agent.id, wAgent)).toMatchObject({ state: "requested" });

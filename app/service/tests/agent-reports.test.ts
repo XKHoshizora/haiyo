@@ -301,4 +301,16 @@ describe("reports:list and reports:close", () => {
     expect(await disabledAt()).toBe(true);
     expect(await reach(db, w.visitor.id, w.agent.id, "social", on)).toBe("gone");
   }, TIMEOUT);
+
+  it("two reports of one Agent by one person at the same moment are one open report (review 2, n4: the index decides, not the read before the insert)", async () => {
+    const owner = await signUp(app, "rpt2o");
+    const visitor = await signUp(app, "rpt2v");
+    const agent = (await mustCreateAgent(app, owner, { handle: "rpt2y", name: "rpt2y" })) as { id: string };
+    await seedSocial(app, { owner, agentId: agent.id, visitor });
+    const both = await Promise.all([1, 2, 3, 4].map(() => api(app, visitor, "POST", "/api/reports", { agentId: agent.id, reason: "spam" })));
+    expect(both.map((r) => r.status)).toEqual([201, 201, 201, 201]);
+    expect(new Set(both.map((r) => r.json.id)).size).toBe(1);
+    expect((await db.query("select 1 from agent_reports where reporter_id = $1 and agent_id = $2", [visitor.id, agent.id])).rowCount).toBe(1);
+    await expect(db.query("insert into agent_reports (reporter_id, target_kind, agent_id, reason) values ($1, 'agent', $2, 'spam')", [visitor.id, agent.id])).rejects.toThrow(/agent_reports_one_open_idx/);
+  });
 });

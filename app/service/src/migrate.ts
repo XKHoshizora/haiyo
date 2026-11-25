@@ -35,7 +35,7 @@ export const DOWN_REMOVES: Readonly<Record<string, string>> = {
   "075_agent_social_access":
     "075's Down DELETES, for good: every 停止往来 (the stop rows of access_bars) and the bars made from blocks, every report of an Agent (agent_reports), every Agent's contact policy and picks (agents.contact_policy, contact_picked, agent_contact_picks), every operator's disable (agents.disabled_at), every answer to a persona card (social_card_answers), whose bar ended an access (agent_contacts.barred_by) and which personas were read (agents.persona_checked_version). People who were stopped can reach those Agents again, and a later Up brings back only the bars that come from blocks.",
   "076_others_reasoning":
-    "076's Down drops agents.others_reasoning and agents.proactive_reasoning: every owner's chosen thinking level for replies to other people and for proactive replies. No other row changes; the code before 076 makes such replies without thinking. It must be undone before 075 and 074 can be.",
+    "076's Down drops agents.others_reasoning and agents.proactive_reasoning: every owner's chosen thinking level for replies to other people and for proactive replies (and the index that keeps one open report per reporter and Agent). No other row changes; the code before 076 makes such replies without thinking. It must be undone before 075 and 074 can be.",
 };
 
 export const CONFIRM_FLAG = "--i-understand-this-deletes-data";

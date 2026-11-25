@@ -179,7 +179,7 @@ describe("the notice sentences", () => {
     );
     const iso = new Date().toISOString();
     expect(await renderNotice(db, "x", { event: "note_withheld", actorId: agent.id, agentId: agent.id, audienceId: owner.id, noteKind: "owner", noteId: "n", expiresAt: iso })).toBe("有一条笔记没有告诉别人");
-    expect(await renderNotice(db, "x", { event: "persona_fact", actorId: agent.id, agentId: agent.id, sentence: "s", personaVersion: 1, expiresAt: iso })).toBe("人格里有一句话可能会被说给别人，点开确认");
+    expect(await renderNotice(db, "x", { event: "persona_fact", actorId: agent.id, agentId: agent.id, sentence: "s", personaVersion: 1, expiresAt: iso })).toBe("人格里有句话可能被说给别人");
   });
 
   it("two owners are joined by 、", async () => {

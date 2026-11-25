@@ -12,8 +12,11 @@ import { blockedEitherWay } from "./relations.ts";
 //   3. a block either way between P and O, P and the Agent, the subject and the Agent, or the subject and O -> blocked;
 //   4. a bar between P and O (either one's: any row of `access_bars` either way) -> barred, unless the subject's own row on the Agent is
 //      live, approved and newer than the latest bar;
-//   5. the subject's own row: live -> ok; ended narrowed, removed or barred -> barred;
-//   6. otherwise group -> ok, social -> no_access. An Agent subject is judged on its own row only: a person's row never grants
+//   5. the subject's own row: live -> ok; in a social conversation, ended narrowed, removed or barred -> barred;
+//   6. otherwise group -> ok, social -> no_access. In a GROUP only what stands now refuses (steps 1, 3 and 4): access there comes from
+//      membership, so a row that ended (by a narrowing, a removal, or a stop since lifted) refuses nobody, and a co-member is answered
+//      again the moment a stop is lifted, without adding again (Controller ruling, fix round 2, N2); adding again is for the social
+//      conversation only. An Agent subject is judged on its own row only: a person's row never grants
 //      their Agent.
 // The switch off refuses only social (D3): a group runs as it always did unless the Agent is deleted or disabled.
 
@@ -65,7 +68,7 @@ export function reachSql(o: ReachSqlOptions): string {
     when ${blockedEitherWay(P, `${O}, ${A}`)} or ${blockedEitherWay(S, `${A}, ${O}`)} then 'blocked'
     when ${bar} then 'barred'
     when ${own("rchc.state = 'live'")} then 'ok'
-    when ${own("rchc.state = 'ended' and rchc.end_reason in ('narrowed', 'removed', 'barred')")} then 'barred'
+    ${o.where === "group" ? "" : `when ${own("rchc.state = 'ended' and rchc.end_reason in ('narrowed', 'removed', 'barred')")} then 'barred'`}
     else '${o.where === "group" ? "ok" : "no_access"}' end)`;
 }
 

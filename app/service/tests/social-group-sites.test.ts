@@ -109,9 +109,9 @@ describe("the sites ask refusedSql", () => {
     expect(rows.filter((r) => r.old).length).toBe(70 + 1);
     // THE decision, asked one by one: the SQL twin spliced over many rows says the same of every one of them.
     for (const r of rows) expect([r.id, r.now]).toEqual([r.id, (await reach(db, r.id, agent.id, "group", app.deps.config)) !== "ok"]);
-    // Where a block stands the old rule and the new agree; the new one also refuses the 7 + 7 stopped and the 7 removed, and not the 7 who left.
+    // Where a block stands the old rule and the new agree; the new one also refuses the 7 + 7 stopped, and neither the 7 removed nor the 7 who left (a row that ended refuses nobody in a group: fix round 2, N2).
     for (const r of rows.filter((x) => x.old)) expect(r.now).toBe(true);
-    expect(rows.filter((r) => r.now && !r.old).length).toBe(21);
+    expect(rows.filter((r) => r.now && !r.old).length).toBe(14);
   }, 180_000);
 });
 

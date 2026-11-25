@@ -68,10 +68,15 @@ const view = async (id: string) =>
       [id],
     )
   ).rows[0] as { status: string; error: string | null; interrupted: string | null; pending: number | null; calls: number[]; covers: number; caller: string | null; lane: string; askers: string[] };
-/** V let in on the Agent: an ending that closes that row `barred`, `removed` or `narrowed` refuses V in a group too (reach, step 5). */
+/** V let in on the Agent. In a group only what STANDS refuses (reach; fix round 2, N2): a stop or a block, never a row that ended. */
 const letIn = (agentId: string, v: string) =>
   db.query(`insert into agent_contacts (agent_id, subject_id, person_id, state, basis) values ($1, $2, $2, 'live', 'approved')`, [agentId, v]);
-const between = (a: string, b: string) => db.tx((t) => endGrants(t, { between: [a, b] }, "barred"));
+/** 停止往来 as `setBar` does it: the bar is written, then the rows between the two end `barred` and their runs are stopped. */
+const between = (a: string, b: string) =>
+  db.tx(async (t) => {
+    await t.query("insert into access_bars (setter_id, other_id, kind) values ($1, $2, 'stop')", [a, b]);
+    return endGrants(t, { between: [a, b] }, "barred");
+  });
 
 describe("an ending takes the refused person's calls out of a group reply", () => {
   it("queued: a folded third party's call survives, the reply becomes theirs; with no call left it is cancelled quietly, with no error", async () => {
@@ -166,8 +171,12 @@ describe("the same through the routes: a third party's folded call survives ever
       const only = await run({ agentId: w.agent.id, group: await newGroup(w.owner.id), status: "queued", calls: [w.v.id] });
       const others = await run({ agentId: w.agent.id, group: await newGroup(w.owner.id), status: "queued", calls: [w.s.id] });
       await end(w);
-      expect([name, await view(shared.id)]).toEqual([name, expect.objectContaining({ status: "queued", error: null, calls: [shared.seqs[1]], caller: w.s.id })]);
-      expect([name, await view(only.id)]).toEqual([name, expect.objectContaining({ status: "cancelled", error: null })]);
+      // A removal and a narrowing end the row and the social conversation; in a group they refuse nobody (access there is membership:
+      // fix round 2, N2), so the person's calls stay in the group's replies. A stop and a block stand, and take them out.
+      const stands = name !== "removal" && name !== "narrowing";
+      expect((await db.query<{ state: string }>("select state from agent_contacts where agent_id = $1 and subject_id = $2", [w.agent.id, w.v.id])).rows[0]!.state).toBe("ended");
+      expect([name, await view(shared.id)]).toEqual([name, expect.objectContaining(stands ? { status: "queued", error: null, calls: [shared.seqs[1]], caller: w.s.id } : { status: "queued", error: null, calls: shared.seqs, caller: w.v.id })]);
+      expect([name, await view(only.id)]).toEqual([name, expect.objectContaining(stands ? { status: "cancelled", error: null } : { status: "queued", error: null, calls: only.seqs })]);
       expect([name, await view(others.id)]).toEqual([name, expect.objectContaining({ status: "queued", calls: others.seqs })]);
     });
   }

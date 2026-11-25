@@ -328,50 +328,72 @@ timed for it. `proactive` (tests only): `false` builds none, `{ delayMs }` waits
 
 **Build and start.** See Commands: `npm run build`, `npm run migrate:prod`, `npm start`.
 
-**Migration 074 (others' numbers) and 075 (Agent social): one deploy, one transaction.** The two are ring 1a's. `migrate`
-applies every pending migration in ONE transaction, so on a database that has 073 the two commit together or not at all:
-074 can never be applied without 075.
+**Migrations 074 (others' numbers), 075 (Agent social) and 076 (the two thinking levels): one deploy, one transaction.** The
+three are ring 1a's. `migrate` applies every pending migration in ONE transaction, so on a database that has 073 they commit
+together or not at all: 074 can never be applied without 075 and 076.
 
 What 074 changes for the code that was serving before: it clears an Agent's own others' number where it still held the old
 default of 20 points (NULL: no number of its own; its owner's one pair of daily numbers applies) and raises a proactive
 budget at exactly 20 to 70. Code from BEFORE 074 reads that NULL as NO limit on others' use, and has no owner total. So an
 old process serving on the new schema has no per-Agent bound on what others spend on those Agents (it is still held by the
 caller's own minute, the owner's concurrency and the owner's balance): acceptable for the minutes of a deploy, not for hours.
-The old code knows none of 075's tables and columns and never reads them.
+The old code knows none of 075's tables and columns nor 076's two columns, and never reads them.
 
-On this platform a deploy that does not become healthy leaves the OLD deployment serving. Before deploying: take a database
-backup; where a short outage is acceptable, stop the old container before the new one starts (there is then no window at
-all). Watch the deploy until the new container is healthy and the old one has exited. The three ways it can go wrong:
+Whether the OLD deployment keeps serving when a new one does not become healthy must be CHECKED on the platform before the
+deploy, not assumed: a service with a volume attached (this one has one, `.railway/railway.ts`) may have its old deployment
+stopped before the new one starts, and then a failed deploy is "the site is down", with no old code on the new schema and no
+money window. Before deploying: take a database backup; find out which of the two the platform does; rehearse the take-back's
+refusal (below); where a short outage is acceptable, stop the old container before the new one starts (there is then no window
+at all, and no old transaction can hold a lock the migration waits for: `migrate` sets no `lock_timeout`). Watch the deploy
+until the new container is healthy and the old one has exited. The three ways it can go wrong:
 
-1. *074 fails.* Nothing is applied (one transaction). The new container stops before it serves; the old code keeps serving
-   on the schema it knows. Nothing to take back: fix and deploy again.
-2. *075 fails.* The same: 074 is rolled back with it, nothing is applied, nothing to take back. (A database left with 074
-   and without 075 cannot come from `migrate` any more.)
-3. *Both applied, and the new container never becomes healthy* (a configuration value it refuses, a crash at start, a health
-   check that times out). The old code is now serving on the new schema, with the NULLs above. Do not wait:
-   - first try to get the NEW container healthy (the usual cause is configuration); if that takes more than a few minutes,
-     take both migrations back, in this order, with the new image and the site's environment. The old container may keep
-     serving while you do it (it reads nothing of 075, and 074's Down only gives it back the numbers it expects):
+1. *074 fails.* Nothing is applied (one transaction). The new container stops before it serves. Nothing to take back: fix
+   and deploy again.
+2. *075 or 076 fails.* The same: everything before it is rolled back with it, nothing is applied, nothing to take back. (A
+   database left with 074 and without the other two cannot come from `migrate` any more.)
+3. *All three applied, and the new container never becomes healthy* (a configuration value it refuses, a crash at start, a
+   health check that times out). If the old deployment is serving, it is on the new schema, with the NULLs above. Do not wait.
+   In this order:
+   - **Stop or remove the failed NEW deployment first**, and do not redeploy that image until it is fixed. The image runs
+     `migrate` at every start and the platform restarts a failed deployment (up to five times): a restart after the Downs
+     below would apply 074 to 076 again at once, and the old code would be back on the cleared numbers with nobody watching.
+     (If the cause is plainly configuration and can be fixed in a few minutes, fixing it and letting the new container come
+     up is the better way out; otherwise go on.)
+   - **Take the three migrations back, newest first.** The OLD image cannot do it: it has no `migrate:down` command and none
+     of the three files. Run the command from the NEW image's code (or from this checkout at the deployed commit), as a
+     one-off process that only needs to reach the site's database, never as the service:
 
      ```
+     node dist/cli.js migrate:down --name 076_others_reasoning --i-understand-this-deletes-data --in-production
      node dist/cli.js migrate:down --name 075_agent_social_access --i-understand-this-deletes-data --in-production
      node dist/cli.js migrate:down --name 074_others_step_l --i-understand-this-deletes-data --in-production
      ```
 
-     (as `docker run --rm --env-file agent-family.env agent-family node dist/cli.js …`, or the platform's one-off command.)
-     The other order is refused: 074 is not the last migration applied while 075 is.
-   - then check `select count(*) from agents where others_budget_micro is null` is 0 and
-     `select name from pgmigrations order by run_on desc, id desc limit 1` is `073_others_columns_and_social_skeleton`;
-   - fix the new image and deploy again: the Up puts every row where the first one did (20 → none, a proactive 20 → 70; a
-     number an owner set to anything else is never touched).
-   Rolling the code back WITHOUT the two Downs keeps 074 applied under the old code: the hazard itself.
+     (as `docker run --rm --env-file agent-family.env <the new image> node dist/cli.js …`: the command given replaces the
+     image's own, so nothing migrates or serves; or from a checkout: `DATABASE_URL=… npm run migrate:down -- --name …`.) Any other order
+     is refused: only the last migration applied can be undone. The old deployment, if it is serving, may keep serving
+     meanwhile (it reads nothing of 075 or 076, and 074's Down only gives it back the numbers it expects).
+   - Then check `select count(*) from agents where others_budget_micro is null` is 0 and
+     `select name from pgmigrations order by run_on desc, id desc limit 1` is `073_others_columns_and_social_skeleton`. If
+     the old deployment was stopped by the platform, redeploy the PREVIOUS image now.
+   - Fix the new image and deploy again: the Up puts every row where the first one did (20 → none, a proactive 20 → 70; a
+     number an owner set to anything else is never touched; both thinking levels `none`).
+   Rolling the code back WITHOUT the Downs keeps 074 applied under the old code: the hazard itself.
+
+**Rehearse before the deploy**, against the site's database, from where the take-back would be run:
+`node dist/cli.js migrate:down --name 076_others_reasoning` with NO confirmation flag must print what 076's Down removes and
+then answer "the last migration applied is 073_others_columns_and_social_skeleton, not 076_others_reasoning: nothing was
+undone". That proves the command, the image and the database connection without changing anything.
 
 **`migrate:down`** is the tool for exactly that take-back and for nothing else. It undoes ONE migration: the last one applied,
 and only when it is the one named. It first prints what that migration's Down removes, and then refuses unless
-`--i-understand-this-deletes-data` is given; with `NODE_ENV=production` it also wants `--in-production`. What the two Downs do:
-074's deletes no row (it writes 20 points on EVERY Agent with no number of its own, also one whose owner had chosen no limit:
-the safe direction for money, and puts a proactive 70 back to 20). 075's DELETES for good every 停止往来, every report of an
-Agent, every Agent's contact policy and every operator's disable. On the first deploy those tables are empty, so nothing is
+`--i-understand-this-deletes-data` is given; with `NODE_ENV=production` it also wants `--in-production`. That second guard
+reads the `NODE_ENV` of the process the operator runs, not the database: run from a laptop with only `DATABASE_URL` set, the
+one flag is enough, so look at which database the URL names before confirming. What the Downs do: 076's drops every owner's
+two chosen thinking levels (replies for others and proactive ones run without thinking again). 075's DELETES for good every
+停止往来, every report of an Agent, every Agent's contact policy and every operator's disable. 074's deletes no row (it writes
+20 points on EVERY Agent with no number of its own, also one whose owner had chosen no limit: the safe direction for money,
+and puts a proactive 70 back to 20). On the first deploy 075's tables are empty and nobody has chosen a level, so nothing is
 lost; once Agent social has been on, 075's Down is a loss of people's own decisions (people who were stopped can reach those
 Agents again) and must not be used as a way of "turning the feature off": the switch does that.
 
@@ -384,10 +406,10 @@ BEFORE starting one with it on (a process still running with it off ends every q
 claim, so a visitor's first message during an overlap would go unanswered). From then the persona aid reads each existing
 persona once, ten owners a poll.
 
-The whole path (Down for both, the old rows, Up for both in one transaction, a failed 075 leaving 074 unapplied, both applied
-and taken back, the fix forward) is run through the real runner by `tests/ring1a-migrations.test.ts`; the command's refusals by
-`tests/migrate-down.test.ts`. Every test database is made from nothing by the same `migrate`: the whole chain of migrations
-applies in one transaction.
+The whole path (Down for all three, the old rows, Up for all in one transaction, a failed 075 leaving 074 unapplied, all
+applied and taken back, the fix forward) is run through the real runner by `tests/ring1a-migrations.test.ts`; the command's
+refusals by `tests/migrate-down.test.ts`. Every test database is made from nothing by the same `migrate`: the whole chain of
+migrations applies in one transaction.
 
 **Web client (`WEB_DIST`).** Unset (the default) the service serves only the API, and every other path is
 the JSON 404. Set to the directory of the built web client (`app/web/dist`: `index.html` and `assets/`; start-up
@@ -850,7 +872,7 @@ push or error. Fellow members see a changed name, intro or field the next time t
 principals, as for people; a changed avatar, or a handle its owner's rename changed, is pushed to them (`principal`).
 
 **Agent** (owner only): `{"id", "handle", "name", "avatarVersion", "intro", "field", "persona", "personaVersion", "replyMode":
-"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersLimit": {"answers": number | null, "points": string | null}, "othersUsedToday": {"answers": number, "points": string}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "operatorDisabled": boolean, "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
+"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersLimit": {"answers": number | null, "points": string | null}, "othersUsedToday": {"answers": number, "points": string}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "operatorDisabled": boolean, "othersReasoning", "proactiveReasoning", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
 "xhigh" | "max", "model": {"source": "site", "id"} | {"source": "provider", "providerId", "model"} | null, "modelUsable", "paused",
 "deleted", "conversationId", "createdAt"}`. `conversationId` is the Agent's dedicated conversation. `modelUsable` is
 false when its model is not there to call any more — taken off its provider's list, or a site model the site no longer
@@ -867,7 +889,7 @@ numbers). They are sub-limits inside yours, never added to them: all your Agents
 50 answers a day unless you set others), whatever their number. `othersUsedToday` is what others' use of this Agent has taken since the site
 day began, against its own numbers: `answers` (replies admitted, counting both calls and replies nobody asked for, as its own
 answers number does) and `points` (a string: settled charges plus what running replies hold, calls only: what its own points
-number holds; a reply nobody asked for has `proactiveBudget`). `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
+number holds; a reply nobody asked for has `proactiveBudget`). `othersReasoning` and `proactiveReasoning` (the owner's view only; each one of `reasoning`'s levels, default `none`; Owner decision 2026-11-26, migration 076) are the thinking levels of a reply somebody other than the owner called for (a co-member's @ in a group, a visitor's message) and of a reply nobody asked for. Any level is accepted whatever the model: a reply runs at the setting's effective level on the Agent's model (the level itself when the model lists it, else the nearest listed one below, `none` when there is none: `callLevel`), and the others' numbers hold for the level actually run. `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
 replies cost today (a string: settled plus held, the same definition of "used"), against `proactiveBudget`. `proactive` says
 whether it may reply in a group to a message that called no Agent, when the judgement model picks it (Proactive replies;
 default false); `proactiveLevel` how readily (`less`, `normal` — the default —, `more`: the threshold it starts from);
@@ -904,7 +926,7 @@ handle is `<your handle>.<namePart>`, Handles), `name` (1–20 characters,
 the display-name rule), and optionally `intro` (≤ 40), `field` (≤ 20), `persona` (≤ 20 000 characters), `replyMode`
 (default `always`), `groupMentions` (`members` or `owner`, default `members`), `chainBudget` (a string of points from 1
 to 100 000 with at most 6 decimals, no sign or exponent: `"50"`, `"12.5"`; default `"50"`), `othersBudget` (the same
-string, or `null` for none) as the alias of `othersLimit.points` for one release, `othersLimit` (`{"answers": 1 to 1000 | null, "points": that string | null}`, or `null` for neither; default none: the owner's numbers apply; naming both it and `othersBudget` is 400 `invalid_request`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
+string, or `null` for none) as the alias of `othersLimit.points` for one release, `othersLimit` (`{"answers": 1 to 1000 | null, "points": that string | null}`, or `null` for neither; default none: the owner's numbers apply; naming both it and `othersBudget` is 400 `invalid_request`), `othersReasoning` and `proactiveReasoning` (a level each, default `none`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
 `more`, default `normal`), `proactiveBudget` (the string of `chainBudget`, never `null`; default `"70"`), `memory` (default `true`), `memoryAsk`
 (default `false`), `sharedNotes` (default `true`), `whisperElsewhere` (default `true`), `webSearch` (default `true`; booleans, never `null`), `ownerAppellation`
 (an appellation, below; default `null`), `reasoning` (default `none`), `model` (default `null`). → 201 Agent.
@@ -980,7 +1002,7 @@ for `GET /api/agents`.
 #### `PATCH /api/agents/:id`
 
 *Session: required.* Body (no other key: `handle` and the owner are 400): any of `name`, `intro`, `field`,
-`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersLimit` (`null` clears both of its numbers; `othersBudget`, for one release, sets `othersLimit.points` alone and leaves the answers; naming both is 400), `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
+`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersLimit` (`null` clears both of its numbers; `othersBudget`, for one release, sets `othersLimit.points` alone and leaves the answers; naming both is 400), `othersReasoning`, `proactiveReasoning`, `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
 model and the reasoning level are checked together when either is sent. A `persona` that differs from the stored one
 raises `personaVersion` by one. `catchUp` (boolean, default `false`) goes only with `"memory": true` for an Agent whose memory is
 off: whether the next review may read what was said while it was off, and nothing earlier (An Agent's memory, *Turning it back on*); a `memory` that
@@ -1609,8 +1631,14 @@ owner's own calls, in groups and in the Agent's own conversation, never count an
 before queueing a run (the early check, advisory), and a reply a later search or round cannot afford goes on without the search.
 Raising a number above today's use answers calls again at once; lowering it below refuses at once. A reply on a provider model costs no
 points, so for such an Agent only the answers number holds. Others' replies are bounded: one real tool call, three further calls answered
-with a note, 800 output tokens, no reasoning, one tool round (`OTHERS.*`); the hold covers every request a reply can make, so spent never
-passes held.
+with a note, 800 output tokens of their own, one tool round (`OTHERS.*`); the hold covers every request a reply can make, so spent never
+passes held. Their thinking level is the owner's setting per Agent (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`;
+both `none` by default, Owner decision 2026-11-26): the reply runs at the setting's effective level on the model, with that level's
+thinking allowance on top of the 800 (`othersOutputLimit`, the one definition), and everything money follows the level actually run:
+the hold at admission (`boundedForOthers`, then `othersFits` under the account lock), the floor and the ceiling the use page's
+`reached` and `tight` are computed from, the proactive lane's early check, and the per-day estimate (`perDay`, which also counts
+half of the allowance as thought in each plain reply). A higher level makes each reply cost more: the estimate drops and `tight` or
+`reached` may show sooner.
 
 The owner's other limits hold throughout, for every reply in a group — called by a person's mention, an Agent's, or a
 follow-up of what was noted while a reply ran: replies started a minute, counted per lane (`AGENT_RUNS_PER_MINUTE` for
@@ -3006,11 +3034,11 @@ the Agent by its full handle (`GET /api/principals/lookup`), are let in by the o
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid), which is what the
 routes below are, and **1b** (notes shown to a non-owner), which is not built: its one route is under 「Planned」.
 
-**Two parts, one switch.** Ring 1a is two things that deploy together (migrations 074 and 075; Deployment):
+**Two parts, one switch.** Ring 1a is two things that deploy together (migrations 074, 075 and 076; Deployment):
 
 - *Others' use and its money* (step L): one pair of daily numbers per owner for everything other people cause on all of that
   owner's Agents (calls in groups, replies nobody asked for, visitors' replies), what one reply to someone else may do (one real
-  tool call, a bounded output, no reasoning), the use routes (`/api/me/others-use`, `/api/me/others-limits`) and the one-time
+  tool call, a bounded output, thinking only at the level its owner set for such replies: none by default), the use routes (`/api/me/others-use`, `/api/me/others-limits`) and the one-time
   notice. This part is live whatever `SOCIAL.enabled` says.
 - *Access* (the `agent_social` conversation, who may add an Agent, 停止往来 and 恢复往来, blocking an Agent, reports, the
   persona aid). All of it is behind `SOCIAL.enabled` (`{"enabled": false}` by default).
@@ -3025,6 +3053,11 @@ block of a person writes its bar row (and stops a group reply in flight that ans
 to be refused at its post); the operator's `agent:disable`, `agent:enable` and `reports:close` work, and a disabled Agent
 answers nobody but its owner, who is told on the Agent's own shape (`operatorDisabled`).
 
+**In a group only what stands now refuses** (Controller ruling, fix round 2): a block, a 停止往来 that has not been lifted,
+the Agent deleted or disabled. A row that ENDED (a narrowing, a removal, a stop since lifted, an unblock) refuses nobody
+there: access in a group comes from membership, so a co-member is answered again the moment a stop is lifted, with the
+switch on or off, without adding the Agent again. Adding again is for the conversation with the Agent only.
+
 **What a person set, they can always undo.** A 停止往来 made while the switch was on keeps refusing in groups after it is
 turned off (it is that person's own protective act, and the group decision never asks the switch). So its setter keeps
 seeing it and can lift it whatever the switch says: `stopped` in `GET /api/me/others-use` is the caller's own stops, on or
@@ -3034,7 +3067,7 @@ nothing is deleted and history stays readable.
 
 **One access decision.** Whether a person (or an Agent of theirs) may reach an Agent is `reach` (social/reach.ts) and its SQL
 twin `refusedSql`: the Agent deleted or disabled, a block either way (of the person, of the Agent), a bar (停止往来, either
-person's), the person's own row on the Agent. Every site asks it and nothing else: permission to write in a social
+person's), and, for the social conversation only, the person's own row on the Agent. Every site asks it and nothing else: permission to write in a social
 conversation, a reply's start and its post there, and in a group the mention, a relay between Agents, the options of a reply
 nobody asked for, a reply's start (`dropRefusedCalls`) and its post (`standingCalls`). So does every ending: in a group an
 ending never cancels a reply as a whole. It takes the calls of whoever is refused now out of the replies that have not called
@@ -3397,10 +3430,10 @@ client can render its own:
 | `agents_halted` | `actorId` (who halted) | `POST /api/conversations/:id/agents/halt`, in a group that was not halted already: “{名字} 让 Agent 停止了接话” |
 | `agent_chain_paused` | `actorId` (the Agent whose message it was), `limit` (`AGENT_CHAIN_LIMIT`) | in a group, the first Agent's message that would call another Agent after the last `limit` messages that are not notices were all Agents'; once until a person writes: “Agent 已连续对话 {limit} 条，已暂停互相接话，有人发言后继续。” |
 | `agent_budget_reached` | `actorId` = `agentId` (the Agent whose `chainBudget` is reached) | in a group, the first Agent's message that would call it once its chain budget is reached — or the end of its reply that reached it, when only Agents' messages were noted on that reply for a follow-up (pushed after that reply's `run`); once per Agent until a person writes: “{Agent 名} 已达到本次接话的点数上限，有人发言后继续。” |
-| `agent_daily_budget_reached` | `actorId` = `agentId` (the Agent whose others' daily budget is spent) | in a group, the first call on the Agent by someone other than its owner that finds the budget spent — a mention, a follow-up of one, or a reply such a call queued as it is about to start; once per site day for each conversation and Agent, whoever calls; nothing of lane or caller goes with it: “「{Agent 名}」今天不再回复别人了，明天恢复。” |
+| `agent_daily_budget_reached` | `actorId` = `agentId` (the Agent whose others' daily budget is spent) | in a group, the first call on the Agent by someone other than its owner that finds the budget spent — a mention, a follow-up of one, or a reply such a call queued as it is about to start; once per site day for each conversation and Agent, whoever calls; nothing of lane or caller goes with it: “「{Agent 名}」今天只回复它的主人，明天恢复。” |
 | `social_opened` | `actorId` (the Agent reached), `agentIds`, `ownerIds` (the owners who watch and may write) | the first message of an `agent_social` conversation (Agent social): “这是{主人}的 Agent。{主人}能看到你们的对话，也可能插话。” (two owners: their names joined by 、) |
 | `note_withheld` | `actorId` = `agentId`, `audienceId`, `noteKind` (`owner` or `self`), `noteId`, `expiresAt` | ring 1b, in the Agent's own conversation, for its owner only: a note it held back from someone who asked about it (Agent social): “有一条笔记没有告诉别人” (the card's details come with the event, to the owner's client alone) |
-| `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有一句话可能会被说给别人，点开确认” |
+| `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有句话可能被说给别人” |
 | `agent_quieted` | `actorId` = `agentId` (the Agent asked to keep quiet) | in a group, a person's message the judgement model is sure asks the Agent to be quiet, or says it is a nuisance: it hardly replies there unasked for a while (a mention still calls it); at most once an hour for each conversation and Agent; nothing says who asked: “「{Agent 名}」暂时不主动发言，需要时可以 @ 它” |
 
 Clients must ignore fields and events they do not know: later batches add more.
