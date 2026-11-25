@@ -665,14 +665,19 @@ mark { background: var(--purple-tint); color: inherit; border-radius: 3px; paddi
 /* A 44px target on a touch screen or a narrow one that takes no room, as the thinking's header has: it reaches 13px up
    (the gap and the bubble's own padding — none of its text) and 13px down. Whatever can be pressed there lies over it
    and keeps its own taps: the opened list, the messages found, the model under my Agent's reply, a proposal's card, and
-   回复 where a narrow page with a mouse draws it (a touch screen draws none: the bubble's menu has it). Plain text there
+   回复 wherever it is drawn: for a mouse on a narrow page, and for the keyboard's focus on a touch screen (which draws
+   none otherwise — the bubble's menu has it; not drawn it is positioned already, so only its level is set). Plain text there
    (the model's name, the footer's tags) stays under it. */
 @media (pointer: coarse), (max-width: 480px) {
   .msg-lookups > .sources-toggle { position: relative; z-index: 1; }
   .msg-lookups > .sources-toggle::before { content: ""; position: absolute; left: 0; right: -12px; top: 50%; height: 44px; transform: translateY(-50%); }
   .web-sources, .msg-lookups > .lookup-rows, .msg-via .model-trigger, .msg-main > .proposal-card { position: relative; z-index: 2; }
 }
-@media (max-width: 480px) and (pointer: fine) { .msg.theirs .msg-action { position: relative; z-index: 2; } }
+@media (pointer: coarse), (max-width: 480px) {
+  .msg.theirs .msg-action { z-index: 2; }
+  .msg.theirs .msg-action:focus-visible { position: relative; }
+}
+@media (max-width: 480px) and (pointer: fine) { .msg.theirs .msg-action { position: relative; } }
 @media (prefers-reduced-motion: reduce) { .sources-toggle > svg { transition: none; } }
 /* A long list opens at its first rows; the row after them shows them all: a quiet button in line with the titles. */
 .web-sources-more > button {

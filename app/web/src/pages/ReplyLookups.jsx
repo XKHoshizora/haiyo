@@ -39,8 +39,10 @@ export function ReplyLookups({ msg, conv, onJump }) {
     if (!opening.current) return;
     opening.current = false;
     const scroller = toggle.current?.closest(".messages");
-    if (!scroller || !block.current?.firstElementChild) return;
-    const [view, at, first, whole] = [scroller, toggle.current, block.current.firstElementChild, block.current].map((el) => el.getBoundingClientRect());
+    // Its first row: the words when they head it, else the first page (not the list, which runs on below).
+    const row = block.current?.querySelector(".lookup-words, .web-sources > li");
+    if (!scroller || !row) return;
+    const [view, at, first, whole] = [scroller, toggle.current, row, block.current].map((el) => el.getBoundingClientRect());
     const down = openingScroll({ view, toggle: at, first, block: whole });
     if (down > 0) scroller.scrollTop += down;
   }, [pagesOpen]);
@@ -56,7 +58,12 @@ export function ReplyLookups({ msg, conv, onJump }) {
   // (The words open with the pages when there are pages: one place.)
   const opens = line !== null && (found.length > 0 || (!listed && words.length > 0));
   if (!opens && !listed) return <p className="msg-lookups">{line}</p>;
-  const note = (change) => setChoice(noteSourcesChoice(conv.id, msg.id, change));
+  // What is shown is this state; the record only says how a row shown again starts (it may have dropped this reply since).
+  const note = (change) => {
+    const next = { ...choice, ...change };
+    setChoice(next);
+    noteSourcesChoice(conv.id, msg.id, next);
+  };
   const togglePages = () => {
     opening.current = !pagesOpen;
     // Folded with the focus inside the block: the button has it, not nothing.

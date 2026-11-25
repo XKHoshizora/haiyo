@@ -733,6 +733,20 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     expect(list(102).querySelectorAll("a")).toHaveLength(5);
   });
 
+  it("what a shown reply is, is its own: after 50 other replies were touched (the record keeps the newest 50), 显示全部 on the first still shows all of it, open", async () => {
+    const seqs = Array.from({ length: 51 }, (_, i) => 3 + i);
+    await openChats({ messages: [...BASE, ...seqs.map((seq) => webReply(seq, { webSources: many(12), webCites: [] }))] });
+    await click(toggle(3));
+    for (const seq of seqs.slice(1)) await click(toggle(seq));
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("true");
+    await click(more(3));
+    expect(toggle(3).getAttribute("aria-expanded")).toBe("true");
+    expect(list(3).querySelectorAll("a")).toHaveLength(12);
+    // And folding it folds it (one press, not two).
+    await click(toggle(3));
+    expect(list(3)).toBeNull();
+  });
+
   it("folding it while the focus is inside it hands the focus to its button, never to nothing", async () => {
     await openChats({ messages: [...BASE, webReply(3, { webSources: many(12), webCites: [] })] });
     await click(toggle(3));
@@ -745,7 +759,8 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
   });
 
   it("opening it moves the chat only when its first row would be out of sight, and never so far that its button leaves", async () => {
-    await openChats({ messages: [...BASE, webReply(3, { webSources: many(12), webCites: [] })] });
+    // (No words: the block holds the list alone — the list and its first row are measured apart. Reply 4 has words.)
+    await openChats({ messages: [...BASE, webReply(3, { webSources: many(12), webCites: [] }), webReply(4, { webSources: many(12), webCites: [], queries: ["天气"] })] });
     const scroller = timeline();
     const rect = (top, bottom) => ({ top, bottom, left: 0, right: 300, width: 300, height: bottom - top, x: 0, y: top });
     let now = {};
@@ -753,15 +768,16 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
       if (this === scroller) return rect(0, 600);
       if (this.classList.contains("sources-toggle")) return now.toggle;
       if (this.classList.contains("sources-block")) return now.block;
-      if (this.parentElement?.classList.contains("sources-block")) return now.first;
+      if (this.classList.contains("web-sources")) return now.list ?? now.block;
+      if (this.classList.contains("lookup-words") || this.matches(".web-sources > li:first-child")) return now.first;
       return rect(0, 0);
     });
-    const opened = async (rects) => {
+    const opened = async (rects, seq = 3) => {
       now = rects;
       scroller.scrollTop = 1000;
-      await click(toggle(3));
+      await click(toggle(seq));
       const moved = scroller.scrollTop - 1000;
-      await click(toggle(3));
+      await click(toggle(seq));
       return moved;
     };
     // In sight already (all of it, or its first row): nothing moves.
@@ -771,6 +787,9 @@ describe("a reply that searched the web (its webSources and webCites)", () => {
     expect(await opened({ toggle: rect(560, 578), block: rect(580, 860), first: rect(580, 624) })).toBe(260);
     // A long list of messages found lies open between the button and the pages: only as far as the button stays in sight.
     expect(await opened({ toggle: rect(120, 138), block: rect(2140, 2420), first: rect(2140, 2184) })).toBe(120);
+    // With the words on top, they are the first row: in sight, nothing moves though the list runs below the edge.
+    expect(await opened({ toggle: rect(500, 518), block: rect(520, 800), first: rect(520, 538), list: rect(540, 800) }, 4)).toBe(0);
+    expect(await opened({ toggle: rect(580, 598), block: rect(600, 880), first: rect(600, 618), list: rect(620, 880) }, 4)).toBe(280);
     // The button already above the edge: nothing moves further.
     expect(await opened({ toggle: rect(-40, -22), block: rect(900, 1180), first: rect(900, 944) })).toBe(0);
   });

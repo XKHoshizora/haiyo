@@ -27,14 +27,15 @@ const choiceKey = (conversationId, messageId) => `${conversationId}\n${messageId
 /** What the reader chose for that reply's pages; folded and short when nothing. Makes no record. */
 export const sourcesChoice = (conversationId, messageId) => choices.get(choiceKey(conversationId, messageId)) ?? NO_CHOICE;
 
-/** Notes a choice of the reader (`{ open }` or `{ all }`) for that reply's pages; resolves with the whole choice. */
-export function noteSourcesChoice(conversationId, messageId, change) {
+/**
+ * Notes what the reader chose for that reply's pages: the whole choice (`{ open, all }`), as its row shows it now — the
+ * row's own state is what is shown; this only says how it starts when it is shown again.
+ */
+export function noteSourcesChoice(conversationId, messageId, choice) {
   const key = choiceKey(conversationId, messageId);
-  const next = { ...(choices.get(key) ?? NO_CHOICE), ...change };
   choices.delete(key);
-  choices.set(key, next);
+  choices.set(key, { open: choice.open === true, all: choice.all === true });
   if (choices.size > SOURCES_CHOICES_KEPT) choices.delete(choices.keys().next().value);
-  return next;
 }
 
 /** The conversation is not shown any more: every reply of it is folded when it is shown again. */
