@@ -1,4 +1,4 @@
-import { runner } from "node-pg-migrate";
+import { PG_MIGRATE_LOCK_ID, runner } from "node-pg-migrate";
 import { fileURLToPath } from "node:url";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations", import.meta.url));
@@ -35,11 +35,17 @@ export const DOWN_REMOVES: Readonly<Record<string, string>> = {
   "075_agent_social_access":
     "075's Down DELETES, for good: every 停止往来 (the stop rows of access_bars) and the bars made from blocks, every report of an Agent (agent_reports), every Agent's contact policy and picks (agents.contact_policy, contact_picked, agent_contact_picks), every operator's disable (agents.disabled_at), every answer to a persona card (social_card_answers), whose bar ended an access (agent_contacts.barred_by) and which personas were read (agents.persona_checked_version). People who were stopped can reach those Agents again, and a later Up brings back only the bars that come from blocks.",
   "076_others_reasoning":
-    "076's Down drops agents.others_reasoning and agents.proactive_reasoning: every Agent's thinking level for replies to other people and for proactive replies, the ones 076 copied from each Agent's own level and every one an owner chose since (and the index that keeps one open report per reporter and Agent). No other row changes. The code before 074 makes such replies at the Agent's own level again. It must be undone before 075 and 074 can be.",
+    "076's Down drops agents.others_reasoning and agents.proactive_reasoning: every Agent's thinking level for replies to other people and for proactive replies, the ones 076 copied from each Agent's own level and every one an owner chose since (and the index that keeps one open report per reporter and Agent), and agent_runs.owner_call_seqs (which calls of each reply were accepted as its owner's own). No other row changes. The code before 074 makes such replies at the Agent's own level again. It must be undone before 075 and 074 can be.",
 };
 
-/** The session lock `undoMigration` holds from its check to the end of its Down (its own key: the runner's lock is taken inside it). */
-const UNDO_LOCK = 7_076_075_074;
+/**
+ * THE migration lock: the advisory lock the runner itself takes for every Up and Down (node-pg-migrate's own key). `runMigrations`
+ * takes it through the runner, which FAILS when it is held ("Another migration is already running"): a deploy that meets a
+ * migration command at work applies nothing and says so. `undoMigration` takes the same lock itself, WAITING for it, before its
+ * name check and holds it to the end of its Down (fix round 4, F6): so neither another Down nor a deploy's Up can change which
+ * migration is the last one between the check and the Down.
+ */
+const MIGRATION_LOCK = PG_MIGRATE_LOCK_ID;
 
 export const CONFIRM_FLAG = "--i-understand-this-deletes-data";
 export const PRODUCTION_FLAG = "--in-production";
@@ -59,14 +65,17 @@ export async function undoMigration(
 ): Promise<void> {
   const quiet = opts.quiet ?? false;
   const { Client } = await import("pg");
-  // ONE connection for the check and the Down, under a lock of this command's own that the session holds from before the check
-  // until after the Down (fix round 3, point 5): two operators who both name the last migration take turns, and the second one's
-  // check is made after the first one's Down, so it finds another migration last and undoes nothing. (The check used to be made on a
-  // connection of its own and closed before the Down began: a second Down could then remove the migration UNDER the one named.)
+  // ONE connection for the check and the Down, under THE migration lock (`MIGRATION_LOCK`: the one every Up takes too), which the
+  // session holds from before the check until after the Down. Two operators who both name the last migration take turns, and the
+  // second one's check is made after the first one's Down, so it finds another migration last and undoes nothing (fix round 3,
+  // point 5); and a deploy's Up cannot apply a migration between this check and this Down — it is refused while the lock is held,
+  // and a Down that starts while an Up runs waits for it and then checks against what that Up left (fix round 4, F6: with a lock
+  // of this command's own, an Up could finish 076 after the check found 075 last, and the Down would undo 076 as "075"). The
+  // runner below is told not to take the lock again (`noLock`): this session holds it.
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    await client.query("select pg_advisory_lock($1)", [UNDO_LOCK]);
+    await client.query("select pg_advisory_lock($1)", [MIGRATION_LOCK]);
     try {
       const last = (await client.query<{ name: string }>("select name from pgmigrations order by run_on desc, id desc limit 1")).rows[0]?.name ?? null;
       if (last !== name) throw new Error(`the last migration applied is ${last ?? "none"}, not ${name}: nothing was undone`);
@@ -80,10 +89,11 @@ export async function undoMigration(
         direction: "down",
         migrationsTable: "pgmigrations",
         count: 1,
+        noLock: true,
         log: quiet ? () => {} : (msg: string) => console.log(msg),
       });
     } finally {
-      await client.query("select pg_advisory_unlock($1)", [UNDO_LOCK]).catch(() => {});
+      await client.query("select pg_advisory_unlock($1)", [MIGRATION_LOCK]).catch(() => {});
     }
   } finally {
     await client.end();

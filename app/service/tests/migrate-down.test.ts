@@ -72,38 +72,79 @@ describe("the command", () => {
   }, 120_000);
 });
 
+/**
+ * Holds the FIRST `undoMigration` that makes its name check right after that check has answered — between its check and its Down —
+ * until `release`. (Its check is the one statement that reads the last migration's name; every other statement passes through.)
+ */
+async function pausedAfterCheck() {
+  const pg = await import("pg");
+  const query = pg.default.Client.prototype.query;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  let checks = 0;
+  const spy = vi.spyOn(pg.default.Client.prototype, "query").mockImplementation(function (this: unknown, ...args: unknown[]) {
+    const result = (query as (...a: unknown[]) => unknown).apply(this, args);
+    if (typeof args[0] !== "string" || !args[0].startsWith("select name from pgmigrations") || ++checks !== 1) return result;
+    return (result as Promise<unknown>).then(async (rows) => (await gate, rows));
+  } as never);
+  return { release: () => release(), checked: () => checks, restore: () => spy.mockRestore() };
+}
+const settledWithin = (p: Promise<unknown>, ms: number) => Promise.race([p.then(() => true, () => true), new Promise<boolean>((r) => setTimeout(() => r(false), ms))]);
+
 describe("two operators at once (fix round 3, point 5)", () => {
   it("both name the last migration and both confirm: exactly one Down runs, the other is refused once its turn comes, and the migration under it is still applied", async () => {
     expect(await last()).toBe(LAST);
-    // The interleaving that matters: the second operator's check ("076 is the last") is made BEFORE the first one's Down, and its
-    // own Down would start AFTER it. Held there by its first connection's close, which is where the old command stood between its
-    // check and its Down (a check on one connection, the Down on another).
-    const pg = await import("pg");
-    const end = pg.default.Client.prototype.end;
-    let release: () => void = () => {};
-    const gate = new Promise<void>((r) => (release = r));
-    let ends = 0;
-    const spy = vi.spyOn(pg.default.Client.prototype, "end").mockImplementation(async function (this: unknown, ...args: unknown[]) {
-      if (++ends === 1) await gate;
-      return (end as (...a: unknown[]) => Promise<void>).apply(this, args);
-    } as never);
-    const second = undoMigration(url, LAST, { quiet: true, confirmed: true });
-    second.catch(() => {});
-    // (Until the second one stands at its first connection's close.)
-    for (let i = 0; i < 200 && ends === 0; i++) await new Promise((r) => setTimeout(r, 25));
+    // The interleaving that matters: the first operator has made its check ("076 is the last") and has NOT begun its Down when the
+    // second one starts. Without a lock held from the check to the end of the Down, the second one would check, undo 076 and
+    // return, and the first would then undo 075 under it (fix round 4: the pause is between the check and the Down, under the lock).
+    const pause = await pausedAfterCheck();
     const first = undoMigration(url, LAST, { quiet: true, confirmed: true });
     first.catch(() => {});
-    await Promise.race([first.then(() => {}, () => {}), new Promise((r) => setTimeout(r, 4000))]);
-    release();
+    for (let i = 0; i < 200 && pause.checked() === 0; i++) await new Promise((r) => setTimeout(r, 25));
+    expect(pause.checked()).toBe(1);
+    const second = undoMigration(url, LAST, { quiet: true, confirmed: true });
+    second.catch(() => {});
+    // The second one waits for the first one's lock: it neither checks nor undoes anything meanwhile.
+    expect(await settledWithin(second, 2000)).toBe(false);
+    expect(pause.checked()).toBe(1);
+    expect(await last()).toBe(LAST);
+    pause.release();
     const both = await Promise.allSettled([first, second]);
-    spy.mockRestore();
+    pause.restore();
     try {
-      expect(both.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
-      const refused = both.find((r) => r.status === "rejected") as PromiseRejectedResult;
-      expect(String(refused.reason)).toMatch(/last migration applied is 075_agent_social_access, not 076_others_reasoning/);
+      expect(both.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+      expect(String((both[1] as PromiseRejectedResult).reason)).toMatch(/last migration applied is 075_agent_social_access, not 076_others_reasoning/);
       expect(await last()).toBe(ACCESS);
       expect((await db.query<{ t: string | null }>("select to_regclass('public.access_bars')::text as t")).rows[0]!.t).toBe("access_bars");
     } finally {
+      await runMigrations(url, { quiet: true });
+    }
+    expect(await last()).toBe(LAST);
+  }, 120_000);
+});
+
+describe("a Down and a deploy's Up at once (fix round 4, F6)", () => {
+  it("the Down has checked that 075 is the last and has not begun; a deploy's Up (076) starts: it is refused, not interleaved — the Down undoes 075, the one it named, never the 076 an Up slipped under it", async () => {
+    await undoMigration(url, LAST, { quiet: true, confirmed: true });
+    expect(await last()).toBe(ACCESS);
+    const pause = await pausedAfterCheck();
+    let down: Promise<void> = Promise.resolve();
+    try {
+      down = undoMigration(url, ACCESS, { quiet: true, confirmed: true });
+      down.catch(() => {});
+      for (let i = 0; i < 200 && pause.checked() === 0; i++) await new Promise((r) => setTimeout(r, 25));
+      expect(pause.checked()).toBe(1);
+      // The deploy: it finds a migration command at work (the runner's own lock, which the Down holds) and applies nothing.
+      await expect(runMigrations(url, { quiet: true })).rejects.toThrow(/Another migration is already running/);
+      expect(await last()).toBe(ACCESS);
+      pause.release();
+      await down;
+      expect(await last()).toBe("074_others_step_l");
+      expect((await db.query<{ t: string | null }>("select to_regclass('public.access_bars')::text as t")).rows[0]!.t).toBeNull();
+    } finally {
+      pause.release();
+      await down.catch(() => {});
+      pause.restore();
       await runMigrations(url, { quiet: true });
     }
     expect(await last()).toBe(LAST);
