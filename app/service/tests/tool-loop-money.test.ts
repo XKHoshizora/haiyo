@@ -633,8 +633,8 @@ describe("the money of a reply that offers tools", () => {
   });
 
   it("a crashed run with a raised hold is swept after 2 × max(AGENT_RUN_TIMEOUT_MS, TOOLS.runTimeoutMs) + 1 minute, and its hold released", async () => {
-    // 2 × max(120 000, 300 000) + 60 000 = 660 000 ms: 11 minutes.
-    expect(staleAfterMs(app.deps.config)).toBe(660_000);
+    // 2 × max(300 000, 600 000) + 60 000 = 1 260 000 ms: 21 minutes.
+    expect(staleAfterMs(app.deps.config)).toBe(1_260_000);
     expect(staleAfterMs({ agentRunTimeoutMs: 600_000, tools: { runTimeoutMs: 300_000 } })).toBe(2 * 600_000 + 60_000);
 
     const { port } = toolWorker(scriptedGateway());
@@ -652,9 +652,9 @@ describe("the money of a reply that offers tools", () => {
     expect(await holdOf(ticket.id)).not.toBe(admitted);
 
     const age = (minutes: number) => db.query("update agent_runs set started_at = now() - make_interval(mins => $2) where id = $1", [ticket.id, minutes]);
-    await age(10);
+    await age(20);
     expect(await app.staleRunSweep.run()).toBe(0);
-    await age(12);
+    await age(22);
     expect(await app.staleRunSweep.run()).toBe(1);
     expect(await runOf(owner.id)).toMatchObject({ status: "failed", error: "provider_unavailable", hold: "0" });
     expect(await recordsOf(ticket.id)).toMatchObject([{ cost: "0", free: "0", balance: "0" }]);

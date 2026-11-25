@@ -521,7 +521,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     }
     // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — an answer that
     // finished with nothing in it is the provider's answer (`provider_unavailable`); the reply's time running out is said
-    // as that (`took_too_long`: its model was reached, and still working), passing only when nothing had come before.
+    // as that (`took_too_long`: its model was reached, and still working), which is never passing (`passingEnding`).
     const nothing = (): RunEnd =>
       noAnswer !== UNAVAILABLE
         ? noAnswer

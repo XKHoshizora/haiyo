@@ -1612,7 +1612,7 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
 /**
  * How long a run must have been `running` before the stale-run sweep may release it: twice the longer of a call's time
  * limit (`AGENT_RUN_TIMEOUT_MS`) and a reply's with tools (`TOOLS.runTimeoutMs`) — the reading of its attachments, then
- * its call or its rounds — and a minute for posting and recording. With the defaults 2 × max(120 s, 300 s) + 60 s: 11
+ * its call or its rounds — and a minute for posting and recording. With the defaults 2 × max(300 s, 600 s) + 60 s: 21
  * minutes.
  */
 export const staleAfterMs = (config: { agentRunTimeoutMs: number; tools: Pick<Config["tools"], "runTimeoutMs"> }): number =>

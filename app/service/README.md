@@ -172,8 +172,8 @@ apart from the owner's own and likewise not scaled; 1–10 000, default 20),
 minute on other people's Agents; counted and not scaled likewise; 1–10 000, default 5),
 `AGENT_RUN_TIMEOUT_MS` (how long a reply or a persona draft may take, and for a reply also the reading of its
 attachments before the call, each in turn: so a reply may take up to about twice it in all; it is also how long a model
-call that thinks may stay silent — one that does not think is given up on after 60 s of silence (Calling a model);
-1 000–3 600 000, default 120 000), `PROVIDER_DEFAULT_CONTEXT_TOKENS` (a provider model's
+call that may be thinking may stay silent — one that cannot be is given up on after 60 s of silence (Calling a model);
+1 000–3 600 000, default 300 000: 5 minutes), `PROVIDER_DEFAULT_CONTEXT_TOKENS` (a provider model's
 context when its owner gives none; 1 000–2 000 000, default 16 000), `PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS` (the output
 limit of every call to a provider model at reasoning `none`, and its reply's limit at any other level; 1–1 000 000,
 default 2 048; it must be less than `PROVIDER_DEFAULT_CONTEXT_TOKENS`, else start-up fails naming both),
@@ -202,7 +202,8 @@ admission alone —, 1–100 000, default 20), `searchPerReply`, `filePerReply` 
 the file and the clock tool one reply may run, 1–1 000, default 6, 4 and 1), `resultMaxWeight`
 (the most one tool result weighs when it goes back to the model, 1–100 000, default 3 000; a reply offered tools keeps
 room for two in its context plan, at most a third of the conversation's), `runTimeoutMs` (how long a
-reply that offers tools may take in all, 1 000–3 600 000, default 300 000: 5 minutes; a reply that offers none is held
+reply that offers tools may take in all, 1 000–3 600 000, default 600 000: 10 minutes, twice one call's default, so
+that one slow call does not use up the reply's rounds — set it no lower than `AGENT_RUN_TIMEOUT_MS`; a reply that offers none is held
 to `AGENT_RUN_TIMEOUT_MS` alone), `web` (the web search, an object, every field optional; Agents and runs, Web search:
 `enabled` (default **false**: no reply is offered it and nothing anywhere changes), `engine` (`exa_search`, the default,
 or `deepseek_messages`), `baseUrl` (https; default by engine: `https://api.exa.ai`, `https://api.deepseek.com`; another host
@@ -1062,11 +1063,13 @@ fact, set once: any text or thinking received in any round, an acknowledgement p
 the service lost, `agent_runs.progressed`, set at the reply's first piece of text or thinking (one write of the run's row,
 once per reply, before the next piece is read), by the acknowledgement and by every step between tool rounds, and at a
 release at shutdown what the worker knew): the model
-service answered 5xx, 408 or 429; a call error with no status, a stream cut short or the reply's own time out
-(`took_too_long`); or the
+service answered 5xx, 408 or 429; a call error with no status or a stream cut short; or the
 service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep). After anything
 was produced none of these is passing (the reply already spent and did things; repeating them unattended is not
-acceptable): it is the ordinary failure, with 重试. An answer that finished with nothing in it (a content refusal, only
+acceptable): it is the ordinary failure, with 重试. The reply's own time running out (`took_too_long`) is never
+passing either, whatever had come: its model was reached and was still working, so another attempt would most likely
+wait as long again, and its owner's provider may bill each attempt's thinking — the failure is shown at once, with 重试.
+An answer that finished with nothing in it (a content refusal, only
 thinking, a persona block cut at the limit, a group reply that was only its mark) is the provider's answer and is not
 retried; nor is anything else (no money, a model gone, a key or request refused, a context too small, a stop, a pause,
 a delete). Which runs (the table): an ordinary reply in the Agent's own conversation or in a
@@ -1101,8 +1104,8 @@ an owner's own key: that owner learns why after the retries (about 2.3 minutes).
 `thinking_exhausted` — the model used its whole output limit thinking and gave no answer; charged what the upstream
 reported; retry, or choose a lower reasoning level —, `took_too_long` — the reply's own time ran out
 (`AGENT_RUN_TIMEOUT_MS`; with tools `TOOLS.runTimeoutMs` in all) before it had anything to post: its model was reached
-and was still working, most often thinking; charged only what an upstream reported, so as a rule nothing; retry, or
-choose a lower reasoning level —, `model_gone` — the Agent's model is not there to call any more (someone else's call on it is recorded so at once, queuing nothing; your own call queues a reply that ends so as it begins)
+and was still working, most often thinking; charged only what an upstream reported, so as a rule nothing; never
+tried again by itself (Automatic retry); retry, or choose a lower reasoning level —, `model_gone` — the Agent's model is not there to call any more (someone else's call on it is recorded so at once, queuing nothing; your own call queues a reply that ends so as it begins)
 (`modelUsable` false, Agent): no call was made; choose another model —, or
 `busy`: the service's own trouble — the reply could not be started or stored, its attachments could not be read, or
 there was nothing to answer — which costs you nothing; `provider_unavailable` is also what a reply that was under way
@@ -2199,12 +2202,15 @@ What follows for a person choosing a model and a level:
   characters of white space, is text); otherwise it is not shown, though it is counted.
 - A Gemini key that is wrong is answered 400 by Google, so it reads as `provider_unavailable`, not
   `provider_rejected` (the same in the provider test route).
-- Silence. A call at `none` that sends nothing for 60 s is given up on (`provider_unavailable`). A call at any other
-  level may be silent for as long as a reply may take (the longer of `AGENT_RUN_TIMEOUT_MS` and `TOOLS.runTimeoutMs`):
-  an upstream that does not stream its thinking sends nothing at all until it has thought, which at a high level, or
-  with a picture to look at, is easily more than a minute. What ends such a call is the reply's own time, and a reply
-  that had nothing to post by then fails `took_too_long` (Run), not `provider_unavailable`. A model that thinks though
-  it was sent `none` (one that cannot switch its thinking off) keeps the 60 s.
+- Silence. A call that cannot be thinking — at `none`, to a model not marked as one that may think — is given up on
+  when it sends nothing for 60 s (`provider_unavailable`). A call that may be thinking — at any other level, or at any
+  level to a model marked as one that may think (a provider model's `reasoning`; a site model that lists a level or has
+  `thinkingSwitch`: some models think whatever they are asked) — may be silent for as long as a reply may take (the
+  longer of `AGENT_RUN_TIMEOUT_MS` and `TOOLS.runTimeoutMs`): an upstream that does not stream its thinking sends
+  nothing at all until it has thought, which at a high level, or with a picture to look at, is easily more than a
+  minute. What ends such a call is its caller's own time: a reply's `AGENT_RUN_TIMEOUT_MS` (5 minutes; it then fails
+  `took_too_long` (Run), not `provider_unavailable`, when it had nothing to post), a memory call's (the same variable),
+  a persona draft's (at most `HTTP_CONNECTION_TIMEOUT_MS` less 10 s: 110 s), the provider test's 15 s.
 
 **What comes back.** The answer as text and reasoning deltas (Responses reasoning summaries, Anthropic thinking, Gemini
 thought summaries; Chat Completions' `reasoning_content` / `reasoning`, which the SDK drops and the gateway reads off
@@ -2223,9 +2229,10 @@ Responses and Anthropic is as the upstream sent it, so it may be empty or repeat
 unique across rounds); only the finish's `truncated` says a round was cut (a call cut short may have input null, or
 `{}` when cut before its first argument); and the gateway bounds no sizes — not a call's name, id or input, nor how
 many calls a round makes, nor what a call sends (`tools`, `steps`, results). An answer may be up to 8 MiB on the wire
-and is given up after 60 s without a byte (before or after the headers) when the call does not think (`reasoning`
-`none`); a call that thinks may be silent for as long as a reply may take (the longer of `AGENT_RUN_TIMEOUT_MS` and
-`TOOLS.runTimeoutMs`, 5 minutes by default: the one rule, `src/models/gateway.ts` `silenceAllowed`), and an address
+and is given up after 60 s without a byte (before or after the headers) when the call cannot be thinking (`reasoning`
+`none` and the model not marked as one that may think, `ModelCall.thinks`); a call that may be thinking may be silent
+for as long as a reply may take (the longer of `AGENT_RUN_TIMEOUT_MS` and `TOOLS.runTimeoutMs`, 10 minutes by default,
+each call ended by its caller well within it: the one rule, `src/models/gateway.ts` `silenceAllowed`), and an address
 that cannot be found or connected to is given up on after the 60 s either way; how long a call may take in all is the
 caller's to bound (its signal ends it at once, silent or not). Nothing a model calls a tool with, nor any tool's result, is logged.
 
@@ -3747,7 +3754,7 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
    pushed as they come. A reply offered tools streams no token-shaped string, nor the beginning of one, of either,
    however it ends (Citations, below). It is
    abandoned at once when the owner stops it or the Agent is paused or deleted (checked every 50 ms), after
-   `AGENT_RUN_TIMEOUT_MS` (2 minutes), and when the service closes (then the run is ended as Shutdown, below, says). A
+   `AGENT_RUN_TIMEOUT_MS` (5 minutes), and when the service closes (then the run is ended as Shutdown, below, says). A
    reply offered tools makes its calls round by round, running the tools between them (Tools in a reply, below).
 3. `post` (`conversation.ts` `postAsAgent`): under the conversation row and the `agents` row — the locks pause and
    delete take — so once a pause or delete has answered, nothing more from the Agent is stored, the reply being
@@ -4558,7 +4565,7 @@ language (measured, fix round 2). So, in the Agent's own conversation only:
 | Everything it was to answer is before a new topic (started while it was queued, or a retry after one) | none, no call made | `cancelled` with no error, not retryable; charged nothing; what the owner wrote meanwhile gets the follow-up |
 | The model's context cannot hold the owner's newest message (or 200 tokens of it) after the system text | none, no call made | `failed`, `context_too_small`, not retryable; charged nothing |
 | Nothing to answer otherwise, or its attachments could not be read (two reads failed before any succeeded, or reading took longer than `AGENT_RUN_TIMEOUT_MS`) | none, no call made | `failed`, `busy`, retryable; charged nothing |
-| `AGENT_RUN_TIMEOUT_MS` (2 minutes) passed, or for a reply with tools `TOOLS.runTimeoutMs` (5 minutes) in all | what had been said, `truncated: true`, without what follows an unfinished proposal block's `<af-` (nothing said, or nothing before that: `failed`, `took_too_long`, retryable, charged only what the upstream reported — tried again by itself only when nothing at all had come, Automatic retry) | `done` |
+| `AGENT_RUN_TIMEOUT_MS` (5 minutes) passed, or for a reply with tools `TOOLS.runTimeoutMs` (10 minutes) in all | what had been said, `truncated: true`, without what follows an unfinished proposal block's `<af-` (nothing said, or nothing before that: `failed`, `took_too_long`, retryable, charged only what the upstream reported — never tried again by itself, Automatic retry) | `done` |
 | The service closed during the call, or while its attachments were read | none | ended by the closing service itself as recovery ends one (Shutdown, below): `failed`, `provider_unavailable`, retryable; charged nothing. Only if that cannot be written (or the process died): left `running`, then recovered at the next start, or by the stale-run sweep of an instance still running |
 
 Failures are never messages: no seq, not in search or unread counts, never shown to a model. The owner sees them on the
@@ -4631,7 +4638,7 @@ alone.
 **The stale-run sweep** (`port-impl.ts` `sweepStaleRuns`; `tests/runs-restart.test.ts`). Once a minute while the service
 runs (first a minute after start), every run — reply, persona draft or memory call — that has been `running` for longer than twice
 the longer of `AGENT_RUN_TIMEOUT_MS` and `TOOLS.runTimeoutMs`, and a minute (the most attachments and then a call, or a
-reply's tool rounds, may take, and a minute to post and record; 2 × max(2, 5) + 1 = 11 minutes with the defaults:
+reply's tool rounds, may take, and a minute to post and record; 2 × max(5, 10) + 1 = 21 minutes with the defaults:
 `staleAfterMs`) is released exactly as start-up recovery releases one, each in a transaction of its own
 under the same locks — unless this process is working on it (a run its worker has claimed and not yet finished, a draft
 whose request is under way, a memory call under way): those are never touched, however old. Unlike at start-up, the owner's sockets are told
@@ -4639,7 +4646,7 @@ whose request is under way, a memory call under way): those are never touched, h
 is past its own limits: its `post` is refused (the run is no longer `running`) and nothing is recorded twice. So a run
 left behind by a process that is gone — a deploy's old instance killed mid-call, or whose stop could not write its runs'
 end, a `finish` that failed — is released
-within about that and another minute (12 minutes with the defaults). Until then it is stuck: its
+within about that and another minute (22 minutes with the defaults). Until then it is stuck: its
 conversation shows it replying and the Agent answers nothing more there (an Agent has one queued or running run per
 conversation at most), it occupies one of the owner's `AGENT_MAX_CONCURRENT_RUNS` slots, and, if it was admitted, its
 hold still counts against the owner's allowance, balance or (a memory call) memory allowance.

@@ -409,6 +409,8 @@ export function registerProviderRoutes(
           reasoning: "none",
           maxOutputTokens: CHAT_TEST.maxOutputTokens,
           thinkingSwitch: saved?.reasoning === true,
+          // As a reply's call says it (`ModelCall.thinks`); the test's own 15 s (`signal`) bound it whatever it allows.
+          thinks: saved?.reasoning === true,
           // As a reply names it (src/models/resolve.ts): what this upstream refused is remembered for both.
           upstreamId: `provider:${req.params.id}@${target.baseUrl}`,
           signal,

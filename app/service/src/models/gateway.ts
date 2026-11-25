@@ -126,6 +126,12 @@ export interface ModelCall {
    */
   thinkingSwitch?: boolean;
   /**
+   * The model is marked as one that may think (models/resolve.ts: a provider model's `reasoning`, a site model that
+   * lists a level or takes the switch). Such a model may think whatever level it is asked for — some cannot switch it
+   * off — so its calls may be silent for long at every level (`silenceAllowed`). Absent or false: not marked.
+   */
+  thinks?: boolean;
+  /**
    * Who the upstream is (`site:<id>`, `provider:<id>@<baseUrl>`: a provider whose address changed is another): an
    * optional field it refused is remembered under it, in this process, and left out of its later calls. Absent:
    * nothing is remembered.
@@ -433,10 +439,12 @@ function providerOptionsFor(call: ModelCall, left: ReadonlySet<OptionalField>): 
 const MODEL_STREAM_MAX_BYTES = 8 * 1024 * 1024;
 /**
  * How long a model stream may be silent (before its headers, or between its bytes) before it is given up on — THE rule
- * (`silenceAllowed`): a call that does not think (`reasoning` `none`) 60 s; a call that thinks, for as long as a reply
- * may take (`GatewayOptions.thinkingIdleTimeoutMs`), because an upstream that does not stream its thinking sends nothing
- * at all until it has thought, and what bounds such a call is its caller's signal (the reply's own time). Whichever it
- * is, an address that cannot be found or connected to is given up on after the 60 s.
+ * (`silenceAllowed`): a call that cannot be thinking — `reasoning` `none`, to a model not marked as one that may think
+ * (`ModelCall.thinks`) — 60 s; a call that may be — any other level, or a model so marked at any level — for as long as
+ * a reply may take (`GatewayOptions.thinkingIdleTimeoutMs`), because an upstream that does not stream its thinking sends
+ * nothing at all until it has thought, and what bounds such a call is its caller's signal (a reply's own time, a
+ * memory call's or a draft's deadline, the provider test's 15 s). Whichever it is, an address that cannot be found or
+ * connected to is given up on after the 60 s.
  */
 const MODEL_IDLE_TIMEOUT_MS = 60_000;
 /** The silence a thinking call is allowed when the gateway is not told how long a reply may take: 5 minutes. */
@@ -468,8 +476,8 @@ export function createModelGateway(options: GatewayOptions): ModelGateway {
   const sized = { ...guard, maxResponseBytes: MODEL_STREAM_MAX_BYTES };
   const fetch = guardedFetch({ ...sized, timeoutMs: idleMs });
   const patient = guardedFetch({ ...sized, timeoutMs: Math.max(idleMs, options.thinkingIdleTimeoutMs ?? MODEL_THINKING_IDLE_TIMEOUT_MS), connectTimeoutMs: idleMs });
-  /** THE rule of how long a call may be silent (`MODEL_IDLE_TIMEOUT_MS`): by whether it thinks. */
-  const silenceAllowed = (call: ModelCall): typeof globalThis.fetch => (call.reasoning === "none" ? fetch : patient);
+  /** THE rule of how long a call may be silent (`MODEL_IDLE_TIMEOUT_MS`): by whether it may be thinking. */
+  const silenceAllowed = (call: ModelCall): typeof globalThis.fetch => (call.reasoning !== "none" || call.thinks === true ? patient : fetch);
   const probe = createProviderProbe(guardedFetch({ ...guard, ...PROBE_GUARD }));
   const refusals = new Refusals();
   return {

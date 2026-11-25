@@ -115,7 +115,8 @@ describe("THE classifier of passing endings: every ending kind × whether the re
     ["address refused", (progress) => ({ kind: "upstream", code: "address_not_allowed", progress }), false],
     ["thinking exhausted", (progress) => ({ kind: "upstream", code: "thinking_exhausted", progress }), false],
     ["stream cut", (progress) => ({ kind: "cut", progress }), true],
-    ["the reply's time out", (progress) => ({ kind: "timeout", progress }), true],
+    // `took_too_long`: its model was reached and still working; another unattended attempt would only wait as long again.
+    ["the reply's time out", (progress) => ({ kind: "timeout", progress }), false],
     ["finished with nothing in it", () => ({ kind: "nothing" }), false],
     ["lost mid-call", (progress) => ({ kind: "lost", progress }), true],
   ];
@@ -196,6 +197,31 @@ describe("a run lost after its reply produced something is not passing: the row 
       ["queued", 1],
     ]);
     await db.query("update agent_runs set status = 'cancelled' where conversation_id = $1 and status = 'queued'", [quiet.conv]);
+  });
+
+  it("the reply's time runs out with nothing said: one attempt only, took_too_long shown at once with 重试, and the owner's retry answers", async () => {
+    const { owner, agent, conv } = await own("ar_too_long");
+    const config = { ...app.deps.config, agentRunTimeoutMs: 1_000 };
+    const { worker } = instance(config);
+    await say(owner, conv, "这道题想一想");
+    const thinking = gateway.hang();
+    expect(await worker.runOnce()).toBe(true);
+    expect((await thinking.reached).signal.aborted).toBe(true);
+    // Nothing is queued behind it, however long anyone waits: the system does not try it again.
+    expect((await runsOf(conv)).map((r) => [r.status, r.error, r.auto_attempt])).toEqual([["failed", "took_too_long", 0]]);
+    expect(await slot(owner, conv)).toMatchObject({ status: "failed", error: "took_too_long", retryable: true });
+    advance(600_000);
+    expect(await worker.runOnce()).toBe(false);
+    expect(metrics("auto_retry")).toBe(0);
+    // 重试 is the owner's: an ordinary reply, answered.
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).status).toBe(201);
+    gateway.reply("想好了。");
+    expect(await worker.runOnce()).toBe(true);
+    expect((await runsOf(conv)).map((r) => [r.status, r.error, r.owner_retry])).toEqual([
+      ["failed", "took_too_long", false],
+      ["done", null, true],
+    ]);
+    expect(await agentSaid(owner, conv, agent.id)).toEqual(["想好了。"]);
   });
 
   it("thinking received is recorded the same", async () => {

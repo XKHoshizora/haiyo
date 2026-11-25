@@ -137,6 +137,7 @@ export async function resolveModel(
         model: site.model,
         maxOutputTokens: outputLimit(site.maxOutputTokens, site.contextTokens, reasoning, config.reasoningAllowanceTokens),
         thinkingSwitch: site.thinkingSwitch === true,
+        thinks: site.reasoning.length > 0 || site.thinkingSwitch === true,
         upstreamId: `site:${site.id}`,
       },
       contextTokens: site.contextTokens,
@@ -167,6 +168,7 @@ export async function resolveModel(
       model: listed.name,
       maxOutputTokens: outputLimit(config.providerDefaultMaxOutputTokens, listed.contextTokens, reasoning, config.reasoningAllowanceTokens),
       thinkingSwitch: listed.reasoning,
+      thinks: listed.reasoning,
       // Its address too: what an upstream refused is forgotten when the provider is pointed elsewhere.
       upstreamId: `provider:${choice.providerId}@${provider.baseUrl}`,
     },

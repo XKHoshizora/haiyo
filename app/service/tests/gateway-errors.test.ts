@@ -189,6 +189,15 @@ describe("upstream refusals and failures become ModelError codes", () => {
       expect(events.flatMap((e) => (e.type === "text" ? [e.delta] : [])).join("")).toBe(CANNED_TEXT_DELTAS.join(""));
     });
 
+    it("a model that may think is allowed the same silence at `none` (one that thinks whatever it is asked): the answer arrives whole", async () => {
+      for (const headersFirst of [true, false]) {
+        stub.answer(thinksSilently(headersFirst));
+        const { events, error } = await run(patient().stream(call("openai_chat", { reasoning: "none", thinks: true })));
+        expect(error).toBeNull();
+        expect(events.flatMap((e) => (e.type === "text" ? [e.delta] : [])).join("")).toBe(CANNED_TEXT_DELTAS.join(""));
+      }
+    });
+
     it("a call that does not think keeps the idle limit: the same silence is provider_unavailable, before and after the headers", async () => {
       for (const headersFirst of [true, false]) {
         stub.answer(thinksSilently(headersFirst));

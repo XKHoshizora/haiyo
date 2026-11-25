@@ -1146,8 +1146,9 @@ describe("whether a failed reply is passing is decided by the reply as a whole (
     await runOn(fake, gateway, { tools: { runTimeoutMs: ms } });
     const [end] = finishedAs(fake);
     const passing = (end as { transient?: true }).transient === true;
-    expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
-    // The reply's own time running out is said as that (`took_too_long`): its provider was not unreachable.
+    // The reply's own time running out is never passing (`took_too_long`): the owner gets 重试 at once.
+    expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet" && kind !== "timeout"]);
+    // And it is said as that: its provider was not unreachable.
     if (state === "nothing yet") expect(end).toMatchObject({ status: "failed", error: kind === "timeout" ? "took_too_long" : "provider_unavailable" });
     expect(gateway.pending()).toBe(0);
   });
@@ -1159,7 +1160,7 @@ describe("whether a failed reply is passing is decided by the reply as a whole (
         const fake = fakePort({ tools: [] });
         await runOn(fake, gateway, { tools: { runTimeoutMs: 300 }, runTimeoutMs: 300 });
         const passing = (finishedAs(fake)[0] as { transient?: true }).transient === true;
-        expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
+        expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet" && kind !== "timeout"]);
       }
     }
   });

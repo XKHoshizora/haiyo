@@ -877,7 +877,7 @@ describe("the state of a told whisper is derived, never stored (Redesign D)", ()
       if (end === "a release") expect(await app.agentPort.releaseRun(ticket.id)).toBe(true);
       if (end === "recovery at start-up") expect(await recoverRuns(app.deps.db, app.deps.config, app.log)).toBe(1);
       if (end === "the stale-run sweep") {
-        await db.query("update agent_runs set started_at = now() - interval '12 minutes' where id = $1", [ticket.id]);
+        await db.query("update agent_runs set started_at = now() - interval '22 minutes' where id = $1", [ticket.id]);
         expect(await sweepStaleRuns(app.agentPort, app.deps.db, app.deps.config, app.log, () => false)).toBe(1);
       }
       // (Recovery at start-up announces nothing: no socket could be open yet. The owner's next read has it.)

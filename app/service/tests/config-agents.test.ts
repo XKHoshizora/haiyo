@@ -44,7 +44,7 @@ describe("agent and metering configuration", () => {
       agentRunsPerMinute: 20,
       agentOthersRunsPerMinute: 20,
       agentCallerRunsPerMinute: 5,
-      agentRunTimeoutMs: 120_000,
+      agentRunTimeoutMs: 300_000,
       providerDefaultContextTokens: 16_000,
       providerDefaultMaxOutputTokens: 2048,
       providerMaxConcurrentCalls: 64,
@@ -77,7 +77,7 @@ describe("agent and metering configuration", () => {
       ["AGENT_RUNS_PER_MINUTE", "agentRunsPerMinute", [["1", 1], ["10000", 10_000], ["", 20]], ["0", "10001", "-5", "2.5", "lots"]],
       ["AGENT_OTHERS_RUNS_PER_MINUTE", "agentOthersRunsPerMinute", [["1", 1], ["10000", 10_000], ["", 20]], ["0", "10001", "-5", "2.5", "lots"]],
       ["AGENT_CALLER_RUNS_PER_MINUTE", "agentCallerRunsPerMinute", [["1", 1], ["10000", 10_000], ["", 5]], ["0", "10001", "-1", "1.5", "five"]],
-      ["AGENT_RUN_TIMEOUT_MS", "agentRunTimeoutMs", [["1000", 1000], ["3600000", 3_600_000], ["", 120_000]], ["999", "3600001", "0", "60s"]],
+      ["AGENT_RUN_TIMEOUT_MS", "agentRunTimeoutMs", [["1000", 1000], ["3600000", 3_600_000], ["", 300_000]], ["999", "3600001", "0", "60s"]],
       ["PROVIDER_DEFAULT_CONTEXT_TOKENS", "providerDefaultContextTokens", [["2049", 2049], ["2000000", 2_000_000], ["", 16_000]], ["999", "2000001", "16k"]],
       ["PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS", "providerDefaultMaxOutputTokens", [["1", 1], ["15999", 15_999], ["", 2048]], ["0", "-1", "1.5"]],
       ["PROVIDER_MAX_CONCURRENT_CALLS", "providerMaxConcurrentCalls", [["1", 1], ["1000", 1000], ["", 64]], ["0", "1001", "many"]],
@@ -443,7 +443,7 @@ describe("the tools configuration", () => {
     timeoutMs: 15_000,
     maxResults: 6,
   };
-  const defaults = { enabled: true, maxRounds: 8, maxPoints: 20, searchPerReply: 6, filePerReply: 4, timePerReply: 1, resultMaxWeight: 3000, runTimeoutMs: 300_000, web };
+  const defaults = { enabled: true, maxRounds: 8, maxPoints: 20, searchPerReply: 6, filePerReply: 4, timePerReply: 1, resultMaxWeight: 3000, runTimeoutMs: 600_000, web };
 
   test("the web search: off unless asked; a partial web keeps the rest; an http address, an unknown key or engine refuse", () => {
     expect(loadConfig({ ...base, TOOLS: '{"web":{"enabled":true}}' }).tools.web).toEqual({ ...web, enabled: true });

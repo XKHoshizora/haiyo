@@ -207,6 +207,7 @@ export interface ToolsConfig {
   /**
    * How long a reply that offers tools may take in all, its rounds and its tools, in ms (each model call and each tool
    * also within `AGENT_RUN_TIMEOUT_MS`); a reply that offers none is held to `AGENT_RUN_TIMEOUT_MS` alone, as before.
+   * Default 10 minutes, twice the default of one call: one slow call does not use up the reply's rounds.
    */
   runTimeoutMs: number;
   /** The web search (`search_web`, src/agents/tools/web/; `TOOLS.web`): off unless the operator turns it on. */
@@ -351,7 +352,7 @@ const toolsSchema = z.strictObject({
   filePerReply: positive(4, 1000),
   timePerReply: positive(1, 1000),
   resultMaxWeight: positive(3000, 100_000),
-  runTimeoutMs: z.number().int().min(1000).max(3_600_000).default(300_000),
+  runTimeoutMs: z.number().int().min(1000).max(3_600_000).default(600_000),
   web: webSearchSchema.prefault({} as never),
 });
 
@@ -841,8 +842,12 @@ const envSchema = z.object({
   AGENT_OTHERS_RUNS_PER_MINUTE: wholeNumber(20, 1, 10_000),
   /** Replies one person, themselves or through their Agents, may call for per minute on other people's Agents. */
   AGENT_CALLER_RUNS_PER_MINUTE: wholeNumber(5, 1, 10_000),
-  /** A reply still running after this long is ended (and so is the reading of its attachments). */
-  AGENT_RUN_TIMEOUT_MS: wholeNumber(120_000, 1_000, 3_600_000),
+  /**
+   * A reply still running after this long is ended (and so is the reading of its attachments). 5 minutes: a model that
+   * thinks hard may rightly take minutes, saying nothing meanwhile (a call that does not think and goes silent is given
+   * up on after 60 s all the same: models/gateway.ts `silenceAllowed`).
+   */
+  AGENT_RUN_TIMEOUT_MS: wholeNumber(300_000, 1_000, 3_600_000),
   /** A provider model's context window when its owner does not give one, in tokens. */
   PROVIDER_DEFAULT_CONTEXT_TOKENS: wholeNumber(16_000, 1_000, 2_000_000),
   /** The output limit every call to a provider model gets, in tokens. */
