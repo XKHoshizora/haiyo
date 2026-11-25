@@ -109,7 +109,9 @@ export interface Estimated {
  * run's lane (`agentRunsPerMinute` for their own, `agentOthersRunsPerMinute` for everyone else's); the run was recorded
  * failed by the trigger (runs.ts), never by the worker, and nothing was called.
  * `thinking_exhausted`: the model stopped at its output limit having only thought, no answer (charged what the
- * upstream reported). `model_gone`: the Agent's model is not there to call any more — its provider model off the
+ * upstream reported). `took_too_long`: the reply's own time ran out (`AGENT_RUN_TIMEOUT_MS`, `TOOLS.runTimeoutMs`) before
+ * it had anything to post — the model was reached and was still working (thinking, most often); charged only what an
+ * upstream reported. `model_gone`: the Agent's model is not there to call any more — its provider model off the
  * provider's list, its provider gone, a site model no longer configured (models/resolve.ts `resolveModel` null); no
  * call is made, and only choosing another model helps.
  */
@@ -122,6 +124,7 @@ export type RunErrorCode =
   | "context_too_small"
   | "rate_limited"
   | "thinking_exhausted"
+  | "took_too_long"
   | "model_gone";
 
 /**

@@ -171,8 +171,9 @@ apart from the owner's own and likewise not scaled; 1–10 000, default 20),
 `AGENT_CALLER_RUNS_PER_MINUTE` (calls one person, themselves or through an Agent's message they are behind, may make a
 minute on other people's Agents; counted and not scaled likewise; 1–10 000, default 5),
 `AGENT_RUN_TIMEOUT_MS` (how long a reply or a persona draft may take, and for a reply also the reading of its
-attachments before the call, each in turn: so a reply may take up to about twice it in all; 1 000–3 600 000, default
-120 000), `PROVIDER_DEFAULT_CONTEXT_TOKENS` (a provider model's
+attachments before the call, each in turn: so a reply may take up to about twice it in all; it is also how long a model
+call that thinks may stay silent — one that does not think is given up on after 60 s of silence (Calling a model);
+1 000–3 600 000, default 120 000), `PROVIDER_DEFAULT_CONTEXT_TOKENS` (a provider model's
 context when its owner gives none; 1 000–2 000 000, default 16 000), `PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS` (the output
 limit of every call to a provider model at reasoning `none`, and its reply's limit at any other level; 1–1 000 000,
 default 2 048; it must be less than `PROVIDER_DEFAULT_CONTEXT_TOKENS`, else start-up fails naming both),
@@ -1061,7 +1062,8 @@ fact, set once: any text or thinking received in any round, an acknowledgement p
 the service lost, `agent_runs.progressed`, set at the reply's first piece of text or thinking (one write of the run's row,
 once per reply, before the next piece is read), by the acknowledgement and by every step between tool rounds, and at a
 release at shutdown what the worker knew): the model
-service answered 5xx, 408 or 429; a call error with no status, a stream cut short or the reply's own time out; or the
+service answered 5xx, 408 or 429; a call error with no status, a stream cut short or the reply's own time out
+(`took_too_long`); or the
 service lost the run mid-call (start-up recovery, the release at a stop or shutdown, the stale-run sweep). After anything
 was produced none of these is passing (the reply already spent and did things; repeating them unattended is not
 acceptable): it is the ordinary failure, with 重试. An answer that finished with nothing in it (a content refusal, only
@@ -1097,7 +1099,10 @@ an owner's own key: that owner learns why after the retries (about 2.3 minutes).
 "retryableUntil"?, "resetsAt"?}`. `error`: for `failed` why (`provider_rejected`, `provider_unavailable`, `address_not_allowed`, `no_quota`,
 `context_too_small` — the model's context cannot hold your newest message, or 200 tokens of it, after the persona —,
 `thinking_exhausted` — the model used its whole output limit thinking and gave no answer; charged what the upstream
-reported; retry, or choose a lower reasoning level —, `model_gone` — the Agent's model is not there to call any more (someone else's call on it is recorded so at once, queuing nothing; your own call queues a reply that ends so as it begins)
+reported; retry, or choose a lower reasoning level —, `took_too_long` — the reply's own time ran out
+(`AGENT_RUN_TIMEOUT_MS`; with tools `TOOLS.runTimeoutMs` in all) before it had anything to post: its model was reached
+and was still working, most often thinking; charged only what an upstream reported, so as a rule nothing; retry, or
+choose a lower reasoning level —, `model_gone` — the Agent's model is not there to call any more (someone else's call on it is recorded so at once, queuing nothing; your own call queues a reply that ends so as it begins)
 (`modelUsable` false, Agent): no call was made; choose another model —, or
 `busy`: the service's own trouble — the reply could not be started or stored, its attachments could not be read, or
 there was nothing to answer — which costs you nothing; `provider_unavailable` is also what a reply that was under way
@@ -2194,8 +2199,12 @@ What follows for a person choosing a model and a level:
   characters of white space, is text); otherwise it is not shown, though it is counted.
 - A Gemini key that is wrong is answered 400 by Google, so it reads as `provider_unavailable`, not
   `provider_rejected` (the same in the provider test route).
-- A model silent for 60 s (for example one thinking hard without streaming its thinking) is given up on
-  (`provider_unavailable`).
+- Silence. A call at `none` that sends nothing for 60 s is given up on (`provider_unavailable`). A call at any other
+  level may be silent for as long as a reply may take (the longer of `AGENT_RUN_TIMEOUT_MS` and `TOOLS.runTimeoutMs`):
+  an upstream that does not stream its thinking sends nothing at all until it has thought, which at a high level, or
+  with a picture to look at, is easily more than a minute. What ends such a call is the reply's own time, and a reply
+  that had nothing to post by then fails `took_too_long` (Run), not `provider_unavailable`. A model that thinks though
+  it was sent `none` (one that cannot switch its thinking off) keeps the 60 s.
 
 **What comes back.** The answer as text and reasoning deltas (Responses reasoning summaries, Anthropic thinking, Gemini
 thought summaries; Chat Completions' `reasoning_content` / `reasoning`, which the SDK drops and the gateway reads off
@@ -2214,8 +2223,11 @@ Responses and Anthropic is as the upstream sent it, so it may be empty or repeat
 unique across rounds); only the finish's `truncated` says a round was cut (a call cut short may have input null, or
 `{}` when cut before its first argument); and the gateway bounds no sizes — not a call's name, id or input, nor how
 many calls a round makes, nor what a call sends (`tools`, `steps`, results). An answer may be up to 8 MiB on the wire
-and is given up after 60 s without a byte (before or after the headers); how long it may take in all is the caller's
-to bound. Nothing a model calls a tool with, nor any tool's result, is logged.
+and is given up after 60 s without a byte (before or after the headers) when the call does not think (`reasoning`
+`none`); a call that thinks may be silent for as long as a reply may take (the longer of `AGENT_RUN_TIMEOUT_MS` and
+`TOOLS.runTimeoutMs`, 5 minutes by default: the one rule, `src/models/gateway.ts` `silenceAllowed`), and an address
+that cannot be found or connected to is given up on after the 60 s either way; how long a call may take in all is the
+caller's to bound (its signal ends it at once, silent or not). Nothing a model calls a tool with, nor any tool's result, is logged.
 
 **Failures** are a `ModelError` with one of four codes and a fixed sentence: 401 or 403 is `provider_rejected`; any
 other error status, a network failure, silence, a redirect, an oversized answer, and a stream that is malformed or ends
@@ -4546,7 +4558,7 @@ language (measured, fix round 2). So, in the Agent's own conversation only:
 | Everything it was to answer is before a new topic (started while it was queued, or a retry after one) | none, no call made | `cancelled` with no error, not retryable; charged nothing; what the owner wrote meanwhile gets the follow-up |
 | The model's context cannot hold the owner's newest message (or 200 tokens of it) after the system text | none, no call made | `failed`, `context_too_small`, not retryable; charged nothing |
 | Nothing to answer otherwise, or its attachments could not be read (two reads failed before any succeeded, or reading took longer than `AGENT_RUN_TIMEOUT_MS`) | none, no call made | `failed`, `busy`, retryable; charged nothing |
-| `AGENT_RUN_TIMEOUT_MS` (2 minutes) passed, or for a reply with tools `TOOLS.runTimeoutMs` (5 minutes) in all | what had been said, `truncated: true`, without what follows an unfinished proposal block's `<af-` (nothing said, or nothing before that: `failed`, `provider_unavailable`, charged only what the upstream reported) | `done` |
+| `AGENT_RUN_TIMEOUT_MS` (2 minutes) passed, or for a reply with tools `TOOLS.runTimeoutMs` (5 minutes) in all | what had been said, `truncated: true`, without what follows an unfinished proposal block's `<af-` (nothing said, or nothing before that: `failed`, `took_too_long`, retryable, charged only what the upstream reported — tried again by itself only when nothing at all had come, Automatic retry) | `done` |
 | The service closed during the call, or while its attachments were read | none | ended by the closing service itself as recovery ends one (Shutdown, below): `failed`, `provider_unavailable`, retryable; charged nothing. Only if that cannot be written (or the process died): left `running`, then recovered at the next start, or by the stale-run sweep of an instance still running |
 
 Failures are never messages: no seq, not in search or unread counts, never shown to a model. The owner sees them on the

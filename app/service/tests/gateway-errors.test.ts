@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { PROTOCOLS, type Protocol } from "../src/config.ts";
 import { createModelGateway, ModelError, type ModelCall, type ModelErrorCode, type ModelEvent } from "../src/models/gateway.ts";
 import { createSlots } from "../src/slots.ts";
-import { answerCanned, cannedKeyError, cannedStream, protocolStub, STUB_MODEL, type ProtocolStub } from "./helpers/models.ts";
+import { answerCanned, CANNED_TEXT_DELTAS, cannedKeyError, cannedStream, protocolOfPath, protocolStub, STUB_MODEL, type ProtocolStub, type StubHandler } from "./helpers/models.ts";
 
 /**
  * How the gateway fails: every upstream failure becomes a `ModelError` whose code is all that is kept (its message is a
@@ -158,6 +158,65 @@ describe("upstream refusals and failures become ModelError codes", () => {
     const { error } = await run(quick.stream(call("gemini")));
     expectModelError(error, "provider_unavailable");
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  describe("a call that thinks may stay silent for as long as a reply may take (the owner's report: a provider that streams nothing while it thinks)", () => {
+    // Scaled down: 200 ms stands for the 60 s a call that does not think may be silent, 3 s for a reply's own time.
+    const IDLE = 200;
+    const patient = () => createModelGateway({ calls: createSlots(64), allowInsecureLocal: true, idleTimeoutMs: IDLE, thinkingIdleTimeoutMs: 3_000 });
+    /** Silent for three idle limits, then the protocol's plain answer: after its headers (`headersFirst`), or before any. */
+    const thinksSilently = (headersFirst: boolean): StubHandler => (req, res) => {
+      const protocol = protocolOfPath(req.path)!;
+      if (headersFirst) res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      setTimeout(() => {
+        if (headersFirst) res.end(cannedStream(protocol, "text"));
+        else answerCanned(req, res);
+      }, IDLE * 3);
+    };
+
+    it.each(["openai_chat", "anthropic"] as const)("%s at a thinking level: silent after its headers for longer than the idle limit, then the answer — it arrives whole", async (protocol) => {
+      stub.answer(thinksSilently(true));
+      const { events, error } = await run(patient().stream(call(protocol, { reasoning: "high" })));
+      expect(error).toBeNull();
+      expect(events.flatMap((e) => (e.type === "text" ? [e.delta] : [])).join("")).toBe(CANNED_TEXT_DELTAS.join(""));
+      expect(events.at(-1)).toMatchObject({ type: "finish" });
+    });
+
+    it.each(["openai_chat", "anthropic"] as const)("%s at a thinking level: nothing at all, not even headers, for longer than the idle limit, then the answer — it arrives whole", async (protocol) => {
+      stub.answer(thinksSilently(false));
+      const { events, error } = await run(patient().stream(call(protocol, { reasoning: "high" })));
+      expect(error).toBeNull();
+      expect(events.flatMap((e) => (e.type === "text" ? [e.delta] : [])).join("")).toBe(CANNED_TEXT_DELTAS.join(""));
+    });
+
+    it("a call that does not think keeps the idle limit: the same silence is provider_unavailable, before and after the headers", async () => {
+      for (const headersFirst of [true, false]) {
+        stub.answer(thinksSilently(headersFirst));
+        const started = Date.now();
+        expectModelError((await run(patient().stream(call("openai_chat")))).error, "provider_unavailable");
+        expect(Date.now() - started).toBeLessThan(IDLE * 3);
+      }
+    });
+
+    it("never unbounded: a thinking call silent past its own allowance is provider_unavailable too", async () => {
+      const bounded = createModelGateway({ calls: createSlots(64), allowInsecureLocal: true, idleTimeoutMs: IDLE, thinkingIdleTimeoutMs: IDLE * 2 });
+      stub.answer((_req, res) => void res.writeHead(200, { "content-type": "text/event-stream" }).flushHeaders());
+      const started = Date.now();
+      expectModelError((await run(bounded.stream(call("anthropic", { reasoning: "high" })))).error, "provider_unavailable");
+      expect(Date.now() - started).toBeGreaterThanOrEqual(IDLE * 2 - 50);
+      expect(Date.now() - started).toBeLessThan(2_500);
+    });
+
+    it("the caller's abort still cuts a silent thinking call at once: its reason is thrown, long before any allowance", async () => {
+      stub.answer(() => {}); // never answers
+      const controller = new AbortController();
+      const reason = new Error("the reply's time is up");
+      setTimeout(() => controller.abort(reason), IDLE * 2);
+      const started = Date.now();
+      const { error } = await run(patient().stream(call("openai_chat", { reasoning: "high", signal: controller.signal })));
+      expect(error).toBe(reason);
+      expect(Date.now() - started).toBeLessThan(1_500);
+    });
   });
 
   it("the guard's refusal is address_not_allowed, and nothing is sent", async () => {

@@ -192,6 +192,12 @@ export interface GuardOptions {
    */
   timeoutMs: number;
   /**
+   * How long finding the address and connecting to it may take, for a guard whose `timeoutMs` is long because what it
+   * calls may rightly be silent for long (a model that thinks: models/gateway.ts): an address that cannot be reached is
+   * still given up on after this. Default `timeoutMs`.
+   */
+  connectTimeoutMs?: number;
+  /**
    * Where calls in flight are counted, one slot each from before the name lookup until the call is over (body read,
    * cancelled, failed, aborted or timed out); a call that finds no slot is `provider_unavailable` at once. In the app:
    * one count for the whole service (one process), `createSlots(PROVIDER_MAX_CONCURRENT_CALLS)`, which `buildApp` makes
@@ -292,8 +298,8 @@ const NULL_BODY_STATUS = new Set([204, 205]);
  * `provider_unavailable` at once); the host is resolved once and every address checked (`checkedAddresses`); the
  * connection is made to exactly those addresses (the name stays the Host and TLS SNI); redirects are never followed
  * (any 3xx is `provider_unavailable`); the request is aborted after `timeoutMs` without progress (re-armed when the
- * headers arrive and at every body chunk) and when the body passes `maxResponseBytes` (`provider_unavailable`, as
- * `GuardGaveUp` saying which).
+ * headers arrive and at every body chunk; until the address is found and connected to, after `connectTimeoutMs` when
+ * that is given) and when the body passes `maxResponseBytes` (`provider_unavailable`, as `GuardGaveUp` saying which).
  * Refusals are `AppError(400, "address_not_allowed")` and happen before any connection. Errors never carry the
  * upstream's body or headers, nor the request's. An abort by the caller's own `signal` passes through as that abort
  * and closes the connection at once, whether or not the body is being read.
@@ -302,6 +308,7 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
   const resolve: Resolve = opts.resolve ?? ((hostname, options) => dns.lookup(hostname, options));
   const local = opts.allowInsecureLocal === true;
   const { calls } = opts;
+  const connectTimeoutMs = opts.connectTimeoutMs ?? opts.timeoutMs;
 
   async function guarded(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
     if (typeof input !== "string" && !(input instanceof URL)) throw new TypeError("guardedFetch takes a URL or a string, not a Request");
@@ -325,15 +332,15 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
       if (agent) void agent.destroy().catch(() => {});
       calls.release(SITE);
     };
-    /** (Re)starts the "no progress for timeoutMs" timer. */
-    const arm = () => {
+    /** (Re)starts the "no progress for timeoutMs" timer (`ms`: for another wait than `timeoutMs`). */
+    const arm = (ms = opts.timeoutMs) => {
       if (finished) return;
       clearTimeout(timer);
       timer = setTimeout(() => {
         timedOut = true;
         own.abort();
         finish();
-      }, opts.timeoutMs);
+      }, ms);
     };
     /**
      * The caller's own abort stays that abort; the guard's errors stay; no progress in time is `GuardGaveUp` `stalled`;
@@ -376,18 +383,19 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
       );
     };
 
-    arm();
+    arm(connectTimeoutMs);
     // An abort (the caller's, or the timer's) ends the call at once, even while nobody reads the body.
     signal.addEventListener("abort", finish, { once: true });
     try {
       const addresses = await checkedAddresses(url, resolve, local, signal);
       signal.throwIfAborted();
+      arm(); // the address is found: from here the wait is for the answer (connecting has its own limit, below)
       agent = new Agent({
         allowH2: false,
         connections: 1,
         headersTimeout: 0, // the guard's own timer governs
         bodyTimeout: 0,
-        connect: { lookup: pinnedLookup(addresses), timeout: opts.timeoutMs },
+        connect: { lookup: pinnedLookup(addresses), timeout: connectTimeoutMs },
       });
       const res = await undiciFetch(url.href, { ...(init as UndiciRequestInit), signal, redirect: "manual", dispatcher: agent });
       arm(); // the headers are progress: the first body chunk gets a full `timeoutMs`

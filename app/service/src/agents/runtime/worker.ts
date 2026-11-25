@@ -519,14 +519,21 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
       if (posted === "empty") return finish(run, { status: "stopped" }, usage, fallback);
       return finish(run, ended(posted, { status: "stopped" }), usage, fallback);
     }
-    // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — passing only when the
-    // reply's time ran out before anything came; an answer that finished with nothing in it is the provider's answer.
-    if (!said) return failed(noAnswer === UNAVAILABLE ? failedEnd("provider_unavailable", finished === null ? { kind: "timeout", progress: last.progress === true } : { kind: "nothing" }) : noAnswer);
+    // A complete answer, or one cut off by the time limit (posted as truncated). Nothing said: failed — an answer that
+    // finished with nothing in it is the provider's answer (`provider_unavailable`); the reply's time running out is said
+    // as that (`took_too_long`: its model was reached, and still working), passing only when nothing had come before.
+    const nothing = (): RunEnd =>
+      noAnswer !== UNAVAILABLE
+        ? noAnswer
+        : finished === null
+          ? failedEnd("took_too_long", { kind: "timeout", progress: last.progress === true })
+          : failedEnd("provider_unavailable", { kind: "nothing" });
+    if (!said) return failed(nothing());
     const toolCalls = finished !== null && trace.length > 0 ? { toolCalls: trace } : {};
     const posted = await post(run, { text, reasoning, stopped: false, truncated: finished === null || finished.truncated, ...looked, ...toolCalls });
     // All it said was inside a persona block that a limit cut off (in a group, also: it only thought, or said only the
-    // mark and labels): as an answer that said nothing.
-    if (posted === "empty") return failed(noAnswer);
+    // mark and labels): as an answer that said nothing — it had produced something, so it is never passing.
+    if (posted === "empty") return failed(finished === null && noAnswer === UNAVAILABLE ? failedEnd("took_too_long", { kind: "timeout", progress: true }) : noAnswer);
     return finish(run, ended(posted, { status: "done" }), usage, fallback);
   }
 

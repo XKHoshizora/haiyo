@@ -458,6 +458,21 @@ describe("guardedFetch answers", () => {
     expect(took).toBeLessThan(3000);
   });
 
+  it("connectTimeoutMs: a guard that waits long for an answer still gives up early on an address it cannot find", async () => {
+    const hangs: Resolve = () => new Promise(() => {});
+    const patient = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 5_000, connectTimeoutMs: 300, allowInsecureLocal: true, resolve: hangs });
+    let started = Date.now();
+    expect(await settle(patient("https://models.example/v1"))).toMatchObject(unavailable);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    expect(Date.now() - started).toBeLessThan(3000);
+
+    // The address found, the wait for the answer is `timeoutMs`: headers that come after `connectTimeoutMs` are waited for.
+    const server = await listener((_req, res) => void setTimeout(() => res.end("late but whole"), 700));
+    started = Date.now();
+    expect(await (await patient(`http://127.0.0.1:${server.port}/`)).text()).toBe("late but whole");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(650);
+  });
+
   it("the time limit is between bytes: a slow but steady body is delivered", async () => {
     const quick = guardedFetch({ calls: room(), maxResponseBytes: 1000, timeoutMs: 300, allowInsecureLocal: true });
     const server = await listener((_req, res) => {

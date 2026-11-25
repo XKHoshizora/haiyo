@@ -737,7 +737,7 @@ describe("a reply that offers tools", () => {
     const acked = fakePort({ tool: () => new Promise((resolve) => setTimeout(() => resolve({ output: "晚了", activity: "search" }), 3_000)) });
     await runOn(acked, scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" }), { tools: { runTimeoutMs: 1_000 } });
     // (Its acknowledgement was posted: the reply had produced something, so its time out is not passing.)
-    expect([acked.acks.map((a) => a.text), acked.posted, finishedAs(acked)]).toEqual([["我先查一下。"], [], [{ status: "failed", error: "provider_unavailable" }]]);
+    expect([acked.acks.map((a) => a.text), acked.posted, finishedAs(acked)]).toEqual([["我先查一下。"], [], [{ status: "failed", error: "took_too_long" }]]);
 
     // Past it between two rounds (the port took long to answer about money): no next call.
     const later = scriptedGateway().callTools([{ name: "search", input: { query: "a" } }], { text: "我先查一下。" });
@@ -752,7 +752,7 @@ describe("a reply that offers tools", () => {
     await runOn(silent, mute, { tools: { runTimeoutMs: 1_000 } });
     expect(silent.posted).toEqual([]);
     // (A tool round had completed: the reply had done something, so its time out is not passing.)
-    expect(finishedAs(silent)).toEqual([{ status: "failed", error: "provider_unavailable" }]);
+    expect(finishedAs(silent)).toEqual([{ status: "failed", error: "took_too_long" }]);
   });
 
   it("a long result is cut to resultMaxWeight with the fixed mark; any other value is cut as its JSON text and sent as a string", async () => {
@@ -1147,7 +1147,8 @@ describe("whether a failed reply is passing is decided by the reply as a whole (
     const [end] = finishedAs(fake);
     const passing = (end as { transient?: true }).transient === true;
     expect([kind, state, passing]).toEqual([kind, state, state === "nothing yet"]);
-    if (state === "nothing yet") expect(end).toMatchObject({ status: "failed", error: "provider_unavailable" });
+    // The reply's own time running out is said as that (`took_too_long`): its provider was not unreachable.
+    if (state === "nothing yet") expect(end).toMatchObject({ status: "failed", error: kind === "timeout" ? "took_too_long" : "provider_unavailable" });
     expect(gateway.pending()).toBe(0);
   });
 

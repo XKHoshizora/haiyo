@@ -431,8 +431,16 @@ function providerOptionsFor(call: ModelCall, left: ReadonlySet<OptionalField>): 
 
 /** A model's answer may be long: the guard's size limit for one model stream. */
 const MODEL_STREAM_MAX_BYTES = 8 * 1024 * 1024;
-/** A model stream silent for this long (before its headers, or between its bytes) is given up on. */
+/**
+ * How long a model stream may be silent (before its headers, or between its bytes) before it is given up on — THE rule
+ * (`silenceAllowed`): a call that does not think (`reasoning` `none`) 60 s; a call that thinks, for as long as a reply
+ * may take (`GatewayOptions.thinkingIdleTimeoutMs`), because an upstream that does not stream its thinking sends nothing
+ * at all until it has thought, and what bounds such a call is its caller's signal (the reply's own time). Whichever it
+ * is, an address that cannot be found or connected to is given up on after the 60 s.
+ */
 const MODEL_IDLE_TIMEOUT_MS = 60_000;
+/** The silence a thinking call is allowed when the gateway is not told how long a reply may take: 5 minutes. */
+const MODEL_THINKING_IDLE_TIMEOUT_MS = 300_000;
 
 export interface GatewayOptions {
   /** Where its calls are counted: the app's one count of calls through the guard (`GuardOptions.calls`). */
@@ -441,6 +449,11 @@ export interface GatewayOptions {
   allowInsecureLocal?: boolean;
   /** Default 60 s; tests shorten it. */
   idleTimeoutMs?: number;
+  /**
+   * How long a call that thinks may be silent: the longest a reply may take (the app: the longer of
+   * `AGENT_RUN_TIMEOUT_MS` and `TOOLS.runTimeoutMs`), never less than `idleTimeoutMs`. Default 5 minutes.
+   */
+  thinkingIdleTimeoutMs?: number;
 }
 
 /**
@@ -451,11 +464,16 @@ export function createModelGateway(options: GatewayOptions): ModelGateway {
   // The SDK reports settings a model ignores through `process.emitWarning`, outside the service's log: not wanted.
   globalThis.AI_SDK_LOG_WARNINGS = false;
   const guard = { calls: options.calls, ...(options.allowInsecureLocal === true ? { allowInsecureLocal: true } : {}) };
-  const fetch = guardedFetch({ ...guard, maxResponseBytes: MODEL_STREAM_MAX_BYTES, timeoutMs: options.idleTimeoutMs ?? MODEL_IDLE_TIMEOUT_MS });
+  const idleMs = options.idleTimeoutMs ?? MODEL_IDLE_TIMEOUT_MS;
+  const sized = { ...guard, maxResponseBytes: MODEL_STREAM_MAX_BYTES };
+  const fetch = guardedFetch({ ...sized, timeoutMs: idleMs });
+  const patient = guardedFetch({ ...sized, timeoutMs: Math.max(idleMs, options.thinkingIdleTimeoutMs ?? MODEL_THINKING_IDLE_TIMEOUT_MS), connectTimeoutMs: idleMs });
+  /** THE rule of how long a call may be silent (`MODEL_IDLE_TIMEOUT_MS`): by whether it thinks. */
+  const silenceAllowed = (call: ModelCall): typeof globalThis.fetch => (call.reasoning === "none" ? fetch : patient);
   const probe = createProviderProbe(guardedFetch({ ...guard, ...PROBE_GUARD }));
   const refusals = new Refusals();
   return {
-    stream: (call) => streamCall(call, fetch, refusals),
+    stream: (call) => streamCall(call, silenceAllowed(call), refusals),
     async listModels(p) {
       try {
         return await probe.listModels(p);

@@ -118,14 +118,14 @@ describe("a model upstream that misbehaves", () => {
     expect(record).toMatchObject({ estimated: true, output: Array.from(reply.text).length });
   });
 
-  it("a stream that says nothing before the time is up: no message, failed provider_unavailable, retryable; costs nothing", async () => {
+  it("a stream that says nothing before the time is up: no message, failed took_too_long (the provider was reached), retryable; costs nothing", async () => {
     const { owner, agent, conv } = await owned("silent", timed);
     const hold = gateway.hang();
     await say(owner, conv, "在吗", timed);
     expect(await timed.agentWorker.runOnce()).toBe(true);
     expect((await hold.reached).signal.aborted).toBe(true);
     expect(await fromAgent(owner, conv, agent.id, timed)).toEqual([]);
-    expect(await settled(owner, conv, { status: "failed", error: "provider_unavailable", retryable: true }, timed)).toMatchObject({ cost: "0" });
+    expect(await settled(owner, conv, { status: "failed", error: "took_too_long", retryable: true }, timed)).toMatchObject({ cost: "0" });
   });
 
   it("a stream the upstream cuts off midway: what it said is discarded, nothing posted, failed; no usage reported: it costs nothing", async () => {
