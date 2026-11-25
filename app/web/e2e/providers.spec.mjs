@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { test, expect } from "./support/fixtures.mjs";
 import { uniq } from "./support/accounts.mjs";
-import { chooseModelUi, createAgentUi, expectStored, goTo, sendText } from "./support/app.mjs";
+import { chatPane, chooseModelUi, chooseOptionUi, createAgentUi, expectStored, goTo, openAgentDetail, sendText } from "./support/app.mjs";
 import { canControlService } from "./support/control.mjs";
 import { STUB_MODELS, modelStub } from "./support/model-stub.mjs";
 import { capture } from "./support/shots.mjs";
@@ -281,4 +281,15 @@ test("思考档位 under 高级 for every model that thinks: one the catalogue d
   await chooseModelUi(page, agentForm, "o3-mini");
   // (Every level its interface has: this provider speaks Chat Completions, where 最高 is sent as 很高, so the list ends there.)
   expect(await offered()).toEqual(["不思考", "低", "中", "高", "很高"]);
+  // And the top it offers is one the save takes (fix round 4, F4: the write accepts exactly what the picker offers): picked,
+  // saved, and still 很高 when its form is opened again.
+  const agentName = `档位${uniq(4)}`;
+  await agentForm.getByLabel("名称", { exact: true }).fill(agentName);
+  await chooseOptionUi(page, agentForm, "思考程度", "很高");
+  await agentForm.getByRole("button", { name: "创建 Agent", exact: true }).click();
+  await expect(chatPane(page, agentName)).toBeVisible();
+  const detail = await openAgentDetail(page, agentName);
+  await detail.getByRole("button", { name: "编辑" }).click();
+  const editForm = page.getByRole("region", { name: "编辑 Agent" });
+  await expect(editForm.getByLabel("思考程度", { exact: true })).toContainText("很高");
 });
