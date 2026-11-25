@@ -4751,8 +4751,9 @@ one space). A call, in this order, each refusal an `{"error"}` in plain words (n
    for everything it is compared with alike (CJK counted by Script_Extensions, so `ー` is kana): refused when the query
    shares 6 CJK characters in a row, 7 digits in a row (a phone, an ID, a card number, whatever separates them), or 3 Latin
    words in a row (read on the spaced form) with any note or hearsay text the run was shown — unless that same run is in
-   its owner's latest message in the conversation and the reply answers the owner's own call (their own conversation,
-   their own `@` in a group: theirs to search; never someone else's call, a reply nobody asked for or a relay) — or, in a
+   its owner's latest message in the conversation and a call the reply answers is one the owner WROTE (accepted as the
+   owner's own and the owner's own message: their own conversation, their own `@` in a group — theirs to search; never
+   someone else's call, even one the owner's 重试 made the owner's own reply, a reply nobody asked for or a relay) — or, in a
    group, holds the display name or handle
    (2 characters or more of that form: `李 雷`, `李，雷` and `guardb mia` are `李雷` and `guardb_mia`) of a current member or
    of the owner;

@@ -105,8 +105,9 @@ export function checked(results: readonly WebResult[]): WebResult[] {
 
 /**
  * What the guard reads of the run, as it may read it now: what its owner last typed in its conversation (no later than
- * the run had heard, `RunScope.heardTo`) — only for a reply the owner asked for themselves (`RunScope.ownerAsked`: their
- * own conversation, their own call in a group; never someone else's call, a reply nobody asked for or a relay, review M6)
+ * the run had heard, `RunScope.heardTo`) — only for a reply answering a call the owner wrote themselves (`RunScope.ownerAsked`:
+ * their own conversation, their own @ in a group; never someone else's call — not even one the owner's 重试 made theirs, review 5
+ * item 7 — a reply nobody asked for or a relay, review M6)
  * — and, in a group, the display name and handle of every current member and of the owner. Read-only; nothing of it is
  * kept or logged.
  */

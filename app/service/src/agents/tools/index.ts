@@ -50,8 +50,10 @@ export interface RunScope extends RunTicket {
   readonly shown?: readonly string[];
   readonly holdSearch?: () => Promise<string | HeldSearch>;
   /**
-   * The reply answers its owner's own call (lane `own`, called by a person's message: their own conversation, a retry,
-   * their own @ in a group): only then do the owner's own typed words exempt a query from the web search's guard.
+   * A call the reply answers is one its owner WROTE (runs.ts `ownerWroteACall`: accepted as the owner's own, the message the
+   * owner's; in their own conversation, every reply): only then do the owner's own typed words exempt a query from the web
+   * search's guard — never for a call someone else made, even one the owner's 重试 made the owner's own reply, nor for a relay
+   * (review 5, item 7).
    */
   readonly ownerAsked?: boolean;
   /**

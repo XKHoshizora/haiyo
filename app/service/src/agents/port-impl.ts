@@ -82,6 +82,7 @@ import {
   hearFrom,
   limitNotice,
   noneTold,
+  ownerWroteACall,
   pushBudgetReached,
   refusedAtAdmission,
   AUTO_RETRY_WINDOW_MS,
@@ -1029,8 +1030,11 @@ export class DbAgentPort implements AgentPort {
       // above), and its tools show it nothing later (`RunScope.heardTo`).
       const heard = offer === null ? null : await t.query<{ seq: string }>("select seq::text from conversations where id = $1", [run.conversationId]);
       // A reply offered the web search keeps what it was shown of its notes and hearsay for its query guard (tools/web).
-      // And whether it answers its owner's own call: only then do the owner's typed words exempt a query (review M6).
-      const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: state.lane === "own" && state.triggered_by === "human" } : {};
+      // And whether a call it answers is one its owner WROTE (review M6; review 5, item 7): only then do the owner's typed words exempt a
+      // query — never for a reply that is the owner's own only by their 重试 of someone else's call, nor for a relay. In the Agent's own
+      // conversation every reply answers what its owner wrote.
+      const ownerWrote = offer?.web !== "offered" ? false : place === "own" ? state.lane === "own" && state.triggered_by === "human" : await ownerWroteACall(t, run.id);
+      const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: ownerWrote } : {};
       const tools = heard === null || refs === null ? null : { refs, heardTo: Number(heard.rows[0]?.seq ?? 0), ...shown };
       return { basis: basisOf(state, covers), resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, bounded, social: socialNotes };
     });

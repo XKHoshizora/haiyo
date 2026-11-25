@@ -751,6 +751,23 @@ export async function standingCalls(t: Tx, runId: string): Promise<{ none: boole
   };
 }
 
+/**
+ * Whether a call run `runId` answers (at or before what it covers) is one its Agent's owner WROTE: a call accepted as the owner's own
+ * (`owner_call_seqs`) whose message is the owner's own — not an Agent's message the owner was behind (a relay), and never a call of
+ * someone else's that the owner's 重试 made the owner's own reply. What lets the owner's typed words exempt a web query from its guard
+ * (port-impl.ts `begin`, tools/web/tool.ts; review M6, review 5 item 7). Reads only.
+ */
+export async function ownerWroteACall(q: Queryable, runId: string): Promise<boolean> {
+  const { rows } = await q.query<{ wrote: boolean }>(
+    `select exists (
+       select 1 from agent_runs r
+         join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
+        where r.id = $1 and m.seq <= r.covers_seq and m.seq = any(r.owner_call_seqs) and m.sender_id = r.owner_id) as wrote`,
+    [runId],
+  );
+  return rows[0]?.wrote === true;
+}
+
 /** The model of Agent `agentId` as its `agents` row says now (`agentModelOf`); null for none, or no such Agent. */
 async function modelOfAgent(q: Queryable, agentId: string): Promise<AgentRow["model"]> {
   const { rows } = await q.query<Parameters<typeof agentModelOf>[0]>(

@@ -1060,6 +1060,38 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     expect(engine.queries).toEqual([query]);
   });
 
+  it("the owner's 重试 of a member's call is the owner's own reply, yet no call it answers is one the owner wrote: the owner's earlier line exempts nothing (review 5, item 7)", async () => {
+    const gateway = scriptedGateway();
+    const engine = fakeEngine();
+    const { worker } = webWorker(gateway, engine);
+    const { owner, agent } = await owned("gdr");
+    await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [agent.id, "主人住在北京市海淀区中关村南大街五号"]);
+    const { g, mia } = await groupWith(owner, "gdr", [agent.id]);
+    const query = "海淀区中关村南大街 美食";
+    await say(owner, g, "我就住海淀区中关村南大街那边");
+    await say(mia, g, `@${agent.handle} 那附近有什么好吃的？`);
+    await db.query("update agent_runs set status = 'failed', error = 'busy', finished_at = now() where agent_id = $1 and status = 'queued'", [agent.id]);
+    expect((await api(app, owner, "POST", `/api/conversations/${g}/runs/retry`, { agentId: agent.id })).status).toBe(201);
+    expect(await lastRun(agent.id)).toMatchObject({ status: "queued", lane: "own", triggered_by: "human" });
+    expect(await searchRun(worker, gateway, [query])).toEqual([{ error: WEB_QUERY_PRIVATE }]);
+    expect(engine.queries).toEqual([]);
+  });
+
+  it("the owner's own @ folded with a member's into one reply for others: a call the reply answers is one the owner wrote, so the owner's words are theirs to search", async () => {
+    const gateway = scriptedGateway();
+    const engine = fakeEngine();
+    const { worker } = webWorker(gateway, engine);
+    const { owner, agent } = await owned("gdo");
+    await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [agent.id, "主人住在北京市海淀区中关村南大街五号"]);
+    const { g, mia } = await groupWith(owner, "gdo", [agent.id]);
+    const query = "海淀区中关村南大街 美食";
+    await say(mia, g, `@${agent.handle} 附近有什么好吃的？`);
+    await say(owner, g, `@${agent.handle} 海淀区中关村南大街附近有什么好吃的？`);
+    expect(await lastRun(agent.id)).toMatchObject({ status: "queued", lane: "others" });
+    expect((await searchRun(worker, gateway, [query]))[0]).toMatchObject({ results: expect.any(Array) });
+    expect(engine.queries).toEqual([query]);
+  });
+
   it("a pre-hold that answers anything but what the fuse held is a refusal: the engine is never called", async () => {
     const engine = fakeEngine();
     const { owner, agent, own } = await owned("notheld");
