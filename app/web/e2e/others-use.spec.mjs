@@ -178,6 +178,7 @@ for (const [size, contextOptions] of SIZES) {
       const got = await (await ann.request.get(`/api/agents/${agent.id}`)).json();
       expect(got).toMatchObject({ othersReasoning: "medium", proactiveReasoning: "low", reasoning: "none" });
     }).toPass();
+    await page.goto("/agents");
     const after = await openAgentDetail(page, name);
     await expect(after).toContainText("别人 @ 它时思考：中");
     await expect(after).toContainText("主动回复时思考：低");

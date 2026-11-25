@@ -36,6 +36,8 @@ fieldset.others-limit legend { padding: 0; margin-bottom: 6px; font-weight: 600;
   .others-use .btn, .others-use .back, .others-notice .btn, .others-usage .text-link { min-height: 44px; }
   .others-number { height: 44px; }
   fieldset.others-limit input { min-height: 44px; }
+  /* (The form's selects, 43px tall elsewhere: the two thinking levels sit among 44px fields.) */
+  .select-trigger { min-height: 44px; }
 }
 
 /* When my day for others is used up: said once, above the list (the cap is one for all my Agents). */
