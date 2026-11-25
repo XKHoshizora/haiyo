@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readOwnedAgent } from "../src/agents/store.ts";
 import { REASONING_LEVELS, type ReasoningLevel } from "../src/config.ts";
-import type { ModelEvent } from "../src/models/gateway.ts";
-import { callLevel, outputLimit, resolveModel } from "../src/models/resolve.ts";
+import { REASONING_PARAMS, type ModelEvent } from "../src/models/gateway.ts";
+import { callLevel, outputLimit, resolveModel, sentLevel } from "../src/models/resolve.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -142,6 +142,20 @@ describe("resolveModel", () => {
     expect(await narrowed(["low", "medium", "max"])).toMatchObject({ reasoningAllowed: ["none", "low", "medium", "max"], reasoning: "medium", call: { maxOutputTokens: at("medium") } });
     expect(await narrowed(["high", "xhigh"])).toMatchObject({ reasoningAllowed: ["none", "high", "xhigh"], reasoning: "xhigh" });
     expect(await narrowed(["max"])).toMatchObject({ reasoningAllowed: ["none", "max"], reasoning: "none", call: { maxOutputTokens: config().providerDefaultMaxOutputTokens } });
+    // Fix round 3, point 3b: this provider speaks Gemini, which has no `max` level (the call is sent `xhigh`: gateway.ts
+    // REASONING_PARAMS). The level resolved IS the level sent: what the hold is sized for and what the owner's line says.
+    expect((await api(app, owner, "PATCH", `/api/agents/${deep.id}`, { reasoning: "max" })).status).toBe(200);
+    const top = { ...deep, reasoning: "max" as const };
+    const sent = await (async () => {
+      expect((await api(app, owner, "PATCH", `/api/providers/${provider.id}`, { models })).status).toBe(200);
+      return resolveModel(db, config(), top);
+    })();
+    expect(sent).toMatchObject({ reasoning: "xhigh", call: { maxOutputTokens: config().providerDefaultMaxOutputTokens + Math.min(config().reasoningAllowanceTokens.xhigh, room) } });
+    for (const protocol of ["openai_chat", "openai_responses", "anthropic", "gemini"] as const) {
+      for (const level of REASONING_LEVELS) expect([protocol, level, REASONING_PARAMS[protocol][sentLevel(protocol, level)]]).toEqual([protocol, level, REASONING_PARAMS[protocol][level]]);
+    }
+    expect([sentLevel("openai_chat", "max"), sentLevel("gemini", "max"), sentLevel("anthropic", "max"), sentLevel("openai_responses", "max")]).toEqual(["xhigh", "xhigh", "max", "max"]);
+    await api(app, owner, "PATCH", `/api/agents/${deep.id}`, { reasoning: "xhigh" });
     // The Agent's own level is not rewritten by any of it.
     expect((await readOwnedAgent(db, owner.id, deep.id))?.reasoning).toBe("xhigh");
     // Every level again (no list): the saved level is the one sent.

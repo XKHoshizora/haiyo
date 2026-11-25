@@ -87,6 +87,14 @@ export function callLevel(allowed: readonly ReasoningLevel[], wanted: ReasoningL
 }
 
 /**
+ * The level a protocol actually sends for `level` (fix round 3, point 3b): Chat Completions has no `max` effort and Gemini no `max`
+ * thinking level, and both are sent `xhigh` for it (gateway.ts `REASONING_PARAMS`, which a test holds to this function). The level a
+ * call is RESOLVED at is this one, so the hold, the estimate and the owner's line under the reply say what was sent.
+ */
+export const sentLevel = (protocol: ModelCall["protocol"], level: ReasoningLevel): ReasoningLevel =>
+  level === "max" && (protocol === "openai_chat" || protocol === "gemini") ? "xhigh" : level;
+
+/**
  * The output limit a call at `level` is sent and held for: the reply's own limit (`replyLimit`: a site model's
  * `maxOutputTokens`, `PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS` for a provider model), and at any level but `none` the
  * level's thinking allowance on top (`REASONING_ALLOWANCE_TOKENS`) — upstreams count thinking inside the output limit.
@@ -128,7 +136,7 @@ export async function resolveModel(
     if (!callable) return null;
     const { site, apiKey } = callable;
     const reasoningAllowed = REASONING_LEVELS.filter((level) => level === "none" || site.reasoning.includes(level));
-    const reasoning = callLevel(reasoningAllowed, wanted);
+    const reasoning = sentLevel(site.protocol, callLevel(reasoningAllowed, wanted));
     return {
       source: "site",
       name: site.id,
@@ -159,7 +167,7 @@ export async function resolveModel(
   // The levels it lists (every level when it lists none), `none` always among them; a model that does not reason has `none` alone.
   const lists: readonly ReasoningLevel[] | undefined = listed.reasoningLevels;
   const reasoningAllowed: readonly ReasoningLevel[] = !listed.reasoning ? ["none"] : REASONING_LEVELS.filter((level) => level === "none" || !lists || lists.includes(level));
-  const reasoning = callLevel(reasoningAllowed, wanted);
+  const reasoning = sentLevel(provider.protocol, callLevel(reasoningAllowed, wanted));
   return {
     source: "provider",
     name: listed.name,

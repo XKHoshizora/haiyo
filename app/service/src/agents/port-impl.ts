@@ -14,7 +14,7 @@ import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../me
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
 import { classOf } from "../metering/wallet.ts";
-import { correctedEstimate, estimateTokens, holdTokens, planRatio, ratioKey, readRatio, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR } from "../metering/tokens.ts";
+import { correctedEstimate, cutToWeight, estimateTokens, holdTokens, planRatio, ratioKey, readRatio, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR, weight, weightWithin } from "../metering/tokens.ts";
 import { loadNotes, type ShownNote } from "../memory/passage.ts";
 import { markRead, type ReadEvents } from "../messages/read.ts";
 import type { ToolCall, ToolSpec } from "../models/gateway.ts";
@@ -364,6 +364,12 @@ interface RunFlags {
   model: RunModel | null;
   /** What its context left out (context.ts `LoadedContext.leftOut`), from `begin` once the call is admitted; null until then, or none. */
   leftOut: LeftOut | null;
+  /**
+   * A reply for others made at a thinking level: the most its ANSWER may weigh (the others' output limit, in the weight its model's
+   * tokens are estimated by). The call's one limit is that plus the level's allowance, so the upstream cannot hold the answer to it;
+   * `post` does (fix round 3, point 3a). Null for every other reply: at `none` the upstream's limit is the bound itself.
+   */
+  answerWeight?: number | null;
   /**
    * A reply offered tools, from `begin` once the call is admitted: the numbers it gave the model (refs.ts — its context's
    * file labels, then what its tools hand over) and how far its conversation had come when it began (`RunScope.heardTo`).
@@ -1176,6 +1182,7 @@ export class DbAgentPort implements AgentPort {
     flags.mark = first.loaded.mark;
     flags.money = result.money;
     flags.leftOut = first.loaded.leftOut;
+    flags.answerWeight = first.bounded && first.resolved.reasoning !== "none" ? weightWithin(config.others.outputTokens, first.ratio) : null;
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name, toolsUnknown: resolved.toolsUnknown === true };
     // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
@@ -1419,7 +1426,10 @@ export class DbAgentPort implements AgentPort {
     // no stop flag (only the catch below does). If nothing follows the tool round, that text is the reply.
     if (as === "ack" && flags?.place === "social") return "refused";
     const mark = flags?.mark ?? null;
-    const reply: AgentReply = { ...said, refs: flags?.tools?.refs ?? null };
+    // A reply for others at a thinking level: its answer is cut at the others' output limit, as a reply over its length is cut (marked).
+    const most = as === "reply" ? (flags?.answerWeight ?? null) : null;
+    const over = most !== null && weight(said.text) > most;
+    const reply: AgentReply = { ...said, ...(over ? { text: cutToWeight(said.text, most), truncated: true } : {}), refs: flags?.tools?.refs ?? null };
     try {
       const posted = await this.deps.db.tx((t) => postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as));
       // The access or a note it was shown ended meanwhile (a social reply): the run was marked in that transaction, which committed.

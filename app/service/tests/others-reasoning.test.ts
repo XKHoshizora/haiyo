@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { boundedForOthers, othersFloorHold, othersHold, othersOutputLimit, perDayEstimate } from "../src/metering/others.ts";
 import { queueRun } from "../src/agents/runs.ts";
 import { lockConversation } from "../src/conversations/store.ts";
+import { weight } from "../src/metering/tokens.ts";
 import type { ModelCall, ModelGateway } from "../src/models/gateway.ts";
 import type { Resolved } from "../src/models/resolve.ts";
 import { api } from "./helpers/actors.ts";
@@ -87,7 +88,9 @@ describe("a member's call runs at the owner's setting, and the hold is priced at
     expect(await k.worker.runOnce()).toBe(true);
     expect(w2.inner.calls[0]).toMatchObject({ maxOutputTokens: 800 + allowance().high, reasoning: "high" });
     // Held before the call for the level run: the same reply at none, plus the level's allowance at the output price.
-    expect(w2.holds[0]! - heldNone).toBe(BigInt(allowance().high) * OUT);
+    // (The two groups differ by a few bytes of names: within a point of the allowance at the output price; the exact figure is pinned on the floor below.)
+    const more = w2.holds[0]! - heldNone - BigInt(allowance().high) * OUT;
+    expect(more < POINT && more > -POINT).toBe(true);
     expect(await k.lastRun()).toMatchObject({ status: "done", lane: "others", hold: "0" });
     const recorded = (await db.query<{ reasoning: string }>("select reasoning from agent_runs where conversation_id = $1 order by created_at desc limit 1", [k.g])).rows[0]!;
     expect(recorded.reasoning).toBe("high");
@@ -140,6 +143,27 @@ describe("a member's call runs at the owner's setting, and the hold is priced at
     expect(await k.worker.runOnce()).toBe(true);
     expect(await k.lastRun()).toMatchObject({ status: "done", lane: "proactive", error: null });
     expect(k.gateway.calls[0]).toMatchObject({ maxOutputTokens: 800 + allowance().medium, reasoning: "medium" });
+  });
+});
+
+describe("fix round 3, point 3a: the answer of a reply for others is held to the others' output limit, also at a level", () => {
+  it("at high the call's one limit is 800 plus the allowance, so the model CAN write more than 800 tokens of answer: what is posted is cut to the others' limit and marked cut; the owner's own reply is not", async () => {
+    const k = await othersKitchen(app, db, { agent: { model: THINK, othersReasoning: "high", reasoning: "high" } });
+    const long = "好".repeat(3000); // 9 000 bytes: a weight of 3 000, far over 800
+    k.gateway.reply(long, { reasoning: "想了一下", usage: { inputTokens: 900, outputTokens: 3200 } });
+    await k.ask();
+    expect(await k.worker.runOnce()).toBe(true);
+    const posted = (await db.query<{ text: string; truncated: boolean | null }>("select body ->> 'text' as text, (body ->> 'truncated')::boolean as truncated from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [k.g, k.agent.id])).rows;
+    expect(posted).toHaveLength(1);
+    expect(weight(posted[0]!.text)).toBeLessThanOrEqual(app.deps.config.others.outputTokens);
+    expect(weight(posted[0]!.text)).toBeGreaterThan(app.deps.config.others.outputTokens - 2);
+    expect(posted[0]!.truncated).toBe(true);
+    // The owner's own call in the same group is its model's to bound, not this limit.
+    k.gateway.reply(long, { usage: { inputTokens: 900, outputTokens: 3200 } });
+    await k.askAsOwner();
+    expect(await k.worker.runOnce()).toBe(true);
+    const own = (await db.query<{ text: string }>("select body ->> 'text' as text from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq desc limit 1", [k.g, k.agent.id])).rows[0]!;
+    expect(Array.from(own.text).length).toBe(3000);
   });
 });
 

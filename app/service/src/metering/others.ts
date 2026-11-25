@@ -19,7 +19,7 @@ import {
 import { AGENT_NAME_MAX, DISPLAY_NAME_MAX } from "../schemas.ts";
 import { notesFor } from "../memory/store.ts";
 import { REASONING_LEVELS, type ReasoningLevel } from "../config.ts";
-import { callLevel, outputLimit, type Resolved } from "../models/resolve.ts";
+import { callLevel, outputLimit, sentLevel, type Resolved } from "../models/resolve.ts";
 import { maxCostMicro } from "./prices.ts";
 import type { PayClass } from "./pool.ts";
 
@@ -197,8 +197,8 @@ export function othersOutputLimit(config: LevelConfig, replyLimit: number, conte
 }
 
 /** The level a site model runs `wanted` at: the effective level (models/resolve.ts `callLevel`) over what the site lists for it. */
-export const siteLevel = (site: { reasoning: readonly ReasoningLevel[] }, wanted: ReasoningLevel): ReasoningLevel =>
-  callLevel(REASONING_LEVELS.filter((level) => level === "none" || site.reasoning.includes(level)), wanted);
+export const siteLevel = (site: { reasoning: readonly ReasoningLevel[]; protocol: Resolved["call"]["protocol"] }, wanted: ReasoningLevel): ReasoningLevel =>
+  sentLevel(site.protocol, callLevel(REASONING_LEVELS.filter((level) => level === "none" || site.reasoning.includes(level)), wanted));
 
 /**
  * The level setting that applies to a reply of `lane` that is not the owner's own (Owner decision 2026-11-26): the Agent's
@@ -214,7 +214,7 @@ export const othersWanted = (agent: { othersReasoning: ReasoningLevel; proactive
  * sent at — one `Resolved`, so the hold is always priced at the level actually run.
  */
 export function boundedForOthers<R extends Pick<Resolved, "call" | "reasoning" | "reasoningAllowed" | "contextTokens" | "replyLimit">>(resolved: R, config: LevelConfig, wanted: ReasoningLevel): R {
-  const reasoning = callLevel(resolved.reasoningAllowed, wanted);
+  const reasoning = sentLevel(resolved.call.protocol, callLevel(resolved.reasoningAllowed, wanted));
   const maxOutputTokens = othersOutputLimit(config, resolved.replyLimit ?? resolved.call.maxOutputTokens, resolved.contextTokens, reasoning);
   return { ...resolved, reasoning, call: { ...resolved.call, maxOutputTokens } };
 }
