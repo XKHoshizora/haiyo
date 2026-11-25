@@ -290,6 +290,6 @@ test("思考档位 under 高级 for every model that thinks: one the catalogue d
   await expect(chatPane(page, agentName)).toBeVisible();
   const detail = await openAgentDetail(page, agentName);
   await detail.getByRole("button", { name: "编辑" }).click();
-  const editForm = page.getByRole("region", { name: "编辑 Agent" });
-  await expect(editForm.getByLabel("思考程度", { exact: true })).toContainText("很高");
+  const agentEdit = page.getByRole("region", { name: "编辑 Agent" });
+  await expect(agentEdit.getByLabel("思考程度", { exact: true })).toContainText("很高");
 });
