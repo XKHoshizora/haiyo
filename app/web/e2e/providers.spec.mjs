@@ -279,5 +279,6 @@ test("思考档位 under 高级 for every model that thinks: one the catalogue d
   await chooseModelUi(page, agentForm, "house-think");
   expect(await offered()).toEqual(["不思考", "低", "中", "高"]);
   await chooseModelUi(page, agentForm, "o3-mini");
-  expect(await offered()).toEqual(["不思考", "低", "中", "高", "很高", "最高"]);
+  // (Every level its interface has: this provider speaks Chat Completions, where 最高 is sent as 很高, so the list ends there.)
+  expect(await offered()).toEqual(["不思考", "低", "中", "高", "很高"]);
 });
