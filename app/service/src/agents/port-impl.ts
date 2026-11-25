@@ -9,7 +9,7 @@ import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { placeOf, type Place } from "../social/place.ts";
 import { reach } from "../social/reach.ts";
-import { boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit, othersRoomAdvisory, othersWanted, type OthersLane } from "../metering/others.ts";
+import { agentRoom, boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit, othersRoomAdvisory, othersWanted, type OthersLane } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -1062,7 +1062,9 @@ export class DbAgentPort implements AgentPort {
           // the Agent pushed to its owner; a reply nobody asked for tells nobody.
           if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
           const told = noneTold();
-          if (state.lane === "others") {
+          // The group is told 「今天只回复它的主人」 only when that is true: every reply for others would be refused (`agentRoom`'s `reached`,
+          // the fact the owner's page shows), not because this one call, at its size and level, did not fit.
+          if (state.lane === "others" && (await agentRoom(t, config, agent, new Date())).reached) {
             const notice = await limitNotice(t, run.conversationId, agent.id, siteToday(config));
             if (notice) {
               told.notices.push(notice);

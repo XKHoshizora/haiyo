@@ -37,7 +37,7 @@ function othersRows(agent, row, level) {
   const state = row && row.canReply !== false ? ` · ${othersStateText(row)}` : row ? " · 没有可用的模型，暂时不能回复" : "";
   const usedText = used === undefined ? null : `今天回了别人 ${used.answers} 次（含主动回复），回应别人花了 ${formatPoints(used.points)} 点${state}`;
   // The level a reply for others runs at (the owner's setting, as it runs on this model): said only where the model can think at all.
-  const levelText = level === null ? "" : ` · 别人 @ 它时${levelPhrase(level)}`;
+  const levelText = level === null ? "" : ` · 回应别人时${levelPhrase(level)}`;
   return [...(ownText === null ? [] : [["别人用它的上限", `${ownText}${levelText}`]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
 }
 
@@ -313,7 +313,8 @@ function AgentDetail({ agent }) {
   const live = agent.loaded && !agent.deleted;
   const { use, reload } = useOthersUse({ maxAge: 10_000 });
   // The numbers of the row come from the Agent's record and its state from the use route: when the record's change, the route is read again.
-  const usedKey = JSON.stringify([agent.othersUsedToday, agent.othersLimit]);
+  // (Its model and the two levels of its replies for others too: they decide what a reply costs, so the state the route says.)
+  const usedKey = JSON.stringify([agent.othersUsedToday, agent.othersLimit, agent.model, agent.othersReasoning, agent.proactiveReasoning]);
   const firstKey = useRef(usedKey);
   useEffect(() => {
     if (firstKey.current !== usedKey) {

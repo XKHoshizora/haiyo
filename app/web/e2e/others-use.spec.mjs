@@ -132,7 +132,7 @@ for (const [size, contextOptions] of SIZES) {
     }).toPass();
   });
 
-  test(`the two thinking levels at ${size}: 别人 @ 它时的思考程度 with the others' limit, 主动回复时的思考程度 with the proactive budget; each offers the model's levels, saves alone, and the Agent's page says both`, async ({ people }) => {
+  test(`the two thinking levels at ${size}: 别人 @ 它或来找它时的思考程度 with the others' limit, 主动回复时的思考程度 with the proactive budget; each offers the model's levels, saves alone, and the Agent's page says both`, async ({ people }) => {
     test.skip(!canControlService, "needs the model stub as a provider's address");
     const ann = await people.member("Ann", { contextOptions });
     const page = ann.page;
@@ -153,18 +153,18 @@ for (const [size, contextOptions] of SIZES) {
 
     await page.goto("/agents");
     const detail = await openAgentDetail(page, name);
-    await expect(detail).toContainText("别人 @ 它时不思考");
+    await expect(detail).toContainText("回应别人时不思考");
     await expect(detail).toContainText("主动回复时不思考");
     await detail.getByRole("button", { name: /编辑/ }).click();
     const form = page.getByRole("region", { name: "编辑 Agent" });
-    const others = form.getByLabel("别人 @ 它时的思考程度", { exact: true });
+    const others = form.getByLabel("别人 @ 它或来找它时的思考程度", { exact: true });
     const proactive = form.getByLabel("主动回复时的思考程度", { exact: true });
     await expect(others).toBeVisible();
     await expect(proactive).toBeVisible();
     // Each sits in its own group, with its one line of help.
-    await expect(form.locator("fieldset.others-limit")).toContainText("思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。");
+    await expect(form.locator("fieldset.others-limit")).toContainText("别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。");
     await expect(form).toContainText("思考越多，回复越慢，花的额度也越多。");
-    await chooseOptionUi(page, form, "别人 @ 它时的思考程度", "中");
+    await chooseOptionUi(page, form, "别人 @ 它或来找它时的思考程度", "中");
     await chooseOptionUi(page, form, "主动回复时的思考程度", "低");
     await others.scrollIntoViewIfNeeded();
     expect(await noSideways(page)).toBe(true);
@@ -180,7 +180,7 @@ for (const [size, contextOptions] of SIZES) {
     }).toPass();
     await page.goto("/agents");
     const after = await openAgentDetail(page, name);
-    await expect(after).toContainText("别人 @ 它时思考：中");
+    await expect(after).toContainText("回应别人时思考：中");
     await expect(after).toContainText("主动回复时思考：低");
     expect(await noSideways(page)).toBe(true);
     await integShot(page, "46-agent-page-thinking-levels", { show: after.getByText("别人用它的上限") });

@@ -595,7 +595,9 @@ export async function othersPlainCeiling(
 /**
  * What the owner's page may say of an Agent's room, two one-sided facts (a future reply's hold is not knowable, so one boolean cannot
  * be exact), each by the function admission asks (`othersCheck`, no lock):
- * - `reached`: true ONLY IF every call would be refused: the answers are used up, or what is left is below the floor
+ * - `reached`: true ONLY IF every reply for others would be refused, a call's and (while the Agent makes them) one nobody asked for
+ *   alike (fix round 3, point 4: each at its own level, so a call at a high level can be out of reach while a short proactive
+ *   reply at `none` still fits; that is `tight`, and the page and the group's notice must not say "used up"). For a call: the answers are used up, or what is left is below the floor
  *   (`othersPlainFloor`, a lower bound of any hold admission can compute for the Agent) and the verdict is a `limit`. Never true while a
  *   reply could be admitted. (Waiting behind other replies' holds is not refused, `heldBackBy`; and the owner's points are looked at
  *   before the Agent's own number, so an Agent whose own number is spent can read not reached while another reply holds the owner's:
@@ -606,16 +608,26 @@ export async function othersPlainCeiling(
  */
 export async function agentRoom(
   q: Queryable,
-  config: Pick<Config, "siteTimezone" | "siteModels" | "memory" | "agentGroupContextTokens"> & LevelConfig,
-  agent: { id: string; ownerId: string; name: string; handle: string; persona: string; memory: boolean; sharedNotes: boolean; model: AgentModel; othersReasoning: ReasoningLevel; proactiveReasoning: ReasoningLevel },
+  config: Pick<Config, "siteTimezone" | "siteModels" | "memory" | "agentGroupContextTokens" | "judge"> & LevelConfig,
+  agent: { id: string; ownerId: string; name: string; handle: string; persona: string; memory: boolean; sharedNotes: boolean; model: AgentModel; othersReasoning: ReasoningLevel; proactiveReasoning: ReasoningLevel; proactive: boolean },
   now: Date,
 ): Promise<{ askable: boolean; reached: boolean; tight: boolean }> {
   if (agent.model === null) return { askable: false, reached: false, tight: false };
   if (agent.model.source === "site" && !config.siteModels.some((m) => m.id === (agent.model as { id: string }).id)) return { askable: false, reached: false, tight: false };
   const run = { id: NO_RUN, ownerId: agent.ownerId, agentId: agent.id, lane: "others" as const };
   const floor = await othersCheck(q, config, run, await othersPlainFloor(q, config, agent, null, now, "others"), "admission", now);
-  const reached = !floor.ok && "limit" in floor;
+  const called = !floor.ok && "limit" in floor;
+  // A reply nobody asked for, while this Agent makes them (its switch on and the site able to judge): its own floor, at its own level,
+  // under its own budget. While one still fits, the Agent is not used up for others.
+  let unasked = true;
+  if (called && agent.proactive && config.judge !== null && config.judge !== undefined) {
+    const lane = { ...run, lane: "proactive" as const };
+    const least = await othersCheck(q, config, lane, await othersPlainFloor(q, config, agent, null, now, "proactive"), "admission", now);
+    unasked = !least.ok && "limit" in least;
+  }
+  const reached = called && unasked;
   if (reached) return { askable: true, reached: true, tight: true };
+  if (called) return { askable: true, reached: false, tight: true };
   const ceiling = await othersCheck(q, config, run, await othersPlainCeiling(q, config, agent, now), "admission", now);
   return { askable: true, reached: false, tight: !ceiling.ok };
 }

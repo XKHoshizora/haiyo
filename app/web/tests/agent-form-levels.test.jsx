@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Owner decision 2026-11-26: the thinking level of a reply for others (「别人 @ 它时的思考程度」) and of a proactive reply
+// Owner decision 2026-11-26: the thinking level of a reply for others (「别人 @ 它或来找它时的思考程度」) and of a proactive reply
 // (「主动回复时的思考程度」) are the owner's settings, in the Agent's form beside the numbers each belongs to. Each offers exactly the
 // levels the chosen model lists (hidden when it only has 不思考), shows the level that would run (the effective one), and is sent only
 // when it is not the default (create) or when I changed it (edit). The Agent's page says both effective levels.
@@ -8,7 +8,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { AG1, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, providerOf, syncOf, usageOf } from "./fixtures.js";
-import { click, flush, inMain, installBrowser, mainText, openApp } from "./harness.jsx";
+import { click, flush, inMain, installBrowser, mainText, openApp, push } from "./harness.jsx";
 import { optionsOf, pickOption } from "./select-helpers.js";
 
 beforeEach(() => {
@@ -19,9 +19,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const OTHERS = "别人 @ 它时的思考程度";
+const OTHERS = "别人 @ 它或来找它时的思考程度";
 const PROACTIVE = "主动回复时的思考程度";
-const OTHERS_HINT = "思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。";
+const OTHERS_HINT = "别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。";
 const PROACTIVE_HINT = "思考越多，回复越慢，花的额度也越多。";
 const PAID = { source: "site", id: "paid-1" };
 
@@ -140,7 +140,7 @@ describe("the Agent's page", () => {
     const record = agentOf(AG1, { model: PAID, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "max", proactive: true, proactiveBudget: "70", proactiveReasoning: "none" });
     await openAgents({ agents: [record] });
     await click(inList().getByText("小助手", { selector: ".row-name" }));
-    expect(mainText()).toContain("没有单独设置，和其他 Agent 共用你的每天上限 · 别人 @ 它时思考：高");
+    expect(mainText()).toContain("没有单独设置，和其他 Agent 共用你的每天上限 · 回应别人时思考：高");
     expect(mainText()).toContain("每天最多花 70 点");
     expect(mainText()).toContain(" · 主动回复时不思考");
     cleanup();
@@ -148,6 +148,41 @@ describe("the Agent's page", () => {
     await openAgents({ agents: [agentOf(AG1, { model: { source: "site", id: "free-1" }, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "high" })] });
     await click(inList().getByText("小助手", { selector: ".row-name" }));
     expect(mainText()).toContain("没有单独设置，和其他 Agent 共用你的每天上限");
-    expect(mainText()).not.toContain("别人 @ 它时");
+    expect(mainText()).not.toContain("回应别人时");
+  });
+});
+
+describe("fix round 3, point 4", () => {
+  it("the Agent's page reads the use route again when its model or either level changes elsewhere (a second tab): the state shown is not left from before the edit", async () => {
+    const record = agentOf(AG1, { model: PAID, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "none", proactiveReasoning: "none" });
+    const getOthersUse = vi.fn(async () => ({ limits: { answers: 50, points: "300" }, used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false }));
+    const app = await openAgents({ agents: [record], api: { getOthersUse } });
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    const before = getOthersUse.mock.calls.length;
+    const elsewhere = async (fields) => {
+      app.transport.handlers.agent = () => ({ ...record, ...fields });
+      await push(app.transport, { type: "agent", id: AG1 });
+      await flush();
+    };
+    await elsewhere({ othersReasoning: "high" });
+    expect(getOthersUse.mock.calls.length).toBe(before + 1);
+    await elsewhere({ othersReasoning: "high", proactiveReasoning: "low" });
+    expect(getOthersUse.mock.calls.length).toBe(before + 2);
+    await elsewhere({ othersReasoning: "high", proactiveReasoning: "low", model: { source: "site", id: "free-1" } });
+    expect(getOthersUse.mock.calls.length).toBe(before + 3);
+  });
+
+  it("a model that is no longer offered: its levels are not known, so neither select is drawn (no option is made up from the Agent's own saved level), and nothing of them is sent", async () => {
+    const { patchAgent } = await openEdit({ model: { source: "site", id: "gone-9" }, reasoning: "high", othersReasoning: "high", proactive: true, proactiveReasoning: "high" });
+    expect(box(OTHERS)).toBeNull();
+    expect(box(PROACTIVE)).toBeNull();
+    fireEvent.change(inMain().getByLabelText("简介"), { target: { value: "新的简介" } });
+    await save();
+    expect(patchAgent.mock.calls[0][1]).toEqual({ intro: "新的简介" });
+  });
+
+  it("the others' select says whom it is for (a call in a group, a visitor) and what it counts against", async () => {
+    await openEdit({});
+    expect(box(OTHERS).closest(".field").textContent).toContain("别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。");
   });
 });

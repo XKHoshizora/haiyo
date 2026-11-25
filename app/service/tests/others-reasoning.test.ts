@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { boundedForOthers, othersFloorHold, othersHold, othersOutputLimit, perDayEstimate } from "../src/metering/others.ts";
+import { readOwnedAgent } from "../src/agents/store.ts";
+import { boundedForOthers, othersFloorHold, othersHold, othersOutputLimit, othersPlainCeiling, perDayEstimate } from "../src/metering/others.ts";
 import { queueRun } from "../src/agents/runs.ts";
 import { lockConversation } from "../src/conversations/store.ts";
 import { weight } from "../src/metering/tokens.ts";
@@ -201,5 +202,54 @@ describe("the owner's page follows the level", () => {
     expect(await row()).toMatchObject({ reached: true, perDay: 0 });
     expect((await api(app, k.owner, "PATCH", `/api/agents/${k.agent.id}`, { othersReasoning: "none" })).status).toBe(200);
     expect((await row()).reached).toBe(false);
+  });
+});
+
+describe("fix round 3, point 4: used up is said only of what admission would refuse for EVERY reply for others", () => {
+  it("room for a short proactive reply at none but not for a call at high: the Agent is tight, not used up, and a refused call tells the group nothing; with nothing left that fits, it is used up and the group is told once", async () => {
+    const config = () => app.deps.config;
+    const k = await othersKitchen(app, db, { agent: { model: THINK, othersReasoning: "high", proactive: true, proactiveReasoning: "none" } });
+    const row = async () => (await api(app, k.owner, "GET", "/api/me/others-use")).json.agents.find((a: { agentId: string }) => a.agentId === k.agent.id);
+    // Points for a plain reply at none (61.5 at the estimate's input), not for one at high (the allowance alone is 180).
+    const between = othersFloorHold(config(), THINK, 16_500, 0, "none") + 10n * POINT;
+    expect((await api(app, k.owner, "PUT", "/api/me/others-limits", { answers: 50, points: (Number(between) / 1e6).toFixed(2) })).status).toBe(200);
+    expect(await row()).toMatchObject({ reached: false, tight: true });
+    const whole = (await api(app, k.owner, "GET", "/api/me/others-use")).json;
+    expect(whole.reached).toBe(false);
+    // A member's call cannot be afforded at high: it ends quietly, and the group is NOT told that the Agent answers only its owner today
+    // (a reply nobody asked for could still come).
+    await k.ask();
+    expect(await k.worker.runOnce()).toBe(true);
+    expect(k.gateway.calls).toHaveLength(0);
+    expect(await k.lastRun()).toMatchObject({ status: "cancelled", error: null });
+    expect(await k.notices()).toBe(0);
+    // Its proactive replies off: now nothing it could say for others fits. Used up, and the next refused call tells the group, once.
+    expect((await api(app, k.owner, "PATCH", `/api/agents/${k.agent.id}`, { proactive: false })).status).toBe(200);
+    expect(await row()).toMatchObject({ reached: true, tight: true });
+    await k.ask("@chef 再问一次？");
+    expect(await k.worker.runOnce()).toBe(true);
+    expect(k.gateway.calls).toHaveLength(0);
+    expect(await k.notices()).toBe(1);
+  });
+
+  it("the high-level tight boundary: a number that covers the largest plain reply at none is not tight at none, and is tight at high; one that covers the largest at high is not tight", async () => {
+    const config = () => app.deps.config;
+    const k = await othersKitchen(app, db, { agent: { model: THINK, othersReasoning: "none" } });
+    const row = async () => (await api(app, k.owner, "GET", "/api/me/others-use")).json.agents.find((a: { agentId: string }) => a.agentId === k.agent.id);
+    const agent = async () => (await readOwnedAgent(db, k.owner.id, k.agent.id as string))!;
+    const ceiling = async () => othersPlainCeiling(db, config(), await agent(), new Date());
+    const set = async (micro: bigint) => expect((await api(app, k.owner, "PUT", "/api/me/others-limits", { answers: 50, points: (Number(micro) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "") })).status).toBe(200);
+    const atNone = await ceiling();
+    await set(atNone);
+    expect(await row()).toMatchObject({ reached: false, tight: false });
+    expect((await api(app, k.owner, "PATCH", `/api/agents/${k.agent.id}`, { othersReasoning: "high" })).status).toBe(200);
+    const atHigh = await ceiling();
+    // The ceiling grows by the allowance at the output price, less what the larger output takes from the context a text can fill.
+    expect(atHigh > atNone).toBe(true);
+    expect(await row()).toMatchObject({ reached: false, tight: true });
+    await set(atHigh - 1n);
+    expect((await row()).tight).toBe(true);
+    await set(atHigh);
+    expect(await row()).toMatchObject({ reached: false, tight: false });
   });
 });

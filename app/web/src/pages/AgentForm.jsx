@@ -198,8 +198,9 @@ const recordFields = (a) => ({
  * sent are decided per setting, never per key.
  */
 /** The two thinking levels of replies made for others (Owner decision 2026-11-26): one plain question each, beside the numbers it belongs to. */
-export const OTHERS_LEVEL_LABEL = "别人 @ 它时的思考程度";
-export const OTHERS_LEVEL_HINT = "思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。";
+// (The others' level is for every reply somebody else causes: a call in a group, and a visitor's message in a conversation with it.)
+export const OTHERS_LEVEL_LABEL = "别人 @ 它或来找它时的思考程度";
+export const OTHERS_LEVEL_HINT = "别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。";
 export const PROACTIVE_LEVEL_LABEL = "主动回复时的思考程度";
 export const PROACTIVE_LEVEL_HINT = "思考越多，回复越慢，花的额度也越多。";
 
@@ -311,7 +312,9 @@ export function AgentForm({ agent = null }) {
   const othersReasoning = effectiveLevel(levels, f.othersReasoning);
   const proactiveReasoning = effectiveLevel(levels, f.proactiveReasoning);
   const levelOptions = LEVELS.filter(([id]) => levels.includes(id)).map(([id, label]) => ({ value: id, label }));
-  const thinks = Boolean(choice) && levels.length > 1;
+  // Only for a model whose levels are KNOWN (one that is offered): a model no longer offered has none listed here, and its entry in the
+  // picker carries the Agent's own saved level only so that it can be kept, which says nothing of what the model lists.
+  const thinks = Boolean(choice) && !choice.stale && levels.length > 1;
 
   // 主动参与群聊 is offered (and sent) only while the site has a judgement model; its level and amount only while it is on.
   // Without one, an Agent that has it on still shows the switch alone, saying why, so that it can be turned off: never on.
