@@ -30,15 +30,7 @@ export async function reportAgent(
   // One open report per reporter and Agent (fix round 1, m7): reporting again while the first waits for the operator adds no row and is
   // answered with that report (its reason and note stay the first ones). Once it is handled, a new report is a new row.
   // (Only for an Agent the reporter can see now: for any other the answer stays the one of an Agent that is not there.)
-  const openReport = () =>
-    q.query<{ id: string }>(
-    `select r.id from agent_reports r join principals p on p.id = r.agent_id
-      where r.reporter_id = $1::uuid and r.agent_id = $2::uuid and r.handled_at is null and p.kind = 'agent' and ${agentSeenSql("p", "$1::uuid", config)}
-      order by r.created_at limit 1`,
-    [reporterId, agentId],
-    );
-  const open = await openReport();
-  if (open.rows[0]) return open.rows[0].id;
+  // ONE statement, with no read before it (fix round 4, F7): a first report and a repeated one alike.
   const { rows } = await q.query<{ id: string }>(
     `insert into agent_reports (reporter_id, target_kind, agent_id, conversation_id, reason, note)
      select $1::uuid, 'agent', p.id,

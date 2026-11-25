@@ -320,21 +320,39 @@ describe("reports:list and reports:close", () => {
     const visitor = await signUp(app, "rpt3v");
     const agent = (await mustCreateAgent(app, owner, { handle: "rpt3y", name: "rpt3y" })) as { id: string };
     await seedSocial(app, { owner, agentId: agent.id, visitor });
-    // The interleaving, statement by statement: this call reads (no open report yet); the other request's report commits; this
-    // call's insert meets it; the operator closes that report; this call is answered.
+    // The interleaving: the other request's report commits just before this call's ONE statement, which meets it; the operator
+    // closes that report as soon as the statement has answered; this call is answered. A report is one statement and no other
+    // (fix round 4, F7: no read before it, so there is no moment between a read and the insert).
     let n = 0;
     let other = "";
     const stepped = {
       query: (async (text: string, params?: unknown[]) => {
         n++;
-        const result = await db.query(text, params as never);
         if (n === 1) other = (await db.query<{ id: string }>("insert into agent_reports (reporter_id, target_kind, agent_id, reason) values ($1, 'agent', $2, 'spam') returning id", [visitor.id, agent.id])).rows[0]!.id;
-        if (n === 2) await db.query("update agent_reports set handled_at = now(), outcome = 'dismissed' where id = $1", [other]);
+        const result = await db.query(text, params as never);
+        if (n === 1) await db.query("update agent_reports set handled_at = now(), outcome = 'dismissed' where id = $1", [other]);
         return result;
       }) as typeof db.query,
     };
     const answered = await reportAgent(stepped as never, on, visitor.id, agent.id, "harassment", null);
     expect(answered).toBe(other);
+    expect(n).toBe(1);
     expect((await db.query("select 1 from agent_reports where reporter_id = $1 and agent_id = $2", [visitor.id, agent.id])).rowCount).toBe(1);
+  });
+
+  it("a first report, and a second one while it is open, are one statement each (fix round 4, F7)", async () => {
+    const owner = await signUp(app, "rpt4o");
+    const visitor = await signUp(app, "rpt4v");
+    const agent = (await mustCreateAgent(app, owner, { handle: "rpt4y", name: "rpt4y" })) as { id: string };
+    await seedSocial(app, { owner, agentId: agent.id, visitor });
+    const texts: string[] = [];
+    const counted = { query: ((text: string, params?: unknown[]) => (texts.push(text), db.query(text, params as never))) as typeof db.query };
+    const made = await reportAgent(counted as never, on, visitor.id, agent.id, "spam", "第一次");
+    expect(made).not.toBeNull();
+    expect(texts).toHaveLength(1);
+    expect(await reportAgent(counted as never, on, visitor.id, agent.id, "harassment", "第二次")).toBe(made);
+    expect(texts).toHaveLength(2);
+    // The open report keeps its first reason and note.
+    expect((await db.query("select reason, note from agent_reports where id = $1", [made])).rows).toEqual([{ reason: "spam", note: "第一次" }]);
   });
 });
