@@ -21,8 +21,8 @@ import { maxCallsOf, storedToolCalls } from "./replay.ts";
 import { RunNotRunning, type ToolTrace } from "./runtime/port.ts";
 import { withoutMarkPlaced } from "./runtime/prompt.ts";
 import {
+  askersHandedDown,
   callerOf,
-  hearFrom,
   noneTriggered,
   overLaneLimit,
   ownedAgentOf,
@@ -469,23 +469,25 @@ export async function postAsAgent(
   const message = await insertMessage(t, conversationId, agentId, "text", body, runId, read);
   if (proposal && proposalId !== null) await storeProposal(t, agent, proposalId, message.id, proposal.proposal);
   // An Agent posts only in its own conversation and in groups it is a member of: elsewhere than its own is a group. Who
-  // is behind its message there is decided by this run's caller and lane (read above; a running run's never change); the
-  // runs it calls answer this run's askers (Task 10b: the person whose message started the chain) — with everyone who
-  // wrote while it ran, before its message, whom they will hear from (fix round 2: recorded on this run, `hearFrom` —
-  // only once its message reaches a run, fix round 3).
+  // is behind its message there is decided by this run's caller and lane (read above; a run's never change); the calls it
+  // makes carry this run's askers (Task 10b: the person whose message started the chain) and everyone who wrote while it ran,
+  // before its message, whom the replies it calls will hear from (runs.ts `askersHandedDown`: read only, nothing written to
+  // this run, and recorded only where a target accepts the call — limits redesign C-c; read only once its message may reach a
+  // target, fix round 3).
   const postedBy = { id: run.rows[0].caller_id, lane: run.rows[0].lane };
   const covered = Number(run.rows[0].covers);
   const triggered = own || social
     ? noneTriggered()
-    : await triggerFromAgent(t, conversationId, message, agent, postedBy, config, () => hearFrom(t, runId, covered, message.seq));
+    : await triggerFromAgent(t, conversationId, message, agent, postedBy, config, () => askersHandedDown(t, runId, covered, message.seq));
   return { message, duplicate: false, triggered };
 }
 
 /**
  * A social reply's last look before it is posted, under the conversation's and the Agent's row: the run's one caller must still reach
  * the Agent (`reach`, social) and every note it was shown (`shown`, the run's `shown_notes`) must still be one they may be told
- * (`shownNotesPass`). Otherwise the run is marked `interrupted` with that reason and nothing noted (`pending_seq` null), in the caller's
- * transaction, and the reason is returned. A caller who is missing or is the Agent's owner is refused outright (`runAccess`'s rule).
+ * (`shownNotesPass`). Otherwise the run is marked `interrupted` with that reason, in the caller's transaction, and the reason is
+ * returned (what waits behind it is held to the visitor's access again when its end takes it: runs.ts `takeDeferred`). A caller who
+ * is missing or is the Agent's owner is refused outright (`runAccess`'s rule).
  */
 async function socialRefusal(
   t: Tx,
@@ -498,7 +500,8 @@ async function socialRefusal(
   let reason: "access_ended" | "notes_changed" | null = null;
   if (callerId === null || callerId === agent.ownerId || (await reach(t, callerId, agent.id, "social", config)) !== "ok") reason = "access_ended";
   else if (!(await shownNotesPass(t, agent, callerId, shown))) reason = "notes_changed";
-  if (reason !== null) await t.query("update agent_runs set interrupted = $2, pending_seq = null where id = $1", [runId, reason]);
+  if (reason !== null) await t.query("update agent_runs set interrupted = $2 where id = $1", [runId, reason]);
+
   return reason;
 }
 

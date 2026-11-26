@@ -1,5 +1,6 @@
 import type { EndedRuns } from "../agents/group-leave.ts";
 import { dropRefusedCalls, RUN_COLUMNS, standingCalls, toWireRun, type Announced, type RunRow } from "../agents/runs.ts";
+import { refusedInGroup } from "../agents/refusal.ts";
 import type { Config } from "../config.ts";
 import { ensureSocial, lockConversation } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
@@ -36,9 +37,10 @@ export type GrantScope = { between: readonly [string, string] } | { agentId: str
  *
  * What stops, ONE rule for every ending (A-3 review I1): a reply is never cancelled as a whole for a call that is not the only
  * one it answers. In the pair's social conversations (the other end a listed subject, or a person of the other side) every
- * queued reply is `cancelled` (`access_ended`) and every running one `interrupted` (`access_ended`, `pending_seq` null). In
- * a group the Agents' replies are held to the access decision as it now stands (`endGroupCalls`): the calls of whoever is refused
- * now leave a reply, and one left with no call it answers ends quietly, with no error. So an ending that refuses nobody in a group
+ * queued reply is `cancelled` (`access_ended`), every running one `interrupted` (`access_ended`), and every call waiting there for
+ * the Agent dropped. In a group the Agents' replies, and the calls waiting for them, are held to the access decision as it now
+ * stands (`endGroupCalls`): the calls of whoever is refused now leave a reply, and one left with no call it answers ends quietly,
+ * with no error. So an ending that refuses nobody in a group
  * (a visitor who leaves an Agent may still @ it in a group) takes no call out of any group reply. A person's block of a person is the
  * one ending that leaves a reply that has not begun to `begin`'s own recheck (runs.ts `dropRefusedCalls`, pinned by
  * agents-block-recheck.test.ts, which keeps its calls until then): the same rule at the moment the reply begins; a reply already in
@@ -106,17 +108,19 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
     runsIn.params,
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended'), pending_seq = null
+    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended')
        from principals ag
       where ag.id = r.agent_id and r.purpose = 'reply' and r.status = 'running' and ${runsIn.sql}
       returning r.id`,
     runsIn.params,
   );
+  // The calls waiting there for those Agents: the visitor's, whose access ended (a social conversation has no other caller).
+  await t.query(`delete from deferred_calls r using principals ag where ag.id = r.agent_id and ${runsIn.sql}`, runsIn.params);
   const cancelled: Announced[] = queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) }));
   const stopped = running.rows.map((r) => r.id);
   // (`groups: false`, an unfriend: in a group anyone may @ the Agent, friend or not, so no call of anyone is taken out of a group reply.)
-  const inGroups = o.groups === false ? { cancelled: [], running: [] } : await endGroupCalls(t, groupAgents, o.eager);
-  return { cancelled: [...cancelled, ...inGroups.cancelled], running: [...stopped, ...inGroups.running], ended: ended.rowCount ?? 0 };
+  const inGroups: EndedRuns = o.groups === false ? { cancelled: [], running: [] } : await endGroupCalls(t, groupAgents, o.eager);
+  return { cancelled: [...cancelled, ...inGroups.cancelled], running: [...stopped, ...inGroups.running], idle: inGroups.idle ?? [], ended: ended.rowCount ?? 0 };
 }
 
 /**
@@ -124,21 +128,34 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
  * decision as it stands now, after the ending was written in this transaction (`refusedInGroup`, through the two functions every group
  * site uses: nothing here reads a call by a rule of its own). A reply is never cancelled as a whole for a call that is not the only one
  * it answers:
- * - queued, or claimed and not admitted yet (no model call made): `dropRefusedCalls` takes the refused callers' calls out and re-derives
- *   whose reply it is; with no call left a queued one is cancelled quietly (no error: `access_ended` is a social run's) and a claimed one
- *   is marked, so that its `begin` ends it before any call wherever it stands (also in its attachment read);
- * - running and admitted: decided over the calls it ANSWERS (`standingCalls`: at or before `covers_seq`), as its post will be. Every one
- *   refused: it is marked and its call abandoned now, and what a person not refused noted on it stays for its follow-up. Otherwise it
- *   goes on for the others, and its post stores no mention and no quote of anyone refused.
+ * - queued, or claimed and not admitted yet (no model call made): `dropRefusedCalls` takes the refused callers' calls out (its lane
+ *   and caller stay); with no call left a queued one is cancelled quietly (no error: `access_ended` is a social run's) and a claimed
+ *   one is marked, so that its `begin` ends it before any call wherever it stands (also in its attachment read);
+ * - running and admitted: decided over the calls it answers (`standingCalls`), as its post will be. Every one refused: it is marked
+ *   and its call abandoned now. Otherwise it goes on for the others, and its post stores no mention and no quote of anyone refused.
+ * - waiting (`deferred_calls`): a call whose sender, or the person behind it, is refused now is dropped.
  * The mark is `interrupted = 'access_ended'` for both; a group run it ends is recorded `cancelled` with no error (port-impl.ts
- * `interruptionEnd`). A reply `告诉他们` queued answers nobody's call and is left alone. Each run row is locked first (`for update`, after
- * the Agents' rows: the lock order), so a fold into it waits and nothing is read stale. `eager` false (a person's block of a person):
- * a reply that has not begun is left to `begin`'s own recheck, the same function at the moment it begins (agents-block-recheck.test.ts).
+ * `interruptionEnd`), and its end takes what waits behind it. A queued one cancelled here is no such end — this holds no conversation
+ * row, which comes before the Agents' in the lock order — so its pair is returned (`idle`) for what waits behind it to be taken after
+ * commit (group-leave.ts `announceEnded`). A reply `告诉他们` queued answers nobody's call and is left alone. Each run row is locked first
+ * (`for update`, after the Agents' rows: the lock order), so a fold into it waits and nothing is read stale. `eager` false (a person's
+ * block of a person): a reply that has not begun, and a call that waits, are left to `begin`'s own recheck and to the one where it is
+ * taken (runs.ts `takeDeferred`), the same decision at those moments (agents-block-recheck.test.ts).
  */
 async function endGroupCalls(t: Tx, agents: { sql: string; params: unknown[] }, eager: boolean): Promise<EndedRuns> {
-  const out: EndedRuns = { cancelled: [], running: [] };
-  const found = await t.query<{ id: string; status: "queued" | "running"; admitted: boolean; owner_id: string; agent_owner: string; conversation_id: string }>(
-    `select r.id, r.status, r.model is not null as admitted, r.owner_id, ag.owner_id as agent_owner, r.conversation_id
+  const out: EndedRuns = { cancelled: [], running: [], idle: [] };
+  if (eager) {
+    await t.query(
+      `delete from deferred_calls r
+        using principals ag, conversations c, messages m, principals p
+        where ag.id = r.agent_id and c.id = r.conversation_id and c.type = 'group' and m.conversation_id = r.conversation_id and m.seq = r.message_seq
+          and p.id = m.sender_id and ${agents.sql}
+          and (${refusedInGroup("p.id", "r.agent_id")} or (r.caller_id is not null and ${refusedInGroup("r.caller_id", "r.agent_id")}))`,
+      agents.params,
+    );
+  }
+  const found = await t.query<{ id: string; status: "queued" | "running"; admitted: boolean; owner_id: string; agent_id: string; conversation_id: string }>(
+    `select r.id, r.status, r.model is not null as admitted, r.owner_id, r.agent_id, r.conversation_id
        from agent_runs r join principals ag on ag.id = r.agent_id join conversations c on c.id = r.conversation_id and c.type = 'group'
       where r.purpose = 'reply' and r.status in ('queued', 'running') and r.whisper_id is null and ${agents.sql}
       order by r.id for update of r`,
@@ -150,20 +167,15 @@ async function endGroupCalls(t: Tx, agents: { sql: string; params: unknown[] }, 
     if (inFlight) {
       const calls = await standingCalls(t, run.id);
       if (!calls.none) continue;
-      await t.query("update agent_runs set interrupted = coalesce(interrupted, 'access_ended'), pending_seq = case when $2::boolean then pending_seq end where id = $1", [
-        run.id,
-        calls.noted,
-      ]);
+      await t.query("update agent_runs set interrupted = coalesce(interrupted, 'access_ended') where id = $1", [run.id]);
       out.running.push(run.id);
       continue;
     }
-    if ((await dropRefusedCalls(t, run.id, run.agent_owner)) !== null) continue;
+    if ((await dropRefusedCalls(t, run.id)) !== null) continue;
     if (run.status === "queued") {
-      const done = await t.query<RunRow>(
-        `update agent_runs r set status = 'cancelled', error = null, finished_at = now(), pending_seq = null where r.id = $1 returning ${RUN_COLUMNS}`,
-        [run.id],
-      );
+      const done = await t.query<RunRow>(`update agent_runs r set status = 'cancelled', error = null, finished_at = now() where r.id = $1 returning ${RUN_COLUMNS}`, [run.id]);
       out.cancelled.push({ ownerId: run.owner_id, conversationId: run.conversation_id, run: toWireRun(done.rows[0]!) });
+      out.idle!.push({ agentId: run.agent_id, conversationId: run.conversation_id });
     } else {
       await t.query("update agent_runs set interrupted = coalesce(interrupted, 'access_ended') where id = $1", [run.id]);
       out.running.push(run.id);
@@ -175,15 +187,17 @@ async function endGroupCalls(t: Tx, agents: { sql: string; params: unknown[] }, 
 /**
  * The operator disabled the Agent (`agent:disable`, social/reports.ts), in the same transaction: the replies others asked of it stop.
  * Every queued reply in the lanes `others` and `proactive` is `cancelled` (`access_ended` in a social conversation, no error in a group),
- * every running one `interrupted` (`access_ended`, recorded the same way when it ends; its post is then refused, as for any ending; the owner's own call noted on it stays noted, another person's goes); the owner's own lane is untouched. Rows are not
- * ended (a disable is no ending of access: enabling gives it all back). The Agent's row first (the lock order), the queued runs
- * before the running ones (a run being claimed at that moment is seen queued or already running: see `endGrants`). The caller runs
- * `announceEnded` after commit where it has a hub (the command line has none: a worker sees the interruption in the row).
+ * every running one `interrupted` (`access_ended`, recorded the same way when it ends; its post is then refused, as for any ending),
+ * and every call of someone else's waiting for it dropped (the owner's own calls wait on: their replies go on); the owner's own lane
+ * is untouched. Rows are not ended (a disable is no ending of access: enabling gives it all back). The Agent's row first (the lock
+ * order), the queued runs before the running ones (a run being claimed at that moment is seen queued or already running: see
+ * `endGrants`). The caller runs `announceEnded` after commit where it has a hub, which takes what waits behind the queued ones
+ * cancelled (`idle`); the command line has none: a worker sees the interruption in the row, and the stale-run sweep takes those.
  */
 export async function interruptOthersRuns(t: Tx, agentId: string): Promise<EndedRuns> {
   await t.query("select 1 from agents where principal_id = $1 for update", [agentId]);
   const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
-    `update agent_runs r set status = 'cancelled', finished_at = now(), pending_seq = null,
+    `update agent_runs r set status = 'cancelled', finished_at = now(),
             -- (a group reply ends quietly, with no error; access_ended is a social run's reason)
             error = case when exists (select 1 from conversations rc where rc.id = r.conversation_id and rc.type = 'agent_social') then 'access_ended' end
       where r.agent_id = $1 and r.purpose = 'reply' and r.status = 'queued' and r.lane in ('others', 'proactive')
@@ -191,17 +205,19 @@ export async function interruptOthersRuns(t: Tx, agentId: string): Promise<Ended
     [agentId],
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended'),
-            -- the owner's own call noted on it stays noted (their replies go on); another person's goes (A-4 review m2)
-            pending_seq = case when exists (select 1 from messages pm where pm.conversation_id = r.conversation_id and pm.seq = r.pending_seq and pm.sender_id = r.owner_id) then r.pending_seq end
+    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended')
       where r.agent_id = $1 and r.purpose = 'reply' and r.status = 'running' and r.lane in ('others', 'proactive')
       returning r.id`,
     [agentId],
   );
+  // Someone else's calls waiting for it go (A-4 review m2); the owner's own wait on.
+  await t.query("delete from deferred_calls where agent_id = $1 and lane <> 'own'", [agentId]);
   return {
     cancelled: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) })),
     running: running.rows.map((r) => r.id),
+    idle: queued.rows.map((r) => ({ agentId, conversationId: r.conversation_id })),
   };
+
 }
 
 /** The one writer of bars: see `setBar`. */

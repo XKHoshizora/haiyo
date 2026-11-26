@@ -190,7 +190,7 @@ export function registerConversationRoutes(app: FastifyInstance): void {
       await changeLimit(req, me.id);
       const { change, ended, whispers, personLeft, droppedAvatar } = await db.tx((t) => removeMember(t, req.params.id, me.id, req.params.principalId));
       // The replies of the Agents that left end (as a pause ends them) before the answer.
-      announceEnded(app.agentPort, ended);
+      await announceEnded(app.agentPort, ended);
       if (droppedAvatar) await discardBlob({ db, blobs }, droppedAvatar, req.log);
       conversations.publish(change, req.log);
       // The whispers that leaving expired, each to its owner (after the leaving's own pushes); and the person who left, her

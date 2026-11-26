@@ -8,7 +8,7 @@ import { pushWhispers } from "../whispers/routes.ts";
 import { expireOnLeave, type Whisper } from "../whispers/store.ts";
 import { forgetSummaries } from "./summary/store.ts";
 import type { DbAgentPort } from "./port-impl.ts";
-import { RUN_COLUMNS, toWireRun, type Announced, type RunRow } from "./runs.ts";
+import { dropDeferred, RUN_COLUMNS, toWireRun, type Announced, type RunRow } from "./runs.ts";
 
 /**
  * An Agent leaving a group (design rules 3–5): taken out by the group's creator or its owner, taken along when its owner
@@ -16,25 +16,29 @@ import { RUN_COLUMNS, toWireRun, type Announced, type RunRow } from "./runs.ts";
  * group end with it.
  */
 
-/** The runs a leaving ended: the cancelled ones to announce after commit, and the running ones to stop. */
+/**
+ * The runs an ending ended: the cancelled ones to announce after commit, and the running ones to stop; and the pairs (an Agent and a
+ * conversation) whose queued run it cancelled outside the conversation's lock order, with calls that may wait behind it: taken after
+ * commit (`announceEnded`, runs.ts `consumeIdle`).
+ */
 export interface EndedRuns {
   cancelled: Announced[];
   running: string[];
+  idle?: Array<{ agentId: string; conversationId: string }>;
 }
 
 /**
  * In the transaction that takes `agentIds` out of group `conversationId`, which holds the group's row: their active
  * replies there end for good, as a pause ends them (runs.ts `interruptRuns`) but in this group only. A queued one is
  * cancelled, `agent_removed` (it never reached a model: nothing to settle); a running one is marked `interrupted`
- * (`agent_removed`, unless a pause or delete marked it first) and what was noted on it (`pending_seq`) is dropped, so
- * nothing follows it up in a group the Agent is no longer in: `postAsAgent` refuses it and `finish` records it
- * `cancelled`. The run rows come after the group's row in the lock order, and no `agents` row is locked: holding the
+ * (`agent_removed`, unless a pause or delete marked it first): `postAsAgent` refuses it and `finish` records it `cancelled`; and
+ * every call waiting for them there is dropped (runs.ts `dropDeferred`), so nothing answers anything in a group the Agent is no
+ * longer in. The run rows come after the group's row in the lock order, and no `agents` row is locked: holding the
  * group's row is what serialises this with sends there and with the worker, whose every step on a run locks the run's
  * conversation first. Their replies in other conversations are not touched.
  */
 export async function endRunsInGroup(t: Tx, conversationId: string, agentIds: readonly string[]): Promise<EndedRuns> {
   if (agentIds.length === 0) return { cancelled: [], running: [] };
-  // No follow-up for a queued one either (runs.ts `followUpOnEnd`: `agent_removed` drops what was noted).
   const queued = await t.query<RunRow & { owner_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = 'agent_removed', finished_at = now()
       where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.status = 'queued'
@@ -42,10 +46,11 @@ export async function endRunsInGroup(t: Tx, conversationId: string, agentIds: re
     [conversationId, agentIds],
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs set interrupted = coalesce(interrupted, 'agent_removed'), pending_seq = null
+    `update agent_runs set interrupted = coalesce(interrupted, 'agent_removed')
       where conversation_id = $1 and agent_id = any($2::uuid[]) and status = 'running' returning id`,
     [conversationId, agentIds],
   );
+  await dropDeferred(t, { conversationId, agentIds });
   return {
     cancelled: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId, run: toWireRun(r) })),
     running: running.rows.map((r) => r.id),
@@ -54,12 +59,16 @@ export async function endRunsInGroup(t: Tx, conversationId: string, agentIds: re
 
 /**
  * After that transaction committed, before the request answers, as the pause route does: the running replies' calls are
- * abandoned and nothing more of them reaches anyone; each cancelled one is pushed to its owner.
+ * abandoned and nothing more of them reaches anyone; each cancelled one is pushed to its owner; then what waits behind the queued
+ * ones an ending cancelled outside the conversation's lock order is taken (`DbAgentPort.consumeIdle`, a transaction per pair; the
+ * stale-run sweep takes whatever this misses).
  */
-export function announceEnded(port: Pick<DbAgentPort, "interruptRuns" | "announce">, ended: EndedRuns): void {
+export async function announceEnded(port: Pick<DbAgentPort, "interruptRuns" | "announce" | "consumeIdle">, ended: EndedRuns): Promise<void> {
   port.interruptRuns(ended.running);
   for (const cancelled of ended.cancelled) port.announce(cancelled);
+  if (ended.idle && ended.idle.length > 0) await port.consumeIdle(ended.idle);
 }
+
 
 export interface LeaveDeps {
   db: Db;

@@ -112,7 +112,7 @@ export interface AgentWorker {
   runOnce(): Promise<boolean>;
   /** Whether this worker is working on the run now (from its claim until its `finish` has returned). */
   isWorking(runId: string): boolean;
-  /** `runOnce` until nothing is queued (follow-ups included); how many ran. */
+  /** `runOnce` until nothing is queued (the replies queued for calls that waited included); how many ran. */
   drain(): Promise<number>;
   /** Resolves once no claim is under way and no run is in flight (for tests: what a finished test leaves running). */
   idle(): Promise<void>;
@@ -920,7 +920,7 @@ export function createAgentWorker(opts: WorkerOptions): AgentWorker {
     inFlight.add(running);
     void running.then(() => {
       inFlight.delete(running);
-      wake(); // its follow-up, or a reply that waited for a free place
+      wake(); // the reply for what waited behind it, or a reply that waited for a free place
     });
     return running;
   }

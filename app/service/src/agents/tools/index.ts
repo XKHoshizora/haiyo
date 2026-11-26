@@ -32,8 +32,8 @@ export { SEARCH_WEB } from "./web/tool.ts";
 /**
  * The reply run a tool call is for, as the port holds it from `begin` (port-impl.ts): the run, whether it is in a group
  * (anywhere but its Agent's own conversation), the numbers it gave the model (`refs`), how far its conversation had come
- * when it began (`heardTo`: the conversation's seq then — a group reply heard everyone who wrote up to it, runs.ts
- * `hearFrom`, so its tools may show it nothing later), in a group its mark (taken out of whatever someone else wrote), and
+ * when it began (`heardTo`: its assignment's last call, limits redesign Part 2 — what it is shown ends there too, so its tools may
+ * show it nothing later), in a group its mark (taken out of whatever someone else wrote), and
  * in its own conversation where what its call shows begins (`shownFrom`).
  */
 export interface RunScope extends RunTicket {

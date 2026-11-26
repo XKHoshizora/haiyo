@@ -9,7 +9,7 @@ import { handleOf } from "../principals/store.ts";
  * with it (`messages.mentions`, `Mention`: who, and the range of the stored text that names them). Nothing reads mention
  * text again to decide who was meant. A mention picked from the @ list comes with its id (`checkPicked`); an `@…` typed
  * and not picked is read here, once (`mentionsAtSend`, by the family-names reading, `namedIn`); every reader after that —
- * the triggers (runs.ts), the follow-up (by the calls its run recorded), the proactive judgement, the web — reads the
+ * the triggers (runs.ts), the calls that wait for a reply (by the calls each recorded), the proactive judgement, the web — reads the
  * stored entries.
  */
 

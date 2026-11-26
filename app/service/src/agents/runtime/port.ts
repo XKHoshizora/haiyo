@@ -327,8 +327,8 @@ export interface AgentPort {
    */
   acknowledge(run: RunTicket, said: { text: string; reasoning: string }): Promise<"posted" | "refused" | "empty">;
   /**
-   * Settles the call and records how the run ended (one transaction, one usage record), then queues the follow-up for
-   * messages that came meanwhile. `usage` is what the upstream reported; with none, `fallback` is what settlement counts,
+   * Settles the call and records how the run ended (one transaction, one usage record), then queues the reply for the calls
+   * that waited behind it (runs.ts `takeDeferred`). `usage` is what the upstream reported; with none, `fallback` is what settlement counts,
    * and the record says it was estimated. A reply of several rounds (one that offers tools) is settled once, on their
    * sums: `usage` is the rounds' summed usage, null when any round reported none; `fallback` is then, summed over the
    * rounds, each round's reported usage when it has one (its hidden reasoning included, as the upstream counts it) and
@@ -376,7 +376,7 @@ export interface AgentPort {
    * reply posted → `done` (`stopped` when its message says so); interrupted by its Agent's pause, delete or removal from
    * the run's conversation → `cancelled`; else `failed`, `provider_unavailable`, retryable — its hold released by a
    * settlement on no tokens, which
-   * costs nothing, and the follow-up queued by the one rule. Its owner is told. Nothing when it had ended already.
+   * costs nothing, and the reply for what waited behind it queued by the one rule. Its owner is told. Nothing when it had ended already.
    * Rejects when that cannot be written: the run then stays `running`, for the stale-run sweep or the next start.
    * `progress`: what the worker knows of the reply as a whole — it had produced something (`Ending.progress`) — beside what
    * its row recorded (`progressed`), so that such a reply released is no passing failure either. Absent: false.

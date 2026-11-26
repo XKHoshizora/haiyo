@@ -74,12 +74,10 @@ import { fuseLine, WEB_NO_MONEY, WEB_UNAVAILABLE } from "./tools/web/tool.ts";
 import {
   actOnTriggered,
   budgetReachedWith,
-  droppedOnEnd,
+  consumeIdle,
   dropRefusedCalls,
-  followUp,
-  followUpOf,
-  followUpOnEnd,
-  hearFrom,
+  idlePairs,
+  nextOf,
   noneTold,
   othersReachedNotice,
   ownerWroteACall,
@@ -88,15 +86,15 @@ import {
   AUTO_RETRY_WINDOW_MS,
   RUN_COLUMNS,
   scheduleAutoRetry,
-  settleLane,
+  takeDeferred,
   transientFailure,
   type AutoRetry,
   withTellable,
   toWireRun,
   type Announced,
-  type FollowUp,
   type Interruption,
   type Lane,
+  type Next,
   type RunRow,
   type Told,
 } from "./runs.ts";
@@ -236,9 +234,10 @@ const REMOVED: RunEnd = { status: "cancelled", error: "agent_removed" };
 /**
  * Ended quietly before any call: refused as it was admitted (a reply for others found others' use of its owner's Agents at the
  * owner's one number, metering/others.ts `OthersLimit`; a reply nobody asked for found its owner's switch off, runs.ts
- * `refusedAtAdmission`), or a reply nobody asked for that someone called after its claim (`begin`'s first step). No call,
- * nothing held or charged — nothing failed and there is nothing to retry, as for such a call refused when it was made (of
- * which nothing is recorded); the group is told nothing (the number's refusal tells its senders and the owner: `actOnTold`).
+ * `refusedAtAdmission`), or a reply nobody asked for with a call waiting behind it as it begins (`begin`'s first step: the moment
+ * for an unasked remark has passed; its end takes the call). No call, nothing held or charged — nothing failed and there is nothing
+ * to retry, as for such a call refused when it was made (of which nothing is recorded); the group is told nothing (the number's
+ * refusal tells its senders and the owner: `actOnTold`).
  */
 const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
 /**
@@ -251,26 +250,36 @@ const HELD_BACK: RunEnd = Object.freeze({ status: "cancelled" });
 /**
  * Refused at admission by its owner's one number (`OthersLimit`), and ended in that very transaction (fix round 1, F5): the refusal
  * and the run's end commit together, so no recovery can answer a call its sender was told was refused. `begin` announced its end
- * and its follow-up; `finish`, given this very value, does nothing. Compared by identity, never by its shape.
+ * and the reply queued for what waited behind it; `finish`, given this very value, does nothing. Compared by identity, never by its
+ * shape.
  */
 const ENDED_AT_ADMISSION: RunEnd = Object.freeze({ status: "cancelled" });
 
-/** `beginOnce`: the plan it made is not for the reply the row is at admission; nothing of it was sent or held (`begin` plans again). */
+/**
+ * `beginOnce`: the plan it made is not for the reply the row and the Agent are at admission (a call taken out of its assignment, or
+ * the Agent's model, level or web search changed meanwhile); nothing of it was sent or held (`begin` plans again).
+ */
 const STALE_PLAN = Symbol("stale plan");
+/** How many plans `begin` makes of one attempt at most (each thrown away only for a change between its steps 1 and 3). */
+const PLANS_AT_MOST = 5;
 
-/** What a plan of `begin` was made for: whose reply the run was (its lane and caller) and the calls it answers (those it covers). */
+
+/**
+ * What a plan of `begin` was made for (limits redesign, Part 2: a run's lane and caller never change, so they are no part of it): the
+ * calls of its assignment still to be answered (those a refusal took out are not) and the Agent's settings it was made with — its
+ * model, the level it runs at, and whether it may search the web.
+ */
 interface PlanBasis {
-  lane: Lane;
-  caller: string | null;
   calls: string;
+  settings: string;
 }
-const basisOf = (state: Pick<RunState, "lane" | "caller_id" | "call_seqs">, covers: number): PlanBasis => ({
-  lane: state.lane,
-  caller: state.caller_id,
-  // (A call noted on it since — after what it covers — is its follow-up's: no part of the plan.)
-  calls: (state.call_seqs ?? []).map(Number).filter((seq) => seq <= covers).sort((a, b) => a - b).join(","),
+const basisOf = (state: Pick<RunState, "call_seqs">, agent: AgentRow, level: string): PlanBasis => ({
+  calls: (state.call_seqs ?? []).map(Number).sort((a, b) => a - b).join(","),
+  settings: JSON.stringify([agent.model, level, agent.webSearch]),
 });
-const sameBasis = (a: PlanBasis, b: PlanBasis): boolean => a.lane === b.lane && a.caller === b.caller && a.calls === b.calls;
+const sameBasis = (a: PlanBasis, b: PlanBasis): boolean => a.calls === b.calls && a.settings === b.settings;
+/** The level a run of `agent` in `lane` is made at (`forOthers`: its level for others or for replies nobody asked for). */
+const levelOf = (agent: AgentRow, lane: Lane, forOthers: boolean): AgentRow["reasoning"] => (forOthers ? othersWanted(agent, lane) : agent.reasoning);
 
 /** Why `postAsAgent` refuses a run's reply (409): the Agent's state, or what interrupted the run. */
 const REFUSED: ReadonlySet<string> = new Set(["agent_paused", "agent_deleted", "agent_removed", "halted", "owner_spoke", "access_ended", "notes_changed", "errand_ended"]);
@@ -278,17 +287,13 @@ const REFUSED: ReadonlySet<string> = new Set(["agent_paused", "agent_deleted", "
 /** What `begin`, `finish` and recovery read of the run, under its row lock. */
 interface RunState {
   status: string;
+  /** Its assignment's last call (`covers_seq`): what it is shown, and its tools reach, end there. */
   covers_seq: string | null;
-  pending_seq: string | null;
   interrupted: Interruption | null;
+  /** Its lane, fixed as its row was made (runs.ts `Caller`). */
   lane: Lane;
-  /**
-   * The calls it answers and those noted on it, as each was accepted when it was sent (`call_seqs`): what its follow-up
-   * answers of what was noted. A told reply's hold the calls noted on it only.
-   */
+  /** The calls of its assignment (`call_seqs`), as each was accepted; none for a tell or a greeting (zero-call runs). */
   call_seqs: string[] | null;
-  /** Those of them accepted as its owner's own, each as it was made (`owner_call_seqs`): what makes a reply, or its follow-up, the owner's own. */
-  owner_call_seqs: string[];
   /** It was held back at an earlier attempt and is not admitted yet (`held_back_by`). */
   marked: boolean;
   /** Its owner asked it to stop while it ran (runs.ts `stopRun`). */
@@ -297,8 +302,7 @@ interface RunState {
   triggered_by: "human" | "agent";
   /**
    * A reply `告诉他们` queued (`whisper_id`): it answers nobody's call — what it covers is merely the group's latest message
-   * when it was queued, anyone's — so `begin` holds none of it to the block rule; the calls noted on it are its follow-up's,
-   * held to that rule there (runs.ts `followUp`).
+   * when it was queued, anyone's — so `begin` holds none of it to the block rule; a call meanwhile waits behind it.
    */
   told: boolean;
   /** A new Agent's first reply (`agent_runs.greets`, conversation.ts `createAgent`): told to greet its owner. */
@@ -317,7 +321,7 @@ interface RunState {
   social: boolean;
 }
 const RUN_STATE =
-  "status, covers_seq::text, pending_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, owner_call_seqs::text[] as owner_call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
+  "status, covers_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
   "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at, " +
   "coalesce((select sc.type = 'agent_social' from conversations sc where sc.id = agent_runs.conversation_id), false) as social";
 
@@ -353,25 +357,12 @@ function countRetry(log: Partial<Pick<FastifyBaseLogger, "info">>, retried: Auto
 const quietGreeting = (end: RunEnd, state: Pick<RunState, "greets">): RunEnd => (state.greets && end.status === "failed" ? { status: "cancelled" } : end);
 
 
-/*
- * `keepsNothingNoted` (round 2, N-3): the members' calls noted on a told reply (`告诉他们`) are never held to its owner. However
- * it ends — posted or not; failed as it ran (`finish`), or ended by recovery at start-up, a release or the stale-run sweep
- * (`recoverRun`, which follows no other failed run) — they go to an ordinary follow-up at once by the one rule
- * (`followUpSeq`: unless the Agent's pause, delete, leaving or missing model dropped them, as for any run), and the told
- * run keeps none of them (`pending_seq` cleared, `call_seqs` empty): a retry of it tells with nothing noted.
- */
-
 /**
  * A run's in-process flags, from its claim until it has finished. A delta waiting to be delivered keeps the flags it
  * was emitted under, so once `silenced` it stays dropped, however late the hub gets to it — also after `finish` has
  * forgotten the run.
  */
 interface RunFlags {
-  /**
-   * The lane this attempt has met the owner's replies at a time for (`claimNext`'s check, or `begin`'s own when the lane changed
-   * since): a reply that is no longer the owner's own as it begins meets the others' limit before anything is prepared.
-   */
-  lane?: Lane;
   /** Its owner asked it to stop, or its Agent's pause, delete or leaving the run's group interrupted it. */
   stop: boolean;
   /** Its Agent's pause, delete or leaving the run's group interrupted it: nothing more of it is pushed. */
@@ -513,10 +504,14 @@ export class DbAgentPort implements AgentPort {
     return this.flags.get(run.id)?.stop === true;
   }
 
-  /** Ends every queued reply in a social conversation `cancelled`, `access_ended` (the switch is off), and tells each one's owner. */
+  /**
+   * Ends every queued reply in a social conversation `cancelled`, `access_ended` (the switch is off), and tells each one's owner; and
+   * drops every call waiting there (nothing answers an old message when the switch comes back on).
+   */
   private async endQueuedSocial(): Promise<void> {
+    await this.deps.db.query("delete from deferred_calls d using conversations c where c.id = d.conversation_id and c.type = 'agent_social'");
     const { rows } = await this.deps.db.query<RunRow & { owner_id: string; conversation_id: string }>(
-      `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now(), pending_seq = null
+      `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now()
          from conversations c
         where c.id = r.conversation_id and c.type = 'agent_social' and r.status = 'queued' and r.purpose = 'reply'
         returning ${RUN_COLUMNS}, r.owner_id, r.conversation_id`,
@@ -597,7 +592,7 @@ export class DbAgentPort implements AgentPort {
     const row = rows[0];
     if (!row) return null;
     const run: RunTicket = { id: row.id, agentId: row.agent_id, ownerId: row.owner_id, conversationId: row.conversation_id };
-    this.flags.set(run.id, { ...freshFlags(), lane: row.lane as Lane });
+    this.flags.set(run.id, freshFlags());
     if (row.again) {
       this.deps.realtime.pushRunToOwner(run.conversationId, toWireRun(row));
     } else if (row.auto_attempt > 0) {
@@ -633,11 +628,6 @@ export class DbAgentPort implements AgentPort {
     return null;
   }
 
-  /** What step 1 of `begin` took on, handed back as noted (`covers_seq` back to what it covered, `pending_seq` at least it). */
-  private async handBack(t: Tx, runId: string, coveredBefore: number, covers: number): Promise<void> {
-    await t.query("update agent_runs set covers_seq = $2, pending_seq = greatest(coalesce(pending_seq, 0), $3) where id = $1", [runId, coveredBefore, covers]);
-  }
-
   /** Whether `state` is an automatic retry past its start bound (`RETRY_TOO_LATE`); counted once it is found so. */
   private tooLate(state: RunState): boolean {
     if (state.auto_attempt === 0 || state.original_at === null) return false;
@@ -652,17 +642,19 @@ export class DbAgentPort implements AgentPort {
    * 1. A short transaction under `lockRun`: a run that is `halted` ends here, and so does one in a group its Agent is no
    *    longer a member of (`cancelled`, `agent_removed`) and one whose model does not resolve (`failed`,
    *    `model_gone`). A run in a group is flagged so that none of it is streamed (`emit`). A reply nobody asked
-   *    for (lane `proactive`) that a mention was noted on since its claim ends here quietly (`ENDED_QUIETLY`): the moment
-   *    for an unasked remark has passed, and its follow-up answers the mention, noted still, in the caller's lane.
-   *    Otherwise the run takes on what came meanwhile (`covers_seq` = max(covers, pending)), and what the model may be
-   *    shown is read: the
+   *    for (lane `proactive`) with a call waiting behind it ends here quietly (`ENDED_QUIETLY`): the moment for an unasked
+   *    remark has passed, and its end takes the call (runs.ts `takeDeferred`). A run takes on nothing that came after its row
+   *    was made (limits redesign, Part 2: a call meanwhile waits for a reply of its own); its calls are held to the access
+   *    decision once more (runs.ts `dropRefusedCalls`), which may take calls out but never changes its lane or caller. What the
+   *    model may be shown is read, up to its assignment's last call (`covers_seq`, `ContextRun.upTo`), and so is what its tools
+   *    reach (`RunScope.heardTo`): the
    *    system text — its own conversation's (`systemPrompt`, with what the Agent calls its owner), or the group's
    *    (`groupSystemPrompt`, with the group's title, other Agents and roster, `loadGroupScene`; the roster's speakers
    *    are those of what `loadContext` read, `withRoster`; and, last, the pair's rolling summary when it may be shown,
    *    context.ts `loadContext`) — and the conversation (`loadContext`, SQL only; in a group at
    *    most `agentGroupContextTokens` tokens of its latest `GROUP_CONTEXT_MESSAGES` messages, nothing at or before the
    *    run's asker's line (context.ts `askerLine`: the latest joining of its askers — those whose questions it answers,
-   *    and everyone who wrote since what it covered before, recorded first, runs.ts `hearFrom`) but the calls it answers
+   *    and everyone it hears from, recorded as its calls were accepted) but the calls it answers
    *    (context.ts `callsSeen`), each of someone else's
    *    labelled with the run's mark, which `loadContext` draws with `deps.drawMark` and the roster carries too; the
    *    port keeps it for `post` once the call is handed over, `RunFlags.mark`). In a group, a run none of whose calls its
@@ -694,11 +686,11 @@ export class DbAgentPort implements AgentPort {
    *    `admitRun`, under the owner's account lock) refuses a reply for others (lanes `others` and `proactive`) once others'
    *    use of the owner's Agents today has reached the owner's one number (`OthersLimit`: replies settled while it waited
    *    count now). Refused, it ends `cancelled` with no error (`ENDED_QUIETLY`) — no call, nothing held or charged — and
-   *    after commit the senders of the calls it answers read why on their messages and the owner is told once a day
-   *    (`actOnTold`; a reply nobody asked for tells nobody). What step 1 took on (noted on the run after its claim) is
-   *    handed back as noted — `covers_seq` back to what it covered before, `pending_seq` at least what it took on — so
-   *    `finish`'s follow-up answers it as any: the owner's own mention is queued as theirs (the owner's calls are never
-   *    refused by these), someone else's meets the owner's number again and is not queued once it is reached.
+   *    after commit the people the calls it answers are for read why on their messages and the owner is told once a day
+   *    (`actOnTold`; a reply nobody asked for tells nobody); its end, in the same transaction, takes what waited behind it.
+   *    Before admission the plan is compared with the row and the Agent as they are now (`basisOf`: the calls of its
+   *    assignment still to answer, the Agent's model, level and web search): any difference and the plan is stale, nothing
+   *    of it sent or held, and `begin` plans again.
    *    Otherwise
    *    the call is admitted holding the most its input can cost: its text at its utf-8 bytes, at most what the model's
    *    context leaves beside the output limit, images and PDFs at their constants (metering/tokens.ts `holdTokens`; no
@@ -712,24 +704,15 @@ export class DbAgentPort implements AgentPort {
    *    calls are priced by is kept for `extend` (`RunFlags.money`).
    */
   async begin(run: RunTicket, closing?: AbortSignal): Promise<Prepared | RunEnd> {
-    // A plan that the row no longer agrees with at admission (step 3: whose reply it is changed while its attachments were read) is
-    // thrown away whole — no call was made, nothing held — and made again from the row as it is. Changes are few (each takes a call
-    // out of the reply): after three plans it goes back to the queue instead, to be claimed and begun afresh.
-    for (let plan = 0; plan < 3; plan += 1) {
+    // A plan that the row or the Agent no longer agrees with at admission (step 3: a call taken out of its assignment, or the Agent's
+    // model, level or web search changed while its attachments were read) is thrown away whole — no call was made, nothing held — and
+    // made again from them as they are. Changes are few (each takes a call out, or is the owner's own edit): after PLANS_AT_MOST plans
+    // the run ends as a failure of ours (`BUSY`), retryable, and its end takes what waited behind it.
+    for (let plan = 0; plan < PLANS_AT_MOST; plan += 1) {
       const begun = await this.beginOnce(run, closing);
       if (begun !== STALE_PLAN) return begun;
     }
-    const queued = await this.deps.db.tx(async (t) => {
-      await this.lockRun(t, run);
-      return this.backToQueue(t, run);
-    });
-    return this.heldBack(run, queued, this.flagsOf(run.id));
-  }
-
-  /** The run back to `queued`, unadmitted and holding nothing, to be claimed again (the claim meets the limits of the lane it has now). */
-  private async backToQueue(t: Tx, run: RunTicket): Promise<Announced> {
-    const queued = await t.query<RunRow>(`update agent_runs as r set status = 'queued', started_at = null where r.id = $1 returning ${RUN_COLUMNS}`, [run.id]);
-    return { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(queued.rows[0]!) };
+    return BUSY;
   }
 
   /** This attempt put its run back to `queued` (`HELD_BACK`): its owner is told; its flags go, unless a later attempt has its own already. */
@@ -746,14 +729,13 @@ export class DbAgentPort implements AgentPort {
     // This attempt's flags (`claimNext` started them): a later attempt of the same run has flags of its own.
     const mine = this.flagsOf(run.id);
     const first = await db.tx(async (t): Promise<
-      | { end: RunEnd; queued?: Announced }
+      | { end: RunEnd }
       | {
-          /** Whose reply the plan was made for (the row after step 1): step 3 admits it only for the same. */
+          /** What the plan was made for (its calls left, the Agent's settings): step 3 admits it only for the same. */
           basis: PlanBasis;
           resolved: Resolved;
           loaded: LoadedContext;
           covers: number;
-          coveredBefore: number;
           key: string;
           ratio: number;
           offer: Offer | null;
@@ -785,39 +767,22 @@ export class DbAgentPort implements AgentPort {
       if (group && scene === null) return { end: REMOVED };
       const socialScene = social ? await loadSocialScene(t, agent, run.conversationId) : null;
       if (social && socialScene === null) return { end: REMOVED };
-      // A block made since a call, either way, between the Agent's owner and whoever made it: that call is dropped, as it
-      // would be refused now (runs.ts `dropRefusedCalls`, every lane, every group run: one of the owner's own may carry a
-      // call relayed by someone else's Agent); with no call left the reply ends quietly. Not asked (no query) in the
-      // Agent's own conversation, where every call is its owner's and nobody has a block with themselves — nor for a reply
-      // `告诉他们` queued (`told`): it is its owner's own tell and answers nobody's call (what it covers is merely the
-      // group's latest message then, anyone's); what was noted on it is held to the block rule by its follow-up.
+      // A block made since a call, either way, between the Agent's owner and whoever made it, or a limit's refusal of a call since
+      // (C-b): that call is dropped, as it would be refused now (runs.ts `dropRefusedCalls`, every lane, every group run: one of the
+      // owner's own may carry a call relayed by someone else's Agent); with no call left the reply ends quietly. Its lane and caller
+      // stay as they were made. Not asked (no query) in the Agent's own conversation, where every call is its owner's and nobody has a
+      // block with themselves — nor for a reply `告诉他们` queued (`told`): it is its owner's own tell and answers nobody's call (what it
+      // covers is merely the group's latest message then, anyone's).
       if (group && !state.told) {
-        const kept = await dropRefusedCalls(t, run.id, agent.ownerId);
+        const kept = await dropRefusedCalls(t, run.id);
         if (kept === null) return { end: BLOCKED_SINCE };
         Object.assign(state, kept);
-        // The calls noted on it since its claim are taken on below (`covers`): whose reply it is, is decided over every call it will
-        // answer, as for calls folded into it while it was queued (runs.ts `settleLane`; fix round 5) — a member's call taken on so
-        // makes the owner's own reply a reply for others; the owner's taken on by a member's reply leaves it the member's.
-        if (Number(state.pending_seq ?? 0) > Number(state.covers_seq ?? 0)) {
-          const settled = await settleLane(t, run.id, agent.ownerId, false);
-          if (settled !== null) Object.assign(state, { lane: settled.lane, caller_id: settled.id });
-        }
-      }
-      // The lane it has now is not the one its claim met the owner's replies at a time for (a call was taken out since — just now, or
-      // by an ending of access — or one noted on it is taken on now): a reply that is no longer the owner's own meets the others' limit
-      // here, before anything is prepared (fix round 4, R3). Over it, it goes back to the queue, where the claim holds it to that limit.
-      if (mine.lane !== undefined && mine.lane !== state.lane) {
-        if (state.lane !== "own") {
-          const others = await t.query<{ n: number }>("select count(*)::int as n from agent_runs where owner_id = $1 and status = 'running' and lane <> 'own' and id <> $2", [run.ownerId, run.id]);
-          if (others.rows[0]!.n >= config.agentMaxConcurrentOthersRuns) return { end: HELD_BACK, queued: await this.backToQueue(t, run) };
-        }
-        mine.lane = state.lane;
       }
       // A reply somebody other than its owner caused: every social run (its caller is never the owner: `runAccess`), and any other run
-      // not in lane `own`. Decided here by the place, so no social run is the owner's own whatever its row says; and AFTER the calls
-      // refused since were dropped, by the lane the reply has now (the calls left decide it: runs.ts `dropRefusedCalls`). It is made as
-      // the owner's own reply is — the model's output limit, context and wallet holds alike, nothing cut for cost — at the Agent's level
-      // for such replies (`othersReasoning`, or `proactiveReasoning` for one nobody asked for), with one tool round of one real call.
+      // not in lane `own` (fixed as its row was made). Decided here by the place, so no social run is the owner's own whatever its row
+      // says. It is made as the owner's own reply is — the model's output limit, context and wallet holds alike, nothing cut for cost —
+      // at the Agent's level for such replies (`othersReasoning`, or `proactiveReasoning` for one nobody asked for), with one tool round
+      // of one real call.
       const forOthers = social || state.lane !== "own";
       // A reply `告诉他们` queued (Task 8): what its whisper found elsewhere, read now as its owner may read it now
       // (Redesign D: a hit she can no longer read is left out), shown to it as material in its system text
@@ -826,18 +791,20 @@ export class DbAgentPort implements AgentPort {
       // read: there is nothing to tell.
       const told = group ? await toldHits(t, run.id, { timeZone: config.siteTimezone, elsewhereTtlHours: config.whispers.elsewhereTtlHours }) : null;
       if (told !== null && told.length === 0) return { end: NOTHING_LEFT };
-      // A reply nobody asked for that someone has called since its claim: no unasked remark now. What was noted on it
-      // stays noted, so its follow-up answers the call in the caller's lane.
-      if (state.lane === "proactive" && Number(state.pending_seq ?? 0) > Number(state.covers_seq ?? 0)) return { end: ENDED_QUIETLY };
-      // An automatic retry whose question was answered meanwhile — a reply of this Agent's there from another run, posted
-      // after the original call was made — has nothing left to answer: it ends quietly, with no call.
+      // A reply nobody asked for with a call waiting behind it: no unasked remark now. Its end takes the call, in the call's identity.
+      if (state.lane === "proactive" && (await t.query("select 1 from deferred_calls where agent_id = $1 and conversation_id = $2 limit 1", [run.agentId, run.conversationId])).rowCount !== 0) {
+        return { end: ENDED_QUIETLY };
+      }
+      // An automatic retry whose assignment was answered meanwhile — an attempt of its own chain posted its reply — has nothing left
+      // to answer: it ends quietly, with no call. (Assignments are disjoint: no other run answers its calls.)
       if (state.retry_of !== null && (await answeredSince(t, run, state.retry_of))) return { end: ENDED_QUIETLY };
       // An automatic retry starts within ten minutes of its original call, or not at all (the bound is on starting).
       if (this.tooLate(state)) return { end: RETRY_TOO_LATE };
 
       let resolved;
       try {
-        resolved = await resolveModel(t, config, forOthers ? { ...agent, reasoning: othersWanted(agent, state.lane) } : agent);
+        resolved = await resolveModel(t, config, { ...agent, reasoning: levelOf(agent, state.lane, forOthers) });
+
       } catch (err) {
         if (!(err instanceof KeyUnreadableError)) throw err;
         // As a key the provider refused: its owner must save it again. Not retryable as it is.
@@ -855,14 +822,10 @@ export class DbAgentPort implements AgentPort {
       const ratio = await readRatio(t, key);
       const planned = planRatio(ratio);
 
-      // What it covered before taking on what was noted on it since its claim (kept: step 3 may hand that back). A told
-      // reply takes on nothing noted on it: that stays noted, for its follow-up to answer as an ordinary reply.
-      const coveredBefore = Number(state.covers_seq ?? 0);
-      // Nor does a new Agent's greeting: it answers no message of its owner's — one written meanwhile is answered by the
-      // ordinary follow-up after it (so a greeting's quiet end never hides a question).
-      const keepsNoted = told !== null || state.greets;
-      const covers = keepsNoted ? coveredBefore : Math.max(coveredBefore, Number(state.pending_seq ?? 0));
-      if (!keepsNoted) await t.query("update agent_runs set covers_seq = $2, pending_seq = null where id = $1", [run.id, covers]);
+
+      // What its assignment covers: its last call. Nothing after it is shown, nor reached by its tools — a call meanwhile waits for
+      // a reply of its own (a greeting's and a told reply's too: they answer no call).
+      const covers = Number(state.covers_seq ?? 0);
       const owner = await t.query<{ display_name: string }>("select display_name from principals where id = $1", [agent.ownerId]);
       const displayName = owner.rows[0]!.display_name;
       // What its Agent may be shown of its memory here (`notesFor`'s rules), read once with the rest, under the same locks.
@@ -902,7 +865,8 @@ export class DbAgentPort implements AgentPort {
         (mark: string, speakers: readonly Speaker[]): SystemText => {
           const tools: ToolsPrompt = offered && web !== undefined ? { web } : offered;
           const text = scene
-            ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, state.lane === "proactive", notes, told === null ? tools : "told", replyLanguage)
+            ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, state.lane === "proactive", notes, told === null ? tools : "told", replyLanguage, calls.length)
+
             : socialScene
               ? socialSystemText(agent, socialScene.owners, socialScene.other, now, config.siteTimezone, mark, notes, tools, replyLanguage)
               : systemText(agent, { displayName }, now, agent.persona === "" ? "onboarding" : "normal", config.siteTimezone, notes, tools, replyLanguage);
@@ -914,12 +878,9 @@ export class DbAgentPort implements AgentPort {
           return { text: `${text.text}\n\n${passage}`, rest: `${text.rest}\n\n${passage}`, passage: text.passage };
         };
       // In a group, at most `AGENT_GROUP_CONTEXT_TOKENS` of its latest `GROUP_CONTEXT_MESSAGES` messages are shown, and
-      // nothing at or before its asker's line (`askerLine`, Task 10b) but the calls it answers (`callsSeen`), read once,
-      // here, for the whole run. First, whoever it will hear from beyond what it was asked — everyone who wrote since
-      // what it covered before taking on what was noted above, those calls included — is recorded among its askers
-      // (runs.ts `hearFrom`, fix round 2), so the line counts them, and so does whatever it hands down.
-      // (A told reply hears nobody beyond what it covers: it is shown nothing later, `upTo` below.)
-      if (group && told === null) await hearFrom(t, run.id, coveredBefore, null);
+      // nothing at or before its asker's line (`askerLine`, Task 10b: its askers — those whose questions it answers and everyone it
+      // hears from, recorded as each call was accepted, runs.ts `heardIn`) but the calls it answers (`callsSeen`), read once,
+      // here, for the whole run; nothing after its assignment's last call (`upTo`), so nobody it has not heard is shown.
       // A social run has no asker's line: the Agent is shown the whole conversation it can see (`after` 0), up to the weight a social
       // reply is shown (`OTHERS.contextWeight`), and the calls it answers.
       const line = group ? await askerLine(t, run.id) : 0;
@@ -942,9 +903,10 @@ export class DbAgentPort implements AgentPort {
         group: cap,
         planRatio: planned,
         summary,
-        // A told reply is shown the group up to what it covers: a call noted on it since is its follow-up's.
-        ...(keepsNoted ? { upTo: covers } : {}),
+        // Nothing after its assignment's last call (limits redesign, Part 2): what came since is another reply's.
+        upTo: covers,
       };
+
       // The tools the reply is offered, decided in this order: none for a reply `告诉他们` queued (`told`); none while
       // `TOOLS.enabled` is false; none for a model that
       // cannot use them (`Resolved.tools`: its configuration, or its owner's list); none without a toolbox, or when it
@@ -1005,19 +967,18 @@ export class DbAgentPort implements AgentPort {
       // its tools are not sent: an upstream that refuses them, or the ordinary call after a later round it refused
       // (`ModelCall.systemWithoutTools`). Its plan holds it: the tools' definitions it leaves out are larger.
       const withoutTools = offer === null ? null : system(false)(loaded.mark ?? "", loaded.speakers).text;
-      // How far its conversation has come, read under its row's lock: everyone who wrote up to here is heard (`hearFrom`
-      // above), and its tools show it nothing later (`RunScope.heardTo`).
-      const heard = offer === null ? null : await t.query<{ seq: string }>("select seq::text from conversations where id = $1", [run.conversationId]);
+      // How far its tools reach (`RunScope.heardTo`): its assignment's last call, as what it is shown; nothing later.
+      const heardTo = offer === null ? null : covers;
       // A reply offered the web search keeps what it was shown of its notes and hearsay for its query guard (tools/web).
       // And whether a call it answers is one its owner WROTE (review M6; review 5, item 7): only then do the owner's typed words exempt a
       // query — never for a reply that is the owner's own only by their 重试 of someone else's call, nor for a relay. In the Agent's own
       // conversation every reply answers what its owner wrote.
       const ownerWrote = offer?.web !== "offered" ? false : place === "own" ? state.lane === "own" && state.triggered_by === "human" : await ownerWroteACall(t, run.id);
       const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: ownerWrote } : {};
-      const tools = heard === null || refs === null ? null : { refs, heardTo: Number(heard.rows[0]?.seq ?? 0), ...shown };
-      return { basis: basisOf(state, covers), resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, forOthers, social: socialNotes };
+      const tools = heardTo === null || refs === null ? null : { refs, heardTo, ...shown };
+      return { basis: basisOf(state, agent, levelOf(agent, state.lane, forOthers)), resolved, loaded, covers, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, forOthers, social: socialNotes };
     });
-    if ("end" in first) return first.end === HELD_BACK && first.queued ? this.heldBack(run, first.queued, mine) : first.end;
+    if ("end" in first) return first.end;
 
     const deadline = AbortSignal.timeout(config.agentRunTimeoutMs);
     let context: BuiltContext;
@@ -1043,46 +1004,37 @@ export class DbAgentPort implements AgentPort {
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
       // ADMISSION (fix round 4, R3). The terms a reply is made on — its model and level, its output limit, its tool caps, the hold
-      // and the numbers it is counted against — are decided ONCE, here, from the row as it is NOW, under its locks (the
-      // conversation's, the Agent's and the run's: `lockRun`; every writer of a run's calls holds the Agent's row) and, in
-      // `admitRun`, its owner's account lock. Step 1 prepared a plan for whoever the reply was then; the attachments were read with
-      // no lock. So first the calls are held to the access decision once more (`dropRefusedCalls`: a block since), and then the row
-      // is compared with what the plan was made for (`basisOf`: its lane, its caller, the calls it answers). Any difference: the
-      // plan is STALE — nothing of it is sent, nothing is held — and `begin` makes a new one from the row (`STALE_PLAN`).
-      // BOUNDARY: once `admitRun` below has written the hold, the run's lane, caller and money terms are FROZEN. A later ending of
-      // access never rewrites them and never requeues the reply (its calls would be made, and charged, twice): it is ended as a
-      // whole when no call it answers is left (social/agent-contacts.ts `endGroupCalls`, `standingCalls`), else it goes on, and
-      // its post leaves out whoever is refused by then (`postAsAgent`).
+      // and the numbers it is counted against — are decided ONCE, here, under its locks (the conversation's, the Agent's and the
+      // run's: `lockRun`; every writer of a run's calls holds the conversation's row) and, in `admitRun`, its owner's account lock.
+      // Its lane and caller never change (limits redesign, Part 2). Step 1 prepared a plan; the attachments were read with no lock. So
+      // first the calls are held to the access decision once more (`dropRefusedCalls`: a block since, a limit's refusal since), and
+      // then the row and the Agent are compared with what the plan was made for (`basisOf`: the calls left, the Agent's model, level
+      // and web search). Any difference: the plan is STALE — nothing of it is sent, nothing is held — and `begin` makes a new one
+      // (`STALE_PLAN`).
+      // BOUNDARY: once `admitRun` below has written the hold, the run's money terms are FROZEN. A later ending of access never
+      // rewrites them and never requeues the reply (its calls would be made, and charged, twice): it is ended as a whole when no call
+      // it answers is left (social/agent-contacts.ts `endGroupCalls`, `standingCalls`), else it goes on, and its post leaves out
+      // whoever is refused by then (`postAsAgent`); its usage settles either way.
       if (this.flags.get(run.id)?.place === "group" && !first.told) {
-        const kept = await dropRefusedCalls(t, run.id, agent.ownerId);
+        const kept = await dropRefusedCalls(t, run.id);
         if (kept === null) return { end: BLOCKED_SINCE };
         Object.assign(state, kept);
       }
-      if (!sameBasis(first.basis, basisOf(state, first.covers))) {
-        if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
-        log.info({ metric: "stale_plan" }, "agent run: whose reply it is changed while it was prepared; its plan is made again");
+      if (!sameBasis(first.basis, basisOf(state, agent, levelOf(agent, state.lane, first.forOthers)))) {
+        log.info({ metric: "stale_plan" }, "agent run: its calls or its Agent's settings changed while it was prepared; its plan is made again");
         return { stale: true };
       }
       // A social run: its visitor may still reach the Agent now, after the attachments were read outside any transaction (B-4 review m1).
       if (this.flags.get(run.id)?.place === "social" && (await runAccess(t, agent, state, this.deps.config)) !== "ok") return { end: ACCESS_ENDED };
-      // Too late to start (it crossed the bound while its attachments were read): what step 1 took on is handed back as
-      // noted, as a refusal hands it back, so its follow-up rule answers it.
-      if (this.tooLate(state)) {
-        if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
-        return { end: RETRY_TOO_LATE };
-      }
+      // Too late to start (it crossed the bound while its attachments were read).
+      if (this.tooLate(state)) return { end: RETRY_TOO_LATE };
       // The service may have started closing while this waited for the locks: then nothing is admitted (thrown, so the
       // transaction rolls back) and the run is left running, unadmitted, for the caller to end (the worker: `release`).
       if (closing?.aborted) throw closing.reason;
       // What its lane is held to, once more: replies settled while it waited count now, and its owner may have turned a
-      // reply nobody asked for off. Refused, what step 1 took on (noted on it after its claim — its owner's mention, say)
-      // is handed back as noted, so `finish`'s follow-up answers it by the usual rule: its owner's own is queued; someone
-      // else's meets the owner's number again and is simply not queued, so nothing loops.
+      // reply nobody asked for off.
       const told = refusedAtAdmission(agent, state.lane);
-      if (told) {
-        if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
-        return { end: ENDED_QUIETLY, told };
-      }
+      if (told) return { end: ENDED_QUIETLY, told };
       const { resolved, loaded, covers, key, ratio, offer, reserved, withoutTools, forOthers } = first;
       // The tools the reply is offered (step 1).
       const tools = offer?.tools ?? [];
@@ -1121,36 +1073,29 @@ export class DbAgentPort implements AgentPort {
         admission = await admitRun(t, config, run.id, run.ownerId, resolved, held, () => new Date(), lastCall);
       } catch (err) {
         if (err instanceof OthersLimit) {
-          // Others' use of its owner's Agents today has reached the owner's one number: no call, nothing held or charged. What step 1
-          // took on is handed back as noted (as above): its follow-up decides it. Each person whose call it answers is told on their own
-          // message, and its owner once a site day (`actOnTold`); a reply nobody asked for tells nobody.
-          if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
+          // Others' use of its owner's Agents today has reached the owner's one number: no call, nothing held or charged. Each person
+          // a call of its assignment is for is told on their own message (taking the call out of any assignment for good, C-b), and its
+          // owner once a site day (`actOnTold`); a reply nobody asked for tells nobody.
           const told = noneTold();
           if (state.lane === "others") {
-            const { refused, calls } = await refuseRunCalls(t, run.id, first.coveredBefore, "others_limit");
+            const { refused, calls } = await refuseRunCalls(t, run.id, "others_limit");
             told.refused.push(...refused);
             // Its owner is told only of a refused call, of the number that refused it.
             if (calls > 0) told.reached.push({ ownerId: agent.ownerId, agentId: agent.id, pointsMicro: await othersLimitOf(t, config, agent.ownerId) });
           }
           log.info({ metric: "others_limit_refused", at: "admission" }, "agent run: its owner's number for others' use is reached; it ends quietly");
-          // Its end, in this transaction, as `finish` would record it (the locks are those `finish` takes, held already): what it
-          // handed back is followed up by the one rule.
+          // Its end, in this transaction, as `finish` would record it (the locks are those `finish` takes, held already): what waited
+          // behind it is taken by THE consumption (runs.ts `takeDeferred`).
           const recordedEnd = await this.recordIn(t, run, ENDED_QUIETLY, null, NOTHING, this.now());
           return { end: ENDED_AT_ADMISSION, told, recordedEnd };
         }
         if (err instanceof HeldBack) {
           // Back to `queued`, under the account lock admission still holds, so none of the calls it waits for can have
           // ended unseen (each leaves `running` in a transaction that takes that lock): `claimNext` passes it over until
-          // one of them has, and the owner's younger replies on the same source behind it. What step 1 took on (noted on it
-          // after its claim — its owner's mention, say) is handed back as noted, as a refusal hands it back: its next
-          // `begin` takes it on again, and should that attempt be refused its owner's call is still followed up.
-          await t.query(
-            `update agent_runs set status = 'queued', started_at = null, held_back_by = $2::uuid[], held_back_on = $3,
-                    covers_seq = case when $5::bigint > $4::bigint then $4::bigint else covers_seq end,
-                    pending_seq = case when $5::bigint > $4::bigint then greatest(coalesce(pending_seq, 0), $5::bigint) else pending_seq end
-              where id = $1`,
-            [run.id, err.behind, err.on, first.coveredBefore, first.covers],
-          );
+          // one of them has, and the owner's younger replies on the same source behind it. Its assignment is as it was (its mark
+          // keeps a call of its identity from being folded into it: runs.ts `pairOf`).
+          await t.query("update agent_runs set status = 'queued', started_at = null, held_back_by = $2::uuid[], held_back_on = $3 where id = $1", [run.id, err.behind, err.on]);
+
           const queued = await t.query<RunRow>(`select ${RUN_COLUMNS} from agent_runs r where r.id = $1`, [run.id]);
           return { end: HELD_BACK, queued: { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(queued.rows[0]!) } };
         }
@@ -1538,10 +1483,11 @@ export class DbAgentPort implements AgentPort {
   /**
    * One transaction under `lockAgent` on the run's conversation: settles the call (it leaves `running` in the same
    * transaction, so its hold never stops counting before its cost lands) — at no charge when it failed on our side
-   * (`busy`: the reply could not be stored) — records how the run ended (`recorded`), and follows it up by
-   * `followUpSeq`, in the run's conversation (runs.ts `followUp`: in a group, under the owner's replies a minute, the
-   * halt, the chain budget and the owner's number for others' use). Announced after commit, and the notices the follow-up
-   * appended are published after the run's end, with whom its refusal tells (`actOnTold`). A run
+   * (`busy`: the reply could not be stored) — records how the run ended (`recorded`), tries it again by itself when it failed for
+   * a passing reason (runs.ts `scheduleAutoRetry`, which takes the slot first), else takes what waited behind it, in the run's
+   * conversation (runs.ts `takeDeferred`: in a group, the halt, the chain budget and the owner's number for others' use met again).
+   * Announced after commit — the run's end before the reply queued after it — and the notices deciding it appended are published
+   * after the run's end, with whom its refusal tells (`actOnTold`). A run
    * ended elsewhere meanwhile (another instance's recovery, the stale-run sweep, a stop of a run this
    * process was not seen working on) is left as that recorded it, and its owner is told how it stands now, so no
    * "replying" stays shown. A run whose reply was posted is pushed that reply once more, to its owner only, before its
@@ -1571,7 +1517,7 @@ export class DbAgentPort implements AgentPort {
     await this.afterRecorded(run, result, { leftOut, social });
   }
 
-  /** What `finish` does once the run's end (`recordIn`) has committed: its pushes, its follow-up's announcement, memory, a reminder. */
+  /** What `finish` does once the run's end (`recordIn`) has committed: its pushes, the next reply's announcement, memory, a reminder. */
   private async afterRecorded(run: RunTicket, result: Recorded, { leftOut, social }: { leftOut: { to: number } | null; social: boolean }): Promise<void> {
     if (result.reply !== null) this.deps.realtime.pushChargedReply(run.conversationId, run.ownerId, result.reply);
     countRetry(this.deps.log, result.retried);
@@ -1586,10 +1532,10 @@ export class DbAgentPort implements AgentPort {
       this.deps.memory?.noted(run.agentId, run.conversationId);
       if (leftOut !== null) this.deps.memory?.summarise(run.agentId, run.conversationId, leftOut.to);
     }
-    if (result.followed.run) this.announce(result.followed.run);
-    // A notice its follow-up appended (a chain budget spent), and whom a refusal of it tells (the owner's number for others'
+    if (result.next.run) this.announce(result.next.run);
+    // A notice deciding the next reply appended (a chain budget spent), and whom a refusal of it tells (the owner's number for others'
     // use reached): after the run's end.
-    this.actOnTold(result.followed);
+    this.actOnTold(result.next);
     // A reminder about money its settlement found due (metering/reminders.ts): its whisper made now, after commit, with
     // the whisper's own locks; should this fail, the periodic sweep makes it.
     if (result.reminder !== null) {
@@ -1612,7 +1558,7 @@ export class DbAgentPort implements AgentPort {
 
   /**
    * The run's end, in transaction `t` (`finish`'s own, or the admission's that refused it, `ENDED_AT_ADMISSION`): settled, recorded,
-   * tried again or followed up by the one rule, under the locks `finish` takes.
+   * tried again or the calls that waited taken (THE consumption, runs.ts `takeDeferred`), under the locks `finish` takes.
    */
   private async recordIn(t: Tx, run: RunTicket, end: RunEnd, usage: Usage | null, fallback: Estimated, now: Date): Promise<Recorded | null> {
     const { config } = this.deps;
@@ -1624,7 +1570,8 @@ export class DbAgentPort implements AgentPort {
         if (!current.rows[0]) return null;
         await withTellable(t, current.rows, config.whispers.elsewhereTtlHours);
         const ended: Announced = { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(current.rows[0]) };
-        return { ended, followed: followUpOf(null), interrupted: false, reply: null, reminder: null, retried: null };
+        return { ended, next: nextOf(null), interrupted: false, reply: null, reminder: null, retried: null };
+
       }
       // Its reply (its acknowledgement, if it posted one, is not: `ack:<run id>`).
       const said = await t.query<{ seq: string }>("select seq::text from messages where conversation_id = $1 and sender_id = $2 and client_txn = $3", [
@@ -1649,26 +1596,21 @@ export class DbAgentPort implements AgentPort {
       const kept = quietGreeting(final, state.rows[0]);
       const error = kept.status === "failed" || kept.status === "cancelled" ? (kept.error ?? null) : null;
       const resetsAt = kept.status === "failed" && kept.resetsAt !== undefined ? kept.resetsAt : null;
-      // A told reply keeps nothing noted once its end has decided its follow-up (`keepsNothingNoted`).
       const updated = await t.query<RunRow>(
-        `update agent_runs as r set status = $2, error = $3, resets_at = $4, finished_at = now(),
-                pending_seq = case when $5::boolean or $6::boolean then null else r.pending_seq end,
-                call_seqs = case when $6::boolean then '{}' else r.call_seqs end
-          where r.id = $1 returning ${RUN_COLUMNS}`,
-        [run.id, kept.status, error, resetsAt, droppedOnEnd(final), state.rows[0].told],
+        `update agent_runs as r set status = $2, error = $3, resets_at = $4, finished_at = now() where r.id = $1 returning ${RUN_COLUMNS}`,
+        [run.id, kept.status, error, resetsAt],
       );
       await withTellable(t, updated.rows, config.whispers.elsewhereTtlHours);
       const ended: Announced = { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(updated.rows[0]!) };
-      // Failed for a passing reason: the system tries it again by itself (runs.ts `scheduleAutoRetry`); the retry answers
-      // what this run covered and what was noted on it, so nothing follows this run up.
-      // (Never one its owner asked to stop.)
-      const retried = transientFailure(final) && !state.rows[0].stop_asked ? await scheduleAutoRetry(t, run.id, agent, run.conversationId, state.rows[0], now, config) : null;
-      const next = followUpOnEnd(state.rows[0], agent, final, { recovered: false, retried: retried !== null && "retry" in retried });
-      const followed =
-        next === null ? followUpOf(null) : await followUp(t, agent, run.conversationId, Number(state.rows[0].covers_seq ?? 0), next, state.rows[0].call_seqs, state.rows[0].owner_call_seqs, config);
+      // Failed for a passing reason: the system tries it again by itself (runs.ts `scheduleAutoRetry`), the retry keeping its
+      // assignment and taking the slot BEFORE anything that waits behind it (never one its owner asked to stop). Otherwise, THE
+      // consumption takes what waited (runs.ts `takeDeferred`), in this same transaction.
+      const retried = transientFailure(final) && !state.rows[0].stop_asked ? await scheduleAutoRetry(t, run.id, agent, run.conversationId, now, config) : null;
+      const next = retried !== null && "retry" in retried ? nextOf(null) : await takeDeferred(t, agent, run.conversationId, Number(state.rows[0].covers_seq ?? 0), config);
       return {
         ended,
-        followed,
+        next,
+
         interrupted: state.rows[0].interrupted !== null,
         reply: reply ? Number(reply.seq) : null,
         retried,
@@ -1690,9 +1632,9 @@ export class DbAgentPort implements AgentPort {
   /**
    * Ends run `runId` (a reply, or a persona draft) that will not be finished where it was begun — this process is
    * closing, or nobody is working on it — exactly as recovery at start-up ends one (`recoverRun`, in a transaction of
-   * its own under the locks `finish` takes, on the run's own conversation), then tells its owner (and a follow-up queued
-   * by the one rule wakes the worker), publishes the notices its follow-up appended and tells whom its refusal tells
-   * (`actOnTold`), and forgets its flags; a run whose
+   * its own under the locks `finish` takes, on the run's own conversation), then tells its owner (and a reply queued for
+   * what waited behind it wakes the worker), publishes the notices deciding that reply appended and tells whom its refusal
+   * tells (`actOnTold`), and forgets its flags; a run whose
    * reply had been posted pushes that reply once more to its owner, first (`Hub.pushChargedReply`, as `finish` does).
    * False when it was no longer running. Rejects, changing nothing, when it cannot be written. `progress`: the worker
    * knew its reply had produced something (`AgentPort.release`); then it is no passing failure, whatever its row says.
@@ -1717,13 +1659,37 @@ export class DbAgentPort implements AgentPort {
     this.actOnTold(recovered.told);
     return true;
   }
+
+  /**
+   * The calls left waiting on `pairs` with nothing active there (runs.ts `consumeIdle`: after an ending made outside the
+   * conversation's lock order — an ending of access in a group, the operator's disable, group-leave.ts `announceEnded` — and by the
+   * stale-run sweep, for one whose process died between that ending and this): each pair in a transaction of its own, the reply
+   * queued announced and whom deciding it tells told. A pair that fails is logged and left for the next sweep.
+   */
+  async consumeIdle(pairs: ReadonlyArray<{ agentId: string; conversationId: string }>): Promise<number> {
+    let queued = 0;
+    for (const pair of pairs) {
+      try {
+        const next = await this.deps.db.tx((t) => consumeIdle(t, pair.agentId, pair.conversationId, this.deps.config));
+        if (next === null) continue;
+        if (next.run) {
+          queued++;
+          this.announce(next.run);
+        }
+        this.actOnTold(next);
+      } catch (err) {
+        this.deps.log.error({ err, agentId: pair.agentId, conversationId: pair.conversationId }, "agent run: the calls waiting for an Agent could not be taken now; the next sweep tries again");
+      }
+    }
+    return queued;
+  }
 }
 
 /** What `finish`'s transaction leaves to do once it has committed. */
 interface Recorded {
   ended: Announced;
-  /** Its follow-up (runs.ts `followUp`), and what deciding it told: notices to publish, Agents to push their owners. */
-  followed: FollowUp;
+  /** The reply queued for what waited behind it (runs.ts `takeDeferred`), and what deciding it told: notices to publish, people to push. */
+  next: Next;
   interrupted: boolean;
   /** The seq of the reply the run posted, to push again to its owner now that it is charged; null when none. */
   reply: number | null;
@@ -1734,8 +1700,8 @@ interface Recorded {
 }
 
 /**
- * What `recoverRun` leaves to do once it has committed: runs to announce, what its follow-up told (notices to publish,
- * the senders and the owner its refusal tells), a charged reply to push.
+ * What `recoverRun` leaves to do once it has committed: runs to announce (its end, then the reply queued for what waited behind
+ * it), what deciding that reply told (notices to publish, the people and the owner its refusal tells), a charged reply to push.
  */
 interface Recovered {
   runs: Announced[];
@@ -1747,20 +1713,21 @@ interface Recovered {
 }
 
 /**
- * Whether Agent `run.agentId` has posted a reply in `run.conversationId` since original run `original` was made, from a run
- * that is neither it nor one of its automatic retries (an acknowledgement is no reply).
+ * Whether the assignment of automatic retry `run` was answered already (limits redesign [C2]): another attempt of its own chain —
+ * the original run `original`, or another of its retries — posted its reply (`client_txn` its id; an acknowledgement is no reply).
+ * Matched on the assignment, never on "the Agent posted something later": assignments are disjoint, so no other run answers its calls.
  */
 async function answeredSince(t: Tx, run: RunTicket, original: string): Promise<boolean> {
   const { rowCount } = await t.query(
-    `select 1 from messages m join agent_runs o on o.id = $3
-      where m.conversation_id = $1 and m.sender_id = $2 and m.kind = 'text' and m.created_at > o.created_at
-        and m.client_txn is not null and m.client_txn not like 'ack:%'
-        and m.client_txn not in (select x.id::text from agent_runs x where x.id = $3 or x.retry_of = $3)
+    `select 1 from messages m
+      where m.conversation_id = $1 and m.sender_id = $2 and m.kind = 'text'
+        and m.client_txn in (select x.id::text from agent_runs x where (x.id = $3 or x.retry_of = $3) and x.id <> $4)
       limit 1`,
-    [run.conversationId, run.agentId, original],
+    [run.conversationId, run.agentId, original, run.id],
   );
   return rowCount !== 0;
 }
+
 
 /** The texts of the notes and hearsay a run was shown (what its web search's query guard compares a query with). */
 const shownTexts = (notes: PromptNotes): string[] => [...notes.owner, ...notes.self, ...notes.hearsay].map((n) => n.text);
@@ -1792,13 +1759,15 @@ export function createAgentPort(deps: AgentPortDeps): DbAgentPort {
  * - else, its Agent's pause, delete or leaving the run's group had interrupted it: `cancelled` with that reason;
  * - else `failed`, `provider_unavailable`, retryable.
  * In the same transaction its hold is released by a settlement that costs nothing (whatever the upstream reported died
- * with the process: no tokens, all forgiven) — unless it already has its usage record: it is never settled twice. A
- * posted or cancelled run is followed up by the one rule (`followUpSeq`: queued, for the worker about to start); a
- * failed one is not, so nothing is called again on its own (spec 6.5) and a retry answers everything — but a told reply's
- * noted calls, which are followed up whatever it ended as (`keepsNothingNoted`). Queued runs are
- * left as they are. Nothing is pushed (no socket can be open yet): a client learns the state from `GET …/run`. A run
- * that cannot be recovered is logged and left for the stale-run sweep or the next start. Returns how many were
- * recovered. The same ending, while the service runs, is `DbAgentPort.releaseRun` (one transaction of `recoverRun`).
+ * with the process: no tokens, all forgiven) — unless it already has its usage record: it is never settled twice. A failed
+ * one lost mid-call is tried again by itself when it may be (`scheduleAutoRetry`, which takes the slot first); otherwise, in
+ * the same transaction, what waited behind it is taken (runs.ts `takeDeferred`: queued, for the worker about to start) —
+ * each waiting call answered exactly once, whatever crashed when (a call leaves the table in the transaction that queues its
+ * reply). Queued runs are left as they are. Then the calls left waiting with nothing active (an ending of access that crashed
+ * before its next step: `consumeIdle`) are taken, each pair in a transaction of its own. Nothing is pushed (no socket can be open
+ * yet): a client learns the state from `GET …/run`. A run that cannot be recovered is logged and left for the stale-run sweep or
+ * the next start. Returns how many runs were recovered. The same ending, while the service runs, is `DbAgentPort.releaseRun` (one
+ * transaction of `recoverRun`).
  */
 export async function recoverRuns(
   db: Db,
@@ -1819,16 +1788,23 @@ export async function recoverRuns(
       log.error({ err, runId: run.id }, "agent run: could not be recovered at start-up; it stays running until the stale-run sweep or the next start releases it");
     }
   }
+  for (const pair of await idlePairs(db)) {
+    try {
+      await db.tx((t) => consumeIdle(t, pair.agentId, pair.conversationId, config));
+    } catch (err) {
+      log.error({ err, agentId: pair.agentId, conversationId: pair.conversationId }, "agent run: the calls waiting for an Agent could not be taken at start-up; the stale-run sweep tries again");
+    }
+  }
   return recovered;
 }
 
 /**
  * One run of `recoverRuns` (and of `sweepStaleRuns`, `releaseRun`): null when it was no longer running (or does not
- * exist), else what to tell its owner — the run as it ended and its follow-up (queued, or in a group over the owner's
- * replies a minute the reusable `rate_limited` run), if any, both in the run's own conversation (a draft has no
- * conversation: nothing) — and the notices the follow-up appended there. The run's Agent and conversation are read from
- * its row first (they never change), so that the locks are taken in their order: that conversation's row and the
- * `agents` row, then the run's, then (`settle`, the follow-up) the owner's `accounts` row. `progress`: a release's
+ * exist), else what to tell its owner — the run as it ended and the reply queued for what waited behind it (or its automatic
+ * retry), if any, both in the run's own conversation (a draft has no conversation: nothing) — and the notices deciding that reply
+ * appended there. The run's Agent and conversation are read from its row first (they never change), so that the locks are taken
+ * in their order: that conversation's row and the `agents` row, then the run's, then (`settle`, `takeDeferred`) the owner's
+ * `accounts` row. `progress`: a release's
  * knowledge that the reply had produced something, beside its row's `progressed` (a lost run is passing only without both).
  */
 async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<FastifyBaseLogger, "warn">, now: Date, progress = false): Promise<Recovered | null> {
@@ -1862,28 +1838,23 @@ async function recoverRun(t: Tx, config: Config, runId: string, log: Pick<Fastif
   if (!settled) await settle(t, config, runId, null, NOTHING, end.status, new Date(), { forgiveAll: true, log });
   const kept = quietGreeting(end, state);
   const error = kept.status === "failed" || kept.status === "cancelled" ? (kept.error ?? null) : null;
-  const updated = await t.query<RunRow>(
-    `update agent_runs as r set status = $2, error = $3, finished_at = now(),
-            pending_seq = case when $4::boolean or $5::boolean then null else r.pending_seq end,
-            call_seqs = case when $5::boolean then '{}' else r.call_seqs end
-      where r.id = $1 returning ${RUN_COLUMNS}`,
-    [runId, kept.status, error, droppedOnEnd(end), state.told],
-  );
+  const updated = await t.query<RunRow>(`update agent_runs as r set status = $2, error = $3, finished_at = now() where r.id = $1 returning ${RUN_COLUMNS}`, [
+    runId,
+    kept.status,
+    error,
+  ]);
   if (reply === null) return { runs: [], told: noneTold(), charged: null, retried: null };
   const { agent, conversationId } = reply;
   await withTellable(t, updated.rows, config.whispers.elsewhereTtlHours);
   const ended: Announced = { ownerId: agent.ownerId, conversationId, run: toWireRun(updated.rows[0]!) };
   // A run the service lost mid-call failed for a passing reason: the system tries it again by itself (runs.ts
-  // `scheduleAutoRetry`), the retry answering all it covered and noted (a told reply's noted calls stay noted on it).
-  // (Never one its owner asked to stop: a stop of a run nobody here works on releases it so.)
-  const retried = transientFailure(end) && !state.stop_asked ? await scheduleAutoRetry(t, runId, agent, conversationId, state, now, config) : null;
-  // Else a failed run is followed by nothing on its own (its owner's retry answers everything) — but a told reply's noted
-  // calls, which were never part of what failed, are followed up at once (`keepsNothingNoted`).
-  const next = followUpOnEnd(state, agent, end, { recovered: true, retried: retried !== null && "retry" in retried });
-  const { run: followed, ...told } =
-    next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(state.covers_seq ?? 0), next, state.call_seqs, state.owner_call_seqs, config);
+  // `scheduleAutoRetry`), the retry keeping its assignment and taking the slot first (never one its owner asked to stop: a stop of
+  // a run nobody here works on releases it so). Otherwise THE consumption takes what waited behind it, in this transaction.
+  const retried = transientFailure(end) && !state.stop_asked ? await scheduleAutoRetry(t, runId, agent, conversationId, now, config) : null;
+  const { run: next, ...told } = retried !== null && "retry" in retried ? nextOf(null) : await takeDeferred(t, agent, conversationId, Number(state.covers_seq ?? 0), config);
   return {
-    runs: followed ? [ended, followed] : [ended],
+    runs: next ? [ended, next] : [ended],
+
     told,
     charged: posted ? { conversationId, ownerId: agent.ownerId, seq: Number(posted.seq) } : null,
     retried,
@@ -1905,7 +1876,7 @@ export const staleAfterMs = (config: { agentRunTimeoutMs: number; tools: Pick<Co
  * The stale-run sweep (README "Agents and runs", Recovery): every run — reply or draft — that is `running`, has been
  * since longer than `staleAfterMs`, and is not one this process is working on (`held`: its worker's runs and its drafts
  * in flight) is released exactly as start-up recovery releases one (`port.releaseRun`: `recoverRun`, each in a
- * transaction of its own under the same locks, on the run's own conversation; its owner is told, a follow-up wakes the
+ * transaction of its own under the same locks, on the run's own conversation; its owner is told, the next reply wakes the
  * worker, and its flags are forgotten). Such a run's process died mid-call while another instance kept running (a
  * deploy where two overlap), its stop could not write its end, or its `finish` failed. Every run is bounded well within
  * `staleAfterMs`, so one that is still being worked on elsewhere is past its time: `post` then refuses it
@@ -1913,7 +1884,7 @@ export const staleAfterMs = (config: { agentRunTimeoutMs: number; tools: Pick<Co
  * sweep. Returns how many were released.
  */
 export async function sweepStaleRuns(
-  port: Pick<DbAgentPort, "releaseRun">,
+  port: Pick<DbAgentPort, "releaseRun"> & Partial<Pick<DbAgentPort, "consumeIdle">>,
   db: Db,
   config: Config,
   log: Pick<FastifyBaseLogger, "error" | "warn">,
@@ -1936,8 +1907,11 @@ export async function sweepStaleRuns(
       log.error({ err, runId: run.id }, "agent run: the stale-run sweep could not release it; the next sweep tries again");
     }
   }
+  // And the calls left waiting with nothing active (an ending made outside the conversation's lock order whose next step was lost).
+  if (port.consumeIdle) await port.consumeIdle(await idlePairs(db));
   return released;
 }
+
 
 /**
  * Runs `sweep` once after `initialDelayMs` (default a minute), then every `intervalMs` (default a minute); never two at

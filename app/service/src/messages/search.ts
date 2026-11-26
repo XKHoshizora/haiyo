@@ -123,7 +123,7 @@ export interface SearchRowsOptions {
    * the owner's messages its call shows — after what the Agent's last posted reply there covered (its posting run's
    * `covers_seq`) and from where its call's context begins (`shownFrom`, context.ts `BuiltContext.shownFrom`; null: no
    * such bound), up to what this run covers: a question re-asked after a failure nobody retried, what was written while
-   * the Agent was paused or had no model or was not named, a follow-up's turn. What its context does not show — past the
+   * the Agent was paused or had no model or was not named, a later reply's turn. What its context does not show — past the
    * budget, folded into the rolling summary, before a new topic — stays findable. The bound is read once per statement
    * (a materialized CTE, whatever the number of candidates) in this same statement, so `limit` (and the paging flag made
    * of it) counts what is left. Absent or null: nothing is left out.

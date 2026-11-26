@@ -307,7 +307,7 @@ export class Hub {
   }
 
   /**
-   * A person's message at `seq` a limit refused a call of after it was sent (at admission, or when the reply it was noted on ended:
+   * A person's message at `seq` a limit refused a call of after it was sent (at admission, or when it was taken after waiting for a reply:
    * agents/runs.ts `recordRefusal`): pushed to its sender again, rendered for them when it is delivered, so that it carries `refused`
    * (`toWireForReaders` sends that to its sender only). Pushed only when the rendering carries it; nobody else is pushed anything.
    */

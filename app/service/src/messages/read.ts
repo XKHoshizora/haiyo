@@ -128,7 +128,7 @@ export const acknowledgementTxn = (runId: string): string => `ack:${runId}`;
 /**
  * SQL: run `run` (an `agent_runs` alias) posted message `message` (a `messages` alias, spliced in: only aliases) — a
  * reply run of its sender in its conversation whose id the message's `client_txn` names (`postAsAgent`): its reply, or
- * its acknowledgement. A person's message names no run. Who is behind an Agent's message (agents/runs.ts `followUp`),
+ * its acknowledgement. A person's message names no run. Who is behind an Agent's message (agents/runs.ts `behindMessageSql`),
  * whom it heard from (`heardIn`), where it belongs in a later reply's context (agents/context.ts), and the `via` of a
  * reply here (its reply only).
  */
@@ -288,9 +288,10 @@ function toWire(
  * the messages its tools found (`found`), each reader only those they can see now, by VISIBLE_JOIN as the reply itself —
  * the others dropped without a trace, the key absent when none is left; its search words (`queries`) only to the owner
  * of the Agent that sent it, in the Agent's own conversation (in the same query that decides visibility), never in a
- * group, whatever the stored body holds. A person's message carries, for its sender alone, the Agents a LIMIT kept a call of it
- * from and why (`refused`: `call_refusals`, migration 077), in the order they were recorded, read in the same query by one more
- * join, which looks only when the reader sent the message; nobody else is sent the key.
+ * group, whatever the stored body holds. A message carries, for the one person a refusal is for alone, the Agents a LIMIT kept a
+ * call of it from and why (`refused`: `call_refusals`, migration 077, its `sender_id`): a person's message for its sender, an
+ * Agent's relay for the person behind it (limits redesign C-d) — in the order they were recorded, read in the same query by one
+ * more join; nobody else is sent the key.
  * Every visibility decision goes through VISIBLE_JOIN, so an owner who left the group reads nothing of it; a fixed number
  * of queries however many readers and messages there are. `config`: the site models' labels, read now.
  */
@@ -324,7 +325,7 @@ export async function toWireForReaders(
        left join lateral (
          select json_agg(json_build_object('agentId', cr.agent_id, 'reason', cr.reason) order by cr.created_at, cr.agent_id) as refused
            from call_refusals cr
-          where m.sender_id = r.reader_id and m.kind <> 'system' and cr.conversation_id = m.conversation_id and cr.seq = m.seq
+          where cr.sender_id = r.reader_id and m.kind <> 'system' and cr.conversation_id = m.conversation_id and cr.seq = m.seq
        ) refusal on true
       where m.id = any($2::bigint[])`,
     [readers, msgs.map((m) => m.id)],

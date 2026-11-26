@@ -156,7 +156,7 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       const { dryRun, ...next } = req.body;
       const done = await db.tx((t) => applyPolicy(t, me.id, req.params.id, next, { dryRun: dryRun === true }));
       if (dryRun !== true) {
-        announceEnded(app.agentPort, done.ended);
+        await announceEnded(app.agentPort, done.ended);
         await announceNarrowed(req, req.params.id, me.id, done.subjects);
       }
       return { ends: done.ends };
@@ -176,7 +176,7 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       const kind = (await db.query<{ kind: string }>("select kind from principals where id = $1", [other])).rows[0]?.kind;
       if (kind !== "human") throw notFound();
       const ended = await db.tx((t) => setBar(t, me.id, other, "stop"));
-      announceEnded(app.agentPort, ended);
+      await announceEnded(app.agentPort, ended);
       await announceBar(req, me.id, other, ended.ended > 0);
       return { ok: true as const, ended: ended.ended };
     },
@@ -292,7 +292,7 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
       const { agentId, subjectId } = req.params;
       const ended = await db.tx((t) => removeContact(t, me.id, agentId, subjectId));
       if (!ended) throw notFound();
-      announceEnded(app.agentPort, ended);
+      await announceEnded(app.agentPort, ended);
       await announce(req, agentId, subjectId);
       return { ok: true as const };
     },

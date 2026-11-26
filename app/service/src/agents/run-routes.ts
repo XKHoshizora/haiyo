@@ -65,12 +65,12 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
     async (req) => {
       const me = await requirePrincipal(req);
       await writeLimit(req, me.id);
-      const { stopped, running, followed } = await db.tx((t) => stopRun(t, me.id, req.params.id, req.params.runId, config));
+      const { stopped, running, next } = await db.tx((t) => stopRun(t, me.id, req.params.id, req.params.runId, config));
       // (A told reply's announcement brings its owner its whisper as it is now: open again — sync/hub.ts.)
       if (stopped) app.agentPort.announce(stopped);
-      // A queued run stopped: what was noted on it is followed up (a told reply's members' calls; what an admission handed back).
-      if (followed.run) app.agentPort.announce(followed.run);
-      app.agentPort.actOnTold(followed);
+      // A queued run stopped: the reply queued for what waited behind it, after the stopped one.
+      if (next.run) app.agentPort.announce(next.run);
+      app.agentPort.actOnTold(next);
       if (running) {
         // This process's worker stops it within 50 ms; a later attempt of it ends stopped (the stop is kept in its row).
         // A run nobody here is working on (another instance's, or one left by a process that is gone) would never read
@@ -107,8 +107,9 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
       app.agentPort.interruptRuns(halted.running);
       for (const cancelled of halted.cancelled) app.agentPort.announce(cancelled);
       if (halted.notice) conversations.publish({ messages: [halted.notice], conversations: [] }, req.log);
-      // A person's call noted on a queued run it ended gets its follow-up (announced above): what deciding it appended.
-      app.agentPort.actOnTold(halted.followed);
+      // What waited behind a queued run it ended gets its reply (announced above): what deciding it appended.
+      app.agentPort.actOnTold(halted.next);
+
       return { ok: true as const };
     },
   );

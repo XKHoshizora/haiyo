@@ -30,9 +30,10 @@ import { afterProactive, afterQuiet, thresholdNow, type GroupState } from "./thr
  *    are applied (`afterQuiet`; a sure one tells the group once an hour, `agent_quieted`), and the winner — the Agent
  *    option with the highest pick probability, ties to the lowest id — replies when the message has led to no proactive
  *    reply yet, its probability reaches its threshold (`thresholdNow`), the new messages did not ask it to be quiet (the hush
- *    rule) and it can speak now; when it cannot, nobody does (there is no second choice). Its reply is queued in lane
- *    `proactive`, called for by nobody (a call folded into it while it is queued makes it that call's; a halt ends it
- *    while it is not, runs.ts), and its surcharge rises at once (`afterProactive`).
+ *    rule) and it can speak now (no reply of it there under way and no call waiting for one: nothing passes the head); when it
+ *    cannot, nobody does (there is no second choice). Its reply is queued in lane `proactive`, called for by nobody, and stays so
+ *    (a call meanwhile waits behind it, and it ends quietly as it begins when one does; a halt ends it, runs.ts), and its
+ *    surcharge rises at once (`afterProactive`).
  * The same request also carries the listener questions of the Agents with memory on (listeners.ts, the memory plan's
  * Task 8): per owner whether someone else just said something lasting about them (`hearsay`), and whether they did
  * (`own`). The answers raise rows of `memory_flags`, written right after the answer (a failed write drops the flags only,
@@ -356,11 +357,14 @@ async function whyNot(
   if (await decidedAlready(t, conversationId, seq)) return "already_decided";
   if (quiet !== undefined && quiet >= P.quietSmall.at) return "hushed";
   if (p < thresholdNow(agent.proactiveLevel, state, now, P)) return "under_threshold";
-  const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [
-    agent.id,
-    conversationId,
-  ]);
+  // A reply under way, or calls waiting for one (`deferred_calls`): nothing passes the head (limits redesign, Part 2).
+  const active = await t.query(
+    `select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')
+     union all select 1 from deferred_calls where agent_id = $1 and conversation_id = $2 limit 1`,
+    [agent.id, conversationId],
+  );
   if (active.rowCount) return "active_run";
+
   const fuse = await t.query<{ recent: number; hour: number }>(
     `select count(*) filter (where created_at > now() - make_interval(secs => $3))::int as recent, count(*)::int as hour
        from agent_runs

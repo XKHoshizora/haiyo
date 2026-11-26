@@ -184,7 +184,7 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       const me = await requirePrincipal(req);
       const other = req.params.principalId;
       const r = await run(req, (t) => unfriend(t, me.id, other), () => [me.id, other]);
-      announceEnded(app.agentPort, r.ended);
+      await announceEnded(app.agentPort, r.ended);
       await publishSocial(req, me.id, other);
       return { ok: true as const };
     },
@@ -217,7 +217,7 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       if (!result.ok) throw new AppError(STATUS[result.code], result.code);
       // Blocking again is idempotent: the same 200, and no event when nothing changed.
       if (blockChanged(result)) announce(req, [me.id, other], result);
-      announceEnded(app.agentPort, result.ended);
+      await announceEnded(app.agentPort, result.ended);
       if (blockChanged(result)) await publishSocial(req, me.id, other);
       return { ok: true as const };
     },

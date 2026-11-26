@@ -128,7 +128,10 @@ export interface ContextRun {
    * than that (the step-1 tools' per-reply caps, replay.ts `maxCallsOf`) returns as its text too.
    */
   replay?: ReplayScope & { timeZone: string };
-  /** Nothing after this seq is shown (a told reply: what was noted on it since is its follow-up's). Absent: no bound. */
+  /**
+   * Nothing after this seq is shown — but the Agent's own replies to what is at or before it: its assignment's last call (limits
+   * redesign, Part 2: what came since is another reply's). Absent: no bound.
+   */
   upTo?: number;
   /**
    * The pair's summary and what of it may be shown (`readPairSummary`, held to `MEMORY.summaryMaxWeight` as shown), read
@@ -301,16 +304,17 @@ export async function readPrefix(
  * The asker's line of reply run `runId` in a group (Task 10b, the product rule of 2026-11-20): the seq at and before which
  * nothing of the group is shown to its model but the calls it answers (`callsSeen`) — the latest current-stay start
  * (`joined_seq`, the visibility rule's) among its askers (`agent_runs.asker_ids`, runs.ts `Askers`): the people whose
- * questions it answers and everyone it hears from, recorded as it goes (fix round 2: runs.ts `hearFrom`, wherever what it
- * covers moves forward — so a question that slipped in while the reply waited is not answered from before its sender's
- * joining, and an older member's does not move the line). Where an asker cannot be told — the run's askers are not
+ * questions it answers and everyone it hears from, recorded as each of its calls is accepted (fix round 2: runs.ts `heardIn`,
+ * wherever what it covers moves forward — so a question folded in while the reply waited is not answered from before its
+ * sender's joining, and an older member's does not move the line). Where an asker cannot be told — the run's askers are not
  * known (a run recorded before they were, a chain whose first person cannot be told), or one is not in the group now
  * (left since, or never in it) — the latest joining among the group's people now counts as well (the safe side). 0 when
  * nothing bounds it (no such run; no person in the group now). The Agent's own joining needs no line here: the
  * visibility rule with the Agent as reader (`VISIBLE_JOIN`) bounds everything it is shown already, so a reply is shown
  * nothing before the later of the two. Everything that shows a reply's model what was said in its group — this context
  * (`loadContext`), and any tool that reads the group's history or a summary of it for the reply — keeps to the same
- * line, and records whoever it shows the reply beyond what the reply has heard (`hearFrom`) before it reads the line.
+ * line, and shows the reply nothing after its assignment's last call (`ContextRun.upTo`, `RunScope.heardTo`), so it is shown nobody
+ * it has not heard.
  */
 export async function askerLine(q: Queryable, runId: string): Promise<number> {
   const { rows } = await q.query<{ line: string }>(
@@ -333,8 +337,8 @@ export async function askerLine(q: Queryable, runId: string): Promise<number> {
 
 /**
  * The calls reply run `runId` of Agent `agentId` answers that the Agent can see and show, by seq, oldest first: of the
- * messages that called for it (`agent_runs.call_seqs`, which holds the latest it covers too as it is written — but a told
- * reply's, which hold only the calls noted on it, all after what it covers and shown to it as nothing, `upTo`; its
+ * messages that called for it (`agent_runs.call_seqs`: its assignment, which holds the latest it covers too — none for a told
+ * reply or a greeting, which answer no call; its
  * `covers_seq` alone when not known — a call `runs.ts dropRefusedCalls` dropped is in neither), those that are text or
  * file messages the Agent can see (`VISIBLE_JOIN`) — one at or before the run's line
  * `line` (`askerLine`) only when it has text: it is shown even there, but as its text only (fix round 3: not its file).
@@ -504,7 +508,8 @@ async function loadPage(
         and m.kind in ('text', 'file') and (m.body -> 'fixed') is distinct from 'true'::jsonb
         and ((m.seq > $3 and coalesce(r.covers_seq, m.seq) > $3) or m.seq = any($9::bigint[]))
         and (m.sender_id = $6 or ($8::boolean and m.sender_id <> $1) or coalesce(r.covers_seq, m.seq) <= $5)
-        and ($10::bigint is null or m.seq <= $10::bigint)
+        and ($10::bigint is null or m.seq <= $10::bigint or (m.sender_id = $1 and r.covers_seq is not null and r.covers_seq <= $10::bigint))
+
       order by m.seq desc
       limit $7`,
     [run.agentId, run.conversationId, from, before, run.coversSeq, run.ownerId, limit, group, run.group?.calls ?? [], run.upTo ?? null, !group && run.replay !== undefined],

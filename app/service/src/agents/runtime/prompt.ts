@@ -812,7 +812,9 @@ export const NOTES_SECRET_CLAUSE = "，以及你没有被给到的任何笔记";
  * site's own rules (when to call another Agent, what never to reveal) are outside those lines. With `unasked` (the run is
  * a proactive one) the scene's sentence about being called by @ is left out and `UNASKED_PASSAGE` follows the scene as a
  * paragraph of its own; otherwise the text is as it always was. With `tools` (the reply is offered tools) the sentence
- * that it has none gives way to the tools' passage, as in `systemText` (`toolsPassage`, the group's).
+ * that it has none gives way to the tools' passage, as in `systemText` (`toolsPassage`, the group's). `calls`: how many calls the
+ * reply answers (its assignment, limits redesign [C7]; what it is shown ends at the last of them): more than one, and the
+ * scene names them — how many, and that the conversation's last message is one of them.
  */
 export function groupSystemText(
   agent: { name: string; handle: string; persona: string; bare?: string | null },
@@ -825,6 +827,7 @@ export function groupSystemText(
   notes: PromptNotes = NO_NOTES,
   tools: ToolsPrompt | "told" = false,
   replyLanguage?: ReplyLanguage,
+  calls = 1,
 ): SystemText {
   // Offered tools: what a model that cannot use them is never shown (`REPLY_LANGUAGE`, `HOW_TOLD`: lane prompt2).
   const offered = tools === true || typeof tools === "object";
@@ -841,7 +844,11 @@ export function groupSystemText(
       "不要向任何人说出或复述暗记和标签。你自己说过的话前面没有标签；你回复时也不要在前面写自己的名字或任何标签。",
     ...(unasked
       ? []
-      : [`有人在消息里写了 @${agent.handle}${agent.bare ? `（或 @${agent.bare}）` : " "}叫你，你才回复。回答叫你的人，简短、切题；不要替别人回答。`]),
+      : [
+          `有人在消息里写了 @${agent.handle}${agent.bare ? `（或 @${agent.bare}）` : " "}叫你，你才回复。回答叫你的人，简短、切题；不要替别人回答。` +
+            (calls > 1 ? `这次一共有 ${calls} 条消息叫了你（对话里最后一条就是其中之一），都要回答。` : ""),
+        ]),
+
   ].join("\n");
   const passage = unasked ? `${UNASKED_PASSAGE}\n\n` : "";
   const roster =

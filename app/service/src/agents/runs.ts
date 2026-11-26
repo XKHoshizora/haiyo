@@ -22,7 +22,8 @@ import { mayTell, tellableRuns } from "../whispers/store.ts";
  * dismiss, the latest run of a conversation, and what a group's members may know of its Agents' replies (`groupRuns`,
  * `runAudience`: the owner the run, everyone else its state). The worker's side is `port-impl.ts`. A run belongs to
  * one conversation (`conversation_id`), and everything here acts on that one: an Agent has at most one queued or
- * running run per conversation, and a message is folded only into the active run of its own conversation. In a group
+ * running run per conversation (a "pair"), whose lane and caller are fixed as its row is made and never change; a call on a
+ * pair with an active run waits in `deferred_calls` (migration 078) until that run ends (`acceptCall`, `takeDeferred`). In a group
  * a message calls the Agents its stored mentions mean (`messages.mentions`, decided once when it was sent:
  * mentions.ts; `triggerInGroup`, `triggerFromAgent`), under brakes on Agents calling Agents
  * (the chain limit, the halt, the chain budget) and, on what other people's calls spend of an owner's points, the
@@ -339,14 +340,16 @@ const OWNER_STARTED_LAST_MINUTE = `${STARTED_LAST_MINUTE} and error is distinct 
  * the other. Counted under the owner's `accounts` row lock — the last lock of the order, taken here before counting and
  * held until the caller's transaction (which inserts the run) ends — so that two replies started at once, to two of the
  * owner's Agents, are counted one after the other. A run refused by this limit (`rate_limited`) started nothing and is
- * not counted.
+ * not counted. Others' calls waiting for a reply under way (`deferred_calls`) count in the others' lane as they are accepted
+ * (`accepted_at`); the owner's own waiting calls do not, as the owner's own calls folded into a reply never did.
  */
 async function startedLastMinute(t: Tx, ownerId: string, own: boolean): Promise<number> {
   await lockAccount(t, ownerId);
-  const { rows } = await t.query<{ n: number }>(`select count(*)::int as n from agent_runs where owner_id = $1 and (lane = 'own') = $2 and ${OWNER_STARTED_LAST_MINUTE}`, [
-    ownerId,
-    own,
-  ]);
+  const { rows } = await t.query<{ n: number }>(
+    `select (select count(*) from agent_runs where owner_id = $1 and (lane = 'own') = $2 and ${OWNER_STARTED_LAST_MINUTE})::int
+          + (case when $2 then 0 else (select count(*) from deferred_calls where owner_id = $1 and lane = 'others' and accepted_at > now() - interval '1 minute') end)::int as n`,
+    [ownerId, own],
+  );
   return rows[0]!.n;
 }
 
@@ -372,14 +375,19 @@ async function lockAccounts(t: Tx, ids: Iterable<string>): Promise<void> {
  * Calls person `callerId` has made in the last minute on other people's Agents (`agentCallerRunsPerMinute`),
  * themselves or through an Agent's message they are behind (`behindAgentMessage`: their own Agents', or another's
  * relaying their call), whoever's Agents they were: the replies they are the caller of that are not
- * their owner's own (so a call on one of their own Agents never counts). A run an owner's limit refused
- * (`rate_limited`) started nothing and is not counted; nor is a mention folded into a reply under way, which starts
+ * their owner's own (so a call on one of their own Agents never counts), and their calls waiting for a reply under way
+ * (`deferred_calls`, each by its `accepted_at`: a call that waits is counted as it is accepted). A run an owner's limit refused
+ * (`rate_limited`) started nothing and is not counted; nor is a mention folded into a reply not claimed yet, which starts
  * none. Counted under the caller's `accounts` row lock (`reachAgents` takes it with the owners', in id order), so two
  * calls the same person makes at once are counted one after the other.
  */
 async function calledLastMinute(t: Tx, callerId: string): Promise<number> {
   await lockAccount(t, callerId);
-  const { rows } = await t.query<{ n: number }>(`select count(*)::int as n from agent_runs where caller_id = $1 and lane <> 'own' and ${STARTED_LAST_MINUTE}`, [callerId]);
+  const { rows } = await t.query<{ n: number }>(
+    `select (select count(*) from agent_runs where caller_id = $1 and lane <> 'own' and ${STARTED_LAST_MINUTE})::int
+          + (select count(*) from deferred_calls where caller_id = $1 and lane = 'others' and accepted_at > now() - interval '1 minute')::int as n`,
+    [callerId],
+  );
   return rows[0]!.n;
 }
 
@@ -404,9 +412,14 @@ export type TriggeredBy = "human" | "agent";
 export type Lane = "own" | "others" | "proactive";
 
 /**
- * Who called for a run (`agent_runs.caller_id`: the person behind it, an Agent's call being that of the person behind
- * its message, `behindAgentMessage`; nobody for a follow-up in a group none of whose callers it can see any more,
- * `followUp`, and for what is relayed from a reply nobody called for), and its lane.
+ * A reply's identity (limits redesign, Part 2): its lane and who called for it (`agent_runs.lane`, `caller_id`), decided ONCE, as the
+ * call that makes its row is accepted, and never changed by anything after — a call folded into it, a refusal, a retry, an ending
+ * of access, a crash. `caller_id`: the person behind the call, an Agent's call being that of the person behind its message
+ * (`behindAgentMessage`); nobody for what is relayed from a reply nobody called for, and for a reply nobody asked for
+ * (`proactive`). The owner's own (`own`, the owner its caller): the owner's own message or an Agent's message the owner is behind,
+ * every reply in the Agent's own conversation, a tell, a greeting, and the owner's 重试 — the one deliberate case of a member's
+ * question answered on the owner's terms: the owner asked again. A call of another identity on a pair with a reply under way waits
+ * (`deferred_calls`) and is answered by a reply of its own (`takeDeferred`), never folded into that one.
  */
 export type Caller = { id: string | null; lane: Lane };
 
@@ -418,47 +431,23 @@ export function callerOf(ownerId: string, personId: string | null): Caller {
   return { id: personId, lane: personId === ownerId ? "own" : "others" };
 }
 
-/**
- * THE decision of whose reply a run is (fix round 4, R2; fix round 5): its lane and its caller, from what was WRITTEN as each of its
- * calls was accepted — never from who wrote a message. Every writer of `agent_runs.lane` and `caller_id` of a reply asks it, with
- * EVERY call the run answers or has noted (`calls`): a queue (`queueRun`, `recordRateLimited`), a call folded into a reply
- * (`settleLane`: `reachAgents`, `rateLimitedInGroup`), calls taken out of one (`dropRefusedCalls`, and through it
- * social/agent-contacts.ts `endGroupCalls` and `begin` up to admission), the calls noted on a claimed reply as it takes them on
- * (`settleLane`: port-impl.ts `begin`), a follow-up (`followUp`) and an automatic retry (`scheduleAutoRetry`).
- * - `unasked`: a reply nobody asked for that no call has taken over — `proactive`, nobody's. The message it was queued on is no
- *   call of anyone, whoever wrote it (the Agent's owner too), and a call noted on it while it runs is its follow-up's.
- * - `own`, the owner its caller: the owner's own by what it is (`ownerRetry`: their 重试; so are a tell and a greeting, which
- *   carry no call), or it has a call and EVERY one of `calls` was accepted as its owner's own (`ownerCall`:
- *   `agent_runs.owner_call_seqs`: the owner's own message calling it, or an Agent's message the owner was behind when it was
- *   sent). Conservative (fix round 5, reversing round 3's rule A): one call somebody else is behind makes the reply a reply for
- *   others — bounded, at the level for others, counted — even beside the owner's own; a call taken out again (`dropRefusedCalls`)
- *   can make it the owner's own again, before it is admitted.
- * - else `others`: its caller the person behind the earliest of `calls` somebody other than the owner is behind (`behind`:
- *   `behindMessageSql`); failing that, as before, the earliest somebody is behind; nobody when none is.
- * (A reply `告诉他们` queued, a new Agent's greeting and every reply in the Agent's own conversation are their owner's by what they
- * are; they carry nobody else's call and are never decided again.)
- */
-export function laneOf(ownerId: string, run: { ownerRetry: boolean; unasked: boolean }, calls: readonly { ownerCall: boolean; behind: string | null }[]): Caller {
-  if (run.unasked) return { id: null, lane: "proactive" };
-  if (run.ownerRetry || (calls.length > 0 && calls.every((call) => call.ownerCall))) return { id: ownerId, lane: "own" };
-  const behind = calls.find((call) => call.behind !== null && call.behind !== ownerId) ?? calls.find((call) => call.behind !== null);
-  return { id: behind?.behind ?? null, lane: "others" };
-}
+/** Whether two identities are one (`Caller`): the same lane and the same caller (nobody being nobody). */
+const sameIdentity = (a: Caller, b: Caller): boolean => a.lane === b.lane && a.id === b.id;
 
 /**
  * The person behind an Agent's message — whose call it is on the Agents it names: the caller of the run that posted it
  * (`postedBy`, that run's caller and lane) when that run is not its owner's own — so a member's call relayed through the
  * owner's Agent stays the member's, and what a reply nobody called for relays is nobody's (`null`) — otherwise (the run
- * is its owner's own, or no run posted the message) the Agent's owner. `followUp` reads the same rule from the stored
+ * is its owner's own, or no run posted the message) the Agent's owner. `behindMessageSql` reads the same rule from the stored
  * messages (the posting run is the one the message's `client_txn` names). A block, either way, between that person and
- * a named Agent's owner keeps the call off that Agent (`triggerFromAgent`, `followUp`), as between the two owners.
+ * a named Agent's owner keeps the call off that Agent (`triggerFromAgent`, `takeDeferred`), as between the two owners.
  */
 export function behindAgentMessage(ownerId: string, postedBy: Caller | null): string | null {
   return postedBy !== null && postedBy.lane !== "own" ? postedBy.id : ownerId;
 }
 
 /**
- * `behindAgentMessage`'s twin in SQL, for a query that reads many messages at once (`followUp`; a test holds the two to
+ * `behindAgentMessage`'s twin in SQL, for a query that reads many messages at once (`callRowsSql`; a test holds the two to
  * the same answers): the person behind a message from `sender` (a `principals` alias) that run `run` posted (an
  * `agent_runs` alias joined by `postingRun`, all null when no run did) — that run's caller when its lane is not `own`,
  * else the sender's owner; for a person's message (no run), that person. Only aliases are spliced in.
@@ -470,10 +459,10 @@ export const behindMessageSql = (sender: string, run: string): string =>
  * In the pause's (or delete's) own transaction, which holds `lockAgent`: the Agent's active replies, in every
  * conversation, end for good. A queued one is cancelled at once (it never reached a model: nothing to settle). A
  * running one is marked `interrupted`: `postAsAgent` refuses it and `finish` records it `cancelled` with that reason —
- * even if the Agent is resumed before the worker notices — and what was noted on it (`pending_seq`) is dropped: nothing
- * written before the pause gets a follow-up. Whatever is noted on it from now on came after a resume (nothing is noted
- * while the Agent is paused; what an Agent's message in a group writes for it as the pause commits, which this cannot
- * see, the resume ends: `endWhatPauseMissed`) and is followed up as usual (`finish`). Returns the cancelled runs to
+ * even if the Agent is resumed before the worker notices — and every call waiting for the Agent (`deferred_calls`, every
+ * conversation) is dropped: nothing written before the pause is answered. A call that waits from now on came after a resume
+ * (nothing waits while the Agent is paused; what an Agent's message in a group writes for it as the pause commits, which this
+ * cannot see, the resume drops: `endWhatPauseMissed`) and is answered as usual (`takeDeferred`). Returns the cancelled runs to
  * announce, each with its own conversation, and the running ones to stop.
  */
 export async function interruptRuns(
@@ -481,17 +470,14 @@ export async function interruptRuns(
   agent: AgentRow,
   reason: "agent_paused" | "agent_deleted",
 ): Promise<{ cancelled: Announced[]; running: string[] }> {
-  // No follow-up for these (`followUpOnEnd`): an Agent paused or deleted answers nothing, and what was noted on them —
-  // handed back by an admission that held one back — is dropped, as on its running runs below.
+  // Nothing follows these: an Agent paused or deleted answers nothing.
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = $2, finished_at = now()
       where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
     [agent.id, reason],
   );
-  const running = await t.query<{ id: string }>(
-    "update agent_runs set interrupted = $2, pending_seq = null where agent_id = $1 and status = 'running' returning id",
-    [agent.id, reason],
-  );
+  const running = await t.query<{ id: string }>("update agent_runs set interrupted = $2 where agent_id = $1 and status = 'running' returning id", [agent.id, reason]);
+  await dropDeferred(t, { agentId: agent.id });
   return {
     cancelled: queued.rows.map((r) => ({ ownerId: agent.ownerId, conversationId: r.conversation_id, run: toWireRun(r) })),
     running: running.rows.map((r) => r.id),
@@ -502,16 +488,14 @@ export async function interruptRuns(
  * In the resume's own transaction, which holds `lockAgent` and found the Agent paused: what the pause could not see
  * ends now, before the Agent can answer again. An Agent's message in a group reads the Agents it calls without locking
  * them (`triggerFromAgent`), so a pause that commits inside that message's transaction misses what it then writes — a
- * run it queues (none other can be queued while the Agent is paused: a person's mention, a retry, a follow-up and
- * recovery all refuse a paused Agent), and a mention its fold notes on a reply the pause interrupted. So, in every
+ * run it queues (none other can be queued while the Agent is paused: a person's mention, a retry, the next of the calls
+ * waiting and recovery all refuse a paused Agent), and a call it leaves waiting behind a reply. So, in every
  * conversation: a queued run of the Agent is `cancelled` `agent_paused` (it never reached a model), and so is one the
  * worker claimed meanwhile (it does not look at the pause): every running run not marked yet is marked `interrupted`
- * `agent_paused`, as the pause marked the others, and nothing noted on a running one is followed up. Returns, as
- * `interruptRuns` does, the cancelled runs to announce and the newly marked ones to stop.
+ * `agent_paused`, as the pause marked the others, and every call waiting for the Agent is dropped (`dropDeferred`). Returns,
+ * as `interruptRuns` does, the cancelled runs to announce and the newly marked ones to stop.
  */
 export async function endWhatPauseMissed(t: Tx, agent: AgentRow): Promise<{ cancelled: Announced[]; running: string[] }> {
-  // None of these queued ones has started (a start finds the pause and ends it), so nothing was noted on one: no
-  // follow-up (`followUpOnEnd`).
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = 'agent_paused', finished_at = now()
       where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
@@ -521,7 +505,7 @@ export async function endWhatPauseMissed(t: Tx, agent: AgentRow): Promise<{ canc
     "update agent_runs set interrupted = 'agent_paused' where agent_id = $1 and status = 'running' and interrupted is null returning id",
     [agent.id],
   );
-  await t.query("update agent_runs set pending_seq = null where agent_id = $1 and status = 'running' and pending_seq is not null", [agent.id]);
+  await dropDeferred(t, { agentId: agent.id });
   return {
     cancelled: queued.rows.map((r) => ({ ownerId: agent.ownerId, conversationId: r.conversation_id, run: toWireRun(r) })),
     running: claimed.rows.map((r) => r.id),
@@ -577,19 +561,16 @@ const withAskers = (param: string | null, heard: string | null = null): string =
 };
 
 /**
- * The one way whoever a reply hears from is recorded (Task 10b, fix round 2): everyone who wrote in its group after
- * seq `from` and up to `to` (null: to the end, `heardIn`) is taken on among run `runId`'s askers (`asker_ids`, each once;
- * left not known when they are not), so its line (context.ts `askerLine`) and what it hands down (`triggerFromAgent`)
- * count them. Called wherever what a run covers moves forward, or a stretch it did not answer is handed down with it:
- * `begin` (DbAgentPort, before it reads the line: what came since what it covered, the calls it takes on included) and
- * `postAsAgent` (the reply's message hands down what came while it ran); the folds and follow-ups below use `heardIn`
- * itself. Returns the run's askers as they now are. Under the group's row, as every writer of its runs.
+ * What an Agent's message hands down as the askers of the calls it makes (Task 10b, fix rounds 2 and 3; limits redesign C-c): run
+ * `runId`'s askers (`asker_ids`) and everyone who wrote in its group after seq `from` and up to `to` (`heardIn`: what came while it
+ * ran, before its message — the reply it calls will be shown that stretch), each once; null (not known) when either is not known.
+ * Read only: nothing is written to the posting run (its askers end with what it answered), and the calls that carry these record
+ * them only where a target accepts the call (a run it queues, a call it leaves waiting: `reachAgents`).
  */
-export async function hearFrom(t: Tx, runId: string, from: number, to: number | null): Promise<Askers> {
-  const { rows } = await t.query<{ askers: string[] | null }>(
-    `update agent_runs set asker_ids = ${withAskers(null, heardIn("agent_runs.conversation_id", "$2::bigint", to === null ? null : "$3::bigint"))}
-      where id = $1 returning asker_ids as askers`,
-    to === null ? [runId, from] : [runId, from, to],
+export async function askersHandedDown(q: Queryable, runId: string, from: number, to: number): Promise<Askers> {
+  const { rows } = await q.query<{ askers: string[] | null }>(
+    `select ${withAskers(null, heardIn("r.conversation_id", "$2::bigint", "$3::bigint"))} as askers from agent_runs r where r.id = $1`,
+    [runId, from, to],
   );
   return rows[0]?.askers ?? null;
 }
@@ -611,101 +592,72 @@ const callRowsSql = (columns: string, order = ""): string =>
      cross join lateral (select ${behindMessageSql("p", "pr")} as caller_id) bh
     where r.id = $1${order}`;
 
-/** What THE decision reads of each call of a run (`callRowsSql` with `CALL_COLUMNS`), and of the run itself. */
+/** What is read of each call of a run (`callRowsSql` with `CALL_COLUMNS`), and of the run itself. */
 interface CallRow {
   seq: string;
   kind: "human" | "agent";
-  behind: string | null;
-  /** Accepted as its owner's own (`owner_call_seqs`). */
-  owner_call: boolean;
   lane: Lane;
-  owner_retry: boolean;
 }
-const CALL_COLUMNS = "m.seq::text as seq, p.kind, bh.caller_id as behind, m.seq = any(r.owner_call_seqs) as owner_call, r.lane, r.owner_retry";
-const callOf = (row: CallRow): { ownerCall: boolean; behind: string | null } => ({ ownerCall: row.owner_call, behind: row.behind });
+const CALL_COLUMNS = "m.seq::text as seq, p.kind, r.lane";
 
 /**
- * Run `runId`'s lane and caller by THE decision (`laneOf`) over ALL its calls (`callRowsSql`: those it answers and those noted on
- * it), read only. `tookCall`: a call was just taken on by a queued reply — one nobody had asked for is then that call's (no longer
- * unasked). `accepted`: the call just recorded and the person behind it, as its trigger decided when it was made. Null: no such run.
+ * SQL, true when the call of the message at seq `seq` (SQL) of run `run`'s conversation on its Agent has a refusal of a limit
+ * recorded (`call_refusals`): such a call is in no assignment — no run, retry or 重试 answers it (limits redesign C-b).
  */
-async function decideLane(t: Tx, runId: string, ownerId: string, tookCall: boolean, accepted?: { seq: number; behind: string | null }): Promise<Caller | null> {
-  const { rows } = await t.query<CallRow>(callRowsSql(CALL_COLUMNS, "\n      order by m.seq"), [runId]);
-  const run = rows[0] ?? (await t.query<{ lane: Lane; owner_retry: boolean }>("select lane, owner_retry from agent_runs where id = $1", [runId])).rows[0];
-  if (!run) return null;
-  // (The call just accepted is whose its trigger decided it is, as it was made; the others are read as `dropRefusedCalls` reads them.)
-  const calls = rows.map((row) => (accepted !== undefined && Number(row.seq) === accepted.seq ? { ownerCall: row.owner_call, behind: accepted.behind } : callOf(row)));
-  return laneOf(ownerId, { ownerRetry: run.owner_retry, unasked: run.lane === "proactive" && !tookCall }, calls);
-}
+const limitRefusedSql = (run: string, seq: string): string =>
+  `exists (select 1 from call_refusals cr where cr.conversation_id = ${run}.conversation_id and cr.seq = ${seq} and cr.agent_id = ${run}.agent_id)`;
 
 /**
- * After a call was recorded on run `runId` of an Agent of `ownerId` (`call_seqs`, and `owner_call_seqs` when it was the owner's
- * own) — or, as a claimed reply begins, after it takes on the calls noted on it since its claim (port-impl.ts `begin`, step 1: the
- * same calls weighed as if they had been folded into it while it was queued) —: its lane and caller by THE decision over all its
- * calls (`decideLane`), written, and returned (null: no such run).
+ * The calls of run `runId`'s assignment that are still to be answered: its `call_seqs` (its `covers_seq` when not known) less any a
+ * limit refused (`limitRefusedSql`). What an automatic retry and the owner's 重试 of it answer (C-b).
  */
-export async function settleLane(t: Tx, runId: string, ownerId: string, tookCall: boolean, accepted?: { seq: number; behind: string | null }): Promise<Caller | null> {
-  const caller = await decideLane(t, runId, ownerId, tookCall, accepted);
-  if (caller === null) return null;
-  await t.query("update agent_runs set lane = $2, caller_id = $3 where id = $1 and (lane, caller_id) is distinct from ($2::text, $3::uuid)", [runId, caller.lane, caller.id]);
-  return caller;
+async function standingSeqs(q: Queryable, runId: string): Promise<number[] | null> {
+  const { rows } = await q.query<{ seqs: string[] | null }>(
+    `select case when r.call_seqs is null then null
+                 else array(select s from unnest(r.call_seqs) as x (s) where not ${limitRefusedSql("r", "x.s")} order by s)::text[] end as seqs
+       from agent_runs r where r.id = $1`,
+    [runId],
+  );
+  const seqs = rows[0]?.seqs;
+  return seqs === undefined || seqs === null ? null : seqs.map(Number);
 }
 
 /**
- * The rule a call meets when it is made (`triggerInGroup`, `triggerFromAgent`), met again by every call reply run `runId` of an
- * Agent of `ownerId` answers as it begins (reverse-paths audit A12; B5b), whatever the run's lane: a call (`call_seqs`; its
- * `covers_seq` when not known) whose person `refusedInGroup` refuses now — the sender of a person's message; for an Agent's message
- * that Agent as a subject and the person behind it (`behindMessageSql`), as `followUp` reads them — is dropped: it is no longer among
- * the calls the run answers and nobody refused is among its askers; what the run covers ends at the latest call left (`covers_seq`,
- * or `pending_seq` when that call was noted after its claim), so what came after that call is heard by the usual rule as the run
- * begins (`hearFrom`: someone refused who wrote there is heard, as anyone is, and counts toward its line, never as a call). A run that
- * lost a call becomes the remaining calls' by THE decision (`laneOf`), whoever its recorded caller was — its owner's own while every
- * call left was accepted as the owner's own (`owner_call_seqs`, kept to the calls left) or it is the owner's 重试, else the earliest
- * other person's — and a person's while a person's call is left (a reply nobody asked for keeps its lane, caller and trigger). Asked only of a reply that is
- * not admitted yet: once a reply is admitted its lane and caller are frozen (port-impl.ts `begin`, step 3).
- * The owner's own call is never dropped (`refusedInGroup` never refuses the owner): `begin` asks this of every group run but a reply
- * `告诉他们` queued, which answers nobody's call. Returns what the run now covers, has noted and its lane now (the caller takes them
- * all: what a reply is bounded to is decided by the lane it has here; empty when nothing was dropped: one query), or null when no call
- * is left: the run ends (`cancelled`, no error: see `BLOCKED_SINCE`; `access_ended` is for social runs), and nothing is left noted on it (a follow-up
- * answers calls only, and every call it carries is refused).
+ * The rule a call meets when it is made (`triggerInGroup`, `triggerFromAgent`), met again by every call reply run `runId` answers
+ * as it begins, before admission (reverse-paths audit A12; B5b): a call (`call_seqs`; its `covers_seq` when not known) whose person
+ * `refusedInGroup` refuses now — the sender of a person's message; for an Agent's message that Agent as a subject and the person
+ * behind it (`behindMessageSql`) — or whose call a limit refused since (`limitRefusedSql`, C-b) is dropped: it is no longer among
+ * the calls the run answers, nobody refused is among its askers, and what the run covers ends at the latest call left (`covers_seq`).
+ * A refusal removes a call from the assignment and NOTHING else: the run's lane and caller stay what they were made (limits
+ * redesign, Part 2); whose message called (`triggered_by`) follows the calls left (a person's while one is left; a reply nobody
+ * asked for keeps its own). Asked only of a reply not admitted yet: once a reply is admitted its calls are what it was made for
+ * (port-impl.ts `begin`, step 3), and an ending of access in flight is `standingCalls`'. The owner's own call is never dropped
+ * (`refusedInGroup` never refuses the owner). Returns what the run now covers and answers (empty when nothing was dropped: one query),
+ * or null when no call is left: the run ends (`cancelled`, no error: see port-impl.ts `BLOCKED_SINCE`; `access_ended` is for social
+ * runs).
  */
-export async function dropRefusedCalls(
-  t: Tx,
-  runId: string,
-  ownerId: string,
-): Promise<{ covers_seq?: string | null; pending_seq?: string | null; lane?: Lane; caller_id?: string | null; call_seqs?: string[] | null } | null> {
+export async function dropRefusedCalls(t: Tx, runId: string): Promise<{ covers_seq?: string | null; call_seqs?: string[] | null } | null> {
   const { rows } = await t.query<CallRow & { refused: boolean }>(
     callRowsSql(
       `${CALL_COLUMNS},
-            (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})) as refused`,
+            (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})
+             or ${limitRefusedSql("r", "m.seq")}) as refused`,
       "\n      order by m.seq",
     ),
     [runId],
   );
   if (!rows.some((r) => r.refused)) return {};
   const left = rows.filter((r) => !r.refused);
-  if (left.length === 0) {
-    // Every call it carries, those noted on it too (step 1 of `begin` has taken them on), is refused: none is left to follow up.
-    await t.query("update agent_runs set pending_seq = null where id = $1", [runId]);
-    return null;
-  }
+  if (left.length === 0) return null;
   const { lane } = rows[0]!;
-  // Whose reply it is now: THE decision (`laneOf`), over the calls that are LEFT and what was written of each as it was accepted.
-  // A reply nobody asked for stays that; the owner's 重试 stays the owner's own; owner calls alone left make it the owner's own (a
-  // member's refused out of it: the owner's own again); and a reply somebody else's call is left on is theirs, whoever its caller was
-  // recorded as.
-  const caller = laneOf(ownerId, { ownerRetry: rows[0]!.owner_retry, unasked: lane === "proactive" }, left.map(callOf));
   const by: TriggeredBy | null = lane === "proactive" ? null : left.some((r) => r.kind === "human") ? "human" : "agent";
-  const updated = await t.query<{ covers_seq: string | null; pending_seq: string | null; lane: Lane; caller_id: string | null; call_seqs: string[] | null }>(
+  const updated = await t.query<{ covers_seq: string | null; call_seqs: string[] | null }>(
     `update agent_runs set call_seqs = $2::bigint[], covers_seq = least(covers_seq, $3::bigint),
-            owner_call_seqs = array(select s from unnest(owner_call_seqs) as x (s) where s = any($2::bigint[]) order by s),
-            pending_seq = case when $3::bigint > covers_seq then $3::bigint end,
             asker_ids = case when asker_ids is null then null
                              else array(select x.a from unnest(asker_ids) as x (a) where not ${refusedInGroup("x.a", "agent_runs.agent_id")} order by x.a) end,
-            caller_id = $4::uuid, lane = $5::text,
-            triggered_by = coalesce($6::text, triggered_by)
-      where id = $1 returning covers_seq::text as covers_seq, pending_seq::text as pending_seq, lane, caller_id, call_seqs::text[] as call_seqs`,
-    [runId, left.map((r) => Number(r.seq)), Number(left.at(-1)!.seq), caller.id, caller.lane, by],
+            triggered_by = coalesce($4::text, triggered_by)
+      where id = $1 returning covers_seq::text as covers_seq, call_seqs::text[] as call_seqs`,
+    [runId, left.map((r) => Number(r.seq)), Number(left.at(-1)!.seq), by],
   );
   return updated.rows[0]!;
 }
@@ -713,17 +665,15 @@ export async function dropRefusedCalls(
 /**
  * At post time (`postAsAgent`, under the run's conversation row and its Agent's): the same rule met once more by the calls the run
  * answers, for the window in which a person is refused after `begin` dropped what it dropped (an admitted run keeps its context; its
- * output can be filtered only now). `none`: it answers calls (those at or before `covers_seq`) and every one is refused: nothing is to
- * be posted. `refused`: the persons refused now among all its calls' senders, the persons behind them and its askers: a reply that goes
- * on for others quotes none of their messages and stores no mention of them (the text may still name them). `noted`: a call noted on
- * it since (after `covers_seq`) by someone not refused, which a follow-up will answer (an ending that stops the run keeps what was noted
- * only then: social/agent-contacts.ts `endGroupCalls`). Reads only. A run with no call of its own (`告诉他们`'s) is never refused; the
- * caller leaves those out.
+ * output can be filtered only now). `none`: it answers calls and every one is refused: nothing is to be posted. `refused`: the persons
+ * refused now among all its calls' senders, the persons behind them and its askers: a reply that goes on for the others quotes none of
+ * their messages and stores no mention of them (the text may still name them). Reads only. A run with no call of its own
+ * (`告诉他们`'s) is never refused; the caller leaves those out.
  */
-export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string>; noted: boolean }> {
-  const { rows } = await t.query<{ sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean; answered: boolean }>(
+export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string> }> {
+  const { rows } = await t.query<{ sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean }>(
     callRowsSql(
-      `p.id as sender, p.kind, bh.caller_id as behind, m.seq <= r.covers_seq as answered,
+      `p.id as sender, p.kind, bh.caller_id as behind,
             ${refusedInGroup("p.id", "r.agent_id")} as sender_refused,
             (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")}) as behind_refused`,
     ),
@@ -738,27 +688,21 @@ export async function standingCalls(t: Tx, runId: string): Promise<{ none: boole
     if (r.sender_refused && r.kind === "human") refused.add(r.sender);
     if (r.behind_refused && r.behind !== null) refused.add(r.behind);
   }
-  // The calls it ANSWERS are those at or before what it covers; a call noted on it since (`pending_seq`) is its follow-up's, never a reason to post.
-  const answered = rows.filter((r) => r.answered);
-  return {
-    none: answered.length > 0 && answered.every((r) => r.sender_refused || r.behind_refused),
-    refused,
-    noted: rows.some((r) => !r.answered && !r.sender_refused && !r.behind_refused),
-  };
+  return { none: rows.length > 0 && rows.every((r) => r.sender_refused || r.behind_refused), refused };
 }
 
 /**
- * Whether a call run `runId` answers (at or before what it covers) is one its Agent's owner WROTE: a call accepted as the owner's own
- * (`owner_call_seqs`) whose message is the owner's own — not an Agent's message the owner was behind (a relay), and never a call of
- * someone else's that the owner's 重试 made the owner's own reply. What lets the owner's typed words exempt a web query from its guard
- * (port-impl.ts `begin`, tools/web/tool.ts; review M6, review 5 item 7). Reads only.
+ * Whether a call run `runId` answers is one its Agent's owner WROTE: the run is the owner's own (`lane` `own`) and one of its calls is
+ * a message the owner sent — not an Agent's message the owner was behind (a relay), and never a call of someone else's that the
+ * owner's 重试 made the owner's own reply (its message is that person's). What lets the owner's typed words exempt a web query from
+ * its guard (port-impl.ts `begin`, tools/web/tool.ts; review M6, review 5 item 7). Reads only.
  */
 export async function ownerWroteACall(q: Queryable, runId: string): Promise<boolean> {
   const { rows } = await q.query<{ wrote: boolean }>(
     `select exists (
        select 1 from agent_runs r
          join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
-        where r.id = $1 and m.seq <= r.covers_seq and m.seq = any(r.owner_call_seqs) and m.sender_id = r.owner_id) as wrote`,
+        where r.id = $1 and r.lane = 'own' and m.seq <= r.covers_seq and m.sender_id = r.owner_id) as wrote`,
     [runId],
   );
   return rows[0]?.wrote === true;
@@ -773,39 +717,14 @@ async function modelOfAgent(q: Queryable, agentId: string): Promise<AgentRow["mo
   return rows[0] ? agentModelOf(rows[0]) : null;
 }
 
-/** That run `runId` answers the calls at `seqs` too (`call_seqs`, migration 046), besides those it has. */
-async function answersCalls(t: Tx, runId: string, seqs: readonly number[]): Promise<void> {
-  if (seqs.length === 0) return;
-  await t.query("update agent_runs set call_seqs = array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || $2::bigint[]) as x (s) order by s) where id = $1", [
-    runId,
-    seqs,
-  ]);
-}
-
 /**
- * The calls a new run records as its owner's own (`owner_call_seqs`) when the call that queues it is `caller`'s at `seq`: that one
- * when it is the owner's own (`callerOf`, `behindAgentMessage`: decided as the call is accepted), none otherwise.
- */
-const ownerCallsOf = (caller: Caller, seq: number): number[] => (caller.lane === "own" ? [seq] : []);
-
-/**
- * A new run's lane and caller as it is queued, by THE decision (`laneOf`): the call that queues it is `caller`'s — nobody's for a
- * reply nobody asked for — and the owner's own exactly when `caller` is (a trigger's call as it is accepted, `callerOf`; a follow-up's
- * caller is THE decision over every call it answers already, `followUp`); `ownerCalls` are those of its calls accepted as its owner's
- * own. (The owner's with none of them: the owner's own by what it is — their 重试, a tell, a greeting — which its caller marks on the
- * row right after.)
- */
-const queuedAs = (ownerId: string, caller: Caller, ownerCalls: readonly number[]): Caller =>
-  laneOf(ownerId, { ownerRetry: caller.lane === "own" && ownerCalls.length === 0, unasked: caller.lane === "proactive" }, [{ ownerCall: caller.lane === "own", behind: caller.id }]);
-
-/**
- * Queues a reply of the Agent in `conversationId` answering up to `coversSeq` (a seq of that conversation), called for
- * by a person's message unless `triggeredBy` says an Agent's, by `caller` and in its lane, answering `askers` (every
- * caller says whose; null only where they cannot be told) and the call at `coversSeq` (`call_seqs`; a follow-up or a
- * retry adds the others it answers, `answersCalls`); `ownerCalls`: those of them accepted as its owner's own (by default the call
- * at `coversSeq` when `caller` is the owner; a follow-up says which, a tell and a greeting none). Under that conversation's row lock, which every writer of the
- * Agent's runs there holds: the Agent has no active run there (`agent_runs_one_active_per_agent_conversation` would
- * refuse a second).
+ * Queues a reply of the Agent in `conversationId` answering up to `coversSeq` (a seq of that conversation: the last call of its
+ * assignment), called for by a person's message unless `triggeredBy` says an Agent's, with the identity `caller` (its lane and
+ * caller, written here once and never again: `Caller`), answering `askers` (every caller says whose; null only where they cannot be
+ * told) and the calls at `calls` (`call_seqs`: by default the one at `coversSeq`; an assignment of waiting calls names them all; a
+ * tell and a greeting none; a reply nobody asked for the message it answers, which is no call of anyone's). Under that
+ * conversation's row lock, which every writer of the Agent's runs there holds: the Agent has no active run there
+ * (`agent_runs_one_active_per_agent_conversation` would refuse a second).
  */
 export async function queueRun(
   t: Tx,
@@ -815,13 +734,12 @@ export async function queueRun(
   triggeredBy: TriggeredBy,
   caller: Caller,
   askers: Askers,
-  ownerCalls: readonly number[] = ownerCallsOf(caller, coversSeq),
+  calls: readonly number[] = [coversSeq],
 ): Promise<Announced> {
-  const who = queuedAs(agent.ownerId, caller, ownerCalls);
   const { rows } = await t.query<RunRow>(
-    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane, asker_ids, call_seqs, owner_call_seqs)
-     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, array[$4::bigint], $9::bigint[]) returning ${RUN_COLUMNS}`,
-    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, who.id, who.lane, askersParam(askers), ownerCalls],
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane, asker_ids, call_seqs)
+     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9::bigint[]) returning ${RUN_COLUMNS}`,
+    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, caller.id, caller.lane, askersParam(askers), [...calls]],
   );
   return { ownerId: agent.ownerId, conversationId, run: toWireRun(rows[0]!) };
 }
@@ -843,70 +761,118 @@ async function recordRateLimited(
   caller: Caller,
   askers: Askers,
   error: "rate_limited" | "model_gone" = "rate_limited",
-  ownerCalls: readonly number[] = ownerCallsOf(caller, coversSeq),
 ): Promise<Announced> {
-  const who = queuedAs(agent.ownerId, caller, ownerCalls);
   const { rows } = await t.query<RunRow>(
-    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, finished_at, triggered_by, caller_id, lane, asker_ids, call_seqs, owner_call_seqs)
-     values ('reply', $1, $2, $3, 'failed', $9, $4, now(), $5, $6, $7, $8, array[$4::bigint], $10::bigint[]) returning ${RUN_COLUMNS}`,
-    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, who.id, who.lane, askersParam(askers), error, ownerCalls],
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, finished_at, triggered_by, caller_id, lane, asker_ids, call_seqs)
+     values ('reply', $1, $2, $3, 'failed', $9, $4, now(), $5, $6, $7, $8, array[$4::bigint]) returning ${RUN_COLUMNS}`,
+    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, caller.id, caller.lane, askersParam(askers), error],
   );
   return { ownerId: agent.ownerId, conversationId, run: toWireRun(rows[0]!) };
 }
 
 /**
- * SQL `set` items: what a run records of a call at `seq` (a parameter position) recorded on it — folded in, or covered by a
- * reused `rate_limited` run; `when` (SQL): it TAKES the call on (a queued reply; a running one only notes it). Whose message
- * called (`triggeredBy`, a parameter position): a person's makes it a person's, and any call makes a reply nobody had called for
- * that call's. The call among its calls (`call_seqs`) — and for a reply nobody had called for that takes it on, INSTEAD of the
- * message it was queued on, which was no call of anyone and is none now (fix round 4, R1). And, when the call is its owner's own
- * as it is accepted (`lane`, a parameter position holding the call's lane: the owner's own message, or an Agent's the owner is
- * behind), among its owner calls (`owner_call_seqs`). The run's own `lane` and `caller_id` are NOT written here: `settleLane`
- * decides them right after, from what this recorded. `lane` on the right of an item is the run's lane before this update — SQL
- * reads every right-hand side from the row as it was.
+ * `recordRateLimited` in a group for the owner's own call (plan ruling 7): one such run per Agent there, not one per mention. When
+ * the Agent's latest run in the group is a `rate_limited` failure of its owner's own (lane `own`, the owner its caller: the same
+ * identity, the only one such a record is ever made for since limits T1) its owner has not dismissed, that run now covers `coversSeq`
+ * too (and is announced again), answers `askers` and the call too (`withAskers`, `call_seqs`), and everyone who wrote in the stretch
+ * it now covers besides (`heardIn`): its lane and caller stay. Otherwise a new one is recorded. So repeated mentions over the limit
+ * show one line.
  */
-const takesOnCall = (when: string, triggeredBy: string, seq: string, lane: string): string =>
-  `triggered_by = case when ${when} and (${triggeredBy} = 'human' or lane = 'proactive') then ${triggeredBy}::text else triggered_by end,
-   call_seqs = case when ${when} and lane = 'proactive' then array[${seq}::bigint]
-                    else array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || ${seq}::bigint) as x (s) order by s) end,
-   owner_call_seqs = case when ${lane} = 'own' then array(select distinct s from unnest(owner_call_seqs || ${seq}::bigint) as x (s) order by s) else owner_call_seqs end`;
-
-/**
- * `recordRateLimited` in a group (plan ruling 7): one such run per Agent there, not one per mention. When the Agent's
- * latest run in the group is a `rate_limited` failure its owner has not dismissed, that run now covers `coversSeq` too
- * (and is announced again) — a person's once a person's message is recorded on it, and whose it is decided over all its calls
- * (`settleLane`: its owner's own only while every one is the owner's own) — and answers `askers` and the call too (`withAskers`,
- * `call_seqs`), and everyone who wrote in the stretch it now covers besides (`heardIn`); otherwise a new one is recorded.
- * So repeated mentions over the limit show one line.
- */
-async function rateLimitedInGroup(
-  t: Tx,
-  agent: RunAgent,
-  conversationId: string,
-  coversSeq: number,
-  triggeredBy: TriggeredBy,
-  caller: Caller,
-  askers: Askers,
-  ownerCalls: readonly number[] = ownerCallsOf(caller, coversSeq),
-): Promise<Announced> {
+async function rateLimitedInGroup(t: Tx, agent: RunAgent, conversationId: string, coversSeq: number, triggeredBy: TriggeredBy, caller: Caller, askers: Askers): Promise<Announced> {
   const latest = await t.query<{ id: string; reusable: boolean }>(
-    `select id, (status = 'failed' and error is not distinct from 'rate_limited' and dismissed_at is null) as reusable
+    `select id, (status = 'failed' and error is not distinct from 'rate_limited' and dismissed_at is null and lane = $3 and caller_id is not distinct from $4::uuid) as reusable
        from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at desc, id desc limit 1`,
-    [agent.id, conversationId],
+    [agent.id, conversationId, caller.lane, caller.id],
   );
   const row = latest.rows[0];
-  if (!row?.reusable) return recordRateLimited(t, agent, conversationId, coversSeq, triggeredBy, caller, askers, "rate_limited", ownerCalls);
+  if (caller.lane !== "own" || !row?.reusable) return recordRateLimited(t, agent, conversationId, coversSeq, triggeredBy, caller, askers, "rate_limited");
   const { rows } = await t.query<RunRow>(
     `update agent_runs as r
-        set covers_seq = greatest(r.covers_seq, $2), finished_at = now(), ${takesOnCall("true", "$3", "$2", "'others'")},
+        set covers_seq = greatest(r.covers_seq, $2), finished_at = now(),
+            triggered_by = case when $3 = 'human' then 'human' else r.triggered_by end,
+            call_seqs = array(select distinct s from unnest(coalesce(r.call_seqs, array[r.covers_seq]) || $2::bigint) as x (s) order by s),
             asker_ids = ${withAskers("$4", heardIn("r.conversation_id", "r.covers_seq", "$2::bigint"))}
       where r.id = $1 returning ${RUN_COLUMNS}`,
     [row.id, coversSeq, triggeredBy, askersParam(askers)],
   );
-  // (Its owner calls are said by the caller: `ownerCalls`, which a follow-up names among what it answers.)
-  if (ownerCalls.length > 0) await t.query("update agent_runs set owner_call_seqs = array(select distinct s from unnest(owner_call_seqs || $2::bigint[]) as x (s) order by s) where id = $1", [row.id, ownerCalls]);
-  await settleLane(t, row.id, agent.ownerId, true, { seq: coversSeq, behind: caller.id });
   return { ownerId: agent.ownerId, conversationId, run: toWireRun(rows[0]!) };
+}
+
+/**
+ * The most calls that may wait for one Agent in one conversation (`deferred_calls`): one more is refused, its sender told
+ * `too_often` (internal, not a setting; limits redesign, Part 2).
+ */
+export const DEFERRED_PER_PAIR = 8;
+
+/**
+ * The Agent's active run in the conversation (queued or running; at most one), locked (`for update`, after the conversation's row,
+ * which the caller holds: the lock order), with whether a call of its own identity may be folded into it: a reply queued and never
+ * claimed (`held_back_by` none), that is no retry (an automatic one keeps its assignment; the owner's 重试 is of one), no tell, no
+ * greeting and not a reply nobody asked for (each answers no call: zero-call runs, which a call never joins). And how many calls wait
+ * for the Agent there (`deferred_calls`). The worker's claim skips a locked row, so what this reads stays so until commit.
+ */
+async function pairOf(t: Tx, agentId: string, conversationId: string): Promise<{ active: { id: string; foldable: boolean; caller: Caller } | null; waiting: number }> {
+  const { rows } = await t.query<{ id: string; foldable: boolean; lane: Lane; caller_id: string | null }>(
+    `select id, lane, caller_id,
+            (status = 'queued' and held_back_by is null and retry_of is null and not owner_retry and whisper_id is null and not greets and lane <> 'proactive') as foldable
+       from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')
+      for update`,
+    [agentId, conversationId],
+  );
+  const waiting = await t.query<{ n: number }>("select count(*)::int as n from deferred_calls where agent_id = $1 and conversation_id = $2", [agentId, conversationId]);
+  const row = rows[0];
+  return { active: row ? { id: row.id, foldable: row.foldable, caller: { id: row.caller_id, lane: row.lane } } : null, waiting: waiting.rows[0]!.n };
+}
+
+/**
+ * A call at `seq` folded into the Agent's queued, never claimed run `runId` of its own identity (`pairOf`, nothing waiting there): it
+ * now covers the call (`covers_seq`), answers it (`call_seqs`) and its askers, and everyone who wrote since what it covered up to the
+ * call (`heardIn`); a person's message makes it a person's (`triggered_by`). Its lane and caller are those of the call already.
+ * False when the run was claimed meanwhile (the caller then leaves the call waiting).
+ */
+async function foldInto(t: Tx, runId: string, seq: number, triggeredBy: TriggeredBy, askers: Askers): Promise<boolean> {
+  const folded = await t.query(
+    `update agent_runs as r
+        set covers_seq = greatest(r.covers_seq, $2),
+            call_seqs = array(select distinct s from unnest(coalesce(r.call_seqs, array[r.covers_seq]) || $2::bigint) as x (s) order by s),
+            triggered_by = case when $3 = 'human' then 'human' else r.triggered_by end,
+            asker_ids = ${withAskers("$4", heardIn("r.conversation_id", "r.covers_seq", "$2::bigint"))}
+      where r.id = $1 and r.status = 'queued' and r.held_back_by is null`,
+    [runId, seq, triggeredBy, askersParam(askers)],
+  );
+  return folded.rowCount === 1;
+}
+
+/**
+ * The call at `seq` of `conversationId` on `agent` waits for the reply under way there (`deferred_calls`, accepted now): with its
+ * identity (`by`, never `proactive`), whose message made it and whose questions it carries. Over `DEFERRED_PER_PAIR` calls waiting
+ * it is refused instead (`too_often`, its sender told — for an Agent's relay, the person behind it: `recordRefusal`, into `told`):
+ * false.
+ */
+async function deferCall(t: Tx, agent: RunAgent, conversationId: string, seq: number, triggeredBy: TriggeredBy, by: Caller, askers: Askers, waiting: number, told: Told): Promise<boolean> {
+  if (waiting >= DEFERRED_PER_PAIR) {
+    told.refused.push(...(await recordRefusal(t, conversationId, [seq], agent.id, "too_often", by.id)));
+    return false;
+  }
+  await t.query(
+    `insert into deferred_calls (agent_id, conversation_id, message_seq, owner_id, lane, caller_id, triggered_by, asker_ids)
+     values ($1, $2, $3, $4, $5, $6, $7, $8::uuid[]) on conflict do nothing`,
+    [agent.id, conversationId, seq, agent.ownerId, by.lane, by.id, triggeredBy, askersParam(askers)],
+  );
+  return true;
+}
+
+/**
+ * Drops the calls waiting (`deferred_calls`) for Agent `agentId` (in every conversation), or for those Agents in `conversationId`
+ * (`agentIds`, all of them when absent): its pause or delete, its leaving a group, the owner's interjection in a social
+ * conversation. Nothing answers them; nobody is told (a refusal for access is quiet).
+ */
+export async function dropDeferred(t: Tx, scope: { agentId: string } | { conversationId: string; agentIds?: readonly string[] }): Promise<void> {
+  if ("agentId" in scope) {
+    await t.query("delete from deferred_calls where agent_id = $1", [scope.agentId]);
+    return;
+  }
+  await t.query("delete from deferred_calls where conversation_id = $1 and ($2::uuid[] is null or agent_id = any($2::uuid[]))", [scope.conversationId, scope.agentIds ? [...scope.agentIds] : null]);
 }
 
 /**
@@ -970,37 +936,37 @@ export function noneTold(): Told {
 }
 
 /**
- * Records that a LIMIT refused the calls of the messages at `seqs` of `conversationId` on Agent `agentId` (`reason`), for each
- * message's sender alone — only a person's message: an Agent's has nobody to read the line. One row per (message, Agent), the first
- * refusal kept. Returns the senders to push their message to again after commit (none for what was recorded already).
+ * Records that a LIMIT refused the calls of the messages at `seqs` of `conversationId` on Agent `agentId` (`reason`), for the person
+ * each is for alone (`call_refusals.sender_id`): a person's message's sender; for an Agent's message (a relay), the person behind it
+ * (`behind`, the call's caller: limits redesign C-d) — none when nobody is, and then nothing is recorded for it. One row per (message,
+ * Agent), the first refusal kept. Returns whom to push the message to again after commit (none for what was recorded already).
  */
-export async function recordRefusal(t: Tx, conversationId: string, seqs: readonly number[], agentId: string, reason: RefusalReason): Promise<Refused[]> {
+export async function recordRefusal(t: Tx, conversationId: string, seqs: readonly number[], agentId: string, reason: RefusalReason, behind: string | null = null): Promise<Refused[]> {
   if (seqs.length === 0) return [];
   const { rows } = await t.query<{ seq: string; sender_id: string }>(
     `insert into call_refusals (conversation_id, seq, agent_id, sender_id, reason)
-     select m.conversation_id, m.seq, $3, m.sender_id, $4
-       from messages m join principals p on p.id = m.sender_id and p.kind = 'human'
-      where m.conversation_id = $1 and m.seq = any($2::bigint[]) and m.kind <> 'system'
+     select m.conversation_id, m.seq, $3, case when p.kind = 'human' then m.sender_id else $5::uuid end, $4
+       from messages m join principals p on p.id = m.sender_id
+      where m.conversation_id = $1 and m.seq = any($2::bigint[]) and m.kind <> 'system' and (p.kind = 'human' or $5::uuid is not null)
      on conflict do nothing
      returning seq::text, sender_id`,
-    [conversationId, [...seqs], agentId, reason],
+    [conversationId, [...seqs], agentId, reason, behind],
   );
   return rows.map((r) => ({ conversationId, seq: Number(r.seq), senderId: r.sender_id }));
 }
 
 /**
- * The calls run `runId` answers up to `upTo` (its `call_seqs`, as each was accepted), refused at its admission by `reason`: recorded
- * for their senders (`recordRefusal`). What it took on after `upTo` was handed back as noted: its follow-up decides those.
+ * The calls run `runId` answers (its assignment, `call_seqs`), refused at its admission by `reason`: recorded for the person each is
+ * for (`recordRefusal`, the run's caller behind its relays), and so taken out of its assignment for good (C-b).
  */
-export async function refuseRunCalls(t: Tx, runId: string, upTo: number, reason: RefusalReason): Promise<{ refused: Refused[]; calls: number }> {
-  const { rows } = await t.query<{ conversation_id: string; agent_id: string; seqs: string[] }>(
-    `select conversation_id, agent_id, array(select s from unnest(coalesce(call_seqs, array[covers_seq])) as x (s) where s <= $2)::text[] as seqs
-       from agent_runs where id = $1`,
-    [runId, upTo],
+export async function refuseRunCalls(t: Tx, runId: string, reason: RefusalReason): Promise<{ refused: Refused[]; calls: number }> {
+  const { rows } = await t.query<{ conversation_id: string; agent_id: string; caller_id: string | null; seqs: string[] }>(
+    `select conversation_id, agent_id, caller_id, coalesce(call_seqs, array[covers_seq])::text[] as seqs from agent_runs where id = $1`,
+    [runId],
   );
   const run = rows[0];
   if (!run) return { refused: [], calls: 0 };
-  return { refused: await recordRefusal(t, run.conversation_id, run.seqs.map(Number), run.agent_id, reason), calls: run.seqs.length };
+  return { refused: await recordRefusal(t, run.conversation_id, run.seqs.map(Number), run.agent_id, reason, run.caller_id), calls: run.seqs.length };
 }
 
 /**
@@ -1058,35 +1024,29 @@ interface Call {
 }
 
 /**
- * In a group, under its row lock: the message at `seq` reaches the Agent of each of `calls` (in id order; whether each
- * may be called is decided already, the owner's one number included), called for by its `by`. It is folded into the
- * Agent's active run in the group — a queued one now covers it, becomes a person's when a person's message is folded
- * in, and whose it is is decided over all its calls (`settleLane`): its owner's own (`lane` `own`, the owner its caller) only
- * while every call it holds is its owner's own (the owner's message, or an Agent's message the owner is behind,
- * `behindAgentMessage`; fix round 5), else a reply for others — so neither the owner's call folded into a member's reply nor a
- * member's call relayed through one of the owner's Agents makes it the owner's — unless nobody had called for it (lane
- * `proactive`): then it is this call's, in its lane (`takesOnCall`); a running one notes it (`pending_seq`), and
- * stays as it is: its follow-up answers what was noted, in a lane of its own (`followUp`). A told reply (`whisper_id`:
- * 告诉他们 queued it, Task 8), queued or running, takes on no call: it only notes it, as a running reply does — the seq
- * in `pending_seq`, the call in `call_seqs`, which for it hold nothing else (`tellFromWhisper`) — and takes on nothing
- * else of it: its follow-up answers the call as an ordinary reply, with tools, in the caller's lane. Every call records
- * the call (`call_seqs`: what a follow-up answers of what was noted is exactly those); any but a told reply also takes
- * on the call's askers (`withAskers`), and everyone who wrote since what it covers, up to the call
- * (`heardIn`: a queued one now covers that stretch; a running one takes it on in `begin`, or hands it down): a running
- * one may take on what was noted before its `begin` reads what it is shown, and what it relays carries its askers on
- * (`triggerFromAgent`). A mention folded so is never
- * refused by the limits below (the owner's one number refused it before it came here). Failing that, a call on
- * someone else's Agent (any lane but `own`) first meets its caller's limit (`calledLastMinute`; a call with no caller
- * has none to meet): over it, no run — the call is returned in `callerLimited`, to log, and its sender is told on their
- * message (`recordRefusal`, `too_often`, into `told`).
- * Then the owner's replies a minute in the call's lane decide (`overLaneLimit`): a reply is queued, or, over it, the owner's own
- * call is recorded on the reusable `rate_limited` run (`rateLimitedInGroup`) while a call someone else made starts nothing at all
- * and its sender alone is told (`recordRefusal`, `too_often`): no run, nothing for the owner or the other members. The owners'
- * `accounts` rows, and the caller's when they call someone else's Agent, are locked once the run rows are done with, all of
- * them in id order, before any is counted (the lock order's last step) — with them those of the `doubtful` calls, whose owner's
- * number looked reached: each is decided only then, under that lock (`refusedByOthersLimit`), and one not refused after all is
- * folded or counted as any. Returns what to announce and what to log after
- * commit (it appends no notice).
+ * In a group, under its row lock: the message at `seq` reaches the Agent of each of `calls` (in id order; whether each may be called
+ * is decided already, but for the owner's one number where it looks reached: the `doubtful` calls), called for by its `by` — the
+ * call's identity, decided now and never again (`Caller`). ONE rule for every call, whatever stands on the Agent's pair there
+ * (`pairOf`, its active run locked; the limits redesign, Part 2):
+ * - The limits on someone else's call (any lane but `own`), met as it is accepted (`accepted_at`), whatever happens to it next
+ *   (C-a): the owner's one number for a doubtful call (`refusedByOthersLimit`, under the accounts' locks); the caller's calls a
+ *   minute (`calledLastMinute`; a call with no caller has none to meet: over it the call is returned in `callerLimited`, to log);
+ *   the owner's others' replies a minute (`overLaneLimit`). Over a minute: nothing is queued, folded or left waiting, nothing is
+ *   recorded for the owner or the other members: the person the call is for alone is told (`recordRefusal`, `too_often`: the
+ *   sender of a person's message; for an Agent's relay, the person behind it, C-d).
+ * - Nothing active there and nothing waiting: a reply is queued for the call (`queueRun`) — but someone else's call on an Agent whose
+ *   model is not there to call is recorded failed `model_gone` at once (not held to the owner's minute: it would spend nothing of
+ *   theirs), and the owner's own call over the owner's own minute is recorded on the reusable `rate_limited` run
+ *   (`rateLimitedInGroup`). The owner's own call is never held to the others' numbers.
+ * - A queued reply never claimed of the SAME identity, and nothing waiting: the call is folded into it (`foldInto`: what one person
+ *   asking twice comes to). It starts no reply and is not counted.
+ * - Otherwise (a reply under way, or one of another identity, a retry, a tell, a greeting, a reply nobody asked for, or calls waiting
+ *   already: nothing passes the head): the call waits (`deferCall`, over `DEFERRED_PER_PAIR` refused `too_often`), to be answered
+ *   when the active run ends (`takeDeferred`).
+ * Whose questions a call carries is recorded only where it is accepted (a run, a fold, a waiting call: C-c). The run rows first (the
+ * pairs, in id order), then the `accounts` rows of every call's owner and caller, all in ascending id (`lockAccounts`: the lock
+ * order's last step), before any is counted. Returns what to announce and what to log after commit (it appends no notice), and the
+ * Agents the owner's number refused (`refusedIds`, for `recordRefusedCalls`).
  */
 async function reachAgents(
   t: Tx,
@@ -1098,65 +1058,49 @@ async function reachAgents(
   told: Told,
   doubtful: readonly Call[] = [],
 ): Promise<Pick<Triggered, "runs" | "callerLimited"> & { refusedIds: string[] }> {
-  // Each call not folded into a reply under way, with its caller's id when it is a call on someone else's Agent (any
-  // lane but `own`): that call is counted for its caller.
-  const unfolded: Array<Call & { othersCaller: string | null }> = [];
-  const fold = async ({ agent, by, askers }: Call): Promise<void> => {
-    const folded = await t.query<{ id: string; took: boolean }>(
-      `update agent_runs
-          set covers_seq = case when status = 'queued' and whisper_id is null then greatest(covers_seq, $3) else covers_seq end,
-              pending_seq = case when status = 'running' or whisper_id is not null then greatest(pending_seq, $3) else pending_seq end,
-              ${takesOnCall("status = 'queued' and whisper_id is null", "$4", "$3", "$5")},
-              asker_ids = case when whisper_id is null then ${withAskers("$6", heardIn("$2::uuid", "agent_runs.covers_seq", "$3::bigint"))} else asker_ids end
-        where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')
-        returning id, status = 'queued' and whisper_id is null as took`,
-      [agent.id, conversationId, seq, triggeredBy, by.lane, askersParam(askers)],
-    );
-    // A queued reply that took the call on: whose it is now (`laneOf`). One that only noted it stays as it is.
-    for (const row of folded.rows) if (row.took) await settleLane(t, row.id, agent.ownerId, true, { seq, behind: by.id });
-    if (!folded.rowCount) unfolded.push({ agent, by, askers, othersCaller: by.lane === "own" ? null : by.id });
-  };
-  for (const call of calls) await fold(call);
-  // The accounts, in id order, once: the owners' (and the callers') of what is to be counted, and of the calls whose owner's number
-  // looked reached — decided only now, under the lock (a raise committing meanwhile is waited for).
-  const accounts = [...unfolded, ...doubtful.map((c) => ({ ...c, othersCaller: c.by.lane === "own" ? null : c.by.id }))].flatMap(({ agent, othersCaller }) =>
-    othersCaller === null ? [agent.ownerId] : [agent.ownerId, othersCaller],
+  const all = [...calls.map((call) => ({ call, doubtful: false })), ...doubtful.map((call) => ({ call, doubtful: true }))].sort((a, b) => (a.call.agent.id < b.call.agent.id ? -1 : 1));
+  const pairs = new Map<string, Awaited<ReturnType<typeof pairOf>>>();
+  for (const { call } of all) pairs.set(call.agent.id, await pairOf(t, call.agent.id, conversationId));
+  await lockAccounts(
+    t,
+    all.flatMap(({ call }) => (call.by.lane !== "own" && call.by.id !== null ? [call.agent.ownerId, call.by.id] : [call.agent.ownerId])),
   );
-  await lockAccounts(t, accounts);
-  const refusedIds: string[] = [];
-  for (const call of doubtful) {
-    if (await refusedByOthersLimit(t, conversationId, [seq], call.agent, call.by.lane, told, config)) refusedIds.push(call.agent.id);
-    // Not reached after all: as any call (folded after the accounts' locks: the conversation's row, held, orders every writer of its runs).
-    else await fold(call);
+  const out: Pick<Triggered, "runs" | "callerLimited"> & { refusedIds: string[] } = { runs: [], callerLimited: [], refusedIds: [] };
+  for (const { call, doubtful: looked } of all) {
+    const { agent, by, askers } = call;
+    const pair = pairs.get(agent.id)!;
+    if (looked && (await refusedByOthersLimit(t, conversationId, [seq], agent, by.lane, told, config, by.id))) {
+      out.refusedIds.push(agent.id);
+      continue;
+    }
+    const idle = pair.active === null && pair.waiting === 0;
+    if (by.lane !== "own") {
+      if (by.id !== null && (await calledLastMinute(t, by.id)) >= config.agentCallerRunsPerMinute) {
+        out.callerLimited.push({ callerId: by.id, agentId: agent.id, conversationId });
+        told.refused.push(...(await recordRefusal(t, conversationId, [seq], agent.id, "too_often", by.id)));
+        continue;
+      }
+      // Someone else's call on an Agent whose model is not there to call (models/resolve.ts `modelUsable`) queues no reply and is
+      // not held to its owner's minute (it would spend nothing of theirs): recorded failed `model_gone` at once.
+      if (idle && !(await modelUsable(t, config, { ownerId: agent.ownerId, model: await modelOfAgent(t, agent.id) }))) {
+        out.runs.push(await recordRateLimited(t, agent, conversationId, seq, triggeredBy, by, askers, "model_gone"));
+        continue;
+      }
+      if (await overLaneLimit(t, agent.ownerId, by.lane, config)) {
+        told.refused.push(...(await recordRefusal(t, conversationId, [seq], agent.id, "too_often", by.id)));
+        continue;
+      }
+    }
+    if (idle) {
+      // The owner's own call over their own minute: their `rate_limited` run, as ever.
+      const over = by.lane === "own" && (await overLaneLimit(t, agent.ownerId, "own", config));
+      out.runs.push(over ? await rateLimitedInGroup(t, agent, conversationId, seq, triggeredBy, by, askers) : await queueRun(t, agent, conversationId, seq, triggeredBy, by, askers));
+      continue;
+    }
+    if (pair.active?.foldable && pair.waiting === 0 && sameIdentity(pair.active.caller, by) && (await foldInto(t, pair.active.id, seq, triggeredBy, askers))) continue;
+    await deferCall(t, agent, conversationId, seq, triggeredBy, by, askers, pair.waiting, told);
   }
-  const reached: Pick<Triggered, "runs" | "callerLimited"> & { refusedIds: string[] } = { runs: [], callerLimited: [], refusedIds };
-  for (const { agent, by, askers, othersCaller } of unfolded) {
-    if (othersCaller !== null && (await calledLastMinute(t, othersCaller)) >= config.agentCallerRunsPerMinute) {
-      reached.callerLimited.push({ callerId: othersCaller, agentId: agent.id, conversationId });
-      told.refused.push(...(await recordRefusal(t, conversationId, [seq], agent.id, "too_often")));
-      continue;
-    }
-    // Someone else's call on an Agent whose model is not there to call (models/resolve.ts `modelUsable`) queues no reply
-    // and is not held to its owner's minute (it would spend nothing of theirs): recorded failed `model_gone` at once.
-    // Its owner's own call is queued as any (it ends `model_gone` as it begins, with 换一个模型 for them).
-    if (by.lane !== "own" && !(await modelUsable(t, config, { ownerId: agent.ownerId, model: await modelOfAgent(t, agent.id) }))) {
-      reached.runs.push(await recordRateLimited(t, agent, conversationId, seq, triggeredBy, by, askers, "model_gone"));
-      continue;
-    }
-    const over = await overLaneLimit(t, agent.ownerId, by.lane, config);
-    // Someone else's call over the owner's others' minute: its sender's line is the one outward result (no run of it, so the
-    // owner sees no failure and the other members nothing unavailable). The owner's own call: their `rate_limited` run, as ever.
-    if (over && by.lane !== "own") {
-      told.refused.push(...(await recordRefusal(t, conversationId, [seq], agent.id, "too_often")));
-      continue;
-    }
-    reached.runs.push(
-      over
-        ? await rateLimitedInGroup(t, agent, conversationId, seq, triggeredBy, by, askers)
-        : await queueRun(t, agent, conversationId, seq, triggeredBy, by, askers),
-    );
-  }
-  return reached;
+  return out;
 }
 
 /** When today began, in the site's time zone (`siteDayStart`). */
@@ -1173,8 +1117,9 @@ const looksReached = async (t: Tx, ownerId: string, lane: Lane, config: RunLimit
  * Whether the calls of the messages at `seqs` on `agent` in `lane` are refused by its owner's one number for others' use: only a
  * call someone other than its owner made (`others`) ever is, once others' use of the owner's Agents today has reached the number
  * (metering/others.ts `othersReached`, the measure admission decides by), read under the owner's account lock (`lockAccount`,
- * taken here unless the caller took it already: what it reads is then what a raise of the number has committed). Refused, each message's sender is told on their own copy (`recordRefusal`, `others_limit`), and the owner
- * once a site day (`reached`): both go into `told`, to act on after commit. Nothing is told the conversation.
+ * taken here unless the caller took it already: what it reads is then what a raise of the number has committed). Refused, each message's sender is told on their own copy (`recordRefusal`, `others_limit`; for an
+ * Agent's relay the person behind it, `behind`: C-d), and the owner once a site day (`reached`): both go into `told`, to act on after
+ * commit. Nothing is told the conversation.
  */
 async function refusedByOthersLimit(
   t: Tx,
@@ -1184,12 +1129,13 @@ async function refusedByOthersLimit(
   lane: Lane,
   told: Told,
   config: RunLimits,
+  behind: string | null = null,
 ): Promise<boolean> {
   if (!(await looksReached(t, agent.ownerId, lane, config))) return false;
   // Decided under the owner's account lock (taken already where the caller's lock order needs it earlier: a no-op then).
   await lockAccount(t, agent.ownerId);
   if (!(await othersReached(t, config, agent.ownerId, new Date()))) return false;
-  told.refused.push(...(await recordRefusal(t, conversationId, seqs, agent.id, "others_limit")));
+  told.refused.push(...(await recordRefusal(t, conversationId, seqs, agent.id, "others_limit", behind)));
   // The owner is told only of a refused call, of the number that refused it.
   if (seqs.length > 0) told.reached.push({ ownerId: agent.ownerId, agentId: agent.id, pointsMicro: await othersLimitOf(t, config, agent.ownerId) });
   return true;
@@ -1237,10 +1183,10 @@ export async function budgetReachedWith(
  * deleted, paused or has no model, or only its owner may call it (`groupMentions` `owner`) and this is someone else's
  * message. `replyMode` plays no part in a group. Someone else's message is then held to the owner's one number for others'
  * use (`refusedByOthersLimit`, decided in `reachAgents` under the accounts' locks for each call whose number looks reached):
- * once it is reached the Agent is not called — not even folded into a reply of its under way —
+ * once it is reached the Agent is not called — not even folded into a reply of its, nor left waiting —
  * the sender is told on their message and the owner once a day (into what is returned, to act on after commit); the refusal is
- * recorded with the message (`recordRefusedCalls`), so should it lie among what a later follow-up of the Agent answers, it is no
- * call of it (`followUp`). Its owner's message never is. Then `reachAgents`, each called for by the sender (`callerOf`).
+ * recorded with the message (`recordRefusedCalls`). Its owner's message never is. Then `reachAgents`, each called for by the
+ * sender (`callerOf`).
  */
 async function triggerInGroup(t: Tx, conversationId: string, message: StoredMessage, config: RunLimits): Promise<Triggered> {
   const called = mentionedIds(message);
@@ -1359,10 +1305,10 @@ async function chainBudgetSpent(
  * reaches nothing, as the member's own mention would. Their `agents` rows are read, not locked — not even key-shared
  * by what this writes: a run refers to its Agent's principal, and so does a recorded refusal (migration 023) — since the
  * poster's is held already, and locking another's after it could take two Agents' rows out of id order — two Agents
- * calling each other from two groups at once would deadlock. The fold-or-insert decision needs no target's row: the group's row, which
- * this transaction holds, orders it with every other trigger, retry, follow-up and halt in this group (the one-active-run
- * index backs that). A pause or delete that commits meanwhile takes the target's row, not the group's, and cannot see
- * the run this inserts or the mention it notes (no predicate lock): a deleted Agent's run is ended by the worker without
+ * calling each other from two groups at once would deadlock. What becomes of each call (`reachAgents`) needs no target's row: the
+ * group's row, which this transaction holds, orders it with every other trigger, retry, run's end and halt in this group (the
+ * one-active-run index backs that). A pause or delete that commits meanwhile takes the target's row, not the group's, and cannot see
+ * the run this inserts or the call it leaves waiting (no predicate lock): a deleted Agent's run is ended by the worker without
  * a call (`begin`), and a paused one's by the resume, before the Agent answers again (`endWhatPauseMissed`; the worker's
  * `begin` too while it is still paused) — unless both the pause and the resume commit inside this transaction's few
  * queries: then the resume cannot see it either. With nobody to call, nothing more.
@@ -1377,10 +1323,9 @@ async function chainBudgetSpent(
  * - the owner's one number for others' use, per Agent the call is not its owner's own on (see below): once it is reached
  *   (`refusedByOthersLimit`) → it is not called, and its owner is told once a day (returned, to act on after commit; an
  *   Agent's message has no sender to tell).
- * Each Agent refused so, or for a block, is recorded with the message (`recordRefusedCalls`): nothing was noted for it,
- * and should the message lie among what a later follow-up of that Agent answers, it is no call of it (`followUp`). One
- * the query does not find at all (paused, deleted, without a model, only its owner's to call, not a member) is not
- * recorded: nothing was noted for it, so it is no call of a follow-up either (`call_seqs`).
+ * Each Agent refused so, or for a block, is recorded with the message (`recordRefusedCalls`): no run of it answers it and no
+ * call of it waits. One the query does not find at all (paused, deleted, without a model, only its owner's to call, not a member)
+ * is not recorded: nothing of it is there either.
  * The rest are reached as a person's message reaches them (`reachAgents`), as an Agent's (`triggered_by` `agent`),
  * called for by the person behind the message (`behindAgentMessage`, from `postedBy`, the caller and lane of the run that
  * posted it; null when no run did): the caller of that run when it is not its owner's own, else the poster's owner —
@@ -1388,10 +1333,10 @@ async function chainBudgetSpent(
  * stays the member's — held to the target's owner's one number, the member's caller limit and the others' lane — and a
  * call on someone else's Agent counts toward the caller limit of the person behind it, as their own call would; what a
  * reply nobody called for relays is others', with no caller (no caller limit; the budget and the others' lane hold).
- * Each run it reaches answers `askers`, those of the run that posted the message (Task 10b: the person whose message
+ * Each call it makes carries `askers`, those of the run that posted the message (Task 10b: the person whose message
  * started the chain; null, not known, when no run posted it or that run's are not known) — every caller says whose; a
- * function (`postAsAgent`'s, which first records what the posting run heard, runs.ts `hearFrom`) is called only once the
- * message reaches a run, never for one that calls nobody.
+ * function (`postAsAgent`'s: runs.ts `askersHandedDown`, which writes nothing) is called only once the message may reach a
+ * target, never for one that calls nobody, and what it returns is recorded only where a target accepts the call (C-c).
  */
 export async function triggerFromAgent(
   t: Tx,
@@ -1419,7 +1364,7 @@ export async function triggerFromAgent(
     [conversationId, called, poster.id, behind],
   );
   // The targets refused below (a block, the halt, the chain limit, a chain budget, the owner's one number), recorded with
-  // the message as this returns, so that none of them counts it as a call later (`followUp`).
+  // the message as this returns (`recordRefusedCalls`).
   const refused = rows.filter((r) => r.blocked).map((r) => r.id);
   const targets = rows.filter((r) => !r.blocked);
   const recorded = async (triggered: Triggered): Promise<Triggered> => {
@@ -1471,8 +1416,8 @@ export async function triggerFromAgent(
 
 /**
  * That the message at `seq` called each of `agentIds` and was refused for it when it was posted (`refused_agent_calls`,
- * migrations 022 and 023; `triggerFromAgent`, and `triggerInGroup` for the owner's one number): `followUp` does not
- * count it as a call of theirs. The row refers to each Agent's principal, never its `agents` row, so writing it locks no
+ * migrations 022 and 023; `triggerFromAgent`, and `triggerInGroup` for the owner's one number): no run of theirs answers it and no
+ * call of it waits for them. The row refers to each Agent's principal, never its `agents` row, so writing it locks no
  * `agents` row (an Agent's post holds none but its own). Never on the wire.
  */
 async function recordRefusedCalls(t: Tx, conversationId: string, seq: number, agentIds: readonly string[]): Promise<void> {
@@ -1484,180 +1429,188 @@ async function recordRefusedCalls(t: Tx, conversationId: string, seq: number, ag
   ]);
 }
 
-/** What a run's end calls for in its conversation, to act on after commit (`followUp`). */
-export interface FollowUp extends Told {
-  /** The follow-up queued — or, over the owner's replies a minute, the Agent's reusable `rate_limited` run — to announce. */
+/** What a run's end calls for in its conversation, to act on after commit (`takeDeferred`). */
+export interface Next extends Told {
+  /** The reply queued for the next assignment of the calls that waited, to announce after the end of the run before it. */
   run: Announced | null;
 }
 
-/** The follow-up `run` (null: none), and what deciding it `told` (nothing unless given). */
-export function followUpOf(run: Announced | null, told: Told = noneTold()): FollowUp {
+/** The next `run` (null: none), and what deciding it `told` (nothing unless given). */
+export function nextOf(run: Announced | null, told: Told = noneTold()): Next {
   return { run, ...told };
 }
 
-/**
- * The follow-up of a run of `agent` in `conversationId` that ended having noted messages up to `pending` beyond what it
- * covered (`covers`), under that conversation's row and the Agent's (`finish`, recovery): a queued reply answering up
- * to `pending`. A message there "calls" it only when the run noted it as a call when it was sent (`callSeqs`, the run's
- * `call_seqs`; none when null), whatever its text would name now. In the Agent's own conversation it is its owner's, as always, and is queued whatever the owner's
- * replies a minute (it answers what its owner wrote meanwhile; README "Replies started"). In a group it is a person's
- * when a person's message in (covers, pending] calls the Agent (one its `groupMentions` lets call it, from a person with no block between them and its owner, in either direction); otherwise only
- * Agents' messages called for it: it is an Agent's, and is not queued at all when the latest of them (`pending`) came
- * at or before the group's latest halt (`agents_halted_seq`, ruling 11), even if a person has written since: what
- * Agents asked before a halt is not answered after it (what a person asked is); nor once the Agent's chain budget is
- * spent (ruling 12, the same rule and notice as for an Agent's mention, `chainBudgetSpent`) — checked again here
- * because the reply that just ended was settled after it was called, so a chain overshoots its budget by at most the
- * one reply that was under way. A follow-up in lane `others` (see below) is not queued either once its owner's one number
- * for others' use is reached — the same rule as for someone else's mention (`refusedByOthersLimit`; the reply that just ended is
- * settled by now): the senders of the calls it would answer are told on their messages, the owner once a day; its owner's own is
- * never held to it. A group's follow-up, a person's or an Agent's, is a reply started like any other, so
- * the owner's replies a minute in its lane decide as for a mention (`overLaneLimit`; its caller's limit does not: what
- * it answers was folded into a reply under way, never refused): counted under the owner's `accounts` row (the lock
- * order's last step; the caller holds the group's row, the Agent's and the run's), and over it the owner's own follow-up is
- * recorded on the Agent's reusable `rate_limited` run in the group instead (`rateLimitedInGroup`), while a follow-up for others
- * starts nothing and the senders of its calls are told on their messages (`too_often`), so a member who keeps mentioning an Agent
- * while it replies cannot keep it replying past its owner's limit. Its lane and caller come from what it
- * answers, not from the run that ended: the messages in (covers, pending] that call the Agent — a person's, as above,
- * or another Agent's while its `groupMentions` lets members call it (with no block, either way, between the Agent's
- * owner and that Agent's owner, nor the person behind that message), which is the call of the person behind it by the rule of
- * `behindAgentMessage` (the caller of the run that posted it — the run its `client_txn` names — when that run is not its
- * owner's own, else that Agent's owner) — make it its owner's own only when every one of them was recorded as its owner's own as
- * it was noted (`ownerCallSeqs`: `laneOf`, fix round 5), else the earliest other person's (a message nobody is behind, relayed from
- * a reply nobody called for, names no one: the earliest that names someone). When none of them is left (a block since, or the Agent no longer lets members call it) it is others',
- * with no caller: a call its owner no longer allows does not ride the owner's own lane. A mention of it that was refused
- * when it was posted — an Agent's for the group's halt, the chain limit, its chain budget, its owner's one number or a
- * block (`triggerFromAgent`), a person's for its owner's one number (`triggerInGroup`) — is no call at all
- * (`refused_agent_calls`): nothing was noted for it, though it may lie among what the follow-up answers. One refused
- * because the Agent was paused, had no model or let only its owner call it is not recorded: nothing was noted for it,
- * so it is no call of the follow-up either (`call_seqs`). Whose questions it answers (`Askers`, Task 10b) comes from the same calls: each
- * person's sender, and the askers of the run that posted each Agent's — not known (null) when one of those is not (or
- * no run posted it), or when no call is left — and everyone who wrote in (covers, pending] besides (fix round 2,
- * `heardIn`); it answers those calls (`call_seqs`). In the Agent's own conversation, its owner.
- */
-export async function followUp(
-  t: Tx,
-  agent: AgentRow,
-  conversationId: string,
-  covers: number,
-  pending: number,
-  callSeqs: readonly (number | string)[] | null,
-  ownerCallSeqs: readonly (number | string)[],
-  config: RunLimits,
-): Promise<FollowUp> {
-  const owners = callerOf(agent.ownerId, agent.ownerId);
-  if (conversationId === agent.conversationId) return followUpOf(await queueRun(t, agent, conversationId, pending, "human", owners, [agent.ownerId]));
-  if ((await placeOf(t, conversationId, agent)) === "social") return followUpInSocial(t, agent, conversationId, covers, pending, config);
-  // The person behind each message (`behindMessageSql`): its sender; for an Agent's message, the caller of the run that
-  // posted it (`postingRun`) unless that run is its owner's own (or there is none: the owner). A message does not count
-  // when it was refused for this Agent when it was posted (`refused_agent_calls`), nor when there is a block, either way,
-  // between the Agent's owner and the sender or the sending Agent's owner, or the person behind it (nobody behind it
-  // matches no block), nor when it is an Agent's acknowledgement: it calls nobody (`notAcknowledgement`; whom the
-  // follow-up hears from, `heardIn` below, still counts it).
-  const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; sender_id: string; caller_id: string | null; askers: string[] | null }>(
-    `select m.seq::text as seq, p.kind, m.sender_id, bh.caller_id, r.asker_ids as askers
-       from messages m
-       join principals p on p.id = m.sender_id
-       left join agent_runs r on p.kind = 'agent' and ${postingRun("m", "r")}
-       cross join lateral (select ${behindMessageSql("p", "r")} as caller_id) bh
-      where m.conversation_id = $1 and m.seq > $2 and m.seq <= $3 and m.kind <> 'system' and m.sender_id <> $4 and ${notAcknowledgement("m")}
-        and not exists (select 1 from refused_agent_calls x where x.conversation_id = m.conversation_id and x.seq = m.seq and x.agent_id = $4)
-        and not (${refusedInGroup("p.id", "$4::uuid")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "$4::uuid")}))
-      order by m.seq`,
-    [conversationId, covers, pending, agent.id],
-  );
-  // The calls the run noted (`callSeqs`, its `call_seqs`: each recorded as it was accepted when it was sent), never read
-  // again from the text, which a rename or a member joining or leaving since would read otherwise (fix round 1, I1) — nor
-  // from the messages' stored mentions, which also name the Agent where its call was refused as it was sent. A told reply
-  // (`告诉他们`) is followed up so too: its `call_seqs` hold the calls noted on it and nothing else (`reachAgents`).
-  const noted = new Set((callSeqs ?? []).map(Number));
-  // An Agent's message calls no Agent only its owner may call (`triggerFromAgent`).
-  const calls = rows.filter(
-    (r) => (agent.groupMentions === "members" || (r.kind === "human" && r.sender_id === agent.ownerId)) && noted.has(Number(r.seq)),
-  );
-  const asked = calls.some((r) => r.kind === "human");
-  // Whose it is: THE decision (`laneOf`) over those calls — the owner's own only when every one is a call the ended run recorded as
-  // its owner's own when it was noted (`ownerCallSeqs`, its `owner_call_seqs`), never because the owner wrote a message in between;
-  // else the earliest other person's; none of them (or none that names someone): others', with no caller.
-  const ownersOwn = new Set(ownerCallSeqs.map(Number));
-  const ownerCalls = calls.map((r) => Number(r.seq)).filter((seq) => ownersOwn.has(seq));
-  const caller = laneOf(agent.ownerId, { ownerRetry: false, unasked: false }, calls.map((r) => ({ ownerCall: ownersOwn.has(Number(r.seq)), behind: r.caller_id })));
-  // And everyone who wrote in what it now covers (fix round 2: whoever it hears from, `heardIn`).
-  const heard = (await t.query<{ ids: string[] | null }>(`select ${heardIn("$1::uuid", "$2::bigint", "$3::bigint")} as ids`, [conversationId, covers, pending]))
-    .rows[0]!.ids;
-  const askers: Askers =
-    calls.length === 0 || calls.some((r) => r.kind === "agent" && r.askers === null) || heard === null
-      ? null
-      : [...new Set([...calls.flatMap((r) => (r.kind === "human" ? [r.sender_id] : r.askers!)), ...heard])];
-  const told = noneTold();
-  if (!asked) {
-    if (await haltedSince(t, conversationId, pending)) return followUpOf(null);
-    // The chain budget again, now that the reply that just ended is settled: it may have spent it.
-    const spent = await chainBudgetSpent(t, conversationId, agent.id, agent.chainBudgetMicro, await latestHumanSeq(t, conversationId));
-    if (spent?.notice) told.notices.push(spent.notice);
-    if (spent) return followUpOf(null, told);
-  }
-  const answered = calls.map((r) => Number(r.seq));
-  if (await refusedByOthersLimit(t, conversationId, answered, agent, caller.lane, told, config)) return followUpOf(null, told);
-  const by: TriggeredBy = asked ? "human" : "agent";
-  const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
-  // A follow-up for others over the owner's others' minute: nothing is queued or recorded but its calls' senders' lines.
-  if (over && caller.lane !== "own") {
-    told.refused.push(...(await recordRefusal(t, conversationId, answered, agent.id, "too_often")));
-    return followUpOf(null, told);
-  }
-  const run = over
-    ? await rateLimitedInGroup(t, agent, conversationId, pending, by, caller, askers, ownerCalls)
-    : await queueRun(t, agent, conversationId, pending, by, caller, askers, ownerCalls);
-  await answersCalls(t, run.run.id, answered);
-  // A reused `rate_limited` record holds its earlier calls too, and now every one of these: whose it is, over all of them.
-  if (over) await settleLane(t, run.run.id, agent.ownerId, true);
-  return followUpOf(run, told);
+/** A call taken out of `deferred_calls` for an assignment (`takeHead`). */
+interface Waited {
+  seq: number;
+  lane: "own" | "others";
+  caller_id: string | null;
+  triggered_by: TriggeredBy;
+  asker_ids: string[] | null;
 }
 
 /**
- * `followUp` in a social conversation (B5a): the run that ended was one visitor's (its `caller_id`), and what the visitor wrote
- * meanwhile (`covers`, `pending`] is that same call again, in lane `others` with the visitor as caller (`callerOf`), answering
- * the visitor alone. No mention is read: everything a participant writes there calls the Agent. Nothing is queued when there is
- * no caller or no message of the visitor's in that stretch, when `reach` refuses the visitor now (an ending since: the same rule
- * as at the trigger), or when the owner's one number for others' use is reached (`refusedByOthersLimit`); nor over the owner's
- * minute in the lane: then the visitor alone is told, on their messages (`too_often`), and no run records it. The caller holds the
- * conversation's row and the Agent's.
+ * The head of the calls waiting for `agentId` in `conversationId` — the oldest (by seq: the order they were accepted in, each under
+ * the conversation's row) — and every call right after it of the same identity (lane and caller), up to the first of another:
+ * ONE assignment, taken out of `deferred_calls` (deleted) and returned oldest first. Empty when nothing waits.
  */
-async function followUpInSocial(t: Tx, agent: AgentRow, conversationId: string, covers: number, pending: number, config: RunLimits): Promise<FollowUp> {
-  const ended = await t.query<{ caller_id: string | null }>(
-    "select caller_id from agent_runs where agent_id = $1 and conversation_id = $2 and purpose = 'reply' order by created_at desc, id desc limit 1",
-    [agent.id, conversationId],
+async function takeHead(t: Tx, agentId: string, conversationId: string): Promise<Waited[]> {
+  const { rows } = await t.query<Omit<Waited, "seq"> & { seq: string }>(
+    `with head as (
+       select lane, caller_id from deferred_calls where agent_id = $1 and conversation_id = $2 order by message_seq limit 1
+     ), stop as (
+       select min(d.message_seq) as seq from deferred_calls d cross join head h
+        where d.agent_id = $1 and d.conversation_id = $2 and (d.lane is distinct from h.lane or d.caller_id is distinct from h.caller_id)
+     )
+     delete from deferred_calls d using head h, stop s
+      where d.agent_id = $1 and d.conversation_id = $2 and d.lane = h.lane and d.caller_id is not distinct from h.caller_id
+        and (s.seq is null or d.message_seq < s.seq)
+     returning d.message_seq::text as seq, d.lane, d.caller_id, d.triggered_by, d.asker_ids`,
+    [agentId, conversationId],
   );
-  const callerId = ended.rows[0]?.caller_id ?? null;
-  if (callerId === null || callerId === agent.ownerId) return followUpOf(null);
-  if ((await reach(t, callerId, agent.id, "social", config)) !== "ok") return followUpOf(null);
-  const { rows } = await t.query<{ seq: string }>(
-    "select seq::text as seq from messages where conversation_id = $1 and seq > $2 and seq <= $3 and kind <> 'system' and sender_id = $4 order by seq",
-    [conversationId, covers, pending, callerId],
-  );
-  if (rows.length === 0) return followUpOf(null);
-  const caller = callerOf(agent.ownerId, callerId);
-  const told = noneTold();
-  const answered = rows.map((r) => Number(r.seq));
-  if (await refusedByOthersLimit(t, conversationId, answered, agent, caller.lane, told, config)) return followUpOf(null, told);
-  // Over the owner's others' minute: nothing is queued or recorded but the visitor's lines.
-  if (await overLaneLimit(t, agent.ownerId, caller.lane, config)) {
-    told.refused.push(...(await recordRefusal(t, conversationId, answered, agent.id, "too_often")));
-    return followUpOf(null, told);
+  return rows.map((r) => ({ ...r, seq: Number(r.seq) })).sort((a, b) => a.seq - b.seq);
+}
+
+/**
+ * THE consumption of the calls that wait (limits redesign, Part 2), in the transaction that ended the pair's active run — `finish`
+ * and recovery (port-impl.ts `recordIn`, `recoverRun`: an answer, a failure that is not tried again, a stop, a run lost), the owner's
+ * stop of a queued run (`stopRun`) and a halt (`haltAgents`) — or, for an ending made outside the conversation's lock order (an ending
+ * of access, the operator's disable), the transaction right after it (`consumeIdle`). Under the conversation's row and the Agent's
+ * (`lockAgent`), with nothing active on the pair: an automatic retry of the run that ended took the slot first (`scheduleAutoRetry`),
+ * and then nothing is taken. The oldest call waiting and the calls right after it of its identity are ONE assignment (`takeHead`),
+ * answered by ONE reply queued now in that identity — never another's, never the owner's for a member's call nor the other way — its
+ * context, its tools' reach and what it hands down ending at the assignment's last call (`covers_seq`). Before it is queued each call
+ * is held again to what may have changed while it waited, and a call refused so leaves the assignment and changes nothing else:
+ * - in a group: the access decision (`refusedInGroup`: its sender, the person behind it), and the Agent's `groupMentions` (only its
+ *   owner's own message calls one only its owner may call); then, for an assignment of Agents' messages only, the halt (`haltedSince`
+ *   its last call: what Agents asked before a halt is not answered after it) and the Agent's chain budget (`chainBudgetSpent`, settled
+ *   by now: the notice into `told`); in a social conversation the visitor's access (`reach`);
+ * - someone else's (lane `others`): the owner's one number for others' use (`refusedByOthersLimit`: the people the calls are for told,
+ *   the owner once a day). The minutes are not met again: they were met as each call was accepted (`accepted_at`).
+ * An assignment with no call left is dropped and the next is taken. The owner's replies a minute play no part here (a reply waits;
+ * it is not refused later for a minute that was free when it was asked). Whose questions it answers: each call's (a person's message,
+ * its sender; a relay, the askers it carried) and everyone who wrote after `after` (what the run that just ended covered) up to its
+ * last call (`heardIn`), or not known (null) when one of those is not. An Agent that cannot answer (paused, deleted, no model) answers
+ * none of them: they are dropped. Returns the reply queued, to announce after the run that ended, and what deciding it told.
+ */
+export async function takeDeferred(t: Tx, agent: AgentRow, conversationId: string, after: number, config: RunLimits): Promise<Next> {
+  const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [agent.id, conversationId]);
+  if (active.rowCount !== 0) return nextOf(null);
+  if (agent.paused || agent.deleted || agent.model === null) {
+    await dropDeferred(t, { conversationId, agentIds: [agent.id] });
+    return nextOf(null);
   }
-  const run = await queueRun(t, agent, conversationId, pending, "human", caller, [callerId]);
-  await answersCalls(t, run.run.id, answered);
-  return followUpOf(run, told);
+  const place: Place = conversationId === agent.conversationId ? "own" : await placeOf(t, conversationId, agent);
+  // An Agent that is no longer there answers nothing there.
+  if (place !== "own" && !(await currentMembership(t, conversationId, agent.id))) {
+    await dropDeferred(t, { conversationId, agentIds: [agent.id] });
+    return nextOf(null);
+  }
+  const told = noneTold();
+  for (;;) {
+    const taken = await takeHead(t, agent.id, conversationId);
+    if (taken.length === 0) return nextOf(null, told);
+    const run = await answerAssignment(t, agent, conversationId, place, taken, after, config, told);
+    if (run !== null) return nextOf(run, told);
+  }
+}
+
+/** One assignment of `takeDeferred`: the reply queued for it, or null when no call of it is left to answer. */
+async function answerAssignment(
+  t: Tx,
+  agent: AgentRow,
+  conversationId: string,
+  place: Place,
+  taken: readonly Waited[],
+  after: number,
+  config: RunLimits,
+  told: Told,
+): Promise<Announced | null> {
+  const identity: Caller = { id: taken[0]!.caller_id, lane: taken[0]!.lane };
+  // In its own conversation every call is its owner's, and nobody else can be refused there.
+  if (place === "own") {
+    const seqs = taken.map((c) => c.seq);
+    return queueRun(t, agent, conversationId, seqs.at(-1)!, "human", identity, [agent.ownerId], seqs);
+  }
+  if (place === "social") {
+    // A social conversation's one visitor (`triggerInSocial`): still one who may reach the Agent.
+    if (identity.lane !== "others" || identity.id === null || identity.id === agent.ownerId) return null;
+    if ((await reach(t, identity.id, agent.id, "social", config)) !== "ok") return null;
+    const seqs = taken.map((c) => c.seq);
+    if (await refusedByOthersLimit(t, conversationId, seqs, agent, identity.lane, told, config, identity.id)) return null;
+    return queueRun(t, agent, conversationId, seqs.at(-1)!, "human", identity, [identity.id], seqs);
+  }
+  // In a group: each call held to the access decision as it stands now — its sender, and the person behind it (the call's caller).
+  const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; sender_id: string; refused: boolean }>(
+    `select m.seq::text as seq, p.kind, m.sender_id,
+            (${refusedInGroup("p.id", "$3::uuid")} or ($4::uuid is not null and ${refusedInGroup("$4::uuid", "$3::uuid")})) as refused
+       from messages m join principals p on p.id = m.sender_id
+      where m.conversation_id = $1 and m.seq = any($2::bigint[])
+      order by m.seq`,
+    [conversationId, taken.map((c) => c.seq), agent.id, identity.id],
+  );
+  const kept = new Set(
+    rows.filter((r) => !r.refused && (agent.groupMentions === "members" || (r.kind === "human" && r.sender_id === agent.ownerId))).map((r) => Number(r.seq)),
+  );
+  const calls = taken.filter((c) => kept.has(c.seq));
+  if (calls.length === 0) return null;
+  const last = calls.at(-1)!.seq;
+  const asked = calls.some((c) => c.triggered_by === "human");
+  if (!asked) {
+    // What Agents asked before a halt is not answered after it; nor once the Agent's chain budget is spent (the reply that just
+    // ended is settled by now: it may have spent it).
+    if (await haltedSince(t, conversationId, last)) return null;
+    const spent = await chainBudgetSpent(t, conversationId, agent.id, agent.chainBudgetMicro, await latestHumanSeq(t, conversationId));
+    if (spent?.notice) told.notices.push(spent.notice);
+    if (spent) return null;
+  }
+  const seqs = calls.map((c) => c.seq);
+  if (await refusedByOthersLimit(t, conversationId, seqs, agent, identity.lane, told, config, identity.id)) return null;
+  const heard = (await t.query<{ ids: string[] | null }>(`select ${heardIn("$1::uuid", "$2::bigint", "$3::bigint")} as ids`, [conversationId, after, last])).rows[0]!.ids;
+  const askers: Askers = calls.some((c) => c.asker_ids === null) || heard === null ? null : [...new Set([...calls.flatMap((c) => c.asker_ids!), ...heard])];
+  return queueRun(t, agent, conversationId, last, asked ? "human" : "agent", identity, askers, seqs);
+}
+
+/**
+ * The calls waiting for `agentId` in `conversationId` with nothing active there — left so by an ending made outside the conversation's
+ * lock order (social/agent-contacts.ts: an ending of access in a group, the operator's disable; announced after it commits,
+ * group-leave.ts `announceEnded`), or by a process that died between such an ending and this — taken now, in a transaction of their
+ * own under the conversation's row and the Agent's (`lockAgent`, the lock order), by THE consumption (`takeDeferred`), as if the run
+ * that ended had ended here. Its `after` is what the pair's latest reply covered. Null when the Agent is gone.
+ */
+export async function consumeIdle(t: Tx, agentId: string, conversationId: string, config: RunLimits): Promise<Next | null> {
+  let agent: AgentRow;
+  try {
+    agent = await lockAgent(t, agentId, conversationId);
+  } catch (err) {
+    if (err instanceof AppError && err.status === 404) return null;
+    throw err;
+  }
+  const latest = await t.query<{ covers: string | null }>(
+    "select covers_seq::text as covers from agent_runs where agent_id = $1 and conversation_id = $2 and purpose = 'reply' order by created_at desc, id desc limit 1",
+    [agentId, conversationId],
+  );
+  return takeDeferred(t, agent, conversationId, Number(latest.rows[0]?.covers ?? 0), config);
+}
+
+/** The pairs that have calls waiting and nothing active (`consumeIdle`'s): what start-up recovery and the stale-run sweep take. */
+export async function idlePairs(q: Queryable): Promise<Array<{ agentId: string; conversationId: string }>> {
+  const { rows } = await q.query<{ agent_id: string; conversation_id: string }>(
+    `select distinct d.agent_id, d.conversation_id from deferred_calls d
+      where not exists (select 1 from agent_runs r where r.agent_id = d.agent_id and r.conversation_id = d.conversation_id and r.status in ('queued', 'running'))
+      order by d.agent_id, d.conversation_id`,
+  );
+  return rows.map((r) => ({ agentId: r.agent_id, conversationId: r.conversation_id }));
 }
 
 /** What a halt did, to act on after it commits. */
 export interface Halted {
   /** The `agents_halted` notice, or null when the group was halted already. */
   notice: StoredMessage | null;
-  /** Queued runs it cancelled, each to announce to its owner — and the follow-ups queued for what was noted on them. */
+  /** Queued runs it cancelled, each to announce to its owner — and the replies queued for the calls that waited behind them. */
   cancelled: Announced[];
-  /** What those follow-ups appended and whom they tell (`followUp`'s notices, senders and owners), to act on after commit. */
-  followed: Told;
+  /** What deciding those replies appended and whom it tells (`takeDeferred`'s notices, senders and owners), to act on after commit. */
+  next: Told;
   /** Running runs it interrupted, whose calls this process abandons (`DbAgentPort.interruptRuns`). */
   running: string[];
 }
@@ -1667,37 +1620,35 @@ export interface Halted {
  * any lock; then under the group's row (`lockForWrite`: 404 unless a current member of an open conversation)
  * `agents_halted_seq` becomes the group's current seq, so Agents' messages call nobody until a person writes again (and,
  * batch 2D, no Agent replies unasked to a message before it). The runs Agents' messages called for end, and so do the
- * replies nobody called for (lane `proactive`; one a call was folded into is that call's, `takesOnCall`): a queued one is
- * `cancelled`, `halted` (it never reached a model); a running one is marked `interrupted` `halted` — never posted, it
- * ends `cancelled` with that reason and is settled as any; what a person asked of it meanwhile still gets its follow-up
- * (`followUp`) — of a running one when it ends (port-impl.ts `finish`), of a queued one here, by the same rule
- * (`followUpOnEnd`: what an admission that held it back handed back to it; round 3 S-4). Runs a person called for are
- * left alone. The `agents_halted` notice is appended unless the group was halted already (no person has written since
- * the last halt): then nothing changes. Lock order: the group's row, the `agents` rows of the queued runs with something
- * noted (in id order), then run rows, then the `accounts` rows of the owners whose runs are followed up, in id order, before any
- * follow-up (`followUp` then locks nothing new).
+ * replies nobody called for (lane `proactive`): a queued one is `cancelled`, `halted` (it never reached a model); a running one
+ * is marked `interrupted` `halted` — never posted, it ends `cancelled` with that reason and is settled as any. What waited behind
+ * a queued one is taken now, by THE consumption (`takeDeferred`: what a person asked is answered; what only Agents asked before
+ * the halt is not); behind a running one, when it ends. Runs a person called for are left alone, and so are the calls that wait
+ * behind them (held to the halt when they are taken). The `agents_halted` notice is appended unless the group was halted already
+ * (no person has written since the last halt): then nothing changes. Lock order: the group's row, the `agents` rows of the queued
+ * runs with calls waiting behind them (in id order), then run rows, then the `accounts` rows of their owners, in id order, before
+ * any is taken.
  */
 export async function haltAgents(t: Tx, conversationId: string, actorId: string, config: RunLimits): Promise<Halted> {
   if ((await peekConversation(t, conversationId))?.type !== "group") throw notFound();
   const lock = await lockForWrite(t, conversationId, actorId);
   const already = await isHalted(t, conversationId, await latestHumanSeq(t, conversationId));
   await t.query("update conversations set agents_halted_seq = greatest(coalesce(agents_halted_seq, 0), $2) where id = $1", [conversationId, lock.conversation.seq]);
-  // The Agents of the queued runs it ends that hold something noted, before any run row (nothing changes that while the
-  // group's row is held: an admission takes it first).
-  const noting = await t.query<{ agent_id: string }>(
-    `select distinct agent_id from agent_runs
-      where conversation_id = $1 and status = 'queued' and (triggered_by = 'agent' or lane = 'proactive') and pending_seq > covers_seq
-      order by agent_id`,
+  // The Agents of the queued runs it ends that have calls waiting behind them, before any run row (nothing changes that while the
+  // group's row is held).
+  const waiting = await t.query<{ agent_id: string }>(
+    `select distinct r.agent_id from agent_runs r
+      where r.conversation_id = $1 and r.status = 'queued' and (r.triggered_by = 'agent' or r.lane = 'proactive')
+        and exists (select 1 from deferred_calls d where d.agent_id = r.agent_id and d.conversation_id = r.conversation_id)
+      order by r.agent_id`,
     [conversationId],
   );
   const agents = new Map<string, AgentRow>();
-  for (const { agent_id } of noting.rows) agents.set(agent_id, await lockAgent(t, agent_id, conversationId));
-  const queued = await t.query<RunRow & { owner_id: string; agent_id: string; covers: string | null; pending: string | null; calls: string[] | null; owner_calls: string[]; told: boolean; greets: boolean }>(
+  for (const { agent_id } of waiting.rows) agents.set(agent_id, await lockAgent(t, agent_id, conversationId));
+  const queued = await t.query<RunRow & { owner_id: string; agent_id: string; covers: string | null }>(
     `update agent_runs as r set status = 'cancelled', error = 'halted', finished_at = now()
-      from (select id, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls, owner_call_seqs::text[] as owner_calls from agent_runs
-             where conversation_id = $1 and status = 'queued' and (triggered_by = 'agent' or lane = 'proactive')) before
-      where r.id = before.id
-      returning ${RUN_COLUMNS}, r.owner_id, r.agent_id, before.covers, before.pending, before.calls, before.owner_calls, r.whisper_id is not null as told, r.greets`,
+      where r.conversation_id = $1 and r.status = 'queued' and (r.triggered_by = 'agent' or r.lane = 'proactive')
+      returning ${RUN_COLUMNS}, r.owner_id, r.agent_id, r.covers_seq::text as covers`,
     [conversationId],
   );
   const running = await t.query<{ id: string }>(
@@ -1706,33 +1657,22 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
     [conversationId],
   );
   const notice = already ? null : await appendSystem(t, conversationId, { event: "agents_halted", actorId });
-  // Then the follow-ups, after the notice (what an Agent asked before it is not answered after it: `followUp`). Their owners'
-  // accounts first, all of them in ascending id (`lockAccounts`), whatever order the runs came back in: each follow-up then locks
-  // only rows this transaction holds.
+  // Then what waited, after the notice (what an Agent asked before it is not answered after it). Their owners' accounts first, all
+  // of them in ascending id (`lockAccounts`), whatever order the runs came back in.
   const cancelled: Announced[] = [];
-  const followed = noneTold();
-  const nextOf = (r: (typeof queued.rows)[number]) => {
-    const agent = agents.get(r.agent_id);
-    return agent ? followUpOnEnd({ covers_seq: r.covers, pending_seq: r.pending, told: r.told, greets: r.greets }, agent, { status: "cancelled", error: "halted" }, { recovered: false, retried: false }) : null;
-  };
-  await lockAccounts(t, queued.rows.filter((r) => nextOf(r) !== null).map((r) => r.owner_id));
+  const next = noneTold();
+  await lockAccounts(t, queued.rows.filter((r) => agents.has(r.agent_id)).map((r) => r.owner_id));
   for (const r of queued.rows) {
     cancelled.push({ ownerId: r.owner_id, conversationId, run: toWireRun(r) });
     const agent = agents.get(r.agent_id);
-    const next = nextOf(r);
-    if (agent === undefined || next === null) continue;
-    const { run, ...told } = await followUp(t, agent, conversationId, Number(r.covers ?? 0), next, r.calls, r.owner_calls, config);
+    if (agent === undefined) continue;
+    const { run, ...told } = await takeDeferred(t, agent, conversationId, Number(r.covers ?? 0), config);
     if (run) cancelled.push(run);
-    followed.notices.push(...told.notices);
-    followed.refused.push(...told.refused);
-    followed.reached.push(...told.reached);
+    next.notices.push(...told.notices);
+    next.refused.push(...told.refused);
+    next.reached.push(...told.reached);
   }
-  return {
-    notice,
-    cancelled,
-    followed,
-    running: running.rows.map((r) => r.id),
-  };
+  return { notice, cancelled, next, running: running.rows.map((r) => r.id) };
 }
 
 /**
@@ -1740,12 +1680,13 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
  * send's locks. In a group: `triggerInGroup`, the Agent members its stored mentions mean. In an Agent conversation
  * only a message from the owner counts, and nothing happens when the Agent is paused, deleted or has no model, or
  * answers only when called (`replyMode` `mention`) and its stored mentions do not mean it (picked, or typed as its full
- * handle, its name part or `@` and its name: mentions.ts `mentionsAtSend`). With a
- * reply of the Agent already active in this conversation the message is folded into it: a queued one now covers it, a
- * running one notes it in `pending_seq` (one follow-up answers everything that came meanwhile); a reply active in
- * another conversation is not touched. Otherwise a reply is queued here — unless the owner has started their own
- * `agentRunsPerMinute` in the last minute (every reply here is their own: `overLaneLimit`): then a `failed` run,
- * `rate_limited`, is recorded instead (`recordRateLimited`; the message stays sent). Returns the runs to announce and,
+ * handle, its name part or `@` and its name: mentions.ts `mentionsAtSend`). Every reply here is its owner's own. With nothing
+ * active and nothing waiting, a reply is queued — unless the owner has started their own `agentRunsPerMinute` in the last minute
+ * (`overLaneLimit`): then a `failed` run, `rate_limited`, is recorded instead (`recordRateLimited`; the message stays sent). With a
+ * reply queued and never claimed and nothing waiting, the message is folded into it (`foldInto`); otherwise it waits for the reply
+ * under way (`deferCall`: over `DEFERRED_PER_PAIR` refused `too_often`, the owner told on their message), and is answered when that
+ * reply ends (`takeDeferred`, with the owner's other messages right after it as one reply). A new Agent's greeting still queued gives
+ * way (cancelled) to the owner's message; a reply active in another conversation is not touched. Returns the runs to announce and,
  * in a group, the calls their caller's limit refused, to log, the notices to publish after the message, and whom a limit's
  * refusal tells — its senders, the owners whose one number refused — after commit (nothing in a direct chat).
  */
@@ -1762,26 +1703,25 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
   if (agent.replyMode === "mention" && !mentionedIds(message).includes(agent.id)) return noneTriggered();
   // Its owner's message: every reply here is the owner's own.
   const caller = callerOf(agent.ownerId, message.senderId);
+  const askers = [message.senderId];
   // A new Agent's greeting still queued gives way: it answers no message, so the owner's gets an ordinary reply (whose
-  // failure is shown, with 重试) — never folded into a greeting that ends quietly. Whatever was noted on it needs no
-  // follow-up of its own (`followUpOnEnd`): the reply queued below covers this message, so all written before it too.
+  // failure is shown, with 重试) — never folded into a greeting that ends quietly.
   const greeting = await t.query<RunRow>(
     `update agent_runs as r set status = 'cancelled', finished_at = now()
       where r.agent_id = $1 and r.conversation_id = $2 and r.status = 'queued' and r.greets returning ${RUN_COLUMNS}`,
     [agent.id, conversationId],
   );
   const gaveWay: Announced[] = greeting.rows.map((r) => ({ ownerId: agent.ownerId, conversationId, run: toWireRun(r) }));
-
-  const folded = await t.query(
-    `update agent_runs
-        set covers_seq = case when status = 'queued' then greatest(covers_seq, $3) else covers_seq end,
-            pending_seq = case when status = 'running' then greatest(pending_seq, $3) else pending_seq end
-      where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')`,
-    [agent.id, conversationId, message.seq],
-  );
-  if (folded.rowCount) return noneTriggered();
+  const pair = await pairOf(t, agent.id, conversationId);
+  if (pair.active !== null || pair.waiting > 0) {
+    if (pair.active?.foldable && pair.waiting === 0 && sameIdentity(pair.active.caller, caller) && (await foldInto(t, pair.active.id, message.seq, "human", askers))) {
+      return { ...noneTriggered(), runs: gaveWay };
+    }
+    const told = noneTold();
+    await deferCall(t, agent, conversationId, message.seq, "human", caller, askers, pair.waiting, told);
+    return { ...noneTriggered(), runs: gaveWay, ...told };
+  }
   const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
-  const askers = [message.senderId];
   const run = over
     ? await recordRateLimited(t, agent, conversationId, message.seq, "human", caller, askers)
     : await queueRun(t, agent, conversationId, message.seq, "human", caller, askers);
@@ -1793,14 +1733,15 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
  * rule, `permission`) its participating Agents' rows. Two cases, told apart by who wrote it:
  * 1. A supervisor's (an observer who owns a participating Agent; nobody else, whatever their name: RF5) is an interjection: that
  *    Agent's queued reply here is `cancelled` (`owner_spoke`, announced to its owner); a running one is marked `interrupted`
- *    (`owner_spoke`, `pending_seq` null) and its id returned in `stopped`, whose calls the route abandons after commit, and what it
- *    posts is refused (`postAsAgent`); nothing is triggered.
+ *    (`owner_spoke`) and its id returned in `stopped`, whose calls the route abandons after commit, and what it posts is refused
+ *    (`postAsAgent`); the calls waiting for it here are dropped; nothing is triggered.
  * 2. A person participant's (the visitor V): `reach(V, Agent, 'social')` again; a paused or deleted Agent, or one with no model,
- *    does nothing; an active run folds the message in (a queued one covers it, a running one notes it); else, the owner's one number
- *    reached (`refusedByOthersLimit`: V told on the message, the owner once a day), nothing; else, over V's minute (`calledLastMinute`)
- *    or the owner's others' minute (`overLaneLimit`), no run: V alone is told on the message (`too_often`); an Agent whose model is gone
- *    `model_gone`; else `queueRun`, caller V, lane `others`, triggered by `human`, askers [V]. The accounts are locked in id order,
- *    last (the lock order).
+ *    does nothing; else, the accounts locked in id order (the lock order's last step), the limits as the call is accepted (C-a): the
+ *    owner's one number reached (`refusedByOthersLimit`: V told on the message, the owner once a day) → nothing; over V's minute
+ *    (`calledLastMinute`) or the owner's others' minute (`overLaneLimit`) → no run, V alone is told on the message (`too_often`).
+ *    Then, as in a group (`reachAgents`): nothing active and nothing waiting → an Agent whose model is gone records `model_gone`
+ *    (before the owner's minute, which it is not held to), else `queueRun`, caller V, lane `others`, triggered by `human`, askers
+ *    [V]; a reply of V's queued and never claimed, nothing waiting → folded into it; otherwise the message waits (`deferCall`).
  * Agent-to-Agent conversations trigger nothing but interjections in ring 1.
  */
 export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMessage, config: RunLimits): Promise<Triggered> {
@@ -1820,56 +1761,55 @@ export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMes
   const agent = await lockAgent(t, agents[0]!.id, conversationId);
   if ((await reach(t, sender, agent.id, "social", config)) !== "ok") return noneTriggered();
   if (agent.deleted || agent.paused || agent.model === null) return noneTriggered();
-  const folded = await t.query(
-    `update agent_runs
-        set covers_seq = case when status = 'queued' then greatest(covers_seq, $3) else covers_seq end,
-            pending_seq = case when status = 'running' then greatest(pending_seq, $3) else pending_seq end,
-            call_seqs = array(select distinct s from unnest(coalesce(call_seqs, array[covers_seq]) || $3::bigint) as x (s) order by s)
-      where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')`,
-    [agent.id, conversationId, message.seq],
-  );
-  if (folded.rowCount) return noneTriggered();
+  const pair = await pairOf(t, agent.id, conversationId);
   const caller = callerOf(agent.ownerId, sender);
   const told = noneTold();
   // The accounts in id order, last (the lock order), before the owner's number is decided under its lock.
   await lockAccounts(t, [agent.ownerId, sender]);
   if (await refusedByOthersLimit(t, conversationId, [message.seq], agent, caller.lane, told, config)) return { ...noneTriggered(), ...told };
   const askers = [sender];
-  // The order of `reachAgents`: the visitor's own minute first (a `model_gone` row counts in it, so a visitor cannot write one
-  // row a message without end), then an Agent whose model is gone (recorded failed `model_gone` at once, never held to the owner's
-  // minute), then the owner's others' minute.
   // Over a minute: the visitor's line is the one outward result (no run of it for the owner).
   const limited = async () => {
     told.refused.push(...(await recordRefusal(t, conversationId, [message.seq], agent.id, "too_often")));
     return { ...noneTriggered(), ...told };
   };
+  // The order of `reachAgents`: the visitor's own minute first (a `model_gone` row counts in it, so a visitor cannot write one
+  // row a message without end), then an Agent whose model is gone (recorded failed `model_gone` at once, never held to the owner's
+  // minute), then the owner's others' minute.
   if ((await calledLastMinute(t, sender)) >= config.agentCallerRunsPerMinute) return limited();
-  if (!(await modelUsable(t, config, { ownerId: agent.ownerId, model: agent.model }))) {
+  const idle = pair.active === null && pair.waiting === 0;
+  if (idle && !(await modelUsable(t, config, { ownerId: agent.ownerId, model: agent.model }))) {
     return { ...noneTriggered(), runs: [await recordRateLimited(t, agent, conversationId, message.seq, "human", caller, askers, "model_gone")], ...told };
   }
   if (await overLaneLimit(t, agent.ownerId, caller.lane, config)) return limited();
-  return { ...noneTriggered(), runs: [await queueRun(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
+  if (idle) return { ...noneTriggered(), runs: [await queueRun(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
+  if (pair.active?.foldable && pair.waiting === 0 && sameIdentity(pair.active.caller, caller) && (await foldInto(t, pair.active.id, message.seq, "human", askers))) {
+    return { ...noneTriggered(), ...told };
+  }
+  await deferCall(t, agent, conversationId, message.seq, "human", caller, askers, pair.waiting, told);
+  return { ...noneTriggered(), ...told };
 }
 
 /**
  * The owner's interjection (`triggerInSocial`, case 1) for the Agents `agentIds` (the owner's, participating there): their queued
- * replies in the conversation are cancelled (`owner_spoke`, no pending), their running ones interrupted (`coalesce`: a mark already
- * there stays) with no pending, and returned for the caller to abandon. The queued ones before the running ones: a run claimed in
- * between is seen as one or the other (as `endGrants` orders them).
+ * replies in the conversation are cancelled (`owner_spoke`), their running ones interrupted (`coalesce`: a mark already there
+ * stays), and returned for the caller to abandon; the calls waiting for them there are dropped (`dropDeferred`). The queued ones
+ * before the running ones: a run claimed in between is seen as one or the other (as `endGrants` orders them).
  */
 async function interjection(t: Tx, conversationId: string, agentIds: readonly string[]): Promise<Triggered> {
   const queued = await t.query<RunRow & { owner_id: string }>(
-    `update agent_runs r set status = 'cancelled', error = 'owner_spoke', finished_at = now(), pending_seq = null
+    `update agent_runs r set status = 'cancelled', error = 'owner_spoke', finished_at = now()
       where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply' and r.status = 'queued'
       returning ${RUN_COLUMNS}, r.owner_id`,
     [conversationId, [...agentIds]],
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs r set interrupted = coalesce(r.interrupted, 'owner_spoke'), pending_seq = null
+    `update agent_runs r set interrupted = coalesce(r.interrupted, 'owner_spoke')
       where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply' and r.status = 'running'
       returning r.id`,
     [conversationId, [...agentIds]],
   );
+  await dropDeferred(t, { conversationId, agentIds });
   return {
     ...noneTriggered(),
     runs: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId, run: toWireRun(r) })),
@@ -1902,78 +1842,22 @@ async function ownAgentInGroup(
 }
 
 /**
- * The Agent's latest reply run in the conversation (whatever its stay): what it covered (`covers`), that and what was
- * noted on it besides (`answers`: the greater of `covers_seq` and `pending_seq`), whose message called for it, whose
- * questions it answered (`asker_ids`), and which calls (`call_seqs`: null when not known).
+ * The Agent's latest reply run in the conversation (whatever its stay): its id, what it covered (`covers`: its assignment's last
+ * call), whose message called for it, whose questions it answered (`asker_ids`) and its told reply's whisper.
  */
 async function latestRunOf(
   q: Queryable,
   agentId: string,
   conversationId: string,
-): Promise<
-  (RunRow & { covers: string | null; answers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; calls: string[] | null; owner_calls: string[]; whisper_id: string | null }) | null
-> {
-  const { rows } = await q.query<
-    RunRow & { covers: string | null; answers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; calls: string[] | null; owner_calls: string[]; whisper_id: string | null }
-  >(
-    `select ${RUN_COLUMNS}, r.covers_seq::text as covers, greatest(r.covers_seq, coalesce(r.pending_seq, 0))::text as answers, r.triggered_by, r.asker_ids,
-            r.call_seqs::text[] as calls, r.owner_call_seqs::text[] as owner_calls, r.whisper_id
+): Promise<(RunRow & { covers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; whisper_id: string | null }) | null> {
+  const { rows } = await q.query<RunRow & { covers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; whisper_id: string | null }>(
+    `select ${RUN_COLUMNS}, r.covers_seq::text as covers, r.triggered_by, r.asker_ids, r.whisper_id
        from agent_runs r
       where r.agent_id = $1 and r.conversation_id = $2 and r.purpose = 'reply' order by r.created_at desc, r.id desc limit 1`,
     [agentId, conversationId],
   );
   return rows[0] ?? null;
 }
-
-/**
- * The one rule for a follow-up (README "Agents and runs", Coalescing): a run that has ended is followed by a reply to
- * what its owner wrote meanwhile when something was noted on it (`pending_seq` beyond what it covered) and its Agent
- * can still answer (not paused, not deleted, has a model) — however the run itself ended. A pause or delete drops what
- * was noted (`interruptRuns`), and so does the Agent's leaving the run's group (group-leave.ts `endRunsInGroup`);
- * nothing is noted while the Agent is paused or out of that group, so what is noted on an interrupted run came after the
- * resume, and is answered. A run that ended `agent_removed` (its Agent is no longer a member of the run's group, however
- * that was found) is followed by nothing: what was noted on it is dropped (`droppedOnEnd`). Whether it is queued, as
- * whose, and how it meets the owner's replies a minute is `followUp`'s.
- */
-function followUpSeq(state: EndingRun, agent: AgentRow, end: RunEnd): number | null {
-  if (droppedOnEnd(end)) return null;
-  const covers = Number(state.covers_seq ?? 0);
-  const pending = Number(state.pending_seq ?? 0);
-  return pending > covers && !agent.paused && !agent.deleted && agent.model !== null ? pending : null;
-}
-
-/** What `followUpOnEnd` reads of a run that ends, as its row was before it was rewritten. */
-export interface EndingRun {
-  covers_seq: string | null;
-  pending_seq: string | null;
-  /** A reply `告诉他们` queued (`whisper_id` set). */
-  told: boolean;
-  greets: boolean;
-}
-
-/**
- * THE one place that decides, for every way a run ends, whether a follow-up answers what was noted on it — a running run:
- * `finish` (an answer, a failure, a stop) and `recoverRun` (start-up recovery, the release at a stop or shutdown, the
- * stale-run sweep), both port-impl.ts; a queued one: its owner's stop (`stopRun`) and a halt (`haltAgents`). A queued run
- * holds something noted only when an admission held it back (port-impl.ts `HELD_BACK`: what it took on at its start is
- * handed back as noted, and what was noted while it ran stays so) or when it is a told reply. The queued run's other
- * endings need no follow-up: a pause or delete (`interruptRuns`) drops what was noted, as on its running runs, for an
- * Agent that can answer nothing; what the resume ends (`endWhatPauseMissed`) never ran, so nothing was noted on it; a
- * greeting that gives way (`maybeTrigger`) gives way to the owner's newer message, whose own run covers everything noted
- * on it; leaving a group (group-leave.ts) drops it (`droppedOnEnd`). Never when the system scheduled its automatic
- * retry (that covers what was noted: `retried`); a failed run the service lost (`recovered`) is not followed up, its
- * owner's 重试 answers everything (spec 6.5) — except a told reply and a new Agent's greeting, which answer no message of
- * the owner's, so what was noted on them always gets its own reply (a greeting's quiet end never hides a question;
- * README "Replies", Automatic retry, table 2); otherwise the one rule, `followUpSeq`.
- */
-export function followUpOnEnd(state: EndingRun, agent: AgentRow, end: RunEnd, how: { recovered: boolean; retried: boolean }): number | null {
-  if (how.retried) return null;
-  if (how.recovered && end.status === "failed" && !state.told && !state.greets) return null;
-  return followUpSeq(state, agent, end);
-}
-
-/** A run that ends so is followed by nothing, and what was noted on it (`pending_seq`) is cleared as it ends. */
-export const droppedOnEnd = (end: RunEnd): boolean => end.status === "cancelled" && end.error === "agent_removed";
 
 /** The latest an automatic retry may start after its original call was made (README "Agents and runs", Automatic retry). */
 export const AUTO_RETRY_WINDOW_MS = 600_000;
@@ -1986,15 +1870,6 @@ export const AUTO_RETRY_WINDOW_MS = 600_000;
  */
 export const transientFailure = (end: { status: string; transient?: true }): boolean => end.status === "failed" && end.transient === true;
 
-/** What a run that just ended had covered and had noted, read before its own row was rewritten: what its retry answers. */
-export interface EndedRun {
-  covers_seq: string | null;
-  pending_seq: string | null;
-  call_seqs: string[] | null;
-  /** Those of its calls accepted as its owner's own (`owner_call_seqs`). */
-  owner_call_seqs: string[];
-}
-
 /**
  * What `scheduleAutoRetry` did: queued the retry (to push to its owner alone); found it could not because the original call
  * has had its attempts, the retry would start more than `AUTO_RETRY_WINDOW_MS` after it, or the owner's replies a minute
@@ -2006,28 +1881,25 @@ export type AutoRetry = { retry: Announced; attempt: number } | { gaveUp: "attem
  * The automatic retry of reply run `runId` of `agent` in `conversationId`, which has just failed for a reason that clears
  * by itself (`transientFailure`; the caller checks it), in the transaction that recorded that — `finish` or recovery
  * (port-impl.ts), holding the run's conversation row, the Agent's and the run's, its owner's `accounts` row taken last
- * (the lock order). Not for (README "Replies", Automatic retry, the table): a reply nobody asked for (lane `proactive`:
- * the moment for an unasked remark has passed); a told reply (`告诉他们`: its owner has just pressed it, and its whisper's
- * own rule offers 重试 — what was noted on it goes to its ordinary follow-up at once, round 2 N-3); a new Agent's greeting;
- * the owner's own 重试 (`owner_retry`: the owner is there); an Agent paused, deleted or without a model; none at all while
- * `AGENTS.autoRetryDelaysMs` is empty. Each original call is tried again at most once per wait in that list
- * (`auto_attempt`, carried on the chain, `retry_of`), the n-th retry `delays[n-1]` after this end (by the port's clock,
- * `now`), and never one scheduled to start more than `AUTO_RETRY_WINDOW_MS` after the original call was made (nor started
- * later: port-impl.ts `begin`); the owner's replies a minute in the retry's lane are met as for any reply queued
- * (`overLaneLimit`). The retry is an ordinary queued reply that is not claimed before its `not_before` (port-impl.ts
- * `claimNext`) and is admitted as any (`begin`: pause, membership, blocks, budgets, money) — and it answers the same calls:
- * what the failed run covered and what was noted on it (the greater of the two), its calls, askers and whose message called.
- * Its lane and caller are THE decision (`laneOf`) over all those calls, made BEFORE the minute is met (fix round 5): a member's
- * call noted on the owner's own reply makes its retry a reply for others, held to the others' minute; a member's call stays the
- * member's. (In the Agent's own conversation it is its owner's, as every reply there.) Being queued, it holds the Agent's one active run there:
- * whatever calls it meanwhile is folded into it, and the owner's 重试 is `busy_run`.
+ * (the lock order) — BEFORE any call waiting there is taken (`takeDeferred`): the retry takes the slot, and the calls wait a bounded
+ * time more (its attempts are bounded). Not for (README "Replies", Automatic retry, the table): a reply nobody asked for (lane
+ * `proactive`: the moment for an unasked remark has passed); a told reply (`告诉他们`: its owner has just pressed it, and its whisper's
+ * own rule offers 重试); a new Agent's greeting; the owner's own 重试 (`owner_retry`: the owner is there); an Agent paused, deleted or
+ * without a model; none at all while `AGENTS.autoRetryDelaysMs` is empty. Each original call is tried again at most once per wait in
+ * that list (`auto_attempt`, carried on the chain, `retry_of`), the n-th retry `delays[n-1]` after this end (by the port's clock,
+ * `now`), and never one scheduled to start more than `AUTO_RETRY_WINDOW_MS` after the original call was made (nor started later:
+ * port-impl.ts `begin`); the owner's replies a minute in the retry's lane are met as for any reply queued (`overLaneLimit`). The
+ * retry is an ordinary queued reply that is not claimed before its `not_before` (port-impl.ts `claimNext`) and is admitted as any
+ * (`begin`: pause, membership, blocks, budgets, money) — and it keeps the failed run's ASSIGNMENT: what it covered, its calls (less
+ * any a limit refused since: C-b), askers and whose message called, and its identity — its lane and caller, never decided again
+ * (limits redesign, Part 2). Being queued, it holds the Agent's one active run there: whatever calls it meanwhile waits behind it,
+ * and the owner's 重试 is `busy_run`.
  */
 export async function scheduleAutoRetry(
   t: Tx,
   runId: string,
   agent: AgentRow,
   conversationId: string,
-  ended: EndedRun,
   now: Date,
   config: RunLimits & Pick<Config, "agents" | "whispers">,
 ): Promise<AutoRetry> {
@@ -2039,6 +1911,7 @@ export async function scheduleAutoRetry(
     caller_id: string | null;
     triggered_by: TriggeredBy;
     asker_ids: string[] | null;
+    covers: string | null;
     whisper_id: string | null;
     greets: boolean;
     owner_retry: boolean;
@@ -2046,7 +1919,7 @@ export async function scheduleAutoRetry(
     original: string;
     original_at: Date;
   }>(
-    `select r.purpose, r.lane, r.caller_id, r.triggered_by, r.asker_ids, r.whisper_id, r.greets, r.owner_retry, r.auto_attempt,
+    `select r.purpose, r.lane, r.caller_id, r.triggered_by, r.asker_ids, r.covers_seq::text as covers, r.whisper_id, r.greets, r.owner_retry, r.auto_attempt,
             coalesce(r.retry_of, r.id) as original, coalesce(o.created_at, r.created_at) as original_at
        from agent_runs r left join agent_runs o on o.id = r.retry_of
       where r.id = $1 and r.agent_id = $2 and r.conversation_id = $3`,
@@ -2058,33 +1931,16 @@ export async function scheduleAutoRetry(
   if (attempt > delays.length) return { gaveUp: "attempts" };
   const notBefore = new Date(now.getTime() + delays[attempt - 1]!);
   if (notBefore.getTime() - run.original_at.getTime() > AUTO_RETRY_WINDOW_MS) return { gaveUp: "window" };
-  // Something else holds the Agent's one active run there already: it answers whatever comes; nothing is queued beside it.
+  // Something else holds the Agent's one active run there already: nothing is queued beside it.
   const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [agent.id, conversationId]);
   if (active.rowCount !== 0) return null;
-  // Whose it is: THE decision over every call the failed run had — those it answered and those noted on it, which the retry answers.
-  const caller: Caller = conversationId === agent.conversationId ? { id: run.caller_id, lane: run.lane } : ((await decideLane(t, runId, agent.ownerId, false)) ?? { id: run.caller_id, lane: run.lane });
-  if (await overLaneLimit(t, agent.ownerId, caller.lane, config)) return { gaveUp: "rate_limited" };
-  const covers = Number(ended.covers_seq ?? 0);
-  const pending = Number(ended.pending_seq ?? 0);
+  if (await overLaneLimit(t, agent.ownerId, run.lane, config)) return { gaveUp: "rate_limited" };
+  const calls = await standingSeqs(t, runId);
   const queued = await t.query<RunRow>(
-    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, caller_id, lane,
-                                  asker_ids, call_seqs, whisper_id, greets, retry_of, auto_attempt, not_before, owner_call_seqs)
-     values ('reply', $1, $2, $3, 'queued', $4, null, $5, $6, $7, $8, $9::bigint[], null, false, $10, $11, $12, $13::bigint[]) returning ${RUN_COLUMNS}`,
-    [
-      conversationId,
-      agent.id,
-      agent.ownerId,
-      Math.max(covers, pending),
-      run.triggered_by,
-      caller.id,
-      caller.lane,
-      run.asker_ids,
-      ended.call_seqs === null ? null : ended.call_seqs.map(Number),
-      run.original,
-      attempt,
-      notBefore,
-      ended.owner_call_seqs.map(Number),
-    ],
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane,
+                                  asker_ids, call_seqs, whisper_id, greets, retry_of, auto_attempt, not_before)
+     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9::bigint[], null, false, $10, $11, $12) returning ${RUN_COLUMNS}`,
+    [conversationId, agent.id, agent.ownerId, Number(run.covers ?? 0), run.triggered_by, run.caller_id, run.lane, run.asker_ids, calls, run.original, attempt, notBefore],
   );
   return { retry: { ownerId: agent.ownerId, conversationId, run: toWireRun(queued.rows[0]!) }, attempt };
 }
@@ -2094,8 +1950,8 @@ export async function scheduleAutoRetry(
  * group's row, the Agent's (for update) and the whisper's held, its state found open (nothing is written to it: this run is
  * what makes it telling, and its posted reply what makes it told — Redesign D): ONE reply of the Agent in the group,
  * queued as its owner's own (`triggered_by` human, lane `own`, the owner its caller and the one it answers), covering the
- * group's latest message but answering no call (`call_seqs` empty: they will hold the calls noted on it, `reachAgents`),
- * that is shown the whisper's hits (`agent_runs.whisper_id`, read in port-impl.ts `begin`) and
+ * group's latest message but answering no call (`call_seqs` empty: a zero-call run; a call meanwhile waits behind it,
+ * `reachAgents`), that is shown the whisper's hits (`agent_runs.whisper_id`, read in port-impl.ts `begin`) and
  * offered no tools — none when the whisper holds no hits (nothing to tell: null). Held to what a retry by its owner is
  * held to (`retryInGroup`): 409 `agent_paused`, 400
  * `invalid_request` when it has no model, 409 `busy_run` while it has a reply queued or running there, 429 `rate_limited`
@@ -2123,19 +1979,18 @@ export async function tellFromWhisper(
   const latest = await t.query<{ seq: string }>("select seq::text from conversations where id = $1", [whisper.conversationId]);
   const owner = callerOf(whisper.ownerId, whisper.ownerId);
   const queued = await queueRun(t, agent, whisper.conversationId, Number(latest.rows[0]!.seq), "human", owner, [whisper.ownerId], []);
-  // It answers no call: what it covers is no call of it, and its `call_seqs` will hold the calls noted on it, nothing else.
-  await t.query("update agent_runs set whisper_id = $2, call_seqs = '{}' where id = $1", [queued.run.id, whisper.id]);
+  await t.query("update agent_runs set whisper_id = $2 where id = $1", [queued.run.id, whisper.id]);
   return queued;
 }
 
 /**
- * `POST …/runs/retry`: a new queued reply answering up to the owner's last message, only when the conversation's
- * latest run failed. 404 unless it is the caller's Agent conversation; 409 `agent_deleted` / `agent_paused`; 409
- * `busy_run` while a reply is queued or running; 400 when the latest run did not fail (or there is none) or the Agent
- * has no model; 409 `model_gone` while its model is not there to call (`retryable`'s rule); 429 over the owner's own
- * `agentRunsPerMinute`. In a group, for the Agent `agentId` names
- * (`retryInGroup`); elsewhere `agentId` plays no part. A retry is its owner's call: the owner's own (`lane` `own`),
- * wherever it is, held to their own lane's limit.
+ * `POST …/runs/retry`: a new queued reply answering the failed assignment again, only when the conversation's latest run failed. 404
+ * unless it is the caller's Agent conversation; 409 `agent_deleted` / `agent_paused`; 409 `busy_run` while a reply is queued or
+ * running; 400 when the latest run did not fail (or there is none) or the Agent has no model; 409 `model_gone` while its model is not
+ * there to call (`retryable`'s rule); 429 over the owner's own `agentRunsPerMinute`. In a group, for the Agent `agentId` names
+ * (`retryInGroup`); elsewhere `agentId` plays no part. A retry is its owner's call: the owner's own (`lane` `own`), wherever it is,
+ * held to their own lane's limit — targeted at the failed run by its id (`retryOf`): what it covered and the calls it answered (less
+ * any a limit refused since: C-b), nothing written after it.
  */
 export async function retryRun(
   t: Tx,
@@ -2153,33 +2008,34 @@ export async function retryRun(
   const agent = await lockAgent(t, ownAgentId, conversationId);
   if (agent.deleted) throw new AppError(409, "agent_deleted");
   if (agent.paused) throw new AppError(409, "agent_paused");
-  const latest = await latestRun(t, conversationId);
+  const latest = await latestRunOf(t, agent.id, conversationId);
   if (latest?.status === "queued" || latest?.status === "running") throw new AppError(409, "busy_run");
-  if (latest?.status !== "failed" || agent.model === null) throw new AppError(400, "invalid_request");
+  if (latest?.status !== "failed" || agent.model === null || latest.covers === null) throw new AppError(400, "invalid_request");
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
-  const last = await t.query<{ seq: string | null }>(
-    "select max(seq)::text as seq from messages where conversation_id = $1 and sender_id = $2 and kind <> 'system'",
-    [conversationId, ownerId],
-  );
-  if (last.rows[0]?.seq == null) throw new AppError(400, "invalid_request");
-  const queued = await queueRun(t, agent, conversationId, Number(last.rows[0].seq), "human", callerOf(ownerId, ownerId), [ownerId]);
+  return retryOf(t, agent, conversationId, latest);
+}
+
+/** The owner's 重试 of failed run `failed`: a new queued reply of its assignment, the owner's own (`owner_retry`). */
+async function retryOf(t: Tx, agent: AgentRow, conversationId: string, failed: NonNullable<Awaited<ReturnType<typeof latestRunOf>>>): Promise<Announced> {
+  const covers = Number(failed.covers);
+  const calls = (await standingSeqs(t, failed.id)) ?? [covers];
+  const queued = await queueRun(t, agent, conversationId, covers, failed.triggered_by, callerOf(agent.ownerId, agent.ownerId), failed.asker_ids, calls);
   await ownersRetry(t, queued.run.id);
   return queued;
 }
 
 /**
  * Retry in a group (wire contract "Run state"): the owner's Agent's latest run there, when it failed in the Agent's
- * current stay, is answered again — a new queued run covering what it covered and what was noted on it (the greater of
- * its `covers_seq` and `pending_seq`: a run recovery or a release failed is not followed up), called for by whoever
- * called the failed one (`triggered_by` kept: one an Agent's message called for is still an Agent's, so a member's
- * halt still ends it), and its owner's own whoever's the failed one was (its owner asked again) — answering the same
- * questions as the failed one, so whose they were is kept too (`asker_ids`: the retry asks nothing new), and so are the
- * calls (`call_seqs`), and a told reply's whisper (`whisper_id`: it tells again what it covered only; what was noted on it
- * was followed up as it ended). Not for an Agent that
- * is not in the group now, nor for a run from before it last joined; a run a halt or the Agent's leaving cancelled
- * (`halted`, `agent_removed`) did not fail: 400 like any other; 409 `model_gone` as `retryRun`; 429 over the owner's own
- * `agentRunsPerMinute`. Lock order: the group's row → the Agent's → run rows → the owner's `accounts` row.
+ * current stay, is answered again — a new queued run of its assignment, targeted at it by its id (`retryOf`): what it covered and
+ * its calls (less any a limit refused since, C-b; nothing that waited behind it, which was answered as it ended), called for by
+ * whoever called the failed one (`triggered_by` kept: one an Agent's message called for is still an Agent's, so a member's
+ * halt still ends it), and its owner's own whoever's the failed one was (its owner asked again: the one deliberate exception to "a
+ * member's question never runs on the owner's terms") — answering the same questions as the failed one, so whose they were is kept
+ * too (`asker_ids`: the retry asks nothing new), and a told reply's whisper (`whisper_id`: it tells again what it covered only, and
+ * answers no call). Not for an Agent that is not in the group now, nor for a run from before it last joined; a run a halt or the
+ * Agent's leaving cancelled (`halted`, `agent_removed`) did not fail: 400 like any other; 409 `model_gone` as `retryRun`; 429 over
+ * the owner's own `agentRunsPerMinute`. Lock order: the group's row → the Agent's → run rows → the owner's `accounts` row.
  */
 async function retryInGroup(
   t: Tx,
@@ -2206,25 +2062,11 @@ async function retryInGroup(
     throw new AppError(409, "stale_whisper");
   }
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
-  if (latest.whisper_id === null) {
-    // The owner's own by its 重试 (`owner_retry`: `laneOf`), whoever's calls it answers; which of them were the owner's own is kept.
-    const queued = await queueRun(t, agent, conversationId, Number(latest.answers), latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids, latest.owner_calls.map(Number));
-    await answersCalls(t, queued.run.id, (latest.calls ?? [latest.covers]).map(Number));
-    await ownersRetry(t, queued.run.id);
-    return queued;
-  }
+  if (latest.whisper_id === null) return retryOf(t, agent, conversationId, latest);
   // A told reply (`告诉他们`, Task 8) is told again: the retry keeps its whisper, so it is shown the hits and offered no tools,
-  // covers what it covered and answers no call. What was noted on it went to a follow-up as it ended (port-impl.ts
-  // `keepsNothingNoted`, round 2 N-3), so it carries nothing noted — but for a row that ended before that, whose noted calls
-  // (up to its `pending_seq`, in its `call_seqs`) stay noted, for the retry's follow-up to answer.
+  // covers what it covered and answers no call.
   const queued = await queueRun(t, agent, conversationId, covers, latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids, []);
-  const answers = Number(latest.answers);
-  await t.query("update agent_runs set whisper_id = $2, call_seqs = $3::bigint[], pending_seq = $4, owner_retry = true where id = $1", [
-    queued.run.id,
-    latest.whisper_id,
-    (latest.calls ?? []).map(Number),
-    answers > covers ? answers : null,
-  ]);
+  await t.query("update agent_runs set whisper_id = $2, owner_retry = true where id = $1", [queued.run.id, latest.whisper_id]);
   return queued;
 }
 
@@ -2237,11 +2079,12 @@ async function ownersRetry(t: Tx, runId: string): Promise<void> {
 }
 
 /**
- * `POST …/runs/:runId/stop`: a queued run is stopped at once (it never reached a model: nothing to settle); a running
- * one is reported, so the caller can flag it for the worker working on it, or release it when nobody here is; a
- * finished one is left as it is. 404 unless the run is of the caller's Agent conversation — or, in a group the caller is
- * a current member of (whose row is locked first, `lockForWrite`, as every writer of runs there does), one of the
- * caller's Agents' runs there: another member's Agent's run is the 404 of a run that does not exist.
+ * `POST …/runs/:runId/stop`: a queued run is stopped at once (it never reached a model: nothing to settle), and what waited behind
+ * it is taken in the same transaction (`takeDeferred`); a running one is reported, so the caller can flag it for the worker working
+ * on it, or release it when nobody here is (its end takes what waited); a finished one is left as it is. 404 unless the run is of the
+ * caller's Agent conversation — or, in a group the caller is a current member of (whose row is locked first, `lockForWrite`, as
+ * every writer of runs there does), one of the caller's Agents' runs there: another member's Agent's run is the 404 of a run that
+ * does not exist.
  */
 export async function stopRun(
   t: Tx,
@@ -2249,16 +2092,16 @@ export async function stopRun(
   conversationId: string,
   runId: string,
   config: RunLimits,
-): Promise<{ stopped: Announced | null; running: boolean; followed: FollowUp }> {
+): Promise<{ stopped: Announced | null; running: boolean; next: Next }> {
   // A group or a social conversation: the owner is a current member there (an observer in a social one), under its row.
   if ((await runSitePlace(t, conversationId)) !== "own") await lockForWrite(t, conversationId, ownerId);
   else if (!(await ownedAgentOf(t, ownerId, conversationId))) throw notFound();
-  // The run's Agent row before the run's (the lock order): the stop of a queued run may follow up what was noted on it.
+  // The run's Agent row before the run's (the lock order): the stop of a queued run may take what waited behind it.
   const peek = (await t.query<{ agent_id: string }>("select agent_id from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply'", [runId, conversationId, ownerId])).rows[0];
   if (!peek) throw notFound();
   const agent = await lockAgent(t, peek.agent_id, conversationId);
-  const { rows } = await t.query<{ status: RunStatus; covers: string | null; pending: string | null; calls: string[] | null; owner_calls: string[]; told: boolean; greets: boolean }>(
-    "select status, covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls, owner_call_seqs::text[] as owner_calls, whisper_id is not null as told, greets from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply' for update",
+  const { rows } = await t.query<{ status: RunStatus; covers: string | null }>(
+    "select status, covers_seq::text as covers from agent_runs where id = $1 and conversation_id = $2 and owner_id = $3 and purpose = 'reply' for update",
     [runId, conversationId, ownerId],
   );
   const status = rows[0]?.status;
@@ -2267,24 +2110,12 @@ export async function stopRun(
     // Kept in the row (`stop_asked`): an attempt that begins after this — the same, or the next after its admission held
     // it back — ends stopped (port-impl.ts `halted`), whatever this process's flags say.
     await t.query("update agent_runs set stop_asked = true where id = $1", [runId]);
-    return { stopped: null, running: true, followed: followUpOf(null) };
+    return { stopped: null, running: true, next: nextOf(null) };
   }
-  if (status !== "queued") return { stopped: null, running: false, followed: followUpOf(null) };
-  const stopped = await t.query<RunRow>(
-    `update agent_runs as r set status = 'stopped', finished_at = now(),
-            pending_seq = case when r.whisper_id is null then r.pending_seq end, call_seqs = case when r.whisper_id is null then r.call_seqs else '{}' end
-      where r.id = $1 returning ${RUN_COLUMNS}`,
-    [runId],
-  );
+  if (status !== "queued") return { stopped: null, running: false, next: nextOf(null) };
+  const stopped = await t.query<RunRow>(`update agent_runs as r set status = 'stopped', finished_at = now() where r.id = $1 returning ${RUN_COLUMNS}`, [runId]);
   const ended = { ownerId, conversationId, run: toWireRun(stopped.rows[0]!) };
-  // What was noted on it gets its follow-up by the one rule, as for a run stopped while it ran (`followUpOnEnd`): what
-  // an admission that held it back handed back to it (round 3 S-4) — or, for a told reply (`告诉他们`), the members'
-  // questions noted on it: the stop ends the tell — its whisper reads open again, nothing written to it
-  // (whispers/store.ts) — but not those, which get their ordinary follow-up at once (port-impl.ts `keepsNothingNoted`).
-  const row = rows[0]!;
-  const next = followUpOnEnd({ covers_seq: row.covers, pending_seq: row.pending, told: row.told, greets: row.greets }, agent, { status: "stopped" }, { recovered: false, retried: false });
-  const followed = next === null ? followUpOf(null) : await followUp(t, agent, conversationId, Number(row.covers ?? 0), next, row.calls, row.owner_calls, config);
-  return { stopped: ended, running: false, followed };
+  return { stopped: ended, running: false, next: await takeDeferred(t, agent, conversationId, Number(rows[0]!.covers ?? 0), config) };
 }
 
 /** A failure its owner dismissed in a group: the others are told its Agent's state again (`Hub.pushRunState`). */
