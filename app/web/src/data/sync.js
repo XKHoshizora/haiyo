@@ -131,7 +131,18 @@ function safeClose(socket) {
  */
 export function start(
   transport,
-  { getModel, setModel, timers = defaultTimers, now = () => Date.now(), random = Math.random, onSignedOut = () => {}, onStatus = () => {}, paused: startPaused = false },
+  {
+    getModel,
+    setModel,
+    timers = defaultTimers,
+    now = () => Date.now(),
+    random = Math.random,
+    onSignedOut = () => {},
+    onStatus = () => {},
+    paused: startPaused = false,
+    accountId = null,
+    onAccountChanged = () => {},
+  },
 ) {
   let alive = true;
   /** The page is in the background (the shell's pause): no socket, no attempt planned, until `resume()`. */
@@ -297,6 +308,12 @@ export function start(
     need.convs.clear(); // a full sync refreshes every conversation
     const res = await transport.getSync();
     if (my !== conn) return;
+    // Another account than this layer runs for (a tab that reconnects after someone else signed in in this browser): nothing of it
+    // is applied here. The engine stops, and the sign-in gate gives that account a layer of its own (AuthRoot `confirm`).
+    if (accountId !== null && res?.me?.id && res.me.id !== accountId) {
+      accountChanged(res.me);
+      return;
+    }
     const before = getModel();
     setModel(applySync(before, res));
     // Agent conversations: the run of each new one (of every one, the first time on this connection), the Agent of
@@ -734,6 +751,12 @@ export function start(
     halt();
     setStatus("signedOut");
     onSignedOut();
+  }
+
+  function accountChanged(me) {
+    if (!alive) return;
+    halt();
+    onAccountChanged(me);
   }
 
   connect();

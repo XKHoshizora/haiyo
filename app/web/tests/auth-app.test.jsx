@@ -24,6 +24,7 @@ const EXPIRED_NOTICE = "登录已失效，请重新登录。";
 
 function fakeLayer() {
   const handlers = new Set();
+  const accounts = new Set();
   return {
     start: vi.fn(),
     stop: vi.fn(),
@@ -31,7 +32,13 @@ function fakeLayer() {
       handlers.add(fn);
       return () => handlers.delete(fn);
     },
+    onAccountChanged: (fn) => {
+      accounts.add(fn);
+      return () => accounts.delete(fn);
+    },
     closeWith4001: () => [...handlers].forEach((fn) => fn()),
+    /** A sync of the layer answered for `me`, another account (someone else signed in in this browser). */
+    answeredFor: (me) => [...accounts].forEach((fn) => fn(me)),
   };
 }
 
@@ -893,7 +900,23 @@ describe("session lifecycle", () => {
     expect(screen.getByText(EXPIRED_NOTICE)).toBeTruthy();
   });
 
+  it("a sync for another account than the layer runs for (T2 fix 2, R4): that account gets a layer of its own — the app mounted again, nothing typed in a form kept", async () => {
+    mount(fakeApi());
+    await screen.findByTestId("app");
+    await waitFor(() => expect(layers[0].start).toHaveBeenCalled());
+    // The layer runs for the account the gate confirmed.
+    expect(layers[0].start.mock.calls[0][0]).toMatchObject({ accountId: ANN.id });
+    saveDraft("provider:new", { apiKey: "sk-of-ann" });
+    act(() => layers[0].answeredFor(BO));
+    await waitFor(() => expect(screen.getByTestId("app").dataset.key).toBe("1"));
+    expect(layers[0].stop).toHaveBeenCalledTimes(1);
+    expect(layers).toHaveLength(2);
+    expect(layers[1].start.mock.calls[0][0]).toMatchObject({ accountId: BO.id });
+    expect(peekDraft("provider:new")).toBeNull();
+  });
+
   it("the same account signing in again keeps the data layer (its drafts); another account gets a fresh one", async () => {
+
     const getMe = vi.fn().mockResolvedValueOnce(ANN);
     mount(fakeApi({ getMe }));
     await screen.findByTestId("app");

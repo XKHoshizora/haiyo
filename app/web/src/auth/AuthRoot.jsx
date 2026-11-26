@@ -48,6 +48,8 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
       const another = accountId.current !== null && accountId.current !== me.id;
       accountId.current = me.id;
       if (another) {
+        // Nothing of the account before is kept: its layer (the old one is stopped as the new one starts), what was typed in its forms.
+        forgetDrafts();
         const layer = createLayer();
         setBox((b) => ({ layer, id: b.id + 1 }));
       }
@@ -93,12 +95,16 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     if (!running) return undefined;
     const { layer } = box;
     const off = layer.onSignedOut(() => end(true));
-    layer.start({ paused: startsInBackground() });
+    // A sync that answers for another account (someone else signed in in this browser): that account is confirmed here, as a
+    // sign-in confirms one: its own layer, a new session epoch, everything bound to the account mounted again (`confirm`).
+    const offAccount = layer.onAccountChanged?.((me) => confirm(me)) ?? (() => {});
+    layer.start({ paused: startsInBackground(), accountId: accountId.current });
     return () => {
       off();
+      offAccount();
       layer.stop();
     };
-  }, [running, box, end]);
+  }, [running, box, end, confirm]);
   // The iOS shell, when this page is in it (src/shell/): pause and resume of the socket, the phone's push registration.
   useShellSession({ running, layer: box.layer, api });
 

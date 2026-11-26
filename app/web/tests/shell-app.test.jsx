@@ -104,7 +104,7 @@ describe("push", () => {
     await screen.findByTestId("app");
     await waitFor(() => expect(api.registerPushDevice).toHaveBeenCalledTimes(1));
     expect(shell.named("push.register")).toHaveLength(1);
-    expect(layers[0].start).toHaveBeenCalledWith({ paused: false });
+    expect(layers[0].start).toHaveBeenCalledWith({ paused: false, accountId: ANN.id });
   });
 
   it("signed out: not asked on the sign-in page; asked once after the sign-in, and the token sent", async () => {
@@ -138,7 +138,7 @@ describe("push", () => {
     mount(api);
     await screen.findByTestId("app");
     await act(async () => {});
-    expect(layers[0].start).toHaveBeenCalledWith({ paused: true });
+    expect(layers[0].start).toHaveBeenCalledWith({ paused: true, accountId: ANN.id });
     expect(shell.named("push.register")).toHaveLength(0);
     state.mockReturnValue("visible");
     act(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -191,7 +191,7 @@ describe("in an ordinary browser", () => {
     at("/signin");
     mount(api);
     await signInUi();
-    expect(layers[0].start).toHaveBeenCalledWith({ paused: false });
+    expect(layers[0].start).toHaveBeenCalledWith({ paused: false, accountId: ANN.id });
     fireEvent.click(screen.getByRole("button", { name: "退出" }));
     await screen.findByLabelText("邮箱");
     expect(api.registerPushDevice).not.toHaveBeenCalled();
@@ -219,7 +219,7 @@ describe("an ordinary desktop browser", () => {
     mount(apiOf());
     await screen.findByTestId("app");
     await act(async () => {});
-    expect(layers[0].start).toHaveBeenCalledWith({ paused: false });
+    expect(layers[0].start).toHaveBeenCalledWith({ paused: false, accountId: ANN.id });
     act(() => document.dispatchEvent(new Event("visibilitychange")));
     state.mockReturnValue("visible");
     act(() => document.dispatchEvent(new Event("visibilitychange")));

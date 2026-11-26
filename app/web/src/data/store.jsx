@@ -86,6 +86,8 @@ export function createDataLayer({
   let notified = false;
   const listeners = new Set();
   const signedOutListeners = new Set();
+  /** Told the account a sync showed when it is not the one this layer runs for (`start({ accountId })`). */
+  const accountListeners = new Set();
 
   const emit = () => {
     snapshot = { model, connection, failed };
@@ -143,12 +145,33 @@ export function createDataLayer({
       signedOutListeners.add(fn);
       return () => signedOutListeners.delete(fn);
     },
-    /** `paused`: the page loads in the background of the iOS shell, so no socket is opened until `resume()`. */
-    start({ paused = false } = {}) {
+    /**
+     * `fn(me)` when a sync answers for another account than `start({ accountId })` named: nothing of it is applied and this layer
+     * stops talking to the service; the sign-in gate replaces it (AuthRoot `confirm`: a layer of that account's own, a new session epoch).
+     */
+    onAccountChanged(fn) {
+      accountListeners.add(fn);
+      return () => accountListeners.delete(fn);
+    },
+    /**
+     * `paused`: the page loads in the background of the iOS shell, so no socket is opened until `resume()`. `accountId`: the account
+     * this layer runs for (the sign-in gate's); a sync for any other is never applied here (`onAccountChanged`).
+     */
+    start({ paused = false, accountId = null } = {}) {
       if (engine) return;
       notified = false;
       if (model.synced) model = resetKeepingDrafts(model); // signed out without stop(): start from a first load
-      engine = startSync(tx, { getModel, setModel, timers, now, random, onSignedOut: notifySignedOut, onStatus: setConnection, paused });
+      const onAccountChanged = (me) => {
+        engine = null;
+        for (const fn of [...accountListeners]) {
+          try {
+            fn(me);
+          } catch {
+            /* a listener must not stop the others */
+          }
+        }
+      };
+      engine = startSync(tx, { getModel, setModel, timers, now, random, onSignedOut: notifySignedOut, onStatus: setConnection, paused, accountId, onAccountChanged });
     },
     /** The iOS shell's `haiyo:pause` / `haiyo:resume` (shell/useShell.js): the socket is let go, and comes back by the ordinary reconnect. */
     pause: () => engine?.pause(),

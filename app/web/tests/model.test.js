@@ -91,17 +91,6 @@ describe("applySync", () => {
     expect(other.pending).toEqual({});
   });
 
-  it("a sync for another account (a tab that reconnects after someone else signed in in the browser) holds nothing of the first (T2 fix 1, F1a)", () => {
-    // Held by the first account: a group's messages, one with a refusal line meant for that account alone.
-    let s = M.applySync(M.initial(), syncOf([group(G1, { lastSeq: 5, readSeq: 5 })], [...range(G1, 1, 4, [BO]), wire(G1, 5, ME_ID, "@annbot 在吗", { refused: [{ agentId: ANN, reason: "too_often" }] })]));
-    expect(s.messages[G1].at(-1).refused).toEqual([{ agentId: ANN, reason: "too_often" }]);
-    // The same group, synced for BO: its own copies, none of the first account's lines kept.
-    const bo = { id: BO, handle: "bo", displayName: "阿波", email: "b@x.test" };
-    s = M.applySync(s, { ...syncOf([group(G1, { lastSeq: 5, readSeq: 5 })], [...range(G1, 1, 4, [BO]), wire(G1, 5, ME_ID, "@annbot 在吗")]), me: bo });
-    expect(s.owner).toBe(BO);
-    expect(s.messages[G1].map((m) => m.seq)).toEqual([1, 2, 3, 4, 5]);
-    expect(s.messages[G1].at(-1).refused).toBeUndefined();
-  });
 });
 
 

@@ -115,7 +115,33 @@ describe("StoreProvider", () => {
     expect(screen.getByText("阿波：周六可以吗")).toBeTruthy();
   });
 
+  it("a sync answered for another account than the layer runs for is not applied: the layer stops and names that account (T2 fix 2, R4)", async () => {
+    const other = { id: BO, handle: "bo", displayName: "阿波", email: "bo@example.test" };
+    let as = ME_ID;
+    const t = fakeTransport({ sync: () => ({ ...syncOf([direct(D1, ANN, { lastSeq: 2 })], range(D1, 1, 2)), ...(as === BO ? { me: other } : {}) }) });
+    const layer = createDataLayer({ transport: t, api: {}, timers: fakeTimers(), random: () => 0.5 });
+    const told = [];
+    layer.onAccountChanged((me) => told.push(me.id));
+    const store = mount(layer);
+    // Someone else signed in in this browser before the first sync: the answer is theirs.
+    as = BO;
+    await act(async () => {
+      store.current.start({ accountId: ME_ID });
+      await settle();
+    });
+    expect(told).toEqual([BO]);
+    expect(store.current.state.order).toEqual([]);
+    expect(store.current.state.convs).toEqual({});
+    // Nothing more is asked of the service by this layer.
+    const asked = t.log.length;
+    await act(async () => {
+      await settle();
+    });
+    expect(t.log.length).toBe(asked);
+  });
+
   it("initialState renders a fixed state without a data layer running", () => {
+
     const fixed = emptyState({ id: ME, kind: "person", name: "你", handle: "@me", cell: [0, 0] });
     fixed.order = ["x"];
     const seen = { current: null };
