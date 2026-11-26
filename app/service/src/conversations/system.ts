@@ -64,8 +64,9 @@ export async function renderNotice(q: Queryable, conversationId: string, e: Syst
       return `Agent 已连续对话 ${e.limit} 条，已暂停互相接话，有人发言后继续。`;
     case "agent_budget_reached":
       return `${n(e.agentId)} 已达到本次接话的点数上限，有人发言后继续。`;
-    case "agent_daily_budget_reached":
-      return `「${n(e.agentId)}」今天只回复它的主人，明天恢复。`;
+    // To the owner, in the Agent's own conversation: the number as it was then (decimal points), and that replies under way finish.
+    case "others_limit_reached":
+      return `别人今天用你的 Agent 已经花到每天上限 ${e.points} 点，今天不再回复别人；已经在回复的会照常回完。`;
     case "agent_quieted":
       return `「${n(e.agentId)}」暂时不主动发言，需要时可以 @ 它`;
     // The disclosure of a social conversation (system UI text, in no Agent's voice): who watches it. Two owners: their names joined by 、.

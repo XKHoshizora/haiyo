@@ -4,26 +4,26 @@ import { z } from "zod";
 import { listOwnedAgents } from "../agents/store.ts";
 import { onSnapshot, type Queryable } from "../db.ts";
 import { perPrincipalLimit } from "../limits.ts";
-import { agentRoom, othersByPerson, othersUsedByAgents, othersUsedToday, ownerNumbers, perDayEstimate } from "../metering/others.ts";
+import { OWN_KEY_NOMINAL_MICRO, othersByPerson, othersLimitOf, othersUseToday } from "../metering/others.ts";
 import { requirePrincipal } from "../session.ts";
 import { ensureAccount, formatPoints, MICRO_PER_POINT, pointsBetween } from "./store.ts";
 
-// Lane B's route plugin (plan "Step 0 interfaces", Routes; README "Agent social", Numbers): what others' use of an owner's Agents has cost
-// today against the owner's two numbers (answers and points, one value each per owner whatever the number of Agents), and the owner's
-// say over them. Unlike lane A's, these are live whatever `SOCIAL.enabled` says (step L).
+// Lane B's route plugin (README "Agent social", One number): what others' use of an owner's Agents has used today against the owner's
+// one number (one value per owner whatever the number of Agents: metering/others.ts), and the owner's say over it. Unlike lane A's,
+// these are live whatever `SOCIAL.enabled` says (step L).
 
-/** The owner's points number as a request gives it: a decimal string of points, 1 to 100 000 (as an Agent's `chainBudget`). */
+/** The owner's number as a request gives it: a decimal string of points, 1 to 100 000 (as an Agent's `chainBudget`). */
 const pointsNumber = pointsBetween(MICRO_PER_POINT, 100_000n * MICRO_PER_POINT);
 
 const person = z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number() });
 const useResponse = z.object({
-  limits: z.object({ answers: z.number(), points: z.string() }),
-  used: z.object({ answers: z.number(), points: z.string(), proactivePoints: z.string(), proactiveAnswers: z.number() }),
+  limit: z.string(),
+  used: z.string(),
+  proactive: z.string(),
+  ownKeyPoints: z.string(),
   reached: z.boolean(),
-  tight: z.boolean(),
-  byPerson: z.array(z.object({ person, answers: z.number(), points: z.string() })),
+  byPerson: z.array(z.object({ person, points: z.string() })),
   stopped: z.array(z.object({ person, since: z.string() })),
-  agents: z.array(z.object({ agentId: z.string(), answers: z.number(), points: z.string(), perDay: z.number(), reached: z.boolean(), tight: z.boolean(), canReply: z.boolean() })),
   notice: z.boolean(),
 });
 
@@ -74,10 +74,9 @@ export function registerOthersRoutes(app: FastifyInstance): void {
     const me = await requirePrincipal(req);
     await readLimit(req, me.id);
     const now = new Date();
-    // One snapshot (repeatable read, read only): the numbers and the day are read together.
+    // One snapshot (repeatable read, read only): the number and the day are read together.
     return onSnapshot(db, async (t) => {
       const agents = (await listOwnedAgents(t, me.id)).filter((a) => !a.deleted);
-      const ids = agents.map((a) => a.id);
       // New owners are told nothing about a change they never had: only accounts whose row (made at their first Agent, metered reply or grant,
       // not at sign-up) is older than the moment 074 ran. `run_on` is a timestamp without zone that node-pg-migrate wrote with NOW() in its
       // session's zone; it is read here in the database's own TimeZone, so a changed default misplaces only the accounts made within that
@@ -90,41 +89,24 @@ export function registerOthersRoutes(app: FastifyInstance): void {
                                             from accounts a, (select run_on from pgmigrations where name = '074_others_step_l') m where a.principal_id = $1), false) as notice`,
         [me.id, agents.length > 0],
       );
-      // One connection, one query at a time.
-      const owner = await ownerNumbers(t, config, me.id);
-      const used = await othersUsedToday(t, config, me.id, now);
-      const perAgent = await othersUsedByAgents(t, config, me.id, ids, now);
+      // One connection, one query at a time. The one measure admission decides by (metering/others.ts `othersUseToday`): `reached`
+      // is exactly what refuses the next reply for others.
+      const limit = await othersLimitOf(t, config, me.id);
+      const used = await othersUseToday(t, config, me.id, now);
+      // Of it, what the Agents' proactive replies used (no caller: in the total and in no person's row).
+      const proactive = await othersUseToday(t, config, me.id, now, "proactive");
       const byPerson = await othersByPerson(t, config, me.id, now);
-      const usedPoints = used.settledMicro + used.heldMicro;
-      // Of those points, what the Agents' proactive replies cost (no caller: in the total and in no person's row).
-      const proactive = await othersUsedToday(t, config, me.id, now, { lane: "proactive" });
-      const rows = [];
-      const askable: boolean[] = [];
-      for (const a of agents) {
-        const u = perAgent.get(a.id) ?? { answers: 0, pointsMicro: 0n };
-        const perDay = perDayEstimate(config, a.model, { owner, agent: { answers: a.othersAnswers, pointsMicro: a.othersBudgetMicro } }, a.othersReasoning);
-        const room = await agentRoom(t, config, a, now);
-        askable.push(room.askable);
-        rows.push({ agentId: a.id, answers: u.answers, points: formatPoints(u.pointsMicro), perDay, reached: room.reached, tight: room.tight, canReply: room.askable });
-      }
-      // The owner's two facts, over the Agents that could answer at all (one with no model answers nobody, whatever the room: its row shows
-      // reached false, tight false, perDay 0, and it is left out): `reached` when the answers are used up or every such Agent is reached;
-      // `tight` when any such Agent is. With none to ask, the numbers themselves.
-      const asked = rows.filter((_, i) => askable[i]);
-      const answersUp = used.answers >= owner.answers;
-      const reached = answersUp || (asked.length > 0 ? asked.every((r) => r.reached) : usedPoints >= owner.pointsMicro);
-      const tight = reached || asked.some((r) => r.tight);
       return {
-        limits: { answers: owner.answers, points: formatPoints(owner.pointsMicro) },
-        used: { answers: used.answers, points: formatPoints(usedPoints), proactivePoints: formatPoints(proactive.settledMicro + proactive.heldMicro), proactiveAnswers: proactive.answers },
-        reached,
-        tight,
-        byPerson: byPerson.map((r) => ({ person: r.person, answers: r.answers, points: formatPoints(r.pointsMicro) })),
+        limit: formatPoints(limit),
+        used: formatPoints(used),
+        proactive: formatPoints(proactive),
+        ownKeyPoints: formatPoints(OWN_KEY_NOMINAL_MICRO),
+        reached: used >= limit,
+        byPerson: byPerson.map((r) => ({ person: r.person, points: formatPoints(r.pointsMicro) })),
         // The caller's own stops, whatever the switch says (fix round 1, I4): a stop made while it was on keeps refusing in groups while it
         // is off, so its setter must still see it and be able to lift it. With the switch off no new stop can be made, so the list is
         // empty for everyone who never made one.
         stopped: await stoppedOf(t, me.id),
-        agents: rows,
         notice: notice.rows[0]!.notice,
       };
     });
@@ -136,19 +118,19 @@ export function registerOthersRoutes(app: FastifyInstance): void {
       schema: {
         params: empty,
         querystring: z.strictObject({}),
-        body: z.strictObject({ answers: z.number().int().min(1).max(1000), points: pointsNumber }),
-        response: { 200: z.object({ answers: z.number(), points: z.string() }) },
+        body: z.strictObject({ points: pointsNumber }),
+        response: { 200: z.object({ points: z.string() }) },
       },
     },
     async (req) => {
       const me = await requirePrincipal(req);
       await writeLimit(req, me.id);
-      const { answers, points } = req.body;
+      const { points } = req.body;
       await db.tx(async (t) => {
         await ensureAccount(t, me.id);
-        await t.query("update accounts set others_answers = $2, others_points_micro = $3 where principal_id = $1", [me.id, answers, points.toString()]);
+        await t.query("update accounts set others_points_micro = $2 where principal_id = $1", [me.id, points.toString()]);
       });
-      return { answers, points: formatPoints(points) };
+      return { points: formatPoints(points) };
     },
   );
 

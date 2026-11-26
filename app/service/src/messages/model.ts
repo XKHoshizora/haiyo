@@ -26,11 +26,11 @@ export type SystemEvent =
    */
   | { event: "agent_budget_reached"; actorId: string; agentId: string }
   /**
-   * In a group: Agent `agentId` (also `actorId`) has spent today's others' daily budget (`othersBudget`) on replies people
-   * other than its owner called for; their calls do not reach it until its owner raises it or the site's day ends. Once a
-   * site day per group and Agent.
+   * In Agent `agentId`'s own conversation (also `actorId`), for its owner: others' use of the owner's Agents has reached the owner's
+   * one daily number (`points`, as it was then) — a call on this Agent was refused for it; replies under way finish. Once a site
+   * day per owner, whichever Agent it was (agents/runs.ts `othersReachedNotice`).
    */
-  | { event: "agent_daily_budget_reached"; actorId: string; agentId: string }
+  | { event: "others_limit_reached"; actorId: string; agentId: string; points: string }
   /**
    * In a group: someone's message asked Agent `agentId` (also `actorId`) to be quiet, and the judgement model was sure of
    * it, so it will hardly reply there unasked for a while; a mention still calls it. At most once an hour per group and
@@ -285,6 +285,12 @@ export const wireMessageSchema = z.object({
   ack: z.literal(true).optional(),
   /** An Agent's reply that was cut: by the model's output limit, the reply time limit, or at 8 000 characters. */
   truncated: z.literal(true).optional(),
+  /**
+   * A person's message, to its sender only (absent for everyone else, and when nothing was refused): the Agents a LIMIT kept a call of
+   * it from, and why (`call_refusals`, agents/runs.ts `recordRefusal`) — the owner's daily number for others' use reached
+   * (`others_limit`), or too often (`too_often`). In the order they were recorded.
+   */
+  refused: z.array(z.object({ agentId: z.string(), reason: z.enum(["others_limit", "too_often"]) })).optional(),
   /** An Agent's reply that proposed a persona (agents/persona.ts): shown to the Agent's owner only. */
   proposal: z
     .object({

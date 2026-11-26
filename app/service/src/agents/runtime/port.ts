@@ -43,14 +43,12 @@ export interface ToolRun {
   /** At most how many calls of each tool, by name, one reply runs (loop.ts `LoopGuard`); a tool not named has only the round cap. */
   readonly perTool: Readonly<Record<string, number>>;
   /**
-   * An others' reply (a reply somebody other than the Agent's owner called for): the most calls that run in the whole reply, all
-   * tools together (`OTHERS.toolCalls`, loop.ts `LoopGuard.maxCalls`), and the most further calls it has answered with the
-   * over-cap note (`OTHERS.overCapNotes`). Set, the tool phase also ends after the first round that called tools, whatever
-   * it ran (the next call is the last), and a turn asking for more calls than both allow is discarded, once, and the reply
-   * finished without tools (worker.ts; plan B2a, B2b). Absent: neither — the owner's own replies, as before.
+   * A reply for others (somebody other than the Agent's owner caused it): the most calls that run in the whole reply, all tools
+   * together (`OTHERS.toolCalls`, loop.ts `LoopGuard.maxCalls`); a further call is answered with the over-cap note. Set, the tool
+   * phase also ends after the first round that called tools, whatever it ran (the next call is the last). What the model wrote
+   * before its calls is its acknowledgement, as any reply's: nothing it wrote is dropped. Absent: the owner's own replies.
    */
   readonly callsCap?: number;
-  readonly overCapNotes?: number;
   /**
    * What each tool's work is, by name: what the reply's status says while it runs (`AgentPort.activity`) and what it is
    * counted under in what the reply looked up (`Reply.lookups`). A tool not named shows nothing and counts nothing.

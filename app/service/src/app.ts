@@ -515,7 +515,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
             // the port. Both exist before any message is noted, so before any debounce can end and call this.
             act: (_conversationId, triggered) => {
               if (triggered.notices.length > 0) deps.conversations.publish({ messages: triggered.notices, conversations: [] }, app.log);
-              actOnTriggered(triggered, { announce: (run) => agentPort.announce(run), log: app.log, realtime: app.realtime, interrupt: (ids) => agentPort.interruptRuns(ids) });
+              actOnTriggered(triggered, { announce: (run) => agentPort.announce(run), log: app.log, interrupt: (ids) => agentPort.interruptRuns(ids), tell: (told) => agentPort.actOnTold(told) });
             },
             delayMs: proactiveAsked.delayMs ?? config.proactive.debounceMs,
             perGroupHour: config.proactive.perGroupHour,

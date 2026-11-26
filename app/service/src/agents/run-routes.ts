@@ -7,7 +7,7 @@ import { uuidParam } from "../schemas.ts";
 import { requirePrincipal } from "../session.ts";
 import { modelUsable } from "../models/resolve.ts";
 import { readOwnedAgent } from "./store.ts";
-import { dismissRun, groupRuns, haltAgents, latestRun, ownedAgentOf, pushBudgetReached, retryRun, stopRun, toWireRun, wireRunSchema } from "./runs.ts";
+import { dismissRun, groupRuns, haltAgents, latestRun, ownedAgentOf, retryRun, stopRun, toWireRun, wireRunSchema } from "./runs.ts";
 
 const empty = z.object({});
 const idParams = z.object({ id: uuidParam });
@@ -70,8 +70,7 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
       if (stopped) app.agentPort.announce(stopped);
       // A queued run stopped: what was noted on it is followed up (a told reply's members' calls; what an admission handed back).
       if (followed.run) app.agentPort.announce(followed.run);
-      if (followed.notices.length > 0) app.deps.conversations.publish({ messages: followed.notices, conversations: [] }, req.log);
-      pushBudgetReached(app.realtime, followed.budgetReached);
+      app.agentPort.actOnTold(followed);
       if (running) {
         // This process's worker stops it within 50 ms; a later attempt of it ends stopped (the stop is kept in its row).
         // A run nobody here is working on (another instance's, or one left by a process that is gone) would never read
@@ -109,8 +108,7 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
       for (const cancelled of halted.cancelled) app.agentPort.announce(cancelled);
       if (halted.notice) conversations.publish({ messages: [halted.notice], conversations: [] }, req.log);
       // A person's call noted on a queued run it ended gets its follow-up (announced above): what deciding it appended.
-      if (halted.followed.notices.length > 0) conversations.publish({ messages: halted.followed.notices, conversations: [] }, req.log);
-      pushBudgetReached(app.realtime, halted.followed.budgetReached);
+      app.agentPort.actOnTold(halted.followed);
       return { ok: true as const };
     },
   );

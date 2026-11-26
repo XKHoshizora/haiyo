@@ -25,7 +25,8 @@ export async function runMigrations(databaseUrl: string, opts: { quiet?: boolean
 
 /**
  * What a migration's Down removes, in words an operator can weigh before running it (`migrate:down` prints it). Declared for the
- * migrations a deploy may have to take back (ring 1a's three, 074 to 076, deploy together, and 073 under them); for any other the operator is told to read the file's Down.
+ * migrations a deploy may have to take back (ring 1a's three, 074 to 076, deploy together, and 073 under them; and 077, the limits
+ * redesign's); for any other the operator is told to read the file's Down.
  */
 export const DOWN_REMOVES: Readonly<Record<string, string>> = {
   "073_others_columns_and_social_skeleton":
@@ -36,6 +37,8 @@ export const DOWN_REMOVES: Readonly<Record<string, string>> = {
     "075's Down DELETES, for good: every 停止往来 (the stop rows of access_bars) and the bars made from blocks, every report of an Agent (agent_reports), every Agent's contact policy and picks (agents.contact_policy, contact_picked, agent_contact_picks), every operator's disable (agents.disabled_at), every answer to a persona card (social_card_answers), whose bar ended an access (agent_contacts.barred_by) and which personas were read (agents.persona_checked_version). People who were stopped can reach those Agents again, and a later Up brings back only the bars that come from blocks.",
   "076_others_reasoning":
     "076's Down drops agents.others_reasoning and agents.proactive_reasoning: every Agent's thinking level for replies to other people and for proactive replies, the ones 076 copied from each Agent's own level and every one an owner chose since (and the index that keeps one open report per reporter and Agent), and agent_runs.owner_call_seqs (which calls of each reply were accepted as its owner's own). No other row changes. The code before 074 makes such replies at the Agent's own level again. It must be undone before 075 and 074 can be.",
+  "077_call_refusals":
+    "077's Down drops the table call_refusals: every line a sender is shown under a message of theirs that a limit kept from an Agent (the owner's daily number for others' use reached, or too often). No other row changes; the code before 077 never told the sender.",
 };
 
 /**

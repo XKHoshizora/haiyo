@@ -288,7 +288,8 @@ function toWire(
  * the messages its tools found (`found`), each reader only those they can see now, by VISIBLE_JOIN as the reply itself —
  * the others dropped without a trace, the key absent when none is left; its search words (`queries`) only to the owner
  * of the Agent that sent it, in the Agent's own conversation (in the same query that decides visibility), never in a
- * group, whatever the stored body holds.
+ * group, whatever the stored body holds. A person's message carries, for its sender alone, the Agents a LIMIT kept a call of it
+ * from and why (`refused`: `call_refusals`, migration 077), read in one more query; nobody else is sent the key.
  * Every visibility decision goes through VISIBLE_JOIN, so an owner who left the group reads nothing of it; a fixed number
  * of queries however many readers and messages there are. `config`: the site models' labels, read now.
  */
@@ -391,6 +392,7 @@ export async function toWireForReaders(
 
   const { changes, owners } = await memoryChangesOf(q, msgs.filter((m) => shownToAnyone.has(m.id)));
   const personaCards = await personaCardsOf(q, msgs.filter((m) => shownToAnyone.has(m.id)));
+  const refusals = await refusalsOf(q, readers, msgs.filter((m) => shownToAnyone.has(m.id)));
 
   for (const reader of readers) {
     const list = out.get(reader)!;
@@ -437,8 +439,35 @@ export async function toWireForReaders(
         continue;
       }
       const quote = quotes.get(`${reader}|${m.conversationId}|${m.body.replyToSeq}`) ?? null;
-      list.push(toWire(m, quote, proposalFor(reader, m), reasoningFor.has(key), viaFor.get(key) ?? null, lookedFor(reader, m, key)));
+      const wire = toWire(m, quote, proposalFor(reader, m), reasoningFor.has(key), viaFor.get(key) ?? null, lookedFor(reader, m, key));
+      // Its sender's alone: what a limit refused of its calls.
+      const refused = refusals.get(`${reader}|${m.conversationId}|${m.seq}`);
+      if (refused) wire.refused = refused;
+      list.push(wire);
     }
+  }
+  return out;
+}
+
+/**
+ * The refusals of `msgs`'s calls that their senders among `readers` are sent (`call_refusals`): keyed `sender|conversation|seq`, each
+ * list in the order the refusals were recorded. One query, none when no reader sent any of them.
+ */
+async function refusalsOf(q: Queryable, readers: readonly string[], msgs: readonly StoredMessage[]): Promise<Map<string, NonNullable<WireMessage["refused"]>>> {
+  const out = new Map<string, NonNullable<WireMessage["refused"]>>();
+  const sent = msgs.filter((m) => m.kind !== "system" && m.senderId !== null && readers.includes(m.senderId.toLowerCase()));
+  if (sent.length === 0) return out;
+  const { rows } = await q.query<{ conversation_id: string; seq: string; sender_id: string; agent_id: string; reason: "others_limit" | "too_often" }>(
+    `select r.conversation_id, r.seq::text as seq, r.sender_id, r.agent_id, r.reason
+       from call_refusals r
+       join unnest($1::uuid[], $2::bigint[]) as w (conversation_id, seq) on r.conversation_id = w.conversation_id and r.seq = w.seq
+      where r.sender_id = any($3::uuid[])
+      order by r.created_at, r.agent_id`,
+    [sent.map((m) => m.conversationId), sent.map((m) => m.seq), [...readers]],
+  );
+  for (const r of rows) {
+    const key = `${r.sender_id}|${r.conversation_id}|${r.seq}`;
+    out.set(key, [...(out.get(key) ?? []), { agentId: r.agent_id, reason: r.reason }]);
   }
   return out;
 }

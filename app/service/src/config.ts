@@ -413,20 +413,18 @@ const socialSchema = z.strictObject({
 });
 
 /**
- * What bounds an Agent's use by people other than its owner (`OTHERS`; README "Agent social", Numbers): the owner's daily caps, what
- * one such reply may do, and the notes judge (ring 1b). Constants the controller tunes. Sizes are in weight, times in days or ms.
+ * What bounds an Agent's use by people other than its owner (`OTHERS`; README "Agent social", One number): the owner's one daily number,
+ * the one real tool call such a reply may make, and the notes judge (ring 1b). Constants the controller tunes. Sizes are in weight, times
+ * in days or ms.
  */
 export interface OthersConfig {
-  /** Answers others cause per owner and site day (lanes `others` and `proactive`); an account's own number replaces it. */
-  answersPerDay: number;
-  /** The same in whole points, settled plus held. */
+  /**
+   * N: the most points a site day that what others cause on all of one owner's Agents may use (lanes `others` and `proactive`; metering/
+   * others.ts `othersUseToday`); an account's own number replaces it.
+   */
   pointsPerDay: number;
-  /** Real tool calls in a whole others' reply, all tools together. */
+  /** Real tool calls in a whole others' reply, all tools together (its one tool round). */
   toolCalls: number;
-  /** Further calls a whole others' reply may have answered with the over-cap note. */
-  overCapNotes: number;
-  /** The output limit of every call of an others' reply (reasoning is `none`). */
-  outputTokens: number;
   /** The conversation shown to a social reply, in weight. */
   contextWeight: number;
   /** The notes a non-owner reply may be shown, and one judge batch, in weight. */
@@ -463,11 +461,8 @@ export interface OthersConfig {
 
 const othersSchema = z
   .strictObject({
-    answersPerDay: positive(50, 1000),
     pointsPerDay: positive(300, 100_000),
     toolCalls: positive(1, 10),
-    overCapNotes: z.number().int().min(0).max(20).default(3),
-    outputTokens: positive(800, 100_000),
     contextWeight: positive(4000, 200_000),
     notesWeight: positive(1000, 20_000),
     judgeBatch: positive(20, 200),

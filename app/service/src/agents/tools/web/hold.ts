@@ -2,7 +2,7 @@ import { MICRO_PER_POINT, siteDay } from "../../../accounts/store.ts";
 import type { Config } from "../../../config.ts";
 import type { Db, Tx } from "../../../db.ts";
 import type { ChargeTo } from "../../../metering/admit.ts";
-import { keepsRoom, othersFits } from "../../../metering/others.ts";
+import { othersAdmissible } from "../../../metering/others.ts";
 import { fuseCost, inBand, searchCharge, tool } from "../../../metering/pool.ts";
 import { classOf, lockPots, readParts } from "../../../metering/wallet.ts";
 import { budgetReachedWith, type Lane } from "../../runs.ts";
@@ -142,9 +142,9 @@ export async function recordSearchCost(db: Db, held: HeldSearch, actual: bigint 
  * 2. the money, each bound its own refusal (`RefusedBy`): the model part of the reply so far at its bound (a site model's
  *    hold, less the room kept on `AB` for a last call, `reserveMicro`, and less its searches; 0 for a provider's model),
  *    with what its searches are charged so far and this one's price, within `TOOLS.maxPoints` (`reply_cap`); no chain budget
- *    reached (runs.ts `budgetReachedWith`; `lane_budget`), and for a reply somebody other than the owner called for the
- *    owner's numbers kept (`othersFits`, counting settled plus every running reply's hold, the run's own included;
- *    `lane_budget`); and the price held whole on the owner's pots beside every promise (pool.ts
+ *    reached (runs.ts `budgetReachedWith`; `lane_budget`), and for a reply somebody other than the owner caused, others' use
+ *    of the owner's Agents today still below the owner's one number (metering/others.ts `othersAdmissible`, the measure
+ *    admission decides by, under the account lock; `lane_budget`); and the price held whole on the owner's pots beside every promise (pool.ts
  *    `tool`, class `AB` whatever the model's tier — the allowance first at settlement —, under the account lock: so a
  *    search is never paid by forgiveness; `no_points`);
  * 3. today's money fuse of the whole site (`takeFuse`, at the configured estimate) — past it, refused (`site_fuse`, and
@@ -177,20 +177,16 @@ export async function holdSearch(
   const price = BigInt(web.pointsMicroPerSearch);
   const hold = BigInt(row.hold);
   const searched = BigInt(row.web);
-  // The room kept for the last call: on the free allowance, and for every reply somebody other than the owner called for (`keepsRoom`).
-  const reserve = site && row.charge_to !== null && keepsRoom(classOf(row.charge_to as "free" | "balance"), o.lane.lane) ? o.reserveMicro : 0n;
+  // The room kept for the last call on the free allowance.
+  const reserve = site && row.charge_to !== null && classOf(row.charge_to as "free" | "balance") === "AB" ? o.reserveMicro : 0n;
   const model = site && hold - reserve - searched > 0n ? hold - reserve - searched : 0n;
   const spent = model + BigInt(row.web_charge) + price;
   if (spent > BigInt(config.tools.maxPoints) * MICRO_PER_POINT) throw new SearchRefused("reply_cap");
   if (await budgetReachedWith(t, { conversationId: o.run.conversationId, ...o.lane }, o.agent, spent)) {
     throw new SearchRefused("lane_budget");
   }
-  // An others' reply: the owner's numbers (and the Agent's own), counting what is settled today and every running reply's hold, this
-  // run's own included — its model part and its earlier searches, as `spent` counts them above — under the account lock (B3, D19).
-  if (o.lane.lane !== "own") {
-    const verdict = await othersFits(t, config, { id: o.run.id, ownerId: o.run.ownerId, agentId: o.agent.id, lane: o.lane.lane }, price, "search", now);
-    if (!verdict.ok) throw new SearchRefused("lane_budget");
-  }
+  // A reply somebody other than the owner caused: while others' use of the owner's Agents today is below the owner's one number.
+  if (o.lane.lane !== "own" && !(await othersAdmissible(t, config, o.run.ownerId, now))) throw new SearchRefused("lane_budget");
   const { pots } = await lockPots(t, config, o.run.ownerId, now);
   if (tool(pots, await readParts(t, o.run.ownerId), { run: o.run.id, cls: "AB", x: price }) === null) throw new SearchRefused("no_points");
   // Last of the rows it takes: the site's (see above).

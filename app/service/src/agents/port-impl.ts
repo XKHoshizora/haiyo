@@ -9,12 +9,12 @@ import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { placeOf, type Place } from "../social/place.ts";
 import { reach } from "../social/reach.ts";
-import { agentRoom, boundedForOthers, keepsRoom, othersFits, othersHold, OthersLimit, othersRoomAdvisory, othersWanted, type OthersLane } from "../metering/others.ts";
+import { OthersLimit, othersWanted } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
 import { classOf } from "../metering/wallet.ts";
-import { correctedEstimate, cutToWeight, estimateTokens, holdTokens, planRatio, ratioKey, readRatio, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR, weight, weightWithin } from "../metering/tokens.ts";
+import { correctedEstimate, estimateTokens, holdTokens, planRatio, ratioKey, readRatio, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR } from "../metering/tokens.ts";
 import { loadNotes, type ShownNote } from "../memory/passage.ts";
 import { markRead, type ReadEvents } from "../messages/read.ts";
 import type { ToolCall, ToolSpec } from "../models/gateway.ts";
@@ -45,7 +45,7 @@ import {
 } from "./context.ts";
 import { maxCallsOf } from "./replay.ts";
 import { contextBudget, holdsNewest, partText } from "./runtime/context.ts";
-import { FINAL_LINE, longestToolName, noteBytes, RESULT_FRAMING_BYTES } from "./runtime/loop.ts";
+import { FINAL_LINE, RESULT_FRAMING_BYTES } from "./runtime/loop.ts";
 import { postAsAgent, standingAcknowledgement, type AgentReply } from "./conversation.ts";
 import { namePartCalls } from "./mentions.ts";
 import type { Reviewer } from "../memory/reviewer.ts";
@@ -80,16 +80,15 @@ import {
   followUpOf,
   followUpOnEnd,
   hearFrom,
-  limitNotice,
   noneTold,
+  othersReachedNotice,
   ownerWroteACall,
-  pushBudgetReached,
+  refuseRunCalls,
   refusedAtAdmission,
   AUTO_RETRY_WINDOW_MS,
   RUN_COLUMNS,
   scheduleAutoRetry,
   settleLane,
-  siteToday,
   transientFailure,
   type AutoRetry,
   withTellable,
@@ -108,7 +107,7 @@ export interface AgentPortDeps {
   config: Config;
   /** Where attachments are read from for what the model is shown (`buildContext`). */
   blobs: BlobStore;
-  realtime: Pick<Hub, "pushRun" | "pushRunToOwner" | "pushDelta" | "pushActivity" | "pushAgentChanged" | "pushChargedReply" | "pushWhisper">;
+  realtime: Pick<Hub, "pushRun" | "pushRunToOwner" | "pushDelta" | "pushActivity" | "pushAgentChanged" | "pushChargedReply" | "pushWhisper" | "pushRefused">;
   conversations: ConversationEvents;
   reads: ReadEvents;
   log: Pick<FastifyBaseLogger, "error" | "warn" | "info">;
@@ -250,18 +249,6 @@ const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
  */
 const HELD_BACK: RunEnd = Object.freeze({ status: "cancelled" });
 
-/**
- * What of a reply's one budget of text (`RunFlags.othersText`) the acknowledgement that stands for it took — its own, or an earlier
- * attempt's at the same question (conversation.ts `standingAcknowledgement`) — by the text STORED; 0 when none stands (none was
- * posted, its write failed, or it is a social reply, which posts none: its preface is in its one message).
- */
-async function acknowledgedWeight(t: Tx, run: RunTicket): Promise<number> {
-  const seq = await standingAcknowledgement(t, run.conversationId, run.agentId, run.id);
-  if (seq === null) return 0;
-  const { rows } = await t.query<{ text: string | null }>("select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2", [run.conversationId, seq]);
-  return weight(rows[0]?.text ?? "");
-}
-
 /** `beginOnce`: the plan it made is not for the reply the row is at admission; nothing of it was sent or held (`begin` plans again). */
 const STALE_PLAN = Symbol("stale plan");
 
@@ -402,22 +389,6 @@ interface RunFlags {
   model: RunModel | null;
   /** What its context left out (context.ts `LoadedContext.leftOut`), from `begin` once the call is admitted; null until then, or none. */
   leftOut: LeftOut | null;
-  /**
-   * A reply for others: the ONE budget for every text of it the conversation reads (fix round 4, F3; review 5, item 8) — `most`, the
-   * others' output limit in the weight its model's tokens are estimated by. Its acknowledgement (the text it wrote before a tool call,
-   * posted at once as a message of its own) is held to half of it, so the answer always has room; its final post to what is left of it
-   * once the acknowledgement that stands for it is taken out, read at the post from what is STORED (`acknowledgedWeight`) — whenever
-   * that text may hold more than one call's limit of what the conversation reads:
-   * - `always`: made at a thinking level, where the call's one limit is that plus the level's allowance and the upstream cannot hold
-   *   the answer to it (fix round 3, point 3a);
-   * - `joined`: the text it wrote before a tool call was handed to `acknowledge` — set as it is handed over, before any write, so
-   *   whether that acknowledgement was posted, refused (a social reply keeps it in its one message) or failed (its text stays with
-   *   the reply), the final post is held to what is left;
-   * - an acknowledgement stands for it (its own, or an earlier attempt's, whose text a retry's stream keeps).
-   * Otherwise — one call at `none`, nothing before it — the upstream's limit is the bound itself and nothing is cut here. Null for the
-   * owner's own reply.
-   */
-  othersText?: { most: number; always: boolean; joined: boolean } | null;
   /**
    * A reply offered tools, from `begin` once the call is admitted: the numbers it gave the model (refs.ts — its context's
    * file labels, then what its tools hand over) and how far its conversation had come when it began (`RunScope.heardTo`).
@@ -784,8 +755,8 @@ export class DbAgentPort implements AgentPort {
           withoutTools: string | null;
           tools: { refs: RunRefs; heardTo: number; shown?: readonly string[]; ownerAsked?: boolean } | null;
           told: boolean;
-          /** Bounded as another person's reply is (`boundedForOthers`, one real tool call, the two-part hold, the others' numbers). */
-          bounded: boolean;
+          /** A reply somebody other than its owner caused: made at the Agent's level for such replies, with one tool round of one real call. */
+          forOthers: boolean;
           /** A social run: the notes it was shown and the ones left out, to be written to the run with its admission (B7c). */
           social: { shown: readonly ShownNote[]; withheld: readonly ShownNote[] } | null;
         }
@@ -836,10 +807,12 @@ export class DbAgentPort implements AgentPort {
         }
         mine.lane = state.lane;
       }
-      // Bounded as another person's reply is: every social run (its caller is never the owner: `runAccess`), and any other run not
-      // in lane `own`. Decided here by the place, so no social run can be unbounded whatever its row says; and AFTER the calls
-      // refused since were dropped, by the lane the reply has now (the calls left decide it: runs.ts `dropRefusedCalls`).
-      const bounded = social || state.lane !== "own";
+      // A reply somebody other than its owner caused: every social run (its caller is never the owner: `runAccess`), and any other run
+      // not in lane `own`. Decided here by the place, so no social run is the owner's own whatever its row says; and AFTER the calls
+      // refused since were dropped, by the lane the reply has now (the calls left decide it: runs.ts `dropRefusedCalls`). It is made as
+      // the owner's own reply is — the model's output limit, context and wallet holds alike, nothing cut for cost — at the Agent's level
+      // for such replies (`othersReasoning`, or `proactiveReasoning` for one nobody asked for), with one tool round of one real call.
+      const forOthers = social || state.lane !== "own";
       // A reply `告诉他们` queued (Task 8): what its whisper found elsewhere, read now as its owner may read it now
       // (Redesign D: a hit she can no longer read is left out), shown to it as material in its system text
       // (tools/elsewhere.ts `toldPassage`); it answers no call, and is offered no tools. Its whisper gone (deleted 30 days
@@ -858,7 +831,7 @@ export class DbAgentPort implements AgentPort {
 
       let resolved;
       try {
-        resolved = await resolveModel(t, config, agent);
+        resolved = await resolveModel(t, config, forOthers ? { ...agent, reasoning: othersWanted(agent, state.lane) } : agent);
       } catch (err) {
         if (!(err instanceof KeyUnreadableError)) throw err;
         // As a key the provider refused: its owner must save it again. Not retryable as it is.
@@ -866,9 +839,6 @@ export class DbAgentPort implements AgentPort {
         return { end: KEY_UNREADABLE };
       }
       if (!resolved) return { end: MODEL_GONE };
-      // A reply somebody other than its owner called for: its own output at most `OTHERS.outputTokens`, at the effective level of the
-      // owner's setting for such replies (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`), the hold priced at it.
-      if (bounded) resolved = boundedForOthers(resolved, config, othersWanted(agent, state.lane));
       // Whether its name part alone, typed, calls it there (mentions.ts `namePartCalls`: how a send would read it — no
       // message is read): then the system text names both ways it is called. Not for a reply nobody asked for, whose text
       // says nobody called it.
@@ -1021,22 +991,6 @@ export class DbAgentPort implements AgentPort {
         reserved = 0;
         ({ loaded, refs } = await planOf(false, 0));
       }
-      // An others' reply is offered tools only when the room its owner's numbers leave covers the hold with them (plan B7c, D11): the
-      // plan's own texts and the tools' definitions through `othersHold` with B2b's room, read without a lock — step 3 decides exactly. Else
-      // it is planned, and made, as one that offers none (one call).
-      if (offer !== null && bounded && resolved.price !== undefined && resolved.price !== null) {
-        const texts = [loaded.system.text, ...loaded.entries.map((e) => e.text), JSON.stringify(offer.tools)];
-        const heldTokens = holdTokens(texts, resolved.contextTokens, resolved.call.maxOutputTokens) + TOOL_PREAMBLE_TOKENS;
-        const roomCap = Math.max(0, resolved.contextTokens - resolved.call.maxOutputTokens) + TOOL_PREAMBLE_TOKENS;
-        const growth = roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens) + config.others.overCapNotes * noteBytes(longestToolName(offer.tools));
-        const needed = othersHold(resolved, heldTokens, { growthTokens: growth, roomCapTokens: roomCap });
-        if ((await othersRoomAdvisory(t, config, run.ownerId, agent.id, state.lane as OthersLane, now)) < needed) {
-          log.info({ metric: "others_plain_fallback", from: "advisory" }, "agent run: an others' reply made without tools: the room its owner's number leaves does not cover the hold with them");
-          offer = null;
-          reserved = 0;
-          ({ loaded, refs } = await planOf(false, 0));
-        }
-      }
       // A new Agent's greeting before its owner has written: the one turn it is shown is what is so (`GREETING_TURN`).
       if (state.greets && place === "own" && !hasOwnerTurn(loaded)) loaded.entries.push({ role: "user", text: GREETING_TURN, attachment: null });
       if (!hasOwnerTurn(loaded)) return { end: loaded.topicStart > 0 && covers <= loaded.topicStart ? STARTED_OVER : BUSY };
@@ -1055,7 +1009,7 @@ export class DbAgentPort implements AgentPort {
       const ownerWrote = offer?.web !== "offered" ? false : place === "own" ? state.lane === "own" && state.triggered_by === "human" : await ownerWroteACall(t, run.id);
       const shown = offer?.web === "offered" ? { shown: shownTexts(notes), ownerAsked: ownerWrote } : {};
       const tools = heard === null || refs === null ? null : { refs, heardTo: Number(heard.rows[0]?.seq ?? 0), ...shown };
-      return { basis: basisOf(state, covers), resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, bounded, social: socialNotes };
+      return { basis: basisOf(state, covers), resolved, loaded, covers, coveredBefore, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, forOthers, social: socialNotes };
     });
     if ("end" in first) return first.end === HELD_BACK && first.queued ? this.heldBack(run, first.queued, mine) : first.end;
 
@@ -1121,9 +1075,9 @@ export class DbAgentPort implements AgentPort {
         if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
         return { end: ENDED_QUIETLY, told };
       }
-      const { resolved, loaded, covers, key, ratio, offer, reserved, withoutTools, bounded } = first;
-      // The tools the reply is offered (step 1); none after a plain admission (below).
-      let tools = offer?.tools ?? [];
+      const { resolved, loaded, covers, key, ratio, offer, reserved, withoutTools, forOthers } = first;
+      // The tools the reply is offered (step 1).
+      const tools = offer?.tools ?? [];
       // What admission holds for the input: the most it can cost — its text at its utf-8 bytes, at most what the context
       // leaves beside the output limit (`holdTokens`), images and PDFs at their constants — whatever the model's ratio.
       // Offered tools go with the call too: their definitions are held at their bytes as well, and what providers add
@@ -1145,53 +1099,33 @@ export class DbAgentPort implements AgentPort {
       const roomCapTokens = Math.max(0, resolved.contextTokens - resolved.call.maxOutputTokens) + TOOL_PREAMBLE_TOKENS + context.fixedTokens;
       // (A tool offered with no cap of its own has only the round cap: what one round brings back is not bounded below the
       // whole of a call, so the room is that.)
-      // An others' reply (plan B2b) has one real call and at most `OTHERS.overCapNotes` notes, in one tool round: what its last call
-      // can add to the next input is one result and those notes, each at the longest answer a call past the first can get
-      // (`noteBytes`). It replaces the per-tool caps' sum, and nothing is raised after admission (`extend`).
+      // A reply for others has one tool round of one real call (`OTHERS.toolCalls`): what its last call can add to the next input is
+      // that call's result. It replaces the per-tool caps' sum.
       const growthTokens =
         offer === null
           ? 0
-          : bounded
-            ? roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens) +
-              config.others.overCapNotes * noteBytes(longestToolName(offer.tools))
+          : forOthers
+            ? roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
             : offer.tools.every((tool) => Object.hasOwn(offer.perTool, tool.name))
               ? roomGrowth(Object.values(offer.perTool).reduce((sum, n) => sum + n, 0), config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
               : roomCapTokens;
-      // An others' reply's hold is `othersHold` (call 1 and its last call), the one definition; what `admit` is given as the last-call
-      // part is what it adds to call 1's.
-      const lastCall =
-        tools.length === 0
-          ? 0n
-          : bounded
-            ? othersHold(resolved, held, { growthTokens, roomCapTokens }) - maxCostMicro(resolved, held)
-            : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
-      // What an others' reply offered tools holds if its with-tools hold does not fit its owner's number (`admit`, N3): the one
-      // call it then makes without them — the text for going without them and the same messages — at its most.
-      const plainMicro =
-        tools.length === 0 || withoutTools === null || !bounded
-          ? null
-          : maxCostMicro(resolved, holdTokens([withoutTools, ...messageTexts], resolved.contextTokens, resolved.call.maxOutputTokens) + context.fixedTokens);
+      const lastCall = tools.length === 0 ? 0n : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
       let admission;
       try {
-        // (The day its owner's numbers are read for is the day it is under the account lock, not the day `begin` started on.)
-        admission = await admitRun(t, config, run.id, run.ownerId, resolved, held, () => new Date(), lastCall, plainMicro);
+        // (The day its owner's number is read for is the day it is under the account lock, not the day `begin` started on.)
+        admission = await admitRun(t, config, run.id, run.ownerId, resolved, held, () => new Date(), lastCall);
       } catch (err) {
         if (err instanceof OthersLimit) {
-          // Its owner's number is reached (answers or points) with nothing running to wait for: no call, nothing held or charged.
-          // What step 1 took on is handed back as noted (as above); the conversation is told once a site day (`limitNotice`),
-          // the Agent pushed to its owner; a reply nobody asked for tells nobody.
+          // Others' use of its owner's Agents today has reached the owner's one number: no call, nothing held or charged. What step 1
+          // took on is handed back as noted (as above): its follow-up decides it. Each person whose call it answers is told on their own
+          // message, and its owner once a site day (`actOnTold`); a reply nobody asked for tells nobody.
           if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
           const told = noneTold();
-          // The group is told 「今天只回复它的主人」 only when that is true: every reply for others would be refused (`agentRoom`'s `reached`,
-          // the fact the owner's page shows), not because this one call, at its size and level, did not fit.
-          if (state.lane === "others" && (await agentRoom(t, config, agent, new Date())).reached) {
-            const notice = await limitNotice(t, run.conversationId, agent.id, siteToday(config));
-            if (notice) {
-              told.notices.push(notice);
-              told.budgetReached.push({ ownerId: agent.ownerId, agentId: agent.id });
-            }
+          if (state.lane === "others") {
+            told.refused.push(...(await refuseRunCalls(t, run.id, first.coveredBefore, "others_limit")));
+            told.reached.push({ ownerId: agent.ownerId, agentId: agent.id });
           }
-          log.info({ metric: "others_limit_refused", limit: err.limit }, "agent run: an owner's number for others' use is reached; it ends quietly");
+          log.info({ metric: "others_limit_refused", at: "admission" }, "agent run: its owner's number for others' use is reached; it ends quietly");
           return { end: ENDED_QUIETLY, told };
         }
         if (err instanceof HeldBack) {
@@ -1208,18 +1142,11 @@ export class DbAgentPort implements AgentPort {
             [run.id, err.behind, err.on, first.coveredBefore, first.covers],
           );
           const queued = await t.query<RunRow>(`select ${RUN_COLUMNS} from agent_runs r where r.id = $1`, [run.id]);
-          if (bounded) log.info({ metric: "others_held_back" }, "agent run: an others' reply waits for its owner's other replies to end");
           return { end: HELD_BACK, queued: { ownerId: run.ownerId, conversationId: run.conversationId, run: toWireRun(queued.rows[0]!) } };
         }
         if (!(err instanceof AppError) || err.code !== "no_quota") throw err;
         const resetsAt = err.details.resetsAt;
         return { end: { status: "failed", error: "no_quota", ...(typeof resetsAt === "string" ? { resetsAt } : {}) } };
-      }
-      // Admitted plain (N3): its with-tools hold did not fit, its one-call hold did — it makes one call without the tools it was
-      // offered, as a reply whose tools the upstream refused does (`others_plain_fallback`).
-      if (admission.plain) {
-        log.info({ metric: "others_plain_fallback", from: "admission" }, "agent run: an others' reply made without tools: only its one-call hold fit its owner's number");
-        tools = [];
       }
       // What a social reply was shown of its owner's notes, and what was left out for want of a yes: written with the admission, in this
       // transaction (null when empty, also over an earlier attempt's). Ring 1a: both always empty.
@@ -1235,7 +1162,7 @@ export class DbAgentPort implements AgentPort {
       // the tools and the steps, which the estimate does not count, and settle on their summed usage.
       await t.query("update agent_runs set input_estimate = $2, ratio_key = $3 where id = $1", [
         run.id,
-        context.fixedTokens === 0 && tools.length === 0 && !admission.plain ? context.inputTokensEstimate : null,
+        context.fixedTokens === 0 && tools.length === 0 ? context.inputTokensEstimate : null,
         key,
       ]);
       // An automatic retry is counted as run once it is admitted: its call is made now (not at its claim).
@@ -1243,15 +1170,14 @@ export class DbAgentPort implements AgentPort {
       const marked = await markRead(t, agent.id, run.conversationId, covers);
       const reasoning = resolved.reasoning;
       const planned = planRatio(ratio);
-      // An acknowledgement already stands for what it answers (an earlier attempt's: a retry): it posts none. (A reply for others: what
-      // it took of the one budget of text is read at the post, `RunFlags.othersText`.)
+      // An acknowledgement already stands for what it answers (an earlier attempt's: a retry): it posts none.
       const standing = tools.length > 0 ? await standingAcknowledgement(t, run.conversationId, run.agentId, run.id) : null;
       const acknowledged = standing !== null;
       return {
         prepared: {
           call: {
             ...resolved.call,
-            system: admission.plain && withoutTools !== null ? withoutTools : loaded.system.text,
+            system: loaded.system.text,
             ...(tools.length > 0 && withoutTools !== null ? { systemWithoutTools: withoutTools } : {}),
             messages: context.messages,
             reasoning,
@@ -1263,8 +1189,8 @@ export class DbAgentPort implements AgentPort {
               ? null
               : {
                   perTool: offer.perTool,
-                  // An others' reply: one real call, three notes, one tool round (plan B2a).
-                  ...(bounded ? { callsCap: config.others.toolCalls, overCapNotes: config.others.overCapNotes } : {}),
+                  // A reply for others: one real call, in one tool round.
+                  ...(forOthers ? { callsCap: config.others.toolCalls } : {}),
                   kinds: offer.kinds,
                   acknowledged,
                   contextTokens: resolved.contextTokens,
@@ -1293,8 +1219,8 @@ export class DbAgentPort implements AgentPort {
         log.info({ metric: "run_held_back" }, "agent run: held back until a call of its owner ends");
         return this.heldBack(run, result.queued, mine);
       }
-      // The others' daily budget's notice, if the admission's refusal appended it, goes to the group; the Agent to its owner.
-      if (result.told) this.tell(result.told);
+      // Whom the admission's refusal tells: the senders of the calls it answers, and its owner (`actOnTold`).
+      if (result.told) this.actOnTold(result.told);
       return result.end;
     }
     // Admitted after it was held back: the owner's younger replies its mark kept waiting may be claimed now.
@@ -1305,7 +1231,6 @@ export class DbAgentPort implements AgentPort {
     flags.mark = first.loaded.mark;
     flags.money = result.money;
     flags.leftOut = first.loaded.leftOut;
-    flags.othersText = first.bounded ? { most: weightWithin(config.others.outputTokens, first.ratio), always: first.resolved.reasoning !== "none", joined: false } : null;
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name, toolsUnknown: resolved.toolsUnknown === true };
     // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
@@ -1374,8 +1299,8 @@ export class DbAgentPort implements AgentPort {
    * what settlement would charge now, before its cap — and the most the next call can cost is `nextInputTokens` (the
    * worker's bound of everything that call sends — the last call's line, every step and the tools' definitions included —
    * whichever call it is: tool round or last) and the whole output limit. In this order:
-   * 1. a budget of the run's lane reached by what it has cost so far (runs.ts `budgetReachedWith`: the others' daily,
-   *    the proactive daily, the chain budget) makes the answer at most "final";
+   * 1. a reply somebody other than its owner caused has had its one tool round, and the chain budget reached by what the
+   *    reply has cost so far (runs.ts `budgetReachedWith`) makes the answer at most "final";
    * 2. so far and the next call's most within `TOOLS.maxPoints` (its searches at what they are charged), step 1 not
    *    reached, the raise fitting beside every promise on the owner's pots and the reply holding nothing over (admit.ts
    *    `raiseHold`, the pool): the model's part of the hold raised to that — "ok";
@@ -1406,8 +1331,8 @@ export class DbAgentPort implements AgentPort {
         ).rows[0]!;
         // What its searches are charged so far (tools/web/hold.ts: their actual once the engine said it, else their price).
         const searchedCharge = BigInt(row.web_charge);
-        // A provider's model costs nothing but the searches its tool held: those count with its lane. An others' reply has had its
-        // one tool round: the next call is its last, whatever the money says (plan B2a).
+        // A provider's model costs nothing but the searches its tool held: those count with its lane. A reply for others has had its
+        // one tool round: the next call is its last, whatever the money says.
         if (money.price === null || row.charge_to === null) return state.lane !== "own" ? "final" : (await budgetReachedWith(t, lane, agent, searchedCharge)) ? "final" : "ok";
         const reported = spent !== null && isCount(spent.inputTokens) && isCount(spent.outputTokens);
         const cost = costMicro(money.price, reported ? spent.inputTokens : estimated.inputChars, reported ? spent.outputTokens : estimated.outputChars);
@@ -1416,30 +1341,19 @@ export class DbAgentPort implements AgentPort {
         // model's, which is what is raised here (0 for a reply that made none: every number as before).
         const searched = BigInt(row.web);
         // The room kept for a last call on `AB` (`RunMoney.reserveMicro`): this call is within it.
-        const reserve = row.charge_to !== "memory" && keepsRoom(classOf(row.charge_to), state.lane) ? money.reserveMicro : 0n;
+        const reserve = row.charge_to !== "memory" && classOf(row.charge_to) === "AB" ? money.reserveMicro : 0n;
         // So far is at most what the reply held for its calls: each was held at its most before it was made, so a round
         // reported above that is the upstream's error — forgiven at settlement, never held for.
         const modelHeld = held - reserve - searched > 0n ? held - reserve - searched : 0n;
         const sofar = cost < modelHeld ? cost : modelHeld;
         const next = costMicro(money.price, nextInputTokens, money.maxOutputTokens);
-        // An others' reply: its hold, taken whole at admission — its first call and its last, the latter at the most a one-round
-        // reply can add to its input (`othersGrowth`, `begin`) — covers every request it can make, the tool-less finish after
-        // a discard or a refused round included. Nothing is raised here; the tool phase has ended, so the answer is "final". What
-        // the next call can cost beside what the reply has cost so far passing what is held would be a bug, and is counted.
-        if (state.lane !== "own") {
-          // What the hold covers of the model: call 1 and the last call (`held` less the searches' part).
-          const covered = held - searched > 0n ? held - searched : 0n;
-          const raise = sofar + next > covered ? sofar + next - covered : 0n;
-          if (raise > 0n) this.deps.log.warn({ metric: "others_round_raise" }, "agent run: an others' reply's next call could cost more than its hold; the hold is not raised");
-          // The number the raise would have to fit (0: what the hold covers is what the two calls can cost): asked all the same, under the account lock; the answer stays "final".
-          await othersFits(t, config, { id: run.id, ownerId: run.ownerId, agentId: agent.id, lane: state.lane }, raise, "round", new Date());
-          return "final";
-        }
         // Another round must keep room for a last call after it: renewed from the next call's input bound and what one
         // round can add, at most the whole of a call (`roomGrowth`); short of it on `AB`, the next call is the last.
         const renewed =
           reserve === 0n ? 0n : costMicro(money.price, Math.min(nextInputTokens + money.growthTokens, money.roomCapTokens), money.maxOutputTokens);
+        // A reply for others has had its one tool round: its next call is its last, held as the owner's own last call is.
         const tools =
+          state.lane === "own" &&
           sofar + searchedCharge + next <= BigInt(config.tools.maxPoints) * MICRO_PER_POINT &&
           !(await budgetReachedWith(t, lane, agent, sofar + searchedCharge));
         const answer = await raiseHold(
@@ -1531,13 +1445,9 @@ export class DbAgentPort implements AgentPort {
    * (`postAsAgent` "ack", in its own transaction), published after commit as any message of the Agent's — it calls
    * nobody — and, in a group, dropping the proactive judgement waiting there as the Agent's reply would. It cites
    * nothing: every token of its run is taken out (tools/refs.ts `takeCites`). Refused, or empty, as `post`. In a social conversation
-   * nothing is posted and the answer is "refused": the text stays with the reply (see `posting`). A reply for others is marked as
-   * handing one over (`RunFlags.othersText` `joined`) before anything is written, so its final post is held to the one budget however
-   * this ends.
+   * nothing is posted and the answer is "refused": the text stays with the reply (see `posting`).
    */
   acknowledge(run: RunTicket, said: { text: string; reasoning: string }): Promise<"posted" | "refused" | "empty"> {
-    const budget = this.flags.get(run.id)?.othersText;
-    if (budget) budget.joined = true;
     return this.posting(run, { ...said, stopped: false, truncated: false }, "ack");
   }
 
@@ -1553,18 +1463,9 @@ export class DbAgentPort implements AgentPort {
     // no stop flag (only the catch below does). If nothing follows the tool round, that text is the reply.
     if (as === "ack" && flags?.place === "social") return "refused";
     const mark = flags?.mark ?? null;
-    // A reply for others: what the conversation reads of it is held to the others' output limit as ONE budget (`RunFlags.othersText`)
-    // — its acknowledgement to half of it, its final post to what the acknowledgement that stands for it left, as STORED (read here, in
-    // the post's own transaction), whenever its text may hold more than one call's limit — each cut as a reply over its length is cut
-    // (marked `truncated`).
-    const budget = flags?.othersText ?? null;
     try {
       const posted = await this.deps.db.tx(async (t) => {
-        const stood = budget === null || as === "ack" ? 0 : await acknowledgedWeight(t, run);
-        const most =
-          budget === null ? null : as === "ack" ? Math.floor(budget.most / 2) : budget.always || budget.joined || stood > 0 ? Math.max(0, budget.most - stood) : null;
-        const over = most !== null && weight(said.text) > most;
-        const reply: AgentReply = { ...said, ...(over ? { text: cutToWeight(said.text, most), truncated: true } : {}), refs: flags?.tools?.refs ?? null };
+        const reply: AgentReply = { ...said, refs: flags?.tools?.refs ?? null };
         return postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as);
       });
       // The access or a note it was shown ended meanwhile (a social reply): the run was marked in that transaction, which committed.
@@ -1575,11 +1476,11 @@ export class DbAgentPort implements AgentPort {
       if (!posted) return "empty";
       const { message, duplicate, triggered } = posted;
       // In a group, the notices the Agent's message led to follow it; the runs it called for go to their owners, the
-      // calls over its owner's limit on other people's Agents are only logged, and the owners of Agents whose others'
-      // daily budget it found spent are pushed them.
+      // calls over its owner's limit on other people's Agents are logged, and the owners whose one number for others' use
+      // refused a call of it are told.
       if (!duplicate) this.deps.conversations.publish({ messages: [message, ...triggered.notices], conversations: [] }, this.deps.log);
       if (!duplicate && typeof message.body.proposalId === "string") this.deps.realtime.pushAgentChanged(run.ownerId, run.agentId);
-      actOnTriggered(triggered, { announce: (called) => this.announce(called), log: this.deps.log, realtime: this.deps.realtime, interrupt: (ids) => this.interruptRuns(ids) });
+      actOnTriggered(triggered, { announce: (called) => this.announce(called), log: this.deps.log, interrupt: (ids) => this.interruptRuns(ids), tell: (told) => this.actOnTold(told) });
       // The group moved on: a judgement waiting there for a person's message is dropped (the decision would refuse that
       // message now). Nothing ever waits in the Agent's own conversation.
       if (!duplicate) this.deps.proactive?.cancelled(run.conversationId);
@@ -1599,12 +1500,23 @@ export class DbAgentPort implements AgentPort {
   }
 
   /**
-   * After commit, what a refusal told (runs.ts `Told`): the notices it appended go to their group, and each Agent whose
-   * others' daily budget it found spent to its owner (`pushBudgetReached`).
+   * After commit, what a refusal told (runs.ts `Told`): the notices it appended go to their group; each sender a limit refused a call
+   * of is pushed their message again, which now carries the refusal (`Hub.pushRefused`); and each owner whose one number for others'
+   * use refused one is told once a site day, in the refused Agent's own conversation (runs.ts `othersReachedNotice`, its own
+   * transaction, published once it commits; a failure is logged and tells nobody: the refusals stand).
    */
-  private tell(told: Told): void {
+  actOnTold(told: Told): void {
     if (told.notices.length > 0) this.deps.conversations.publish({ messages: told.notices, conversations: [] }, this.deps.log);
-    pushBudgetReached(this.deps.realtime, told.budgetReached);
+    for (const r of told.refused) this.deps.realtime.pushRefused(r.conversationId, r.senderId, r.seq);
+    const owners = new Map(told.reached.map((o) => [o.ownerId, o]));
+    for (const owner of owners.values()) {
+      void this.deps.db
+        .tx((t) => othersReachedNotice(t, this.deps.config, owner))
+        .then((notice) => {
+          if (notice) this.deps.conversations.publish({ messages: [notice], conversations: [] }, this.deps.log);
+        })
+        .catch((err: unknown) => this.deps.log.error({ err, ownerId: owner.ownerId }, "the owner's notice that others' use reached their number could not be written"));
+    }
   }
 
   /**
@@ -1655,7 +1567,7 @@ export class DbAgentPort implements AgentPort {
     if (result.followed.run) this.announce(result.followed.run);
     // A notice its follow-up appended (a chain budget or the others' daily budget spent): the group is told after the
     // run's end.
-    this.tell(result.followed);
+    this.actOnTold(result.followed);
     // A reminder about money its settlement found due (metering/reminders.ts): its whisper made now, after commit, with
     // the whisper's own locks; should this fail, the periodic sweep makes it.
     if (result.reminder !== null) {
@@ -1772,7 +1684,7 @@ export class DbAgentPort implements AgentPort {
     // Tried again by the system: its owner alone is told of the queued retry (as `finish` tells it); nothing else.
     if (retried !== null && "retry" in retried) this.deps.realtime.pushRunToOwner(retried.retry.conversationId, retried.retry.run);
     else for (const a of recovered.runs) this.announce(a);
-    this.tell(recovered.told);
+    this.actOnTold(recovered.told);
     return true;
   }
 }

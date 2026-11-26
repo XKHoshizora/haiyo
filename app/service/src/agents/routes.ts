@@ -11,7 +11,6 @@ import { lockSwitchGroups, memorySwitched, SwitchAgain } from "../memory/pipelin
 import { chosenModel } from "../models/choice.ts";
 import { wireMessageSchema } from "../messages/model.ts";
 import { toWireFor } from "../messages/read.ts";
-import { othersUsedByAgents } from "../metering/others.ts";
 import { modelsUsable } from "../models/resolve.ts";
 import { avatarBudget, registerAvatarPut, storeAvatar } from "../principals/avatar-upload.ts";
 import { NAME_PART_PATTERN, swapAvatarKey } from "../principals/store.ts";
@@ -70,44 +69,12 @@ const DEFAULT_CHAIN_BUDGET = 50n * MICRO_PER_POINT;
  * money is on the wire) from 1 to 100 000; micro-points once parsed.
  */
 const chainBudget = pointsBetween(CHAIN_BUDGET_MIN, CHAIN_BUDGET_MAX);
-/**
- * `othersLimit`, an Agent's own numbers for what other people may spend through it in a site day, both sub-limits inside its owner's
- * (metering/others.ts `othersFits`, one value per owner whatever the number of Agents): `answers` (1 to 1000) and `points` (as
- * `chainBudget`, 1 to 100 000), each `null` for none of its own. `null` as a whole clears both. A new Agent has none (074).
- */
-const othersLimit = z.strictObject({ answers: z.number().int().min(1).max(1000).nullable(), points: chainBudget.nullable() }).nullable();
-/**
- * `othersBudget`, for one release: what `othersLimit.points` was before. A body naming it is read as that number alone; naming both
- * is a 400 (`othersNumbersOf`).
- */
-const othersBudget = chainBudget.nullable();
 
 /**
- * The owner's settings for proactive replies (an Agent answering in a group nobody called it in): `proactive`, how
- * readily (`proactiveLevel`), and the most it pays in a site day for them (`proactiveBudget`: as `chainBudget`, never
- * `null`: there is no unlimited setting; 20 points unless its owner says otherwise).
+ * The owner's settings for proactive replies (an Agent answering in a group nobody called it in): `proactive` and how readily
+ * (`proactiveLevel`). What they may cost is the owner's one number for others' use (metering/others.ts), never the Agent's own.
  */
 const proactiveLevel = z.enum(PROACTIVE_LEVELS);
-const proactiveBudget = chainBudget;
-/** The proactive budget's default: 70 points, as migration 074 makes the column's (not tied to the owner's others' cap, which is 300). */
-const DEFAULT_PROACTIVE_BUDGET = 70n * MICRO_PER_POINT;
-
-/** What others' use of an Agent has taken today when nothing has (a new Agent). */
-const NO_USE = { answers: 0, pointsMicro: 0n, proactiveMicro: 0n } as const;
-
-/**
- * The Agent's own others' numbers a body says: `othersLimit` as a whole, or the alias `othersBudget` for its points alone (the answers
- * then as they are); `undefined` when it names neither. Both together are a 400 (`invalid_request`).
- */
-function othersNumbersOf(
-  b: { othersLimit?: z.infer<typeof othersLimit> | undefined; othersBudget?: bigint | null | undefined },
-  current: { answers: number | null; pointsMicro: bigint | null },
-): { answers: number | null; pointsMicro: bigint | null } | undefined {
-  if (b.othersLimit !== undefined && b.othersBudget !== undefined) throw new AppError(400, "invalid_request");
-  if (b.othersLimit !== undefined) return b.othersLimit === null ? { answers: null, pointsMicro: null } : { answers: b.othersLimit.answers, pointsMicro: b.othersLimit.points };
-  if (b.othersBudget !== undefined) return { answers: current.answers, pointsMicro: b.othersBudget };
-  return undefined;
-}
 
 /**
  * How many times `PATCH /api/agents/:id` runs its transaction when the memory switch has to run it again (memory/pipeline.ts
@@ -142,11 +109,8 @@ const agentSettings = {
   replyMode: replyMode.optional(),
   groupMentions: groupMentions.optional(),
   chainBudget: chainBudget.optional(),
-  othersLimit: othersLimit.optional(),
-  othersBudget: othersBudget.optional(),
   proactive: z.boolean().optional(),
   proactiveLevel: proactiveLevel.optional(),
-  proactiveBudget: proactiveBudget.optional(),
   memory: z.boolean().optional(),
   memoryAsk: z.boolean().optional(),
   sharedNotes: z.boolean().optional(),
@@ -172,13 +136,8 @@ const agentView = z.object({
   replyMode,
   groupMentions,
   chainBudget: z.string(),
-  othersLimit: z.object({ answers: z.number().nullable(), points: z.string().nullable() }),
-  othersUsedToday: z.object({ answers: z.number(), points: z.string() }),
   proactive: z.boolean(),
   proactiveLevel,
-  proactiveBudget: z.string(),
-  /** What its proactive replies cost today (settled plus held, decimal points): the owner's view only. */
-  proactiveSpentToday: z.string(),
   /** The site's operator turned it off (`agent:disable`): it answers nobody but its owner until it is turned on again. The owner's view only. */
   operatorDisabled: z.boolean(),
   memory: z.boolean(),
@@ -211,11 +170,10 @@ const agentView = z.object({
 
 /**
  * An Agent as its owner sees it, with its configuration (persona, model, `groupMentions`, …), which nobody else is shown,
- * what others' use of it has taken today of the owner's two numbers (`used`, metering/others.ts `othersUsedByAgents`), and
  * what it calls its owner and the people and Agents the owner named (`ownerAppellation`, `appellations`), and whether its
  * model is there to call (`modelUsable`, models/resolve.ts `modelsUsable`).
  */
-const toView = (a: AgentRow, used: { answers: number; pointsMicro: bigint; proactiveMicro: bigint }, appellations: AppellationEntry[], modelUsable: boolean, web = false): z.infer<typeof agentView> => ({
+const toView = (a: AgentRow, appellations: AppellationEntry[], modelUsable: boolean, web = false): z.infer<typeof agentView> => ({
   id: a.id,
   handle: a.handle,
   name: a.name,
@@ -227,12 +185,8 @@ const toView = (a: AgentRow, used: { answers: number; pointsMicro: bigint; proac
   replyMode: a.replyMode,
   groupMentions: a.groupMentions,
   chainBudget: formatPoints(a.chainBudgetMicro),
-  othersLimit: { answers: a.othersAnswers, points: a.othersBudgetMicro === null ? null : formatPoints(a.othersBudgetMicro) },
-  othersUsedToday: { answers: used.answers, points: formatPoints(used.pointsMicro) },
   proactive: a.proactive,
   proactiveLevel: a.proactiveLevel,
-  proactiveBudget: formatPoints(a.proactiveBudgetMicro),
-  proactiveSpentToday: formatPoints(used.proactiveMicro),
   operatorDisabled: a.operatorDisabled,
   memory: a.memory,
   memoryAsk: a.memoryAsk,
@@ -269,11 +223,10 @@ export function registerAgentRoutes(
   // Whether the site offers web search now (tools/web/engine.ts `siteOffersWebSearch`): the view shows the Agent's switch only then.
   const web = siteOffersWebSearch(config, app.deps.webEngine);
   const api = app.withTypeProvider<ZodTypeProvider>();
-  /** The owner's view of `agent`, with what others' use of it has taken today, read now (metering/others.ts `othersUsedByAgents`). */
+  /** The owner's view of `agent`. */
   const viewOf = async (agent: AgentRow) =>
     toView(
       agent,
-      (await othersUsedByAgents(db, config, agent.ownerId, [agent.id], new Date())).get(agent.id) ?? NO_USE,
       (await appellationEntriesOf(db, [agent.id])).get(agent.id)!,
       (await modelsUsable(db, config, agent.ownerId, [agent.model]))[0]!,
       web,
@@ -306,8 +259,6 @@ export function registerAgentRoutes(
       await writeLimit(req, me.id);
       const b = req.body;
       assertProactiveAvailable(config, b.proactive);
-      // A new Agent has no numbers of its own unless its owner gives them (074): the owner's 300 points and 50 answers apply.
-      const own = othersNumbersOf(b, { answers: null, pointsMicro: null }) ?? { answers: null, pointsMicro: null };
       const input = {
         namePart: b.namePart,
         name: b.name,
@@ -317,11 +268,8 @@ export function registerAgentRoutes(
         replyMode: b.replyMode ?? "always",
         groupMentions: b.groupMentions ?? "members",
         chainBudgetMicro: b.chainBudget ?? DEFAULT_CHAIN_BUDGET,
-        othersBudgetMicro: own.pointsMicro,
-        othersAnswers: own.answers,
         proactive: b.proactive ?? false,
         proactiveLevel: b.proactiveLevel ?? "normal",
-        proactiveBudgetMicro: b.proactiveBudget ?? DEFAULT_PROACTIVE_BUDGET,
         memory: b.memory ?? true,
         memoryAsk: b.memoryAsk ?? false,
         sharedNotes: b.sharedNotes ?? true,
@@ -337,8 +285,8 @@ export function registerAgentRoutes(
       conversations.publish(change, req.log);
       // Its first reply, queued (it greets its owner): to its owner, and to the worker.
       if (greets) app.agentPort.announce(greets);
-      // A new Agent has had no reply yet (nothing spent) and its owner has named nobody.
-      return reply.code(201).send(toView(agent, NO_USE, [], (await modelsUsable(db, config, me.id, [agent.model]))[0]!, web));
+      // A new Agent's owner has named nobody.
+      return reply.code(201).send(toView(agent, [], (await modelsUsable(db, config, me.id, [agent.model]))[0]!, web));
     },
   );
 
@@ -395,10 +343,9 @@ export function registerAgentRoutes(
       await readLimit(req, me.id);
       const agents = await listOwnedAgents(db, me.id);
       const ids = agents.map((a) => a.id);
-      const used = await othersUsedByAgents(db, config, me.id, ids, new Date());
       const named = await appellationEntriesOf(db, ids);
       const usable = await modelsUsable(db, config, me.id, agents.map((a) => a.model));
-      return { agents: agents.map((a, i) => toView(a, used.get(a.id) ?? NO_USE, named.get(a.id)!, usable[i]!, web)) };
+      return { agents: agents.map((a, i) => toView(a, named.get(a.id)!, usable[i]!, web)) };
     },
   );
 
@@ -442,8 +389,7 @@ export function registerAgentRoutes(
         const current = await lockOwnedAgent(t, me.id, req.params.id);
         if (current.deleted) throw deletedError();
         assertProactiveAvailable(config, req.body.proactive);
-        const { chainBudget: budget, othersLimit: _limit, othersBudget: _alias, proactiveBudget: proactiveBudgetPoints, catchUp, ...fields } = req.body;
-        const others = othersNumbersOf(req.body, { answers: current.othersAnswers, pointsMicro: current.othersBudgetMicro });
+        const { chainBudget: budget, catchUp, ...fields } = req.body;
         // Turning memory off or on: what it does to what memory would read, waits for or is waiting on, in this same transaction
         // (memory/pipeline.ts `memorySwitched`). Whether to look back at what was said while it was off is said only when turning it on.
         const switching = req.body.memory !== undefined && req.body.memory !== current.memory;
@@ -451,9 +397,6 @@ export function registerAgentRoutes(
         const patch: AgentPatch = {
           ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)),
           ...(budget === undefined ? {} : { chainBudgetMicro: budget }),
-          // `null` is none of its own, and changes it like any value.
-          ...(others === undefined ? {} : { othersAnswers: others.answers, othersBudgetMicro: others.pointsMicro }),
-          ...(proactiveBudgetPoints === undefined ? {} : { proactiveBudgetMicro: proactiveBudgetPoints }),
         };
         const next = { ...current, ...patch };
         // The levels this save names, and the Agent's own whenever its model is named: each one the picker offers on the model it

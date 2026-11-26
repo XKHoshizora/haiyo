@@ -307,6 +307,15 @@ export class Hub {
   }
 
   /**
+   * A person's message at `seq` a limit refused a call of after it was sent (at admission, or when the reply it was noted on ended:
+   * agents/runs.ts `recordRefusal`): pushed to its sender again, rendered for them when it is delivered, so that it carries `refused`
+   * (`toWireForReaders` sends that to its sender only). Pushed only when the rendering carries it; nobody else is pushed anything.
+   */
+  pushRefused(conversationId: string, senderId: string, seq: number): void {
+    this.enqueue(conversationId, { kind: "charged", principalId: senderId.toLowerCase(), seq });
+  }
+
+  /**
    * A whisper of its owner's (src/whispers/), made or changed — answered, expired, its told reply moved on —, to their
    * sockets only: nobody else is pushed anything of it, ever. Read when it is delivered, so it goes as it is then (each
    * push carries the state at its delivery, and its revision). Through a queue of its owner's whispers, never its
@@ -588,7 +597,7 @@ export class Hub {
     );
     if (!rows[0]) return;
     const [message] = (await toWireForReaders(this.deps.db, [reader], [toStored(rows[0])], this.deps.config)).get(reader) ?? [];
-    if (message?.via || message?.system?.event === "memory_changed") this.push(reader, { type: "message", message });
+    if (message?.via || message?.system?.event === "memory_changed" || message?.refused) this.push(reader, { type: "message", message });
   }
 
   /**

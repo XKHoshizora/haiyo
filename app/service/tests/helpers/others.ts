@@ -107,6 +107,12 @@ export async function seedRun(db: Db, r: SeedRun): Promise<string> {
   return rows[0]!.id;
 }
 
+/** Sets the owner's one number for others' use (an account's `others_points_micro`; null: none of their own); a missing account row is made. */
+export async function setOwnerLimit(db: Db, ownerId: string, pointsMicro: bigint | null): Promise<void> {
+  await db.query("insert into accounts (principal_id) values ($1) on conflict do nothing", [ownerId]);
+  await db.query("update accounts set others_points_micro = $2 where principal_id = $1", [ownerId, pointsMicro === null ? null : pointsMicro.toString()]);
+}
+
 /** Sets the owner's own numbers (an account's `others_answers`, `others_points_micro`); a missing account row is made. */
 export async function setOwnerNumbers(db: Db, ownerId: string, n: { answers?: number | null; pointsMicro?: bigint | null }): Promise<void> {
   await db.query("insert into accounts (principal_id) values ($1) on conflict do nothing", [ownerId]);

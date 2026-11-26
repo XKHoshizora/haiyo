@@ -69,12 +69,8 @@ export interface NewAgent {
   replyMode: ReplyMode;
   groupMentions: GroupMentions;
   chainBudgetMicro: bigint;
-  othersBudgetMicro: bigint | null;
-  /** The Agent's own answers number (`othersLimit.answers`); absent: none. */
-  othersAnswers?: number | null;
   proactive: boolean;
   proactiveLevel: ProactiveLevel;
-  proactiveBudgetMicro: bigint;
   memory: boolean;
   memoryAsk: boolean;
   sharedNotes: boolean;
@@ -129,10 +125,10 @@ export async function createAgent(
   const personaVersion = input.persona === "" ? 0 : 1;
   const created = await t.query<{ created_at: Date }>(
     `insert into agents (principal_id, intro, field, persona, persona_version, reply_mode, group_mentions, reasoning,
-                         model_source, site_model_id, provider_id, provider_model, chain_budget_micro, others_budget_micro, owner_appellation,
-                         proactive, proactive_level, proactive_budget_micro, memory, memory_ask, shared_notes, whisper_elsewhere, web_search, others_answers,
+                         model_source, site_model_id, provider_id, provider_model, chain_budget_micro, owner_appellation,
+                         proactive, proactive_level, memory, memory_ask, shared_notes, whisper_elsewhere, web_search,
                          others_reasoning, proactive_reasoning)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) returning created_at`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) returning created_at`,
     [
       id,
       input.intro,
@@ -144,17 +140,14 @@ export async function createAgent(
       input.reasoning,
       ...modelParams(input.model),
       input.chainBudgetMicro.toString(),
-      input.othersBudgetMicro === null ? null : input.othersBudgetMicro.toString(),
       input.ownerAppellation,
       input.proactive,
       input.proactiveLevel,
-      input.proactiveBudgetMicro.toString(),
       input.memory,
       input.memoryAsk,
       input.sharedNotes,
       input.whisperElsewhere,
       input.webSearch ?? true,
-      input.othersAnswers ?? null,
       input.othersReasoning ?? "none",
       input.proactiveReasoning ?? "none",
     ],
@@ -188,11 +181,8 @@ export async function createAgent(
     replyMode: input.replyMode,
     groupMentions: input.groupMentions,
     chainBudgetMicro: input.chainBudgetMicro,
-    othersBudgetMicro: input.othersBudgetMicro,
-    othersAnswers: input.othersAnswers ?? null,
     proactive: input.proactive,
     proactiveLevel: input.proactiveLevel,
-    proactiveBudgetMicro: input.proactiveBudgetMicro,
     memory: input.memory,
     memoryAsk: input.memoryAsk,
     sharedNotes: input.sharedNotes,

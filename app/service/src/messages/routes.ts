@@ -17,13 +17,12 @@ import { MESSAGE_TEXT_MAX, sendMessage } from "./send.ts";
 const empty = z.object({});
 const idParams = z.object({ id: uuidParam });
 /**
- * A send's answer; `notCalled` only when a call of the sender's on someone else's Agent was refused for their caller
- * limit (the sender's alone: never stored with the message, never pushed).
+ * A send's answer: the message as its sender reads it once its calls were decided (`refused`: the Agents a limit kept a call of it
+ * from, theirs alone), and whether it was a repeat.
  */
 const sendResult = z.object({
   message: wireMessageSchema,
   duplicate: z.boolean(),
-  notCalled: z.array(z.object({ agentId: z.string(), reason: z.literal("caller_rate_limited") })).optional(),
 });
 
 const sendBody = z
@@ -54,10 +53,10 @@ const searchCursor = z
 
 /**
  * Whether a message called an Agent, as its trigger found (`maybeTrigger`): a call was acted on or refused — a run, a
- * caller's limit, a spent budget and its notice. Nothing more is read for it. A name the trigger did not reach (an Agent
+ * caller's limit, the owner's one number, a notice. Nothing more is read for it. A name the trigger did not reach (an Agent
  * outside the group, or one it skipped) reads as no; the decision then refuses that message at its first read.
  */
-const calledAnAgent = (t: Triggered): boolean => t.runs.length > 0 || t.callerLimited.length > 0 || t.budgetReached.length > 0 || t.notices.length > 0;
+const calledAnAgent = (t: Triggered): boolean => t.runs.length > 0 || t.callerLimited.length > 0 || t.reached.length > 0 || t.notices.length > 0;
 
 export function registerMessageRoutes(app: FastifyInstance): void {
   const { db, config, conversations, reads, searches, proactive } = app.deps;
@@ -79,27 +78,28 @@ export function registerMessageRoutes(app: FastifyInstance): void {
       // Rendered inside the transaction, under the locks that just proved the sender may read it. An owner's
       // message to their Agent, and a message in a group whose mentions (decided in the send) mean Agent members, queue their replies in the
       // same transaction (agents/runs.ts `maybeTrigger`; over an owner's replies a minute, a failed `rate_limited` run
-      // instead). Each is announced to its own Agent's owner. A call over its sender's limit on other people's Agents
-      // starts nothing: it is logged, and the sender alone is told which in this answer (`notCalled`). A call on someone
-      // else's Agent whose others' daily budget is spent starts nothing either: the group is told once a day (published
-      // after the message) and the Agent's owner is pushed it.
+      // instead). Each is announced to its own Agent's owner. A call a LIMIT refuses — over its sender's calls a minute on other
+      // people's Agents, over the owner's others' replies a minute, or the owner's one number for others' use reached — is told
+      // to its sender alone, on their copy of the message (`refused`: in this answer, rendered after the calls were decided, and
+      // in every later read of theirs); the owner whose number refused is told once a day. Nothing is told the group.
       const { message, duplicate, wire, triggered, lock } = await db.tx(async (t) => {
         const sent = await sendMessage(t, req.params.id, me.id, req.body, config);
+        const triggered = sent.duplicate ? noneTriggered() : await maybeTrigger(t, sent.lock, sent.message, config);
         const [rendered] = await toWireFor(t, me.id, [sent.message], config);
         if (!rendered) throw new Error("sendMessage: sender cannot read the message it just stored");
-        const triggered = sent.duplicate ? noneTriggered() : await maybeTrigger(t, sent.lock, sent.message, config);
         return { ...sent, wire: rendered, triggered };
       });
       if (!duplicate) conversations.publish({ messages: [message, ...triggered.notices], conversations: [] }, req.log);
-      actOnTriggered(triggered, { announce: (run) => app.agentPort.announce(run), log: req.log, realtime: app.realtime, interrupt: (ids) => app.agentPort.interruptRuns(ids) });
+      // (The message itself, published now, is rendered for its sender with what was refused: it is not pushed to them again.)
+      const own = { ...triggered, refused: triggered.refused.filter((r) => !(r.conversationId === message.conversationId && r.seq === message.seq)) };
+      actOnTriggered(own, { announce: (run) => app.agentPort.announce(run), log: req.log, interrupt: (ids) => app.agentPort.interruptRuns(ids), tell: (told) => app.agentPort.actOnTold(told) });
       // A person's message in a group may be answered unasked: the scheduler waits for people to stop, then has the latest
       // judged (agents/proactive/scheduler.ts); one that called an Agent cancels the wait instead. Without a judgement
       // model there is no scheduler.
       if (!duplicate && proactive !== null && lock.conversation.type === "group") {
         proactive.noted(message.conversationId, message.seq, message.senderId, calledAnAgent(triggered));
       }
-      const notCalled = triggered.callerLimited.map(({ agentId }) => ({ agentId, reason: "caller_rate_limited" as const }));
-      return reply.code(duplicate ? 200 : 201).send({ message: wire, duplicate, ...(notCalled.length > 0 ? { notCalled } : {}) });
+      return reply.code(duplicate ? 200 : 201).send({ message: wire, duplicate });
     },
   );
 
