@@ -1,12 +1,13 @@
 /**
- * A zero-call run whose origin is what it covers (`covers_seq`; T2 fix 1, F10): a reply nobody asked for (its seed, the message it was
- * decided on: agents/proactive/decide.ts), or its owner's 重试 of one (runs.ts `retryRun`) — not a told reply (its whisper is its origin) nor a
- * greeting. It answers no call: nothing is refused for its origin (`begin` holds no call of it to the access decision, its post none),
- * no line names calls, and its context shows the origin as a call's message is shown (context.ts `callsSeen`). `r`: an `agent_runs`
- * alias.
+ * A zero-call run made from a message, its origin (`agent_runs.origin_seq`; T2 fix 2, R1): a reply nobody asked for (its seed, the
+ * message it was decided on: agents/proactive/decide.ts; runs.ts `queueRun` states it for every lane `proactive` row), or its owner's
+ * 重试 of one (runs.ts `retryRun`, which copies it). STATED on the row as it is made, never inferred from its shape: a call reply with
+ * every call refused is no origin run (and is never queued: runs.ts `scheduleAutoRetry`, `retryRun`). It answers no call: nothing is
+ * refused for its origin (`begin` holds no call of it to the access decision, its post none), its system text is an unasked reply's
+ * (no line about calls, no instruction to answer whoever wrote @ it), its post quotes nothing, and its context shows the origin as a
+ * call's message is shown (context.ts `callsSeen`). `r`: an `agent_runs` alias.
  */
-export const originOnlySql = (r: string): string => `(cardinality(coalesce(${r}.call_seqs, array[${r}.covers_seq])) = 0 and ${r}.whisper_id is null and not ${r}.greets)`;
+export const originOnlySql = (r: string): string => `(${r}.origin_seq is not null)`;
 
-/** `originOnlySql` of a run as `begin` reads it. */
-export const originOnly = (run: { call_seqs: readonly unknown[] | null; told: boolean; greets: boolean }): boolean =>
-  run.call_seqs !== null && run.call_seqs.length === 0 && !run.told && !run.greets;
+/** `originOnlySql` of a run as it is read (`origin_seq`). */
+export const originOnly = (run: { origin_seq: string | number | null }): boolean => run.origin_seq !== null;

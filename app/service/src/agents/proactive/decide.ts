@@ -283,8 +283,8 @@ async function settle(t: Tx, j: Judged): Promise<Triggered> {
     return told;
   }
   // Nobody called it, but it answers the message's sender (Task 10b): what it is shown starts no earlier than their joining. The
-  // message is its origin (what it covers), never a call: it answers none (runs.ts `originOnlySql`; T2 fix 1, F10).
-  const run = await queueRun(t, agent, conversationId, seq, "human", { id: null, lane: "proactive" }, [still.senderId], []);
+  // message is its origin, stated on its row (`origin_seq`), never a call: it answers none (agents/origin.ts; T2 fix 2, R1).
+  const run = await queueRun(t, agent, conversationId, seq, "human", { id: null, lane: "proactive" }, [still.senderId], [], seq);
   await saveState(t, agent.id, conversationId, { state: afterProactive(stored.state, now, P), surchargeSeq: seq });
   return { ...told, runs: [run] };
 }

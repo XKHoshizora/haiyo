@@ -350,7 +350,7 @@ export async function callsSeen(q: Queryable, agentId: string, runId: string, li
     `select m.seq::text as seq
        from agent_runs r
        join messages m on m.conversation_id = r.conversation_id
-        and m.seq = any(case when ${originOnlySql("r")} then array[r.covers_seq] else coalesce(r.call_seqs, array[r.covers_seq]) end)
+        and m.seq = any(case when ${originOnlySql("r")} then array[r.origin_seq] else coalesce(r.call_seqs, array[r.covers_seq]) end)
        ${VISIBLE_JOIN}
       where r.id = $2 and m.kind in ('text', 'file') and (m.body -> 'fixed') is distinct from 'true'::jsonb
         and (m.seq > $3 or coalesce(m.body ->> 'text', '') <> '')

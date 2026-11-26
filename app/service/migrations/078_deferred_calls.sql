@@ -26,6 +26,13 @@ create table deferred_calls (
 create index deferred_calls_caller_idx on deferred_calls (caller_id, accepted_at) where lane = 'others';
 create index deferred_calls_owner_idx on deferred_calls (owner_id, accepted_at) where lane = 'others';
 
+-- A reply that answers no call but was made from a message (its origin): one nobody asked for (lane `proactive`, the message the
+-- judgement picked it for), or its owner's 重试 of one — stated on its row, never inferred from its shape (src/agents/origin.ts).
+-- Null for every other reply: a call reply answers `call_seqs`, a told reply its whisper, a greeting its owner's arrival.
+alter table agent_runs add column origin_seq bigint;
+-- What the code before 078 left: a reply nobody asked for stored its seed among its calls. Its seed is its origin now; it answers none.
+update agent_runs set origin_seq = covers_seq, call_seqs = '{}' where purpose = 'reply' and lane = 'proactive' and origin_seq is null;
+
 -- The cutover drains instead of inferring (deploy only while the site is idle): no reply that began under the old rules goes on. A
 -- queued reply ends `cancelled` now (it never reached a model); a running one is marked so that start-up recovery, before the worker
 -- starts, ends it `cancelled` without posting and settles what was admitted (src/agents/port-impl.ts `recoverRun`; a group reply ends
@@ -37,5 +44,8 @@ update agent_runs set interrupted = coalesce(interrupted, 'access_ended')
 update agent_runs set pending_seq = null where pending_seq is not null;
 
 -- Down Migration
--- (The calls waiting here are lost: the code before 078 never answers them. Nothing else changes back.)
+-- (The calls waiting here are lost: the code before 078 never answers them. A reply made from an origin stores it among its calls
+-- again, as the code before 078 reads one; nothing else changes back.)
+update agent_runs set call_seqs = array[origin_seq] where origin_seq is not null and cardinality(coalesce(call_seqs, '{}')) = 0;
+alter table agent_runs drop column origin_seq;
 drop table deferred_calls;

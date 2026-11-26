@@ -316,8 +316,8 @@ export async function postAsAgent(
   // A run that has ended — another instance's recovery ended it while this one was still answering — is never posted;
   // nor is one its Agent's pause or delete interrupted, even once the Agent is resumed (runs.ts); nor a run of another
   // conversation's, here.
-  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string; told: boolean; shown_notes: ShownNote[] | null }>(
-    "select status, interrupted, lane, caller_id, covers_seq::text as covers, whisper_id is not null as told, shown_notes from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
+  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string; told: boolean; origin: boolean; shown_notes: ShownNote[] | null }>(
+    "select status, interrupted, lane, caller_id, covers_seq::text as covers, whisper_id is not null as told, origin_seq is not null as origin, shown_notes from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
     [runId, agentId, conversationId],
   );
   if (run.rows[0]?.status !== "running") throw new RunNotRunning(runId, run.rows[0]?.status ?? null);
@@ -420,7 +420,8 @@ export async function postAsAgent(
         agentId,
       ])
     ).rowCount !== 0;
-  if (overtaken) body.replyToSeq = Number(run.rows[0].covers);
+  // (A reply made from an origin answers no call: it quotes nothing — agents/origin.ts; T2 fix 2, R1.)
+  if (overtaken && !run.rows[0].origin) body.replyToSeq = Number(run.rows[0].covers);
   // ... but never quoting a message of someone refused now.
   // ... nor a call of its refused now, whoever wrote it (a relay whose Agent's owner has a block since: T2 fix 1, F13).
   if (body.replyToSeq !== undefined && calls?.refusedSeqs.has(body.replyToSeq)) delete body.replyToSeq;

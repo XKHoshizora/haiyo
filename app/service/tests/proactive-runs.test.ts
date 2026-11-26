@@ -169,7 +169,12 @@ describe("a reply nobody asked for that fails", () => {
 describe("its seed is its origin, never a call (T2 fix 1, F10)", () => {
   /** The Agent's runs in `conv`, oldest first: lane, what each covers and the calls it answers. */
   const assignments = async (agentId: string, conv: string) =>
-    (await db.query("select id, status, lane, covers_seq::int as covers, call_seqs::int[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id", [agentId, conv])).rows;
+    (
+      await db.query(
+        "select id, status, lane, covers_seq::int as covers, call_seqs::int[] as calls, origin_seq::int as origin from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id",
+        [agentId, conv],
+      )
+    ).rows;
 
   it("its owner's 重试 of a failed one is the owner's own reply answering no call, with the same origin: no line about calls, nothing refused for the seed, and not retried twice", async () => {
     const w = await world();
@@ -179,16 +184,31 @@ describe("its seed is its origin, never a call (T2 fix 1, F10)", () => {
     gateway.fail("provider_unavailable");
     expect(await app.agentWorker.runOnce()).toBe(true);
     const [failed] = await assignments(anna.id, w.g);
-    expect(failed).toMatchObject({ status: "failed", lane: "proactive", covers: seed, calls: [] });
+    // Its origin stated on its row (`origin_seq`: T2 fix 2, R1), never inferred from its shape.
+    expect(failed).toMatchObject({ status: "failed", lane: "proactive", covers: seed, calls: [], origin: seed });
     // The seed's writer has a block with the owner since: the seed is no call, so nothing of the retry is refused for it.
     expect((await api(app, w.owner, "PUT", `/api/blocks/${w.third.id}`)).status).toBe(200);
     expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed!.id })).status).toBe(201);
-    expect((await assignments(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", covers: seed, calls: [] });
-    gateway.reply("今晚吃面。");
-    expect(await app.agentWorker.runOnce()).toBe(true);
+    const [, retry] = await assignments(anna.id, w.g);
+    expect(retry).toMatchObject({ status: "queued", lane: "own", covers: seed, calls: [], origin: seed });
+    // Its reply acknowledges, someone writes, then it answers: nothing quotes the seed as a call.
+    const ticket = (await app.agentPort.claimNext())!;
+    expect(ticket.id).toBe(retry!.id);
+    const prepared = await app.agentPort.begin(ticket);
+    if (!("call" in prepared)) throw new Error("begin ended the run");
+    expect(await app.agentPort.acknowledge(ticket, { text: "我想想", reasoning: "" })).toBe("posted");
+    await say(w.member, w.g, "我也在想");
+    expect(await app.agentPort.post(ticket, { text: "今晚吃面。", reasoning: "", stopped: false, truncated: false })).toBe("posted");
+    await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
     expect((await assignments(anna.id, w.g)).map((r) => r.status)).toEqual(["failed", "done"]);
-    const sent = gateway.calls.at(-1)!;
-    expect(sent.messages.map((m) => m.parts.map((p) => ("text" in p ? p.text : "")).join("")).join("\n")).not.toContain("条消息叫了你");
+    const posted = (await db.query<{ body: { replyToSeq?: number; ack?: boolean } }>("select body from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [w.g, anna.id])).rows;
+    expect(posted.find((m) => !m.body.ack)!.body.replyToSeq).toBeUndefined();
+    // Its system text is an unasked reply's: no line about calls, no instruction to answer whoever wrote @ it.
+    const { system } = prepared.call;
+    expect(system).not.toContain("条消息叫了你");
+    expect(system).not.toContain("叫你，你才回复");
+    expect(system).toContain("这次没有人点你的名");
+
     // Retried once already: a second 重试 of the same failure is refused.
     expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed!.id })).toEqual({ status: 400, json: { error: "invalid_request" } });
   });

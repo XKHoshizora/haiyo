@@ -414,7 +414,10 @@ names the variable), whatever `SOCIAL.enabled` says. After it, every open tab mu
 (`othersLimit`, `proactiveBudget`) and use page (`answers`) send what the new service refuses (400 `invalid_request`).
 
 **Migration 078 (the waiting calls; the limits redesign, Part 2).** It adds one table, `deferred_calls`: the calls on an Agent
-that wait for its reply under way in that conversation to end (Agents and runs, "One identity per reply"). It cuts over by
+that wait for its reply under way in that conversation to end (Agents and runs, "One identity per reply"), and one column,
+`agent_runs.origin_seq`: the message a reply that answers no call was made from (a reply nobody asked for, or its owner's 重试 of
+one), stated as the row is made; every reply nobody asked for that the code before it left (its seed stored among its calls) has
+its seed moved there and answers no call. It cuts over by
 draining, not by inference: its Up ends every reply queued at the deploy (`cancelled`, it never reached a model), marks every
 reply under way so that start-up recovery, before the worker starts, ends it `cancelled` without posting and settles it as any
 recovery does (nothing is charged; a group reply ends with no error, a social one `access_ended`), and clears what was noted on
@@ -422,7 +425,8 @@ any run (`agent_runs.pending_seq`, which nothing reads any more). **Deploy it on
 just then is not answered (its asker asks again). There is no production data yet; acceptance data may lose its replies in
 flight. It is taken back FIRST, before 077: `node dist/cli.js migrate:down --name 078_deferred_calls
 --i-understand-this-deletes-data --in-production`. Its Down drops the table (the calls waiting then are never answered) and
-nothing else: the replies its Up ended stay ended. The code that comes with 078 neither reads nor writes `agent_runs.pending_seq`
+`origin_seq`, after writing each reply's origin back among its calls (as the code before it reads one), and nothing else: the
+replies its Up ended stay ended. The code that comes with 078 neither reads nor writes `agent_runs.pending_seq`
 or `owner_call_seqs` (076's column, whose rows from before it 076 no longer fills in): both stay, unread, for a later cleanup
 migration. So the code from before 078, put back on the schema, finds them as it left them, empty.
 
@@ -5234,9 +5238,12 @@ nothing more is judged, and what a decision still in flight decides is dropped (
    `state.ts`); the quiet
    answers are applied (Asked to be quiet, below); and the winner replies unless one of the reasons below holds: a
    `queued` run covering the message, `triggered_by` `human`, lane `proactive`, no caller, answering no call (`call_seqs`
-   empty: the message is its origin, what it covers, never a call — nothing is refused for it, no line names calls, and it is
-   shown as a call's message would be: `agents/origin.ts`), and its surcharge raised at once, stamped with the message's seq. Its
-   owner's 重试 of one that failed is the owner's own reply (lane `own`) answering no call, from the same origin. After commit the outcome is acted on as a send acts on a mention's: its notices
+   empty) and made from that message, its origin, stated on its row (`origin_seq`, `agents/origin.ts`; never inferred from a
+   row's shape): nothing is refused for it, its system text is an unasked reply's (no line about calls, no instruction to answer
+   whoever wrote @ it), its post quotes nothing, and it is shown as a call's message would be. Its surcharge is raised at once,
+   stamped with the message's seq. Its owner's 重试 of one that failed is the owner's own reply (lane `own`), answering no call,
+   made from the same origin, and told as an unasked reply is. A call reply is never made with no call: an automatic retry whose
+   every call a limit refused since is not made (what waited behind it is taken instead), and the owner's 重试 of one is refused. After commit the outcome is acted on as a send acts on a mention's: its notices
    are published, the run is announced (the `run` push to its owner, `"replying"` to everyone else) and wakes the worker.
 
 At most one Agent replies to a message, and there is never a second choice: when the winner cannot speak, nobody does.

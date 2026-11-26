@@ -40,7 +40,7 @@ export const DOWN_REMOVES: Readonly<Record<string, string>> = {
   "077_call_refusals":
     "077's Down drops the table call_refusals: every line a sender is shown under a message of theirs that a limit kept from an Agent (the owner's daily number for others' use reached, or too often). No other row changes; the code before 077 never told the sender.",
   "078_deferred_calls":
-    "078's Down drops the table deferred_calls: every call on an Agent that waits for the Agent's reply under way in that conversation to end. Those calls are never answered. No other row changes back: the replies 078's Up ended stay ended. It must be undone before 077 can be.",
+    "078's Down drops the table deferred_calls: every call on an Agent that waits for the Agent's reply under way in that conversation to end. Those calls are never answered. It drops agent_runs.origin_seq too, after writing each reply's origin back among its calls (as the code before 078 reads a reply nobody asked for). No other row changes back: the replies 078's Up ended stay ended. It must be undone before 077 can be.",
 };
 
 /**

@@ -294,8 +294,10 @@ interface RunState {
   interrupted: Interruption | null;
   /** Its lane, fixed as its row was made (runs.ts `Caller`). */
   lane: Lane;
-  /** The calls of its assignment (`call_seqs`), as each was accepted; none for a tell or a greeting (zero-call runs). */
+  /** The calls of its assignment (`call_seqs`), as each was accepted; none for a tell, a greeting or an origin run (zero-call runs). */
   call_seqs: string[] | null;
+  /** Its origin, when it answers no call but was made from a message (agents/origin.ts): a reply nobody asked for, or a 重试 of one. */
+  origin_seq: string | null;
   /** It was held back at an earlier attempt and is not admitted yet (`held_back_by`). */
   marked: boolean;
   /** Its owner asked it to stop while it ran (runs.ts `stopRun`). */
@@ -323,7 +325,7 @@ interface RunState {
   social: boolean;
 }
 const RUN_STATE =
-  "status, covers_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
+  "status, covers_seq::text, interrupted, lane, call_seqs::text[] as call_seqs, origin_seq::text as origin_seq, held_back_by is not null as marked, stop_asked, whisper_id is not null as told, triggered_by, caller_id, greets, retry_of, auto_attempt, progressed, " +
   "case when auto_attempt > 0 then (select o.created_at from agent_runs o where o.id = agent_runs.retry_of) end as original_at, " +
   "coalesce((select sc.type = 'agent_social' from conversations sc where sc.id = agent_runs.conversation_id), false) as social";
 
@@ -817,7 +819,9 @@ export class DbAgentPort implements AgentPort {
       // Whether its name part alone, typed, calls it there (mentions.ts `namePartCalls`: how a send would read it — no
       // message is read): then the system text names both ways it is called. Not for a reply nobody asked for, whose text
       // says nobody called it.
-      const bare = group && state.lane !== "proactive" && (await namePartCalls(t, run.conversationId, agent.namePart, agent.id)) ? agent.namePart : null;
+      // A reply nobody asked for, or its owner's 重试 of one (an origin run, agents/origin.ts): told nobody called it.
+      const unasked = state.lane === "proactive" || originOnly(state);
+      const bare = group && !unasked && (await namePartCalls(t, run.conversationId, agent.namePart, agent.id)) ? agent.namePart : null;
       // The model's learned ratio, read once for the run: the context is planned at it when it is above 1 (`planRatio`),
       // and step 3 corrects by it the input estimate settlement falls back on (never the hold).
       const key = ratioKey(resolved);
@@ -867,7 +871,7 @@ export class DbAgentPort implements AgentPort {
         (mark: string, speakers: readonly Speaker[]): SystemText => {
           const tools: ToolsPrompt = offered && web !== undefined ? { web } : offered;
           const text = scene
-            ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, state.lane === "proactive", notes, told === null ? tools : "told", replyLanguage, calls.length)
+            ? groupSystemText({ ...agent, bare }, { displayName }, withRoster(scene, speakers), now, config.siteTimezone, mark, unasked, notes, told === null ? tools : "told", replyLanguage, calls.length)
 
             : socialScene
               ? socialSystemText(agent, socialScene.owners, socialScene.other, now, config.siteTimezone, mark, notes, tools, replyLanguage)
@@ -922,7 +926,7 @@ export class DbAgentPort implements AgentPort {
       web = offer?.web;
       // Only a reply offered tools says its language (`REPLY_LANGUAGE`), and not one nobody called for. The message answered: in
       // the Agent's own conversation its owner's latest at or before what the run covers; in a group the latest call it answers.
-      if (offer !== null && state.lane !== "proactive") {
+      if (offer !== null && !unasked) {
         const answered = await t.query<{ text: string | null }>(
           away
             ? "select body ->> 'text' as text from messages where conversation_id = $1 and seq = $2"

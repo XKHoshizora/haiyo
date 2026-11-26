@@ -345,6 +345,25 @@ describe("invariant 5 (retries): an automatic retry takes the slot before any wa
     ]);
   });
 
+  it("every call of the failed reply refused since, then a passing failure (T2 fix 2, R1): no retry is made — nothing is left to answer — and the call that waited is taken, once", async () => {
+    offset = 0;
+    const w = await world(retrying);
+    const { db: pool, conversations, reads } = retrying.deps;
+    const port = createAgentPort({ db: pool, config: retrying.deps.config, blobs: retrying.deps.blobs, realtime: retrying.realtime, conversations, reads, log: retrying.log, now });
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`, retrying);
+    const ticket = await claim(w.agent.id, w.g);
+    const ned = await say(w.ned, w.g, `${w.at} NED-ASK 我也问`, retrying);
+    // A limit refused mia's call since (it is in no assignment any more: C-b).
+    await db.query("insert into call_refusals (conversation_id, seq, agent_id, sender_id, reason) values ($1, $2, $3, $4, 'others_limit')", [w.g, member, w.agent.id, w.mia.id]);
+    await port.finish(ticket, failedEnd("provider_unavailable", { kind: "upstream", code: "provider_unavailable", status: 503, progress: false }), null, NOTHING);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([
+      ["failed", w.mia.id, [member]],
+      ["queued", w.ned.id, [ned]],
+    ]);
+    expect(await waiting(w.agent.id, w.g)).toEqual([]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+  });
+
   it("every call refused as it begins (T2 fix 1, F7a): its end and the taking of what waits are begin's own transaction — the process dies after, the block is lifted, recovery answers nothing", async () => {
     offset = 0;
     const w = await world(retrying);

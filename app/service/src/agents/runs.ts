@@ -745,11 +745,14 @@ export async function queueRun(
   caller: Caller,
   askers: Askers,
   calls: readonly number[] = [coversSeq],
+  origin: number | null = null,
 ): Promise<Announced> {
+  // A reply nobody asked for answers no call: the message it covers is its origin, stated here (agents/origin.ts; T2 fix 2, R1).
+  const unasked = caller.lane === "proactive";
   const { rows } = await t.query<RunRow>(
-    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane, asker_ids, call_seqs)
-     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9::bigint[]) returning ${RUN_COLUMNS}`,
-    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, caller.id, caller.lane, askersParam(askers), [...calls]],
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane, asker_ids, call_seqs, origin_seq)
+     values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9::bigint[], $10) returning ${RUN_COLUMNS}`,
+    [conversationId, agent.id, agent.ownerId, coversSeq, triggeredBy, caller.id, caller.lane, askersParam(askers), unasked ? [] : [...calls], unasked ? coversSeq : origin],
   );
   return { ownerId: agent.ownerId, conversationId, run: toWireRun(rows[0]!) };
 }
@@ -1928,12 +1931,16 @@ export async function scheduleAutoRetry(
   const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [agent.id, conversationId]);
   if (active.rowCount !== 0) return null;
   if (await overLaneLimit(t, agent.ownerId, run.lane, config, { waiting: false })) return { gaveUp: "rate_limited" };
+  // The calls it answered, less any a limit refused since (C-b): with none left there is nothing to answer again, and nothing is queued
+  // — what waited behind it is taken instead (T2 fix 2, R1: a reply with no call is never made of a call reply). It covers the last left.
   const calls = await standingSeqs(t, runId);
+  if (calls !== null && calls.length === 0) return null;
+  const covers = calls === null ? Number(run.covers ?? 0) : calls.at(-1)!;
   const queued = await t.query<RunRow>(
     `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane,
                                   asker_ids, call_seqs, whisper_id, greets, retry_of, auto_attempt, not_before)
      values ('reply', $1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9::bigint[], null, false, $10, $11, $12) returning ${RUN_COLUMNS}`,
-    [conversationId, agent.id, agent.ownerId, Number(run.covers ?? 0), run.triggered_by, run.caller_id, run.lane, run.asker_ids, calls, run.original, attempt, notBefore],
+    [conversationId, agent.id, agent.ownerId, covers, run.triggered_by, run.caller_id, run.lane, run.asker_ids, calls, run.original, attempt, notBefore],
   );
   return { retry: { ownerId: agent.ownerId, conversationId, run: toWireRun(queued.rows[0]!) }, attempt };
 }
@@ -1984,8 +1991,8 @@ interface FailedRun {
   triggered_by: TriggeredBy;
   asker_ids: string[] | null;
   whisper_id: string | null;
-  /** It answers no call, its origin what it covers (`originOnlySql`): a reply nobody asked for, or a 重试 of one. */
-  origin_only: boolean;
+  /** Its origin (`origin_seq`: agents/origin.ts), stated as it was made: a reply nobody asked for, or a 重试 of one; else null. */
+  origin_seq: string | null;
   /**
    * A later run of the pair took it on since — answered one of its calls, (a told reply) told its whisper, or (`origin_only`) answered
    * its origin with no call: retried already.
@@ -2048,7 +2055,7 @@ export async function retryRun(
   if (place === "group" && (joinedSeq === null || covers <= joinedSeq)) throw new AppError(400, "invalid_request");
   // What it answered, less what a limit refused since (C-b); with nothing left there is nothing to answer again. A told reply and a
   // reply nobody asked for (or a 重试 of one) answer no call: it is made again from its origin, answering none (T2 fix 1, F10).
-  const zeroCall = failed.whisper_id !== null || failed.origin_only;
+  const zeroCall = failed.whisper_id !== null || failed.origin_seq !== null;
   const calls = zeroCall ? [] : ((await standingSeqs(t, failed.id)) ?? [covers]);
   if (!zeroCall && calls.length === 0) throw new AppError(400, "invalid_request");
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
@@ -2058,7 +2065,17 @@ export async function retryRun(
     throw new AppError(409, "stale_whisper");
   }
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
-  const queued = await queueRun(t, agent, conversationId, zeroCall ? covers : calls.at(-1)!, failed.triggered_by, callerOf(ownerId, ownerId), failed.asker_ids, calls);
+  const queued = await queueRun(
+    t,
+    agent,
+    conversationId,
+    zeroCall ? covers : calls.at(-1)!,
+    failed.triggered_by,
+    callerOf(ownerId, ownerId),
+    failed.asker_ids,
+    calls,
+    failed.origin_seq === null ? null : Number(failed.origin_seq),
+  );
 
   // That it is its owner's own 重试 (`owner_retry`): the owner is there, so the system never tries it again by itself
   // (`scheduleAutoRetry`) — what bounds the attempts of one call across a manual 重试; and a told reply's whisper, told again.
@@ -2069,13 +2086,13 @@ export async function retryRun(
 /** Run `runId` as a 重试 reads it (`retryRun`), locked; null when there is none. */
 async function failedRunOf(t: Tx, runId: string): Promise<FailedRun | null> {
   const { rows } = await t.query<FailedRun>(
-    `select r.id, r.status, r.covers_seq::text as covers, r.triggered_by, r.asker_ids, r.whisper_id, ${originOnlySql("r")} as origin_only,
+    `select r.id, r.status, r.covers_seq::text as covers, r.triggered_by, r.asker_ids, r.whisper_id, r.origin_seq::text as origin_seq,
             exists (select 1 from agent_runs x
                      where x.agent_id = r.agent_id and x.conversation_id = r.conversation_id and x.purpose = 'reply' and x.id <> r.id
                        and (x.created_at, x.id) > (r.created_at, r.id)
                        and (r.call_seqs is null or x.call_seqs is null or x.call_seqs && r.call_seqs
                             or (r.whisper_id is not null and x.whisper_id = r.whisper_id)
-                            or (${originOnlySql("r")} and ${originOnlySql("x")} and x.covers_seq = r.covers_seq))) as taken
+                            or (${originOnlySql("r")} and x.origin_seq = r.origin_seq))) as taken
        from agent_runs r where r.id = $1 for update of r`,
     [runId],
   );

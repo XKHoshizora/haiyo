@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { recoverRuns } from "../src/agents/port-impl.ts";
 import { runMigrations, DOWN_REMOVES, undoMigration } from "../src/migrate.ts";
-import { signUp } from "./helpers/actors.ts";
+import { api, signUp } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { testDatabaseUrl } from "./helpers/env.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -58,6 +58,16 @@ describe("078: the deferred calls, and the cutover by draining", () => {
       "update agent_runs set admitted_at = now(), source = 'site', model = 'fast', charge_to = 'balance', hold_micro = 5000, money_rule = 1 where id = $1",
       [admitted],
     );
+    // A reply nobody asked for, failed, as the code before 078 stored it: its seed among its calls (T2 fix 2, R1).
+    const fifth = (await mustCreateAgent(app, owner, { handle: "dcbot5", persona: "简短。", model: { source: "site", id: "fast" } })) as { id: string; conversationId: string };
+    const seedSeq = Number((await db.query<{ seq: string }>("select seq::text from conversations where id = $1", [fifth.conversationId])).rows[0]!.seq);
+    const unasked = (
+      await db.query<{ id: string }>(
+        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, call_seqs, triggered_by, lane, caller_id, started_at, finished_at)
+         values ('reply', $1, $2, $3, 'failed', 'provider_unavailable', $4, array[$4::bigint], 'human', 'proactive', null, now(), now()) returning id`,
+        [fifth.conversationId, fifth.id, owner.id, seedSeq],
+      )
+    ).rows[0]!.id;
 
     await runMigrations(url, { quiet: true });
     expect(await tableThere()).toBe(true);
@@ -65,6 +75,11 @@ describe("078: the deferred calls, and the cutover by draining", () => {
     expect(await rowOf(running)).toEqual({ status: "running", error: null, interrupted: "access_ended", pending: null });
     expect(await rowOf(admitted)).toEqual({ status: "running", error: null, interrupted: "access_ended", pending: null });
     expect(await rowOf(done)).toMatchObject({ status: "done", pending: null });
+    // The legacy unasked reply: its seed is its origin now, and it answers no call; its owner's 重试 is an unasked reply's again.
+    const origin = async (id: string) =>
+      (await db.query<{ calls: string[]; origin: string | null; lane: string }>("select call_seqs::text[] as calls, origin_seq::text as origin, lane from agent_runs where id = $1", [id])).rows[0]!;
+    expect(await origin(unasked)).toEqual({ calls: [], origin: String(seedSeq), lane: "proactive" });
+
 
     // Start-up recovery, before the worker: each running one ends cancelled with no error, posts nothing, and is settled once — the
     // admitted one's hold released.
@@ -80,5 +95,10 @@ describe("078: the deferred calls, and the cutover by draining", () => {
     expect((await db.query<{ hold: string }>("select hold_micro::text as hold from agent_runs where id = $1", [admitted])).rows[0]!.hold).toBe("0");
     // Nothing was queued in its place.
     expect((await db.query("select 1 from agent_runs where status in ('queued', 'running')")).rowCount).toBe(0);
+    // The owner's 重试 of the legacy unasked reply: the owner's own, answering no call, from the same origin.
+    const retried = await api(app, owner, "POST", `/api/conversations/${fifth.conversationId}/runs/retry`, { runId: unasked });
+    expect(retried.status).toBe(201);
+    expect(await origin(retried.json.run.id)).toEqual({ calls: [], origin: String(seedSeq), lane: "own" });
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where id = $1", [retried.json.run.id]);
   }, 120_000);
 });
