@@ -1069,8 +1069,9 @@ interface Call {
  * someone else's Agent (any lane but `own`) first meets its caller's limit (`calledLastMinute`; a call with no caller
  * has none to meet): over it, no run — the call is returned in `callerLimited`, to log, and its sender is told on their
  * message (`recordRefusal`, `too_often`, into `told`).
- * Then the owner's replies a minute in the call's lane decide (`overLaneLimit`): a reply is queued, or the reusable
- * `rate_limited` run records it (`rateLimitedInGroup`) — for a call someone else made, its sender told so too. The owners'
+ * Then the owner's replies a minute in the call's lane decide (`overLaneLimit`): a reply is queued, or, over it, the owner's own
+ * call is recorded on the reusable `rate_limited` run (`rateLimitedInGroup`) while a call someone else made starts nothing at all
+ * and its sender alone is told (`recordRefusal`, `too_often`): no run, nothing for the owner or the other members. The owners'
  * `accounts` rows, and the caller's when they call someone else's Agent, are locked once the run rows are done with, all of
  * them in id order, before any is counted (the lock order's last step). Returns what to announce and what to log after
  * commit (it appends no notice).
@@ -1119,7 +1120,12 @@ async function reachAgents(
       continue;
     }
     const over = await overLaneLimit(t, agent.ownerId, by.lane, config);
-    if (over && by.lane !== "own") told.refused.push(...(await recordRefusal(t, conversationId, [seq], agent.id, "too_often")));
+    // Someone else's call over the owner's others' minute: its sender's line is the one outward result (no run of it, so the
+    // owner sees no failure and the other members nothing unavailable). The owner's own call: their `rate_limited` run, as ever.
+    if (over && by.lane !== "own") {
+      told.refused.push(...(await recordRefusal(t, conversationId, [seq], agent.id, "too_often")));
+      continue;
+    }
     reached.runs.push(
       over
         ? await rateLimitedInGroup(t, agent, conversationId, seq, triggeredBy, by, askers)
@@ -1469,10 +1475,10 @@ export function followUpOf(run: Announced | null, told: Told = noneTold()): Foll
  * never held to it. A group's follow-up, a person's or an Agent's, is a reply started like any other, so
  * the owner's replies a minute in its lane decide as for a mention (`overLaneLimit`; its caller's limit does not: what
  * it answers was folded into a reply under way, never refused): counted under the owner's `accounts` row (the lock
- * order's last step; the caller holds the group's row, the Agent's and the run's), and over it the Agent's reusable
- * `rate_limited` run in the group records it instead (`rateLimitedInGroup`; for a follow-up for others, the senders of its calls
- * told on their messages, `too_often`), so a member who keeps mentioning an Agent while it replies cannot keep it replying past its
- * owner's limit. Its lane and caller come from what it
+ * order's last step; the caller holds the group's row, the Agent's and the run's), and over it the owner's own follow-up is
+ * recorded on the Agent's reusable `rate_limited` run in the group instead (`rateLimitedInGroup`), while a follow-up for others
+ * starts nothing and the senders of its calls are told on their messages (`too_often`), so a member who keeps mentioning an Agent
+ * while it replies cannot keep it replying past its owner's limit. Its lane and caller come from what it
  * answers, not from the run that ended: the messages in (covers, pending] that call the Agent — a person's, as above,
  * or another Agent's while its `groupMentions` lets members call it (with no block, either way, between the Agent's
  * owner and that Agent's owner, nor the person behind that message), which is the call of the person behind it by the rule of
@@ -1556,7 +1562,11 @@ export async function followUp(
   if (await refusedByOthersLimit(t, conversationId, answered, agent, caller.lane, told, config)) return followUpOf(null, told);
   const by: TriggeredBy = asked ? "human" : "agent";
   const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
-  if (over && caller.lane !== "own") told.refused.push(...(await recordRefusal(t, conversationId, answered, agent.id, "too_often")));
+  // A follow-up for others over the owner's others' minute: nothing is queued or recorded but its calls' senders' lines.
+  if (over && caller.lane !== "own") {
+    told.refused.push(...(await recordRefusal(t, conversationId, answered, agent.id, "too_often")));
+    return followUpOf(null, told);
+  }
   const run = over
     ? await rateLimitedInGroup(t, agent, conversationId, pending, by, caller, askers, ownerCalls)
     : await queueRun(t, agent, conversationId, pending, by, caller, askers, ownerCalls);
@@ -1571,8 +1581,8 @@ export async function followUp(
  * meanwhile (`covers`, `pending`] is that same call again, in lane `others` with the visitor as caller (`callerOf`), answering
  * the visitor alone. No mention is read: everything a participant writes there calls the Agent. Nothing is queued when there is
  * no caller or no message of the visitor's in that stretch, when `reach` refuses the visitor now (an ending since: the same rule
- * as at the trigger), or when the owner's one number for others' use is reached (`refusedByOthersLimit`); over the owner's minute in
- * the lane the run is recorded `rate_limited`, as a trigger records it, and the visitor told on their messages. The caller holds the
+ * as at the trigger), or when the owner's one number for others' use is reached (`refusedByOthersLimit`); nor over the owner's
+ * minute in the lane: then the visitor alone is told, on their messages (`too_often`), and no run records it. The caller holds the
  * conversation's row and the Agent's.
  */
 async function followUpInSocial(t: Tx, agent: AgentRow, conversationId: string, covers: number, pending: number, config: RunLimits): Promise<FollowUp> {
@@ -1592,11 +1602,12 @@ async function followUpInSocial(t: Tx, agent: AgentRow, conversationId: string, 
   const told = noneTold();
   const answered = rows.map((r) => Number(r.seq));
   if (await refusedByOthersLimit(t, conversationId, answered, agent, caller.lane, told, config)) return followUpOf(null, told);
-  const over = await overLaneLimit(t, agent.ownerId, caller.lane, config);
-  if (over) told.refused.push(...(await recordRefusal(t, conversationId, answered, agent.id, "too_often")));
-  const run = over
-    ? await rateLimitedInGroup(t, agent, conversationId, pending, "human", caller, [callerId])
-    : await queueRun(t, agent, conversationId, pending, "human", caller, [callerId]);
+  // Over the owner's others' minute: nothing is queued or recorded but the visitor's lines.
+  if (await overLaneLimit(t, agent.ownerId, caller.lane, config)) {
+    told.refused.push(...(await recordRefusal(t, conversationId, answered, agent.id, "too_often")));
+    return followUpOf(null, told);
+  }
+  const run = await queueRun(t, agent, conversationId, pending, "human", caller, [callerId]);
   await answersCalls(t, run.run.id, answered);
   return followUpOf(run, told);
 }
@@ -1741,7 +1752,7 @@ export async function maybeTrigger(t: Tx, lock: WriteLock, message: StoredMessag
  * 2. A person participant's (the visitor V): `reach(V, Agent, 'social')` again; a paused or deleted Agent, or one with no model,
  *    does nothing; an active run folds the message in (a queued one covers it, a running one notes it); else, the owner's one number
  *    reached (`refusedByOthersLimit`: V told on the message, the owner once a day), nothing; else, over V's minute (`calledLastMinute`)
- *    or the owner's others' minute (`overLaneLimit`), a `rate_limited` run (reused, `rateLimitedInGroup`), V told; an Agent whose model is gone
+ *    or the owner's others' minute (`overLaneLimit`), no run: V alone is told on the message (`too_often`); an Agent whose model is gone
  *    `model_gone`; else `queueRun`, caller V, lane `others`, triggered by `human`, askers [V]. The accounts are locked in id order,
  *    last (the lock order).
  * Agent-to-Agent conversations trigger nothing but interjections in ring 1.
@@ -1780,9 +1791,10 @@ export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMes
   // The order of `reachAgents`: the visitor's own minute first (a `model_gone` row counts in it, so a visitor cannot write one
   // row a message without end), then an Agent whose model is gone (recorded failed `model_gone` at once, never held to the owner's
   // minute), then the owner's others' minute.
+  // Over a minute: the visitor's line is the one outward result (no run of it for the owner).
   const limited = async () => {
     told.refused.push(...(await recordRefusal(t, conversationId, [message.seq], agent.id, "too_often")));
-    return { ...noneTriggered(), runs: [await rateLimitedInGroup(t, agent, conversationId, message.seq, "human", caller, askers)], ...told };
+    return { ...noneTriggered(), ...told };
   };
   if ((await calledLastMinute(t, sender)) >= config.agentCallerRunsPerMinute) return limited();
   if (!(await modelUsable(t, config, { ownerId: agent.ownerId, model: agent.model }))) {

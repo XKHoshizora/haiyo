@@ -111,6 +111,11 @@ const finish = (ticket: RunTicket, on: FastifyInstance = app) => on.agentPort.fi
  * Twenty replies of `agentId`'s in each lane, its owner's own and others', started half a minute ago in `conv`: its
  * owner's replies a minute, in both lanes, are used up.
  */
+/** The senders and reasons of the refusals of calls on `agentId` in `conv` (`call_refusals`), in the order they were recorded. */
+const refusalsOf = async (agentId: string, conv: string) =>
+  (await db.query<{ sender_id: string; reason: string }>("select sender_id, reason from call_refusals where agent_id = $1 and conversation_id = $2 order by created_at, seq", [agentId, conv])).rows.map(
+    (r) => [r.sender_id, r.reason],
+  );
 const useUpTheMinute = (conv: string, agentId: string, ownerId: string) =>
   db.query(
     `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, created_at, finished_at, lane)
@@ -284,7 +289,7 @@ describe("a run's lane and who called for it", () => {
     ]);
   });
 
-  it("a rate-limited record carries them too", async () => {
+  it("a rate-limited record carries them too: the owner's own, over their minute; someone else's call over the others' minute records nothing but its sender's line", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const carl = await agentOf(w.owner, "carlbot", null);
@@ -295,15 +300,20 @@ describe("a run's lane and who called for it", () => {
       );
 
     await say(w.member, w.g, "@anna 一");
-    expect(await errors(w.g)).toEqual(["rate_limited"]);
-    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
-    // The same record covers the next mentions: another member's leaves it the first caller's, and so does the owner's (a member's
-    // call is in it: fix round 5).
-    await say(w.third, w.g, "@anna 二");
-    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
+    expect(await errors(w.g)).toEqual([]);
+    expect(await refusalsOf(anna.id, w.g)).toEqual([[w.member.id, "too_often"]]);
+    // The owner's own call: the record, its lane and caller the owner's.
     await say(w.owner, w.g, "@anna 三");
-    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
     expect(await errors(w.g)).toEqual(["rate_limited"]);
+    expect(await laneOf(anna.id, w.g)).toEqual([["own", w.owner.id]]);
+    // Another member's call meanwhile leaves it as it is: it is refused on its own, with its own line.
+    await say(w.third, w.g, "@anna 二");
+    expect(await laneOf(anna.id, w.g)).toEqual([["own", w.owner.id]]);
+    expect(await errors(w.g)).toEqual(["rate_limited"]);
+    expect(await refusalsOf(anna.id, w.g)).toEqual([
+      [w.member.id, "too_often"],
+      [w.third.id, "too_often"],
+    ]);
 
     // In its own conversation: own.
     await say(w.owner, anna.conversationId, "你好");
@@ -656,9 +666,13 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     const w = await crowd();
     const anna = await agentOf(w.owner, "anna", w.g, limited);
     await startedEarlier(w.g, anna.id, w.owner.id, "proactive", 2);
-    // The others' two a minute are used up: a member's call is recorded rate_limited.
+    // The others' two a minute are used up: a member's call starts nothing, its sender's line the one result.
     await say(w.member, w.g, "@anna 一", limited);
-    expect((await statusOf(anna.id, w.g)).at(-1)).toEqual(["failed", "rate_limited"]);
+    expect(await statusOf(anna.id, w.g)).toEqual([
+      ["done", null],
+      ["done", null],
+    ]);
+    expect(await refusalsOf(anna.id, w.g)).toEqual([[w.member.id, "too_often"]]);
     // The owner's own call in the same minute starts a reply.
     await say(w.owner, w.g, "@anna 我来问", limited);
     expect((await statusOf(anna.id, w.g)).at(-1)).toEqual(["queued", null]);
@@ -682,7 +696,7 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     expect(await retry()).toEqual({ status: 429, json: { error: "rate_limited" } });
   });
 
-  it("a follow-up over its lane's minute is recorded rate_limited with its own caller and lane, not the ended run's", async () => {
+  it("a follow-up over its lane's minute (its own caller and lane, not the ended run's): nothing is queued or recorded, its calls' senders read the line", async () => {
     const w = await crowd();
     const anna = await agentOf(w.owner, "anna", w.g, limited);
     await say(w.member, w.g, "@anna 一", limited);
@@ -691,9 +705,9 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     const asked = await say(w.third, w.g, "@anna 二", limited);
     await startedEarlier(w.g, anna.id, w.owner.id, "others", 1);
     await finish(one, limited);
-    const last = (await runsOf(anna.id, w.g)).at(-1);
-    expect(last).toEqual({ status: "failed", error: "rate_limited", covers: asked, pending: null });
-    expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.third.id]);
+    expect((await statusOf(anna.id, w.g)).filter(([status]) => status !== "done")).toEqual([]);
+    expect(await refusalsOf(anna.id, w.g)).toEqual([[w.third.id, "too_often"]]);
+    expect(asked).toBeGreaterThan(0);
   });
 
   it("others' calls do not use up the owner's own minute", async () => {
@@ -703,13 +717,13 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     await settleAll();
     await say(w.third, w.g, "@anna 二", limited);
     await settleAll();
-    // The others' two a minute are used up: a third caller's call is refused, and recorded for the owner to see.
+    // The others' two a minute are used up: a third caller's call is refused, its sender alone told.
     await say(w.fourth, w.g, "@anna 三", limited);
     expect(await statusOf(anna.id, w.g)).toEqual([
       ["done", null],
       ["done", null],
-      ["failed", "rate_limited"],
     ]);
+    expect(await refusalsOf(anna.id, w.g)).toEqual([[w.fourth.id, "too_often"]]);
     // The owner's own call in the same minute starts a reply: in the group, and in the Agent's own conversation.
     await say(w.owner, w.g, "@anna 我来问", limited);
     expect((await statusOf(anna.id, w.g)).at(-1)).toEqual(["queued", null]);

@@ -557,29 +557,6 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     expect(await peopleAfter(w.g, line)).toEqual([older, slipped, noted]);
   });
 
-  it("a mention recorded on the Agent's rate-limited reply, with the newcomer's message before it: the retry counts the newcomer", async () => {
-    const w = await world();
-    await privateThings(w);
-    const line = await newcomerJoins(w);
-    // The owner's replies a minute in the others' lane used up.
-    await db.query(
-      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane, finished_at)
-       select 'reply', $1, $2, $3, 'done', 1, 'human', 'others', now() from generate_series(1, $4)`,
-      [w.g, w.agent.id, w.v.id, app.deps.config.agentOthersRunsPerMinute],
-    );
-    const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
-    const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
-    const again = await say(w.m2, w.g, "@helper_bot 我也想知道");
-    expect((await runsOf(w.agent.id, w.g)).at(-1)).toEqual({ status: "failed", error: "rate_limited", lane: "others" });
-
-    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
-    await answer("（重试的回答）");
-    const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([older, slipped, again]);
-    expect(await peopleAfter(w.g, line)).toEqual([older, slipped, again]);
-  });
-
   it("a call noted on a claimed reply that is then released (failed, not followed up), with the newcomer's message before it: the owner's retry counts the newcomer", async () => {
     const w = await world();
     await privateThings(w);

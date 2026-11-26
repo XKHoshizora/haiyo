@@ -376,15 +376,15 @@ describe("the run push in a group", () => {
     const w = await world();
     const sockets = await connectAll(w.owner, w.member, w.member, w.third, w.third);
     const thirdS = sockets[4]!;
-    // Over the owner's replies a minute that others call for: every mention reuses one failed rate_limited run (plan
-    // ruling 7).
+    // Over the owner's own replies a minute: every mention of theirs reuses one failed rate_limited run (plan ruling 7; someone
+    // else's call over the others' minute starts nothing, others-one-number.test.ts).
     await db.query(
       `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, created_at, finished_at, lane)
-       select 'reply', $1, $2, $3, 'done', 0, now() - interval '30 seconds', now() - interval '29 seconds', 'others' from generate_series(1, 20)`,
-      [w.anna.conversationId, w.anna.id, w.owner.id],
+       select 'reply', $1, $2, $3, 'done', 0, now() - interval '30 seconds', now() - interval '29 seconds', 'own' from generate_series(1, $4)`,
+      [w.anna.conversationId, w.anna.id, w.owner.id, app.deps.config.agentRunsPerMinute],
     );
-    await say(w.member, w.g, "@anna 一");
-    await say(w.third, w.g, "@anna 二");
+    await say(w.owner, w.g, "@anna 一");
+    await say(w.owner, w.g, "@anna 二");
     const limited = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and conversation_id = $2", [w.anna.id, w.g])).rows;
     expect(limited).toHaveLength(1);
     for (const s of sockets.slice(1)) {

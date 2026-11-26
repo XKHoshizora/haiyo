@@ -41,6 +41,11 @@ async function world() {
   return { owner, v, agent, conv: seeded.conversationId };
 }
 type World = Awaited<ReturnType<typeof world>>;
+/** The visitor's refused calls in the conversation (`call_refusals`): [seq, reason], in the order they were recorded. */
+const refusals = async (w: World) =>
+  (await db.query<{ seq: string; reason: string }>("select seq::text as seq, reason from call_refusals where conversation_id = $1 and sender_id = $2 order by created_at, seq", [w.conv, w.v.id])).rows.map(
+    (r) => [r.seq, r.reason],
+  );
 
 type RunView = RunRow & { lane: string; caller_id: string | null; triggered_by: string; asker_ids: string[] | null; call_seqs: string[] | null; pending: string | null; interrupted: string | null; covers: string };
 const runsOf = async (w: World): Promise<RunView[]> =>
@@ -85,7 +90,7 @@ describe("a person's message", () => {
     expect(await runsOf(w)).toHaveLength(0);
   });
 
-  it("the person's rate limit (5 a minute) and the owner's others' minute record one rate_limited run, reused", async () => {
+  it("the person's rate limit (5 a minute): no run records it; the visitor reads the line on each message", async () => {
     const w = await world();
     for (let i = 0; i < 5; i++) {
       await db.query(
@@ -95,13 +100,12 @@ describe("a person's message", () => {
       );
     }
     const seq = await say(w.v, w.conv, "又来了");
-    const runs = (await runsOf(w)).filter((r) => r.status === "failed");
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ error: "rate_limited", lane: "others", caller_id: w.v.id, covers: String(seq) });
     const again = await say(w.v, w.conv, "再来");
-    const reused = (await runsOf(w)).filter((r) => r.status === "failed");
-    expect(reused).toHaveLength(1);
-    expect(reused[0]!.covers).toBe(String(again));
+    expect((await runsOf(w)).filter((r) => r.status !== "done")).toEqual([]);
+    expect(await refusals(w)).toEqual([
+      [String(seq), "too_often"],
+      [String(again), "too_often"],
+    ]);
   });
 
   it("the owner's number reached: no run, a line for the visitor on each message, the owner told once a site day, the conversation nothing", async () => {
@@ -194,7 +198,7 @@ describe("the review's cases", () => {
     expect((await runsOf(w)).filter((r) => r.status === "queued")).toHaveLength(1);
   });
 
-  it("m6: the owner's others' minute alone records a rate_limited run; a gone model is model_gone whatever the minute", async () => {
+  it("m6: the owner's others' minute alone refuses with the visitor's line, no run; a gone model is model_gone whatever the minute", async () => {
     const w = await world();
     for (let i = 0; i < app.deps.config.agentOthersRunsPerMinute; i++) {
       await db.query(
@@ -203,15 +207,15 @@ describe("the review's cases", () => {
         [w.conv, w.agent.id, w.owner.id],
       );
     }
-    await say(w.v, w.conv, "在吗");
-    expect((await runsOf(w)).filter((r) => r.status === "failed").map((r) => r.error)).toEqual(["rate_limited"]);
-    await db.query("update agent_runs set dismissed_at = now() where status = 'failed'");
+    const seq = await say(w.v, w.conv, "在吗");
+    expect((await runsOf(w)).filter((r) => r.status === "failed")).toEqual([]);
+    expect(await refusals(w)).toEqual([[String(seq), "too_often"]]);
     await db.query("update agents set site_model_id = 'gone' where principal_id = $1", [w.agent.id]);
     await say(w.v, w.conv, "在吗");
     expect((await runsOf(w)).filter((r) => r.status === "failed").map((r) => r.error)).toContain("model_gone");
   });
 
-  it("n1: over the visitor's own minute, a gone model is held to it first (a rate_limited run, reused), not a new model_gone row each time", async () => {
+  it("n1: over the visitor's own minute, a gone model is held to it first (the visitor's line, no run), not a new model_gone row each time", async () => {
     const w = await world();
     for (let i = 0; i < 5; i++) {
       await db.query(
@@ -223,8 +227,8 @@ describe("the review's cases", () => {
     await db.query("update agents set site_model_id = 'gone' where principal_id = $1", [w.agent.id]);
     await say(w.v, w.conv, "在吗");
     await say(w.v, w.conv, "在吗？");
-    const failed = (await runsOf(w)).filter((r) => r.status === "failed");
-    expect(failed.map((r) => r.error)).toEqual(["rate_limited"]);
+    expect((await runsOf(w)).filter((r) => r.status === "failed")).toEqual([]);
+    expect((await refusals(w)).map(([, reason]) => reason)).toEqual(["too_often", "too_often"]);
   });
 
   it("n2: an admitted reply the owner's interjection interrupted called the model: it counts toward the visitor's minute; one that never started does not", async () => {
@@ -236,8 +240,9 @@ describe("the review's cases", () => {
         [w.conv, w.agent.id, w.owner.id, w.v.id],
       );
     }
-    await say(w.v, w.conv, "还在吗");
-    expect((await runsOf(w)).filter((r) => r.status === "failed").map((r) => r.error)).toEqual(["rate_limited"]);
+    const seq = await say(w.v, w.conv, "还在吗");
+    expect((await runsOf(w)).filter((r) => r.status === "failed")).toEqual([]);
+    expect(await refusals(w)).toEqual([[String(seq), "too_often"]]);
   });
 
   it("a deleted Agent calls nobody", async () => {

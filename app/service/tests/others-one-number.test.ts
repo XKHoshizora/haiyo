@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { NOTHING } from "../src/agents/runtime/port.ts";
 import { admit, admitRun } from "../src/metering/admit.ts";
 import { OWN_KEY_NOMINAL_MICRO, othersReplyCeilingMicro, othersUseToday, OthersLimit } from "../src/metering/others.ts";
 import { maxCostMicro } from "../src/metering/prices.ts";
@@ -274,14 +275,54 @@ describe("a call refused for being too often", () => {
     expect(sent.json).not.toHaveProperty("notCalled");
   });
 
-  it("over the owner's others' replies a minute: the owner's failed rate_limited run as before, and the sender's line", async () => {
-    const k = await othersKitchen(app, db);
-    const limit = config().agentOthersRunsPerMinute;
+  /** The group's runs as `who` reads them again (`GET …/runs`): the Agent's entry, and whether any run of it there failed. */
+  const runsSeenBy = async (k: Awaited<ReturnType<typeof othersKitchen>>, who: Actor) =>
+    ((await api(app, who, "GET", `/api/conversations/${k.g}/runs`)).json.runs as Array<Record<string, unknown>>).find((r) => r.agentId === k.agent.id) ?? null;
+  const failedIn = async (conv: string) => (await db.query("select 1 from agent_runs where conversation_id = $1 and status = 'failed'", [conv])).rowCount;
+  /** `limit` replies of the owner's for others started in the last minute (by somebody else: not the member's own minute). */
+  const ownerMinuteFull = async (k: Awaited<ReturnType<typeof othersKitchen>>) => {
     const other = await newOwner();
-    for (let i = 0; i < limit; i++) await db.query("insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, lane, caller_id, finished_at) values ('reply', $1, $2, $3, 'done', 'others', $4, now())", [k.g, k.agent.id, k.owner.id, other.id]);
+    for (let i = 0; i < config().agentOthersRunsPerMinute; i++) {
+      await db.query("insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, lane, caller_id, finished_at) values ('reply', $1, $2, $3, 'done', 'others', $4, now())", [k.g, k.agent.id, k.owner.id, other.id]);
+    }
+  };
+
+  it("over the owner's others' replies a minute: the sender's line is the one outward result — no rate_limited run for the owner, nothing unavailable for the other members, pushed or read again", async () => {
+    const k = await othersKitchen(app, db);
+    await ownerMinuteFull(k);
+    const [ownerSocket, thirdSocket] = [await connect(app, k.owner), await connect(app, k.third)];
     const sent = await api(app, k.member, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 又来了", clientTxn: "n6" });
     expect(sent.json.message.refused).toEqual([{ agentId: k.agent.id, reason: "too_often" }]);
-    expect(await k.lastRun()).toMatchObject({ status: "failed", error: "rate_limited" });
+    expect(await failedIn(k.g)).toBe(0);
+    // Read again: the Agent's latest run there is as it was (done): no entry for the owner, none for the others.
+    expect([await runsSeenBy(k, k.owner), await runsSeenBy(k, k.third)]).toEqual([null, null]);
+    // Nothing pushed of it: no run frame to the owner, no state to the others (the message itself, as any).
+    await new Promise((r) => setTimeout(r, 300));
+    expect(ownerSocket.events.filter((e) => e.type === "run")).toEqual([]);
+    expect(thirdSocket.events.filter((e) => e.type === "run")).toEqual([]);
+  });
+
+  it("over the caller's minute or the owner's others' minute, a follow-up for others is no rate_limited run either: its calls' senders read the line", async () => {
+    const k = await othersKitchen(app, db);
+    await k.ask("@chef 一");
+    const ticket = (await k.port.claimNext())!;
+    const noted = await api(app, k.third, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 二", clientTxn: "n7" });
+    const seq = noted.json.message.seq as number;
+    await ownerMinuteFull(k);
+    await k.port.finish(ticket, { status: "done" }, null, NOTHING);
+    expect(await failedIn(k.g)).toBe(0);
+    expect((await db.query("select 1 from agent_runs where conversation_id = $1 and status = 'queued'", [k.g])).rowCount).toBe(0);
+    expect((await readAs(k.third, k.g, seq))?.refused).toEqual([{ agentId: k.agent.id, reason: "too_often" }]);
+  });
+
+  it("the owner's own lane over its minute is as before: the owner's rate_limited run, no line", async () => {
+    const k = await othersKitchen(app, db);
+    for (let i = 0; i < config().agentRunsPerMinute; i++) {
+      await db.query("insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, lane, caller_id, finished_at) values ('reply', $1, $2, $3, 'done', 'own', $3, now())", [k.g, k.agent.id, k.owner.id]);
+    }
+    const sent = await api(app, k.owner, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 我来问", clientTxn: "n8" });
+    expect(sent.json.message).not.toHaveProperty("refused");
+    expect(await k.lastRun()).toMatchObject({ status: "failed", error: "rate_limited", lane: "own" });
   });
 });
 
