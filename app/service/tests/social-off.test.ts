@@ -42,8 +42,8 @@ describe("an app started with the switch off", () => {
     expect((await api(app, other, "PUT", `/api/blocks/${agent.id}`)).status).toBe(404);
     // Money is live whatever the switch says.
     const use = await api(app, owner, "GET", "/api/me/others-use");
-    expect([use.status, use.json.limits, use.json.stopped]).toEqual([200, { answers: 50, points: "300" }, []]);
-    expect((await api(app, owner, "PUT", "/api/me/others-limits", { answers: 40, points: "250" })).status).toBe(200);
+    expect([use.status, use.json.limit, use.json.stopped]).toEqual([200, "300", []]);
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "250" })).status).toBe(200);
     expect((await api(app, owner, "GET", "/api/sync")).json.social).toEqual({ enabled: false });
     // Nothing of Agent social was written by any of it.
     const counts = await db.query<{ contacts: number; bars: number; reports: number; social: number }>(

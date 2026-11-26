@@ -125,7 +125,8 @@ for (const [size, contextOptions] of SIZES) {
     const peopleList = main.getByRole("list", { name: "今天用过你的 Agent 的人" });
     await expect(peopleList.getByRole("link", { name: bo.displayName })).toBeVisible();
     await expect(peopleList.getByRole("link", { name: dan.displayName })).toBeVisible();
-    await expect(main.getByText("已回别人 2 次，花了").first()).toBeVisible();
+    // Today's use of the one number (each person's row says what they used, by points).
+    await expect(main.getByText(/今天别人花了 [0-9.]+ 点/).first()).toBeVisible();
     await expect(main.getByText("现在没有停止往来的人。")).toBeVisible();
     await expect(main.getByRole("button", { name: /停止往来|恢复往来/ })).toHaveCount(0);
     await expect(main.locator("h2")).toHaveCount(1);

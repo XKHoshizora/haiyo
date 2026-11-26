@@ -6,6 +6,8 @@ import type { WebEngine, WebResult } from "../src/agents/tools/web/engine.ts";
 import { WEB_LANE_BUDGET } from "../src/agents/tools/web/tool.ts";
 import type { Config } from "../src/config.ts";
 import type { ModelCall, ModelGateway } from "../src/models/gateway.ts";
+import { outputLimit } from "../src/models/resolve.ts";
+import { othersReplyCeilingMicro } from "../src/metering/others.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -242,12 +244,17 @@ describe("a visitor's reply at the level the owner set for others", () => {
     const socket = await connect(app, w.visitor);
     await w.say(w.visitor, "周三有空吗？");
     expect(await w.worker.runOnce()).toBe(true);
-    // The call: the others' level (not the Agent's own low), the others' 800 with the level's allowance on top.
-    expect(inner.calls[0]).toMatchObject({ reasoning: "medium", maxOutputTokens: 800 + allowance });
+    // The call: the others' level (not the Agent's own low), made as the owner's own reply at that level is: the model's own output
+    // limit with the level's allowance on top.
+    const big = app.deps.config.siteModels.find((m) => m.id === BIG_MODEL.id)!;
+    const out = outputLimit(big.maxOutputTokens, big.contextTokens, "medium", app.deps.config.reasoningAllowanceTokens);
+    expect(out).toBe(big.maxOutputTokens + allowance);
+    expect(inner.calls[0]).toMatchObject({ reasoning: "medium", maxOutputTokens: out });
     // Held before the call for exactly that output (280 micro-points a token on this model) and its input.
-    expect(held >= BigInt(800 + allowance) * 280n).toBe(true);
-    // (Offered the web search, it holds for its last call too: at most twice that, and a few points of input.)
-    expect(held <= 2n * (BigInt(800 + allowance) * 280n + 5n * POINT)).toBe(true);
+    expect(held >= BigInt(out) * 280n).toBe(true);
+    // (Offered tools, it may hold for its last call too: never more than the most one such reply can cost, the ceiling the owner's
+    // page shows under the level, searches aside.)
+    expect(held <= othersReplyCeilingMicro(app.deps.config, big, "medium", null)).toBe(true);
     const run = await w.run();
     expect(run).toMatchObject({ status: "done", lane: "others", caller: w.visitor.id, hold: "0" });
     expect((await db.query<{ reasoning: string }>("select reasoning from agent_runs where id = $1", [run.id])).rows[0]!.reasoning).toBe("medium");
