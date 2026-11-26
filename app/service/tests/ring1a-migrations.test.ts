@@ -28,10 +28,10 @@ afterAll(async () => {
 
 const P = 1_000_000n;
 /**
- * Ring 1a's migrations, which deploy together: the step-L numbers, access, the two thinking levels (fix round 2), and the senders'
- * refusal lines (077, the limits redesign's Part 1), taken back first.
+ * Ring 1a's migrations, which deploy together: the step-L numbers, access, the two thinking levels (fix round 2), the senders'
+ * refusal lines (077, the limits redesign's Part 1) and the deferred calls (078, its Part 2), the last two taken back first.
  */
-const RING = ["074_others_step_l", "075_agent_social_access", "076_others_reasoning", "077_call_refusals"];
+const RING = ["074_others_step_l", "075_agent_social_access", "076_others_reasoning", "077_call_refusals", "078_deferred_calls"];
 /** Whether 077's table is there. */
 const refusalsTable = async () => (await db.query<{ t: string | null }>("select to_regclass('public.call_refusals')::text as t")).rows[0]!.t !== null;
 const levelColumns = async () =>
@@ -41,8 +41,10 @@ const levels = async () =>
   Object.fromEntries(
     (await db.query<{ tag: string; r: string; o: string; p: string }>("select p.handle::text as tag, a.reasoning as r, a.others_reasoning as o, a.proactive_reasoning as p from agents a join principals p on p.id = a.principal_id order by 1")).rows.map((x) => [x.tag, [x.r, x.o, x.p]]),
   );
-/** Whether `agent_runs.owner_call_seqs` is there (076, fix round 4). */
+/** Whether `agent_runs.owner_call_seqs` is there (076, fix round 4; unread and unwritten since 078). */
 const ownerCallsColumn = async () => (await db.query("select 1 from information_schema.columns where table_name = 'agent_runs' and column_name = 'owner_call_seqs'")).rowCount === 1;
+/** Whether 078's table is there. */
+const deferredTable = async () => (await db.query<{ t: string | null }>("select to_regclass('public.deferred_calls')::text as t")).rows[0]!.t !== null;
 /** A run of the Agent `agentId` in its own conversation as the code before 076 left it (no `owner_call_seqs`): `caller` its owner, somebody else, or nobody. */
 const oldRun = async (agentId: string, status: string, lane: string, caller: "owner" | "other" | null, covers: number, calls: number[] | null) =>
   (
@@ -55,6 +57,7 @@ const oldRun = async (agentId: string, status: string, lane: string, caller: "ow
     )
   ).rows[0]!.id;
 const ownerCalls = async (runId: string) => (await db.query<{ c: number[] }>("select owner_call_seqs::int[] as c from agent_runs where id = $1", [runId])).rows[0]!.c;
+const statusOf = async (runId: string) => (await db.query<{ s: string }>("select status as s from agent_runs where id = $1", [runId])).rows[0]!.s;
 const applied = async () => (await db.query<{ name: string }>("select name from pgmigrations where name >= '073' order by name")).rows.map((r) => r.name);
 /** Each Agent's two numbers in points, by the name part it was made with. */
 const numbers = async () =>
@@ -100,13 +103,17 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     const messagesBefore = (await db.query<{ n: number }>("select count(*)::int as n from messages")).rows[0]!.n;
 
     // ── Down for both, in reverse. The command refuses anything but the last one applied.
-    expect((await applied()).slice(-4)).toEqual(RING);
-    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 077_call_refusals/);
+    expect((await applied()).slice(-5)).toEqual(RING);
+    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 078_deferred_calls/);
     // Not without the operator's word that data goes: nothing is undone.
-    await expect(undoMigration(url, "075_agent_social_access", sure)).rejects.toThrow(/last migration applied is 077_call_refusals/);
-    await expect(undoMigration(url, "077_call_refusals", quiet)).rejects.toThrow(/--i-understand-this-deletes-data/);
+    await expect(undoMigration(url, "075_agent_social_access", sure)).rejects.toThrow(/last migration applied is 078_deferred_calls/);
+    await expect(undoMigration(url, "078_deferred_calls", quiet)).rejects.toThrow(/--i-understand-this-deletes-data/);
+    expect((await applied()).at(-1)).toBe("078_deferred_calls");
+    // 078's Down drops its table, and nothing else; so does 077's.
+    expect(await deferredTable()).toBe(true);
+    await undoMigration(url, "078_deferred_calls", sure);
+    expect(await deferredTable()).toBe(false);
     expect((await applied()).at(-1)).toBe("077_call_refusals");
-    // 077's Down drops its table, and nothing else.
     expect(await refusalsTable()).toBe(true);
     await undoMigration(url, "077_call_refusals", sure);
     expect(await refusalsTable()).toBe(false);
@@ -142,18 +149,15 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
       unasked: await oldRun(ids.big!, "queued", "proactive", null, 9, [9]),
     };
 
-    // ── Up for all three, as a deploy runs them.
+    // ── Up for all of them, as a deploy runs them.
     await runMigrations(url, quiet);
     expect(await levelColumns()).toEqual(["others_reasoning", "proactive_reasoning"]);
     expect(await refusalsTable()).toBe(true);
-    // 076 (fix round 4, R1): a run from before has NO owner call, except one that is its owner's own already (lane own, its caller
-    // the owner): its calls are taken as the owner's (what it covers, when its calls were never recorded). Nothing is guessed from
-    // who wrote a message: a reply for others, one nobody asked for, and one in the owner's lane with no caller have none.
-    expect(await ownerCalls(legacy.ownQueued)).toEqual([5, 7]);
-    expect(await ownerCalls(legacy.ownFailedNoCalls)).toEqual([4]);
-    expect(await ownerCalls(legacy.ownNobody)).toEqual([]);
-    expect(await ownerCalls(legacy.othersRunning)).toEqual([]);
-    expect(await ownerCalls(legacy.unasked)).toEqual([]);
+    expect(await deferredTable()).toBe(true);
+    // 076 infers no owner call from a run from before any more (078: the column is neither read nor written): it is empty on every one.
+    for (const id of Object.values(legacy)) expect(await ownerCalls(id)).toEqual([]);
+    // 078 drains: the queued ones end cancelled; the one under way is left to recovery, marked (its end: tests/deferred-calls-migration).
+    expect([await statusOf(legacy.ownQueued), await statusOf(legacy.unasked), await statusOf(legacy.othersRunning), await statusOf(legacy.ownFailedNoCalls)]).toEqual(["cancelled", "cancelled", "running", "failed"]);
     await db.query("delete from agent_runs where id = any($1::uuid[])", [Object.values(legacy)]);
     // 076 (fix round 3, point 6): an EXISTING Agent's two new levels are its own level (what such replies run at today); none stays none.
     expect(await levels()).toEqual({ olddefault: ["none", "none", "none"], nolimit: ["none", "none", "none"], chosen: ["high", "high", "high"], seventy: ["none", "none", "none"], small: ["low", "low", "low"], big: ["max", "max", "max"] });
@@ -185,6 +189,7 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
 
     // ── A deploy that goes wrong, first way: 075 fails (here: a table in its way). Both were pending in one transaction, so 074 is not
     // applied either: the old code keeps serving on exactly the schema it had, and nothing has to be taken back.
+    await undoMigration(url, "078_deferred_calls", sure);
     await undoMigration(url, "077_call_refusals", sure);
     await undoMigration(url, "076_others_reasoning", sure);
     await undoMigration(url, "075_agent_social_access", sure);
@@ -203,7 +208,7 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     await db.query("alter table access_bars rename to access_bars_in_the_way");
 
     // ── The same when 076 fails (fix round 3): it meets a relation named as its index, after 074 and 075 have run in the same
-    // transaction. Nothing of the four is applied: no bars, no cleared number, no new column, no table of 077.
+    // transaction. Nothing of them is applied: no bars, no cleared number, no new column, no table of 077 or 078.
     await db.query("create table agent_reports_one_open_idx (in_the_way int)");
     await expect(runMigrations(url, quiet)).rejects.toThrow(/agent_reports_one_open_idx/);
     expect((await applied()).at(-1)).toBe("073_others_columns_and_social_skeleton");
@@ -212,6 +217,7 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     expect((await db.query<{ t: string | null }>("select to_regclass('public.access_bars')::text as t")).rows[0]!.t).toBeNull();
     expect(await levelColumns()).toEqual([]);
     expect(await refusalsTable()).toBe(false);
+    expect(await deferredTable()).toBe(false);
     await db.query("drop table agent_reports_one_open_idx");
 
     // ── Second way: both applied, and the new container never serves; the old code is what answers, on the new schema. It reads the
@@ -220,8 +226,9 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
     expect(await numbers()).toEqual(first);
     expect(Object.values(await numbers()).filter(([others]) => others === null)).toHaveLength(2);
     // The take-back is 075's Down and THEN 074's: the other order is refused and undoes nothing.
-    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 077_call_refusals/);
-    expect((await applied()).slice(-4)).toEqual(RING);
+    await expect(undoMigration(url, "074_others_step_l", sure)).rejects.toThrow(/last migration applied is 078_deferred_calls/);
+    expect((await applied()).slice(-5)).toEqual(RING);
+    await undoMigration(url, "078_deferred_calls", sure);
     await undoMigration(url, "077_call_refusals", sure);
     await undoMigration(url, "076_others_reasoning", sure);
     await undoMigration(url, "075_agent_social_access", sure);
@@ -236,7 +243,7 @@ describe("074 and 075 through the runner, on rows in production's shape", () => 
 
     // ── Fixed forward: both run again; every row is where the first Up put it.
     await runMigrations(url, quiet);
-    expect((await applied()).slice(-4)).toEqual(RING);
+    expect((await applied()).slice(-5)).toEqual(RING);
     expect(await numbers()).toEqual(first);
     expect((await db.query("select setter_id, other_id, kind from access_bars order by 1, 2")).rows).toEqual(pairs);
     // And the service, on what the migrations left, answers as ever.
