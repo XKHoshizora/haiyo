@@ -4081,7 +4081,8 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
       owner, either way, made since (for an Agent's message: its owner, or the person behind it), or whose call a limit refused
       since, is dropped — no longer a call it answers, nobody with such a block among its askers, and what it covers ends at the
       latest call left — and a run with no call left ends `cancelled` with no error (no call, nothing held or charged, no message,
-      nothing to retry). Its lane and caller stay as its row was made. A model that no longer resolves ends `failed`
+      nothing to retry), recorded in this step's own transaction with what waited behind it taken, so a process that dies right
+      after leaves no running row for recovery to answer or retry. Its lane and caller stay as its row was made. A model that no longer resolves ends `failed`
       (`model_gone`, not retryable; `provider_rejected`, not retryable, when its provider's saved key cannot be opened). The
       run takes on nothing that came after its row was made (a call meanwhile waits for a reply of its own: One identity per
       reply) — and a reply nobody had asked for (lane `proactive`) with a call waiting behind it ends here, `cancelled` with no

@@ -214,7 +214,8 @@ const NOTHING_LEFT: RunEnd = { status: "cancelled" };
 /**
  * Every call the reply answers (a told reply answers none: never so) was made by someone who has had a block with the Agent's owner, either way, since: each
  * would be refused now (runs.ts `dropRefusedCalls`), so with none left the reply ends before any call — nothing held or
- * charged, no message, nothing to retry.
+ * charged, no message, nothing to retry — recorded in `begin`'s own transaction with what waited behind it taken (`endHere`,
+ * `ENDED_AT_ADMISSION`: a process that dies right after leaves nothing for recovery to answer; T2 fix 1, F7a).
  */
 const BLOCKED_SINCE: RunEnd = { status: "cancelled" };
 /**
@@ -248,10 +249,10 @@ const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
  */
 const HELD_BACK: RunEnd = Object.freeze({ status: "cancelled" });
 /**
- * Refused at admission by its owner's one number (`OthersLimit`), and ended in that very transaction (fix round 1, F5): the refusal
- * and the run's end commit together, so no recovery can answer a call its sender was told was refused. `begin` announced its end
- * and the reply queued for what waited behind it; `finish`, given this very value, does nothing. Compared by identity, never by its
- * shape.
+ * Ended in `begin`'s own transaction (`endHere`): refused at admission by its owner's one number (`OthersLimit`; fix round 1, F5), or
+ * every call of it refused as it begins (`BLOCKED_SINCE`; T2 fix 1, F7a). The refusal and the run's end commit together, so no
+ * recovery can answer a call its sender was told was refused, nor retry one. `begin` announced its end and the reply queued for what
+ * waited behind it; `finish`, given this very value, does nothing. Compared by identity, never by its shape.
  */
 const ENDED_AT_ADMISSION: RunEnd = Object.freeze({ status: "cancelled" });
 
@@ -729,7 +730,7 @@ export class DbAgentPort implements AgentPort {
     // This attempt's flags (`claimNext` started them): a later attempt of the same run has flags of its own.
     const mine = this.flagsOf(run.id);
     const first = await db.tx(async (t): Promise<
-      | { end: RunEnd }
+      | { end: RunEnd; recordedEnd?: Recorded | null }
       | {
           /** What the plan was made for (its calls left, the Agent's settings): step 3 admits it only for the same. */
           basis: PlanBasis;
@@ -775,7 +776,7 @@ export class DbAgentPort implements AgentPort {
       // covers is merely the group's latest message then, anyone's).
       if (group && !state.told) {
         const kept = await dropRefusedCalls(t, run.id);
-        if (kept === null) return { end: BLOCKED_SINCE };
+        if (kept === null) return { end: ENDED_AT_ADMISSION, recordedEnd: await this.endHere(t, run, BLOCKED_SINCE) };
         Object.assign(state, kept);
       }
       // A reply somebody other than its owner caused: every social run (its caller is never the owner: `runAccess`), and any other run
@@ -978,7 +979,11 @@ export class DbAgentPort implements AgentPort {
       const tools = heardTo === null || refs === null ? null : { refs, heardTo, ...shown };
       return { basis: basisOf(state, agent, levelOf(agent, state.lane, forOthers)), resolved, loaded, covers, key, ratio, offer, reserved, withoutTools, tools, told: told !== null, forOthers, social: socialNotes };
     });
-    if ("end" in first) return first.end;
+    if ("end" in first) {
+      // Ended in that transaction (every call refused): what `finish` does once its transaction has committed, done here.
+      if (first.recordedEnd !== undefined) await this.afterEndedHere(run, first.recordedEnd);
+      return first.end;
+    }
 
     const deadline = AbortSignal.timeout(config.agentRunTimeoutMs);
     let context: BuiltContext;
@@ -1017,7 +1022,7 @@ export class DbAgentPort implements AgentPort {
       // whoever is refused by then (`postAsAgent`); its usage settles either way.
       if (this.flags.get(run.id)?.place === "group" && !first.told) {
         const kept = await dropRefusedCalls(t, run.id);
-        if (kept === null) return { end: BLOCKED_SINCE };
+        if (kept === null) return { end: ENDED_AT_ADMISSION, recordedEnd: await this.endHere(t, run, BLOCKED_SINCE) };
         Object.assign(state, kept);
       }
       if (!sameBasis(first.basis, basisOf(state, agent, levelOf(agent, state.lane, first.forOthers)))) {
@@ -1086,8 +1091,7 @@ export class DbAgentPort implements AgentPort {
           log.info({ metric: "others_limit_refused", at: "admission" }, "agent run: its owner's number for others' use is reached; it ends quietly");
           // Its end, in this transaction, as `finish` would record it (the locks are those `finish` takes, held already): what waited
           // behind it is taken by THE consumption (runs.ts `takeDeferred`).
-          const recordedEnd = await this.recordIn(t, run, ENDED_QUIETLY, null, NOTHING, this.now());
-          return { end: ENDED_AT_ADMISSION, told, recordedEnd };
+          return { end: ENDED_AT_ADMISSION, told, recordedEnd: await this.endHere(t, run, ENDED_QUIETLY) };
         }
         if (err instanceof HeldBack) {
           // Back to `queued`, under the account lock admission still holds, so none of the calls it waits for can have
@@ -1177,11 +1181,7 @@ export class DbAgentPort implements AgentPort {
       // Whom the admission's refusal tells: the senders of the calls it answers, and its owner (`actOnTold`).
       if (result.told) this.actOnTold(result.told);
       // Ended with its refusal: what `finish` does once its transaction has committed, done here.
-      if (result.recordedEnd) {
-        const flags = this.flags.get(run.id);
-        this.flags.delete(run.id);
-        await this.afterRecorded(run, result.recordedEnd, { leftOut: flags?.leftOut ?? null, social: flags?.place === "social" });
-      }
+      if (result.recordedEnd !== undefined) await this.afterEndedHere(run, result.recordedEnd);
       return result.end;
     }
     // Admitted after it was held back: the owner's younger replies its mark kept waiting may be claimed now.
@@ -1560,7 +1560,25 @@ export class DbAgentPort implements AgentPort {
    * The run's end, in transaction `t` (`finish`'s own, or the admission's that refused it, `ENDED_AT_ADMISSION`): settled, recorded,
    * tried again or the calls that waited taken (THE consumption, runs.ts `takeDeferred`), under the locks `finish` takes.
    */
+  /**
+   * `begin` ends the run in its own transaction (`ENDED_AT_ADMISSION`, which `finish` then leaves alone): recorded as `finish` would
+   * record `end` (the locks are those `finish` takes, held already), and what waited behind it taken by THE consumption (runs.ts
+   * `takeDeferred`) — so a process that dies right after leaves no running row for recovery to answer or retry (T2 fix 1, F7a: every
+   * call refused as it begins; its owner's number reached at admission).
+   */
+  private endHere(t: Tx, run: RunTicket, end: RunEnd): Promise<Recorded | null> {
+    return this.recordIn(t, run, end, null, NOTHING, this.now());
+  }
+
+  /** What `finish` does after its transaction for a run `begin` ended in its own (`endHere`): announced, its flags gone. */
+  private async afterEndedHere(run: RunTicket, recorded: Recorded | null): Promise<void> {
+    const flags = this.flags.get(run.id);
+    this.flags.delete(run.id);
+    if (recorded) await this.afterRecorded(run, recorded, { leftOut: flags?.leftOut ?? null, social: flags?.place === "social" });
+  }
+
   private async recordIn(t: Tx, run: RunTicket, end: RunEnd, usage: Usage | null, fallback: Estimated, now: Date): Promise<Recorded | null> {
+
     const { config } = this.deps;
     {
       const agent = await lockAgent(t, run.agentId, run.conversationId);

@@ -307,7 +307,35 @@ describe("invariant 5 (retries): an automatic retry takes the slot before any wa
       ["done", "own", w.owner.id, [own]],
     ]);
   });
+
+  it("every call refused as it begins (T2 fix 1, F7a): its end and the taking of what waits are begin's own transaction — the process dies after, the block is lifted, recovery answers nothing", async () => {
+    offset = 0;
+    const w = await world(retrying);
+    const { db: pool, conversations, reads } = retrying.deps;
+    const port = createAgentPort({ db: pool, config: retrying.deps.config, blobs: retrying.deps.blobs, realtime: retrying.realtime, conversations, reads, log: retrying.log, now });
+    const asked = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`, retrying);
+    const ticket = await claim(w.agent.id, w.g);
+    const later = await say(w.ned, w.g, `${w.at} NED-ASK 我也问`, retrying);
+    // The owner blocks mia after her call was claimed: as the reply begins, its one call is refused.
+    expect((await api(retrying, w.owner, "PUT", `/api/blocks/${w.mia.id}`)).status).toBe(200);
+    expect(await port.begin(ticket)).toEqual({ status: "cancelled" });
+    // Ended there, and ned's call that waited taken there: the process dies now (no `finish`), the block is lifted, and the next
+    // process recovers what was left running.
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([
+      ["cancelled", w.mia.id, [asked]],
+      ["queued", w.ned.id, [later]],
+    ]);
+    expect((await api(retrying, w.owner, "DELETE", `/api/blocks/${w.mia.id}`)).status).toBe(200);
+    await recoverRuns(db, retrying.deps.config, retrying.log, now);
+    offset += 60_000;
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([
+      ["cancelled", w.mia.id, [asked]],
+      ["queued", w.ned.id, [later]],
+    ]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+  });
 });
+
 
 describe("invariant 5 (retries, T2 fix 1, F5b): calls that wait never cost an automatic retry its slot", () => {
   // Its own instance: one automatic retry, and the owner's others' minute at 3 (a run and two waiting calls fill it).
