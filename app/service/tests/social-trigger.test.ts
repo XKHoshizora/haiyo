@@ -6,7 +6,8 @@ import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
-import { setOwnerNumbers } from "./helpers/others.ts";
+import { paidReply } from "./helpers/metering.ts";
+import { setOwnerLimit } from "./helpers/others.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 
@@ -103,19 +104,19 @@ describe("a person's message", () => {
     expect(reused[0]!.covers).toBe(String(again));
   });
 
-  it("the owner's numbers reached: no run, the notice once a site day", async () => {
+  it("the owner's number reached: no run, a line for the visitor on each message, the owner told once a site day, the conversation nothing", async () => {
     const w = await world();
-    await setOwnerNumbers(db, w.owner.id, { answers: 1 });
-    await db.query(
-      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, caller_id, triggered_by, finished_at, admitted_at)
-       values ('reply', $1, $2, $3, 'done', 1, 'others', $4, 'human', now(), now())`,
-      [w.conv, w.agent.id, w.owner.id, w.v.id],
-    );
-    await say(w.v, w.conv, "还能问吗");
-    await say(w.v, w.conv, "还能问吗");
+    await setOwnerLimit(db, w.owner.id, 1_000_000n);
+    await paidReply(db, { agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.conv, lane: "others", micro: 1_000_000n });
+    for (const text of ["还能问吗", "还能问吗"]) {
+      const sent = await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text, clientTxn: `st${++txn}` });
+      expect(sent.json.message.refused).toEqual([{ agentId: w.agent.id, reason: "others_limit" }]);
+    }
     expect((await runsOf(w)).filter((r) => r.status !== "done")).toHaveLength(0);
-    const notices = await db.query("select 1 from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = 'agent_daily_budget_reached'", [w.conv]);
-    expect(notices.rowCount).toBe(1);
+    expect((await db.query("select 1 from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = 'others_limit_reached'", [w.conv])).rowCount).toBe(0);
+    const ownerNotices = async () =>
+      (await db.query("select 1 from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = 'others_limit_reached'", [w.agent.conversationId])).rowCount;
+    await expect.poll(ownerNotices).toBe(1);
   });
 
   it("`reach` failing at the trigger (called directly): nothing is queued", async () => {

@@ -95,10 +95,10 @@ describe("a social reply is posted once", () => {
     expect(await runOf(w)).toMatchObject({ status: "done", error: null });
   });
 
-  it("the preface and the answer are ONE text for the visitor and so ONE budget (review 5, item 8): two rounds each under the others' limit come out cut to it, and marked cut", async () => {
+  it("the preface and the answer are ONE text for the visitor (review 5, item 8), posted whole: nothing is cut for what a reply for others may cost", async () => {
     const w = await world("onebudget");
     await say(w.v, w.conv, "帮我查查");
-    const first = "好".repeat(700); // a weight of 700 each, of a limit of 800
+    const first = "好".repeat(700); // a weight of 700 each: 1 400 together, past what one call of the model may write
     gateway.callTools([{ name: "search_messages", input: { query: "不存在的词语" } }], { text: first }).reply("行".repeat(700));
     expect(await app.agentWorker.runOnce()).toBe(true);
     const messages = await posted(w);
@@ -106,9 +106,9 @@ describe("a social reply is posted once", () => {
     const text = messages[0]!.body.text as string;
     expect(text.startsWith(first)).toBe(true);
     expect(text).toContain("行");
-    expect(weight(text)).toBeLessThanOrEqual(app.deps.config.others.outputTokens);
-    expect(weight(text)).toBeGreaterThan(app.deps.config.others.outputTokens - 2);
-    expect(messages[0]!.body.truncated).toBe(true);
+    expect(text.endsWith("行".repeat(700))).toBe(true);
+    expect(weight(text)).toBeGreaterThanOrEqual(1400);
+    expect(messages[0]!.body.truncated ?? false).toBe(false);
   });
 
   it("I1: preface, a tool call, then nothing: the preface is the reply, one message, the run done", async () => {

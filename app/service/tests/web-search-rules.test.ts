@@ -13,7 +13,7 @@ import { holdSearch, recordSearchCost, SearchRefused, SITE_SCOPE } from "../src/
 import { WEB_LANE_BUDGET, WEB_NO_MONEY, WEB_QUERY_PRIVATE, WEB_REPLY_CAP, WEB_SITE_DAY } from "../src/agents/tools/web/tool.ts";
 import type { Config, WebSearchConfig } from "../src/config.ts";
 import { admitRun } from "../src/metering/admit.ts";
-import { othersUsedToday } from "../src/metering/others.ts";
+import { OthersLimit, othersUseToday } from "../src/metering/others.ts";
 import { settle } from "../src/metering/settle.ts";
 import { webEngineOf } from "../src/app.ts";
 import { RunRefs } from "../src/agents/tools/refs.ts";
@@ -411,19 +411,20 @@ describe("no cap per owner: the points are the bound", () => {
 });
 
 describe("each lane's own budget sees the search: before it is spent, and after", () => {
-  it("someone else's calls: the others' daily budget (a provider model's searches count now); refused at the pre-hold, the reply goes on", async () => {
+  it("someone else's calls: the owner's one number (a provider model's searches and its nominal count both); refused at the pre-hold, the reply goes on", async () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine);
     const { owner, agent } = await owned("bgo", "provider");
-    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { othersBudget: "1" })).status).toBe(200);
+    // Seven points: the nominal 6 of one reply on the owner's own key, and room for one search.
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "7" })).status).toBe(200);
     const { g, mia } = await groupWith(owner, "bgo", [agent.id]);
     await say(mia, g, `@${agent.handle} 北京天气？`);
     await searchRun(worker, gateway);
-    // After: the budget counts what the search was charged.
-    expect(await othersUsedToday(db, app.deps.config, owner.id, new Date(), { agentId: agent.id })).toEqual({ answers: 1, settledMicro: PRICE, heldMicro: 0n });
-    expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json.othersUsedToday).toEqual({ answers: 1, points: "0.77035" });
-    // Before: 0.77035 settled + 0.77035 ≥ 1 — the second search is refused before the engine; the reply is still posted.
+    // After: the measure counts the reply's nominal 6 and what the search was charged.
+    expect(await othersUseToday(db, app.deps.config, owner.id, new Date())).toBe(6_000_000n + PRICE);
+    // Before: the second reply (6.77 is below 7, so it is admitted, and counts 6 more) finds the number reached at its search: refused
+    // before the engine; the reply is still posted.
     await say(mia, g, `@${agent.handle} 上海呢？`);
     expect(await searchRun(worker, gateway, ["上海 天气"], "查不了了。")).toEqual([{ error: WEB_LANE_BUDGET }]);
     expect(engine.queries).toEqual([QUERY]);
@@ -432,17 +433,17 @@ describe("each lane's own budget sees the search: before it is spent, and after"
     expect((await lastRun(agent.id)).status).toBe("done");
   });
 
-  it("a reply nobody asked for: the proactive daily budget, the same way", async () => {
+  it("a reply nobody asked for: the same one number, the same way", async () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine);
     const { owner, agent } = await owned("bgp", "provider");
-    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactiveBudget: "1" })).status).toBe(200);
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "7" })).status).toBe(200);
     const { g, mia } = await groupWith(owner, "bgp", [agent.id]);
     await proactiveRun(agent.id, owner.id, g, mia);
     await searchRun(worker, gateway);
-    expect(await othersUsedToday(db, app.deps.config, owner.id, new Date(), { agentId: agent.id, lane: "proactive" })).toMatchObject({ settledMicro: PRICE, heldMicro: 0n });
-    expect(await othersUsedToday(db, app.deps.config, owner.id, new Date(), { agentId: agent.id, lane: "others" })).toMatchObject({ settledMicro: 0n });
+    expect(await othersUseToday(db, app.deps.config, owner.id, new Date(), "proactive")).toBe(6_000_000n + PRICE);
+    expect(await othersUseToday(db, app.deps.config, owner.id, new Date(), "others")).toBe(0n);
     await proactiveRun(agent.id, owner.id, g, mia);
     expect(await searchRun(worker, gateway, ["上海 天气"])).toEqual([{ error: WEB_LANE_BUDGET }]);
     expect(engine.queries).toEqual([QUERY]);
@@ -489,16 +490,11 @@ describe("each lane's own budget sees the search: before it is spent, and after"
     expect([metricLines("web_refused_lane_budget"), metricLines("web_refused_no_points")]).toEqual([[], []]);
   });
 
-  it("between rounds a provider model's reply counts its searches with its lane's budget: reached, the next call is its last", async () => {
+  it("between rounds a provider model's reply for someone else has had its one tool round: the next call is its last", async () => {
     const gateway = scriptedGateway();
     const { owner, agent } = await owned("bge", "provider");
-    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { othersBudget: "1" })).status).toBe(200);
     const { g, mia } = await groupWith(owner, "bge", [agent.id]);
-    // While the engine runs, another of its replies for someone else settles 0.3 points: 0.3 + 0.77035 ≥ 1.
-    const engine = fakeEngine(async () => {
-      await paidReply(db, { agentId: agent.id, ownerId: owner.id, conversationId: agent.conversationId, lane: "others", micro: 300_000n });
-      return { results: RESULTS };
-    });
+    const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine);
     await say(mia, g, `@${agent.handle} 北京天气？`);
     await searchRun(worker, gateway);
@@ -507,7 +503,7 @@ describe("each lane's own budget sees the search: before it is spent, and after"
   });
 });
 
-describe("the pre-hold under the lane budgets, two connections", () => {
+describe("the pre-hold under the owner's one number", () => {
   /** A running reply of `agent` in `conversationId`, lane `lane`, admitted on its model (a provider's: no source yet). */
   async function admittedIn(ownerId: string, agent: Awaited<ReturnType<typeof meteredAgent>>, conversationId: string, lane: "own" | "others" | "proactive") {
     const { rows } = await db.query<{ id: string }>(
@@ -518,7 +514,7 @@ describe("the pre-hold under the lane budgets, two connections", () => {
     return rows[0]!.id;
   }
   /** `holdSearch` of run `runId` as port-impl.ts calls it, under `lockRun`'s locks; `gate`: waited for before commit. */
-  const preHold = (r: { runId: string; ownerId: string; agentId: string; conversationId: string; lane: "own" | "others" | "proactive" }, over: Partial<Pick<AgentRow, "othersBudgetMicro" | "proactiveBudgetMicro">>, config: Config, gate?: { held: () => void; wait: Promise<void> }) =>
+  const preHold = (r: { runId: string; ownerId: string; agentId: string; conversationId: string; lane: "own" | "others" | "proactive" }, over: Partial<AgentRow>, config: Config, gate?: { held: () => void; wait: Promise<void> }) =>
     db.tx(async (t) => {
       const locked = await lockAgent(t, r.agentId, r.conversationId);
       await t.query("select 1 from agent_runs where id = $1 for update", [r.runId]);
@@ -531,85 +527,29 @@ describe("the pre-hold under the lane budgets, two connections", () => {
     });
   const webOf = async (id: string) => (await db.query<{ n: number; m: string; c: string | null }>("select web_searches as n, web_micro::text as m, charge_to as c from agent_runs where id = $1", [id])).rows[0]!;
 
-  for (const lane of ["others", "proactive"] as const) {
-    it(`two replies of one Agent in two groups (lane ${lane}) racing for the last points of its daily budget: one gets them`, async () => {
-      const owner = await signUp(app, `race${lane.slice(0, 3)}`);
-      await grant(db, owner.id, 10n * POINT);
-      const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "own-1", contextTokens: 32000 }] }))).json;
-      const agent = await meteredAgent(app, db, owner, { source: "provider", providerId: provider.id, model: "own-1" });
-      const g1 = await group(app, owner, "一", [await signUp(app, `race${lane.slice(0, 3)}_a`), await signUp(app, `race${lane.slice(0, 3)}_c`)]);
-      const g2 = await group(app, owner, "二", [await signUp(app, `race${lane.slice(0, 3)}_b`), await signUp(app, `race${lane.slice(0, 3)}_d`)]);
-      // The Agent's daily number for the lane: a point (decided by `othersFits` from the database since B3).
-      await db.query(`update agents set ${lane === "others" ? "others_budget_micro" : "proactive_budget_micro"} = $2 where principal_id = $1`, [agent.agentId, POINT.toString()]);
-      const budget = {};
-      const a = { runId: await admittedIn(owner.id, agent, g1, lane), ownerId: owner.id, agentId: agent.agentId, conversationId: g1, lane };
-      const b = { runId: await admittedIn(owner.id, agent, g2, lane), ownerId: owner.id, agentId: agent.agentId, conversationId: g2, lane };
-      let held!: () => void;
-      const heldNow = new Promise<void>((r) => (held = r));
-      let release!: () => void;
-      const wait = new Promise<void>((r) => (release = r));
-      const first = preHold(a, budget, webConfig(), { held, wait });
-      await heldNow;
-      // B waits on the Agent's row A holds; once A has committed, B counts A's search (held, not settled yet).
-      const second = preHold(b, budget, webConfig()).then(
-        () => "held",
-        (err: unknown) => (err instanceof SearchRefused ? err.why : String(err)),
-      );
-      await new Promise((r) => setTimeout(r, 100));
-      release();
-      await first;
-      expect(await second).toBe(WEB_LANE_BUDGET);
-      // (A provider run carries no class: wallet v3.)
-      expect([await webOf(a.runId), await webOf(b.runId)]).toEqual([
-        { n: 1, m: PRICE.toString(), c: null },
-        { n: 0, m: "0", c: null },
-      ]);
-    });
-  }
-
-  it("a site model's reply nobody asked for: its proactive budget with the search at the pre-hold", async () => {
-    const owner = await signUp(app, "bgsp");
+  it("a search of a reply for others is refused once others' use of the owner's Agents today has reached the owner's number: settled charges count, a running reply's held search does not", async () => {
+    const owner = await signUp(app, "bgnum");
     await grant(db, owner.id, 10n * POINT);
     const agent = await meteredAgent(app, db, owner, PAID);
-    const g = await group(app, owner, "三", [await signUp(app, "bgsp_a"), await signUp(app, "bgsp_b")]);
-    const r = { runId: await admittedIn(owner.id, agent, g, "proactive"), ownerId: owner.id, agentId: agent.agentId, conversationId: g, lane: "proactive" as const };
-    // Its first call held 2 points: 2 + 0.77035 > 2.5 — refused; > 3 is not reached — held (the budget is the Agent's row's: `othersFits`).
-    await db.query("update agents set proactive_budget_micro = 2500000 where principal_id = $1", [agent.agentId]);
-    await expect(preHold(r, {}, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
-    await db.query("update agents set proactive_budget_micro = 3000000 where principal_id = $1", [agent.agentId]);
-    await preHold(r, {}, webConfig());
-    expect((await webOf(r.runId)).n).toBe(1);
-  });
-
-  it("the lane budgets count another running reply's search at what it holds: an old code's row (rule 0) and a corrected one alike, until it is settled at its actual (third attack V3.5; B3)", async () => {
-    const owner = await signUp(app, "overlapweb");
-    await grant(db, owner.id, 10n * POINT);
-    const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "own-1", contextTokens: 32000 }] }))).json;
-    const agent = await meteredAgent(app, db, owner, { source: "provider", providerId: provider.id, model: "own-1" });
-    const g1 = await group(app, owner, "旧", [await signUp(app, "overlapweb_a"), await signUp(app, "overlapweb_b")]);
-    const g2 = await group(app, owner, "新", [await signUp(app, "overlapweb_c"), await signUp(app, "overlapweb_d")]);
-    await db.query("update agents set others_budget_micro = $2 where principal_id = $1", [agent.agentId, ((3n * PRICE) / 2n).toString()]);
-    const budget = {};
-    // A reply of the Agent in lane others the old code admitted during the overlap, its search held as it writes one.
-    const old = (
-      await db.query<{ id: string }>(
-        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, started_at, lane, source, model, charge_to, hold_micro, web_searches, web_micro)
-         values ('reply', $1, $2, $3, 'running', now(), 'others', 'provider', 'own-1', 'free', $4, 1, $4) returning id`,
-        [g1, agent.agentId, owner.id, PRICE.toString()],
-      )
-    ).rows[0]!.id;
-    const b = { runId: await admittedIn(owner.id, agent, g2, "others"), ownerId: owner.id, agentId: agent.agentId, conversationId: g2, lane: "others" as const };
-    // Its hold (its search's price) and this one's: 2 × 0.77035 > 1.155525 — refused.
-    await expect(preHold(b, budget, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
-    // The same row by the pool's rule, its search corrected to a quarter of the price: what it holds stands until it is settled (B3
-    // counts holds), so it is refused still.
-    await db.query("update agent_runs set money_rule = 1, charge_to = null, web_charge_micro = $2 where id = $1", [old, (PRICE / 4n).toString()]);
-    await expect(preHold(b, budget, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
-    // Settled, at the corrected quarter: 0.25 + 0.77035 ≤ 1.155525 — held.
-    await db.query("update agent_runs set hold_micro = 0, status = 'done' where id = $1", [old]);
-    await paidReply(db, { agentId: agent.agentId, ownerId: owner.id, conversationId: g1, lane: "others", micro: PRICE / 4n });
-    await preHold(b, budget, webConfig());
-    expect((await webOf(b.runId)).n).toBe(1);
+    const g1 = await group(app, owner, "一", [await signUp(app, "bgnum_a"), await signUp(app, "bgnum_b")]);
+    const g2 = await group(app, owner, "二", [await signUp(app, "bgnum_c"), await signUp(app, "bgnum_d")]);
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "1" })).status).toBe(200);
+    for (const lane of ["others", "proactive"] as const) {
+      const r = { runId: await admittedIn(owner.id, agent, lane === "others" ? g1 : g2, lane), ownerId: owner.id, agentId: agent.agentId, conversationId: lane === "others" ? g1 : g2, lane };
+      // Its own search, held: nothing is settled yet, so the next one is held too (holds are no use).
+      await preHold(r, {}, webConfig());
+      await preHold(r, {}, webConfig());
+      expect([lane, (await webOf(r.runId)).n]).toEqual([lane, 2]);
+    }
+    // A point settled today: every search of a reply for others is refused now, the owner's own is not.
+    await paidReply(db, { agentId: agent.agentId, ownerId: owner.id, conversationId: g1, lane: "proactive", micro: POINT });
+    for (const lane of ["others", "proactive"] as const) {
+      const id = (await db.query<{ id: string }>("select id from agent_runs where conversation_id = $1 and lane = $2 and status = 'running'", [lane === "others" ? g1 : g2, lane])).rows[0]!.id;
+      await expect(preHold({ runId: id, ownerId: owner.id, agentId: agent.agentId, conversationId: lane === "others" ? g1 : g2, lane }, {}, webConfig())).rejects.toMatchObject({ by: "lane_budget" });
+    }
+    const own = { runId: await admittedIn(owner.id, agent, agent.conversationId, "own"), ownerId: owner.id, agentId: agent.agentId, conversationId: agent.conversationId, lane: "own" as const };
+    await preHold(own, {}, webConfig());
+    expect((await webOf(own.runId)).n).toBe(1);
   });
 
   it("a provider model's reply: refused (unavailable) only when it is not admitted; its searches hold on the pool, the balance paying what the allowance cannot (wallet v3)", async () => {
@@ -836,14 +776,14 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     return { gate: { held, wait }, heldNow, release };
   };
 
-  it("at the shipped defaults (13 points a search, TOOLS.maxPoints 20, the owner's 300 points a day for others' use, a proactive budget of 70, no number of an Agent's own): one search a reply, 23 a day for others' calls and five for replies nobody asked for (review I1: a change of any of the numbers shows here)", async () => {
+  it("at the shipped defaults (13 points a search, TOOLS.maxPoints 20, the owner's one number of 300 a day for others' use, nothing of an Agent's own): one search a reply, and 16 replies a day on the owner's own key with a search each, in either lane others cause (review I1: a change of any of the numbers shows here)", async () => {
     const config = shipped();
     expect([config.tools.web.pointsMicroPerSearch, config.tools.maxPoints, config.tools.web.perReply]).toEqual([13_000_000, 20, 3]);
     const owner = await signUp(app, "dflta");
     await grant(db, owner.id, 200n * POINT);
     const agent = await providerOf(owner);
     const view = (await api(app, owner, "GET", `/api/agents/${agent.agentId}`)).json;
-    expect([view.othersLimit, view.proactiveBudget, view.chainBudget]).toEqual([{ answers: null, points: null }, "70", "50"]);
+    expect([Object.hasOwn(view, "othersLimit"), Object.hasOwn(view, "proactiveBudget"), view.chainBudget]).toEqual([false, false, "50"]);
     // A provider model's reply: 13 ≤ 20, then 26 > 20 — its own bound, though perReply is 3.
     const own = await running(owner.id, agent, agent.conversationId, "own", config);
     await pre(own, config);
@@ -853,19 +793,20 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     const siteRun = await running(owner.id, site, site.conversationId, "own", config);
     await pre(siteRun, config);
     await expect(pre(siteRun, config)).rejects.toMatchObject({ by: "reply_cap" });
-    // Someone else's calls a day: 23 searches settled (299 of the owner's 300, the Agent having no number of its own), and the 24th's 312 > 300.
-    // Replies nobody asked for: the Agent's proactive budget of 70 binds first, as it did: five (65), and the sixth's 78 > 70.
+    // Replies for others a day, on the owner's own key: each counts 6 (nominal, admitted) and its search 13, so after 15 the day is at
+    // 285; the 16th is admitted (285 < 300, then 291) and searches (291 < 300): 304; the 17th is not admitted at all. Either lane alike.
     for (const lane of ["others", "proactive"] as const) {
       const o = await signUp(app, `dflt${lane.slice(0, 2)}o`);
       await grant(db, o.id, 400n * POINT);
       const a = await providerOf(o);
       const g = await group(app, o, `${lane}一`, [await signUp(app, `dflt${lane.slice(0, 2)}a`), await signUp(app, `dflt${lane.slice(0, 2)}b`)]);
-      for (let i = 0; i < (lane === "others" ? 23 : 5); i++) {
+      for (let i = 0; i < 16; i++) {
         const day = await running(o.id, a, g, lane, config);
         await pre(day, config);
         await ended(day, config);
       }
-      await expect(pre(await running(o.id, a, g, lane, config), config)).rejects.toMatchObject({ by: "lane_budget" });
+      expect(await othersUseToday(db, config, o.id, new Date())).toBe(304n * POINT);
+      await expect(running(o.id, a, g, lane, config)).rejects.toBeInstanceOf(OthersLimit);
     }
   });
 

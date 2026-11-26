@@ -103,7 +103,14 @@ export async function othersKitchen<G extends Pick<ModelGateway, "stream"> = Scr
         [g],
       )
     ).rows[0]!;
-  const notices = async () => (await db.query("select 1 from messages where conversation_id = $1 and body ->> 'event' = 'agent_daily_budget_reached'", [g])).rowCount;
+  /** The owner's notices that others' use of their Agents reached their number (`others_limit_reached`), in any of their Agents' own conversations. */
+  const notices = async () =>
+    (
+      await db.query(
+        "select 1 from messages m join agent_conversations ac on ac.conversation_id = m.conversation_id where ac.owner_id = $1 and m.kind = 'system' and m.body ->> 'event' = 'others_limit_reached'",
+        [owner.id],
+      )
+    ).rowCount;
   const posted = async () =>
     (await db.query<{ text: string }>("select body ->> 'text' as text from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [g, agent.id])).rows.map((r) => r.text);
   const charged = async (runId: string) =>

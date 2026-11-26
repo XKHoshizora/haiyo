@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { siteDayStart } from "../src/accounts/store.ts";
 import { NOTHING, type RunEnd, type RunTicket } from "../src/agents/runtime/port.ts";
 import { triggerFromAgent } from "../src/agents/runs.ts";
@@ -13,14 +13,14 @@ import { scriptedGateway } from "./helpers/models.ts";
 import { closeAllSockets, connect } from "./helpers/ws.ts";
 
 /**
- * The others' daily budget (the limits plan, Task 4): what calls by people other than an Agent's owner — themselves or
- * through an Agent's message they are behind, their own Agent's or one relaying their call (lane `others`) — spend of
- * its owner's points in a site day is capped by the Agent's
- * `othersBudget` (20 points unless its owner says otherwise; `null`: no cap). Spent is what those replies were charged
- * today: a reply being written counts once it is settled. Once it is spent such a call reaches nothing — not even a reply under way —
- * and the group is told once a day; its owner is pushed the Agent again. The owner's own calls never count and are never
- * refused. As in agents-group-trigger.test.ts, an Agent is put into a group by inserting its membership row, and an
- * Agent's own message is stored and handed to `triggerFromAgent` in one transaction, as `postAsAgent` does.
+ * The owner's one number for others' use (limits redesign, Part 1), as calls in groups meet it: what people other than an Agent's
+ * owner cause on all the owner's Agents — calls by others (lane `others`) and replies nobody asked for (`proactive`) — is counted in
+ * one measure a site day, and once it has reached the owner's number (`OTHERS.pointsPerDay`, 300 points, unless the owner sets
+ * another: `PUT /api/me/others-limits`) a call someone other than the owner makes reaches nothing — not even a reply under way.
+ * Its sender alone is told, on their own copy of the message (`refused`, `others_limit`); the owner once a site day, in the Agent's
+ * own conversation (`others_limit_reached`); the group nothing. The owner's own calls never count and are never refused. As in
+ * agents-group-trigger.test.ts, an Agent is put into a group by inserting its membership row, and an Agent's own message is stored
+ * and handed to `triggerFromAgent` in one transaction, as `postAsAgent` does.
  */
 
 const gateway = scriptedGateway();
@@ -28,14 +28,13 @@ const gateway = scriptedGateway();
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false });
 
 afterEach(async () => {
-  vi.restoreAllMocks();
   await closeAllSockets();
   expect(gateway.pending()).toBe(0);
 });
 
 const FAST = { source: "site", id: "fast" } as const;
 const POINT = 1_000_000;
-const EVENT = "agent_daily_budget_reached";
+const EVENT = "others_limit_reached";
 
 interface World {
   owner: Actor;
@@ -73,12 +72,30 @@ async function agentOf(owner: Actor, handle: string, conv: string | null, over: 
   return { id: made.id, ownerId: owner.id, conversationId: made.conversationId };
 }
 
-let txn = 0;
-const say = async (who: Actor, conv: string, text: string): Promise<number> => {
-  const sent = await api(app, who, "POST", `/api/conversations/${conv}/messages`, { text, clientTxn: `ob${++txn}` });
-  if (sent.status !== 201) throw new Error(`say: ${sent.status} ${JSON.stringify(sent.json)}`);
-  return sent.json.message.seq as number;
+/** Sets `owner`'s one number for others' use, in points. */
+const setLimit = async (owner: Actor, points: string) => {
+  const res = await api(app, owner, "PUT", "/api/me/others-limits", { points });
+  expect([points, res.status]).toEqual([points, 200]);
+  return res.json;
 };
+
+let txn = 0;
+/** `who` sends `text` in `conv`: its seq, and what the sender's own copy says a limit refused (`refused`). */
+const send = async (who: Actor, conv: string, text: string): Promise<{ seq: number; refused: unknown }> => {
+  const sent = await api(app, who, "POST", `/api/conversations/${conv}/messages`, { text, clientTxn: `ol${++txn}` });
+  if (sent.status !== 201) throw new Error(`send: ${sent.status} ${JSON.stringify(sent.json)}`);
+  return { seq: sent.json.message.seq as number, refused: sent.json.message.refused };
+};
+const say = async (who: Actor, conv: string, text: string): Promise<number> => (await send(who, conv, text)).seq;
+
+/** The line `agent`'s refusal by the owner's number makes on its sender's copy. */
+const limitLine = (agent: Agent) => [{ agentId: agent.id, reason: "others_limit" }];
+
+/** The message at `seq` of `conv` as `who` reads it now. */
+async function readAs(who: Actor, conv: string, seq: number): Promise<Record<string, unknown> | undefined> {
+  const page = await api(app, who, "GET", `/api/conversations/${conv}/messages`);
+  return (page.json.messages as Array<Record<string, unknown>>).find((m) => m.seq === seq);
+}
 
 /**
  * The Agent's own message in `conv`, stored and handed to the trigger in one transaction, as `postAsAgent` does — posted
@@ -104,14 +121,19 @@ const runsOf = async (agentId: string, conv: string) =>
 /** Ends every active run, so that the next trigger queues a new one instead of folding. */
 const settleAll = () => db.query("update agent_runs set status = 'done', finished_at = now() where status in ('queued', 'running')");
 
-/** The bodies of the budget notices in `conv`, oldest first. */
-const noticesOf = async (conv: string) =>
+/** The system messages of the event `others_limit_reached` in `conv`: none ever in a group. */
+const noticesIn = async (conv: string) =>
+  (await db.query("select 1 from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = $2", [conv, EVENT])).rowCount;
+
+/** The owner's notices that others' use reached their number, in any of their Agents' own conversations, oldest first. */
+const ownerNotices = async (owner: Actor) =>
   (
-    await db.query<{ body: Record<string, unknown> }>(
-      "select body from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = $2 order by seq",
-      [conv, EVENT],
+    await db.query<{ conversation_id: string; body: Record<string, unknown> }>(
+      `select m.conversation_id, m.body from messages m join agent_conversations ac on ac.conversation_id = m.conversation_id
+        where ac.owner_id = $1 and m.kind = 'system' and m.body ->> 'event' = $2 order by m.created_at, m.seq`,
+      [owner.id, EVENT],
     )
-  ).rows.map((r) => r.body);
+  ).rows;
 
 /**
  * A finished reply of `agent` in `conv`, in `lane`, settled with `micro` charged to its owner's balance; its usage record
@@ -143,134 +165,124 @@ const claim = async (agent: Agent, conv: string): Promise<RunTicket> => {
   return { id: rows[0]!.id, agentId: agent.id, ownerId: agent.ownerId, conversationId: conv };
 };
 
-const viewOf = async (who: Actor, agent: Agent) => (await api(app, who, "GET", `/api/agents/${agent.id}`)).json;
+const othersUse = async (owner: Actor) => (await api(app, owner, "GET", "/api/me/others-use")).json;
 
-describe("the others' daily budget", () => {
-  it("under the budget another member's call is queued; at it, no run and one notice a day in the group", async () => {
+describe("the owner's one number for others' use", () => {
+  it("below it another member's call is queued; at it, no run, a line for the sender alone, one notice a day for the owner in the Agent's own conversation, and nothing in the group", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { name: "安娜", othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g, { name: "安娜" });
+    await setLimit(w.owner, "2");
     await paidOthers(anna, w.g, 2 * POINT - 1);
-    const asked = await say(w.member, w.g, "@anna 你好");
-    expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others", covers: asked });
+    const asked = await send(w.member, w.g, "@anna 你好");
+    expect(asked.refused).toBeUndefined();
+    expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others", covers: asked.seq });
     await settleAll();
 
-    // One micro-point more and it is spent: the member's call reaches nothing, the group is told (live), and its owner is
-    // pushed the Agent once.
+    // One micro-point more and it is reached: the member's call reaches nothing; the member alone reads why, on their own message;
+    // the owner is told in the Agent's own conversation (live), the group nothing.
     await paidOthers(anna, w.g, 1);
-    const pushed = vi.spyOn(app.realtime, "pushAgentChanged");
-    const thirdSocket = await connect(app, w.third);
+    const ownerSocket = await connect(app, w.owner);
     const before = await runsOf(anna.id, w.g);
-    await say(w.member, w.g, "@anna 再问");
+    const refused = await send(w.member, w.g, "@anna 再问");
+    expect(refused.refused).toEqual(limitLine(anna));
     expect(await runsOf(anna.id, w.g)).toEqual(before);
-    expect(await noticesOf(w.g)).toEqual([{ event: EVENT, actorId: anna.id, agentId: anna.id, text: "「安娜」今天只回复它的主人，明天恢复。" }]);
-    const told = await thirdSocket.next((x) => x.type === "message" && x.message.system?.event === EVENT);
-    expect(told.message).toMatchObject({ senderId: null, text: "「安娜」今天只回复它的主人，明天恢复。", system: { event: EVENT, actorId: anna.id, agentId: anna.id } });
-    expect(pushed.mock.calls).toEqual([[w.owner.id, anna.id]]);
+    expect((await readAs(w.member, w.g, refused.seq))?.refused).toEqual(limitLine(anna));
+    expect(await readAs(w.third, w.g, refused.seq)).not.toHaveProperty("refused");
+    expect(await readAs(w.owner, w.g, refused.seq)).not.toHaveProperty("refused");
+    const told = await ownerSocket.next((x) => x.type === "message" && x.message.system?.event === EVENT);
+    expect(told.message).toMatchObject({ conversationId: anna.conversationId, senderId: null, system: { event: EVENT, agentId: anna.id, points: "2" } });
+    expect(await ownerNotices(w.owner)).toEqual([
+      {
+        conversation_id: anna.conversationId,
+        body: { event: EVENT, actorId: anna.id, agentId: anna.id, points: "2", text: "别人今天用你的 Agent 已经花到每天上限 2 点，今天不再回复别人；已经在回复的会照常回完。" },
+      },
+    ]);
+    expect(await noticesIn(w.g)).toBe(0);
 
-    // Another member's call the same day: refused too, with no second notice and no second push.
-    await say(w.third, w.g, "@anna 我也问");
+    // Another member's call the same day: refused too, with its own line and no second notice.
+    const also = await send(w.third, w.g, "@anna 我也问");
+    expect(also.refused).toEqual(limitLine(anna));
     expect(await runsOf(anna.id, w.g)).toEqual(before);
-    expect(await noticesOf(w.g)).toHaveLength(1);
-    expect(pushed).toHaveBeenCalledTimes(1);
 
-    // In another group the same day: its own one notice.
+    // Another of the owner's Agents, and another group, the same day: the one number is the owner's, for all their Agents; still
+    // one notice for the owner.
+    const carl = await agentOf(w.owner, "carlbot", w.g);
+    expect((await send(w.member, w.g, "@carlbot 你好")).refused).toEqual(limitLine(carl));
     const g2 = await anotherGroup(w, "second");
     await join(g2, anna.id);
-    await say(w.member, g2, "@anna 你好");
-    await say(w.third, g2, "@anna 你好");
+    expect((await send(w.member, g2, "@anna 你好")).refused).toEqual(limitLine(anna));
     expect(await runsOf(anna.id, g2)).toEqual([]);
-    expect((await noticesOf(g2)).map((n) => n.agentId)).toEqual([anna.id]);
-    expect(await noticesOf(w.g)).toHaveLength(1);
-    expect(pushed).toHaveBeenCalledTimes(2);
+    expect(await runsOf(carl.id, w.g)).toEqual([]);
+    expect(await noticesIn(g2)).toBe(0);
+    expect(await ownerNotices(w.owner)).toHaveLength(1);
 
     // A notice of an earlier day does not count for today's.
     const dayStart = siteDayStart(new Date(), app.deps.config.siteTimezone, 0);
-    await db.query("update messages set created_at = $2 where conversation_id = $1 and body ->> 'event' = $3", [w.g, new Date(dayStart.getTime() - 1000), EVENT]);
-    await say(w.third, w.g, "@anna 今天呢");
-    expect(await noticesOf(w.g)).toHaveLength(2);
+    await db.query("update messages set created_at = $2 where conversation_id = $1 and body ->> 'event' = $3", [anna.conversationId, new Date(dayStart.getTime() - 1000), EVENT]);
+    await send(w.third, w.g, "@anna 今天呢");
+    await expect.poll(async () => (await ownerNotices(w.owner)).length).toBe(2);
   });
 
-  it("the owner's own call is answered all the same, and does not count", async () => {
+  it("the owner's own call is answered all the same, and does not count; a reply nobody asked for does", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
     const carl = await agentOf(w.owner, "carlbot", w.g);
-    // What its owner's own replies were charged today — in the group, in its own conversation — and what replies nobody
-    // called for were do not count: another member's call is queued.
+    await setLimit(w.owner, "2");
+    // What its owner's own replies were charged today — in the group, in its own conversation — does not count: another member's
+    // call is queued.
     await paid(anna, w.g, "own", 50 * POINT);
     await paid(anna, anna.conversationId, "own", 50 * POINT);
-    await paid(anna, w.g, "proactive", 50 * POINT);
     await say(w.member, w.g, "@anna 你好");
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others" });
     await settleAll();
 
-    // Spent: its owner's call is answered.
-    await paidOthers(anna, w.g, 2 * POINT);
+    // Replies nobody asked for count (others caused them): reached, its owner's call is answered.
+    await paid(carl, w.g, "proactive", 2 * POINT);
     const mine = await say(w.owner, w.g, "@anna 我来问");
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", covers: mine });
-    // Another member's call is not even folded into that reply: it is refused, and the group told.
-    await say(w.member, w.g, "@anna 我也问");
+    // Another member's call is not even folded into that reply: it is refused, with its line.
+    expect((await send(w.member, w.g, "@anna 我也问")).refused).toEqual(limitLine(anna));
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", covers: mine });
-    expect(await noticesOf(w.g)).toHaveLength(1);
     await settleAll();
     // Through another of its owner's Agents, and in its own conversation: answered too.
     const called = await agentSays(carl.id, w.g, "@anna 你看看");
-    expect([called.runs.length, called.notices, called.budgetReached]).toEqual([1, [], []]);
+    expect([called.runs.length, called.notices, called.refused, called.reached]).toEqual([1, [], [], []]);
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own" });
     await say(w.owner, anna.conversationId, "你好");
     expect((await runsOf(anna.id, anna.conversationId)).at(-1)).toMatchObject({ status: "queued", lane: "own" });
-    // Its owner sees what others spent today, and only that.
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersLimit: { points: "2" }, othersUsedToday: { points: "2" } });
+    // Its owner sees what others caused today, and only that.
+    expect(await othersUse(w.owner)).toMatchObject({ limit: "2", used: "2", reached: true });
   });
 
-  it("an Agent of someone else is refused the same way", async () => {
+  it("an Agent of someone else is refused the same way: its message has nobody to read a line, the owner is told", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
     const mia = await agentOf(w.member, "mia", w.g);
+    await setLimit(w.owner, "2");
     await say(w.third, w.g, "开始");
     await paidOthers(anna, w.g, 2 * POINT);
     const before = await runsOf(anna.id, w.g);
 
     const refused = await agentSays(mia.id, w.g, "@anna 你看看");
-    expect([refused.runs, refused.callerLimited, refused.budgetReached]).toEqual([[], [], [{ ownerId: w.owner.id, agentId: anna.id }]]);
-    expect(refused.notices.map((n) => [n.seq, n.body])).toEqual([[refused.message.seq + 1, { event: EVENT, actorId: anna.id, agentId: anna.id, text: "「anna」今天只回复它的主人，明天恢复。" }]]);
-    // Once a day in the group.
-    const again = await agentSays(mia.id, w.g, "@anna 还在吗");
-    expect([again.runs, again.notices, again.budgetReached]).toEqual([[], [], []]);
+    expect([refused.runs, refused.callerLimited, refused.notices, refused.refused, refused.reached]).toEqual([[], [], [], [], [{ ownerId: w.owner.id, agentId: anna.id }]]);
     expect(await runsOf(anna.id, w.g)).toEqual(before);
 
-    // Its reply, as the worker posts it, in another group: the same; the notice follows the reply, and its owner is
-    // pushed the Agent.
+    // Its reply, as the worker posts it, in another group: the same; the owner is told once (after the refusal's commit).
     const g2 = await anotherGroup(w, "second");
     await join(g2, anna.id);
     await join(g2, mia.id);
     await say(w.member, g2, "@mia 问问 anna");
-    const pushed = vi.spyOn(app.realtime, "pushAgentChanged");
-    const thirdSocket = await connect(app, w.third);
     gateway.reply("@anna 你也看看");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    const reply = await thirdSocket.waitFor((x) => x.type === "message" && x.message.senderId === mia.id);
-    await thirdSocket.waitFor((x) => x.type === "message" && x.message.system?.event === EVENT, { from: reply + 1 });
     expect(await runsOf(anna.id, g2)).toEqual([]);
-    expect((await noticesOf(g2)).map((n) => n.agentId)).toEqual([anna.id]);
-    expect(pushed.mock.calls).toEqual([[w.owner.id, anna.id]]);
+    expect(await noticesIn(g2)).toBe(0);
+    await expect.poll(async () => (await ownerNotices(w.owner)).length).toBe(1);
   });
 
-  it("a member's call relayed by the owner's Agent meets the other Agent's budget: refused, and the group told", async () => {
+  it("a follow-up others asked for is not queued once it is reached, and the caller is told on their message; its owner's is", async () => {
     const w = await world();
-    await agentOf(w.owner, "anna", w.g);
-    const carl = await agentOf(w.owner, "carlbot", w.g, { othersBudget: "2" });
-    await paidOthers(carl, w.g, 2 * POINT);
-    const before = await runsOf(carl.id, w.g);
-    await say(w.member, w.g, "@anna 问问 carlbot");
-    gateway.reply("@carlbot 你也看看");
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(await runsOf(carl.id, w.g)).toEqual(before);
-    expect((await noticesOf(w.g)).map((n) => n.agentId)).toEqual([carl.id]);
-  });
-
-  it("a follow-up others asked for is not queued once it is spent; its owner's is", async () => {
-    const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
+    await setLimit(w.owner, "2");
     const g2 = await anotherGroup(w, "second");
     const g3 = await anotherGroup(w, "third");
     for (const conv of [g2, g3]) await join(conv, anna.id);
@@ -283,95 +295,85 @@ describe("the others' daily budget", () => {
     }
     const noted = [await say(w.third, w.g, "@anna 二"), await say(w.owner, g2, "@anna 我也问"), await say(w.third, g3, "@anna 二")];
     for (const [i, conv] of [w.g, g2, g3].entries()) expect((await runsOf(anna.id, conv)).at(-1)).toMatchObject({ status: "running", pending: noted[i] });
-    // The day's spend reaches the budget before they end.
+    // Others' use reaches the number before they end.
     await paidOthers(anna, w.g, 2 * POINT);
-    const pushed = vi.spyOn(app.realtime, "pushAgentChanged");
-    const memberSocket = await connect(app, w.member);
+    const thirdSocket = await connect(app, w.third);
 
-    // The first ends: what the other member asked meanwhile is not answered; the group is told after the run's end, and
-    // its owner is pushed the Agent.
+    // The first ends: what the other member asked meanwhile is not answered; that member's message is pushed to them again, with
+    // its line.
     await app.agentPort.finish(tickets[0]!, { status: "done" }, null, NOTHING);
-    const told = await memberSocket.next((x) => x.type === "message" && x.message.system?.event === EVENT);
-    expect([told.message.conversationId, told.message.system]).toEqual([w.g, { event: EVENT, actorId: anna.id, agentId: anna.id }]);
+    const pushed = await thirdSocket.next((x) => x.type === "message" && x.message.seq === noted[0] && Array.isArray(x.message.refused));
+    expect([pushed.message.conversationId, pushed.message.refused]).toEqual([w.g, limitLine(anna)]);
     expect((await runsOf(anna.id, w.g)).filter((r) => r.status !== "done")).toEqual([]);
-    expect(pushed.mock.calls).toEqual([[w.owner.id, anna.id]]);
 
     // The second: what its owner asked is answered, as its owner's own.
     await app.agentPort.finish(tickets[1]!, { status: "done" }, null, NOTHING);
     expect((await runsOf(anna.id, g2)).at(-1)).toMatchObject({ status: "queued", lane: "own", covers: noted[1] });
-    expect(await noticesOf(g2)).toEqual([]);
+    expect(await readAs(w.owner, g2, noted[1]!)).not.toHaveProperty("refused");
 
     // The third, released after its reply was posted (recovery's way): the same rule as the first.
     await db.tx((t) => insertMessage(t, g3, anna.id, "text", { text: "回答" }, tickets[2]!.id));
     expect(await app.agentPort.releaseRun(tickets[2]!.id)).toBe(true);
     expect((await runsOf(anna.id, g3)).map((r) => r.status)).toEqual(["done"]);
-    expect((await noticesOf(g3)).map((n) => n.agentId)).toEqual([anna.id]);
-    expect(pushed.mock.calls).toEqual([
-      [w.owner.id, anna.id],
-      [w.owner.id, anna.id],
-    ]);
+    expect((await readAs(w.third, g3, noted[2]!))?.refused).toEqual(limitLine(anna));
+    await expect.poll(async () => (await ownerNotices(w.owner)).length).toBe(1);
   });
 
-  it("checked again as a reply is admitted, with its hold: one queued while there was room ends there when the room left cannot hold it, with no call and no charge, and the group is told", async () => {
+  it("checked again as a reply is admitted: one queued below the number ends there once others' use has reached it, with no call and no charge, and its sender is told", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
+    await setLimit(w.owner, "2");
     const g2 = await anotherGroup(w, "second");
     await join(g2, anna.id);
-    // A micro-point short of the budget: the member's calls in both groups are queued.
+    // A micro-point short of the number: the member's calls in both groups are queued.
     await paidOthers(anna, w.g, 2 * POINT - 1);
-    await say(w.member, w.g, "@anna 一");
-    await say(w.member, g2, "@anna 二");
+    const first = await say(w.member, w.g, "@anna 一");
+    const second = await say(w.member, g2, "@anna 二");
     expect([(await runsOf(anna.id, w.g)).at(-1), (await runsOf(anna.id, g2)).at(-1)]).toEqual([
       expect.objectContaining({ status: "queued", lane: "others" }),
       expect.objectContaining({ status: "queued", lane: "others" }),
     ]);
 
-    // The cap is exact (B1, `othersFits`): settled plus what the reply holds must stay within the budget, and the one
-    // micro-point left holds nothing. The first, as the worker takes it, ends as it is admitted — no model call, nothing
-    // charged — and the group is told.
-    const pushed = vi.spyOn(app.realtime, "pushAgentChanged");
-    const memberSocket = await connect(app, w.member);
+    // The micro-point is used while they wait (nothing is reserved against the number: only what is used counts). The first, as the
+    // worker takes it, ends as it is admitted — no model call, nothing charged — and its sender's message carries the line.
+    await paidOthers(anna, g2, 1);
     const calls = gateway.calls.length;
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(gateway.calls.length).toBe(calls);
     const ended = async (conv: string) =>
       (
         await db.query<{ id: string; status: string; error: string | null; source: string | null }>(
-          "select id, status, error, source from agent_runs where agent_id = $1 and conversation_id = $2 and status <> 'done' order by created_at desc limit 1",
+          "select id, status, error, source from agent_runs where agent_id = $1 and conversation_id = $2 and covers_seq > 0 order by created_at desc limit 1",
           [anna.id, conv],
         )
       ).rows;
     expect((await ended(w.g)).map(({ status, error, source }) => ({ status, error, source }))).toEqual([{ status: "cancelled", error: null, source: null }]);
     const charged = await db.query("select coalesce(sum(free_micro + balance_micro), 0)::text as charged from usage_records where run_id = $1", [(await ended(w.g))[0]!.id]);
     expect(charged.rows[0].charged).toBe("0");
-    expect((await noticesOf(w.g)).map((n) => n.agentId)).toEqual([anna.id]);
-    const told = await memberSocket.next((x) => x.type === "message" && x.message.system?.event === EVENT);
-    expect(told.message.conversationId).toBe(w.g);
-    expect(pushed.mock.calls).toEqual([[w.owner.id, anna.id]]);
+    expect((await readAs(w.member, w.g, first))?.refused).toEqual(limitLine(anna));
 
-    // The second, in the other group: the same, with that group's own notice (once a site day per conversation).
+    // The second, in the other group: the same; the owner is told once.
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(gateway.calls.length).toBe(calls);
     expect((await ended(g2)).map(({ status, error, source }) => ({ status, error, source }))).toEqual([{ status: "cancelled", error: null, source: null }]);
-    expect((await noticesOf(g2)).map((n) => n.agentId)).toEqual([anna.id]);
-    expect(pushed.mock.calls).toEqual([
-      [w.owner.id, anna.id],
-      [w.owner.id, anna.id],
-    ]);
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "1.999999" } });
+    expect((await readAs(w.member, g2, second))?.refused).toEqual(limitLine(anna));
+    await expect.poll(async () => (await ownerNotices(w.owner)).length).toBe(1);
+    expect([await noticesIn(w.g), await noticesIn(g2)]).toEqual([0, 0]);
+    expect(await othersUse(w.owner)).toMatchObject({ used: "2" });
   });
 
   it.each([
     ["its owner's is answered", "owner", true],
-    ["another member's meets the budget again: nothing, and no second notice", "third", false],
-  ] as const)("a mention noted between the claim and a budget-refused admission is followed up: %s", async (_what, who, answered) => {
+    ["another member's meets the number again: nothing, and the line on their message", "third", false],
+  ] as const)("a mention noted between the claim and an admission the number refused is followed up: %s", async (_what, who, answered) => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
+    await setLimit(w.owner, "2");
     await paidOthers(anna, w.g, 2 * POINT - 1);
     await say(w.member, w.g, "@anna 一");
     const ticket = await app.agentPort.claimNext();
     expect(ticket?.conversationId).toBe(w.g);
-    // Claimed (running), the reply has a mention noted on it before it begins; then the budget is spent.
+    // Claimed (running), the reply has a mention noted on it before it begins; then the number is reached.
     const asked = await say(w[who], w.g, "@anna 我也问");
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "running", pending: asked });
     await paidOthers(anna, w.g, 1);
@@ -380,10 +382,10 @@ describe("the others' daily budget", () => {
     expect(end).toEqual({ status: "cancelled" });
     await app.agentPort.finish(ticket!, end as RunEnd, null, NOTHING);
     expect(gateway.calls.length).toBe(calls);
-    expect(await noticesOf(w.g)).toHaveLength(1);
     const queued = (await runsOf(anna.id, w.g)).filter((r) => r.status === "queued");
     if (!answered) {
       expect(queued).toEqual([]);
+      expect((await readAs(w.third, w.g, asked))?.refused).toEqual(limitLine(anna));
       return;
     }
     // The owner's mention: an own follow-up covering it, answered when it runs.
@@ -394,59 +396,30 @@ describe("the others' daily budget", () => {
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "done", lane: "own", covers: asked });
   });
 
-  it("a reply being written counts by what it holds (B3): its owner's own does not; another's under way, holding more than the budget, refuses the next call, and the group is NOT told it answers only its owner until tomorrow (a hold is over when its reply ends: fix round 4, F5); the spend shown is what is settled", async () => {
+  it("a reply being written counts nothing until it is settled: one for others under way, holding far more than the number, refuses no call", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
+    await setLimit(w.owner, "2");
     const g2 = await anotherGroup(w, "second");
     await join(g2, anna.id);
-    // Its owner's reply under way in its own conversation holds many times the budget (a hold is a reply's most it can cost):
-    // it is the owner's own, and counts for nothing against what others may spend.
-    await holding(anna, anna.conversationId, "own", 50 * POINT);
+    await holding(anna, g2, "others", 50 * POINT);
     const asked = await say(w.member, w.g, "@anna 一");
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others", covers: asked });
-    await settleAll();
-
-    // Another member's reply under way in the second group, holding the same: it is held against the budget (it will be charged
-    // at most that), so the next call, in either group, is refused; a mention is not noted on it. The group is told nothing: nothing
-    // is used up for the day (the same decision the owner's page shows, `agentRoom`), and the call below is answered once it ends.
-    await holding(anna, g2, "others", 50 * POINT);
-    const before = await runsOf(anna.id, w.g);
-    await say(w.third, w.g, "@anna 二");
-    expect(await runsOf(anna.id, w.g)).toEqual(before);
-    expect(await noticesOf(w.g)).toHaveLength(0);
-    await say(w.third, g2, "@anna 三");
-    expect(await runsOf(anna.id, g2)).toEqual([expect.objectContaining({ status: "running", pending: null })]);
-    expect(await noticesOf(g2)).toHaveLength(0);
-    // Others' use counts what the reply being written holds (the number is decided by settled plus held).
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "50" } });
-
-    // It ends: its hold is gone, and the call is answered again.
-    await settleAll();
-    const again = await say(w.member, w.g, "@anna 四");
-    expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others", covers: again });
-    await settleAll();
-
-    // Once what such replies were charged reaches it, the next call is refused (the notice, once a day, was told).
-    await paidOthers(anna, w.g, 2 * POINT);
-    const settled = await runsOf(anna.id, w.g);
-    await say(w.third, w.g, "@anna 五");
-    expect(await runsOf(anna.id, w.g)).toEqual(settled);
-    expect(await noticesOf(w.g)).toHaveLength(1);
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "2" } });
+    expect(await othersUse(w.owner)).toMatchObject({ used: "0", reached: false });
   });
 
   it("a person's mention it refused is no call of a later follow-up whose answer it lies in: that follow-up is the caller's whose mention was noted", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
+    await setLimit(w.owner, "2");
     await say(w.member, w.g, "@anna 一");
     const ticket = await claim(anna, w.g);
-    // The budget is spent while the reply runs: the third's mention is refused (nothing noted) and the group told.
+    // The number is reached while the reply runs: the third's mention is refused (nothing noted), with its line.
     await paidOthers(anna, w.g, 2 * POINT);
-    await say(w.third, w.g, "@anna 二");
-    expect(await noticesOf(w.g)).toHaveLength(1);
+    expect((await send(w.third, w.g, "@anna 二")).refused).toEqual(limitLine(anna));
     expect((await db.query("select pending_seq from agent_runs where id = $1", [ticket.id])).rows).toEqual([{ pending_seq: null }]);
     // Raised, the member's next mention is noted on the reply under way, after the third's.
-    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { othersBudget: "10" })).status).toBe(200);
+    await setLimit(w.owner, "10");
     const asked = await say(w.member, w.g, "@anna 三");
     await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
     const queued = await db.query("select lane, caller_id, covers_seq::int as covers from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [
@@ -456,33 +429,28 @@ describe("the others' daily budget", () => {
     expect(queued.rows).toEqual([{ lane: "others", caller_id: w.member.id, covers: asked }]);
   });
 
-  it("yesterday's spend does not count", async () => {
+  it("yesterday's use does not count", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
+    const anna = await agentOf(w.owner, "anna", w.g);
+    await setLimit(w.owner, "2");
     const dayStart = siteDayStart(new Date(), app.deps.config.siteTimezone, 0);
     await paidOthers(anna, w.g, 50 * POINT, new Date(dayStart.getTime() - 1000));
     await say(w.member, w.g, "@anna 你好");
     expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others" });
-    expect(await viewOf(w.owner, anna)).toMatchObject({ othersUsedToday: { points: "0" } });
+    expect(await othersUse(w.owner)).toMatchObject({ used: "0" });
     await settleAll();
     // From the day's first instant it counts.
     await paidOthers(anna, w.g, 2 * POINT, dayStart);
     const before = await runsOf(anna.id, w.g);
-    await say(w.member, w.g, "@anna 再问");
+    expect((await send(w.member, w.g, "@anna 再问")).refused).toEqual(limitLine(anna));
     expect(await runsOf(anna.id, w.g)).toEqual(before);
-    expect(await noticesOf(w.g)).toHaveLength(1);
   });
 
-  it("raising it restores calls at once; null is unlimited; lowering it below today's spend refuses", async () => {
+  it("raising it restores calls at once; lowering it below today's use refuses; the Agents carry no number of their own", async () => {
     const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { othersBudget: "2" });
-    const plain = await agentOf(w.owner, "plainbot", w.g);
+    const anna = await agentOf(w.owner, "anna", w.g);
+    await setLimit(w.owner, "2");
     await paidOthers(anna, w.g, 2.5 * POINT);
-    const patch = async (value: string | null) => {
-      const res = await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { othersBudget: value });
-      expect([value, res.status]).toEqual([value, 200]);
-      return res.json;
-    };
     const queued = async (who: Actor, text: string) => {
       const seq = await say(who, w.g, text);
       const last = (await runsOf(anna.id, w.g)).at(-1);
@@ -490,24 +458,17 @@ describe("the others' daily budget", () => {
     };
 
     expect(await queued(w.member, "@anna 一")).toBe(false);
-    expect(await noticesOf(w.g)).toHaveLength(1);
-    // Raised above today's spend (2.5 points): answered at once.
-    expect(await patch("3")).toMatchObject({ othersLimit: { points: "3" }, othersUsedToday: { points: "2.5" } });
+    // Raised above today's use (2.5 points): answered at once.
+    expect(await setLimit(w.owner, "3")).toEqual({ points: "3" });
+    expect(await othersUse(w.owner)).toMatchObject({ limit: "3", used: "2.5", reached: false });
     expect(await queued(w.member, "@anna 二")).toBe(true);
     await db.query("update agent_runs set status = 'done', finished_at = now() where agent_id = $1 and conversation_id = $2", [anna.id, w.g]);
-    // Lowered below it: refused at once (the group was told today already).
-    await patch("1");
+    // Lowered below it: refused at once.
+    await setLimit(w.owner, "1");
     expect(await queued(w.third, "@anna 三")).toBe(false);
-    expect(await noticesOf(w.g)).toHaveLength(1);
-    // No limit: answered, however much was spent.
-    expect(await patch(null)).toMatchObject({ othersLimit: { points: null }, othersUsedToday: { points: "2.5" } });
-    expect(await queued(w.third, "@anna 四")).toBe(true);
-    // Its owner's list shows each Agent's own.
+    // No Agent has a number or a count of its own any more.
     const listed = (await api(app, w.owner, "GET", "/api/agents")).json.agents as Array<Record<string, unknown>>;
-    expect(listed.map((a) => [a.id, (a.othersLimit as { points: string | null }).points, (a.othersUsedToday as { points: string }).points])).toEqual([
-      [anna.id, null, "2.5"],
-      [plain.id, null, "0"],
-    ]);
+    expect(listed.flatMap((a) => ["othersLimit", "othersUsedToday", "proactiveBudget", "proactiveSpentToday"].filter((k) => Object.hasOwn(a, k)))).toEqual([]);
   });
 });
 
@@ -521,31 +482,31 @@ describe("the order of the checks", () => {
     logStream: { write: (line) => void lines.push(line) },
   });
 
-  it("the others' budget comes before the caller's limit: a caller over his limit is told the budget is spent, and no limit is logged", async () => {
+  it("the owner's number comes before the caller's limit: a caller over his limit is told the number is reached, not that he calls too often, and no limit is logged", async () => {
     const [owner, member, third] = [await signUp(limited, "owner"), await signUp(limited, "member"), await signUp(limited, "third")];
     const g = await group(limited, owner, "team", [member, third]);
-    const make = async (handle: string, over: Record<string, unknown> = {}) => {
-      const made = await mustCreateAgent(limited, owner, { handle, name: handle, model: FAST, persona: "简短地回答。", ...over });
+    const make = async (by: Actor, handle: string) => {
+      const made = await mustCreateAgent(limited, by, { handle, name: handle, model: FAST, persona: "简短地回答。" });
       await join(g, made.id);
-      return { id: made.id, ownerId: owner.id, conversationId: made.conversationId };
+      return { id: made.id, ownerId: by.id, conversationId: made.conversationId };
     };
-    const anna = await make("anna", { othersBudget: "2" });
-    const carl = await make("carlbot");
+    const anna = await make(owner, "anna");
+    // Another owner's Agent, whose owner's number is far off.
+    const carl = await make(third, "carlbot");
+    expect((await api(limited, owner, "PUT", "/api/me/others-limits", { points: "2" })).status).toBe(200);
     await paidOthers(anna, g, 2 * POINT);
     const sayIn = async (text: string) => {
       const sent = await api(limited, member, "POST", `/api/conversations/${g}/messages`, { text, clientTxn: `order${++txn}` });
       expect(sent.status).toBe(201);
-      return sent.json as Record<string, unknown>;
+      return sent.json.message as Record<string, unknown>;
     };
 
     // The member's one call of the minute on someone else's Agent is used up (queued)...
     await sayIn("@carlbot 你好");
     expect(await runsOf(carl.id, g)).toEqual([expect.objectContaining({ status: "queued", lane: "others" })]);
-    // ...so this call is over his limit, and Anna's budget is spent too: the budget answers — the group is told, and the
-    // sender's answer names nothing his limit refused.
+    // ...so this call is over his limit, and the owner's number is reached too: the number answers.
     const answered = await sayIn("@anna 你好");
-    expect(await noticesOf(g)).toHaveLength(1);
-    expect(answered).not.toHaveProperty("notCalled");
+    expect(answered.refused).toEqual([{ agentId: anna.id, reason: "others_limit" }]);
     expect(lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e.metric === "caller_rate_limited")).toEqual([]);
   });
 });

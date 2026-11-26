@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { admit } from "../src/metering/admit.ts";
+import { admit, admitRun } from "../src/metering/admit.ts";
 import { OWN_KEY_NOMINAL_MICRO, othersReplyCeilingMicro, othersUseToday, OthersLimit } from "../src/metering/others.ts";
 import { maxCostMicro } from "../src/metering/prices.ts";
+import { settle } from "../src/metering/settle.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -127,6 +128,48 @@ describe("admission", () => {
         await db.query("update agent_runs set status = 'done', hold_micro = 0 where id = $1", [runId]);
       }
     }
+  });
+});
+
+describe("admission across connections and days", () => {
+  it("two replies admitted at once on two connections while use is below N: both are, nothing being reserved; the day passes N by them alone", async () => {
+    const owner = await newOwner();
+    await grant(db, owner.id, 10_000n * POINT);
+    const [a, b] = await agentsOf(app, db, owner, 2, PAID_MODEL);
+    await setOwnerLimit(db, owner.id, 10n * POINT);
+    await paidReply(db, { agentId: a!.agentId, ownerId: owner.id, conversationId: a!.conversationId, lane: "others", micro: 9n * POINT });
+    const [r1, r2] = [await seedRun(db, { ownerId: owner.id, agent: a!, lane: "others" }), await seedRun(db, { ownerId: owner.id, agent: b!, lane: "others" })];
+    const admitBoth = await Promise.allSettled([
+      db.tx((t) => admitRun(t, config(), r1, owner.id, a!.resolved, 20_000, () => new Date())),
+      db.tx((t) => admitRun(t, config(), r2, owner.id, b!.resolved, 20_000, () => new Date())),
+    ]);
+    expect(admitBoth.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    // Settled, they pass N; the next reply for others is refused.
+    for (const id of [r1, r2]) {
+      await db.tx((t) => settle(t, config(), id, { inputTokens: 1000, outputTokens: 100 }, { inputChars: 0, outputChars: 0 }, "done", new Date(), { log: { warn: () => undefined } }));
+      await db.query("update agent_runs set status = 'done', finished_at = now() where id = $1", [id]);
+    }
+    expect(await othersUseToday(db, config(), owner.id, new Date())).toBeGreaterThan(10n * POINT);
+    const r3 = await seedRun(db, { ownerId: owner.id, agent: a!, lane: "others" });
+    await expect(db.tx((t) => admitRun(t, config(), r3, owner.id, a!.resolved, 10, () => new Date()))).rejects.toBeInstanceOf(OthersLimit);
+  });
+
+  it("the site day's edge: a reply admitted at 00:00:01 is counted on the new day, read under the account lock; a chain begun yesterday and retried today counts on both days", async () => {
+    const owner = await newOwner();
+    const mine = await providerAgent(app, db, owner);
+    const before = new Date("2026-03-02T15:59:58Z"); // 23:59:58 in Shanghai on 2 March
+    const after = new Date("2026-03-02T16:00:01Z"); // 00:00:01 on 3 March
+    const run = await seedRun(db, { ownerId: owner.id, agent: mine, lane: "others" });
+    await db.query("update agent_runs set started_at = $2 where id = $1", [run, before]);
+    await db.tx((t) => admitRun(t, config(), run, owner.id, mine.resolved, 10, after));
+    expect(await othersUseToday(db, config(), owner.id, after)).toBe(6n * POINT);
+    expect(await othersUseToday(db, config(), owner.id, before)).toBe(0n);
+    await db.query("update agent_runs set status = 'failed', finished_at = now() where id = $1", [run]);
+    const retry = await seedRun(db, { ownerId: owner.id, agent: mine, lane: "others", retryOf: run });
+    const nextDay = new Date("2026-03-03T16:00:05Z");
+    await db.tx((t) => admitRun(t, config(), retry, owner.id, mine.resolved, 10, nextDay));
+    expect(await othersUseToday(db, config(), owner.id, after)).toBe(6n * POINT);
+    expect(await othersUseToday(db, config(), owner.id, nextDay)).toBe(6n * POINT);
   });
 });
 

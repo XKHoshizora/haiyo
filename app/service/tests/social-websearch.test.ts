@@ -12,7 +12,7 @@ import { useApp } from "./helpers/harness.ts";
 import { grant, paidReply } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { providerBody } from "./helpers/providers.ts";
-import { BIG_MODEL, committedMicro, FREE_MODEL, OTHERS_ENV, POINT } from "./helpers/others.ts";
+import { BIG_MODEL, FREE_MODEL, OTHERS_ENV, POINT } from "./helpers/others.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets, connect } from "./helpers/ws.ts";
 
@@ -80,13 +80,12 @@ async function world(engine: WebEngine, gateway: Pick<ModelGateway, "stream">, m
 }
 
 describe("a visitor's reply searches the web on the owner's numbers", () => {
-  it("the price is held before the engine is called, inside the owner's shared numbers; one search; the reply is posted; the points are the owner's, in the visitor's row", async () => {
-    const seen: { before: bigint; during: bigint; committed: bigint } = { before: -1n, during: -1n, committed: -1n };
+  it("the price is held before the engine is called; one search; the reply is posted; the points are the owner's, counted in others' use, in the visitor's row", async () => {
+    const seen: { before: bigint; during: bigint } = { before: -1n, during: -1n };
     const holdOf = async (conv: string) => BigInt((await db.query<{ h: string }>("select hold_micro::text as h from agent_runs where conversation_id = $1 order by created_at desc limit 1", [conv])).rows[0]!.h);
     const ctx = { conv: "", owner: "" };
     const engine = fakeEngine(async () => {
       seen.during = await holdOf(ctx.conv);
-      seen.committed = await committedMicro(db, ctx.owner);
     });
     const inner = scriptedGateway().callTools([{ name: SEARCH_WEB, input: { query: QUERY } }], { usage: { inputTokens: 900, outputTokens: 40 } }).reply("今天多云。", { usage: { inputTokens: 1200, outputTokens: 20 } });
     let first = true;
@@ -109,11 +108,9 @@ describe("a visitor's reply searches the web on the owner's numbers", () => {
     // The web search was among the tools a visitor's reply is offered, and it ran once.
     expect(inner.calls[0]!.tools?.map((t) => t.name)).toContain(SEARCH_WEB);
     expect(engine.queries).toEqual([QUERY]);
-    // Held before the engine was called: the run's hold had grown by exactly the price, and the owner's settled plus held was within the cap.
+    // Held before the engine was called: the run's hold had grown by exactly the price.
     expect(seen.before > 0n).toBe(true);
     expect(seen.during - seen.before).toBe(PRICE);
-    expect(seen.committed <= 300n * POINT).toBe(true);
-    expect(seen.committed >= seen.during).toBe(true);
     expect(await w.posted()).toEqual(["今天多云。"]);
     const run = await w.run();
     expect(run).toMatchObject({ status: "done", error: null, lane: "others", caller: w.visitor.id, hold: "0", searches: 1, web: PRICE.toString() });
@@ -123,12 +120,10 @@ describe("a visitor's reply searches the web on the owner's numbers", () => {
     expect(records[0]).toMatchObject({ owner_id: w.owner.id, web: PRICE.toString() });
     expect(BigInt(records[0]!.total) >= PRICE).toBe(true);
     expect((await db.query("select 1 from usage_records where owner_id = $1", [w.visitor.id])).rowCount).toBe(0);
-    // The owner's use page: one answer, the points with the search in them, in the visitor's row.
+    // The owner's use page: what the reply was charged, the search in it, in the visitor's row.
     const use = (await api(app, w.owner, "GET", "/api/me/others-use")).json;
-    expect(use.used.answers).toBe(1);
-    expect(Number(use.used.points)).toBeGreaterThanOrEqual(0.77);
-    expect(use.byPerson.map((r: { person: { id: string }; answers: number }) => [r.person.id, r.answers])).toEqual([[w.visitor.id, 1]]);
-    expect(Number(use.byPerson[0].points)).toBeGreaterThanOrEqual(0.77);
+    expect(Number(use.used)).toBeGreaterThanOrEqual(0.77);
+    expect(use.byPerson.map((r: { person: { id: string }; points: string }) => [r.person.id, r.points])).toEqual([[w.visitor.id, use.used]]);
     // The visitor is sent the reply and never the search words; nothing of the query is logged.
     const read = (await api(app, w.visitor, "GET", `/api/conversations/${w.conv}/messages`)).json.messages as Array<Record<string, unknown>>;
     const reply = read.find((m) => m.senderId === w.agent.id)!;
@@ -149,7 +144,7 @@ describe("a visitor's reply searches the web on the owner's numbers", () => {
     const inner = scriptedGateway().callTools([{ name: SEARCH_WEB, input: { query: QUERY } }], { usage: { inputTokens: 900, outputTokens: 40 } }).reply("查不了，凭印象说。", { usage: { inputTokens: 1200, outputTokens: 20 } });
     const ctx = { conv: "", owner: "", agent: "", own: "" };
     let first = true;
-    // On its first request, with its hold written, the owner's others' points are brought to within 0.4 of the number: a search (0.77) cannot be held.
+    // On its first request, with its hold written, others' use of the owner's Agents is brought to the owner's number: its search is refused.
     const gateway = Object.create(inner) as ModelGateway & typeof inner;
     gateway.stream = ((call: ModelCall) => {
       const events = inner.stream(call);
@@ -157,7 +152,8 @@ describe("a visitor's reply searches the web on the owner's numbers", () => {
         if (first) {
           first = false;
           const hold = BigInt((await db.query<{ h: string }>("select hold_micro::text as h from agent_runs where conversation_id = $1 order by created_at desc limit 1", [ctx.conv])).rows[0]!.h);
-          await paidReply(db, { agentId: ctx.agent, ownerId: ctx.owner, conversationId: ctx.own, lane: "others", micro: 300n * POINT - hold - 400_000n });
+          expect(hold).toBeGreaterThan(0n);
+          await paidReply(db, { agentId: ctx.agent, ownerId: ctx.owner, conversationId: ctx.own, lane: "others", micro: 300n * POINT });
         }
         yield* events;
       })();
@@ -171,8 +167,7 @@ describe("a visitor's reply searches the web on the owner's numbers", () => {
     expect(await w.posted()).toEqual(["查不了，凭印象说。"]);
     expect(await w.run()).toMatchObject({ status: "done", hold: "0", searches: 0, web: "0" });
     expect(metric("web_refused_lane_budget")).toHaveLength(1);
-    // Never over the number, and the visitor is told nothing of why.
-    expect((await committedMicro(db, w.owner.id)) <= 300n * POINT).toBe(true);
+    // The visitor is told nothing of why (the reply answered: no call was refused).
     const read = (await api(app, w.visitor, "GET", `/api/conversations/${w.conv}/messages`)).json;
     expect(JSON.stringify(read)).not.toContain("lane_budget");
   });

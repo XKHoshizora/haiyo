@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { stopRun } from "../src/agents/runs.ts";
 import { createAgentWorker } from "../src/agents/runtime/worker.ts";
+import { othersUseToday } from "../src/metering/others.ts";
 import { mayThink, type ModelCall, type ModelGateway } from "../src/models/gateway.ts";
 import { api } from "./helpers/actors.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -81,7 +82,8 @@ describe("a reply for others that may think: no clock but the ceiling, and its h
     expect(await s.worker.runOnce()).toBe(true);
     const call = s.inner.calls[0]!;
     expect([call.reasoning, call.thinks, mayThink(call)]).toEqual(["none", true, true]);
-    expect(call.maxOutputTokens).toBe(app.deps.config.others.outputTokens);
+    // The model's own output limit, as at the owner's own `none`: a reply for others is made as the owner's own is.
+    expect(call.maxOutputTokens).toBe(app.deps.config.siteModels.find((m) => m.id === THINK.id)!.maxOutputTokens);
     expect(await s.k.posted()).toEqual(["去吃面。"]);
     expect(await s.k.lastRun()).toMatchObject({ status: "done", lane: "others", hold: "0" });
   });
@@ -113,9 +115,8 @@ describe("a reply for others that may think: no clock but the ceiling, and its h
     expect((await s.k.charged(run.id)) < s.held[0]!.hold).toBe(true);
     expect(await s.heldNow()).toBe(0n);
     expect(await s.waiting()).toBe(0);
-    // What it is counted as against the owner's numbers for others is what was charged, not what was held.
-    const used = (await api(app, s.k.owner, "GET", "/api/me/others-use")).json.used as { points: string };
-    expect(BigInt(Math.round(Number(used.points) * 1e6))).toBe(await s.k.charged(run.id));
+    // What it is counted as in others' use of the owner's Agents is what was charged, not what was held.
+    expect(await othersUseToday(db, app.deps.config, s.k.owner.id, new Date())).toBe(await s.k.charged(run.id));
   });
 
   it("ended by its connection dying midway: failed, and the hold is released the same", async () => {

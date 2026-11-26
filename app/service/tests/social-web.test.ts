@@ -11,7 +11,7 @@ import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { grant } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
-import { FREE_MODEL, OTHERS_ENV, POINT, setOwnerNumbers } from "./helpers/others.ts";
+import { FREE_MODEL, OTHERS_ENV, POINT, setOwnerLimit } from "./helpers/others.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 
@@ -61,7 +61,7 @@ async function world(tag: string, webSearch = true) {
   const [owner, v] = [await signUp(app, `sw_o_${tag}`), await signUp(app, `sw_v_${tag}`)];
   const agent = (await mustCreateAgent(app, owner, { handle: `sw_bot_${tag}`, name: "sw", model: FREE_MODEL, persona: "简短地回答。", webSearch })) as { id: string; conversationId: string };
   await grant(db, owner.id, 20n * POINT);
-  await setOwnerNumbers(db, owner.id, { pointsMicro: 70n * POINT });
+  await setOwnerLimit(db, owner.id, 70n * POINT);
   const seeded = await seedSocial(app, { owner, agentId: agent.id, visitor: v });
   return { owner, v, agent, conv: seeded.conversationId };
 }

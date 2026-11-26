@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { optionsFor } from "../src/agents/proactive/candidates.ts";
 import { NOTHING } from "../src/agents/runtime/port.ts";
+import { othersUseToday } from "../src/metering/others.ts";
 import { disableAgent } from "../src/social/reports.ts";
 import { createWhisper } from "../src/whispers/store.ts";
 import { reach } from "../src/social/reach.ts";
@@ -8,13 +9,12 @@ import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { markOf, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
-import { committedMicro, seedRun, setOwnerNumbers } from "./helpers/others.ts";
 import { SOCIAL_ON } from "./helpers/social.ts";
 import { closeAllSockets, connect, type TestSocket } from "./helpers/ws.ts";
 
 /**
  * Ring 1a across both lanes (plan, Task I1a; the integration lists of `socialb-b3-review`, `socialb-b4-review` and `socialb-b5-review3`):
- * lane A's access (rows, bars, `reach`, the routes) with lane B's runs and money (trigger, `begin`, post, `othersFits`), through the real
+ * lane A's access (rows, bars, `reach`, the routes) with lane B's runs and money (trigger, `begin`, post, `othersAdmissible`), through the real
  * add, approve, send, claim, begin and post paths and a scripted gateway. What each lane proved against the other's stand-in is proved
  * here against the real thing.
  */
@@ -177,31 +177,45 @@ describe("I1a.1: access ends while a visitor's reply is mid-call", () => {
   });
 });
 
-describe("I1a.2 and I1a.3: the owner's two numbers with real visitors", () => {
-  it("12 answers a day: twelve visitor replies are admitted, the thirteenth ends quietly with one notice, and the owner's own reply runs", async () => {
+describe("I1a.2 and I1a.3: the owner's one number with real visitors", () => {
+  /** Brings others' use of `ownerId`'s Agents today to exactly `micro`, by what run `runId` was charged (its usage record). */
+  const useComesTo = async (ownerId: string, runId: string, micro: bigint) => {
+    const used = await othersUseToday(db, app.deps.config, ownerId, new Date());
+    expect(used <= micro).toBe(true);
+    await db.query("update usage_records set balance_micro = balance_micro + $2 where run_id = $1", [runId, (micro - used).toString()]);
+  };
+  const ownerNotices = async (ownerId: string) =>
+    (
+      await db.query(
+        "select 1 from messages m join agent_conversations ac on ac.conversation_id = m.conversation_id where ac.owner_id = $1 and m.kind = 'system' and m.body ->> 'event' = 'others_limit_reached'",
+        [ownerId],
+      )
+    ).rowCount;
+
+  it("a visitor's replies are admitted while others' use is below the number; once it is reached the next has no call and a line for the visitor alone, the owner is told once, and the owner's own reply runs", async () => {
     const w = await visited();
-    expect((await api(app, w.owner, "PUT", "/api/me/others-limits", { answers: 12, points: "300" })).status).toBe(200);
-    for (let i = 1; i <= 12; i++) {
-      await say(w.v, w.conv, `第 ${i} 问`);
-      gateway.reply(`第 ${i} 答`);
-      expect(await app.agentWorker.runOnce()).toBe(true);
-      // (Out of the callers' and the owner's minute: the day's numbers are what is tested.)
-      await db.query("update agent_runs set created_at = created_at - interval '2 minutes' where agent_id = $1", [w.agent.id]);
-    }
-    expect((await textsOf(w.conv, w.agent.id)).map((m) => m.body.text)).toEqual(Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 答`));
+    expect((await api(app, w.owner, "PUT", "/api/me/others-limits", { points: "1" })).status).toBe(200);
+    await say(w.v, w.conv, "第 1 问");
+    gateway.reply("第 1 答");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const run = (await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and status = 'done' order by created_at desc limit 1", [w.agent.id])).rows[0]!;
+    await useComesTo(w.owner.id, run.id, 1_000_000n);
+    // (Out of the callers' and the owner's minute: the day's number is what is tested.)
+    await db.query("update agent_runs set created_at = created_at - interval '2 minutes' where agent_id = $1", [w.agent.id]);
     const before = gateway.calls.length;
-    await say(w.v, w.conv, "第 13 问");
-    await app.agentWorker.runOnce();
-    await say(w.v, w.conv, "第 14 问");
-    await app.agentWorker.runOnce();
+    for (const text of ["第 2 问", "第 3 问"]) {
+      const sent = await send(w.v, w.conv, text);
+      expect([text, sent.json.message.refused]).toEqual([text, [{ agentId: w.agent.id, reason: "others_limit" }]]);
+      expect(await app.agentWorker.runOnce()).toBe(false);
+    }
     expect(gateway.calls.length).toBe(before);
-    expect((await textsOf(w.conv, w.agent.id)).length).toBe(12);
-    const notices = await db.query("select 1 from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = 'agent_daily_budget_reached'", [w.conv]);
-    expect(notices.rowCount).toBe(1);
+    expect((await textsOf(w.conv, w.agent.id)).map((m) => m.body.text)).toEqual(["第 1 答"]);
+    // The conversation is told nothing; the owner, in the Agent's own conversation, once.
+    expect((await db.query("select 1 from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = 'others_limit_reached'", [w.conv])).rowCount).toBe(0);
+    await expect.poll(() => ownerNotices(w.owner.id)).toBe(1);
     const use = (await api(app, w.owner, "GET", "/api/me/others-use")).json;
-    expect(use.used.answers).toBe(12);
-    expect(use.reached).toBe(true);
-    expect(use.byPerson.map((r: { person: { id: string }; answers: number }) => [r.person.id, r.answers])).toEqual([[w.v.id, 12]]);
+    expect([use.limit, use.used, use.reached]).toEqual(["1", "1", true]);
+    expect(use.byPerson.map((r: { person: { id: string }; points: string }) => [r.person.id, r.points])).toEqual([[w.v.id, "1"]]);
     // The owner's own conversation is not held to it.
     await say(w.owner, w.agent.conversationId, "我自己问");
     gateway.reply("好的");
@@ -209,63 +223,50 @@ describe("I1a.2 and I1a.3: the owner's two numbers with real visitors", () => {
     expect((await textsOf(w.agent.conversationId, w.agent.id)).at(-1)!.body.text).toBe("好的");
   }, 120_000);
 
-  it("five visitors at once under a points number that cannot hold them all: settled plus held never passes it, at any step", async () => {
-    // What one visitor's reply holds on this model, measured once.
-    const probe = await visited();
-    await say(probe.v, probe.conv, "你好");
-    const first = (await app.agentPort.claimNext())!;
-    expect("call" in (await app.agentPort.begin(first))).toBe(true);
-    const hold = await committedMicro(db, probe.owner.id);
-    expect(hold > 0n).toBe(true);
-    await app.agentPort.finish(first, { status: "cancelled" }, null, NOTHING);
-
+  it("five visitors at once: the replies admitted while use is below the number finish and are charged what they used (nothing is reserved against it); once their charges reach it, those still waiting end at admission, each visitor told", async () => {
     const t = tag();
     const owner = await signUp(app, `${t}o`);
-    // An owner's points number is at least one point: the bound is 2.5 holds where a hold is that large, else what one point leaves after
-    // the day's use is filled up (settled usage, written straight in, so that the same room of 2.5 holds is what is left).
-    const POINT = 1_000_000n;
-    const room = (hold * 5n) / 2n;
-    const cap = room > POINT ? room : POINT;
-    await setOwnerNumbers(db, owner.id, { pointsMicro: cap });
-    const filler = cap - room;
-    const visitors: Array<{ v: Actor; conv: string }> = [];
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "1" })).status).toBe(200);
+    const visitors: Array<{ v: Actor; conv: string; agent: Made; seq: number }> = [];
     for (let i = 0; i < 5; i++) {
       const agent = (await mustCreateAgent(app, owner, { handle: `${t}y${i}`, name: `${t}y${i}`, model: FAST, persona: "简短地回答。" })) as Made;
       const v = await signUp(app, `${t}v${i}`);
       expect((await add(v, agent.id)).status).toBe(202);
       const yes = await api(app, owner, "POST", `/api/agent-contacts/${agent.id}/${v.id}/approve`);
-      visitors.push({ v, conv: yes.json.conversationId as string });
+      visitors.push({ v, conv: yes.json.conversationId as string, agent, seq: 0 });
     }
-    if (filler > 0n) {
-      const used = (await mustCreateAgent(app, owner, { handle: `${t}f`, name: `${t}f`, model: FAST })) as Made;
-      await seedRun(db, { ownerId: owner.id, agent: { agentId: used.id, conversationId: used.conversationId }, lane: "others", hold: filler, admittedAt: new Date() });
+    for (const x of visitors) x.seq = await say(x.v, x.conv, "你好");
+    // At most `AGENT_MAX_CONCURRENT_OTHERS_RUNS` (3) of an owner's replies for others run at once: the others wait, queued.
+    const begun: Array<NonNullable<Awaited<ReturnType<typeof app.agentPort.claimNext>>>> = [];
+    for (;;) {
+      const ticket = await app.agentPort.claimNext();
+      if (!ticket) break;
+      expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
+      begun.push(ticket);
     }
-    for (const x of visitors) await say(x.v, x.conv, "你好");
-    const within = async (step: string) => expect([step, (await committedMicro(db, owner.id)) <= cap]).toEqual([step, true]);
-    const begun: Array<{ ticket: NonNullable<Awaited<ReturnType<typeof app.agentPort.claimNext>>>; called: boolean }> = [];
+    expect(begun).toHaveLength(app.deps.config.agentMaxConcurrentOthersRuns);
+    for (const ticket of begun) {
+      expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("posted");
+      await app.agentPort.finish(ticket, { status: "done" }, { inputTokens: 200, outputTokens: 50 }, NOTHING);
+    }
+    // Each was charged what it used, past the number if they cost that much together: the measure is what was used.
+    const charged = BigInt((await db.query<{ n: string }>("select coalesce(sum(free_micro + balance_micro), 0)::text as n from usage_records where run_id = any($1::uuid[])", [begun.map((b) => b.id)])).rows[0]!.n);
+    expect(charged > 0n).toBe(true);
+    expect(await othersUseToday(db, app.deps.config, owner.id, new Date())).toBe(charged);
+    if (charged < 1_000_000n) await useComesTo(owner.id, begun[0]!.id, 1_000_000n);
+    // Those still waiting are admitted by the same rule as the day goes on: refused, with no call, and their visitors told.
+    const waiting = visitors.filter((x) => !begun.some((b) => b.conversationId === x.conv));
+    expect(waiting).toHaveLength(5 - begun.length);
     for (;;) {
       const ticket = await app.agentPort.claimNext();
       if (!ticket) break;
       const prepared = await app.agentPort.begin(ticket);
-      begun.push({ ticket, called: "call" in prepared });
-      await within(`after admission ${begun.length}`);
-      if (!("call" in prepared)) await app.agentPort.finish(ticket, prepared, null, NOTHING);
+      expect(prepared).toEqual({ status: "cancelled" });
+      await app.agentPort.finish(ticket, prepared as { status: "cancelled" }, null, NOTHING);
     }
-    expect(begun.some((b) => b.called)).toBe(true);
-    for (const [i, b] of begun.entries()) {
-      if (!b.called) continue;
-      expect(await app.agentPort.post(b.ticket, { text: "在的", ...REPLY })).toBe("posted");
-      await app.agentPort.finish(b.ticket, { status: "done" }, { inputTokens: 200, outputTokens: 50 }, NOTHING);
-      await within(`after settlement ${i + 1}`);
-    }
-    // What was left waiting is admitted or refused by the same rule as the day goes on.
-    for (;;) {
-      const ticket = await app.agentPort.claimNext();
-      if (!ticket) break;
-      const prepared = await app.agentPort.begin(ticket);
-      await within("after a later admission");
-      await app.agentPort.finish(ticket, "call" in prepared ? { status: "cancelled" } : prepared, null, NOTHING);
-      await within("after a later end");
+    for (const x of waiting) {
+      const mine = ((await api(app, x.v, "GET", `/api/conversations/${x.conv}/messages`)).json.messages as Array<{ seq: number; refused?: unknown }>).find((m) => m.seq === x.seq);
+      expect(mine?.refused).toEqual([{ agentId: x.agent.id, reason: "others_limit" }]);
     }
   }, 120_000);
 });

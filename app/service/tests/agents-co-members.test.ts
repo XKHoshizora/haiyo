@@ -65,26 +65,19 @@ const HIDDEN_KEYS = [
   "reasoning",
   "replyMode",
   "groupMentions",
-  "othersBudget",
-  "othersSpentToday",
   "proactive",
   "proactiveLevel",
-  "proactiveBudget",
-  "proactiveSpentToday",
   // Agent social (plan Step 0, T0.4): what a non-owner is shown of the owner's notes, the owner's numbers and settings for
   // others' use, and the owner's verdicts and cards: the owner's alone, whoever else is in a conversation.
   "shownNotes",
   "withheld",
   "shown_notes",
   "withheld_notes",
-  "othersLimit",
-  "othersUsedToday",
-  "proactivePoints",
-  "proactiveAnswers",
-  "canReply",
-  // The use page's own keys (plan B4): the owner's numbers per person and per Agent.
+  // The use page's own keys (limits redesign, Part 1): others' use of the owner's Agents, per person.
   "byPerson",
-  "perDay",
+  "ownKeyPoints",
+  // What a limit refused of a person's message: its sender's alone (call_refusals).
+  "refused",
   "contactPolicy",
   "contactPicked",
   "picks",
@@ -283,7 +276,6 @@ async function world() {
     groupMentions: "owner",
     proactive: false,
     proactiveLevel: "normal",
-    proactiveBudget: "70",
     memory: true,
     memoryAsk: false,
     sharedNotes: true,

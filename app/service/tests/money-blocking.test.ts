@@ -469,7 +469,7 @@ describe("the holds of one owner's replies are capped together by queueing, not 
     const ned = await signUp(app, "groupned");
     const a = await mustCreateAgent(app, owner, { model: FIVE, handle: "held_ann", name: "Ann", persona: "简短地回答。" });
     const b = await mustCreateAgent(app, owner, { model: FIVE, handle: "held_bob", name: "Bob", persona: "简短地回答。" });
-    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (800 output tokens at 1 000: 0.8, B2a).
+    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (made as the owner's own is: 5).
     await grant(db, owner.id, 5_500_000n);
     const g = await group(app, owner, "team", [mia, ned]);
     for (const agent of [a, b]) expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: agent.id })).status).toBe(201);
@@ -683,12 +683,13 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
     expect(await port.claimNext()).toBeNull();
   });
 
-  it("a held-back reply keeps the owner's own mention it took on: refused at its next attempt by the others' daily budget, the owner's call is still answered", async () => {
+  it("a held-back reply keeps the owner's own mention it took on: refused at its next attempt by the owner's number for others' use, the owner's call is still answered", async () => {
     const owner = await signUp(app, "keepmention");
     const [mia, ned] = [await signUp(app, "keepmia"), await signUp(app, "keepned")];
-    const x = await mustCreateAgent(app, owner, { model: FIVE, handle: "keep_x", name: "Xia", persona: "简短地回答。Xia", othersBudget: "6" });
+    const x = await mustCreateAgent(app, owner, { model: FIVE, handle: "keep_x", name: "Xia", persona: "简短地回答。Xia" });
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "6" })).status).toBe(200);
     const y = await agentOf(owner, FIVE, "Yan");
-    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (800 output tokens at 1 000: 0.8, B2a).
+    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (made as the owner's own is: 5).
     await grant(db, owner.id, 5_500_000n);
     const g = await group(app, owner, "team", [mia, ned]);
     expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: x.id })).status).toBe(201);
@@ -704,7 +705,7 @@ describe("fix round 1: spend clamped to what was held, a requeued attempt that c
     const ownersSeq = Number((await db.query("select seq from conversations where id = $1", [g])).rows[0].seq);
     await port.finish(r, (await port.begin(r)) as RunEnd, null, NOTHING);
     expect(await runIn(g)).toMatchObject({ status: "queued" });
-    // Replies settled while it waited spend the Agent's others' daily budget.
+    // Replies settled while it waited bring others' use of the owner's Agents to the owner's number.
     await paidReply(db, { agentId: x.id, ownerId: owner.id, conversationId: g, lane: "others", micro: 6n * POINT });
     await port.finish(yan, { status: "failed", error: "busy" }, null, NOTHING);
     const again = (await port.claimNext())!;
@@ -1019,7 +1020,7 @@ describe("fix round 2: the free allowance's room for the last call, renewed a ro
     const y = await agentOf(owner, FIVE, "Yan");
     const z = await agentOf(owner, PAID, "Zed");
     const w = await agentOf(owner, PAID, "Wen");
-    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (800 output tokens at 1 000: 0.8, B2a).
+    // 5.5 points: the owner's own reply holds 5, and what is left cannot hold a reply someone else called for (made as the owner's own is: 5).
     await grant(db, owner.id, 5_500_000n);
     const g = await group(app, owner, "team", [mia, ned]);
     expect((await api(app, owner, "POST", `/api/conversations/${g}/members`, { principalId: x.id })).status).toBe(201);

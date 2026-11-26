@@ -20,9 +20,21 @@ describe("GET /api/models", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       siteModels: [
-        { id: "fast", label: "Fast", tier: "free", vision: false, pdf: false, reasoning: [], contextTokens: 100000, tools: true },
-        { id: "thinker", label: "Thinker", tier: "paid", vision: true, pdf: true, reasoning: ["low", "medium"], contextTokens: 200000, tools: true },
+        { id: "fast", label: "Fast", tier: "free", vision: false, pdf: false, reasoning: [], contextTokens: 100000, tools: true, othersCeiling: { none: expect.any(String) } },
+        {
+          id: "thinker",
+          label: "Thinker",
+          tier: "paid",
+          vision: true,
+          pdf: true,
+          reasoning: ["low", "medium"],
+          contextTokens: 200000,
+          tools: true,
+          // About the most one reply to somebody else can cost at each level it can run at (shown under the two levels for others).
+          othersCeiling: { none: expect.any(String), low: expect.any(String), medium: expect.any(String) },
+        },
       ],
+      othersOwnKeyPoints: "6",
       providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 },
       proactiveAvailable: false,
       memoryCatchUp: { days: 30, lines: 200 },
@@ -37,7 +49,10 @@ describe("GET /api/models", () => {
     const bare = await buildApp({ config: { ...app.deps.config, siteModels: [] }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });
     try {
       const owner = await signUp(bare, "nomodels");
-      expect(await api(bare, owner, "GET", "/api/models")).toEqual({ status: 200, json: { siteModels: [], providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 }, proactiveAvailable: false, memoryCatchUp: { days: 30, lines: 200 } } });
+      expect(await api(bare, owner, "GET", "/api/models")).toEqual({
+        status: 200,
+        json: { siteModels: [], othersOwnKeyPoints: "6", providerDefaults: { contextTokens: 16000, maxOutputTokens: 2048 }, proactiveAvailable: false, memoryCatchUp: { days: 30, lines: 200 } },
+      });
     } finally {
       await bare.close();
     }
@@ -61,7 +76,8 @@ describe("GET /api/models", () => {
       const owner = await signUp(able, "abilities");
       const res = await api(able, owner, "GET", "/api/models");
       const base = { label: "Fast", tier: "free", vision: false, pdf: false, reasoning: [], contextTokens: 100000 };
-      expect(res.json.siteModels).toEqual([
+      // (What one reply for others can cost there is the route's other test's: left out here.)
+      expect(res.json.siteModels.map(({ othersCeiling: _ceiling, ...m }: Record<string, unknown>) => m)).toEqual([
         { ...base, id: "omni", tools: true, ...mediaIn(hears) },
         { id: films.id, label: "Thinker", tier: "paid", vision: true, pdf: true, reasoning: ["low", "medium"], contextTokens: 200000, tools: true, ...mediaIn(films) },
         { ...base, id: "painter", tools: true, ...mediaIn(paints) },

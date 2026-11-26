@@ -222,40 +222,6 @@ describe("reading and editing", () => {
     expect(await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { groupMentions: "owner" })).toEqual({ status: 409, json: { error: "agent_deleted" } });
   });
 
-  it("othersLimit (the successor of othersBudget): none of its own by default, a decimal string of 1 to 100 000 points or null, and answers 1 to 1000 or null, on create and by PATCH; today's use beside it", async () => {
-    const owner = await signUp(app, "otto");
-    const plain = await mustCreateAgent(app, owner);
-    expect([plain.othersLimit, plain.othersUsedToday]).toEqual([{ answers: null, points: null }, { answers: 0, points: "0" }]);
-    // The alias, for one release: `othersBudget` is `othersLimit.points`.
-    expect((await mustCreateAgent(app, owner, { othersBudget: "5.5" })).othersLimit).toEqual({ answers: null, points: "5.5" });
-    expect((await mustCreateAgent(app, owner, { othersBudget: null })).othersLimit).toEqual({ answers: null, points: null });
-    expect((await mustCreateAgent(app, owner, { othersLimit: { answers: 12, points: "5.5" } })).othersLimit).toEqual({ answers: 12, points: "5.5" });
-    for (const [value, shown] of [
-      ["1", "1"],
-      ["100000", "100000"],
-      ["12.345678", "12.345678"],
-      ["0003.50", "3.5"],
-      [null, null],
-      ["7", "7"],
-    ] as const) {
-      const patched = await api(app, owner, "PATCH", `/api/agents/${plain.id}`, { othersBudget: value });
-      expect([value, patched.status, patched.json.othersLimit, patched.json.othersUsedToday]).toEqual([value, 200, { answers: null, points: shown }, { answers: 0, points: "0" }]);
-    }
-    expect((await db.query("select others_budget_micro::text as m, others_answers as a from agents where principal_id = $1", [plain.id])).rows).toEqual([{ m: "7000000", a: null }]);
-    // Other edits keep it.
-    expect((await api(app, owner, "PATCH", `/api/agents/${plain.id}`, { intro: "简介" })).json.othersLimit).toEqual({ answers: null, points: "7" });
-    for (const bad of ["0", "0.5", "0.999999", "abc", "100000.000001", "100001", "-1", "+5", "1e3", "", "5.", "1.0000001", 5, [], {}]) {
-      expect([bad, await api(app, owner, "PATCH", `/api/agents/${plain.id}`, { othersBudget: bad })]).toEqual([bad, { status: 400, json: { error: "invalid_request" } }]);
-      expect([bad, (await createAgent(app, owner, { othersBudget: bad })).status]).toEqual([bad, 400]);
-      expect([bad, (await createAgent(app, owner, { othersLimit: { answers: null, points: bad } })).status]).toEqual([bad, 400]);
-    }
-    expect((await api(app, owner, "GET", `/api/agents/${plain.id}`)).json).toMatchObject({ othersLimit: { answers: null, points: "7" }, othersUsedToday: { answers: 0, points: "0" } });
-    // Anybody else: as for an Agent that does not exist, and nothing changes.
-    const stranger = await signUp(app, "stan");
-    expect(await api(app, stranger, "PATCH", `/api/agents/${plain.id}`, { othersLimit: null })).toEqual({ status: 404, json: { error: "not_found" } });
-    expect((await api(app, owner, "GET", `/api/agents/${plain.id}`)).json.othersLimit).toEqual({ answers: null, points: "7" });
-  });
-
   it("refuses the handle, the owner and any unknown key (400), and over-long texts", async () => {
     const owner = await signUp(app, "sven");
     const agent = await mustCreateAgent(app, owner);

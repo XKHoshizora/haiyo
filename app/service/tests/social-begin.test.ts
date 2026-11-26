@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUN_COLUMNS, type RunRow } from "../src/agents/runs.ts";
 import { NO_NOTES, NOTES_SECRET_CLAUSE, SOCIAL_NO_COMMIT, socialSystemText, speakerLabel } from "../src/agents/runtime/prompt.ts";
-import { othersFloorHold, othersPlainCeiling, othersPlainFloor, othersUsedToday } from "../src/metering/others.ts";
+import { othersUseToday } from "../src/metering/others.ts";
 import { loadSocialScene } from "../src/agents/context.ts";
 import { readOwnedAgent } from "../src/agents/store.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
@@ -76,7 +76,7 @@ const textsOf = (call: ModelCall): string[] => call.messages.flatMap((m) => m.pa
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 describe("the call a social run makes", () => {
-  it("bounded as an others' reply, no replay, the labels by account, the persona whole, the owner's name and the other party's", async () => {
+  it("made as a reply for others (the Agent's level for others, the model's own output limit), no replay, the labels by account, the persona whole, the owner's name and the other party's", async () => {
     const w = await world("访客甲");
     const ownerSaid = await say(w.owner, w.conv, "主人先说一句");
     await say(w.v, w.conv, "你好呀");
@@ -84,7 +84,8 @@ describe("the call a social run makes", () => {
     expect(await app.agentWorker.runOnce()).toBe(true);
     const [call] = callsHere();
     const mark = markOf(call!);
-    expect(call!.maxOutputTokens).toBe(800);
+    // (`fast` writes at most 4 096 tokens; a new Agent's level for others is 不思考.)
+    expect(call!.maxOutputTokens).toBe(4096);
     expect(call!.reasoning).toBe("none");
     expect(call!.tools ?? []).toEqual([]);
     expect(call!.messages.flatMap((m) => m.parts).some((p) => p.type === "tool-call" || p.type === "tool-result")).toBe(false);
@@ -322,70 +323,38 @@ describe("access, scene, context", () => {
 });
 
 
-describe("the money bounds apply to a social run as to another person's group reply (hand-off 5)", () => {
-  it("it is an answer of its owner's (othersUsedToday), charged to the owner under lane others, and its calls are bounded (800 tokens, no reasoning)", async () => {
+describe("a social run is a reply for others, as another person's group reply is", () => {
+  it("it counts in its owner's one measure (othersUseToday), charged to the owner under lane others, and is made at the Agent's level for others with the model's own output limit", async () => {
     const w = await world("访客癸");
     await say(w.v, w.conv, "你好");
     gateway.reply("好。", { usage: { inputTokens: 900, outputTokens: 20 } });
     expect(await app.agentWorker.runOnce()).toBe(true);
     const run = await lastRun(w);
     expect(run).toMatchObject({ status: "done", lane: "others" });
-    const used = await othersUsedToday(db, app.deps.config, w.owner.id, new Date());
-    expect(used.answers).toBe(1);
-    const usage = await db.query<{ owner_id: string }>("select owner_id from usage_records where run_id = $1", [run.id]);
+    const usage = await db.query<{ owner_id: string; charged: string }>("select owner_id, (free_micro + balance_micro)::text as charged from usage_records where run_id = $1", [run.id]);
     expect(usage.rows.map((r) => r.owner_id)).toEqual([w.owner.id]);
-    expect(callsHere()[0]!.maxOutputTokens).toBe(800);
+    expect(await othersUseToday(db, app.deps.config, w.owner.id, new Date())).toBe(BigInt(usage.rows[0]!.charged));
+    const model = (await readOwnedAgent(db, w.owner.id, w.agent.id))!.model as { id: string };
+    expect(callsHere()[0]!.maxOutputTokens).toBe(app.deps.config.siteModels.find((m) => m.id === model.id)!.maxOutputTokens);
     expect(callsHere()[0]!.reasoning).toBe("none");
   });
 
-  it("the owner's answers number binds it: one answer a day and the next visitor message is not called (the notice, once)", async () => {
+  it("the owner's one number binds it: once others' use today reaches it the next visitor message is not called, and the visitor alone is told on it", async () => {
     const w = await world("访客子");
-    await db.query("insert into accounts (principal_id, others_answers) values ($1, 1) on conflict (principal_id) do update set others_answers = 1", [w.owner.id]);
     await say(w.v, w.conv, "你好");
-    gateway.reply("好。");
+    gateway.reply("好。", { usage: { inputTokens: 900, outputTokens: 20 } });
     expect(await app.agentWorker.runOnce()).toBe(true);
-    await say(w.v, w.conv, "再问一次");
+    // Its number is now at what that reply used (its least, 1 point, when it used less: then a charge of today makes up the rest).
+    await db.query("insert into accounts (principal_id) values ($1) on conflict do nothing", [w.owner.id]);
+    await db.query("update accounts set others_points_micro = 1000000 where principal_id = $1", [w.owner.id]);
+    const used = await othersUseToday(db, app.deps.config, w.owner.id, new Date());
+    if (used < 1_000_000n) {
+      const run = await lastRun(w);
+      await db.query("update usage_records set balance_micro = balance_micro + $2 where run_id = $1", [run.id, (1_000_000n - used).toString()]);
+    }
+    const sent = await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "再问一次", clientTxn: "sb-again" });
+    expect(sent.json.message.refused).toEqual([{ agentId: w.agent.id, reason: "others_limit" }]);
     expect((await db.query("select 1 from agent_runs where agent_id = $1 and status = 'queued'", [w.agent.id])).rowCount).toBe(0);
-  });
-});
-
-describe("the page facts stay true of a social reply (hand-off 6)", () => {
-  it("the hold admission takes for a social reply is at least othersPlainFloor and at most othersPlainCeiling", async () => {
-    const w = await world("访客辛");
-    await say(w.v, w.conv, "你好");
-    const hold = gateway.hang();
-    const done = app.agentWorker.runOnce();
-    await hold.reached;
-    const run = await lastRun(w);
-    const held = BigInt((await db.query<{ h: string }>("select coalesce(hold_micro, 0)::text as h from agent_runs where id = $1", [run.id])).rows[0]!.h);
-    hold.release("好。");
-    await done;
-    const row = (await readOwnedAgent(db, w.owner.id, w.agent.id))!;
-    const config = app.deps.config;
-    const floor = await othersPlainFloor(db, config, row, null, new Date(), "others");
-    const ceiling = await othersPlainCeiling(db, config, row, new Date());
-    expect(held).toBeGreaterThan(0n);
-    expect(held).toBeGreaterThanOrEqual(floor);
-    expect(held).toBeLessThanOrEqual(ceiling);
-    // The social floor itself (the social text with the fewest names) is under the hold too.
-    expect(held).toBeGreaterThanOrEqual(await othersPlainFloor(db, config, row, null, new Date(), "others", "social"));
-  });
-
-  it("the floor of the others' lane is the lower of the group's and the social text; the proactive lane's is a group's; the ceiling counts the fullest social text", async () => {
-    const w = await world("访客壬");
-    const row = (await readOwnedAgent(db, w.owner.id, w.agent.id))!;
-    const config = app.deps.config;
-    const now = new Date();
-    const grouped = await othersPlainFloor(db, config, row, null, now, "others", "group");
-    const social = await othersPlainFloor(db, config, row, null, now, "others", "social");
-    expect(await othersPlainFloor(db, config, row, null, now, "others")).toBe(grouped < social ? grouped : social);
-    expect(await othersPlainFloor(db, config, row, null, now, "proactive")).toBe(await othersPlainFloor(db, config, row, null, now, "proactive", "group"));
-    // The ceiling is at least what the fullest social text (two owners, an Agent for the other party, every name at its limit) and the
-    // fullest conversation make: a pin that the social text is counted whatever the group's is.
-    const wide = "\u{1F600}".repeat(60);
-    const fullest = socialSystemText({ name: row.name, handle: row.handle, persona: row.persona }, [{ displayName: wide }, { displayName: wide }], { name: wide, handle: "a".repeat(49), kind: "agent" }, now, config.siteTimezone, "abcdef", NO_NOTES, false).text;
-    const cap = Math.max(config.agentGroupContextTokens, config.others.contextWeight);
-    expect(await othersPlainCeiling(db, config, row, now)).toBeGreaterThanOrEqual(othersFloorHold(config, row.model, Buffer.byteLength(fullest, "utf8") + 3 * cap, cap));
   });
 });
 

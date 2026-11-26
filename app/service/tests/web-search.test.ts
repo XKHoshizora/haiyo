@@ -20,6 +20,7 @@ import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { costOf, grant, METER_ENV, meteredAgent, OVER_USAGE, paidReply, runningRun } from "./helpers/metering.ts";
 import { scriptedGateway, type ScriptedGateway } from "./helpers/models.ts";
+import { setOwnerLimit } from "./helpers/others.ts";
 import { providerBody } from "./helpers/providers.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 
@@ -350,7 +351,7 @@ describe("the pre-hold's money (the pool: held whole or refused)", () => {
   const preHold = (
     r: Awaited<ReturnType<typeof admitted>>,
     config: Config,
-    over: { lane?: { lane: "own" | "others" | "proactive"; coversSeq: number }; conversationId?: string; agent?: Partial<Pick<AgentRow, "othersBudgetMicro" | "chainBudgetMicro">> } = {},
+    over: { lane?: { lane: "own" | "others" | "proactive"; coversSeq: number }; conversationId?: string; agent?: Partial<Pick<AgentRow, "chainBudgetMicro">> } = {},
   ) =>
     db.tx(async (t) => {
       const locked = await lockAgent(t, r.agent.agentId, r.agent.conversationId);
@@ -369,22 +370,23 @@ describe("the pre-hold's money (the pool: held whole or refused)", () => {
     });
   const runRow = async (id: string) => (await db.query<{ hold: string; web_searches: number; web_micro: string }>("select hold_micro::text as hold, web_searches, web_micro::text from agent_runs where id = $1", [id])).rows[0]!;
 
-  it("a budget of its lane reached with the search (the others' daily, crossing it; the chain budget in a group): refused, nothing counted", async () => {
-    // Others' daily budget 3 points: 0.5 settled today + the reply's 2 held + the search's 0.77 = 3.27 ≥ 3 — refused.
-    // (Decided by `othersFits` since B3, from the database: the run's row says its lane, the Agent's row its budget.)
+  it("a budget of its lane reached (others' use of the owner's Agents at the owner's number; the chain budget in a group): refused, nothing counted", async () => {
+    // The owner's number 3 points, and 3 settled today for others' replies: reached — refused. Neither the reply's 2 held nor the
+    // search's 0.77 counts: only what is used does (metering/others.ts `othersAdmissible`).
     const asOthers = async (x: Awaited<ReturnType<typeof admitted>>) => {
       await db.query("update agent_runs set lane = 'others' where id = $1", [x.runId]);
-      await db.query("update agents set others_budget_micro = $2 where principal_id = $1", [x.agent.agentId, (3n * POINT).toString()]);
+      await setOwnerLimit(db, x.owner.id, 3n * POINT);
     };
     const r = await admitted("lanea");
     await asOthers(r);
-    await paidReply(db, { agentId: r.agent.agentId, ownerId: r.owner.id, conversationId: r.agent.conversationId, lane: "others", micro: 500_000n });
+    await paidReply(db, { agentId: r.agent.agentId, ownerId: r.owner.id, conversationId: r.agent.conversationId, lane: "others", micro: 3n * POINT });
     const others = { lane: { lane: "others" as const, coversSeq: 0 } };
     await expect(preHold(r, webConfig(), others)).rejects.toMatchObject({ by: "lane_budget" });
     expect([await runRow(r.runId), await countOf(SITE_SCOPE)]).toEqual([{ hold: (2n * POINT).toString(), web_searches: 0, web_micro: "0" }, 0]);
-    // Without what was settled before, 2.77 < 3: held.
+    // Below it (2.9 settled; the hold and the search would carry it past 3): held.
     const s = await admitted("laneb");
     await asOthers(s);
+    await paidReply(db, { agentId: s.agent.agentId, ownerId: s.owner.id, conversationId: s.agent.conversationId, lane: "others", micro: 2_900_000n });
     await preHold(s, webConfig(), others);
     expect((await runRow(s.runId)).web_searches).toBe(1);
     // A reply in a group covering more than its latest message from a person (an Agents' chain): its chain budget.

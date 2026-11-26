@@ -166,14 +166,17 @@ describe("read again as it is admitted", () => {
     expect(gateway.calls.length).toBe(calls);
   };
 
-  it("its proactive budget, with its hold: of two queued in two groups one micro-point short of it, neither can be held within it, so both end at admission — no call, no charge, nobody told", async () => {
+  it("the owner's number for others' use: of two queued in two groups below it, once others' use has reached it both end at admission — no call, no charge, nobody told", async () => {
     const w = await world();
     const g2 = await group(app, w.member, "second", [w.owner, w.third]);
-    const anna = await agentIn(w.owner, "anna", w.g, { proactiveBudget: "2" });
+    const anna = await agentIn(w.owner, "anna", w.g);
+    expect((await api(app, w.owner, "PUT", "/api/me/others-limits", { points: "2" })).status).toBe(200);
     expect((await api(app, w.owner, "POST", `/api/conversations/${g2}/members`, { principalId: anna.id })).status).toBe(201);
     await paidUnasked(anna, 2 * POINT - 1);
     const first = await unasked(anna, w.g, await say(w.third, w.g, "问一"));
     const second = await unasked(anna, g2, await say(w.third, g2, "问二"));
+    // Used while they wait (nothing is reserved against the number: only what is used counts).
+    await paidUnasked(anna, 1);
 
     const [ownerS, memberS] = [await connect(app, w.owner), await connect(app, w.member)];
     const pushed = vi.spyOn(app.realtime, "pushAgentChanged");
@@ -204,12 +207,12 @@ describe("read again as it is admitted", () => {
     expect(await runsOf(anna.id, w.g)).toEqual([{ status: "cancelled", error: null, lane: "proactive" }]);
   });
 
-  it("its owner lowered the budget below today's spend meanwhile: it ends there", async () => {
+  it("its owner lowered their number for others' use to today's use meanwhile: it ends there", async () => {
     const w = await world();
     const anna = await agentIn(w.owner, "anna", w.g);
     await paidUnasked(anna, 3 * POINT);
     await unasked(anna, w.g, await say(w.third, w.g, "今晚做什么菜好？"));
-    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveBudget: "3" })).status).toBe(200);
+    expect((await api(app, w.owner, "PUT", "/api/me/others-limits", { points: "3" })).status).toBe(200);
     await endsAtAdmission();
     expect(await runsOf(anna.id, w.g)).toEqual([{ status: "cancelled", error: null, lane: "proactive" }]);
   });

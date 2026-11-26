@@ -17,6 +17,9 @@ vi.mock("../src/agents/context.ts", async (original) => {
 
 import { queueRun } from "../src/agents/runs.ts";
 import { lockConversation } from "../src/conversations/store.ts";
+import type { ReasoningLevel } from "../src/config.ts";
+import { othersUseToday } from "../src/metering/others.ts";
+import { outputLimit } from "../src/models/resolve.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { isRunEnd, NOTHING } from "../src/agents/runtime/port.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
@@ -79,9 +82,13 @@ const latest = async (agentId: string, conv: string): Promise<RunView> =>
   ).rows[0]!;
 const posted = async (agentId: string, conv: string) =>
   (await db.query<{ text: string }>("select body ->> 'text' as text from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [conv, agentId])).rows.map((r) => r.text);
-const answersForOthers = async (owner: Actor) => (await api(app, owner, "GET", "/api/me/others-use")).json.used.answers as number;
-const othersLimit = () => app.deps.config.others.outputTokens;
-const allowance = () => app.deps.config.reasoningAllowanceTokens;
+/** Whether others' use of `owner`'s Agents today counts a reply for others (its charge, lane others). */
+const countedForOthers = async (owner: Actor) => (await othersUseToday(db, app.deps.config, owner.id, new Date(), "others")) > 0n;
+/** The output limit of the site model `thinker` at `level`: what a reply is made at, the owner's own or one for others alike. */
+const limitAt = (level: ReasoningLevel) => {
+  const thinker = app.deps.config.siteModels.find((m) => m.id === THINKER.id)!;
+  return outputLimit(thinker.maxOutputTokens, thinker.contextTokens, level, app.deps.config.reasoningAllowanceTokens);
+};
 
 let n = 0;
 /** A group of an owner (with points), mia and ned, with the owner's Agent: it thinks `medium` for its owner and `low` for others. */
@@ -148,7 +155,7 @@ describe("R1: a call is the owner's own only when it was accepted as one", () =>
     expect((await db.query("select 1 from agent_runs where agent_id = $1 and (lane = 'own' or source is not null)", [w.agent.id])).rowCount).toBe(0);
   });
 
-  it("the same with two members' calls, one refused: the other is answered as a reply for others — bounded, at the level for others, counted against the owner's numbers", async () => {
+  it("the same with two members' calls, one refused: the other is answered as a reply for others — at the level for others, counted in others' use of the owner's Agents", async () => {
     const w = await world();
     const seed = await say(w.owner, w.g, "今晚谁做饭？");
     await queueUnasked(w, seed, w.owner);
@@ -162,8 +169,8 @@ describe("R1: a call is the owner's own only when it was accepted as one", () =>
     const run = await latest(w.agent.id as string, w.g);
     expect(run).toMatchObject({ status: "done", error: null, lane: "others", caller: w.ned.id, calls: [kept], reasoning: "low" });
     const call = callsHere()[0]!;
-    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
-    expect(await answersForOthers(w.owner)).toBe(1);
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", limitAt("low")]);
+    expect(await countedForOthers(w.owner)).toBe(true);
   });
 
   it("a follow-up is the owner's own only for an owner call noted on the reply before it; the owner's ordinary message in between makes it nobody's", async () => {
@@ -194,8 +201,8 @@ describe("R2: the round-3 rules hold by what is written", () => {
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "done", lane: "own", caller: w.owner.id, calls: [kept], owner_calls: [] });
     const call = callsHere()[before]!;
     expect(call.reasoning).toBe("medium");
-    expect(call.maxOutputTokens).toBeGreaterThan(othersLimit() + allowance().medium);
-    expect(await answersForOthers(w.owner)).toBe(0);
+    expect(call.maxOutputTokens).toBe(limitAt("medium"));
+    expect(await countedForOthers(w.owner)).toBe(false);
   });
 
   it("the owner's call noted on a member's reply while it runs: the reply stays the member's, and its follow-up is the owner's own for that call", async () => {
@@ -233,10 +240,10 @@ describe("R3: the terms of a reply are those of its row at admission", () => {
     // One request, and it is the owner's own: never the plan prepared at the level for others.
     const made = callsHere().slice(before);
     expect(made.map((c) => c.reasoning)).toEqual(["medium"]);
-    expect(made[0]!.maxOutputTokens).toBeGreaterThan(othersLimit() + allowance().medium);
+    expect(made[0]!.maxOutputTokens).toBe(limitAt("medium"));
     const run = await latest(w.agent.id as string, w.g);
     expect(run).toMatchObject({ status: "done", error: null, lane: "own", caller: w.owner.id, calls: [own], reasoning: "medium", hold: "0" });
-    expect(await answersForOthers(w.owner)).toBe(0);
+    expect(await countedForOthers(w.owner)).toBe(false);
   });
 
   it("the same with the owner's numbers for others used up meanwhile: admitted as the owner's own, which those numbers never refuse — one call, answered", async () => {
@@ -301,7 +308,7 @@ describe("R3: the terms of a reply are those of its row at admission", () => {
     await app.agentPort.releaseRun(tickets[0]!.id);
     gateway.reply("（回答两位）");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(callsHere().slice(before).map((c) => [c.reasoning, c.maxOutputTokens])).toEqual([["low", othersLimit() + allowance().low]]);
+    expect(callsHere().slice(before).map((c) => [c.reasoning, c.maxOutputTokens])).toEqual([["low", limitAt("low")]]);
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "done", lane: "others", caller: w.ned.id, calls: [own, kept] });
     for (const t of tickets.slice(1)) await app.agentPort.releaseRun(t.id);
   });
@@ -315,20 +322,16 @@ describe("fix round 5: a reply is the owner's own only while EVERY call it answe
     expect("call" in prepared).toBe(true);
     return { ticket, call: (prepared as unknown as { call: ModelCall }).call, admitted: await latest(w.agent.id as string, w.g) };
   };
-  const byPerson = async (owner: Actor) =>
-    ((await api(app, owner, "GET", "/api/me/others-use")).json.byPerson as Array<{ person: { id: string }; answers: number }>).map((p) => [p.person.id, p.answers]);
 
-  it("(a) the owner's @ and a member's @ folded into one queued reply: a reply for others — at the level for others, the others' limit, its hold taken, counted for the member", async () => {
+  it("(a) the owner's @ and a member's @ folded into one queued reply: a reply for others — at the level for others, its hold taken, the member its caller (whose its charge counts as)", async () => {
     const w = await world();
     const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
     const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 我也问一句`);
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.mia.id, calls: [member, own], owner_calls: [own] });
     const { ticket, call, admitted } = await begun(w);
-    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", limitAt("low")]);
     expect(admitted).toMatchObject({ status: "running", lane: "others", caller: w.mia.id, calls: [member, own], reasoning: "low" });
     expect(BigInt(admitted.hold) > 0n).toBe(true);
-    expect(await answersForOthers(w.owner)).toBe(1);
-    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
     await app.agentPort.releaseRun(ticket.id);
   });
 
@@ -339,12 +342,11 @@ describe("fix round 5: a reply is the owner's own only while EVERY call it answe
     const member = await say(w.mia, w.g, `${w.at} MIA-ASK 我也问一句`);
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.mia.id, calls: [own, member], owner_calls: [own] });
     const { ticket, call } = await begun(w);
-    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
-    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", limitAt("low")]);
     await app.agentPort.releaseRun(ticket.id);
   });
 
-  it("(b) a member's reply already claimed, the owner's call noted before it begins and taken on: it stays the member's — bounded, at the level for others, counted for the member", async () => {
+  it("(b) a member's reply already claimed, the owner's call noted before it begins and taken on: it stays the member's — at the level for others, the member its caller", async () => {
     const w = await world();
     const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
     const ticket = (await app.agentPort.claimNext())!;
@@ -352,15 +354,14 @@ describe("fix round 5: a reply is the owner's own only while EVERY call it answe
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ id: ticket.id, status: "running", lane: "others", caller: w.mia.id, calls: [member, own], owner_calls: [own] });
     const prepared = await app.agentPort.begin(ticket);
     const call = (prepared as unknown as { call: ModelCall }).call;
-    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", limitAt("low")]);
     const admitted = await latest(w.agent.id as string, w.g);
     expect(admitted).toMatchObject({ status: "running", lane: "others", caller: w.mia.id, calls: [member, own], reasoning: "low" });
     expect(BigInt(admitted.hold) > 0n).toBe(true);
-    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
     await app.agentPort.releaseRun(ticket.id);
   });
 
-  it("(b, the other order) the owner's reply already claimed, a member's call noted before it begins and taken on: it becomes the member's — bounded, at the level for others, counted for the member", async () => {
+  it("(b, the other order) the owner's reply already claimed, a member's call noted before it begins and taken on: it becomes the member's — at the level for others, the member its caller", async () => {
     const w = await world();
     const own = await say(w.owner, w.g, `${w.at} OWNER-ASK 在吗？`);
     const ticket = (await app.agentPort.claimNext())!;
@@ -369,11 +370,10 @@ describe("fix round 5: a reply is the owner's own only while EVERY call it answe
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ id: ticket.id, status: "running", lane: "own", calls: [own, member] });
     const prepared = await app.agentPort.begin(ticket);
     const call = (prepared as unknown as { call: ModelCall }).call;
-    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", othersLimit() + allowance().low]);
+    expect([call.reasoning, call.maxOutputTokens]).toEqual(["low", limitAt("low")]);
     const admitted = await latest(w.agent.id as string, w.g);
     expect(admitted).toMatchObject({ status: "running", lane: "others", caller: w.mia.id, calls: [own, member], reasoning: "low" });
     expect(BigInt(admitted.hold) > 0n).toBe(true);
-    expect(await byPerson(w.owner)).toEqual([[w.mia.id, 1]]);
     await app.agentPort.releaseRun(ticket.id);
   });
 
@@ -385,9 +385,9 @@ describe("fix round 5: a reply is the owner's own only while EVERY call it answe
     await block(w.owner, w.mia);
     const { ticket, call, admitted } = await begun(w);
     expect(call.reasoning).toBe("medium");
-    expect(call.maxOutputTokens).toBeGreaterThan(othersLimit() + allowance().medium);
+    expect(call.maxOutputTokens).toBe(limitAt("medium"));
     expect(admitted).toMatchObject({ status: "running", lane: "own", caller: w.owner.id, calls: [own], reasoning: "medium" });
-    expect(await answersForOthers(w.owner)).toBe(0);
+    expect(await countedForOthers(w.owner)).toBe(false);
     await app.agentPort.releaseRun(ticket.id);
   });
 
@@ -399,7 +399,7 @@ describe("fix round 5: a reply is the owner's own only while EVERY call it answe
     const { ticket, call, admitted } = await begun(w);
     expect(call.reasoning).toBe("medium");
     expect(admitted).toMatchObject({ lane: "own", caller: w.owner.id });
-    expect(await answersForOthers(w.owner)).toBe(0);
+    expect(await countedForOthers(w.owner)).toBe(false);
     await app.agentPort.releaseRun(ticket.id);
   });
 
@@ -411,9 +411,9 @@ describe("fix round 5: a reply is the owner's own only while EVERY call it answe
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [member], owner_calls: [] });
     const { ticket, call, admitted } = await begun(w);
     expect(call.reasoning).toBe("medium");
-    expect(call.maxOutputTokens).toBeGreaterThan(othersLimit() + allowance().medium);
+    expect(call.maxOutputTokens).toBe(limitAt("medium"));
     expect(admitted).toMatchObject({ lane: "own", caller: w.owner.id, calls: [member] });
-    expect(await answersForOthers(w.owner)).toBe(0);
+    expect(await countedForOthers(w.owner)).toBe(false);
     await app.agentPort.releaseRun(ticket.id);
   });
 

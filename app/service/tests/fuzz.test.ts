@@ -479,7 +479,7 @@ function plausibleBody(route: RouteEntry, fx: Fixture): Record<string, unknown> 
     case "PATCH /api/agents/:id":
       return { intro: "fuzz", groupMentions: "members", chainBudget: "12.5" };
     case "PUT /api/me/others-limits":
-      return { answers: 50, points: "70" };
+      return { points: "70" };
     case "POST /api/agents/draft-persona":
       return { name: "Fuzz", model: FAST };
     case "POST /api/agent-contacts":
@@ -658,10 +658,9 @@ describe("fuzz", () => {
       const name = `${route.method} ${route.url}`;
       const malformedPath = sent[i]!.filter((x) => x.label.startsWith("path "));
       expect([name, malformedPath.filter((x) => x.status < 400 || x.status >= 500)]).toEqual([name, []]);
-      // Every field an Agent is created or edited with is walked, `groupMentions` and `chainBudget` (batch 2C), `othersBudget` (the
-      // limits plan) and `othersLimit` (plan B4: its successor) included.
+      // Every field an Agent is created or edited with is walked, `groupMentions` and `chainBudget` (batch 2C) included.
       if (name === "POST /api/agents" || name === "PATCH /api/agents/:id") {
-        for (const field of ["groupMentions", "chainBudget", "othersBudget", "othersLimit"]) {
+        for (const field of ["groupMentions", "chainBudget"]) {
           expect([name, field, sent[i]!.some((x) => x.label.startsWith(`body.${field}=`))]).toEqual([name, field, true]);
         }
       }

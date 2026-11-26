@@ -34,7 +34,7 @@ export const OTHERS_ENV = {
   SITE_MODELS: JSON.stringify([
     model("oth_free", "free", 140, 280),
     model("oth_paid", "paid", 3000, 15000),
-    // A model that thinks and writes more than an others' reply may: `OTHERS.outputTokens` and reasoning `none` bound its calls to others.
+    // A model that thinks and writes long replies (4 096 tokens out).
     model("oth_big", "free", 140, 280, { maxOutputTokens: 4096, reasoning: ["low", "medium"] }),
   ]),
 } as const;
@@ -45,11 +45,6 @@ export const BIG_MODEL = { source: "site", id: "oth_big" } as const;
 export const POINT = 1_000_000n;
 /** Noon in Shanghai: every admission and settlement of a test is at this instant, so one site day holds all of them. */
 export const NOON = new Date("2026-03-01T04:00:00Z");
-/** The input a reply offered tools is held at (call 1), its room for the last call (B2b), and the one-call hold (the same reply without tools). */
-export const HELD_WITH_TOOLS = 20_900;
-export const HELD_PLAIN = 16_500;
-/** The last call of an others' reply: its growth at the defaults (3 000 result weight, 800 output tokens, 3 notes of 203 bytes), and a context that never caps it. */
-export const ROOM = { growthTokens: 14_909, roomCapTokens: 1_000_000 };
 
 export type LaneName = "own" | "others" | "proactive";
 
@@ -111,37 +106,4 @@ export async function seedRun(db: Db, r: SeedRun): Promise<string> {
 export async function setOwnerLimit(db: Db, ownerId: string, pointsMicro: bigint | null): Promise<void> {
   await db.query("insert into accounts (principal_id) values ($1) on conflict do nothing", [ownerId]);
   await db.query("update accounts set others_points_micro = $2 where principal_id = $1", [ownerId, pointsMicro === null ? null : pointsMicro.toString()]);
-}
-
-/** Sets the owner's own numbers (an account's `others_answers`, `others_points_micro`); a missing account row is made. */
-export async function setOwnerNumbers(db: Db, ownerId: string, n: { answers?: number | null; pointsMicro?: bigint | null }): Promise<void> {
-  await db.query("insert into accounts (principal_id) values ($1) on conflict do nothing", [ownerId]);
-  await db.query("update accounts set others_answers = $2, others_points_micro = $3 where principal_id = $1", [
-    ownerId,
-    n.answers ?? null,
-    n.pointsMicro === undefined || n.pointsMicro === null ? null : n.pointsMicro.toString(),
-  ]);
-}
-
-/** What the site day of `now` has charged others' replies of `ownerId` plus what their running ones hold: the sum no number may be passed by. */
-export async function committedMicro(db: Db, ownerId: string): Promise<bigint> {
-  const { rows } = await db.query<{ settled: string; held: string }>(
-    `select (select coalesce(sum(u.free_micro + u.balance_micro), 0) from usage_records u join agent_runs r on r.id = u.run_id
-              where u.owner_id = $1 and r.lane <> 'own' and r.purpose = 'reply')::text as settled,
-            (select coalesce(sum(hold_micro), 0) from agent_runs where owner_id = $1 and status = 'running' and lane <> 'own' and purpose = 'reply')::text as held`,
-    [ownerId],
-  );
-  return BigInt(rows[0]!.settled) + BigInt(rows[0]!.held);
-}
-
-/** A small seeded generator (mulberry32): the same orders every run. */
-export function seeded(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }

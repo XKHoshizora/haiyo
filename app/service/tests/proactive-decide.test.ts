@@ -16,8 +16,6 @@ import { createWhisper } from "../src/whispers/store.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
-import { proactivePlainFloor } from "../src/agents/proactive/decide.ts";
-import { readOwnedAgent } from "../src/agents/store.ts";
 import { byName, nameOf, scriptedJudge, type ScriptedAnswers } from "./helpers/judge.ts";
 import { closeAllSockets, connect, type Push } from "./helpers/ws.ts";
 
@@ -195,7 +193,7 @@ const judgeAfter = (meanwhile: () => Promise<unknown>): Judge => ({
 /** After commit, what the send route does with what a message triggered: its notices published, its runs announced. */
 const publish = (t: Triggered) => {
   app.deps.conversations.publish({ messages: t.notices, conversations: [] }, log);
-  actOnTriggered(t, { announce: (run) => app.agentPort.announce(run), log, realtime: app.realtime, interrupt: (ids) => app.agentPort.interruptRuns(ids) });
+  actOnTriggered(t, { announce: (run) => app.agentPort.announce(run), log, interrupt: (ids) => app.agentPort.interruptRuns(ids), tell: (told) => app.agentPort.actOnTold(told) });
 };
 
 // --- listeners (Task 8; the rest is in memory-flags.test.ts) ---
@@ -252,7 +250,8 @@ describe.each([false, true])("who replies unasked (memory %s)", (memory) => {
       runs: [{ ownerId: w.owner.id, conversationId: w.g, run: { id: expect.any(String), status: "queued", retryable: false } }],
       callerLimited: [],
       notices: [],
-      budgetReached: [],
+      refused: [],
+      reached: [],
       stopped: [],
     });
     expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, lane: "proactive", caller: null, by: "human", covers: asked }]);
@@ -964,7 +963,7 @@ describe.each([false, true])("a winner that cannot speak now: nobody replies, no
   });
 });
 
-describe.each([false, true])("a proactive budget that cannot hold a reply (memory %s)", (memory) => {
+describe.each([false, true])("the owner's one number for others' use reached (memory %s)", (memory) => {
   beforeEach(() => {
     memoryOn = memory;
   });
@@ -972,22 +971,24 @@ describe.each([false, true])("a proactive budget that cannot hold a reply (memor
   const rowsIn = async (conv: string) => (await db.query("select count(*)::int as n from agent_runs where conversation_id = $1", [conv])).rows[0].n as number;
   /** Whether the judge was shown Agent `name` as an option in any call since `from` (an option's description starts with its name). */
   const optionIn = (from: number, name: string) => judge.calls.slice(from).some((c) => JSON.stringify(c.questions).includes(`${name}：`));
-  const setBudget = (agentId: string, micro: bigint) => db.query("update agents set proactive_budget_micro = $2 where principal_id = $1", [agentId, micro.toString()]);
-  const floorOf = async (w: World, agentId: string) => {
-    const row = (await readOwnedAgent(db, w.owner.id, agentId))!;
-    return proactivePlainFloor(db, app.deps.config as never, row, w.g, new Date());
+  /** A reply of `agent` nobody asked for, settled today with `micro` charged: what others' use of the owner's Agents counts. */
+  const charged = async (w: World, agent: { id: string; conversationId: string }, micro: bigint) => {
+    const run = await db.query<{ id: string }>(
+      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, finished_at, source, model, charge_to, money_rule, lane)
+       values ('reply', $1, $2, $3, 'done', 0, now(), 'site', 'fast', 'balance', 1, 'proactive') returning id`,
+      [agent.conversationId, agent.id, w.owner.id],
+    );
+    await db.query(
+      `insert into usage_records (owner_id, agent_id, run_id, purpose, source, model, cost_micro, balance_micro, outcome) values ($1, $2, $3, 'reply', 'site', 'fast', $4, $4, 'done')`,
+      [w.owner.id, agent.id, run.rows[0]!.id, micro.toString()],
+    );
   };
 
-  it("asks the numbers admission asks (holds counted), before the judgement: no judge call (memory off), the Agent no option, no run row", async () => {
+  it("asks the measure admission asks, before the judgement: no judge call (memory off), the Agent no option, no run row", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
-    // A point of budget, and a running reply of the Agent in another conversation holding all of it: nothing it can hold fits.
-    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveBudget: "1" })).status).toBe(200);
-    await db.query(
-      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at, source, model, charge_to, hold_micro, money_rule, lane)
-       values ('reply', $1, $2, $3, 'running', 0, now(), 'site', 'fast', 'balance', 1000000, 1, 'proactive')`,
-      [anna.conversationId, anna.id, w.owner.id],
-    );
+    expect((await api(app, w.owner, "PUT", "/api/me/others-limits", { points: "1" })).status).toBe(200);
+    await charged(w, anna, 1_000_000n);
     const calls = judge.calls.length;
     const rowsBefore = await rowsIn(w.g);
     const asked = await say(w.third, w.g, "有人懂吗？");
@@ -996,74 +997,22 @@ describe.each([false, true])("a proactive budget that cannot hold a reply (memor
     if (!memory) expect(judge.calls.length).toBe(calls);
     expect(optionIn(calls, "anna")).toBe(false);
     expect(await rowsIn(w.g)).toBe(rowsBefore);
-  });
-
-  it("a paid-tier Agent at the default 20 points: its floor (output 12 points and the tool-less system text) passes 20 or not as the text weighs, and a budget just under the floor never reaches the judge while one just over proceeds", async () => {
-    const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { model: { source: "site", id: "paid3" } });
-    const floor = await floorOf(w, anna.id);
-    // The output alone is 15 000 x 800 = 12 points; the floor adds the system text as `begin` builds it without the conversation.
-    expect(floor).toBeGreaterThan(12_000_000n);
-    expect(floor).toBeLessThan(40_000_000n);
-
-    // Just under the floor: nothing it holds can fit — no judgement, no run.
-    await setBudget(anna.id, floor - 1n);
-    const calls = judge.calls.length;
-    const rowsBefore = await rowsIn(w.g);
-    const asked = await say(w.third, w.g, "有人懂吗？");
-    expect(await decide(w.g, asked, lowBase())).toEqual(noneTriggered());
-    if (!memory) expect(judge.calls.length).toBe(calls);
-    expect(optionIn(calls, "anna")).toBe(false);
-    expect(await rowsIn(w.g)).toBe(rowsBefore);
-
-    // Just over: the floor fits, so the judgement is asked and the pick is queued (admission, with the whole hold, decides after).
-    await setBudget(anna.id, floor + 1n);
+    // Below the number again (it is raised): the judgement is asked and the pick is queued, whatever the reply may cost.
+    expect((await api(app, w.owner, "PUT", "/api/me/others-limits", { points: "2" })).status).toBe(200);
     judge.answer(byName({ anna: 0.9 }));
     const again = await say(w.third, w.g, "有人知道吗？");
     expect((await decide(w.g, again, lowBase())).runs).toHaveLength(1);
     expect(optionIn(calls, "anna")).toBe(true);
   });
 
-  it("a proactive level that is not the default: the floor is the hold at THAT level, so a budget that covers a reply at none and not at the level set never reaches the judge; back at none it does (fix round 3, point 11)", async () => {
-    const w = await world();
-    const anna = await agentOf(w.owner, "anna", w.g, { model: { source: "site", id: "paid3" }, proactiveReasoning: "high" });
-    const atLevel = await floorOf(w, anna.id);
-    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveReasoning: "none" })).status).toBe(200);
-    const atNone = await floorOf(w, anna.id);
-    // The level's thinking allowance, at the model's output price, is what the floor grows by.
-    expect(atLevel - atNone).toBe(BigInt(app.deps.config.reasoningAllowanceTokens.high) * 15_000n);
-    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveReasoning: "high" })).status).toBe(200);
-    await setBudget(anna.id, atLevel - 1n);
-    expect(atLevel - 1n).toBeGreaterThan(atNone);
-    const calls = judge.calls.length;
-    const rowsBefore = await rowsIn(w.g);
-    const asked = await say(w.third, w.g, "有人懂吗？");
-    expect(await decide(w.g, asked, lowBase())).toEqual(noneTriggered());
-    if (!memory) expect(judge.calls.length).toBe(calls);
-    expect(optionIn(calls, "anna")).toBe(false);
-    expect(await rowsIn(w.g)).toBe(rowsBefore);
-    // The same budget, the level back at none: the floor fits, the judgement is asked and the pick is queued.
-    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveReasoning: "none" })).status).toBe(200);
-    judge.answer(byName({ anna: 0.9 }));
-    const again = await say(w.third, w.g, "有人知道吗？");
-    expect((await decide(w.g, again, lowBase())).runs).toHaveLength(1);
-    expect(optionIn(calls, "anna")).toBe(true);
-  });
-
-  it("the locked check catches what changes while the judgement is out: a hold that appears makes the pick `budget` and no run", async () => {
+  it("the locked check catches what changes while the judgement is out: a charge that settles makes the pick `budget` and no run", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
-    expect((await api(app, w.owner, "PATCH", `/api/agents/${anna.id}`, { proactiveBudget: "1" })).status).toBe(200);
+    expect((await api(app, w.owner, "PUT", "/api/me/others-limits", { points: "1" })).status).toBe(200);
     judge.answer(byName({ anna: 0.9 }));
     const asked = await say(w.third, w.g, "今晚吃什么？");
     const rowsBefore = await rowsIn(w.g);
-    const hold = () =>
-      db.query(
-        `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at, source, model, charge_to, hold_micro, money_rule, lane)
-         values ('reply', $1, $2, $3, 'running', 0, now(), 'site', 'fast', 'balance', 1000000, 1, 'proactive')`,
-        [anna.conversationId, anna.id, w.owner.id],
-      );
-    expect(await decide(w.g, asked, lowBase(), judgeAfter(hold))).toEqual(noneTriggered());
+    expect(await decide(w.g, asked, lowBase(), judgeAfter(() => charged(w, anna, 1_000_000n)))).toEqual(noneTriggered());
     expect(judge.calls.length).toBeGreaterThan(0);
     expect(await rowsIn(w.g)).toBe(rowsBefore);
     expect(skipped()).toEqual([{ metric: "proactive_skipped", reason: "budget", agentId: anna.id, conversationId: w.g }]);
@@ -1267,7 +1216,7 @@ describe("what reaches anyone", () => {
       }
     return into;
   };
-  const HIDDEN_KEYS = ["proactive", "proactiveLevel", "proactiveBudget", "proactiveSpentToday", "memory", "memoryAsk", "sharedNotes", "newNotes", "memoryModel", "memoryModelUsable", "modelUsable", "memoryLanguage", "lane", "callerId", "caller", "quiet", "surcharge", "judgedAt", "probability", "probabilities", "threshold", "whisper", "whispers", "afterSeq", "queries", "tools", "askerIds", "asker_ids", "askers", "callSeqs", "call_seqs", "sourceLines", "whisperElsewhere", "webSearch", "webSearches", "whisperId", "whisper_id", "handleChangeAvailableAt", "asksAgent", "asks_agent", "canStartFreeReply", "heldBackBy", "held_back_by", "stopAsked", "stop_asked", "revision", "lastTellFailed", "openUntil", "retryableUntil", "shownNotes", "withheld", "shown_notes", "withheld_notes", "othersLimit", "othersUsedToday", "proactivePoints", "proactiveAnswers", "canReply", "byPerson", "perDay", "contactPolicy", "contactPicked", "picks", "audienceId", "noteId", "ownerShare", "judgeShare", "card", "endReason", "end_reason", "operatorDisabled", "othersReasoning", "proactiveReasoning", "others_reasoning", "proactive_reasoning"];
+  const HIDDEN_KEYS = ["proactive", "proactiveLevel", "refused", "memory", "memoryAsk", "sharedNotes", "newNotes", "memoryModel", "memoryModelUsable", "modelUsable", "memoryLanguage", "lane", "callerId", "caller", "quiet", "surcharge", "judgedAt", "probability", "probabilities", "threshold", "whisper", "whispers", "afterSeq", "queries", "tools", "askerIds", "asker_ids", "askers", "callSeqs", "call_seqs", "sourceLines", "whisperElsewhere", "webSearch", "webSearches", "whisperId", "whisper_id", "handleChangeAvailableAt", "asksAgent", "asks_agent", "canStartFreeReply", "heldBackBy", "held_back_by", "stopAsked", "stop_asked", "revision", "lastTellFailed", "openUntil", "retryableUntil", "shownNotes", "withheld", "shown_notes", "withheld_notes", "othersLimit", "othersUsedToday", "proactivePoints", "proactiveAnswers", "canReply", "byPerson", "perDay", "contactPolicy", "contactPicked", "picks", "audienceId", "noteId", "ownerShare", "judgeShare", "card", "endReason", "end_reason", "operatorDisabled", "othersReasoning", "proactiveReasoning", "others_reasoning", "proactive_reasoning"];
 
   it("no frame and no view of another member names proactive replies, lanes, callers, thresholds or probabilities; the log only ids and reasons", async () => {
     const w = await world();

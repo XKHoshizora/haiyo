@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NOTHING } from "../src/agents/runtime/port.ts";
+import { othersUseToday } from "../src/metering/others.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -27,6 +28,12 @@ afterEach(() => {
 });
 
 const FAST = { source: "site", id: "fast" } as const;
+/** What a scripted reply reports, so that it is charged. */
+const USAGE = { inputTokens: 900, outputTokens: 20 };
+/** The output limit of the site model `fast`. */
+const fastOutput = () => app.deps.config.siteModels.find((m) => m.id === "fast")!.maxOutputTokens;
+/** Others' use of `owner`'s Agents today, in lane others. */
+const forOthersToday = (owner: Actor) => othersUseToday(db, app.deps.config, owner.id, new Date(), "others");
 let txn = 0;
 const say = async (who: Actor, conv: string, text: string): Promise<number> => {
   const sent = await api(app, who, "POST", `/api/conversations/${conv}/messages`, { text, clientTxn: `br${++txn}` });
@@ -203,10 +210,9 @@ describe("a block made after a call, as the reply begins", () => {
     const prepared = await app.agentPort.begin(ticket);
     expect("call" in prepared).toBe(true);
     expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "running", lane: "own", caller: w.owner.id, calls: [own] });
-    // The owner's own reply: its own level and its model's own output limit (with the level's allowance), not the bounds of a reply for others.
+    // The owner's own reply: its own level, not the level the owner set for replies to others.
     const call = (prepared as unknown as { call: ModelCall }).call;
     expect(call.reasoning).toBe("low");
-    expect(call.maxOutputTokens).toBeGreaterThan(app.deps.config.others.outputTokens + app.deps.config.reasoningAllowanceTokens.low);
     const recorded = (await db.query<{ reasoning: string }>("select reasoning from agent_runs where id = $1", [ticket.id])).rows[0]!;
     expect(recorded.reasoning).toBe("low");
     expect((await latest(w.agent.id, w.g)).askers).not.toContain(w.mia.id);
@@ -230,7 +236,7 @@ describe("a block made after a call, as the reply begins", () => {
     expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "cancelled", error: null });
   });
 
-  it("the owner's chain relayed by someone else's Agent with a member's call folded in, the relay dropped since: the reply is the member's (lane others, caller the member), bounded and counted as a reply for others", async () => {
+  it("the owner's chain relayed by someone else's Agent with a member's call folded in, the relay dropped since: the reply is the member's (lane others, caller the member), counted in others' use of the owner's Agents", async () => {
     const w = await world();
     const theirs = await mustCreateAgent(app, w.mia, { handle: "mia_bot", name: "米娅的助手", model: FAST, persona: "你是米娅的助手。" });
     expect((await api(app, w.mia, "POST", `/api/conversations/${w.g}/members`, { principalId: theirs.id })).status).toBe(201);
@@ -246,23 +252,21 @@ describe("a block made after a call, as the reply begins", () => {
     await block(w.owner, w.mia);
 
     const before = callsHere().length;
-    gateway.reply("（回答 ned）");
+    gateway.reply("（回答 ned）", { usage: USAGE });
     expect(await app.agentWorker.runOnce()).toBe(true);
     // Only ned's call survived: the reply is his, in the lane somebody other than the owner calls for.
     expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "done", lane: "others", caller: w.ned.id, calls: [mine] });
     const call = callsHere()[before]!;
     expect(shownText(call)).toContain("NED-ASK-r9");
-    expect(call.maxOutputTokens).toBe(app.deps.config.others.outputTokens);
-    // It counts against the owner's numbers for others: one answer today.
-    expect((await api(app, w.owner, "GET", "/api/me/others-use")).json.used.answers).toBe(1);
+    // Made as the owner's own would be (the model's own output limit), and counted in others' use of the owner's Agents today.
+    expect(call.maxOutputTokens).toBe(fastOutput());
+    expect(await forOthersToday(w.owner)).toBeGreaterThan(0n);
   });
 
   // Fix round 3, ruling 1, its first rule as fix round 5 changed it: two rules, each named by its own test so neither is an accident.
   describe("after a drop, whose reply it is (ruling 1)", () => {
-    const othersLimit = () => app.deps.config.others.outputTokens;
-    const answersForOthers = async (owner: Actor) => (await api(app, owner, "GET", "/api/me/others-use")).json.used.answers as number;
 
-    it("rule A — a reply is the owner's own only while EVERY call it has left is the owner's own (fix round 5): with a member's call left beside the owner's after another is dropped, it is that member's — lane others, bounded, counted as a reply for others", async () => {
+    it("rule A — a reply is the owner's own only while EVERY call it has left is the owner's own (fix round 5): with a member's call left beside the owner's after another is dropped, it is that member's — lane others, counted in others' use of the owner's Agents", async () => {
       const w = await world();
       await samJoins(w);
       const dropped = await say(w.sam, w.g, "@helper_bot SAM-ASK-rA 帮我看看");
@@ -271,19 +275,19 @@ describe("a block made after a call, as the reply begins", () => {
       expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "others", caller: w.sam.id, calls: [dropped, kept, own] });
       await block(w.owner, w.sam);
 
-      gateway.reply("（回答主人和米娅）");
+      gateway.reply("（回答主人和米娅）", { usage: USAGE });
       expect(await app.agentWorker.runOnce()).toBe(true);
       const run = await latest(w.agent.id, w.g);
       expect(run).toMatchObject({ status: "done", error: null, lane: "others", caller: w.mia.id, calls: [kept, own] });
       expect(run.askers).not.toContain(w.sam.id);
       const call = callsHere()[0]!;
       expect(shownText(call)).toContain("OWNER-ASK-rA");
-      // A reply for others: the output limit such a reply is held to.
-      expect(call.maxOutputTokens).toBe(othersLimit());
-      expect(await answersForOthers(w.owner)).toBe(1);
+      // A reply for others: made at the model's own output limit, as the owner's own is, and counted in others' use.
+      expect(call.maxOutputTokens).toBe(fastOutput());
+      expect(await forOthersToday(w.owner)).toBeGreaterThan(0n);
     });
 
-    it("rule B — the owner's retry is the owner's own: retrying a reply to two other people's calls, one of them dropped since, it keeps lane own with the call left, not bounded, and no reply for others is counted", async () => {
+    it("rule B — the owner's retry is the owner's own: retrying a reply to two other people's calls, one of them dropped since, it keeps lane own with the call left, and nothing is counted in others' use", async () => {
       const w = await world();
       // (The dropped call is the earlier one: a refused person who wrote AFTER the call left is still heard, and so among its askers.)
       const dropped = await say(w.ned, w.g, "@helper_bot NED-ASK-rB 我也问一句");
@@ -294,15 +298,15 @@ describe("a block made after a call, as the reply begins", () => {
       expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "own" });
       await block(w.owner, w.ned);
 
-      gateway.reply("（回答米娅）");
+      gateway.reply("（回答米娅）", { usage: USAGE });
       expect(await app.agentWorker.runOnce()).toBe(true);
       const run = await latest(w.agent.id, w.g);
       expect(run).toMatchObject({ status: "done", error: null, lane: "own", calls: [kept] });
       expect(run.askers).not.toContain(w.ned.id);
       const call = callsHere()[0]!;
       expect(shownText(call)).toContain("MIA-ASK-rB");
-      expect(call.maxOutputTokens).toBeGreaterThan(othersLimit());
-      expect(await answersForOthers(w.owner)).toBe(0);
+      expect(call.maxOutputTokens).toBe(fastOutput());
+      expect(await forOthersToday(w.owner)).toBe(0n);
     });
   });
 });

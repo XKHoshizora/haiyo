@@ -788,16 +788,17 @@ describe("the Agent social configuration (SOCIAL, OTHERS, MEMORY.judgeModel)", (
     expect(loadConfig({ ...base, SOCIAL: "" }).social).toEqual({ enabled: false });
     expect(loadConfig({ ...base, SOCIAL: '{"enabled":true}' }).social).toEqual({ enabled: true });
     expect(loadConfig({ ...base }).others).toEqual({
-      answersPerDay: 50, pointsPerDay: 300, toolCalls: 1, overCapNotes: 3, outputTokens: 800, contextWeight: 4000,
+      pointsPerDay: 300, toolCalls: 1, contextWeight: 4000,
       notesWeight: 1000, judgeBatch: 20, judgeCallsPerDay: 5, withheldCallsPerDay: 3, judgeAttemptsPerVersion: 2, judgeInputBytes: 9000,
       judgeOutputTokens: 2200, judgeOwnerExamples: 4, judgePollMs: 5000, judgeOwnersPerPoll: 10, withheldInputBytes: 6000, withheldCardsMax: 3,
       cardDays: 7, requestDays: 7, cooldownDays: 30,
     });
-    expect(loadConfig({ ...base, OTHERS: '{"answersPerDay":10,"pointsPerDay":30}' }).others).toMatchObject({ answersPerDay: 10, pointsPerDay: 30, toolCalls: 1 });
+    expect(loadConfig({ ...base, OTHERS: '{"pointsPerDay":30}' }).others).toMatchObject({ pointsPerDay: 30, toolCalls: 1 });
   });
 
   test("a number out of range, an unknown key, a wrong type and bad JSON are refused naming the variable", () => {
-    for (const bad of ['{"judgePollMs":999}', '{"toolCalls":0}', '{"toolCalls":1.5}', '{"answersPerDay":"50"}', '{"surprise":1}', "[]", "nope"]) expect(() => loadConfig({ ...base, OTHERS: bad }), bad).toThrow(/OTHERS/);
+    // The numbers of the limits before the one number (limits redesign, Part 1) are unknown keys now: refused at start, as any other.
+    for (const bad of ['{"judgePollMs":999}', '{"toolCalls":0}', '{"toolCalls":1.5}', '{"pointsPerDay":"300"}', '{"surprise":1}', '{"answersPerDay":50}', '{"outputTokens":800}', '{"overCapNotes":3}', "[]", "nope"]) expect(() => loadConfig({ ...base, OTHERS: bad }), bad).toThrow(/OTHERS/);
     for (const bad of ['{"enabled":"yes"}', '{"enabled":1}', '{"surprise":true}', "nope"]) expect(() => loadConfig({ ...base, SOCIAL: bad }), bad).toThrow(/SOCIAL/);
   });
 

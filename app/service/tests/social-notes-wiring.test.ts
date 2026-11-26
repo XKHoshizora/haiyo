@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LoadedNotes, NotesPlace } from "../src/memory/passage.ts";
-import { othersRoomAdvisory } from "../src/metering/others.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
+import { paidReply } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
-import { FREE_MODEL, OTHERS_ENV, PAID_MODEL, POINT, setOwnerNumbers } from "./helpers/others.ts";
+import { FREE_MODEL, OTHERS_ENV, PAID_MODEL, POINT, setOwnerLimit } from "./helpers/others.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 
@@ -23,12 +23,8 @@ vi.mock("../src/memory/passage.ts", async (importOriginal) => {
 });
 
 const gateway = scriptedGateway();
-const lines: string[] = [];
-const { app, db } = useApp({ env: OTHERS_ENV, models: gateway, agentWorker: false, tools: true, config: SOCIAL_ON, logStream: { write: (line) => void lines.push(line) } });
-/** The metric lines named `name` logged since the test began, with where they came from (`from`). */
-const metric = (name: string) => lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e.metric === name);
+const { app, db } = useApp({ env: OTHERS_ENV, models: gateway, agentWorker: false, tools: true, config: SOCIAL_ON });
 afterEach(async () => {
-  lines.length = 0;
   loadNotesOverride.current = null;
   vi.restoreAllMocks();
   await closeAllSockets();
@@ -78,7 +74,7 @@ describe("ring 1a shows a visitor no owner notes at all", () => {
 describe("ring 1a, a run with a tool round", () => {
   it("m4: every request of a social run that calls a tool (the steps and the finishing request) is free of every canary, and so is what is posted", async () => {
     const w = await world("canarytool");
-    await setOwnerNumbers(db, w.owner.id, { pointsMicro: 70n * POINT });
+    await setOwnerLimit(db, w.owner.id, 70n * POINT);
     await db.query("insert into owner_notes (owner_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.owner.id, "OWNER-OPEN-CANARY 主人爱吃辣", "OWNER-VAULT-CANARY 主人的存款"]);
     await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.agent.id, "SELF-OPEN-CANARY 我记下的", "SELF-VAULT-CANARY 我私下记的"]);
     await db.query("insert into agent_hearsay (agent_id, conversation_id, speaker_id, speaker_name, text, said_at) values ($1, $2, $3, $4, $5, now())", [w.agent.id, w.conv, w.v.id, "nw", "HEARSAY-CANARY 听来的话"]);
@@ -112,10 +108,11 @@ describe("loadNotes wired into the social run", () => {
             withheld: [withheld],
           }
         : null;
-    // A reply its owner's number cannot hold (the paid tier's one call is 17 points; the number is one) is refused at admission: nothing is written.
+    // A reply whose owner's number is reached by the time it is admitted (others' use today at it, one point) is refused there: nothing is written.
     const refused = await world("fake_refused", PAID_MODEL);
-    await setOwnerNumbers(db, refused.owner.id, { pointsMicro: 1n * POINT });
+    await setOwnerLimit(db, refused.owner.id, 1n * POINT);
     await say(refused.v, refused.conv, "你好");
+    await paidReply(db, { agentId: refused.agent.id, ownerId: refused.owner.id, conversationId: refused.agent.conversationId, lane: "others", micro: POINT });
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect((await runOf(refused)).status).not.toBe("done");
     expect(await runOf(refused)).toMatchObject({ shown_notes: null, withheld_notes: null });
@@ -133,35 +130,16 @@ describe("loadNotes wired into the social run", () => {
   });
 });
 
-describe("the advisory room", () => {
-  it("is the least room left under the numbers (the owner's, and the Agent's own where lower), holds counted", async () => {
-    const w = await world("room");
-    await setOwnerNumbers(db, w.owner.id, { pointsMicro: 10n * POINT });
-    expect(await othersRoomAdvisory(db, app.deps.config, w.owner.id, w.agent.id, "others", new Date())).toBe(10n * POINT);
-    await db.query("update agents set others_budget_micro = $2 where principal_id = $1", [w.agent.id, (4n * POINT).toString()]);
-    expect(await othersRoomAdvisory(db, app.deps.config, w.owner.id, w.agent.id, "others", new Date())).toBe(4n * POINT);
-    await setOwnerNumbers(db, w.owner.id, { pointsMicro: 1n * POINT });
-    expect(await othersRoomAdvisory(db, app.deps.config, w.owner.id, w.agent.id, "others", new Date())).toBe(1n * POINT);
-  });
-
-  it("an others' reply whose room covers the with-tools hold is offered tools; with room for one call only it is offered none and makes one call", async () => {
-    const roomy = await world("roomy");
-    await setOwnerNumbers(db, roomy.owner.id, { pointsMicro: 70n * POINT });
-    await say(roomy.v, roomy.conv, "你好");
-    gateway.reply("好。");
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(gateway.calls.at(-1)!.tools?.length ?? 0).toBeGreaterThan(0);
-    // One point: more than a plain call's hold (a few tenths) and less than the hold with tools (about three).
-    const tight = await world("tight");
-    await setOwnerNumbers(db, tight.owner.id, { pointsMicro: 1n * POINT });
-    await say(tight.v, tight.conv, "你好");
-    gateway.reply("好。");
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    const call = gateway.calls.at(-1)!;
-    expect(call.tools ?? []).toEqual([]);
-    expect(call.system).toContain("你没有任何工具");
-    expect(await runOf(tight)).toMatchObject({ status: "done" });
-    // m2: it was the advisory room in `begin` that dropped the tools, not step 3's admission fallback (the two are told apart on the metric line).
-    expect(metric("others_plain_fallback").map((e) => e.from)).toEqual(["advisory"]);
+describe("the tools of a social reply", () => {
+  it("are offered as the owner's own reply's are, whatever the owner's one number leaves: nothing is reserved against it", async () => {
+    for (const points of [70n, 1n]) {
+      const w = await world(`tools${points}`);
+      await setOwnerLimit(db, w.owner.id, points * POINT);
+      await say(w.v, w.conv, "你好");
+      gateway.reply("好。");
+      expect(await app.agentWorker.runOnce()).toBe(true);
+      expect([points, (gateway.calls.at(-1)!.tools?.length ?? 0) > 0]).toEqual([points, true]);
+      expect(await runOf(w)).toMatchObject({ status: "done" });
+    }
   });
 });

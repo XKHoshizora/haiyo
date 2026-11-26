@@ -295,7 +295,7 @@ describe("listeners", () => {
     judge.answer(answering({ h1: 0.9, h1o: 0.9 }));
 
     await used(5);
-    expect(await decide(only.g, await say(only.member, only.g, "owner 喜欢跑步"), over)).toEqual({ runs: [], callerLimited: [], notices: [], budgetReached: [], stopped: [] });
+    expect(await decide(only.g, await say(only.member, only.g, "owner 喜欢跑步"), over)).toEqual({ runs: [], callerLimited: [], notices: [], refused: [], reached: [], stopped: [] });
     expect(judge.calls).toHaveLength(0);
     expect(await flagsOf(only.g)).toEqual([]);
     expect((await db.query("select calls from judge_usage")).rows).toEqual([{ calls: 5 }]);

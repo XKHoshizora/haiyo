@@ -535,35 +535,30 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ estimated: false, cost, balance: cost, forgiven: "0" }]);
   });
 
-  it("the Agent's others' daily budget is held for up front (B1): a reply whose hold cannot fit within it, with tools or plain, ends at admission — no call, nothing held or charged; the group is told only when NO reply for others could fit (fix round 3, point 4)", async () => {
+  it("nothing is reserved against the owner's number for others' use: a reply whose one call could cost far more than it is admitted and made while use is below it; once use has reached it the next call reaches nothing, its sender is told, and the group nothing", async () => {
     const owner = await signUp(app, "budgetowner");
     const member = await signUp(app, "budgetmember");
     const g = await group(app, owner, "饭搭子", [member, await signUp(app, "budgetthird")]);
-    // A paid model and a balance of 20 points: nothing but the budget, one point, which not even its one call can be held within.
-    const agent = await mustCreateAgent(app, owner, { handle: "chef", name: "chef", model: PAID, persona: "简短地回答。", othersBudget: "1" });
+    // A paid model and a balance of 20 points; the owner's number one point, which not even its one call could be held within.
+    const agent = await mustCreateAgent(app, owner, { handle: "chef", name: "chef", model: PAID, persona: "简短地回答。" });
     await grant(db, owner.id, 20n * POINT);
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "1" })).status).toBe(200);
     await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [g, agent.id]);
-    const gateway = scriptedGateway();
+    const gateway = scriptedGateway().reply("面馆。", { usage: U(8000, 1200) });
     const { worker } = toolWorker(gateway);
     await say(member, g, "@chef 附近有什么好吃的？");
     expect(await worker.runOnce()).toBe(true);
-    expect(gateway.calls).toHaveLength(0);
-    expect(await runOf(owner.id)).toMatchObject({ status: "cancelled", hold: "0" });
-    // One point still covers the least a reply of it can hold (its system text and the others' output: under a point on this model): this
-    // call did not fit, a shorter one could. The Agent is tight, not used up, and the group is not told it answers only its owner today.
-    const notices = async () => (await db.query("select count(*)::int as n from messages where conversation_id = $1 and body ->> 'event' = 'agent_daily_budget_reached'", [g])).rows[0].n;
-    expect(await notices()).toBe(0);
-    const row = async () => (await api(app, owner, "GET", "/api/me/others-use")).json.agents.find((a: { agentId: string }) => a.agentId === agent.id);
-    expect(await row()).toMatchObject({ reached: false, tight: true });
-    // The owner's own answers number used up (one answer a day, and one counted): now every reply for others is refused, and the group is told, once.
-    expect((await api(app, owner, "PUT", "/api/me/others-limits", { answers: 1, points: "300" })).status).toBe(200);
-    await db.query("update agent_runs set admitted_at = now(), lane = 'others', status = 'done', finished_at = now() where owner_id = $1", [owner.id]);
-    await say(member, g, "@chef 再问一次？");
-    // (Refused where the call is made, or as its reply begins: either way no call of the model.)
-    await worker.runOnce();
-    expect(gateway.calls).toHaveLength(0);
-    expect((await row()).reached).toBe(true);
-    expect(await notices()).toBe(1);
+    expect(gateway.calls).toHaveLength(1);
+    expect(await runOf(owner.id)).toMatchObject({ status: "done", hold: "0" });
+    // Charged what it used, past the number: nothing was cut for it.
+    const use = (await api(app, owner, "GET", "/api/me/others-use")).json;
+    expect([Number(use.used) > 1, use.reached]).toEqual([true, true]);
+    // Reached: the next call is refused where it is made — no call of the model — and its sender reads why on their message.
+    const sent = await api(app, member, "POST", `/api/conversations/${g}/messages`, { text: "@chef 再问一次？", clientTxn: "tlm-again" });
+    expect(sent.json.message.refused).toEqual([{ agentId: agent.id, reason: "others_limit" }]);
+    expect(await worker.runOnce()).toBe(false);
+    expect(gateway.calls).toHaveLength(1);
+    expect((await db.query("select 1 from messages where conversation_id = $1 and kind = 'system' and body ->> 'event' = 'others_limit_reached'", [g])).rowCount).toBe(0);
   });
 
   it("stopped during its third round, which reported nothing: the first two rounds' reported tokens, their hidden reasoning in them, are charged; the third's estimate is added; the raised hold is released", async () => {
@@ -694,14 +689,15 @@ describe("the money of a reply that offers tools", () => {
     expect(await recordsOf(run.id)).toMatchObject([{ source: "provider", cost: "0", free: "0", balance: "0", input: 900_000, output: 9000 }]);
   });
 
-  it("a provider's model in an others' lane: extend answers final whatever the budget says (its one tool round has been made) — nothing held, its owner's account never waited on", async () => {
+  it("a provider's model in an others' lane: extend answers final whatever others' use is (its one tool round has been made) — nothing held, its owner's account never waited on", async () => {
     const owner = await signUp(app, "ownbudget");
     const member = await signUp(app, "ownbudgetmember");
     const g = await group(app, owner, "饭搭子", [member, await signUp(app, "ownbudgetthird")]);
     const provider = (await api(app, owner, "POST", "/api/providers", providerBody({ models: [{ name: "mine" }] }))).json;
     const model = { source: "provider", providerId: provider.id as string, model: "mine" } as const;
-    // Someone else's call, in the others' lane; its daily budget a point.
-    const agent = await mustCreateAgent(app, owner, { handle: "ownchef", name: "ownchef", model, persona: "简短地回答。", othersBudget: "1" });
+    // Someone else's call, in the others' lane; the owner's number a point.
+    const agent = await mustCreateAgent(app, owner, { handle: "ownchef", name: "ownchef", model, persona: "简短地回答。" });
+    expect((await api(app, owner, "PUT", "/api/me/others-limits", { points: "1" })).status).toBe(200);
     await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [g, agent.id]);
     await grant(db, owner.id, 20n * POINT);
     await say(member, g, "@ownchef 附近有什么好吃的？");
@@ -726,7 +722,7 @@ describe("the money of a reply that offers tools", () => {
       }
     };
 
-    // An others' reply has one tool round (B2a): the next call is the last, the budget reached or not.
+    // An others' reply has one tool round (B2a): the next call is the last, the owner's number reached or not.
     expect(await extend()).toBe("final");
     expect(await holdOf(ticket.id)).toBe(0n);
     await paidReply(db, { agentId: agent.id, ownerId: owner.id, conversationId: g, lane: "others", micro: POINT });
@@ -928,8 +924,8 @@ describe("the tools' definitions, and room for what they bring back, in the cont
     expect(isRunEnd(inGroup)).toBe(false);
     const cap = app.deps.config.agentGroupContextTokens;
     expect(cap).toBe(12_000);
-    // A member's call: the call's output is `OTHERS.outputTokens`, 800, not the model's 1 000 (lane `others`).
-    const plan = planOf(inGroup, cap, app.deps.config.others.outputTokens);
+    // A member's call (lane `others`): its output is the model's own (MAX_OUT), as the owner's own reply's is.
+    const plan = planOf(inGroup, cap);
     expect(plan.results).toBe(4000);
     expect(plan.whole).toBeGreaterThan(cap);
   });

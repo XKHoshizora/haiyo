@@ -771,30 +771,33 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.third.id]);
   });
 
-  it("the sender alone is told which of their calls their limit refused: in the answer to their send, never in the message", async () => {
+  it("the sender alone is told which of their calls their limit refused: on their own copy of the message, as they read it again too; nobody else reads it", async () => {
     const w = await crowd();
     const anna = await agentOf(w.owner, "anna", w.g, limited);
     const tess = await agentOf(w.third, "tess", w.g, limited);
     const send = async (text: string) => {
       const sent = await api(limited, w.member, "POST", `/api/conversations/${w.g}/messages`, { text, clientTxn: `ln${++txn}` });
       expect(sent.status).toBe(201);
-      return sent.json as { message: { seq: number }; notCalled?: unknown };
+      return sent.json as { message: { seq: number; refused?: unknown } };
     };
     const read = async (who: Actor, seq: number) =>
-      ((await api(limited, who, "GET", `/api/conversations/${w.g}/messages`)).json.messages as Array<{ seq: number }>).find((m) => m.seq === seq);
+      ((await api(limited, who, "GET", `/api/conversations/${w.g}/messages`)).json.messages as Array<{ seq: number; refused?: unknown }>).find((m) => m.seq === seq);
 
     // A call that reaches its Agent: no such key at all.
     const first = await send("@anna 一");
+    expect(first.message).not.toHaveProperty("refused");
     expect(first).not.toHaveProperty("notCalled");
     await settleAll();
-    // The member's next calls this minute on other people's Agents start nothing: the answer names each, in id order.
+    // The member's next calls this minute on other people's Agents start nothing: their copy names each, in id order.
     const refused = await send("@tess @anna 二");
-    expect(refused.notCalled).toEqual([anna.id, tess.id].sort().map((agentId) => ({ agentId, reason: "caller_rate_limited" })));
-    // The message itself carries nothing of it: not as another member reads it, nor as the sender reads it again.
-    for (const who of [w.third, w.owner, w.member]) {
+    const line = [anna.id, tess.id].sort().map((agentId) => ({ agentId, reason: "too_often" }));
+    expect(refused.message.refused).toEqual(line);
+    expect((await read(w.member, refused.message.seq))?.refused).toEqual(line);
+    // Nobody else's copy carries anything of it.
+    for (const who of [w.third, w.owner]) {
       const stored = await read(who, refused.message.seq);
       expect([who.id, stored]).toEqual([who.id, expect.objectContaining({ seq: refused.message.seq })]);
-      expect(stored).not.toHaveProperty("notCalled");
+      expect(stored).not.toHaveProperty("refused");
     }
   });
 

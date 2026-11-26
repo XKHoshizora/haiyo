@@ -56,12 +56,11 @@ async function overMidnightAtTheLock(ownerId: string, work: () => Promise<unknow
 }
 
 describe("a reply for others prepared across the site's midnight", () => {
-  it("is admitted against the NEW day's room: with the new day's points already used up by another reply, it is refused (no call), though yesterday had room", async () => {
+  it("is admitted against the NEW day's use: with the new day's number already reached by another reply, it is refused (no call), though yesterday was below it", async () => {
     const k = await othersKitchen(app, db, { agent: { model: PAID_MODEL } });
     await k.ask();
-    // After midnight another reply for others of this owner has settled 295 of the day's 300 points: 5 are left, and a reply on
-    // the paid model holds 12 at least.
-    await paidReply(db, { agentId: k.agent.id as string, ownerId: k.owner.id, conversationId: k.agent.conversationId as string, lane: "others", micro: 295n * POINT, at: new Date(AFTER.getTime() + 1000) });
+    // After midnight another reply for others of this owner has settled the day's 300 points: the number is reached.
+    await paidReply(db, { agentId: k.agent.id as string, ownerId: k.owner.id, conversationId: k.agent.conversationId as string, lane: "others", micro: 300n * POINT, at: new Date(AFTER.getTime() + 1000) });
     k.gateway.reply("不该说出来。");
     let ran: boolean | undefined;
     expect(await overMidnightAtTheLock(k.owner.id, async () => (ran = await k.worker.runOnce()))).toBe(true);
@@ -71,13 +70,13 @@ describe("a reply for others prepared across the site's midnight", () => {
     expect(await k.posted()).toEqual([]);
     // Nothing of it was held or charged on either day.
     const used = (await db.query<{ n: string }>("select coalesce(sum(free_micro + balance_micro), 0)::text as n from usage_records where owner_id = $1", [k.owner.id])).rows[0]!.n;
-    expect(used).toBe((295n * POINT).toString());
+    expect(used).toBe((300n * POINT).toString());
   });
 
-  it("and the other way: yesterday's points used up, the new day's room is what counts: it is answered, and its admission is stamped on the new day", async () => {
+  it("and the other way: yesterday's number reached, the new day's use is what counts: it is answered, and its admission is stamped on the new day", async () => {
     const k = await othersKitchen(app, db, { agent: { model: PAID_MODEL } });
     await k.ask();
-    await paidReply(db, { agentId: k.agent.id as string, ownerId: k.owner.id, conversationId: k.agent.conversationId as string, lane: "others", micro: 295n * POINT, at: new Date(BEFORE.getTime() - 1000) });
+    await paidReply(db, { agentId: k.agent.id as string, ownerId: k.owner.id, conversationId: k.agent.conversationId as string, lane: "others", micro: 300n * POINT, at: new Date(BEFORE.getTime() - 1000) });
     k.gateway.reply("好。");
     expect(await overMidnightAtTheLock(k.owner.id, () => k.worker.runOnce())).toBe(true);
     expect(await k.posted()).toEqual(["好。"]);

@@ -6,7 +6,7 @@ import { canSend } from "../src/conversations/store.ts";
 import { loadNotes } from "../src/memory/passage.ts";
 import { shownNotesPass } from "../src/memory/shown.ts";
 import { startNoteJudge } from "../src/memory/judge.ts";
-import { keepsRoom, othersFits } from "../src/metering/others.ts";
+import { othersAdmissible } from "../src/metering/others.ts";
 import { discoverable, reach, reachSql, refusedSql } from "../src/social/reach.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -81,12 +81,10 @@ describe("the seams: reach is the rule, the money stubs say yes, notes are none"
     expect(await reach(db, other.id, agent.id, "group", off)).toBe("blocked");
   });
 
-  it("an Agent is not discoverable with the switch off, the money stubs say yes, the notes of a social conversation are none", async () => {
+  it("an Agent is not discoverable with the switch off, the owner's number admits with nothing used, the notes of a social conversation are none", async () => {
     const { owner, member, v, agent } = await world();
     expect(await discoverable(db, agent.id, member.id, off)).toBe(false);
-    expect([keepsRoom("AB", "own"), keepsRoom("B", "own"), keepsRoom("B", "others"), keepsRoom("B", "proactive"), keepsRoom("A", "own")]).toEqual([true, false, true, true, false]);
-    const verdict = await db.tx((t) => othersFits(t, app.deps.config, { id: "r", ownerId: owner.id, agentId: agent.id, lane: "others" }, 1n, "admission", new Date()));
-    expect(verdict).toEqual({ ok: true });
+    expect(await db.tx((t) => othersAdmissible(t, app.deps.config, owner.id, new Date()))).toBe(true);
     const s = (await seedSocial(app, { owner, agentId: agent.id, visitor: v })).conversationId;
     const loaded = await db.tx((t) => loadNotes(t, asAgent(owner, agent), { place: "social", conversationId: s, audienceId: v.id }, app.deps.config));
     expect(loaded).toEqual({ notes: NO_NOTES, shown: [], withheld: [] });
@@ -112,7 +110,7 @@ describe("the seams: reach is the rule, the money stubs say yes, notes are none"
   it("a message that stopped runs interrupts them after commit, and one that stopped none interrupts nothing", () => {
     expect(noneTriggered().stopped).toEqual([]);
     const interrupt = vi.fn();
-    const to = { announce: vi.fn(), log: { info: vi.fn() }, realtime: { pushAgentChanged: vi.fn() }, interrupt };
+    const to = { announce: vi.fn(), log: { info: vi.fn() }, interrupt, tell: vi.fn() };
     actOnTriggered(noneTriggered(), to);
     expect(interrupt).not.toHaveBeenCalled();
     actOnTriggered({ ...noneTriggered(), stopped: ["r1", "r2"] }, to);

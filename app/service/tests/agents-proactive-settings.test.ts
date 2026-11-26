@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { siteToday } from "../src/agents/runs.ts";
 import { buildApp } from "../src/app.ts";
 import { api, signUp } from "./helpers/actors.ts";
 import { createAgent, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
-import { paidReply } from "./helpers/metering.ts";
 
 /**
- * The owner's settings for proactive replies (README "Agents"): `proactive`, `proactiveLevel`, `proactiveBudget`, and
- * `othersUsedToday` in the owner's view. Turning it on needs the judgement model (`JUDGE`); nothing else does.
+ * The owner's settings for proactive replies (README "Agents"): `proactive` and `proactiveLevel`. What the replies cost counts in
+ * the owner's one number for others' use (limits redesign, Part 1): an Agent has no budget of its own for them. Turning it on
+ * needs the judgement model (`JUDGE`); nothing else does.
  */
 
 const { app, db } = useApp({ env: { ...SITE_ENV, RATE_LIMIT_SCALE: "1000" }, agentWorker: false });
@@ -24,19 +23,19 @@ const JUDGE = {
 const withJudge = () =>
   buildApp({ config: { ...app.deps.config, judge: JUDGE }, db }, { agentWorker: false, answerFloor: NO_ANSWER_FLOOR, staleRunSweep: false });
 
-const KEYS = ["proactive", "proactiveLevel", "proactiveBudget"];
+const KEYS = ["proactive", "proactiveLevel"];
 
 describe("proactive settings", () => {
-  it("a new Agent has them off, at level normal, with 70 points a day (074)", async () => {
+  it("a new Agent has them off, at level normal", async () => {
     const owner = await signUp(app, "pro_defaults");
     const agent = await mustCreateAgent(app, owner);
-    expect(agent).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "70" });
-    expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "70" });
+    expect(agent).toMatchObject({ proactive: false, proactiveLevel: "normal" });
+    expect((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json).toMatchObject({ proactive: false, proactiveLevel: "normal" });
     const list = (await api(app, owner, "GET", "/api/agents")).json as { agents: Record<string, unknown>[] };
-    expect(list.agents[0]).toMatchObject({ proactive: false, proactiveLevel: "normal", proactiveBudget: "70" });
+    expect(list.agents[0]).toMatchObject({ proactive: false, proactiveLevel: "normal" });
   });
 
-  it("validates each field on create and PATCH; there is no unlimited budget", async () => {
+  it("validates each field on create and PATCH; a budget of the Agent's own is no field any more", async () => {
     const owner = await signUp(app, "pro_validate");
     const agent = await mustCreateAgent(app, owner);
     const bad: Record<string, unknown>[] = [
@@ -44,24 +43,17 @@ describe("proactive settings", () => {
       { proactiveLevel: null },
       { proactive: "yes" },
       { proactive: null },
-      { proactiveBudget: "0" },
-      { proactiveBudget: "0.5" },
-      { proactiveBudget: "100001" },
-      { proactiveBudget: "abc" },
+      { proactiveBudget: "70" },
       { proactiveBudget: null },
-      { proactiveBudget: 20 },
     ];
     for (const body of bad) {
       expect([body, (await api(app, owner, "PATCH", `/api/agents/${agent.id}`, body)).status]).toEqual([body, 400]);
       expect([body, (await createAgent(app, owner, body)).status]).toEqual([body, 400]);
     }
-    const ok = await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactiveLevel: "more", proactiveBudget: "1" });
-    expect(ok).toMatchObject({ status: 200, json: { proactiveLevel: "more", proactiveBudget: "1" } });
-    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactiveLevel: "less", proactiveBudget: "100000" })).json).toMatchObject({
-      proactiveLevel: "less",
-      proactiveBudget: "100000",
-    });
-    expect((await createAgent(app, owner, { proactiveLevel: "more", proactiveBudget: "12.5" })).json).toMatchObject({ proactiveLevel: "more", proactiveBudget: "12.5" });
+    const ok = await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactiveLevel: "more" });
+    expect(ok).toMatchObject({ status: 200, json: { proactiveLevel: "more" } });
+    expect((await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactiveLevel: "less" })).json).toMatchObject({ proactiveLevel: "less" });
+    expect((await createAgent(app, owner, { proactiveLevel: "more" })).json).toMatchObject({ proactiveLevel: "more" });
   });
 
   it("proactive: true without the judgement model is 409 proactive_unavailable, on create and PATCH, and changes nothing", async () => {
@@ -85,14 +77,14 @@ describe("proactive settings", () => {
     expect(await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactive: true })).toMatchObject({ status: 409, json: { error: "agent_deleted" } });
   });
 
-  it("proactive: false is always accepted; level and budget may be set at any time", async () => {
+  it("proactive: false is always accepted; the level may be set at any time", async () => {
     const owner = await signUp(app, "pro_off");
     const made = await createAgent(app, owner, { proactive: false, proactiveLevel: "less" });
     expect(made).toMatchObject({ status: 201, json: { proactive: false, proactiveLevel: "less" } });
     const id = (made.json as { id: string }).id;
-    expect(await api(app, owner, "PATCH", `/api/agents/${id}`, { proactive: false, proactiveBudget: "5" })).toMatchObject({
+    expect(await api(app, owner, "PATCH", `/api/agents/${id}`, { proactive: false, proactiveLevel: "more" })).toMatchObject({
       status: 200,
-      json: { proactive: false, proactiveBudget: "5" },
+      json: { proactive: false, proactiveLevel: "more" },
     });
   });
 
@@ -122,34 +114,12 @@ describe("proactive settings", () => {
     expect(await api(app, owner, "PATCH", `/api/agents/${agent.id}`, { proactive: false })).toMatchObject({ status: 200, json: { proactive: false } });
   });
 
-  it("the owner's view has the three keys", async () => {
+  it("the owner's view has the two keys, and no budget or spend of the Agent's own", async () => {
     const owner = await signUp(app, "pro_view");
     const agent = await mustCreateAgent(app, owner);
-    expect(Object.keys((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as object)).toEqual(expect.arrayContaining(KEYS));
-  });
-
-  it("othersUsedToday.points counts the settled charges of lane others since the site day began, and what its running replies hold (its own points number scopes that lane): a proactive reply's, the owner's own and yesterday's are not in it", async () => {
-    const owner = await signUp(app, "pro_spent");
-    const agent = await mustCreateAgent(app, owner);
-    const yesterday = new Date(siteToday(app.deps.config).getTime() - 3_600_000);
-    const paid = (lane: "own" | "others" | "proactive", micro: number, at: Date | null) =>
-      paidReply(db, { agentId: agent.id, ownerId: owner.id, conversationId: agent.conversationId, lane, micro, at });
-    await paid("proactive", 3_000_000, null);
-    await paid("proactive", 500_000, null);
-    await paid("others", 7_000_000, null);
-    await paid("own", 11_000_000, null);
-    await paid("proactive", 40_000_000, yesterday);
-    const view = (await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as { othersUsedToday: { points: string } };
-    expect(view.othersUsedToday.points).toBe("7");
-    const list = (await api(app, owner, "GET", "/api/agents")).json as { agents: Array<{ othersUsedToday: { points: string } }> };
-    expect(list.agents[0]!.othersUsedToday.points).toBe("7");
-    // A reply still being written holds points, and a proactive reply's hold is the proactive budget's, not the others' number's.
-    await db.query(
-      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at, source, model, charge_to, hold_micro, lane)
-       values ('reply', $1, $2, $3, 'running', 0, now(), 'site', 'fast', 'balance', 9000000, 'proactive')`,
-      [agent.conversationId, agent.id, owner.id],
-    );
-    expect(((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as { othersUsedToday: { points: string } }).othersUsedToday.points).toBe("7");
+    const keys = Object.keys((await api(app, owner, "GET", `/api/agents/${agent.id}`)).json as object);
+    expect(keys).toEqual(expect.arrayContaining(KEYS));
+    expect(keys.filter((k) => ["proactiveBudget", "proactiveSpentToday", "othersLimit", "othersUsedToday"].includes(k))).toEqual([]);
   });
 });
 
