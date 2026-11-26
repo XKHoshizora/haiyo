@@ -145,6 +145,30 @@ describe("the settings row and the page", () => {
     expect(pointsBox().getAttribute("aria-invalid")).toBe("true");
   });
 
+  it("raised above today's use while the page's refresh fails: the number and its state change together (no 用完了 beside the new number)", async () => {
+    let fail = false;
+    const { calls } = await openPage({
+      answer: () => {
+        if (fail) throw apiError(503, "unavailable");
+        return useOf({ limit: "10", used: "12.5", reached: true });
+      },
+    });
+    expect(mainEl().querySelector(".others-today").textContent).toContain("今天给别人的额度用完了");
+    fail = true;
+    typeInto(pointsBox(), "20");
+    enter(pointsBox());
+    await flush();
+    expect(calls.putOthersLimits).toHaveBeenLastCalledWith({ points: "20" });
+    expect(pointsBox().value).toBe("20");
+    expect(mainEl().querySelector(".others-today").textContent).toContain("正常");
+    expect(mainEl().querySelector(".others-today").textContent).not.toContain("用完了");
+    // Lowered to today's use or below: reached again, as the service would say.
+    typeInto(pointsBox(), "12.5");
+    enter(pointsBox());
+    await flush();
+    expect(mainEl().querySelector(".others-today").textContent).toContain("今天给别人的额度用完了");
+  });
+
   it("an Enter that confirms an input method's candidate saves nothing", async () => {
     const { calls } = await openPage();
     typeInto(pointsBox(), "20");

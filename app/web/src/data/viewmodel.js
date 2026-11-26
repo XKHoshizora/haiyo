@@ -286,7 +286,7 @@ export function balancePoints(value) {
  * A decimal string of points in micro-points (its first six decimals, no float maths), or null when it is not a
  * non-negative decimal string.
  */
-function microPoints(value) {
+export function microPoints(value) {
   const parts = typeof value === "string" ? /^(\d+)(?:\.(\d+))?$/.exec(value) : null;
   if (!parts) return null;
   const [, whole, decimals = ""] = parts;
@@ -468,8 +468,9 @@ const REFUSED_TEXTS = {
 
 /**
  * The lines under my message some of whose calls a limit refused (`refused`, on my copy alone): one a reason, in the order the reasons
- * first come, each the names of its Agents joined with 、 in 「」 before it — or the reason alone (「」 are for real names) while a name
- * is not known. A reason this client does not know says nothing.
+ * first come, each the names this client knows of its Agents joined with 、 in 「」 before it (「」 are for real names), and how many
+ * more there are when some are not known (「…」和另外 N 个 Agent) — or the reason alone when none is. A reason this client does not know
+ * says nothing.
  */
 function refusedLines(refused, nameOf) {
   const byReason = new Map();
@@ -478,9 +479,10 @@ function refusedLines(refused, nameOf) {
     byReason.set(r.reason, [...(byReason.get(r.reason) ?? []), r.agentId]);
   }
   return [...byReason].map(([reason, agentIds]) => {
-    const names = agentIds.map(nameOf);
-    const known = names.every((name) => typeof name === "string" && name !== "");
-    return known ? `「${names.join("、")}」：${REFUSED_TEXTS[reason]}` : REFUSED_TEXTS[reason];
+    const names = agentIds.map(nameOf).filter((name) => typeof name === "string" && name !== "");
+    const unnamed = agentIds.length - names.length;
+    if (names.length === 0) return REFUSED_TEXTS[reason];
+    return `「${names.join("、")}」${unnamed > 0 ? `和另外 ${unnamed} 个 Agent` : ""}：${REFUSED_TEXTS[reason]}`;
   });
 }
 

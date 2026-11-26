@@ -2068,12 +2068,13 @@ describe("Agents in a group (batch 2C)", () => {
   it("a call of mine a limit refused: a muted line under my message names the Agent and why, from the service's `refused` on my copy; under nobody else's", async () => {
     const refused = (reason, ...agentIds) => agentIds.map((agentId) => ({ agentId, reason }));
     // What my copy of each message says: the first and the fourth were refused (the fourth names an Agent this client knows nothing
-    // of), the second for two Agents and two reasons, the third reached its Agent.
+    // of), the second for two Agents and two reasons, the third reached its Agent, the fifth was refused for a known and an unknown one.
     const extras = [
       { refused: refused("too_often", OAG) },
       { refused: [...refused("others_limit", OAG, AG1), ...refused("too_often", STRAY)] },
       {},
       { refused: refused("others_limit", STRAY) },
+      { refused: refused("too_often", OAG, STRAY) },
     ];
     let seq = 2;
     const sendMessage = vi.fn(async (_conv, body) => ({ message: wire(G1, ++seq, ME_ID, body.text, extras.shift()), duplicate: false }));
@@ -2091,12 +2092,15 @@ describe("Agents in a group (batch 2C)", () => {
     await send("@annbot @helper 四");
     await send("@annbot 五");
     await send("@someone 六");
+    await send("@annbot @someone 七");
     expect(lines()).toEqual([
       ["m3", "「安的助手」：太频繁，稍后再试"],
-      // One line a reason; the Agents of each joined; a name not known: the reason alone (「」 are for real names).
+      // One line a reason; the Agents of each joined; no name known: the reason alone (「」 are for real names); some known: those
+      // names, and how many more.
       ["m4", "「安的助手、小助手」：这个 Agent 今天不能再回复别人了"],
       ["m4", "太频繁，稍后再试"],
       ["m6", "这个 Agent 今天不能再回复别人了"],
+      ["m7", "「安的助手」和另外 1 个 Agent：太频繁，稍后再试"],
     ]);
     // A refusal decided later (at admission) comes as my message pushed to me again, with the line.
     await push(transport, { type: "message", message: wire(G1, 5, ME_ID, "@annbot 五", { refused: refused("others_limit", OAG) }) });

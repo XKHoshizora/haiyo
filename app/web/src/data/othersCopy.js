@@ -2,8 +2,18 @@
 // the hint under the two level selects. (What a conversation shows — the line under a sender's message a limit refused, the owner's
 // notice when the day is used up — is worded with every other notice, data/viewmodel.js.)
 // All of it is system UI text, never an Agent's voice. The facts are the service's (`reached`, the number, the refusal's reason): the web
-// only words them, and never compares what was used with the number.
-import { formatPoints } from "./viewmodel.js";
+// only words them — but for the one moment it has a new number of mine and no answer with it (`reachedAt`).
+import { formatPoints, microPoints } from "./viewmodel.js";
+
+/**
+ * Whether today's use (`used`) has reached the number `limit`, by the service's own rule (`reached` is used ≥ limit), in exact
+ * micro-points: what the page shows beside a number I have just saved until the service's next answer says it; null when either is
+ * no number.
+ */
+export function reachedAt(used, limit) {
+  const [u, l] = [microPoints(used), microPoints(limit)];
+  return u === null || l === null ? null : u >= l;
+}
 
 /** The two states of the owner's day (`reached` of `GET /api/me/others-use`): every reply for others is still made, or none is. */
 export const OTHERS_STATES = {

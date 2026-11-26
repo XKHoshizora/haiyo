@@ -2,7 +2,7 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { formatPoints } from "../data/viewmodel.js";
-import { othersStateOf, othersStateText, ownKeyText } from "../data/othersCopy.js";
+import { othersStateOf, othersStateText, ownKeyText, reachedAt } from "../data/othersCopy.js";
 import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
 import { socialOn } from "../state/social.js";
 import { Avatar, Btn, Reason, TextLink } from "../ui/primitives.jsx";
@@ -147,7 +147,8 @@ function PersonLink({ person, linked }) {
 /**
  * Settings › 别人怎么用我的 Agent: my one daily number (edited in place), today's use against it with its state (正常 / 今天给别人的额度用完了,
  * the service's `reached`, worded in data/othersCopy.js), who used them today and who is stopped. Nothing here is computed: every number,
- * state and list is what `GET /api/me/others-use` says, and the page exists for its owner alone. It never stops or resumes anyone: that is
+ * state and list is what `GET /api/me/others-use` says — but the state beside a number just saved, until the next answer says it
+ * (`reachedAt`, the service's rule) — and the page exists for its owner alone. It never stops or resumes anyone: that is
  * done on the person's profile.
  */
 export function OthersUsePage({ back }) {
@@ -155,7 +156,8 @@ export function OthersUsePage({ back }) {
   const { use, failed, reload, settle } = useOthersUse();
   const save = async (body) => {
     const saved = await actions.putOthersLimits(body);
-    if (use && saved && typeof saved.points === "string") settle({ ...use, limit: saved.points });
+    // The number saved and the state beside it change together, also should the refresh below fail.
+    if (use && saved && typeof saved.points === "string") settle({ ...use, limit: saved.points, reached: reachedAt(use.used, saved.points) ?? use.reached });
     await reload({ afterWrite: true });
   };
 
