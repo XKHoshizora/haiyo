@@ -155,6 +155,55 @@ describe("admission across connections and days", () => {
     await expect(db.tx((t) => admitRun(t, config(), r3, owner.id, a!.resolved, 10, () => new Date()))).rejects.toBeInstanceOf(OthersLimit);
   });
 
+  /**
+   * Holds `ownerId`'s account row (as a raise of their number does) in a transaction of its own, writing `pointsMicro` as their
+   * number, until `release`; resolves `locked` once it holds it.
+   */
+  const raising = (ownerId: string, pointsMicro: bigint) => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const held = new Promise<void>((r) => (locked = r));
+    const done = db.tx(async (t) => {
+      await t.query("select 1 from accounts where principal_id = $1 for update", [ownerId]);
+      await t.query("update accounts set others_points_micro = $2 where principal_id = $1", [ownerId, pointsMicro.toString()]);
+      locked();
+      await gate;
+    });
+    return { held, release: () => release(), done };
+  };
+
+  for (const where of ["a group", "a follow-up"] as const) {
+    it(`a refusal by N is decided under the owner's account lock (${where}): a raise committing meanwhile is waited for, and the call is answered`, async () => {
+      const k = await othersKitchen(app, db);
+      await setOwnerLimit(db, k.owner.id, POINT);
+      await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: POINT });
+      let ticket: Awaited<ReturnType<typeof k.port.claimNext>> = null;
+      if (where === "a follow-up") {
+        // A reply under way with the third's call noted on it; it ends while the raise holds the account.
+        await db.query("update accounts set others_points_micro = $2 where principal_id = $1", [k.owner.id, (10n * POINT).toString()]);
+        await k.ask("@chef 一");
+        ticket = await k.port.claimNext();
+        expect((await api(app, k.third, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 二", clientTxn: "f2f" })).status).toBe(201);
+        await setOwnerLimit(db, k.owner.id, POINT);
+      }
+      const raise = raising(k.owner.id, 2n * POINT);
+      await raise.held;
+      const deciding =
+        where === "a group"
+          ? api(app, k.member, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 在吗", clientTxn: "f2g" })
+          : k.port.finish(ticket!, { status: "done" }, null, NOTHING);
+      // It waits for the account the raise holds (it does not decide on what it read before).
+      await new Promise((r) => setTimeout(r, 300));
+      raise.release();
+      await raise.done;
+      const result = await deciding;
+      if (where === "a group") expect((result as { json: { message: Record<string, unknown> } }).json.message).not.toHaveProperty("refused");
+      expect((await db.query("select 1 from call_refusals where agent_id = $1", [k.agent.id])).rowCount).toBe(0);
+      expect((await db.query("select 1 from agent_runs where conversation_id = $1 and status = 'queued'", [k.g])).rowCount).toBe(1);
+    });
+  }
+
   it("the site day's edge: a reply admitted at 00:00:01 is counted on the new day, read under the account lock; a chain begun yesterday and retried today counts on both days", async () => {
     const owner = await newOwner();
     const mine = await providerAgent(app, db, owner);
