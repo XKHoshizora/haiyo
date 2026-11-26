@@ -5,7 +5,7 @@ import type { AgentPort, RunTicket } from "../src/agents/runtime/port.ts";
 import { createAgentWorker } from "../src/agents/runtime/worker.ts";
 import { buildApp } from "../src/app.ts";
 import { api, befriend, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
 import { grant } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
@@ -415,7 +415,7 @@ describe("stopping, pausing, failing", () => {
     expect(await usageOf(run.id)).toEqual([{ outcome: "cancelled", source: "site", model: "fast", estimated: true }]);
     expect(await holds()).toBe("0");
     // Retrying a paused Agent's reply is refused.
-    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).toEqual({ status: 409, json: { error: "agent_paused" } });
+    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).toEqual({ status: 409, json: { error: "agent_paused" } });
   });
 
   it("delete mid-run: the call is abandoned, nothing is posted, the run is cancelled", async () => {
@@ -489,7 +489,7 @@ describe("stopping, pausing, failing", () => {
     expect(failed).toEqual({ id: failed.id, status: "failed", error: "provider_unavailable", retryable: true });
 
     gateway.reply("这次好了。");
-    const retried = await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`);
+    const retried = await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) });
     expect(retried.status).toBe(201);
     expect(retried.json.run).toEqual({ id: expect.any(String), status: "queued", retryable: false });
     expect(retried.json.run.id).not.toBe(failed.id);
@@ -501,10 +501,11 @@ describe("stopping, pausing, failing", () => {
     expect(await latestRun(owner, conv)).toMatchObject({ status: "done" });
   });
 
-  it("retry: 409 busy_run while a run is active; 400 when the last run did not fail", async () => {
+  it("retry: 404 for no run there; 409 busy_run while a run is active; 400 when the run named did not fail", async () => {
     const { owner, conv } = await owned("rhea");
-    const retry = () => api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`);
-    expect(await retry()).toEqual({ status: 400, json: { error: "invalid_request" } });
+    const retry = async () => api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) });
+    // No run there to name (T2 fix 1, F4: a 重试 names the failure by its id).
+    expect(await retry()).toEqual({ status: 404, json: { error: "not_found" } });
     const hold = gateway.hang();
     await say(owner, conv, "你好");
     expect(await retry()).toEqual({ status: 409, json: { error: "busy_run" } });
@@ -584,7 +585,7 @@ describe("the run routes are the owner's", () => {
     expect(await api(app, b.owner, "POST", `/api/conversations/${b.conv}/runs/${runId}/stop`)).toEqual(notFound);
     for (const conv of [a.conv, nobody]) {
       expect(await api(app, b.owner, "GET", `/api/conversations/${conv}/run`)).toEqual(notFound);
-      expect(await api(app, b.owner, "POST", `/api/conversations/${conv}/runs/retry`)).toEqual(notFound);
+      expect(await api(app, b.owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).toEqual(notFound);
       expect(await api(app, b.owner, "POST", `/api/conversations/${conv}/runs/dismiss`)).toEqual(notFound);
     }
     // A conversation that is not an Agent's: also 404.

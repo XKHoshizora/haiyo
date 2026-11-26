@@ -324,7 +324,8 @@ describe("replies", () => {
     const retryRun = vi.fn(async () => ({ run: runOf(R2, "queued") }));
     const { actions, model } = await failedRun({ retryRun });
     await expect(actions.retryRun(A1)).resolves.toMatchObject({ ok: true, value: { run: runOf(R2, "queued") } });
-    expect(retryRun).toHaveBeenCalledWith(A1);
+    // The failure shown is named by its id (T2 fix 1, F4).
+    expect(retryRun).toHaveBeenCalledWith(A1, R1);
     expect(model().runs[A1]).toMatchObject({ id: R2, status: "queued" });
     retryRun.mockRejectedValueOnce(apiError(409, "busy_run"));
     await expect(actions.retryRun(A1)).resolves.toMatchObject({ ok: false, text: "它正在回复，请等这次回复结束。" });
@@ -429,12 +430,12 @@ describe("replies in a group (batch 2C)", () => {
     expect(api.stopRun).toHaveBeenLastCalledWith(A1, R2);
   });
 
-  it("retryRun and dismissRun send the Agent: the retry's run replaces the failed one, the dismissal closes the line", async () => {
+  it("retryRun sends the failure shown, dismissRun the Agent: the retry's run replaces the failed one, the dismissal closes the line", async () => {
     const api = { retryRun: vi.fn(async () => ({ run: runOf(R2, "queued") })), dismissRun: vi.fn(async () => ({ ok: true })) };
     const { actions, model, transport, view } = await inGroup(api);
     transport.socket.emit(ownerPush(runOf(R1, "failed", { error: "busy", retryable: true })));
     await expect(actions.retryRun(G1, AG1)).resolves.toMatchObject({ ok: true });
-    expect(api.retryRun).toHaveBeenCalledWith(G1, AG1);
+    expect(api.retryRun).toHaveBeenCalledWith(G1, R1);
     expect(model().groupRuns[G1][AG1].run).toMatchObject({ id: R2, status: "queued" });
     expect(model().runs[G1]).toBeUndefined();
     transport.socket.emit(ownerPush(runOf(R2, "failed", { error: "rate_limited", retryable: true })));
@@ -442,9 +443,10 @@ describe("replies in a group (batch 2C)", () => {
     await expect(actions.dismissRun(G1, AG1)).resolves.toMatchObject({ ok: true });
     expect(api.dismissRun).toHaveBeenCalledWith(G1, AG1);
     expect(view().convs[G1].agentRuns).toEqual([]);
-    // The Agent's own conversation's routes go without an Agent, as before.
-    await actions.retryRun(A1);
-    expect(api.retryRun).toHaveBeenLastCalledWith(A1);
+    // The Agent's own conversation's routes go without an Agent, as before; with no failure held there, a retry sends nothing.
+    const sent = api.retryRun.mock.calls.length;
+    await expect(actions.retryRun(A1)).resolves.toMatchObject({ ok: false, error: { code: "no_run" } });
+    expect(api.retryRun).toHaveBeenCalledTimes(sent);
     await actions.dismissRun(A1);
     expect(api.dismissRun).toHaveBeenLastCalledWith(A1);
   });

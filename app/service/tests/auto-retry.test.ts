@@ -6,7 +6,7 @@ import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worke
 import { createToolbox, SEARCH_MESSAGES } from "../src/agents/tools/index.ts";
 import type { Config } from "../src/config.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
@@ -214,7 +214,7 @@ describe("a run lost after its reply produced something is not passing: the row 
     expect(await worker.runOnce()).toBe(false);
     expect(metrics("auto_retry")).toBe(0);
     // 重试 is the owner's: an ordinary reply, answered.
-    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).status).toBe(201);
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).status).toBe(201);
     gateway.reply("想好了。");
     expect(await worker.runOnce()).toBe(true);
     expect((await runsOf(conv)).map((r) => [r.status, r.error, r.owner_retry])).toEqual([
@@ -445,7 +445,7 @@ describe("in the Agent's own conversation", () => {
     advance(120_000);
     gateway.fail("provider_unavailable", { status: 503 });
     expect(await worker.runOnce()).toBe(true);
-    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).status).toBe(201);
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).status).toBe(201);
     gateway.fail("provider_unavailable", { status: 503 });
     expect(await worker.runOnce()).toBe(true);
     advance(600_000);
@@ -627,7 +627,7 @@ describe("in the Agent's own conversation", () => {
     await say(owner, conv, "在吗");
     gateway.fail("provider_unavailable", { status: 503 });
     expect(await worker.runOnce()).toBe(true);
-    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).toEqual({ status: 409, json: { error: "busy_run" } });
+    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).toEqual({ status: 409, json: { error: "busy_run" } });
     expect((await runsOf(conv)).map((r) => r.status)).toEqual(["failed", "queued"]);
     advance(20_000);
     gateway.reply("在。");
@@ -886,7 +886,7 @@ describe("in a group", () => {
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "维修电话" } }], { text: "我查一下。" }).fail("provider_unavailable", { status: 503 });
     expect(await worker.runOnce()).toBe(true);
     expect((await runsOf(w.g)).map((r) => [r.status, r.auto_attempt])).toEqual([["failed", 0]]);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "维修电话" } }], { text: "我再查一下。" }).reply("群里没人说过。");
     expect(await worker.runOnce()).toBe(true);
     // The retry's own words before its search are not posted as a second acknowledgement: they stay its answer's.

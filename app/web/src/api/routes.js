@@ -174,9 +174,8 @@ export const getRun = (conversationId) => request("GET", `/api/conversations/${s
 /** A group's Agent replies → {runs: [{agentId, state: "replying" | "unavailable", run?}]} (`run` only for my Agents) */
 export const getGroupRuns = (conversationId) => request("GET", `/api/conversations/${seg(conversationId)}/runs`);
 export const stopRun = (conversationId, runId) => request("POST", `/api/conversations/${seg(conversationId)}/runs/${seg(runId)}/stop`);
-/** In a group, `agentId` names which of my Agents' reply (sent as `{agentId}`); none in an Agent's conversation. → {run} */
-export const retryRun = (conversationId, agentId) =>
-  request("POST", `/api/conversations/${seg(conversationId)}/runs/retry`, agentId ? { agentId } : undefined);
+/** Tries the failed reply `runId` again: the failure shown, named by its id (in a group as in an Agent's conversation). → {run} */
+export const retryRun = (conversationId, runId) => request("POST", `/api/conversations/${seg(conversationId)}/runs/retry`, { runId });
 export const dismissRun = (conversationId, agentId) =>
   request("POST", `/api/conversations/${seg(conversationId)}/runs/dismiss`, agentId ? { agentId } : undefined);
 export const resetTopic = (conversationId) => request("POST", `/api/conversations/${seg(conversationId)}/topic`); // → {message}

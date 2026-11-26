@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { closeAllSockets, connect } from "./helpers/ws.ts";
@@ -71,11 +71,11 @@ describe("replies started a minute", () => {
     expect(history.at(-1)).toMatchObject({ seq: sent.json.message.seq, senderId: owner.id, text: "第 21 句" });
 
     // Retrying counts too: still over the limit, 429, and nothing more is recorded.
-    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).toEqual({ status: 429, json: { error: "rate_limited" } });
+    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).toEqual({ status: 429, json: { error: "rate_limited" } });
     expect(await runCount(owner.id)).toBe(21);
     // Once the minute has passed, the retry answers everything up to the last message.
     await db.query("update agent_runs set created_at = created_at - interval '2 minutes' where owner_id = $1 and status = 'done'", [owner.id]);
-    const retried = await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`);
+    const retried = await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) });
     expect(retried).toMatchObject({ status: 201, json: { run: { status: "queued" } } });
     gateway.reply("现在回复。");
     expect(await app.agentWorker.runOnce()).toBe(true);

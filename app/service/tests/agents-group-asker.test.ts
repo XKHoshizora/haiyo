@@ -3,7 +3,7 @@ import { decideProactive } from "../src/agents/proactive/decide.ts";
 import { insertMessage } from "../src/messages/model.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
-import { markOf, mustCreateAgent, PNG, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, markOf, mustCreateAgent, PNG, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 import { byName, scriptedJudge } from "./helpers/judge.ts";
@@ -564,7 +564,7 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
 
     // The minute clears; the owner retries.
     await db.query("update agent_runs set created_at = created_at - interval '2 minutes' where agent_id = $1 and conversation_id = $2", [w.agent.id, w.agent.conversationId]);
-    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
     await answer("（重试的回答）");
     const call = lastCall();
     expectNoSecret(call);
@@ -729,7 +729,7 @@ describe("the calls shown from before the line, and the calls a follow-up or a r
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "failed", error: "provider_unavailable", lane: "others" }]);
 
-    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
     await answer("（重试的回答）");
     const call = lastCall();
     expectNoSecret(call);
@@ -836,7 +836,7 @@ describe("the calls a reply answers are always shown; an asker who is not in the
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(callsHere()).toEqual([]);
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "cancelled", error: null, lane: "others" }]);
-    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(400);
+    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(400);
   });
 
   it("an asker who is no longer in the group when the reply begins counts as not known: the latest joining among the group's people now", async () => {
@@ -1031,7 +1031,7 @@ describe("more of what reaches back, and more of who asked", () => {
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "failed", error: "provider_unavailable", lane: "others" }]);
 
-    const retried = await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id });
+    const retried = await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) });
     expect(retried.status).toBe(201);
     await answer("（重试的回答）");
     const call = lastCall();

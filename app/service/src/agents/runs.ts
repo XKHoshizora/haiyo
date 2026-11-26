@@ -1841,24 +1841,6 @@ async function ownAgentInGroup(
   return { agentId, joinedSeq: rows[0].joined === null ? null : Number(rows[0].joined) };
 }
 
-/**
- * The Agent's latest reply run in the conversation (whatever its stay): its id, what it covered (`covers`: its assignment's last
- * call), whose message called for it, whose questions it answered (`asker_ids`) and its told reply's whisper.
- */
-async function latestRunOf(
-  q: Queryable,
-  agentId: string,
-  conversationId: string,
-): Promise<(RunRow & { covers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; whisper_id: string | null }) | null> {
-  const { rows } = await q.query<RunRow & { covers: string | null; triggered_by: TriggeredBy; asker_ids: string[] | null; whisper_id: string | null }>(
-    `select ${RUN_COLUMNS}, r.covers_seq::text as covers, r.triggered_by, r.asker_ids, r.whisper_id
-       from agent_runs r
-      where r.agent_id = $1 and r.conversation_id = $2 and r.purpose = 'reply' order by r.created_at desc, r.id desc limit 1`,
-    [agentId, conversationId],
-  );
-  return rows[0] ?? null;
-}
-
 /** The latest an automatic retry may start after its original call was made (README "Agents and runs", Automatic retry). */
 export const AUTO_RETRY_WINDOW_MS = 600_000;
 
@@ -1983,100 +1965,103 @@ export async function tellFromWhisper(
   return queued;
 }
 
+/** The failed run a 重试 names (`retryRun`), read under its pair's locks. */
+interface FailedRun {
+  id: string;
+  status: RunStatus;
+  covers: string | null;
+  triggered_by: TriggeredBy;
+  asker_ids: string[] | null;
+  whisper_id: string | null;
+  /** A later run of the pair took it on since — answered one of its calls, or (a told reply) told its whisper: retried already. */
+  taken: boolean;
+}
+
 /**
- * `POST …/runs/retry`: a new queued reply answering the failed assignment again, only when the conversation's latest run failed. 404
- * unless it is the caller's Agent conversation; 409 `agent_deleted` / `agent_paused`; 409 `busy_run` while a reply is queued or
- * running; 400 when the latest run did not fail (or there is none) or the Agent has no model; 409 `model_gone` while its model is not
- * there to call (`retryable`'s rule); 429 over the owner's own `agentRunsPerMinute`. In a group, for the Agent `agentId` names
- * (`retryInGroup`); elsewhere `agentId` plays no part. A retry is its owner's call: the owner's own (`lane` `own`), wherever it is,
- * held to their own lane's limit — targeted at the failed run by its id (`retryOf`): what it covered and the calls it answered (less
- * any a limit refused since: C-b), nothing written after it.
+ * `POST …/runs/retry` `{runId}`: the failure the owner was shown, named by its id (design Part 2, Retries: a 重试 targets the failed
+ * assignment by id, never "the latest" — a later assignment may have failed meanwhile, and answering that one would leave the failure
+ * shown unanswered). A new queued reply answers that assignment again: the calls it answered less any a limit refused since (C-b),
+ * covering the last of those (nothing written after it is read), its askers (the retry asks nothing new) and whose message called for
+ * it (`triggered_by`: what an Agent's message called for is still an Agent's, so a member's halt still ends it) — and it is its owner's
+ * own (`lane` `own`, `owner_retry`) whoever's the failure was: the owner asked again, the one deliberate exception to "a member's
+ * question never runs on the owner's terms". A told reply (告诉他们) tells its whisper again: covering what it covered and answering no
+ * call. Under the conversation's row (a group's, `lockForWrite`) and the Agent's, in that order, then the run rows and the owner's
+ * `accounts` row. 404 unless the run is a reply of the caller's Agent in this conversation (their Agent conversation, or a group they
+ * are a current member of with that Agent of theirs in it; a social conversation's run is retried by no one: the visitor asks again by
+ * writing again); 409 `agent_deleted` / `agent_paused`; 409 `busy_run` while the Agent has a reply queued or running there; 400
+ * `invalid_request` when the run did not fail, a later run took it on since, it is from before the Agent's current stay in the group,
+ * no call of it is left, or the Agent has no model; 409 `model_gone` while its model is not there to call (`retryable`'s rule); 409
+ * `stale_whisper` for a told reply whose whisper reads open no more; 429 over the owner's own `agentRunsPerMinute`.
  */
 export async function retryRun(
   t: Tx,
   ownerId: string,
   conversationId: string,
-  agentId: string | undefined,
+  runId: string,
   config: RunLimits & Pick<Config, "siteModels" | "whispers">,
 ): Promise<Announced> {
   const place = await runSitePlace(t, conversationId);
-  // A social conversation's run is retried by no one: the visitor asks again by writing again.
   if (place === "social") throw notFound();
-  if (place === "group") return retryInGroup(t, ownerId, conversationId, agentId, config);
-  const ownAgentId = await ownedAgentOf(t, ownerId, conversationId);
-  if (!ownAgentId) throw notFound();
-  const agent = await lockAgent(t, ownAgentId, conversationId);
-  if (agent.deleted) throw new AppError(409, "agent_deleted");
-  if (agent.paused) throw new AppError(409, "agent_paused");
-  const latest = await latestRunOf(t, agent.id, conversationId);
-  if (latest?.status === "queued" || latest?.status === "running") throw new AppError(409, "busy_run");
-  if (latest?.status !== "failed" || agent.model === null || latest.covers === null) throw new AppError(400, "invalid_request");
-  if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
-  if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
-  return retryOf(t, agent, conversationId, latest);
-}
-
-/** The owner's 重试 of failed run `failed`: a new queued reply of its assignment, the owner's own (`owner_retry`). */
-async function retryOf(t: Tx, agent: AgentRow, conversationId: string, failed: NonNullable<Awaited<ReturnType<typeof latestRunOf>>>): Promise<Announced> {
-  const covers = Number(failed.covers);
-  const calls = (await standingSeqs(t, failed.id)) ?? [covers];
-  const queued = await queueRun(t, agent, conversationId, covers, failed.triggered_by, callerOf(agent.ownerId, agent.ownerId), failed.asker_ids, calls);
-  await ownersRetry(t, queued.run.id);
-  return queued;
-}
-
-/**
- * Retry in a group (wire contract "Run state"): the owner's Agent's latest run there, when it failed in the Agent's
- * current stay, is answered again — a new queued run of its assignment, targeted at it by its id (`retryOf`): what it covered and
- * its calls (less any a limit refused since, C-b; nothing that waited behind it, which was answered as it ended), called for by
- * whoever called the failed one (`triggered_by` kept: one an Agent's message called for is still an Agent's, so a member's
- * halt still ends it), and its owner's own whoever's the failed one was (its owner asked again: the one deliberate exception to "a
- * member's question never runs on the owner's terms") — answering the same questions as the failed one, so whose they were is kept
- * too (`asker_ids`: the retry asks nothing new), and a told reply's whisper (`whisper_id`: it tells again what it covered only, and
- * answers no call). Not for an Agent that is not in the group now, nor for a run from before it last joined; a run a halt or the
- * Agent's leaving cancelled (`halted`, `agent_removed`) did not fail: 400 like any other; 409 `model_gone` as `retryRun`; 429 over
- * the owner's own `agentRunsPerMinute`. Lock order: the group's row → the Agent's → run rows → the owner's `accounts` row.
- */
-async function retryInGroup(
-  t: Tx,
-  ownerId: string,
-  conversationId: string,
-  agentId: string | undefined,
-  config: RunLimits & Pick<Config, "siteModels" | "whispers">,
-): Promise<Announced> {
-  const own = await ownAgentInGroup(t, ownerId, conversationId, agentId);
-  const joinedSeq = own.joinedSeq;
-  const agent = await lockAgent(t, own.agentId, conversationId);
-  if (agent.deleted) throw new AppError(409, "agent_deleted");
-  if (agent.paused) throw new AppError(409, "agent_paused");
-  const latest = await latestRunOf(t, agent.id, conversationId);
-  if (latest?.status === "queued" || latest?.status === "running") throw new AppError(409, "busy_run");
-  const covers = latest?.covers == null ? null : Number(latest.covers);
-  if (latest?.status !== "failed" || agent.model === null || joinedSeq === null || covers === null || covers <= joinedSeq) {
-    throw new AppError(400, "invalid_request");
+  // Whose reply it is, read before any lock (the Agent's row is locked after the conversation's), then read again under them.
+  const of = await t.query<{ agent_id: string }>("select agent_id from agent_runs where id = $1 and conversation_id = $2 and purpose = 'reply'", [
+    runId,
+    conversationId,
+  ]);
+  const agentId = of.rows[0]?.agent_id;
+  let joinedSeq: number | null = null;
+  if (place === "group") {
+    if (agentId === undefined) {
+      await lockForWrite(t, conversationId, ownerId);
+      throw notFound();
+    }
+    joinedSeq = (await ownAgentInGroup(t, ownerId, conversationId, agentId)).joinedSeq;
+  } else if (agentId === undefined || (await ownedAgentOf(t, ownerId, conversationId)) !== agentId) {
+    throw notFound();
   }
+  const agent = await lockAgent(t, agentId, conversationId);
+  if (agent.deleted) throw new AppError(409, "agent_deleted");
+  if (agent.paused) throw new AppError(409, "agent_paused");
+  const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [
+    agent.id,
+    conversationId,
+  ]);
+  if (active.rowCount !== 0) throw new AppError(409, "busy_run");
+  const failed = await failedRunOf(t, runId);
+  const covers = failed?.covers == null ? null : Number(failed.covers);
+  if (!failed || failed.status !== "failed" || failed.taken || agent.model === null || covers === null) throw new AppError(400, "invalid_request");
+  if (place === "group" && (joinedSeq === null || covers <= joinedSeq)) throw new AppError(400, "invalid_request");
+  // What it answered, less what a limit refused since (C-b); with nothing left there is nothing to answer again.
+  const calls = failed.whisper_id !== null ? [] : ((await standingSeqs(t, failed.id)) ?? [covers]);
+  if (failed.whisper_id === null && calls.length === 0) throw new AppError(400, "invalid_request");
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
   // A told reply tells again only a whisper that reads open (whispers/store.ts `mayTell`, the one rule a press and a told
-  // reply's beginning keep too): declined and expired are final. Under the group's row and the Agent's, held.
-  if (latest.whisper_id !== null && !(await mayTell(t, { id: latest.whisper_id, ownerId }, { ttlHours: config.whispers.elsewhereTtlHours })).may) {
+  // reply's beginning keep too): declined and expired are final. Under the conversation's row and the Agent's, held.
+  if (failed.whisper_id !== null && !(await mayTell(t, { id: failed.whisper_id, ownerId }, { ttlHours: config.whispers.elsewhereTtlHours })).may) {
     throw new AppError(409, "stale_whisper");
   }
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
-  if (latest.whisper_id === null) return retryOf(t, agent, conversationId, latest);
-  // A told reply (`告诉他们`, Task 8) is told again: the retry keeps its whisper, so it is shown the hits and offered no tools,
-  // covers what it covered and answers no call.
-  const queued = await queueRun(t, agent, conversationId, covers, latest.triggered_by, callerOf(ownerId, ownerId), latest.asker_ids, []);
-  await t.query("update agent_runs set whisper_id = $2, owner_retry = true where id = $1", [queued.run.id, latest.whisper_id]);
+  const queued = await queueRun(t, agent, conversationId, failed.whisper_id !== null ? covers : calls.at(-1)!, failed.triggered_by, callerOf(ownerId, ownerId), failed.asker_ids, calls);
+  // That it is its owner's own 重试 (`owner_retry`): the owner is there, so the system never tries it again by itself
+  // (`scheduleAutoRetry`) — what bounds the attempts of one call across a manual 重试; and a told reply's whisper, told again.
+  await t.query("update agent_runs set owner_retry = true, whisper_id = $2 where id = $1", [queued.run.id, failed.whisper_id]);
   return queued;
 }
 
-/**
- * That run `runId` is its owner's own 重试 (`owner_retry`): the owner is there, so the system never tries it again by
- * itself (`scheduleAutoRetry`) — what bounds the attempts of one call across a manual 重试.
- */
-async function ownersRetry(t: Tx, runId: string): Promise<void> {
-  await t.query("update agent_runs set owner_retry = true where id = $1", [runId]);
+/** Run `runId` as a 重试 reads it (`retryRun`), locked; null when there is none. */
+async function failedRunOf(t: Tx, runId: string): Promise<FailedRun | null> {
+  const { rows } = await t.query<FailedRun>(
+    `select r.id, r.status, r.covers_seq::text as covers, r.triggered_by, r.asker_ids, r.whisper_id,
+            exists (select 1 from agent_runs x
+                     where x.agent_id = r.agent_id and x.conversation_id = r.conversation_id and x.purpose = 'reply' and x.id <> r.id
+                       and (x.created_at, x.id) > (r.created_at, r.id)
+                       and (r.call_seqs is null or x.call_seqs is null or x.call_seqs && r.call_seqs
+                            or (r.whisper_id is not null and x.whisper_id = r.whisper_id))) as taken
+       from agent_runs r where r.id = $1 for update of r`,
+    [runId],
+  );
+  return rows[0] ?? null;
 }
+
 
 /**
  * `POST …/runs/:runId/stop`: a queued run is stopped at once (it never reached a model: nothing to settle), and what waited behind

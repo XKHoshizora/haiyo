@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { providerBody } from "./helpers/providers.ts";
@@ -114,12 +114,12 @@ describe("a model that comes back", () => {
     expect(await app.agentWorker.runOnce()).toBe(true);
     const latestRun = async () => (await api(app, w.owner, "GET", `/api/conversations/${w.agent.conversationId}/run`)).json.run;
     expect(await latestRun()).toMatchObject({ status: "failed", error: "model_gone", retryable: false });
-    expect(await api(app, w.owner, "POST", `/api/conversations/${w.agent.conversationId}/runs/retry`)).toEqual({ status: 409, json: { error: "model_gone" } });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.agent.conversationId}/runs/retry`, { runId: await latestRunId(db, w.agent.conversationId) })).toEqual({ status: 409, json: { error: "model_gone" } });
 
     expect((await api(app, w.owner, "PATCH", `/api/providers/${w.provider}`, { models: [{ name: "keep-1" }, { name: "gone-1" }] })).status).toBe(200);
     expect((await view(w.owner, w.agent.id)).modelUsable).toBe(true);
     expect(await latestRun()).toMatchObject({ status: "failed", error: "model_gone", retryable: true });
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.agent.conversationId}/runs/retry`)).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.agent.conversationId}/runs/retry`, { runId: await latestRunId(db, w.agent.conversationId) })).status).toBe(201);
     gateway.reply("我在。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(await latestRun()).toMatchObject({ status: "done" });
@@ -136,7 +136,7 @@ describe("a model that comes back", () => {
     expect(await app.agentWorker.runOnce()).toBe(false);
     const mine = async () => (await api(app, w.owner, "GET", `/api/conversations/${g}/runs`)).json.runs[0].run;
     expect(await mine()).toMatchObject({ error: "model_gone", retryable: false });
-    expect(await api(app, w.owner, "POST", `/api/conversations/${g}/runs/retry`, { agentId: w.agent.id })).toEqual({ status: 409, json: { error: "model_gone" } });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${g}/runs/retry`, { runId: await latestRunId(db, g, w.agent.id) })).toEqual({ status: 409, json: { error: "model_gone" } });
     expect((await api(app, w.owner, "PATCH", `/api/providers/${w.provider}`, { models: [{ name: "keep-1" }, { name: "gone-1" }] })).status).toBe(200);
     expect(await mine()).toMatchObject({ error: "model_gone", retryable: true });
   });

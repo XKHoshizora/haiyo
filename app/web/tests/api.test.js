@@ -72,12 +72,11 @@ const table = [
   ["discardProposal", () => routes.discardProposal(ID, ID2), "POST", `/api/agents/${ID}/proposals/${ID2}/discard`, undefined],
   ["getRun", () => routes.getRun(ID), "GET", `/api/conversations/${ID}/run`, undefined],
   ["stopRun", () => routes.stopRun(ID, ID2), "POST", `/api/conversations/${ID}/runs/${ID2}/stop`, undefined],
-  ["retryRun", () => routes.retryRun(ID), "POST", `/api/conversations/${ID}/runs/retry`, undefined],
+  ["retryRun", () => routes.retryRun(ID, ID2), "POST", `/api/conversations/${ID}/runs/retry`, { runId: ID2 }],
   ["dismissRun", () => routes.dismissRun(ID), "POST", `/api/conversations/${ID}/runs/dismiss`, undefined],
   ["resetTopic", () => routes.resetTopic(ID), "POST", `/api/conversations/${ID}/topic`, undefined],
   // An Agent's reply in a group, and the stop for Agent-to-Agent talk (batch 2C)
   ["getGroupRuns", () => routes.getGroupRuns(ID), "GET", `/api/conversations/${ID}/runs`, undefined],
-  ["retryRun (a group's Agent)", () => routes.retryRun(ID, ID2), "POST", `/api/conversations/${ID}/runs/retry`, { agentId: ID2 }],
   ["dismissRun (a group's Agent)", () => routes.dismissRun(ID, ID2), "POST", `/api/conversations/${ID}/runs/dismiss`, { agentId: ID2 }],
   ["haltAgents", () => routes.haltAgents(ID), "POST", `/api/conversations/${ID}/agents/halt`, undefined],
   // Whispers (悄悄话): a conversation's, a page at a time, and the two answers

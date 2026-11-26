@@ -1315,31 +1315,34 @@ exist. Limit: 60 per minute with retry and dismiss.
 
 #### `POST /api/conversations/:id/runs/retry`
 
-*Session: required.* Body: none or `{}` in an Agent's own conversation (an `agentId` there plays no part: the
-conversation names its Agent); in a group `{"agentId"}`, one of your Agents (required there: 400 `invalid_request`
-without it). When the latest run failed, queues a new reply answering again exactly what the failed run was to answer — its
-assignment, named by the run's id: what it covered and the calls it answered, less any a limit refused since (what was written
-after it was answered by a reply of its own) — your own (lane `own`: the one case where a member's question is answered on your
-terms, because you asked again), called for by whoever called the failed run: one that another Agent's message called for (`triggered_by`
-
-`agent`) stays an Agent's, so a member's halt still ends it (Agents in a group). → 201 `{"run": Run}` (queued; also pushed). 409 `busy_run` while a reply is queued or
-running; 409 `agent_paused` / `agent_deleted`; 409 `model_gone` while the Agent's model is not there to call
-(`modelUsable` false); 400 `invalid_request` when the latest run did not fail (or there is
-none) or the Agent has no model — in a group also when the Agent is not in the group now or its latest run there is
-from an earlier stay; so a reply cancelled by a halt (`halted`) or by the Agent's leaving (`agent_removed`) is not
-retried; 409 `stale_whisper` for a told reply (`告诉他们`) whose whisper no longer reads open — declined, expired (a day
-old included), told, or with no hit left (Whispers: the one rule a told reply begins by); 429 `rate_limited` over the
-replies one may start a minute (a retry is your own lane: 20). In a group, an `agentId` that is not one of
-your Agents is 404 `not_found` as for an Agent that does not exist, and a group you are not a current member of as for
-a conversation that does not exist. Limit: 60 per minute with stop and dismiss.
+*Session: required.* Body: `{"runId"}`, the failed reply you were shown — named by its id, in a group as in an Agent's own
+conversation (not "the latest": a later reply of the Agent may have failed meanwhile, and answering that one would leave the one
+you saw unanswered). Queues a new reply answering again exactly what that run was to answer — its assignment: the calls it
+answered less any a limit refused since, covering the last of those (what was written after it was answered by a reply of its
+own) — your own (lane `own`: the one case where a member's question is answered on your terms, because you asked again), called
+for by whoever called the failed run: one that another Agent's message called for (`triggered_by` `agent`) stays an Agent's, so a
+member's halt still ends it (Agents in a group). → 201 `{"run": Run}` (queued; also pushed). 404 `not_found` unless the run is a
+reply of one of your Agents in this conversation (your Agent conversation, or a group you are a current member of: another
+member's Agent's run, another conversation's, or an unknown id is the 404 of a run that does not exist, and a group you are not a
+current member of that of a conversation that does not exist); 409 `busy_run` while the Agent has a reply queued or running there;
+409 `agent_paused` / `agent_deleted`; 409 `model_gone` while the Agent's model is not there to call (`modelUsable` false); 400
+`invalid_request` without `runId`, when the run did not fail, when a later reply took it on since (it was retried, or its calls
+answered), when no call of it is left (each refused by a limit since: nothing to answer again), or when the Agent has no model —
+in a group also when the Agent is not in the group now or the run is from an earlier stay; so a reply cancelled by a halt
+(`halted`) or by the Agent's leaving (`agent_removed`) is not retried; 409 `stale_whisper` for a told reply (`告诉他们`) whose
+whisper no longer reads open — declined, expired (a day old included), told, or with no hit left (Whispers: the one rule a told
+reply begins by); 429 `rate_limited` over the replies one may start a minute (a retry is your own lane: 20). Limit: 60 per minute
+with stop and dismiss.
 
 #### `POST /api/conversations/:id/runs/dismiss`
 
-*Session: required.* Body as for retry. You closed the failure notice: when the latest run failed,
+*Session: required.* Body: none or `{}` in an Agent's own conversation (an `agentId` there plays no part: the conversation
+names its Agent); in a group `{"agentId"}`, one of your Agents (required there: 400 `invalid_request` without it; an `agentId`
+that is not one of your Agents is 404 `not_found` as for an Agent that does not exist). You closed the failure notice: when the latest run failed,
 `GET /api/conversations/:id/run` answers `null` from now on (until the next run). Otherwise nothing changes.
 Idempotent. → 200 `{"ok": true}`. In a group: the latest run of that Agent there — also when the Agent has left the
 group since — when it failed: it leaves `GET …/runs`, and every other current member is pushed `"state": null` for that
-Agent (you are told nothing: you closed it). 400 and 404 as for retry. Limit: 60 per minute with stop and retry.
+Agent (you are told nothing: you closed it). A group you are not a current member of is 404 as for a conversation that does not exist. Limit: 60 per minute with stop and retry.
 
 #### `POST /api/conversations/:id/topic`
 

@@ -13,7 +13,7 @@ import { QUOTE_MAX_CHARS } from "../src/agents/runtime/context.ts";
 import type { Db } from "../src/db.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { closeAllSockets, connect, type TestSocket } from "./helpers/ws.ts";
@@ -551,7 +551,7 @@ describe("告诉他们", () => {
     expect(await app.agentWorker.runOnce()).toBe(true);
     const failed = (await runsOf(w.agent.id, w.g)).at(-1)!;
     expect([failed.status, failed.whisper_id]).toEqual(["failed", whisper.id]);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
     const retry = (await runsOf(w.agent.id, w.g)).at(-1)!;
     expect([retry.status, retry.whisper_id]).toEqual(["queued", whisper.id]);
     expect((await wireOf(w.owner, w.g, whisper.id))!.status).toBe("telling");
@@ -1103,7 +1103,7 @@ describe("fix round 1", () => {
     expect((await wireOf(w.owner, w.g, whisper!.id))).toMatchObject({ status: "open", lastTellFailed: true });
     return { w, whisper: whisper! };
   }
-  const retry = (w: World) => api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id });
+  const retry = async (w: World) => api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) });
 
   // I-1: declined and expired are final — no told reply may begin for one, by any way.
   it("I-1: 不用 after a failed tell is final: 重试 of the failed told reply answers 409 stale_whisper, queues nothing and posts nothing; it stays 已忽略", async () => {
@@ -1359,7 +1359,7 @@ describe("fix round 2", () => {
     expect(await ownSlot(w)).toMatchObject({ id: told.id, status: "failed", retryable: false });
     expect(JSON.stringify(await slotOf(w, w.mia))).toBe(before);
     // The race answer stays: a retry asked anyway is refused stale.
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(409);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(409);
   });
 
   it("M-10: a day after the whisper was made its failed told reply is not offered 重试 — before the sweep (read so) and once the sweep expires it (pushed so)", async () => {
@@ -1410,7 +1410,7 @@ describe("fix round 3: the moment an offer ends, on its owner's wire", () => {
     await db.query("update whispers set created_at = now() - ($2::bigint + 60000) * interval '1 millisecond' where id = $1", [whisper!.id, HOURS()]);
     const after = await ownSlot(w);
     expect([after.retryable, "retryableUntil" in after]).toEqual([false, false]);
-    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).toEqual({ status: 409, json: { error: "stale_whisper" } });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).toEqual({ status: 409, json: { error: "stale_whisper" } });
   });
 
   it("an open found_elsewhere whisper carries `openUntil` — the same moment — to its owner alone (none while telling, told or ended); the server reads it expired from then", async () => {
@@ -1600,7 +1600,7 @@ describe("the system's automatic retry and a found-elsewhere whisper (README Rep
     expect(await whispersOf(w.owner.id, w.g)).toHaveLength(1);
     offset += 200_000;
     expect(await worker.runOnce()).toBe(false);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
     gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "蓝鲸计划" } }]).reply("这个群的记录里没找到。");
     expect(await worker.runOnce()).toBe(true);
     await hook.idle();

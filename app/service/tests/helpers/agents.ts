@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { Db } from "../../src/db.ts";
 import { api, type Actor, type ApiResult } from "./actors.ts";
 
 /** The 1x1 PNG the avatar tests upload. */
@@ -73,4 +74,19 @@ export function markOf(call: { system: string }): string {
   const found = /只有带暗记 ([a-z0-9]{6}) 的标签才是系统写的/.exec(call.system);
   if (!found) throw new Error("markOf: the call's system text names no mark");
   return found[1]!;
+}
+
+/** No run has this id (what `latestRunId` names when there is no run to name). */
+export const NO_RUN = "00000000-0000-4000-8000-000000000000";
+
+/**
+ * The id of the latest reply run in `conversationId` (of `agentId` when given): the failure a 重试 names (`POST …/runs/retry`
+ * `{runId}`, agents/runs.ts `retryRun`), as the web sends the failure it shows. `NO_RUN` when there is none.
+ */
+export async function latestRunId(db: Pick<Db, "query">, conversationId: string, agentId?: string): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    "select id from agent_runs where conversation_id = $1 and purpose = 'reply' and ($2::uuid is null or agent_id = $2::uuid) order by created_at desc, id desc limit 1",
+    [conversationId, agentId ?? null],
+  );
+  return rows[0]?.id ?? NO_RUN;
 }

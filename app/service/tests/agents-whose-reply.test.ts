@@ -23,7 +23,7 @@ import { outputLimit } from "../src/models/resolve.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { NOTHING } from "../src/agents/runtime/port.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { grant } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
@@ -150,7 +150,7 @@ describe("each reply on its own identity's terms", () => {
     const w = await world();
     const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`);
     await db.query("update agent_runs set status = 'failed', error = 'busy', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
     expect(await latest(w.agent.id as string, w.g)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [member] });
     const { ticket, call, admitted } = await begun(w);
     expect(call.reasoning).toBe("medium");

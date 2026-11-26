@@ -22,7 +22,7 @@ import { createSlots } from "../src/slots.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { insertMessage } from "../src/messages/model.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { costOf, grant, METER_ENV, meteredAgent, paidReply } from "./helpers/metering.ts";
 import { scriptedGateway, type ScriptedGateway } from "./helpers/models.ts";
@@ -1012,7 +1012,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     await say(owner, g, "我就住海淀区中关村南大街那边");
     await say(mia, g, `@${agent.handle} 那附近有什么好吃的？`);
     await db.query("update agent_runs set status = 'failed', error = 'busy', finished_at = now() where agent_id = $1 and status = 'queued'", [agent.id]);
-    expect((await api(app, owner, "POST", `/api/conversations/${g}/runs/retry`, { agentId: agent.id })).status).toBe(201);
+    expect((await api(app, owner, "POST", `/api/conversations/${g}/runs/retry`, { runId: await latestRunId(db, g, agent.id) })).status).toBe(201);
     expect(await lastRun(agent.id)).toMatchObject({ status: "queued", lane: "own", triggered_by: "human" });
     expect(await searchRun(worker, gateway, [query])).toEqual([{ error: WEB_QUERY_PRIVATE }]);
     expect(engine.queries).toEqual([]);

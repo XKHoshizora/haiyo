@@ -9,7 +9,7 @@ import { isRunEnd, NOTHING, type RunEnd } from "../src/agents/runtime/port.ts";
 import { systemPrompt } from "../src/agents/runtime/prompt.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, group, seatPerson, signUp, type Actor } from "./helpers/actors.ts";
-import { markOf, mustCreateAgent, PNG } from "./helpers/agents.ts";
+import { latestRunId, markOf, mustCreateAgent, PNG } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
@@ -271,7 +271,7 @@ describe("a new topic", () => {
     expect(gateway.calls.length).toBe(calls);
     const run = await latestRun(owner, conv);
     expect(run).toEqual({ id: run.id, status: "cancelled", retryable: false });
-    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect(await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).toEqual({ status: 400, json: { error: "invalid_request" } });
     // Never admitted: no model on its record and nothing charged.
     expect((await db.query("select outcome, source, cost_micro::text as cost from usage_records where run_id = $1", [run.id])).rows).toEqual([
       { outcome: "cancelled", source: null, cost: "0" },
@@ -291,7 +291,7 @@ describe("a new topic", () => {
     expect((await api(app, owner, "POST", `/api/conversations/${conv}/topic`)).status).toBe(201);
 
     const calls = gateway.calls.length;
-    const retried = await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`);
+    const retried = await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) });
     expect(retried.status).toBe(201);
     // A retry answers up to the owner's last message; the notice, though written by the owner, is not one.
     const covers = await db.query("select covers_seq::int as c from agent_runs where id = $1", [retried.json.run.id]);

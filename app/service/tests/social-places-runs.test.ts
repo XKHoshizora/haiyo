@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RUN_COLUMNS, toWireRun, type RunRow, type RunStatus } from "../src/agents/runs.ts";
 import { NOTHING, type RunTicket } from "../src/agents/runtime/port.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
@@ -105,9 +105,9 @@ describe("GET …/runs answers the visitor; retry is 404; the owner stops and di
     const w = await world();
     await seedRun(w, { status: "failed", error: ERROR_TEXT });
     for (const who of [w.owner, w.v, w.stranger]) {
-      expect((await api(app, who, "POST", `/api/conversations/${w.conv}/runs/retry`, { agentId: w.agent.id })).status).toBe(404);
+      expect((await api(app, who, "POST", `/api/conversations/${w.conv}/runs/retry`, { runId: await latestRunId(db, w.conv, w.agent.id) })).status).toBe(404);
     }
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.conv}/runs/retry`)).status).toBe(404);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.conv}/runs/retry`, { runId: await latestRunId(db, w.conv) })).status).toBe(404);
   });
 
   it("the owner stops a queued run; the visitor cannot; a running one is flagged", async () => {

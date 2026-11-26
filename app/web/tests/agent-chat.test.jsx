@@ -1351,7 +1351,7 @@ describe("the status line of a failed reply", () => {
     const { transport, api } = await openAgentChat();
     await runPush(transport, runOf(R1, "failed", { error: "busy", retryable: true }));
     await click(within(statusLine()).getByRole("button", { name: "重试" }));
-    expect(api.retryRun).toHaveBeenCalledWith(A1);
+    expect(api.retryRun).toHaveBeenCalledWith(A1, R1);
     expect(statusLines()).toHaveLength(0);
     expect(bubbleText()).toContain("正在回复…");
   });
@@ -2164,7 +2164,7 @@ describe("Agents in a group (batch 2C)", () => {
     expect(muted[0].classList.contains("run-status")).toBe(false);
     expect(within(muted[0]).queryByRole("button")).toBeNull();
     await click(within(line).getByRole("button", { name: "重试" }));
-    expect(api.retryRun).toHaveBeenCalledWith(G1, AG1);
+    expect(api.retryRun).toHaveBeenCalledWith(G1, R1);
     expect(statusLines()).toHaveLength(0);
     expect(replyingRows()).toHaveLength(1);
     await push(transport, groupRun(AG1, { run: runOf(R2, "failed", { error: "rate_limited", retryable: true }) }));

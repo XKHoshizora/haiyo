@@ -339,14 +339,79 @@ describe("C-b: a call a limit refused is in no assignment", () => {
     const w = await world();
     const one = await say(w.mia, w.g, `${w.at} 一`);
     const two = await say(w.mia, w.g, `${w.at} 二`);
+    const [failed] = await runsOf(w.agent.id, w.g);
     await db.query("update agent_runs set status = 'failed', error = 'provider_unavailable', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
     await db.query("insert into call_refusals (conversation_id, seq, agent_id, sender_id, reason) values ($1, $2, $3, $4, 'others_limit')", [w.g, one, w.agent.id, w.mia.id]);
-    const retried = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id });
+    const retried = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed!.id });
     expect(retried.status).toBe(201);
     expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, calls: [two] });
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
   });
 });
+
+describe("the owner's 重试 names the failure it was shown, by its id (design Part 2, Retries; T2 fix 1, F4)", () => {
+  /** The owner's 重试 of run `runId` in `conv`. */
+  const retry = (w: Awaited<ReturnType<typeof world>>, runId: string) => api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId });
+  const failRun = (id: string) => db.query("update agent_runs set status = 'failed', error = 'provider_unavailable', finished_at = now() where id = $1", [id]);
+
+  it("failure A shown, then the assignment that waited behind it (B) fails too: a 重试 of A answers A's call, not B's; A once retried is not retried twice", async () => {
+    const w = await world();
+    const asked = await say(w.mia, w.g, `${w.at} 一`);
+    const a = await claim(w.agent.id, w.g);
+    const later = await say(w.ned, w.g, `${w.at} 二`);
+    // A fails (nothing tries it again here): what waited behind it, ned's call, is B; B fails too.
+    await app.agentPort.finish(a, { status: "failed", error: "provider_unavailable" }, null, NOTHING);
+    const b = await claim(w.agent.id, w.g);
+    await app.agentPort.finish(b, { status: "failed", error: "provider_unavailable" }, null, NOTHING);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.calls])).toEqual([
+      ["failed", [asked]],
+      ["failed", [later]],
+    ]);
+    const retried = await retry(w, a.id);
+    expect(retried.status).toBe(201);
+    expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, covers: asked, calls: [asked] });
+    // Its retry ends; A is retried already: a second 重试 of it is refused, and B is still the owner's to retry.
+    await db.query("update agent_runs set status = 'done', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+    expect(await retry(w, a.id)).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect((await retry(w, b.id)).status).toBe(201);
+    expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", calls: [later] });
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+  });
+
+  it("what it covers is its last call left: the last refused since, it covers the one before; every call refused, there is nothing to retry and no run", async () => {
+    const w = await world();
+    const one = await say(w.mia, w.g, `${w.at} 一`);
+    const two = await say(w.mia, w.g, `${w.at} 二`);
+    const [failed] = await runsOf(w.agent.id, w.g);
+    await failRun(failed!.id);
+    const refuse = (seq: number) =>
+      db.query("insert into call_refusals (conversation_id, seq, agent_id, sender_id, reason) values ($1, $2, $3, $4, 'too_often')", [w.g, seq, w.agent.id, w.mia.id]);
+    await refuse(two);
+    expect((await retry(w, failed!.id)).status).toBe(201);
+    expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", covers: one, calls: [one] });
+    await db.query("delete from agent_runs where agent_id = $1 and status = 'queued'", [w.agent.id]);
+    await refuse(one);
+    const runs = (await runsOf(w.agent.id, w.g)).length;
+    expect(await retry(w, failed!.id)).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect((await runsOf(w.agent.id, w.g)).length).toBe(runs);
+  });
+
+  it("a run that is not its failure to retry is refused: another conversation's (404), a reply that did not fail (400), none named (400)", async () => {
+    const w = await world();
+    await say(w.mia, w.g, `${w.at} 一`);
+    const [run] = await runsOf(w.agent.id, w.g);
+    // Its own conversation does not hold this run.
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.agent.conversationId}/runs/retry`, { runId: run!.id })).toEqual({ status: 404, json: { error: "not_found" } });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: run!.id })).toEqual({ status: 409, json: { error: "busy_run" } });
+    await db.query("update agent_runs set status = 'done', finished_at = now() where id = $1", [run!.id]);
+    expect(await retry(w, run!.id)).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).toEqual({ status: 400, json: { error: "invalid_request" } });
+    // Another member may not retry the owner's Agent's failure.
+    await failRun(run!.id);
+    expect(await api(app, w.mia, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: run!.id })).toEqual({ status: 404, json: { error: "not_found" } });
+  });
+});
+
 
 describe("C-c and C-d: what a relay carries is recorded only where it is accepted; a relay refused for a limit tells the person behind it", () => {
   it("a member's call relayed through the owner's Agent to another Agent, refused 太频繁 there: nothing is written to the relaying run's askers, and the member alone reads the line on the Agent's message", async () => {

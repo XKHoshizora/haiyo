@@ -9,7 +9,7 @@ import type { Db } from "../src/db.ts";
 import { settle } from "../src/metering/settle.ts";
 import type { ModelGateway } from "../src/models/gateway.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useProbeBlobs } from "./helpers/blobs.ts";
 import { NO_ANSWER_FLOOR, useApp } from "./helpers/harness.ts";
 import { runningRun } from "./helpers/metering.ts";
@@ -145,7 +145,7 @@ describe("a reply in progress when the service stops", () => {
     expect(after.calls).toHaveLength(0);
 
     after.reply("我回来了。");
-    expect((await api(fresh, owner, "POST", `/api/conversations/${conv}/runs/retry`)).status).toBe(201);
+    expect((await api(fresh, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).status).toBe(201);
     expect(await fresh.agentWorker.runOnce()).toBe(true);
     expect((await fromAgent(fresh, owner, conv, agent.id)).map((m) => m.text)).toEqual(["我回来了。"]);
     expect(await latestRun(fresh, owner, conv)).toMatchObject({ status: "done" });
@@ -503,7 +503,7 @@ describe("the stale-run sweep", () => {
     // Sweeping again finds nothing; a retry then works.
     expect(await app.staleRunSweep.run()).toBe(0);
     gateway.reply("重新回答。");
-    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`)).status).toBe(201);
+    expect((await api(app, owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: await latestRunId(db, conv) })).status).toBe(201);
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect((await fromAgent(app, owner, conv, agent.id)).map((m) => m.text)).toEqual(["重新回答。"]);
   });

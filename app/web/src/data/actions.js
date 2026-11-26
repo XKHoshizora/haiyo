@@ -890,19 +890,20 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
       return attempt(() => api.stopRun(conversationId, run.id), { text: replyText("stop"), onFail: staleReply(conversationId, agentId) });
     },
     /**
-     * Tries the failed reply again (in a group: of my Agent `agentId`, which the request names): the new run replaces
-     * the failed one (unless a newer one was pushed meanwhile).
+     * Tries the failed reply again (in a group: of my Agent `agentId`) — the failure shown, named by its id, so a later
+     * failure pushed meanwhile is never the one answered: the new run replaces the failed one (unless a newer one was pushed
+     * meanwhile).
      */
     retryRun: (conversationId, agentId = null) => {
       const failed = heldRun(conversationId, agentId)?.id ?? null;
-      // In a group only my Agent's run is held (someone else's is a bare state): nothing to try again, nothing is sent.
-      if (agentId && failed === null) {
+      // No run held (in a group someone else's is a bare state): nothing to try again, nothing is sent.
+      if (failed === null) {
         const error = dropped("no_run");
         return Promise.resolve(failure(error, replyErrorText("retry", error)));
       }
       const keep = (run) =>
         setModel(agentId ? applyGroupRun(getModel(), conversationId, agentId, { run }, { ordered: true }) : applyRun(getModel(), conversationId, run, { ordered: true }));
-      return attempt(() => (agentId ? api.retryRun(conversationId, agentId) : api.retryRun(conversationId)), {
+      return attempt(() => api.retryRun(conversationId, failed), {
         after: (res) => {
           // In order: nothing of this reply's runs happened between the failed run and its retry.
           if ((heldRun(conversationId, agentId)?.id ?? null) === failed && res?.run) keep(res.run);

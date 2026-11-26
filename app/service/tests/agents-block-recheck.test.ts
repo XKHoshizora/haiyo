@@ -3,7 +3,7 @@ import { NOTHING } from "../src/agents/runtime/port.ts";
 import { othersUseToday } from "../src/metering/others.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { grant } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
@@ -168,7 +168,7 @@ describe("a block made after a call, as the reply begins", () => {
     await say(w.mia, w.g, "@helper_bot MIA-ASK-r4 在吗？");
     await db.query("update agent_runs set status = 'failed', error = 'busy', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
     await block(w.mia, w.owner);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
     expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "own" });
 
     expect(await app.agentWorker.runOnce()).toBe(true);
@@ -315,7 +315,7 @@ describe("a block made after a call, as the reply begins", () => {
       const kept = await say(w.mia, w.g, "@helper_bot MIA-ASK-rB 在吗？");
       expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "others", calls: [dropped, kept] });
       await db.query("update agent_runs set status = 'failed', error = 'busy', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
-      expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+      expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
       expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "own" });
       await db.query("insert into call_refusals (conversation_id, seq, agent_id, sender_id, reason) values ($1, $2, $3, $4, 'too_often')", [w.g, dropped, w.agent.id, w.mia.id]);
 

@@ -2,7 +2,7 @@ import type { InjectOptions } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUN_COLUMNS, toWireRun, type RunRow, type RunStatus } from "../src/agents/runs.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { closeAllSockets, connect, type Push, type TestSocket } from "./helpers/ws.ts";
@@ -560,37 +560,34 @@ describe("the owner's controls over a group run", () => {
     expect((await nextState(memberS, w.g, w.anna.id)).state).toBe("unavailable");
   });
 
-  it("retry: answers again what the failed run covered (not its owner's last message); agentId is required in a group; only its owner's", async () => {
+  it("retry: names the failed run by its id and answers again what it covered (not its owner's last message); only its owner's", async () => {
     const w = await world();
     const asked = await say(w.member, w.g, "帮我看看");
     const failed = await seedRun(w.anna, w.owner, w.g, { status: "failed", error: "provider_unavailable", covers: asked });
+    const bobs = await seedRun(w.bob, w.member, w.g, { status: "failed", error: "provider_unavailable", covers: asked });
     await say(w.owner, w.g, "我后来说的话");
     const retry = (conv: string, payload?: object | null) => post(`/api/conversations/${conv}/runs/retry`, payload);
     const [ownerS, thirdS] = await connectAll(w.owner, w.third);
 
-    // Anyone but its owner: as an Agent that does not exist.
-    const unknown = await observe(w.member, retry(w.g, { agentId: RANDOM }));
+    // Anyone but its owner: as a run that does not exist.
+    const unknown = await observe(w.member, retry(w.g, { runId: RANDOM }));
     expect(unknown).toEqual({ status: 404, type: "application/json; charset=utf-8", body: '{"error":"not_found"}' });
-    for (const [label, who, conv, agentId] of [
-      ["a fellow member who owns another Agent there", w.member, w.g, w.anna.id],
-      ["a fellow member", w.third, w.g, w.anna.id],
-      ["its owner, the other owner's Agent", w.owner, w.g, w.bob.id],
-      ["its owner, a person", w.owner, w.g, w.member.id],
-      ["a former member", w.leaver, w.g, w.anna.id],
-      ["a stranger", w.stranger, w.g, w.anna.id],
+    for (const [label, who, conv, runId] of [
+      ["a fellow member who owns another Agent there", w.member, w.g, failed.id],
+      ["a fellow member", w.third, w.g, failed.id],
+      ["its owner, the other owner's Agent's failure", w.owner, w.g, bobs.id],
+      ["a former member", w.leaver, w.g, failed.id],
+      ["a stranger", w.stranger, w.g, failed.id],
     ] as const) {
-      expect([label, await observe(who, retry(conv, { agentId }))]).toEqual([label, unknown]);
+      expect([label, await observe(who, retry(conv, { runId }))]).toEqual([label, unknown]);
     }
-    // A stranger without agentId, too: a group they cannot see is as one that does not exist.
-    expect(await observe(w.stranger, retry(w.g))).toEqual(await observe(w.stranger, retry(RANDOM)));
-    // Its owner, without agentId: required in a group.
-    for (const payload of [undefined, {}, null]) {
+    // Its owner, without the failed run's id (an Agent's id no longer names one: T2 fix 1, F4): a bad request, nothing queued.
+    for (const payload of [undefined, {}, null, { agentId: w.anna.id }, { runId: "anna" }]) {
       expect([payload, await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, payload)]).toEqual([payload, { status: 400, json: { error: "invalid_request" } }]);
     }
-    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: "anna" })).toEqual({ status: 400, json: { error: "invalid_request" } });
-    expect((await db.query("select count(*)::int as n from agent_runs where conversation_id = $1", [w.g])).rows[0].n).toBe(1);
+    expect((await db.query("select count(*)::int as n from agent_runs where conversation_id = $1", [w.g])).rows[0].n).toBe(2);
 
-    const retried = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.anna.id.toUpperCase() });
+    const retried = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed.id.toUpperCase() });
     expect(retried.status).toBe(201);
     expect(retried.json.run).toMatchObject({ status: "queued", retryable: false });
     expect(retried.json.run.id).not.toBe(failed.id);
@@ -598,7 +595,7 @@ describe("the owner's controls over a group run", () => {
     expect((await ownerS.next((e) => e.type === "run" && e.run?.id === retried.json.run.id)).agentId).toBe(w.anna.id);
     expect((await nextState(thirdS, w.g, w.anna.id)).state).toBe("replying");
     // While it is queued: busy.
-    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.anna.id })).toEqual({ status: 409, json: { error: "busy_run" } });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.anna.id) })).toEqual({ status: 409, json: { error: "busy_run" } });
   });
 
   it("retry: keeps whose message the failed run answered (an Agent's stays an Agent's, so a halt still stops it) and answers the same calls as it", async () => {
@@ -607,7 +604,7 @@ describe("the owner's controls over a group run", () => {
     const folded = await say(w.third, w.g, "又说一句");
     // A reply an Agent's messages called for, two calls folded into it, that failed.
     const failed = await seedRun(w.anna, w.owner, w.g, { status: "failed", error: "provider_unavailable", covers: folded, calls: [asked, folded], by: "agent" });
-    const retried = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.anna.id });
+    const retried = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.anna.id) });
     expect(retried.status).toBe(201);
     const runOf = async (id: string) =>
       (await db.query("select status, error, covers_seq::int as covers, call_seqs::int[] as calls, triggered_by as by from agent_runs where id = $1", [id])).rows[0];
@@ -620,7 +617,7 @@ describe("the owner's controls over a group run", () => {
     // A person's failed reply is retried as a person's, and a halt leaves it alone.
     await say(w.member, w.g, "继续");
     const persons = await seedRun(w.anna, w.owner, w.g, { status: "failed", error: "provider_unavailable", by: "human" });
-    const again = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.anna.id });
+    const again = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.anna.id) });
     expect(again.status).toBe(201);
     const covered = (await runOf(persons.id)).covers;
     expect(await runOf(again.json.run.id)).toEqual({ status: "queued", error: null, covers: covered, calls: [covered], by: "human" });
@@ -630,7 +627,8 @@ describe("the owner's controls over a group run", () => {
 
   it("retry: not after a halt or the Agent's leaving, nor for one that left; paused or deleted as in its own conversation", async () => {
     const w = await world();
-    const retry = (agentId: string) => api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId });
+    /** The owner's 重试 of the Agent's latest run in the group. */
+    const retry = async (agentId: string) => api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, agentId) });
     const notRetryable = { status: 400, json: { error: "invalid_request" } };
 
     // Halted (cancelled): not retryable.
@@ -645,9 +643,9 @@ describe("the owner's controls over a group run", () => {
     // agent_removed (cancelled) as its latest: the same.
     await seedRun(w.anna, w.owner, w.g, { status: "cancelled", error: "agent_removed" });
     expect(await retry(w.anna.id)).toEqual(notRetryable);
-    // An Agent of the owner's never in the group: nothing to retry there either.
+    // An Agent of the owner's never in the group: no run of it there to retry.
     const carl = await agentOf(w.owner, "carlbot", null);
-    expect(await retry(carl.id)).toEqual(notRetryable);
+    expect(await retry(carl.id)).toEqual({ status: 404, json: { error: "not_found" } });
 
     await seedRun(w.anna, w.owner, w.g, { status: "failed", error: "provider_unavailable" });
     expect((await api(app, w.owner, "POST", `/api/agents/${w.anna.id}/pause`)).status).toBe(200);
@@ -658,9 +656,10 @@ describe("the owner's controls over a group run", () => {
 
     // Deleted (which also takes it out of the group): 409 agent_deleted, as in its own conversation; nothing is queued.
     const bobFailed = await seedRun(w.bob, w.member, w.g, { status: "failed", error: "provider_unavailable" });
+    const bobOwnFailed = await seedRun(w.bob, w.member, w.bob.conversationId, { status: "failed", error: "provider_unavailable" });
     expect((await api(app, w.member, "DELETE", `/api/agents/${w.bob.id}`)).status).toBe(200);
-    expect(await api(app, w.member, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.bob.id })).toEqual({ status: 409, json: { error: "agent_deleted" } });
-    expect((await api(app, w.member, "POST", `/api/conversations/${w.bob.conversationId}/runs/retry`)).json).toEqual({ error: "agent_deleted" });
+    expect(await api(app, w.member, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: bobFailed.id })).toEqual({ status: 409, json: { error: "agent_deleted" } });
+    expect((await api(app, w.member, "POST", `/api/conversations/${w.bob.conversationId}/runs/retry`, { runId: bobOwnFailed.id })).json).toEqual({ error: "agent_deleted" });
     expect((await db.query("select id from agent_runs where agent_id = $1 and status = 'queued'", [w.bob.id])).rows).toEqual([]);
     expect((await rowOf(bobFailed.id)).status).toBe("failed");
   });
@@ -704,7 +703,7 @@ describe("the owner's controls over a group run", () => {
     expect(await dismissed(bobs.id)).toBe(true);
   });
 
-  it("an Agent's own conversation keeps its routes as they were: no body needed, and an agentId there plays no part", async () => {
+  it("an Agent's own conversation: a 重试 names its failure by id as in a group; a dismiss needs no body, and an agentId there plays no part", async () => {
     const w = await world();
     const conv = w.anna.conversationId;
     // An owner's message to answer (its own reply is ended here: none is under way when the failed run is seeded).
@@ -715,9 +714,12 @@ describe("the owner's controls over a group run", () => {
     expect(await api(app, w.owner, "POST", `/api/conversations/${conv}/runs/dismiss`)).toEqual({ status: 200, json: { ok: true } });
     expect(await api(app, w.owner, "GET", `/api/conversations/${conv}/run`)).toEqual({ status: 200, json: { run: null } });
 
-    await seedRun(w.anna, w.owner, conv, { status: "failed", error: "provider_unavailable" });
-    // Another Agent's id (or a random one) in the body changes nothing: the conversation names its Agent.
-    const retried = await api(app, w.owner, "POST", `/api/conversations/${conv}/runs/retry`, { agentId: w.bob.id });
+    const again = await seedRun(w.anna, w.owner, conv, { status: "failed", error: "provider_unavailable" });
+    // Another Agent's run is not this conversation's to retry.
+    const bobs = await seedRun(w.bob, w.member, w.bob.conversationId, { status: "failed", error: "provider_unavailable" });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: bobs.id })).toEqual({ status: 404, json: { error: "not_found" } });
+    const retried = await api(app, w.owner, "POST", `/api/conversations/${conv}/runs/retry`, { runId: again.id });
+
     expect(retried.status).toBe(201);
     expect((await db.query("select agent_id, conversation_id from agent_runs where id = $1", [retried.json.run.id])).rows).toEqual([{ agent_id: w.anna.id, conversation_id: conv }]);
     expect(await api(app, w.owner, "POST", `/api/conversations/${conv}/runs/${retried.json.run.id}/stop`)).toEqual({ status: 200, json: { ok: true } });

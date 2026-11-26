@@ -273,6 +273,8 @@ interface Fixture {
   agent: string;
   agentConv: string;
   run: string;
+  /** Its run there that failed (what a 重试 names: T2 fix 1, F4). */
+  failedRun: string;
   proposal: string;
   /** The same Agent is a member of `group` too (batch 2C), and a reply of it there failed. */
   groupRun: string;
@@ -379,6 +381,7 @@ async function fixture(): Promise<Fixture> {
     agent: agent.id,
     agentConv: agent.conversationId,
     run: runs.rows[0]!.id,
+    failedRun: runs.rows[1]!.id,
     proposal: proposal.rows[0]!.id,
     groupRun: groupRun.rows[0]!.id,
     victimAgent: victimAgent.id,
@@ -614,13 +617,14 @@ describe("fuzz", () => {
     const inGroup = routes.filter((r) => r.method === "POST" && /^\/api\/conversations\/:id\/runs\/(retry|dismiss|:runId\/stop)$/.test(r.url));
     expect(inGroup.map((r) => r.url).sort()).toEqual(["/api/conversations/:id/runs/:runId/stop", "/api/conversations/:id/runs/dismiss", "/api/conversations/:id/runs/retry"]);
     for (const route of inGroup) {
-      const probes = probesFor(route, fx, { params: { id: fx.group, runId: fx.groupRun }, body: { agentId: fx.agent } });
+      // (A 重试 names the failed run: T2 fix 1, F4.)
+      const body = route.url.endsWith("/retry") ? { runId: fx.groupRun } : { agentId: fx.agent };
+      const probes = probesFor(route, fx, { params: { id: fx.group, runId: fx.groupRun }, body });
       const got = await probeAll(signedInAndOut(probes, fx.me.cookie), findings);
       const name = `${route.method} ${route.url} (a group)`;
       expect([name, got.filter((x) => x.label.startsWith("path ") && (x.status < 400 || x.status >= 500))]).toEqual([name, []]);
-      if (route.url.endsWith("/retry") || route.url.endsWith("/dismiss")) {
-        expect([name, got.some((x) => x.label.startsWith("body.agentId="))]).toEqual([name, true]);
-      }
+      if (route.url.endsWith("/retry")) expect([name, got.some((x) => x.label.startsWith("body.runId="))]).toEqual([name, true]);
+      if (route.url.endsWith("/dismiss")) expect([name, got.some((x) => x.label.startsWith("body.agentId="))]).toEqual([name, true]);
       expect([name, got.some((x) => x.label.endsWith("[signed in]") && !SHALLOW.has(x.status))]).toEqual([name, true]);
     }
     expect(findings).toEqual([]);
@@ -632,7 +636,9 @@ describe("fuzz", () => {
     expect([added.filter((x) => x.label.startsWith("the body given") && x.label.endsWith("[signed in]")).map((x) => x.status)]).toEqual([[409]]);
     expect(findings).toEqual([]);
 
-    const sent = await Promise.all(routes.map((r) => probeAll(signedInAndOut(probesFor(r, fx), fx.me.cookie), findings)));
+    // (A 重试 must name the failed run: its body is given, so one probe gets past the shape check — T2 fix 1, F4.)
+    const given = (r: RouteEntry) => (r.method === "POST" && r.url === "/api/conversations/:id/runs/retry" ? { body: { runId: fx.failedRun } } : {});
+    const sent = await Promise.all(routes.map((r) => probeAll(signedInAndOut(probesFor(r, fx, given(r)), fx.me.cookie), findings)));
     expect(findings).toEqual([]);
     expect(sent.flat().length).toBeGreaterThan(4000);
 

@@ -114,7 +114,7 @@ describe("enumeration: an existing id that is not yours is answered like a rando
       ["group replies", (id) => json("GET", `/api/conversations/${id}/runs`)],
       ["halt Agents", (id) => json("POST", `/api/conversations/${id}/agents/halt`)],
       ["stop a run", (id) => json("POST", `/api/conversations/${id}/runs/${RANDOM}/stop`)],
-      ["retry an Agent's run", (id) => json("POST", `/api/conversations/${id}/runs/retry`, { agentId: RANDOM })],
+      ["retry an Agent's run", (id) => json("POST", `/api/conversations/${id}/runs/retry`, { runId: RANDOM })],
       ["dismiss an Agent's run", (id) => json("POST", `/api/conversations/${id}/runs/dismiss`, { agentId: RANDOM })],
       // An owner's whispers there (src/whispers/).
       ["whispers", (id) => json("GET", `/api/conversations/${id}/whispers`)],
@@ -407,7 +407,7 @@ describe("enumeration: Agent, provider, run and persona-proposal ids", () => {
     ["provider refresh", ({ provider }) => json("POST", `/api/providers/${provider}/models/refresh`)],
     ["run", ({ conv }) => json("GET", `/api/conversations/${conv}/run`)],
     ["stop", ({ conv, run }) => json("POST", `/api/conversations/${conv}/runs/${run}/stop`)],
-    ["retry", ({ conv }) => json("POST", `/api/conversations/${conv}/runs/retry`)],
+    ["retry", ({ conv, run }) => json("POST", `/api/conversations/${conv}/runs/retry`, { runId: run })],
     ["dismiss", ({ conv }) => json("POST", `/api/conversations/${conv}/runs/dismiss`)],
     ["topic", ({ conv }) => json("POST", `/api/conversations/${conv}/topic`)],
     ["new Agent on the provider", ({ provider }) => json("POST", "/api/agents", { namePart: "enum_taker", name: "T", model: { source: "provider", providerId: provider, model: "m" } })],
@@ -513,7 +513,7 @@ describe("enumeration: Agent, provider, run and persona-proposal ids", () => {
     const ownChatRun = await failedRun(anna.id, owner.id, anna.conversationId);
     const { conversationId: direct } = await befriend(app, owner, stranger);
     const stop = (run: string) => json("POST", `/api/conversations/${g}/runs/${run}/stop`);
-    const retry = (agentId: string) => json("POST", `/api/conversations/${g}/runs/retry`, { agentId });
+    const retry = (run: string) => json("POST", `/api/conversations/${g}/runs/retry`, { runId: run });
     const dismiss = (agentId: string) => json("POST", `/api/conversations/${g}/runs/dismiss`, { agentId });
 
     // Fellow members — one owns another Agent there — and the owner, with someone else's run, Agent or person.
@@ -522,22 +522,19 @@ describe("enumeration: Agent, provider, run and persona-proposal ids", () => {
       [other, { annaRun, ownChatRun, upperCase: annaRun.toUpperCase() }, { anna: anna.id, person: mate.id, upperCase: anna.id.toUpperCase() }],
       [owner, { theirRun }, { theirs: theirs.id, person: other.id }],
     ] as const) {
+      // A 重试 names the failed run (T2 fix 1, F4), as a stop names the run.
       expect((await indistinguishable(who, `${who.handle} stop`, stop, foreignRuns, OTHER_RANDOM)).body).toBe('{"error":"not_found"}');
-      for (const [label, request] of [
-        ["retry", retry],
-        ["dismiss", dismiss],
-      ] as const) {
-        expect((await indistinguishable(who, `${who.handle} ${label}`, request, foreignAgents)).body).toBe('{"error":"not_found"}');
-      }
+      expect((await indistinguishable(who, `${who.handle} retry`, retry, foreignRuns, OTHER_RANDOM)).body).toBe('{"error":"not_found"}');
+      expect((await indistinguishable(who, `${who.handle} dismiss`, dismiss, foreignAgents)).body).toBe('{"error":"not_found"}');
     }
     // A former member and a stranger: every group route on it, as on a conversation that does not exist.
     const onGroup: Array<[string, (id: string) => InjectOptions]> = [
       ["group replies", (id) => json("GET", `/api/conversations/${id}/runs`)],
       ["halt", (id) => json("POST", `/api/conversations/${id}/agents/halt`)],
       ["stop", (id) => json("POST", `/api/conversations/${id}/runs/${annaRun}/stop`)],
-      ["retry", (id) => json("POST", `/api/conversations/${id}/runs/retry`, { agentId: anna.id })],
+      ["retry", (id) => json("POST", `/api/conversations/${id}/runs/retry`, { runId: annaRun })],
       ["dismiss", (id) => json("POST", `/api/conversations/${id}/runs/dismiss`, { agentId: anna.id })],
-      ["retry without agentId", (id) => json("POST", `/api/conversations/${id}/runs/retry`)],
+
     ];
     for (const who of [leaver, stranger]) {
       for (const [label, request] of onGroup) {

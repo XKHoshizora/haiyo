@@ -14,6 +14,8 @@ const idParams = z.object({ id: uuidParam });
 const ok = z.object({ ok: z.literal(true) });
 /** Retry and dismiss: which Agent's run, in a group (required there); in an Agent's own conversation it plays no part. */
 const agentBody = z.object({ agentId: uuidParam.optional() }).nullish();
+/** `POST …/runs/retry`: the failed run to answer again. */
+const retryBody = z.object({ runId: uuidParam });
 
 /**
  * The owner's view of their Agent's replies, per conversation (README "Replies"). For anyone else, and for a
@@ -84,11 +86,12 @@ export function registerRunRoutes(app: FastifyInstance, { readLimit }: { readLim
 
   api.post(
     "/api/conversations/:id/runs/retry",
-    { schema: { params: idParams, querystring: empty, body: agentBody, response: { 201: z.object({ run: wireRunSchema }) } } },
+    { schema: { params: idParams, querystring: empty, body: retryBody, response: { 201: z.object({ run: wireRunSchema }) } } },
     async (req, reply) => {
       const me = await requirePrincipal(req);
       await writeLimit(req, me.id);
-      const queued = await db.tx((t) => retryRun(t, me.id, req.params.id, req.body?.agentId, config));
+      // The failure the owner was shown, by its id (runs.ts `retryRun`).
+      const queued = await db.tx((t) => retryRun(t, me.id, req.params.id, req.body.runId, config));
       app.agentPort.announce(queued);
       return reply.code(201).send({ run: queued.run });
     },

@@ -4,7 +4,7 @@ import type { RunScope } from "../src/agents/tools/index.ts";
 import { createAgentWorker, type AgentWorker } from "../src/agents/runtime/worker.ts";
 import type { ToolSpec } from "../src/models/gateway.ts";
 import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway, type ScriptedGateway } from "./helpers/models.ts";
 import { UNSPOKEN } from "../src/memory/review.ts";
@@ -277,7 +277,7 @@ describe("an acknowledgement, then the answer", () => {
     expect(await toolWorker().worker.runOnce()).toBe(true);
     expect((await lastRun(agent.id, g)).status).toBe("failed");
     await say(ned, g, "我也想知道");
-    expect((await api(app, owner, "POST", `/api/conversations/${g}/runs/retry`, { agentId: agent.id })).status).toBe(201);
+    expect((await api(app, owner, "POST", `/api/conversations/${g}/runs/retry`, { runId: await latestRunId(db, g, agent.id) })).status).toBe(201);
     gateway.callTools([{ name: "search", input: { query: "川菜馆" } }], { text: "我再查查。" }).reply("叫蜀香。");
     expect(await toolWorker().worker.runOnce()).toBe(true);
     const mine = (await messages(g)).filter((m) => m.sender === agent.id).map((m) => m.body);
@@ -304,7 +304,7 @@ describe("an acknowledgement, then the answer", () => {
     const plain = (t: { role: string; parts: Array<{ type: string; text?: string }> }) => [t.role, t.parts.map((p) => p.text)];
     expect(gateway.calls.at(-2)!.messages.map(plain)).toEqual([["user", ["查一下"]]]);
     expect((await lastRun(agent.id, own)).status).toBe("failed");
-    expect((await api(app, owner, "POST", `/api/conversations/${own}/runs/retry`, {})).status).toBe(201);
+    expect((await api(app, owner, "POST", `/api/conversations/${own}/runs/retry`, { runId: await latestRunId(db, own) })).status).toBe(201);
     gateway.reply("查到了。");
     expect(await toolWorker().worker.runOnce()).toBe(true);
     const retried = gateway.calls.at(-1)!.messages;

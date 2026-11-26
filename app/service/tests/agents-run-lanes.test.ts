@@ -8,7 +8,7 @@ import { lockAgent } from "../src/agents/store.ts";
 import { mentionsAtSend } from "../src/agents/mentions.ts";
 import { insertMessage } from "../src/messages/model.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
-import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
+import { latestRunId, mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 
@@ -309,7 +309,7 @@ describe("a run's lane and who called for it", () => {
 
     await say(w.member, w.g, "@anna 一");
     await fail(anna.id, w.g);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: anna.id })).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, anna.id) })).status).toBe(201);
     expect(await laneOf(anna.id, w.g)).toEqual([
       ["others", w.member.id],
       ["own", w.owner.id],
@@ -317,7 +317,7 @@ describe("a run's lane and who called for it", () => {
 
     await say(w.owner, anna.conversationId, "你好");
     await fail(anna.id, anna.conversationId);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${anna.conversationId}/runs/retry`)).status).toBe(201);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${anna.conversationId}/runs/retry`, { runId: await latestRunId(db, anna.conversationId) })).status).toBe(201);
     expect(await laneOf(anna.id, anna.conversationId)).toEqual([
       ["own", w.owner.id],
       ["own", w.owner.id],
@@ -657,7 +657,7 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
   it("its owner's retry in a group is held to their own lane: with the others' lane full it is answered; with their own full, 429", async () => {
     const w = await crowd();
     const anna = await agentOf(w.owner, "anna", w.g, limited);
-    const retry = () => api(limited, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: anna.id });
+    const retry = async () => api(limited, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, anna.id) });
     const failQueued = () =>
       db.query("update agent_runs set status = 'failed', error = 'provider_unavailable', finished_at = now() where agent_id = $1 and status = 'queued'", [anna.id]);
     // A member's call, which failed; with one more of others' this minute, the others' lane is full.
