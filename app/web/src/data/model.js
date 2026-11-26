@@ -446,6 +446,10 @@ function putConversation(state, conv, list) {
  */
 export function applySync(state, sync) {
   const meId = sync.me.id;
+  // Another account than the one this model holds (a tab that reconnects after someone else signed in in this browser): nothing held
+  // is theirs — every conversation, message, window and run starts over, as at a first load, so nothing one account was sent (a
+  // refusal line, a whisper, a run) can merge into another's (T2 fix 1, F1a).
+  if (state.owner !== null && state.owner !== meId) state = initial();
   const sameOwner = state.owner === null || state.owner === meId;
   const windows = new Map();
   for (const m of sync.messages) {
