@@ -35,7 +35,7 @@ export function parsePoints(text: string): bigint | null {
 /**
  * A number of points as a request gives it: a decimal string (no sign, no exponent, at most 6 fraction digits), exact micro-points
  * once parsed, from `min` to `max` micro-points inclusive. The one schema of a points limit in a request body (an Agent's
- * `chainBudget`, `othersBudget`, `proactiveBudget`; the owner's numbers for others' use).
+ * `chainBudget`; the owner's one number for others' use).
  */
 export const pointsBetween = (min: bigint, max: bigint) =>
   z

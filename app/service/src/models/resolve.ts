@@ -21,8 +21,6 @@ export interface Resolved {
   reasoningAllowed: readonly ReasoningLevel[];
   /** The Agent's effective level (`callLevel`): what the call is sent at and its output limit is sized for. */
   reasoning: ReasoningLevel;
-  /** The reply's own output limit, without any level's thinking allowance (`outputLimit`'s `replyLimit`): what a reply for others re-sizes from (metering/others.ts `boundedForOthers`). */
-  replyLimit?: number;
   /** Site models only. */
   price?: { inputMicroPerToken: number; outputMicroPerToken: number };
   tier?: "free" | "paid";
@@ -164,7 +162,6 @@ export async function resolveModel(
       pdf: site.pdf,
       reasoningAllowed,
       reasoning,
-      replyLimit: site.maxOutputTokens,
       price: { inputMicroPerToken: site.inputMicroPerToken, outputMicroPerToken: site.outputMicroPerToken },
       tier: site.tier,
       tools: site.tools,
@@ -197,7 +194,6 @@ export async function resolveModel(
     pdf: listed.pdf,
     reasoningAllowed,
     reasoning,
-    replyLimit: config.providerDefaultMaxOutputTokens,
     providerId: choice.providerId,
     tools: listed.tools !== false,
     toolsUnknown: listed.tools === undefined,

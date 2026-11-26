@@ -234,11 +234,11 @@ const MODEL_GONE: RunEnd = { status: "failed", error: "model_gone" };
 /** The Agent is no longer a member of the run's group: nothing is called or posted there. */
 const REMOVED: RunEnd = { status: "cancelled", error: "agent_removed" };
 /**
- * Ended quietly before any call: refused as it was admitted (runs.ts `refusedAtAdmission`: someone else's call found the
- * Agent's others' daily budget spent, or a reply nobody asked for found its owner's switch off or its proactive budget
- * spent), or a reply nobody asked for that someone called after its claim (`begin`'s first step). No call, nothing held
- * or charged — nothing failed and there is nothing to retry, as for such a call refused when it was made (of which
- * nothing is recorded); the group is told only by the others' budget's notice.
+ * Ended quietly before any call: refused as it was admitted (a reply for others found others' use of its owner's Agents at the
+ * owner's one number, metering/others.ts `OthersLimit`; a reply nobody asked for found its owner's switch off, runs.ts
+ * `refusedAtAdmission`), or a reply nobody asked for that someone called after its claim (`begin`'s first step). No call,
+ * nothing held or charged — nothing failed and there is nothing to retry, as for such a call refused when it was made (of
+ * which nothing is recorded); the group is told nothing (the number's refusal tells its senders and the owner: `actOnTold`).
  */
 const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
 /**
@@ -683,16 +683,16 @@ export class DbAgentPort implements AgentPort {
    *    is still `running`, unadmitted, and its caller ends it (the worker: `release`).
    * 3. A short transaction under `lockRun` again: a run `halted` meanwhile ends as in step 1, with no call; when
    *    `closing` has aborted by the time the locks are held, the transaction rolls back and `begin` rejects with its
-   *    reason, admitting nothing (as in step 2). Then what its lane is held to is read again (runs.ts
-   *    `refusedAtAdmission`; replies settled while it waited queued may have spent a budget since): a run someone else
-   *    called for (lane `others`) meets the Agent's others' daily budget, and a reply nobody asked for (`proactive`) its
-   *    owner's switch and its proactive budget. Refused, it ends `cancelled` with no error (`ENDED_QUIETLY`) — no
-   *    call, nothing held or charged — and the others' budget's notice, if this appended it, is published to the group
-   *    after commit, the Agent pushed to its owner (a reply nobody asked for tells nobody). What step 1 took on (noted on
-   *    the run after its claim) is handed back as noted — `covers_seq` back to what it covered before, `pending_seq` at
-   *    least what it took on — so `finish`'s follow-up answers it as any: the owner's own mention is queued as theirs (the
-   *    owner's calls are never refused by these), someone else's meets the others' budget again and is not queued once
-   *    it is spent.
+   *    reason, admitting nothing (as in step 2). Then what its lane is held to is read again: a reply nobody asked for
+   *    (`proactive`) meets its owner's switch (runs.ts `refusedAtAdmission`), and admission itself (metering/admit.ts
+   *    `admitRun`, under the owner's account lock) refuses a reply for others (lanes `others` and `proactive`) once others'
+   *    use of the owner's Agents today has reached the owner's one number (`OthersLimit`: replies settled while it waited
+   *    count now). Refused, it ends `cancelled` with no error (`ENDED_QUIETLY`) — no call, nothing held or charged — and
+   *    after commit the senders of the calls it answers read why on their messages and the owner is told once a day
+   *    (`actOnTold`; a reply nobody asked for tells nobody). What step 1 took on (noted on the run after its claim) is
+   *    handed back as noted — `covers_seq` back to what it covered before, `pending_seq` at least what it took on — so
+   *    `finish`'s follow-up answers it as any: the owner's own mention is queued as theirs (the owner's calls are never
+   *    refused by these), someone else's meets the owner's number again and is not queued once it is reached.
    *    Otherwise
    *    the call is admitted holding the most its input can cost: its text at its utf-8 bytes, at most what the model's
    *    context leaves beside the output limit, images and PDFs at their constants (metering/tokens.ts `holdTokens`; no
@@ -1069,7 +1069,7 @@ export class DbAgentPort implements AgentPort {
       // What its lane is held to, once more: replies settled while it waited count now, and its owner may have turned a
       // reply nobody asked for off. Refused, what step 1 took on (noted on it after its claim — its owner's mention, say)
       // is handed back as noted, so `finish`'s follow-up answers it by the usual rule: its owner's own is queued; someone
-      // else's meets the others' budget again and is simply not queued (no second notice that day), so nothing loops.
+      // else's meets the owner's number again and is simply not queued, so nothing loops.
       const told = refusedAtAdmission(agent, state.lane);
       if (told) {
         if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
@@ -1524,8 +1524,8 @@ export class DbAgentPort implements AgentPort {
    * transaction, so its hold never stops counting before its cost lands) — at no charge when it failed on our side
    * (`busy`: the reply could not be stored) — records how the run ended (`recorded`), and follows it up by
    * `followUpSeq`, in the run's conversation (runs.ts `followUp`: in a group, under the owner's replies a minute, the
-   * halt, the chain budget and the others' daily budget). Announced after commit, and the notices the follow-up appended
-   * are published after the run's end (the owner of an Agent whose others' daily budget refused it is pushed it). A run
+   * halt, the chain budget and the owner's number for others' use). Announced after commit, and the notices the follow-up
+   * appended are published after the run's end, with whom its refusal tells (`actOnTold`). A run
    * ended elsewhere meanwhile (another instance's recovery, the stale-run sweep, a stop of a run this
    * process was not seen working on) is left as that recorded it, and its owner is told how it stands now, so no
    * "replying" stays shown. A run whose reply was posted is pushed that reply once more, to its owner only, before its
@@ -1565,8 +1565,8 @@ export class DbAgentPort implements AgentPort {
       if (leftOut !== null) this.deps.memory?.summarise(run.agentId, run.conversationId, leftOut.to);
     }
     if (result.followed.run) this.announce(result.followed.run);
-    // A notice its follow-up appended (a chain budget or the others' daily budget spent): the group is told after the
-    // run's end.
+    // A notice its follow-up appended (a chain budget spent), and whom a refusal of it tells (the owner's number for others'
+    // use reached): after the run's end.
     this.actOnTold(result.followed);
     // A reminder about money its settlement found due (metering/reminders.ts): its whisper made now, after commit, with
     // the whisper's own locks; should this fail, the periodic sweep makes it.
@@ -1661,8 +1661,8 @@ export class DbAgentPort implements AgentPort {
    * Ends run `runId` (a reply, or a persona draft) that will not be finished where it was begun — this process is
    * closing, or nobody is working on it — exactly as recovery at start-up ends one (`recoverRun`, in a transaction of
    * its own under the locks `finish` takes, on the run's own conversation), then tells its owner (and a follow-up queued
-   * by the one rule wakes the worker), publishes the notices its follow-up appended (pushing the Agent to its owner when
-   * its others' daily budget refused the follow-up), and forgets its flags; a run whose
+   * by the one rule wakes the worker), publishes the notices its follow-up appended and tells whom its refusal tells
+   * (`actOnTold`), and forgets its flags; a run whose
    * reply had been posted pushes that reply once more to its owner, first (`Hub.pushChargedReply`, as `finish` does).
    * False when it was no longer running. Rejects, changing nothing, when it cannot be written. `progress`: the worker
    * knew its reply had produced something (`AgentPort.release`); then it is no passing failure, whatever its row says.
@@ -1705,7 +1705,7 @@ interface Recorded {
 
 /**
  * What `recoverRun` leaves to do once it has committed: runs to announce, what its follow-up told (notices to publish,
- * the Agent to push to its owner when its others' daily budget refused the follow-up), a charged reply to push.
+ * the senders and the owner its refusal tells), a charged reply to push.
  */
 interface Recovered {
   runs: Announced[];

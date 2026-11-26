@@ -58,7 +58,6 @@ describe("resolveModel", () => {
       pdf: true,
       reasoningAllowed: ["none", "low", "medium"],
       reasoning: "medium",
-      replyLimit: 8192,
       price: { inputMicroPerToken: 3, outputMicroPerToken: 6 },
       tier: "paid",
       tools: true,
@@ -114,7 +113,6 @@ describe("resolveModel", () => {
       // (Gemini has no `max` level: what it is sent for it is `xhigh`, so the levels it can run at end there. Fix round 3, ruling 5.)
       reasoningAllowed: ["none", "low", "medium", "high", "xhigh"],
       reasoning: "xhigh",
-      replyLimit: 2048,
       // The provider's row: what the model's learned token ratio is kept under (metering/tokens.ts `ratioKey`).
       providerId: provider.id,
       // Its entry says nothing of tools: not known yet, so its replies may be offered them.

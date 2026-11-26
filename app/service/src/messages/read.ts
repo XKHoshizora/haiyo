@@ -289,7 +289,8 @@ function toWire(
  * the others dropped without a trace, the key absent when none is left; its search words (`queries`) only to the owner
  * of the Agent that sent it, in the Agent's own conversation (in the same query that decides visibility), never in a
  * group, whatever the stored body holds. A person's message carries, for its sender alone, the Agents a LIMIT kept a call of it
- * from and why (`refused`: `call_refusals`, migration 077), read in one more query; nobody else is sent the key.
+ * from and why (`refused`: `call_refusals`, migration 077), in the order they were recorded, read in the same query by one more
+ * join, which looks only when the reader sent the message; nobody else is sent the key.
  * Every visibility decision goes through VISIBLE_JOIN, so an owner who left the group reads nothing of it; a fixed number
  * of queries however many readers and messages there are. `config`: the site models' labels, read now.
  */
@@ -303,12 +304,12 @@ export async function toWireForReaders(
   const out = new Map<string, WireMessage[]>(readers.map((r) => [r, []]));
   if (readers.length === 0 || msgs.length === 0) return out;
 
-  const shown = await q.query<{ reader_id: string; id: string; with_reasoning: boolean; with_queries: boolean } & ViaRow>(
+  const shown = await q.query<{ reader_id: string; id: string; with_reasoning: boolean; with_queries: boolean; refused: WireMessage["refused"] | null } & ViaRow>(
     `select r.reader_id, m.id,
             coalesce(c.type = 'agent' or (c.type in ('group', 'agent_social') and sender.owner_id = r.reader_id), false) as with_reasoning,
             coalesce(c.type = 'agent' and sender.owner_id = r.reader_id, false) as with_queries,
             via.source as via_source, via.model as via_model, via.reasoning as via_reasoning, via.points as via_points,
-            via.proactive as via_proactive, via.web as via_web
+            via.proactive as via_proactive, via.web as via_web, refusal.refused
        from unnest($1::uuid[]) as r (reader_id)
        cross join messages m ${visibleJoin("r.reader_id")}
        join conversations c on c.id = m.conversation_id
@@ -320,6 +321,11 @@ export async function toWireForReaders(
           where sender.owner_id = r.reader_id and m.kind = 'text' and ${postingRun("m", "run")} and m.client_txn = run.id::text
             and run.source is not null and run.model is not null and run.reasoning is not null
        ) via on true
+       left join lateral (
+         select json_agg(json_build_object('agentId', cr.agent_id, 'reason', cr.reason) order by cr.created_at, cr.agent_id) as refused
+           from call_refusals cr
+          where m.sender_id = r.reader_id and m.kind <> 'system' and cr.conversation_id = m.conversation_id and cr.seq = m.seq
+       ) refusal on true
       where m.id = any($2::bigint[])`,
     [readers, msgs.map((m) => m.id)],
   );
@@ -331,9 +337,12 @@ export async function toWireForReaders(
   const queriesFor = new Set(shown.rows.filter((r) => r.with_queries === true).map((r) => `${r.reader_id}|${r.id}`));
   /** reader|message → what the run that posted it used, for the owner of the Agent that sent it. */
   const viaFor = new Map<string, WireVia>();
+  /** reader|message → what a limit refused of its calls, for its sender. */
+  const refusedFor = new Map<string, NonNullable<WireMessage["refused"]>>();
   for (const r of shown.rows) {
     const via = toWireVia(r, config);
     if (via) viaFor.set(`${r.reader_id}|${r.id}`, via);
+    if (r.refused && r.refused.length > 0) refusedFor.set(`${r.reader_id}|${r.id}`, r.refused);
   }
 
   const quoting = msgs.filter((m) => typeof m.body.replyToSeq === "number" && shownToAnyone.has(m.id));
@@ -392,7 +401,6 @@ export async function toWireForReaders(
 
   const { changes, owners } = await memoryChangesOf(q, msgs.filter((m) => shownToAnyone.has(m.id)));
   const personaCards = await personaCardsOf(q, msgs.filter((m) => shownToAnyone.has(m.id)));
-  const refusals = await refusalsOf(q, readers, msgs.filter((m) => shownToAnyone.has(m.id)));
 
   for (const reader of readers) {
     const list = out.get(reader)!;
@@ -441,33 +449,10 @@ export async function toWireForReaders(
       const quote = quotes.get(`${reader}|${m.conversationId}|${m.body.replyToSeq}`) ?? null;
       const wire = toWire(m, quote, proposalFor(reader, m), reasoningFor.has(key), viaFor.get(key) ?? null, lookedFor(reader, m, key));
       // Its sender's alone: what a limit refused of its calls.
-      const refused = refusals.get(`${reader}|${m.conversationId}|${m.seq}`);
+      const refused = refusedFor.get(key);
       if (refused) wire.refused = refused;
       list.push(wire);
     }
-  }
-  return out;
-}
-
-/**
- * The refusals of `msgs`'s calls that their senders among `readers` are sent (`call_refusals`): keyed `sender|conversation|seq`, each
- * list in the order the refusals were recorded. One query, none when no reader sent any of them.
- */
-async function refusalsOf(q: Queryable, readers: readonly string[], msgs: readonly StoredMessage[]): Promise<Map<string, NonNullable<WireMessage["refused"]>>> {
-  const out = new Map<string, NonNullable<WireMessage["refused"]>>();
-  const sent = msgs.filter((m) => m.kind !== "system" && m.senderId !== null && readers.includes(m.senderId.toLowerCase()));
-  if (sent.length === 0) return out;
-  const { rows } = await q.query<{ conversation_id: string; seq: string; sender_id: string; agent_id: string; reason: "others_limit" | "too_often" }>(
-    `select r.conversation_id, r.seq::text as seq, r.sender_id, r.agent_id, r.reason
-       from call_refusals r
-       join unnest($1::uuid[], $2::bigint[]) as w (conversation_id, seq) on r.conversation_id = w.conversation_id and r.seq = w.seq
-      where r.sender_id = any($3::uuid[])
-      order by r.created_at, r.agent_id`,
-    [sent.map((m) => m.conversationId), sent.map((m) => m.seq), [...readers]],
-  );
-  for (const r of rows) {
-    const key = `${r.sender_id}|${r.conversation_id}|${r.seq}`;
-    out.set(key, [...(out.get(key) ?? []), { agentId: r.agent_id, reason: r.reason }]);
   }
   return out;
 }
