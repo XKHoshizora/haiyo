@@ -920,9 +920,10 @@ describe.each([false, true])("after it has spoken unasked (memory %s)", (memory)
     );
     judge.answer(byName({ anna: 0.9 }));
     expect((await decide(w.g, await say(w.member, w.g, "问一下"))).runs).toHaveLength(1);
-    // The minute is full now: a member's mention of the owner's other Agent is refused by it.
+    // The minute is full now: a member's mention of the owner's other Agent is refused by it (no run; the member's line).
     await say(w.member, w.g, "@carl_bot 你呢");
-    expect((await runsOf(carl.id, w.g)).map((r) => r.error)).toEqual(["rate_limited"]);
+    expect(await runsOf(carl.id, w.g)).toEqual([]);
+    expect((await db.query<{ reason: string }>("select reason from call_refusals where agent_id = $1", [carl.id])).rows).toEqual([{ reason: "too_often" }]);
   });
 });
 
