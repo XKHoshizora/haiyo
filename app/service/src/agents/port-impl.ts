@@ -1098,17 +1098,14 @@ export class DbAgentPort implements AgentPort {
       // and PDFs) — and its whole output. Renewed a round at a time (`extend`).
       const roomCapTokens = Math.max(0, resolved.contextTokens - resolved.call.maxOutputTokens) + TOOL_PREAMBLE_TOKENS + context.fixedTokens;
       // (A tool offered with no cap of its own has only the round cap: what one round brings back is not bounded below the
-      // whole of a call, so the room is that.)
-      // A reply for others has one tool round of one real call (`OTHERS.toolCalls`): what its last call can add to the next input is
-      // that call's result. It replaces the per-tool caps' sum.
+      // whole of a call, so the room is that.) One calculation for every lane: a reply for others keeps what the owner's own would,
+      // for the same model, level and offered tools (fix round 1, F4).
       const growthTokens =
         offer === null
           ? 0
-          : forOthers
-            ? roomGrowth(config.others.toolCalls, config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
-            : offer.tools.every((tool) => Object.hasOwn(offer.perTool, tool.name))
-              ? roomGrowth(Object.values(offer.perTool).reduce((sum, n) => sum + n, 0), config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
-              : roomCapTokens;
+          : offer.tools.every((tool) => Object.hasOwn(offer.perTool, tool.name))
+            ? roomGrowth(Object.values(offer.perTool).reduce((sum, n) => sum + n, 0), config.tools.resultMaxWeight, resolved.call.maxOutputTokens)
+            : roomCapTokens;
       const lastCall = tools.length === 0 ? 0n : maxCostMicro(resolved, Math.min(held + growthTokens, roomCapTokens));
       let admission;
       try {

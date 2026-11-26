@@ -115,7 +115,7 @@ describe("admission", () => {
     await expect(db.tx((t) => admit(t, config(), owner.id, mine.resolved, 10, new Date(), "reply", 0n, runId, "others"))).rejects.toBeInstanceOf(OthersLimit);
   });
 
-  it("an others' reply keeps room for its last call exactly as the owner's own does: on the free allowance only", async () => {
+  it("admission keeps a given last call's room on the free allowance only, for an others' reply as for the owner's own (how large that room is, the one calculation for both: others-reserve.test.ts)", async () => {
     const owner = await newOwner();
     await grant(db, owner.id, 10_000n * POINT);
     const [free] = await agentsOf(app, db, owner, 1);
