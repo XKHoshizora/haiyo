@@ -192,7 +192,23 @@ function filterValues(obj, keep) {
 /** What this page alone knows of a message of mine its send's answer returned (`markSent`), kept on its held copy. */
 const LOCAL_KEYS = ["clientTxn"];
 
-/** Merges ascending, seq-unique lists; on equal seqs the incoming copy wins but keeps what this page knows (`LOCAL_KEYS`). */
+/**
+ * What a limit refused of my message's calls (`refused`), held and incoming together: one entry an Agent, the held ones first, never
+ * one taken away — a copy older than one pushed to me again (a send's answer after the push of a refusal found later) adds what it
+ * names and keeps the rest. Neither has any: `incoming` as it is.
+ */
+function refusedOf(held, incoming) {
+  const before = Array.isArray(held?.refused) ? held.refused : [];
+  if (before.length === 0) return incoming;
+  const now = Array.isArray(incoming.refused) ? incoming.refused : [];
+  const known = new Set(before.map((r) => r?.agentId));
+  return { ...incoming, refused: [...before, ...now.filter((r) => !known.has(r?.agentId))] };
+}
+
+/**
+ * Merges ascending, seq-unique lists; on equal seqs the incoming copy wins but keeps what this page knows (`LOCAL_KEYS`) and the
+ * refusals held (`refusedOf`).
+ */
 function mergeBySeq(held, incoming) {
   if (incoming.length === 0) return held;
   if (held.length === 0) return [...incoming].sort((a, b) => a.seq - b.seq);
@@ -200,7 +216,8 @@ function mergeBySeq(held, incoming) {
   for (const m of incoming) {
     const old = bySeq.get(m.seq);
     const kept = old ? LOCAL_KEYS.filter((key) => m[key] == null && old[key] != null) : [];
-    bySeq.set(m.seq, kept.length > 0 ? { ...m, ...Object.fromEntries(kept.map((key) => [key, old[key]])) } : m);
+    const merged = old ? refusedOf(old, m) : m;
+    bySeq.set(m.seq, kept.length > 0 ? { ...merged, ...Object.fromEntries(kept.map((key) => [key, old[key]])) } : merged);
   }
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
@@ -1037,7 +1054,8 @@ function replaceBySeq(list, wire) {
   const at = list.findIndex((m) => m.seq === wire.seq);
   if (at < 0) return list;
   const next = [...list];
-  next[at] = list[at].clientTxn ? { ...wire, clientTxn: list[at].clientTxn } : wire;
+  const merged = refusedOf(list[at], wire);
+  next[at] = list[at].clientTxn ? { ...merged, clientTxn: list[at].clientTxn } : merged;
   return next;
 }
 

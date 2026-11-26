@@ -199,6 +199,25 @@ describe("optimistic sends", () => {
     expect(s.messages[D1][3].clientTxn).toBe("t1");
   });
 
+  it("a refusal pushed before the send's answer is kept when the answer arrives: lines are merged by Agent, never taken away", () => {
+    const AG_A = "aaaaaaaa-0000-4000-8000-00000000000a";
+    const AG_B = "aaaaaaaa-0000-4000-8000-00000000000b";
+    let s = M.markSending(loaded(), { clientTxn: "t1", conversationId: D1, text: "hi", at: 1000 });
+    // The message is pushed to me again with a refusal found as a reply was admitted, before the send's (older) answer comes back.
+    s = M.applyMessage(s, wire(D1, 4, ME_ID, "hi")).state;
+    s = M.applyMessage(s, wire(D1, 4, ME_ID, "hi", { refused: [{ agentId: AG_A, reason: "others_limit" }] })).state;
+    expect(s.messages[D1][3].refused).toEqual([{ agentId: AG_A, reason: "others_limit" }]);
+    s = M.markSent(s, "t1", wire(D1, 4, ME_ID, "hi"));
+    expect(s.messages[D1][3].refused).toEqual([{ agentId: AG_A, reason: "others_limit" }]);
+    expect(s.messages[D1][3].clientTxn).toBe("t1");
+    // An answer naming another Agent adds to what is held; one naming the same keeps one line for it.
+    s = M.markSent(s, "t1", wire(D1, 4, ME_ID, "hi", { refused: [{ agentId: AG_B, reason: "too_often" }, { agentId: AG_A, reason: "others_limit" }] }));
+    expect(s.messages[D1][3].refused).toEqual([
+      { agentId: AG_A, reason: "others_limit" },
+      { agentId: AG_B, reason: "too_often" },
+    ]);
+  });
+
   it("a sent message beyond a gap is held without advancing the position; catch-up then fills in once", () => {
     let s = M.markSending(loaded(), { clientTxn: "t1", conversationId: D1, text: "hi", at: 1000 });
     s = M.markSent(s, "t1", wire(D1, 6, ME_ID, "hi"));
