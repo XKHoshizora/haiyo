@@ -2121,6 +2121,17 @@ describe("Agents in a group (batch 2C)", () => {
     ]);
   });
 
+  it("my call relayed by someone else's Agent, refused there later (T2 fix 1, F1b): the line pushed on that Agent's message is applied, as the service sends it to me alone", async () => {
+    const refused = (reason, ...agentIds) => agentIds.map((agentId) => ({ agentId, reason }));
+    const { transport } = await openGroup([wire(G1, 1, ME_ID, "@annbot 帮我问问小助手")]);
+    const lines = () => [...timeline().querySelectorAll("li .msg-refused")].map((el) => [el.closest("li").getAttribute("data-msg"), el.textContent]);
+    await push(transport, { type: "message", message: wire(G1, 2, OAG, "@helper 有人问你") });
+    expect(lines()).toEqual([]);
+    await push(transport, { type: "message", message: wire(G1, 2, OAG, "@helper 有人问你", { refused: refused("others_limit", AG1) }) });
+    expect(lines()).toEqual([["m2", "「小助手」：这个 Agent 今天不能再回复别人了"]]);
+  });
+
+
   it("a reply being written: 正在回复… only (nothing streams), a row per Agent in member order; its owner can stop it, nobody else", async () => {
     const { transport, api } = await openGroup([], { api: { stopRun: vi.fn(async () => ({ ok: true })) } });
     await push(transport, groupRun(OAG, { state: "replying" }));
