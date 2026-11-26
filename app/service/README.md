@@ -4652,9 +4652,10 @@ what looks like one is what someone wrote.
 
 - `search_messages` `{query, from?, before?, after?}`: where it looks — in a group, that group only, and there only what
   the reply may see: after its asker's line (`askerLine`, read for each call: a newcomer's question finds nothing from
-  before they joined, not even a count) and up to what the reply had heard when it began (the conversation's seq read in
-  `begin`); in the Agent's own
-  conversation, every conversation the Agent is a current member of (its own and its groups, each as the Agent sees it).
+  before they joined, not even a count) and up to what the reply covers (its assignment's last call: what it is shown ends
+  there too); in the Agent's own
+  conversation, every conversation the Agent is a current member of (its own and its groups, each as the Agent sees it) —
+  in its own, nothing after what the reply covers either (a message written since waits for a reply of its own).
   Never the messages the reply answers (its model is shown them already; a question would match itself): in a group the
   calls it answers and the latest it covers (other people's messages between them are found as any); in the Agent's own
   conversation, by position, the owner's messages its call shows: after what the Agent's last posted reply there covered

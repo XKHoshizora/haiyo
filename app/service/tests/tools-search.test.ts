@@ -696,7 +696,20 @@ describe("a search never returns the messages its run answers (item E): they are
     expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["雨衣也可能在车里", "之前说过：雨衣挂在门后"]);
   });
 
+  it("own conversation: nothing after what the reply covers is found (its tools reach no further than it is shown: T2 fix 1, F2b)", async () => {
+    const { owner, own } = await owned("zora");
+    await postAs(own, owner.id, "雨伞以前放在门口");
+    await answeredSoFar(own);
+    await say(owner, own, "雨伞在哪？");
+    // Written after the reply's call (as a message that waits for a reply of its own is): past what it covers.
+    await postAs(own, owner.id, "雨伞后来放到阳台了");
+    gateway.callTools([{ name: SEARCH_MESSAGES, input: { query: "雨伞" } }]).reply("门口。");
+    expect(await toolWorker().runOnce()).toBe(true);
+    expect(outputs(gateway.calls.at(-1)!)[0].results.map((r: any) => r.text)).toEqual(["雨伞以前放在门口"]);
+  });
+
   it("own conversation: the bound is read once per search, however many of the owner's messages match (round 3 S-3) — by the statement's plan", async () => {
+
     const { owner, agent, own } = await owned("yuri");
     const many = async (n: number) =>
       db.query(

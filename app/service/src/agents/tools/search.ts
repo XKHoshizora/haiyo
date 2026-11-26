@@ -242,6 +242,9 @@ async function look(t: Tx, deps: ToolDeps, scope: RunScope, o: { term: string; f
       [scope.agentId, scope.conversationId],
     );
     conversationIds = rows.map((r) => r.id);
+    // In its own conversation, nothing after what the reply covers either (`heardTo`: what it is shown ends there; a message written
+    // since waits for a reply of its own — T2 fix 1, F2b); its groups are other conversations, searched as before.
+    window = { conversationId: scope.conversationId, after: 0, upTo: scope.heardTo };
   }
   // Never what this run answers and is shown (in a group its calls and the latest message it covers; in its own
   // conversation the owner's messages its call shows, from `shownFrom`): its model has them already, and a question would
