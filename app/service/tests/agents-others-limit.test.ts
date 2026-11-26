@@ -112,14 +112,22 @@ const agentSays = (agentId: string, conv: string, text: string) =>
 /** The Agent's runs in `conv`, oldest first. */
 const runsOf = async (agentId: string, conv: string) =>
   (
-    await db.query<{ status: string; lane: string; covers: number; pending: number | null }>(
-      "select status, lane, covers_seq::int as covers, pending_seq::int as pending from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id",
+    await db.query<{ status: string; lane: string; covers: number }>(
+      "select status, lane, covers_seq::int as covers from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id",
       [agentId, conv],
     )
   ).rows;
 
 /** Ends every active run, so that the next trigger queues a new one instead of folding. */
-const settleAll = () => db.query("update agent_runs set status = 'done', finished_at = now() where status in ('queued', 'running')");
+const settleAll = async () => {
+  await db.query("delete from deferred_calls");
+  await db.query("update agent_runs set status = 'done', finished_at = now() where status in ('queued', 'running')");
+};
+/** The seqs of the calls waiting for the Agent in `conv` behind its active reply (`deferred_calls`), oldest first. */
+const waitingOf = async (agentId: string, conv: string): Promise<number[]> =>
+  (await db.query<{ seq: number }>("select message_seq::int as seq from deferred_calls where agent_id = $1 and conversation_id = $2 order by message_seq", [agentId, conv])).rows.map(
+    (r) => r.seq,
+  );
 
 /** The system messages of the event `others_limit_reached` in `conv`: none ever in a group. */
 const noticesIn = async (conv: string) =>
@@ -254,7 +262,7 @@ describe("the owner's one number for others' use", () => {
     expect(await othersUse(w.owner)).toMatchObject({ limit: "2", used: "2", reached: true });
   });
 
-  it("an Agent of someone else is refused the same way: its message has nobody to read a line, the owner is told", async () => {
+  it("an Agent of someone else is refused the same way: the line is for the person behind its message alone (limits redesign C-d), the owner is told", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const mia = await agentOf(w.member, "mia", w.g);
@@ -264,7 +272,11 @@ describe("the owner's one number for others' use", () => {
     const before = await runsOf(anna.id, w.g);
 
     const refused = await agentSays(mia.id, w.g, "@anna 你看看");
-    expect([refused.runs, refused.callerLimited, refused.notices, refused.refused, refused.reached]).toEqual([[], [], [], [], [{ ownerId: w.owner.id, agentId: anna.id, pointsMicro: 2_000_000n }]]);
+    // Posted by no run: the person behind it is its Agent's owner, the member.
+    expect([refused.runs, refused.callerLimited, refused.notices, refused.reached]).toEqual([[], [], [], [{ ownerId: w.owner.id, agentId: anna.id, pointsMicro: 2_000_000n }]]);
+    expect(refused.refused).toEqual([{ conversationId: w.g, senderId: w.member.id, seq: refused.message.seq }]);
+    expect((await readAs(w.member, w.g, refused.message.seq))?.refused).toEqual(limitLine(anna));
+    expect(await readAs(w.third, w.g, refused.message.seq)).not.toHaveProperty("refused");
     expect(await runsOf(anna.id, w.g)).toEqual(before);
 
     // Its reply, as the worker posts it, in another group: the same; the owner is told once (after the refusal's commit).
@@ -279,14 +291,14 @@ describe("the owner's one number for others' use", () => {
     await expect.poll(async () => (await ownerNotices(w.owner)).length).toBe(1);
   });
 
-  it("a follow-up others asked for is not queued once it is reached, and the caller is told on their message; its owner's is", async () => {
+  it("a call others made that waited behind a reply is not queued once it is reached, and the caller is told on their message; its owner's is", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     await setLimit(w.owner, "2");
     const g2 = await anotherGroup(w, "second");
     const g3 = await anotherGroup(w, "third");
     for (const conv of [g2, g3]) await join(conv, anna.id);
-    // A member's reply under way in each group, with a mention noted on it: another member's in the first and the
+    // A member's reply under way in each group, with a mention waiting behind it: another member's in the first and the
     // third, its owner's in the second.
     const tickets: RunTicket[] = [];
     for (const conv of [w.g, g2, g3]) {
@@ -294,7 +306,10 @@ describe("the owner's one number for others' use", () => {
       tickets.push(await claim(anna, conv));
     }
     const noted = [await say(w.third, w.g, "@anna 二"), await say(w.owner, g2, "@anna 我也问"), await say(w.third, g3, "@anna 二")];
-    for (const [i, conv] of [w.g, g2, g3].entries()) expect((await runsOf(anna.id, conv)).at(-1)).toMatchObject({ status: "running", pending: noted[i] });
+    for (const [i, conv] of [w.g, g2, g3].entries()) {
+      expect((await runsOf(anna.id, conv)).at(-1)).toMatchObject({ status: "running" });
+      expect(await waitingOf(anna.id, conv)).toEqual([noted[i]]);
+    }
     // Others' use reaches the number before they end.
     await paidOthers(anna, w.g, 2 * POINT);
     const thirdSocket = await connect(app, w.third);
@@ -365,7 +380,7 @@ describe("the owner's one number for others' use", () => {
   it.each([
     ["its owner's is answered", "owner", true],
     ["another member's meets the number again: nothing, and the line on their message", "third", false],
-  ] as const)("a mention noted between the claim and an admission the number refused is followed up: %s", async (_what, who, answered) => {
+  ] as const)("a mention that waited from between the claim and an admission the number refused is taken as it ends: %s", async (_what, who, answered) => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     await setLimit(w.owner, "2");
@@ -373,9 +388,10 @@ describe("the owner's one number for others' use", () => {
     await say(w.member, w.g, "@anna 一");
     const ticket = await app.agentPort.claimNext();
     expect(ticket?.conversationId).toBe(w.g);
-    // Claimed (running), the reply has a mention noted on it before it begins; then the number is reached.
+    // Claimed (running), the reply has a mention waiting behind it before it begins; then the number is reached.
     const asked = await say(w[who], w.g, "@anna 我也问");
-    expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "running", pending: asked });
+    expect((await runsOf(anna.id, w.g)).at(-1)).toMatchObject({ status: "running" });
+    expect(await waitingOf(anna.id, w.g)).toEqual([asked]);
     await paidOthers(anna, w.g, 1);
     const calls = gateway.calls.length;
     const end = await app.agentPort.begin(ticket!);
@@ -388,7 +404,7 @@ describe("the owner's one number for others' use", () => {
       expect((await readAs(w.third, w.g, asked))?.refused).toEqual(limitLine(anna));
       return;
     }
-    // The owner's mention: an own follow-up covering it, answered when it runs.
+    // The owner's mention: a reply of its own covering it, answered when it runs.
     expect(queued).toEqual([expect.objectContaining({ lane: "own", covers: asked })]);
     gateway.reply("好的");
     expect(await app.agentWorker.runOnce()).toBe(true);
@@ -408,17 +424,18 @@ describe("the owner's one number for others' use", () => {
     expect(await othersUse(w.owner)).toMatchObject({ used: "0", reached: false });
   });
 
-  it("a person's mention it refused is no call of a later follow-up whose answer it lies in: that follow-up is the caller's whose mention was noted", async () => {
+  it("a person's mention it refused never waits, so it is no call of the reply after it, whose answer it lies in: that reply is the caller's whose mention waited", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     await setLimit(w.owner, "2");
     await say(w.member, w.g, "@anna 一");
     const ticket = await claim(anna, w.g);
-    // The number is reached while the reply runs: the third's mention is refused (nothing noted), with its line.
+    // The number is reached while the reply runs: the third's mention is refused (nothing waits), with its line.
     await paidOthers(anna, w.g, 2 * POINT);
     expect((await send(w.third, w.g, "@anna 二")).refused).toEqual(limitLine(anna));
-    expect((await db.query("select pending_seq from agent_runs where id = $1", [ticket.id])).rows).toEqual([{ pending_seq: null }]);
-    // Raised, the member's next mention is noted on the reply under way, after the third's.
+    expect(await waitingOf(anna.id, w.g)).toEqual([]);
+    // Raised, the member's next mention waits behind the reply under way, after the third's.
+
     await setLimit(w.owner, "10");
     const asked = await say(w.member, w.g, "@anna 三");
     await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);

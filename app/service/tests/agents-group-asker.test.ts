@@ -97,6 +97,8 @@ const joinedSeq = async (conv: string, principalId: string): Promise<number> =>
   );
 
 const callsHere = (): ModelCall[] => gateway.calls.slice(first);
+/** The texts of a call's turns (not its system text, whose roster names every Agent there). */
+const turnsText = (call: ModelCall): string => call.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : []))).join("\n");
 const lastCall = (): ModelCall => {
   const calls = callsHere();
   expect(calls.length).toBeGreaterThan(0);
@@ -324,19 +326,22 @@ describe("a newcomer asks someone's Agent what was said before they joined", () 
     expect(shownText(lastCall())).toContain(`〔${markOf(lastCall())} mike｜群成员〕\n> SECRET-QUOTED-10b 我们周六去吃火锅\n看上面这条`);
   });
 
-  it("the newcomer's mention folded into a reply an older member asked for: the one reply answers both, cut at the later joining — the newcomer's", async () => {
+  it("the newcomer's mention while an older member's reply waits (limits redesign, Part 2): it waits for a reply of its own — the older member's is not shown it; the newcomer's is cut at their joining", async () => {
     const w = await world();
     await privateThings(w);
     const line = await newcomerJoins(w);
     const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
     const asked = await say(w.s, w.g, QUESTION);
-    // One queued reply covers both.
+    // Two people, two identities: the newcomer's call is not folded into the older member's reply, it waits.
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
-    await answer("（一起回答）");
+    await answer("（回答老成员）");
+    expect((await seqsShown(lastCall(), w.g)).shown).not.toContain(asked);
+    await answer("（回答新来的）");
     const call = lastCall();
     expectNoSecret(call);
     expect((await seqsShown(call, w.g)).shown).toEqual([older, asked]);
     expect(await peopleAfter(w.g, line)).toEqual([older, asked]);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["done", "done"]);
   });
 
   it("the newcomer's mention noted while a reply to an older member runs: that reply is as it was; its follow-up is cut at the newcomer's joining", async () => {
@@ -396,11 +401,11 @@ describe("a newcomer asks someone's Agent what was said before they joined", () 
 
 // --- whoever the reply will hear from (fix round 1) -------------------------------------------------------------------
 
-describe("everyone whose words the reply will see counts: what a person sends while the reply waits", () => {
-  it("the newcomer's question without a mention, sent while an older member's reply waits to run, is not answered from before their joining", async () => {
+describe("what a person sends while the reply waits is not shown to it: a reply ends at its assignment's last call (limits redesign, Part 2)", () => {
+  it("the newcomer's message without a mention, sent while an older member's reply waits to run, is not shown to that reply — it is the older member's, from their line", async () => {
     const w = await world();
     await privateThings(w);
-    const line = await newcomerJoins(w);
+    await newcomerJoins(w);
     const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
     // Every member is told the Agent is replying: the newcomer can watch for the moment.
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
@@ -408,16 +413,18 @@ describe("everyone whose words the reply will see counts: what a person sends wh
 
     await answer("（回答老成员）");
     const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([older, slipped]);
-    expect(await peopleAfter(w.g, line)).toEqual([older, slipped]);
+    const { shown } = await seqsShown(call, w.g);
+    expect(shown).not.toContain(slipped);
+    expect(shown.at(-1)).toBe(older);
+    // An older member asking while a newcomer reads the answer: as it always was (README, Whose joining it reaches back to).
+    expect(shownText(call)).toContain(SECRET.m);
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "done", error: null, lane: "others" }]);
   });
 
-  it("the same for a reply nobody asked for that the newcomer's message rides on", async () => {
+  it("the same for a reply nobody asked for: the newcomer's message sent while it waits is not shown it", async () => {
     const w = await world();
     await privateThings(w);
-    const line = await newcomerJoins(w);
+    await newcomerJoins(w);
     const remark = await say(w.m, w.g, "周末好像要停水");
     judge.answer(byName({ 小助手: 0.95 }));
     const decided = await decideProactive({ db, judge, config: app.deps.config, log: app.log }, w.g, remark);
@@ -426,14 +433,13 @@ describe("everyone whose words the reply will see counts: what a person sends wh
     const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
 
     await answer("（主动说一句）");
-    const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([remark, slipped]);
-    expect(await peopleAfter(w.g, line)).toEqual([remark, slipped]);
+    const { shown } = await seqsShown(lastCall(), w.g);
+    expect(shown).not.toContain(slipped);
+    expect(shown.at(-1)).toBe(remark);
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "done", error: null, lane: "proactive" }]);
   });
 
-  it("control: an older member, or an Agent that joined later, writing while the reply waits does not move the line", async () => {
+  it("control: an older member, or an Agent that joined later, writing while the reply waits is not shown it either; the line stays the Agent's joining", async () => {
     const w = await world();
     const other = await mustCreateAgent(app, w.m2, { handle: "other_bot", name: "阿杰", intro: "擅长查资料", model: FAST, persona: "你是阿杰。" });
     const agentJoined = await joinedSeq(w.g, w.agent.id);
@@ -442,7 +448,7 @@ describe("everyone whose words the reply will see counts: what a person sends wh
     await addMember(w.m2, w.g, other.id);
     await newcomerJoins(w);
     await say(w.m2, w.g, "@other_bot 你好");
-    await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
+    const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
     // 阿杰's reply (queued first) is posted while the older member's reply waits; so is an older member's message.
     await answer("AGENT-GAP-10b 我在");
     await say(w.m2, w.g, "我也想知道");
@@ -450,8 +456,9 @@ describe("everyone whose words the reply will see counts: what a person sends wh
     await answer("（回答老成员）");
     const call = lastCall();
     const sent = shownText(call);
-    for (const secret of [SECRET.m, SECRET.m2, "AGENT-GAP-10b"]) expect([secret, sent.includes(secret)]).toEqual([secret, true]);
-    expect((await seqsShown(call, w.g)).shown).toEqual(await peopleAfter(w.g, agentJoined));
+    for (const secret of [SECRET.m, SECRET.m2]) expect([secret, sent.includes(secret)]).toEqual([secret, true]);
+    expect(sent).not.toContain("AGENT-GAP-10b");
+    expect((await seqsShown(call, w.g)).shown).toEqual((await peopleAfter(w.g, agentJoined)).filter((seq) => seq <= older));
   });
 });
 
@@ -461,7 +468,7 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     (await db.query<{ ids: string[] | null }>("select asker_ids as ids from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id limit 1", [agentId, conv]))
       .rows[0]!.ids;
 
-  it("begin: the newcomer writes without a mention while an older member's reply waits, and that reply calls another Agent — the newcomer is recorded on the reply, and both replies are cut at their joining", async () => {
+  it("the newcomer writes without a mention while an older member's reply waits, and that reply calls another Agent: the reply is not shown the newcomer's message (nothing recorded of them on it); the Agent it calls is, and its reply is cut at their joining", async () => {
     const w = await world();
     const other = await mustCreateAgent(app, w.m, { handle: "other_bot", name: "阿杰", intro: "擅长查资料", model: FAST, persona: "你是阿杰。" });
     await addMember(w.m, w.g, other.id);
@@ -471,14 +478,12 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
 
     await answer("@other_bot 周末停水吗？");
-    expect(await recordedAskers(w.agent.id, w.g)).toContain(w.s.id);
+    expect(await recordedAskers(w.agent.id, w.g)).not.toContain(w.s.id);
     await answer("不停水。");
-    const calls = callsHere();
-    expect(calls).toHaveLength(2);
-    for (const call of calls) {
-      expectNoSecret(call);
-      expect((await seqsShown(call, w.g)).shown).toEqual([asked, slipped]);
-    }
+    const [toHelper, toOther] = callsHere();
+    expect((await seqsShown(toHelper!, w.g)).shown).not.toContain(slipped);
+    expectNoSecret(toOther!);
+    expect((await seqsShown(toOther!, w.g)).shown).toEqual([asked, slipped]);
     expect(await peopleAfter(w.g, line)).toEqual([asked, slipped]);
   });
 
@@ -504,13 +509,13 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     expect((await runsOf(other.id, w.g)).map((r) => r.status)).toEqual(["done"]);
   });
 
-  it("a mention folded into a waiting reply, with the newcomer's message before it: the newcomer counts", async () => {
+  it("a mention folded into a waiting reply (the same person asking again), with the newcomer's message before it: the newcomer counts", async () => {
     const w = await world();
     await privateThings(w);
     const line = await newcomerJoins(w);
     const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
     const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
-    const again = await say(w.m2, w.g, "@helper_bot 我也想知道");
+    const again = await say(w.m, w.g, "@helper_bot 我也想知道");
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
 
     await answer("（一起回答）");
@@ -520,24 +525,7 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     expect(await peopleAfter(w.g, line)).toEqual([older, slipped, again]);
   });
 
-  it("begin taking on a call noted after the reply was claimed, with the newcomer's message before it: the newcomer counts", async () => {
-    const w = await world();
-    await privateThings(w);
-    const line = await newcomerJoins(w);
-    const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
-    const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
-    const later = await say(w.m2, w.g, "还有物业费的事");
-    // As if `later` had been a call noted on the reply after its claim, before it began: begin takes it on.
-    await db.query("update agent_runs set pending_seq = $2 where agent_id = $1 and status = 'queued'", [w.agent.id, later]);
-
-    await answer("（回答）");
-    const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([older, slipped, later]);
-    expect(await peopleAfter(w.g, line)).toEqual([older, slipped, later]);
-  });
-
-  it("a follow-up answering a call noted while the reply ran, with the newcomer's message before it: the newcomer counts", async () => {
+  it("the reply for a call that waited while the reply ran, with the newcomer's message before it: the newcomer counts", async () => {
     const w = await world();
     await privateThings(w);
     const line = await newcomerJoins(w);
@@ -584,7 +572,7 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     expect(await peopleAfter(w.g, line)).toEqual([older, slipped, again]);
   });
 
-  it("a call noted on a claimed reply that is then released (failed, not followed up), with the newcomer's message before it: the owner's retry counts the newcomer", async () => {
+  it("a claimed reply released (failed) with a call waiting behind it, the newcomer's message between: the waiting call gets its reply at once, and it counts the newcomer", async () => {
     const w = await world();
     await privateThings(w);
     const line = await newcomerJoins(w);
@@ -593,15 +581,18 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
     const noted = await say(w.m2, w.g, "@helper_bot 我也想知道");
     expect(await app.agentPort.releaseRun(ticket!.id)).toBe(true);
-    expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "failed", error: "provider_unavailable", lane: "others" }]);
+    expect(await runsOf(w.agent.id, w.g)).toEqual([
+      { status: "failed", error: "provider_unavailable", lane: "others" },
+      { status: "queued", error: null, lane: "others" },
+    ]);
 
-    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
-    await answer("（重试的回答）");
+    await answer("（回答 mike）");
     const call = lastCall();
     expectNoSecret(call);
     expect((await seqsShown(call, w.g)).shown).toEqual([older, slipped, noted]);
     expect(await peopleAfter(w.g, line)).toEqual([older, slipped, noted]);
   });
+
 });
 
 describe("what an Agent relays counts for whoever asked it (fix round 3)", () => {
@@ -612,29 +603,28 @@ describe("what an Agent relays counts for whoever asked it (fix round 3)", () =>
     return relay;
   }
 
-  it("the newcomer's own Agent, called before an older member's question, posts the newcomer's question while that reply waits: the reply is cut at the newcomer's joining", async () => {
+  it("the newcomer's own Agent, called before an older member's question, posts the newcomer's question while that reply waits: that reply is not shown it (it ends at its call)", async () => {
     const w = await world();
     await privateThings(w);
-    const line = await newcomerJoins(w);
+    await newcomerJoins(w);
     await relayOf(w);
-    const toRelay = await say(w.s, w.g, "@x_bot 请原样说一遍：大家最近有什么要注意的吗？");
+    await say(w.s, w.g, "@x_bot 请原样说一遍：大家最近有什么要注意的吗？");
     const older = await say(w.m, w.g, "@helper_bot 周末停水吗？");
-    // 小喇叭's run was queued first: it posts the question (no mention, nobody's new message) into the wait.
+    // 小喇叭's run was queued first: it posts the question (no mention, nobody's new message) while the older member's reply waits.
     await answer("大家最近有什么要注意的吗？");
 
     await answer("（回答 mona）");
     const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([toRelay, older]);
-    expect(await peopleAfter(w.g, line)).toEqual([toRelay, older]);
+    expect(turnsText(call)).not.toContain("小喇叭｜Agent〕");
+    expect((await seqsShown(call, w.g)).shown.at(-1)).toBe(older);
   });
 
   it("the same through a reply nobody asked for, picked for an older member's remark", async () => {
     const w = await world();
     await privateThings(w);
-    const line = await newcomerJoins(w);
+    await newcomerJoins(w);
     await relayOf(w);
-    const toRelay = await say(w.s, w.g, "@x_bot 请原样说一遍：大家最近有什么要注意的吗？");
+    await say(w.s, w.g, "@x_bot 请原样说一遍：大家最近有什么要注意的吗？");
     const remark = await say(w.m, w.g, "周末好像要停水");
     judge.answer(byName({ 小助手: 0.95 }));
     const decided = await decideProactive({ db, judge, config: app.deps.config, log: app.log }, w.g, remark);
@@ -644,26 +634,24 @@ describe("what an Agent relays counts for whoever asked it (fix round 3)", () =>
 
     await answer("（主动说一句）");
     const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([toRelay, remark]);
-    expect(await peopleAfter(w.g, line)).toEqual([toRelay, remark]);
+    expect(turnsText(call)).not.toContain("小喇叭｜Agent〕");
+    expect((await seqsShown(call, w.g)).shown.at(-1)).toBe(remark);
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.lane)).toEqual(["proactive"]);
   });
 
-  it("an Agent's message no run posted, while the reply waits: whose question it carries is not known — the latest joining of the people there now", async () => {
+  it("an Agent's message no run posted, while the reply waits: not shown to that reply either", async () => {
     const w = await world();
     const other = await mustCreateAgent(app, w.m2, { handle: "other_bot", name: "阿杰", intro: "擅长查资料", model: FAST, persona: "你是阿杰。" });
     await addMember(w.m2, w.g, other.id);
     await privateThings(w);
-    const line = await newcomerJoins(w);
+    await newcomerJoins(w);
     const older = await say(w.m, w.g, "@helper_bot 周末停水吗？");
-    await db.tx((t) => insertMessage(t, w.g, other.id, "text", { text: "大家最近有什么要注意的吗？" }, null));
+    await db.tx((t) => insertMessage(t, w.g, other.id, "text", { text: "NO-RUN-10b 大家最近有什么要注意的吗？" }, null));
 
     await answer("（回答 mona）");
     const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([older]);
-    expect(await peopleAfter(w.g, line)).toEqual([older]);
+    expect(shownText(call)).not.toContain("NO-RUN-10b");
+    expect((await seqsShown(call, w.g)).shown.at(-1)).toBe(older);
   });
 
   it("a reply that calls nobody records nothing more when it is posted (what it heard is recorded only for what it hands down)", async () => {
@@ -688,7 +676,8 @@ describe("the calls shown from before the line, and the calls a follow-up or a r
     await sendFile(w.m2, w.g, FILE_NAME, SECRET.file, "application/octet-stream", "@helper_bot 帮我看看这份报告");
     await newcomerJoins(w);
     await say(w.s, w.g, "我刚进群，大家好");
-    await sendFile(w.m, w.g, "AFTER-10b.txt", "AFTER-CONTENT-10b 一切正常", "application/octet-stream", "@helper_bot 也看看这份");
+    // The same person asks again while the reply waits: folded into it, the newcomer's message between heard.
+    await sendFile(w.m2, w.g, "AFTER-10b.txt", "AFTER-CONTENT-10b 一切正常", "application/octet-stream", "@helper_bot 也看看这份");
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
 
     await answer("（回答）");
@@ -701,14 +690,14 @@ describe("the calls shown from before the line, and the calls a follow-up or a r
         parts: [
           { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 帮我看看这份报告` },
           { type: "text", text: `〔${m} sam｜群成员〕我刚进群，大家好` },
-          { type: "text", text: `〔${m} mona｜群成员〕@helper_bot 也看看这份` },
+          { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 也看看这份` },
           { type: "text", text: "[文件：AFTER-10b.txt]\nAFTER-CONTENT-10b 一切正常" },
         ],
       },
     ]);
   });
 
-  it("a follow-up answering two noted calls, the earlier from before the newcomer joined: both calls are shown, nothing else from before the joining", async () => {
+  it("one assignment of two calls that waited (one person's), the earlier from before the newcomer joined: both calls are shown, nothing else from before the joining", async () => {
     const w = await world();
     await privateThings(w);
     await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
@@ -718,23 +707,24 @@ describe("the calls shown from before the line, and the calls a follow-up or a r
     const earlier = await say(w.m2, w.g, "@helper_bot 还有物业费呢？");
     const line = await newcomerJoins(w);
     const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
-    const later = await say(w.m, w.g, "@helper_bot 再问一句，垃圾什么时候收？");
+    const later = await say(w.m2, w.g, "@helper_bot 再问一句，垃圾什么时候收？");
     hold.release("（回答 mona）");
     expect(await running).toBe(true);
 
-    await answer("（回答后来的）");
-    const followUp = lastCall();
-    expectNoSecret(followUp);
-    expect((await seqsShown(followUp, w.g)).shown).toEqual([earlier, slipped, later]);
+    await answer("（回答 mike）");
+    const next = lastCall();
+    expectNoSecret(next);
+    expect((await seqsShown(next, w.g)).shown).toEqual([earlier, slipped, later]);
     expect(await peopleAfter(w.g, line)).toEqual([slipped, later]);
   });
 
-  it("a group retry of a reply that had an older member's call folded in from before the line: the retry shows that call too", async () => {
+  it("a group retry of a reply that had a call folded in from before the line: the retry shows that call too, and its calls once each", async () => {
     const w = await world();
     await privateThings(w);
     const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
     const line = await newcomerJoins(w);
-    const asked = await say(w.s, w.g, QUESTION);
+    const slipped = await say(w.s, w.g, "我刚进群，大家好");
+    const again = await say(w.m, w.g, "@helper_bot 还有，垃圾什么时候收？");
     gateway.fail("provider_unavailable");
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "failed", error: "provider_unavailable", lane: "others" }]);
@@ -743,30 +733,30 @@ describe("the calls shown from before the line, and the calls a follow-up or a r
     await answer("（重试的回答）");
     const call = lastCall();
     expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([older, asked]);
-    expect(await peopleAfter(w.g, line)).toEqual([asked]);
-    // The calls it carries are a set (each once), not the failed run's appended to its own.
+    expect((await seqsShown(call, w.g)).shown).toEqual([older, slipped, again]);
+    expect(await peopleAfter(w.g, line)).toEqual([slipped, again]);
+    // The calls it carries are the failed run's assignment, each once.
     const stored = await db.query<{ calls: string[] }>(
       "select call_seqs::text[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at desc, id desc limit 1",
       [w.agent.id, w.g],
     );
-    expect(stored.rows[0]!.calls.map(Number)).toEqual([older, asked]);
+    expect(stored.rows[0]!.calls.map(Number)).toEqual([older, again]);
   });
 });
 
 describe("the calls a reply answers are always shown; an asker who is not in the group now", () => {
-  it("a newcomer who joined after the question and spoke before the reply began: the question is still answered — from itself and what came after the newcomer's joining", async () => {
+  it("a newcomer who joined after the question and spoke before the reply began: the question is answered as it was asked — the newcomer's message after it is not shown", async () => {
     const w = await world();
     await privateThings(w);
     const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
-    const line = await newcomerJoins(w);
+    await newcomerJoins(w);
     const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
 
     await answer("（回答 mona）");
     const call = lastCall();
-    expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([older, ...(await peopleAfter(w.g, line))]);
-    expect(await peopleAfter(w.g, line)).toEqual([slipped]);
+    const { shown } = await seqsShown(call, w.g);
+    expect(shown).not.toContain(slipped);
+    expect(shown.at(-1)).toBe(older);
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "done", error: null, lane: "others" }]);
     const posted = (await api(app, w.m, "GET", `/api/conversations/${w.g}/messages`)).json.messages.at(-1);
     expect(posted).toMatchObject({ senderId: w.agent.id, text: "（回答 mona）" });
@@ -786,20 +776,23 @@ describe("the calls a reply answers are always shown; an asker who is not in the
     expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "done", error: null, lane: "others" }]);
   });
 
-  it("older members' questions folded with a newcomer's: every question is shown, nothing else from before the newcomer's joining", async () => {
+  it("older members' questions and then a newcomer's: three replies in that order, each its asker's; the newcomer's is shown nothing from before their joining", async () => {
     const w = await world();
     await privateThings(w);
-    const older = await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
-    const folded = await say(w.m2, w.g, "@helper_bot 还有物业费呢？");
+    await say(w.m, w.g, "@helper_bot 周末停水的事你记得吗？");
+    await say(w.m2, w.g, "@helper_bot 还有物业费呢？");
     const line = await newcomerJoins(w);
     const asked = await say(w.s, w.g, QUESTION);
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
 
-    await answer("（一起回答）");
+    await answer("（回答 mona）");
+    await answer("（回答 mike）");
+    await answer("（回答新来的）");
     const call = lastCall();
     expectNoSecret(call);
-    expect((await seqsShown(call, w.g)).shown).toEqual([older, folded, asked]);
+    expect((await seqsShown(call, w.g)).shown).toEqual([asked]);
     expect(await peopleAfter(w.g, line)).toEqual([asked]);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["done", "done", "done"]);
   });
 
   it("a call that quotes something from before the line: the call is shown, its quote left out (as one the Agent cannot see)", async () => {
@@ -809,6 +802,8 @@ describe("the calls a reply answers are always shown; an asker who is not in the
     await newcomerJoins(w);
     const slipped = "我刚进群，大家最近有什么要注意的吗？";
     await say(w.s, w.g, slipped);
+    // mike asks again while the reply waits: folded into it, the newcomer's message between heard — the line is the newcomer's.
+    await say(w.m2, w.g, "@helper_bot 还有呢？");
 
     await answer("（回答 mike）");
     const call = lastCall();
@@ -820,9 +815,11 @@ describe("the calls a reply answers are always shown; an asker who is not in the
         parts: [
           { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 这条怎么看？` },
           { type: "text", text: `〔${m} sam｜群成员〕${slipped}` },
+          { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 还有呢？` },
         ],
       },
     ]);
+
   });
 
   it("a reply none of whose calls its Agent can see (a run recorded as answering a notice): it ends quietly — no call, nothing failed, nothing to retry", async () => {
@@ -926,21 +923,25 @@ describe("more of what reaches back, and more of who asked", () => {
     expect((await runsOf(other.id, w.g)).map((r) => r.status)).toEqual(["done"]);
   });
 
-  it("two newcomers' mentions folded into one reply: the later joining is the line", async () => {
+  it("two newcomers' mentions: two replies, each cut at its own asker's joining", async () => {
     const w = await world();
     await privateThings(w);
     await newcomerJoins(w);
-    await say(w.m, w.g, "BETWEEN-10b 欢迎新邻居");
+    const between = await say(w.m, w.g, "BETWEEN-10b 欢迎新邻居");
     const later = await anotherJoins(w, "tina");
     const first = await say(w.s, w.g, QUESTION);
     const second = await say(later.who, w.g, "@helper_bot 我也刚进群，有什么要注意的？");
     expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
 
-    await answer("（回答两位新来的）");
-    const call = lastCall();
-    expectNoSecret(call);
-    expect(JSON.stringify(call)).not.toContain("BETWEEN-10b");
-    expect((await seqsShown(call, w.g)).shown).toEqual([first, second]);
+    await answer("（回答 sam）");
+    const toSam = lastCall();
+    expectNoSecret(toSam);
+    expect((await seqsShown(toSam, w.g)).shown).toEqual([between, first]);
+    await answer("（回答 tina）");
+    const toTina = lastCall();
+    expectNoSecret(toTina);
+    expect(JSON.stringify(toTina)).not.toContain("BETWEEN-10b");
+    expect((await seqsShown(toTina, w.g)).shown).toEqual([first, second]);
     expect(await peopleAfter(w.g, later.line)).toEqual([first, second]);
   });
 
@@ -993,7 +994,7 @@ describe("more of what reaches back, and more of who asked", () => {
     expect(filesSent(lastCall()).map((p) => p.type)).toEqual(["image"]);
   });
 
-  it("a reply nobody asked for, taken over by the newcomer's mention while it waits: cut at the newcomer's joining", async () => {
+  it("a reply nobody asked for with the newcomer's mention waiting behind it: it ends quietly as it begins, and the newcomer's own reply is cut at their joining", async () => {
     const w = await world();
     await privateThings(w);
     const line = await newcomerJoins(w);
@@ -1004,13 +1005,19 @@ describe("more of what reaches back, and more of who asked", () => {
     for (const run of decided.runs) app.agentPort.announce(run);
     const asked = await say(w.s, w.g, QUESTION);
 
-    await answer("（回答新来的）");
+    gateway.reply("（回答新来的）");
+    while (await app.agentWorker.runOnce());
+    expect(callsHere()).toHaveLength(1);
     const call = lastCall();
     expectNoSecret(call);
     expect((await seqsShown(call, w.g)).shown).toEqual([remark, asked]);
     expect(await peopleAfter(w.g, line)).toEqual([remark, asked]);
-    expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "done", error: null, lane: "others" }]);
+    expect(await runsOf(w.agent.id, w.g)).toEqual([
+      { status: "cancelled", error: null, lane: "proactive" },
+      { status: "done", error: null, lane: "others" },
+    ]);
   });
+
 
   it("the owner retrying a failed reply the newcomer asked for: the retry answers the same asker, cut at the newcomer's joining", async () => {
     const w = await world();

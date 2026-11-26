@@ -92,7 +92,6 @@ interface RunView {
   status: string;
   error: string | null;
   covers: number;
-  pending: number | null;
   by: string;
   interrupted: string | null;
 }
@@ -101,7 +100,7 @@ interface RunView {
 const runsOf = async (agentId: string, conv: string): Promise<RunView[]> =>
   (
     await db.query<RunView>(
-      `select status, error, covers_seq::int as covers, pending_seq::int as pending, triggered_by as by, interrupted
+      `select status, error, covers_seq::int as covers, triggered_by as by, interrupted
          from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id`,
       [agentId, conv],
     )
@@ -110,7 +109,15 @@ const runsOf = async (agentId: string, conv: string): Promise<RunView[]> =>
 const allRuns = async () => Number((await db.query("select count(*) n from agent_runs")).rows[0].n);
 
 /** Ends every active run, so that the next trigger queues a new one instead of folding. */
-const settleAll = () => db.query("update agent_runs set status = 'done', finished_at = now() where status in ('queued', 'running')");
+const settleAll = async () => {
+  await db.query("delete from deferred_calls");
+  await db.query("update agent_runs set status = 'done', finished_at = now() where status in ('queued', 'running')");
+};
+/** The seqs of the calls waiting for `agentId` in `conv` (`deferred_calls`), oldest first. */
+const waitingOf = async (agentId: string, conv: string): Promise<number[]> =>
+  (await db.query<{ seq: number }>("select message_seq::int as seq from deferred_calls where agent_id = $1 and conversation_id = $2 order by message_seq", [agentId, conv])).rows.map(
+    (r) => r.seq,
+  );
 
 /** The notices of `event` in `conv`, oldest first: their seq, text and event. */
 const noticesOf = async (conv: string, event: string) =>
@@ -222,7 +229,7 @@ describe("a person's message in a group", () => {
     const memberSocket = await connect(app, w.member);
 
     const first = await say(w.member, w.g, "@anna 你好");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: first, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: first, by: "human", interrupted: null }]);
     expect(await runsOf(anna2.id, w.g)).toEqual([]);
     // The owner gets the run; another member of the group only its state (`run` without a run, Task 6).
     const annaPush = await ownerSocket.next((e) => e.type === "run" && e.conversationId === w.g && "run" in e);
@@ -230,8 +237,8 @@ describe("a person's message in a group", () => {
 
     // Two named: two runs, each announced to its own owner.
     const second = await say(w.third, w.g, "@ANNA_2 和 @bobbot 一起看看");
-    expect(await runsOf(anna2.id, w.g)).toEqual([{ status: "queued", error: null, covers: second, pending: null, by: "human", interrupted: null }]);
-    expect(await runsOf(bob.id, w.g)).toEqual([{ status: "queued", error: null, covers: second, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna2.id, w.g)).toEqual([{ status: "queued", error: null, covers: second, by: "human", interrupted: null }]);
+    expect(await runsOf(bob.id, w.g)).toEqual([{ status: "queued", error: null, covers: second, by: "human", interrupted: null }]);
     const bobPush = await memberSocket.next((e) => e.type === "run" && e.conversationId === w.g && "run" in e);
     expect(bobPush.run.status).toBe("queued");
     await ownerSocket.waitFor((e) => e.type === "run" && e.conversationId === w.g && "run" in e && e.run.id !== annaPush.run.id);
@@ -245,17 +252,21 @@ describe("a person's message in a group", () => {
     expect((await runsOf(anna.id, w.g)).map((r) => r.covers)).toEqual([first]);
   });
 
-  it("while the Agent's reply in the group is queued a mention folds into it; while it runs, it is noted; replyMode plays no part", async () => {
+  it("while the Agent's reply in the group is queued, its caller's next mention folds into it and another person's waits; while it runs, every mention waits; replyMode plays no part", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g, { replyMode: "mention" });
     const one = await say(w.member, w.g, "@anna 一");
     await say(w.member, w.g, "没有点名");
+    const again = await say(w.member, w.g, "@anna 一又一");
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: again, by: "human", interrupted: null }]);
     const two = await say(w.third, w.g, "@anna 二");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: two, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: again, by: "human", interrupted: null }]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([two]);
     expect(two).toBeGreaterThan(one);
     await db.query("update agent_runs set status = 'running', started_at = now() where agent_id = $1", [anna.id]);
     const three = await say(w.owner, w.g, "@anna 三");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "running", error: null, covers: two, pending: three, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "running", error: null, covers: again, by: "human", interrupted: null }]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([two, three]);
     // Its own conversation is another conversation: a run there is not touched, and none is made there.
     expect(await runsOf(anna.id, anna.conversationId)).toEqual([]);
   });
@@ -273,7 +284,7 @@ describe("a person's message in a group", () => {
     const s = await connect(app, w.owner);
     const one = await say(w.owner, w.g, "@anna 一");
     const [limited] = await runsOf(anna.id, w.g);
-    expect(limited).toEqual({ status: "failed", error: "rate_limited", covers: one, pending: null, by: "human", interrupted: null });
+    expect(limited).toEqual({ status: "failed", error: "rate_limited", covers: one, by: "human", interrupted: null });
     const first = await s.next((e) => e.type === "run" && e.conversationId === w.g);
     expect(first.run).toEqual({ id: first.run.id, status: "failed", error: "rate_limited", retryable: true });
 
@@ -318,7 +329,7 @@ describe("a person's message in a group", () => {
     await say(w.third, w.g, "@anna");
     expect(await runsOf(anna.id, w.g)).toEqual([]);
     const mine = await say(w.owner, w.g, "@anna 你来");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: mine, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: mine, by: "human", interrupted: null }]);
   });
 
   it("a person its owner has blocked, or who has blocked its owner, does not call it; the others do, and so does that person once the block is lifted", async () => {
@@ -338,12 +349,12 @@ describe("a person's message in a group", () => {
     await say(w.owner, w.g, "@tess 你呢");
     expect((await runsOf(theirs.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
     const other = await say(w.owner, w.g, "@anna 我来问");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: other, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: other, by: "human", interrupted: null }]);
     // Nor is the blocked person's mention folded into the run under way.
     await say(w.member, w.g, "@anna 还有我");
     await db.query("update agent_runs set status = 'running', started_at = now() where agent_id = $1", [anna.id]);
     await say(w.member, w.g, "@anna 再问一次");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "running", error: null, covers: other, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "running", error: null, covers: other, by: "human", interrupted: null }]);
     await settleAll();
     expect((await api(app, w.owner, "DELETE", `/api/blocks/${w.member.id}`)).status).toBe(200);
     const again = await say(w.member, w.g, "@anna 现在呢");
@@ -366,7 +377,7 @@ describe("a person's message in a group", () => {
     const calls = gateway.calls.length;
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(gateway.calls.length).toBe(calls);
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "cancelled", error: null, covers: asked, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "cancelled", error: null, covers: asked, by: "human", interrupted: null }]);
     const charged = await db.query<{ charged: string }>(
       "select coalesce(sum(u.free_micro + u.balance_micro), 0)::text as charged from usage_records u join agent_runs r on r.id = u.run_id where r.agent_id = $1",
       [anna.id],
@@ -407,7 +418,7 @@ describe("a person's message in a group", () => {
     await say(w.member, w.g, "", { attachmentId: await upload() });
     expect(await runsOf(anna.id, w.g)).toEqual([]);
     const captioned = await say(w.member, w.g, "看看这个 @anna", { attachmentId: await upload() });
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: captioned, pending: null, by: "human", interrupted: null }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: captioned, by: "human", interrupted: null }]);
   });
 });
 
@@ -423,7 +434,7 @@ describe("an Agent's message in a group", () => {
     const said = await agentSays(a.id, w.g, "@alpha 自己，@beta 你来，@gamma 也来");
     expect(said.notices).toEqual([]);
     expect(said.runs.map((r) => [r.ownerId, r.conversationId, r.run.status])).toEqual([[w.member.id, w.g, "queued"]]);
-    expect(await runsOf(b.id, w.g)).toEqual([{ status: "queued", error: null, covers: said.message.seq, pending: null, by: "agent", interrupted: null }]);
+    expect(await runsOf(b.id, w.g)).toEqual([{ status: "queued", error: null, covers: said.message.seq, by: "agent", interrupted: null }]);
     expect([await runsOf(a.id, w.g), await runsOf(c.id, w.g)]).toEqual([[], []]);
     // Its owner's own mention does call the owner-only Agent.
     const mine = await say(w.third, w.g, "@gamma");
@@ -449,7 +460,7 @@ describe("an Agent's message in a group", () => {
     expect(await runsOf(a.id, w.g)).toEqual([]);
   });
 
-  it("folds and queues like a person's, and over the others' minute starts nothing; a person's mention folded into an Agent's queued run makes it the person's", async () => {
+  it("folds and queues like a person's, and over the others' minute starts nothing; a person's mention while an Agent's run is queued waits for a reply of its own", async () => {
     const w = await world();
     const a = await agentOf(w.owner, "alpha", w.g);
     const b = await agentOf(w.member, "beta", w.g);
@@ -457,15 +468,18 @@ describe("an Agent's message in a group", () => {
     const first = await agentSays(a.id, w.g, "@beta 看一下");
     const second = await agentSays(a.id, w.g, "@beta 还有这个");
     expect(second.runs).toEqual([]);
-    expect(await runsOf(b.id, w.g)).toEqual([{ status: "queued", error: null, covers: second.message.seq, pending: null, by: "agent", interrupted: null }]);
+    expect(await runsOf(b.id, w.g)).toEqual([{ status: "queued", error: null, covers: second.message.seq, by: "agent", interrupted: null }]);
     expect(second.message.seq).toBeGreaterThan(first.message.seq);
     const asked = await say(w.third, w.g, "@beta 我也想知道");
-    expect(await runsOf(b.id, w.g)).toEqual([{ status: "queued", error: null, covers: asked, pending: null, by: "human", interrupted: null }]);
-    // Running: an Agent's mention is noted; the run stays whoever's it was.
-    await db.query("update agent_runs set status = 'running', started_at = now(), triggered_by = 'agent' where agent_id = $1", [b.id]);
+    expect(await runsOf(b.id, w.g)).toEqual([{ status: "queued", error: null, covers: second.message.seq, by: "agent", interrupted: null }]);
+    expect(await waitingOf(b.id, w.g)).toEqual([asked]);
+    // Running: an Agent's mention waits too; the run stays whoever's it was.
+    await db.query("update agent_runs set status = 'running', started_at = now() where agent_id = $1", [b.id]);
     const third = await agentSays(a.id, w.g, "@beta 再补充");
-    expect(await runsOf(b.id, w.g)).toEqual([{ status: "running", error: null, covers: asked, pending: third.message.seq, by: "agent", interrupted: null }]);
-    // Over the limit (the others' lane: the owner's Agent calls the member's): nothing is started and no run records it.
+    expect(await runsOf(b.id, w.g)).toEqual([{ status: "running", error: null, covers: second.message.seq, by: "agent", interrupted: null }]);
+    expect(await waitingOf(b.id, w.g)).toEqual([asked, third.message.seq]);
+    // Over the limit (the others' lane: the owner's Agent calls the member's): nothing is started and no run records it; the
+    // refusal is recorded for the person behind the relay (no run posted it: the Agent's owner), for them alone (C-d).
     await settleAll();
     await db.query(
       `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, created_at, finished_at, lane)
@@ -474,7 +488,8 @@ describe("an Agent's message in a group", () => {
     );
     const before = await runsOf(b.id, w.g);
     const limited = await agentSays(a.id, w.g, "@beta 超限");
-    expect([limited.runs, limited.refused]).toEqual([[], []]);
+    expect(limited.runs).toEqual([]);
+    expect(limited.refused).toEqual([{ conversationId: w.g, senderId: w.owner.id, seq: limited.message.seq }]);
     expect(await runsOf(b.id, w.g)).toEqual(before);
   });
 
@@ -680,7 +695,7 @@ describe("POST /api/conversations/:id/agents/halt", () => {
     const at = await seqOf(w.g);
 
     expect(await api(app, w.third, "POST", `/api/conversations/${w.g}/agents/halt`)).toEqual({ status: 200, json: { ok: true } });
-    expect(await runsOf(b.id, w.g)).toEqual([{ status: "cancelled", error: "halted", covers: 1, pending: null, by: "agent", interrupted: null }]);
+    expect(await runsOf(b.id, w.g)).toEqual([{ status: "cancelled", error: "halted", covers: 1, by: "agent", interrupted: null }]);
     expect((await runsOf(c.id, w.g)).map((r) => [r.status, r.interrupted])).toEqual([["queued", null]]);
     expect((await runsOf(a.id, w.g)).map((r) => [r.status, r.interrupted])).toEqual([["running", "halted"]]);
     expect((await runsOf(e.id, w.g)).map((r) => [r.status, r.interrupted])).toEqual([["running", null]]);
@@ -757,7 +772,7 @@ describe("POST /api/conversations/:id/agents/halt", () => {
     await finish(two);
     expect((await runsOf(b.id, w.g)).slice(1)).toEqual([
       expect.objectContaining({ status: "cancelled", error: "halted" }),
-      { status: "queued", error: null, covers: asked, pending: null, by: "human", interrupted: null },
+      { status: "queued", error: null, covers: asked, by: "human", interrupted: null },
     ]);
     await settleAll();
 
@@ -777,7 +792,7 @@ describe("POST /api/conversations/:id/agents/halt", () => {
     await finish(four);
     expect((await runsOf(b.id, w.g)).slice(4)).toEqual([
       expect.objectContaining({ status: "done", by: "human" }),
-      { status: "queued", error: null, covers: noted.message.seq, pending: null, by: "agent", interrupted: null },
+      { status: "queued", error: null, covers: noted.message.seq, by: "agent", interrupted: null },
     ]);
     // Released instead of finished (recovery's way): the same rule.
     await settleAll();
@@ -937,7 +952,7 @@ describe("follow-ups in a group", () => {
     return { id, agentId, ownerId, conversationId: conv } satisfies RunTicket;
   };
 
-  it("an Agent's mention noted before a halt is never followed up, even once a person has written since; a person's mention noted with it still is", async () => {
+  it("an Agent's mention that waited from before a halt is never answered, even once a person has written since; a person's mention that waited with it still is", async () => {
     const w = await world();
     const a = await agentOf(w.owner, "alpha", w.g);
     const b = await agentOf(w.member, "beta", w.g);
@@ -953,17 +968,22 @@ describe("follow-ups in a group", () => {
     await finish(one);
     expect(await runsOf(b.id, w.g)).toEqual([expect.objectContaining({ status: "done", by: "human" })]);
 
-    // The same with a person's mention noted on it before the halt too: that person is answered, up to all that was noted.
+    // The same with a person's mention waiting before the halt too: that person is answered; the Agent's, taken after it, is not.
     const two = await runningIn(w.g, b.id, w.member.id, "human");
-    await say(w.third, w.g, "@beta 我也问一下");
-    const noted = (await agentSays(a.id, w.g, "@beta 再补充")).message.seq;
+    const asked = await say(w.third, w.g, "@beta 我也问一下");
+    await agentSays(a.id, w.g, "@beta 再补充");
     expect((await api(app, w.third, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
     await say(w.owner, w.g, "好的");
     await finish(two);
+    const three = await db.query<{ id: string }>("select id from agent_runs where agent_id = $1 and status = 'queued'", [b.id]);
     expect((await runsOf(b.id, w.g)).slice(1)).toEqual([
       expect.objectContaining({ status: "done", by: "human" }),
-      { status: "queued", error: null, covers: noted, pending: null, by: "human", interrupted: null },
+      { status: "queued", error: null, covers: asked, by: "human", interrupted: null },
     ]);
+    await db.query("update agent_runs set status = 'running', started_at = now() where id = $1", [three.rows[0]!.id]);
+    await finish({ id: three.rows[0]!.id, agentId: b.id, ownerId: w.member.id, conversationId: w.g });
+    expect((await runsOf(b.id, w.g)).length).toBe(3);
+    expect(await waitingOf(b.id, w.g)).toEqual([]);
   });
 
   it.each([
@@ -995,9 +1015,11 @@ describe("follow-ups in a group", () => {
     await agentSays(a.id, w.g, "我先说两句");
     // A reply of beta's an Agent called for, covering that message, admitted on `fast` and holding a point.
     const one = await runningIn(w.g, b.id, w.member.id, "agent", 1_000_000);
-    // Nothing of the chain is charged yet: another Agent's mention of it is noted.
-    expect((await agentSays(a.id, w.g, "@beta 继续")).notices).toEqual([]);
-    expect((await runsOf(b.id, w.g))[0]?.pending).not.toBeNull();
+    // Nothing of the chain is charged yet: another Agent's mention of it waits behind it.
+    const waits = await agentSays(a.id, w.g, "@beta 继续");
+    expect(waits.notices).toEqual([]);
+    expect(await waitingOf(b.id, w.g)).toEqual([waits.message.seq]);
+
 
     // It ends having cost a point (600 000 input and 200 000 output tokens on `fast`): the budget is spent, and what was
     // noted on it is not answered. The group is told as the run ends, live.

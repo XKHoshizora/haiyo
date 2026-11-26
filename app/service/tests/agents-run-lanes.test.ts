@@ -92,8 +92,24 @@ const laneOf = async (agentId: string, conv: string): Promise<Array<[string, str
     )
   ).rows.map((r) => [r.lane, r.caller_id]);
 
-/** Ends every active run, so that the next trigger queues a new one instead of folding. */
-const settleAll = () => db.query("update agent_runs set status = 'done', finished_at = now() where status in ('queued', 'running')");
+/** Ends every active run, and drops every call waiting for one, so that the next trigger queues a new one. */
+const settleAll = async () => {
+  await db.query("delete from deferred_calls");
+  await db.query("update agent_runs set status = 'done', finished_at = now() where status in ('queued', 'running')");
+};
+/** The calls waiting for `agentId` in `conv` (`deferred_calls`), oldest first: [seq, lane, caller]. */
+const waitingOf = async (agentId: string, conv: string): Promise<Array<[number, string, string | null]>> =>
+  (
+    await db.query<{ seq: number; lane: string; caller_id: string | null }>(
+      "select message_seq::int as seq, lane, caller_id from deferred_calls where agent_id = $1 and conversation_id = $2 order by message_seq",
+      [agentId, conv],
+    )
+  ).rows.map((r) => [r.seq, r.lane, r.caller_id]);
+/** The calls of the Agent's runs in `conv` (`call_seqs`), oldest first. */
+const callsOf = async (agentId: string, conv: string): Promise<number[][]> =>
+  (await db.query<{ calls: number[] }>("select call_seqs::int[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id", [agentId, conv])).rows.map(
+    (r) => r.calls,
+  );
 
 /** The Agent's queued run in `conv`, made running as the worker's claim makes it. */
 const claim = async (agentId: string, conv: string): Promise<RunTicket> => {
@@ -164,129 +180,90 @@ describe("a run's lane and who called for it", () => {
     ]);
   });
 
-  it("folding: a queued run is its owner's own only while every call it holds is the owner's own (fix round 5); else others, its caller the earliest other person's", async () => {
+  it("folding (limits redesign, Part 2): a call is folded only into a queued, never claimed reply of its own identity with nothing waiting; any other call waits for a reply of its own, and the run's lane and caller never change", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const carl = await agentOf(w.owner, "carlbot", w.g);
-    await say(w.member, w.g, "@anna 一");
-    await say(w.third, w.g, "@anna 二");
+    const one = await say(w.member, w.g, "@anna 一");
+    const two = await say(w.member, w.g, "@anna 二");
     expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
-    // The owner's mention folded in leaves it a reply for others: a member's call is still in it.
-    await say(w.owner, w.g, "@anna 三");
+    expect(await callsOf(anna.id, w.g)).toEqual([[one, two]]);
+    // The owner's mention and another member's: each of another identity, so each waits; the run stays the member's.
+    const three = await say(w.owner, w.g, "@anna 三");
+    const four = await say(w.third, w.g, "@anna 四");
+    // Once something waits, the member's own next call waits too (nothing passes the head).
+    const five = await say(w.member, w.g, "@anna 五");
     expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
-    await say(w.third, w.g, "@anna 四");
-    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.member.id]]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([
+      [three, "own", w.owner.id],
+      [four, "others", w.third.id],
+      [five, "others", w.member.id],
+    ]);
 
-    // An Agent of the owner's folds in as the owner does: a member's call is in it, so others.
+    // The owner's call and one of the owner's Agents': one identity, so one reply, the owner's own; a member's after it waits.
     await settleAll();
-    await say(w.member, w.g, "@anna 五");
-    await agentSays(carl.id, w.g, "@anna 补充");
-    expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.member.id]);
-
-    // The owner's calls only, themselves and through their Agent: own; a member's folded in after makes it the member's.
-    await settleAll();
-    await say(w.owner, w.g, "@anna 八");
+    const eight = await say(w.owner, w.g, "@anna 八");
     await agentSays(carl.id, w.g, "@anna 也看看");
     expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["own", w.owner.id]);
-    await say(w.third, w.g, "@anna 九");
-    expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.third.id]);
+    expect((await callsOf(anna.id, w.g)).at(-1)).toHaveLength(2);
+    expect((await callsOf(anna.id, w.g)).at(-1)![0]).toBe(eight);
+    const nine = await say(w.third, w.g, "@anna 九");
+    expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["own", w.owner.id]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([[nine, "others", w.third.id]]);
 
-    // A running run is not folded into: the owner's mention is noted for its follow-up, and the run stays the member's.
+    // A running run is never folded into, not even by its own caller: the call waits, and the run stays as it was.
     await settleAll();
     await say(w.member, w.g, "@anna 六");
     await claim(anna.id, w.g);
-    await say(w.owner, w.g, "@anna 七");
+    const seven = await say(w.member, w.g, "@anna 七");
     expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.member.id]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([[seven, "others", w.member.id]]);
   });
 
-  it("a follow-up takes its lane from what it answers", async () => {
+  it("the calls that waited are answered in their own identities, in the order they were made", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const carl = await agentOf(w.owner, "carlbot", w.g);
     const beta = await agentOf(w.third, "beta", w.g);
 
-    // A member's reply under way; its owner mentions it meanwhile, and so does the member: the follow-up answers both — a reply for
-    // others, the member's (fix round 5). Only the owner's mention meanwhile: the follow-up is the owner's own. (The first callers
-    // take turns: one person's calls on someone else's Agent are held to a few a minute, AGENT_CALLER_RUNS_PER_MINUTE.)
+    // A member's reply under way; the owner mentions it meanwhile, then the member: two replies after it, the owner's own first.
     await say(w.member, w.g, "@anna 一");
     const one = await claim(anna.id, w.g);
     await say(w.owner, w.g, "@anna 我也问");
     await say(w.member, w.g, "@anna 还有");
     await finish(one);
+    await finish(await claim(anna.id, w.g));
     expect(await laneOf(anna.id, w.g)).toEqual([
       ["others", w.member.id],
-      ["others", w.member.id],
-    ]);
-    await settleAll();
-    await say(w.third, w.g, "@anna 一又一");
-    const oneMore = await claim(anna.id, w.g);
-    await say(w.owner, w.g, "@anna 我也问");
-    await finish(oneMore);
-    expect((await laneOf(anna.id, w.g)).slice(2)).toEqual([
-      ["others", w.third.id],
       ["own", w.owner.id],
-    ]);
-
-    // Only the member mentions it meanwhile: others, the member's.
-    await settleAll();
-    await say(w.member, w.g, "@anna 二");
-    const two = await claim(anna.id, w.g);
-    await say(w.member, w.g, "@anna 再问");
-    await finish(two);
-    expect((await laneOf(anna.id, w.g)).slice(4)).toEqual([
-      ["others", w.member.id],
       ["others", w.member.id],
     ]);
 
-    // Several others: the earliest of them, an Agent counted as its owner.
+    // An Agent of someone else's is its owner's call (the third's); one of the owner's Agents, the owner's own.
     await settleAll();
     await say(w.member, w.g, "@anna 三");
     const three = await claim(anna.id, w.g);
     await agentSays(beta.id, w.g, "@anna 补充");
-    await say(w.member, w.g, "@anna 再问");
+    await agentSays(carl.id, w.g, "@anna 也看看");
     await finish(three);
-    expect((await laneOf(anna.id, w.g)).slice(6)).toEqual([
+    await finish(await claim(anna.id, w.g));
+    expect((await laneOf(anna.id, w.g)).slice(3)).toEqual([
       ["others", w.member.id],
-      ["others", w.third.id],
-    ]);
-
-    // One of the owner's Agents among them, beside another's call: others, the other's.
-    await settleAll();
-    await say(w.third, w.g, "@anna 四");
-    const four = await claim(anna.id, w.g);
-    await say(w.member, w.g, "@anna 我问");
-    await agentSays(carl.id, w.g, "@anna 也看看");
-    await finish(four);
-    expect((await laneOf(anna.id, w.g)).slice(8)).toEqual([
-      ["others", w.third.id],
-      ["others", w.member.id],
-    ]);
-    // One of the owner's Agents alone: own.
-    await settleAll();
-    await say(w.third, w.g, "@anna 五");
-    const five = await claim(anna.id, w.g);
-    await agentSays(carl.id, w.g, "@anna 也看看");
-    await finish(five);
-    expect((await laneOf(anna.id, w.g)).slice(10)).toEqual([
       ["others", w.third.id],
       ["own", w.owner.id],
     ]);
   });
 
-  it("a follow-up whose callers are no longer visible to it is others', with no caller — never its owner's own", async () => {
+  it("a call that waited from someone the owner has blocked since is dropped as it is taken: no reply, and nothing rides the owner's own lane", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     await say(w.third, w.g, "@anna 一");
     const one = await claim(anna.id, w.g);
     await say(w.member, w.g, "@anna 我也问");
-    // The owner blocks the member before the reply ends: the member's mention no longer counts for the follow-up (which
-    // is still queued, as before this change). A call its owner no longer allows does not ride the owner's own lane.
     expect((await api(app, w.owner, "PUT", `/api/blocks/${w.member.id}`)).status).toBe(200);
     await finish(one);
-    expect(await laneOf(anna.id, w.g)).toEqual([
-      ["others", w.third.id],
-      ["others", null],
-    ]);
+    expect(await laneOf(anna.id, w.g)).toEqual([["others", w.third.id]]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([]);
   });
 
   it("a rate-limited record carries them too: the owner's own, over their minute; someone else's call over the others' minute records nothing but its sender's line", async () => {
@@ -367,7 +344,7 @@ describe("a run's lane and who called for it", () => {
     expect(await laneOf(carl.id, w.g)).toEqual([["others", w.member.id]]);
   });
 
-  it("relayed into the other Agent's queued run of someone else's, it stays that run's; the owner's own minute is untouched", async () => {
+  it("relayed to the other Agent while a run of someone else's is queued there: the relayed call waits (another identity), that run stays as it was; the owner's own minute is untouched", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const carl = await agentOf(w.owner, "carlbot", w.g);
@@ -385,11 +362,11 @@ describe("a run's lane and who called for it", () => {
       );
     expect(await ownMinute()).toBe(0);
     gateway.reply("@carlbot 你也看看");
-    // The worker takes Anna's reply (the older), which names Carl: folded into his queued reply, the third's.
+    // The worker takes Anna's reply (the older), which names Carl: the member's call, relayed, waits behind the third's reply.
     expect(await app.agentWorker.runOnce()).toBe(true);
     const relayed = (await db.query<{ seq: string }>("select seq::text from messages where conversation_id = $1 and sender_id = $2", [w.g, anna.id])).rows[0]!;
     expect(await laneOf(carl.id, w.g)).toEqual([["others", w.third.id]]);
-    expect((await db.query("select covers_seq::text as covers from agent_runs where agent_id = $1", [carl.id])).rows).toEqual([{ covers: relayed.seq }]);
+    expect(await waitingOf(carl.id, w.g)).toEqual([[Number(relayed.seq), "others", w.member.id]]);
     expect(await ownMinute()).toBe(0);
   });
 
@@ -451,24 +428,22 @@ describe("a run's lane and who called for it", () => {
     },
   );
 
-  it("a relayed call noted on a reply under way no longer counts for its follow-up once a block stands between the person behind it and the Agent's owner", async () => {
+  it("a relayed call that waited for a reply under way is dropped as it is taken once a block stands between the person behind it and the Agent's owner", async () => {
     const w = await world();
     await agentOf(w.owner, "alpha", w.g);
     const beta = await agentOf(w.third, "beta", w.g);
     await say(w.third, w.g, "@beta 一");
     const one = await claim(beta.id, w.g);
-    // While Beta's reply runs, the member asks the owner's Alpha to ask it: Alpha's message is noted on Beta's reply.
+    // While Beta's reply runs, the member asks the owner's Alpha to ask it: Alpha's message, the member's call, waits.
     await say(w.member, w.g, "@alpha 问问 beta");
     gateway.reply("@beta 你看看");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    expect((await db.query("select pending_seq from agent_runs where id = $1", [one.id])).rows[0].pending_seq).not.toBeNull();
-    // Then Beta's owner blocks the member: the follow-up is still queued, but the member's relayed call is not its caller.
+    expect((await waitingOf(beta.id, w.g)).map(([, lane, caller]) => [lane, caller])).toEqual([["others", w.member.id]]);
+    // Then Beta's owner blocks the member: as Beta's reply ends the relayed call is held to the block, and nothing is queued.
     expect((await api(app, w.third, "PUT", `/api/blocks/${w.member.id}`)).status).toBe(200);
     await finish(one);
-    expect(await laneOf(beta.id, w.g)).toEqual([
-      ["own", w.third.id],
-      ["others", null],
-    ]);
+    expect(await laneOf(beta.id, w.g)).toEqual([["own", w.third.id]]);
+    expect(await waitingOf(beta.id, w.g)).toEqual([]);
   });
 
   it("a reply nobody called for names nobody: what it calls is others', with no caller", async () => {
@@ -509,14 +484,14 @@ describe("a run's lane and who called for it", () => {
 
   /**
    * Beta (the member's) replies to the third; while it runs, Delta (the member's too: its message, posted by no run, is
-   * the member's own call) names Beta and is refused by `refuse`. Alone it is not followed up; with the third's mention
-   * noted after it, the follow-up is the third's — the refused mention, which lies among what it answers, is no call.
+   * the member's own call) names Beta and is refused by `refuse`. Alone nothing waits and nothing follows; with the third's mention
+   * waiting after it, the next reply is the third's and answers that call only — the refused mention never waited.
    */
   const refusedThenAsked = async (refuse: (w: World, betaId: string) => Promise<string[]>) => {
     const w = await world();
     const beta = await agentOf(w.member, "beta", w.g);
     const delta = await agentOf(w.member, "delta", w.g);
-    const pendingOf = async (runId: string) => (await db.query("select pending_seq::int as p from agent_runs where id = $1", [runId])).rows[0].p as number | null;
+    const lastWaiting = async () => (await waitingOf(beta.id, w.g)).at(-1)?.[0] ?? null;
     // Beta's runs as `laneOf` gives them, less the fixtures `refuse` made.
     const fixtures: string[] = [];
     const lanes = async () =>
@@ -532,7 +507,7 @@ describe("a run's lane and who called for it", () => {
     const one = await claim(beta.id, w.g);
     fixtures.push(...(await refuse(w, beta.id)));
     expect((await agentSays(delta.id, w.g, "@beta 你看看")).runs).toEqual([]);
-    expect(await pendingOf(one.id)).toBeNull();
+    expect(await lastWaiting()).toBeNull();
     await finish(one);
     expect(await lanes()).toEqual([["others", w.third.id]]);
 
@@ -542,12 +517,13 @@ describe("a run's lane and who called for it", () => {
     fixtures.push(...(await refuse(w, beta.id)));
     expect((await agentSays(delta.id, w.g, "@beta 你再看看")).runs).toEqual([]);
     const asked = await say(w.third, w.g, "@beta 三");
-    expect(await pendingOf(two.id)).toBe(asked);
+    expect(await lastWaiting()).toBe(asked);
     await finish(two);
     expect((await lanes()).slice(1)).toEqual([
       ["others", w.third.id],
       ["others", w.third.id],
     ]);
+    expect((await callsOf(beta.id, w.g)).at(-1)).toEqual([asked]);
   };
 
   it("an Agent's mention refused because the group was halted never counts as a call of a later follow-up", async () => {
@@ -634,11 +610,11 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     return { owner, member, third, fourth, g: await group(limited, owner, "team", [member, third, fourth]) };
   }
 
-  /** The Agent's runs in `conv`, oldest first: status, error, what each covers and what was noted on it. */
+  /** The Agent's runs in `conv`, oldest first: status, error, what each covers. */
   const runsOf = async (agentId: string, conv: string) =>
     (
-      await db.query<{ status: string; error: string | null; covers: number; pending: number | null }>(
-        "select status, error, covers_seq::int as covers, pending_seq::int as pending from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id",
+      await db.query<{ status: string; error: string | null; covers: number }>(
+        "select status, error, covers_seq::int as covers from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id",
         [agentId, conv],
       )
     ).rows;
@@ -696,18 +672,25 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     expect(await retry()).toEqual({ status: 429, json: { error: "rate_limited" } });
   });
 
-  it("a follow-up over its lane's minute (its own caller and lane, not the ended run's): nothing is queued or recorded, its calls' senders read the line", async () => {
+  it("a call is met by the minutes as it is accepted, never later (C-a): one that waited is answered though the others' minute filled since; one made over the minute is refused at once and never waits", async () => {
     const w = await crowd();
     const anna = await agentOf(w.owner, "anna", w.g, limited);
     await say(w.member, w.g, "@anna 一", limited);
     const one = await claim(anna.id, w.g);
-    // The third's mention is noted on the member's reply under way; meanwhile the others' minute fills.
+    // The third's mention waits behind the member's reply (the others' minute: one reply and this call, two of two).
     const asked = await say(w.third, w.g, "@anna 二", limited);
-    await startedEarlier(w.g, anna.id, w.owner.id, "others", 1);
+    expect(await waitingOf(anna.id, w.g)).toEqual([[asked, "others", w.third.id]]);
+    // Full now: the fourth's call is refused as it is made, its sender alone told, and nothing of it waits.
+    const late = await say(w.fourth, w.g, "@anna 三", limited);
+    expect(await waitingOf(anna.id, w.g)).toEqual([[asked, "others", w.third.id]]);
+    expect(await refusalsOf(anna.id, w.g)).toEqual([[w.fourth.id, "too_often"]]);
+    expect(late).toBeGreaterThan(asked);
     await finish(one, limited);
-    expect((await statusOf(anna.id, w.g)).filter(([status]) => status !== "done")).toEqual([]);
-    expect(await refusalsOf(anna.id, w.g)).toEqual([[w.third.id, "too_often"]]);
-    expect(asked).toBeGreaterThan(0);
+    expect(await statusOf(anna.id, w.g)).toEqual([
+      ["done", null],
+      ["queued", null],
+    ]);
+    expect((await laneOf(anna.id, w.g)).at(-1)).toEqual(["others", w.third.id]);
   });
 
   it("others' calls do not use up the owner's own minute", async () => {
@@ -878,28 +861,26 @@ describe("replies a minute by lane, and one caller's limit on other people's Age
     expect(await laneOf(tess.id, w.g)).toEqual([["others", w.owner.id]]);
   });
 
-  it("a call folded into a run under way does not count, and its follow-up is not refused", async () => {
+  it("the caller's minute is met by every call as it is made (C-a): at their limit, a call that would fold, and one that would wait, are refused 太频繁 — and nothing follows them", async () => {
     const w = await crowd();
     const anna = await agentOf(w.owner, "anna", w.g, limited);
     lines.length = 0;
-    await say(w.member, w.g, "@anna 一", limited);
-    // At their limit, the member's next call folds into the queued reply, and the one after is noted on it running.
+    const one = await say(w.member, w.g, "@anna 一", limited);
+    // At their limit (one call a minute): the next would fold into the queued reply; it is refused instead.
     const two = await say(w.member, w.g, "@anna 二", limited);
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: two, pending: null }]);
-    const one = await claim(anna.id, w.g);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, covers: one }]);
+    const running = await claim(anna.id, w.g);
+    // And the next would wait behind the reply under way: refused too.
     const three = await say(w.member, w.g, "@anna 三", limited);
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "running", error: null, covers: two, pending: three }]);
-    // The follow-up answering it is the member's, and is queued: a follow-up is held to its lane's limit, not its
-    // caller's.
-    await finish(one, limited);
-    expect(await statusOf(anna.id, w.g)).toEqual([
-      ["done", null],
-      ["queued", null],
+    expect(await waitingOf(anna.id, w.g)).toEqual([]);
+    expect(await refusalsOf(anna.id, w.g)).toEqual([
+      [w.member.id, "too_often"],
+      [w.member.id, "too_often"],
     ]);
-    expect(await laneOf(anna.id, w.g)).toEqual([
-      ["others", w.member.id],
-      ["others", w.member.id],
-    ]);
-    expect(callerLimited()).toEqual([]);
+    expect(callerLimited().map((c) => c.callerId)).toEqual([w.member.id, w.member.id]);
+    await finish(running, limited);
+    expect(await statusOf(anna.id, w.g)).toEqual([["done", null]]);
+    expect([two, three].every((seq) => seq > one)).toBe(true);
   });
+
 });

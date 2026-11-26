@@ -140,8 +140,8 @@ describe("the operator's disable and enable", () => {
     const make = async (conv: string, status: "queued" | "running", lane: "own" | "others" | "proactive", caller: string) =>
       (
         await db.query<{ id: string }>(
-          `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, lane, caller_id, started_at)
-           values ('reply', $1, $2, $3, $4, 0, null, 'human', $5, $6, case when $4 = 'running' then now() end) returning id`,
+          `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane, caller_id, started_at)
+           values ('reply', $1, $2, $3, $4, 0, 'human', $5, $6, case when $4 = 'running' then now() end) returning id`,
           [conv, w.agent.id, w.owner.id, status, lane, caller],
         )
       ).rows[0]!.id;
@@ -194,27 +194,40 @@ describe("the operator's disable and enable", () => {
     expect(await runOf(r.groupQueued)).toMatchObject({ status: "cancelled" });
   }, TIMEOUT);
 
-  it("a disable keeps the owner's own call that is noted on an interrupted reply (A-4 review m2), and drops what another person's was", async () => {
+  it("a disable keeps the owner's own call that waits behind an interrupted reply (A-4 review m2), and drops another person's", async () => {
     const w = await world();
     const handle = await fullHandle(w.agent.id);
-    const noted = async (by: string) => {
+    /** A visitor's reply running in a group of its own, with `by`'s call waiting behind it (`deferred_calls`: the owner's own, or the visitor's). */
+    const waitingBehind = async (by: string) => {
       const g = (await db.query<{ id: string }>(`insert into conversations (type, creator_id, title) values ('group', $1, 'g') returning id`, [w.visitor.id])).rows[0]!.id;
       const seq = Number((await db.query<{ seq: string }>(`insert into messages (conversation_id, seq, sender_id, kind, body) values ($1, 1, $2, 'text', '{"text":"hi"}'::jsonb) returning seq::text as seq`, [g, by])).rows[0]!.seq);
+      await db.query(
+        `insert into deferred_calls (agent_id, conversation_id, message_seq, owner_id, lane, caller_id, triggered_by) values ($1, $2, $3, $4, $5, $6, 'human')`,
+        [w.agent.id, g, seq, w.owner.id, by === w.owner.id ? "own" : "others", by],
+      );
       return (
         await db.query<{ id: string }>(
-          `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, triggered_by, lane, caller_id, started_at)
-           values ('reply', $1, $2, $3, 'running', 0, $4, 'human', 'others', $5, now()) returning id`,
-          [g, w.agent.id, w.owner.id, seq, w.visitor.id],
+          `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane, caller_id, started_at)
+           values ('reply', $1, $2, $3, 'running', 0, 'human', 'others', $4, now()) returning id`,
+          [g, w.agent.id, w.owner.id, w.visitor.id],
         )
       ).rows[0]!.id;
     };
-    const ownerCall = await noted(w.owner.id);
-    const visitorCall = await noted(w.visitor.id);
+    const ownerCall = await waitingBehind(w.owner.id);
+    const visitorCall = await waitingBehind(w.visitor.id);
     expect((await cli("agent:disable", handle)).code).toBe(0);
-    const read = async (id: string) => (await db.query(`select interrupted, pending_seq is not null as noted from agent_runs where id = $1`, [id])).rows[0];
-    expect(await read(ownerCall)).toEqual({ interrupted: "access_ended", noted: true });
-    expect(await read(visitorCall)).toEqual({ interrupted: "access_ended", noted: false });
+    const read = async (id: string) =>
+      (
+        await db.query(
+          `select r.interrupted, exists (select 1 from deferred_calls d where d.agent_id = r.agent_id and d.conversation_id = r.conversation_id) as waiting
+             from agent_runs r where r.id = $1`,
+          [id],
+        )
+      ).rows[0];
+    expect(await read(ownerCall)).toEqual({ interrupted: "access_ended", waiting: true });
+    expect(await read(visitorCall)).toEqual({ interrupted: "access_ended", waiting: false });
   }, TIMEOUT);
+
 
   it("an unknown handle, a person's handle, an Agent that is deleted: refused, nothing changed", async () => {
     const w = await world();

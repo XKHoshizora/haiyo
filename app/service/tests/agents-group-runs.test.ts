@@ -85,8 +85,8 @@ interface Seed {
   status: RunStatus;
   error?: string;
   covers?: number;
-  /** What was noted on it beyond what it covered (`pending_seq`). */
-  pending?: number;
+  /** The calls it answers (`call_seqs`; null, as an old row's: not known). */
+  calls?: number[];
   resetsAt?: string;
   dismissed?: boolean;
   by?: "human" | "agent";
@@ -96,12 +96,12 @@ interface Seed {
 async function seedRun(agent: Agent, owner: Actor, conv: string, s: Seed): Promise<RunRow> {
   const covers = s.covers ?? (await seqOf(conv));
   const { rows } = await db.query<RunRow>(
-    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, pending_seq, resets_at, dismissed_at,
+    `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, error, covers_seq, call_seqs, resets_at, dismissed_at,
                                   triggered_by, started_at, finished_at)
      values ('reply', $1, $2, $3, $4, $5, $6, $7, $8, case when $9 then now() end, $10,
              case when $4 <> 'queued' then now() end, case when $4 not in ('queued', 'running') then now() end)
      returning ${RUN_COLUMNS}`,
-    [conv, agent.id, owner.id, s.status, s.error ?? null, covers, s.pending ?? null, s.resetsAt ?? null, s.dismissed === true, s.by ?? "human"],
+    [conv, agent.id, owner.id, s.status, s.error ?? null, covers, s.calls ?? null, s.resetsAt ?? null, s.dismissed === true, s.by ?? "human"],
   );
   return rows[0]!;
 }
@@ -601,17 +601,17 @@ describe("the owner's controls over a group run", () => {
     expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.anna.id })).toEqual({ status: 409, json: { error: "busy_run" } });
   });
 
-  it("retry: keeps whose message the failed run answered (an Agent's stays an Agent's, so a halt still stops it) and also answers what was noted on it", async () => {
+  it("retry: keeps whose message the failed run answered (an Agent's stays an Agent's, so a halt still stops it) and answers the same calls as it", async () => {
     const w = await world();
     const asked = await say(w.member, w.g, "先说一句");
-    const noted = await say(w.third, w.g, "又说一句");
-    // A reply an Agent's message called for, with a later message noted on it, that failed (released, not followed up).
-    const failed = await seedRun(w.anna, w.owner, w.g, { status: "failed", error: "provider_unavailable", covers: asked, pending: noted, by: "agent" });
+    const folded = await say(w.third, w.g, "又说一句");
+    // A reply an Agent's messages called for, two calls folded into it, that failed.
+    const failed = await seedRun(w.anna, w.owner, w.g, { status: "failed", error: "provider_unavailable", covers: folded, calls: [asked, folded], by: "agent" });
     const retried = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.anna.id });
     expect(retried.status).toBe(201);
     const runOf = async (id: string) =>
-      (await db.query("select status, error, covers_seq::int as covers, pending_seq::int as pending, triggered_by as by from agent_runs where id = $1", [id])).rows[0];
-    expect(await runOf(retried.json.run.id)).toEqual({ status: "queued", error: null, covers: noted, pending: null, by: "agent" });
+      (await db.query("select status, error, covers_seq::int as covers, call_seqs::int[] as calls, triggered_by as by from agent_runs where id = $1", [id])).rows[0];
+    expect(await runOf(retried.json.run.id)).toEqual({ status: "queued", error: null, covers: folded, calls: [asked, folded], by: "agent" });
     expect((await runOf(failed.id)).status).toBe("failed");
     // A member's halt ends it as it ends every reply Agents called for.
     expect((await api(app, w.third, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
@@ -622,7 +622,8 @@ describe("the owner's controls over a group run", () => {
     const persons = await seedRun(w.anna, w.owner, w.g, { status: "failed", error: "provider_unavailable", by: "human" });
     const again = await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.anna.id });
     expect(again.status).toBe(201);
-    expect(await runOf(again.json.run.id)).toEqual({ status: "queued", error: null, covers: (await runOf(persons.id)).covers, pending: null, by: "human" });
+    const covered = (await runOf(persons.id)).covers;
+    expect(await runOf(again.json.run.id)).toEqual({ status: "queued", error: null, covers: covered, calls: [covered], by: "human" });
     expect((await api(app, w.member, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
     expect((await runOf(again.json.run.id)).status).toBe("queued");
   });

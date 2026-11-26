@@ -86,19 +86,31 @@ const visibleTo = async (readerId: string, conv: string) =>
 const creatorOf = async (conv: string) =>
   (await db.query<{ creator_id: string; closed: boolean }>("select creator_id, closed_at is not null as closed from conversations where id = $1", [conv])).rows[0]!;
 
-/** A reply run of `agent` in `conv`, inserted by hand (the trigger in groups is another task's). */
-async function insertRun(agent: Agent, owner: Actor, conv: string, status: "queued" | "running", { covers = 1, pending = null as number | null } = {}) {
+/**
+ * A reply run of `agent` in `conv`, inserted by hand (the trigger in groups is another task's); with `waiting`, the owner's call
+ * on the conversation's latest message waits behind it (`deferred_calls`).
+ */
+async function insertRun(agent: Agent, owner: Actor, conv: string, status: "queued" | "running", { covers = 1, waiting = false } = {}) {
   const { rows } = await db.query<{ id: string }>(
-    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, started_at)
-     values ('reply', $1, $2, $3, $4, $5, $6, case when $4 = 'running' then now() end) returning id`,
-    [conv, agent.id, owner.id, status, covers, pending],
+    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at)
+     values ('reply', $1, $2, $3, $4, $5, case when $4 = 'running' then now() end) returning id`,
+    [conv, agent.id, owner.id, status, covers],
   );
+  if (waiting)
+    await db.query(
+      `insert into deferred_calls (agent_id, conversation_id, message_seq, owner_id, lane, caller_id, triggered_by)
+       select $1, $2, max(seq), $3, 'own', $3, 'human' from messages where conversation_id = $2`,
+      [agent.id, conv, owner.id],
+    );
   return rows[0]!.id;
 }
+/** The run, and how many calls wait for its Agent in its conversation (`deferred_calls`). */
 const runOf = async (runId: string) =>
   (
-    await db.query<{ status: string; error: string | null; interrupted: string | null; pending: number | null }>(
-      "select status, error, interrupted, pending_seq::int as pending from agent_runs where id = $1",
+    await db.query<{ status: string; error: string | null; interrupted: string | null; waiting: number }>(
+      `select status, error, interrupted,
+              (select count(*)::int from deferred_calls d where d.agent_id = r.agent_id and d.conversation_id = r.conversation_id) as waiting
+         from agent_runs r where id = $1`,
       [runId],
     )
   ).rows[0]!;
@@ -318,26 +330,26 @@ describe("taking an Agent out of a group", () => {
     await addOwn(owner, g, y);
     const queued = await insertRun(x, owner, g, "queued");
     const ownChat = await insertRun(x, owner, x.conversationId, "queued");
-    const running = await insertRun(y, owner, g, "running", { covers: 1, pending: 3 });
+    const running = await insertRun(y, owner, g, "running", { covers: 1, waiting: true });
     const socket = await connect(app, owner);
 
     expect((await remove(creator, g, x.id)).status).toBe(200);
-    expect(await runOf(queued)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: null, pending: null });
-    expect(await runOf(ownChat)).toEqual({ status: "queued", error: null, interrupted: null, pending: null });
+    expect(await runOf(queued)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: null, waiting: 0 });
+    expect(await runOf(ownChat)).toEqual({ status: "queued", error: null, interrupted: null, waiting: 0 });
     const pushed = await socket.next((e) => e.type === "run" && e.run.id === queued);
     expect(pushed).toMatchObject({ conversationId: g, run: { id: queued, status: "cancelled", error: "agent_removed", retryable: false } });
 
     const ticket = ticketOf(running, y, owner, g);
     expect(app.agentPort.shouldStop(ticket)).toBe(false);
     expect((await remove(owner, g, y.id)).status).toBe(200);
-    // Still running until its worker ends it, but marked: it stops now, posts nothing and ends cancelled; what was noted
-    // on it (seq 3) is dropped, so nothing follows it up in a group it is no longer in.
-    expect(await runOf(running)).toEqual({ status: "running", error: null, interrupted: "agent_removed", pending: null });
+    // Still running until its worker ends it, but marked: it stops now, posts nothing and ends cancelled; the call that waited
+    // behind it is dropped, so nothing answers it in a group the Agent is no longer in.
+    expect(await runOf(running)).toEqual({ status: "running", error: null, interrupted: "agent_removed", waiting: 0 });
     expect(app.agentPort.shouldStop(ticket)).toBe(true);
     await app.agentPort.finish(ticket, { status: "stopped" }, null, { inputChars: 0, outputChars: 0 });
-    expect(await runOf(running)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: "agent_removed", pending: null });
+    expect(await runOf(running)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: "agent_removed", waiting: 0 });
     expect((await db.query("select 1 from agent_runs where agent_id = $1 and status in ('queued', 'running')", [y.id])).rowCount).toBe(0);
-    expect(await runOf(ownChat)).toEqual({ status: "queued", error: null, interrupted: null, pending: null });
+    expect(await runOf(ownChat)).toEqual({ status: "queued", error: null, interrupted: null, waiting: 0 });
   });
 
   it("a fellow member's socket gets only the Agent's state for the cancelled runs (null): nothing of their details", async () => {
@@ -370,7 +382,7 @@ describe("an owner leaving takes their Agents along", () => {
     const g2 = await group(app, owner, "another", [creator, mia]);
     await addOwn(owner, g2, x);
     const xQueued = await insertRun(x, owner, g, "queued");
-    const yRunning = await insertRun(y, owner, g, "running", { pending: 4 });
+    const yRunning = await insertRun(y, owner, g, "running", { waiting: true });
     const xElsewhere = await insertRun(x, owner, g2, "queued");
     const zQueued = await insertRun(z, mia, g, "queued");
     const [ownerSocket, miaSocket] = [await connect(app, owner), await connect(app, mia)];
@@ -394,7 +406,7 @@ describe("an owner leaving takes their Agents along", () => {
     expect(members).toEqual([creator.id, mia.id, z.id].sort());
 
     expect(await runOf(xQueued)).toMatchObject({ status: "cancelled", error: "agent_removed" });
-    expect(await runOf(yRunning)).toEqual({ status: "running", error: null, interrupted: "agent_removed", pending: null });
+    expect(await runOf(yRunning)).toEqual({ status: "running", error: null, interrupted: "agent_removed", waiting: 0 });
     expect(app.agentPort.shouldStop(ticketOf(yRunning, y, owner, g))).toBe(true);
     // Its other group, and the other owner's Agent, are untouched.
     expect(await isIn(g2, x.id)).toBe(1);
@@ -433,7 +445,7 @@ describe("an owner leaving takes their Agents along", () => {
 
     expect((await remove(creator, g, owner.id)).status).toBe(200);
     expect(await notices(g, seq)).toHaveLength(2);
-    expect(await runOf(queued)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: null, pending: null });
+    expect(await runOf(queued)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: null, waiting: 0 });
     await ownerSocket.next((e) => e.type === "run" && e.run.id === queued && e.run.error === "agent_removed");
   });
 
@@ -683,7 +695,7 @@ describe("races", () => {
     await bounded("finish", app.agentPort.finish(ticket, { status: "cancelled" }, CANNED_USAGE, { inputChars: prepared.inputChars, outputChars: 7 }));
 
     expect(await fromAgent(x, g)).toEqual([]);
-    expect(await runOf(runId)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: "agent_removed", pending: null });
+    expect(await runOf(runId)).toEqual({ status: "cancelled", error: "agent_removed", interrupted: "agent_removed", waiting: 0 });
     const record = await db.query(
       `select outcome, input_tokens::int as input_tokens, output_tokens::int as output_tokens, estimated, cost_micro::int as cost,
               (free_micro + balance_micro)::int as charged, forgiven_micro::int as forgiven

@@ -1002,27 +1002,28 @@ describe("an Agent that is no longer in the group", () => {
     expect((await api(app, owner, "GET", "/api/usage")).json).toEqual(before);
   });
 
-  const pendingOf = async (runId: string) =>
-    (await db.query<{ pending: string | null }>("select pending_seq::text as pending from agent_runs where id = $1", [runId])).rows[0]!.pending;
+  /** How many calls wait for the Agent in `conv` behind its active reply (`deferred_calls`). */
+  const waitingOf = async (agentId: string, conv: string) =>
+    (await db.query<{ n: number }>("select count(*)::int as n from deferred_calls where agent_id = $1 and conversation_id = $2", [agentId, conv])).rows[0]!.n;
 
-  it("ended agent_removed at begin, it is followed by nothing, though a mention was noted on it meanwhile", async () => {
+  it("ended agent_removed at begin, it is followed by nothing, though a mention waited behind it meanwhile", async () => {
     const { mia, owner, g, agent } = await world();
     await addOwn(owner, g, agent.id);
     await say(mia, g, "@helper_bot 在吗");
     const ticket = (await app.agentPort.claimNext())!;
-    // A second mention while it runs is noted on it; then its membership ends with nothing marking the run.
+    // A second mention while it runs waits behind it; then its membership ends with nothing marking the run.
     await say(mia, g, "@helper_bot 还在吗");
-    expect(await pendingOf(ticket.id)).not.toBeNull();
+    expect(await waitingOf(agent.id, g)).toBe(1);
     await db.query("update memberships set left_seq = (select seq from conversations where id = $1) where conversation_id = $1 and principal_id = $2", [g, agent.id]);
     const end = await app.agentPort.begin(ticket);
     expect(end).toEqual({ status: "cancelled", error: "agent_removed" });
     await app.agentPort.finish(ticket, end as RunEnd, null, NOTHING);
     expect(await runsOf(agent.id, g)).toEqual([{ status: "cancelled", error: "agent_removed", owner: owner.id, by: "human" }]);
-    expect(await pendingOf(ticket.id)).toBeNull();
+    expect(await waitingOf(agent.id, g)).toBe(0);
     expect(await app.agentWorker.runOnce()).toBe(false);
   });
 
-  it("ended agent_removed at finish, it is followed by nothing, though a mention was noted on it meanwhile", async () => {
+  it("ended agent_removed at finish, it is followed by nothing, though a mention waited behind it meanwhile", async () => {
     const { mia, owner, g, agent } = await world();
     await addOwn(owner, g, agent.id);
     await say(mia, g, "@helper_bot 在吗");
@@ -1030,12 +1031,12 @@ describe("an Agent that is no longer in the group", () => {
     const prepared = await app.agentPort.begin(ticket);
     if (isRunEnd(prepared)) throw new Error(`begin ended the run: ${JSON.stringify(prepared)}`);
     await say(mia, g, "@helper_bot 还在吗");
-    expect(await pendingOf(ticket.id)).not.toBeNull();
+    expect(await waitingOf(agent.id, g)).toBe(1);
     await db.query("update memberships set left_seq = (select seq from conversations where id = $1) where conversation_id = $1 and principal_id = $2", [g, agent.id]);
     expect(await app.agentPort.post(ticket, { text: "在的", reasoning: "", stopped: false, truncated: false })).toBe("refused");
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
     expect(await runsOf(agent.id, g)).toEqual([{ status: "cancelled", error: "agent_removed", owner: owner.id, by: "human" }]);
-    expect(await pendingOf(ticket.id)).toBeNull();
+    expect(await waitingOf(agent.id, g)).toBe(0);
     expect(await app.agentWorker.runOnce()).toBe(false);
   });
 
