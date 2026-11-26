@@ -557,6 +557,33 @@ describe("whoever the reply hears from is recorded as it goes (fix round 2): eac
     expect(await peopleAfter(w.g, line)).toEqual([older, slipped, noted]);
   });
 
+  it("the owner's own calls recorded on the Agent's rate-limited reply (their own minute used up), the newcomer's message between them: the retry counts the newcomer", async () => {
+    const w = await world();
+    await privateThings(w);
+    const line = await newcomerJoins(w);
+    // The owner's own replies a minute used up (in the Agent's own conversation: none of them is in the group).
+    await db.query(
+      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, lane, created_at, finished_at)
+       select 'reply', $1, $2, $3, 'done', 1, 'human', 'own', now() - interval '30 seconds', now() - interval '29 seconds' from generate_series(1, $4)`,
+      [w.agent.conversationId, w.agent.id, w.v.id, app.deps.config.agentRunsPerMinute],
+    );
+    const older = await say(w.v, w.g, "@helper_bot 周末停水的事你记得吗？");
+    expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "failed", error: "rate_limited", lane: "own" }]);
+    const slipped = await say(w.s, w.g, "我刚进群，大家最近有什么要注意的吗？");
+    const again = await say(w.v, w.g, "@helper_bot 我也想知道");
+    // The same row records the owner's second call.
+    expect(await runsOf(w.agent.id, w.g)).toEqual([{ status: "failed", error: "rate_limited", lane: "own" }]);
+
+    // The minute clears; the owner retries.
+    await db.query("update agent_runs set created_at = created_at - interval '2 minutes' where agent_id = $1 and conversation_id = $2", [w.agent.id, w.agent.conversationId]);
+    expect((await api(app, w.v, "POST", `/api/conversations/${w.g}/runs/retry`, { agentId: w.agent.id })).status).toBe(201);
+    await answer("（重试的回答）");
+    const call = lastCall();
+    expectNoSecret(call);
+    expect((await seqsShown(call, w.g)).shown).toEqual([older, slipped, again]);
+    expect(await peopleAfter(w.g, line)).toEqual([older, slipped, again]);
+  });
+
   it("a call noted on a claimed reply that is then released (failed, not followed up), with the newcomer's message before it: the owner's retry counts the newcomer", async () => {
     const w = await world();
     await privateThings(w);
