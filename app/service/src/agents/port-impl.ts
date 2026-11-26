@@ -248,6 +248,12 @@ const ENDED_QUIETLY: RunEnd = { status: "cancelled" };
  * of this one may touch (its row, its settlement, its flags). Compared by identity, never by its shape.
  */
 const HELD_BACK: RunEnd = Object.freeze({ status: "cancelled" });
+/**
+ * Refused at admission by its owner's one number (`OthersLimit`), and ended in that very transaction (fix round 1, F5): the refusal
+ * and the run's end commit together, so no recovery can answer a call its sender was told was refused. `begin` announced its end
+ * and its follow-up; `finish`, given this very value, does nothing. Compared by identity, never by its shape.
+ */
+const ENDED_AT_ADMISSION: RunEnd = Object.freeze({ status: "cancelled" });
 
 /** `beginOnce`: the plan it made is not for the reply the row is at admission; nothing of it was sent or held (`begin` plans again). */
 const STALE_PLAN = Symbol("stale plan");
@@ -1030,7 +1036,9 @@ export class DbAgentPort implements AgentPort {
 
     const result = await db.tx(async (
       t,
-    ): Promise<{ end: RunEnd; told?: Told; queued?: Announced } | { stale: true } | { prepared: Prepared; read: number | null; money: RunMoney; wasMarked: boolean }> => {
+    ): Promise<
+      { end: RunEnd; told?: Told; queued?: Announced; recordedEnd?: Recorded | null } | { stale: true } | { prepared: Prepared; read: number | null; money: RunMoney; wasMarked: boolean }
+    > => {
       const { agent, state } = await this.lockRun(t, run);
       const halted = this.halted(run, agent, state);
       if (halted) return { end: halted };
@@ -1123,7 +1131,10 @@ export class DbAgentPort implements AgentPort {
             told.reached.push({ ownerId: agent.ownerId, agentId: agent.id });
           }
           log.info({ metric: "others_limit_refused", at: "admission" }, "agent run: its owner's number for others' use is reached; it ends quietly");
-          return { end: ENDED_QUIETLY, told };
+          // Its end, in this transaction, as `finish` would record it (the locks are those `finish` takes, held already): what it
+          // handed back is followed up by the one rule.
+          const recordedEnd = await this.recordIn(t, run, ENDED_QUIETLY, null, NOTHING, this.now());
+          return { end: ENDED_AT_ADMISSION, told, recordedEnd };
         }
         if (err instanceof HeldBack) {
           // Back to `queued`, under the account lock admission still holds, so none of the calls it waits for can have
@@ -1218,6 +1229,12 @@ export class DbAgentPort implements AgentPort {
       }
       // Whom the admission's refusal tells: the senders of the calls it answers, and its owner (`actOnTold`).
       if (result.told) this.actOnTold(result.told);
+      // Ended with its refusal: what `finish` does once its transaction has committed, done here.
+      if (result.recordedEnd) {
+        const flags = this.flags.get(run.id);
+        this.flags.delete(run.id);
+        await this.afterRecorded(run, result.recordedEnd, { leftOut: flags?.leftOut ?? null, social: flags?.place === "social" });
+      }
       return result.end;
     }
     // Admitted after it was held back: the owner's younger replies its mark kept waiting may be claimed now.
@@ -1532,8 +1549,9 @@ export class DbAgentPort implements AgentPort {
    * The run's flags are forgotten in any case, also when this throws (a delta still waiting keeps its own).
    */
   async finish(run: RunTicket, end: RunEnd, usage: Usage | null, fallback: Estimated): Promise<void> {
-    // An attempt held back at admission ended in `begin`, which told its owner: the run may already be under way again.
-    if (end === HELD_BACK) return;
+    // An attempt held back at admission ended in `begin`, which told its owner: the run may already be under way again. One
+    // refused by its owner's number ended in `begin` too, which announced it.
+    if (end === HELD_BACK || end === ENDED_AT_ADMISSION) return;
     const leftOut = this.flags.get(run.id)?.leftOut ?? null;
     // A social conversation is never reviewed or summarised (memory is the owner's own, and what a stranger said never becomes a note).
     const social = this.flags.get(run.id)?.place === "social";
@@ -1548,6 +1566,11 @@ export class DbAgentPort implements AgentPort {
       this.flags.delete(run.id);
     }
     if (!result) return;
+    await this.afterRecorded(run, result, { leftOut, social });
+  }
+
+  /** What `finish` does once the run's end (`recordIn`) has committed: its pushes, its follow-up's announcement, memory, a reminder. */
+  private async afterRecorded(run: RunTicket, result: Recorded, { leftOut, social }: { leftOut: { to: number } | null; social: boolean }): Promise<void> {
     if (result.reply !== null) this.deps.realtime.pushChargedReply(run.conversationId, run.ownerId, result.reply);
     countRetry(this.deps.log, result.retried);
     // Tried again by the system: the failure is announced to nobody — its owner is told of the queued retry alone (its slot
@@ -1582,8 +1605,16 @@ export class DbAgentPort implements AgentPort {
 
   /** `finish`'s transaction: what to announce once it has committed, or null for a run that no longer exists. */
   private record(run: RunTicket, end: RunEnd, usage: Usage | null, fallback: Estimated, now: Date) {
-    const { db, config } = this.deps;
-    return db.tx(async (t): Promise<Recorded | null> => {
+    return this.deps.db.tx((t) => this.recordIn(t, run, end, usage, fallback, now));
+  }
+
+  /**
+   * The run's end, in transaction `t` (`finish`'s own, or the admission's that refused it, `ENDED_AT_ADMISSION`): settled, recorded,
+   * tried again or followed up by the one rule, under the locks `finish` takes.
+   */
+  private async recordIn(t: Tx, run: RunTicket, end: RunEnd, usage: Usage | null, fallback: Estimated, now: Date): Promise<Recorded | null> {
+    const { config } = this.deps;
+    {
       const agent = await lockAgent(t, run.agentId, run.conversationId);
       const state = await t.query<RunState>(`select ${RUN_STATE} from agent_runs where id = $1 for update`, [run.id]);
       if (state.rows[0]?.status !== "running") {
@@ -1641,7 +1672,7 @@ export class DbAgentPort implements AgentPort {
         retried,
         reminder,
       };
-    });
+    }
   }
 
   /** `AgentPort.release`: the worker's run, ended as recovery ends one (`releaseRun`), with what the worker knew. */

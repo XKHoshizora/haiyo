@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { recoverRuns } from "../src/agents/port-impl.ts";
 import { NOTHING } from "../src/agents/runtime/port.ts";
 import { admit, admitRun } from "../src/metering/admit.ts";
 import { OWN_KEY_NOMINAL_MICRO, othersReplyCeilingMicro, othersUseToday, OthersLimit } from "../src/metering/others.ts";
@@ -303,6 +304,27 @@ describe("a call refused by N: one line for its sender alone, and one notice a d
     const pushed = await socket.next((e) => e.type === "message" && e.message.seq === seq && Array.isArray(e.message.refused));
     expect(pushed.message.refused).toEqual([{ agentId: k.agent.id, reason: "others_limit" }]);
     expect((await readAs(k.member, k.g, seq))?.refused).toEqual([{ agentId: k.agent.id, reason: "others_limit" }]);
+  });
+
+  it("refused at admission, its end commits with the refusal: a process that dies before it finishes leaves nothing for recovery to answer, though the number is raised since", async () => {
+    const k = await othersKitchen(app, db);
+    await setOwnerLimit(db, k.owner.id, 1n * POINT);
+    const sent = await api(app, k.member, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 附近有什么好吃的？", clientTxn: "n5a" });
+    const seq = sent.json.message.seq as number;
+    await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: POINT });
+    const ticket = (await k.port.claimNext())!;
+    expect(await k.port.begin(ticket)).toEqual({ status: "cancelled" });
+    // The refusal and the run's end are one transaction: the run is over already.
+    expect(await k.lastRun()).toMatchObject({ id: ticket.id, status: "cancelled", error: null, hold: "0" });
+    // The process dies here (no `finish`); the number is raised; the next process recovers what was left running: nothing.
+    await setOwnerLimit(db, k.owner.id, 100n * POINT);
+    await recoverRuns(db, config(), app.log);
+    expect(await k.port.releaseRun(ticket.id)).toBe(false);
+    expect((await db.query("select 1 from agent_runs where conversation_id = $1 and status in ('queued', 'running')", [k.g])).rowCount).toBe(0);
+    expect((await readAs(k.member, k.g, seq))?.refused).toEqual([{ agentId: k.agent.id, reason: "others_limit" }]);
+    // The worker's own finish after it changes nothing.
+    await k.port.finish(ticket, { status: "cancelled" }, null, NOTHING);
+    expect(await k.lastRun()).toMatchObject({ id: ticket.id, status: "cancelled", error: null });
   });
 
   it("a refusal for access stays quiet: an Agent only its owner may call, a paused one", async () => {

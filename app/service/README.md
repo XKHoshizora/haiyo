@@ -4083,7 +4083,9 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
       meets its owner's switch (`proactive`; `runs.ts` `refusedAtAdmission`), and admission itself (`metering/admit.ts`
       `admitRun`, under the owner's account lock) refuses a reply for others — lanes `others` and `proactive` — once others'
       use of the owner's Agents today has reached the owner's number (`OthersLimit`: what replies settled while it waited
-      were charged counts now). Refused, it ends `cancelled` with no error, with no call and nothing held or charged; after
+      were charged counts now). Refused, it ends `cancelled` with no error, with no call and nothing held or charged — its end,
+      and its follow-up of what it hands back, in the transaction that records the refusal, so that no recovery can answer a call
+      its sender was told was refused; after
       commit the senders of the calls it answers read why on their messages (pushed to them again) and the owner is told
       once a day (Agents and runs, The owner's number for others' use); a reply nobody asked for tells nobody. What the first
       step took on (mentions noted on the run after its claim) is handed back as noted, so the run's end follows it up as any
