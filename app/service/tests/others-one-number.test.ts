@@ -199,6 +199,19 @@ describe("admission across connections and days", () => {
   });
 
   /**
+   * Waits (10 s at most) until a connection of this database is seen waiting on a lock (`pg_stat_activity`): whether one was. The
+   * races below let the transaction that holds the lock go only then, so a path that took no lock is never waited for and fails.
+   */
+  const someoneWaitsOnALock = async (): Promise<boolean> => {
+    for (let i = 0; i < 400; i++) {
+      const { rows } = await db.query<{ n: number }>("select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+      if (rows[0]!.n > 0) return true;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return false;
+  };
+
+  /**
    * Holds `ownerId`'s account row (as a raise of their number does) in a transaction of its own, writing `pointsMicro` as their
    * number, until `release`; resolves `locked` once it holds it.
    */
@@ -236,8 +249,8 @@ describe("admission across connections and days", () => {
         where === "a group"
           ? api(app, k.member, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 在吗", clientTxn: "f2g" })
           : k.port.finish(ticket!, { status: "done" }, null, NOTHING);
-      // It waits for the account the raise holds (it does not decide on what it read before).
-      await new Promise((r) => setTimeout(r, 300));
+      // It waits for the account the raise holds (it does not decide on what it read before): seen waiting on the lock, then released.
+      expect(await someoneWaitsOnALock()).toBe(true);
       raise.release();
       await raise.done;
       const result = await deciding;
@@ -267,7 +280,8 @@ describe("admission across connections and days", () => {
     });
     await firstIn;
     const second = db.tx((t) => admitRun(t, config(), rb, owner.id, b.resolved, 10, () => new Date()));
-    await new Promise((r) => setTimeout(r, 200));
+    // The second is seen waiting on the account the first holds; only then is the first let go.
+    expect(await someoneWaitsOnALock()).toBe(true);
     release();
     const results = await Promise.allSettled([first, second]);
     expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
