@@ -617,6 +617,7 @@ Every error body is `{"error": "<snake_case_code>"}`, sometimes with details nex
 | 409 | `agent_deleted` | Editing, pausing, resuming or changing the avatar of a deleted Agent, retrying its reply, or confirming or discarding its persona proposals |
 | 409 | `agent_paused` | Retrying the reply of a paused Agent |
 | 409 | `busy_run` | Retrying while a reply of that Agent is already queued or running |
+| 409 | `nothing_to_retry` | Retrying a failure nothing of which is left to answer: each of its calls refused since, or a later reply took it on (the web closes the failure quietly) |
 | 409 | `model_gone` | Retrying while the Agent's model is not there to call (its `modelUsable` is false); also a run's error (Run): its model was not there to call, so no call was made |
 | 409 | `stale_proposal` | Confirming or discarding a persona proposal that can no longer be acted on: confirmed already, discarded (confirming), superseded by a newer one, or made against a persona that has changed since (see Persona proposals) |
 | 409 | `provider_in_use` | Deleting a provider that Agents still use; `agents: [{"id", "name"}]` names them |
@@ -1331,9 +1332,10 @@ reply of one of your Agents in this conversation (your Agent conversation, or a 
 member's Agent's run, another conversation's, or an unknown id is the 404 of a run that does not exist, and a group you are not a
 current member of that of a conversation that does not exist); 409 `busy_run` while the Agent has a reply queued or running there;
 409 `agent_paused` / `agent_deleted`; 409 `model_gone` while the Agent's model is not there to call (`modelUsable` false); 400
-`invalid_request` without `runId`, when the run did not fail, when a later reply took it on since (it was retried, or its calls
-answered), when no call of it is left (each refused by a limit since: nothing to answer again), or when the Agent has no model —
-in a group also when the Agent is not in the group now or the run is from an earlier stay; so a reply cancelled by a halt
+`invalid_request` without `runId`, when the run did not fail, or when the Agent has no model — in a group also when the Agent is
+not in the group now or the run is from an earlier stay; 409 `nothing_to_retry` when a later reply took it on since (it was
+retried, or its calls answered) or no call of it is left (each refused by a limit since): the web closes that failure quietly.
+A reply cancelled by a halt
 (`halted`) or by the Agent's leaving (`agent_removed`) is not retried; 409 `stale_whisper` for a told reply (`告诉他们`) whose
 whisper no longer reads open — declined, expired (a day old included), told, or with no hit left (Whispers: the one rule a told
 reply begins by); 429 `rate_limited` over the replies one may start a minute (a retry is your own lane: 20). Limit: 60 per minute

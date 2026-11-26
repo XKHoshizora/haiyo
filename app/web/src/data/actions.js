@@ -890,12 +890,14 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
       return attempt(() => api.stopRun(conversationId, run.id), { text: replyText("stop"), onFail: staleReply(conversationId, agentId) });
     },
     /**
-     * Tries the failed reply again (in a group: of my Agent `agentId`) — the failure shown, named by its id, so a later
-     * failure pushed meanwhile is never the one answered: the new run replaces the failed one (unless a newer one was pushed
-     * meanwhile).
+     * Tries the failed reply again (in a group: of my Agent `agentId`) — the failure shown, named by its id (`runId`: the one the
+     * line rendered; else the one held), so a later failure pushed meanwhile is never the one answered: the new run replaces the
+     * failed one (unless a newer one was pushed meanwhile). Nothing left of it to answer (409 `nothing_to_retry`: its calls refused
+     * since, or a later reply took it on) ends quietly: that failure is closed here, as a dismissal closes it, and the reply's state
+     * fetched again.
      */
-    retryRun: (conversationId, agentId = null) => {
-      const failed = heldRun(conversationId, agentId)?.id ?? null;
+    retryRun: (conversationId, agentId = null, runId = null) => {
+      const failed = runId ?? heldRun(conversationId, agentId)?.id ?? null;
       // No run held (in a group someone else's is a bare state): nothing to try again, nothing is sent.
       if (failed === null) {
         const error = dropped("no_run");
@@ -910,7 +912,12 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
         },
         refetch: () => request(agentId ? { groupRuns: conversationId } : { run: conversationId }),
         text: replyText("retry"),
-        onFail: staleReply(conversationId, agentId),
+        onFail: (error) => {
+          if (error.code === "nothing_to_retry") {
+            setModel(agentId ? dismissGroupRunOf(getModel(), conversationId, agentId, failed) : dismissRunOf(getModel(), conversationId, failed));
+          }
+          staleReply(conversationId, agentId)(error);
+        },
       });
     },
     /**

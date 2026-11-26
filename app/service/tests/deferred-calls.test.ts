@@ -510,7 +510,7 @@ describe("the owner's 重试 names the failure it was shown, by its id (design P
     expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", caller: w.owner.id, covers: asked, calls: [asked] });
     // Its retry ends; A is retried already: a second 重试 of it is refused, and B is still the owner's to retry.
     await db.query("update agent_runs set status = 'done', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
-    expect(await retry(w, a.id)).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect(await retry(w, a.id)).toEqual({ status: 409, json: { error: "nothing_to_retry" } });
     expect((await retry(w, b.id)).status).toBe(201);
     expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", calls: [later] });
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
@@ -530,7 +530,7 @@ describe("the owner's 重试 names the failure it was shown, by its id (design P
     await db.query("delete from agent_runs where agent_id = $1 and status = 'queued'", [w.agent.id]);
     await refuse(one);
     const runs = (await runsOf(w.agent.id, w.g)).length;
-    expect(await retry(w, failed!.id)).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect(await retry(w, failed!.id)).toEqual({ status: 409, json: { error: "nothing_to_retry" } });
     expect((await runsOf(w.agent.id, w.g)).length).toBe(runs);
   });
 

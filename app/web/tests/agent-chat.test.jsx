@@ -1371,7 +1371,21 @@ describe("the status line of a failed reply", () => {
     expect(bubbleText()).toContain("正在回复…");
   });
 
+  it("nothing left to retry (409 nothing_to_retry: its calls refused since, or retried already): the failure line goes quietly, with no text (T2 fix 2, R6)", async () => {
+    const retryRun = vi.fn(async () => Promise.reject(apiError(409, "nothing_to_retry")));
+    const { transport } = await openAgentChat({ api: { retryRun } });
+    await runPush(transport, runOf(R1, "failed", { error: "busy", retryable: true }));
+    await click(within(statusLine()).getByRole("button", { name: "重试" }));
+    await flush();
+    // The failure it rendered, by its id.
+    expect(retryRun).toHaveBeenCalledWith(A1, R1);
+    expect(statusLines()).toHaveLength(0);
+    expect(toastText()).toBeNull();
+    expect(mainText()).not.toContain("现在没有可以重试的回复");
+  });
+
   it("a retry over the reply limit (429) says why in the line, not in a toast", async () => {
+
     const { transport } = await openAgentChat({ api: { retryRun: vi.fn(async () => Promise.reject(apiError(429, "rate_limited"))) } });
     await runPush(transport, runOf(R1, "failed", { error: "rate_limited", retryable: true }));
     await click(within(statusLine()).getByRole("button", { name: "重试" }));

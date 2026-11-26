@@ -2010,8 +2010,8 @@ interface FailedRun {
  * `accounts` row. 404 unless the run is a reply of the caller's Agent in this conversation (their Agent conversation, or a group they
  * are a current member of with that Agent of theirs in it; a social conversation's run is retried by no one: the visitor asks again by
  * writing again); 409 `agent_deleted` / `agent_paused`; 409 `busy_run` while the Agent has a reply queued or running there; 400
- * `invalid_request` when the run did not fail, a later run took it on since, it is from before the Agent's current stay in the group,
- * no call of it is left, or the Agent has no model; 409 `model_gone` while its model is not there to call (`retryable`'s rule); 409
+ * `invalid_request` when the run did not fail, it is from before the Agent's current stay in the group, or the Agent has no model;
+ * 409 `nothing_to_retry` (the web's quiet answer: the failure is closed) when a later run took it on since or no call of it is left; 409 `model_gone` while its model is not there to call (`retryable`'s rule); 409
  * `stale_whisper` for a told reply whose whisper reads open no more; 429 over the owner's own `agentRunsPerMinute`.
  */
 export async function retryRun(
@@ -2049,13 +2049,15 @@ export async function retryRun(
   if (active.rowCount !== 0) throw new AppError(409, "busy_run");
   const failed = await failedRunOf(t, runId);
   const covers = failed?.covers == null ? null : Number(failed.covers);
-  if (!failed || failed.status !== "failed" || failed.taken || agent.model === null || covers === null) throw new AppError(400, "invalid_request");
+  if (!failed || failed.status !== "failed" || agent.model === null || covers === null) throw new AppError(400, "invalid_request");
   if (place === "group" && (joinedSeq === null || covers <= joinedSeq)) throw new AppError(400, "invalid_request");
+  // A later reply took it on (retried, its calls answered): nothing of it is left to answer — the quiet answer (T2 fix 2, R6).
+  if (failed.taken) throw new AppError(409, "nothing_to_retry");
   // What it answered, less what a limit refused since (C-b); with nothing left there is nothing to answer again. A told reply and a
   // reply nobody asked for (or a 重试 of one) answer no call: it is made again from its origin, answering none (T2 fix 1, F10).
   const zeroCall = failed.whisper_id !== null || failed.origin_seq !== null;
   const calls = zeroCall ? [] : ((await standingSeqs(t, failed.id)) ?? [covers]);
-  if (!zeroCall && calls.length === 0) throw new AppError(400, "invalid_request");
+  if (!zeroCall && calls.length === 0) throw new AppError(409, "nothing_to_retry");
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
   // A told reply tells again only a whisper that reads open (whispers/store.ts `mayTell`, the one rule a press and a told
   // reply's beginning keep too): declined and expired are final. Under the conversation's row and the Agent's, held.

@@ -210,7 +210,7 @@ describe("its seed is its origin, never a call (T2 fix 1, F10)", () => {
     expect(system).toContain("这次没有人点你的名");
 
     // Retried once already: a second 重试 of the same failure is refused.
-    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed!.id })).toEqual({ status: 400, json: { error: "invalid_request" } });
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed!.id })).toEqual({ status: 409, json: { error: "nothing_to_retry" } });
   });
 });
 

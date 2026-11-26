@@ -320,7 +320,16 @@ describe("replies", () => {
     return loaded({ api, transport: t });
   }
 
+  it("retryRun sends the failure it is handed (the one the line rendered), not the one held at the click (T2 fix 2, R6)", async () => {
+    const retryRun = vi.fn(async () => ({ run: runOf(R2, "queued") }));
+    const { actions } = await failedRun({ retryRun });
+    const rendered = "00000000-0000-4000-8000-0000000000f7";
+    await actions.retryRun(A1, null, rendered);
+    expect(retryRun).toHaveBeenCalledWith(A1, rendered);
+  });
+
   it("retryRun replaces the failed run with the new one; busy_run says why", async () => {
+
     const retryRun = vi.fn(async () => ({ run: runOf(R2, "queued") }));
     const { actions, model } = await failedRun({ retryRun });
     await expect(actions.retryRun(A1)).resolves.toMatchObject({ ok: true, value: { run: runOf(R2, "queued") } });

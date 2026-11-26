@@ -447,7 +447,9 @@ export function RunStatusLine({ conv, run, agentId = null }) {
     setBusy(null);
     if (!res.ok && !quiet(res.error)) setNote(res.text);
   };
-  const retry = () => act("retry", () => (agentId ? actions.retryRun(conv.id, agentId) : actions.retryRun(conv.id)), (error) => error?.code === "busy_run");
+  // The failure this line rendered, by its id; refused because a reply is going, or because nothing of it is left to answer: quiet.
+  const retry = () =>
+    act("retry", () => actions.retryRun(conv.id, agentId, run.id), (error) => error?.code === "busy_run" || error?.code === "nothing_to_retry");
   const dismiss = () => act("dismiss", () => (agentId ? actions.dismissRun(conv.id, agentId) : actions.dismissRun(conv.id)));
   return (
     <li className="msg-system run-status">

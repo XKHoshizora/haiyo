@@ -174,7 +174,10 @@ export const getRun = (conversationId) => request("GET", `/api/conversations/${s
 /** A group's Agent replies → {runs: [{agentId, state: "replying" | "unavailable", run?}]} (`run` only for my Agents) */
 export const getGroupRuns = (conversationId) => request("GET", `/api/conversations/${seg(conversationId)}/runs`);
 export const stopRun = (conversationId, runId) => request("POST", `/api/conversations/${seg(conversationId)}/runs/${seg(runId)}/stop`);
-/** Tries the failed reply `runId` again: the failure shown, named by its id (in a group as in an Agent's conversation). → {run} */
+/**
+ * Tries the failed reply `runId` again: the failure shown, named by its id (in a group as in an Agent's conversation). → {run};
+ * 409 nothing_to_retry when nothing of it is left to answer (its calls refused since, or a later reply took it on).
+ */
 export const retryRun = (conversationId, runId) => request("POST", `/api/conversations/${seg(conversationId)}/runs/retry`, { runId });
 export const dismissRun = (conversationId, agentId) =>
   request("POST", `/api/conversations/${seg(conversationId)}/runs/dismiss`, agentId ? { agentId } : undefined);
