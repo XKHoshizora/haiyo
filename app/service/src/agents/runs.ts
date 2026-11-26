@@ -654,8 +654,8 @@ async function standingSeqs(q: Queryable, runId: string): Promise<number[] | nul
  * asked for keeps its own). Asked only of a reply not admitted yet: once a reply is admitted its calls are what it was made for
  * (port-impl.ts `begin`, step 3), and an ending of access in flight is `standingCalls`'. The owner's own call is never dropped
  * (`refusedInGroup` never refuses the owner). Returns what the run now covers and answers (empty when nothing was dropped: one query),
- * or null when no call is left: the run ends (`cancelled`, no error: see port-impl.ts `BLOCKED_SINCE`; `access_ended` is for social
- * runs).
+ * or null when no call is left: its calls are stored as none, and the run ends (`cancelled`, no error: see port-impl.ts
+ * `BLOCKED_SINCE`; `access_ended` is for social runs).
  */
 export async function dropRefusedCalls(t: Tx, runId: string): Promise<{ covers_seq?: string | null; call_seqs?: string[] | null } | null> {
   const { rows } = await t.query<CallRow & { refused: boolean }>(
@@ -667,7 +667,12 @@ export async function dropRefusedCalls(t: Tx, runId: string): Promise<{ covers_s
   );
   if (!rows.some((r) => r.refused)) return {};
   const left = rows.filter((r) => !r.refused);
-  if (left.length === 0) return null;
+  if (left.length === 0) {
+    // The run ends in this transaction (each caller ends it), answering none: a refused call is not kept as one of its calls (an empty
+    // list is no origin: origin.ts reads `origin_seq` alone; T2 fix 2, R7).
+    await t.query("update agent_runs set call_seqs = '{}' where id = $1", [runId]);
+    return null;
+  }
   const { lane } = rows[0]!;
   const by: TriggeredBy | null = lane === "proactive" ? null : left.some((r) => r.kind === "human") ? "human" : "agent";
   const updated = await t.query<{ covers_seq: string | null; call_seqs: string[] | null }>(

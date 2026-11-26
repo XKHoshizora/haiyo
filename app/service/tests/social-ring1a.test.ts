@@ -368,8 +368,9 @@ describe("I1a.4: bars and blocks in a shared group (one access decision at every
     expect(await waitingOf(w.y.id, w.g)).toEqual([second]);
     expect((await stop(w.owner, w.v)).status).toBe(200);
     const runs = await runsOf(w.y.id, w.g);
+    // Ended answering none of its calls: the refused one is not kept as its (T2 fix 2, R7).
     expect(runs.map((r) => [r.status, r.error, r.caller, r.calls])).toEqual([
-      ["cancelled", null, w.v.id, [first]],
+      ["cancelled", null, w.v.id, []],
       ["queued", null, w.w.id, [second]],
     ]);
     expect(await waitingOf(w.y.id, w.g)).toEqual([]);

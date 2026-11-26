@@ -4094,7 +4094,7 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
       a reply the halt left queued included), is dropped — one rule, `runs.ts` `callRefusedSql`, asked here, at the post and as
       the calls that waited are taken — no longer a call it answers, nobody with such a block among its askers, and what it covers ends at the
       latest call left — and a run with no call left ends `cancelled` with no error (no call, nothing held or charged, no message,
-      nothing to retry), recorded in this step's own transaction with what waited behind it taken, so a process that dies right
+      nothing to retry; its calls stored as none, a refused one not kept as its), recorded in this step's own transaction with what waited behind it taken, so a process that dies right
       after leaves no running row for recovery to answer or retry. Its lane and caller stay as its row was made. A model that no longer resolves ends `failed`
       (`model_gone`, not retryable; `provider_rejected`, not retryable, when its provider's saved key cannot be opened). The
       run takes on nothing that came after its row was made (a call meanwhile waits for a reply of its own: One identity per

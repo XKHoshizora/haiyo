@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAgentPort, recoverRuns } from "../src/agents/port-impl.ts";
 import { mentionsAtSend } from "../src/agents/mentions.ts";
 import { queueRun, triggerFromAgent } from "../src/agents/runs.ts";
@@ -16,6 +16,7 @@ import { useApp } from "./helpers/harness.ts";
 import { backendPid, waitersBehind } from "./helpers/locks.ts";
 import { grant } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
+import { MULTIPART, multipart } from "./helpers/multipart.ts";
 import { seedSocial } from "./helpers/social.ts";
 
 /**
@@ -284,22 +285,15 @@ describe("invariant 5: at most one active row per pair; assignments served in ac
     await say(w.owner, w.g, `${w.at} 零`);
     await claim(w.agent.id, w.g);
     const mia = await say(w.mia, w.g, `${w.at} 一`);
-    /** Until `n` connections of this database are seen waiting on a lock (10 s at most): whether they were. */
-    const waitersOnALock = async (count: number): Promise<boolean> => {
-      for (let i = 0; i < 400; i++) {
-        const { rows } = await db.query<{ n: number }>("select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-        if (rows[0]!.n >= count) return true;
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      return false;
-    };
     const holder = await db.pool.connect();
     try {
       await holder.query("begin");
-      // The group's row held (the first lock of every step on a run there): both recoveries are seen waiting on it before either goes.
+      const pid = await backendPid(holder);
+      // The group's row held (the first lock of every step on a run there): both recoveries are seen waiting behind it (T2 fix 2, R7:
+      // behind this transaction, not on any lock of the database) before either goes.
       await holder.query("select 1 from conversations where id = $1 for update", [w.g]);
       const both = Promise.all([recoverRuns(db, app.deps.config, app.log), recoverRuns(db, app.deps.config, app.log)]);
-      expect(await waitersOnALock(2)).toBe(true);
+      expect(await waitersBehind(db, pid, 2)).toBe(true);
       await holder.query("commit");
       await both;
     } finally {
@@ -372,23 +366,70 @@ describe("invariant 5 (retries): an automatic retry takes the slot before any wa
     const w = await world(retrying);
     const { db: pool, conversations, reads } = retrying.deps;
     const port = createAgentPort({ db: pool, config: retrying.deps.config, blobs: retrying.deps.blobs, realtime: retrying.realtime, conversations, reads, log: retrying.log, now });
-    const asked = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`, retrying);
+    await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`, retrying);
     const ticket = await claim(w.agent.id, w.g);
     const later = await say(w.ned, w.g, `${w.at} NED-ASK 我也问`, retrying);
     // The owner blocks mia after her call was claimed: as the reply begins, its one call is refused.
     expect((await api(retrying, w.owner, "PUT", `/api/blocks/${w.mia.id}`)).status).toBe(200);
     expect(await port.begin(ticket)).toEqual({ status: "cancelled" });
-    // Ended there, and ned's call that waited taken there: the process dies now (no `finish`), the block is lifted, and the next
-    // process recovers what was left running.
+    // Ended there, answering none of its calls (T2 fix 2, R7: the refused one is not kept as its), and ned's call that waited taken
+    // there: the process dies now (no `finish`), the block is lifted, and the next process recovers what was left running.
     expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([
-      ["cancelled", w.mia.id, [asked]],
+      ["cancelled", w.mia.id, []],
       ["queued", w.ned.id, [later]],
     ]);
     expect((await api(retrying, w.owner, "DELETE", `/api/blocks/${w.mia.id}`)).status).toBe(200);
     await recoverRuns(db, retrying.deps.config, retrying.log, now);
     offset += 60_000;
     expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([
-      ["cancelled", w.mia.id, [asked]],
+      ["cancelled", w.mia.id, []],
+      ["queued", w.ned.id, [later]],
+    ]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+  });
+
+  it("every call refused at admission (T2 fix 2, R7; F7a's other moment): the block lands while the reply reads a file, after its first look — the same end in admission's own transaction, what waits taken there; recovery answers nothing", async () => {
+    offset = 0;
+    const w = await world(retrying);
+    const { db: pool, conversations, reads, blobs } = retrying.deps;
+    const port = createAgentPort({ db: pool, config: retrying.deps.config, blobs, realtime: retrying.realtime, conversations, reads, log: retrying.log, now });
+    // mia's call carries a file, which the reply reads between its first look and admission, holding no lock.
+    const uploaded = await retrying.inject({
+      method: "POST",
+      url: `/api/conversations/${w.g}/attachments`,
+      headers: { cookie: w.mia.cookie, "content-type": MULTIPART },
+      payload: multipart([{ name: "file", filename: "报告.txt", type: "application/octet-stream", data: "REPORT-BODY" }]),
+    });
+    expect(uploaded.statusCode).toBe(201);
+    const sent = await api(retrying, w.mia, "POST", `/api/conversations/${w.g}/messages`, { text: `${w.at} MIA-ASK 看看这个`, attachmentId: uploaded.json().id, clientTxn: `dc${++txn}` });
+    expect(sent.status).toBe(201);
+    const ticket = await claim(w.agent.id, w.g);
+    const later = await say(w.ned, w.g, `${w.at} NED-ASK 我也问`, retrying);
+    // The owner blocks mia as the file is read: her call stood at the first look, it is refused at admission.
+    const get = blobs.get.bind(blobs);
+    let read = 0;
+    vi.spyOn(blobs, "get").mockImplementation(async (key) => {
+      if (read++ === 0) expect((await api(retrying, w.owner, "PUT", `/api/blocks/${w.mia.id}`)).status).toBe(200);
+      return get(key);
+    });
+    try {
+      expect(await port.begin(ticket)).toEqual({ status: "cancelled" });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(read).toBeGreaterThan(0);
+    expect(gateway.pending()).toBe(0);
+    // Ended in admission's transaction, answering none of its calls, and ned's call taken there; the process dies now, the block is
+    // lifted, and recovery finds nothing left running.
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([
+      ["cancelled", w.mia.id, []],
+      ["queued", w.ned.id, [later]],
+    ]);
+    expect((await api(retrying, w.owner, "DELETE", `/api/blocks/${w.mia.id}`)).status).toBe(200);
+    await recoverRuns(db, retrying.deps.config, retrying.log, now);
+    offset += 60_000;
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([
+      ["cancelled", w.mia.id, []],
       ["queued", w.ned.id, [later]],
     ]);
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
@@ -699,18 +740,6 @@ describe("a halt and the chain budget are met by each relayed call as it is take
 });
 
 describe("one order for every bulk lock of active run rows: ascending run id (T2 fix 1, F6)", () => {
-  /**
-   * Waits (10 s at most) until a connection of this database is seen waiting on a lock (`pg_stat_activity`): whether one was. The
-   * transaction holding the lock is let go only then, so a path that took no lock is never waited for and fails.
-   */
-  const someoneWaitsOnALock = async (): Promise<boolean> => {
-    for (let i = 0; i < 400; i++) {
-      const { rows } = await db.query<{ n: number }>("select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-      if (rows[0]!.n > 0) return true;
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    return false;
-  };
   /** A run id that sorts first (`low`) or last among all: `randomUUID` with its first 8 hex digits set. */
   const runIdAt = (low: boolean) => `${low ? "00000000" : "ffffffff"}${randomUUID().slice(8)}`;
 
@@ -736,10 +765,12 @@ describe("one order for every bulk lock of active run rows: ascending run id (T2
     try {
       await holder.query("begin");
       await holder.query("set local lock_timeout = '3s'");
+      const pid = await backendPid(holder);
       // Another transaction holds the smaller run id (as an ending of access, which locks in run id order, would first).
       await holder.query("select 1 from agent_runs where id = $1 for update", [first]);
       const sending = api(app, w.mia, "POST", `/api/conversations/${w.g}/messages`, { text: `${w.at} @dcs${tag} 你们好`, clientTxn: `dc${++txn}` });
-      expect(await someoneWaitsOnALock()).toBe(true);
+      // Seen waiting behind this transaction (T2 fix 2, R7): a path that took no lock is never waited for, and fails.
+      expect(await waitersBehind(db, pid)).toBe(true);
       // The message waits for the smaller holding nothing else: the larger is free (no deadlock).
       await holder.query("select 1 from agent_runs where id = $1 for update", [last]);
       await holder.query("commit");
