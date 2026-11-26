@@ -413,11 +413,18 @@ names the variable), whatever `SOCIAL.enabled` says. After it, every open tab mu
 `GET /api/me/others-use` answer as unreadable (its page shows no use), never shows a sender's `refused` line, and its Agent form
 (`othersLimit`, `proactiveBudget`) and use page (`answers`) send what the new service refuses (400 `invalid_request`).
 
-**What 076 does to replies queued or under way at the deploy.** 076 also adds `agent_runs.owner_call_seqs` (which of a reply's
-calls were accepted as its owner's own; "Whose reply a reply is"). A run from before the column has NO owner call, except one
-that is its owner's own already (lane `own`, its caller the owner): its calls are taken as the owner's. Nothing is guessed from
-who wrote a message. So a reply for others that had the owner's call noted on it at the deploy is followed up as a reply for
-others (at the level for others, counted in the owner's number), never the other way; a reply already admitted keeps its terms.
+**Migration 078 (the waiting calls; the limits redesign, Part 2).** It adds one table, `deferred_calls`: the calls on an Agent
+that wait for its reply under way in that conversation to end (Agents and runs, "One identity per reply"). It cuts over by
+draining, not by inference: its Up ends every reply queued at the deploy (`cancelled`, it never reached a model), marks every
+reply under way so that start-up recovery, before the worker starts, ends it `cancelled` without posting and settles it as any
+recovery does (nothing is charged; a group reply ends with no error, a social one `access_ended`), and clears what was noted on
+any run (`agent_runs.pending_seq`, which nothing reads any more). **Deploy it only while the site is idle**: a reply asked for
+just then is not answered (its asker asks again). There is no production data yet; acceptance data may lose its replies in
+flight. It is taken back FIRST, before 077: `node dist/cli.js migrate:down --name 078_deferred_calls
+--i-understand-this-deletes-data --in-production`. Its Down drops the table (the calls waiting then are never answered) and
+nothing else: the replies its Up ended stay ended. The code that comes with 078 neither reads nor writes `agent_runs.pending_seq`
+or `owner_call_seqs` (076's column, whose rows from before it 076 no longer fills in): both stay, unread, for a later cleanup
+migration. So the code from before 078, put back on the schema, finds them as it left them, empty.
 
 **Rehearse before the deploy**, against the site's database, from where the take-back would be run:
 `node dist/cli.js migrate:down --name 076_others_reasoning` with NO confirmation flag must print what 076's Down removes and
@@ -650,8 +657,8 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `POST /api/conversations` | 10 | principal |
 | `PATCH /api/conversations/:id`, `POST /api/conversations/:id/members`, `DELETE /api/conversations/:id/members/:principalId`, `PUT`, `DELETE /api/conversations/:id/avatar` | 20 together | principal |
 | `POST /api/conversations/:id/messages` | 120 | principal |
-| Replies started (each message that queues a reply of one of your Agents — yours, or anyone's or an Agent's in a group the Agent is in —, each follow-up in a group: the reply that answers what was noted while one of your Agents was replying there, and `POST …/runs/retry`) | Counted for you in two lanes, each from the stored runs under your account's lock (so exactly, also for messages to two of your Agents at the same moment) and not scaled by `RATE_LIMIT_SCALE`: 20 for the replies you called for yourself — your own lane: your messages to your Agents, in their conversations and in groups, your Agents' calls on each other that you are behind, retries, follow-ups that answer you (`AGENT_RUNS_PER_MINUTE`) — and 20 together for every reply someone else called for on your Agents (`AGENT_OTHERS_RUNS_PER_MINUTE`), so that others' mentions cannot use up your own minute. A run is `own` when you called for it — yourself, or through an Agent's message you are behind — else `others` (a third lane, `proactive`, is for replies nobody called for — an Agent answering in a group unasked — and counts with `others` toward `AGENT_OTHERS_RUNS_PER_MINUTE`), and keeps its lane. An Agent's message is the call of whoever called for the reply that posted it, unless that reply was its owner's own: then its owner's (Agents and runs, In a group); so a member's call that one of your Agents relays to another of yours is the member's, not yours. Neither lane nor caller is ever on the wire. Over the count of your own lane a message of yours (or a follow-up in a group) starts no reply: the message is still sent, and a `failed` run with error `rate_limited` (retryable) is recorded instead, so you see it (`run` push, `GET …/run`, in a group `GET …/runs`) and can retry — it started nothing and is not counted; in a group one such run per Agent stands for every mention and follow-up over the limit while it is the Agent's latest there and you have not dismissed it; a retry over it is 429. Someone else's call over the others' count starts nothing either, and no run records it: its sender alone reads a line on their own copy of the message (`refused`, reason `too_often`: Messages, `WireMessage`), the one outward result — you see nothing of it, nor do the other members. A follow-up in your Agent's own conversation (it answers what you wrote while it replied) is queued whatever the count, and counts toward it; one in a group counts in the lane of what it answers (Agents and runs, In a group). A reply that ended `model_gone` called nothing and is not counted either; and someone else's call on an Agent of yours whose model is not there to call (`modelUsable` false) starts no reply at all: a `failed` run with error `model_gone` is recorded at once (the group shows its one 暂时无法回复 line), not counted toward your minute — so such calls cannot crowd out calls on your other Agents — and counted toward the caller's own (below) | owner |
-| Calls on other people's Agents (a mention in a group that would start a reply of an Agent whose owner is someone else, made by a person or by an Agent's message they are behind: their own Agent's, or one relaying their call) | 5 together per person (`AGENT_CALLER_RUNS_PER_MINUTE`), counted from the stored runs under the caller's account lock, so exactly, and not scaled by `RATE_LIMIT_SCALE`; calls on the caller's own Agents never count. Over it the mention starts nothing — no run, no `rate_limited` run, no notice to the group or to the Agent's owner (the message is sent as any), only one log line (Metrics in the log) and, when a person's own message made the call, a line on that person's own copy of it (`refused`, reason `too_often`: Messages, `WireMessage`). A mention folded into a reply already under way starts nothing, so it is neither counted nor refused. It is checked after the owner's number for others' use (Agents and runs, The owner's number for others' use) and before the owner's replies a minute | caller |
+| Replies started (each message that queues a reply of one of your Agents — yours, or anyone's or an Agent's in a group the Agent is in —, each call that waits for one of your Agents' replies under way, and `POST …/runs/retry`) | Counted for you in two lanes, under your account's lock (so exactly, also for messages to two of your Agents at the same moment) and not scaled by `RATE_LIMIT_SCALE`: 20 for the replies you called for yourself — your own lane: your messages to your Agents, in their conversations and in groups, your Agents' calls on each other that you are behind, retries (`AGENT_RUNS_PER_MINUTE`) — and 20 together for every reply someone else called for on your Agents (`AGENT_OTHERS_RUNS_PER_MINUTE`), so that others' mentions cannot use up your own minute. Each lane counts the replies started in the last minute (the stored runs); the others' lane also counts the calls of someone else's that wait for one of your Agents' replies under way, each as it was accepted (`deferred_calls.accepted_at`: a call is met by the minute as it is made, never later). A run is `own` when you called for it — yourself, or through an Agent's message you are behind — else `others` (a third lane, `proactive`, is for replies nobody called for — an Agent answering in a group unasked — and counts with `others` toward `AGENT_OTHERS_RUNS_PER_MINUTE`), and keeps its lane and its caller for ever (Agents and runs, One identity per reply). An Agent's message is the call of whoever called for the reply that posted it, unless that reply was its owner's own: then its owner's (Agents and runs, In a group); so a member's call that one of your Agents relays to another of yours is the member's, not yours. Neither lane nor caller is ever on the wire. Over the count of your own lane a message of yours starts no reply: the message is still sent, and a `failed` run with error `rate_limited` (retryable) is recorded instead, so you see it (`run` push, `GET …/run`, in a group `GET …/runs`) and can retry — it started nothing and is not counted; in a group one such run per Agent stands for every one of your mentions over the limit while it is the Agent's latest there and you have not dismissed it; a retry over it is 429. Your own call that waits for a reply under way is not held to your minute (it starts nothing now; the waiting calls are bounded, 8 per Agent and conversation). Someone else's call over the others' count starts nothing either — it is not queued, folded or left waiting — and no run records it: the one person it is for reads a line on their copy of the message (`refused`, reason `too_often`: Messages, `WireMessage`), the one outward result — you see nothing of it, nor do the other members. A reply queued later for calls that waited is not met by any minute again: each call was, as it was made. A reply that ended `model_gone` called nothing and is not counted either; and someone else's call on an Agent of yours whose model is not there to call (`modelUsable` false) starts no reply at all: a `failed` run with error `model_gone` is recorded at once (the group shows its one 暂时无法回复 line), not counted toward your minute — so such calls cannot crowd out calls on your other Agents — and counted toward the caller's own (below) | owner |
+| Calls on other people's Agents (a mention in a group that would start a reply of an Agent whose owner is someone else, made by a person or by an Agent's message they are behind: their own Agent's, or one relaying their call) | 5 together per person (`AGENT_CALLER_RUNS_PER_MINUTE`), counted under the caller's account lock, so exactly, and not scaled by `RATE_LIMIT_SCALE`: the replies they called for started in the last minute, and their calls that wait for a reply under way, each as it was accepted; calls on the caller's own Agents never count. It is met by EVERY such call as it is made — one that would start a reply, one that would be folded into a reply not begun yet (which is not counted), and one that would wait. Over it the mention starts nothing — no run, no `rate_limited` run, no notice to the group or to the Agent's owner (the message is sent as any), only one log line (Metrics in the log) and a line for the person the call is for on their copy of the message (`refused`, reason `too_often`: Messages, `WireMessage`): the sender of a person's message, or the person behind an Agent's relay (on the Agent's message; a relay nobody is behind records nothing). It is checked after the owner's number for others' use (Agents and runs, The owner's number for others' use) and before the owner's replies a minute | caller |
 | `GET /api/agents`, `GET /api/agents/:id`, `GET /api/providers`, `GET /api/conversations/:id/run`, `GET /api/conversations/:id/runs` | 120 together | principal |
 | `POST /api/conversations/:id/runs/:runId/stop`, `…/runs/retry`, `…/runs/dismiss` | 60 together | principal |
 | `POST /api/conversations/:id/agents/halt` | 20 (a budget of its own) | principal |
@@ -875,7 +882,7 @@ picked from the @ list mean anyone but the one picked.
 - **What a model is shown** of a message with mentions is its text as sent (a picked Agent may read `@贾维斯` there);
   the stored entries are never put into a model's context.
 - **Readers** — the triggers (a person's message in a group or to their Agent in `mention` mode, an Agent's reply), the
-  calls a reply records (`call_seqs`) and so its follow-up, the proactive judgement's "names an Agent", the web's
+  calls a reply records (`call_seqs`) and so the calls that wait for one, the proactive judgement's "names an Agent", the web's
   让 Agent 停下 — all read the stored entries. An entry whose principal has since left or been deleted stays as data and
   calls nobody new. Old messages are never rewritten.
 - **On the wire**: `mentions` goes out with the message (WireMessage) to everyone who can read it; its ids are of
@@ -1079,9 +1086,9 @@ message is, with everything before it in what the Agent is shown.
 
 *Session: required.* Body: none or `{}`. Resumes it (idempotent). → 200 Agent; 409 `agent_deleted`; 404 `not_found` unless yours.
 Resuming a paused Agent first ends, in its own transaction, what its pause could not see — a reply another Agent's
-message in a group queued for it, or a mention noted, as the pause committed (Agents and runs, Pause and delete): such
+message in a group queued for it, or a call left waiting for it, as the pause committed (Agents and runs, Pause and delete): such
 a queued reply is `cancelled` `agent_paused` (`run` pushed), a running one is never posted and ends `cancelled`
-`agent_paused`, and nothing noted on it is followed up. So nothing written before the resume is answered by it.
+`agent_paused`, and every call waiting for it is dropped. So nothing written before the resume is answered by it.
 
 #### `DELETE /api/agents/:id`
 
@@ -1201,10 +1208,10 @@ thinking, a persona block cut at the limit, a group reply that was only its mark
 retried; nor is anything else (no money, a model gone, a key or request refused, a context too small, a stop, a pause,
 a delete). Which runs (the table): an ordinary reply in the Agent's own conversation or in a
 group, whoever called it (an Agent's relayed call included) — never a reply nobody asked for (lane `proactive`), a
-told reply (`告诉他们`: its owner has just pressed it; its whisper reads open again and offers 重试, and the members'
-calls noted on it get their follow-up at once), a new Agent's greeting (what its owner wrote while it ran always gets an
-ordinary follow-up, however the greeting ends — answered, failed, stopped, lost at a restart, released at shutdown or by
-the stale-run sweep: `port-impl.ts` `followUpOnEnd`, the one place for every ending), or a run queued by the owner's own 重试
+told reply (`告诉他们`: its owner has just pressed it; its whisper reads open again and offers 重试; a member's call that
+waited behind it gets its own reply as it ends), a new Agent's greeting (what its owner wrote while it ran always gets an
+ordinary reply, however the greeting ends — answered, failed, stopped, lost at a restart, released at shutdown or by
+the stale-run sweep: every ending takes what waited behind it, Agents and runs, One identity per reply), or a run queued by the owner's own 重试
 (`owner_retry`: the owner is there). At most once per wait of `AGENTS.autoRetryDelaysMs` per original call (default
 `[20000, 120000]`: 20 s, then 2 min after the failure; `[]` turns it off; counted on the chain, `retry_of` /
 `auto_attempt`, also across restarts), and only when it can START within 10 minutes of the original call: one held back
@@ -1212,11 +1219,12 @@ past that (by admission, by the owner's other running replies, or queued while t
 — it ends as the ordinary failure, with 重试 for its owner and 暂时无法回复 for the others. The retry is an ordinary queued
 run (`not_before`): the worker claims it once due (`for update skip locked`: one instance only), so it survives a
 restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held back or refused, it is not
-forced), charged as any, and answers the same calls — those the failed run answered and those noted on it — in the lane and
-by the caller THE decision gives over all of them (Whose reply a reply is, below: a member's call stays the member's, and a
-member's call noted on the owner's own reply makes its retry a reply for others), held to the owner's replies a minute in that
-lane. Whatever calls the Agent while it waits is folded into it and
-waits with it (up to the backoff); it ends quietly (`cancelled`) when the Agent answered meanwhile. A chain never holds an
+forced), charged as any, and keeps the failed run's ASSIGNMENT — what it covered and the calls it answered (less any a limit
+refused since) — and its identity: the same lane and caller (Agents and runs, One identity per reply: a member's call stays the
+member's, the owner's the owner's), held to the owner's replies a minute in that lane. It takes the Agent's place there BEFORE
+anything waiting behind the failed run: a call meanwhile waits behind it (up to the backoff) and gets its own reply after it;
+nothing is folded into a retry. It ends quietly (`cancelled`) when an attempt of its own chain posted its reply (assignments do
+not overlap: no other reply answers its calls). A chain never holds an
 acknowledgement (one posted makes the failure not passing), and it makes no second found-elsewhere whisper about the same
 asking message (a run lost between its whisper and its round's record is tried again). While it
 waits the run slot reads `queued` (there is no separate "trying again" state: everyone sees 正在回复…, up to about
@@ -1294,9 +1302,8 @@ is a group you are a current member of: a direct chat and an Agent's own convers
 *Session: required.* Body: none or `{}`. Stops the reply: a queued one at once (it never reaches the model; `run`
 `stopped` is pushed) — also one that was running when you asked and that its admission held back to queued meanwhile
 (Metering, Money that does not block); a running one as soon as the worker notices (within 50 ms): what it had said so far is posted
-with `stopped: true` and the run ends `stopped` (nothing said: no message). Either way what was noted on it — written
-after it started — gets its own reply by the one follow-up rule (`followUpOnEnd`): for a queued one, what its admission
-handed back as it held it back, and a told reply's members' calls. A running one that no worker of this
+with `stopped: true` and the run ends `stopped` (nothing said: no message). Either way the calls that waited behind it get
+their own reply as it ends (Agents and runs, One identity per reply). A running one that no worker of this
 instance is working on — another instance's during a deploy, or one left by a process that is gone — is released at
 once, exactly as recovery releases one (Agents and runs, Recovery): `failed`, `provider_unavailable`, retryable, its
 hold released at no charge (or, when its reply had been posted, `done` / `stopped` as its message says; `cancelled`
@@ -1310,9 +1317,11 @@ exist. Limit: 60 per minute with retry and dismiss.
 
 *Session: required.* Body: none or `{}` in an Agent's own conversation (an `agentId` there plays no part: the
 conversation names its Agent); in a group `{"agentId"}`, one of your Agents (required there: 400 `invalid_request`
-without it). When the latest run failed, queues a new reply answering up to your last message — in a group, answering
-again exactly what the failed run was to answer (its messages and what was noted on it while it ran, not your last
-one), called for by whoever called the failed run: one that another Agent's message called for (`triggered_by`
+without it). When the latest run failed, queues a new reply answering again exactly what the failed run was to answer — its
+assignment, named by the run's id: what it covered and the calls it answered, less any a limit refused since (what was written
+after it was answered by a reply of its own) — your own (lane `own`: the one case where a member's question is answered on your
+terms, because you asked again), called for by whoever called the failed run: one that another Agent's message called for (`triggered_by`
+
 `agent`) stays an Agent's, so a member's halt still ends it (Agents in a group). → 201 `{"run": Run}` (queued; also pushed). 409 `busy_run` while a reply is queued or
 running; 409 `agent_paused` / `agent_deleted`; 409 `model_gone` while the Agent's model is not there to call
 (`modelUsable` false); 400 `invalid_request` when the latest run did not fail (or there is
@@ -1650,13 +1659,13 @@ under three brakes, each about Agents calling Agents — a person's mention is n
   sent by Agents, an Agent's message calls nobody until a person writes; the first such message appends the
   `agent_chain_paused` notice (System notices), once per pause.
 - **The halt** (below): any member stops it at once; until a person writes again, Agents' messages call nobody, and
-  what Agents' messages asked of a reply before the halt is never answered by a follow-up, even once a person has
-  written since.
+  what Agents' messages asked before the halt while a reply was under way (calls that waited) is never answered, even
+  once a person has written since.
 - **The chain budget** (`chainBudget`, per Agent, its owner's setting): once what its owner was charged for its replies
   in the group covering messages after the latest from a person reaches it, Agents' messages do not call it until a
   person writes; the group is told once per chain (`agent_budget_reached`). It is checked when an Agent's message would
-  call it and again as each of its replies ends, before a follow-up that only Agents' messages asked for (a reply is
-  charged only once it has ended): so a chain passes its budget by at most the reply that was under way. A reply on a
+  call it and again as each of its replies ends, before a reply for calls that waited that only Agents' messages made (a reply
+  is charged only once it has ended): so a chain passes its budget by at most the reply that was under way. A reply on a
   provider model costs no points, so for such an Agent only the chain limit and the halt apply.
 
 **The owner's number for others' use** (one per owner, for all their Agents; the limits redesign, Part 1) is of another kind: it is
@@ -1682,7 +1691,8 @@ The owner is told once a site day, in the own conversation of the Agent a call w
 (`others_limit_reached`, System notices; a reply refused as it was admitted is counted, `others_limit_refused`), of the number that
 refused it (read in the refusal's own transaction, so a raise just after does not change what the notice says); the conversation
 the call was made in is told nothing. A reply nobody asked for that the number refuses tells nobody, and so does a reply for others
-with no call left (a follow-up whose calls a block took away).
+with no call left (its calls all taken away by a block). A call the number refuses as it is made is never left waiting; one that
+waited is held to the number again when it is taken, and as its reply is admitted.
 
 Replies for others are made as the owner's own are: at the model's own output limit, with the thinking allowance of their level on
 top — the owner's setting per Agent (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`; `none` for a new Agent, Owner
@@ -1691,47 +1701,63 @@ the last call only where the reply is charged to free points and balance togethe
 what it costs. Their one bound of their own is their tools: one tool round of at most `OTHERS.toolCalls` (1) calls. The owner's page
 shows under each level what one such reply can cost at most there (`GET /api/models` `othersCeiling`): shown, never reserved.
 
-**Whose reply a reply is** (its lane and caller, and so its level, its tools and whether it counts in the owner's number for others' use) is WRITTEN,
-never read back from who wrote a message (`agent_runs.owner_call_seqs`, migration 076; `src/agents/runs.ts` `laneOf`, the one
-decision every writer of a run's lane asks, with every call the reply has: a queue, a call folded in, calls taken out, the calls
-noted on a claimed reply as it takes them on, a follow-up, an automatic retry):
-- each call a run records is marked the owner's own AT THE MOMENT IT IS ACCEPTED, when it is: the owner's own @ or message to
-  their Agent, or another Agent's message the owner is behind then. Nothing later makes a call the owner's;
-- a reply is the owner's own (`own`) when it is the owner's own by what it is — their 重试 (`owner_retry`), a tell, a greeting —
-  or when it has a call and EVERY call it has is so marked (fix round 5: conservative; it reverses round 3's rule that one owner
-  call kept a reply the owner's own); a reply nobody asked for that no call has taken over is `proactive` — the message it was
-  queued on is no call of anyone, whoever wrote it, the owner too, and when a call takes such a reply over that message leaves
-  its calls; anything else is a reply for others, its caller the person behind the earliest call somebody other than the owner
-  is behind;
-- so the owner's @ and a member's @ folded into one reply make a reply for others — bounded, at the level for others, held to the
-  others' numbers and counted for the member — whichever came first, and so does a member's call noted on the owner's own reply
-  before it begins (taken on as it begins), its follow-up and its automatic retry; a call refused since is taken out before it
-  begins, so a reply only the owner's calls are left on is the owner's own again, and with no call left it ends quietly, with
-  no model call.
+**One identity per reply** (the limits redesign, Part 2; `src/agents/runs.ts` `Caller`, `reachAgents`, `takeDeferred`;
+`tests/deferred-calls.test.ts`). Whose reply a reply is — its lane and caller, and so its level, its tools and whether it counts in
+the owner's number for others' use — is decided ONCE, as the call that makes its run is accepted, and nothing changes it after: no
+call folded in, no refusal, no retry, no ending of access, no crash. The owner's own (`own`, the owner its caller): the owner's own @
+or message, or another Agent's message the owner is behind then; every reply in the Agent's own conversation; a tell, a greeting; and
+the owner's 重试 of a failed reply — the one deliberate case of a member's question answered on the owner's terms. A member's call, a
+relay a member is behind or nobody is behind, a visitor's: `others`, with that person as caller (nobody for an ownerless relay). A
+reply nobody asked for: `proactive`. Then, per Agent and conversation (a pair), under the conversation's row:
+- a call on a pair with nothing active and nothing waiting queues its reply at once;
+- a call of the same identity as a reply queued there and never claimed, with nothing waiting, is folded into it (one person
+  asking twice: one reply);
+- any other call waits (`deferred_calls`, migration 078: its lane, caller, whose message made it, whose questions it carries and when
+  it was accepted) — behind a reply under way, a reply of another identity, a retry, a tell, a greeting, a reply nobody asked for, or
+  calls waiting already (nothing passes the head). At most 8 wait per pair; one more is refused 太频繁 (`too_often`, Messages) for
+  the person it is for;
+- when the active reply ends — answered, failed and not tried again, stopped, lost at a restart, released, ended at admission, halted
+  — the same transaction takes the oldest call waiting and the calls right after it of the same identity as ONE assignment and queues
+  its reply, in that identity; the run that ended is announced before the one queued. A call of another identity between them
+  starts the next assignment: so the owner's @ and a member's @ together are two replies, in the order they were made, the owner's own
+  on the owner's terms and the member's on the others' — neither is ever counted or bounded as the other's;
+- an automatic retry takes the slot BEFORE anything waiting (its attempts are bounded, so the calls wait a bounded time), keeping the
+  failed run's assignment and identity; a reply nobody asked for with a call waiting behind it ends quietly as it begins (no call;
+  the call gets its own reply);
+- a refusal takes a call out of an assignment and changes nothing else: a call refused by a limit is in no assignment (no reply,
+  retry or 重试 answers it), a waiting call is held again to the access decision, the halt and the chain budget (for a relay) and the
+  owner's number for others' use when it is taken; an assignment with no call left is dropped and the next is taken;
+- a reply is shown, and its tools reach, nothing after its assignment's last call (`covers_seq`): what came since is another reply's;
+- the Agent's pause or delete drops every call waiting for it; its leaving a group, or its owner's interjection in a social
+  conversation, the calls waiting there; an ending of access the refused people's calls (an ending outside the conversation's lock
+  order takes what waits behind a reply it cancelled right after it commits, and the stale-run sweep and start-up recovery take
+  whatever was left: each call is answered exactly once).
+Nothing of this is on the wire: a member sees the Agent replying while any of it runs, its owner its one run slot, and Stop stops the
+run that is visible.
 
 **The terms are those of the row at admission.** `begin` prepares a plan (model and level, bounds, tool caps, the context) in a
 first step, reads attachments with no lock, and admits in a third. At admission, under the run's locks, the calls are held to
-the access decision once more and the row is compared with what the plan was made for (lane, caller, the calls it answers). Any
-difference: the plan is thrown away — no upstream call, no hold — and made again from the row (three times at most, then the
-reply goes back to the queue). A reply that is no longer the owner's own as it begins meets the others' limit of replies at a
-time before anything is prepared (`AGENT_MAX_CONCURRENT_OTHERS_RUNS`; over it, back to the queue). ONCE ADMITTED the lane,
-caller and money terms are frozen: a later ending of access never rewrites them and never requeues the reply (its calls would be
-made and charged twice) — it is ended as a whole when no call it answers is left, else it goes on and its post leaves out
-whoever is refused by then. The site day the owner's number is read
+the access decision once more and the row and the Agent are compared with what the plan was made for (the calls it answers, and the
+Agent's model, level and web search). Any difference: the plan is thrown away — no upstream call, no hold — and made again (five
+times at most, then the reply fails `busy` and what waits behind it is taken). ONCE ADMITTED the money terms are frozen: a later
+ending of access never rewrites them and never requeues the reply (its calls would be made and charged twice) — it is ended as a
+whole when no call it answers is left, else it goes on and its post leaves out whoever is refused by then; its usage settles either
+way. The site day the owner's number is read
 for is the day it is under the owner's account lock when the hold is placed, not the day the reply began to be prepared.
 
-The owner's other limits hold throughout, for every reply in a group — called by a person's mention, an Agent's, or a
-follow-up of what was noted while a reply ran: replies started a minute, counted per lane (`AGENT_RUNS_PER_MINUTE` for
+The owner's other limits hold throughout, for every reply in a group — called by a person's mention, an Agent's, or calls that
+waited for a reply under way: replies started a minute, counted per lane (`AGENT_RUNS_PER_MINUTE` for
 the owner's own, `AGENT_OTHERS_RUNS_PER_MINUTE` for what others called for; over it, for the owner's own call the Agent's one
 `rate_limited` run in the group, for someone else's no run at all but its sender's line, Rate limits), running at once (`AGENT_MAX_CONCURRENT_RUNS`, of which at most
 `AGENT_MAX_CONCURRENT_OTHERS_RUNS` for others' calls, so that a crowd mentioning the Agent leaves the owner a place of
 their own), and the free allowance or balance. And a person who calls other people's Agents more than
 `AGENT_CALLER_RUNS_PER_MINUTE` times a minute is not answered for the extra ones (Rate limits). So members who keep
 mentioning an Agent while it replies cannot keep it replying past its owner's limits. For a mention by someone other
-than the Agent's owner the checks run in this order, and the first to refuse decides: the owner's number for others' use (the
-sender is told on their message, `others_limit`, and the owner once a day), then — unless the mention folds into a reply under way,
-which starts nothing — the caller's limit (the sender is told on their message, `too_often`), then the owner's others' replies a
-minute (the sender is told the same; no run records it). Each refusal's one outward result is the sender's line.
+than the Agent's owner the checks run in this order, as the call is made — whether it would start a reply, be folded into one or
+wait — and the first to refuse decides: the owner's number for others' use (the sender is told on their message, `others_limit`, and
+the owner once a day), then the caller's limit (the sender is told on their message, `too_often`), then the owner's others' replies
+a minute (the sender is told the same; no run records it), then, for a call that would wait, the 8 waiting. Each refusal's one
+outward result is the line of the person the call is for (the sender; for an Agent's relay, the person behind it).
 
 **A reply there** (Agents and runs: the worker, What the model is shown):
 
@@ -1756,17 +1782,16 @@ minute (the sender is told the same; no run records it). Each refusal's one outw
   nobody asked for (Proactive replies), the sender of the message the judgement picked it for; for an Agent called by
   another Agent (a chain), the person whose message started the chain — not the calling Agent; the Agent's own owner
   asking in the group is an asker like anyone else. Everyone the reply hears from counts as asking too: a person who
-  wrote in the group after the message the reply was made for, and, for an Agent's message there, the people the reply
-  that posted it answered (whose question it may be relaying; when they are not known, the line falls on the safe side,
-  below) — while it waited to run, in what was
-  folded into it or noted on it, in what a follow-up answers, or, for an Agent it calls, while it ran — so a
-  newcomer's question sent without a mention while an older member's reply waits to run is not answered from before
-  the newcomer's joining, and neither is anything that reply hands down a chain; an older member writing then, or
-  another member's Agent answering one, does not move the line. They are recorded on the run as it goes, wherever what it covers moves forward, and an Agent it calls
-  takes them on. The line is the latest current joining among all of them: a reply that answers several people's calls
-  at once (one folded into a reply waiting to run, or answered by a follow-up) starts at the latest of their joinings,
-  so the owner's own question folded with a newcomer's is answered from the newcomer's line, and the Agent may seem to
-  have forgotten what came before it. Where an asker cannot be told — a run recorded before askers were, a chain whose
+  wrote in the group in the stretch it shows beyond what it was asked — between what the reply before it covered and its
+  assignment's last call (a call folded into it, an assignment of calls that waited), or, for an Agent it calls, while the
+  relaying reply ran — and, for an Agent's message there, the people the reply that posted it answered (whose question it may
+  be relaying; when they are not known, the line falls on the safe side, below). A reply is shown nothing after its
+  assignment's last call, so a newcomer's message sent while it waits is not shown it at all; an older member writing, or
+  another member's Agent answering one, does not move the line. They are recorded on the run as its calls are accepted (only
+  where a call is accepted: what an Agent's message hands down is recorded on the reply it calls, never on the reply that
+  posted it). The line is the latest current joining among all of them: a reply that answers several calls of one person at
+  once (folded, or one assignment) starts at the latest of the joinings it heard, so the Agent may seem to have forgotten what
+  came before it. Where an asker cannot be told — a run recorded before askers were, a chain whose
   first person is not known, an asker who is not in the group when the reply begins (left since: not the start of the
   stay they asked in), or one who was never in it — the latest joining among the group's people now counts. The calls
   the reply answers — the messages that called for it — are always shown: one after the line whole, one at or before
@@ -1784,7 +1809,7 @@ minute (the sender is told the same; no run records it). Each refusal's one outw
   and the Agent's own notes learned in that group and the notes passage (An Agent's memory). Nor does the line change
   what anyone can read through the API, the memory reviews' input or the judgement's transcript for unasked replies.
   Recorded on the run (`agent_runs.asker_ids` and the calls' `call_seqs`, never on the wire; `src/agents/runs.ts`
-  `hearFrom`), read once as the reply begins (`src/agents/context.ts` `askerLine`, `callsSeen`).
+  `heardIn`, `askersHandedDown`), read once as the reply begins (`src/agents/context.ts` `askerLine`, `callsSeen`).
 - *How much of the group.* At most its latest 80 messages, and at most `AGENT_GROUP_CONTEXT_TOKENS` (12 000) tokens of
   them, oldest dropped first, within that cap, as in its own conversation (What the model is shown): the cap replaces
   the model's context as the budget when the context would hold more. It is the service's estimate — text in weight,
@@ -1824,10 +1849,11 @@ minute (the sender is told the same; no run records it). Each refusal's one outw
 Agent, and no Agent replies unasked to a message sent before it. Replies that Agents' messages called for end at once,
 and so do replies an Agent was to give unasked that nobody has called for since: a queued one is `cancelled` with error `halted` (`run`
 pushed to its owner), a running one is never posted and ends `cancelled`, `halted` (what it had said is discarded; what
-it used is settled; a reply already posted stays); what a person asked of such a reply meanwhile is still answered (of a
-queued one — noted on it before its admission held it back — at once, by the same rule as a running one's). Replies
-a person called for are left alone, but what Agents' messages asked of one before the halt (noted while it ran) gets no
-follow-up when it ends, even if a person has written since. An `agents_halted` notice from you is appended (and pushed). Idempotent: while the
+it used is settled; a reply already posted stays); what a person asked while such a reply was under way (a call that waited
+behind it) is still answered — behind a queued one at once, behind a running one when it ends. Replies a person called for are
+left alone, but what Agents' messages asked before the halt while one was under way (calls that waited) is not answered when it
+ends, even if a person has written since.
+ An `agents_halted` notice from you is appended (and pushed). Idempotent: while the
 group is still halted (nobody has written since the last halt) it changes nothing and appends nothing. → 200
 `{"ok": true}`. 404 `not_found`, byte for byte as for an id that does not exist, unless it is a group you are a current
 member of (a direct chat and an Agent's own conversation too). Limit: 20 per minute, a budget of its own.
@@ -1930,18 +1956,15 @@ the hits lies outside every late-joiner line of this group — none of its membe
 acceptable only because it is your own, deliberate telling of what you can read; nothing else crosses. The words
 themselves are told: a hit's own text can name its group or its speaker (an Agent's earlier reply, `mia 在乙群说…`), and
 nothing can take that out of prose — only `不要说是在哪里看到的，也不要说是谁说的。` asks the model not to repeat it (a limit, to
-check with a live model). A told reply takes on no call: a member's call while it is queued or running is noted on it
-(`pending_seq`, and the call recorded in its `call_seqs`, which hold nothing else), never folded in, and it is shown the
-group only up to what it covers; its follow-up then answers exactly the calls recorded so — a mention refused as it was
-sent is none of them, whatever has changed since — as an ordinary reply: with tools, in the caller's lane, each held to
-the block rule as any follow-up's calls. Those calls are never held to you: however the told reply ends — posted or
-not, failed as it ran, ended by recovery, a release or the stale-run sweep (where a failed run is otherwise followed by
-nothing) — they go to that follow-up at once, and the told reply keeps none of them. Stopping a told reply while it is
-queued ends the tell only (the whisper reads open again): the members' calls noted on it still get their ordinary
-follow-up. (`让 Agent 停下`, a group member's halt, does
+check with a live model). A told reply answers no call (`call_seqs` empty): a member's call while it is queued or running waits
+behind it (One identity per reply), never folded in, and it is shown the group only up to what it covers; the call is answered
+by a reply of its own as the told reply ends — as an ordinary reply: with tools, in the caller's lane, held to the block rule as
+any waiting call. Those calls are never held to you: however the told reply ends — posted or not, failed as it ran, stopped while
+queued (that ends the tell only: the whisper reads open again), ended by recovery, a release or the stale-run sweep — they get
+their reply at once. (`让 Agent 停下`, a group member's halt, does
 not touch a told reply at all — it is your own, a person's call: it ends the runs Agents' messages called for and the
-replies nobody asked for, and a follow-up of noted calls that only Agents' messages made is such a run.) A retry of a told
-reply that failed keeps its whisper (it reads telling again), and tells again what it covered, with nothing noted; it is
+replies nobody asked for.) A retry of a told
+reply that failed keeps its whisper (it reads telling again), and tells again what it covered, answering no call; it is
 offered (`retryable`, on your wire only) while the told reply is the Agent's latest run there and its whisper reads open —
 by the same one rule: once it no longer reads open — you answer 不用, it expires (a day old, or no hit left that you can
 read, a leaving's included) — it is not offered, and its slot is pushed to you again without it, right after the whisper's
@@ -3003,9 +3026,9 @@ owner also removes their Agent.
 - Errors: 404 `not_found` (not a current member, closed, unknown), 403 `cannot_send` with `reason`
   `blocked` or `not_friends` (direct chats), 400 `invalid_request` (empty text without attachment, a
   `replyToSeq` you cannot see, an attachment that is not your unsent upload here), 400 `bad_mentions` (above).
-- In your Agent's conversation, a message (not a repeat) may start the Agent's reply in the same transaction, or be
-  folded into the one in progress (see Agents and runs). In a group, so may a message whose mentions mean an Agent
-  member (Mentions; Agents and runs, In a group).
+- In your Agent's conversation, a message (not a repeat) may start the Agent's reply in the same transaction, be
+  folded into one not begun yet, or wait for the one in progress and get its own reply after it (see Agents and runs). In a
+  group, so may a message whose mentions mean an Agent member (Mentions; Agents and runs, In a group).
 - Limit: 120 per minute. Pushes: `message` to every member who can see it; a reply it queues, `run` to that Agent's
   owner.
 
@@ -3200,7 +3223,8 @@ conversation, a reply's start and its post there, and in a group the mention, a 
 nobody asked for, a reply's start (`dropRefusedCalls`) and its post (`standingCalls`). So does every ending: in a group an
 ending never cancels a reply as a whole. It takes the calls of whoever is refused now out of the replies that have not called
 their model; a reply left with no call ends quietly (`cancelled`, no error), and a reply in flight is stopped only when every
-call it answers is refused (what someone else noted on it is answered by its follow-up). `access_ended` as a run's recorded
+call it answers is refused; the calls of whoever is refused now that wait for a reply are dropped (others' wait on, and get their
+reply as the one under way ends). `access_ended` as a run's recorded
 reason is a social run's alone. An ending that refuses nobody in a group (unfriending; a visitor who removes an Agent from their
 contacts) takes nothing out of a group reply: in a group anyone may @ an Agent.
 
@@ -3280,7 +3304,7 @@ what those people called on the Agent stops. Approved rows stay; widening ends a
 *Session: required.* 停止往来: no access between you and the person, in either direction, for any Agent of either (ring 1a).
 Every live or waiting row between the two sides ends, and their replies in the pair's social conversations stop (`access_ended`); in a group the
 person's calls are taken out of a reply (it ends, quietly and with no error, only when it answers no one else; one in flight is stopped only when
-every call it answers is theirs, and a call someone else noted on it is then answered by its follow-up: One access decision, above). It is
+every call it answers is theirs; their calls waiting for a reply are dropped, others' wait on: One access decision, above). It is
 offered on the person's profile for anyone, a stranger who only called your Agent in a group included, and nowhere else. The bar is your own row: it is lifted by you alone (the other person's own stop or block is theirs), and the pair
 stays barred while a row of either of you stands. → 200 `{"ok": true, "ended": number}` (also when a bar stands already); 400 `invalid_request` for yourself; 404
 `not_found` for an unknown id and for an Agent (a person only). Limit: 20 a minute, shared with `DELETE`. 404 while `SOCIAL.enabled` is off.
@@ -3312,7 +3336,8 @@ read by the one access decision (`reach` and its SQL twin `refusedSql`), so it h
 avatar rule, every social conversation (permission to write, a reply's start and its post) and every group site (a mention, a relay, a
 reply nobody asked for, a reply's start and its post): a disabled Agent answers nobody but its owner, in a group too. The replies others asked of
 it stop (queued ones cancelled, running ones interrupted: recorded `access_ended` in a social conversation and with no error in a group;
-the owner's own call noted on one stays noted), and its owner's own replies go on; no row is touched, and enabling gives access back. The command line has no live connection: screens that are open
+the calls of others that wait for one are dropped, the owner's own wait on and get their reply — at once after a route, by the stale-run
+sweep within a minute after the command line), and its owner's own replies go on; no row is touched, and enabling gives access back. The command line has no live connection: screens that are open
 catch up at their next sync (a typed message to a disabled Agent is answered 403 at once). `reports:close --outcome disabled` disables the
 Agent too, by the same path (an outcome that only recorded would read as having acted); `dismissed` only records.
 
@@ -3470,8 +3495,12 @@ refused a call of a person's message on an Agent — the Agent's owner's number 
 often: the sender's calls a minute on other people's Agents, or the owner's others' replies a minute (`too_often`) — it is
 recorded with the message, one row per message and Agent (the first refusal kept), and the message as its SENDER reads it carries
 `refused`, one entry per Agent, in the order they were recorded (those of one moment by Agent id): in the answer to the send, history, sync, catch-up and every push of it to them. A
-refusal found after the send (as the reply was admitted, or a follow-up of the call) pushes the message to its sender again with
-it. Nobody else's copy ever carries it; an Agent's message carries none (nobody reads a line for it); and a call refused for
+refusal found after the send (as the reply was admitted, or as the call was taken after waiting for a reply) pushes the message to
+its sender again with it. Nobody else's copy ever carries it — but an Agent's message that relays a member's call (the limits
+redesign C-d): a limit's refusal of that call is recorded for the person behind the relay (`call_refusals.sender_id`), whose copy of
+the Agent's message alone carries it and who is pushed it again, the web drawing the line under the Agent's message; a relay nobody
+is behind records nothing. A call refused for
+
 access (a block, a stop, removed, owner-only, paused) is never recorded: it stays quiet. The web shows one line a reason under
 the sender's message, the refused Agents' names before it: “「小助手」：这个 Agent 今天不能再回复别人了” (`others_limit`),
 “「小助手」：太频繁，稍后再试” (`too_often`); an Agent whose name the client does not know is counted instead
@@ -3557,8 +3586,8 @@ client can render its own:
 | `memory_changed` | `actorId` = the Agent, `changeId`, `lines` (`记住了：…`, `改成了：…`, `忘掉了：…`, `锁进了保险箱：…`; while the change is pending the future tense, `要记住：…`, `要改成：…`, `要忘掉：…`, `要锁进保险箱：…`, a dream's `要合并成：…`, `要拆成：…`, written again in the past once it is applied; under an applied merge's `合并了 {k} 条：…` one `原来：…` line per note it merged, as it was; `听说：「{speaker}」在「{group}」里说：…` for hearsay; for a request to unlock, the note's text), `vaultLines` (booleans, one per line: the note is in the vault afterwards), `sourceLines` (only on a notice with an applied merge: booleans, one per line, true for each `原来：…` line — a note the merge above it joined, part of that merge's line; a client tells them by this, never by a line's text, which a note may begin with too), `pending`, `unlock`, `full`, `status` (`applied`, `undone`, `pending`, `discarded`, or `expired`: the record of the change was swept 30 days after it was over, the notice stays with the lines it was stored with and nothing to decide) | a review (小憩) or a dream (入梦) changed, or proposed to change, the Agent's notes, in the owner's own conversation with it, sent to the owner only; text “记忆已更新”; also `phase` (`"rest"`, or `"dream"` for a dream: `合并了 {k} 条：…`, `改成了：…`, `拆成了：…`, `锁进了保险箱：…`) and `count` (the number of lines) |
 | `agents_halted` | `actorId` (who halted) | `POST /api/conversations/:id/agents/halt`, in a group that was not halted already: “{名字} 让 Agent 停止了接话” |
 | `agent_chain_paused` | `actorId` (the Agent whose message it was), `limit` (`AGENT_CHAIN_LIMIT`) | in a group, the first Agent's message that would call another Agent after the last `limit` messages that are not notices were all Agents'; once until a person writes: “Agent 已连续对话 {limit} 条，已暂停互相接话，有人发言后继续。” |
-| `agent_budget_reached` | `actorId` = `agentId` (the Agent whose `chainBudget` is reached) | in a group, the first Agent's message that would call it once its chain budget is reached — or the end of its reply that reached it, when only Agents' messages were noted on that reply for a follow-up (pushed after that reply's `run`); once per Agent until a person writes: “{Agent 名} 已达到本次接话的点数上限，有人发言后继续。” |
-| `others_limit_reached` | `actorId` = `agentId` (the Agent a call on was refused for it), `points` (the owner's number then) | in the Agent's own conversation, for its owner: the first call on any of the owner's Agents by someone other than the owner that the owner's number for others' use refuses — at the trigger, a follow-up, or a reply such a call queued as it was admitted; once per site day per owner, whichever Agent it was (Agents and runs, The owner's number for others' use); the conversation the call was made in is told nothing: “别人今天用你的 Agent 已经花到每天上限 {points} 点，今天不再回复别人；已经在回复的会照常回完。” (a notice of the event it replaced, `agent_daily_budget_reached`, stored in a group before, is still read back as stored; the web draws none) |
+| `agent_budget_reached` | `actorId` = `agentId` (the Agent whose `chainBudget` is reached) | in a group, the first Agent's message that would call it once its chain budget is reached — or the end of its reply that reached it, when only Agents' messages waited behind that reply (pushed after that reply's `run`); once per Agent until a person writes: “{Agent 名} 已达到本次接话的点数上限，有人发言后继续。” |
+| `others_limit_reached` | `actorId` = `agentId` (the Agent a call on was refused for it), `points` (the owner's number then) | in the Agent's own conversation, for its owner: the first call on any of the owner's Agents by someone other than the owner that the owner's number for others' use refuses — at the trigger, as a call that waited is taken, or a reply such a call queued as it was admitted; once per site day per owner, whichever Agent it was (Agents and runs, The owner's number for others' use); the conversation the call was made in is told nothing: “别人今天用你的 Agent 已经花到每天上限 {points} 点，今天不再回复别人；已经在回复的会照常回完。” (a notice of the event it replaced, `agent_daily_budget_reached`, stored in a group before, is still read back as stored; the web draws none) |
 | `social_opened` | `actorId` (the Agent reached), `agentIds`, `ownerIds` (the owners who watch and may write) | the first message of an `agent_social` conversation (Agent social): “这是{主人}的 Agent。{主人}能看到你们的对话，也可能插话。” (two owners: their names joined by 、) |
 | `note_withheld` | `actorId` = `agentId`, `audienceId`, `noteKind` (`owner` or `self`), `noteId`, `expiresAt` | ring 1b, in the Agent's own conversation, for its owner only: a note it held back from someone who asked about it (Agent social): “有一条笔记没有告诉别人” (the card's details come with the event, to the owner's client alone) |
 | `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有句话可能被说给别人” |
@@ -3857,8 +3886,9 @@ Agent or conversation: its route makes the call itself, `POST /api/agents/draft-
 (not a repeated `clientTxn`), under the send's locks: nothing happens when the Agent is paused, deleted or has no model,
 or when its `replyMode` is `mention` and the message's stored mentions (Mentions) do not mean it — picked from the @
 list, or typed as its handle (the full one) or its name part as a whole mention (`@jarvis_2` is not `@jarvis`), or `@` +
-its current name anywhere (case ignored), read once at send. A message that comes while a run of the Agent is active in that conversation is folded into it (Coalescing,
-below). Otherwise a `queued` run is inserted in that conversation covering the message (`covers_seq`), unless the owner
+its current name anywhere (case ignored), read once at send. A message that comes while a run of the Agent is active in that
+conversation is folded into it when that run is queued and not claimed yet and nothing waits, else it waits for a reply of its own
+(One identity per reply, under Agents in a group; Coalescing, below). Otherwise a `queued` run is inserted in that conversation covering the message (`covers_seq`), unless the owner
 has started `AGENT_RUNS_PER_MINUTE` (20) replies of their own lane in the last minute (a reply in the Agent's own
 conversation is always the owner's own, the owner its caller): then the run is inserted already `failed`, error
 `rate_limited` (retryable), covering the message — the message is still sent, nothing is called, held or charged (no
@@ -3896,11 +3926,12 @@ not even a query.
   the other's points; lifting the block restores it at once). When the sender is not the Agent's owner, the owner's
   number for others' use is then checked (`othersReached`, read under the Agent's row lock): reached, nothing is done — not
   even a fold —, the sender reads why on their message and the owner is told once a day (Agents and runs, The owner's number
-  for others' use). Then as in its own conversation: folded into
-  its active run in the group (a queued run a person's message is folded into is a person's from then on, and the
-  owner's own — the owner its caller — when the message is the owner's; another member's leaves its lane and first
-  caller, but takes over a reply nobody called for: lane `others`, that member its caller), else, for a call on someone else's Agent, the caller's limit (`AGENT_CALLER_RUNS_PER_MINUTE`: over it,
-  no run is recorded, one `caller_rate_limited` line is logged and the sender's message carries the line, `refused` `too_often`), else a queued run (`triggered_by` `human`, with its
+  for others' use). Then, for a call on someone else's Agent, the caller's limit (`AGENT_CALLER_RUNS_PER_MINUTE`: over it, no run
+  is recorded, one `caller_rate_limited` line is logged and the sender's message carries the line, `refused` `too_often`) and the
+  owner's others' replies a minute (the same line), met by every call as it is made (`runs.ts` `reachAgents`). Then, with a run of
+  the Agent active in the group, the call is folded into it when it is a queued run never claimed of the same identity and nothing
+  waits (a person's message makes it a person's, `triggered_by` `human`), else it waits (`deferred_calls`, at most 8; One identity
+  per reply). With nothing active and nothing waiting, a queued run (`triggered_by` `human`, with its
   caller and lane) — or, over its owner's replies a minute in the call's lane: for the owner's own call a `failed`
   `rate_limited` run, of which there is one per Agent in the group (while it is the Agent's latest run there and its owner
   has not dismissed it, it covers every further mention of theirs over the limit, announced again, instead of a new one being
@@ -3926,86 +3957,71 @@ not even a query.
   group whose `covers_seq` is after the latest message from a person has reached `chainBudget`), when one
   `agent_budget_reached` notice about it is appended unless one was since a person last wrote. The called Agents'
   `agents` rows are read, not locked (the poster's is held already, and another's taken after it could be out of id
-  order: two Agents calling each other from two groups at once would deadlock). The fold-or-insert decision needs no
-  target's row: the group's row, which this transaction holds, orders it with every other trigger, retry, follow-up
+  order: two Agents calling each other from two groups at once would deadlock). What becomes of each call needs no
+  target's row: the group's row, which this transaction holds, orders it with every other trigger, retry, run's end
   and halt there. A pause or delete of a called Agent that commits meanwhile takes that Agent's row, not the group's,
-  and cannot see the run this inserts or the mention it notes: a deleted Agent's run is ended by the worker without a
+  and cannot see the run this inserts or the call it leaves waiting: a deleted Agent's run is ended by the worker without a
   call (`begin`), and a paused one's by the worker while the Agent is still paused, or else by the resume, before the
   Agent answers again (`runs.ts` `endWhatPauseMissed`; Pause and delete, below).
-- A follow-up (Coalescing) in a group (`runs.ts` `followUp`, from the worker's `finish` and from recovery) is a
-  person's when a person's message among what it answers calls the Agent (one its `groupMentions` lets call it, from a
-  person with no block between them and its owner, in either direction; an Agent's message among them counts only with
-  no block, either way, between the Agent's owner and that Agent's owner or the person behind that message, as above).
-  Otherwise only Agents' messages called for it: it is an Agent's, and is not queued when the latest of them came at
-  or before the group's latest halt (`pending_seq` ≤ `agents_halted_seq`), even if a person has written since — what
-  Agents asked before a halt is not answered after it; nor once the Agent's chain budget is spent, which is checked
-  again here because the reply that just ended was settled after it was called (the `agent_budget_reached` notice is
-  appended unless one was since a person last wrote, and pushed after that reply's `run`). Either way it is a reply
-  started like any other: counted toward its owner's replies a minute in its lane under the owner's `accounts` row (the
-  last lock, after `settle`'s), and over it the owner's own is recorded on the Agent's reusable `rate_limited` run in the group
-  instead of queued, while one for others starts nothing and its calls' senders read the line (`too_often`). Its lane and caller come from the messages it answers, not from the run that ended: the owner's own when the
-  owner is behind one of those that called the Agent (their own message, or an Agent's message they are behind by the
-  rule above, read from the run its `client_txn` names), else `others` with the earliest caller (the earliest that
-  names one); when none of them can call it any more (a block since, or `groupMentions` changed) it is `others` with no
-  caller, so a call its owner no longer allows does not ride the owner's own lane. A mention of it that was refused when
-  it was posted — an Agent's for the group halted, the chain limit, its chain budget, the owner's number for others' use or a
-  block; a person's for the owner's number — is no call at all: the refusal is recorded with the message (`refused_agent_calls`, migrations 022–023, referring to
-  the Agent's principal, so writing it locks no `agents` row; never on the wire), so although nothing was noted for it,
-  it does not count when it lies among what the follow-up answers. A follow-up in lane `others` is not queued once the
-  owner's number for others' use is reached, checked again here because the reply that just ended is settled by now (the
-  senders of the calls it would have answered read why on their messages, and the owner is told once a day); the caller's
-  limit does not apply to it: what it answers was folded into a reply under way, which is never refused.
+- The calls that waited (One identity per reply) are taken as the Agent's active run in the group ends (`runs.ts`
+  `takeDeferred`, from the worker's `finish`, recovery, a stop, a halt), one assignment at a time: the oldest and the calls right
+  after it of its identity, answered by one reply in that identity — `triggered_by` `human` when a person's message is among them.
+  Each is held again to the access decision (its sender, the person behind it: no block between them and the Agent's owner, in
+  either direction; only the owner's own message while its `groupMentions` is `owner`): one refused leaves the assignment. An
+  assignment of Agents' messages only is not answered when its last call came at or before the group's latest halt (even if a
+  person has written since — what Agents asked before a halt is not answered after it), nor once the Agent's chain budget is
+  spent, checked again here because the reply that just ended was settled after it was called (the `agent_budget_reached` notice is
+  appended unless one was since a person last wrote, and pushed after that reply's `run`). One in lane `others` is not answered
+  once the owner's number for others' use is reached, checked again here because the reply that just ended is settled by now
+  (those its calls are for read why on their messages, and the owner is told once a day). No minute is met again: each call met
+  them as it was made. An assignment with no call left is dropped and the next taken. A mention refused when it was posted — an
+  Agent's for the group halted, the chain limit, its chain budget, the owner's number for others' use or a block; a person's for
+  the owner's number — never waits: the refusal is recorded with the message (`refused_agent_calls`, migrations 022–023, referring
+  to the Agent's principal, so writing it locks no `agents` row; never on the wire).
 - A halt (`POST /api/conversations/:id/agents/halt`) cancels the group's queued runs Agents called for and those nobody
   called for (lane `proactive`, Proactive replies) (`halted`) and marks the running ones `interrupted` `halted`: never
   posted, they end `cancelled`, `halted`, settled as any.
 - What the group sees of it (`runs.ts` `groupRuns`, `runAudience`; Replies, In a group): nothing is stored per member.
   Every member's view is derived from the Agent's latest run in the group during its current stay (`covers_seq` after
   its `joined_seq`): its owner sees the run, everyone else its state. A retry in a group answers again what the failed
-  run was to answer (the greater of its `covers_seq` and `pending_seq`: one that recovery or a release failed is not
-  followed up) and keeps its `triggered_by`; stop, retry and dismiss there lock the group's row first, as every writer
-  of runs there does.
+  run was to answer (its assignment: `covers_seq` and its calls, less any a limit refused since) and keeps its `triggered_by`; stop,
+  retry and dismiss there lock the group's row first, as every writer of runs there does.
 
 **Coalescing.** Per Agent per conversation: an Agent has at most one queued or running run in each conversation (a
-unique index on the Agent and the run's conversation, migration `016_agents_in_groups.sql`), and a run's `covers_seq`
-and `pending_seq` are seqs of its own conversation. A message that comes while one is queued in that conversation is
-covered by it; while one is running there, it is noted (`pending_seq`), and when that run ends one follow-up run, in the
-same conversation, answers everything noted — not one per message, and never two replies at once in one conversation. A
-run of the Agent in another conversation is not touched (so an Agent could answer in its own conversation and in a group
-at once; the owner's limits on replies running and started bound them together). The one rule: a run that has ended is
-followed when something was noted on it and its Agent can still answer (not paused, not deleted, has a model) — however
-the run itself ended, except `cancelled` `agent_removed`, which is followed by nothing (what was noted on it is
-dropped) — and, at start-up recovery or a release, except a run that ends `failed` (its retry answers what was noted
-too). (A pause or delete drops what was noted, below, so what an interrupted run has noted came after a resume.) In
-the Agent's own conversation the follow-up is its owner's and is queued whatever the owner's replies a minute (it
-answers what they wrote meanwhile). In a group the messages it answers as calls are those the run noted as calls when
-they were sent (`call_seqs`), never its mentions read again: a rename, or a member joining or leaving, between the call
-and the end of the reply changes nothing of it (task N fix round 1). In a group it is decided as In a group (above) says: whose it is, the halt and the
-chain budget, the owner's number for others' use, and the owner's replies a minute in its lane — over it, the Agent's reusable
-`rate_limited` run there records the owner's own follow-up, and a follow-up for others starts nothing (its calls' senders read
-the line). A mention folded into a queued run turns it the owner's own (the owner its caller)
-when it is the owner's call (their message, or an Agent's message they are behind); another person's — also one relayed
-through one of the owner's Agents — leaves its lane and first caller, except on a reply nobody called for (lane
-`proactive`, the Agent speaking unasked): any call folded into that makes it the call's, in its lane and with its caller.
+unique index on the Agent and the run's conversation, migration `016_agents_in_groups.sql`), and a run's `covers_seq` and
+`call_seqs` are seqs of its own conversation. A run of the Agent in another conversation is not touched (so an Agent could answer
+in its own conversation and in a group at once; the owner's limits on replies running and started bound them together). A message
+that comes while one is active there is folded into it only when it is queued, never claimed, of the call's identity and nothing
+waits; otherwise it waits (`deferred_calls`), and when the run ends the same transaction queues ONE reply for the oldest waiting
+call and the calls right after it of its identity (One identity per reply, under Agents in a group) — never two replies at once in
+one conversation, and never one reply for two identities. In the Agent's own conversation every call is its owner's, so the
+owner's messages written while a reply runs are answered together by the next reply, whatever the owner's replies a minute (each
+was accepted while a reply ran: only the 8 waiting bound them). The calls a reply answers are those it recorded as calls when
+they were sent (`call_seqs`), never its mentions read again: a rename, or a member joining or leaving, between the call and the
+reply changes nothing of it (task N fix round 1). A reply is shown, and its tools reach, nothing after its assignment's last call.
+Every ending takes what waited — answered, failed and not tried again, stopped, cancelled, lost at a restart, released — but an
+automatic retry, which takes the slot first; an Agent that cannot answer (paused, deleted, no model, no longer a member there)
+answers none of it: it is dropped.
 
 **Pause and delete** end the Agent's active replies, in every conversation, for good, in their own transaction (under
 the Agent's lock): a queued run becomes `cancelled` (`agent_paused` / `agent_deleted`; it never reached a model, so it
 has no usage record), announced with its own conversation; a running one is marked `interrupted` with that reason, and
-what was noted on it is dropped. A marked run is never posted and ends `cancelled`, even if the Agent is resumed before
-the worker notices; its call is abandoned and no further `delta` of it is pushed once the request has answered — not
-even one that was already waiting to be delivered, however late it would be. Nothing is queued or noted while the Agent
-is paused, and resuming queues nothing: what was written during the pause is answered only as part of the next reply a
-later message of the owner's starts. A message written after the resume while the interrupted reply is still ending is
-noted on it, and its follow-up answers it.
+every call waiting for the Agent, in every conversation, is dropped. A marked run is never posted and ends `cancelled`, even if
+the Agent is resumed before the worker notices; its call is abandoned and no further `delta` of it is pushed once the request has
+answered — not even one that was already waiting to be delivered, however late it would be. Nothing is queued or left waiting
+while the Agent is paused, and resuming queues nothing: what was written during the pause is answered only as part of the next
+reply a later message of the owner's starts. A message written after the resume while the interrupted reply is still ending
+waits behind it, and is answered after it.
 
 One thing a pause cannot see: an Agent's message in a group reads the Agents it calls without locking them (In a
 group, above), so a pause that commits inside that message's transaction misses the run it then queues for the paused
-Agent and the mention its fold notes on a reply the pause interrupted. The worker ends such a run without a call while
+Agent and the call it leaves waiting behind a reply. The worker ends such a run without a call while
 the Agent is still paused (`begin`). A resume ends the rest, in its own transaction under the Agent's lock
 (`runs.ts` `endWhatPauseMissed`), only when the Agent was paused: every queued run of it, in every conversation,
-becomes `cancelled` `agent_paused` (none can legitimately be queued while it is paused: a mention, a retry, a follow-up
-and recovery all refuse a paused Agent), announced; a running one the pause did not mark (the worker claimed it during
-the pause) is marked `interrupted` `agent_paused` and its call abandoned, so it ends `cancelled` `agent_paused`
-without posting; and nothing noted on a running run is followed up. Only a pause and a resume that both commit inside
+becomes `cancelled` `agent_paused` (none can legitimately be queued while it is paused: a mention, a retry, the next of the
+calls waiting and recovery all refuse a paused Agent), announced; a running one the pause did not mark (the worker claimed it
+during the pause) is marked `interrupted` `agent_paused` and its call abandoned, so it ends `cancelled` `agent_paused`
+without posting; and every call waiting for the Agent is dropped. Only a pause and a resume that both commit inside
 that one message's transaction (a few queries, against two requests of the owner's) could still let such a run
 through.
 
@@ -4013,7 +4029,8 @@ through.
 Agent's active reply in that group, and only there, the same way, in the transaction that takes it out — removed by the
 group's creator or its owner, or along with its owner — under the group's row: a queued run becomes `cancelled`
 (`agent_removed`, announced to its owner), a running one is marked `interrupted` (`agent_removed`, unless a pause or
-delete marked it first) and what was noted on it is dropped, so nothing follows it up in a group it is no longer in; it
+delete marked it first), and every call waiting for it there is dropped, so nothing answers anything in a group it is no longer in; it
+
 is never posted (`postAsAgent` locks the group's row first, so it either posted before the removal or finds the run
 marked), its call is abandoned, and it ends `cancelled`, settled on what it used. No `agents` row is locked: the group's
 row orders it with the sends there and with the worker. A deleted Agent's leaving (`DELETE /api/agents/:id`) ends
@@ -4056,18 +4073,18 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
       earlier attempt ran, whatever this process saw of it), a run in a group its Agent is no longer a current member of
       `cancelled`, `agent_removed`. Every call the run answers meets the block rule of a call made now, whatever its
       lane (a call its owner's own call took over, and a retry, included): one whose person has a block with the Agent's
-      owner, either way, made since (for an Agent's message: its owner, or the person behind it) is dropped — no longer a
-      call it answers, nobody with such a block among its askers, and what it covers ends at the latest call left, so what
-      came after that is heard as usual (Whose joining it reaches back to) — and a run with no call left ends `cancelled`
-      with no error (no call, nothing held or charged, no message, nothing to retry). A model that no longer resolves ends `failed`
+      owner, either way, made since (for an Agent's message: its owner, or the person behind it), or whose call a limit refused
+      since, is dropped — no longer a call it answers, nobody with such a block among its askers, and what it covers ends at the
+      latest call left — and a run with no call left ends `cancelled` with no error (no call, nothing held or charged, no message,
+      nothing to retry). Its lane and caller stay as its row was made. A model that no longer resolves ends `failed`
       (`model_gone`, not retryable; `provider_rejected`, not retryable, when its provider's saved key cannot be opened). The
-      run takes on what was noted meanwhile — but a reply nobody had asked for (lane `proactive`) with a mention noted on
-      it since its claim ends here instead, `cancelled` with no error, no call and nothing held or charged, and its
-      follow-up answers the mention in the caller's lane (Proactive replies) — and, in a group, whoever it hears from
-      since what it covered before is recorded among its askers, then its asker's line and its calls are read (Whose
-      joining it reaches back to): a run none of whose calls its Agent can see and show ends here, `cancelled` with no error, no
-      call (nothing failed, nothing to retry) — and what the model may be shown is read from
-      the database (`loadContext`: the messages, and the records of the attachments it could show). With no message of
+      run takes on nothing that came after its row was made (a call meanwhile waits for a reply of its own: One identity per
+      reply) — and a reply nobody had asked for (lane `proactive`) with a call waiting behind it ends here, `cancelled` with no
+      error, no call and nothing held or charged, and its end takes the call, in the call's lane (Proactive replies). In a group
+      its asker's line and its calls are read (Whose joining it reaches back to): a run none of whose calls its Agent can see and
+      show ends here, `cancelled` with no error, no call (nothing failed, nothing to retry) — and what the model may be shown is
+      read from the database (`loadContext`: the messages up to its assignment's last call, and the records of the attachments it
+      could show). With no message of
       the owner's in it (in a group: of anyone else's), no model is called: when everything the run was to answer is
       before a new topic, it ends
       `cancelled` with no error (the owner started over: nothing failed, nothing to retry); otherwise `failed`, `busy`.
@@ -4092,13 +4109,13 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
       `admitRun`, under the owner's account lock) refuses a reply for others — lanes `others` and `proactive` — once others'
       use of the owner's Agents today has reached the owner's number (`OthersLimit`: what replies settled while it waited
       were charged counts now). Refused, it ends `cancelled` with no error, with no call and nothing held or charged — its end,
-      and its follow-up of what it hands back, in the transaction that records the refusal, so that no recovery can answer a call
-      its sender was told was refused; after
-      commit the senders of the calls it answers read why on their messages (pushed to them again) and the owner is told
-      once a day (Agents and runs, The owner's number for others' use); a reply nobody asked for tells nobody. What the first
-      step took on (mentions noted on the run after its claim) is handed back as noted, so the run's end follows it up as any
-      (Coalescing): the owner's own mention is answered — the owner's calls are never refused by these — and someone else's
-      meets the owner's number again and is not queued once it is reached; nothing loops. Otherwise the call is admitted holding the most its
+      and the reply queued for what waited behind it, in the transaction that records the refusal, so that no recovery can answer a
+      call its sender was told was refused (each refused call is in no assignment again); after
+      commit those the calls it answers are for read why on their messages (pushed to them again) and the owner is told
+      once a day (Agents and runs, The owner's number for others' use); a reply nobody asked for tells nobody. Before that, the
+      plan is held to the row and the Agent as they are now: a call taken out since, or the Agent's model, level or web search
+      changed, and the plan is made again (One identity per reply, The terms are those of the row at admission). Otherwise the call is admitted holding the most its
+
       input can cost (Metering, Admission: its text's utf-8 bytes, at most what the context leaves beside the output
       limit; `no_quota` ends it `failed` before any call; a reply whose hold does not fit beside the owner's other running
       calls' goes back to `queued` with nothing held, Metering, Money that does not block), its input estimate and the ratio's key are recorded on the run
@@ -4137,7 +4154,8 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
    conversation, so a run's reply never lands anywhere else. With nothing left to show, nothing is stored (`post`
    answers `empty`) and the run ends as one that said nothing (below).
 4. `finish`, one transaction: the call is settled (one usage record; its hold released) in the same transaction that
-   moves the run out of `running`, how it ended is recorded, and the follow-up is queued. After it commits, a run that
+   moves the run out of `running`, how it ended is recorded, and its automatic retry, or else the reply for the calls that
+   waited behind it (One identity per reply), is queued. After it commits, a run that
    posted a reply has that reply pushed once more to its owner, before the run's end, now with `via` (Wire shapes; a
    release of a run whose reply was posted does the same). What is recorded is what is
    true under the lock: a reply that was posted stands (`done`, or `stopped` by its owner), whatever happened to the
@@ -4225,8 +4243,8 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
   (the one visibility rule, the Agent as reader): the owner's messages, and the Agent's replies to what the run covers.
   The owner's as `user`, the Agent's as `assistant`, in the order they were answered, not the order they were stored: a
   reply goes right after the owner's message its run had covered when it began (the run is the one its `client_txn`
-  names). So with the owner's messages 1, 2 and 3 and the reply to 1 stored at 4 (2 and 3 came while it was written),
-  the follow-up is shown 1, the reply, 2, 3. A reply that answers something before a new topic belongs to the old topic,
+  names). So with the owner's messages 1, 2 and 3 and the reply to 1 stored at 4 (2 and 3 came while it was written, and
+  waited), the next reply is shown 1, the reply, 2, 3 — nothing after its assignment's last call (3). A reply that answers something before a new topic belongs to the old topic,
   even when it was stored after the notice. Consecutive messages of one side are one turn (their parts in order),
   because several providers refuse two turns of one side in a row. The call starts and ends with the owner: an Agent
   turn left first, or after the owner's newest message, is left out (so a retry is not shown the acknowledgement of the
@@ -4829,7 +4847,7 @@ one stands, and the answer quotes the question when anyone else wrote after that
 message for whom its run heard from (`heardIn`: it names its run, `postingRun`), for the late-joiner line, and in a later
 reply's context (before the answer). By the controller's rulings (Task 6 fix 1) it is nothing more
 (`messages/model.ts` `notAcknowledgement`): it calls nobody — its mentions are read neither when it is posted nor by a
-later follow-up deciding what it answers and whose it is (`followUp`), and it is to be stored with no mentions; it is no
+later reply deciding what it answers and whose it is, and it is to be stored with no mentions; it is no
 Agent's turn toward `AGENT_CHAIN_LIMIT`; it adds nothing to unread counts and is never the chat list's line (the answer
 is both); and it is nothing to remember (a memory review and what the Agent heard do not read it, `UNSPOKEN`; the
 reviewer is told after a run that posted a reply, not one that only acknowledged, and counts no acknowledgement as a
@@ -4916,15 +4934,15 @@ language (measured, fix round 2). So, in the Agent's own conversation only:
 | Paused or deleted while queued | none, no call made, no usage record | `cancelled`, `agent_paused` / `agent_deleted` |
 | In a group, another Agent's message called for it, or nobody did (Proactive replies), and a member halted Agents (Agents in a group) | queued: none, no call made, no usage record; running and not yet posted: none, what it had said is discarded, what it used is settled | `cancelled`, `halted` |
 | Paused or deleted while running, before it posted (resumed since or not) | none; what it had said is discarded, what it used is settled | `cancelled`, `agent_paused` / `agent_deleted` |
-| The Agent left the run's group (taken out by the creator or its owner, or along with its owner), or is otherwise no longer a member there when the run begins or posts | queued: none, no call made, no usage record; running and not yet posted (added back since or not): none, what it had said is discarded, what it used is settled | `cancelled`, `agent_removed`; never followed up: a mention noted on it meanwhile is dropped |
+| The Agent left the run's group (taken out by the creator or its owner, or along with its owner), or is otherwise no longer a member there when the run begins or posts | queued: none, no call made, no usage record; running and not yet posted (added back since or not): none, what it had said is discarded, what it used is settled | `cancelled`, `agent_removed`; what waited for it there is dropped |
 | The provider failed (key refused, unreachable, address refused), or cut the stream off midway | none; what it had said is discarded | `failed` with that code (a cut-off stream: `provider_unavailable`); charged only what the upstream reported, so as a rule nothing (a reply with tools: and what its rounds before it used) |
 | The model stopped at its output limit having only thought (no visible text; reasoning came, or the upstream reported reasoning tokens) | none; the reasoning streamed meanwhile is discarded | `failed`, `thinking_exhausted`, retryable; charged what the upstream reported |
 | The reply could not be stored (or the run started) for the service's own reasons | none | `failed`, `busy`, retryable; charged nothing: the usage record keeps the true cost, all of it forgiven |
 | Nothing left to pay for it | none, no call made | `failed`, `no_quota` |
 | A reply with tools, between its rounds: what is left no longer covers another round (Metering, Extension) | the reply, its last call made without tools — also below zero | `done`; charged what its rounds and its last call used |
-| The owner had started `AGENT_RUNS_PER_MINUTE` replies in the last minute (recorded by the trigger, or in a group by a follow-up; never queued) | none, no call made, no usage record | `failed`, `rate_limited`, retryable; charged nothing |
+| The owner had started `AGENT_RUNS_PER_MINUTE` replies in the last minute (recorded by the trigger; never queued) | none, no call made, no usage record | `failed`, `rate_limited`, retryable; charged nothing |
 | An empty answer (no visible text, no reasoning; in a group, no visible text) | none | `failed`, `provider_unavailable`; charged only what the upstream reported (a reply with tools: and what its rounds before it used) |
-| Everything it was to answer is before a new topic (started while it was queued, or a retry after one) | none, no call made | `cancelled` with no error, not retryable; charged nothing; what the owner wrote meanwhile gets the follow-up |
+| Everything it was to answer is before a new topic (started while it was queued, or a retry after one) | none, no call made | `cancelled` with no error, not retryable; charged nothing; what the owner wrote meanwhile gets its own reply |
 | The model's context cannot hold the owner's newest message (or 200 tokens of it) after the system text | none, no call made | `failed`, `context_too_small`, not retryable; charged nothing |
 | Nothing to answer otherwise, or its attachments could not be read (two reads failed before any succeeded, or reading took longer than `AGENT_RUN_TIMEOUT_MS`) | none, no call made | `failed`, `busy`, retryable; charged nothing |
 | `AGENT_RUN_TIMEOUT_MS` (2 minutes) passed, or for a reply with tools `TOOLS.runTimeoutMs` (5 minutes) in all; for a model that may think, `MODEL_CALL_CEILING_MS` (30 minutes) in all, or its tools took `TOOLS.runTimeoutMs` | what had been said, `truncated: true`, without what follows an unfinished proposal block's `<af-` (nothing said, or nothing before that — and ALWAYS when it was `MODEL_CALL_CEILING_MS` that passed, whatever had been said, which is then discarded: `failed`, `took_too_long`, retryable, never tried again by itself (Automatic retry); a reply of one call charged only what its upstream reported, one with tools what its finished rounds reported and the unfinished round's estimated input and what it had written) | `done` |
@@ -4945,10 +4963,12 @@ died with that process — is ended without any model call, each in one transact
   A persona draft (`POST /api/agents/draft-persona`; no Agent, so locked from its run row) always ends so.
 
 In the same transaction its hold is released by a settlement on no tokens at all, which costs nothing (whatever the
-upstream reported died with the process); a run that already has its usage record gets no second one. A posted or
-cancelled run is followed up by the one rule above (the follow-up is queued for the worker; in a group under the same
-rules as at a reply's end, so a notice it appends is stored and read at the next sync); a failed one is not, since a
-retry answers everything. Queued runs stay queued and are answered once the worker starts. Nothing is pushed — no socket
+upstream reported died with the process); a run that already has its usage record gets no second one. A failed one lost
+mid-call may be tried again by the system (Automatic retry), which takes the slot first; otherwise, in the same transaction,
+the reply for the calls that waited behind it is queued for the worker (One identity per reply: in a group under the same rules
+as at a reply's end, so a notice it appends is stored and read at the next sync) — so each waiting call is answered exactly once,
+however the process died. Then the calls left waiting with nothing active (an ending of access whose next step was lost) are
+taken. Queued runs stay queued and are answered once the worker starts. Nothing is pushed — no socket
 can be open yet — so a client learns the state from `GET /api/conversations/:id/run`. The worker's stop and pause flags
 live in the process: a new start has none. A run that cannot be recovered is logged and left for the stale-run sweep
 or the next start.
@@ -5005,7 +5025,8 @@ run can take: its attachments, its tools, the calls of a model that may think, a
 `staleAfterMs`) is released exactly as start-up recovery releases one, each in a transaction of its own
 under the same locks — unless this process is working on it (a run its worker has claimed and not yet finished, a draft
 whose request is under way, a memory call under way): those are never touched, however old. Unlike at start-up, the owner's sockets are told
-(`run`), and a follow-up queued by the one rule wakes the worker. An instance still working on a run that old elsewhere
+(`run`), and the reply queued for what waited behind it wakes the worker; then the calls left waiting with nothing active are
+taken (`consumeIdle`). An instance still working on a run that old elsewhere
 is past its own limits: its `post` is refused (the run is no longer `running`) and nothing is recorded twice. So a run
 left behind by a process that is gone — a deploy's old instance killed mid-call, or whose stop could not write its runs'
 end, a `finish` that failed — is released
@@ -5023,13 +5044,13 @@ fails when a file there imports `db.ts`, `pg` or any `store.ts`. It is the shape
 
 Lock order of every write here: one conversation row → the `agents` row → the run row → the `accounts` row
 (`store.ts` `lockAgent`). The conversation is the one the write acts in: whatever acts for a run — the trigger, a
-retry, the worker's `begin`, `post` and `finish`, a follow-up, recovery, the stale-run sweep, a stop's release — locks
+retry, the worker's `begin`, `post` and `finish`, the calls that waited, recovery, the stale-run sweep, a stop's release — locks
 the run's own conversation (`agent_runs.conversation_id`, which never changes), never another (so does `extend`, between
 a reply's rounds); the owner's writes to
 the Agent itself (edit, pause, resume, delete, avatar, proposals) lock its dedicated conversation. Where several
 `agents` or `accounts` rows are locked at once (a person's message in a group naming several Agents) they are taken in
 id order, the `accounts` rows after every run row; a run's end (`finish`, recovery) takes its owner's `accounts` row
-to settle and, for a follow-up in a group, to count the owner's replies a minute — the same row, last; an Agent's
+to settle and, for the reply of the calls that waited, to hold them to the owner's number — the same row, last; an Agent's
 message in a group holds only its own `agents` row and reads the others' (In a group, above); a halt locks the group's
 row and run rows only; a resume, the dedicated conversation's row, the `agents` row and the Agent's run rows. Marking a
 provider's model unable to use tools (`toolsUnusable`) takes the `providers` row first — nothing holding a conversation's
@@ -5137,7 +5158,7 @@ whoever was called answers, and nobody unasked. Any other message becomes the gr
 one before, and the wait (`debounceMs`) starts again, so a person writing several lines gets one judgement, of the latest;
 that includes a message naming a person, one that asked an Agent it could not name (an Agent outside the group, two
 Agents of one name part: `asks_agent`), and one whose stored mentions name an Agent the trigger ignored (paused,
-deleted or without a model, `groupMentions` `owner`, a block, or folded into its reply under way), which its decision
+deleted or without a model, `groupMentions` `owner`, a block, or folded into its reply not begun, or waiting for one under way), which its decision
 then refuses. An Agent's post in the group drops the wait too (the group moved on). A group is never decided
 twice at once: a message noted while its decision is in flight waits for that to settle, then for a fresh wait. At most 8
 decisions are in flight, all groups together (`MAX_DECISIONS_AT_ONCE`, a constant: each holds a database connection while
@@ -5219,7 +5240,8 @@ are checked in the order of the table.
 | The message led to a proactive reply meanwhile (another decision of it won the race) | `already_decided` (debug) |
 | The hush rule: this message asked the winner to be quiet, if only a little (its quiet answer is at least `quietSmall.at`): the judgement tends to pick the very Agent a mild complaint is about | `hushed` |
 | The winner's probability is under its threshold now | `under_threshold` (debug) |
-| A reply of the winner is queued or running in the group, in any lane: a proactive reply is never folded into one | `active_run` |
+| A reply of the winner is queued or running in the group, in any lane, or calls wait there for one (nothing passes the head): a proactive reply is never folded into one | `active_run` |
+
 | The fuse: a proactive reply of the winner in the group within `fuse.perSeconds`, or `fuse.perHour` of them within the hour | `fuse` |
 | Others' use of its owner's Agents today has reached the owner's number (Agents and runs, The owner's number for others' use): the measure admission asks (`othersReached` before the judgement, `othersAdmissible` under the owner's account lock after it) | `budget` |
 | Its owner has started `AGENT_OTHERS_RUNS_PER_MINUTE` replies in the last minute outside their own lane (proactive replies count with others' calls, Rate limits; checked under the owner's `accounts` row, the lock order's last) | `owner_minute` |
@@ -5258,14 +5280,13 @@ still calls the Agent and does not end it; nobody records who asked, and nothing
 at most once an hour for each group and Agent; a small raise tells nobody. It is applied to every Agent asked about while
 it is still an option, winner or not, whatever the pick says — unless phase 3 finds the group changed.
 
-**A mention while it waits.** A proactive reply still `queued` when a message calls its Agent (a person's mention, or an
-Agent's message) is taken over by that call (`runs.ts` `takesOnCall`): it covers the message and takes the call's lane,
-caller and `triggered_by`. It is no longer unasked: it leaves the fuse, counts in the limits as a
-reply that call started would, is not told that nobody called it, its `via` has no `proactive`, and a halt ends it only
-when an Agent's message called it. Its surcharge stays. One already `running` notes the mention like any reply under way
-(its follow-up answers it, in the call's lane) and stays a proactive reply; but when the mention came between the
-worker's claim and the run's beginning, the moment for an unasked remark has passed: the run ends there, `cancelled`,
-with no call and no charge, and the follow-up alone answers the mention (Agents and runs, the worker's `begin`).
+**A mention while it waits.** A proactive reply is never a call's (the limits redesign, Part 2: its lane and caller are fixed
+as it is queued, and the message it answers is no call of anyone's). A call that comes while it is queued or running waits
+behind it (One identity per reply) and gets a reply of its own, in the call's lane. One that has not begun when the call comes
+ends as it begins: the moment for an unasked remark has passed — `cancelled`, with no call and no charge — and its end takes the
+call (Agents and runs, the worker's `begin`); one already under way finishes as the proactive reply it is, and the call is
+answered after it. Its surcharge stays. And no Agent is picked to speak unasked while a reply of it is under way there or calls
+wait for one (`active_run`).
 
 **A halt** (`POST /api/conversations/:id/agents/halt`) ends proactive replies as it ends the replies Agents' messages
 called for: a queued one is `cancelled` `halted`, a running one is never posted and ends `cancelled` `halted`, settled on
@@ -5461,8 +5482,9 @@ provider key does not wait). That
 is decided under your account's lock, which every settlement takes before its run leaves `running`, so a reply is never
 left waiting for a call that has already ended. It stays an ordinary queued reply meanwhile: your stop (also one you
 asked while it was still running: it is kept in the run's row, `agent_runs.stop_asked`, and its next attempt ends
-`stopped`), a pause, a delete, the Agent's leaving end it as any; what it had taken on (your mention noted while it ran) is handed back as noted, so it is answered whatever becomes of
-its next attempt; its next `begin` reads everything again (what it was asked, its asker's line, the model). A persona
+`stopped`), a pause, a delete, the Agent's leaving end it as any; its assignment stays as it was (a call meanwhile waits behind it,
+never folded into it), and its next `begin` reads everything again (what it was asked, its asker's line, the model). A persona
+
 draft never waits (you are waiting for it on the page): it starts while something is left of what it may use, whatever
 your replies hold, promised what fits and over the rest, and its hold counts against them like any. *On class `AB`* (the
 site forgives a free-tier over) a reply
