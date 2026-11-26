@@ -1,5 +1,5 @@
 import type { EndedRuns } from "../agents/group-leave.ts";
-import { dropRefusedCalls, RUN_COLUMNS, standingCalls, toWireRun, type Announced, type RunRow } from "../agents/runs.ts";
+import { dropRefusedCalls, lockActiveRuns, RUN_COLUMNS, standingCalls, toWireRun, type Announced, type RunRow } from "../agents/runs.ts";
 import { refusedInGroup } from "../agents/refusal.ts";
 import type { Config } from "../config.ts";
 import { ensureSocial, lockConversation } from "../conversations/store.ts";
@@ -100,6 +100,12 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
   }
   const ended = await t.query(endRows.sql, endRows.params);
 
+  // The run rows it writes, locked first in ascending run id (runs.ts `lockActiveRuns`: the one order of every bulk lock of them).
+  await t.query(
+    `select 1 from agent_runs r join principals ag on ag.id = r.agent_id
+      where r.purpose = 'reply' and r.status in ('queued', 'running') and ${runsIn.sql} order by r.id for update of r`,
+    runsIn.params,
+  );
   const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
     `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now()
        from principals ag
@@ -197,6 +203,7 @@ async function endGroupCalls(t: Tx, agents: { sql: string; params: unknown[] }, 
  */
 export async function interruptOthersRuns(t: Tx, agentId: string): Promise<EndedRuns> {
   await t.query("select 1 from agents where principal_id = $1 for update", [agentId]);
+  await lockActiveRuns(t, "r.agent_id = $1 and r.purpose = 'reply' and r.lane in ('others', 'proactive')", [agentId]);
   const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
     `update agent_runs r set status = 'cancelled', finished_at = now(),
             -- (a group reply ends quietly, with no error; access_ended is a social run's reason)

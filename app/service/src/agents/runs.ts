@@ -472,6 +472,7 @@ export async function interruptRuns(
   reason: "agent_paused" | "agent_deleted",
 ): Promise<{ cancelled: Announced[]; running: string[] }> {
   // Nothing follows these: an Agent paused or deleted answers nothing.
+  await lockActiveRuns(t, "r.agent_id = $1", [agent.id]);
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = $2, finished_at = now()
       where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
@@ -497,6 +498,7 @@ export async function interruptRuns(
  * as `interruptRuns` does, the cancelled runs to announce and the newly marked ones to stop.
  */
 export async function endWhatPauseMissed(t: Tx, agent: AgentRow): Promise<{ cancelled: Announced[]; running: string[] }> {
+  await lockActiveRuns(t, "r.agent_id = $1", [agent.id]);
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = 'agent_paused', finished_at = now()
       where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
@@ -805,24 +807,51 @@ async function rateLimitedInGroup(t: Tx, agent: RunAgent, conversationId: string
  */
 export const DEFERRED_PER_PAIR = 8;
 
+/** A pair as `pairsOf` reads it: its active run, locked, and how many calls wait there. */
+type Pair = { active: { id: string; foldable: boolean; caller: Caller } | null; waiting: number };
+
 /**
- * The Agent's active run in the conversation (queued or running; at most one), locked (`for update`, after the conversation's row,
- * which the caller holds: the lock order), with whether a call of its own identity may be folded into it: a reply queued and never
- * claimed (`held_back_by` none), that is no retry (an automatic one keeps its assignment; the owner's 重试 is of one), no tell, no
- * greeting and not a reply nobody asked for (each answers no call: zero-call runs, which a call never joins). And how many calls wait
- * for the Agent there (`deferred_calls`). The worker's claim skips a locked row, so what this reads stays so until commit.
+ * Locks the active reply runs (queued or running) `where` names (`r`: `agent_runs`), `for update`, in ascending run id: THE order
+ * every transaction keeps that locks more than one active run row at once (the lock order; T2 fix 1, F6) — a message calling several
+ * Agents (`pairsOf`), a halt, a pause, a delete, a removal from a group, an interjection, an ending of access, the operator's disable —
+ * so two of them never hold one each of two rows the other wants. Taken before such a transaction writes any of them.
  */
-async function pairOf(t: Tx, agentId: string, conversationId: string): Promise<{ active: { id: string; foldable: boolean; caller: Caller } | null; waiting: number }> {
-  const { rows } = await t.query<{ id: string; foldable: boolean; lane: Lane; caller_id: string | null }>(
-    `select id, lane, caller_id,
-            (status = 'queued' and held_back_by is null and retry_of is null and not owner_retry and whisper_id is null and not greets and lane <> 'proactive') as foldable
-       from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running')
-      for update`,
-    [agentId, conversationId],
+export async function lockActiveRuns(t: Tx, where: string, params: readonly unknown[]): Promise<void> {
+  await t.query(`select 1 from agent_runs r where r.status in ('queued', 'running') and (${where}) order by r.id for update of r`, [...params]);
+}
+
+/**
+ * The Agents' active runs in the conversation (queued or running; at most one each), locked (`for update`, after the conversation's
+ * row, which the caller holds, and in ascending run id: `lockActiveRuns`' order), each with whether a call of its own identity may be
+ * folded into it: a reply queued and never claimed (`held_back_by` none), that is no retry (an automatic one keeps its assignment;
+ * the owner's 重试 is of one), no tell, no greeting and not a reply nobody asked for (each answers no call: zero-call runs, which a
+ * call never joins). And how many calls wait for each Agent there (`deferred_calls`). The worker's claim skips a locked row, so what
+ * this reads stays so until commit.
+ */
+async function pairsOf(t: Tx, agentIds: readonly string[], conversationId: string): Promise<Map<string, Pair>> {
+  const { rows } = await t.query<{ id: string; agent_id: string; foldable: boolean; lane: Lane; caller_id: string | null }>(
+    `select r.id, r.agent_id, r.lane, r.caller_id,
+            (r.status = 'queued' and r.held_back_by is null and r.retry_of is null and not r.owner_retry and r.whisper_id is null and not r.greets
+             and r.lane <> 'proactive') as foldable
+       from agent_runs r where r.agent_id = any($1::uuid[]) and r.conversation_id = $2 and r.status in ('queued', 'running')
+      order by r.id for update of r`,
+    [[...agentIds], conversationId],
   );
-  const waiting = await t.query<{ n: number }>("select count(*)::int as n from deferred_calls where agent_id = $1 and conversation_id = $2", [agentId, conversationId]);
-  const row = rows[0];
-  return { active: row ? { id: row.id, foldable: row.foldable, caller: { id: row.caller_id, lane: row.lane } } : null, waiting: waiting.rows[0]!.n };
+  const waiting = await t.query<{ agent_id: string; n: number }>(
+    "select agent_id, count(*)::int as n from deferred_calls where agent_id = any($1::uuid[]) and conversation_id = $2 group by agent_id",
+    [[...agentIds], conversationId],
+  );
+  const pairs = new Map<string, Pair>();
+  for (const id of agentIds) {
+    const row = rows.find((r) => r.agent_id === id);
+    pairs.set(id, { active: row ? { id: row.id, foldable: row.foldable, caller: { id: row.caller_id, lane: row.lane } } : null, waiting: waiting.rows.find((r) => r.agent_id === id)?.n ?? 0 });
+  }
+  return pairs;
+}
+
+/** `pairsOf` for one Agent. */
+async function pairOf(t: Tx, agentId: string, conversationId: string): Promise<Pair> {
+  return (await pairsOf(t, [agentId], conversationId)).get(agentId)!;
 }
 
 /**
@@ -1060,8 +1089,7 @@ async function reachAgents(
   doubtful: readonly Call[] = [],
 ): Promise<Pick<Triggered, "runs" | "callerLimited"> & { refusedIds: string[] }> {
   const all = [...calls.map((call) => ({ call, doubtful: false })), ...doubtful.map((call) => ({ call, doubtful: true }))].sort((a, b) => (a.call.agent.id < b.call.agent.id ? -1 : 1));
-  const pairs = new Map<string, Awaited<ReturnType<typeof pairOf>>>();
-  for (const { call } of all) pairs.set(call.agent.id, await pairOf(t, call.agent.id, conversationId));
+  const pairs = await pairsOf(t, [...new Set(all.map(({ call }) => call.agent.id))], conversationId);
   await lockAccounts(
     t,
     all.flatMap(({ call }) => (call.by.lane !== "own" && call.by.id !== null ? [call.agent.ownerId, call.by.id] : [call.agent.ownerId])),
@@ -1654,6 +1682,7 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
   );
   const agents = new Map<string, AgentRow>();
   for (const { agent_id } of waiting.rows) agents.set(agent_id, await lockAgent(t, agent_id, conversationId));
+  await lockActiveRuns(t, "r.conversation_id = $1 and (r.triggered_by = 'agent' or r.lane = 'proactive')", [conversationId]);
   const queued = await t.query<RunRow & { owner_id: string; agent_id: string; covers: string | null }>(
     `update agent_runs as r set status = 'cancelled', error = 'halted', finished_at = now()
       where r.conversation_id = $1 and r.status = 'queued' and (r.triggered_by = 'agent' or r.lane = 'proactive')
@@ -1806,7 +1835,9 @@ export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMes
  * before the running ones: a run claimed in between is seen as one or the other (as `endGrants` orders them).
  */
 async function interjection(t: Tx, conversationId: string, agentIds: readonly string[]): Promise<Triggered> {
+  await lockActiveRuns(t, "r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply'", [conversationId, [...agentIds]]);
   const queued = await t.query<RunRow & { owner_id: string }>(
+
     `update agent_runs r set status = 'cancelled', error = 'owner_spoke', finished_at = now()
       where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply' and r.status = 'queued'
       returning ${RUN_COLUMNS}, r.owner_id`,

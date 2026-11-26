@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createAgentPort, recoverRuns } from "../src/agents/port-impl.ts";
 import { mentionsAtSend } from "../src/agents/mentions.ts";
@@ -530,7 +531,66 @@ describe("a halt and the chain budget are met by each relayed call as it is take
   });
 });
 
+describe("one order for every bulk lock of active run rows: ascending run id (T2 fix 1, F6)", () => {
+  /**
+   * Waits (10 s at most) until a connection of this database is seen waiting on a lock (`pg_stat_activity`): whether one was. The
+   * transaction holding the lock is let go only then, so a path that took no lock is never waited for and fails.
+   */
+  const someoneWaitsOnALock = async (): Promise<boolean> => {
+    for (let i = 0; i < 400; i++) {
+      const { rows } = await db.query<{ n: number }>("select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+      if (rows[0]!.n > 0) return true;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return false;
+  };
+  /** A run id that sorts first (`low`) or last among all: `randomUUID` with its first 8 hex digits set. */
+  const runIdAt = (low: boolean) => `${low ? "00000000" : "ffffffff"}${randomUUID().slice(8)}`;
+
+  it("a message calling two busy Agents locks their runs in run id order: while another transaction holds the smaller, the larger is not held by it", async () => {
+    const w = await world();
+    const tag = `${n}x${Math.floor(Math.random() * 1e6)}`;
+    const second = (await mustCreateAgent(app, w.owner, { handle: `dcs${tag}`, name: "二号", model: THINKER, persona: "你是二号。" })) as { id: string };
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/members`, { principalId: second.id })).status).toBe(201);
+    // Both busy, their runs' ids in the order opposite their Agents' ids: the smaller Agent id has the larger run id.
+    const [lowAgent, highAgent] = [w.agent.id, second.id].sort();
+    const [first, last] = [runIdAt(true), runIdAt(false)];
+    for (const [agentId, runId] of [
+      [highAgent, first],
+      [lowAgent, last],
+    ] as const) {
+      await db.query(
+        `insert into agent_runs (id, purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at, lane, caller_id, call_seqs)
+         select $1, 'reply', $2, $3, $4, 'running', seq, now(), 'own', $4, array[seq] from conversations where id = $2`,
+        [runId, w.g, agentId, w.owner.id],
+      );
+    }
+    const holder = await db.pool.connect();
+    try {
+      await holder.query("begin");
+      await holder.query("set local lock_timeout = '3s'");
+      // Another transaction holds the smaller run id (as an ending of access, which locks in run id order, would first).
+      await holder.query("select 1 from agent_runs where id = $1 for update", [first]);
+      const sending = api(app, w.mia, "POST", `/api/conversations/${w.g}/messages`, { text: `${w.at} @dcs${tag} 你们好`, clientTxn: `dc${++txn}` });
+      expect(await someoneWaitsOnALock()).toBe(true);
+      // The message waits for the smaller holding nothing else: the larger is free (no deadlock).
+      await holder.query("select 1 from agent_runs where id = $1 for update", [last]);
+      await holder.query("commit");
+      const sent = await sending;
+      expect(sent.status).toBe(201);
+      expect((await waiting(w.agent.id, w.g)).map((c) => c.seq)).toEqual([sent.json.message.seq]);
+      expect((await waiting(second.id, w.g)).map((c) => c.seq)).toEqual([sent.json.message.seq]);
+    } finally {
+      await holder.query("rollback").catch(() => {});
+      holder.release();
+    }
+    await db.query("delete from deferred_calls where conversation_id = $1", [w.g]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where id = any($1::uuid[])", [[first, last]]);
+  });
+});
+
 describe("the prompt names the calls a reply answers (design [C7])", () => {
+
 
   it("one person's two calls in one reply: its system text says there are two and that the last message is one; a reply of one call says nothing more", async () => {
     const w = await world();

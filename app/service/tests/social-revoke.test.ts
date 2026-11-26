@@ -366,7 +366,8 @@ describe("races", () => {
     const claiming = holdThen(db, ["update agent_runs set status = 'running', started_at = now() where id = $1", [queued]], ["select 1", []]);
     await claiming.locked;
     const ending = grants({ agentId: agent.id, subjectIds: [v.id] }, "removed");
-    await someoneWaits(db, ["%update agent_runs%"]);
+    // (It waits on the run row as it locks the rows it ends, in run id order: runs.ts `lockActiveRuns`.)
+    await someoneWaits(db, ["%from agent_runs r%for update of r%"]);
     claiming.release();
     await claiming.done;
     const result = await ending;
