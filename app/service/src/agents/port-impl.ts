@@ -98,6 +98,7 @@ import {
   type RunRow,
   type Told,
 } from "./runs.ts";
+import { originOnly } from "./origin.ts";
 import { lockAgent, type AgentRow } from "./store.ts";
 
 export interface AgentPortDeps {
@@ -774,7 +775,7 @@ export class DbAgentPort implements AgentPort {
       // stay as they were made. Not asked (no query) in the Agent's own conversation, where every call is its owner's and nobody has a
       // block with themselves — nor for a reply `告诉他们` queued (`told`): it is its owner's own tell and answers nobody's call (what it
       // covers is merely the group's latest message then, anyone's).
-      if (group && !state.told) {
+      if (group && !state.told && !originOnly(state)) {
         const kept = await dropRefusedCalls(t, run.id);
         if (kept === null) return { end: ENDED_AT_ADMISSION, recordedEnd: await this.endHere(t, run, BLOCKED_SINCE) };
         Object.assign(state, kept);
@@ -1020,7 +1021,7 @@ export class DbAgentPort implements AgentPort {
       // rewrites them and never requeues the reply (its calls would be made, and charged, twice): it is ended as a whole when no call
       // it answers is left (social/agent-contacts.ts `endGroupCalls`, `standingCalls`), else it goes on, and its post leaves out
       // whoever is refused by then (`postAsAgent`); its usage settles either way.
-      if (this.flags.get(run.id)?.place === "group" && !first.told) {
+      if (this.flags.get(run.id)?.place === "group" && !first.told && !originOnly(state)) {
         const kept = await dropRefusedCalls(t, run.id);
         if (kept === null) return { end: ENDED_AT_ADMISSION, recordedEnd: await this.endHere(t, run, BLOCKED_SINCE) };
         Object.assign(state, kept);

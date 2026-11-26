@@ -27,6 +27,7 @@ import {
   type ShownSummary,
   type SystemText,
 } from "./runtime/prompt.ts";
+import { originOnlySql } from "./origin.ts";
 import type { AgentRow } from "./store.ts";
 import type { RunRefs } from "./tools/refs.ts";
 import { baseOf, countPlaced, readSummary, shownSummary, stayOf, type PlacedReader, type Summary } from "./summary/store.ts";
@@ -348,7 +349,8 @@ export async function callsSeen(q: Queryable, agentId: string, runId: string, li
   const { rows } = await q.query<{ seq: string }>(
     `select m.seq::text as seq
        from agent_runs r
-       join messages m on m.conversation_id = r.conversation_id and m.seq = any(coalesce(r.call_seqs, array[r.covers_seq]))
+       join messages m on m.conversation_id = r.conversation_id
+        and m.seq = any(case when ${originOnlySql("r")} then array[r.covers_seq] else coalesce(r.call_seqs, array[r.covers_seq]) end)
        ${VISIBLE_JOIN}
       where r.id = $2 and m.kind in ('text', 'file') and (m.body -> 'fixed') is distinct from 'true'::jsonb
         and (m.seq > $3 or coalesce(m.body ->> 'text', '') <> '')

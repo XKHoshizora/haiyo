@@ -1150,8 +1150,11 @@ describe.each([false, true])("the rows it locks, and a proactive reply someone a
     await decide(w.g, asked);
     const mention = await say(w.member, w.g, "@anna 对，就问你");
     expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, lane: "proactive", caller: null, by: "human", covers: asked }]);
+    // Its seed is its origin (what it covers), never a call (T2 fix 1, F10).
+    expect((await db.query("select call_seqs::int[] as calls from agent_runs where agent_id = $1 and conversation_id = $2", [anna.id, w.g])).rows).toEqual([{ calls: [] }]);
     expect(await waitingOf(anna.id, w.g)).toEqual([{ seq: mention, lane: "others", caller: w.member.id, by: "human" }]);
     expect((await stateOf(anna.id, w.g)).surcharge).toBeCloseTo(0.1, 6);
+
 
     await settleAndAge();
     await decide(w.g, await say(w.third, w.g, "那明天呢？"));

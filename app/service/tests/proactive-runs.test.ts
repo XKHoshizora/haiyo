@@ -68,12 +68,15 @@ const say = async (who: Actor, conv: string, text: string): Promise<number> => {
   return sent.json.message.seq as number;
 };
 
-/** The reply of `agent` nobody asked for, covering message `seq` of `conv`, queued under the group's row and announced. */
+/**
+ * The reply of `agent` nobody asked for, covering message `seq` of `conv` (its origin; it answers no call, as the decision queues it:
+ * T2 fix 1, F10), queued under the group's row and announced.
+ */
 async function unasked(agent: Agent, conv: string, seq: number): Promise<Announced> {
   const run = await db.tx(async (t) => {
     await lockConversation(t, conv);
     // Queued by hand, not by a judgement: whose message it answers is not known here (null, the safe side; Task 10b).
-    return queueRun(t, agent, conv, seq, "human", { id: null, lane: "proactive" }, null);
+    return queueRun(t, agent, conv, seq, "human", { id: null, lane: "proactive" }, null, []);
   });
   app.agentPort.announce(run);
   return run;
@@ -163,7 +166,36 @@ describe("a reply nobody asked for that fails", () => {
 
 });
 
+describe("its seed is its origin, never a call (T2 fix 1, F10)", () => {
+  /** The Agent's runs in `conv`, oldest first: lane, what each covers and the calls it answers. */
+  const assignments = async (agentId: string, conv: string) =>
+    (await db.query("select id, status, lane, covers_seq::int as covers, call_seqs::int[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at, id", [agentId, conv])).rows;
+
+  it("its owner's 重试 of a failed one is the owner's own reply answering no call, with the same origin: no line about calls, nothing refused for the seed, and not retried twice", async () => {
+    const w = await world();
+    const anna = await agentIn(w.owner, "anna", w.g);
+    const seed = await say(w.third, w.g, "今晚做什么菜好？");
+    await unasked(anna, w.g, seed);
+    gateway.fail("provider_unavailable");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const [failed] = await assignments(anna.id, w.g);
+    expect(failed).toMatchObject({ status: "failed", lane: "proactive", covers: seed, calls: [] });
+    // The seed's writer has a block with the owner since: the seed is no call, so nothing of the retry is refused for it.
+    expect((await api(app, w.owner, "PUT", `/api/blocks/${w.third.id}`)).status).toBe(200);
+    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed!.id })).status).toBe(201);
+    expect((await assignments(anna.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", covers: seed, calls: [] });
+    gateway.reply("今晚吃面。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect((await assignments(anna.id, w.g)).map((r) => r.status)).toEqual(["failed", "done"]);
+    const sent = gateway.calls.at(-1)!;
+    expect(sent.messages.map((m) => m.parts.map((p) => ("text" in p ? p.text : "")).join("")).join("\n")).not.toContain("条消息叫了你");
+    // Retried once already: a second 重试 of the same failure is refused.
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: failed!.id })).toEqual({ status: 400, json: { error: "invalid_request" } });
+  });
+});
+
 describe("read again as it is admitted", () => {
+
   /** The worker takes the next queued run; no model is called. */
   const endsAtAdmission = async () => {
     const calls = gateway.calls.length;

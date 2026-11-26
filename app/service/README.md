@@ -5227,8 +5227,10 @@ nothing more is judged, and what a decision still in flight decides is dropped (
    their `agent_group_state` rows are locked, in id order (every writer of those rows takes them in that order;
    `state.ts`); the quiet
    answers are applied (Asked to be quiet, below); and the winner replies unless one of the reasons below holds: a
-   `queued` run covering the message, `triggered_by` `human`, lane `proactive`, no caller, and its surcharge raised at
-   once, stamped with the message's seq. After commit the outcome is acted on as a send acts on a mention's: its notices
+   `queued` run covering the message, `triggered_by` `human`, lane `proactive`, no caller, answering no call (`call_seqs`
+   empty: the message is its origin, what it covers, never a call — nothing is refused for it, no line names calls, and it is
+   shown as a call's message would be: `agents/origin.ts`), and its surcharge raised at once, stamped with the message's seq. Its
+   owner's 重试 of one that failed is the owner's own reply (lane `own`) answering no call, from the same origin. After commit the outcome is acted on as a send acts on a mention's: its notices
    are published, the run is announced (the `run` push to its owner, `"replying"` to everyone else) and wakes the worker.
 
 At most one Agent replies to a message, and there is never a second choice: when the winner cannot speak, nobody does.

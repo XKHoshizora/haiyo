@@ -10,6 +10,7 @@ import { notAcknowledgement, type StoredMessage, type SystemEvent } from "../mes
 import { postingRun } from "../messages/read.ts";
 import { othersLimitOf, othersReached } from "../metering/others.ts";
 import { reach } from "../social/reach.ts";
+import { originOnlySql } from "./origin.ts";
 import { refusedInGroup } from "./refusal.ts";
 import { groupPlaceSql, placeOf, placeOfType, socialPlaceSql, type Place } from "../social/place.ts";
 import { modelsUsable, modelUsable } from "../models/resolve.ts";
@@ -2013,7 +2014,12 @@ interface FailedRun {
   triggered_by: TriggeredBy;
   asker_ids: string[] | null;
   whisper_id: string | null;
-  /** A later run of the pair took it on since — answered one of its calls, or (a told reply) told its whisper: retried already. */
+  /** It answers no call, its origin what it covers (`originOnlySql`): a reply nobody asked for, or a 重试 of one. */
+  origin_only: boolean;
+  /**
+   * A later run of the pair took it on since — answered one of its calls, (a told reply) told its whisper, or (`origin_only`) answered
+   * its origin with no call: retried already.
+   */
   taken: boolean;
 }
 
@@ -2070,9 +2076,11 @@ export async function retryRun(
   const covers = failed?.covers == null ? null : Number(failed.covers);
   if (!failed || failed.status !== "failed" || failed.taken || agent.model === null || covers === null) throw new AppError(400, "invalid_request");
   if (place === "group" && (joinedSeq === null || covers <= joinedSeq)) throw new AppError(400, "invalid_request");
-  // What it answered, less what a limit refused since (C-b); with nothing left there is nothing to answer again.
-  const calls = failed.whisper_id !== null ? [] : ((await standingSeqs(t, failed.id)) ?? [covers]);
-  if (failed.whisper_id === null && calls.length === 0) throw new AppError(400, "invalid_request");
+  // What it answered, less what a limit refused since (C-b); with nothing left there is nothing to answer again. A told reply and a
+  // reply nobody asked for (or a 重试 of one) answer no call: it is made again from its origin, answering none (T2 fix 1, F10).
+  const zeroCall = failed.whisper_id !== null || failed.origin_only;
+  const calls = zeroCall ? [] : ((await standingSeqs(t, failed.id)) ?? [covers]);
+  if (!zeroCall && calls.length === 0) throw new AppError(400, "invalid_request");
   if (!(await modelUsable(t, config, agent))) throw new AppError(409, "model_gone");
   // A told reply tells again only a whisper that reads open (whispers/store.ts `mayTell`, the one rule a press and a told
   // reply's beginning keep too): declined and expired are final. Under the conversation's row and the Agent's, held.
@@ -2080,7 +2088,8 @@ export async function retryRun(
     throw new AppError(409, "stale_whisper");
   }
   if (await overLaneLimit(t, ownerId, "own", config)) throw new AppError(429, "rate_limited");
-  const queued = await queueRun(t, agent, conversationId, failed.whisper_id !== null ? covers : calls.at(-1)!, failed.triggered_by, callerOf(ownerId, ownerId), failed.asker_ids, calls);
+  const queued = await queueRun(t, agent, conversationId, zeroCall ? covers : calls.at(-1)!, failed.triggered_by, callerOf(ownerId, ownerId), failed.asker_ids, calls);
+
   // That it is its owner's own 重试 (`owner_retry`): the owner is there, so the system never tries it again by itself
   // (`scheduleAutoRetry`) — what bounds the attempts of one call across a manual 重试; and a told reply's whisper, told again.
   await t.query("update agent_runs set owner_retry = true, whisper_id = $2 where id = $1", [queued.run.id, failed.whisper_id]);
@@ -2090,12 +2099,13 @@ export async function retryRun(
 /** Run `runId` as a 重试 reads it (`retryRun`), locked; null when there is none. */
 async function failedRunOf(t: Tx, runId: string): Promise<FailedRun | null> {
   const { rows } = await t.query<FailedRun>(
-    `select r.id, r.status, r.covers_seq::text as covers, r.triggered_by, r.asker_ids, r.whisper_id,
+    `select r.id, r.status, r.covers_seq::text as covers, r.triggered_by, r.asker_ids, r.whisper_id, ${originOnlySql("r")} as origin_only,
             exists (select 1 from agent_runs x
                      where x.agent_id = r.agent_id and x.conversation_id = r.conversation_id and x.purpose = 'reply' and x.id <> r.id
                        and (x.created_at, x.id) > (r.created_at, r.id)
                        and (r.call_seqs is null or x.call_seqs is null or x.call_seqs && r.call_seqs
-                            or (r.whisper_id is not null and x.whisper_id = r.whisper_id))) as taken
+                            or (r.whisper_id is not null and x.whisper_id = r.whisper_id)
+                            or (${originOnlySql("r")} and ${originOnlySql("x")} and x.covers_seq = r.covers_seq))) as taken
        from agent_runs r where r.id = $1 for update of r`,
     [runId],
   );
