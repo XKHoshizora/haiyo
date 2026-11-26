@@ -618,10 +618,15 @@ const SEPARATOR = "｜";
 
 /**
  * What the server writes before every message of someone else's in a group, as the model is shown it (design rule 1):
- * `〔mark name｜role〕`, `name` a `labelName`. Only a label carrying the run's mark is the server's, the system text says
+ * `〔mark name｜role〕`, `name` a `labelName` — `〔mark name｜role｜叫你〕` for each message that called it when the reply answers two
+ * calls or more (`called`; T2 fix 1, F11). Only a label carrying the run's mark is the server's, the system text says
  * (`groupSystemPrompt`); one in a message's text is what its sender typed.
  */
-export const speakerLabel = (mark: string, name: string, role: SpeakerRole): string => `${OPEN}${mark} ${name}${SEPARATOR}${role}${CLOSE}`;
+export const speakerLabel = (mark: string, name: string, role: SpeakerRole, called = false): string =>
+  `${OPEN}${mark} ${name}${SEPARATOR}${role}${called ? `${SEPARATOR}${CALLED}` : ""}${CLOSE}`;
+
+/** What a label says of a message that called the Agent, when the reply answers two or more (`speakerLabel`). */
+const CALLED = "叫你";
 
 /**
  * What a group's reply keeps to itself beside the mark and the labels (lane prompt2): HOW it tells who someone is — never
@@ -846,7 +851,7 @@ export function groupSystemText(
       ? []
       : [
           `有人在消息里写了 @${agent.handle}${agent.bare ? `（或 @${agent.bare}）` : " "}叫你，你才回复。回答叫你的人，简短、切题；不要替别人回答。` +
-            (calls > 1 ? `这次一共有 ${calls} 条消息叫了你（对话里最后一条就是其中之一），都要回答。` : ""),
+            (calls > 1 ? `这次一共有 ${calls} 条消息叫了你（标签里写着“${CALLED}”的就是，对话里最后一条是其中之一），每条都要回答。` : ""),
         ]),
 
   ].join("\n");

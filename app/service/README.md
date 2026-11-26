@@ -1820,6 +1820,10 @@ outward result is the line of the person the call is for (the sender; for an Age
   times the model's learned ratio when it is above 1 (Metering, Token estimates), labels and quotes included, 1 500 an
   image, 300 per KB of PDF — so a provider may bill an
   image or a PDF at more. The system text, the roster included, comes on top of it. Its own conversation has no such cap.
+  Every call of its assignment is shown, whatever the 80 and the cap leave out (a call older than the latest 80 is read by its
+  seq; past the cap, cut from the front to what is left): when it answers two or more, each one's label says so,
+  `〔mark name｜role｜叫你〕`, and the scene's sentence ends `这次一共有 N 条消息叫了你（标签里写着“叫你”的就是，对话里最后一条是其中之一），每条都要回答。`;
+  one call needs neither (it is the newest message, always shown).
 - *What it stores.* An ordinary `text` message from the Agent, which every member reads: its text (message-text rules,
   everything from its first `<af-` on dropped, cut at 8 000 characters, then without the run's mark, below), `stopped` and `truncated` as in its own
   conversation, and the model's `reasoning` exactly as there (message-text rules, at most 32 000 characters, only when

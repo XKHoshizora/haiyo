@@ -402,7 +402,7 @@ interface Loaded {
    * lists only those), and whether its text starts with a quote. `entry` is without the label, which goes before it once
    * the run's mark is drawn (`shown`).
    */
-  speaker: (Speaker & { present: boolean; quoted: boolean }) | null;
+  speaker: (Speaker & { present: boolean; quoted: boolean; called: boolean }) | null;
 }
 
 interface MessageRow {
@@ -488,8 +488,12 @@ async function loadPage(
   from: number,
   before: number | null,
   limit: number,
+  only: readonly number[] | null = null,
 ): Promise<{ loaded: Loaded[]; oldest: number | null; more: boolean }> {
   const group = run.group !== null;
+  // Two calls or more of its assignment: each is labelled as calling it (`speakerLabel` `called`), and kept whatever else is
+  // left out (`ContextEntry.pinned`; T2 fix 1, F11). One needs neither: it is the newest message, always shown.
+  const calls = run.group !== null && run.group.calls.length > 1 ? new Set(run.group.calls) : null;
   const { rows } = await q.query<MessageRow>(
     `select m.seq::text as seq, m.sender_id, sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, sp.kind as sender_kind,
             $8::boolean and exists (select 1 from memberships sm
@@ -511,10 +515,23 @@ async function loadPage(
         and ((m.seq > $3 and coalesce(r.covers_seq, m.seq) > $3) or m.seq = any($9::bigint[]))
         and (m.sender_id = $6 or ($8::boolean and m.sender_id <> $1) or coalesce(r.covers_seq, m.seq) <= $5)
         and ($10::bigint is null or m.seq <= $10::bigint or (m.sender_id = $1 and r.covers_seq is not null and r.covers_seq <= $10::bigint))
-
+        and ($12::bigint[] is null or m.seq = any($12::bigint[]))
       order by m.seq desc
       limit $7`,
-    [run.agentId, run.conversationId, from, before, run.coversSeq, run.ownerId, limit, group, run.group?.calls ?? [], run.upTo ?? null, !group && run.replay !== undefined],
+    [
+      run.agentId,
+      run.conversationId,
+      from,
+      before,
+      run.coversSeq,
+      run.ownerId,
+      limit,
+      group,
+      run.group?.calls ?? [],
+      run.upTo ?? null,
+      !group && run.replay !== undefined,
+      only === null ? null : [...only],
+    ],
   );
   const quotedSeqs = [...new Set(rows.flatMap((r) => (typeof r.reply_to === "number" && Number.isSafeInteger(r.reply_to) ? [r.reply_to] : [])))];
   /** A quoted message as it is shown: its text, or (when it has none) its attachment, labelled once numbers are known. */
@@ -557,7 +574,8 @@ async function loadPage(
         attachment: r.attachment ? toAttachment(r.attachment, seq, run.conversationId, refs) : null,
         ...(ack ? { ack: true as const } : {}),
       };
-      return scope === undefined || facts === null ? plain : withReplay(plain, r.tool_calls, facts, scope, real);
+      const entry = scope === undefined || facts === null ? plain : withReplay(plain, r.tool_calls, facts, scope, real);
+      return calls?.has(seq) ? { ...entry, pinned: true as const } : entry;
     };
     const excerpt = facts !== null && hasExcerpt(r.tool_calls);
     const quoted = quotedText !== undefined || quotedFile !== undefined;
@@ -570,6 +588,7 @@ async function loadPage(
             role: speakerRole(r.sender_id, r.sender_kind, run.ownerId, run.group?.place ?? "group"),
             present: r.sender_present,
             quoted,
+            called: calls?.has(seq) ?? false,
           }
         : null;
     return [{ entry: build(null), build, excerpt, real: false, seq, answers: r.answers === null ? seq : Number(r.answers), reply: r.answers !== null, placed: r.placed, speaker }];
@@ -583,10 +602,14 @@ async function loadPage(
  * rule of it: what a reply is shown (`shown`) and what the rolling summary weighs a message it replaces as
  * (agents/summary/job.ts) are both this.
  */
-export function labelledEntry(entry: ContextEntry, speaker: Pick<Speaker, "name" | "handle" | "role"> & { quoted: boolean } | null, mark: string | null): ContextEntry {
+export function labelledEntry(
+  entry: ContextEntry,
+  speaker: (Pick<Speaker, "name" | "handle" | "role"> & { quoted: boolean; called?: boolean }) | null,
+  mark: string | null,
+): ContextEntry {
   if (speaker === null || mark === null) return entry;
-  const { name, handle, role, quoted } = speaker;
-  return { ...entry, text: `${speakerLabel(mark, labelName(name, handle), role)}${quoted ? "\n" : ""}${entry.text}` };
+  const { name, handle, role, quoted, called } = speaker;
+  return { ...entry, text: `${speakerLabel(mark, labelName(name, handle), role, called === true)}${quoted ? "\n" : ""}${entry.text}` };
 }
 
 /** A loaded message as the model is shown it (`labelledEntry`, with the run's `mark`; with no mark, as loaded). */
@@ -698,6 +721,9 @@ export async function loadContext(
     before = page.oldest;
   }
   const kept = more ? loaded.filter((l) => l.answers >= oldest) : loaded;
+  // Every call of its assignment is shown, also one older than the group's page (`maxMessages`): read by its seq (T2 fix 1, F11).
+  const unread = (run.group?.calls ?? []).filter((seq) => !kept.some((l) => l.seq === seq));
+  if (unread.length > 0) kept.push(...(await loadPage(q, run, from, null, unread.length, unread)).loaded);
   const speakers = speakersOf(kept);
   const unmarked = withPassage("", speakers);
   const mark = run.group === null ? null : newMark((m) => unmarked.text.includes(m) || kept.some((l) => shows(l, m)), draw);

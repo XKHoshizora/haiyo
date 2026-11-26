@@ -81,6 +81,11 @@ export interface ContextEntry {
    * design §3).
    */
   ack?: true;
+  /**
+   * A call of the reply's assignment when it answers two or more (agents/context.ts `loadPage`; T2 fix 1, F11): kept whatever else is
+   * left out — cut from the front to what the budget holds when it does not fit whole (`ContextPlan`).
+   */
+  pinned?: true;
 }
 
 /** What an attachment is shown as instead of its name: an image, a PDF, or the text of a file (cut already). */
@@ -321,10 +326,22 @@ export class ContextPlan {
     let fits = true;
     for (const [i, p] of turn.entries()) {
       if (i === 0) this.keepNewest(p);
-      else if (!(fits = this.keep(p))) break;
+      else if (fits && (fits = this.keep(p))) continue;
+      // Past what fits, only a call of its assignment is kept (`ContextEntry.pinned`), cut if it must be.
+      else if (p.entry.pinned) this.keepPinned(p);
     }
     this.current = this.kept.length;
-    this.older = fits ? shown.slice(turn.length) : [];
+    this.older = fits ? shown.slice(turn.length) : shown.slice(turn.length).filter((p) => p.entry.pinned === true);
+  }
+
+  /** A call of the assignment (`ContextEntry.pinned`): kept whole when it fits, else cut from the front to what is left. */
+  private keepPinned(p: Placed): void {
+    if (this.keep(p)) return;
+    const e = p.entry;
+    const whole = [e.text, e.attachment ? attachmentLabel(e.attachment) : ""].filter((s) => s !== "").join("\n");
+    const text = CUT_FRONT + lastToWeight(whole, Math.max(0, weightWithin(this.left, this.ratio) - weight(CUT_FRONT)));
+    this.kept.push({ entry: { ...e, text, attachment: null }, content: null, at: p.at });
+    this.left -= estimateTokens(text, this.ratio);
   }
 
   /** The owner's newest message: as it is when it fits, else cut from the front to what the budget holds (its end, in weight). */
@@ -348,7 +365,11 @@ export class ContextPlan {
 
   /** Step 3: older messages by name, newest first, while they fit. */
   keepOlder(): void {
-    for (const p of this.older) if (!this.keep(p)) break;
+    let fits = true;
+    for (const p of this.older) {
+      if (fits && (fits = this.keep(p))) continue;
+      if (p.entry.pinned) this.keepPinned(p);
+    }
     this.older.length = 0;
   }
 

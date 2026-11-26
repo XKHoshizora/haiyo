@@ -688,9 +688,9 @@ describe("the calls shown from before the line, and the calls a follow-up or a r
       {
         role: "user",
         parts: [
-          { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 帮我看看这份报告` },
+          { type: "text", text: `〔${m} mike｜群成员｜叫你〕@helper_bot 帮我看看这份报告` },
           { type: "text", text: `〔${m} sam｜群成员〕我刚进群，大家好` },
-          { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 也看看这份` },
+          { type: "text", text: `〔${m} mike｜群成员｜叫你〕@helper_bot 也看看这份` },
           { type: "text", text: "[文件：AFTER-10b.txt]\nAFTER-CONTENT-10b 一切正常" },
         ],
       },
@@ -813,9 +813,9 @@ describe("the calls a reply answers are always shown; an asker who is not in the
       {
         role: "user",
         parts: [
-          { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 这条怎么看？` },
+          { type: "text", text: `〔${m} mike｜群成员｜叫你〕@helper_bot 这条怎么看？` },
           { type: "text", text: `〔${m} sam｜群成员〕${slipped}` },
-          { type: "text", text: `〔${m} mike｜群成员〕@helper_bot 还有呢？` },
+          { type: "text", text: `〔${m} mike｜群成员｜叫你〕@helper_bot 还有呢？` },
         ],
       },
     ]);

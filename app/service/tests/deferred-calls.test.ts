@@ -627,13 +627,37 @@ describe("the prompt names the calls a reply answers (design [C7])", () => {
     const first = gateway.calls.length;
     gateway.reply("两个都答了");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(gateway.calls[first]!.system).toContain("这次一共有 2 条消息叫了你（对话里最后一条就是其中之一），都要回答。");
+    expect(gateway.calls[first]!.system).toContain("这次一共有 2 条消息叫了你（标签里写着“叫你”的就是，对话里最后一条是其中之一），每条都要回答。");
     await say(w.ned, w.g, `${w.at} 只问一次`);
     gateway.reply("答了");
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(gateway.calls[first + 1]!.system).not.toContain("条消息叫了你");
+    expect(everything(gateway.calls[first + 1]!)).not.toMatch(/｜叫你〕/);
+  });
+
+  it("two calls of one person with 85 messages between them, folded into one reply: both are in what its model is shown, each labelled as calling it (T2 fix 1, F11)", async () => {
+    const w = await world();
+    const firstCall = await say(w.mia, w.g, `${w.at} FIRST-ASK 第一问`);
+    // 85 messages of ned's in between (written as a send stores them): more than one page of a group's context (80).
+    await db.query(
+      `with c as (update conversations set seq = seq + 85 where id = $1 returning seq)
+       insert into messages (conversation_id, seq, sender_id, kind, body)
+       select $1, c.seq - 85 + g, $2, 'text', jsonb_build_object('text', '闲聊 ' || g) from c, generate_series(1, 85) as g`,
+      [w.g, w.ned.id],
+    );
+    const secondCall = await say(w.mia, w.g, `${w.at} SECOND-ASK 第二问`);
+    expect(await runsOf(w.agent.id, w.g)).toMatchObject([{ status: "queued", calls: [firstCall, secondCall] }]);
+    const at = gateway.calls.length;
+    gateway.reply("两个都答了");
+    expect(await app.agentWorker.runOnce()).toBe(true);
+    const shown = everything(gateway.calls[at]!);
+    expect(shown).toContain("FIRST-ASK");
+    expect(shown).toContain("SECOND-ASK");
+    expect(shown.match(/｜叫你〕/g)?.length).toBe(2);
+    expect(gateway.calls[at]!.system).toContain("这次一共有 2 条消息叫了你");
   });
 });
+
 
 describe("a run begun is shown nothing after its assignment's last call", () => {
   it("in the Agent's own conversation: the owner writes again while it runs; that message waits for a reply of its own, and the first is not shown it", async () => {
