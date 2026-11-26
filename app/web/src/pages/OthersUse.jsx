@@ -2,7 +2,7 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { formatPoints } from "../data/viewmodel.js";
-import { othersStateOf, othersStateText } from "../data/othersCopy.js";
+import { othersStateOf, othersStateText, ownKeyText } from "../data/othersCopy.js";
 import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
 import { socialOn } from "../state/social.js";
 import { Avatar, Btn, Reason, TextLink } from "../ui/primitives.jsx";
@@ -84,7 +84,7 @@ function LimitSentence({ limit, ownKeyPoints, onSave }) {
     event.preventDefault();
     commit();
   };
-  const own = typeof ownKeyPoints === "string" ? `用你自己的模型密钥时不扣点，每条回复按 ${formatPoints(ownKeyPoints)} 点算。` : "";
+  const own = typeof ownKeyPoints === "string" ? `用你自己的模型密钥时不扣点，每条回复${ownKeyText(ownKeyPoints)}。` : "";
   return (
     <div className="others-limit-sentence">
       <p>
@@ -110,7 +110,7 @@ function LimitSentence({ limit, ownKeyPoints, onSave }) {
       </p>
       {error && <p className="field-msg" role="alert">{error}</p>}
       <p id={hintId} className="field-hint">
-        你所有的 Agent 合在一起算，它们主动回复的也算。{own}每天零点（站点时间）重新算。已经在回复的会照常回完，所以可能略超过一点。
+        你所有的 Agent 合在一起算，它们主动回复的也算。{own}每天零点（站点时间）重新算。已经在回复的会照常回完，所以一天用的可能超过这个数。
       </p>
     </div>
   );

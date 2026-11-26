@@ -3347,7 +3347,8 @@ any of it (a visitor or co-member never learns your number, their use or what is
   hold is not in it. `proactive` is the part of it your Agents' replies nobody asked for are (no caller: in no `byPerson` row).
 - `reached`: `used` has reached `limit`: the next reply for others is refused (its sender reads why on their message, and you are told
   once a day in the Agent's own conversation).
-- `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then id; `points` as `used`'s.
+- `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then id; `points` as `used`'s
+  (a reply chain on your own key counted once, for the caller of its latest attempt today, so the rows never add up to more than `used`).
   A reply nobody asked for, and one whose caller has left, are in `used` and in no row.
 - `stopped`: the people you stopped contact with (停止往来) and have not since resumed, newest first: your own `stop` rows of `access_bars`,
   never a block's row and never a stop somebody else set about you. It is yours whatever `SOCIAL.enabled` says (a stop made while it was

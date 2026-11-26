@@ -6,7 +6,7 @@ import { lockForWrite } from "../src/conversations/store.ts";
 import { insertMessage } from "../src/messages/model.ts";
 import { NOTHING } from "../src/agents/runtime/port.ts";
 import { admit, admitRun } from "../src/metering/admit.ts";
-import { OWN_KEY_NOMINAL_MICRO, othersReplyCeilingMicro, othersUseToday, OthersLimit } from "../src/metering/others.ts";
+import { OWN_KEY_NOMINAL_MICRO, othersByPerson, othersReplyCeilingMicro, othersUseToday, OthersLimit } from "../src/metering/others.ts";
 import { maxCostMicro } from "../src/metering/prices.ts";
 import { settle } from "../src/metering/settle.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
@@ -85,6 +85,30 @@ describe("the one measure", () => {
     expect(await othersUseToday(db, config(), owner.id, new Date(), "proactive")).toBe(6n * POINT);
     // Counted, never charged.
     expect(await balance()).toBe(before);
+  });
+});
+
+describe("who used it (`othersByPerson`)", () => {
+  it("a reply chain counts once, for one person: a first attempt one caller's that failed, its retry another's — the people's figures add up to the total", async () => {
+    const owner = await newOwner();
+    const mine = await providerAgent(app, db, owner);
+    const [a, b] = [await newOwner(), await newOwner()];
+    const attempt = async (caller: Actor, retryOf: string | null, status: string) =>
+      (
+        await db.query<{ id: string }>(
+          `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, started_at, finished_at, lane, caller_id, source, model, admitted_at, retry_of, money_rule)
+           values ('reply', $1, $2, $3, $4, now(), now(), 'others', $5, 'provider', 'mine', now(), $6, 1) returning id`,
+          [mine.conversationId, mine.agentId, owner.id, status, caller.id, retryOf],
+        )
+      ).rows[0]!.id;
+    const first = await attempt(a, null, "failed");
+    await attempt(b, first, "done");
+    const total = await othersUseToday(db, config(), owner.id, new Date());
+    expect(total).toBe(6n * POINT);
+    const people = await othersByPerson(db, config(), owner.id, new Date());
+    expect(people.reduce((sum, p) => sum + p.pointsMicro, 0n)).toBe(total);
+    // The chain is the person's whose call its latest attempt answers.
+    expect(people.map((p) => [p.person.id, p.pointsMicro])).toEqual([[b.id, 6n * POINT]]);
   });
 });
 

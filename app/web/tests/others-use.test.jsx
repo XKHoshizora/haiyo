@@ -106,7 +106,7 @@ describe("the settings row and the page", () => {
     expect(pointsBox().closest("p").textContent).toBe("别人用我的 Agent，每天合计最多花我点");
     const text = mainText();
     // One number for all of them, proactive replies included; an own key's reply counted at the service's number; replies under way finish.
-    expect(text).toContain("你所有的 Agent 合在一起算，它们主动回复的也算。用你自己的模型密钥时不扣点，每条回复按 6 点算。每天零点（站点时间）重新算。已经在回复的会照常回完，所以可能略超过一点。");
+    expect(text).toContain("你所有的 Agent 合在一起算，它们主动回复的也算。用你自己的模型密钥时不扣点，每条回复按 6 点计，联网搜索另计。每天零点（站点时间）重新算。已经在回复的会照常回完，所以一天用的可能超过这个数。");
     expect(text).toContain("今天别人花了 12.5 点（其中主动回复 2 点）");
     expect(text).toContain("小美");
     expect(text).toContain("@mei · 花了 8 点");

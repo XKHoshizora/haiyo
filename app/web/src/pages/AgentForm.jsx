@@ -4,7 +4,7 @@ import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { NAME_PART_PATTERN, agentName as agentNameProblem, appellation as appellationProblem, namePart as namePartProblem } from "../auth/validation.js";
 import { PROACTIVE_LEVELS, isProactiveLevel } from "../data/viewmodel.js";
-import { levelCeilingText } from "../data/othersCopy.js";
+import { levelCeilingText, ownKeyText } from "../data/othersCopy.js";
 import { Btn, Field, Modal, Notice, Reason, Switch, focusInvalid } from "../ui/primitives.jsx";
 import { isEscape } from "../ui/keys.js";
 import { Select } from "../ui/Select.jsx";
@@ -161,23 +161,23 @@ const recordFields = (a) => ({
 /**
  * The two thinking levels of replies made for others (Owner decision 2026-11-26): one plain question each. (The others' level is for
  * every reply somebody else causes: a call in a group, and a visitor's message in a conversation with it.) Each keeps ONE short hint: the
- * most one reply at the level shown can cost (`ceilingOf`).
+ * most one reply at the level shown can cost, or what one on my own key counts (`ceilingOf`).
  */
 export const OTHERS_LEVEL_LABEL = "别人 @ 它或来找它时的思考程度";
 export const PROACTIVE_LEVEL_LABEL = "主动回复时的思考程度";
 
 /**
- * The most one reply to someone else at `level` can cost on the model `choice` is, in points, as the service says it: a site model's
- * `othersCeiling` (`GET /api/models`), and for a model on my own key what each such reply counts (`othersOwnKeyPoints`), whatever the
- * level; null when the service says nothing.
+ * The hint under a level select for the model `choice` at `level`, as the service says it: on a site model the most one reply to
+ * someone else can cost there (`othersCeiling`, `GET /api/models`); on my own key what each such reply counts (`othersOwnKeyPoints`),
+ * whatever the level, with its web searches charged besides; null when the service says nothing.
  */
 function ceilingOf(state, choice, level) {
   if (!choice || choice.stale) return null;
   if (choice.model.source === "site") {
     const points = choice.othersCeiling?.[level];
-    return typeof points === "string" ? points : null;
+    return typeof points === "string" ? levelCeilingText(points) : null;
   }
-  return typeof state.othersOwnKeyPoints === "string" ? state.othersOwnKeyPoints : null;
+  return typeof state.othersOwnKeyPoints === "string" ? ownKeyText(state.othersOwnKeyPoints) : null;
 }
 
 /** A setting as it would be stored (the text fields trimmed, points as sent), to compare with the record's. */
@@ -283,8 +283,8 @@ export function AgentForm({ agent = null }) {
   const levelOptions = LEVELS.filter(([id]) => levels.includes(id)).map(([id, label]) => ({ value: id, label }));
   /** Under each of the two levels for others: the most one reply at the level shown can cost (none when the service says nothing). */
   const levelHint = (level) => {
-    const points = ceilingOf(state, choice, level);
-    return points === null ? undefined : levelCeilingText(points);
+    const hint = ceilingOf(state, choice, level);
+    return hint === null ? undefined : hint;
   };
   // Only for a model whose levels are KNOWN (one that is offered): a model no longer offered has none listed here, and its entry in the
   // picker carries the Agent's own saved level only so that it can be kept, which says nothing of what the model lists.

@@ -85,16 +85,20 @@ export interface PersonUse {
 
 /**
  * The people whose calls the owner's replies of lane `others` answered today (a reply admitted today with them as its caller), each with
- * what their replies used by the one measure (settled charges, and the nominal count of a chain on a provider's model), most first, then
- * by id. A reply nobody asked for has no caller, and one whose caller is gone names nobody: both are in the owner's total and in no row.
+ * what their replies used by the one measure (settled charges, and the nominal count of a chain on a provider's model — each chain
+ * once, for the caller of its latest attempt of today, so the rows never add up to more than the total), most first, then by id. A reply
+ * nobody asked for has no caller, and one whose caller is gone names nobody: both are in the owner's total and in no row.
  */
 export async function othersByPerson(q: Queryable, config: Pick<Config, "siteTimezone">, ownerId: string, now: Date): Promise<PersonUse[]> {
   const { rows } = await q.query<{ id: string; handle: string; name: string; avatar_version: number; points: string }>(
-    `with chains as (
-       select r.caller_id, count(distinct coalesce(r.retry_of, r.id)) filter (where r.source = 'provider') * $4::bigint as nominal
+    `with chain as (
+       -- Each reply chain on the owner's key once, for the person whose call its latest attempt of today answers.
+       select distinct on (coalesce(r.retry_of, r.id)) r.caller_id
          from agent_runs r
-        where r.owner_id = $1 and r.purpose = 'reply' and r.lane = 'others' and r.caller_id is not null and r.admitted_at >= $2 and r.admitted_at < $3
-        group by r.caller_id),
+        where r.owner_id = $1 and r.purpose = 'reply' and r.lane = 'others' and r.source = 'provider' and r.admitted_at >= $2 and r.admitted_at < $3
+        order by coalesce(r.retry_of, r.id), r.admitted_at desc, r.id desc),
+     chains as (
+       select caller_id, count(*) * $4::bigint as nominal from chain where caller_id is not null group by caller_id),
      settled as (
        select r.caller_id, sum(u.free_micro + u.balance_micro) as micro
          from usage_records u join agent_runs r on r.id = u.run_id

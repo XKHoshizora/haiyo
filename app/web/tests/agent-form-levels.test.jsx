@@ -107,9 +107,10 @@ describe("creating", () => {
     expect(hintOf(PROACTIVE)).toBe("这一档单条回复最多约 61.5 点");
     pickOption(box(PROACTIVE), "low");
     expect(hintOf(PROACTIVE)).toBe("这一档单条回复最多约 91.5 点");
-    // A model on my own key costs no points: each of its replies counts what the service says (6 points) whatever the level.
+    // A model on my own key costs no points: each of its replies counts what the service says (6 points) whatever the level, and a
+    // web search is charged besides — no "at most" is promised.
     await chooseModel("gpt-x");
-    expect(hintOf(OTHERS)).toBe("这一档单条回复最多约 6 点");
+    expect(hintOf(OTHERS)).toBe("按 6 点计，联网搜索另计");
   });
 
   it("with no number from the service the select has no hint at all", async () => {

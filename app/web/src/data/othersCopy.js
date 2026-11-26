@@ -27,3 +27,8 @@ export const othersNoticeText = (limit) => `别人用你的 Agent，每天合计
 
 /** Under each of the two level selects: the most one reply to someone else can cost at that level (decimal points, the service's). */
 export const levelCeilingText = (points) => `这一档单条回复最多约 ${formatPoints(points)} 点`;
+/**
+ * What one reply on the owner's own key counts toward their number (the service's nominal points, `ownKeyPoints` /
+ * `othersOwnKeyPoints`): counted, not an "at most" — a web search it makes is charged besides.
+ */
+export const ownKeyText = (points) => `按 ${formatPoints(points)} 点计，联网搜索另计`;
