@@ -120,7 +120,8 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
   const stopped = running.rows.map((r) => r.id);
   // (`groups: false`, an unfriend: in a group anyone may @ the Agent, friend or not, so no call of anyone is taken out of a group reply.)
   const inGroups: EndedRuns = o.groups === false ? { cancelled: [], running: [] } : await endGroupCalls(t, groupAgents, o.eager);
-  return { cancelled: [...cancelled, ...inGroups.cancelled], running: [...stopped, ...inGroups.running], idle: inGroups.idle ?? [], ended: ended.rowCount ?? 0 };
+  const idle = inGroups.idle ?? [];
+  return { cancelled: [...cancelled, ...inGroups.cancelled], running: [...stopped, ...inGroups.running], ...(idle.length > 0 ? { idle } : {}), ended: ended.rowCount ?? 0 };
 }
 
 /**
@@ -215,7 +216,7 @@ export async function interruptOthersRuns(t: Tx, agentId: string): Promise<Ended
   return {
     cancelled: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) })),
     running: running.rows.map((r) => r.id),
-    idle: queued.rows.map((r) => ({ agentId, conversationId: r.conversation_id })),
+    ...(queued.rows.length > 0 ? { idle: queued.rows.map((r) => ({ agentId, conversationId: r.conversation_id })) } : {}),
   };
 
 }

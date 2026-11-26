@@ -527,7 +527,7 @@ describe("停止往来 and 恢复往来 (design test 6)", () => {
       if (how === "bar") expect((await stop(owner, v)).status).toBe(200);
       else expect((await block(owner, v)).status).toBe(200);
       expect(await rowState(y.id, v.id)).toEqual({ state: "ended", endReason: "barred" });
-      expect(await runOf(running)).toMatchObject({ status: "running", interrupted: "access_ended", pending_seq: null });
+      expect(await runOf(running)).toMatchObject({ status: "running", interrupted: "access_ended" });
       // V's only call leaves the group reply: a stop cancels it quietly now; a block leaves a reply that has not begun to the check
       // `begin` makes call by call (agents-block-recheck.test.ts), which drops the same call then.
       if (how === "bar") expect(await runOf(queued)).toMatchObject({ status: "cancelled", error: null });
@@ -680,7 +680,7 @@ describe("blocks (Controller ruling Q4, per setter)", () => {
     const running = await queuedRun(y.id, s, v.id, "running");
     expect((await block(v, owner)).status).toBe(200);
     expect(await rowState(y.id, v.id)).toEqual({ state: "ended", endReason: "barred" });
-    expect(await runOf(running)).toMatchObject({ interrupted: "access_ended", pending_seq: null });
+    expect(await runOf(running)).toMatchObject({ interrupted: "access_ended" });
     expect((await unblock(v, owner)).status).toBe(200);
     expect(await barRows(owner, v)).toEqual([]);
     expect(await rowState(y.id, v.id)).toEqual({ state: "ended", endReason: "barred" });

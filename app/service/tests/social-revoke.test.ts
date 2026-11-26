@@ -7,7 +7,7 @@ import { holdThen, someoneWaits } from "./helpers/locks.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 
 // Plan A5a (design §1.2, §8 test 1, lane A's half): `endGrants`, the only way access stops: the rows end, the queued replies are
-// cancelled, the running ones interrupted (`access_ended`, `pending_seq` null), in the pair's social conversations and in groups
+// cancelled, the running ones interrupted (`access_ended`; the calls waiting for them there dropped), in the pair's social conversations and in groups
 // the person concerned called; and what takes it over (`removeContact`, a person's block of an Agent).
 const { app, db } = useApp({ env: SITE_ENV, config: SOCIAL_ON, agentWorker: false });
 
@@ -39,7 +39,7 @@ async function newGroup(creator: string): Promise<string> {
   return rows[0]!.id;
 }
 /**
- * An active reply of `agentId` in `conversationId` called by `callerId`; `pending_seq` is set so that dropping it can be seen. In a
+ * An active reply of `agentId` in `conversationId` called by `callerId` (`pending_seq` is set, as the code before 078 noted, and is no longer read). In a
  * group the call is a real message (by `author`, the caller unless said), which `call_seqs` and `covers_seq` name: an ending
  * decides a group reply by whose calls it answers.
  */
@@ -63,7 +63,7 @@ async function runIn(agentId: string, conversationId: string, callerId: string |
 }
 const runOf = async (id: string) => (await db.query(`select status, error, interrupted, pending_seq from agent_runs where id = $1`, [id])).rows[0] as { status: string; error: string | null; interrupted: string | null; pending_seq: string | null };
 const untouched = { error: null, interrupted: null };
-const ended = { interrupted: "access_ended", pending_seq: null };
+const ended = { interrupted: "access_ended" };
 const rowOf = async (agentId: string, subjectId: string) =>
   (await db.query(`select state, basis, end_reason, until from agent_contacts where agent_id = $1 and subject_id = $2`, [agentId, subjectId])).rows[0] as { state: string; basis: string | null; end_reason: string | null; until: Date | null } | undefined;
 const live = (agentId: string, subjectId: string, personId: string = subjectId) =>

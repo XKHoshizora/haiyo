@@ -93,7 +93,7 @@ describe("narrowing", () => {
     expect(await rowOf(agent.id, friend.id)).toMatchObject({ state: "ended", end_reason: "narrowed", basis: null });
     expect(await rowOf(agent.id, approved.id)).toMatchObject({ state: "live", basis: "approved" });
     expect(await agentState(agent.id)).toEqual({ contact_policy: "ask", contact_picked: false });
-    expect(await runOf(running)).toMatchObject({ status: "running", interrupted: "access_ended", pending_seq: null });
+    expect(await runOf(running)).toMatchObject({ status: "running", interrupted: "access_ended" });
     // (The friend's call in a group is not refused by the narrowing: in a group only a standing bar refuses. Fix round 2, N2.)
     expect(await runOf(queued)).toMatchObject({ status: "queued", error: null });
     // The friend is refused now, and may ask again as a request (the row closed is `narrowed`).
