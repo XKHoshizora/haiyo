@@ -335,22 +335,24 @@ describe("a greeting never hides its owner's message, however it ends (round 2 R
   });
 });
 
-describe("a queued run that ends holds what was handed back to it to the one follow-up rule (round 3 S-4)", () => {
+describe("a queued run that ends takes what waited behind it, as a run that ran does (round 3 S-4)", () => {
   /**
-   * A queued run of `agentId` in `conv` with `noted` written after its claim and handed back to it, as an admission that
-   * held it back leaves it (port-impl.ts `HELD_BACK`): written while it ran (noted, `pending_seq`), then queued again.
+   * A queued run of `agentId` in `conv` with `noted` written after its claim, as an admission that held it back leaves it
+   * (port-impl.ts `HELD_BACK`): written while it ran, the call waits behind it (`deferred_calls`), and the run is queued again,
+   * what it covers unchanged.
    */
   async function heldBackWith(conv: string, write: () => Promise<number>) {
     const [queued] = (await db.query<{ id: string; covers: string }>("select id, covers_seq::text as covers from agent_runs where conversation_id = $1 and status = 'queued'", [conv])).rows;
     await db.query("update agent_runs set status = 'running', started_at = now() where id = $1", [queued!.id]);
     const noted = await write();
     await db.query("update agent_runs set status = 'queued', started_at = null where id = $1", [queued!.id]);
-    const row = (await db.query<{ covers: string; pending: string }>("select covers_seq::text as covers, pending_seq::text as pending from agent_runs where id = $1", [queued!.id])).rows[0]!;
-    expect([row.covers, row.pending]).toEqual([queued!.covers, String(noted)]);
+    const row = (await db.query<{ covers: string }>("select covers_seq::text as covers from agent_runs where id = $1", [queued!.id])).rows[0]!;
+    const waiting = (await db.query<{ seq: string }>("select message_seq::text as seq from deferred_calls where conversation_id = $1", [conv])).rows;
+    expect([row.covers, waiting]).toEqual([queued!.covers, [{ seq: String(noted) }]]);
     return { id: queued!.id, noted };
   }
 
-  it("its owner stops it: what was handed back gets its own reply, as for a run stopped while it ran", async () => {
+  it("its owner stops it: what waited behind it gets its own reply, as for a run stopped while it ran", async () => {
     const { owner, conv } = await own("ar_stop_held");
     await say(owner, conv, "帮我想个名字");
     const { id, noted } = await heldBackWith(conv, () => say(owner, conv, "要两个字的"));
@@ -363,7 +365,7 @@ describe("a queued run that ends holds what was handed back to it to the one fol
     expect(await instance().worker.runOnce()).toBe(true);
   });
 
-  it("a halt ends it (it was called by an Agent): a person's call handed back to it still gets its follow-up", async () => {
+  it("a halt ends it (it was called by an Agent): a person's call that waited behind it still gets its own reply", async () => {
     const w = await scene("ar_halt_held");
     const relay = await say(w.owner, w.g, "大家好");
     await db.tx((t) => queueRun(t, { id: w.agent.id, ownerId: w.owner.id }, w.g, relay, "agent", { id: w.owner.id, lane: "own" }, [w.owner.id]));
@@ -633,20 +635,17 @@ describe("in the Agent's own conversation", () => {
     expect((await runsOf(conv)).map((r) => r.status)).toEqual(["failed", "done"]);
   });
 
-  it("answered meanwhile (a reply of the Agent's there from another run, after the original call): the retry ends quietly, with no call", async () => {
+  it("answered meanwhile by an attempt of its own (its reply posted, its ending lost): the retry ends quietly, with no call — another run's reply answers none of its calls (limits redesign, Part 2)", async () => {
     const { owner, agent, conv } = await own("ar_answered");
     const { worker } = instance();
     await say(owner, conv, "在吗");
     gateway.fail("provider_unavailable", { status: 503 });
     expect(await worker.runOnce()).toBe(true);
-    const other = await db.query<{ id: string }>(
-      "insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, caller_id, triggered_by) values ('reply', $1, $2, $3, 'done', 1, 'own', $3, 'human') returning id",
-      [conv, agent.id, owner.id],
-    );
+    const failed = (await runsOf(conv)).find((r) => r.status === "failed")!;
     await db.query(
       `with c as (update conversations set seq = seq + 1 where id = $1 returning seq)
        insert into messages (conversation_id, seq, sender_id, kind, body, client_txn) select $1, c.seq, $2, 'text', '{"text":"在的。"}'::jsonb, $3 from c`,
-      [conv, agent.id, other.rows[0]!.id],
+      [conv, agent.id, failed.id],
     );
     advance(20_000);
     const calls = gateway.calls.length;
@@ -811,7 +810,11 @@ describe("in a group", () => {
     expect(o2.events.filter((e: Push) => e.type === "run" && e.run?.status === "failed")).toEqual([]);
   });
 
-  it("the owner's call noted on a member's reply that then fails for a passing reason: the retry answers both calls and is a reply for others, the member's (whose it is: the calls it has, as each was accepted — fix round 4, R2; every one the owner's for own — fix round 5)", async () => {
+  /** The calls waiting behind the Agent's reply in `g` (`deferred_calls`), oldest first. */
+  const waitingIn = async (g: string) =>
+    (await db.query("select message_seq::text as seq, lane, caller_id as caller from deferred_calls where conversation_id = $1 order by message_seq", [g])).rows;
+
+  it("the owner's call that waited behind a member's reply that then fails for a passing reason: the retry is that reply again — the member's call alone, for others, the member's (a reply's identity never changes: limits redesign, Part 2) — and the owner's call gets a reply of its own after it", async () => {
     const w = await scene("ar_gc");
     const { worker, port } = instance();
     const asked = await say(w.mia, w.g, `${w.call} 打印机的维修电话？`);
@@ -820,14 +823,19 @@ describe("in a group", () => {
     await port.finish(ticket, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
     const [failed, retry] = await runsOf(w.g);
     expect(failed).toMatchObject({ status: "failed", lane: "others" });
-    expect(retry).toMatchObject({ status: "queued", lane: "others", auto_attempt: 1, calls: [String(asked), String(own)] });
-    expect((await db.query<{ c: string[]; caller: string }>("select owner_call_seqs::text[] as c, caller_id as caller from agent_runs where conversation_id = $1 and status = 'queued'", [w.g])).rows).toEqual([{ c: [String(own)], caller: w.mia.id }]);
+    expect(retry).toMatchObject({ status: "queued", lane: "others", auto_attempt: 1, calls: [String(asked)] });
+    expect((await db.query<{ caller: string }>("select caller_id as caller from agent_runs where id = $1", [retry!.id])).rows[0]!.caller).toBe(w.mia.id);
+    expect(await waitingIn(w.g)).toEqual([{ seq: String(own), lane: "own", caller: w.owner.id }]);
     advance(20_000);
     gateway.reply("12345。");
     expect(await worker.runOnce()).toBe(true);
+    expect((await runsOf(w.g)).at(-1)).toMatchObject({ status: "queued", lane: "own", auto_attempt: 0, calls: [String(own)] });
+    expect(await waitingIn(w.g)).toEqual([]);
+    gateway.reply("同上。");
+    expect(await worker.runOnce()).toBe(true);
   });
 
-  it("a member's call noted on the owner's own reply that then fails for a passing reason: the retry is a reply for others, the member's — and is held to the owner's replies a minute for others, not their own (fix round 5)", async () => {
+  it("a member's call that waited behind the owner's own reply that then fails for a passing reason: the retry is the owner's own reply again, held to the owner's own replies a minute — not to their replies for others — and the member's call gets a reply of its own after it", async () => {
     const w = await scene("ar_gd");
     const { port } = instance();
     const own = await say(w.owner, w.g, `${w.call} 打印机的维修电话？`);
@@ -836,11 +844,11 @@ describe("in a group", () => {
     await port.finish(ticket, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
     const [failed, retry] = await runsOf(w.g);
     expect(failed).toMatchObject({ status: "failed", lane: "own" });
-    expect(retry).toMatchObject({ status: "queued", lane: "others", auto_attempt: 1, calls: [String(own), String(asked)] });
-    expect((await db.query<{ caller: string }>("select caller_id as caller from agent_runs where id = $1", [retry!.id])).rows[0]!.caller).toBe(w.mia.id);
-    await db.query("delete from agent_runs where id = $1", [retry!.id]);
+    expect(retry).toMatchObject({ status: "queued", lane: "own", auto_attempt: 1, calls: [String(own)] });
+    expect((await db.query<{ caller: string }>("select caller_id as caller from agent_runs where id = $1", [retry!.id])).rows[0]!.caller).toBe(w.owner.id);
+    expect(await waitingIn(w.g)).toEqual([{ seq: String(asked), lane: "others", caller: w.mia.id }]);
 
-    // The same with the owner's replies a minute for others used up (their own lane free): no retry is made, it gives up.
+    // With the owner's replies a minute for others used up, the retry is made all the same (its lane is the owner's own).
     const v = await scene("ar_ge");
     const second = instance();
     await say(v.owner, v.g, `${v.call} 打印机的维修电话？`);
@@ -852,9 +860,24 @@ describe("in a group", () => {
       [v.g, v.agent.id, v.owner.id, app.deps.config.agentOthersRunsPerMinute],
     );
     await second.port.finish(t2, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
-    expect((await runsOf(v.g)).filter((r) => r.status === "queued")).toEqual([]);
+    expect((await runsOf(v.g)).filter((r) => r.status === "queued")).toEqual([expect.objectContaining({ lane: "own", auto_attempt: 1 })]);
+
+    // With their own replies a minute used up, it gives up; the member's call, accepted before, is then answered by its own reply.
+    const u = await scene("ar_gf");
+    const third = instance();
+    await say(u.owner, u.g, `${u.call} 打印机的维修电话？`);
+    const t3 = (await third.port.claimNext())!;
+    const uAsked = await say(u.mia, u.g, `${u.call} 我也想知道`);
+    await db.query(
+      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, created_at, finished_at, lane)
+       select 'reply', $1, $2, $3, 'done', 0, now() - interval '30 seconds', now() - interval '29 seconds', 'own' from generate_series(1, $4)`,
+      [u.g, u.agent.id, u.owner.id, app.deps.config.agentRunsPerMinute],
+    );
+    await third.port.finish(t3, { status: "failed", error: "provider_unavailable", transient: true }, null, NOTHING);
+    expect((await runsOf(u.g)).filter((r) => r.status === "queued")).toEqual([expect.objectContaining({ lane: "others", auto_attempt: 0, calls: [String(uAsked)] })]);
     expect(metrics("auto_retry_gave_up", "rate_limited")).toBe(1);
   });
+
 
   it("a 503 after an acknowledgement and a tool round is no passing failure (the reply had done things): shown at once; the owner's 重试 posts no second acknowledgement", async () => {
     const w = await scene("ar_ack");

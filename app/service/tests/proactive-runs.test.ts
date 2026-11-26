@@ -143,19 +143,24 @@ describe("a reply nobody asked for that fails", () => {
     expect(await runsRead(w.member, w.g)).toEqual([]);
   });
 
-  it("a failed reply someone asked for — a mention, or one that took over an unasked reply — is shown to the members as before", async () => {
+  it("a failed reply someone asked for — a mention, also one that waited behind an unasked reply — is shown to the members as before", async () => {
     const w = await world();
     const anna = await agentIn(w.owner, "anna", w.g);
     const memberS = await connect(app, w.member);
-    // A member's mention folded into the unasked reply while it was queued makes it theirs (lane `others`).
+    // A member's mention while the unasked reply is queued waits behind it; the unasked reply ends quietly as it begins, and the
+    // mention gets its own reply (lane `others`), which fails.
     await unasked(anna, w.g, await say(w.third, w.g, "今晚做什么菜好？"));
     await say(w.member, w.g, "@anna 对，就问你");
     gateway.fail("provider_unavailable");
-    expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "failed", error: "provider_unavailable", lane: "others" }]);
+    while (await app.agentWorker.runOnce());
+    expect(await runsOf(anna.id, w.g)).toEqual([
+      { status: "cancelled", error: null, lane: "proactive" },
+      { status: "failed", error: "provider_unavailable", lane: "others" },
+    ]);
     expect(await stateAfterReplying(memberS, w.g, anna.id)).toBe("unavailable");
     expect(await runsRead(w.third, w.g)).toEqual([{ agentId: anna.id, state: "unavailable" }]);
   });
+
 });
 
 describe("read again as it is admitted", () => {

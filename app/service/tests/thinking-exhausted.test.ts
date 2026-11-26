@@ -84,7 +84,7 @@ describe("the level a reply is sent is the level it was sized for", () => {
   it.each([
     ["high", "none"],
     ["none", "high"],
-  ] as const)("the Agent changed from %s to %s while the reply read its files: the call is still sent at the first, with its limit", async (from, to) => {
+  ] as const)("the Agent changed from %s to %s while the reply read its files: the plan made at the first is thrown away (the admission compares the Agent's settings: limits redesign, Part 2) and the call is sent at the second, with its limit", async (from, to) => {
     const owner = await signUp(app, `level_${from}`);
     const agent = await mustCreateAgent(app, owner, { model: FAST_THINK, persona: "简短地回答。", reasoning: from });
     const conv = agent.conversationId as string;
@@ -96,11 +96,13 @@ describe("the level a reply is sent is the level it was sized for", () => {
     };
     gateway.reply("好。", { usage: { inputTokens: 5, outputTokens: 3 } });
     expect(await app.agentWorker.runOnce()).toBe(true);
-    expect(store.probe.gets).toHaveLength(1);
+    // Planned twice (the files read twice), one call made: at the level the Agent has as it is admitted.
+    expect(store.probe.gets).toHaveLength(2);
     const sent = gateway.calls.at(-1)!;
-    expect([sent.reasoning, sent.maxOutputTokens]).toEqual([from, LIMIT[from]]);
+    expect([sent.reasoning, sent.maxOutputTokens]).toEqual([to, LIMIT[to]]);
 
-    // The change applies from the next reply.
+    // And so is the next reply.
+
     gateway.reply("好的。", { usage: { inputTokens: 5, outputTokens: 3 } });
     expect((await api(app, owner, "POST", `/api/conversations/${conv}/messages`, { text: "再来", clientTxn: `lv${++txn}` })).status).toBe(201);
     expect(await app.agentWorker.runOnce()).toBe(true);

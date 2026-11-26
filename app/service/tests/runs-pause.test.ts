@@ -339,20 +339,26 @@ describe("what a pause could not see is ended by the resume", () => {
     expect(await fromAgent(owner, g, agent.id)).toEqual([]);
   });
 
-  it("a mention noted on the interrupted reply after the pause dropped what was noted is dropped by the resume: no follow-up", async () => {
+  it("a call left waiting behind the interrupted reply after the pause dropped what waited is dropped by the resume: no reply of it", async () => {
     const { owner, mate, agent, g } = await inGroup("iris");
     await say(mate, g, "第一句");
     const id = await insertRun(agent.id, owner.id, g, "running", await seqOf(g));
     const ticket: RunTicket = { id, agentId: agent.id, ownerId: owner.id, conversationId: g };
-    // The message of the Agent's that called it was written before the pause; its fold waited on the run's row, which
-    // the pause held, and noted it once the pause had committed.
+    // The message of an Agent's that called it was written before the pause; it reads the Agents it calls without locking them, so
+    // the call it left waiting is one the pause did not see.
     await say(mate, g, "暂停前写的");
     const noted = await seqOf(g);
     await pause(owner, agent.id);
-    await db.query("update agent_runs set pending_seq = $2 where id = $1", [id, noted]);
+    await db.query(
+      `insert into deferred_calls (agent_id, conversation_id, message_seq, owner_id, lane, caller_id, triggered_by, asker_ids)
+       values ($1, $2, $3, $4, 'others', $5, 'agent', array[$5::uuid])`,
+      [agent.id, g, noted, owner.id, mate.id],
+    );
     await resume(owner, agent.id);
 
-    expect((await db.query("select pending_seq, interrupted from agent_runs where id = $1", [id])).rows).toEqual([{ pending_seq: null, interrupted: "agent_paused" }]);
+    expect((await db.query("select interrupted from agent_runs where id = $1", [id])).rows).toEqual([{ interrupted: "agent_paused" }]);
+    expect((await db.query("select 1 from deferred_calls where agent_id = $1", [agent.id])).rowCount).toBe(0);
+
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
     expect(await runsOf(agent.id)).toEqual([{ status: "cancelled", error: "agent_paused" }]);
     expect(await app.agentWorker.runOnce()).toBe(false);

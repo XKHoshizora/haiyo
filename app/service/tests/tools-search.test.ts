@@ -587,9 +587,9 @@ describe("a search never returns the messages its run answers (item E): they are
     expect(body.cites).toEqual([{ at: 3, kind: "m", ref: { conversationId: g, seq: earlier } }]);
   });
 
-  it("a run answering two calls excludes both; a later message that only repeats the question is an ordinary result", async () => {
+  it("a run answering two calls (one person's, folded) excludes both; a later message that only repeats the question is an ordinary result", async () => {
     const { mia, ned, g } = await inGroup();
-    const { out, seqs } = await askedTogether(g, [[mia, "@owen_bot 打印机的维修电话？"], [ned, "@owen_bot 打印机的维修电话我也想知道"]], { query: "打印机的维修电话" });
+    const { out, seqs } = await askedTogether(g, [[mia, "@owen_bot 打印机的维修电话？"], [mia, "@owen_bot 打印机的维修电话我也想知道"]], { query: "打印机的维修电话" });
     expect(out).toEqual({ results: [], note: "这个群的记录里没找到。" });
     expect((await db.query<{ calls: string[] }>("select call_seqs::text[] as calls from agent_runs where conversation_id = $1 order by created_at desc limit 1", [g])).rows[0]!.calls).toEqual(seqs.map(String));
     // A message that only repeats the question, sent later and calling nobody, is no call of the next run: found as any.

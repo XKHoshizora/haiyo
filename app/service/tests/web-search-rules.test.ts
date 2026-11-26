@@ -1018,7 +1018,7 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     expect(engine.queries).toEqual([]);
   });
 
-  it("the owner's own @ folded with a member's into one reply for others: a call the reply answers is one the owner wrote, so the owner's words are theirs to search", async () => {
+  it("the owner's own @ while a member's call is queued waits for a reply of its own (a reply's caller never changes): the member's reply answers no call the owner wrote, so the owner's words are not its to search; the owner's own reply after it may", async () => {
     const gateway = scriptedGateway();
     const engine = fakeEngine();
     const { worker } = webWorker(gateway, engine);
@@ -1029,6 +1029,9 @@ describe("fix round 1 (review websearch2-review.md)", () => {
     await say(mia, g, `@${agent.handle} 附近有什么好吃的？`);
     await say(owner, g, `@${agent.handle} 海淀区中关村南大街附近有什么好吃的？`);
     expect(await lastRun(agent.id)).toMatchObject({ status: "queued", lane: "others" });
+    expect(await searchRun(worker, gateway, [query])).toEqual([{ error: WEB_QUERY_PRIVATE }]);
+    expect(engine.queries).toEqual([]);
+    expect(await lastRun(agent.id)).toMatchObject({ status: "queued", lane: "own" });
     expect((await searchRun(worker, gateway, [query]))[0]).toMatchObject({ results: expect.any(Array) });
     expect(engine.queries).toEqual([query]);
   });

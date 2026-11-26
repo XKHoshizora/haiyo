@@ -54,12 +54,12 @@ async function insertRun(
   s: Setup,
   conversationId: string,
   status: "queued" | "running" | "done",
-  { covers = 1, pending = null, startedMinutesAgo = 0 }: { covers?: number; pending?: number | null; startedMinutesAgo?: number } = {},
+  { covers = 1, startedMinutesAgo = 0 }: { covers?: number; startedMinutesAgo?: number } = {},
 ): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
-    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, pending_seq, started_at)
-     values ('reply', $1, $2, $3, $4, $5, $6, case when $4 = 'queued' then null else now() - make_interval(mins => $7) end) returning id`,
-    [conversationId, s.agent.id, s.owner.id, status, covers, pending, startedMinutesAgo],
+    `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, started_at)
+     values ('reply', $1, $2, $3, $4, $5, case when $4 = 'queued' then null else now() - make_interval(mins => $6) end) returning id`,
+    [conversationId, s.agent.id, s.owner.id, status, covers, startedMinutesAgo],
   );
   return rows[0]!.id;
 }
@@ -73,11 +73,25 @@ const postedIn = (s: Setup, conversationId: string, runId: string, seq = 1) =>
     runId,
   ]);
 
+/**
+ * The owner's message at `seq` of `conversationId`, stored by hand, and the call it makes waiting for the Agent's reply under way there
+ * (`deferred_calls`: what a send while the reply runs writes), to be answered as that reply ends.
+ */
+async function waitBehind(s: Setup, conversationId: string, seq: number): Promise<void> {
+  await db.query(`insert into messages (conversation_id, seq, sender_id, kind, body) values ($1, $2, $3, 'text', '{"text":"还有一件事"}')`, [conversationId, seq, s.owner.id]);
+  await db.query("update conversations set seq = greatest(seq, $2) where id = $1", [conversationId, seq]);
+  await db.query(
+    `insert into deferred_calls (agent_id, conversation_id, message_seq, owner_id, lane, caller_id, triggered_by, asker_ids)
+     values ($1, $2, $3, $4, 'own', $4, 'human', array[$4::uuid])`,
+    [s.agent.id, conversationId, seq, s.owner.id],
+  );
+}
+
 /** The runs in `conversationId`, oldest first. */
 const runsIn = async (conversationId: string) =>
   (
-    await db.query<{ status: string; error: string | null; covers: number; pending: number | null }>(
-      `select status, error, covers_seq::int as covers, pending_seq::int as pending from agent_runs where conversation_id = $1 order by created_at, id`,
+    await db.query<{ status: string; error: string | null; covers: number }>(
+      `select status, error, covers_seq::int as covers from agent_runs where conversation_id = $1 order by created_at, id`,
       [conversationId],
     )
   ).rows;
@@ -145,7 +159,7 @@ describe("lockAgent", () => {
 });
 
 describe("the worker's side of a run in another conversation", () => {
-  it("claim, begin and finish lock and announce the run's conversation; the follow-up is queued there", async () => {
+  it("claim, begin and finish lock and announce the run's conversation; the reply for the call that waited is queued there", async () => {
     const s = await setup("wanda");
     const socket = await connect(app, s.owner);
     const runId = await insertRun(s, s.other, "queued");
@@ -160,14 +174,14 @@ describe("the worker's side of a run in another conversation", () => {
       expect(await app.agentPort.begin(claimed)).toEqual({ status: "cancelled" });
       return claimed;
     });
-    // As if the reply had been posted there while the owner wrote more (seq 5).
+    // As if the reply had been posted there while the owner wrote more (seq 5), which waits.
     await postedIn(s, s.other, runId);
-    await db.query("update agent_runs set pending_seq = 5 where id = $1", [runId]);
+    await waitBehind(s, s.other, 5);
     await whileLocked(s.dedicated, () => app.agentPort.finish(ticket, { status: "done" }, null, NOTHING));
 
     expect(await runsIn(s.other)).toEqual([
-      { status: "done", error: null, covers: 1, pending: 5 },
-      { status: "queued", error: null, covers: 5, pending: null },
+      { status: "done", error: null, covers: 1 },
+      { status: "queued", error: null, covers: 5 },
     ]);
     expect(await runsIn(s.dedicated)).toEqual([]);
     await socket.waitFor((e) => e.type === "run" && e.run.status === "queued");
@@ -181,15 +195,16 @@ describe("the worker's side of a run in another conversation", () => {
 });
 
 describe("recovery of a run in another conversation", () => {
-  it("at start-up: its reply is looked for in its own conversation (done), and the follow-up is queued there", async () => {
+  it("at start-up: its reply is looked for in its own conversation (done), and the reply for the call that waited is queued there", async () => {
     const s = await setup("rosa");
-    const runId = await insertRun(s, s.other, "running", { covers: 1, pending: 3 });
+    const runId = await insertRun(s, s.other, "running", { covers: 1 });
     await postedIn(s, s.other, runId);
+    await waitBehind(s, s.other, 3);
 
     expect(await whileLocked(s.dedicated, () => recoverRuns(db, app.deps.config, app.log))).toBe(1);
     expect(await runsIn(s.other)).toEqual([
-      { status: "done", error: null, covers: 1, pending: 3 },
-      { status: "queued", error: null, covers: 3, pending: null },
+      { status: "done", error: null, covers: 1 },
+      { status: "queued", error: null, covers: 3 },
     ]);
     expect(await runsIn(s.dedicated)).toEqual([]);
     expect((await db.query("select outcome, cost_micro::int as cost from usage_records where run_id = $1", [runId])).rows).toEqual([{ outcome: "done", cost: 0 }]);
@@ -197,26 +212,28 @@ describe("recovery of a run in another conversation", () => {
 
   it("at start-up: a reply of the same run id in the dedicated conversation does not count; the run fails as one that posted nothing", async () => {
     const s = await setup("rudi");
-    const runId = await insertRun(s, s.other, "running", { covers: 1, pending: 3 });
+    const runId = await insertRun(s, s.other, "running", { covers: 1 });
     // Only a reply in the run's own conversation is its reply.
     await postedIn(s, s.dedicated, runId);
 
     expect(await recoverRuns(db, app.deps.config, app.log)).toBe(1);
-    expect(await runsIn(s.other)).toEqual([{ status: "failed", error: "provider_unavailable", covers: 1, pending: 3 }]);
+    expect(await runsIn(s.other)).toEqual([{ status: "failed", error: "provider_unavailable", covers: 1 }]);
     expect(await runsIn(s.dedicated)).toEqual([]);
   });
 
-  it("by the stale-run sweep: released in its own conversation, its owner told there, the follow-up queued there", async () => {
+  it("by the stale-run sweep: released in its own conversation, its owner told there, the reply for the call that waited queued there", async () => {
     const s = await setup("sven");
-    const runId = await insertRun(s, s.other, "running", { covers: 1, pending: 2, startedMinutesAgo: 42 });
+    const runId = await insertRun(s, s.other, "running", { covers: 1, startedMinutesAgo: 42 });
     await postedIn(s, s.other, runId);
+    await waitBehind(s, s.other, 2);
     const socket = await connect(app, s.owner);
 
     expect(await whileLocked(s.dedicated, () => app.staleRunSweep.run())).toBe(1);
     expect(await runsIn(s.other)).toEqual([
-      { status: "done", error: null, covers: 1, pending: 2 },
-      { status: "queued", error: null, covers: 2, pending: null },
+      { status: "done", error: null, covers: 1 },
+      { status: "queued", error: null, covers: 2 },
     ]);
+
     expect(await runsIn(s.dedicated)).toEqual([]);
     await socket.waitFor((e) => e.type === "run" && e.run.status === "queued");
     expect(runPushes(socket)).toEqual([
@@ -234,8 +251,8 @@ describe("the routes' side, with a run of the Agent in another conversation", ()
     const socket = await connect(app, s.owner);
 
     expect((await api(app, s.owner, "POST", `/api/agents/${s.agent.id}/pause`)).status).toBe(200);
-    expect(await runsIn(s.dedicated)).toEqual([{ status: "cancelled", error: "agent_paused", covers: 1, pending: null }]);
-    expect(await runsIn(s.other)).toEqual([{ status: "cancelled", error: "agent_paused", covers: 1, pending: null }]);
+    expect(await runsIn(s.dedicated)).toEqual([{ status: "cancelled", error: "agent_paused", covers: 1 }]);
+    expect(await runsIn(s.other)).toEqual([{ status: "cancelled", error: "agent_paused", covers: 1 }]);
     await socket.waitFor((e) => e.type === "run" && e.conversationId === s.dedicated);
     await socket.waitFor((e) => e.type === "run" && e.conversationId === s.other);
     expect(runPushes(socket).sort()).toEqual(
@@ -255,14 +272,14 @@ describe("the routes' side, with a run of the Agent in another conversation", ()
 
     const sent = await api(app, s.owner, "POST", `/api/conversations/${s.dedicated}/messages`, { text: "你好", clientTxn: "fold1" });
     expect(sent.status).toBe(201);
-    expect(await runsIn(s.dedicated)).toEqual([{ status: "queued", error: null, covers: sent.json.message.seq, pending: null }]);
-    expect(await runsIn(s.other)).toEqual([{ status: "queued", error: null, covers: 1, pending: null }]);
-    expect(await runsIn(third)).toEqual([{ status: "running", error: null, covers: 1, pending: null }]);
+    expect(await runsIn(s.dedicated)).toEqual([{ status: "queued", error: null, covers: sent.json.message.seq }]);
+    expect(await runsIn(s.other)).toEqual([{ status: "queued", error: null, covers: 1 }]);
+    expect(await runsIn(third)).toEqual([{ status: "running", error: null, covers: 1 }]);
     // A second message folds into the new one, still not elsewhere.
     const again = await api(app, s.owner, "POST", `/api/conversations/${s.dedicated}/messages`, { text: "还在吗", clientTxn: "fold2" });
-    expect(await runsIn(s.dedicated)).toEqual([{ status: "queued", error: null, covers: again.json.message.seq, pending: null }]);
-    expect(await runsIn(s.other)).toEqual([{ status: "queued", error: null, covers: 1, pending: null }]);
-    expect(await runsIn(third)).toEqual([{ status: "running", error: null, covers: 1, pending: null }]);
+    expect(await runsIn(s.dedicated)).toEqual([{ status: "queued", error: null, covers: again.json.message.seq }]);
+    expect(await runsIn(s.other)).toEqual([{ status: "queued", error: null, covers: 1 }]);
+    expect(await runsIn(third)).toEqual([{ status: "running", error: null, covers: 1 }]);
     await socket.waitFor((e) => e.type === "run");
     expect(runPushes(socket)).toEqual([[s.dedicated, "queued", null]]);
   });
@@ -280,8 +297,8 @@ describe("the routes' side, with a run of the Agent in another conversation", ()
 
     const sent = await api(app, s.owner, "POST", `/api/conversations/${s.dedicated}/messages`, { text: "你好", clientTxn: "rl1" });
     expect(sent.status).toBe(201);
-    expect(await runsIn(s.dedicated)).toEqual([{ status: "failed", error: "rate_limited", covers: sent.json.message.seq, pending: null }]);
-    expect((await runsIn(s.other)).filter((r) => r.status === "queued")).toEqual([{ status: "queued", error: null, covers: 1, pending: null }]);
+    expect(await runsIn(s.dedicated)).toEqual([{ status: "failed", error: "rate_limited", covers: sent.json.message.seq }]);
+    expect((await runsIn(s.other)).filter((r) => r.status === "queued")).toEqual([{ status: "queued", error: null, covers: 1 }]);
     await socket.waitFor((e) => e.type === "run");
     expect(runPushes(socket)).toEqual([[s.dedicated, "failed", "rate_limited"]]);
   });

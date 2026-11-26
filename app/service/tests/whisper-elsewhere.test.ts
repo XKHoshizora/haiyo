@@ -593,12 +593,13 @@ describe("告诉他们", () => {
     // It answers no call: what it covers is none of its calls.
     expect(before.calls).toEqual([]);
     const call = await say(w.ned, w.g, "@olive_bot 另外，周五几点开会？");
-    // Noted on the told reply for its follow-up (recorded as noted: `call_seqs`), not taken on by it.
-    const after = (await db.query<{ covers: string; pending: string | null; calls: string[] | null; lane: string; caller_id: string | null }>(
-      "select covers_seq::text as covers, pending_seq::text as pending, call_seqs::text[] as calls, lane, caller_id from agent_runs where id = $1",
+    // It waits behind the told reply (`deferred_calls`), for a reply of its own; the told reply takes nothing on.
+    const after = (await db.query<{ covers: string; calls: string[] | null; lane: string; caller_id: string | null }>(
+      "select covers_seq::text as covers, call_seqs::text[] as calls, lane, caller_id from agent_runs where id = $1",
       [told.id],
     )).rows[0]!;
-    expect(after).toEqual({ covers: before.covers, pending: String(call), calls: [String(call)], lane: "own", caller_id: w.owner.id });
+    expect(after).toEqual({ covers: before.covers, calls: [], lane: "own", caller_id: w.owner.id });
+    expect((await db.query("select message_seq::text as seq, lane, caller_id from deferred_calls where agent_id = $1", [w.agent.id])).rows).toEqual([{ seq: String(call), lane: "others", caller_id: w.ned.id }]);
     expect((await runsOf(w.agent.id, w.g)).filter((r) => r.status === "queued")).toHaveLength(1);
     // The told reply: shown nothing of the member's question.
     gateway.reply("蓝鲸计划在三楼。");
@@ -607,7 +608,7 @@ describe("告诉他们", () => {
     expect(toldCall.system).toContain(TELL_THEM);
     expect(JSON.stringify(toldCall.messages)).not.toContain("周五几点开会");
     expect(JSON.stringify(toldCall.messages.at(-1))).toContain("上次说的那个计划在哪");
-    // Then its follow-up: an ordinary reply, in the member's lane, offered tools, answering the member's call.
+    // Then the reply after it: an ordinary one, in the member's lane, offered tools, answering the member's call.
     const follow = (await db.query<{ whisper_id: string | null; lane: string; caller_id: string | null; calls: string[] }>(
       "select whisper_id, lane, caller_id, call_seqs::text[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'",
       [w.agent.id, w.g],
@@ -628,7 +629,7 @@ describe("告诉他们", () => {
   /**
    * The group's latest message is ned's, and ned and the owner have a block between them (`by` blocked `whom`): the told
    * reply covers that message, yet answers nobody's call — the owner's own tell is never dropped as blocked (final review
-   * I-1), and a member's call noted on it while it waited is still answered by its follow-up.
+   * I-1), and a member's call that waited behind it is still answered, by a reply of its own.
    */
   async function toldPastABlock(blocker: "owner" | "ned"): Promise<void> {
     const { w, whisper } = await whispered();
@@ -653,26 +654,27 @@ describe("告诉他们", () => {
     expect((await said()).slice(-2)).toEqual(["蓝鲸计划在三楼。", "周五下午三点。"]);
   }
 
-  it("the group's latest message from someone the owner blocked since: the told reply still tells, and a member's call noted on it is still answered", async () => {
+  it("the group's latest message from someone the owner blocked since: the told reply still tells, and a member's call that waited behind it is still answered", async () => {
     await toldPastABlock("owner");
   });
 
-  it("the group's latest message from someone who blocked the owner since: the told reply still tells, and a member's call noted on it is still answered", async () => {
+  it("the group's latest message from someone who blocked the owner since: the told reply still tells, and a member's call that waited behind it is still answered", async () => {
     await toldPastABlock("ned");
   });
 
-  it("its follow-up answers exactly the calls noted on it: a mention refused when it was sent (only its owner might call it then) is no call of it, though it names the Agent", async () => {
+  it("the reply after it answers exactly the calls that waited behind it: a mention refused when it was sent (only its owner might call it then) never waits, though it names the Agent", async () => {
     const { w, whisper } = await whispered();
     expect((await api(app, w.owner, "PATCH", `/api/agents/${w.agent.id}`, { groupMentions: "owner" })).status).toBe(200);
     expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(200);
     const told = (await runsOf(w.agent.id, w.g)).find((r) => r.whisper_id !== null)!;
-    // Refused as it is sent (a member's, while only the owner may call it): nothing is noted, though its mention is stored.
+    // Refused as it is sent (a member's, while only the owner may call it): nothing waits, though its mention is stored.
     const refused = await say(w.mia, w.g, "@olive_bot 先问一句：明天带伞吗？");
     expect((await db.query("select 1 from messages where conversation_id = $1 and seq = $2 and mentions @> $3::jsonb", [w.g, refused, JSON.stringify([{ id: w.agent.id }])])).rowCount).toBe(1);
     expect((await api(app, w.owner, "PATCH", `/api/agents/${w.agent.id}`, { groupMentions: "members" })).status).toBe(200);
     const call = await say(w.ned, w.g, "@olive_bot 周五几点开会？");
-    // Noted on the told reply, and recorded as noted: its follow-up's calls are these, and only these.
-    expect((await db.query<{ calls: string[] }>("select call_seqs::text[] as calls from agent_runs where id = $1", [told.id])).rows[0]!.calls).toEqual([String(call)]);
+    // The told reply answers no call; what waits behind it is this call, and only this.
+    expect((await db.query<{ calls: string[] }>("select call_seqs::text[] as calls from agent_runs where id = $1", [told.id])).rows[0]!.calls).toEqual([]);
+    expect((await db.query("select message_seq::text as seq from deferred_calls where agent_id = $1", [w.agent.id])).rows).toEqual([{ seq: String(call) }]);
     gateway.reply("蓝鲸计划在三楼。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     const follow = (await db.query<{ lane: string; caller_id: string | null; calls: string[]; askers: string[] | null }>(
@@ -685,22 +687,19 @@ describe("告诉他们", () => {
   });
 
   /**
-   * The members' calls noted on a told reply are never held to its owner (round 2, N-3): however it ends without posting —
-   * failed as it ran, ended by recovery at start-up or by a release, or superseded by a later run — they go to an ordinary
-   * follow-up at once, and the told run keeps none of them (a retry of it would tell with nothing noted).
+   * The members' calls that waited behind a told reply are never held to its owner (round 2, N-3): however it ends without
+   * posting — failed as it ran, ended by recovery at start-up or by a release — they get an ordinary reply at once, and the told
+   * run answers none of them (a retry of it would tell, and answer nothing).
    */
-  async function notedThenEnded(claimed: boolean, end: (ticketId: string) => Promise<void>) {
+  async function waitedThenEnded(claimed: boolean, end: (ticketId: string) => Promise<void>) {
     const { w, whisper } = await whispered();
     expect((await api(app, w.owner, "POST", `/api/whispers/${whisper.id}/accept`)).status).toBe(200);
     const id = claimed ? (await app.agentPort.claimNext())!.id : (await runsOf(w.agent.id, w.g)).find((r) => r.whisper_id !== null)!.id;
     const call = await say(w.ned, w.g, "@olive_bot 另外，周五几点开会？");
     await end(id);
     const ticket = { id };
-    const told = (await db.query<{ status: string; pending: string | null; calls: string[] }>(
-      "select status, pending_seq::text as pending, call_seqs::text[] as calls from agent_runs where id = $1",
-      [ticket.id],
-    )).rows[0]!;
-    expect(told).toEqual({ status: "failed", pending: null, calls: [] });
+    const told = (await db.query<{ status: string; calls: string[] }>("select status, call_seqs::text[] as calls from agent_runs where id = $1", [ticket.id])).rows[0]!;
+    expect(told).toEqual({ status: "failed", calls: [] });
     const follow = (await db.query<{ whisper_id: string | null; lane: string; caller_id: string | null; calls: string[] }>(
       "select whisper_id, lane, caller_id, call_seqs::text[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'",
       [w.agent.id, w.g],
@@ -714,40 +713,46 @@ describe("告诉他们", () => {
     expect((await agentSaid(w)).at(-1).text).toBe("周五下午三点。");
   };
 
-  it("a told reply that fails as it runs: the members' calls noted on it are followed up at once", async () => {
-    const { w } = await notedThenEnded(false, async () => {
+  it("a told reply that fails as it runs: the members' calls that waited behind it are answered at once", async () => {
+    const { w } = await waitedThenEnded(false, async () => {
       gateway.fail("provider_unavailable", { status: 502 });
       expect(await app.agentWorker.runOnce()).toBe(true);
     });
     await answered(w);
   });
 
-  it("a told reply that recovery at start-up ends: the members' calls noted on it are followed up at once (a failed run is otherwise followed by nothing)", async () => {
-    const { w } = await notedThenEnded(true, async () => {
+  it("a told reply that recovery at start-up ends: the members' calls that waited behind it are answered at once", async () => {
+    const { w } = await waitedThenEnded(true, async () => {
       expect(await recoverRuns(app.deps.db, app.deps.config, app.log)).toBe(1);
     });
     await answered(w);
   });
 
-  it("a told reply that a release ends (as recovery ends one): the members' calls noted on it are followed up at once", async () => {
-    const { w } = await notedThenEnded(true, async (id) => {
+  it("a told reply that a release ends (as recovery ends one): the members' calls that waited behind it are answered at once", async () => {
+
+    const { w } = await waitedThenEnded(true, async (id) => {
       expect(await app.agentPort.releaseRun(id)).toBe(true);
     });
     await answered(w);
   });
 
-  it("a told reply ended so and then superseded (its owner calls the Agent before anything ran): the member's call is answered, once", async () => {
-    const { w } = await notedThenEnded(true, async (id) => {
+  it("a told reply ended so and then its owner calls the Agent before anything ran: the member's call is answered once, and the owner's by a reply of its own after it", async () => {
+    const { w } = await waitedThenEnded(true, async (id) => {
       expect(await app.agentPort.releaseRun(id)).toBe(true);
     });
     const own = await say(w.owner, w.g, "@olive_bot 我也问一句：明天几点？");
-    // Folded into the follow-up that waits: one reply answers both.
-    const queued = (await db.query<{ calls: string[]; covers: string }>("select call_seqs::text[] as calls, covers_seq::text as covers from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.g])).rows;
+    // The owner's call is of another identity than the member's queued reply: it waits behind it, never folded into it.
+    const queued = (await db.query<{ calls: string[] }>("select call_seqs::text[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.g])).rows;
     expect(queued).toHaveLength(1);
-    expect(queued[0]!.calls).toContain(String(own));
+    expect(queued[0]!.calls).not.toContain(String(own));
     await answered(w);
+    const next = (await db.query<{ lane: string; calls: string[] }>("select lane, call_seqs::text[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.g])).rows;
+    expect(next).toEqual([{ lane: "own", calls: [String(own)] }]);
+    gateway.reply("明天九点。");
+    expect(await app.agentWorker.runOnce()).toBe(true);
     expect((await runsOf(w.agent.id, w.g)).filter((r) => r.status === "queued")).toEqual([]);
   });
+
 
   it("不用: nothing happens", async () => {
     const { w, whisper } = await whispered();
@@ -888,7 +893,7 @@ describe("the state of a told whisper is derived, never stored (Redesign D)", ()
     });
   }
 
-  it("stopped by its owner while queued: the tell ends, open again; a member's call noted on it still gets its follow-up", async () => {
+  it("stopped by its owner while queued: the tell ends, open again; a member's call that waited behind it still gets a reply of its own", async () => {
     const x = await toldQueued();
     const call = await say(x.w.ned, x.w.g, "@olive_bot 另外，周五几点开会？");
     expect((await api(app, x.w.owner, "POST", `/api/conversations/${x.w.g}/runs/${x.told.id}/stop`)).status).toBe(200);
@@ -1535,13 +1540,13 @@ describe("the system's automatic retry and a found-elsewhere whisper (README Rep
     return { port, worker: createAgentWorker({ port, models: gateway, runTimeoutMs: on.agentRunTimeoutMs, maxRunsInFlight: 1, background: false, log: app.log, tools: on.tools }) };
   }
 
-  it("a told reply that fails for a passing reason, its whisper open, is not tried again: the whisper reads open again, and a member's call noted on it is followed up at once", async () => {
+  it("a told reply that fails for a passing reason, its whisper open, is not tried again: the whisper reads open again, and a member's call that waited behind it is answered at once", async () => {
     offset = 0;
     const w = await world();
     await askInGroup(w, createElsewhere(elsewhereDeps()));
     const [whisper] = await whispersOf(w.owner.id, w.g);
     expect((await api(app, w.owner, "POST", `/api/whispers/${whisper!.id}/accept`)).status).toBe(200);
-    // Ned calls the Agent while the told reply waits: noted on it, never taken on.
+    // Ned calls the Agent while the told reply waits: the call waits behind it, never taken on by it.
     const nedAsked = await say(w.ned, w.g, "@olive_bot 我也有个问题");
     const { worker } = retrying();
     gateway.fail("provider_unavailable", { status: 503 });

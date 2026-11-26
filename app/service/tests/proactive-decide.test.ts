@@ -130,8 +130,19 @@ const post = (senderId: string, conv: string, kind: "text" | "file", body: Recor
 const agentSays = (agentId: string, conv: string, text: string) => post(agentId, conv, "text", { text });
 
 /** Ends every active run and moves it a minute back: no longer active, out of the fuse and of every minute's count. */
-const settleAndAge = () =>
-  db.query("update agent_runs set status = 'done', finished_at = now(), created_at = created_at - interval '1 minute' where status in ('queued', 'running')");
+const settleAndAge = async () => {
+  await db.query("delete from deferred_calls");
+  await db.query("update agent_runs set status = 'done', finished_at = now(), created_at = created_at - interval '1 minute' where status in ('queued', 'running')");
+};
+/** The calls waiting for the Agent in `conv` behind its active reply (`deferred_calls`), oldest first. */
+const waitingOf = async (agentId: string, conv: string) =>
+  (
+    await db.query(
+      `select message_seq::int as seq, lane, caller_id as caller, triggered_by as by
+         from deferred_calls where agent_id = $1 and conversation_id = $2 order by message_seq`,
+      [agentId, conv],
+    )
+  ).rows;
 
 /** The Agent's runs in `conv`, oldest first. */
 const runsOf = async (agentId: string, conv: string) =>
@@ -1131,22 +1142,25 @@ describe.each([false, true])("the rows it locks, and a proactive reply someone a
     }
   });
 
-  it("a mention folded into its queued run takes it over: a member's makes it others' with that caller, the owner's its own; the surcharge stays", async () => {
+  it("a mention while its queued run waits is never folded into it (a reply's caller never changes): it waits for a reply of its own, a member's others' with that caller, the owner's its own; the surcharge stays", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     judge.answer(byName({ anna: 0.99 }));
-    await decide(w.g, await say(w.third, w.g, "今晚吃什么？"));
+    const asked = await say(w.third, w.g, "今晚吃什么？");
+    await decide(w.g, asked);
     const mention = await say(w.member, w.g, "@anna 对，就问你");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, lane: "others", caller: w.member.id, by: "human", covers: mention }]);
+    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, lane: "proactive", caller: null, by: "human", covers: asked }]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([{ seq: mention, lane: "others", caller: w.member.id, by: "human" }]);
     expect((await stateOf(anna.id, w.g)).surcharge).toBeCloseTo(0.1, 6);
 
     await settleAndAge();
     await decide(w.g, await say(w.third, w.g, "那明天呢？"));
     const own = await say(w.owner, w.g, "@anna 我也想知道");
-    expect((await runsOf(anna.id, w.g)).at(-1)).toEqual({ status: "queued", error: null, lane: "own", caller: w.owner.id, by: "human", covers: own });
+    expect((await runsOf(anna.id, w.g)).at(-1)).toEqual(expect.objectContaining({ status: "queued", lane: "proactive", caller: null }));
+    expect(await waitingOf(anna.id, w.g)).toEqual([{ seq: own, lane: "own", caller: w.owner.id, by: "human" }]);
   });
 
-  it("an Agent's mention folded into its queued run makes it an Agent's call, in the call's lane — and a halt ends it", async () => {
+  it("an Agent's mention while its queued run waits waits behind it as an Agent's call, in the call's lane — and a halt ends both", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const bob = await agentOf(w.member, "bob_bot", w.g);
@@ -1164,18 +1178,24 @@ describe.each([false, true])("the rows it locks, and a proactive reply someone a
     await decide(w.g, await say(w.third, w.g, "今晚吃什么？"));
     // bob's own message (its owner, member, behind it) calls anna: others', member's, an Agent's.
     const byBob = await agentCalls(bob.id, "@anna 你来答");
-    expect(await runsOf(anna.id, w.g)).toEqual([{ status: "queued", error: null, lane: "others", caller: w.member.id, by: "agent", covers: byBob }]);
+    expect((await runsOf(anna.id, w.g)).map((r) => r.lane)).toEqual(["proactive"]);
+    expect(await waitingOf(anna.id, w.g)).toEqual([{ seq: byBob, lane: "others", caller: w.member.id, by: "agent" }]);
     // What a reply nobody called for relays: others', nobody's, an Agent's.
     judge.answer(byName({ carl_bot: 0.9 }));
     await decide(w.g, await say(w.member, w.g, "明天去哪儿？"));
     const relayed = await agentCalls(bob.id, "@carl_bot 你说", { id: null, lane: "proactive" });
-    expect(await runsOf(carl.id, w.g)).toEqual([{ status: "queued", error: null, lane: "others", caller: null, by: "agent", covers: relayed }]);
+    expect((await runsOf(carl.id, w.g)).map((r) => r.lane)).toEqual(["proactive"]);
+    expect(await waitingOf(carl.id, w.g)).toEqual([{ seq: relayed, lane: "others", caller: null, by: "agent" }]);
 
+    // The halt cancels the proactive runs; what waited behind them, only Agents' calls, is never answered after it.
     expect((await api(app, w.third, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
-    for (const agent of [anna, carl]) expect((await runsOf(agent.id, w.g)).map((r) => [r.status, r.error])).toEqual([["cancelled", "halted"]]);
+    for (const agent of [anna, carl]) {
+      expect((await runsOf(agent.id, w.g)).map((r) => [r.status, r.error])).toEqual([["cancelled", "halted"]]);
+      expect(await waitingOf(agent.id, w.g)).toEqual([]);
+    }
   });
 
-  it("a halt cancels a queued proactive run and interrupts a running one, and leaves one a mention took over", async () => {
+  it("a halt cancels a queued proactive run and interrupts a running one; a person's mention that waited behind one gets a reply of its own after it", async () => {
     const w = await world();
     const anna = await agentOf(w.owner, "anna", w.g);
     const bob = await agentOf(w.member, "bob_bot", w.g);
@@ -1193,14 +1213,20 @@ describe.each([false, true])("the rows it locks, and a proactive reply someone a
     expect([await ends(anna.id), await ends(bob.id), await ends(carl.id)]).toEqual([
       [{ status: "queued", error: null, interrupted: null, lane: "proactive" }],
       [{ status: "running", error: null, interrupted: null, lane: "proactive" }],
-      [{ status: "queued", error: null, interrupted: null, lane: "others" }],
+      [{ status: "queued", error: null, interrupted: null, lane: "proactive" }],
     ]);
+    expect((await waitingOf(carl.id, w.g)).map((c) => [c.lane, c.caller])).toEqual([["others", w.owner.id]]);
     expect((await api(app, w.third, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
     expect([await ends(anna.id), await ends(bob.id), await ends(carl.id)]).toEqual([
       [{ status: "cancelled", error: "halted", interrupted: null, lane: "proactive" }],
       [{ status: "running", error: null, interrupted: "halted", lane: "proactive" }],
-      [{ status: "queued", error: null, interrupted: null, lane: "others" }],
+      [
+        { status: "cancelled", error: "halted", interrupted: null, lane: "proactive" },
+        { status: "queued", error: null, interrupted: null, lane: "others" },
+      ],
     ]);
+    expect(await waitingOf(carl.id, w.g)).toEqual([]);
+
   });
 });
 
