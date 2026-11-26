@@ -246,9 +246,9 @@ whisper expires this many hours after it was made; whole hours 1–168, default 
 `SOCIAL` (the operator's switch for Agent social, JSON; Agent social, Configuration: `enabled` (boolean, default `false`: people
 other than an Agent's owner cannot reach it — no social conversation can be made, written in or run, and no entry point shows —;
 groups and everything that exists today behave as ever)),
-`OTHERS` (the numbers that bound others' use of an Agent, JSON, every field optional; Agent social, Configuration: `answersPerDay`
-(50) and `pointsPerDay` (300; Owner decision 2026-11-25) are an owner's daily caps for what others cause, one value each whatever the number of Agents;
-`toolCalls` (1), `overCapNotes` (3), `outputTokens` (800) bound one others' reply; `contextWeight` (4000) and `notesWeight` (1000)
+`OTHERS` (the numbers that bound others' use of an Agent, JSON, every field optional; Agent social, Configuration: `pointsPerDay`
+(300) is an owner's one number for what others cause on all their Agents a site day, unless the owner sets another (Agents and runs,
+The owner's number for others' use); `toolCalls` (1) the tool calls of one others' reply's one tool round; `contextWeight` (4000) and `notesWeight` (1000)
 what it is shown; `judgeBatch` (20), `judgeCallsPerDay` (5), `withheldCallsPerDay` (3, always less than `judgeCallsPerDay`),
 `judgeAttemptsPerVersion` (2), `judgeInputBytes` (9000), `judgeOutputTokens` (2200), `judgeOwnerExamples` (4), `judgePollMs` (5000),
 `judgeOwnersPerPoll` (10), `withheldInputBytes` (6000) and `withheldCardsMax` (3) the notes judge of ring 1b; `cardDays` (7),
@@ -364,11 +364,13 @@ until the new container is healthy and the old one has exited. The three ways it
      below would apply 074 to 076 again at once, and the old code would be back on the cleared numbers with nobody watching.
      (If the cause is plainly configuration and can be fixed in a few minutes, fixing it and letting the new container come
      up is the better way out; otherwise go on.)
-   - **Take the three migrations back, newest first.** The OLD image cannot do it: it has no `migrate:down` command and none
+   - **Take the three migrations back, newest first** (and 077 before them when it was applied with them: Migration 077,
+     below). The OLD image cannot do it: it has no `migrate:down` command and none
      of the three files. Run the command from the NEW image's code (or from this checkout at the deployed commit), as a
      one-off process that only needs to reach the site's database, never as the service:
 
      ```
+     node dist/cli.js migrate:down --name 077_call_refusals --i-understand-this-deletes-data --in-production
      node dist/cli.js migrate:down --name 076_others_reasoning --i-understand-this-deletes-data --in-production
      node dist/cli.js migrate:down --name 075_agent_social_access --i-understand-this-deletes-data --in-production
      node dist/cli.js migrate:down --name 074_others_step_l --i-understand-this-deletes-data --in-production
@@ -387,20 +389,31 @@ until the new container is healthy and the old one has exited. The three ways it
 
 **What 076 does to existing Agents, and what it costs.** The code deployed before ring 1a makes a co-member's call and a
 proactive reply at the Agent's OWN thinking level. 076 keeps that: every existing Agent's `othersReasoning` and
-`proactiveReasoning` are set to its own level (a new Agent has `none` for both). Such replies are now priced at that level
-against the owner's daily numbers and the proactive budget, and at a high level on a paid model that is a lot. With the
-design's paid prices (3 000 and 15 000 micro-points a token) and the default allowance of 12 000 tokens at 高: a plain reply
-holds 16 500 x 3 000 + (800 + 12 000) x 15 000 = 241.5 points (61.5 at 不思考). Under the default 300 points a day one such
-reply can be held at a time and the page's estimate reads 1 a day (11 at 不思考); under the default proactive budget of 70
-points NO proactive reply of such an Agent is admitted (241.5 > 70; at 不思考 one is). On a free-tier model (140 and 280) the
-same reply holds 5.9 points instead of 2.5. An owner sees both levels on the Agent's page and can lower them in its form; the
-controller should look at which existing Agents think at 高 or above on a paid model before the deploy.
+`proactiveReasoning` are set to its own level (a new Agent has `none` for both). Such replies count at that level in the
+owner's one number for others' use (300 points a day by default), and at a high level on a paid model one reply costs a lot:
+nothing is reserved against the number, so the reply admitted last may carry the day past it by up to what one reply costs.
+The owner's page shows under each of the two levels what one such reply can cost at most there (`GET /api/models`
+`othersCeiling`); an owner can lower them in the Agent's form. The controller should look at which existing Agents think at 高
+or above on a paid model before the deploy.
+
+**Migration 077 (the refusal lines; the limits redesign, Part 1).** It adds one table, `call_refusals`: which call of a
+person's message a limit refused, and why (the sender's line, `refused`, `WireMessage`). Nothing else of the schema changes.
+`migrate` applies it in the one transaction with whatever is pending beside it (074 to 076 too, when they are: then the four
+commit together or not at all), and it is taken back FIRST, before 076: `node dist/cli.js migrate:down --name
+077_call_refusals --i-understand-this-deletes-data --in-production`. Its Down drops the table: the recorded lines go (a sender
+no longer reads why an earlier call was refused) and nothing else; code from before 077 never reads it. The code that comes
+with 077 no longer reads what an Agent held of its own for others (`agents.others_budget_micro`, `others_answers`,
+`proactive_budget_micro`) nor an owner's answers number (`accounts.others_answers`): the columns stay, unread and unwritten,
+and `accounts.others_points_micro` is the owner's one number. So the code from before 077, put back on the schema, finds those
+columns as it left them (an Agent made since has their defaults). A tab left open across the deploy still runs the old client: its Agent form sends `othersLimit` or
+`proactiveBudget` and its use page `answers`, which the new service refuses (400 `invalid_request`) until the page is reloaded;
+the rest of the old client works.
 
 **What 076 does to replies queued or under way at the deploy.** 076 also adds `agent_runs.owner_call_seqs` (which of a reply's
 calls were accepted as its owner's own; "Whose reply a reply is"). A run from before the column has NO owner call, except one
 that is its owner's own already (lane `own`, its caller the owner): its calls are taken as the owner's. Nothing is guessed from
 who wrote a message. So a reply for others that had the owner's call noted on it at the deploy is followed up as a reply for
-others (bounded and counted), never the other way; a reply already admitted keeps its terms.
+others (at the level for others, counted in the owner's number), never the other way; a reply already admitted keeps its terms.
 
 **Rehearse before the deploy**, against the site's database, from where the take-back would be run:
 `node dist/cli.js migrate:down --name 076_others_reasoning` with NO confirmation flag must print what 076's Down removes and
@@ -426,10 +439,9 @@ and puts a proactive 70 back to 20). On the first deploy 075's tables are empty 
 lost; once Agent social has been on, 075's Down is a loss of people's own decisions (people who were stopped can reach those
 Agents again) and must not be used as a way of "turning the feature off": the switch does that.
 
-After a good deploy: every owner has one 300-point and one 50-answer cap a day for all their Agents together (unless the
-site's `OTHERS` says otherwise: a pinned `pointsPerDay` wins over the default), and owners who had an Agent before it see the
-one-time notice. A browser tab left open across the deploy still runs the old client, whose create form sends an own limit of
-20 points for a new Agent: such an Agent has an own number of 20 (shown and editable on its page). `SOCIAL` stays
+After a good deploy: every owner has one number of 300 points a day for what others cause on all their Agents together
+(unless they set another, or the site's `OTHERS` says otherwise: a pinned `pointsPerDay` wins over the default), and owners who
+had an Agent before 074 see the one-time notice. `SOCIAL` stays
 `{"enabled": false}` until it is turned on. Turning it on is a restart: stop every process that runs with the switch off
 BEFORE starting one with it on (a process still running with it off ends every queued reply of a social conversation at each
 claim, so a visitor's first message during an overlap would go unanswered). From then the persona aid reads each existing
@@ -634,8 +646,8 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `POST /api/conversations` | 10 | principal |
 | `PATCH /api/conversations/:id`, `POST /api/conversations/:id/members`, `DELETE /api/conversations/:id/members/:principalId`, `PUT`, `DELETE /api/conversations/:id/avatar` | 20 together | principal |
 | `POST /api/conversations/:id/messages` | 120 | principal |
-| Replies started (each message that queues a reply of one of your Agents — yours, or anyone's or an Agent's in a group the Agent is in —, each follow-up in a group: the reply that answers what was noted while one of your Agents was replying there, and `POST …/runs/retry`) | Counted for you in two lanes, each from the stored runs under your account's lock (so exactly, also for messages to two of your Agents at the same moment) and not scaled by `RATE_LIMIT_SCALE`: 20 for the replies you called for yourself — your own lane: your messages to your Agents, in their conversations and in groups, your Agents' calls on each other that you are behind, retries, follow-ups that answer you (`AGENT_RUNS_PER_MINUTE`) — and 20 together for every reply someone else called for on your Agents (`AGENT_OTHERS_RUNS_PER_MINUTE`), so that others' mentions cannot use up your own minute. A run is `own` when you called for it — yourself, or through an Agent's message you are behind — else `others` (a third lane, `proactive`, is for replies nobody called for — an Agent answering in a group unasked — and counts with `others` toward `AGENT_OTHERS_RUNS_PER_MINUTE`), and keeps its lane. An Agent's message is the call of whoever called for the reply that posted it, unless that reply was its owner's own: then its owner's (Agents and runs, In a group); so a member's call that one of your Agents relays to another of yours is the member's, not yours. Neither lane nor caller is ever on the wire. Over the count of its lane a message (or a follow-up in a group) starts no reply: the message is still sent, and a `failed` run with error `rate_limited` (retryable) is recorded instead, so you see it (`run` push, `GET …/run`, in a group `GET …/runs`) and can retry — it started nothing and is not counted; in a group one such run per Agent stands for every mention and follow-up over the limit while it is the Agent's latest there and you have not dismissed it; a retry over it is 429. A follow-up in your Agent's own conversation (it answers what you wrote while it replied) is queued whatever the count, and counts toward it; one in a group counts in the lane of what it answers (Agents and runs, In a group). A reply that ended `model_gone` called nothing and is not counted either; and someone else's call on an Agent of yours whose model is not there to call (`modelUsable` false) starts no reply at all: a `failed` run with error `model_gone` is recorded at once (the group shows its one 暂时无法回复 line), not counted toward your minute — so such calls cannot crowd out calls on your other Agents — and counted toward the caller's own (below) | owner |
-| Calls on other people's Agents (a mention in a group that would start a reply of an Agent whose owner is someone else, made by a person or by an Agent's message they are behind: their own Agent's, or one relaying their call) | 5 together per person (`AGENT_CALLER_RUNS_PER_MINUTE`), counted from the stored runs under the caller's account lock, so exactly, and not scaled by `RATE_LIMIT_SCALE`; calls on the caller's own Agents never count. Over it the mention starts nothing and nothing of it is recorded — no run, no `rate_limited` run, no notice to the group or to the Agent's owner (the message is sent as any), only one log line (Metrics in the log) and, when a person's own message made the call, a word to that person alone in the answer to their send (`notCalled`, `POST /api/conversations/:id/messages`). A mention folded into a reply already under way starts nothing, so it is neither counted nor refused. It is checked after the Agent's others' daily budget (Agents in a group) and before the owner's replies a minute | caller |
+| Replies started (each message that queues a reply of one of your Agents — yours, or anyone's or an Agent's in a group the Agent is in —, each follow-up in a group: the reply that answers what was noted while one of your Agents was replying there, and `POST …/runs/retry`) | Counted for you in two lanes, each from the stored runs under your account's lock (so exactly, also for messages to two of your Agents at the same moment) and not scaled by `RATE_LIMIT_SCALE`: 20 for the replies you called for yourself — your own lane: your messages to your Agents, in their conversations and in groups, your Agents' calls on each other that you are behind, retries, follow-ups that answer you (`AGENT_RUNS_PER_MINUTE`) — and 20 together for every reply someone else called for on your Agents (`AGENT_OTHERS_RUNS_PER_MINUTE`), so that others' mentions cannot use up your own minute. A run is `own` when you called for it — yourself, or through an Agent's message you are behind — else `others` (a third lane, `proactive`, is for replies nobody called for — an Agent answering in a group unasked — and counts with `others` toward `AGENT_OTHERS_RUNS_PER_MINUTE`), and keeps its lane. An Agent's message is the call of whoever called for the reply that posted it, unless that reply was its owner's own: then its owner's (Agents and runs, In a group); so a member's call that one of your Agents relays to another of yours is the member's, not yours. Neither lane nor caller is ever on the wire. Over the count of its lane a message (or a follow-up in a group) starts no reply: the message is still sent, and a `failed` run with error `rate_limited` (retryable) is recorded instead, so you see it (`run` push, `GET …/run`, in a group `GET …/runs`) and can retry — it started nothing and is not counted; in a group one such run per Agent stands for every mention and follow-up over the limit while it is the Agent's latest there and you have not dismissed it; a retry over it is 429. When someone else's call was refused so, its sender also reads a line on their own copy of the message (`refused`, reason `too_often`: Messages, `WireMessage`). A follow-up in your Agent's own conversation (it answers what you wrote while it replied) is queued whatever the count, and counts toward it; one in a group counts in the lane of what it answers (Agents and runs, In a group). A reply that ended `model_gone` called nothing and is not counted either; and someone else's call on an Agent of yours whose model is not there to call (`modelUsable` false) starts no reply at all: a `failed` run with error `model_gone` is recorded at once (the group shows its one 暂时无法回复 line), not counted toward your minute — so such calls cannot crowd out calls on your other Agents — and counted toward the caller's own (below) | owner |
+| Calls on other people's Agents (a mention in a group that would start a reply of an Agent whose owner is someone else, made by a person or by an Agent's message they are behind: their own Agent's, or one relaying their call) | 5 together per person (`AGENT_CALLER_RUNS_PER_MINUTE`), counted from the stored runs under the caller's account lock, so exactly, and not scaled by `RATE_LIMIT_SCALE`; calls on the caller's own Agents never count. Over it the mention starts nothing — no run, no `rate_limited` run, no notice to the group or to the Agent's owner (the message is sent as any), only one log line (Metrics in the log) and, when a person's own message made the call, a line on that person's own copy of it (`refused`, reason `too_often`: Messages, `WireMessage`). A mention folded into a reply already under way starts nothing, so it is neither counted nor refused. It is checked after the owner's number for others' use (Agents and runs, The owner's number for others' use) and before the owner's replies a minute | caller |
 | `GET /api/agents`, `GET /api/agents/:id`, `GET /api/providers`, `GET /api/conversations/:id/run`, `GET /api/conversations/:id/runs` | 120 together | principal |
 | `POST /api/conversations/:id/runs/:runId/stop`, `…/runs/retry`, `…/runs/dismiss` | 60 together | principal |
 | `POST /api/conversations/:id/agents/halt` | 20 (a budget of its own) | principal |
@@ -686,8 +698,8 @@ for an operator to tune the numbers above (and the site's models) from (nothing 
   "web_site_fuse", "share": 80 }` once a site day, when the day's money for searches first reaches 80 % of
   `TOOLS.web.siteUsdPerDay`; `{ "metric": "web_cost_ignored" }` once for each cost report of the engine's outside a tenth
   to ten times the estimate (the estimate then stands); and once for each search a bound refused before the engine, by
-  the bound — `web_refused_reply_cap` (the reply's `TOOLS.maxPoints`), `web_refused_lane_budget` (the others' daily, the
-  proactive daily or the chain budget), `web_refused_no_points` (the owner's free allowance and balance),
+  the bound — `web_refused_reply_cap` (the reply's `TOOLS.maxPoints`), `web_refused_lane_budget` (the owner's number for
+  others' use, or the chain budget), `web_refused_no_points` (the owner's free allowance and balance),
   `web_site_fuse_refused` (the site's fuse), `web_query_refused` (the guard) — so the log shows which bound bites.
 - `{ "metric": "replay_lowered", "protocol", "model"? }` (`model`: a site model's `id`; an owner's provider is never
   named), once for each request carrying an earlier reply's tool use in the
@@ -699,9 +711,8 @@ Proactive replies write four more (`proactive_skipped`, `judge_failed`, `judge_p
 replies, Log. Pushes write theirs (`push`, `push_off`, `push_config_refused`, `push_devices_expired`, `push_targets_failed`,
 `push_failed`): Push notifications, Counters in the log.
 
-Agent social writes eight in ring 1a (Agent social, Counters; each a count and an id or a reason, never a text):
-`others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback`, `others_round_raise` (what others'
-use of an Agent was refused, held back, cut short, finished without tools, or could have cost past its hold),
+Agent social writes four in ring 1a (Agent social, Counters; each a count and an id or a reason, never a text):
+`others_limit_refused` (a reply for others the owner's number refused as it was admitted),
 `social_post_refused` (a social reply the post-time check stopped), `persona_aid` (a persona read by the persona aid) and
 `agent_reported` (a report of an Agent). Ring 1b adds `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`
 and `withheld_checks`.
@@ -895,13 +906,13 @@ conversation. Like a person who left, an Agent that left a group stays named by 
 still read them (a member who has since left too) gets its entry in those reads' `principals` — name, handle, intro,
 field, owner, the current ones. Only its avatar stops: once either membership ends, the avatar route answers as for an
 id that does not exist (old messages then show the generated initial). Nobody but the owner ever receives its persona, persona version, model, `modelUsable`, reasoning
-level, reply mode, `groupMentions`, `chainBudget`, `othersLimit`, `othersUsedToday`, `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation`, `appellations`, provider, pause or persona proposals, whether a reply of it was one nobody called for (Proactive replies), or the reasoning of its replies there (A reply
+level, reply mode, `groupMentions`, `chainBudget`, `proactive`, `proactiveLevel`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation`, `appellations`, provider, pause or persona proposals, whether a reply of it was one nobody called for (Proactive replies), or the reasoning of its replies there (A reply
 there), or which model and reasoning level a reply of it used and what it cost (`via`, Wire shapes), in any response,
 push or error. Fellow members see a changed name, intro or field the next time they load
 principals, as for people; a changed avatar, or a handle its owner's rename changed, is pushed to them (`principal`).
 
 **Agent** (owner only): `{"id", "handle", "name", "avatarVersion", "intro", "field", "persona", "personaVersion", "replyMode":
-"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "othersLimit": {"answers": number | null, "points": string | null}, "othersUsedToday": {"answers": number, "points": string}, "proactive", "proactiveLevel": "less" | "normal" | "more", "proactiveBudget", "proactiveSpentToday", "operatorDisabled": boolean, "othersReasoning", "proactiveReasoning", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
+"always" | "mention", "groupMentions": "members" | "owner", "chainBudget", "proactive", "proactiveLevel": "less" | "normal" | "more", "operatorDisabled": boolean, "othersReasoning", "proactiveReasoning", "memory", "memoryAsk", "sharedNotes", "whisperElsewhere", "webSearch"?, "ownerAppellation": string | null, "appellations": [{"principalId", "kind": "human" | "agent", "handle", "name", "appellation"}], "reasoning": "none" | "low" | "medium" | "high" |
 "xhigh" | "max", "model": {"source": "site", "id"} | {"source": "provider", "providerId", "model"} | null, "modelUsable", "paused",
 "deleted", "conversationId", "createdAt"}`. `conversationId` is the Agent's dedicated conversation. `modelUsable` is
 false when its model is not there to call any more — taken off its provider's list, or a site model the site no longer
@@ -911,15 +922,9 @@ nobody asked for meanwhile (Proactive replies). `groupMentions` says
 who may call the Agent with `@` in a group it is in: `members` (any member, and other Agents there) or `owner` (you
 only; never another Agent). `chainBudget` is the most you pay, in points (a decimal string as money is on the wire, `"1"`
 to `"100000"`, default `"50"`), for its replies in a group that other Agents' messages called for between two messages
-from people (Agents in a group). `othersLimit` is the Agent's own numbers for what other people may spend through
-it in a site day, `answers` (1 to 1000) and `points` (a string as `chainBudget`, `"1"` to `"100000"`), each `null` for
-none of its own: a new Agent has none, so your own two numbers apply to it (`GET /api/me/others-use`, The others' daily
-numbers). They are sub-limits inside yours, never added to them: all your Agents together stay within your two numbers (300 points and
-50 answers a day unless you set others), whatever their number. `othersUsedToday` is what others' use of this Agent has taken since the site
-day began, against its own numbers: `answers` (replies admitted, counting both calls and replies nobody asked for, as its own
-answers number does) and `points` (a string: settled charges plus what running replies hold, calls only: what its own points
-number holds; a reply nobody asked for has `proactiveBudget`). `othersReasoning` and `proactiveReasoning` (the owner's view only; each one of `reasoning`'s levels; `none` for a new Agent, and for an Agent that existed before migration 076 its own level, which is what such replies ran at before; Owner decision 2026-11-26) are the thinking levels of a reply somebody other than the owner called for (a co-member's @ in a group, a visitor's message) and of a reply nobody asked for. A save accepts exactly the levels the picker offers on the Agent's model — `none` and the levels it can run at (`sendableLevels`: on Chat Completions and Gemini a model that lists `max` offers `xhigh`, and `max` itself is no choice), for the Agent's own level and these two alike, on create and on edit (400 `invalid_request` otherwise; with the model changed in the same save, the new model's) — and a level stored before that is sent back unchanged for an unchanged model stays as it is. A reply runs at the setting's effective level on the Agent's model (the level itself when the model lists it, else the nearest listed one below, `none` when there is none: `callLevel`; and where the model's protocol has no such level, the one it is sent, `sentLevel`: Chat Completions and Gemini send `xhigh` for `max`, and then `xhigh` is what the hold is sized for and what the owner's line under the reply says), and the others' numbers hold for the level actually run. `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactiveSpentToday` (the owner's view only) is what its proactive
-replies cost today (a string: settled plus held, the same definition of "used"), against `proactiveBudget`. `proactive` says
+from people (Agents in a group). An Agent has no number of its own for what other people cause through it: your one
+number holds for all your Agents together (300 points a day unless you set another; `GET /api/me/others-use`, Agents and runs, The
+owner's number for others' use). `othersReasoning` and `proactiveReasoning` (the owner's view only; each one of `reasoning`'s levels; `none` for a new Agent, and for an Agent that existed before migration 076 its own level, which is what such replies ran at before; Owner decision 2026-11-26) are the thinking levels of a reply somebody other than the owner called for (a co-member's @ in a group, a visitor's message) and of a reply nobody asked for. A save accepts exactly the levels the picker offers on the Agent's model — `none` and the levels it can run at (`sendableLevels`: on Chat Completions and Gemini a model that lists `max` offers `xhigh`, and `max` itself is no choice), for the Agent's own level and these two alike, on create and on edit (400 `invalid_request` otherwise; with the model changed in the same save, the new model's) — and a level stored before that is sent back unchanged for an unchanged model stays as it is. A reply runs at the setting's effective level on the Agent's model (the level itself when the model lists it, else the nearest listed one below, `none` when there is none: `callLevel`; and where the model's protocol has no such level, the one it is sent, `sentLevel`: Chat Completions and Gemini send `xhigh` for `max`, and then `xhigh` is what the hold is sized for and what the owner's line under the reply says), and the owner's page shows what one such reply can cost at each level (`GET /api/models` `othersCeiling`). `operatorDisabled` (the owner's view only) is true while the site's operator has turned the Agent off (`agent:disable`): it then answers nobody but its owner, in groups too, until it is turned on again. `proactive` says
 whether it may reply in a group to a message that called no Agent, when the judgement model picks it (Proactive replies;
 default false); `proactiveLevel` how readily (`less`, `normal` — the default —, `more`: the threshold it starts from);
 `memory` (default true) says whether it keeps notes (An Agent's memory); `memoryAsk` (default false) whether a change of
@@ -927,9 +932,8 @@ its notes waits for your yes; `sharedNotes` (default true) whether it uses the n
 share; `whisperElsewhere` (群里没找到时悄悄告诉我, default true) whether, when a search of its reply in a group finds
 nothing there, it looks in its other conversations and whispers what it finds to you (Whispers: `found_elsewhere`);
 `webSearch` (联网搜索, default true) whether its replies may search the web — there only while the site offers web search
-(`GET /api/models` `webSearchAvailable`; Agents and runs, Web search), absent otherwise. `proactiveBudget` the most you pay, in points (a string as `chainBudget`, `"1"` to `"100000"`, default `"70"`; never
-`null`: a reply nobody asked for always has a limit), in a site day, for those replies: a hard limit that counts what running
-replies hold (migration 074 raised every one still at the old default of `"20"` to `"70"`, and cleared every others' number still at the old `"20"` to none). `ownerAppellation`
+(`GET /api/models` `webSearchAvailable`; Agents and runs, Web search), absent otherwise. What replies nobody asked for cost counts in
+your one number for others' use, with the calls of other people. `ownerAppellation`
 is what the Agent calls you (1–20 characters, `null`: it uses your display name); `appellations` is what it calls
 others, the people and Agents you named (`PUT /api/agents/:id/appellations/:principalId`), ordered by handle, each
 with the name and handle they have now (Appellations, below). Like everything here, they are shown to nobody but you.
@@ -954,9 +958,8 @@ push or log carries them, and they reach nobody but the model of that one Agent.
 handle is `<your handle>.<namePart>`, Handles), `name` (1–20 characters,
 the display-name rule), and optionally `intro` (≤ 40), `field` (≤ 20), `persona` (≤ 20 000 characters), `replyMode`
 (default `always`), `groupMentions` (`members` or `owner`, default `members`), `chainBudget` (a string of points from 1
-to 100 000 with at most 6 decimals, no sign or exponent: `"50"`, `"12.5"`; default `"50"`), `othersBudget` (the same
-string, or `null` for none) as the alias of `othersLimit.points` for one release, `othersLimit` (`{"answers": 1 to 1000 | null, "points": that string | null}`, or `null` for neither; default none: the owner's numbers apply; naming both it and `othersBudget` is 400 `invalid_request`), `othersReasoning` and `proactiveReasoning` (a level each, default `none`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
-`more`, default `normal`), `proactiveBudget` (the string of `chainBudget`, never `null`; default `"70"`), `memory` (default `true`), `memoryAsk`
+to 100 000 with at most 6 decimals, no sign or exponent: `"50"`, `"12.5"`; default `"50"`), `othersReasoning` and `proactiveReasoning` (a level each, default `none`), `proactive` (default `false`), `proactiveLevel` (`less`, `normal` or
+`more`, default `normal`), `memory` (default `true`), `memoryAsk`
 (default `false`), `sharedNotes` (default `true`), `whisperElsewhere` (default `true`), `webSearch` (default `true`; booleans, never `null`), `ownerAppellation`
 (an appellation, below; default `null`), `reasoning` (default `none`), `model` (default `null`). → 201 Agent.
 
@@ -1031,7 +1034,7 @@ for `GET /api/agents`.
 #### `PATCH /api/agents/:id`
 
 *Session: required.* Body (no other key: `handle` and the owner are 400): any of `name`, `intro`, `field`,
-`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersLimit` (`null` clears both of its numbers; `othersBudget`, for one release, sets `othersLimit.points` alone and leaves the answers; naming both is 400), `othersReasoning`, `proactiveReasoning`, `proactive`, `proactiveLevel`, `proactiveBudget`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
+`persona`, `replyMode`, `groupMentions`, `chainBudget`, `othersReasoning`, `proactiveReasoning`, `proactive`, `proactiveLevel`, `memory`, `memoryAsk`, `sharedNotes`, `whisperElsewhere`, `webSearch`, `ownerAppellation` (`null` clears it), `reasoning`, `model` (`null` clears it), under the rules of creation; the
 model and the reasoning level are checked together when either is sent. A `persona` that differs from the stored one
 raises `personaVersion` by one. `catchUp` (boolean, default `false`) goes only with `"memory": true` for an Agent whose memory is
 off: whether the next review may read what was said while it was off, and nothing earlier (An Agent's memory, *Turning it back on*); a `memory` that
@@ -1241,8 +1244,9 @@ has passed), for
 took it out, or it left with you when you left or were removed), `halted` (in a group: another Agent's message had called for it,
 or nobody had — it was to speak unasked — and a member halted Agents, Agents in a group; show it as “已被群成员叫停”), or none (everything it was to
 answer is before a new topic you started; in a group, none of the messages that called for it is one the Agent can see
-and show (A reply there, Whose joining it reaches back to); or — a reply someone else called for in a group — the Agent's others' daily
-budget was spent by the time it was to start: nothing was called or charged, and the group was told, Agents in a group;
+and show (A reply there, Whose joining it reaches back to); or — a reply for others — others' use of your Agents had reached your number by the time it was to start: nothing was
+called or charged, and those whose calls it answered read why on their messages, Agents and runs, The owner's number for
+others' use;
 or everyone whose call it answered has had a block with you, either way, since the call and before it began — a call from
 such a person is dropped and the others are still answered; with none left nothing was called or charged).
 `retryable`: it failed and trying again as it is may work (false
@@ -1651,48 +1655,38 @@ under three brakes, each about Agents calling Agents — a person's mention is n
   charged only once it has ended): so a chain passes its budget by at most the reply that was under way. A reply on a
   provider model costs no points, so for such an Agent only the chain limit and the halt apply.
 
-**The others' daily numbers** (per owner; an Agent's own `othersLimit` is a sub-limit inside them) are of another kind: they are
-about whose points are spent, and they hold against people's mentions too. A call on an Agent by anyone but its owner — a member, or an
-Agent's message a member is behind (the member's own Agent's, or one of the owner's Agents relaying the member's call), whose call is
-that member's — spends the owner's points. The owner has two numbers a site day, shared by all their Agents and by both lanes others
-call for: answers (an answer is an admitted reply chain; 50 unless the owner sets another, `PUT /api/me/others-limits`) and points (300).
-One function decides them, under the owner's account lock, at admission, at a search's pre-hold and at a round: what has been settled
-today plus what every running reply of those lanes holds, the asking reply's own hold included, plus what is asked. So the sum never
-passes a number, whatever order replies arrive in, and an owner with three Agents has 300 points for all three together, not 900. An
-Agent's own `othersLimit` (null: none) and, for a reply nobody asked for, its `proactiveBudget` bind it further.
+**The owner's number for others' use** (one per owner, for all their Agents; the limits redesign, Part 1) is of another kind: it is
+about whose points are spent, and it holds against people's mentions too. A call on an Agent by anyone but its owner — a member, a
+visitor, or an Agent's message a member is behind (the member's own Agent's, or one of the owner's Agents relaying the member's call),
+whose call is that member's — and a reply nobody asked for (lane `proactive`) are others' use of the owner's Agents. It is measured ONE
+way, others' use today (`src/metering/others.ts` `othersUseToday`): the wallet charges settled today (free points and balance, web
+searches included) of replies in those two lanes, plus a nominal 6 points (`OWN_KEY_NOMINAL_MICRO`) once per reply chain on the
+owner's own provider key admitted today (a reply and its automatic retries are one chain; a failed attempt counts too) — counted,
+never charged, so that an Agent on the owner's own key is not unlimited. What running replies hold does not count. The owner has one
+number N: 300 points a site day (midnight in `SITE_TIMEZONE`; `OTHERS.pointsPerDay`) unless they set another (`PUT
+/api/me/others-limits`). A reply for others is admitted while others' use today is below N (`othersAdmissible`, under the owner's
+account lock); nothing is reserved against N, so the replies admitted last may carry the day past it by what they cost (each is held on
+the wallet for what it may cost, as the owner's own is). Triggers ask the same measure before queueing a run (`othersReached`, the early
+check, without the lock); admission decides for good; and a web search of a reply others caused is refused (`lane_budget`) once the
+measure has reached N — the reply goes on without it. Raising N above today's use answers calls again at once; lowering it to today's
+use or below refuses at once. The owner's own calls, in groups and in the Agent's own conversation, never count and are never refused.
 
-A reply offered tools is admitted with them if its hold with tools fits what is left, else as a plain reply if its one-call hold fits
-(counter `others_plain_fallback`); else it waits while other replies of the owner hold points in that number (`HeldBack`, counter
-`others_held_back`), or, with nothing held, ends `cancelled` with no error — no model call, nothing held or charged — and the group is
-told by one `agent_daily_budget_reached` notice, once per site day (midnight in `SITE_TIMEZONE`) for each conversation and Agent
-(counter `others_limit_refused`); the owner is pushed their Agent again. A reply that is refused an answer is never retried plain. The
-owner's own calls, in groups and in the Agent's own conversation, never count and are never refused. Triggers read the same rule
-before queueing a run (the early check, advisory), and a reply a later search or round cannot afford goes on without the search.
-Raising a number above today's use answers calls again at once; lowering it below refuses at once. A reply on a provider model costs no
-points, so for such an Agent only the answers number holds. Others' replies are bounded: one real tool call, three further calls answered
-with a note, 800 output tokens of their own, one tool round (`OTHERS.*`); the hold covers every request a reply can make, so spent never
-passes held. Their thinking level is the owner's setting per Agent (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`;
-`none` for a new Agent, Owner decision 2026-11-26): the reply runs at the setting's effective level on the model, with that level's
-thinking allowance on top of the 800 (`othersOutputLimit`, the one definition; the upstream is given the one sum as its limit, so
-at a level the ANSWER is held to the 800 when it is posted: cut there and marked cut, as a reply over its length is), and everything money follows the level actually run:
-the hold at admission (`boundedForOthers`, then `othersFits` under the account lock), the floor and the ceiling the use page's
-`reached` and `tight` are computed from, the proactive lane's early check, and the per-day estimate (`perDay`, which also counts
-half of the allowance as thought in each plain reply). A higher level makes each reply cost more: the estimate drops and `tight` or
-`reached` may show sooner. `reached` (the page's 用完了, the card's tag, and the group's line 「今天只回复它的主人，明天恢复。」) is said
-only when EVERY reply for others would be refused: a call at its level and, while the Agent makes them, a reply nobody asked for
-at its own. A call that cannot be afforded while a shorter or cheaper reply still fits is `tight`, ends quietly, and tells the
-group nothing. The same decision is asked when a call is refused AS IT IS MADE (`othersBudgetSpent`): the call is refused, and the
-group is told only when `reached` holds — not while a reply nobody asked for still fits, and not while only another reply's hold
-is in the way (that ends with the reply, not tomorrow). The others' output limit is ONE budget for everything of a reply the
-conversation reads: the text a reply writes before a tool call is posted at once as its acknowledgement, cut to at most half of
-the limit, and the answer after it has what is left; each is cut and marked cut as a reply over its length is. The final post is
-held to the limit less the acknowledgement that stands for the reply, read from what is STORED when it is posted, whenever its
-text may hold more than one call's: at a level, once its text before a tool call was handed over as an acknowledgement (posted,
-or not — a social reply keeps its preface in its one message, and one whose write failed stays with the reply), or when an
-acknowledgement stands for it (an earlier attempt's). So a text that holds two rounds is cut and marked like any over-long
-answer, at `none` too; one call at `none` with nothing before it is bounded by its upstream's limit and not cut here.
+A call the number refuses reaches nothing — not even a reply under way — and its sender alone is told, on their own copy of the
+message (`refused`, reason `others_limit`: Messages, `WireMessage`), whether it was refused at the trigger or as its reply was admitted
+(the reply ends `cancelled` with no error — no model call, nothing held or charged — and the message is pushed to its sender again).
+The owner is told once a site day, in the own conversation of the Agent a call was refused for, whichever of their Agents it was
+(`others_limit_reached`, System notices; a reply refused as it was admitted is counted, `others_limit_refused`); the conversation
+the call was made in is told nothing. A reply
+nobody asked for that the number refuses tells nobody.
 
-**Whose reply a reply is** (its lane and caller, and so its level, its bounds and whose numbers it counts against) is WRITTEN,
+Replies for others are made as the owner's own are: at the model's own output limit, with the thinking allowance of their level on
+top — the owner's setting per Agent (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`; `none` for a new Agent, Owner
+decision 2026-11-26), run at the setting's effective level on the model — and held on the wallet as the owner's own are (a reserve for
+the last call only where the reply is charged to free points and balance together, `AB`); nothing of them is cut or discarded for
+what it costs. Their one bound of their own is their tools: one tool round of at most `OTHERS.toolCalls` (1) calls. The owner's page
+shows under each level what one such reply can cost at most there (`GET /api/models` `othersCeiling`): shown, never reserved.
+
+**Whose reply a reply is** (its lane and caller, and so its level, its tools and whether it counts in the owner's number for others' use) is WRITTEN,
 never read back from who wrote a message (`agent_runs.owner_call_seqs`, migration 076; `src/agents/runs.ts` `laneOf`, the one
 decision every writer of a run's lane asks, with every call the reply has: a queue, a call folded in, calls taken out, the calls
 noted on a claimed reply as it takes them on, a follow-up, an automatic retry):
@@ -1718,7 +1712,7 @@ reply goes back to the queue). A reply that is no longer the owner's own as it b
 time before anything is prepared (`AGENT_MAX_CONCURRENT_OTHERS_RUNS`; over it, back to the queue). ONCE ADMITTED the lane,
 caller and money terms are frozen: a later ending of access never rewrites them and never requeues the reply (its calls would be
 made and charged twice) — it is ended as a whole when no call it answers is left, else it goes on and its post leaves out
-whoever is refused by then. The site day the numbers are read
+whoever is refused by then. The site day the owner's number is read
 for is the day it is under the owner's account lock when the hold is placed, not the day the reply began to be prepared.
 
 The owner's other limits hold throughout, for every reply in a group — called by a person's mention, an Agent's, or a
@@ -1729,9 +1723,10 @@ in the group, Rate limits), running at once (`AGENT_MAX_CONCURRENT_RUNS`, of whi
 their own), and the free allowance or balance. And a person who calls other people's Agents more than
 `AGENT_CALLER_RUNS_PER_MINUTE` times a minute is not answered for the extra ones (Rate limits). So members who keep
 mentioning an Agent while it replies cannot keep it replying past its owner's limits. For a mention by someone other
-than the Agent's owner the checks run in this order, and the first to refuse decides: the others' daily budget (the
-group is told), then — unless the mention folds into a reply under way, which starts nothing — the caller's limit
-(only the sender is told, in the answer to their send), then the lane's replies a minute (a `rate_limited` run, which only the owner sees).
+than the Agent's owner the checks run in this order, and the first to refuse decides: the owner's number for others' use (the
+sender is told on their message, `others_limit`, and the owner once a day), then — unless the mention folds into a reply under way,
+which starts nothing — the caller's limit (the sender is told on their message, `too_often`), then the lane's replies a minute (a
+`rate_limited` run, which only the owner sees, and the sender's line `too_often`).
 
 **A reply there** (Agents and runs: the worker, What the model is shown):
 
@@ -2448,7 +2443,7 @@ Stopping a call (its abort signal) ends it at once and closes the upstream conne
 
 *Session: required.* What a client's model picker reads: the models the site offers and the defaults a provider model
 gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision", "pdf", "reasoning": [levels],
-"contextTokens", "tools": boolean, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?}], "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true,
+"contextTokens", "tools": boolean, "othersCeiling": {"<level>": string}, "audioIn"?, "videoIn"?, "imageOut"?, "videoOut"?, "audioOut"?}], "othersOwnKeyPoints": string, "providerDefaults": {"contextTokens", "maxOutputTokens"}, "proactiveAvailable": boolean, "webSearchAvailable"?: true,
 "webSearchPoints"?: string, "memoryCatchUp": {"days", "lines"}}`.
 
 - `siteModels`: `SITE_MODELS` in configuration order (`[]` when none is configured). `id` is what an Agent's
@@ -2459,7 +2454,17 @@ gets. → 200 `{"siteModels": [{"id", "label", "tier": "free" | "paid", "vision"
   name the model is called by when the catalogue knows that name, else by its `id`, in both cases only when that is a
   catalogue model itself (never a name that merely starts with one), else absent (`vision`, `pdf`, `reasoning` and
   `tools` are always the configuration's; a site model has no `reportedTools`). Nothing else of a site model is shown: never where it is called (`baseUrl`, `protocol`), the
-  upstream model name, its key or the name of the variable holding it, or its prices.
+  upstream model name, its key or the name of the variable holding it, or its prices (but what `othersCeiling` is derived from them).
+- `othersCeiling`: for each level the model can run at (`none` and its `reasoning`), about the most one reply to somebody other
+  than the owner can cost on it there, in points (rounded as `webSearchPoints`): each of its model calls at the most one call can
+  cost — the whole context beside the level's output limit in, that limit out, at the model's prices — two of them when the model
+  may be offered tools (the reply's one tool round and its last call), else one; and, while the site offers web search, as many
+  searches as that tool round may make (`OTHERS.toolCalls`, at most `TOOLS.web.perReply`) at their price (`metering/others.ts`
+  `othersReplyCeilingMicro`). What the Agent form says under the two levels for others (这一档单条回复最多约 X 点). Shown, never
+  reserved: no reply is held to it (Agents and runs, The owner's number for others' use). It does say something of the model's
+  prices; nothing else of them is shown.
+- `othersOwnKeyPoints`: what one reply chain on the owner's own provider key counts in their number for others' use (`"6"`),
+  counted, never charged: what the form says for such a model.
 - `proactiveAvailable`: whether the judgement model is configured (`JUDGE`); turning an Agent's `proactive` on is refused (409 `proactive_unavailable`) when it is not.
 - `webSearchAvailable`: present (`true`) only while the site offers web search (`TOOLS.web.enabled` and its key there, and `TOOLS.enabled`; Agents and runs, Web search): the Agent form then shows 联网搜索, and an Agent's view carries `webSearch`. Absent otherwise: the answer is exactly as before.
 - `webSearchPoints`: with it, about what one search costs in points — `TOOLS.web.pointsMicroPerSearch` rounded half up to one decimal at most, no trailing zero, never `"0"` for a price above 0 (770 350 micro-points: `"0.8"`; Exa's default: `"13"`) — what the form says under 联网搜索 (每次约 n 点).
@@ -2981,14 +2986,12 @@ owner also removes their Agent.
   in an address, at most 20, each `id` a current member of the conversation (a person, or an Agent that is not
   deleted); anything else 400 `bad_mentions` and nothing is stored. What is typed outside them is
   read once now (Mentions); the message is stored, and answered, with `mentions` as decided.
-- 201 `{"message": WireMessage, "duplicate": false}`, and, only when the message called someone else's Agent in a group
-  and your own calls a minute on other people's Agents refused it (`AGENT_CALLER_RUNS_PER_MINUTE`, Rate limits),
-  `"notCalled": [{"agentId", "reason": "caller_rate_limited"}]`, one entry per Agent it did not reach, in id order
-  (absent otherwise, never empty). It is yours alone, in this answer: it is not stored with the message, nor in what
-  anyone receives of it (push, history, sync), nor said of a call relayed through an Agent's message (those are only
-  logged); a call another limit refused (the Agent's others' daily budget: its group is told) is not in it.
+- 201 `{"message": WireMessage, "duplicate": false}`. When a LIMIT refused a call of the message on an Agent (the owner's number
+  for others' use; your calls a minute on other people's Agents; the owner's others' replies a minute), the message as you read it
+  says so (`refused`, `WireMessage`): yours alone, never in anyone else's copy, and never for a call refused for access (a block, a
+  stop, removed, owner-only, paused), which stays quiet.
 - Retries: the same `clientTxn` again (same sender, same conversation) stores nothing and answers 200
-  `{"message": <the stored message>, "duplicate": true}` (no `notCalled`) — even if you could no longer send there now (you
+  `{"message": <the stored message>, "duplicate": true}` — even if you could no longer send there now (you
   must still be a member). The same
   `clientTxn` in another conversation is a new message there. 409 `client_txn_reused` when the message stored
   under it is no longer visible to you (you left and were added again).
@@ -3149,16 +3152,17 @@ between.
 People other than an Agent's owner reach it in a conversation of its own kind, `agent_social`: two participants (a person
 and the Agent) who speak, and the Agent's owner who watches (role `observer`, shown as 主人) and may write in it. They find
 the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以添加它」:
-`需要我同意` by default, `我的好友可以直接添加`, `不让别人添加`), and cost the owner at most two daily numbers. Every way access
+`需要我同意` by default, `我的好友可以直接添加`, `不让别人添加`), and cost the owner at most their one number a day. Every way access
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid), which is what the
 routes below are, and **1b** (notes shown to a non-owner), which is not built: its one route is under 「Planned」.
 
-**Two parts, one switch.** Ring 1a is two things that deploy together (migrations 074, 075 and 076; Deployment):
+**Two parts, one switch.** Ring 1a is two things that deploy together (migrations 074 to 077; Deployment):
 
-- *Others' use and its money* (step L): one pair of daily numbers per owner for everything other people cause on all of that
-  owner's Agents (calls in groups, replies nobody asked for, visitors' replies), what one reply to someone else may do (one real
-  tool call, a bounded output, thinking only at the level its owner set for such replies: none by default), the use routes (`/api/me/others-use`, `/api/me/others-limits`) and the one-time
-  notice. This part is live whatever `SOCIAL.enabled` says.
+- *Others' use and its money* (step L; the limits redesign, Part 1): one number a day per owner for everything other people cause
+  on all of that owner's Agents (calls in groups, replies nobody asked for, visitors' replies: Agents and runs, The owner's number
+  for others' use), what one reply to someone else may do (one tool round of one call, thinking only at the level its owner set for
+  such replies: none by default), the line a refused sender reads (`refused`, `WireMessage`), the use routes (`/api/me/others-use`,
+  `/api/me/others-limits`) and the one-time notice. This part is live whatever `SOCIAL.enabled` says.
 - *Access* (the `agent_social` conversation, who may add an Agent, 停止往来 and 恢复往来, blocking an Agent, reports, the
   persona aid). All of it is behind `SOCIAL.enabled` (`{"enabled": false}` by default).
 
@@ -3199,13 +3203,12 @@ contacts) takes nothing out of a group reply: in a group anyone may @ an Agent.
 that Agent's own conversation (`unread` in `/api/sync`), as no other notice does, while `SOCIAL.enabled` is on; it makes no push.
 Answering it does not read it; reading the conversation does. An expired card counts until the conversation is read.
 
-**Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's daily caps, what one reply to
+**Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's one number a day, what one reply to
 others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
 
 **Counters.** `{ "metric": "<name>", … }`, ids, counts and reasons only, never a text. Written in ring 1a:
-`others_limit_refused`, `others_held_back`, `others_turn_discarded`, `others_plain_fallback` (what others' use of an Agent was
-refused, held back, cut short or finished without tools), `others_round_raise` (at `warn`: a later call of an others' reply could
-cost more than its hold; the hold is not raised), `social_post_refused` (`reason`: a social reply the post-time check stopped),
+`others_limit_refused` (`at`: `admission`; a reply for others the owner's number refused as it was admitted),
+`social_post_refused` (`reason`: a social reply the post-time check stopped),
 `persona_aid` (the persona aid read a persona: the Agent's id, how many cards) and `agent_reported` (the reason). Ring 1b's,
 not written yet: `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`, `withheld_checks`.
 
@@ -3331,53 +3334,35 @@ changed and the card can be answered again); 422 `note_refused`. Limit: 30 a min
 
 #### `GET /api/me/others-use`
 
-*Session: required.* Live whatever `SOCIAL.enabled` says (step L). Limit: 60 a minute. → 200 `{"limits": {"answers", "points"}, "used": {"answers", "points", "proactivePoints", "proactiveAnswers"},
-"reached": boolean, "tight": boolean, "byPerson": [{"person": {"id", "handle", "displayName", "avatarVersion"}, "answers", "points"}], "stopped":
-[{"person": {…}, "since"}], "agents": [{"agentId", "answers", "points", "perDay", "reached", "tight", "canReply"}], "notice": boolean}`: what others' use of your Agents
-has cost today, against your two numbers. Nobody but you is ever shown any of it (a visitor or co-member never learns your numbers, their
-use or what is left).
+*Session: required.* Live whatever `SOCIAL.enabled` says (step L). Limit: 60 a minute. → 200 `{"limit", "used", "proactive",
+"ownKeyPoints", "reached": boolean, "byPerson": [{"person": {"id", "handle", "displayName", "avatarVersion"}, "points"}], "stopped":
+[{"person": {…}, "since"}], "notice": boolean}`: what others' use of your Agents has used today, against your one number (Agents and
+runs, The owner's number for others' use). Every amount is a string of points, as money is on the wire. Nobody but you is ever shown
+any of it (a visitor or co-member never learns your number, their use or what is left).
 
-- `limits`: your own two numbers, else `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` (50 and `"300"`): one pair per owner, shared by
-  all your Agents (never multiplied by their number) and by both lanes others call for (calls on your Agents, and replies nobody asked for).
-- `used`: today's answers (distinct retry chains admitted in the site day) and points (settled charges plus what your running replies hold:
-  the sum the cap is decided by); `proactivePoints` and `proactiveAnswers` are the parts of those points and answers that your Agents' proactive replies
-  are (same definition of used, scoped to lane `proactive`; no caller: in no `byPerson` row), so `answers` = the people's answers + `proactiveAnswers`
-  (+ callers who have left).
-- `reached` and `tight`, yours and in each `agents[]` row: two one-sided facts about what another person's reply would meet now, each decided by the
-  function admission asks (`othersCheck`), because the hold of a future reply is not knowable. `reached: true` ONLY IF every call would be refused:
-  your answers are used up, or what is left (holds counted) is below a lower bound of any hold admission can compute for that Agent (its tool-less
-  system text from its persona, your name and the date, with no conversation, and the others' output limit). Never true while any reply could be
-  admitted. `tight: true` IF a reply could be refused for size: what is left is below the largest hold admission can compute for a plain reply of that
-  Agent (its system text with the fullest group scene, the notes it holds, the summary and three times the context cap, never more than the
-  model's context beside its output); `tight: false` means every plain reply fits. A model priced like the design's paid tier has a largest plain hold of about 204 points (36 000 bytes of
-  conversation alone hold 108), so it is `tight` only when what is left is under that: at the default 300 an Agent with nothing used is neither
-  `tight` nor `reached` (at an owner's own number of 70 it would be `tight` from the start). `reached` implies `tight`. So there are three states: neither (fits), `tight` (a
-  longer reply may not be sent), `reached` (certainly refused). Waiting behind other replies' holds is not refused. An Agent with no model (or whose
-  site model is gone) answers nobody: its row has `reached` false, `tight` false, `canReply` false and `perDay` 0 (every other row has `canReply` true), and your `reached` / `tight` leave it out: yours is
-  `reached` when your answers are used up or every other Agent is (with none to ask, when `used` has reached your points), and `tight` when any is.
-- `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then answers, then id, `points` as
-  `used`'s (settled plus held). A reply nobody asked for, and one whose caller has left, are in `used` and in no row.
+- `limit`: your number, else `OTHERS.pointsPerDay` (`"300"`): one per owner, for all your Agents together (never multiplied by their
+  number) and for both lanes others cause (calls on your Agents, and replies nobody asked for).
+- `used`: others' use today, the one measure admission decides by (`othersUseToday`): what those replies were charged, settled, plus
+  `ownKeyPoints` (`"6"`) for each reply chain on your own provider key admitted today — counted, never charged. What running replies
+  hold is not in it. `proactive` is the part of it your Agents' replies nobody asked for are (no caller: in no `byPerson` row).
+- `reached`: `used` has reached `limit`: the next reply for others is refused (its sender reads why on their message, and you are told
+  once a day in the Agent's own conversation).
+- `byPerson`: the people whose calls on your Agents were answered today (lane `others`), by points, then id; `points` as `used`'s.
+  A reply nobody asked for, and one whose caller has left, are in `used` and in no row.
 - `stopped`: the people you stopped contact with (停止往来) and have not since resumed, newest first: your own `stop` rows of `access_bars`,
   never a block's row and never a stop somebody else set about you. It is yours whatever `SOCIAL.enabled` says (a stop made while it was
   on can always be seen and lifted by its setter); with the switch off no stop can be made, so it is empty unless you made one before.
   Each person of `stopped` is a link to that person's profile, where 恢复往来 is; with the switch on the people of `byPerson` are links
   too and the profile also offers 停止往来 (with it off they are plain names, and no profile offers a new stop). The page itself has neither control.
-- `agents`: each of your live Agents' day (as `othersUsedToday` of its shape: so the rows' `points` leave out replies nobody asked for,
-  which `used` counts) and `perDay`, about how many replies a site day it can give
-  others: 0 when the numbers that bind it (yours, or its own where lower) do not cover one plain reply's hold (one call at 16 500 input
-  tokens and the others' output limit), else the smaller of the answers number and `1 + ⌊(points − that hold) / the cost of a plain reply⌋`
-  (5 000 input and 500 output tokens at its model's price); a provider's own model costs you nothing, so it gets the answers number; no
-  model, 0. On the design's sites that is 50 on the free tier at 300 points and 11 on the paid. It is what the WHOLE shared amount would buy with this
-  Agent's model if only it were used, so the rows of several Agents are never added together.
 - `notice`: true while you have a live Agent that was made before migration 074 ran, have not seen the one-time notice (`POST /api/me/others-limits/seen`) and your account row is older
   than that moment (the row is made at your first Agent, metered reply or grant, not at sign-up; an owner who joined after the change is
-  told nothing about a change they never had).
+  told nothing about a change they never had). The web says “别人用你的 Agent，每天合计最多花 {limit} 点。” with a link to the page.
 
 #### `PUT /api/me/others-limits`
 
-*Session: required.* Body (no other key, both required) `{"answers": 1–1000, "points": "<decimal string of points, 1–100 000>"}`: your two
-daily numbers for what others cause. → 200 `{"answers", "points"}`. Unset, `OTHERS.answersPerDay` and `OTHERS.pointsPerDay` apply. Limit: 30
-a minute, shared only with `POST /api/me/others-limits/seen`.
+*Session: required.* Body (no other key) `{"points": "<decimal string of points, 1–100 000>"}`: your one number for what others cause
+on your Agents a day. → 200 `{"points"}`. Unset, `OTHERS.pointsPerDay` applies. It holds at once: raised above today's use, calls are
+answered again; lowered to it or below, refused. Limit: 30 a minute, shared only with `POST /api/me/others-limits/seen`.
 
 #### `POST /api/me/others-limits/seen`
 
@@ -3439,6 +3424,9 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
   "mentions": [{ "id": "…", "start": 0, "length": 7 }],   // who its mentions mean, as decided when it was sent
                                        // (Mentions): ranges of "text" in UTF-16 code units, ascending; to every reader;
                                        // absent when it names nobody (and on messages from before mentions were stored)
+  "refused": [{ "agentId": "…", "reason": "others_limit" | "too_often" }],
+                                       // a person's message whose call of an Agent a LIMIT refused, to its sender alone
+                                       // (Refused calls, below); absent for every other reader and when none was
   "reasoning": "…",                    // an Agent's reply: the model's reasoning, when it gave any — in its own
                                        // conversation; in a group only when you own the Agent that sent it (absent
                                        // for every other member, so their message is shaped as one without any);
@@ -3470,6 +3458,17 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
   "createdAt": "2026-11-16T01:02:03.000Z"
 }
 ```
+
+**Refused calls** (limits redesign, Part 1; `call_refusals`, migration 077; `messages/read.ts` `refusalsOf`): when a LIMIT
+refused a call of a person's message on an Agent — the Agent's owner's number for others' use reached (`others_limit`), or too
+often: the sender's calls a minute on other people's Agents, or the owner's others' replies a minute (`too_often`) — it is
+recorded with the message, one row per message and Agent (the first refusal kept), and the message as its SENDER reads it carries
+`refused`, one entry per Agent, in the order they were recorded (those of one moment by Agent id): in the answer to the send, history, sync, catch-up and every push of it to them. A
+refusal found after the send (as the reply was admitted, or a follow-up of the call) pushes the message to its sender again with
+it. Nobody else's copy ever carries it; an Agent's message carries none (nobody reads a line for it); and a call refused for
+access (a block, a stop, removed, owner-only, paused) is never recorded: it stays quiet. The web shows one line a reason under
+the sender's message, the refused Agents' names before it: “「小助手」：这个 Agent 今天不能再回复别人了” (`others_limit`),
+“「小助手」：太频繁，稍后再试” (`too_often`).
 
 An Agent's reply is an ordinary `text` message from the Agent; `reasoning`, `stopped`, `ack`, `truncated`, `proposal`,
 `via`, `lookups`, `found`, `queries` and `cites` appear only on those, only when they apply. Render its text as Markdown (spec 6.6);
@@ -3551,7 +3550,7 @@ client can render its own:
 | `agents_halted` | `actorId` (who halted) | `POST /api/conversations/:id/agents/halt`, in a group that was not halted already: “{名字} 让 Agent 停止了接话” |
 | `agent_chain_paused` | `actorId` (the Agent whose message it was), `limit` (`AGENT_CHAIN_LIMIT`) | in a group, the first Agent's message that would call another Agent after the last `limit` messages that are not notices were all Agents'; once until a person writes: “Agent 已连续对话 {limit} 条，已暂停互相接话，有人发言后继续。” |
 | `agent_budget_reached` | `actorId` = `agentId` (the Agent whose `chainBudget` is reached) | in a group, the first Agent's message that would call it once its chain budget is reached — or the end of its reply that reached it, when only Agents' messages were noted on that reply for a follow-up (pushed after that reply's `run`); once per Agent until a person writes: “{Agent 名} 已达到本次接话的点数上限，有人发言后继续。” |
-| `agent_daily_budget_reached` | `actorId` = `agentId` (the Agent whose others' daily budget is spent) | in a group, the first call on the Agent by someone other than its owner that finds the budget spent — a mention, a follow-up of one, or a reply such a call queued as it is about to start; once per site day for each conversation and Agent, whoever calls; nothing of lane or caller goes with it: “「{Agent 名}」今天只回复它的主人，明天恢复。” |
+| `others_limit_reached` | `actorId` = `agentId` (the Agent a call on was refused for it), `points` (the owner's number then) | in the Agent's own conversation, for its owner: the first call on any of the owner's Agents by someone other than the owner that the owner's number for others' use refuses — at the trigger, a follow-up, or a reply such a call queued as it was admitted; once per site day per owner, whichever Agent it was (Agents and runs, The owner's number for others' use); the conversation the call was made in is told nothing: “别人今天用你的 Agent 已经花到每天上限 {points} 点，今天不再回复别人；已经在回复的会照常回完。” (a notice of the event it replaced, `agent_daily_budget_reached`, stored in a group before, is still read back as stored; the web draws none) |
 | `social_opened` | `actorId` (the Agent reached), `agentIds`, `ownerIds` (the owners who watch and may write) | the first message of an `agent_social` conversation (Agent social): “这是{主人}的 Agent。{主人}能看到你们的对话，也可能插话。” (two owners: their names joined by 、) |
 | `note_withheld` | `actorId` = `agentId`, `audienceId`, `noteKind` (`owner` or `self`), `noteId`, `expiresAt` | ring 1b, in the Agent's own conversation, for its owner only: a note it held back from someone who asked about it (Agent social): “有一条笔记没有告诉别人” (the card's details come with the event, to the owner's client alone) |
 | `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有句话可能被说给别人” |
@@ -3886,13 +3885,14 @@ not even a query.
   `agents` row lock (the group's row is the send's): nothing for one that is paused, deleted or has no model, nor for
   one whose `groupMentions` is `owner` unless its owner wrote the message, nor for one with a block between its owner
   and the sender, in either direction (as in a direct chat: neither of the two calls the other's Agents, nor spends
-  the other's points; lifting the block restores it at once). When the sender is not the Agent's owner, the Agent's
-  others' daily budget (read under the Agent's row lock) is then checked: spent, nothing is done — not even a fold —
-  and the group is told once a day (Agents in a group). Then as in its own conversation: folded into
+  the other's points; lifting the block restores it at once). When the sender is not the Agent's owner, the owner's
+  number for others' use is then checked (`othersReached`, read under the Agent's row lock): reached, nothing is done — not
+  even a fold —, the sender reads why on their message and the owner is told once a day (Agents and runs, The owner's number
+  for others' use). Then as in its own conversation: folded into
   its active run in the group (a queued run a person's message is folded into is a person's from then on, and the
   owner's own — the owner its caller — when the message is the owner's; another member's leaves its lane and first
   caller, but takes over a reply nobody called for: lane `others`, that member its caller), else, for a call on someone else's Agent, the caller's limit (`AGENT_CALLER_RUNS_PER_MINUTE`: over it,
-  nothing is recorded, one `caller_rate_limited` line is logged and the sender's answer names the Agent, `notCalled`), else a queued run (`triggered_by` `human`, with its
+  no run is recorded, one `caller_rate_limited` line is logged and the sender's message carries the line, `refused` `too_often`), else a queued run (`triggered_by` `human`, with its
   caller and lane) — or, over its owner's replies a minute in the call's lane, a `failed` `rate_limited` run, of which
   there is one per Agent in the group: while it is the Agent's latest run there and its owner has not dismissed it, it
   covers every further mention over the limit (announced again) instead of a new one being recorded. The owners'
@@ -3902,7 +3902,7 @@ not even a query.
   is the message's `client_txn`) when that run is not its owner's own, else the Agent's owner — so a member's call that
   the owner's Agent relays, to another of the owner's Agents or to someone else's, stays the member's, and what a reply
   nobody called for relays is nobody's (`others`, no caller). A call on an Agent of someone other than the person behind
-  it meets that Agent's others' daily budget, that person's caller limit (none without a caller) and the lane's
+  it meets the owner's number for others' use, that person's caller limit (none without a caller) and the lane's
   replies a minute as a person's does; a call the Agent's owner is behind is their own. The message calls the Agent
   members its stored entries mean other than itself whose `groupMentions` is `members` and whose owner has no block, in either direction, with the
   posting Agent's owner nor with the person behind the message (none to match when nobody is behind it): a member's
@@ -3938,13 +3938,13 @@ not even a query.
   rule above, read from the run its `client_txn` names), else `others` with the earliest caller (the earliest that
   names one); when none of them can call it any more (a block since, or `groupMentions` changed) it is `others` with no
   caller, so a call its owner no longer allows does not ride the owner's own lane. A mention of it that was refused when
-  it was posted — an Agent's for the group halted, the chain limit, its chain budget, its others' daily budget or a
-  block; a person's for its others' daily budget — is no call at all: the refusal is recorded with the message (`refused_agent_calls`, migrations 022–023, referring to
+  it was posted — an Agent's for the group halted, the chain limit, its chain budget, the owner's number for others' use or a
+  block; a person's for the owner's number — is no call at all: the refusal is recorded with the message (`refused_agent_calls`, migrations 022–023, referring to
   the Agent's principal, so writing it locks no `agents` row; never on the wire), so although nothing was noted for it,
   it does not count when it lies among what the follow-up answers. A follow-up in lane `others` is not queued once the
-  Agent's others' daily budget is spent, checked again here because the reply that just ended is settled by now (the
-  notice, once a day, and the owner pushed their Agent); the caller's limit does not apply to it: what it answers was
-  folded into a reply under way, which is never refused.
+  owner's number for others' use is reached, checked again here because the reply that just ended is settled by now (the
+  senders of the calls it would have answered read why on their messages, and the owner is told once a day); the caller's
+  limit does not apply to it: what it answers was folded into a reply under way, which is never refused.
 - A halt (`POST /api/conversations/:id/agents/halt`) cancels the group's queued runs Agents called for and those nobody
   called for (lane `proactive`, Proactive replies) (`halted`) and marks the running ones `interrupted` `halted`: never
   posted, they end `cancelled`, `halted`, settled as any.
@@ -3970,7 +3970,7 @@ the Agent's own conversation the follow-up is its owner's and is queued whatever
 answers what they wrote meanwhile). In a group the messages it answers as calls are those the run noted as calls when
 they were sent (`call_seqs`), never its mentions read again: a rename, or a member joining or leaving, between the call
 and the end of the reply changes nothing of it (task N fix round 1). In a group it is decided as In a group (above) says: whose it is, the halt and the
-chain budget, the others' daily budget, and the owner's replies a minute in its lane — over it, the Agent's reusable
+chain budget, the owner's number for others' use, and the owner's replies a minute in its lane — over it, the Agent's reusable
 `rate_limited` run there records it. A mention folded into a queued run turns it the owner's own (the owner its caller)
 when it is the owner's call (their message, or an Agent's message they are behind); another person's — also one relayed
 through one of the owner's Agents — leaves its lane and first caller, except on a reply nobody called for (lane
@@ -4076,16 +4076,16 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
    3. A short transaction under the Agent's lock again: a run interrupted, paused, deleted or stopped meanwhile ends as in
       the first step, with no call; when the service has started closing by the time the locks are held, the
       transaction rolls back and nothing is admitted (the closing service ends the run, Shutdown below;
-      `tests/runs-restart.test.ts`). Then what its lane is held to is read once more (`runs.ts` `refusedAtAdmission`:
-      what replies settled while it waited were charged counts now; settlement takes the Agent's lock too): a reply
-      someone else called for (lane `others`) meets the Agent's others' daily budget, and a reply nobody asked for
-      (`proactive`) its owner's switch (`proactive`) and its proactive budget. Refused, it ends `cancelled` with no error,
-      with no call and nothing held or charged; the others' budget tells the group by `agent_daily_budget_reached` once a
-      day (published after commit) and pushes the owner their Agent (Agents in a group), a reply nobody asked for tells
-      nobody. What the first step took on (mentions noted on the run after its claim) is handed back as noted, so the
-      run's end follows it up as any (Coalescing): the owner's own mention is answered — the owner's calls are never
-      refused by these — and someone else's meets the others' budget again and is not queued once it is spent (no second
-      notice that day); nothing loops. Otherwise the call is admitted holding the most its
+      `tests/runs-restart.test.ts`). Then what its lane is held to is read once more: a reply nobody asked for (`proactive`)
+      meets its owner's switch (`proactive`; `runs.ts` `refusedAtAdmission`), and admission itself (`metering/admit.ts`
+      `admitRun`, under the owner's account lock) refuses a reply for others — lanes `others` and `proactive` — once others'
+      use of the owner's Agents today has reached the owner's number (`OthersLimit`: what replies settled while it waited
+      were charged counts now). Refused, it ends `cancelled` with no error, with no call and nothing held or charged; after
+      commit the senders of the calls it answers read why on their messages (pushed to them again) and the owner is told
+      once a day (Agents and runs, The owner's number for others' use); a reply nobody asked for tells nobody. What the first
+      step took on (mentions noted on the run after its claim) is handed back as noted, so the run's end follows it up as any
+      (Coalescing): the owner's own mention is answered — the owner's calls are never refused by these — and someone else's
+      meets the owner's number again and is not queued once it is reached; nothing loops. Otherwise the call is admitted holding the most its
       input can cost (Metering, Admission: its text's utf-8 bytes, at most what the context leaves beside the output
       limit; `no_quota` ends it `failed` before any call; a reply whose hold does not fit beside the owner's other running
       calls' goes back to `queued` with nothing held, Metering, Money that does not block), its input estimate and the ratio's key are recorded on the run
@@ -5208,9 +5208,9 @@ are checked in the order of the table.
 | The winner's probability is under its threshold now | `under_threshold` (debug) |
 | A reply of the winner is queued or running in the group, in any lane: a proactive reply is never folded into one | `active_run` |
 | The fuse: a proactive reply of the winner in the group within `fuse.perSeconds`, or `fuse.perHour` of them within the hour | `fuse` |
-| Its proactive budget or its owner's numbers cannot take the cheapest reply the Agent could be admitted as: settled charges today plus what running replies hold plus that reply's floor hold (the plain hold, through the same function admission asks, `othersFits`) would pass `proactiveBudget`, the owner's points, or the owner's answers | `budget` |
+| Others' use of its owner's Agents today has reached the owner's number (Agents and runs, The owner's number for others' use): the measure admission asks (`othersReached` before the judgement, `othersAdmissible` under the owner's account lock after it) | `budget` |
 | Its owner has started `AGENT_OTHERS_RUNS_PER_MINUTE` replies in the last minute outside their own lane (proactive replies count with others' calls, Rate limits; checked under the owner's `accounts` row, the lock order's last) | `owner_minute` |
-| Queued, but before it began its owner turned `proactive` off, or replies settled or held meanwhile left its proactive budget or its owner's numbers too little for it (decided again as it is admitted, Agents and runs) | nothing: the run ends `cancelled`, with no call, no charge and no notice |
+| Queued, but before it began its owner turned `proactive` off, or replies settled meanwhile brought others' use to the owner's number (decided again as it is admitted, Agents and runs) | nothing: the run ends `cancelled`, with no call, no charge and no notice |
 
 **The threshold** (`threshold.ts`, pure arithmetic). The winner replies when its probability is at least `min(cap,
 base[proactiveLevel] + surcharge now + quiet now)`, read for its Agent and this group:
@@ -5247,7 +5247,7 @@ it is still an option, winner or not, whatever the pick says — unless phase 3 
 
 **A mention while it waits.** A proactive reply still `queued` when a message calls its Agent (a person's mention, or an
 Agent's message) is taken over by that call (`runs.ts` `takesOnCall`): it covers the message and takes the call's lane,
-caller and `triggered_by`. It is no longer unasked: it leaves the proactive budget and the fuse, counts in the limits as a
+caller and `triggered_by`. It is no longer unasked: it leaves the fuse, counts in the limits as a
 reply that call started would, is not told that nobody called it, its `via` has no `proactive`, and a halt ends it only
 when an Agent's message called it. Its surcharge stays. One already `running` notes the mention like any reply under way
 (its follow-up answers it, in the call's lane) and stays a proactive reply; but when the mention came between the
@@ -5286,17 +5286,16 @@ prototype, so any key is only a key. Nothing of it is logged, and no error carri
 question or an answer.
 
 **The owner's settings** (`POST /api/agents`, `PATCH /api/agents/:id`; the Agent shape, Agents): `proactive` (default
-false), `proactiveLevel` (`less`, `normal`, `more`: which `base` it starts from; default `normal`), `proactiveBudget`
-(points a site day, `"1"` to `"100000"` as `chainBudget`, default `"70"`; never `null`). `"proactive": true` while `JUDGE`
+false), `proactiveLevel` (`less`, `normal`, `more`: which `base` it starts from; default `normal`). `"proactive": true` while `JUDGE`
 is unset is 409 `proactive_unavailable` — on a create before anything is written, on an edit once the Agent is found
-yours and not deleted (so for anybody else it stays the 404). The level and the budget are accepted whether it is on or
-off. The budget is hard and counts holds: admission asks `othersFits` (Agents and runs, The others' daily numbers), settled
-charges today plus what running replies hold, so a reply never starts past it, and the decision asks the same function with the
-cheapest reply it could be admitted as before it spends a judgement. The worker reads it — and the switch — again as the reply
-is admitted, so a reply queued before it was spent, or before its owner lowered it or turned `proactive` off, ends there. Over the budget it stops silently — nothing in the group; the owner's
-page shows the spend — and raising the budget lets it speak again at once, since every decision reads it. Each reply's model call
-is its owner's, as any reply's (Metering); on a provider model it costs no points, so the budget never holds there, while
-the fuse and the owner's minute do. `GET /api/models` answers `proactiveAvailable` (whether `JUDGE` is configured).
+yours and not deleted (so for anybody else it stays the 404). The level is accepted whether it is on or off. What these
+replies cost counts in the owner's one number for others' use, with the calls of other people (Agents and runs, The owner's
+number for others' use): once others' use today has reached it no reply nobody asked for is started — the decision asks the
+same measure before it spends a judgement, and admission asks it again under the owner's account lock, so a reply queued before
+it was reached, or before its owner lowered it or turned `proactive` off, ends there. It stops silently — nothing in the group;
+the owner's page shows the use — and raising the number lets it speak again at once, since every decision reads it. Each reply's
+model call is its owner's, as any reply's (Metering); on a provider model each reply chain counts its nominal 6 points, while
+the fuse and the owner's minute hold as ever. `GET /api/models` answers `proactiveAvailable` (whether `JUDGE` is configured).
 
 **What the reply is told.** A run whose lane is still `proactive` when it begins (read in `begin`'s first step) is given
 the group's system text (Agents and runs, What the model is shown) without the scene's sentence
@@ -5323,7 +5322,7 @@ at `info`, so the two `debug` lines show only when the level is lowered.
 - `{ "metric": "proactive_skipped", "reason", "agentId", "conversationId" }`: the judgement picked an Agent that did not
   reply, and why (the table above). At `debug` for `under_threshold` (most messages are chat: the usual case) and
   `already_decided`; at `info` for `hushed`, `active_run`, `fuse`, `budget` and `owner_minute`. Many `budget` lines:
-  owners' numbers or the Agents' proactive budgets are low for how often the Agents are picked; `owner_minute`: their minute for others is full; `fuse`
+  owners' numbers for others' use are low for how often the Agents are picked; `owner_minute`: their minute for others is full; `fuse`
   should practically never appear — it guards against the judgement misbehaving, so look at what is being picked;
   `hushed` counts mild complaints about the very Agent picked.
 - `{ "metric": "judge_failed", "reason", "conversationId" }` (info): no channel answered; `reason` is the client's
@@ -5521,10 +5520,9 @@ the context leaves beside the output limit (as Admission bounds a call), 400 for
 definitions, images and PDFs at their constants — and its whole output limit, whichever call it is (the worker may make
 it the last for reasons of its own: the rounds' cap, a repeat, the context). *Left* is what the pots its class may use
 leave beside every promise (The pool), this run's own included; the model's part is what is raised (its searches hold
-apart, at their charge). In this order (`pool.ts` `extendRound`): a budget of its lane
-reached by so far counted with what is settled (the Agent's others' daily budget for someone else's call, its proactive
-budget for a reply nobody asked for, and in a group, for a reply in an Agents' chain, its chain budget) allows the last
-call at most; else, while so far and the next call's most stay within `TOOLS.maxPoints` and the raise fits *left* — on
+apart, at their charge). In this order (`pool.ts` `extendRound`): a reply for others (lanes `others` and `proactive`)
+has had its one tool round, and in a group a reply in an Agents' chain whose chain budget is reached by so far counted with
+what is settled: either allows the last call at most; else, while so far and the next call's most stay within `TOOLS.maxPoints` and the raise fits *left* — on
 `AB` with the room for a last call after it besides, renewed from the next call's input bound (Admission, the free
 allowance's room) — and the reply holds nothing over (one that started alone past the pots, or went last once, stays
 last: third attack V3-I1), the hold becomes that, all of it promised, and another round may call tools; else the hold becomes so far and the next
@@ -5575,10 +5573,11 @@ row every pre-hold shares, never held while an account is waited for):
    nothing and which carries no class; else refused;
 2. the money, each bound its own words and metric: the model part of the reply so far at its bound (a site model's hold,
    less the room kept on `AB` for a last call and less its searches; none for a provider's model) with what its searches
-   are charged so far and this one's price within `TOOLS.maxPoints`; no budget of its lane reached — the others' daily,
-   the proactive daily, the chain budget, each counting what was settled and, for the daily ones, what the searches the
-   Agent's other replies of the same lane hold now are charged (an old code's row at its price), read under the Agent's
-   row every pre-hold of it takes (two replies racing for a budget's last points are put in order); and the price held
+   are charged so far and this one's price within `TOOLS.maxPoints`; no budget of its lane reached — the chain budget,
+   counting what was settled, read under the Agent's row every pre-hold of it takes, and, for a reply others caused (lanes
+   `others` and `proactive`), others' use of the owner's Agents today still below the owner's number (`othersAdmissible`,
+   under the owner's account lock: what is settled and the nominal points of the owner's own key; no hold or search under way
+   counts); and the price held
    whole on the pool, class `AB` whatever the model's tier, beside every promise (`pool.ts` `tool`) — so a search is
    never paid by forgiveness —; else refused, its hold as it was. Such a hold counts as any hold: a reply of the owner's
    may be held back at admission behind a provider model's reply that holds its searches (Money that does not block),
