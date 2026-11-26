@@ -361,6 +361,14 @@ export async function overLaneLimit(t: Tx, ownerId: string, lane: Lane, config: 
 }
 
 /**
+ * Locks the `accounts` rows of `ids` — owners', callers' — in ascending id, each once: the one order every transaction that locks
+ * more than one account keeps (the lock order's last step), so two of them never wait on each other. A row held already is a no-op.
+ */
+async function lockAccounts(t: Tx, ids: Iterable<string>): Promise<void> {
+  for (const id of [...new Set(ids)].sort()) await lockAccount(t, id);
+}
+
+/**
  * Calls person `callerId` has made in the last minute on other people's Agents (`agentCallerRunsPerMinute`),
  * themselves or through an Agent's message they are behind (`behindAgentMessage`: their own Agents', or another's
  * relaying their call), whoever's Agents they were: the replies they are the caller of that are not
@@ -1114,7 +1122,7 @@ async function reachAgents(
   const accounts = [...unfolded, ...doubtful.map((c) => ({ ...c, othersCaller: c.by.lane === "own" ? null : c.by.id }))].flatMap(({ agent, othersCaller }) =>
     othersCaller === null ? [agent.ownerId] : [agent.ownerId, othersCaller],
   );
-  for (const id of [...new Set(accounts)].sort()) await lockAccount(t, id);
+  await lockAccounts(t, accounts);
   const refusedIds: string[] = [];
   for (const call of doubtful) {
     if (await refusedByOthersLimit(t, conversationId, [seq], call.agent, call.by.lane, told, config)) refusedIds.push(call.agent.id);
@@ -1666,7 +1674,8 @@ export interface Halted {
  * (`followUpOnEnd`: what an admission that held it back handed back to it; round 3 S-4). Runs a person called for are
  * left alone. The `agents_halted` notice is appended unless the group was halted already (no person has written since
  * the last halt): then nothing changes. Lock order: the group's row, the `agents` rows of the queued runs with something
- * noted (in id order), then run rows, then (`followUp`) their owners' `accounts` rows.
+ * noted (in id order), then run rows, then the `accounts` rows of the owners whose runs are followed up, in id order, before any
+ * follow-up (`followUp` then locks nothing new).
  */
 export async function haltAgents(t: Tx, conversationId: string, actorId: string, config: RunLimits): Promise<Halted> {
   if ((await peekConversation(t, conversationId))?.type !== "group") throw notFound();
@@ -1697,13 +1706,20 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
     [conversationId],
   );
   const notice = already ? null : await appendSystem(t, conversationId, { event: "agents_halted", actorId });
-  // Then the follow-ups, after the notice (what an Agent asked before it is not answered after it: `followUp`).
+  // Then the follow-ups, after the notice (what an Agent asked before it is not answered after it: `followUp`). Their owners'
+  // accounts first, all of them in ascending id (`lockAccounts`), whatever order the runs came back in: each follow-up then locks
+  // only rows this transaction holds.
   const cancelled: Announced[] = [];
   const followed = noneTold();
+  const nextOf = (r: (typeof queued.rows)[number]) => {
+    const agent = agents.get(r.agent_id);
+    return agent ? followUpOnEnd({ covers_seq: r.covers, pending_seq: r.pending, told: r.told, greets: r.greets }, agent, { status: "cancelled", error: "halted" }, { recovered: false, retried: false }) : null;
+  };
+  await lockAccounts(t, queued.rows.filter((r) => nextOf(r) !== null).map((r) => r.owner_id));
   for (const r of queued.rows) {
     cancelled.push({ ownerId: r.owner_id, conversationId, run: toWireRun(r) });
     const agent = agents.get(r.agent_id);
-    const next = agent ? followUpOnEnd({ covers_seq: r.covers, pending_seq: r.pending, told: r.told, greets: r.greets }, agent, { status: "cancelled", error: "halted" }, { recovered: false, retried: false }) : null;
+    const next = nextOf(r);
     if (agent === undefined || next === null) continue;
     const { run, ...told } = await followUp(t, agent, conversationId, Number(r.covers ?? 0), next, r.calls, r.owner_calls, config);
     if (run) cancelled.push(run);
@@ -1816,7 +1832,7 @@ export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMes
   const caller = callerOf(agent.ownerId, sender);
   const told = noneTold();
   // The accounts in id order, last (the lock order), before the owner's number is decided under its lock.
-  for (const id of [...new Set([agent.ownerId, sender])].sort()) await lockAccount(t, id);
+  await lockAccounts(t, [agent.ownerId, sender]);
   if (await refusedByOthersLimit(t, conversationId, [message.seq], agent, caller.lane, told, config)) return { ...noneTriggered(), ...told };
   const askers = [sender];
   // The order of `reachAgents`: the visitor's own minute first (a `model_gone` row counts in it, so a visitor cannot write one
