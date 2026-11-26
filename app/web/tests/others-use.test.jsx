@@ -316,6 +316,34 @@ describe("the settings row and the page", () => {
       expect(store.use.limit).toBe("20");
     });
 
+    it("a save's answer keeps a use read while it was on its way: the state beside the saved number comes from that fresher use", async () => {
+      let used = "10";
+      let failing = false;
+      const gate = deferred();
+      const { app } = await openPage({
+        answer: () => {
+          if (failing) throw apiError(503, "unavailable");
+          return useOf({ limit: "15", used, reached: false });
+        },
+        api: { putOthersLimits: vi.fn(() => gate.promise) },
+      });
+      typeInto(pointsBox(), "20");
+      enter(pointsBox());
+      await flush();
+      // While the save is on its way, a read answers with more used (25) than the number about to be saved.
+      used = "25";
+      await readOthersUse(app.layer.actions, storeOf(app.layer.actions));
+      await flush();
+      expect(mainEl().querySelector(".others-today").textContent).toContain("今天别人花了 25 点");
+      // The save is answered; the reload after it fails.
+      failing = true;
+      gate.resolve({ points: "20" });
+      await flush();
+      const today = mainEl().querySelector(".others-today").textContent;
+      expect(today).toContain("今天别人花了 25 点");
+      expect(today).toContain("今天给别人的额度用完了");
+    });
+
     it("a box nobody touched follows the service (a change made on another device shows after the next read)", async () => {
       let limit = "300";
       const { app } = await openPage({ answer: () => useOf({ limit }) });

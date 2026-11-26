@@ -64,10 +64,14 @@ export function readOthersUse(actions, store, { afterWrite = false } = {}) {
 }
 
 
-/** A newer answer of the same shape than any read can bring (a save's own answer, a dismissed notice): a read still in flight does not replace it. */
+/**
+ * A newer answer of the same shape than any read can bring (a save's own answer, a dismissed notice): a read still in flight does not
+ * replace it. `next` may be a function of the answer held now (the freshest), so that what it changes is laid over that, never over
+ * an older copy the caller held.
+ */
 export function settleOthersUse(store, next) {
   store.newest += 1;
-  store.use = next;
+  store.use = typeof next === "function" ? next(store.use) : next;
   store.failed = false;
   store.at = Date.now();
   store.listeners.forEach((fn) => fn());

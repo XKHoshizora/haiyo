@@ -156,8 +156,11 @@ export function OthersUsePage({ back }) {
   const { use, failed, reload, settle } = useOthersUse();
   const save = async (body) => {
     const saved = await actions.putOthersLimits(body);
-    // The number saved and the state beside it change together, also should the refresh below fail.
-    if (use && saved && typeof saved.points === "string") settle({ ...use, limit: saved.points, reached: reachedAt(use.used, saved.points) ?? use.reached });
+    // The number saved and the state beside it change together, also should the refresh below fail — over the freshest use held (a
+    // read may have answered while the save was on its way), never over the copy this page drew from.
+    if (saved && typeof saved.points === "string") {
+      settle((held) => (held ? { ...held, limit: saved.points, reached: reachedAt(held.used, saved.points) ?? held.reached } : held));
+    }
     await reload({ afterWrite: true });
   };
 
