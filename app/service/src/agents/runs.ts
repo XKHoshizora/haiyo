@@ -671,13 +671,15 @@ export async function dropRefusedCalls(t: Tx, runId: string): Promise<{ covers_s
  * answers, for the window in which a person is refused after `begin` dropped what it dropped (an admitted run keeps its context; its
  * output can be filtered only now). `none`: it answers calls and every one is refused: nothing is to be posted. `refused`: the persons
  * refused now among all its calls' senders, the persons behind them and its askers: a reply that goes on for the others quotes none of
- * their messages and stores no mention of them (the text may still name them). Reads only. A run with no call of its own
- * (`告诉他们`'s) is never refused; the caller leaves those out.
+ * their messages and stores no mention of them (the text may still name them). `refusedSeqs`: its calls refused now — by their
+ * sender (a person, or an Agent as a subject: a relay whose Agent's owner has a block since) or the person behind them — which it
+ * quotes none of either, whoever wrote them (T2 fix 1, F13: a relay folded beside its caller's own call). Reads only. A run with no
+ * call of its own (`告诉他们`'s) is never refused; the caller leaves those out.
  */
-export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string> }> {
-  const { rows } = await t.query<{ sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean }>(
+export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string>; refusedSeqs: ReadonlySet<number> }> {
+  const { rows } = await t.query<{ seq: string; sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean }>(
     callRowsSql(
-      `p.id as sender, p.kind, bh.caller_id as behind,
+      `m.seq::text as seq, p.id as sender, p.kind, bh.caller_id as behind,
             ${refusedInGroup("p.id", "r.agent_id")} as sender_refused,
             (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")}) as behind_refused`,
     ),
@@ -688,11 +690,13 @@ export async function standingCalls(t: Tx, runId: string): Promise<{ none: boole
     [runId],
   );
   const refused = new Set<string>(askers.rows.map((r) => r.a));
+  const refusedSeqs = new Set<number>();
   for (const r of rows) {
     if (r.sender_refused && r.kind === "human") refused.add(r.sender);
     if (r.behind_refused && r.behind !== null) refused.add(r.behind);
+    if (r.sender_refused || r.behind_refused) refusedSeqs.add(Number(r.seq));
   }
-  return { none: rows.length > 0 && rows.every((r) => r.sender_refused || r.behind_refused), refused };
+  return { none: rows.length > 0 && rows.every((r) => r.sender_refused || r.behind_refused), refused, refusedSeqs };
 }
 
 /**

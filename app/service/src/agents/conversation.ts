@@ -422,6 +422,8 @@ export async function postAsAgent(
     ).rowCount !== 0;
   if (overtaken) body.replyToSeq = Number(run.rows[0].covers);
   // ... but never quoting a message of someone refused now.
+  // ... nor a call of its refused now, whoever wrote it (a relay whose Agent's owner has a block since: T2 fix 1, F13).
+  if (body.replyToSeq !== undefined && calls?.refusedSeqs.has(body.replyToSeq)) delete body.replyToSeq;
   if (body.replyToSeq !== undefined && refusedNow.size > 0) {
     const quoted = await t.query<{ sender_id: string }>("select sender_id from messages where conversation_id = $1 and seq = $2", [conversationId, body.replyToSeq]);
     if (quoted.rows[0] && refusedNow.has(quoted.rows[0].sender_id)) delete body.replyToSeq;

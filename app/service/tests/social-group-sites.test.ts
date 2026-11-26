@@ -231,15 +231,20 @@ describe("one rule for the end of a group call", () => {
     expect(next).toEqual([{ calls: [waited], caller: w.ned.id }]);
   });
 
-  it("the quote of a refused person's message is dropped at post (the reply goes on for the other's call)", async () => {
+  it("a call relayed for its caller, folded beside the caller's own, its Agent's owner blocked since: the reply goes on for the caller's call and quotes not the relay (T2 fix 1, F13)", async () => {
     const w = await world();
-    await say(w.mia, w.g, "@anna_bot MIA-ASK 在吗？");
-    const nedCall = await say(w.ned, w.g, "@anna_bot NED-ASK 我也问");
-    expect(await waitingOf(w.anna.id, w.g)).toEqual([nedCall]);
-    // A reply answering two persons' calls, made by hand: none is made since a reply's caller never changes (limits redesign,
-    // Part 2), and the rule at post holds for one all the same.
-    await db.query("delete from deferred_calls where agent_id = $1", [w.anna.id]);
-    await db.query("update agent_runs set call_seqs = array_append(call_seqs, $2::bigint), covers_seq = $2 where agent_id = $1 and status = 'queued'", [w.anna.id, nedCall]);
+    const nedBot = (await mustCreateAgent(app, w.ned, { handle: "ned_bot", model: FAST })) as { id: string };
+    expect((await api(app, w.ned, "POST", `/api/conversations/${w.g}/members`, { principalId: nedBot.id })).status).toBe(201);
+    const asked = await say(w.mia, w.g, "@anna_bot MIA-ASK 在吗？");
+    // ned's Agent, in a reply mia called for, relays her question: her call (lane others, her the caller), folded into her reply.
+    const relayed = await db.tx(async (t) => {
+      const poster = await lockAgent(t, nedBot.id, w.g);
+      const text = "@anna_bot 帮 mia 问一下";
+      const message = await insertMessage(t, w.g, nedBot.id, "text", { text }, null, await mentionsAtSend(t, { id: w.g, type: "group" }, text));
+      await triggerFromAgent(t, w.g, message, poster, { id: w.mia.id, lane: "others" }, app.deps.config, [w.mia.id]);
+      return message.seq;
+    });
+    expect(await firstRun(w.anna.id, w.g)).toMatchObject({ status: "queued", caller: w.mia.id, calls: [asked, relayed] });
     const ticket = (await app.agentPort.claimNext())!;
     expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
     expect(await app.agentPort.acknowledge(ticket, { text: "稍等", reasoning: "" })).toBe("posted");
@@ -249,10 +254,8 @@ describe("one rule for the end of a group call", () => {
     const replies = (await db.query<{ body: { replyToSeq?: number; ack?: boolean } }>("select body from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [w.g, w.anna.id])).rows;
     const reply = replies.find((r) => !r.body.ack)!;
     expect(reply.body.replyToSeq).toBeUndefined();
-
     await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
   });
-
 
   it("a run interrupted `access_ended` is refused at post, not thrown (every interruption is a refusal)", async () => {
     const w = await world();

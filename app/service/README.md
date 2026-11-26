@@ -3231,7 +3231,8 @@ conversation, a reply's start and its post there, and in a group the mention, a 
 nobody asked for, a reply's start (`dropRefusedCalls`) and its post (`standingCalls`). So does every ending: in a group an
 ending never cancels a reply as a whole. It takes the calls of whoever is refused now out of the replies that have not called
 their model; a reply left with no call ends quietly (`cancelled`, no error), and a reply in flight is stopped only when every
-call it answers is refused; the calls of whoever is refused now that wait for a reply are dropped (others' wait on, and get their
+call it answers is refused — one that goes on quotes none of its calls refused now, whoever wrote them (a relay whose Agent's
+owner has a block since included), and mentions nobody refused; the calls of whoever is refused now that wait for a reply are dropped (others' wait on, and get their
 reply as the one under way ends). `access_ended` as a run's recorded
 reason is a social run's alone. An ending that refuses nobody in a group (unfriending; a visitor who removes an Agent from their
 contacts) takes nothing out of a group reply: in a group anyone may @ an Agent.
