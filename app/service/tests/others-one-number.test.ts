@@ -233,6 +233,34 @@ describe("admission across connections and days", () => {
     });
   }
 
+  it("two own-key reply chains admitted at once at N = 6, on two connections: exactly one is (the second reads the first's 6 under the lock)", async () => {
+    const owner = await newOwner();
+    const a = await providerAgent(app, db, owner);
+    // Another Agent of the owner's on the same key (an Agent has one active reply a conversation).
+    const made = await mustCreateAgent(app, owner, { handle: "chain_b", name: "chain_b", model: { source: "provider", providerId: a.resolved.providerId!, model: "mine" } });
+    const b = { agentId: made.id, conversationId: made.conversationId, resolved: a.resolved };
+    await setOwnerLimit(db, owner.id, 6n * POINT);
+    const [ra, rb] = [await seedRun(db, { ownerId: owner.id, agent: a, lane: "others" }), await seedRun(db, { ownerId: owner.id, agent: b, lane: "others" })];
+    // The first is admitted and holds its transaction open; the second starts meanwhile.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let admitted!: () => void;
+    const firstIn = new Promise<void>((r) => (admitted = r));
+    const first = db.tx(async (t) => {
+      await admitRun(t, config(), ra, owner.id, a.resolved, 10, () => new Date());
+      admitted();
+      await gate;
+    });
+    await firstIn;
+    const second = db.tx((t) => admitRun(t, config(), rb, owner.id, b.resolved, 10, () => new Date()));
+    await new Promise((r) => setTimeout(r, 200));
+    release();
+    const results = await Promise.allSettled([first, second]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+    expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(OthersLimit);
+    expect(await othersUseToday(db, config(), owner.id, new Date())).toBe(6n * POINT);
+  });
+
   it("the site day's edge: a reply admitted at 00:00:01 is counted on the new day, read under the account lock; a chain begun yesterday and retried today counts on both days", async () => {
     const owner = await newOwner();
     const mine = await providerAgent(app, db, owner);
@@ -394,11 +422,21 @@ describe("a call refused by N: one line for its sender alone, and one notice a d
     expect((await db.query("select 1 from call_refusals where agent_id = $1", [k.agent.id])).rowCount).toBe(0);
   });
 
-  it("a refusal for access stays quiet: an Agent only its owner may call, a paused one", async () => {
-    const k = await othersKitchen(app, db, { agent: { groupMentions: "owner" } });
-    const sent = await api(app, k.member, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 你好", clientTxn: "n4" });
-    expect(sent.json.message).not.toHaveProperty("refused");
-    expect((await db.query("select 1 from call_refusals")).rowCount).toBe(0);
+  it("a refusal for access stays quiet: an Agent only its owner may call, a paused one — even with the owner's number reached", async () => {
+    for (const [what, agent, paused] of [
+      ["owner only", { groupMentions: "owner" }, false],
+      ["paused", {}, true],
+    ] as const) {
+      const k = await othersKitchen(app, db, { agent });
+      if (paused) await db.query("update agents set paused = true where principal_id = $1", [k.agent.id]);
+      // The number is reached too: a limit would refuse with a line; access refuses first, and quietly.
+      await setOwnerLimit(db, k.owner.id, 1n * POINT);
+      await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: POINT });
+      const sent = await api(app, k.member, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 你好", clientTxn: `n4${paused ? "p" : "o"}` });
+      expect([what, sent.status, sent.json.message.refused]).toEqual([what, 201, undefined]);
+      expect([what, (await db.query("select 1 from call_refusals where agent_id = $1", [k.agent.id])).rowCount]).toEqual([what, 0]);
+      expect([what, (await db.query("select 1 from agent_runs where conversation_id = $1", [k.g])).rowCount]).toEqual([what, 0]);
+    }
   });
 });
 
