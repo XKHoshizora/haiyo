@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mentionsAtSend } from "../src/agents/mentions.ts";
 import { recoverRuns } from "../src/agents/port-impl.ts";
 import { maybeTrigger } from "../src/agents/runs.ts";
 import { lockForWrite } from "../src/conversations/store.ts";
 import { insertMessage } from "../src/messages/model.ts";
-import { NOTHING } from "../src/agents/runtime/port.ts";
+import { NOTHING, type RunEnd } from "../src/agents/runtime/port.ts";
 import { admit, admitRun } from "../src/metering/admit.ts";
 import { OWN_KEY_NOMINAL_MICRO, othersByPerson, othersReplyCeilingMicro, othersUseToday, OthersLimit } from "../src/metering/others.ts";
 import { maxCostMicro } from "../src/metering/prices.ts";
@@ -397,8 +397,12 @@ describe("a call refused by N: one line for its sender alone, and one notice a d
     const seq = sent.json.message.seq as number;
     await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: POINT });
     const ticket = (await k.port.claimNext())!;
-    expect(await k.port.begin(ticket)).toEqual({ status: "cancelled" });
-    // The refusal and the run's end are one transaction: the run is over already.
+    const pushed = vi.spyOn(app.realtime, "pushRun");
+    const ends = () => pushed.mock.calls.filter(([, run]) => run.id === ticket.id && run.status === "cancelled").length;
+    const ended = await k.port.begin(ticket);
+    expect(ended).toEqual({ status: "cancelled" });
+    // The refusal and the run's end are one transaction: the run is over already, and its end announced, once.
+    expect(ends()).toBe(1);
     expect(await k.lastRun()).toMatchObject({ id: ticket.id, status: "cancelled", error: null, hold: "0" });
     // The process dies here (no `finish`); the number is raised; the next process recovers what was left running: nothing.
     await setOwnerLimit(db, k.owner.id, 100n * POINT);
@@ -406,9 +410,11 @@ describe("a call refused by N: one line for its sender alone, and one notice a d
     expect(await k.port.releaseRun(ticket.id)).toBe(false);
     expect((await db.query("select 1 from agent_runs where conversation_id = $1 and status in ('queued', 'running')", [k.g])).rowCount).toBe(0);
     expect((await readAs(k.member, k.g, seq))?.refused).toEqual([{ agentId: k.agent.id, reason: "others_limit" }]);
-    // The worker's own finish after it changes nothing.
-    await k.port.finish(ticket, { status: "cancelled" }, null, NOTHING);
+    // The worker's own finish, given what `begin` returned, changes nothing and announces nothing more.
+    await k.port.finish(ticket, ended as RunEnd, null, NOTHING);
     expect(await k.lastRun()).toMatchObject({ id: ticket.id, status: "cancelled", error: null });
+    expect(ends()).toBe(1);
+    pushed.mockRestore();
   });
 
   /** The owner's notices that others' use reached their number (`others_limit_reached`), in the Agent's own conversation. */
