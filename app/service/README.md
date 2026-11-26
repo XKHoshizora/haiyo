@@ -405,9 +405,13 @@ no longer reads why an earlier call was refused) and nothing else; code from bef
 with 077 no longer reads what an Agent held of its own for others (`agents.others_budget_micro`, `others_answers`,
 `proactive_budget_micro`) nor an owner's answers number (`accounts.others_answers`): the columns stay, unread and unwritten,
 and `accounts.others_points_micro` is the owner's one number. So the code from before 077, put back on the schema, finds those
-columns as it left them (an Agent made since has their defaults). A tab left open across the deploy still runs the old client: its Agent form sends `othersLimit` or
-`proactiveBudget` and its use page `answers`, which the new service refuses (400 `invalid_request`) until the page is reloaded;
-the rest of the old client works.
+columns as it left them (an Agent made since has their defaults).
+
+Before this deploy, take `answersPerDay`, `outputTokens` and `overCapNotes` out of the site's `OTHERS` if it pins any of them:
+they are no keys of `OTHERS` any more, and a value naming one stops the new service at start-up (Configuration: an invalid value
+names the variable), whatever `SOCIAL.enabled` says. After it, every open tab must be reloaded: an old client reads the new
+`GET /api/me/others-use` answer as unreadable (its page shows no use), never shows a sender's `refused` line, and its Agent form
+(`othersLimit`, `proactiveBudget`) and use page (`answers`) send what the new service refuses (400 `invalid_request`).
 
 **What 076 does to replies queued or under way at the deploy.** 076 also adds `agent_runs.owner_call_seqs` (which of a reply's
 calls were accepted as its owner's own; "Whose reply a reply is"). A run from before the column has NO owner call, except one
@@ -1675,9 +1679,10 @@ A call the number refuses reaches nothing — not even a reply under way — and
 message (`refused`, reason `others_limit`: Messages, `WireMessage`), whether it was refused at the trigger or as its reply was admitted
 (the reply ends `cancelled` with no error — no model call, nothing held or charged — and the message is pushed to its sender again).
 The owner is told once a site day, in the own conversation of the Agent a call was refused for, whichever of their Agents it was
-(`others_limit_reached`, System notices; a reply refused as it was admitted is counted, `others_limit_refused`); the conversation
-the call was made in is told nothing. A reply
-nobody asked for that the number refuses tells nobody.
+(`others_limit_reached`, System notices; a reply refused as it was admitted is counted, `others_limit_refused`), of the number that
+refused it (read in the refusal's own transaction, so a raise just after does not change what the notice says); the conversation
+the call was made in is told nothing. A reply nobody asked for that the number refuses tells nobody, and so does a reply for others
+with no call left (a follow-up whose calls a block took away).
 
 Replies for others are made as the owner's own are: at the model's own output limit, with the thinking allowance of their level on
 top — the owner's setting per Agent (`othersReasoning`; a reply nobody asked for: `proactiveReasoning`; `none` for a new Agent, Owner
@@ -3469,7 +3474,9 @@ refusal found after the send (as the reply was admitted, or a follow-up of the c
 it. Nobody else's copy ever carries it; an Agent's message carries none (nobody reads a line for it); and a call refused for
 access (a block, a stop, removed, owner-only, paused) is never recorded: it stays quiet. The web shows one line a reason under
 the sender's message, the refused Agents' names before it: “「小助手」：这个 Agent 今天不能再回复别人了” (`others_limit`),
-“「小助手」：太频繁，稍后再试” (`too_often`).
+“「小助手」：太频繁，稍后再试” (`too_often`); an Agent whose name the client does not know is counted instead
+(“「小助手」和另外 1 个 Agent：…”), and with none known the reason stands alone. A copy older than one that carries a refusal (the
+send's answer after a later push) never takes a line away: the lines are merged by Agent.
 
 An Agent's reply is an ordinary `text` message from the Agent; `reasoning`, `stopped`, `ack`, `truncated`, `proposal`,
 `via`, `lookups`, `found`, `queries` and `cites` appear only on those, only when they apply. Render its text as Markdown (spec 6.6);
