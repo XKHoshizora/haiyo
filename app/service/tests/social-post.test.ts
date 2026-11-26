@@ -42,8 +42,8 @@ type World = Awaited<ReturnType<typeof world>>;
 const posted = async (w: World) =>
   (await db.query<{ seq: number; body: Record<string, unknown>; mentions: unknown }>("select seq::int, body, mentions from messages where conversation_id = $1 and sender_id = $2 and kind = 'text'", [w.conv, w.agent.id])).rows;
 const runOf = async (w: World) =>
-  (await db.query<{ id: string; status: string; error: string | null; interrupted: string | null; pending: string | null }>(
-    "select id, status, error, interrupted, pending_seq::text as pending from agent_runs where agent_id = $1 and conversation_id = $2 and purpose = 'reply' order by created_at, id limit 1",
+  (await db.query<{ id: string; status: string; error: string | null; interrupted: string | null }>(
+    "select id, status, error, interrupted from agent_runs where agent_id = $1 and conversation_id = $2 and purpose = 'reply' order by created_at, id limit 1",
     [w.agent.id, w.conv],
   )).rows[0]!;
 const usageRecords = async (runId: string) => Number((await db.query<{ n: string }>("select count(*) as n from usage_records where run_id = $1", [runId])).rows[0]!.n);
@@ -154,7 +154,7 @@ describe("the post checks access and notes as they are now", () => {
     expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
     expect(await posted(w)).toEqual([]);
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
-    expect(await runOf(w)).toMatchObject({ status: "cancelled", error: "access_ended", interrupted: "access_ended", pending: null });
+    expect(await runOf(w)).toMatchObject({ status: "cancelled", error: "access_ended", interrupted: "access_ended" });
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
     expect(await usageRecords(ticket.id)).toBe(1);
   });
@@ -167,7 +167,7 @@ describe("the post checks access and notes as they are now", () => {
     expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
     expect(await posted(w)).toEqual([]);
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
-    expect(await runOf(w)).toMatchObject({ status: "cancelled", error: "notes_changed", pending: null });
+    expect(await runOf(w)).toMatchObject({ status: "cancelled", error: "notes_changed" });
     await say(w.v, w.conv, "再问一次");
     expect((await db.query("select 1 from agent_runs where agent_id = $1 and status = 'queued'", [w.agent.id])).rowCount).toBe(1);
   });

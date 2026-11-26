@@ -90,12 +90,17 @@ async function grouped() {
 
 const runsOf = async (agentId: string, conv: string) =>
   (
-    await db.query<{ id: string; status: string; error: string | null; interrupted: string | null; pending: number | null; caller: string | null; calls: number[] | null }>(
-      `select id, status, error, interrupted, pending_seq::int as pending, caller_id as caller, call_seqs::int[] as calls
+    await db.query<{ id: string; status: string; error: string | null; interrupted: string | null; caller: string | null; calls: number[] | null }>(
+      `select id, status, error, interrupted, caller_id as caller, call_seqs::int[] as calls
          from agent_runs where agent_id = $1 and conversation_id = $2 and purpose = 'reply' order by created_at, id`,
       [agentId, conv],
     )
   ).rows;
+/** The seqs of the calls waiting for the Agent in `conv` behind its active reply (`deferred_calls`), oldest first. */
+const waitingOf = async (agentId: string, conv: string): Promise<number[]> =>
+  (await db.query<{ seq: number }>("select message_seq::int as seq from deferred_calls where agent_id = $1 and conversation_id = $2 order by message_seq", [agentId, conv])).rows.map(
+    (r) => r.seq,
+  );
 const textsOf = async (conv: string, agentId: string) =>
   (await db.query<{ seq: number; body: { text?: string } }>("select seq::int, body from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [conv, agentId])).rows;
 const usageRecords = async (runId: string) => Number((await db.query<{ n: string }>("select count(*) as n from usage_records where run_id = $1", [runId])).rows[0]!.n);
@@ -132,7 +137,8 @@ describe("I1a.1: access ends while a visitor's reply is mid-call", () => {
       expect(await working).toBe(true);
       expect(await textsOf(w.conv, w.agent.id)).toEqual([]);
       const [run] = await runsOf(w.agent.id, w.conv);
-      expect(run).toMatchObject({ status: "cancelled", error: "access_ended", pending: null });
+      expect(run).toMatchObject({ status: "cancelled", error: "access_ended" });
+      expect(await waitingOf(w.agent.id, w.conv)).toEqual([]);
       expect(await usageRecords(run!.id)).toBe(1);
       expect(streamed(ownerSocket, w.conv, fromOwner)).toEqual([]);
       expect(streamed(visitorSocket, w.conv, fromVisitor)).toEqual([]);
@@ -168,7 +174,8 @@ describe("I1a.1: access ends while a visitor's reply is mid-call", () => {
     expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
     await say(w.owner, w.conv, "我来回答他");
     expect((await stop(w.owner, w.v)).status).toBe(200);
-    expect((await runsOf(w.agent.id, w.conv))[0]).toMatchObject({ status: "running", interrupted: "owner_spoke", pending: null });
+    expect((await runsOf(w.agent.id, w.conv))[0]).toMatchObject({ status: "running", interrupted: "owner_spoke" });
+    expect(await waitingOf(w.agent.id, w.conv)).toEqual([]);
     expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
@@ -328,14 +335,15 @@ describe("I1a.4: bars and blocks in a shared group (one access decision at every
     expect(await app.agentWorker.runOnce()).toBe(true);
   });
 
-  it("停止往来 while a group reply to that person is being written: not posted, ended quietly with NO error, settled once; a call someone else noted on it is answered", async () => {
+  it("停止往来 while a group reply to that person is being written: not posted, ended quietly with NO error, settled once; a call someone else made that waited behind it is answered", async () => {
     const w = await grouped();
     await say(w.v, w.g, `${w.at} V-ASK 在吗`);
     const ticket = (await app.agentPort.claimNext())!;
     expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
     const noted = await say(w.w, w.g, `${w.at} W-ASK 我也问`);
     expect((await stop(w.owner, w.v)).status).toBe(200);
-    expect((await runsOf(w.y.id, w.g))[0]).toMatchObject({ status: "running", interrupted: "access_ended", pending: noted });
+    expect((await runsOf(w.y.id, w.g))[0]).toMatchObject({ status: "running", interrupted: "access_ended" });
+    expect(await waitingOf(w.y.id, w.g)).toEqual([noted]);
     expect(app.agentPort.shouldStop(ticket)).toBe(true);
     expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
@@ -352,21 +360,28 @@ describe("I1a.4: bars and blocks in a shared group (one access decision at every
     expect((await textsOf(w.g, w.y.id)).map((m) => m.body.text)).toEqual(["W 的答案"]);
   });
 
-  it("a queued group reply whose only caller is stopped ends at once, quietly; one with another caller goes on as theirs", async () => {
+  it("a queued group reply whose only caller is stopped ends at once, quietly; another person's call that waited behind it gets a reply of its own, theirs", async () => {
     const w = await grouped();
     const first = await say(w.v, w.g, `${w.at} V-ASK`);
     const second = await say(w.w, w.g, `${w.at} W-ASK`);
-    expect((await runsOf(w.y.id, w.g))[0]!.calls).toEqual([first, second]);
+    expect((await runsOf(w.y.id, w.g))[0]!.calls).toEqual([first]);
+    expect(await waitingOf(w.y.id, w.g)).toEqual([second]);
     expect((await stop(w.owner, w.v)).status).toBe(200);
-    expect((await runsOf(w.y.id, w.g))[0]).toMatchObject({ status: "queued", error: null, caller: w.w.id, calls: [second] });
+    const runs = await runsOf(w.y.id, w.g);
+    expect(runs.map((r) => [r.status, r.error, r.caller, r.calls])).toEqual([
+      ["cancelled", null, w.v.id, [first]],
+      ["queued", null, w.w.id, [second]],
+    ]);
+    expect(await waitingOf(w.y.id, w.g)).toEqual([]);
     gateway.reply("只回 W");
     expect(await app.agentWorker.runOnce()).toBe(true);
     const other = await grouped();
     await say(other.v, other.g, `${other.at} V-ASK`);
     expect((await stop(other.owner, other.v)).status).toBe(200);
-    expect((await runsOf(other.y.id, other.g))[0]).toMatchObject({ status: "cancelled", error: null, pending: null });
+    expect((await runsOf(other.y.id, other.g))[0]).toMatchObject({ status: "cancelled", error: null });
     expect(await app.agentWorker.runOnce()).toBe(false);
   });
+
 
   it("a disabled Agent answers nobody in a group: an @ is refused, it is no option for a reply nobody asked for, and its owner's own @ still goes", async () => {
     const w = await grouped();

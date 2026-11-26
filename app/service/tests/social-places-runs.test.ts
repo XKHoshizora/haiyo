@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { followUp, RUN_COLUMNS, toWireRun, type RunRow, type RunStatus } from "../src/agents/runs.ts";
-import { lockAgent } from "../src/agents/store.ts";
+import { RUN_COLUMNS, toWireRun, type RunRow, type RunStatus } from "../src/agents/runs.ts";
+import { NOTHING, type RunTicket } from "../src/agents/runtime/port.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -11,8 +11,8 @@ import { closeAllSockets, connect, type Push } from "./helpers/ws.ts";
 /**
  * Lane B, B5a: `placeOf` at every run site and in the hub. A social conversation (`agent_social`) is a place of its own: the run of an
  * Agent there is told to its owner as a run and to every other current member (the visitor) as a state, never as the run; the visitor
- * reads `GET …/runs`; the owner stops and dismisses by the group path (as an observer, a current member); retry is 404; a follow-up keeps
- * its caller (the visitor) in lane `others`.
+ * reads `GET …/runs`; the owner stops and dismisses by the group path (as an observer, a current member); retry is 404; the visitor's
+ * message that waited for a reply under way gets a reply of its own, its caller the visitor, in lane `others`.
  */
 const gateway = scriptedGateway();
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false, config: SOCIAL_ON });
@@ -132,41 +132,42 @@ describe("GET …/runs answers the visitor; retry is 404; the owner stops and di
   });
 });
 
-describe("a follow-up keeps its caller", () => {
-  it("a message the visitor noted during the run is queued with caller V and lane others", async () => {
+describe("what the visitor writes while a reply runs keeps its caller", () => {
+  /** The visitor's queued reply, made running as the worker's claim makes it. */
+  const claim = async (w: Awaited<ReturnType<typeof world>>): Promise<RunTicket> => {
+    const { rows } = await db.query<{ id: string }>("update agent_runs set status = 'running', started_at = now() where agent_id = $1 and conversation_id = $2 and status = 'queued' returning id", [
+      w.agent.id,
+      w.conv,
+    ]);
+    return { id: rows[0]!.id, agentId: w.agent.id, ownerId: w.owner.id, conversationId: w.conv };
+  };
+
+  it("a message the visitor sent during the run waits, and as the run ends its reply is queued with caller V and lane others", async () => {
     const w = await world();
+    expect((await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "第一句", clientTxn: "spf1a" })).status).toBe(201);
+    const ticket = await claim(w);
     const sent = await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "再问一句", clientTxn: "spf1" });
     expect(sent.status).toBe(201);
     const seq = sent.json.message.seq as number;
-    // The send queued a run of its own (B6); what the test needs is the state after that run was folded into: none active.
-    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where status = 'queued'");
-    // The ended run covered the opening notice (seq 1), noted the visitor's message (`pending_seq`), and recorded no call of it.
-    const ended = await seedRun(w, { status: "done" as RunStatus, pending: seq, caller: w.v.id });
-    await db.query("update agent_runs set covers_seq = 1, call_seqs = '{}' where id = $1", [ended.id]);
-    const followed = await db.tx(async (t) => {
-      const agent = await lockAgent(t, w.agent.id, w.conv);
-      return followUp(t, agent, w.conv, 1, seq, [], [], app.deps.config);
-    });
-    expect(followed.run).not.toBeNull();
-    const queued = await rowOf(followed.run!.run.id);
-    expect(queued).toMatchObject({ status: "queued" });
-    const { rows } = await db.query<{ caller_id: string; lane: string; triggered_by: string; asker_ids: string[] }>(
-      "select caller_id, lane, triggered_by, asker_ids from agent_runs where id = $1",
-      [queued.id],
+    expect((await db.query("select message_seq::int as seq, lane, caller_id from deferred_calls where agent_id = $1", [w.agent.id])).rows).toEqual([{ seq, lane: "others", caller_id: w.v.id }]);
+    await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
+    const { rows } = await db.query<{ status: string; caller_id: string; lane: string; triggered_by: string; asker_ids: string[]; calls: number[] }>(
+      "select status, caller_id, lane, triggered_by, asker_ids, call_seqs::int[] as calls from agent_runs where agent_id = $1 and conversation_id = $2 order by created_at desc limit 1",
+      [w.agent.id, w.conv],
     );
-    expect(rows[0]).toMatchObject({ caller_id: w.v.id, lane: "others", triggered_by: "human" });
+    expect(rows[0]).toMatchObject({ status: "queued", caller_id: w.v.id, lane: "others", triggered_by: "human", calls: [seq] });
     expect(rows[0]!.asker_ids).toEqual([w.v.id]);
   });
 
-  it("nothing is queued when the visitor no longer has access", async () => {
+  it("nothing is queued when the visitor no longer has access as the run ends", async () => {
     const w = await world();
-    const sent = await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "再问一句", clientTxn: "spf2" });
-    const seq = sent.json.message.seq as number;
-    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where status = 'queued'");
-    const ended = await seedRun(w, { status: "done" as RunStatus, pending: seq, caller: w.v.id });
-    await db.query("update agent_runs set covers_seq = 1 where id = $1", [ended.id]);
+    expect((await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "第一句", clientTxn: "spf2a" })).status).toBe(201);
+    const ticket = await claim(w);
+    expect((await api(app, w.v, "POST", `/api/conversations/${w.conv}/messages`, { text: "再问一句", clientTxn: "spf2" })).status).toBe(201);
     await db.query(`update agent_contacts set state = 'ended', basis = null, end_reason = 'removed' where agent_id = $1 and subject_id = $2`, [w.agent.id, w.v.id]);
-    const followed = await db.tx(async (t) => followUp(t, await lockAgent(t, w.agent.id, w.conv), w.conv, 1, seq, [], [], app.deps.config));
-    expect(followed.run).toBeNull();
+    await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
+    expect((await db.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status = 'queued'", [w.agent.id, w.conv])).rowCount).toBe(0);
+    expect((await db.query("select 1 from deferred_calls where agent_id = $1", [w.agent.id])).rowCount).toBe(0);
   });
 });
+

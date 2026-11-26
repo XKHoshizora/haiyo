@@ -14,7 +14,7 @@ import { closeAllSockets } from "./helpers/ws.ts";
 /**
  * Lane B, B6: `triggerInSocial`. A person's message in a social conversation calls the Agent (one run, caller the person, lane
  * `others`); a second folds into it. The owner's message there is an interjection: it cancels a queued run (`owner_spoke`),
- * interrupts a running one (`interrupted`, no pending, its id handed to `interruptRuns`) and calls nobody. Only the real owner
+ * interrupts a running one (`interrupted`, what waited behind it dropped, its id handed to `interruptRuns`) and calls nobody. Only the real owner
  * (an observer's membership of the Agent's owner) is a supervisor: a visitor's name is no part of it.
  */
 const gateway = scriptedGateway();
@@ -47,11 +47,11 @@ const refusals = async (w: World) =>
     (r) => [r.seq, r.reason],
   );
 
-type RunView = RunRow & { lane: string; caller_id: string | null; triggered_by: string; asker_ids: string[] | null; call_seqs: string[] | null; pending: string | null; interrupted: string | null; covers: string };
+type RunView = RunRow & { lane: string; caller_id: string | null; triggered_by: string; asker_ids: string[] | null; call_seqs: string[] | null; interrupted: string | null; covers: string };
 const runsOf = async (w: World): Promise<RunView[]> =>
   (
     await db.query<RunView>(
-      `select ${RUN_COLUMNS}, r.lane, r.caller_id, r.triggered_by, r.asker_ids, r.call_seqs::text[] as call_seqs, r.pending_seq::text as pending, r.interrupted, r.covers_seq::text as covers
+      `select ${RUN_COLUMNS}, r.lane, r.caller_id, r.triggered_by, r.asker_ids, r.call_seqs::text[] as call_seqs, r.interrupted, r.covers_seq::text as covers
          from agent_runs r where r.agent_id = $1 and r.conversation_id = $2 and r.purpose = 'reply' order by r.created_at, r.id`,
       [w.agent.id, w.conv],
     )
@@ -70,14 +70,15 @@ describe("a person's message", () => {
     expect(after[0]).toMatchObject({ status: "queued", covers: String(second), call_seqs: [String(first), String(second)] });
   });
 
-  it("folds into a running run as a noted call", async () => {
+  it("waits for a running run (never folded into it): one run, and the call waiting behind it", async () => {
     const w = await world();
     await say(w.v, w.conv, "你好");
     await app.agentPort.claimNext();
     const second = await say(w.v, w.conv, "还有一句");
     const [run] = await runsOf(w);
-    expect(run).toMatchObject({ status: "running", pending: String(second) });
+    expect(run).toMatchObject({ status: "running" });
     expect(await runsOf(w)).toHaveLength(1);
+    expect((await db.query("select message_seq::int as seq, lane, caller_id from deferred_calls where agent_id = $1", [w.agent.id])).rows).toEqual([{ seq: second, lane: "others", caller_id: w.v.id }]);
   });
 
   it("a paused Agent, a deleted one and one with no model do nothing", async () => {
@@ -142,7 +143,7 @@ describe("the owner's interjection", () => {
     const spoken = await say(w.owner, w.conv, "我来说两句");
     const runs = await runsOf(w);
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ status: "cancelled", error: "owner_spoke", pending: null });
+    expect(runs[0]).toMatchObject({ status: "cancelled", error: "owner_spoke" });
     expect(spoken).toBeGreaterThan(0);
   });
 
@@ -154,7 +155,7 @@ describe("the owner's interjection", () => {
     const interrupt = vi.spyOn(app.agentPort, "interruptRuns");
     await say(w.owner, w.conv, "我来说两句");
     const [run] = await runsOf(w);
-    expect(run).toMatchObject({ status: "running", interrupted: "owner_spoke", pending: null });
+    expect(run).toMatchObject({ status: "running", interrupted: "owner_spoke" });
     expect(interrupt).toHaveBeenCalledWith([ticket.id]);
     expect(await runsOf(w)).toHaveLength(1);
     // The run goes on to end without a post (post is refused), once.
@@ -253,13 +254,15 @@ describe("the review's cases", () => {
     expect((await runsOf(w)).length).toBe(before);
   });
 
-  it("m9: the visitor writes while an interrupted run is still running: the follow-up answers it (caller V)", async () => {
+  it("m9: the visitor writes while an interrupted run is still running: it waits, and its reply answers it as the run ends (caller V)", async () => {
     const w = await world();
     await say(w.v, w.conv, "你好");
     const ticket = (await app.agentPort.claimNext())!;
     await say(w.owner, w.conv, "我来说两句");
     const second = await say(w.v, w.conv, "那我再问一句");
-    expect((await runsOf(w))[0]).toMatchObject({ status: "running", interrupted: "owner_spoke", pending: String(second) });
+    expect((await runsOf(w))[0]).toMatchObject({ status: "running", interrupted: "owner_spoke" });
+    expect((await db.query("select message_seq::int as seq from deferred_calls where agent_id = $1", [w.agent.id])).rows).toEqual([{ seq: second }]);
+
     await app.agentPort.finish(ticket, { status: "cancelled" }, null, { inputChars: 0, outputChars: 0 });
     const queued = (await runsOf(w)).filter((r) => r.status === "queued");
     expect(queued).toHaveLength(1);
