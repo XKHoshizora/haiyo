@@ -15,6 +15,7 @@ import { useApp } from "./helpers/harness.ts";
 import { paidReply, grant } from "./helpers/metering.ts";
 import { agentsOf, BIG_MODEL, OTHERS_ENV, PAID_MODEL, POINT, providerAgent, seedRun, setOwnerLimit } from "./helpers/others.ts";
 import { boxOf, othersKitchen } from "./helpers/others-kitchen.ts";
+import { providerBody } from "./helpers/providers.ts";
 import { connect, closeAllSockets } from "./helpers/ws.ts";
 
 /**
@@ -474,7 +475,67 @@ describe("a call refused by N: one line for its sender alone, and one notice a d
   });
 });
 
+describe("the number holds for calls that waited behind a reply (limits redesign, Part 2): met again as each is taken", () => {
+  /** `who` calls the kitchen's Agent: the message's seq. */
+  const calls = async (k: Awaited<ReturnType<typeof othersKitchen>>, who: Actor, text: string): Promise<number> => {
+    const sent = await api(app, who, "POST", `/api/conversations/${k.g}/messages`, { text, clientTxn: `w${++n}x${Math.floor(Math.random() * 1e6)}` });
+    expect(sent.status).toBe(201);
+    return sent.json.message.seq as number;
+  };
+  const waitingIn = async (k: Awaited<ReturnType<typeof othersKitchen>>) =>
+    (await db.query<{ seq: number }>("select message_seq::int as seq from deferred_calls where agent_id = $1 and conversation_id = $2 order by message_seq", [k.agent.id, k.g])).rows.map((r) => r.seq);
+  const activeIn = async (k: Awaited<ReturnType<typeof othersKitchen>>) =>
+    (await db.query("select 1 from agent_runs where conversation_id = $1 and status in ('queued', 'running')", [k.g])).rowCount;
+  const REPLY = { reasoning: "", stopped: false, truncated: false } as const;
+
+  it("invariants 3 and 4: a reply admitted below N posts whole as others' use reaches N; the call that waited behind it gets no reply, and its sender alone reads the line on their message", async () => {
+    const k = await othersKitchen(app, db);
+    await setOwnerLimit(db, k.owner.id, 2n * POINT);
+    await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: 2n * POINT - 1n });
+    await calls(k, k.member, "@chef 一");
+    const ticket = (await k.port.claimNext())!;
+    expect("call" in (await k.port.begin(ticket))).toBe(true);
+    const waited = await calls(k, k.third, "@chef 二");
+    expect(await waitingIn(k)).toEqual([waited]);
+    // Others' use reaches N while the reply is in flight: what it writes is posted whole, nothing cut for cost.
+    await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: 1n });
+    const long = "这家店的招牌菜很多，".repeat(120);
+    expect(await k.port.post(ticket, { text: long, ...REPLY })).toBe("posted");
+    await k.port.finish(ticket, { status: "done" }, null, NOTHING);
+    expect(await k.posted()).toEqual([long]);
+    // The call that waited, taken as the reply ended, meets N: no reply; the third reads why on their message, nobody else does.
+    expect([await activeIn(k), await waitingIn(k)]).toEqual([0, []]);
+    expect((await readAs(k.third, k.g, waited))?.refused).toEqual([{ agentId: k.agent.id, reason: "others_limit" }]);
+    expect(await readAs(k.member, k.g, waited)).not.toHaveProperty("refused");
+    expect(await readAs(k.owner, k.g, waited)).not.toHaveProperty("refused");
+    await expect.poll(async () => k.notices()).toBe(1);
+  });
+
+  it("invariant 6: an Agent on its owner's own key is bounded the same — once its chains' nominal count reaches N, the call that waited behind its reply gets none", async () => {
+    const k = await othersKitchen(app, db);
+    const provider = (await api(app, k.owner, "POST", "/api/providers", providerBody({ models: [{ name: "mine" }] }))).json;
+    expect((await api(app, k.owner, "PATCH", `/api/agents/${k.agent.id}`, { model: { source: "provider", providerId: provider.id, model: "mine" } })).status).toBe(200);
+    // N is two own-key chains' nominal count: the member's reply, admitted, counts one; the third's call is accepted and waits.
+    await setOwnerLimit(db, k.owner.id, 2n * OWN_KEY_NOMINAL_MICRO);
+    await calls(k, k.member, "@chef 一");
+    const ticket = (await k.port.claimNext())!;
+    expect("call" in (await k.port.begin(ticket))).toBe(true);
+    expect(await othersUseToday(db, config(), k.owner.id, new Date())).toBe(OWN_KEY_NOMINAL_MICRO);
+    const waited = await calls(k, k.third, "@chef 二");
+    expect(await waitingIn(k)).toEqual([waited]);
+    // Another chain of it for someone else is admitted meanwhile (elsewhere): N is reached.
+    await providerRun({ ownerId: k.owner.id, agent: { agentId: k.agent.id, conversationId: k.agent.conversationId }, lane: "others" });
+    expect(await k.port.post(ticket, { text: "好吃的在楼下。", ...REPLY })).toBe("posted");
+    await k.port.finish(ticket, { status: "done" }, null, NOTHING);
+    expect(await othersUseToday(db, config(), k.owner.id, new Date())).toBe(2n * OWN_KEY_NOMINAL_MICRO);
+
+    expect([await activeIn(k), await waitingIn(k)]).toEqual([0, []]);
+    expect((await readAs(k.third, k.g, waited))?.refused).toEqual([{ agentId: k.agent.id, reason: "others_limit" }]);
+  });
+});
+
 describe("a call refused for being too often", () => {
+
   it("over the caller's calls a minute: the sender's copy says so (there is no notCalled any more)", async () => {
     const k = await othersKitchen(app, db);
     const limit = config().agentCallerRunsPerMinute;
@@ -512,18 +573,21 @@ describe("a call refused for being too often", () => {
     expect(thirdSocket.events.filter((e) => e.type === "run")).toEqual([]);
   });
 
-  it("over the caller's minute or the owner's others' minute, a follow-up for others is no rate_limited run either: its calls' senders read the line", async () => {
+  it("over the owner's others' minute, a call made while a reply runs (one that would wait) is no rate_limited run either: refused as it is made (C-a), its sender reads the line, nothing waits", async () => {
     const k = await othersKitchen(app, db);
     await k.ask("@chef 一");
     const ticket = (await k.port.claimNext())!;
+    await ownerMinuteFull(k);
     const noted = await api(app, k.third, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 二", clientTxn: "n7" });
     const seq = noted.json.message.seq as number;
-    await ownerMinuteFull(k);
+    expect(noted.json.message.refused).toEqual([{ agentId: k.agent.id, reason: "too_often" }]);
+    expect((await db.query("select 1 from deferred_calls where agent_id = $1", [k.agent.id])).rowCount).toBe(0);
     await k.port.finish(ticket, { status: "done" }, null, NOTHING);
     expect(await failedIn(k.g)).toBe(0);
     expect((await db.query("select 1 from agent_runs where conversation_id = $1 and status = 'queued'", [k.g])).rowCount).toBe(0);
     expect((await readAs(k.third, k.g, seq))?.refused).toEqual([{ agentId: k.agent.id, reason: "too_often" }]);
   });
+
 
   it("the owner's own lane over its minute is as before: the owner's rate_limited run, no line", async () => {
     const k = await othersKitchen(app, db);
