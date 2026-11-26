@@ -192,8 +192,10 @@ export function noticeText(system, fallback, nameOf, where = {}) {
     case "agent_budget_reached":
       text = `${n(system.agentId)}已达到本次接话的点数上限，有人发言后继续。`;
       break;
-    case "agent_daily_budget_reached":
-      text = `「${n(system.agentId)}」今天只回复它的主人，明天恢复。`;
+    case "others_limit_reached":
+      // The owner's notice, in their Agent's own conversation: others' use of their Agents reached their one number today (`points`).
+      if (typeof system.points !== "string" || !/^\d{1,12}(\.\d{1,6})?$/.test(system.points)) return fallback;
+      text = `别人今天用你的 Agent 已经花到每天上限 ${formatPoints(system.points)} 点，今天不再回复别人；已经在回复的会照常回完。`;
       break;
     case "persona_fact":
       // The persona aid's card (pages/SocialCards.jsx draws it): for its Agent's owner alone (`card`), in that Agent's own conversation, while the
@@ -458,14 +460,28 @@ function kindOf(kind, attachment) {
   return "text";
 }
 
+/** Why a limit kept a call of my message from an Agent (`refused[].reason`, the service's), as the line under it says it. */
+const REFUSED_TEXTS = {
+  others_limit: "这个 Agent 今天不能再回复别人了",
+  too_often: "太频繁，稍后再试",
+};
+
 /**
- * The line under my message some of whose calls on other people's Agents my own calls a minute stopped (`agentIds`):
- * their names joined with 、 in 「」, or 有的 Agent (no 「」: they are for real names) while a name is not known.
+ * The lines under my message some of whose calls a limit refused (`refused`, on my copy alone): one a reason, in the order the reasons
+ * first come, each the names of its Agents joined with 、 in 「」 before it — or the reason alone (「」 are for real names) while a name
+ * is not known. A reason this client does not know says nothing.
  */
-function notCalledText(agentIds, nameOf) {
-  const names = agentIds.map(nameOf);
-  const who = names.every((name) => typeof name === "string" && name !== "") ? `「${names.join("、")}」` : "有的 Agent ";
-  return `你 @ 得太频繁了，${who}这次没有收到，稍后再试。`;
+function refusedLines(refused, nameOf) {
+  const byReason = new Map();
+  for (const r of refused) {
+    if (!r || typeof r.agentId !== "string" || !Object.hasOwn(REFUSED_TEXTS, r.reason)) continue;
+    byReason.set(r.reason, [...(byReason.get(r.reason) ?? []), r.agentId]);
+  }
+  return [...byReason].map(([reason, agentIds]) => {
+    const names = agentIds.map(nameOf);
+    const known = names.every((name) => typeof name === "string" && name !== "");
+    return known ? `「${names.join("、")}」：${REFUSED_TEXTS[reason]}` : REFUSED_TEXTS[reason];
+  });
 }
 
 function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, keepsOwners, proposalAt, social }) {
@@ -523,8 +539,8 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
       m.kind === "text" && typeof agentId === "string" && m.senderId === agentId && Array.isArray(m.queries)
         ? m.queries.filter((q) => typeof q === "string" && q.trim() !== "")
         : [],
-    // Under my own message only: the Agents my own calls a minute kept it from (what its send answered, model.js `markSent`).
-    notCalled: m.senderId === meId && Array.isArray(m.notCalled) && m.notCalled.length > 0 ? notCalledText(m.notCalled, nameOf) : null,
+    // Under my own message only: the Agents a limit kept it from, and why (the service sends `refused` to its sender alone).
+    refused: m.senderId === meId && Array.isArray(m.refused) ? refusedLines(m.refused, nameOf) : [],
   };
   view.webCites = m.kind === "text" ? webCitesView(m.webCites, view.webSources, m.text ?? "") : [];
   if (hidden) view.hidden = true;
@@ -702,12 +718,6 @@ export const isProactiveLevel = (id) => PROACTIVE_LEVELS.some(([level]) => level
 /** The label of level `id`; the default's (适中) for anything else. */
 export const proactiveLevelLabel = (id) => (PROACTIVE_LEVELS.find(([level]) => level === id) ?? PROACTIVE_LEVELS[1])[1];
 
-/** `{answers: 1..1000 | null, points: decimal string | null}`: an Agent's own limit as the service says it. */
-const isOthersLimit = (v) =>
-  v !== null && typeof v === "object" && (v.answers === null || Number.isInteger(v.answers)) && (v.points === null || typeof v.points === "string");
-/** `{answers: count, points: decimal string}`: what others used of an Agent today. */
-const isOthersUsed = (v) => v !== null && typeof v === "object" && Number.isInteger(v.answers) && typeof v.points === "string";
-
 /** The prototype's two private-reply choices, by the service's `replyMode`. */
 const PRIVATE_REPLY = { always: "收到消息时回复", mention: "仅在我点名时回复" };
 
@@ -733,18 +743,9 @@ function agentView(a, version, loaded) {
     groupMentions: a.groupMentions === "owner" ? "owner" : "members",
     /** 一次接话最多花费: decimal points as the service says them (its default when it says nothing). */
     chainBudget: typeof a.chainBudget === "string" ? a.chainBudget : "50",
-    /**
-     * The Agent's own limit on what others spend on it (a sub-limit inside its owner's two daily numbers; null in a part = none of its
-     * own) and what others used of it today (answers, decimal points): only when the service says them.
-     */
-    ...(isOthersLimit(a.othersLimit) ? { othersLimit: { answers: a.othersLimit.answers, points: a.othersLimit.points } } : {}),
-    ...(isOthersUsed(a.othersUsedToday) ? { othersUsedToday: { answers: a.othersUsedToday.answers, points: a.othersUsedToday.points } } : {}),
-    /** 主动参与群聊 with its level and daily budget (decimal points): only the owner's view has these. */
+    /** 主动参与群聊 with how readily it joins in: only the owner's view has these. */
     ...(typeof a.proactive === "boolean" ? { proactive: a.proactive } : {}),
     ...(isProactiveLevel(a.proactiveLevel) ? { proactiveLevel: a.proactiveLevel } : {}),
-    ...(typeof a.proactiveBudget === "string" ? { proactiveBudget: a.proactiveBudget } : {}),
-    /** What its proactive replies cost today (decimal points): the service says it to the owner alone. */
-    ...(typeof a.proactiveSpentToday === "string" ? { proactiveSpentToday: a.proactiveSpentToday } : {}),
     /** How it addresses me and the others: only the owner's view has these (absent, never defaulted, otherwise). */
     ...(typeof a.ownerAppellation === "string" || a.ownerAppellation === null ? { ownerAppellation: a.ownerAppellation } : {}),
     ...(Array.isArray(a.appellations) ? { appellations: a.appellations } : {}),
@@ -1018,6 +1019,8 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     webSearchAvailable: model.webSearchAvailable === true,
     // About what one search costs, in points (`GET /api/models` `webSearchPoints`), for the form's line; null: not said.
     webSearchPoints: typeof model.webSearchPoints === "string" ? model.webSearchPoints : null,
+    // What one reply to someone else on my own key counts toward my one number (`GET /api/models` `othersOwnKeyPoints`); null: not said.
+    othersOwnKeyPoints: typeof model.othersOwnKeyPoints === "string" ? model.othersOwnKeyPoints : null,
     /** {days, lines}: how far back turning an Agent's memory on again looks, as the site says; null when not said. */
     memoryCatchUp: model.memoryCatchUp ?? null,
     /** principal id (the real one, mine too) → the version in its avatar URL; for an avatar of someone nobody names. */

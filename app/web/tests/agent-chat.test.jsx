@@ -111,6 +111,17 @@ const input = () => screen.getByLabelText("消息内容");
 const revealed = () => elapse(REVEAL_MAX_LAG_MS + 100);
 const thinkingSummary = () => bubbleLi().querySelector("details > summary")?.textContent ?? null;
 
+describe("the owner's notice when others' use of my Agents reached my number today", () => {
+  it("is a line in my Agent's own conversation with the number, and the entry to see and change it", async () => {
+    const reached = notice(A1, 3, "服务端句子", { event: "others_limit_reached", actorId: AG1, agentId: AG1, points: "300" });
+    await openAgentChat({ messages: [...BASE, reached] });
+    const line = storedLi(3);
+    expect(line.textContent).toContain("别人今天用你的 Agent 已经花到每天上限 300 点，今天不再回复别人；已经在回复的会照常回完。");
+    await click(within(line).getByRole("link", { name: "查看和修改" }));
+    expect(window.location.pathname).toBe("/settings/others");
+  });
+});
+
 describe("the header and the list row", () => {
   it("carry the prototype's Agent tag; the header says it is my Agent's dedicated chat, nothing about friends", async () => {
     await openAgentChat();
@@ -2054,37 +2065,42 @@ describe("Agents in a group (batch 2C)", () => {
     expect(mainText()).not.toMatch(/别人的 Agent 想的|推来的思考/);
   });
 
-  it("a call of mine my own limit stopped: a muted line under my message names the Agent, kept when my message is pushed to me; under nobody else's, and not when the answer says nothing", async () => {
-    const tooOften = (who) => `你 @ 得太频繁了，「${who}」这次没有收到，稍后再试。`;
-    const notCalled = (...agentIds) => agentIds.map((agentId) => ({ agentId, reason: "caller_rate_limited" }));
-    // What each send answers besides the message: the first, the second and the fourth were stopped (the fourth names
-    // an Agent this client knows nothing of), the third reached its Agent.
-    const extras = [{ notCalled: notCalled(OAG) }, { notCalled: notCalled(OAG, AG1) }, {}, { notCalled: notCalled(STRAY) }];
+  it("a call of mine a limit refused: a muted line under my message names the Agent and why, from the service's `refused` on my copy; under nobody else's", async () => {
+    const refused = (reason, ...agentIds) => agentIds.map((agentId) => ({ agentId, reason }));
+    // What my copy of each message says: the first and the fourth were refused (the fourth names an Agent this client knows nothing
+    // of), the second for two Agents and two reasons, the third reached its Agent.
+    const extras = [
+      { refused: refused("too_often", OAG) },
+      { refused: [...refused("others_limit", OAG, AG1), ...refused("too_often", STRAY)] },
+      {},
+      { refused: refused("others_limit", STRAY) },
+    ];
     let seq = 2;
-    const sendMessage = vi.fn(async (_conv, body) => ({ message: wire(G1, ++seq, ME_ID, body.text), duplicate: false, ...extras.shift() }));
+    const sendMessage = vi.fn(async (_conv, body) => ({ message: wire(G1, ++seq, ME_ID, body.text, extras.shift()), duplicate: false }));
     // Someone else's message, whatever it carries, never shows the line.
-    const { transport } = await openGroup([wire(G1, 1, ANN, "@annbot 一"), wire(G1, 2, BO, "@annbot 二", { notCalled: notCalled(OAG) })], { api: { sendMessage } });
+    const { transport } = await openGroup([wire(G1, 1, ANN, "@annbot 一"), wire(G1, 2, BO, "@annbot 二", { refused: refused("too_often", OAG) })], { api: { sendMessage } });
     const send = async (text) => {
       fireEvent.change(input(), { target: { value: text } });
       fireEvent.keyDown(input(), { key: "Enter" });
       await flush();
     };
-    const lines = () => [...timeline().querySelectorAll("li")].filter((li) => li.textContent.includes("这次没有收到")).map((li) => li.getAttribute("data-msg"));
+    const lines = () => [...timeline().querySelectorAll("li .msg-refused")].map((el) => [el.closest("li").getAttribute("data-msg"), el.textContent]);
 
     await send("@annbot 三");
-    expect(within(storedLi(3)).getByText(tooOften("安的助手")).className).toBe("muted");
-    expect(lines()).toEqual(["m3"]);
-    // Several, joined; one that reached its Agent says nothing; a name not known reads 有的 Agent.
+    expect(within(storedLi(3)).getByText("「安的助手」：太频繁，稍后再试").className).toContain("muted");
     await send("@annbot @helper 四");
     await send("@annbot 五");
     await send("@someone 六");
-    expect(within(storedLi(4)).getByText(tooOften("安的助手、小助手"))).toBeTruthy();
-    // A name not known: no 「」 (they are for real names).
-    expect(within(storedLi(6)).getByText("你 @ 得太频繁了，有的 Agent 这次没有收到，稍后再试。")).toBeTruthy();
-    expect(lines()).toEqual(["m3", "m4", "m6"]);
-    // My message pushed to me as to every member (it carries nothing of it) keeps the line.
-    await push(transport, { type: "message", message: wire(G1, 3, ME_ID, "@annbot 三") });
-    expect(lines()).toEqual(["m3", "m4", "m6"]);
+    expect(lines()).toEqual([
+      ["m3", "「安的助手」：太频繁，稍后再试"],
+      // One line a reason; the Agents of each joined; a name not known: the reason alone (「」 are for real names).
+      ["m4", "「安的助手、小助手」：这个 Agent 今天不能再回复别人了"],
+      ["m4", "太频繁，稍后再试"],
+      ["m6", "这个 Agent 今天不能再回复别人了"],
+    ]);
+    // A refusal decided later (at admission) comes as my message pushed to me again, with the line.
+    await push(transport, { type: "message", message: wire(G1, 5, ME_ID, "@annbot 五", { refused: refused("others_limit", OAG) }) });
+    expect(lines().filter(([id]) => id === "m5")).toEqual([["m5", "「安的助手」：这个 Agent 今天不能再回复别人了"]]);
   });
 
   it("a reply being written: 正在回复… only (nothing streams), a row per Agent in member order; its owner can stop it, nobody else", async () => {

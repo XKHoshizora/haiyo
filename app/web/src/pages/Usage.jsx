@@ -90,7 +90,7 @@ function ReplyPointsSwitch() {
 
 /**
  * 别人用我的 Agent: one line of what others' use of my Agents has cost today (the service's numbers and state: `GET /api/me/others-use`) and the
- * way to the page where it is read in full and its two numbers are set. Without the line (not read yet, or not readable), the link alone.
+ * way to the page where it is read in full and its one number is set. Without the line (not read yet, or not readable), the link alone.
  */
 function OthersUseSection() {
   const { dispatch } = useStore();
@@ -104,7 +104,7 @@ function OthersUseSection() {
       <h3>别人用我的 Agent</h3>
       {use && (
         <p>
-          今天已回别人 {use.used.answers} 次，花了 {formatPoints(use.used.points)} 点 · {othersStateText(use)}
+          今天别人花了 {formatPoints(use.used)} 点，每天最多 {formatPoints(use.limit)} 点 · {othersStateText(use)}
         </p>
       )}
       <p>

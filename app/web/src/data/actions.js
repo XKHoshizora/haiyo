@@ -133,7 +133,7 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
       const res = await api.sendMessage(p.conversationId, body);
       const why = staleness(token);
       if (why) return { ok: false, clientTxn, error: dropped(why) };
-      setModel(markSent(getModel(), clientTxn, res.message, res.notCalled));
+      setModel(markSent(getModel(), clientTxn, res.message));
       return { ok: true, clientTxn, duplicate: Boolean(res.duplicate) };
     } catch (err) {
       return failed(clientTxn, p.conversationId, token, errorOf(err));

@@ -4,7 +4,7 @@ import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { NAME_PART_PATTERN, agentName as agentNameProblem, appellation as appellationProblem, namePart as namePartProblem } from "../auth/validation.js";
 import { PROACTIVE_LEVELS, isProactiveLevel } from "../data/viewmodel.js";
-import { answersOf } from "../data/othersLimits.js";
+import { levelCeilingText } from "../data/othersCopy.js";
 import { Btn, Field, Modal, Notice, Reason, Switch, focusInvalid } from "../ui/primitives.jsx";
 import { isEscape } from "../ui/keys.js";
 import { Select } from "../ui/Select.jsx";
@@ -30,10 +30,6 @@ const chars = (text) => [...text].length;
 
 /** 一次接话最多花费 when nothing else is said, in points (the service's default). */
 export const CHAIN_BUDGET_DEFAULT = "50";
-/** 主动回复每天最多花 when nothing else is said, in points (the service's default, 074's); its amount is a budget like the others. */
-export const PROACTIVE_BUDGET_DEFAULT = "70";
-/** Under the Agent's own limit: what leaving it empty means, in the words of the use page's two numbers. */
-const OTHERS_LIMIT_HINT = "不填：它和你其他的 Agent 共用你的每天上限（在“别人怎么用我的 Agent”里改）。填了：它自己每天最多这么多，同时不超过你的每天上限。";
 /** The 记忆 switches: the form key, its label and what it says; the last two only matter while the first is on. */
 const MEMORY_HELPER = "它会记住关于你的事和自己学到的事。记忆每天有自己的额度，不占用你聊天的额度。";
 const MEMORY_SWITCHES = [
@@ -64,21 +60,15 @@ const webHelper = (points) =>
   typeof points === "string" && /^\d{1,9}(\.\d)?$/.test(points) && points !== "0" ? `联网搜索由站点提供，每次约 ${points} 点，先用每日免费额度。${WEB_WORDS}` : WEB_WORDS;
 
 /**
- * The money hints of the budgets (fix round 1, I2): while the site offers web search, an Agent on its owner's own provider's
- * model still costs nothing for its model, but its web searches are charged — and these budgets bound them; while it
- * offers none, the words as before.
+ * The money hint of the chain budget (fix round 1, I2): while the site offers web search, an Agent on its owner's own provider's
+ * model still costs nothing for its model, but its web searches are charged — and the budget bounds them; while it offers none,
+ * the words as before.
  */
-const BUDGET_HINTS = {
-  chain: {
-    off: "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
-    web: "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
-  },
-  proactive: {
-    off: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
-    web: "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
-  },
+const CHAIN_HINTS = {
+  off: "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
+  web: "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
 };
-// A budget's amount, either of them, as the service takes it.
+// The chain budget's amount, as the service takes it.
 const BUDGET_MIN = 1;
 const BUDGET_MAX = 100000;
 /** Points as the service counts them: whole points, and at most six decimals (micro-points). */
@@ -86,7 +76,7 @@ const POINTS = /^\d+(?:\.\d{1,6})?$/;
 const BUDGET_WRONG = `请填写 ${BUDGET_MIN} 到 ${BUDGET_MAX} 之间的点数（最多 6 位小数）`;
 
 /**
- * A budget's amount (一次接话最多花费, or 别人 @ 每天最多花's 自己填) as typed, as the decimal string sent (" 012.50 " →
+ * A number of points as typed (一次接话最多花费, or the owner's one number for others' use), as the decimal string sent (" 012.50 " →
  * "12.5"); null when it is not 1–100000 points with at most six decimals.
  */
 export function budgetOf(text) {
@@ -102,26 +92,6 @@ export function budgetOf(text) {
 
 /** What is wrong with a budget's amount as typed (`budgetOf`): the sentence shown under it, or "". */
 const budgetProblem = (text) => (budgetOf(text) === null ? BUDGET_WRONG : "");
-
-const ANSWERS_OR_EMPTY = "请填 1 到 1000 的整数，或者不填";
-const POINTS_WRONG_OR_EMPTY = `请填 ${BUDGET_MIN} 到 ${BUDGET_MAX} 的点数，或者不填`;
-
-/** An Agent's own points limit as typed: the decimal string (`budgetOf`), null for nothing typed, undefined for anything else. */
-const pointsOf = (text) => {
-  const typed = typeof text === "string" ? text.trim() : "";
-  return typed === "" ? null : budgetOf(typed) ?? undefined;
-};
-
-/**
- * The Agent's own limit on what others spend on it, for the form's two fields: `{answers, points}` (each null when its field is empty:
- * no limit of its own in that part), or undefined, nothing to send, while either field holds something that is not a number of its
- * kind. Both empty is a limit of none (sent as null, which clears both).
- */
-export const othersLimitOf = (f) => {
-  const answers = answersOf(f.othersAnswers);
-  const points = pointsOf(f.othersPoints);
-  return answers === undefined || points === undefined ? undefined : { answers, points };
-};
 
 /** Opens an Agent's conversation, or waits for it to arrive when this client does not hold it yet. */
 export function openAgentChat(state, dispatch, actions, conversationId, { replace = false } = {}) {
@@ -172,12 +142,8 @@ const recordFields = (a) => ({
   replyMode: a?.replyMode ?? "always",
   groupMentions: a?.groupMentions ?? "members",
   chainBudget: budgetOf(a?.chainBudget) ?? CHAIN_BUDGET_DEFAULT,
-  // Its own limit on others' use, as the service holds it: empty for a part with none of its own (a new Agent has none).
-  othersAnswers: Number.isInteger(a?.othersLimit?.answers) ? String(a.othersLimit.answers) : "",
-  othersPoints: typeof a?.othersLimit?.points === "string" ? a.othersLimit.points : "",
   proactive: a?.proactive === true,
   proactiveLevel: isProactiveLevel(a?.proactiveLevel) ? a.proactiveLevel : "normal",
-  proactiveBudget: budgetOf(a?.proactiveBudget) ?? PROACTIVE_BUDGET_DEFAULT,
   whisperElsewhere: a?.whisperElsewhere !== false,
   webSearch: a?.webSearch !== false,
   ownerAppellation: a?.ownerAppellation ?? "",
@@ -193,28 +159,32 @@ const recordFields = (a) => ({
 });
 
 /**
- * What the form edits of a record, setting by setting: each setting is the form key of its name, but the Agent's own limit
- * (`othersLimit`), which the form holds as two fields. Whether I changed a setting, whether it changed elsewhere and whether it is
- * sent are decided per setting, never per key.
+ * The two thinking levels of replies made for others (Owner decision 2026-11-26): one plain question each. (The others' level is for
+ * every reply somebody else causes: a call in a group, and a visitor's message in a conversation with it.) Each keeps ONE short hint: the
+ * most one reply at the level shown can cost (`ceilingOf`).
  */
-/** The two thinking levels of replies made for others (Owner decision 2026-11-26): one plain question each, beside the numbers it belongs to. */
-// (The others' level is for every reply somebody else causes: a call in a group, and a visitor's message in a conversation with it.)
 export const OTHERS_LEVEL_LABEL = "别人 @ 它或来找它时的思考程度";
-export const OTHERS_LEVEL_HINT = "别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。";
 export const PROACTIVE_LEVEL_LABEL = "主动回复时的思考程度";
-export const PROACTIVE_LEVEL_HINT = "思考越多，回复越慢，花的额度也越多。";
 
-const OTHERS_KEYS = ["othersAnswers", "othersPoints"];
-const settingOf = (key) => (OTHERS_KEYS.includes(key) ? "othersLimit" : key);
-const keysOf = (setting) => (setting === "othersLimit" ? OTHERS_KEYS : [setting]);
+/**
+ * The most one reply to someone else at `level` can cost on the model `choice` is, in points, as the service says it: a site model's
+ * `othersCeiling` (`GET /api/models`), and for a model on my own key what each such reply counts (`othersOwnKeyPoints`), whatever the
+ * level; null when the service says nothing.
+ */
+function ceilingOf(state, choice, level) {
+  if (!choice || choice.stale) return null;
+  if (choice.model.source === "site") {
+    const points = choice.othersCeiling?.[level];
+    return typeof points === "string" ? points : null;
+  }
+  return typeof state.othersOwnKeyPoints === "string" ? state.othersOwnKeyPoints : null;
+}
 
 /** A setting as it would be stored (the text fields trimmed, points as sent), to compare with the record's. */
 const storedValue = (setting, f) => {
   if (setting === "persona") return personaOf(f.persona);
   if (setting === "name" || setting === "intro" || setting === "field" || setting === "ownerAppellation") return f[setting].trim();
-  if (setting === "chainBudget" || setting === "proactiveBudget") return budgetOf(f[setting]) ?? f[setting].trim();
-  // (Compared as text: what is typed that is not a number of its kind is its own value, so it never equals the record's.)
-  if (setting === "othersLimit") return JSON.stringify(othersLimitOf(f) ?? `${f.othersAnswers}|${f.othersPoints}`);
+  if (setting === "chainBudget") return budgetOf(f[setting]) ?? f[setting].trim();
   return f[setting];
 };
 
@@ -232,7 +202,6 @@ export function AgentForm({ agent = null }) {
   const sources = useModelSources();
   const formRef = useRef(null);
   const personaId = useId();
-  const othersId = useId();
   const [random] = useState(randomPart);
   const [f, setF] = useState(() => ({ ...recordFields(agent), handle: agent ? "" : suggestHandle("", random) }));
   const [handleTyped, setHandleTyped] = useState(false);
@@ -247,7 +216,7 @@ export function AgentForm({ agent = null }) {
   const [draftNote, setDraftNote] = useState(null);
   const [confirmDraft, setConfirmDraft] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
-  /** The settings the owner changed (typed, chosen, drafted: `settingOf`); only these are ever sent when editing. */
+  /** The settings the owner changed (typed, chosen, drafted); only these are ever sent when editing. */
   const edited = useRef(new Set());
   /** The record's fields as this form last saw them, to tell what changed elsewhere. */
   const record = recordFields(agent);
@@ -290,12 +259,12 @@ export function AgentForm({ agent = null }) {
     const now = JSON.parse(recordKey);
     const before = seen.current;
     seen.current = now;
-    const changed = [...new Set(Object.keys(now).map(settingOf))].filter((setting) => storedValue(setting, now) !== storedValue(setting, before));
+    const changed = Object.keys(now).filter((setting) => storedValue(setting, now) !== storedValue(setting, before));
     const theirs = changed.filter((setting) => !edited.current.has(setting));
     if (theirs.length > 0) {
       setF((cur) => {
         const next = { ...cur };
-        for (const setting of theirs) for (const key of keysOf(setting)) next[key] = now[key];
+        for (const setting of theirs) next[setting] = now[setting];
         return next;
       });
     }
@@ -312,6 +281,11 @@ export function AgentForm({ agent = null }) {
   const othersReasoning = effectiveLevel(levels, f.othersReasoning);
   const proactiveReasoning = effectiveLevel(levels, f.proactiveReasoning);
   const levelOptions = LEVELS.filter(([id]) => levels.includes(id)).map(([id, label]) => ({ value: id, label }));
+  /** Under each of the two levels for others: the most one reply at the level shown can cost (none when the service says nothing). */
+  const levelHint = (level) => {
+    const points = ceilingOf(state, choice, level);
+    return points === null ? undefined : levelCeilingText(points);
+  };
   // Only for a model whose levels are KNOWN (one that is offered): a model no longer offered has none listed here, and its entry in the
   // picker carries the Agent's own saved level only so that it can be kept, which says nothing of what the model lists.
   const thinks = Boolean(choice) && !choice.stale && levels.length > 1;
@@ -338,11 +312,6 @@ export function AgentForm({ agent = null }) {
     persona: chars(persona) > PERSONA_MAX ? `人格文档不超过 ${PERSONA_MAX} 个字` : "",
     chainBudget: budgetProblem(f.chainBudget),
     ownerAppellation: appellationProblem(f.ownerAppellation),
-    // The Agent's own limit: each part a number of its kind, or empty.
-    othersAnswers: answersOf(f.othersAnswers) === undefined ? ANSWERS_OR_EMPTY : "",
-    othersPoints: pointsOf(f.othersPoints) === undefined ? POINTS_WRONG_OR_EMPTY : "",
-    // Only while the site can judge and the switch is on.
-    proactiveBudget: proactiveAsked ? budgetProblem(f.proactiveBudget) : "",
   };
   const invalid = Object.values(errors).some(Boolean);
   const shown = (key) => (touched ? errors[key] : "");
@@ -360,7 +329,7 @@ export function AgentForm({ agent = null }) {
 
   /** A setting chosen (a Select's value) or typed (`set`: an input's change). */
   const setValue = (key) => (value) => {
-    edited.current.add(settingOf(key));
+    edited.current.add(key);
     setF((cur) => ({ ...cur, [key]: value }));
   };
   const set = (key) => (event) => setValue(key)(event.target.value);
@@ -448,14 +417,11 @@ export function AgentForm({ agent = null }) {
     body.replyMode = f.replyMode;
     body.groupMentions = f.groupMentions;
     body.chainBudget = budgetOf(f.chainBudget);
-    // Said only when it has a limit of its own (otherwise the Agent has none: only its owner's two numbers bind).
-    const own = othersLimitOf(f);
-    if (own && (own.answers !== null || own.points !== null)) body.othersLimit = own;
     // Said only when it is not 不思考 (the service's default).
     if (thinks && othersReasoning !== "none") body.othersReasoning = othersReasoning;
     if (thinks && proactiveAsked && proactiveReasoning !== "none") body.proactiveReasoning = proactiveReasoning;
     // Said only when it is on (off is the service's default).
-    if (proactiveAsked) Object.assign(body, { proactive: true, proactiveLevel: f.proactiveLevel, proactiveBudget: budgetOf(f.proactiveBudget) });
+    if (proactiveAsked) Object.assign(body, { proactive: true, proactiveLevel: f.proactiveLevel });
     if (ownerAppellation) body.ownerAppellation = ownerAppellation;
     // Said only when it is off (on is the service's default).
     if (!f.whisperElsewhere) body.whisperElsewhere = false;
@@ -501,14 +467,11 @@ export function AgentForm({ agent = null }) {
     const mine = (setting) => edited.current.has(setting) && storedValue(setting, f) !== storedValue(setting, record);
     const patch = {};
     for (const key of ["name", "intro", "field", "persona", "replyMode", "groupMentions", "chainBudget"]) if (mine(key)) patch[key] = storedValue(key, f);
-    // Its own limit on others' use: both parts emptied is none (null clears both), never a wrong number (`othersLimitOf`).
-    const own = othersLimitOf(f);
-    if (mine("othersLimit") && own) patch.othersLimit = own.answers === null && own.points === null ? null : own;
-    // 主动参与群聊: while the site can judge, or (only off, then) while it is on without a judgement model; its level and
-    // amount only while it is on and can be.
+    // 主动参与群聊: while the site can judge, or (only off, then) while it is on without a judgement model; how readily only
+    // while it is on and can be.
     if (proactiveOffered || proactiveOffOnly) {
       if (mine("proactive")) patch.proactive = f.proactive;
-      if (proactiveAsked) for (const key of ["proactiveLevel", "proactiveBudget"]) if (mine(key)) patch[key] = storedValue(key, f);
+      if (proactiveAsked && mine("proactiveLevel")) patch.proactiveLevel = storedValue("proactiveLevel", f);
     }
     if (mine("whisperElsewhere")) patch.whisperElsewhere = f.whisperElsewhere;
     if (webOffered && mine("webSearch")) patch.webSearch = f.webSearch;
@@ -693,28 +656,16 @@ export function AgentForm({ agent = null }) {
         </Field>
         <Field
           label="一次接话最多花费（点）"
-          hint={BUDGET_HINTS.chain[webOffered ? "web" : "off"]}
+          hint={CHAIN_HINTS[webOffered ? "web" : "off"]}
           error={shown("chainBudget")}
         >
           {budgetBox("chainBudget")}
         </Field>
-        <fieldset className="field others-limit" aria-describedby={`${othersId}-hint`}>
-          <legend>别人用它的上限（可不填）</legend>
-          <div className="others-limit-parts">
-            <Field label="每天最多回别人（次）" error={shown("othersAnswers")}>
-              <input value={f.othersAnswers} onChange={set("othersAnswers")} inputMode="numeric" autoComplete="off" />
-            </Field>
-            <Field label="每天最多花（点）" error={shown("othersPoints")}>
-              <input value={f.othersPoints} onChange={set("othersPoints")} inputMode="decimal" autoComplete="off" />
-            </Field>
-          </div>
-          <p id={`${othersId}-hint`} className="field-hint">{OTHERS_LIMIT_HINT}</p>
-          {thinks && (
-            <Field label={OTHERS_LEVEL_LABEL} hint={OTHERS_LEVEL_HINT}>
-              <Select value={othersReasoning} onChange={setValue("othersReasoning")} listLabel={OTHERS_LEVEL_LABEL} options={levelOptions} />
-            </Field>
-          )}
-        </fieldset>
+        {thinks && (
+          <Field label={OTHERS_LEVEL_LABEL} hint={levelHint(othersReasoning)}>
+            <Select value={othersReasoning} onChange={setValue("othersReasoning")} listLabel={OTHERS_LEVEL_LABEL} options={levelOptions} />
+          </Field>
+        )}
         {(proactiveOffered || proactiveOffOnly) && (
           <>
             <div className="field">
@@ -725,15 +676,8 @@ export function AgentForm({ agent = null }) {
                 <Field label="话多话少">
                   <Select value={f.proactiveLevel} onChange={setValue("proactiveLevel")} listLabel="话多话少" options={PROACTIVE_LEVELS.map(([id, label]) => ({ value: id, label }))} />
                 </Field>
-                <Field
-                  label="主动回复每天最多花"
-                  hint={BUDGET_HINTS.proactive[webOffered ? "web" : "off"]}
-                  error={shown("proactiveBudget")}
-                >
-                  {budgetBox("proactiveBudget")}
-                </Field>
                 {thinks && (
-                  <Field label={PROACTIVE_LEVEL_LABEL} hint={PROACTIVE_LEVEL_HINT}>
+                  <Field label={PROACTIVE_LEVEL_LABEL} hint={levelHint(proactiveReasoning)}>
                     <Select value={proactiveReasoning} onChange={setValue("proactiveReasoning")} listLabel={PROACTIVE_LEVEL_LABEL} options={levelOptions} />
                   </Field>
                 )}

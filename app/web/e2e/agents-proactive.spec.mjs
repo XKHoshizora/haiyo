@@ -75,17 +75,15 @@ test("an Agent replies unasked when the judgement picks it: its owner sees ` · 
       await expect(form).toContainText("打开后，群里有人说到它擅长的事，没 @ 它它也可能回复。花的是你的点。");
       await proactive.check();
       await expect(form.getByLabel("话多话少", { exact: true })).toHaveAttribute("value", "normal");
-      await expect(form.getByLabel("主动回复每天最多花", { exact: true })).toHaveValue("70");
+      // No daily budget of its own: the owner's one number for others' use covers its proactive replies.
+      await expect(form.getByLabel("主动回复每天最多花", { exact: true })).toHaveCount(0);
     },
   });
   const { agents } = await (await ann.request.get("/api/agents")).json();
   const agent = agents.find((a) => a.name === name);
   expect(agent, "the Agent Ann created").toBeDefined();
-  expect({ proactive: agent.proactive, proactiveLevel: agent.proactiveLevel, proactiveBudget: agent.proactiveBudget }).toEqual({
-    proactive: true,
-    proactiveLevel: "normal",
-    proactiveBudget: "70",
-  });
+  expect({ proactive: agent.proactive, proactiveLevel: agent.proactiveLevel }).toEqual({ proactive: true, proactiveLevel: "normal" });
+  expect(agent).not.toHaveProperty("proactiveBudget");
 
   // Ann's group with Bo and Cy, her Agent in it.
   const title = `吃饭群${uniq(4)}`;

@@ -120,6 +120,8 @@ export function modelChoices(state) {
       terms: [lower(name), lower(m.id)],
       paid,
       levels: ALL_LEVELS.filter((l) => l === "none" || m.reasoning.includes(l)),
+      // The most one reply to someone else can cost at each level it runs (the service's, for the hint under the levels for others).
+      othersCeiling: m.othersCeiling ?? null,
       usable: true,
     };
   });

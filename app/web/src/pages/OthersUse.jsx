@@ -2,7 +2,6 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { commonErrorText } from "../data/errorTexts.js";
 import { formatPoints } from "../data/viewmodel.js";
-import { answersOf } from "../data/othersLimits.js";
 import { othersStateOf, othersStateText } from "../data/othersCopy.js";
 import { SETTINGS_PAGE_NAMES } from "../state/pageTitle.js";
 import { socialOn } from "../state/social.js";
@@ -12,25 +11,23 @@ import { budgetOf } from "./AgentForm.jsx";
 import { useOthersUse } from "./useOthersUse.js";
 
 const POINTS_WRONG = "点数请填 1 到 100000 的数";
-const ANSWERS_WRONG_HERE = "次数请填 1 到 1000 的整数";
 
 /**
- * 「别人每天最多让我的 Agent 回复 [50] 次，最多花我 [300] 点」: the owner's two numbers. Each box owns its draft: a number typed (or being
- * typed) is never overwritten by an answer of the service, only a box nobody has touched follows the stored number. A box is saved, with the
- * other as it is shown, on Enter or when it loses the focus, and only when both are numbers of their kind (anything else is refused in
- * place, under the sentence, and nothing is sent). Saves go one at a time: one asked for during another runs when that ends, with what is
- * shown by then, so none is dropped and what is stored is what the boxes show.
+ * 「别人用我的 Agent，每天合计最多花我 [300] 点」: the owner's one number. The box owns its draft: a number typed (or being typed) is never
+ * overwritten by an answer of the service, only a box nobody has touched follows the stored number. It is saved on Enter or when it loses
+ * the focus, and only when it is a number of its kind (anything else is refused in place, under the sentence, and nothing is sent). Saves
+ * go one at a time: one asked for during another runs when that ends, with what is shown by then, so none is dropped and what is stored is
+ * what the box shows. `ownKeyPoints`: what one reply on the owner's own key counts (the service's number).
  */
-function LimitSentence({ limits, onSave }) {
+function LimitSentence({ limit, ownKeyPoints, onSave }) {
   const hintId = useId();
-  const [answers, setAnswers] = useState(String(limits.answers));
-  const [points, setPoints] = useState(limits.points);
-  const [error, setError] = useState({ field: null, text: "" });
-  const dirty = useRef({ answers: false, points: false });
-  const shown = useRef({ answers, points });
-  shown.current = { answers, points };
-  /** What the service holds, as last known: the saved numbers (before the page has read them again) or the page's. */
-  const stored = useRef({ answers: limits.answers, points: limits.points });
+  const [points, setPoints] = useState(limit);
+  const [error, setError] = useState("");
+  const dirty = useRef(false);
+  const shown = useRef(points);
+  shown.current = points;
+  /** What the service holds, as last known: the saved number (before the page has read it again) or the page's. */
+  const stored = useRef(limit);
   const running = useRef(false);
   const again = useRef(false);
   const alive = useRef(true);
@@ -42,38 +39,27 @@ function LimitSentence({ limits, onSave }) {
   }, []);
   // What the service says follows only a box nobody has touched.
   useEffect(() => {
-    stored.current.answers = limits.answers;
-    if (!dirty.current.answers) setAnswers(String(limits.answers));
-  }, [limits.answers]);
-  useEffect(() => {
-    stored.current.points = limits.points;
-    if (!dirty.current.points) setPoints(limits.points);
-  }, [limits.points]);
+    stored.current = limit;
+    if (!dirty.current) setPoints(limit);
+  }, [limit]);
 
   const once = async () => {
-    const draft = { ...shown.current };
-    const a = answersOf(draft.answers);
-    const p = budgetOf(draft.points);
-    if (a === null || a === undefined) return setError({ field: "answers", text: ANSWERS_WRONG_HERE });
-    if (p === null) return setError({ field: "points", text: POINTS_WRONG });
-    setError({ field: null, text: "" });
-    const same = a === stored.current.answers && p === budgetOf(stored.current.points);
-    if (!same) {
+    const draft = shown.current;
+    const p = budgetOf(draft);
+    if (p === null) return setError(POINTS_WRONG);
+    setError("");
+    if (p !== budgetOf(stored.current)) {
       try {
-        await onSave({ answers: a, points: p });
-        stored.current = { answers: a, points: p };
+        await onSave({ points: p });
+        stored.current = p;
       } catch (err) {
-        if (alive.current) setError({ field: null, text: commonErrorText(err) });
+        if (alive.current) setError(commonErrorText(err));
         return;
       }
     }
     // A box that still holds what was just sent is nobody's draft any more (it follows the service again); one typed in since stays.
-    if (shown.current.answers === draft.answers) {
-      dirty.current.answers = false;
-      if (alive.current) setAnswers(String(a));
-    }
-    if (shown.current.points === draft.points) {
-      dirty.current.points = false;
+    if (shown.current === draft) {
+      dirty.current = false;
       if (alive.current) setPoints(p);
     }
   };
@@ -98,39 +84,34 @@ function LimitSentence({ limits, onSave }) {
     event.preventDefault();
     commit();
   };
-  const box = (field, value, setValue, label, mode) => (
-    <input
-      className="others-number"
-      aria-label={label}
-      aria-describedby={hintId}
-      aria-invalid={error.field === field ? true : undefined}
-      inputMode={mode}
-      autoComplete="off"
-      value={value}
-      onChange={(e) => {
-        dirty.current[field] = true;
-        setValue(e.target.value);
-      }}
-      onBlur={commit}
-      onKeyDown={keys}
-    />
-  );
+  const own = typeof ownKeyPoints === "string" ? `用你自己的模型密钥时不扣点，每条回复按 ${formatPoints(ownKeyPoints)} 点算。` : "";
   return (
     <div className="others-limit-sentence">
       <p>
-        <span>别人每天最多让我的 Agent 回复</span>
+        <span>别人用我的 Agent，每天合计最多花我</span>
         <span className="others-unit">
-          {box("answers", answers, setAnswers, "每天最多回复的次数", "numeric")}
-          <span>次，</span>
-        </span>
-        <span>最多花我</span>
-        <span className="others-unit">
-          {box("points", points, setPoints, "每天最多花的点数", "decimal")}
+          <input
+            className="others-number"
+            aria-label="每天最多花的点数"
+            aria-describedby={hintId}
+            aria-invalid={error === POINTS_WRONG ? true : undefined}
+            inputMode="decimal"
+            autoComplete="off"
+            value={points}
+            onChange={(e) => {
+              dirty.current = true;
+              setPoints(e.target.value);
+            }}
+            onBlur={commit}
+            onKeyDown={keys}
+          />
           <span>点</span>
         </span>
       </p>
-      {error.text && <p className="field-msg" role="alert">{error.text}</p>}
-      <p id={hintId} className="field-hint">你所有的 Agent 合在一起算，它们主动回复的也算。每天零点（站点时间）重新算。</p>
+      {error && <p className="field-msg" role="alert">{error}</p>}
+      <p id={hintId} className="field-hint">
+        你所有的 Agent 合在一起算，它们主动回复的也算。{own}每天零点（站点时间）重新算。已经在回复的会照常回完，所以可能略超过一点。
+      </p>
     </div>
   );
 }
@@ -164,17 +145,17 @@ function PersonLink({ person, linked }) {
 }
 
 /**
- * Settings › 别人怎么用我的 Agent: my two daily numbers (edited in place), today's use against them with its state (正常 / 快用完了… / 今天给别人的
- * 额度用完了, the service's `reached` and `tight`, worded in data/othersCopy.js), each Agent's own line, who used them today and who is
- * stopped. Nothing here is computed: every number, state and list is what `GET /api/me/others-use` says, and the page exists for its owner alone.
- * It never stops or resumes anyone: that is done on the person's profile.
+ * Settings › 别人怎么用我的 Agent: my one daily number (edited in place), today's use against it with its state (正常 / 今天给别人的额度用完了,
+ * the service's `reached`, worded in data/othersCopy.js), who used them today and who is stopped. Nothing here is computed: every number,
+ * state and list is what `GET /api/me/others-use` says, and the page exists for its owner alone. It never stops or resumes anyone: that is
+ * done on the person's profile.
  */
 export function OthersUsePage({ back }) {
   const { state, actions } = useStore();
   const { use, failed, reload, settle } = useOthersUse();
   const save = async (body) => {
-    const limits = await actions.putOthersLimits(body);
-    if (use && limits && typeof limits.answers === "number") settle({ ...use, limits });
+    const saved = await actions.putOthersLimits(body);
+    if (use && saved && typeof saved.points === "string") settle({ ...use, limit: saved.points });
     await reload({ afterWrite: true });
   };
 
@@ -190,10 +171,7 @@ export function OthersUsePage({ back }) {
   } else {
     const stopped = Array.isArray(use.stopped) ? use.stopped : [];
     const byPerson = Array.isArray(use.byPerson) ? use.byPerson : [];
-    const agents = Array.isArray(use.agents) ? use.agents : [];
-    const nameOfAgent = (id) => state.agents[id]?.name ?? "Agent";
-    const proactive = use.used.proactivePoints;
-    const proactiveCount = use.used.proactiveAnswers;
+    const proactive = use.proactive;
     const social = socialOn(state);
     body = (
       <>
@@ -202,36 +180,14 @@ export function OthersUsePage({ back }) {
             没读到最新的数据，下面是上次的。 <Btn small onClick={reload}>重试</Btn>
           </Reason>
         )}
-        <LimitSentence limits={use.limits} onSave={save} />
+        <LimitSentence limit={use.limit} ownKeyPoints={use.ownKeyPoints} onSave={save} />
 
         <h3>今天</h3>
         <p className="others-today">
-          已回别人 {use.used.answers} 次{typeof proactiveCount === "number" && proactiveCount > 0 ? `（其中主动回复 ${proactiveCount} 次）` : ""}，花了 {formatPoints(use.used.points)} 点
+          今天别人花了 {formatPoints(use.used)} 点
           {typeof proactive === "string" && formatPoints(proactive) !== "0" && `（其中主动回复 ${formatPoints(proactive)} 点）`}
           <span className={`others-state others-state-${othersStateOf(use)}`}> <span className="others-keep">· {othersStateText(use)}</span></span>
         </p>
-
-        <h3>每个 Agent</h3>
-        {agents.length === 0 ? (
-          <p className="muted">你还没有可以回复别人的 Agent。</p>
-        ) : (
-          <ul className="member-rows others-agents" aria-label="每个 Agent">
-            {agents.map((a) => (
-              <li key={a.agentId}>
-                <div className="member-body">
-                  <p>
-                    <strong>{nameOfAgent(a.agentId)}</strong>
-                    {a.canReply === false ? "：没有可用的模型，暂时不能回复" : `：额度全给它用的话，每天大约能回 ${a.perDay} 次`}
-                  </p>
-                  <p className="muted">
-                    今天回了别人 {a.answers} 次（含主动回复），回应别人花了 {formatPoints(a.points)} 点
-                    {a.canReply !== false && <span className={`others-state others-state-${othersStateOf(a)}`}> <span className="others-keep">· {othersStateText(a)}</span></span>}
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
 
         <h3>今天谁用过</h3>
         {byPerson.length === 0 ? (
@@ -245,7 +201,7 @@ export function OthersUsePage({ back }) {
                   <Avatar id={row.person.id} size={40} />
                   <div className="member-body">
                     <strong><PersonLink person={row.person} linked={social} /></strong>
-                    <p className="muted">@{row.person.handle} · 回了对方 {row.answers} 次，花了 {formatPoints(row.points)} 点</p>
+                    <p className="muted">@{row.person.handle} · 花了 {formatPoints(row.points)} 点</p>
                   </div>
                 </li>
               ))}

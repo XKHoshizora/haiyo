@@ -46,7 +46,7 @@ export function readOthersUse(actions, store, { afterWrite = false } = {}) {
     try {
       const answer = await actions.getOthersUse();
       if (outdated()) return;
-      if (answer && typeof answer === "object" && answer.limits) {
+      if (answer && typeof answer === "object" && typeof answer.limit === "string") {
         store.use = answer;
         store.failed = false;
         store.at = Date.now();

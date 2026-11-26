@@ -1,14 +1,14 @@
 // Ring 1a in a real browser against the real service, both lanes together (plan, Task I2a), with the site's Agent social switch on and the
 // model being the local stub: a visitor is let in and the Agent really answers them while its owner watches; a person who only called the
 // Agent in a group is on the owner's use page as a link to a profile, where the owner stops dealings with them (their next @ gets no
-// answer) and resumes; the use page's three states, the stopped list, the one-time notice, the Agent's card and page, the blocks page with
+// answer) and resumes; the use page's two states, the stopped list, the one-time notice, the Agent's card and page, the blocks page with
 // a blocked Agent shown as an Agent, and the persona card as an unread message. At 402×874 and at 360×740, touch. The screens for the
 // product owner are taken with E2E_INTEG_SHOTS=1 (support/shots.mjs `integShot`).
 import { test, expect } from "./support/fixtures.mjs";
 import { befriend, sendApi, uniq } from "./support/accounts.mjs";
 import { chatPane, composer, goTo, listRow, messageList, openAgentDetail, sendText } from "./support/app.mjs";
 import { canControlService, restartService } from "./support/control.mjs";
-import { accountFromBeforeStepL, backdateStop } from "./support/db.mjs";
+import { accountFromBeforeStepL, backdateStop, chargeOthersToday } from "./support/db.mjs";
 import { modelStub } from "./support/model-stub.mjs";
 import { integShot as shot } from "./support/shots.mjs";
 import { addApi, agentApi, groupApi } from "./support/tools.mjs";
@@ -30,7 +30,7 @@ async function targetsAre44(scope) {
   expect(small, "controls under 44px").toEqual([]);
 }
 const useOf = async (person) => (await person.request.get("/api/me/others-use")).json();
-const limits = async (person, answers, points) => expect((await person.request.put("/api/me/others-limits", { data: { answers, points } })).status()).toBe(200);
+const limits = async (person, points) => expect((await person.request.put("/api/me/others-limits", { data: { points } })).status()).toBe(200);
 const openUsePage = async (page) => {
   await page.goto("/settings/others");
   const main = page.getByRole("region", { name: USE });
@@ -173,33 +173,18 @@ for (const [size, contextOptions] of SIZES) {
     await targetsAre44(main);
     await shot(ann.page, "22-use-page-stopped-list", { show: stoppedList });
 
-    // ── The three states are the service's: 快用完了 when a longer reply may not fit, 已用完 when nothing more is answered today.
-    // (Which points number leaves "a longer reply may not fit" depends on the model's prices: the service says, the test asks until it does.)
-    let tight = null;
-    const seen = [];
-    for (const points of ["30", "20", "15", "12", "11", "10.5", "10", "9.5", "9", "8.8", "8.6", "8.4", "8.2", "8", "7.5", "7"]) {
-      if (tight !== null) break;
-      await limits(ann, 50, points);
-      const now = await useOf(ann);
-      seen.push(`${points}:${now.tight ? "t" : "-"}${now.reached ? "r" : "-"}`);
-      if (now.tight && !now.reached) tight = points;
-    }
-    expect(tight, `a points number at which the day is tight and not reached (${seen.join(" ")})`).not.toBeNull();
-    main = await openUsePage(ann.page);
-    await expect(main.getByText("快用完了，长一点的回复可能发不出").first()).toBeVisible();
-    expect(await noSideways(ann.page)).toBe(true);
-    await shot(ann.page, "23-use-page-tight");
-    // Three answers were given today: a number of three is used up.
-    await limits(ann, 3, "300");
+    // ── The two states are the service's: 已用完 once others' use of Ann's Agents today has reached her one number (a charge of today
+    // seeded beside the replies, so that the number is certainly reached at its least, 1 point).
+    await limits(ann, "1");
+    await chargeOthersToday(ann.id, agent.id, agent.conversationId, 1_000_000);
     expect((await useOf(ann)).reached).toBe(true);
     main = await openUsePage(ann.page);
     await expect(main.getByText("今天给别人的额度用完了，明天恢复").first()).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "24-use-page-reached");
-    // The card of the Agent says it too, and its page says its three rows.
+    // The list of her Agents says it ONCE above the list (the number is one for all of them); no card carries it, and the name is whole.
     await ann.page.goto("/agents");
     const row = ann.page.getByRole("button").filter({ has: ann.page.getByText(name, { exact: true }) }).first();
-    // I3: the cap is one for all the owner's Agents, so it is said ONCE above the list; no card carries it, and the name is whole.
     const wholeName = async (r) => expect(await r.locator(".row-name").evaluate((el) => el.scrollWidth <= el.clientWidth), "the Agent's name is not cut").toBe(true);
     await expect(ann.page.locator(".list-col .others-reached")).toHaveText("今天给别人的额度用完了，明天恢复");
     await expect(row).not.toContainText("用完");
@@ -207,32 +192,20 @@ for (const [size, contextOptions] of SIZES) {
     expect(await noSideways(ann.page)).toBe(true);
     await shot(ann.page, "25-agents-list-day-used-up");
     const detail = await openAgentDetail(ann.page, name);
-    await expect(detail).toContainText("别人用它的上限");
-    await expect(detail).toContainText("别人今天的使用");
-    await expect(detail).toContainText("今天给别人的额度用完了，明天恢复");
+    await expect(detail).not.toContainText("别人用它的上限");
+    await expect(detail).not.toContainText("别人今天的使用");
     expect(await noSideways(ann.page)).toBe(true);
-    await shot(ann.page, "26-agent-page-rows", { show: detail.getByText("别人今天的使用") });
-    // In the group, the next person who calls it is told once that it answers only its owner today.
-    await sendApi(cy, g.id, `@${String(agent.handle).replace(/^@/, "")} 再问一句`);
+    // In the group, the next person who calls it is told on their own message, and nobody else is; Ann is told once, in her Agent's own
+    // conversation, with the entry to her number.
+    const asked = await sendApi(cy, g.id, `@${String(agent.handle).replace(/^@/, "")} 再问一句`);
+    expect(asked.refused).toEqual([{ agentId: agent.id, reason: "others_limit" }]);
+    const annCopy = (await (await ann.request.get(`/api/conversations/${g.id}/messages`)).json()).messages.find((m) => m.seq === asked.seq);
+    expect(annCopy).not.toHaveProperty("refused");
     await expect(async () => {
-      const texts = (await (await cy.request.get(`/api/conversations/${g.id}/messages`)).json()).messages.filter((m) => m.kind === "system").map((m) => m.system?.event);
-      expect(texts).toContain("agent_daily_budget_reached");
+      const own = (await (await ann.request.get(`/api/conversations/${agent.conversationId}/messages`)).json()).messages;
+      expect(own.filter((m) => m.system?.event === "others_limit_reached")).toHaveLength(1);
     }).toPass({ timeout: 15_000 });
-    await limits(ann, 50, "300");
-    // Only this Agent's OWN number used up (the owner's day is not, and another Agent of theirs can still answer): its card says so in
-    // three characters, beside its status, and its name is still whole at this width.
-    const other = await agentRead(ann, { name: `厨子${uniq(4)}` });
-    expect((await ann.request.patch(`/api/agents/${agent.id}`, { data: { othersLimit: { answers: 3, points: null } } })).status()).toBe(200);
-    await ann.page.goto("/agents");
-    const mine = ann.page.locator(".list-col .rows");
-    const usedUp = mine.getByRole("button").filter({ has: ann.page.getByText(name, { exact: true }) }).first();
-    await expect(usedUp.locator(".tag", { hasText: "别人已用完" })).toBeVisible();
-    await expect(ann.page.locator(".list-col .others-reached")).toHaveCount(0);
-    await wholeName(usedUp);
-    await wholeName(mine.getByRole("button").filter({ has: ann.page.getByText(other.name, { exact: true }) }).first());
-    expect(await noSideways(ann.page)).toBe(true);
-    await shot(ann.page, "25b-agent-card-own-number-used-up");
-    expect((await ann.request.patch(`/api/agents/${agent.id}`, { data: { othersLimit: null } })).status()).toBe(200);
+    await limits(ann, "300");
 
     // ── 恢复往来, from the stopped list's link: the list empties, and Dan is answered again.
     main = await openUsePage(ann.page);
@@ -274,14 +247,13 @@ for (const [size, contextOptions] of SIZES) {
     const persona = (await (await ann.request.get(`/api/agents/${agent.id}`)).json()).persona;
     expect(persona).not.toContain(FACT);
 
-    // ── The one-time notice, for an owner from before the change: once, with their two numbers; 知道了 ends it for good.
+    // ── The one-time notice, for an owner from before the change: once, one sentence with the number and the entry to it; 知道了 ends it for good.
     expect(await accountFromBeforeStepL(ann.id)).toBe(1);
     await ann.page.goto("/agents");
     const list = ann.page.locator(".list-col");
     const notice = list.locator(".others-notice");
-    await expect(notice).toContainText("别人用你的 Agent，每天的上限改了。现在你所有的 Agent 合在一起，每天最多回别人 50 次、最多花你 300 点");
-    await expect(notice).toContainText("原来设为“不限”的，现在也按这个总数算。");
-    await expect(notice).toContainText("可在“设置 › 别人怎么用我的 Agent”里修改。");
+    await expect(notice).toContainText("别人用你的 Agent，每天合计最多花 300 点。");
+    await expect(notice.getByRole("link", { name: "查看和修改" })).toBeVisible();
     // (On a narrow screen the button sits under the text, not beside a squeezed column.)
     const [textBox, buttonBox] = [await notice.locator(".notice-body").boundingBox(), await notice.getByRole("button", { name: "知道了" }).boundingBox()];
     expect(buttonBox.y).toBeGreaterThanOrEqual(textBox.y + textBox.height - 1);

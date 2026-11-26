@@ -79,7 +79,7 @@ export function initial() {
      */
     principals: {},
     conversations: {},
-    /** conversation id → WireMessage[] (plus `clientTxn`, and `notCalled` when there was some, on my messages confirmed over HTTP). */
+    /** conversation id → WireMessage[] (plus `clientTxn` on my messages confirmed over HTTP). */
     messages: {},
     /** clientTxn → unsent message: {clientTxn, conversationId, text, replyToSeq, attachment, file, upload, at, afterSeq, status, error}. */
     pending: {},
@@ -190,7 +190,7 @@ function filterValues(obj, keep) {
 }
 
 /** What this page alone knows of a message of mine its send's answer returned (`markSent`), kept on its held copy. */
-const LOCAL_KEYS = ["clientTxn", "notCalled"];
+const LOCAL_KEYS = ["clientTxn"];
 
 /** Merges ascending, seq-unique lists; on equal seqs the incoming copy wins but keeps what this page knows (`LOCAL_KEYS`). */
 function mergeBySeq(held, incoming) {
@@ -527,8 +527,8 @@ export function applySync(state, sync) {
  * Applies one pushed message by the seq rule: `seq <= position` is a duplicate; `position + 1` is
  * appended; beyond that is a gap to repair with catch-up from the position (nothing is appended).
  * A duplicate still counts as the Agent's reply in push order (its copy came with a snapshot first); and a pushed
- * duplicate that carries a `via` I may keep — my Agent's reply pushed again once its run is charged — replaces the copy
- * held (`chargedCopy`).
+ * duplicate that carries a `via` I may keep — my Agent's reply pushed again once its run is charged — or my own message carrying
+ * `refused` (a limit refused a call of it at admission) replaces the copy held (`chargedCopy`).
  * `pushed: false` for a message of a catch-up page (not in push order).
  * @returns {{state, gap?: {conversationId: string, from: number}, unknown?: string}}
  */
@@ -751,13 +751,11 @@ export function markSending(state, { clientTxn, conversationId, text = "", reply
 }
 
 /**
- * The service stored it (`duplicate` or not): the unsent entry becomes the server's message, with what the answer told
- * me alone (`notCalled`): the Agents my own calls a minute on other people's Agents kept it from reaching, by id — held
- * with my copy while this page holds it, never stored or sent anywhere.
+ * The service stored it (`duplicate` or not): the unsent entry becomes the server's message (my copy: with `refused` when a limit kept
+ * a call of it from an Agent, the service's).
  */
-export function markSent(state, clientTxn, wire, notCalled = null) {
-  const ids = Array.isArray(notCalled) ? notCalled.filter((n) => n?.reason === "caller_rate_limited" && typeof n.agentId === "string").map((n) => n.agentId) : [];
-  return applyPosted({ ...state, pending: without(state.pending, clientTxn) }, { ...wire, clientTxn, ...(ids.length > 0 ? { notCalled: ids } : {}) });
+export function markSent(state, clientTxn, wire) {
+  return applyPosted({ ...state, pending: without(state.pending, clientTxn) }, { ...wire, clientTxn });
 }
 
 /**
@@ -1050,8 +1048,10 @@ function replaceBySeq(list, wire) {
  */
 function chargedCopy(state, conv, wire) {
   const [kept] = withoutOthersPrivate(state, conv.type, [wire]);
-  // (A memory-change notice is pushed again when its status changes: undone, confirmed, discarded.)
-  return kept?.via === undefined && kept?.system?.event !== "memory_changed" ? state : applyMessageUpdate(state, kept);
+  // (A memory-change notice is pushed again when its status changes: undone, confirmed, discarded. My own message is pushed to me again
+  // when a limit refused a call of it after it was sent: it then carries `refused`.)
+  const again = kept?.via !== undefined || kept?.system?.event === "memory_changed" || (Array.isArray(kept?.refused) && kept.senderId === state.me?.id);
+  return again ? applyMessageUpdate(state, kept) : state;
 }
 
 /**
@@ -1595,6 +1595,11 @@ export function applyUsage(state, usage) {
   return usage && typeof usage === "object" ? { ...state, usage } : state;
 }
 
+/** A decimal number of points as the service writes money. */
+const POINTS_TEXT = /^\d{1,12}(\.\d{1,6})?$/;
+/** `{level: points}`: what the service says one reply to someone else can cost at most at each level. */
+const ceilingOk = (v) => v !== null && typeof v === "object" && !Array.isArray(v) && Object.values(v).every((p) => typeof p === "string" && POINTS_TEXT.test(p));
+
 /** `GET /api/models`: the site's models and what a provider model gets by default. */
 export function applyModels(state, answer) {
   if (!answer || !Array.isArray(answer.siteModels)) return state;
@@ -1612,6 +1617,8 @@ export function applyModels(state, answer) {
       ...(typeof m.tools === "boolean" ? { tools: m.tools } : {}),
       // What the catalogue knows it to take and answer with (never `reportedTools`: a site model's tools are the operator's word).
       ...siteReported(m),
+      // The most one reply to someone else can cost at each level it runs (decimal points), for the hint under the two levels for others.
+      ...(ceilingOk(m.othersCeiling) ? { othersCeiling: { ...m.othersCeiling } } : {}),
     }));
   const d = answer.providerDefaults;
   const providerDefaults = d && typeof d === "object" ? { contextTokens: d.contextTokens, maxOutputTokens: d.maxOutputTokens } : state.providerDefaults;
@@ -1620,5 +1627,7 @@ export function applyModels(state, answer) {
   const memoryCatchUp = c && typeof c === "object" && whole(c.days) && whole(c.lines) ? { days: c.days, lines: c.lines } : null;
   // About what one web search costs (`webSearchPoints`: a number of points, one decimal at most), with the site's web search.
   const webSearchPoints = typeof answer.webSearchPoints === "string" && /^\d{1,9}(\.\d)?$/.test(answer.webSearchPoints) ? answer.webSearchPoints : null;
-  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true, memoryCatchUp, webSearchAvailable: answer.webSearchAvailable === true, webSearchPoints };
+  // What one reply to someone else on an owner's own key counts toward the owner's one number (decimal points).
+  const othersOwnKeyPoints = typeof answer.othersOwnKeyPoints === "string" && POINTS_TEXT.test(answer.othersOwnKeyPoints) ? answer.othersOwnKeyPoints : null;
+  return { ...state, siteModels, providerDefaults, proactiveAvailable: answer.proactiveAvailable === true, memoryCatchUp, webSearchAvailable: answer.webSearchAvailable === true, webSearchPoints, othersOwnKeyPoints };
 }

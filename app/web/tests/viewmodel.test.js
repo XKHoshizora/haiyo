@@ -217,41 +217,38 @@ describe("messages", () => {
     expect(lastPreview(v, { ...v.convs[G1], messages: v.convs[G1].messages.slice(0, 7) })).toBe("不认识的 Agent");
   });
 
-  it("the notice that an Agent's daily budget for others' calls is used up names the Agent, and falls back for an unknown one", () => {
+  it("the owner's notice that others' use of their Agents reached the number today says the number and that replies under way finish; the old group notice of a spent daily budget is no notice any more", () => {
     const BOT = "00000000-0000-4000-8000-0000000000b9";
-    const ev = (seq, system, text) => notice(G1, seq, text, system);
     const sync = syncOf(
-      [group(G1, { lastSeq: 2 })],
+      [agentConv(A1, AG1, { lastSeq: 2 }), group(G1, { lastSeq: 1 })],
       [
-        ev(1, { event: "agent_daily_budget_reached", actorId: ANN, agentId: BOT }, "服务端句子1"),
-        ev(2, { event: "agent_daily_budget_reached", actorId: ANN, agentId: "00000000-0000-4000-8000-0000000000ef" }, "不认识的 Agent"),
+        notice(A1, 1, "服务端句子", { event: "others_limit_reached", actorId: AG1, agentId: AG1, points: "1500.5" }),
+        notice(A1, 2, "服务端句子", { event: "others_limit_reached", actorId: AG1, agentId: AG1, points: 7 }),
+        notice(G1, 1, "「安的助手」今天只回复它的主人，明天恢复。", { event: "agent_daily_budget_reached", actorId: ANN, agentId: BOT }),
       ],
-      [...PRINCIPALS, { ...agentPrincipal(BOT, "annbot", "安的助手"), ownerId: ANN }],
+      [...PRINCIPALS, agentPrincipal(AG1), { ...agentPrincipal(BOT, "annbot", "安的助手"), ownerId: ANN }],
     );
     const v = toView(M.applySync(M.initial(), sync), { now: NOW });
-    expect(v.convs[G1].messages.map((m) => [m.text, Boolean(m.hidden)])).toEqual([
-      ["「安的助手」今天只回复它的主人，明天恢复。", false],
-      ["不认识的 Agent", false],
+    expect(v.convs[A1].messages.map((m) => [m.text, Boolean(m.hidden)])).toEqual([
+      ["别人今天用你的 Agent 已经花到每天上限 1,500.5 点，今天不再回复别人；已经在回复的会照常回完。", false],
+      // (A number that is not one: the service's own sentence.)
+      ["服务端句子", false],
     ]);
+    expect(v.convs[G1].messages.map((m) => Boolean(m.hidden))).toEqual([true]);
   });
 
-  it("my Agent carries its own limit on others' use and what they used today as the service says them; absent or malformed stays absent; the old fields are read nowhere", () => {
+  it("my Agent carries none of the numbers others' use of it no longer has, whatever a (stale) answer says: others' use is the owner's one number", () => {
     const withLimit = (extra) =>
       toView(M.applyAgents(M.applySync(M.initial(), syncOf([agentConv(A1, AG1)], [], [...PRINCIPALS, agentPrincipal(AG1)])), [agentOf(AG1, extra)]), { now: NOW }).agents[AG1];
-    expect(withLimit({ othersLimit: { answers: 5, points: "35.5" }, othersUsedToday: { answers: 2, points: "3.5" } })).toMatchObject({
+    const old = withLimit({
       othersLimit: { answers: 5, points: "35.5" },
       othersUsedToday: { answers: 2, points: "3.5" },
+      othersBudget: "35.5",
+      othersSpentToday: "3.5",
+      proactiveBudget: "70",
+      proactiveSpentToday: "1",
     });
-    // A part with no limit of its own is null; both null is an Agent with none (never an absent `othersLimit`, which the service always sends).
-    expect(withLimit({ othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" } })).toMatchObject({ othersLimit: { answers: null, points: null } });
-    expect(withLimit({})).not.toHaveProperty("othersLimit");
-    expect(withLimit({})).not.toHaveProperty("othersUsedToday");
-    for (const bad of [{ answers: "5", points: "1" }, { answers: 1.5, points: null }, { answers: 5, points: 7 }, null, "70"]) expect(withLimit({ othersLimit: bad }), JSON.stringify(bad)).not.toHaveProperty("othersLimit");
-    for (const bad of [{ answers: 2 }, { answers: "2", points: "1" }, null]) expect(withLimit({ othersUsedToday: bad }), JSON.stringify(bad)).not.toHaveProperty("othersUsedToday");
-    // The two fields the wire no longer has are not read, whatever a (stale) answer says; `proactiveSpentToday` is back (owner only, a string).
-    const old = withLimit({ othersBudget: "35.5", othersSpentToday: "3.5", proactiveSpentToday: "1" });
-    for (const key of ["othersBudget", "othersSpentToday"]) expect(old).not.toHaveProperty(key);
-    expect(old).toMatchObject({ proactiveSpentToday: "1" });
+    for (const key of ["othersLimit", "othersUsedToday", "othersBudget", "othersSpentToday", "proactiveBudget", "proactiveSpentToday"]) expect(old).not.toHaveProperty(key);
   });
 
   it("my Agent carries how it addresses me and the others as the service says them; absent stays absent (someone else's view has neither)", () => {

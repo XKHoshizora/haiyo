@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 // Owner decision 2026-11-26: the thinking level of a reply for others (「别人 @ 它或来找它时的思考程度」) and of a proactive reply
-// (「主动回复时的思考程度」) are the owner's settings, in the Agent's form beside the numbers each belongs to. Each offers exactly the
-// levels the chosen model lists (hidden when it only has 不思考), shows the level that would run (the effective one), and is sent only
-// when it is not the default (create) or when I changed it (edit). The Agent's page says both effective levels.
+// (「主动回复时的思考程度」) are the owner's settings, in the Agent's form. Each offers exactly the levels the chosen model lists (hidden when
+// it only has 不思考), shows the level that would run (the effective one), and is sent only when it is not the default (create) or when I
+// changed it (edit). The Agent's page says both effective levels. The limits redesign (Part 1): each select keeps ONE short hint, the most
+// one reply at that level can cost (「这一档单条回复最多约 X 点」, the service's number), and the form has no limit and no budget of the
+// Agent's own any more: others' use is the owner's one number (Settings › 别人怎么用我的 Agent).
 import "./markdown-ready.js";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
-import { AG1, MODELS, P1, PRINCIPALS, agentConv, agentOf, agentPrincipal, providerOf, syncOf, usageOf } from "./fixtures.js";
-import { click, flush, inMain, installBrowser, mainText, openApp, push } from "./harness.jsx";
+import { AG1, MODELS, P1, PRINCIPALS, SITE_MODELS, agentConv, agentOf, agentPrincipal, providerOf, syncOf, usageOf } from "./fixtures.js";
+import { click, flush, inMain, installBrowser, mainText, openApp } from "./harness.jsx";
 import { optionsOf, pickOption } from "./select-helpers.js";
 import { readOthersUse, settleOthersUse, storeOf } from "../src/data/othersUseCache.js";
 
@@ -22,28 +24,34 @@ afterEach(() => {
 
 const OTHERS = "别人 @ 它或来找它时的思考程度";
 const PROACTIVE = "主动回复时的思考程度";
-const OTHERS_HINT = "别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。";
-const PROACTIVE_HINT = "思考越多，回复越慢，花的额度也越多。";
 const PAID = { source: "site", id: "paid-1" };
+/** The site's models with what one reply to someone else can cost at each level the paid model runs (the service's `othersCeiling`). */
+const PRICED = {
+  ...MODELS,
+  proactiveAvailable: true,
+  othersOwnKeyPoints: "6",
+  siteModels: SITE_MODELS.map((m) => (m.id === "paid-1" ? { ...m, othersCeiling: { none: "61.5", low: "91.5", high: "241.5" } } : { ...m, othersCeiling: { none: "2.5" } })),
+};
 
 const rail = (name) => within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name });
 const inList = () => within(document.querySelector(".list-col"));
 const box = (label) => inMain().queryByLabelText(label);
 const levels = (label) => optionsOf(box(label)).map(([, text]) => text);
+const hintOf = (label) => box(label).closest(".field").querySelector(".field-hint")?.textContent ?? null;
 
-async function openAgents({ agents = [], api = {} } = {}) {
+async function openAgents({ agents = [], api = {}, models = PRICED } = {}) {
   const principals = [...PRINCIPALS, ...agents.map((a) => agentPrincipal(a.id, a.handle, a.name))];
   const conversations = agents.map((a) => agentConv(a.conversationId, a.id));
   const app = await openApp({
     sync: () => syncOf(conversations, [], principals),
     api: {
-      getModels: vi.fn(async () => ({ ...MODELS, proactiveAvailable: true })),
+      getModels: vi.fn(async () => models),
       listProviders: vi.fn(async () => ({ providers: [providerOf()] })),
       getUsage: vi.fn(async () => usageOf()),
       listAgents: vi.fn(() => new Promise(() => {})),
       ...api,
     },
-    handlers: { agents: () => ({ agents }), models: () => ({ ...MODELS, proactiveAvailable: true }) },
+    handlers: { agents: () => ({ agents }), models: () => models },
   });
   fireEvent.click(rail(/^Agent/));
   await flush();
@@ -55,8 +63,8 @@ const chooseModel = async (name) => {
   const option = [...document.querySelectorAll('.model-pop [role="option"]')].find((o) => (o.getAttribute("aria-label") ?? "").startsWith(name));
   await click(option);
 };
-const openCreate = async (api = {}) => {
-  await openAgents({ api });
+const openCreate = async (api = {}, models = PRICED) => {
+  await openAgents({ api, models });
   await click(inList().getByRole("button", { name: "创建 Agent" }));
   fireEvent.change(inMain().getByLabelText("名称"), { target: { value: "MyBot" } });
 };
@@ -71,7 +79,7 @@ const openEdit = async (fields = {}) => {
 const save = () => click(inMain().getByRole("button", { name: "保存" }));
 
 describe("creating", () => {
-  it("each select sits with what it belongs to, offers the model's levels, starts at 不思考, and is hidden for a model that only has 不思考", async () => {
+  it("each select offers the model's levels, starts at 不思考, and is hidden for a model that only has 不思考", async () => {
     const createAgent = vi.fn(async () => agentOf(AG1));
     await openCreate({ createAgent });
     await chooseModel("小模型 · 免费");
@@ -79,30 +87,60 @@ describe("creating", () => {
     await chooseModel("大模型 · 需余额");
     expect(levels(OTHERS)).toEqual(["不思考", "低", "高"]);
     expect(box(OTHERS).value).toBe("none");
-    // In the group about others' use, with its one line of help.
-    const group = box(OTHERS).closest("fieldset");
-    expect(group.querySelector("legend").textContent).toBe("别人用它的上限（可不填）");
-    expect(box(OTHERS).closest(".field").textContent).toContain(OTHERS_HINT);
     // The proactive one only while proactive replies are on, beside 话多话少.
     expect(box(PROACTIVE)).toBeNull();
     fireEvent.click(inMain().getByLabelText("主动参与群聊"));
     expect(levels(PROACTIVE)).toEqual(["不思考", "低", "高"]);
-    expect(box(PROACTIVE).closest(".field").textContent).toContain(PROACTIVE_HINT);
-    expect(box(PROACTIVE).closest(".field").textContent).not.toContain("别人今天的额度");
     pickOption(box(OTHERS), "high");
     pickOption(box(PROACTIVE), "low");
     await click(inMain().getByRole("button", { name: /^创建 Agent$/ }));
     expect(createAgent.mock.calls[0][0]).toMatchObject({ othersReasoning: "high", proactiveReasoning: "low", reasoning: "none" });
   });
 
-  it("left at 不思考, neither is sent; the proactive level is not sent while proactive replies are off", async () => {
+  it("each select's one hint is the most one reply at the level shown can cost, as the service says; it follows the level and the model", async () => {
+    await openCreate();
+    await chooseModel("大模型 · 需余额");
+    expect(hintOf(OTHERS)).toBe("这一档单条回复最多约 61.5 点");
+    pickOption(box(OTHERS), "high");
+    expect(hintOf(OTHERS)).toBe("这一档单条回复最多约 241.5 点");
+    fireEvent.click(inMain().getByLabelText("主动参与群聊"));
+    expect(hintOf(PROACTIVE)).toBe("这一档单条回复最多约 61.5 点");
+    pickOption(box(PROACTIVE), "low");
+    expect(hintOf(PROACTIVE)).toBe("这一档单条回复最多约 91.5 点");
+    // A model on my own key costs no points: each of its replies counts what the service says (6 points) whatever the level.
+    await chooseModel("gpt-x");
+    expect(hintOf(OTHERS)).toBe("这一档单条回复最多约 6 点");
+  });
+
+  it("with no number from the service the select has no hint at all", async () => {
+    await openCreate({}, { ...MODELS, proactiveAvailable: true });
+    await chooseModel("大模型 · 需余额");
+    expect(hintOf(OTHERS)).toBeNull();
+  });
+
+  it("left at 不思考, neither is sent; the proactive level is not sent while proactive replies are off; no limit or budget of its own is sent", async () => {
     const createAgent = vi.fn(async () => agentOf(AG1));
     await openCreate({ createAgent });
     await chooseModel("大模型 · 需余额");
+    fireEvent.click(inMain().getByLabelText("主动参与群聊"));
+    fireEvent.click(inMain().getByLabelText("主动参与群聊"));
     await click(inMain().getByRole("button", { name: /^创建 Agent$/ }));
     const body = createAgent.mock.calls[0][0];
-    expect(body).not.toHaveProperty("othersReasoning");
-    expect(body).not.toHaveProperty("proactiveReasoning");
+    for (const key of ["othersReasoning", "proactiveReasoning", "othersLimit", "othersBudget", "proactiveBudget"]) expect([key, Object.hasOwn(body, key)]).toEqual([key, false]);
+  });
+
+  it("the form has no box of the Agent's own limit for others and no daily budget for proactive replies", async () => {
+    const createAgent = vi.fn(async () => agentOf(AG1));
+    await openCreate({ createAgent });
+    await chooseModel("小模型 · 免费");
+    fireEvent.click(inMain().getByLabelText("主动参与群聊"));
+    expect(mainText()).not.toContain("别人用它的上限");
+    expect(inMain().queryByLabelText("每天最多回别人（次）")).toBeNull();
+    expect(inMain().queryByLabelText("每天最多花（点）")).toBeNull();
+    expect(inMain().queryByLabelText("主动回复每天最多花")).toBeNull();
+    await click(inMain().getByRole("button", { name: /^创建 Agent$/ }));
+    expect(createAgent.mock.calls[0][0]).toMatchObject({ proactive: true, proactiveLevel: "normal" });
+    expect(createAgent.mock.calls[0][0]).not.toHaveProperty("proactiveBudget");
   });
 
   it("a model that lacks the level picked shows the level that would run, and that one is sent", async () => {
@@ -134,44 +172,6 @@ describe("editing", () => {
     await save();
     expect(patchAgent.mock.calls[0][1]).toEqual({ othersReasoning: "low" });
   });
-});
-
-describe("the Agent's page", () => {
-  it("says the level others' replies run at beside its others' limit, and the proactive one beside the proactive budget; nothing of either for a model that only has 不思考", async () => {
-    const record = agentOf(AG1, { model: PAID, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "max", proactive: true, proactiveBudget: "70", proactiveReasoning: "none" });
-    await openAgents({ agents: [record] });
-    await click(inList().getByText("小助手", { selector: ".row-name" }));
-    expect(mainText()).toContain("没有单独设置，和其他 Agent 共用你的每天上限 · 回应别人时思考：高");
-    expect(mainText()).toContain("每天最多花 70 点");
-    expect(mainText()).toContain(" · 主动回复时不思考");
-    cleanup();
-    installBrowser();
-    await openAgents({ agents: [agentOf(AG1, { model: { source: "site", id: "free-1" }, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "high" })] });
-    await click(inList().getByText("小助手", { selector: ".row-name" }));
-    expect(mainText()).toContain("没有单独设置，和其他 Agent 共用你的每天上限");
-    expect(mainText()).not.toContain("回应别人时");
-  });
-});
-
-describe("fix round 3, point 4", () => {
-  it("the Agent's page reads the use route again when its model or either level changes elsewhere (a second tab): the state shown is not left from before the edit", async () => {
-    const record = agentOf(AG1, { model: PAID, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "none", proactiveReasoning: "none" });
-    const getOthersUse = vi.fn(async () => ({ limits: { answers: 50, points: "300" }, used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false }));
-    const app = await openAgents({ agents: [record], api: { getOthersUse } });
-    await click(inList().getByText("小助手", { selector: ".row-name" }));
-    const before = getOthersUse.mock.calls.length;
-    const elsewhere = async (fields) => {
-      app.transport.handlers.agent = () => ({ ...record, ...fields });
-      await push(app.transport, { type: "agent", id: AG1 });
-      await flush();
-    };
-    await elsewhere({ othersReasoning: "high" });
-    expect(getOthersUse.mock.calls.length).toBe(before + 1);
-    await elsewhere({ othersReasoning: "high", proactiveReasoning: "low" });
-    expect(getOthersUse.mock.calls.length).toBe(before + 2);
-    await elsewhere({ othersReasoning: "high", proactiveReasoning: "low", model: { source: "site", id: "free-1" } });
-    expect(getOthersUse.mock.calls.length).toBe(before + 3);
-  });
 
   it("a model that is no longer offered: its levels are not known, so neither select is drawn (no option is made up from the Agent's own saved level), and nothing of them is sent", async () => {
     const { patchAgent } = await openEdit({ model: { source: "site", id: "gone-9" }, reasoning: "high", othersReasoning: "high", proactive: true, proactiveReasoning: "high" });
@@ -181,10 +181,22 @@ describe("fix round 3, point 4", () => {
     await save();
     expect(patchAgent.mock.calls[0][1]).toEqual({ intro: "新的简介" });
   });
+});
 
-  it("the others' select says whom it is for (a call in a group, a visitor) and what it counts against", async () => {
-    await openEdit({});
-    expect(box(OTHERS).closest(".field").textContent).toContain("别人在群里 @ 它、或来和它聊天时用。思考越多，回复越慢，花的额度也越多，算在别人今天的额度里。");
+describe("the Agent's page", () => {
+  it("says the level others' replies run at and the proactive one; nothing of either for a model that only has 不思考; no limit or budget of its own", async () => {
+    const record = agentOf(AG1, { model: PAID, othersReasoning: "max", proactive: true, proactiveReasoning: "none" });
+    await openAgents({ agents: [record] });
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    expect(mainText()).toContain("回应别人时思考：高");
+    expect(mainText()).toContain(" · 主动回复时不思考");
+    expect(mainText()).not.toContain("每天最多花");
+    expect(mainText()).not.toContain("别人用它的上限");
+    cleanup();
+    installBrowser();
+    await openAgents({ agents: [agentOf(AG1, { model: { source: "site", id: "free-1" }, othersReasoning: "high" })] });
+    await click(inList().getByText("小助手", { selector: ".row-name" }));
+    expect(mainText()).not.toContain("回应别人时");
   });
 });
 
@@ -192,7 +204,7 @@ describe("fix round 3, ruling 5: no level is offered or shown that no reply runs
   // The service sends 最高 as 很高 on Chat Completions and Gemini (models/resolve.ts `sentLevel`): there the top of every list is 很高.
   const GPT = { source: "provider", providerId: P1, model: "gpt-x" };
   const edit = async (provider) => {
-    const record = agentOf(AG1, { model: GPT, reasoning: "max", othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "max", proactive: true, proactiveBudget: "70", proactiveReasoning: "max" });
+    const record = agentOf(AG1, { model: GPT, reasoning: "max", othersReasoning: "max", proactive: true, proactiveReasoning: "max" });
     await openAgents({ agents: [record], api: { listProviders: vi.fn(async () => ({ providers: [provider] })) } });
     await click(inList().getByText("小助手", { selector: ".row-name" }));
     const page = mainText();
@@ -227,64 +239,21 @@ describe("fix round 3, ruling 5: no level is offered or shown that no reply runs
   });
 });
 
-describe("fix round 4, F5: the state an Agent's page shows of its room for others is never left from before a change", () => {
-  const USE = (fields = {}) => ({ limits: { answers: 50, points: "300" }, used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 }, reached: false, tight: false, byPerson: [], stopped: [], agents: [], notice: false, ...fields });
-  const record = agentOf(AG1, { model: PAID, othersLimit: { answers: null, points: null }, othersUsedToday: { answers: 0, points: "0" }, othersReasoning: "none", proactiveReasoning: "none", proactive: false, proactiveBudget: "70" });
-
-  it("its proactive switch or its proactive budget changed elsewhere: the use route is read again (both decide whether it is used up)", async () => {
-    const getOthersUse = vi.fn(async () => USE());
-    const app = await openAgents({ agents: [record], api: { getOthersUse } });
-    await click(inList().getByText("小助手", { selector: ".row-name" }));
-    const before = getOthersUse.mock.calls.length;
-    const elsewhere = async (fields) => {
-      app.transport.handlers.agent = () => ({ ...record, ...fields });
-      await push(app.transport, { type: "agent", id: AG1 });
-      await flush();
-    };
-    await elsewhere({ proactive: true });
-    expect(getOthersUse.mock.calls.length).toBe(before + 1);
-    await elsewhere({ proactive: true, proactiveBudget: "20" });
-    expect(getOthersUse.mock.calls.length).toBe(before + 2);
-  });
-
-  it("a change while a read is still in flight: that read may be from before the change, so another is made after it and its answer is the one kept", async () => {
-    let answer = null;
-    const waiting = [];
-    const getOthersUse = vi.fn(() => (answer === null ? new Promise((resolve) => waiting.push(resolve)) : Promise.resolve(answer)));
-    answer = USE();
-    const app = await openAgents({ agents: [record], api: { getOthersUse } });
-    await click(inList().getByText("小助手", { selector: ".row-name" }));
-    const before = getOthersUse.mock.calls.length;
-    const elsewhere = async (fields) => {
-      app.transport.handlers.agent = () => ({ ...record, ...fields });
-      await push(app.transport, { type: "agent", id: AG1 });
-      await flush();
-    };
-    // The first change's read does not answer yet.
-    answer = null;
-    await elsewhere({ othersReasoning: "high" });
-    expect(getOthersUse.mock.calls.length).toBe(before + 1);
-    // A second change meanwhile: the read in flight was sent before it.
-    await elsewhere({ othersReasoning: "high", proactive: true });
-    answer = USE({ reached: true, tight: true });
-    waiting.splice(0).forEach((resolve) => resolve(USE()));
-    await flush();
-    await flush();
-    expect(getOthersUse.mock.calls.length).toBe(before + 2);
-  });
+describe("the one read of the use route the screen shares", () => {
+  const USE = (fields = {}) => ({ limit: "300", used: "0", proactive: "0", ownKeyPoints: "6", reached: false, byPerson: [], stopped: [], notice: false, ...fields });
 
   it("a newer answer settled while an older read is in flight is not overwritten by that read", async () => {
     let resolve = () => {};
     const actions = { getOthersUse: () => new Promise((r) => (resolve = r)) };
     const store = storeOf(actions);
     const reading = readOthersUse(actions, store);
-    const newer = USE({ limits: { answers: 9, points: "9" } });
+    const newer = USE({ limit: "9" });
     settleOthersUse(store, newer);
     resolve(USE());
     await reading;
     expect(store.use).toBe(newer);
     // And the next read is taken as ever.
-    const later = USE({ limits: { answers: 3, points: "3" } });
+    const later = USE({ limit: "3" });
     const again = readOthersUse(actions, store);
     resolve(later);
     await again;
@@ -296,7 +265,7 @@ describe("fix round 4, F5: the state an Agent's page shows of its room for other
     const actions = { getOthersUse: vi.fn(() => new Promise((_, r) => (reject = r))) };
     const store = storeOf(actions);
     const reading = readOthersUse(actions, store);
-    const newer = USE({ limits: { answers: 9, points: "9" } });
+    const newer = USE({ limit: "9" });
     settleOthersUse(store, newer);
     reject(new Error("offline"));
     await reading;
@@ -317,12 +286,18 @@ describe("fix round 4, F5: the state an Agent's page shows of its room for other
     answers[0].reject(new Error("offline"));
     await older;
     await Promise.resolve();
-    // The older read's failure is no news: the reload after the change is the read that counts.
     expect(store.failed).toBe(false);
     await flush();
-    const fresh = USE({ limits: { answers: 5, points: "5" } });
+    const fresh = USE({ limit: "5" });
     answers[1].resolve(fresh);
     await after;
     expect([store.use, store.failed]).toEqual([fresh, false]);
+  });
+
+  it("an answer of the old shape (two numbers) is no answer: the read says it failed", async () => {
+    const actions = { getOthersUse: vi.fn(async () => ({ limits: { answers: 50, points: "300" } })) };
+    const store = storeOf(actions);
+    await readOthersUse(actions, store);
+    expect([store.use, store.failed]).toEqual([null, true]);
   });
 });

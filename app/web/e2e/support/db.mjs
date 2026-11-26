@@ -20,6 +20,24 @@ async function withDatabase(work) {
 }
 
 /**
+ * Records that others' use of `ownerId`'s Agent `agentId` (its own conversation `conversationId`) was charged `micro` micro-points today:
+ * a finished reply of lane `others` with its usage record — what reaching the owner's one number takes, without a model call per point.
+ */
+export function chargeOthersToday(ownerId, agentId, conversationId, micro) {
+  if (!Number.isSafeInteger(micro) || micro < 1) throw new Error("a whole number of micro-points");
+  return withDatabase(async (client) => {
+    const { rows } = await client.query(
+      "insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, covers_seq, finished_at, lane) values ('reply', $1, $2, $3, 'done', 0, now(), 'others') returning id",
+      [conversationId, agentId, ownerId],
+    );
+    await client.query(
+      "insert into usage_records (owner_id, agent_id, run_id, purpose, source, model, cost_micro, balance_micro, outcome) values ($1, $2, $3, 'reply', 'site', 'e2e', $4, $4, 'done')",
+      [ownerId, agentId, rows[0].id, String(micro)],
+    );
+  });
+}
+
+/**
  * Moves message `seq` of conversation `conversationId` `days` whole days into the past (as if it had been sent then);
  * resolves with its new time (an ISO string).
  */

@@ -55,13 +55,13 @@ const watched = () => ({
 const person = (id, handle, displayName) => ({ id, handle, displayName, avatarVersion: 0 });
 /** `GET /api/me/others-use` as the service answers it, with these people stopped (the one read the screen shares: data/othersUseCache.js). */
 const useOf = (stoppedIds) => ({
-  limits: { answers: 50, points: "300" },
-  used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 },
+  limit: "300",
+  used: "0",
+  proactive: "0",
+  ownKeyPoints: "6",
   reached: false,
-  tight: false,
   byPerson: [],
   stopped: stoppedIds.map((id) => ({ person: { id, handle: id === BO ? "bob" : "ann", displayName: id === BO ? "阿波" : "小安", avatarVersion: 0 }, since: "2026-11-16T00:00:00Z" })),
-  agents: [],
   notice: false,
 });
 const rail = (name) => within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name });

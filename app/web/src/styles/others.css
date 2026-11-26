@@ -1,6 +1,6 @@
-/* Others' use of my Agents: the use page and its settings row, the Agent's numbers. Written by lane B (plan, File map). */
+/* Others' use of my Agents: the use page and its settings row, the one-time notice. Written by lane B (plan, File map). */
 
-/* The sentence with its two numbers: the boxes sit in the line of text and wrap with it (one column wide at 360px). */
+/* The sentence with its one number: the box sits in the line of text and wraps with it (one column wide at 360px). */
 .others-limit-sentence p:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; line-height: 1.5; }
 .others-unit { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .others-number {
@@ -14,33 +14,25 @@
 .others-keep { white-space: nowrap; }
 .others-today { line-height: 1.5; }
 
-/* The state of a use: said in words (正常 / 快用完了… / 今天给别人的额度用完了), the colour only follows it. */
-.others-state-tight { color: var(--warn); }
+/* The state of a use: said in words (正常 / 今天给别人的额度用完了), the colour only follows it. */
 .others-state-reached { color: var(--warn); font-weight: 600; }
 
 /* Each list row may be a sentence long: it wraps inside the column. */
 .others-use .member-rows li { flex-wrap: wrap; }
 .others-use .member-body { min-width: 0; overflow-wrap: anywhere; }
 
-/* The Agent's own limit in its form: two numbers side by side, one under the other on a narrow screen. */
-fieldset.others-limit { border: 0; margin: 0; padding: 0; min-width: 0; }
-fieldset.others-limit legend { padding: 0; margin-bottom: 6px; font-weight: 600; }
-.others-limit-parts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
-@media (max-width: 480px) { .others-limit-parts { grid-template-columns: minmax(0, 1fr); } }
-
 /* The one-time notice at the top of 我的 Agent. */
 .others-notice { padding: 0 20px 10px; }
 
 /* A touch screen, or a phone: every control of these pages is a 44px target. */
 @media (pointer: coarse), (max-width: 480px) {
-  .others-use .btn, .others-use .back, .others-notice .btn, .others-usage .text-link { min-height: 44px; }
+  .others-use .btn, .others-use .back, .others-notice .btn, .others-notice .text-link, .others-usage .text-link { min-height: 44px; }
   .others-number { height: 44px; }
-  fieldset.others-limit input { min-height: 44px; }
   /* (The form's selects, 43px tall elsewhere: the two thinking levels sit among 44px fields.) */
   .select-trigger { min-height: 44px; }
 }
 
-/* When my day for others is used up: said once, above the list (the cap is one for all my Agents). */
+/* When my day for others is used up: said once, above the list (the number is one for all my Agents). */
 .others-reached { color: var(--warn); font-weight: 600; }
 /* An Agent's name in my list is never squeezed to two characters by the tags beside it: it keeps room for six (and still ends in … when
    longer); the tags give way first. */

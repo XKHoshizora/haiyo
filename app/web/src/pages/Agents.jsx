@@ -1,11 +1,11 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { MODEL_GONE, commonErrorText } from "../data/errorTexts.js";
 import { formatPoints, proactiveLevelLabel } from "../data/viewmodel.js";
-import { OTHERS_NOTICE_BUTTON, OTHERS_REACHED_SHORT, OTHERS_STATES, othersNoticeText, othersStateOf, othersStateText } from "../data/othersCopy.js";
+import { OTHERS_NOTICE_BUTTON, OTHERS_NOTICE_LINK, OTHERS_STATES, othersNoticeText, othersStateOf } from "../data/othersCopy.js";
 import { useOthersUse } from "./useOthersUse.js";
-import { Avatar, ConvAvatar, HeadCounts, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal } from "../ui/primitives.jsx";
+import { Avatar, ConvAvatar, HeadCounts, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal, TextLink } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
 import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "./AgentForm.jsx";
 import { agentLevel, agentLevels, levelLabel, levelPhrase, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
@@ -20,37 +20,16 @@ import { Plus, ChevronLeft, Pencil, Pause, Play, Trash2 } from "../icons.js";
 
 const groupMentionsLabel = (agent) => (GROUP_MENTIONS.find(([id]) => id === agent.groupMentions) ?? GROUP_MENTIONS[0])[1];
 
-/**
- * What others' use of this Agent is, in the owner's view: its own limit (a sub-limit inside the owner's two numbers; none by default) and
- * what others used of it today, with the state the service says it is in (`row`: this Agent's entry of `GET /api/me/others-use`, null
- * until that is read). Only when the service says them; nothing is compared or counted here.
- */
-function othersRows(agent, row, level) {
-  const own = agent.othersLimit;
-  const ownText =
-    own === undefined
-      ? null
-      : own.answers === null && own.points === null
-        ? "没有单独设置，和其他 Agent 共用你的每天上限"
-        : [own.answers === null ? null : `每天最多回别人 ${own.answers} 次`, own.points === null ? null : `最多花 ${formatPoints(own.points)} 点`].filter(Boolean).join("，");
-  const used = agent.othersUsedToday;
-  const state = row && row.canReply !== false ? ` · ${othersStateText(row)}` : row ? " · 没有可用的模型，暂时不能回复" : "";
-  const usedText = used === undefined ? null : `今天回了别人 ${used.answers} 次（含主动回复），回应别人花了 ${formatPoints(used.points)} 点${state}`;
-  // The level a reply for others runs at (the owner's setting, as it runs on this model): said only where the model can think at all.
-  const levelText = level === null ? "" : ` · 回应别人时${levelPhrase(level)}`;
-  return [...(ownText === null ? [] : [["别人用它的上限", `${ownText}${levelText}`]]), ...(usedText === null ? [] : [["别人今天的使用", usedText]])];
+/** The level a reply to someone else runs at (the owner's setting, as it runs on this model): said only where the model can think at all. */
+function othersRows(level) {
+  return level === null ? [] : [["回应别人时", levelPhrase(level)]];
 }
 
-/** 主动参与群聊 with its level and daily budget: only in the owner's view, and only while it is on. */
+/** 主动参与群聊 with how readily it joins in: only in the owner's view, and only while it is on. */
 function proactiveRows(agent, thinking) {
   if (agent.proactive !== true) return [];
-  const level = proactiveLevelLabel(agent.proactiveLevel);
   const thinks = thinking === null ? "" : ` · 主动回复时${levelPhrase(thinking)}`;
-  // The budget is always said by the service; if it somehow is not, the level alone is shown.
-  if (agent.proactiveBudget === undefined) return [["主动参与群聊", `${level}${thinks}`]];
-  // Today's spend is the service's (`proactiveSpentToday`, owner only); said beside the daily budget, never compared with it here.
-  const spent = typeof agent.proactiveSpentToday === "string" ? `，今天花了 ${formatPoints(agent.proactiveSpentToday)} 点` : "";
-  return [["主动参与群聊", `${level} · 每天最多花 ${formatPoints(agent.proactiveBudget)} 点${spent}${thinks}`]];
+  return [["主动参与群聊", `${proactiveLevelLabel(agent.proactiveLevel)}${thinks}`]];
 }
 
 /** 它怎么称呼你 and how many others it has an appellation for: only in the owner's view of the Agent (mine), when set. */
@@ -98,9 +77,9 @@ const excerpt = (text, max = 200) => {
 };
 
 /**
- * The one-time notice at the top of 我的 Agent while the service says `notice` (the others' limit is now counted per person): system text
- * in the web, never a message of an Agent's, dismissed for good with 「知道了」 (`POST /api/me/others-limits/seen`; the notice stays if that
- * fails, and says so).
+ * The one-time notice at the top of 我的 Agent while the service says `notice`: system text in the web, never a message of an Agent's — one
+ * sentence with the owner's number and the entry to the page where it is seen and changed — dismissed for good with 「知道了」
+ * (`POST /api/me/others-limits/seen`; the notice stays if that fails, and says so).
  */
 function OthersNotice({ use, settle, reload }) {
   const { dispatch, actions } = useStore();
@@ -120,10 +99,17 @@ function OthersNotice({ use, settle, reload }) {
       setPending(false);
     }
   };
+  const open = (event) => {
+    event.preventDefault();
+    dispatch({ type: "nav", patch: { section: "settings", settingsPage: "others", pane: "main" } });
+  };
   return (
     <div className="others-notice">
       <Notice tone="info" action={<Btn small disabled={pending} onClick={seen}>{OTHERS_NOTICE_BUTTON}</Btn>}>
-        {othersNoticeText(use.limits)}
+        {othersNoticeText(use.limit)}
+        <TextLink href="/settings/others" onClick={open}>
+          {OTHERS_NOTICE_LINK}
+        </TextLink>
       </Notice>
     </div>
   );
@@ -133,8 +119,6 @@ export function AgentsList() {
   const { state, dispatch, actions } = useStore();
   const { nav } = state;
   const { use, settle, reload } = useOthersUse({ maxAge: 10_000 });
-  /** This Agent's entry of the use route: its numbers and its state today. */
-  const useOf = (id) => use?.agents?.find((a) => a.agentId === id) ?? null;
   const agents = myAgents(state);
   // A deleted Agent is not one of mine any more (the usage page counts none of it): its row waits behind one collapsed entry, because its chat history
   // stays readable by design (the row opens its page, whose 进入查看 reaches the chat). The entry opens by itself when one of them is open.
@@ -164,7 +148,7 @@ export function AgentsList() {
         }
       />
       <OthersNotice use={use} settle={settle} reload={reload} />
-      {/* The cap is one for all my Agents: when the day is used up it is said ONCE here, not on every card (fix round 1, I3). */}
+      {/* The number is one for all my Agents: when the day is used up it is said ONCE here, not on every card. */}
       {othersStateOf(use) === "reached" && <p className="list-note others-reached" role="status">{OTHERS_STATES.reached}</p>}
       <p className="list-note">这里只列出你拥有的 Agent。</p>
       <ul className="rows agent-rows">
@@ -180,8 +164,6 @@ export function AgentsList() {
                 <span className="row-top">
                   <span className="row-name">{a.name}</span>
                   <StatusTag agent={a} />
-                  {/* Only an Agent whose OWN number is used up while my day is not: three characters, so its name keeps its room. */}
-                  {!a.deleted && othersStateOf(use) !== "reached" && othersStateOf(useOf(a.id)) === "reached" && <Tag tone="warn">{OTHERS_REACHED_SHORT}</Tag>}
                 </span>
                 <span className="row-sub">
                   <span className="row-preview">{a.loaded ? (
@@ -311,19 +293,6 @@ function AgentDetail({ agent }) {
   const [deleting, setDeleting] = useState(false);
   const { nav } = state;
   const live = agent.loaded && !agent.deleted;
-  const { use, reload } = useOthersUse({ maxAge: 10_000 });
-  // The numbers of the row come from the Agent's record and its state from the use route: when the record's change, the route is read again.
-  // (Its model and the two levels of its replies for others too: they decide what a reply costs, so the state the route says. And whether
-  // it makes replies nobody asked for, and their budget: while one still fits it is not used up for others.)
-  const usedKey = JSON.stringify([agent.othersUsedToday, agent.othersLimit, agent.model, agent.othersReasoning, agent.proactiveReasoning, agent.proactive, agent.proactiveBudget]);
-  const firstKey = useRef(usedKey);
-  useEffect(() => {
-    if (firstKey.current !== usedKey) {
-      firstKey.current = usedKey;
-      // After the change: a read already in flight may have been sent before it, so this one is made after it and is the one kept.
-      reload({ afterWrite: true });
-    }
-  }, [usedKey, reload]);
   // The 「别人」 tab is for a live Agent, and only while the site's Agent social switch is on.
   const othersOn = live && socialOn(state);
   // The memory tab is for a live Agent: one deleted while it is open falls back to the profile, as a tab not offered does (so does 「别人」).
@@ -415,7 +384,7 @@ function AgentDetail({ agent }) {
                     ["私聊回复方式", agent.privateReply],
                     ["群里谁可以叫它", groupMentionsLabel(agent)],
                     ["一次接话最多花费", `${formatPoints(agent.chainBudget ?? CHAIN_BUDGET_DEFAULT)} 点`],
-                    ...othersRows(agent, use?.agents?.find((a) => a.agentId === agent.id) ?? null, thinks ? agentLevel(state, agent, agent.othersReasoning) : null),
+                    ...othersRows(thinks ? agentLevel(state, agent, agent.othersReasoning) : null),
                     ...proactiveRows(agent, thinks ? agentLevel(state, agent, agent.proactiveReasoning) : null),
                     ...appellationRows(agent),
                   ]}

@@ -78,8 +78,8 @@ export const removeMember = (conversationId, principalId) =>
 
 // ───────── messages
 /**
- * body: {clientTxn, text?, attachmentId?, replyToSeq?}; reuse the same clientTxn when retrying. → {message, duplicate,
- * notCalled?: [{agentId, reason: "caller_rate_limited"}]} (only for me: calls my own limit kept from someone else's Agent)
+ * body: {clientTxn, text?, attachmentId?, replyToSeq?}; reuse the same clientTxn when retrying. → {message, duplicate} (my copy of the
+ * message carries `refused: [{agentId, reason: "others_limit" | "too_often"}]` when a limit kept a call of it from an Agent)
  */
 export const sendMessage = (conversationId, body) => request("POST", `/api/conversations/${seg(conversationId)}/messages`, body);
 export const listMessages = (conversationId, { before, limit } = {}) =>
@@ -108,14 +108,13 @@ export function socketUrl(ticket) {
 
 // ───────── Agents (owner only; app/service/README.md "Agents")
 export const listAgents = () => request("GET", "/api/agents"); // → {agents: [Agent]}, oldest first, deleted ones included
-/** body: {namePart (its handle is `<my handle>.<namePart>`), name, intro?, field?, persona?, replyMode?, groupMentions?, chainBudget?, othersLimit?, proactiveBudget?, ownerAppellation?, reasoning?, model?} → Agent */
+/** body: {namePart (its handle is `<my handle>.<namePart>`), name, intro?, field?, persona?, replyMode?, groupMentions?, chainBudget?, ownerAppellation?, reasoning?, othersReasoning?, proactiveReasoning?, model?} → Agent */
 export const createAgent = (body) => request("POST", "/api/agents", body);
 export const getAgent = (agentId) => request("GET", `/api/agents/${seg(agentId)}`);
 /**
- * patch: any of {name, intro, field, persona, replyMode, groupMentions, chainBudget, othersLimit, proactiveBudget, ownerAppellation,
- * reasoning, model} (`model: null` clears it; `chainBudget` is a decimal string of points; `othersLimit` is the Agent's own limit on
- * what others cause, `{answers: 1..1000 | null, points: decimal string | null}`, or `null` for none of its own (both parts at once);
- * `ownerAppellation` 1–20 characters, or `null` to clear) → Agent
+ * patch: any of {name, intro, field, persona, replyMode, groupMentions, chainBudget, ownerAppellation, reasoning, othersReasoning,
+ * proactiveReasoning, model} (`model: null` clears it; `chainBudget` is a decimal string of points; `ownerAppellation` 1–20 characters,
+ * or `null` to clear) → Agent
  */
 export const patchAgent = (agentId, patch) => request("PATCH", `/api/agents/${seg(agentId)}`, patch);
 export const pauseAgent = (agentId) => request("POST", `/api/agents/${seg(agentId)}/pause`);
@@ -209,11 +208,11 @@ export const reportAgent = (body) => request("POST", "/api/reports", body);
 export const putNoteVerdict = (agentId, body) => request("PUT", `/api/agents/${seg(agentId)}/note-verdicts`, body);
 /** Answers the persona-fact card at message `seq` → {ok: true, moved}; 409 answered | expired. */
 export const answerPersonaFact = (agentId, seq, move) => request("POST", `/api/agents/${seg(agentId)}/persona-facts/${seg(seq)}`, { move });
-/** What others' use of my Agents has cost today against my two numbers → {limits, used, reached, byPerson, stopped, agents, notice}. */
+/** What others' use of my Agents has used today against my one number → {limit, used, proactive, ownKeyPoints, reached, byPerson, stopped, notice}. */
 export const getOthersUse = () => request("GET", "/api/me/others-use");
-/** body: {answers: 1..1000, points: "decimal 1..100000"} → {answers, points}. */
+/** body: {points: "decimal 1..100000"}: my one number → {points}. */
 export const putOthersLimits = (body) => request("PUT", "/api/me/others-limits", body);
-/** The one-time notice about the per-person limit was seen → {ok: true}. */
+/** The one-time notice about my one number was seen → {ok: true}. */
 export const seenOthersNotice = () => request("POST", "/api/me/others-limits/seen");
 
 export const listProviders = () => request("GET", "/api/providers"); // → {providers: [Provider]}

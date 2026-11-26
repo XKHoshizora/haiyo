@@ -1808,16 +1808,16 @@ describe("称呼 (how an Agent addresses its owner and others)", () => {
 describe("主动参与群聊 (proactive replies)", () => {
   const SWITCH = "主动参与群聊";
   const LEVEL = "话多话少";
+  /** The daily budget of proactive replies is gone (the limits redesign): the owner's one number for others' use covers them. */
   const AMOUNT = "主动回复每天最多花";
   const HELPER = "打开后，群里有人说到它擅长的事，没 @ 它它也可能回复。花的是你的点。";
-  const WRONG = "请填写 1 到 100000 之间的点数（最多 6 位小数）";
   const UNAVAILABLE = "现在还不能打开主动参与：站点没有配置判断模型。";
   const LOST = "站点现在没有配置判断模型，主动参与不会生效。可以先关掉。";
   const ON_SITE = { ...MODELS, proactiveAvailable: true };
   const OFF_SITE = { ...MODELS, proactiveAvailable: false };
   const box = () => inMain().getByLabelText(SWITCH);
   const kv = () => document.querySelector(".main-col .kv").textContent;
-  const proactive = (fields = {}) => ({ proactive: true, proactiveLevel: "normal", proactiveBudget: "20", ...fields });
+  const proactive = (fields = {}) => ({ proactive: true, proactiveLevel: "normal", ...fields });
   const save = () => click(inMain().getByRole("button", { name: "保存" }));
 
   const createOn = async (models, choose = () => {}) => {
@@ -1847,7 +1847,7 @@ describe("主动参与群聊 (proactive replies)", () => {
     expect(screen.queryByLabelText(SWITCH)).toBeNull();
     cleanup();
     const createAgent = await createOn(OFF_SITE);
-    for (const key of ["proactive", "proactiveLevel", "proactiveBudget"]) expect(createAgent.mock.calls[0][0]).not.toHaveProperty(key);
+    for (const key of ["proactive", "proactiveLevel"]) expect(createAgent.mock.calls[0][0]).not.toHaveProperty(key);
     cleanup();
     const { patchAgent } = await openEditOf(proactive({ proactive: false }), OFF_SITE);
     expect(screen.queryByLabelText(SWITCH)).toBeNull();
@@ -1896,7 +1896,7 @@ describe("主动参与群聊 (proactive replies)", () => {
     expect(screen.queryByLabelText(SWITCH)).toBeNull();
   });
 
-  it("creating: the switch is off by default, with its helper; level and amount appear only while it is on", async () => {
+  it("creating: the switch is off by default, with its helper; its level appears only while it is on, and there is no amount of its own", async () => {
     await openAgents({ models: ON_SITE });
     await openCreate();
     expect(box().checked).toBe(false);
@@ -1910,57 +1910,33 @@ describe("主动参与群聊 (proactive replies)", () => {
       ["more", "多说"],
     ]);
     expect(inMain().getByLabelText(LEVEL).value).toBe("normal");
-    expect(inMain().getByLabelText(AMOUNT).value).toBe("70");
-    expect(document.getElementById(inMain().getByLabelText(AMOUNT).getAttribute("aria-describedby"))?.textContent).toBe(
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
-    );
-    // A typed amount only: no 不限 choice.
-    expect(inMain().getByLabelText(AMOUNT).tagName).toBe("INPUT");
+    expect(screen.queryByLabelText(AMOUNT)).toBeNull();
     fireEvent.click(box());
     expect(screen.queryByLabelText(LEVEL)).toBeNull();
   });
 
-  it("creating: off sends nothing about it, even after the level or amount was changed and the switch turned off again", async () => {
+  it("creating: off sends nothing about it, even after the level was changed and the switch turned off again", async () => {
     const createAgent = await createOn(ON_SITE, () => {
       fireEvent.click(box());
       pickOption(inMain().getByLabelText(LEVEL), "more");
-      type(AMOUNT, "abc");
       fireEvent.click(box());
     });
     expect(createAgent).toHaveBeenCalledTimes(1);
     for (const key of ["proactive", "proactiveLevel", "proactiveBudget"]) expect(createAgent.mock.calls[0][0]).not.toHaveProperty(key);
   });
 
-  it("creating: on with the defaults sends proactive, normal and 70", async () => {
+  it("creating: on with the default sends proactive and normal, and no budget", async () => {
     const createAgent = await createOn(ON_SITE, () => fireEvent.click(box()));
-    expect(createAgent.mock.calls[0][0]).toMatchObject({ proactive: true, proactiveLevel: "normal", proactiveBudget: "70" });
+    expect(createAgent.mock.calls[0][0]).toMatchObject({ proactive: true, proactiveLevel: "normal" });
+    expect(createAgent.mock.calls[0][0]).not.toHaveProperty("proactiveBudget");
   });
 
-  it("creating: the level and the amount typed are sent", async () => {
+  it("creating: the level picked is sent", async () => {
     const createAgent = await createOn(ON_SITE, () => {
       fireEvent.click(box());
       pickOption(inMain().getByLabelText(LEVEL), "less");
-      type(AMOUNT, " 035.50 ");
     });
-    expect(createAgent.mock.calls[0][0]).toMatchObject({ proactive: true, proactiveLevel: "less", proactiveBudget: "35.5" });
-  });
-
-  it("each wrong amount is refused inline like the chain budget, while the switch is on", async () => {
-    const createAgent = vi.fn(async () => agentOf(AG1));
-    await openAgents({ api: { createAgent }, models: ON_SITE });
-    await openCreate();
-    type("名称", "MyBot");
-    await chooseModel("小模型 · 免费");
-    fireEvent.click(box());
-    for (const value of ["0", "100001", "abc", "", "1.1234567"]) {
-      type(AMOUNT, value);
-      await click(createButton());
-      expect(inMain().getByLabelText(AMOUNT).closest(".field").textContent, value).toContain(WRONG);
-      expect(inMain().getByLabelText(AMOUNT).getAttribute("aria-invalid"), value).toBe("true");
-    }
-    expect(createAgent).not.toHaveBeenCalled();
-    type(AMOUNT, "99.999999");
-    expect(inMain().getByLabelText(AMOUNT).closest(".field").textContent).not.toContain(WRONG);
+    expect(createAgent.mock.calls[0][0]).toMatchObject({ proactive: true, proactiveLevel: "less" });
   });
 
   it("creating: 409 proactive_unavailable is said inline", async () => {
@@ -1978,10 +1954,10 @@ describe("主动参与群聊 (proactive replies)", () => {
   });
 
   it("editing: opens on what is stored", async () => {
-    await openEditOf(proactive({ proactiveLevel: "more", proactiveBudget: "35" }));
+    await openEditOf(proactive({ proactiveLevel: "more" }));
     expect(box().checked).toBe(true);
     expect(inMain().getByLabelText(LEVEL).value).toBe("more");
-    expect(inMain().getByLabelText(AMOUNT).value).toBe("35");
+    expect(screen.queryByLabelText(AMOUNT)).toBeNull();
     cleanup();
     await openEditOf(proactive({ proactive: false }));
     expect(box().checked).toBe(false);
@@ -1995,29 +1971,16 @@ describe("主动参与群聊 (proactive replies)", () => {
     expect(patchAgent.mock.calls[0][1]).toEqual({ proactive: true });
   });
 
-  it("editing: only the level, only the level; only the amount, only the amount", async () => {
-    const { patchAgent } = await openEditOf(proactive({ proactiveBudget: "35" }));
+  it("editing: only the level, only the level", async () => {
+    const { patchAgent } = await openEditOf(proactive());
     pickOption(inMain().getByLabelText(LEVEL), "less");
     await save();
     expect(patchAgent.mock.calls[0][1]).toEqual({ proactiveLevel: "less" });
-    await click(inMain().getByRole("button", { name: /编辑/ }));
-    type(AMOUNT, "40");
-    await save();
-    expect(patchAgent.mock.calls[1][1]).toEqual({ proactiveBudget: "40" });
-    await click(inMain().getByRole("button", { name: /编辑/ }));
   });
 
-  it("editing: 35.0 against the stored 35 sends nothing", async () => {
-    const { patchAgent } = await openEditOf(proactive({ proactiveBudget: "35" }));
-    type(AMOUNT, "35.0");
-    type("简介", "新简介");
-    await save();
-    expect(patchAgent.mock.calls[0][1]).toEqual({ intro: "新简介" });
-  });
-
-  it("editing: turning it off sends only { proactive: false }, whatever was typed in the amount meanwhile", async () => {
+  it("editing: turning it off sends only { proactive: false }, whatever level was picked meanwhile", async () => {
     const { patchAgent } = await openEditOf(proactive());
-    type(AMOUNT, "abc");
+    pickOption(inMain().getByLabelText(LEVEL), "less");
     fireEvent.click(box());
     await save();
     expect(patchAgent.mock.calls[0][1]).toEqual({ proactive: false });
@@ -2074,7 +2037,7 @@ describe("主动参与群聊 (proactive replies)", () => {
     expect(patchAgent.mock.calls[0][1]).toEqual({ proactiveLevel: "less" });
   });
 
-  it("the Agent's page: no row while it is off or the service says nothing; the level and the daily budget", async () => {
+  it("the Agent's page: no row while it is off or the service says nothing; how readily, and no daily budget", async () => {
     const show = async (extra) => {
       await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, ...extra })], models: ON_SITE });
       await openRow("小助手");
@@ -2084,15 +2047,13 @@ describe("主动参与群聊 (proactive replies)", () => {
     cleanup();
     expect(await show(proactive({ proactive: false }))).not.toContain(SWITCH);
     cleanup();
-    expect(await show(proactive({ proactiveLevel: "less", proactiveBudget: "70" }))).toContain("主动参与群聊少说 · 每天最多花 70 点");
+    expect(await show(proactive({ proactiveLevel: "less" }))).toContain("主动参与群聊少说");
     cleanup();
-    expect(await show(proactive({ proactiveLevel: "more", proactiveBudget: "20.5" }))).toContain("多说 · 每天最多花 20.5 点");
-    cleanup();
-    // (There is no spend line any more: the wire has no per-Agent proactive spend.)
-    expect(await show(proactive({ proactiveSpentToday: "20" }))).not.toContain("额度已用完");
-    cleanup();
-    // The budget missing (the service always says it): the level alone.
-    expect(await show({ proactive: true, proactiveLevel: "less" })).toContain("主动参与群聊少说");
+    // A stale answer with the old budget and spend: neither is said.
+    const text = await show(proactive({ proactiveLevel: "more", proactiveBudget: "20.5", proactiveSpentToday: "20" }));
+    expect(text).toContain("主动参与群聊多说");
+    expect(text).not.toContain("每天最多花");
+    expect(text).not.toContain("今天花了");
   });
 });
 
@@ -2446,26 +2407,20 @@ describe("联网搜索 (only while the site offers web search)", () => {
     expect((await createOn(ON_SITE, () => fireEvent.click(sw()))).mock.calls[0][0]).toMatchObject({ webSearch: false });
   });
 
-  it("the money hints of the budgets say that a provider-model Agent's web searches are charged, and bounded by them, only while the site offers web search (fix round 1, I2)", async () => {
+  it("the money hint of the chain budget says that a provider-model Agent's web searches are charged, and bounded by it, only while the site offers web search (fix round 1, I2)", async () => {
     const CHAIN = "一次接话最多花费（点）";
-    const AMOUNT = "主动回复每天最多花";
     const hintOf = (label) => document.getElementById(inMain().getByLabelText(label).getAttribute("aria-describedby"))?.textContent;
     const open = async (models) => {
       await openAgents({ models: { ...models, proactiveAvailable: true } });
       await openCreate();
-      fireEvent.click(inMain().getByLabelText("主动参与群聊"));
-      return [hintOf(CHAIN) ?? inMain().getByLabelText(CHAIN).closest(".field").querySelector(".field-hint").textContent, hintOf(AMOUNT)];
+      return hintOf(CHAIN) ?? inMain().getByLabelText(CHAIN).closest(".field").querySelector(".field-hint").textContent;
     };
-    expect(await open(ON_SITE)).toEqual([
+    expect(await open(ON_SITE)).toBe(
       "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。用你自己的密钥时，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
-    ]);
+    );
     cleanup();
     // The site offering none: the words as before, to the character.
-    expect(await open(MODELS)).toEqual([
-      "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
-      "每天零点（站点时间）重新计算；用完后它当天不再主动接话，被 @ 时照常回复。只对站点的模型有效，用你自己的密钥时不受限。主动回复花的点，也算进“别人怎么用我的 Agent”的每天上限。",
-    ]);
+    expect(await open(MODELS)).toBe("在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。");
   });
 
   it("a price of 0 says only where the words go (no 每次约 0 点)", async () => {

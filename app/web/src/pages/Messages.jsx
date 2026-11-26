@@ -6,7 +6,7 @@ import { supervisorLabel } from "../state/social.js";
 import { formatSize, namesAgent, replyPoints } from "../data/viewmodel.js";
 import { useShowReplyPoints } from "../data/prefs.js";
 import { failureText, retryHopeless } from "../data/uploadErrors.js";
-import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
+import { Avatar, Btn, Tag, TextLink } from "../ui/primitives.jsx";
 import { MentionText } from "../ui/MentionText.jsx";
 import { MediaBody } from "../ui/MediaBody.jsx";
 import { useGrowOnSize } from "../ui/useGrowOnSize.js";
@@ -24,6 +24,7 @@ import { ReplyLookups } from "./ReplyLookups.jsx";
 import { citingOf } from "./WebSources.jsx";
 import { CitesContext } from "../ui/cites.jsx";
 import { Reply, RotateCw, FileText, Check, CircleAlert } from "../icons.js";
+import { OTHERS_NOTICE_LINK } from "../data/othersCopy.js";
 
 /** The quoted message as the reader may see it: the service says whether it is visible to them. */
 function Quote({ quote }) {
@@ -171,6 +172,25 @@ function ReplyVia({ via, agentId = null }) {
   );
 }
 
+/** The owner's notice that others' use of their Agents reached their one number today, with the entry to the page of that number. */
+function OthersReachedNotice({ msg }) {
+  const { dispatch } = useStore();
+  const open = (event) => {
+    event.preventDefault();
+    dispatch({ type: "nav", patch: { section: "settings", settingsPage: "others", pane: "main" } });
+  };
+  return (
+    <li className="msg-system" data-msg={msg.id}>
+      <span>
+        {msg.text}{" "}
+        <TextLink href="/settings/others" onClick={open}>
+          {OTHERS_NOTICE_LINK}
+        </TextLink>
+      </span>
+    </li>
+  );
+}
+
 /**
  * One message of `conv`; `onJump(conversationId, seq)`: the chat's jump (to a message an Agent's reply found);
  * `thinkingOpen`: it takes the place of a bubble whose thinking the reader had open (read when it is first shown).
@@ -188,6 +208,8 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
     if (msg.system?.event === "topic_reset") return <TopicDivider msg={msg} />;
     // What my Agent remembered: only in my own conversation with it, never in a group.
     if (msg.system?.event === "memory_changed") return conv.type === "agent" ? <MemoryNotice msg={msg} conv={conv} /> : null;
+    // Others' use of my Agents reached my number today: the line, and the entry where the number is seen and changed.
+    if (msg.system?.event === "others_limit_reached") return <OthersReachedNotice msg={msg} />;
     return (
       <li className="msg-system" data-msg={msg.id}>
         <span>{msg.text}</span>
@@ -296,7 +318,11 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
               </span>
             )
           )}
-          {mine && msg.notCalled && <span className="muted">{msg.notCalled}</span>}
+          {mine && (msg.refused ?? []).map((line) => (
+            <span key={line} className="muted msg-refused">
+              {line}
+            </span>
+          ))}
           {(msg.kind === "text" || msg.kind === "image") && msg.seq !== null && msg.status !== "failed" && msg.status !== "sending" && (
             <button type="button" className="msg-action" aria-keyshortcuts="Shift+F10" onClick={() => onReply(msg)}>
               <Reply size={15} aria-hidden="true" /> 回复

@@ -51,13 +51,13 @@ const watched = social(SO, "observer", [AG1, ANN], AG1, ME_ID, [
   { id: ME_ID, role: "observer", isCreator: false },
 ]);
 const use = () => ({
-  limits: { answers: 50, points: "300" },
-  used: { answers: 0, points: "0", proactivePoints: "0", proactiveAnswers: 0 },
+  limit: "300",
+  used: "0",
+  proactive: "0",
+  ownKeyPoints: "6",
   reached: false,
-  tight: false,
   byPerson: [],
   stopped: [{ person: { id: ANN, handle: "ann", displayName: "小安", avatarVersion: 0 }, since: "2026-11-20T00:00:00.000Z" }],
-  agents: [{ agentId: AG1, answers: 0, points: "0", perDay: 41, reached: false, tight: false, canReply: true }],
   notice: false,
 });
 const open = () =>
