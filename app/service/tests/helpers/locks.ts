@@ -46,3 +46,29 @@ export const someoneWaits = (db: Db, like: readonly string[], n = 1) =>
     },
     { timeout: 5000 },
   );
+
+/** The backend (`pg_backend_pid`) of connection `c`: the holder a barrier waits behind. */
+export const backendPid = async (c: { query: (sql: string) => Promise<{ rows: Array<{ pid: number }> }> }): Promise<number> =>
+  (await c.query("select pg_backend_pid() as pid")).rows[0]!.pid;
+
+/**
+ * Waits (10 s at most) until `n` backends of this database wait behind the holder `holderPid`: blocked by it, or by a backend that is
+ * (Postgres queues a row's second waiter behind its first): whether they did. Only what waits for THAT transaction counts — never a
+ * waiter of some other lock in the database (a sweep's, another test's).
+ */
+export async function waitersBehind(db: Db, holderPid: number, n = 1): Promise<boolean> {
+  for (let i = 0; i < 400; i++) {
+    const { rows } = await db.query<{ n: number }>(
+      `with recursive behind (pid) as (
+         select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
+         union
+         select a.pid from pg_stat_activity a join behind b on b.pid = any(pg_blocking_pids(a.pid))
+       )
+       select count(*)::int as n from behind`,
+      [holderPid],
+    );
+    if (rows[0]!.n >= n) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return false;
+}

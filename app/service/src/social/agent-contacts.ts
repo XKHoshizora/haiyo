@@ -19,18 +19,25 @@ export type ContactState = "requested" | "live" | "ended";
 export type ContactBasis = "approved" | "contacts";
 export type EndReason = "declined" | "expired" | "left" | "narrowed" | "removed" | "barred";
 
-/** What access to end: all of two people's (an Agent of either's included), or an Agent's for the listed subjects. */
-export type GrantScope = { between: readonly [string, string] } | { agentId: string; subjectIds: readonly string[] };
+/** An Agent's access for the listed subjects. */
+export type AgentGrants = { agentId: string; subjectIds: readonly string[] };
+/**
+ * What access to end: all of two people's (an Agent of either's included), an Agent's for the listed subjects, or several Agents' each
+ * for its own subjects (`grants`: an unfriend's, ended in one go so that every Agent's row is locked before any of their runs).
+ */
+export type GrantScope = { between: readonly [string, string] } | AgentGrants | { grants: readonly AgentGrants[] };
 
 /**
  * The only way access stops (design §1.2; plan A5a). In the caller's transaction, after its pair locks and any direct chat's
  * notice (`endGrants` takes no conversation row):
- *   1. the Agents' rows `for update`, in id order (`between`: every Agent of both people, deleted ones too);
+ *   1. the Agents' rows `for update`, in id order, in one statement (`between`: every Agent of both people, deleted ones too;
+ *      `grants`: every Agent listed);
  *   2. the rows in scope that are `live` or `requested` end with `reason` (`between [A, B]`: the rows on A's Agents whose person
- *      is B and on B's Agents whose person is A, an Agent of the other's included; `agentId`: that Agent's rows for the listed
- *      subjects);
+ *      is B and on B's Agents whose person is A, an Agent of the other's included; `agentId`, `grants`: each Agent's rows for its
+ *      listed subjects);
  *   3. (the errands plan adds its one statement here);
- *   4. the Agents' replies that the ending touches stop (below).
+ *   4. the Agents' replies that the ending touches stop (below), every run row it may write — in the social conversations and, unless
+ *      `groups` is false, in groups — locked first as ONE set in ascending run id (runs.ts `lockActiveRuns`; T2 fix 2, R3).
  * The queued runs are taken before the running ones, each in a statement of its own: a run being claimed at that moment is
  * either seen queued (its claim waits on our row, finds it cancelled) or already running when the second statement looks.
  * The caller runs `announceEnded` after commit. Nothing here writes a bar.
@@ -58,6 +65,10 @@ export function endGrants(
 /** `by`: whose bar ends the rows (`barred` only: a row records it, `agent_contacts.barred_by`, so that lifting a bar relabels only its own rows). */
 async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed" | "removed" | "barred", o: { eager: boolean; by?: string; groups?: boolean }): Promise<EndedRuns & { ended: number }> {
   const barredBy = reason === "barred" ? (o.by ?? null) : null;
+  // An Agent's grants, or several Agents' (`grants`): as pairs (Agent, subject), one per subject.
+  const grants = "between" in scope ? [] : "grants" in scope ? scope.grants : [scope];
+  const pairAgents = grants.flatMap((g) => g.subjectIds.map(() => g.agentId));
+  const pairSubjects = grants.flatMap((g) => g.subjectIds);
   const agents =
     "between" in scope
       ? await t.query<{ id: string }>(
@@ -65,7 +76,9 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
             where p.owner_id = any($1::uuid[]) order by a.principal_id for update of a`,
           [[...scope.between]],
         )
-      : await t.query<{ id: string }>("select principal_id as id from agents where principal_id = $1 for update", [scope.agentId]);
+      : await t.query<{ id: string }>("select principal_id as id from agents where principal_id = any($1::uuid[]) order by principal_id for update", [
+          [...new Set(pairAgents)],
+        ]);
   if (agents.rows.length === 0) return { cancelled: [], running: [], ended: 0 };
 
   // The runs' scope in the pair's social conversations, as SQL over `r` (agent_runs) and `ag` (the run's Agent as a principal).
@@ -88,24 +101,26 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
                                          and coalesce(ro.owner_id, ro.id) = ${concerned})))`,
       params: [a, b],
     };
-    groupAgents = { sql: "ag.owner_id = any($1::uuid[])", params: [[a, b]] };
+    groupAgents = { sql: "ag.owner_id in ($1::uuid, $2::uuid)", params: [a, b] };
   } else {
     endRows = {
       sql: `update agent_contacts c set state = 'ended', end_reason = $3::text, barred_by = $4::uuid, basis = null, until = null
-             where c.agent_id = $1::uuid and c.subject_id = any($2::uuid[]) and c.state in ('live', 'requested')`,
-      params: [scope.agentId, [...scope.subjectIds], reason, barredBy],
+             where (c.agent_id, c.subject_id) in (select * from unnest($1::uuid[], $2::uuid[])) and c.state in ('live', 'requested')`,
+      params: [pairAgents, pairSubjects, reason, barredBy],
     };
-    runsIn = { sql: `r.agent_id = $1::uuid and (${inSocial} and (rsp.a_id = any($2::uuid[]) or rsp.b_id = any($2::uuid[]))))`, params: [scope.agentId, [...scope.subjectIds]] };
-    groupAgents = { sql: "r.agent_id = $1::uuid", params: [scope.agentId] };
+    runsIn = {
+      sql: `r.agent_id = any($1::uuid[]) and (${inSocial}
+              and exists (select 1 from unnest($1::uuid[], $2::uuid[]) as g (agent, subject) where g.agent = r.agent_id and g.subject in (rsp.a_id, rsp.b_id))))`,
+      params: [pairAgents, pairSubjects],
+    };
+    groupAgents = { sql: "r.agent_id = any($1::uuid[])", params: [pairAgents] };
   }
   const ended = await t.query(endRows.sql, endRows.params);
 
-  // The run rows it writes, locked first in ascending run id (runs.ts `lockActiveRuns`: the one order of every bulk lock of them).
-  await t.query(
-    `select 1 from agent_runs r join principals ag on ag.id = r.agent_id
-      where r.purpose = 'reply' and r.status in ('queued', 'running') and ${runsIn.sql} order by r.id for update of r`,
-    runsIn.params,
-  );
+  // Every run row it may write, social and (unless `groups` is false) in groups, locked first as ONE set in ascending run id (runs.ts
+  // `lockActiveRuns`: the one order of every write of several active runs). `groupAgents` names its parameters as `runsIn` does.
+  const inGroup = o.groups === false ? "false" : `${groupAgents.sql} and exists (select 1 from conversations rc where rc.id = r.conversation_id and rc.type = 'group')`;
+  await lockActiveRuns(t, `r.purpose = 'reply' and exists (select 1 from principals ag where ag.id = r.agent_id and ((${runsIn.sql}) or (${inGroup})))`, runsIn.params);
   const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
     `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now()
        from principals ag

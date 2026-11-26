@@ -160,7 +160,8 @@ export async function unfriend(
   // Unfriending is just unfriending (Owner decision 2026-11-25): no bar, no cooldown, nothing in anyone's stopped list. What follows from
   // the friendship being gone: the rows admitted BECAUSE of it (basis `contacts`) between the two sides' Agents and people end, as an
   // ordinary ending (`left`: the pair may be admitted again by the same policy once they are friends again); a row the owner approved
-  // one by one is not touched. After the notice (the lock order); each Agent in id order, as `endGrants` locks them.
+  // one by one is not touched. After the notice (the lock order); ONE ending for all of them, which locks every Agent's row before any
+  // of their runs (T2 fix 2, R3), never one Agent's runs before the next Agent's row.
   const friendRows = await t.query<{ agent_id: string; subject_id: string }>(
     `select c.agent_id, c.subject_id from agent_contacts c join principals ag on ag.id = c.agent_id
       where c.state = 'live' and c.basis = 'contacts'
@@ -170,12 +171,10 @@ export async function unfriend(
   );
   const byAgent = new Map<string, string[]>();
   for (const r of friendRows.rows) byAgent.set(r.agent_id, [...(byAgent.get(r.agent_id) ?? []), r.subject_id]);
-  const ended: EndedRuns = { cancelled: [], running: [] };
-  for (const [agentId, subjectIds] of byAgent) {
-    const done = await endGrants(t, { agentId, subjectIds }, "left", { groups: false }); // no group run is touched (A-5 review m8)
-    ended.cancelled.push(...done.cancelled);
-    ended.running.push(...done.running);
-  }
+  const grants = [...byAgent].map(([agentId, subjectIds]) => ({ agentId, subjectIds }));
+  // No group run is touched (A-5 review m8).
+  const done = grants.length === 0 ? null : await endGrants(t, { grants }, "left", { groups: false });
+  const ended: EndedRuns = { cancelled: done?.cancelled ?? [], running: done?.running ?? [] };
   return { ok: true, conversationId: notice?.conversationId ?? null, notices: notice ? [notice] : [], ended };
 }
 

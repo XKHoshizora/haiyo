@@ -835,9 +835,11 @@ type Pair = { active: { id: string; foldable: boolean; caller: Caller } | null; 
 
 /**
  * Locks the active reply runs (queued or running) `where` names (`r`: `agent_runs`), `for update`, in ascending run id: THE order
- * every transaction keeps that locks more than one active run row at once (the lock order; T2 fix 1, F6) — a message calling several
- * Agents (`pairsOf`), a halt, a pause, a delete, a removal from a group, an interjection, an ending of access, the operator's disable —
- * so two of them never hold one each of two rows the other wants. Taken before such a transaction writes any of them.
+ * every transaction keeps that locks more than one active run row at once (the lock order; T2 fix 1, F6; T2 fix 2, R3) — a message
+ * calling several Agents (`pairsOf`), a halt, a pause, a delete, a removal from a group, an interjection, an ending of access (social
+ * and group runs as one set; an unfriend's after every Agent's row), the operator's disable, the sweep of queued social replies with
+ * the switch off — so two of them never hold one each of two rows the other wants. Taken before such a transaction writes any of them,
+ * after the `agents` rows it needs (ascending id).
  */
 export async function lockActiveRuns(t: Tx, where: string, params: readonly unknown[]): Promise<void> {
   await t.query(`select 1 from agent_runs r where r.status in ('queued', 'running') and (${where}) order by r.id for update of r`, [...params]);

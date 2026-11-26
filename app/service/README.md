@@ -5070,9 +5070,10 @@ a reply's rounds); the owner's writes to
 the Agent itself (edit, pause, resume, delete, avatar, proposals) lock its dedicated conversation. Where several
 `agents` or `accounts` rows are locked at once (a person's message in a group naming several Agents) they are taken in
 id order, the `accounts` rows after every run row; so are several active run rows (`runs.ts` `lockActiveRuns`: ascending run id,
-in one statement, before any of them is written) — a message calling several Agents, a halt, a pause or a delete, a removal from
-a group, an interjection, an ending of access and the operator's disable alike, so that two of them never hold one each of two
-run rows the other wants; a run's end (`finish`, recovery) takes its owner's `accounts` row
+in one statement, before any of them is written, after every `agents` row the write needs) — a message calling several Agents, a
+halt, a pause or a delete, a removal from a group, an interjection, an ending of access (its social and its group runs as one set;
+an unfriend's every Agent's row before any of their runs), the operator's disable and, with the social switch off, the sweep of the
+queued social replies alike, so that two of them never hold one each of two run rows the other wants; a run's end (`finish`, recovery) takes its owner's `accounts` row
 to settle and, for the reply of the calls that waited, to hold them to the owner's number — the same row, last; an Agent's
 message in a group holds only its own `agents` row and reads the others' (In a group, above); a halt locks the group's
 row and run rows only; a resume, the dedicated conversation's row, the `agents` row and the Agent's run rows. Marking a

@@ -8,12 +8,15 @@ import { failedEnd, isRunEnd, NOTHING, type RunTicket } from "../src/agents/runt
 import { createAgentWorker } from "../src/agents/runtime/worker.ts";
 import { lockConversation } from "../src/conversations/store.ts";
 import { insertMessage } from "../src/messages/model.ts";
+import { endGrants } from "../src/social/agent-contacts.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
-import { api, group, signUp, type Actor } from "./helpers/actors.ts";
+import { api, befriend, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
+import { backendPid, waitersBehind } from "./helpers/locks.ts";
 import { grant } from "./helpers/metering.ts";
 import { scriptedGateway } from "./helpers/models.ts";
+import { seedSocial } from "./helpers/social.ts";
 
 /**
  * The limits redesign, Part 2 ("one identity per reply"): a run's lane and caller are fixed when its row is made and never change; a
@@ -750,6 +753,96 @@ describe("one order for every bulk lock of active run rows: ascending run id (T2
     }
     await db.query("delete from deferred_calls where conversation_id = $1", [w.g]);
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where id = any($1::uuid[])", [[first, last]]);
+  });
+
+  /** A queued reply of `agentId` in `conv`, run id `id`, called for by `callerId` (lane `others`) at the conversation's latest message. */
+  const queuedRun = (id: string, conv: string, agentId: string, ownerId: string, callerId: string) =>
+    db.query(
+      `insert into agent_runs (id, purpose, conversation_id, agent_id, owner_id, status, covers_seq, lane, caller_id, call_seqs)
+       select $1, 'reply', $2, $3, $4, 'queued', seq, 'others', $5, array[seq] from conversations where id = $2`,
+      [id, conv, agentId, ownerId, callerId],
+    );
+  const statusOf = async (ids: readonly string[]) =>
+    (await db.query<{ status: string; error: string | null }>("select status, error from agent_runs where id = any($1::uuid[]) order by id", [[...ids]])).rows;
+  /**
+   * In a transaction of its own (a lock_timeout of 3 s): `hold` takes a lock; `start` begins the path under test, which is seen waiting
+   * behind this transaction (`waitersBehind`: on it, not on anything else); then `then` asks for a row the path must not hold yet. Out
+   * of order, the path holds it and waits for us: a deadlock, one of the two aborted. Returns what the path returned.
+   */
+  async function inOrder<T>(hold: readonly [string, unknown[]], then: readonly [string, unknown[]], start: () => Promise<T>): Promise<T> {
+    const holder = await db.pool.connect();
+    try {
+      await holder.query("begin");
+      await holder.query("set local lock_timeout = '3s'");
+      const pid = await backendPid(holder);
+      await holder.query(hold[0], hold[1]);
+      const path = start();
+      path.catch(() => {});
+      expect(await waitersBehind(db, pid)).toBe(true);
+      await holder.query(then[0], then[1]);
+      await holder.query("commit");
+      return await path;
+    } finally {
+      await holder.query("rollback").catch(() => {});
+      holder.release();
+    }
+  }
+  const lockRun = (id: string): [string, unknown[]] => ["select 1 from agent_runs where id = $1 for update", [id]];
+
+  it("the switch off, the queued social replies end in run id order (T2 fix 2, R3): while another transaction holds the smaller, the larger is not held by the sweep", async () => {
+    const w = await world();
+    const convs = new Map<string, string>();
+    for (const visitor of [w.mia, w.ned]) convs.set((await seedSocial(app, { owner: w.owner, agentId: w.agent.id, visitor })).conversationId, visitor.id);
+    // The larger run id in the conversation that sorts first, and made first: a sweep in no order of its own meets it first.
+    const [lowConv, highConv] = [...convs.keys()].sort();
+    const [first, last] = [runIdAt(true), runIdAt(false)];
+    await queuedRun(last, lowConv!, w.agent.id, w.owner.id, convs.get(lowConv!)!);
+    await queuedRun(first, highConv!, w.agent.id, w.owner.id, convs.get(highConv!)!);
+    // The worker's next claim, with the switch off (this app's), first ends every queued social reply.
+    expect(await inOrder(lockRun(first), lockRun(last), () => app.agentPort.claimNext())).toBeNull();
+    expect(await statusOf([first, last])).toEqual([
+      { status: "cancelled", error: "access_ended" },
+      { status: "cancelled", error: "access_ended" },
+    ]);
+  });
+
+  it("an unfriend locks every Agent whose rows it ends before any of their runs (T2 fix 2, R3): while another transaction holds the second Agent's row, the first's run is not held by it", async () => {
+    const w = await world();
+    const tag = `${n}u${Math.floor(Math.random() * 1e6)}`;
+    const second = (await mustCreateAgent(app, w.owner, { handle: `dcu${tag}`, name: "二号", model: THINKER, persona: "你是二号。" })) as { id: string };
+    const friend = await signUp(app, `dcf${tag}`);
+    await befriend(app, w.owner, friend);
+    // Both Agents let the friend in because they are friends (basis contacts), each with a reply queued in its social conversation.
+    const [lowAgent, highAgent] = [w.agent.id, second.id].sort();
+    const runs: string[] = [];
+    for (const agentId of [lowAgent!, highAgent!]) {
+      const { conversationId } = await seedSocial(app, { owner: w.owner, agentId, visitor: friend, basis: "contacts" });
+      runs.push(randomUUID());
+      await queuedRun(runs.at(-1)!, conversationId, agentId, w.owner.id, friend.id);
+    }
+    const unfriended = await inOrder(["select 1 from agents where principal_id = $1 for update", [highAgent]], lockRun(runs[0]!), () =>
+      api(app, w.owner, "DELETE", `/api/friends/${friend.id}`),
+    );
+    expect(unfriended.status).toBe(200);
+    expect(await statusOf(runs)).toEqual([
+      { status: "cancelled", error: "access_ended" },
+      { status: "cancelled", error: "access_ended" },
+    ]);
+  });
+
+  it("an ending of access locks the runs it ends, social and in groups, as one set in run id order (T2 fix 2, R3): while another transaction holds the smaller (a group reply), the larger (a social one) is not held by it", async () => {
+    const w = await world();
+    const { conversationId: social } = await seedSocial(app, { owner: w.owner, agentId: w.agent.id, visitor: w.mia });
+    const [first, last] = [runIdAt(true), runIdAt(false)];
+    await queuedRun(first, w.g, w.agent.id, w.owner.id, w.mia.id);
+    await queuedRun(last, social, w.agent.id, w.owner.id, w.mia.id);
+    // mia leaves the Agent (her row ends): its reply to her in their social conversation ends; in the group she may still call it.
+    await inOrder(lockRun(first), lockRun(last), () => db.tx((t) => endGrants(t, { agentId: w.agent.id, subjectIds: [w.mia.id] }, "left")));
+    expect(await statusOf([first, last])).toEqual([
+      { status: "queued", error: null },
+      { status: "cancelled", error: "access_ended" },
+    ]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where id = $1", [first]);
   });
 });
 

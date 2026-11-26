@@ -77,6 +77,7 @@ import {
   consumeIdle,
   dropRefusedCalls,
   idlePairs,
+  lockActiveRuns,
   nextOf,
   noneTold,
   othersReachedNotice,
@@ -510,16 +511,22 @@ export class DbAgentPort implements AgentPort {
 
   /**
    * Ends every queued reply in a social conversation `cancelled`, `access_ended` (the switch is off), and tells each one's owner; and
-   * drops every call waiting there (nothing answers an old message when the switch comes back on).
+   * drops every call waiting there (nothing answers an old message when the switch comes back on). One transaction, its run rows locked
+   * first in ascending run id (runs.ts `lockActiveRuns`: the one order of every write of several active runs; T2 fix 2, R3), so a
+   * disable or an ending of access locking some of the same rows never waits on it in a circle. It needs no Agent's row.
    */
   private async endQueuedSocial(): Promise<void> {
-    await this.deps.db.query("delete from deferred_calls d using conversations c where c.id = d.conversation_id and c.type = 'agent_social'");
-    const { rows } = await this.deps.db.query<RunRow & { owner_id: string; conversation_id: string }>(
-      `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now()
-         from conversations c
-        where c.id = r.conversation_id and c.type = 'agent_social' and r.status = 'queued' and r.purpose = 'reply'
-        returning ${RUN_COLUMNS}, r.owner_id, r.conversation_id`,
-    );
+    const rows = await this.deps.db.tx(async (t) => {
+      await t.query("delete from deferred_calls d using conversations c where c.id = d.conversation_id and c.type = 'agent_social'");
+      const queuedSocial = "r.purpose = 'reply' and r.status = 'queued' and exists (select 1 from conversations c where c.id = r.conversation_id and c.type = 'agent_social')";
+      await lockActiveRuns(t, queuedSocial, []);
+      return (
+        await t.query<RunRow & { owner_id: string; conversation_id: string }>(
+          `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now() where ${queuedSocial}
+            returning ${RUN_COLUMNS}, r.owner_id, r.conversation_id`,
+        )
+      ).rows;
+    });
     for (const row of rows) this.announce({ ownerId: row.owner_id, conversationId: row.conversation_id, run: toWireRun(row) });
   }
 
