@@ -112,6 +112,20 @@ describe("who used it (`othersByPerson`)", () => {
   });
 });
 
+describe("who used it, before anything is settled", () => {
+  it("a caller whose reply on a site model is admitted today and not settled yet is listed, at 0 points", async () => {
+    const owner = await newOwner();
+    const [site] = await agentsOf(app, db, owner, 1);
+    const caller = await newOwner();
+    await db.query(
+      `insert into agent_runs (purpose, conversation_id, agent_id, owner_id, status, started_at, lane, caller_id, source, model, admitted_at, money_rule, charge_to, hold_micro)
+       values ('reply', $1, $2, $3, 'running', now(), 'others', $4, 'site', 'oth_free', now(), 1, 'free', 1000)`,
+      [site!.conversationId, site!.agentId, owner.id, caller.id],
+    );
+    expect((await othersByPerson(db, config(), owner.id, new Date())).map((p) => [p.person.id, p.pointsMicro])).toEqual([[caller.id, 0n]]);
+  });
+});
+
 describe("admission", () => {
   it("admits an others' reply while use is below N, whatever it may cost (nothing is reserved against N), and refuses one once use has reached it", async () => {
     const owner = await newOwner();

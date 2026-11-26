@@ -92,13 +92,15 @@ export interface PersonUse {
 export async function othersByPerson(q: Queryable, config: Pick<Config, "siteTimezone">, ownerId: string, now: Date): Promise<PersonUse[]> {
   const { rows } = await q.query<{ id: string; handle: string; name: string; avatar_version: number; points: string }>(
     `with chain as (
-       -- Each reply chain on the owner's key once, for the person whose call its latest attempt of today answers.
-       select distinct on (coalesce(r.retry_of, r.id)) r.caller_id
+       -- Each reply chain admitted today once, for the person whose call its latest attempt of today answers (listed even before
+       -- anything of it is settled); its nominal count when an attempt of it was on the owner's own key.
+       select distinct on (coalesce(r.retry_of, r.id)) r.caller_id,
+              bool_or(r.source = 'provider') over (partition by coalesce(r.retry_of, r.id)) as own_key
          from agent_runs r
-        where r.owner_id = $1 and r.purpose = 'reply' and r.lane = 'others' and r.source = 'provider' and r.admitted_at >= $2 and r.admitted_at < $3
+        where r.owner_id = $1 and r.purpose = 'reply' and r.lane = 'others' and r.admitted_at >= $2 and r.admitted_at < $3
         order by coalesce(r.retry_of, r.id), r.admitted_at desc, r.id desc),
      chains as (
-       select caller_id, count(*) * $4::bigint as nominal from chain where caller_id is not null group by caller_id),
+       select caller_id, count(*) filter (where own_key) * $4::bigint as nominal from chain where caller_id is not null group by caller_id),
      settled as (
        select r.caller_id, sum(u.free_micro + u.balance_micro) as micro
          from usage_records u join agent_runs r on r.id = u.run_id
