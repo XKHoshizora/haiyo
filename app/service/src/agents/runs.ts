@@ -565,11 +565,13 @@ const withAskers = (param: string | null, heard: string | null = null): string =
 };
 
 /**
- * What an Agent's message hands down as the askers of the calls it makes (Task 10b, fix rounds 2 and 3; limits redesign C-c): run
- * `runId`'s askers (`asker_ids`) and everyone who wrote in its group after seq `from` and up to `to` (`heardIn`: what came while it
- * ran, before its message — the reply it calls will be shown that stretch), each once; null (not known) when either is not known.
- * Read only: nothing is written to the posting run (its askers end with what it answered), and the calls that carry these record
- * them only where a target accepts the call (a run it queues, a call it leaves waiting: `reachAgents`).
+ * What an Agent's message hands down as the askers of the calls it makes (Task 10b, fix rounds 2 and 3; limits redesign C-c), in two
+ * parts: what it inherits — the askers of the posting run's assignment (`asker_ids`: whose calls it answered and whom it heard up to
+ * what it covers, `from`) — and the called reply's own floor: everyone who wrote after `from` and up to the message, `to` (`heardIn`:
+ * what came while the posting run ran, which it was not shown but the reply it calls will be, so that reply is cut at their joining:
+ * agents-group-asker.test.ts, the hand-down; T2 fix 1, F2c). Each once; null (not known) when either is not known. Read only: nothing
+ * is written to the posting run (its askers end with its assignment), and the calls that carry these record them only where a target
+ * accepts the call (a run it queues, a call it leaves waiting: `reachAgents`).
  */
 export async function askersHandedDown(q: Queryable, runId: string, from: number, to: number): Promise<Askers> {
   const { rows } = await q.query<{ askers: string[] | null }>(

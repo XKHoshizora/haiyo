@@ -505,7 +505,33 @@ describe("C-c and C-d: what a relay carries is recorded only where it is accepte
     expect(await lineFor(w.owner)).toBeUndefined();
     expect(await lineFor(other)).toBeUndefined();
   });
+
+  it("an accepted relay with someone writing between the posting run's call and its post (T2 fix 1, F14): the posting run's askers stay its assignment's; the called Agent's reply counts the writer for its own floor (Task 10b), as it is shown them", async () => {
+    const w = await world();
+    const other = await signUp(app, `dcy${n}`);
+    await db.query("insert into memberships (conversation_id, principal_id, role, joined_seq) select $1, $2, 'speaker', seq from conversations where id = $1", [w.g, other.id]);
+    const target = (await mustCreateAgent(app, other, { handle: `dctz${n}`, name: "阿杰", model: { source: "site", id: "fast" }, persona: "简短。" })) as { id: string };
+    expect((await api(app, other, "POST", `/api/conversations/${w.g}/members`, { principalId: target.id })).status).toBe(201);
+    await say(w.mia, w.g, `${w.at} 帮我问问阿杰`);
+    const ticket = await claim(w.agent.id, w.g);
+    const before = (await db.query<{ askers: string[] }>("select asker_ids::text[] as askers from agent_runs where id = $1", [ticket.id])).rows[0]!.askers;
+    expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
+    // ned writes while the reply runs (after its call): the reply is not shown it, and nothing of ned is written to it.
+    await say(w.ned, w.g, "我随便说一句");
+    expect(await app.agentPort.post(ticket, { text: `@dctz${n} 米娅问你`, reasoning: "", stopped: false, truncated: false })).toBe("posted");
+    await finish(ticket);
+    const relayed = (await db.query<{ askers: string[] | null; caller: string | null }>("select asker_ids::text[] as askers, caller_id as caller from agent_runs where agent_id = $1 and status = 'queued'", [target.id])).rows;
+    expect(relayed).toHaveLength(1);
+    expect(relayed[0]!.caller).toBe(w.mia.id);
+    expect(relayed[0]!.askers).toContain(w.mia.id);
+    // The called Agent's reply is shown ned's message (it covers the relay): ned counts for its floor (agents-group-asker.test.ts,
+    // the hand-down), recorded on the run that accepted the call only.
+    expect(relayed[0]!.askers).toContain(w.ned.id);
+    expect((await db.query<{ askers: string[] }>("select asker_ids::text[] as askers from agent_runs where id = $1", [ticket.id])).rows[0]!.askers).toEqual(before);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [target.id]);
+  });
 });
+
 
 describe("a halt and the chain budget are met by each relayed call as it is taken, whatever else its assignment holds (T2 fix 1, F9)", () => {
   /** mia's own Agent in the group: what it posts in a reply she called for is her call on the Agents it names (lane others, her the caller). */
