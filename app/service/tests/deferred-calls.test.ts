@@ -275,6 +275,43 @@ describe("invariant 5: at most one active row per pair; assignments served in ac
     expect(await waiting(w.agent.id, w.g)).toEqual([]);
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
   });
+
+  it("invariant 5 (crash and recovery, two processes at once — T2 fix 1, F14): both wait on the conversation; one ends the lost run and queues the next assignment, the other finds it ended — each call answered once", async () => {
+    const w = await world();
+    await say(w.owner, w.g, `${w.at} 零`);
+    await claim(w.agent.id, w.g);
+    const mia = await say(w.mia, w.g, `${w.at} 一`);
+    /** Until `n` connections of this database are seen waiting on a lock (10 s at most): whether they were. */
+    const waitersOnALock = async (count: number): Promise<boolean> => {
+      for (let i = 0; i < 400; i++) {
+        const { rows } = await db.query<{ n: number }>("select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+        if (rows[0]!.n >= count) return true;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return false;
+    };
+    const holder = await db.pool.connect();
+    try {
+      await holder.query("begin");
+      // The group's row held (the first lock of every step on a run there): both recoveries are seen waiting on it before either goes.
+      await holder.query("select 1 from conversations where id = $1 for update", [w.g]);
+      const both = Promise.all([recoverRuns(db, app.deps.config, app.log), recoverRuns(db, app.deps.config, app.log)]);
+      expect(await waitersOnALock(2)).toBe(true);
+      await holder.query("commit");
+      await both;
+    } finally {
+      await holder.query("rollback").catch(() => {});
+      holder.release();
+    }
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.lane, r.caller, r.calls])).toEqual([
+      ["failed", "own", w.owner.id, expect.any(Array)],
+      ["queued", "others", w.mia.id, [mia]],
+    ]);
+    expect(await waiting(w.agent.id, w.g)).toEqual([]);
+    const [lost] = await runsOf(w.agent.id, w.g);
+    expect((await db.query<{ n: number }>("select count(*)::int as n from usage_records where run_id = $1", [lost!.id])).rows[0]!.n).toBe(1);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+  });
 });
 
 describe("invariant 5 (retries): an automatic retry takes the slot before any waiting call, keeps its assignment and its identity; the calls are answered after it", () => {
@@ -396,7 +433,27 @@ describe("C-a: the caller's and the owner's minutes are met as each call is acce
   });
 });
 
+describe("C-a with a fold (T2 fix 1, F14): a call folded into a reply not claimed starts nothing and is not counted; one that waits is", () => {
+  const { app: two } = useApp({ env: { ...SITE_ENV, AGENT_CALLER_RUNS_PER_MINUTE: "2" }, models: gateway, agentWorker: false });
+
+  it("a member at 2 a minute: two calls folded into one reply count once; while it runs one more waits (counted as accepted); the next is refused 太频繁", async () => {
+    const w = await world(two);
+    const one = await say(w.mia, w.g, `${w.at} 一`, two);
+    const again = await say(w.mia, w.g, `${w.at} 一又一`, two);
+    expect(await runsOf(w.agent.id, w.g)).toMatchObject([{ status: "queued", calls: [one, again] }]);
+    expect(await refusals(w.agent.id, w.g)).toEqual([]);
+    const ticket = await claim(w.agent.id, w.g);
+    const waits = await say(w.mia, w.g, `${w.at} 二`, two);
+    expect(await waiting(w.agent.id, w.g)).toEqual([{ seq: waits, lane: "others", caller: w.mia.id }]);
+    const over = await say(w.mia, w.g, `${w.at} 三`, two);
+    expect(await refusals(w.agent.id, w.g)).toEqual([{ seq: over, sender: w.mia.id, reason: "too_often" }]);
+    await finish(ticket, two);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+  });
+});
+
 describe("C-b: a call a limit refused is in no assignment", () => {
+
   it("a failed run whose call has a refusal row since: the owner's 重试 answers the rest, never that call", async () => {
     const w = await world();
     const one = await say(w.mia, w.g, `${w.at} 一`);

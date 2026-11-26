@@ -1082,8 +1082,7 @@ interface Call {
  *   when the active run ends (`takeDeferred`).
  * Whose questions a call carries is recorded only where it is accepted (a run, a fold, a waiting call: C-c). The run rows first (the
  * pairs, in id order), then the `accounts` rows of every call's owner and caller, all in ascending id (`lockAccounts`: the lock
- * order's last step), before any is counted. Returns what to announce and what to log after commit (it appends no notice), and the
- * Agents the owner's number refused (`refusedIds`, for `recordRefusedCalls`).
+ * order's last step), before any is counted. Returns what to announce and what to log after commit (it appends no notice).
  */
 async function reachAgents(
   t: Tx,
@@ -1094,21 +1093,18 @@ async function reachAgents(
   config: RunLimits,
   told: Told,
   doubtful: readonly Call[] = [],
-): Promise<Pick<Triggered, "runs" | "callerLimited"> & { refusedIds: string[] }> {
+): Promise<Pick<Triggered, "runs" | "callerLimited">> {
   const all = [...calls.map((call) => ({ call, doubtful: false })), ...doubtful.map((call) => ({ call, doubtful: true }))].sort((a, b) => (a.call.agent.id < b.call.agent.id ? -1 : 1));
   const pairs = await pairsOf(t, [...new Set(all.map(({ call }) => call.agent.id))], conversationId);
   await lockAccounts(
     t,
     all.flatMap(({ call }) => (call.by.lane !== "own" && call.by.id !== null ? [call.agent.ownerId, call.by.id] : [call.agent.ownerId])),
   );
-  const out: Pick<Triggered, "runs" | "callerLimited"> & { refusedIds: string[] } = { runs: [], callerLimited: [], refusedIds: [] };
+  const out: Pick<Triggered, "runs" | "callerLimited"> = { runs: [], callerLimited: [] };
   for (const { call, doubtful: looked } of all) {
     const { agent, by, askers } = call;
     const pair = pairs.get(agent.id)!;
-    if (looked && (await refusedByOthersLimit(t, conversationId, [seq], agent, by.lane, told, config, by.id))) {
-      out.refusedIds.push(agent.id);
-      continue;
-    }
+    if (looked && (await refusedByOthersLimit(t, conversationId, [seq], agent, by.lane, told, config, by.id))) continue;
     const idle = pair.active === null && pair.waiting === 0;
     if (by.lane !== "own") {
       if (by.id !== null && (await calledLastMinute(t, by.id)) >= config.agentCallerRunsPerMinute) {
@@ -1220,9 +1216,8 @@ export async function budgetReachedWith(
  * message. `replyMode` plays no part in a group. Someone else's message is then held to the owner's one number for others'
  * use (`refusedByOthersLimit`, decided in `reachAgents` under the accounts' locks for each call whose number looks reached):
  * once it is reached the Agent is not called — not even folded into a reply of its, nor left waiting —
- * the sender is told on their message and the owner once a day (into what is returned, to act on after commit); the refusal is
- * recorded with the message (`recordRefusedCalls`). Its owner's message never is. Then `reachAgents`, each called for by the
- * sender (`callerOf`).
+ * the sender is told on their message and the owner once a day (into what is returned, to act on after commit). Its owner's message
+ * never is. Then `reachAgents`, each called for by the sender (`callerOf`).
  */
 async function triggerInGroup(t: Tx, conversationId: string, message: StoredMessage, config: RunLimits): Promise<Triggered> {
   const called = mentionedIds(message);
@@ -1248,8 +1243,7 @@ async function triggerInGroup(t: Tx, conversationId: string, message: StoredMess
     // The sender asks (Task 10b): what the reply is shown starts no earlier than their joining.
     ((await looksReached(t, agent.ownerId, by.lane, config)) ? doubtful : calls).push({ agent, by, askers: [message.senderId] });
   }
-  const { refusedIds, ...reached } = await reachAgents(t, conversationId, calls, message.seq, "human", config, told, doubtful);
-  await recordRefusedCalls(t, conversationId, message.seq, refusedIds);
+  const reached = await reachAgents(t, conversationId, calls, message.seq, "human", config, told, doubtful);
   return { ...reached, stopped: [], ...told };
 }
 
@@ -1359,9 +1353,9 @@ async function chainBudgetSpent(
  * - the owner's one number for others' use, per Agent the call is not its owner's own on (see below): once it is reached
  *   (`refusedByOthersLimit`) → it is not called, and its owner is told once a day (returned, to act on after commit; an
  *   Agent's message has no sender to tell).
- * Each Agent refused so, or for a block, is recorded with the message (`recordRefusedCalls`): no run of it answers it and no
- * call of it waits. One the query does not find at all (paused, deleted, without a model, only its owner's to call, not a member)
- * is not recorded: nothing of it is there either.
+ * An Agent refused so, or for a block, is not called: no run of it answers the message and no call of it waits (nothing of the
+ * refusal is written: it is never a call of anything — T2 fix 1, F14). Nor is one the query does not find (paused, deleted, without a
+ * model, only its owner's to call, not a member).
  * The rest are reached as a person's message reaches them (`reachAgents`), as an Agent's (`triggered_by` `agent`),
  * called for by the person behind the message (`behindAgentMessage`, from `postedBy`, the caller and lane of the run that
  * posted it; null when no run did): the caller of that run when it is not its owner's own, else the poster's owner —
@@ -1399,22 +1393,12 @@ export async function triggerFromAgent(
       order by p.id`,
     [conversationId, called, poster.id, behind],
   );
-  // The targets refused below (a block, the halt, the chain limit, a chain budget, the owner's one number), recorded with
-  // the message as this returns (`recordRefusedCalls`).
-  const refused = rows.filter((r) => r.blocked).map((r) => r.id);
+  // A target refused for a block is not called (nor below for the halt, the chain limit, a chain budget or the owner's one number).
   const targets = rows.filter((r) => !r.blocked);
-  const recorded = async (triggered: Triggered): Promise<Triggered> => {
-    await recordRefusedCalls(t, conversationId, message.seq, refused);
-    return triggered;
-  };
-  if (targets.length === 0) return recorded(noneTriggered());
+  if (targets.length === 0) return noneTriggered();
 
   const human = await latestHumanSeq(t, conversationId);
-  const all = targets.map((target) => target.id);
-  if (await isHalted(t, conversationId, human)) {
-    refused.push(...all);
-    return recorded(noneTriggered());
-  }
+  if (await isHalted(t, conversationId, human)) return noneTriggered();
   const limit = config.agentChainLimit;
   // Every message after a person's latest that is not a notice is an Agent's; an acknowledgement is no Agent's turn.
   const inARow = await t.query<{ n: number }>(
@@ -1422,9 +1406,8 @@ export async function triggerFromAgent(
     [conversationId, human, limit],
   );
   if (inARow.rows[0]!.n >= limit) {
-    refused.push(...all);
-    if (await toldSince(t, conversationId, human, "agent_chain_paused")) return recorded(noneTriggered());
-    return recorded({ ...noneTriggered(), notices: [await appendSystem(t, conversationId, { event: "agent_chain_paused", actorId: poster.id, limit })] });
+    if (await toldSince(t, conversationId, human, "agent_chain_paused")) return noneTriggered();
+    return { ...noneTriggered(), notices: [await appendSystem(t, conversationId, { event: "agent_chain_paused", actorId: poster.id, limit })] };
   }
 
   const told = noneTold();
@@ -1436,33 +1419,14 @@ export async function triggerFromAgent(
     if (spent?.notice) told.notices.push(spent.notice);
     const agent = { id: target.id, ownerId: target.owner_id };
     const by = callerOf(agent.ownerId, behind);
-    if (spent) {
-      refused.push(target.id);
-      continue;
-    }
+    if (spent) continue;
     ((await looksReached(t, agent.ownerId, by.lane, config)) ? doubtful : reached).push({ agent, by });
   }
   // Whose questions the calls carry, read only now that the message may reach a run (fix round 3, M-10).
   const carried = reached.length + doubtful.length === 0 ? null : typeof askers === "function" ? await askers() : askers;
   const calls: Call[] = reached.map((c) => ({ ...c, askers: carried }));
-  const { refusedIds, ...out } = await reachAgents(t, conversationId, calls, message.seq, "agent", config, told, doubtful.map((c) => ({ ...c, askers: carried })));
-  refused.push(...refusedIds);
-  return recorded({ ...out, stopped: [], ...told });
-}
-
-/**
- * That the message at `seq` called each of `agentIds` and was refused for it when it was posted (`refused_agent_calls`,
- * migrations 022 and 023; `triggerFromAgent`, and `triggerInGroup` for the owner's one number): no run of theirs answers it and no
- * call of it waits for them. The row refers to each Agent's principal, never its `agents` row, so writing it locks no
- * `agents` row (an Agent's post holds none but its own). Never on the wire.
- */
-async function recordRefusedCalls(t: Tx, conversationId: string, seq: number, agentIds: readonly string[]): Promise<void> {
-  if (agentIds.length === 0) return;
-  await t.query("insert into refused_agent_calls (conversation_id, seq, agent_id) select $1, $2, unnest($3::uuid[]) on conflict do nothing", [
-    conversationId,
-    seq,
-    agentIds,
-  ]);
+  const out = await reachAgents(t, conversationId, calls, message.seq, "agent", config, told, doubtful.map((c) => ({ ...c, askers: carried })));
+  return { ...out, stopped: [], ...told };
 }
 
 /** What a run's end calls for in its conversation, to act on after commit (`takeDeferred`). */

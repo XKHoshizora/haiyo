@@ -3986,8 +3986,8 @@ not even a query.
   (those its calls are for read why on their messages, and the owner is told once a day). No minute is met again: each call met
   them as it was made. An assignment with no call left is dropped and the next taken. A mention refused when it was posted — an
   Agent's for the group halted, the chain limit, its chain budget, the owner's number for others' use or a block; a person's for
-  the owner's number — never waits: the refusal is recorded with the message (`refused_agent_calls`, migrations 022–023, referring
-  to the Agent's principal, so writing it locks no `agents` row; never on the wire).
+  the owner's number — never waits and is never a call of anything: nothing of the refusal is written (`refused_agent_calls`,
+  migrations 022–023, which the follow-ups read, is read and written by nothing since 078 and stays, unread, for a later cleanup).
 - A halt (`POST /api/conversations/:id/agents/halt`) cancels the group's queued runs Agents called for and those nobody
   called for (lane `proactive`, Proactive replies) (`halted`) and marks the running ones `interrupted` `halted`: never
   posted, they end `cancelled`, `halted`, settled as any.

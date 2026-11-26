@@ -803,7 +803,7 @@ describe("POST /api/conversations/:id/agents/halt", () => {
     expect((await runsOf(b.id, w.g)).slice(6)).toEqual([expect.objectContaining({ status: "cancelled", error: "halted" })]);
   });
 
-  it("a mention refused while halted is recorded without touching the named Agent's row: held elsewhere, the post does not wait", async () => {
+  it("a mention refused while halted touches nothing of the named Agent: its row held elsewhere, the post does not wait, and nothing is written of the refusal (it never waits: T2 fix 1, F14)", async () => {
     const w = await world();
     const a = await agentOf(w.owner, "alpha", w.g);
     const b = await agentOf(w.member, "beta", w.g);
@@ -830,8 +830,10 @@ describe("POST /api/conversations/:id/agents/halt", () => {
         return { message, ...(await triggerFromAgent(t, w.g, message, poster, null, app.deps.config, null)) };
       });
       expect(refused.runs).toEqual([]);
+      // (`refused_agent_calls`, read by nothing since the follow-up went, is written no more; the table stays, unread.)
       const recorded = await db.query("select agent_id from refused_agent_calls where conversation_id = $1 and seq = $2", [w.g, refused.message.seq]);
-      expect(recorded.rows).toEqual([{ agent_id: b.id }]);
+      expect(recorded.rows).toEqual([]);
+      expect(await waitingOf(b.id, w.g)).toEqual([]);
     } finally {
       release();
       await holder;
