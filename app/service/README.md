@@ -3970,11 +3970,12 @@ not even a query.
   `takeDeferred`, from the worker's `finish`, recovery, a stop, a halt), one assignment at a time: the oldest and the calls right
   after it of its identity, answered by one reply in that identity — `triggered_by` `human` when a person's message is among them.
   Each is held again to the access decision (its sender, the person behind it: no block between them and the Agent's owner, in
-  either direction; only the owner's own message while its `groupMentions` is `owner`): one refused leaves the assignment. An
-  assignment of Agents' messages only is not answered when its last call came at or before the group's latest halt (even if a
-  person has written since — what Agents asked before a halt is not answered after it), nor once the Agent's chain budget is
-  spent, checked again here because the reply that just ended was settled after it was called (the `agent_budget_reached` notice is
-  appended unless one was since a person last wrote, and pushed after that reply's `run`). One in lane `others` is not answered
+  either direction; only the owner's own message while its `groupMentions` is `owner`): one refused leaves the assignment. Each
+  relayed call (an Agent's message) is held on its own, whatever else the assignment holds: it is not answered when it came at or
+  before the group's latest halt (even if a person has written since — what an Agent asked before a halt is not answered after it),
+  nor once the Agent's chain budget is spent, checked again here because the reply that just ended was settled after it was called
+  (the `agent_budget_reached` notice is appended unless one was since a person last wrote, and pushed after that reply's `run`); a
+  person's call in the same assignment is answered all the same. One in lane `others` is not answered
   once the owner's number for others' use is reached, checked again here because the reply that just ended is settled by now
   (those its calls are for read why on their messages, and the owner is told once a day). No minute is met again: each call met
   them as it was made. An assignment with no call left is dropped and the next taken. A mention refused when it was posted — an

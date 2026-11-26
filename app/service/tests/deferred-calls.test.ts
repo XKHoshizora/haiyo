@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createAgentPort, recoverRuns } from "../src/agents/port-impl.ts";
-import { queueRun } from "../src/agents/runs.ts";
+import { mentionsAtSend } from "../src/agents/mentions.ts";
+import { queueRun, triggerFromAgent } from "../src/agents/runs.ts";
+import { lockAgent } from "../src/agents/store.ts";
 import { failedEnd, isRunEnd, NOTHING, type RunTicket } from "../src/agents/runtime/port.ts";
 import { createAgentWorker } from "../src/agents/runtime/worker.ts";
 import { lockConversation } from "../src/conversations/store.ts";
+import { insertMessage } from "../src/messages/model.ts";
 import type { ModelCall } from "../src/models/gateway.ts";
 import { api, group, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -445,7 +448,60 @@ describe("C-c and C-d: what a relay carries is recorded only where it is accepte
   });
 });
 
+describe("a halt and the chain budget are met by each relayed call as it is taken, whatever else its assignment holds (T2 fix 1, F9)", () => {
+  /** mia's own Agent in the group: what it posts in a reply she called for is her call on the Agents it names (lane others, her the caller). */
+  const miaAgent = async (w: Awaited<ReturnType<typeof world>>): Promise<string> => {
+    const bot = (await mustCreateAgent(app, w.mia, { handle: `dcr${n}x${Math.floor(Math.random() * 1e6)}`, name: "米娅的助手", model: { source: "site", id: "fast" }, persona: "简短。" })) as { id: string };
+    expect((await api(app, w.mia, "POST", `/api/conversations/${w.g}/members`, { principalId: bot.id })).status).toBe(201);
+    return bot.id;
+  };
+  /** `botId`'s message in the group, posted in a reply mia called for (as `postAsAgent` hands it to the trigger): its seq. */
+  const relay = (w: Awaited<ReturnType<typeof world>>, botId: string, text: string) =>
+    db.tx(async (t) => {
+      const poster = await lockAgent(t, botId, w.g);
+      const message = await insertMessage(t, w.g, botId, "text", { text }, null, await mentionsAtSend(t, { id: w.g, type: "group" }, text));
+      await triggerFromAgent(t, w.g, message, poster, { id: w.mia.id, lane: "own" }, app.deps.config, [w.mia.id]);
+      return message.seq;
+    });
+  const halt = async (w: Awaited<ReturnType<typeof world>>) => expect((await api(app, w.ned, "POST", `/api/conversations/${w.g}/agents/halt`)).status).toBe(200);
+  const cleanUp = (w: Awaited<ReturnType<typeof world>>) => db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+
+  it("a relay waits, the group is halted, then its caller calls directly: the reply after the one under way answers the direct call only", async () => {
+    const w = await world();
+    const bot = await miaAgent(w);
+    await say(w.ned, w.g, `${w.at} 先问一句`);
+    const ticket = await claim(w.agent.id, w.g);
+    const relayed = await relay(w, bot, `${w.at} 帮 mia 问一下`);
+    await halt(w);
+    const direct = await say(w.mia, w.g, `${w.at} 我自己也问`);
+    expect((await waiting(w.agent.id, w.g)).map((c) => [c.seq, c.caller])).toEqual([
+      [relayed, w.mia.id],
+      [direct, w.mia.id],
+    ]);
+    await finish(ticket);
+    expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", lane: "others", caller: w.mia.id, covers: direct, calls: [direct] });
+    expect(await waiting(w.agent.id, w.g)).toEqual([]);
+    await cleanUp(w);
+  });
+
+  it("two relays straddling a halt (a person wrote after it): only the later one is answered", async () => {
+    const w = await world();
+    const bot = await miaAgent(w);
+    await say(w.ned, w.g, `${w.at} 先问一句`);
+    const ticket = await claim(w.agent.id, w.g);
+    const before = await relay(w, bot, `${w.at} 帮 mia 问一下`);
+    await halt(w);
+    await say(w.owner, w.g, "好了，继续吧");
+    const afterwards = await relay(w, bot, `${w.at} 再帮 mia 问一下`);
+    expect((await waiting(w.agent.id, w.g)).map((c) => c.seq)).toEqual([before, afterwards]);
+    await finish(ticket);
+    expect((await runsOf(w.agent.id, w.g)).at(-1)).toMatchObject({ status: "queued", caller: w.mia.id, covers: afterwards, calls: [afterwards] });
+    await cleanUp(w);
+  });
+});
+
 describe("the prompt names the calls a reply answers (design [C7])", () => {
+
   it("one person's two calls in one reply: its system text says there are two and that the last message is one; a reply of one call says nothing more", async () => {
     const w = await world();
     await say(w.mia, w.g, `${w.at} 第一问`);

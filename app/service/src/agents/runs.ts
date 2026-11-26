@@ -1482,9 +1482,10 @@ async function takeHead(t: Tx, agentId: string, conversationId: string): Promise
  * context, its tools' reach and what it hands down ending at the assignment's last call (`covers_seq`). Before it is queued each call
  * is held again to what may have changed while it waited, and a call refused so leaves the assignment and changes nothing else:
  * - in a group: the access decision (`refusedInGroup`: its sender, the person behind it), and the Agent's `groupMentions` (only its
- *   owner's own message calls one only its owner may call); then, for an assignment of Agents' messages only, the halt (`haltedSince`
- *   its last call: what Agents asked before a halt is not answered after it) and the Agent's chain budget (`chainBudgetSpent`, settled
- *   by now: the notice into `told`); in a social conversation the visitor's access (`reach`);
+ *   owner's own message calls one only its owner may call); then each relayed call (an Agent's message) on its own, whatever else the
+ *   assignment holds: the halt (`haltedSince` that call: what an Agent asked before a halt is not answered after it) and the Agent's
+ *   chain budget (`chainBudgetSpent`, settled by now: the notice into `told`) — a person's call beside it is answered all the same;
+ *   in a social conversation the visitor's access (`reach`);
  * - someone else's (lane `others`): the owner's one number for others' use (`refusedByOthersLimit`: the people the calls are for told,
  *   the owner once a day). The minutes are not met again: they were met as each call was accepted (`accepted_at`).
  * An assignment with no call left is dropped and the next is taken. The owner's replies a minute play no part here (a reply waits;
@@ -1552,19 +1553,26 @@ async function answerAssignment(
   const kept = new Set(
     rows.filter((r) => !r.refused && (agent.groupMentions === "members" || (r.kind === "human" && r.sender_id === agent.ownerId))).map((r) => Number(r.seq)),
   );
-  const calls = taken.filter((c) => kept.has(c.seq));
+  // Each relayed call (an Agent's message) on its own, whatever else the assignment holds (T2 fix 1, F9): what an Agent asked before
+  // a halt is not answered after it, and none once the Agent's chain budget is spent (the reply that just ended is settled by now: it
+  // may have spent it) — a person's call in the same assignment is answered all the same.
+  let calls = taken.filter((c) => kept.has(c.seq));
+  const relays = calls.filter((c) => c.triggered_by === "agent");
+  if (relays.length > 0) {
+    const dropped = new Set<number>();
+    for (const c of relays) if (await haltedSince(t, conversationId, c.seq)) dropped.add(c.seq);
+    if (relays.some((c) => !dropped.has(c.seq))) {
+      const spent = await chainBudgetSpent(t, conversationId, agent.id, agent.chainBudgetMicro, await latestHumanSeq(t, conversationId));
+      if (spent?.notice) told.notices.push(spent.notice);
+      if (spent) for (const c of relays) dropped.add(c.seq);
+    }
+    calls = calls.filter((c) => !dropped.has(c.seq));
+  }
   if (calls.length === 0) return null;
   const last = calls.at(-1)!.seq;
   const asked = calls.some((c) => c.triggered_by === "human");
-  if (!asked) {
-    // What Agents asked before a halt is not answered after it; nor once the Agent's chain budget is spent (the reply that just
-    // ended is settled by now: it may have spent it).
-    if (await haltedSince(t, conversationId, last)) return null;
-    const spent = await chainBudgetSpent(t, conversationId, agent.id, agent.chainBudgetMicro, await latestHumanSeq(t, conversationId));
-    if (spent?.notice) told.notices.push(spent.notice);
-    if (spent) return null;
-  }
   const seqs = calls.map((c) => c.seq);
+
   if (await refusedByOthersLimit(t, conversationId, seqs, agent, identity.lane, told, config, identity.id)) return null;
   const heard = (await t.query<{ ids: string[] | null }>(`select ${heardIn("$1::uuid", "$2::bigint", "$3::bigint")} as ids`, [conversationId, after, last])).rows[0]!.ids;
   const askers: Askers = calls.some((c) => c.asker_ids === null) || heard === null ? null : [...new Set([...calls.flatMap((c) => c.asker_ids!), ...heard])];
