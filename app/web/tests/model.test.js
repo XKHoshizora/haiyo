@@ -113,7 +113,18 @@ describe("applyMessage: the seq rule", () => {
     expect(sys.state.conversations[D1]).toMatchObject({ position: 6, unread: 3 });
   });
 
+  it("a message pushed again with the refusal the service sent is applied, whoever sent it — also one whose sender this client knows nothing of yet (T2 fix 2, R5)", () => {
+    const STRANGER = "00000000-0000-4000-8000-0000000000e9";
+    let s = M.applySync(M.initial(), syncOf([group(G1, { lastSeq: 5, readSeq: 5 })], range(G1, 4, 5, [BO])));
+    s = M.applyMessage(s, wire(G1, 6, STRANGER, "@annbot 帮人问一下")).state;
+    expect(s.principals[STRANGER]).toBeUndefined();
+    const refused = [{ agentId: ANN, reason: "others_limit" }];
+    s = M.applyMessage(s, wire(G1, 6, STRANGER, "@annbot 帮人问一下", { refused })).state;
+    expect(s.messages[G1].find((m) => m.seq === 6).refused).toEqual(refused);
+  });
+
   it("reports a gap for seq > position + 1 and does not append out of order", () => {
+
     const s = loaded();
     const r = M.applyMessage(s, wire(D1, 6, ANN));
     expect(r.gap).toEqual({ conversationId: D1, from: 3 });
