@@ -4087,8 +4087,10 @@ releases a run and after a persona draft ends, and also looks every 2 s (another
       earlier attempt ran, whatever this process saw of it), a run in a group its Agent is no longer a current member of
       `cancelled`, `agent_removed`. Every call the run answers meets the block rule of a call made now, whatever its
       lane (a call its owner's own call took over, and a retry, included): one whose person has a block with the Agent's
-      owner, either way, made since (for an Agent's message: its owner, or the person behind it), or whose call a limit refused
-      since, is dropped — no longer a call it answers, nobody with such a block among its askers, and what it covers ends at the
+      owner, either way, made since (for an Agent's message: its owner, or the person behind it), whose call a limit refused
+      since, or that is an Agent's message from at or before the group's latest halt (a relay folded beside a person's call into
+      a reply the halt left queued included), is dropped — one rule, `runs.ts` `callRefusedSql`, asked here, at the post and as
+      the calls that waited are taken — no longer a call it answers, nobody with such a block among its askers, and what it covers ends at the
       latest call left — and a run with no call left ends `cancelled` with no error (no call, nothing held or charged, no message,
       nothing to retry), recorded in this step's own transaction with what waited behind it taken, so a process that dies right
       after leaves no running row for recovery to answer or retry. Its lane and caller stay as its row was made. A model that no longer resolves ends `failed`

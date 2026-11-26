@@ -614,6 +614,21 @@ const limitRefusedSql = (run: string, seq: string): string =>
   `exists (select 1 from call_refusals cr where cr.conversation_id = ${run}.conversation_id and cr.seq = ${seq} and cr.agent_id = ${run}.agent_id)`;
 
 /**
+ * THE rule of whether a call still stands for an Agent (T2 fix 2, R2), one SQL predicate true when it does NOT: the access decision
+ * refuses its sender (`refusedInGroup`: a person, or an Agent as a subject) or the person behind it (`behind`, null when nobody is);
+ * a limit refused it since (`call_refusals`, C-b); or its sender is an Agent and it came at or before the group's latest halt (what an
+ * Agent asked before a halt is not answered after it, whatever else the assignment holds or whoever wrote since). Asked of every call
+ * wherever a reply's calls are decided: a run's start and admission (`dropRefusedCalls`), its post (`standingCalls`) and the taking of
+ * the calls that waited (`answerAssignment`). `m` a `messages` alias (the call), `p` its sender's `principals` alias, `agent` and
+ * `behind` SQL for the Agent's id and the person behind the call.
+ */
+const callRefusedSql = (m: string, p: string, agent: string, behind: string): string =>
+  `(${refusedInGroup(`${p}.id`, agent)}
+    or (${behind} is not null and ${refusedInGroup(behind, agent)})
+    or exists (select 1 from call_refusals cr where cr.conversation_id = ${m}.conversation_id and cr.seq = ${m}.seq and cr.agent_id = ${agent})
+    or (${p}.kind = 'agent' and ${m}.seq <= coalesce((select hc.agents_halted_seq from conversations hc where hc.id = ${m}.conversation_id), 0)))`;
+
+/**
  * The calls of run `runId`'s assignment that are still to be answered: its `call_seqs` (its `covers_seq` when not known) less any a
  * limit refused (`limitRefusedSql`). What an automatic retry and the owner's 重试 of it answer (C-b).
  */
@@ -645,9 +660,7 @@ async function standingSeqs(q: Queryable, runId: string): Promise<number[] | nul
 export async function dropRefusedCalls(t: Tx, runId: string): Promise<{ covers_seq?: string | null; call_seqs?: string[] | null } | null> {
   const { rows } = await t.query<CallRow & { refused: boolean }>(
     callRowsSql(
-      `${CALL_COLUMNS},
-            (${refusedInGroup("p.id", "r.agent_id")} or (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")})
-             or ${limitRefusedSql("r", "m.seq")}) as refused`,
+      `${CALL_COLUMNS}, ${callRefusedSql("m", "p", "r.agent_id", "bh.caller_id")} as refused`,
       "\n      order by m.seq",
     ),
     [runId],
@@ -679,9 +692,9 @@ export async function dropRefusedCalls(t: Tx, runId: string): Promise<{ covers_s
  * call of its own (`告诉他们`'s) is never refused; the caller leaves those out.
  */
 export async function standingCalls(t: Tx, runId: string): Promise<{ none: boolean; refused: ReadonlySet<string>; refusedSeqs: ReadonlySet<number> }> {
-  const { rows } = await t.query<{ seq: string; sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean }>(
+  const { rows } = await t.query<{ seq: string; sender: string; kind: "human" | "agent"; behind: string | null; sender_refused: boolean; behind_refused: boolean; call_refused: boolean }>(
     callRowsSql(
-      `m.seq::text as seq, p.id as sender, p.kind, bh.caller_id as behind,
+      `m.seq::text as seq, p.id as sender, p.kind, bh.caller_id as behind, ${callRefusedSql("m", "p", "r.agent_id", "bh.caller_id")} as call_refused,
             ${refusedInGroup("p.id", "r.agent_id")} as sender_refused,
             (bh.caller_id is not null and ${refusedInGroup("bh.caller_id", "r.agent_id")}) as behind_refused`,
     ),
@@ -696,9 +709,9 @@ export async function standingCalls(t: Tx, runId: string): Promise<{ none: boole
   for (const r of rows) {
     if (r.sender_refused && r.kind === "human") refused.add(r.sender);
     if (r.behind_refused && r.behind !== null) refused.add(r.behind);
-    if (r.sender_refused || r.behind_refused) refusedSeqs.add(Number(r.seq));
+    if (r.call_refused) refusedSeqs.add(Number(r.seq));
   }
-  return { none: rows.length > 0 && rows.every((r) => r.sender_refused || r.behind_refused), refused, refusedSeqs };
+  return { none: rows.length > 0 && rows.every((r) => r.call_refused), refused, refusedSeqs };
 }
 
 /**
@@ -1269,16 +1282,6 @@ async function isHalted(t: Tx, conversationId: string, latestHuman: number): Pro
 }
 
 /**
- * Whether the group was halted at or after seq `seq` (`agents_halted_seq` ≥ it): a message up to it came before the
- * latest halt, whether or not a person has written since and so lifted it for what comes next.
- */
-async function haltedSince(t: Tx, conversationId: string, seq: number): Promise<boolean> {
-  const { rows } = await t.query<{ halted: string | null }>("select agents_halted_seq::text as halted from conversations where id = $1", [conversationId]);
-  const halted = rows[0]?.halted ?? null;
-  return halted !== null && seq <= Number(halted);
-}
-
-/**
  * Whether a notice of `event` (about Agent `agentId`, when given) was appended to the conversation after `after`: a seq
  * (after that message: a person's latest, for the chain's notices) or a time (since then: `agent_quieted` once an hour,
  * proactive/decide.ts). What keeps each notice to once a period.
@@ -1544,10 +1547,10 @@ async function answerAssignment(
     if (await refusedByOthersLimit(t, conversationId, seqs, agent, identity.lane, told, config, identity.id)) return null;
     return queueRun(t, agent, conversationId, seqs.at(-1)!, "human", identity, [identity.id], seqs);
   }
-  // In a group: each call held to the access decision as it stands now — its sender, and the person behind it (the call's caller).
+  // In a group: each call held to THE rule of whether a call stands (`callRefusedSql`: the access decision for its sender and the person
+  // behind it, the call's caller; a limit's refusal; a halt since an Agent's call) — the one a run's start and its post ask too.
   const { rows } = await t.query<{ seq: string; kind: "human" | "agent"; sender_id: string; refused: boolean }>(
-    `select m.seq::text as seq, p.kind, m.sender_id,
-            (${refusedInGroup("p.id", "$3::uuid")} or ($4::uuid is not null and ${refusedInGroup("$4::uuid", "$3::uuid")})) as refused
+    `select m.seq::text as seq, p.kind, m.sender_id, ${callRefusedSql("m", "p", "$3::uuid", "$4::uuid")} as refused
        from messages m join principals p on p.id = m.sender_id
       where m.conversation_id = $1 and m.seq = any($2::bigint[])
       order by m.seq`,
@@ -1556,21 +1559,16 @@ async function answerAssignment(
   const kept = new Set(
     rows.filter((r) => !r.refused && (agent.groupMentions === "members" || (r.kind === "human" && r.sender_id === agent.ownerId))).map((r) => Number(r.seq)),
   );
-  // Each relayed call (an Agent's message) on its own, whatever else the assignment holds (T2 fix 1, F9): what an Agent asked before
-  // a halt is not answered after it, and none once the Agent's chain budget is spent (the reply that just ended is settled by now: it
-  // may have spent it) — a person's call in the same assignment is answered all the same.
+  // The relayed calls left (Agents' messages), each on its own whatever else the assignment holds: none once the Agent's chain budget
+  // is spent (the reply that just ended is settled by now: it may have spent it) — a person's call in the same assignment is answered
+  // all the same. (Each was held to the budget as it arrived too: `triggerFromAgent`.)
   let calls = taken.filter((c) => kept.has(c.seq));
-  const relays = calls.filter((c) => c.triggered_by === "agent");
-  if (relays.length > 0) {
-    const dropped = new Set<number>();
-    for (const c of relays) if (await haltedSince(t, conversationId, c.seq)) dropped.add(c.seq);
-    if (relays.some((c) => !dropped.has(c.seq))) {
-      const spent = await chainBudgetSpent(t, conversationId, agent.id, agent.chainBudgetMicro, await latestHumanSeq(t, conversationId));
-      if (spent?.notice) told.notices.push(spent.notice);
-      if (spent) for (const c of relays) dropped.add(c.seq);
-    }
-    calls = calls.filter((c) => !dropped.has(c.seq));
+  if (calls.some((c) => c.triggered_by === "agent")) {
+    const spent = await chainBudgetSpent(t, conversationId, agent.id, agent.chainBudgetMicro, await latestHumanSeq(t, conversationId));
+    if (spent?.notice) told.notices.push(spent.notice);
+    if (spent) calls = calls.filter((c) => c.triggered_by !== "agent");
   }
+
   if (calls.length === 0) return null;
   const last = calls.at(-1)!.seq;
   const asked = calls.some((c) => c.triggered_by === "human");

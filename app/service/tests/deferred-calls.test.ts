@@ -645,7 +645,41 @@ describe("a halt and the chain budget are met by each relayed call as it is take
     await cleanUp(w);
   });
 
+  it("a relay folded beside its caller's direct call into a queued reply, then a halt (T2 fix 2, R2): as it begins, the relay is no call of it — only the direct call is answered, and quoted", async () => {
+    const w = await world();
+    const bot = await miaAgent(w);
+    const direct = await say(w.mia, w.g, `${w.at} 我想问一下`);
+    const relayed = await relay(w, bot, `${w.at} 帮 mia 补充一句`);
+    // The same caller's: folded into her queued reply, which a person's message called for, so the halt leaves it queued.
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.calls])).toEqual([["queued", [direct, relayed]]]);
+    await halt(w);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["queued"]);
+    const ticket = await claim(w.agent.id, w.g);
+    expect("call" in (await app.agentPort.begin(ticket))).toBe(true);
+    expect((await runsOf(w.agent.id, w.g))[0]).toMatchObject({ status: "running", covers: direct, calls: [direct] });
+    expect(await app.agentPort.acknowledge(ticket, { text: "稍等", reasoning: "" })).toBe("posted");
+    await say(w.ned, w.g, "我插一句");
+    expect(await app.agentPort.post(ticket, { text: "好的", reasoning: "", stopped: false, truncated: false })).toBe("posted");
+    await finish(ticket);
+    const posted = (await db.query<{ body: { replyToSeq?: number; ack?: boolean } }>("select body from messages where conversation_id = $1 and sender_id = $2 and kind = 'text' order by seq", [w.g, w.agent.id])).rows;
+    expect(posted.find((m) => !m.body.ack)!.body.replyToSeq).toBe(direct);
+  });
+
+  it("a relay alone, claimed, then a halt (T2 fix 2, R2): it ends as it begins, and nothing is posted", async () => {
+    const w = await world();
+    const bot = await miaAgent(w);
+    await relay(w, bot, `${w.at} 帮 mia 问一下`);
+    const ticket = await claim(w.agent.id, w.g);
+    await halt(w);
+    const end = await app.agentPort.begin(ticket);
+    expect("call" in end).toBe(false);
+    await app.agentPort.finish(ticket, end as never, null, NOTHING);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => r.status)).toEqual(["cancelled"]);
+    expect((await db.query("select 1 from messages where conversation_id = $1 and sender_id = $2", [w.g, w.agent.id])).rowCount).toBe(0);
+  });
+
   it("two relays straddling a halt (a person wrote after it): only the later one is answered", async () => {
+
     const w = await world();
     const bot = await miaAgent(w);
     await say(w.ned, w.g, `${w.at} 先问一句`);
