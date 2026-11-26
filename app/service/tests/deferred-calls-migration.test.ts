@@ -51,18 +51,33 @@ describe("078: the deferred calls, and the cutover by draining", () => {
     const queued = await run(agent.id, agent.conversationId, "queued", null);
     const running = await run(second.id, second.conversationId, "running", 3);
     const done = await run(third.id, third.conversationId, "done", 5);
+    // And one admitted (its model called, a hold written on the site model), as a live worker would have left it (T2 fix 1, F7c).
+    const fourth = (await mustCreateAgent(app, owner, { handle: "dcbot4", persona: "简短。" })) as { id: string; conversationId: string };
+    const admitted = await run(fourth.id, fourth.conversationId, "running", null);
+    await db.query(
+      "update agent_runs set admitted_at = now(), source = 'site', model = 'fast', charge_to = 'balance', hold_micro = 5000, money_rule = 1 where id = $1",
+      [admitted],
+    );
 
     await runMigrations(url, { quiet: true });
     expect(await tableThere()).toBe(true);
     expect(await rowOf(queued)).toEqual({ status: "cancelled", error: null, interrupted: null, pending: null });
     expect(await rowOf(running)).toEqual({ status: "running", error: null, interrupted: "access_ended", pending: null });
+    expect(await rowOf(admitted)).toEqual({ status: "running", error: null, interrupted: "access_ended", pending: null });
     expect(await rowOf(done)).toMatchObject({ status: "done", pending: null });
 
-    // Start-up recovery, before the worker: the running one ends cancelled with no error, posts nothing, and is settled once.
-    expect(await recoverRuns(db, app.deps.config, { error: () => {}, warn: () => {} })).toBe(1);
-    expect(await rowOf(running)).toEqual({ status: "cancelled", error: null, interrupted: "access_ended", pending: null });
-    expect((await db.query("select 1 from usage_records where run_id = $1", [running])).rowCount).toBe(1);
-    expect((await db.query("select 1 from messages where sender_id = $1", [second.id])).rowCount).toBe(0);
+    // Start-up recovery, before the worker: each running one ends cancelled with no error, posts nothing, and is settled once — the
+    // admitted one's hold released.
+    expect(await recoverRuns(db, app.deps.config, { error: () => {}, warn: () => {} })).toBe(2);
+    for (const [id, agentId] of [
+      [running, second.id],
+      [admitted, fourth.id],
+    ] as const) {
+      expect(await rowOf(id)).toEqual({ status: "cancelled", error: null, interrupted: "access_ended", pending: null });
+      expect((await db.query("select 1 from usage_records where run_id = $1", [id])).rowCount).toBe(1);
+      expect((await db.query("select 1 from messages where sender_id = $1", [agentId])).rowCount).toBe(0);
+    }
+    expect((await db.query<{ hold: string }>("select hold_micro::text as hold from agent_runs where id = $1", [admitted])).rows[0]!.hold).toBe("0");
     // Nothing was queued in its place.
     expect((await db.query("select 1 from agent_runs where status in ('queued', 'running')")).rowCount).toBe(0);
   }, 120_000);
