@@ -1066,9 +1066,12 @@ function replaceBySeq(list, wire) {
  */
 function chargedCopy(state, conv, wire) {
   const [kept] = withoutOthersPrivate(state, conv.type, [wire]);
-  // (A memory-change notice is pushed again when its status changes: undone, confirmed, discarded. My own message is pushed to me again
-  // when a limit refused a call of it after it was sent: it then carries `refused`.)
-  const again = kept?.via !== undefined || kept?.system?.event === "memory_changed" || (Array.isArray(kept?.refused) && kept.senderId === state.me?.id);
+  // (A memory-change notice is pushed again when its status changes: undone, confirmed, discarded. My own message — or an Agent's
+  // relaying my call — is pushed to me again when a limit refused a call of it after it was sent: it then carries `refused`.)
+  const again =
+    kept?.via !== undefined ||
+    kept?.system?.event === "memory_changed" ||
+    (Array.isArray(kept?.refused) && (kept.senderId === state.me?.id || Boolean(state.agents?.[kept.senderId])));
   return again ? applyMessageUpdate(state, kept) : state;
 }
 

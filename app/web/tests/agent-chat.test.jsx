@@ -2107,6 +2107,20 @@ describe("Agents in a group (batch 2C)", () => {
     expect(lines().filter(([id]) => id === "m5")).toEqual([["m5", "「安的助手」：这个 Agent 今天不能再回复别人了"]]);
   });
 
+  it("my call relayed by an Agent and refused by a limit there (limits redesign C-d): the line is under the Agent's message, which the service sends `refused` on to me alone — pushed again when it is decided later", async () => {
+    const refused = (reason, ...agentIds) => agentIds.map((agentId) => ({ agentId, reason }));
+    const { transport } = await openGroup([wire(G1, 1, ME_ID, "@helper 帮我问问安的助手"), wire(G1, 2, AG1, "@annbot 我主人问你", { refused: refused("too_often", OAG) })]);
+    const lines = () => [...timeline().querySelectorAll("li .msg-refused")].map((el) => [el.closest("li").getAttribute("data-msg"), el.textContent]);
+    expect(lines()).toEqual([["m2", "「安的助手」：太频繁，稍后再试"]]);
+    // Decided after the Agent's message came: it is pushed to me again, carrying the line.
+    await push(transport, { type: "message", message: wire(G1, 3, AG1, "@annbot 再问一次") });
+    await push(transport, { type: "message", message: wire(G1, 3, AG1, "@annbot 再问一次", { refused: refused("others_limit", OAG) }) });
+    expect(lines()).toEqual([
+      ["m2", "「安的助手」：太频繁，稍后再试"],
+      ["m3", "「安的助手」：这个 Agent 今天不能再回复别人了"],
+    ]);
+  });
+
   it("a reply being written: 正在回复… only (nothing streams), a row per Agent in member order; its owner can stop it, nobody else", async () => {
     const { transport, api } = await openGroup([], { api: { stopRun: vi.fn(async () => ({ ok: true })) } });
     await push(transport, groupRun(OAG, { state: "replying" }));

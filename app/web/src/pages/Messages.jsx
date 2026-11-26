@@ -318,7 +318,7 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
               </span>
             )
           )}
-          {mine && (msg.refused ?? []).map((line) => (
+          {(mine || agent) && (msg.refused ?? []).map((line) => (
             <span key={line} className="muted msg-refused">
               {line}
             </span>

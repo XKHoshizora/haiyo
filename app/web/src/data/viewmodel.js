@@ -541,8 +541,9 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
       m.kind === "text" && typeof agentId === "string" && m.senderId === agentId && Array.isArray(m.queries)
         ? m.queries.filter((q) => typeof q === "string" && q.trim() !== "")
         : [],
-    // Under my own message only: the Agents a limit kept it from, and why (the service sends `refused` to its sender alone).
-    refused: m.senderId === meId && Array.isArray(m.refused) ? refusedLines(m.refused, nameOf) : [],
+    // The Agents a limit kept a call of it from, and why: the service sends `refused` to the one person it is for alone — a
+    // person's message to its sender, an Agent's relay to the person behind it (Messages.jsx draws it under mine and under an Agent's).
+    refused: Array.isArray(m.refused) ? refusedLines(m.refused, nameOf) : [],
   };
   view.webCites = m.kind === "text" ? webCitesView(m.webCites, view.webSources, m.text ?? "") : [];
   if (hidden) view.hidden = true;
