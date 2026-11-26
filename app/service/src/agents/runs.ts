@@ -343,12 +343,12 @@ const OWNER_STARTED_LAST_MINUTE = `${STARTED_LAST_MINUTE} and error is distinct 
  * not counted. Others' calls waiting for a reply under way (`deferred_calls`) count in the others' lane as they are accepted
  * (`accepted_at`); the owner's own waiting calls do not, as the owner's own calls folded into a reply never did.
  */
-async function startedLastMinute(t: Tx, ownerId: string, own: boolean): Promise<number> {
+async function startedLastMinute(t: Tx, ownerId: string, own: boolean, waiting = true): Promise<number> {
   await lockAccount(t, ownerId);
   const { rows } = await t.query<{ n: number }>(
     `select (select count(*) from agent_runs where owner_id = $1 and (lane = 'own') = $2 and ${OWNER_STARTED_LAST_MINUTE})::int
-          + (case when $2 then 0 else (select count(*) from deferred_calls where owner_id = $1 and lane = 'others' and accepted_at > now() - interval '1 minute') end)::int as n`,
-    [ownerId, own],
+          + (case when $2 or not $3 then 0 else (select count(*) from deferred_calls where owner_id = $1 and lane = 'others' and accepted_at > now() - interval '1 minute') end)::int as n`,
+    [ownerId, own, waiting],
   );
   return rows[0]!.n;
 }
@@ -356,11 +356,12 @@ async function startedLastMinute(t: Tx, ownerId: string, own: boolean): Promise<
 /**
  * Whether `ownerId` has started their replies a minute in `lane` (`startedLastMinute`): over it, a reply is refused. A
  * reply nobody called for (`proactive`) is held to the others' minute, as a call by someone else is
- * (agents/proactive/decide.ts).
+ * (agents/proactive/decide.ts). `waiting` false: only the replies started count, not the calls that wait — what an automatic
+ * retry is held to (`scheduleAutoRetry`), so the calls waiting behind it never cost it its slot (invariant 5; T2 fix 1, F5b).
  */
-export async function overLaneLimit(t: Tx, ownerId: string, lane: Lane, config: RunLimits): Promise<boolean> {
+export async function overLaneLimit(t: Tx, ownerId: string, lane: Lane, config: RunLimits, { waiting = true }: { waiting?: boolean } = {}): Promise<boolean> {
   const own = lane === "own";
-  return (await startedLastMinute(t, ownerId, own)) >= (own ? config.agentRunsPerMinute : config.agentOthersRunsPerMinute);
+  return (await startedLastMinute(t, ownerId, own, waiting)) >= (own ? config.agentRunsPerMinute : config.agentOthersRunsPerMinute);
 }
 
 /**
@@ -1924,7 +1925,7 @@ export async function scheduleAutoRetry(
   // Something else holds the Agent's one active run there already: nothing is queued beside it.
   const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [agent.id, conversationId]);
   if (active.rowCount !== 0) return null;
-  if (await overLaneLimit(t, agent.ownerId, run.lane, config)) return { gaveUp: "rate_limited" };
+  if (await overLaneLimit(t, agent.ownerId, run.lane, config, { waiting: false })) return { gaveUp: "rate_limited" };
   const calls = await standingSeqs(t, runId);
   const queued = await t.query<RunRow>(
     `insert into agent_runs as r (purpose, conversation_id, agent_id, owner_id, status, covers_seq, triggered_by, caller_id, lane,

@@ -1221,7 +1221,8 @@ run (`not_before`): the worker claims it once due (`for update skip locked`: one
 restart; it is admitted as any reply (pause, membership, blocks, budgets, money — held back or refused, it is not
 forced), charged as any, and keeps the failed run's ASSIGNMENT — what it covered and the calls it answered (less any a limit
 refused since) — and its identity: the same lane and caller (Agents and runs, One identity per reply: a member's call stays the
-member's, the owner's the owner's), held to the owner's replies a minute in that lane. It takes the Agent's place there BEFORE
+member's, the owner's the owner's), held to the owner's replies a minute in that lane — the replies started, not the calls waiting
+(so calls waiting behind it, there or elsewhere, never cost it its slot). It takes the Agent's place there BEFORE
 anything waiting behind the failed run: a call meanwhile waits behind it (up to the backoff) and gets its own reply after it;
 nothing is folded into a retry. It ends quietly (`cancelled`) when an attempt of its own chain posted its reply (assignments do
 not overlap: no other reply answers its calls). A chain never holds an

@@ -308,7 +308,37 @@ describe("invariant 5 (retries): an automatic retry takes the slot before any wa
   });
 });
 
+describe("invariant 5 (retries, T2 fix 1, F5b): calls that wait never cost an automatic retry its slot", () => {
+  // Its own instance: one automatic retry, and the owner's others' minute at 3 (a run and two waiting calls fill it).
+  const { app: tight } = useApp({ env: { ...SITE_ENV, AGENTS: JSON.stringify({ autoRetryDelaysMs: [20_000] }), AGENT_OTHERS_RUNS_PER_MINUTE: "3" }, models: gateway, agentWorker: false });
+
+  it("the owner's others' minute full of waiting calls (this pair's and another's): the failed reply's retry is still queued first, before the calls that wait", async () => {
+    const w = await world(tight);
+    const member = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`, tight);
+    const ticket = await claim(w.agent.id, w.g);
+    const ned = await say(w.ned, w.g, `${w.at} NED-ASK 我也问`, tight);
+    // Another pair of the owner's: the same Agent in a second group, a call waiting there (accepted now).
+    const g2 = await group(tight, w.owner, "另一个群", [w.mia, w.ned]);
+    expect((await api(tight, w.owner, "POST", `/api/conversations/${g2}/members`, { principalId: w.agent.id })).status).toBe(201);
+    const elsewhere = await say(w.ned, g2, "随便说一句", tight);
+    await db.query(
+      "insert into deferred_calls (agent_id, conversation_id, message_seq, owner_id, lane, caller_id, triggered_by, asker_ids) values ($1, $2, $3, $4, 'others', $5, 'human', array[$5::uuid])",
+      [w.agent.id, g2, elsewhere, w.owner.id, w.ned.id],
+    );
+    // One reply started for others and two waiting: the minute (3) is full as the reply fails for a passing reason.
+    await tight.agentPort.finish(ticket, failedEnd("provider_unavailable", { kind: "upstream", code: "provider_unavailable", status: 503, progress: false }), null, NOTHING);
+    expect(await runsOf(w.agent.id, w.g)).toMatchObject([
+      { status: "failed", lane: "others", caller: w.mia.id, calls: [member] },
+      { status: "queued", lane: "others", caller: w.mia.id, calls: [member] },
+    ]);
+    expect((await waiting(w.agent.id, w.g)).map((c) => c.seq)).toEqual([ned]);
+    await db.query("delete from deferred_calls where agent_id = $1", [w.agent.id]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+  });
+});
+
 describe("C-a: the caller's and the owner's minutes are met as each call is accepted, also while a reply runs", () => {
+
   const { app: limited } = useApp({ env: { ...SITE_ENV, AGENT_CALLER_RUNS_PER_MINUTE: "1", AGENT_OTHERS_RUNS_PER_MINUTE: "2" }, models: gateway, agentWorker: false });
 
   it("a member at their minute: a call folded or waiting is refused 太频繁 like any other; a waiting call counts toward the minute as it is accepted", async () => {
