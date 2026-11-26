@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { mentionsAtSend } from "../src/agents/mentions.ts";
 import { recoverRuns } from "../src/agents/port-impl.ts";
+import { maybeTrigger } from "../src/agents/runs.ts";
+import { lockForWrite } from "../src/conversations/store.ts";
+import { insertMessage } from "../src/messages/model.ts";
 import { NOTHING } from "../src/agents/runtime/port.ts";
 import { admit, admitRun } from "../src/metering/admit.ts";
 import { OWN_KEY_NOMINAL_MICRO, othersReplyCeilingMicro, othersUseToday, OthersLimit } from "../src/metering/others.ts";
@@ -325,6 +329,45 @@ describe("a call refused by N: one line for its sender alone, and one notice a d
     // The worker's own finish after it changes nothing.
     await k.port.finish(ticket, { status: "cancelled" }, null, NOTHING);
     expect(await k.lastRun()).toMatchObject({ id: ticket.id, status: "cancelled", error: null });
+  });
+
+  /** The owner's notices that others' use reached their number (`others_limit_reached`), in the Agent's own conversation. */
+  const ownerNoticesOf = async (k: Awaited<ReturnType<typeof othersKitchen>>) =>
+    (await db.query<{ body: Record<string, unknown> }>("select body from messages where conversation_id = $1 and body ->> 'event' = 'others_limit_reached'", [k.agent.conversationId])).rows.map(
+      (r) => r.body,
+    );
+
+  it("the owner's notice carries the number in force at the refusal, not one set before it is written", async () => {
+    const k = await othersKitchen(app, db);
+    await setOwnerLimit(db, k.owner.id, 1n * POINT);
+    await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: POINT });
+    // The refusal, in a transaction of its own (as the send's), and what it tells kept for after it.
+    const message = await db.tx(async (t) => {
+      const lock = await lockForWrite(t, k.g, k.member.id);
+      const stored = await insertMessage(t, k.g, k.member.id, "text", { text: "@chef 在吗" }, null, await mentionsAtSend(t, { id: k.g, type: "group" }, "@chef 在吗"));
+      return { stored, triggered: await maybeTrigger(t, lock, stored, config()) };
+    });
+    expect(message.triggered.reached.map((r) => r.ownerId)).toEqual([k.owner.id]);
+    // Raised before the notice is written: the notice says the number that refused the call.
+    await setOwnerLimit(db, k.owner.id, 5n * POINT);
+    k.port.actOnTold(message.triggered);
+    await expect.poll(async () => (await ownerNoticesOf(k)).length).toBe(1);
+    expect((await ownerNoticesOf(k))[0]).toMatchObject({ points: "1" });
+  });
+
+  it("no notice for the owner when no call was refused: a follow-up for others whose calls are all gone (a block since) tells nobody", async () => {
+    const k = await othersKitchen(app, db);
+    await k.ask("@chef 一");
+    const ticket = (await k.port.claimNext())!;
+    expect((await api(app, k.third, "POST", `/api/conversations/${k.g}/messages`, { text: "@chef 二", clientTxn: "n6a" })).status).toBe(201);
+    // The owner blocks the third: their call is no call any more. Then the number is reached.
+    expect((await api(app, k.owner, "PUT", `/api/blocks/${k.third.id}`)).status).toBe(200);
+    await setOwnerLimit(db, k.owner.id, 1n * POINT);
+    await paidReply(db, { agentId: k.agent.id, ownerId: k.owner.id, conversationId: k.agent.conversationId, lane: "others", micro: POINT });
+    await k.port.finish(ticket, { status: "done" }, null, NOTHING);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await ownerNoticesOf(k)).toEqual([]);
+    expect((await db.query("select 1 from call_refusals where agent_id = $1", [k.agent.id])).rowCount).toBe(0);
   });
 
   it("a refusal for access stays quiet: an Agent only its owner may call, a paused one", async () => {

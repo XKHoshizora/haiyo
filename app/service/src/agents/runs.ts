@@ -929,11 +929,13 @@ export interface Refused {
 
 /**
  * An owner whose one number for others' use refused a call on their Agent `agentId`: after commit they are told once a site day, in
- * that Agent's own conversation (`othersReachedNotice`, through `DbAgentPort.actOnTold`).
+ * that Agent's own conversation (`othersReachedNotice`, through `DbAgentPort.actOnTold`), of the number that refused it
+ * (`pointsMicro`, read in the refusal's transaction). Only when a call was refused: none for a reply with no call left.
  */
 export interface ReachedOwner {
   ownerId: string;
   agentId: string;
+  pointsMicro: bigint;
 }
 
 /**
@@ -982,21 +984,22 @@ export async function recordRefusal(t: Tx, conversationId: string, seqs: readonl
  * The calls run `runId` answers up to `upTo` (its `call_seqs`, as each was accepted), refused at its admission by `reason`: recorded
  * for their senders (`recordRefusal`). What it took on after `upTo` was handed back as noted: its follow-up decides those.
  */
-export async function refuseRunCalls(t: Tx, runId: string, upTo: number, reason: RefusalReason): Promise<Refused[]> {
+export async function refuseRunCalls(t: Tx, runId: string, upTo: number, reason: RefusalReason): Promise<{ refused: Refused[]; calls: number }> {
   const { rows } = await t.query<{ conversation_id: string; agent_id: string; seqs: string[] }>(
     `select conversation_id, agent_id, array(select s from unnest(coalesce(call_seqs, array[covers_seq])) as x (s) where s <= $2)::text[] as seqs
        from agent_runs where id = $1`,
     [runId, upTo],
   );
   const run = rows[0];
-  return run ? recordRefusal(t, run.conversation_id, run.seqs.map(Number), run.agent_id, reason) : [];
+  if (!run) return { refused: [], calls: 0 };
+  return { refused: await recordRefusal(t, run.conversation_id, run.seqs.map(Number), run.agent_id, reason), calls: run.seqs.length };
 }
 
 /**
  * The owner's notice that others' use of their Agents has reached their one number today (`others_limit_reached`), in the own
  * conversation of `agentId`, the Agent a call on was refused for it: appended unless one of the owner's Agents' conversations has one
- * of the site day already (once per owner and site day, whichever Agent it was), with the number as it is now; null when it is not
- * appended. Its own transaction, after the one that refused (`DbAgentPort.actOnTold`): an advisory lock of the owner's, which nothing
+ * of the site day already (once per owner and site day, whichever Agent it was), with the number that refused the call
+ * (`pointsMicro`, read as it refused); null when it is not appended. Its own transaction, after the one that refused (`DbAgentPort.actOnTold`): an advisory lock of the owner's, which nothing
  * else takes, keeps two at once from both appending; then the Agent's own conversation and its row (`lockAgent`, the lock order).
  */
 export async function othersReachedNotice(t: Tx, config: Pick<Config, "others" | "siteTimezone">, owner: ReachedOwner, now = new Date()): Promise<StoredMessage | null> {
@@ -1009,8 +1012,7 @@ export async function othersReachedNotice(t: Tx, config: Pick<Config, "others" |
   if (told.rowCount) return null;
   const agent = await lockAgent(t, owner.agentId);
   if (agent.deleted || agent.ownerId !== owner.ownerId) return null;
-  const points = formatPoints(await othersLimitOf(t, config, owner.ownerId));
-  return appendSystem(t, agent.conversationId, { event: "others_limit_reached", actorId: agent.id, agentId: agent.id, points });
+  return appendSystem(t, agent.conversationId, { event: "others_limit_reached", actorId: agent.id, agentId: agent.id, points: formatPoints(owner.pointsMicro) });
 }
 
 /** A message that called for nothing. */
@@ -1180,7 +1182,8 @@ async function refusedByOthersLimit(
   await lockAccount(t, agent.ownerId);
   if (!(await othersReached(t, config, agent.ownerId, new Date()))) return false;
   told.refused.push(...(await recordRefusal(t, conversationId, seqs, agent.id, "others_limit")));
-  told.reached.push({ ownerId: agent.ownerId, agentId: agent.id });
+  // The owner is told only of a refused call, of the number that refused it.
+  if (seqs.length > 0) told.reached.push({ ownerId: agent.ownerId, agentId: agent.id, pointsMicro: await othersLimitOf(t, config, agent.ownerId) });
   return true;
 }
 

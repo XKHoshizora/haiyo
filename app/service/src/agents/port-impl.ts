@@ -9,7 +9,7 @@ import { AppError } from "../errors.ts";
 import { admitRun, classSql, HeldBack, olderMarkSql, raiseHold, type ChargeTo } from "../metering/admit.ts";
 import { placeOf, type Place } from "../social/place.ts";
 import { reach } from "../social/reach.ts";
-import { OthersLimit, othersWanted } from "../metering/others.ts";
+import { OthersLimit, othersLimitOf, othersWanted } from "../metering/others.ts";
 import { assertCount, costMicro, isCount, maxCostMicro, type Price } from "../metering/prices.ts";
 import { deliverReminder, remindInSettlement } from "../metering/reminders.ts";
 import { settle } from "../metering/settle.ts";
@@ -1127,8 +1127,10 @@ export class DbAgentPort implements AgentPort {
           if (first.covers > first.coveredBefore) await this.handBack(t, run.id, first.coveredBefore, first.covers);
           const told = noneTold();
           if (state.lane === "others") {
-            told.refused.push(...(await refuseRunCalls(t, run.id, first.coveredBefore, "others_limit")));
-            told.reached.push({ ownerId: agent.ownerId, agentId: agent.id });
+            const { refused, calls } = await refuseRunCalls(t, run.id, first.coveredBefore, "others_limit");
+            told.refused.push(...refused);
+            // Its owner is told only of a refused call, of the number that refused it.
+            if (calls > 0) told.reached.push({ ownerId: agent.ownerId, agentId: agent.id, pointsMicro: await othersLimitOf(t, config, agent.ownerId) });
           }
           log.info({ metric: "others_limit_refused", at: "admission" }, "agent run: its owner's number for others' use is reached; it ends quietly");
           // Its end, in this transaction, as `finish` would record it (the locks are those `finish` takes, held already): what it

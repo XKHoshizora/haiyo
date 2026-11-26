@@ -264,7 +264,7 @@ describe("the owner's one number for others' use", () => {
     const before = await runsOf(anna.id, w.g);
 
     const refused = await agentSays(mia.id, w.g, "@anna 你看看");
-    expect([refused.runs, refused.callerLimited, refused.notices, refused.refused, refused.reached]).toEqual([[], [], [], [], [{ ownerId: w.owner.id, agentId: anna.id }]]);
+    expect([refused.runs, refused.callerLimited, refused.notices, refused.refused, refused.reached]).toEqual([[], [], [], [], [{ ownerId: w.owner.id, agentId: anna.id, pointsMicro: 2_000_000n }]]);
     expect(await runsOf(anna.id, w.g)).toEqual(before);
 
     // Its reply, as the worker posts it, in another group: the same; the owner is told once (after the refusal's commit).
