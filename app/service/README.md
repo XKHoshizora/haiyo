@@ -3284,7 +3284,8 @@ social reply is shown what a group is. A key either group does not list stops th
 **Counters.** `{ "metric": "<name>", … }`, ids, counts and reasons only, never a text. Written in ring 1a:
 `others_limit_refused` (`at`: `admission`; a reply for others the owner's number refused as it was admitted),
 `social_post_refused` (`reason`: a social reply the post-time access check stopped),
-`persona_aid` (the persona aid read a persona: the Agent's id, how many cards) and `agent_reported` (the reason). Ring 1b's are
+`persona_aid` (the persona aid read a persona: the Agent's id, how many cards, `answered`, and `cut` when it stopped at its half of
+the day's judgements) and `agent_reported` (the reason). Ring 1b's are
 memory counters (Memory counters: `social_replies_with_notes`, `social_notes_shown`, `social_note_vaulted_from_reply`), no id and no text.
 
 **For whoever adds a route here.** A route gets its `####` heading in the same edit (`tests/readme.test.ts` wants a heading
@@ -3396,14 +3397,17 @@ paragraph with no end mark the persona aid knows, is not asked; the same sentenc
 judgement model, in a request of its own (state `句子：<sentence>`): does it tell a stranger a fact of the owner's or another real
 person's life (a sentence that only gives the Agent a role, a name, a manner, a joke or a line, or says how the owner wants to be
 answered, does not). No chat model is called and no memory allowance spent; the requests are memory judgements (`MEMORY.judgePerOwnerDay`,
-`judgeShare`, `judge_memory_call_persona`), and sorting keeps priority: a persona is read only while the owner's judgements of the day,
-with the ones the read will make, stay within half of `judgePerOwnerDay` and the site's within half of memory's share, else at a later
-pass (an owner already at half is not claimed). None while `SOCIAL.enabled` is off and nothing stamped then, so that at the first
-switch-on every persona that exists is read once, ten owners a poll; none for an owner's own edit; a request refused for a moment (no
-place among the judgement's calls, the limits unreadable, the service stopping) gives the version back to a later pass, while no
-judgement model, a day used up meanwhile or a failed request leave it read (what was answered stands). A sentence scored at
+`judgeShare`, `judge_memory_call_persona`) through the same gate as every other, but sorting keeps priority: the persona aid stops at
+half of the owner's judgements of the day and at half of memory's share of the site's. None while `SOCIAL.enabled` is off and nothing
+stamped then, so that at the first switch-on every persona that exists is read once, ten owners a poll, each Agent claimed just before
+it is read; none for an owner's own edit. A request refused for a moment (no place among the judgement's calls and nothing sent, the
+limits unreadable, the service stopping) gives the version back to a later pass; anything else that ends the questions — that half
+reached (counted: `cut` on the `persona_aid` line), a request that went out and failed, no judgement model — leaves it read: what was
+answered stands, and the rest of the persona is checked at its next save. A request that sent nothing is not counted for the owner or
+the site. A sentence scored at
 `MEMORY.personaFactAt` (0.4) or more is a candidate; of those the owner has not answered 不用 and whose card does not still wait, the
-three highest get a card, in the persona's order, shown to its owner alone: `system.card`
+three highest get a card, in the persona's order, shown to its owner alone. The card carries the sentence as the persona has it (its
+end mark or the line break that ends it with it); the request asks, and the 200 characters count, that text trimmed. `system.card`
 `{"answer": "moved" | "kept" | null, "expired": boolean, "sentence"}`. `move: true` takes the sentence out of the persona (the sentence as a whole, with its end mark; the persona's version goes up and counts as read) and writes it as a note about the owner (in the vault); a sentence no
 longer in the persona changes nothing and is answered `kept`. `move: false` leaves everything and records `kept`. One answer per card
 (`social_card_answers`); a card is answerable `OTHERS.cardDays` days. → 200 `{"ok": true, "moved": boolean}`; 404 `not_found` for what is
@@ -5381,7 +5385,8 @@ replies unasked, and mentions are untouched. Judgements are never charged to any
 option answered otherwise counts as unanswered. One attempt per channel, in order, each bounded by `timeoutMs` (in all,
 and without progress), its answer at most 64 KiB; any failure — a status, the network, the time, the body, the key's
 variable unset at that moment — goes on to the next channel, and after the last the call has failed: `JudgeError`, whose
-`reason` says coarsely why the last channel tried gave no answer — `auth` (401 or 403), `status` (any other status but
+`reason` says coarsely why the last channel tried gave no answer (and `sent` whether any channel's request went out: not for
+`key_unset` or `busy`) — `auth` (401 or 403), `status` (any other status but
 200), `timeout`, `oversize`, `shape` (not `{"answers": {…}}`), `key_unset`, `busy` (no place among the calls in flight:
 nothing was sent, and a moment later there may be one), `network` (anything else: the connection, the address). The caller giving up (its signal) is its own abort, never a `JudgeError`,
 and no further channel is tried. It goes through the address guard (Model providers) with slots of its own: at most 32

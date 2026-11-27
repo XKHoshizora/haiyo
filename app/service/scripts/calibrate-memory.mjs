@@ -219,7 +219,9 @@ const PERSONA_FACT_INSTRUCTIONS = S(
 )
 SN(F.persona, 'PERSONA_FACT key', 'const PERSONA_FACT = "persona_fact";')
 SN(F.persona, 'persona question', 'const QUESTION: Question = { key: PERSONA_FACT, type: "noul", instructions: PERSONA_FACT_INSTRUCTIONS };')
-SN(F.persona, 'persona state', '`句子：${s.text.trim()}`, [QUESTION], "persona", closing)')
+// The state is the sentence's trimmed text (`asked`), as personaTasks sends it.
+SN(F.persona, 'persona state', '`句子：${s.asked}`, [QUESTION], "persona", { closing, ceiling: PERSONA_SHARE, chargeUnsent: false })')
+SN(F.persona, 'persona asked text', 'const asked = text.trim();')
 SN(F.persona, 'persona rule', 'if (answer?.type === "noul" && answer.p >= config.memory.personaFactAt) candidates.push(')
 SN(F.persona, 'LONGEST_ASKED', 'const LONGEST_ASKED = 200;')
 const PERSONA_KEY = 'persona_fact'
