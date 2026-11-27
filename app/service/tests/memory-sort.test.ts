@@ -520,7 +520,7 @@ describe("askAllOutcome: the answers, or why there are none", () => {
     expect(await used()).toBe(2);
   });
 
-  it("refused before anything is sent: no judge, the owner's day, memory's share, a limit that cannot be read, the service closing — none started, none counted", async () => {
+  it("refused before anything is sent: no judge, the owner's day, memory's share, a limit that cannot be read, the service closing for a caller that is not charged for what it does not send — none started, none counted", async () => {
     judge.answer(() => ({ k: 0.7 }));
     const none = (why: string) => ({ answers: null, why, started: false });
     expect(await ask(deps({ judge: null }))).toEqual(none("no_judge"));
@@ -533,10 +533,20 @@ describe("askAllOutcome: the answers, or why there are none", () => {
     expect(await ask(deps({ db: failing(/^\s*select calls from judge_usage/) }))).toEqual(none("limit_unread"));
     const closed = new AbortController();
     closed.abort();
-    expect(await ask(deps(), closed.signal)).toEqual(none("closing"));
+    expect(await ask(deps(), closed.signal, { chargeUnsent: false })).toEqual(none("closing"));
     expect(judge.calls).toHaveLength(0);
     expect(await used()).toBe(5);
     expect(await ownerUsed()).toBe(2);
+  });
+
+  it("every other caller, the service already closing: counted for the site and the owner, as before this lane (096f217); nothing sent (fix 2, G1)", async () => {
+    judge.answer(() => ({ k: 0.7 }));
+    const closed = new AbortController();
+    closed.abort();
+    expect(await ask(deps(), closed.signal)).toEqual({ answers: null, why: "closing", started: false });
+    expect(await askAll(deps(), "s", Q1, "sort", closed.signal)).toBeNull();
+    expect(judge.calls).toHaveLength(0);
+    expect([await used(), await ownerUsed()]).toEqual([2, 2]);
   });
 
   it("no place among the client's calls in flight is busy: nothing was sent (not started), counted as every call is", async () => {
@@ -583,10 +593,9 @@ describe("askAllOutcome: the answers, or why there are none", () => {
     expect((await ask(deps({}, site))).answers).not.toBeNull();
   });
 
-  it("the service stopping while the limits are read: closing, nothing sent, nothing counted", async () => {
-    judge.answer(() => ({ k: 0.5 }));
-    const closing = new AbortController();
-    const stopsOnRead = new Proxy(db, {
+  /** `db`, aborting `closing` as the site's judgements of the day are read (after the owner's). */
+  const stopsOnRead = (closing: AbortController): Db =>
+    new Proxy(db, {
       get(target, prop, receiver) {
         if (prop !== "query") return Reflect.get(target, prop, receiver);
         return (sql: string, ...rest: unknown[]) => {
@@ -595,9 +604,29 @@ describe("askAllOutcome: the answers, or why there are none", () => {
         };
       },
     }) as Db;
-    expect(await ask(deps({ db: stopsOnRead }), closing.signal)).toEqual({ answers: null, why: "closing", started: false });
+
+  it("the service stopping while the limits are read, for a caller not charged for what it does not send (the persona aid): closing, nothing sent, nothing counted", async () => {
+    judge.answer(() => ({ k: 0.5 }));
+    const closing = new AbortController();
+    expect(await ask(deps({ db: stopsOnRead(closing) }), closing.signal, { chargeUnsent: false })).toEqual({ answers: null, why: "closing", started: false });
     expect(judge.calls).toHaveLength(0);
     expect([await used(), await ownerUsed()]).toEqual([0, 0]);
+  });
+
+  it("the service stopping while the limits are read, for every other caller (a dream's faithful check): counted for the site and the owner, as before this lane (096f217) (fix 2, G1)", async () => {
+    judge.answer(() => ({ "faithful*": 0.9 }));
+    const closing = new AbortController();
+    expect(await addsNothing(deps({ db: stopsOnRead(closing) }), { kind: "rewrite", sources: ["a"], result: "b" }, 0.6, closing.signal)).toBe(false);
+    expect(judge.calls).toHaveLength(0);
+    expect([await used(), await ownerUsed()]).toEqual([1, 1]);
+  });
+
+  it("no request went out and a channel found no place: busy, whatever the last channel's reason (fix 2, G2)", async () => {
+    judge.answer(() => new JudgeError("key_unset", false, true));
+    expect(await ask(deps(), undefined, { chargeUnsent: false })).toEqual({ answers: null, why: "busy", started: false });
+    // One went out: failed.
+    judge.answer(() => new JudgeError("key_unset", true, true));
+    expect(await ask(deps(), undefined, { chargeUnsent: false })).toEqual({ answers: null, why: "failed", started: true });
   });
 
   it("a request made that gave no answer is failed and started: any JudgeError that went out, a timeout; a missing key is no failure but an answer without it (every key unset: below)", async () => {

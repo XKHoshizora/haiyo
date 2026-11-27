@@ -374,6 +374,27 @@ describe("why no channel answered (JudgeError.reason), coarse and text-free", ()
     expect(await judge.ask("s", [Q[0]!])).toEqual(new Map([["need", n(0.5)]]));
   });
 
+  test("no place on the first channel and a key unset on the second: the reason is the last channel's, nothing went out, and busy says a channel found no place (fix 2, G2)", async () => {
+    const server = await stub(() => {});
+    const judge = createJudge(
+      { model: "jev-1", channels: [{ url: server.url, apiKeyEnv: "JUDGE_KEY_A" }, { url: server.url, apiKeyEnv: "NOT_SET_ANYWHERE" }], timeoutMs: 30_000, dailyLimit: 10 },
+      { allowInsecureLocal: true, env },
+    );
+    const ctl = new AbortController();
+    // Every place held on the first channel (its requests are never answered, so the second channel is never tried for them).
+    const held = Array.from({ length: 32 }, () => judge.ask("s", [Q[0]!], ctl.signal).catch(() => null));
+    const deadline = Date.now() + 5000;
+    while (server.seen.length < 32 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    expect(server.seen).toHaveLength(32);
+    const err = (await judge.ask("s", [Q[0]!]).then(() => null, (e: unknown) => e)) as JudgeError;
+    expect([err instanceof JudgeError, err.reason, err.sent, err.busy]).toEqual([true, "key_unset", false, true]);
+    expect(server.seen).toHaveLength(32);
+    ctl.abort();
+    await Promise.all(held);
+    // Made by hand: busy follows the reason unless given.
+    expect([new JudgeError("busy").busy, new JudgeError("key_unset").busy, new JudgeError("key_unset", false, true).busy]).toEqual([true, false, true]);
+  });
+
   test("whether any channel's request went out (sent): not for a key unset or busy, yes for any other failure, carried across channels", async () => {
     const errOf = async (judge: ReturnType<typeof make>) => (await judge.ask("s", [Q[0]!]).then(() => null, (e: unknown) => e)) as JudgeError;
     const broken = await failing(500);

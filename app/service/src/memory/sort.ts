@@ -101,8 +101,9 @@ export type Asked = { answers: Map<string, Answer>; started: true } | { answers:
 /**
  * How a caller asks (`askAllOutcome`). `closing`: the service's stop. `ceiling`: the share of the owner's `judgePerOwnerDay`, and of
  * memory's `judgeShare` of the site's day, this caller may reach (default 1, all of it; the persona aid's is lower, so that sorting
- * keeps priority). `chargeUnsent` false: a request that sent nothing (`busy`, a key unset) is not counted for the site or the owner
- * (default true: every call of the client is counted, as it always was).
+ * keeps priority). `chargeUnsent` false: a request that sent nothing (`busy`, a key unset, or the service's stop, looked at before the
+ * limits are read and again after) is not counted for the site or the owner (default true: every call of the client is counted, as it
+ * always was, the stop's included — the client then refuses it at once).
  */
 export interface AskOptions {
   closing?: AbortSignal;
@@ -113,17 +114,19 @@ export interface AskOptions {
 /**
  * One judgement call with `questions` about `state`, counted in `judge_usage`, bounded as the proactive decision is (each
  * channel its `timeoutMs`). Asked only when it can be (each refusal is a `NoAnswer`; the limits at `ceiling` of them); once `closing`
- * has fired nothing is asked (and nothing counted) — looked at again after the limits are read — and a request under way ends with it
- * (no answer). A call of the client is counted for the site and the owner whatever came of it (`busy` too, unless `chargeUnsent` is
- * false). The answers are the ones it did give: a key left out is no answer.
+ * has fired nothing is sent, and a request under way ends with it (no answer). A call of the client is counted for the site and the
+ * owner whatever came of it (unless it sent nothing and `chargeUnsent` is false). The answers are the ones it did give: a key left out
+ * is no answer.
  */
 export async function askAllOutcome(deps: SortDeps, state: string, questions: readonly Question[], purpose: JudgePurpose, opts: AskOptions = {}): Promise<Asked> {
   const { db, judge, config, log } = deps;
   const { closing, ceiling = 1, chargeUnsent = true } = opts;
   /** Whether the service is stopping (asked again after the reads and after the request: it may have stopped either). */
   const stopping = (): boolean => closing?.aborted === true;
+  /** The stop, for a caller not charged for what it does not send: it ends the question before anything is read or counted. */
+  const stoppedUnsent = (): boolean => !chargeUnsent && stopping();
   if (judge === null || config.judge === null) return { answers: null, why: "no_judge", started: false };
-  if (stopping()) return { answers: null, why: "closing", started: false };
+  if (stoppedUnsent()) return { answers: null, why: "closing", started: false };
   let day: string;
   try {
     day = siteDay(new Date(), config.siteTimezone);
@@ -141,7 +144,9 @@ export async function askAllOutcome(deps: SortDeps, state: string, questions: re
     log.info({ metric: "judge_limit_check_failed", err }, "the judgement limit could not be read: not judged");
     return { answers: null, why: "limit_unread", started: false };
   }
-  if (stopping()) return { answers: null, why: "closing", started: false };
+  if (stoppedUnsent()) return { answers: null, why: "closing", started: false };
+  // Any other caller goes on as it always did (fix 2, G1): the client refuses a stopped request at once, and it is counted below.
+  const stoppedBefore = stopping();
   const timeout = AbortSignal.timeout(config.judge.timeoutMs * Math.max(1, config.judge.channels.length));
   const deadline = closing ? AbortSignal.any([timeout, closing]) : timeout;
   count(db, `judge_memory_call_${purpose}`);
@@ -153,8 +158,9 @@ export async function askAllOutcome(deps: SortDeps, state: string, questions: re
     // No answer: the callers fail closed (or open, as they decide).
     failure = err;
   }
-  // Whether a request went out: an answer, or a JudgeError that says so; any other failure (an abort, a timeout) came while one was out.
-  const sent = answers !== null || !(failure instanceof JudgeError) || failure.sent;
+  // Whether a request went out: an answer, or a JudgeError that says so; any other failure (an abort, a timeout) came while one was
+  // out — unless the stop had come before the client was called.
+  const sent = answers !== null || (!stoppedBefore && (!(failure instanceof JudgeError) || failure.sent));
   // Counted whatever came of the call (unless it sent nothing and the caller asked so); a failure of the count never changes the result.
   if (sent || chargeUnsent) {
     await countJudgement(db, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
@@ -162,7 +168,7 @@ export async function askAllOutcome(deps: SortDeps, state: string, questions: re
   }
   if (answers !== null) return { answers, started: true };
   if (stopping()) return { answers: null, why: "closing", started: sent };
-  if (!sent && failure instanceof JudgeError && failure.reason === "busy") return { answers: null, why: "busy", started: false };
+  if (!sent && failure instanceof JudgeError && failure.busy) return { answers: null, why: "busy", started: false };
   return { answers: null, why: "failed", started: sent };
 }
 
