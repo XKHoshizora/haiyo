@@ -132,7 +132,7 @@ describe("the 记忆已更新 chip", () => {
         </ol>
       </StoreProvider>,
     );
-    fireEvent.click(screen.getByRole("button", { name: `${memorySentence({ name: "它", changeId: "c1", phase: "rest", lines: LINES, count: 2, full: true })}` }));
+    fireEvent.click(screen.getByRole("button", { name: `${memorySentence({ name: "Agent", changeId: "c1", phase: "rest", lines: LINES, count: 2, full: true })}` }));
     fireEvent.click(screen.getByRole("button", { name: "记忆宫殿快满了，去整理一下。" }));
     expect(screen.getByRole("status").textContent).toBe("settings/memory");
   });
@@ -212,7 +212,7 @@ describe("the chip's sentence", () => {
     expect(li(3).textContent).toBe("小助手的记忆宫殿快满了");
   });
 
-  it("an Agent that cannot be named reads 它", () => {
+  it("an Agent that cannot be named reads 「Agent」, never 「它」 (design §8)", () => {
     const msg = { id: "m3", seq: 3, kind: "system", text: "x", system: { event: "memory_changed", changeId: "c1", lines: ["忘掉了：x"], vaultLines: [false], pending: false, unlock: false, full: false, status: "applied" } };
     render(
       <StoreProvider initialState={emptyState()}>
@@ -221,7 +221,7 @@ describe("the chip's sentence", () => {
         </ol>
       </StoreProvider>,
     );
-    expect(screen.getByRole("button").textContent).toBe("它小憩时理了理记忆");
+    expect(screen.getByRole("button").textContent).toBe("Agent小憩时理了理记忆");
   });
 });
 

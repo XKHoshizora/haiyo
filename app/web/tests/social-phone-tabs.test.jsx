@@ -108,7 +108,7 @@ describe("on a phone, Agent social's screens keep the lists in reach", () => {
     await press(screen.getByText("小助手", { selector: ".list-col .row-name" }));
     expect(path()).toBe(`/agents/${AG1}`);
     await press(screen.getByRole("tab", { name: "别人" }));
-    await press(within(screen.getByRole("list", { name: "它和别人的对话" })).getByRole("button"));
+    await press(within(screen.getByRole("list", { name: "小助手和别人的对话" })).getByRole("button"));
     expect(path()).toBe(`/chat/${SO}`);
     expect(bar()).toBeNull();
     await back();

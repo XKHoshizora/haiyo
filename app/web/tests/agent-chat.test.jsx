@@ -53,7 +53,7 @@ const SITE_FREE = { source: "site", id: "free-1" }; // no vision
 const SITE_PAID = { source: "site", id: "paid-1" }; // vision
 const PROVIDER_MODEL = { source: "provider", providerId: P1, model: "gpt-x" }; // no vision
 
-const PAUSE_TEXT = "已暂停全部会话：它不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。";
+const PAUSE_TEXT = "已暂停全部会话：不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。";
 const DELETED_TEXT = "这个 Agent 已删除，聊天记录仍可查看。";
 const IMAGE_HINT = "当前模型看不到图片，只会知道文件名";
 
@@ -201,11 +201,11 @@ describe("the header and the list row", () => {
   it("a message of mine that the Agent will not answer says why under 已发送: paused, or not named in 只在点名时回复", async () => {
     const receipt = (seq) => storedLi(seq).querySelector(".receipt").textContent.trim();
     await openAgentChat({ agent: { paused: true } });
-    expect(receipt(2)).toBe("已发送 · 它暂停中");
+    expect(receipt(2)).toBe("已发送 · 小助手暂停中");
     cleanup();
 
     await openAgentChat({ agent: { replyMode: "mention" } });
-    expect(receipt(2)).toBe("已发送 · 没点名，它不会回复");
+    expect(receipt(2)).toBe("已发送 · 没点名，小助手不会回复");
     cleanup();
 
     // Named — as the service stored it when it was sent (Task M: picked, or typed by handle or by name) — it will answer:
@@ -221,13 +221,13 @@ describe("the header and the list row", () => {
     });
     expect(receipt(3)).toBe("已发送");
     expect(receipt(4)).toBe("已发送");
-    expect(receipt(5)).toBe("已发送 · 没点名，它不会回复");
+    expect(receipt(5)).toBe("已发送 · 没点名，小助手不会回复");
     cleanup();
 
     // Paused wins over the mode; read stays 已读.
     await openAgentChat({ agent: { paused: true, replyMode: "mention" }, conv: { peerReadSeq: 2 }, messages: [...BASE, wire(A1, 3, ME_ID, "还在吗")] });
     expect(receipt(2)).toBe("已读");
-    expect(receipt(3)).toBe("已发送 · 它暂停中");
+    expect(receipt(3)).toBe("已发送 · 小助手暂停中");
   });
 
   it("the list's preview is the stored message, never the streamed text", async () => {
@@ -1227,8 +1227,8 @@ describe("the status line of a failed reply", () => {
     ["rate_limited", true, {}, "发得太快了，请稍后重试。"],
     ["no_quota", true, { resetsAt: tonight }, "今天的免费额度和余额都已用完，免费额度将在明天 00:00 重置。"],
     ["no_quota", true, {}, "余额不足：这个模型需要余额才能使用。"],
-    ["agent_paused", false, {}, "它已暂停，这次没有回复。"],
-    ["agent_deleted", false, {}, "它已删除，这次没有回复。"],
+    ["agent_paused", false, {}, "已暂停，这次没有回复。"],
+    ["agent_deleted", false, {}, "已删除，这次没有回复。"],
     ["model_gone", false, {}, "这个模型不可用，换一个模型。"],
   ];
   for (const [code, retryable, extra, sentence] of CASES) {
@@ -1365,7 +1365,7 @@ describe("the status line of a failed reply", () => {
     await act(async () => busy.reject(apiError(409, "busy_run")));
     await flush();
     expect(toastText()).toBeNull();
-    expect(mainText()).not.toContain("它正在回复");
+    expect(mainText()).not.toContain("正在回复中，请等");
     await runPush(transport, runOf(R2, "running"));
     expect(statusLines()).toHaveLength(0);
     expect(bubbleText()).toContain("正在回复…");
@@ -1429,7 +1429,7 @@ describe("a new topic", () => {
     const { api } = await openAgentChat();
     await openDetails();
     await click(within(document.querySelector(".side-col")).getByRole("button", { name: "开始新话题" }));
-    expect(dialog().textContent).toContain("之前的对话不会再发给它，聊天记录仍然保留。");
+    expect(dialog().textContent).toContain("之前的对话不会再发给小助手，聊天记录仍然保留。");
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     expect(api.resetTopic).not.toHaveBeenCalled();
 
@@ -1661,7 +1661,7 @@ describe("the proposal card", () => {
       handlers: { message: () => hold.promise },
     });
     await click(cardButton("确认"));
-    expect(card().textContent).toContain("这份提议已失效，请让它重新生成提议。");
+    expect(card().textContent).toContain("这份提议已失效，请让 Agent 重新生成一份。");
     await act(async () => hold.resolve({ message: proposed("superseded"), principals: [] }));
     await flush();
     expect(card().textContent).toContain("已被新的提议取代");
@@ -2209,7 +2209,7 @@ describe("Agents in a group (batch 2C)", () => {
     expect(within(statusLine()).queryByRole("button", { name: "重试" })).toBeNull();
     await push(transport, groupRun(AG1, { run: runOf(R2, "cancelled", { error: "agent_removed" }) }));
     expect(statusLines()).toHaveLength(1);
-    expect(statusLine().textContent).toContain("小助手：它已不在这个群里，这条回复没有发出。");
+    expect(statusLine().textContent).toContain("小助手：已不在这个群里，这条回复没有发出。");
     expect(within(statusLine()).queryByRole("button", { name: "重试" })).toBeNull();
     // (Nothing failed: the service keeps nothing to dismiss, and the Agent may be gone from the group.)
     await click(within(statusLine()).getByRole("button", { name: "关闭提示" }));
@@ -2300,7 +2300,7 @@ describe("Agents in a group (batch 2C)", () => {
     expect(haltButton()).toBeTruthy();
   });
 
-  const EVERYWHERE = "换了以后，它在所有会话里都用这个模型";
+  const EVERYWHERE = "换了以后，所有会话里都用这个模型";
   const optionNamed = (name) => [...document.querySelectorAll('.model-pop [role="option"]')].find((o) => o.querySelector(".model-name")?.textContent === name);
   const keepAgent = async (_id, patch) => agentOf(AG1, { model: SITE_FREE, paused: true, ...patch });
 

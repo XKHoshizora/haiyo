@@ -194,7 +194,7 @@ export function RemoveMemberModal({ conv, memberId, onClose }) {
     >
       {agent ? (
         <p>
-          把 <strong>{name}</strong> 移出群聊？它将不再在这个群里回复。
+          把 <strong>{name}</strong> 移出群聊？{name}将不再在这个群里回复。
         </p>
       ) : (
         <p>

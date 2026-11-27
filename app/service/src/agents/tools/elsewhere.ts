@@ -43,8 +43,8 @@ export const TELL_THEM = "主人让你把下面查到的内容告诉大家，用
 export const TELL_HOW = "不要说是在哪里看到的，也不要说是谁说的。";
 /** At most this many second queries run at once in the whole service (one hook per service); more are skipped. */
 export const ELSEWHERE_AT_ONCE = 2;
-/** Where a hit said in the Agent's own conversation was said, as the hit names it. */
-export const OWN_PLACE = "你和它的专属会话";
+/** Where a hit said in the Agent's own conversation was said, as the hit names it: in the Agent's name (its display name now), never 「它」. */
+export const ownPlace = (agentName: string | null): string => `你和${(agentName === null ? "" : cleanText(agentName)) || " Agent "}的专属会话`;
 /** At most this many hits. */
 export const ELSEWHERE_HITS_MAX = 5;
 /** No new `found_elsewhere` whisper while its owner has this many there whose state is open or telling. */
@@ -208,7 +208,7 @@ export function askedOf(detail: unknown): number | null {
 
 /**
  * A hit as its owner is shown it, from what whispers/store.ts `readableHits` read of its message (under her access now,
- * the one rule): where (a group's title, `某个群` when it has none; `你和它的专属会话` for the Agent's own), who (the sender's name
+ * the one rule): where (a group's title, `某个群` when it has none; `你和<Agent>的专属会话` for the Agent's own, `ownPlace`), who (the sender's name
  * as a label shows it), when (in `timeZone`, the site's), and what — on one line, cut around the words as the search cut
  * it (`excerptAt` at the kept `at`, from the same `hitLine` the place was found in), at most `QUOTE_MAX_CHARS` characters
  * (a file message without text: its name).
@@ -219,7 +219,7 @@ export function hitOf(row: HitRow, timeZone: string): ElsewhereHit {
   const window = excerptWindow(source, row.at);
   const said = Array.from(shownOf(window)).slice(0, QUOTE_MAX_CHARS).join("");
   return {
-    where: row.conversationType === "agent" ? OWN_PLACE : cleanText(row.title ?? "") || NO_GROUP_TITLE,
+    where: row.conversationType === "agent" ? ownPlace(row.agentName) : cleanText(row.title ?? "") || NO_GROUP_TITLE,
     who: labelName(row.senderName, row.senderHandle),
     when: `${date} ${time}`,
     text: said !== "" ? said : row.attachmentName ? cleanText(row.attachmentName) : "",

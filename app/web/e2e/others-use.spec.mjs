@@ -46,7 +46,7 @@ for (const [size, contextOptions] of SIZES) {
     // The default the service gives every owner, in the sentence; what it covers under it.
     const points = main.getByLabel("每天最多花的点数");
     await expect(points).toHaveValue("300");
-    await expect(main).toContainText("你所有的 Agent 合在一起算，它们主动回复的也算。");
+    await expect(main).toContainText("你所有的 Agent 合在一起算，主动回复的也算。");
     await expect(main.getByText("今天别人花了 0 点").first()).toBeVisible();
     await expect(main.getByText(/正常|今天给别人的额度用完了，明天恢复/).first()).toBeVisible();
     await expect(main.getByText("别人在群里 @ 你的 Agent，花的点都算在你这里。")).toBeVisible();
@@ -138,14 +138,14 @@ for (const [size, contextOptions] of SIZES) {
     await expect(detail).toContainText("主动回复时不思考");
     await detail.getByRole("button", { name: /编辑/ }).click();
     const form = page.getByRole("region", { name: "编辑 Agent" });
-    const others = form.getByLabel("别人 @ 它或来找它时的思考程度", { exact: true });
+    const others = form.getByLabel("回复别人时的思考程度", { exact: true });
     const proactive = form.getByLabel("主动回复时的思考程度", { exact: true });
     await expect(others).toBeVisible();
     await expect(proactive).toBeVisible();
     // A model on her own key: each reply to others counts what the service says (6 points), whatever the level.
     await expect(others.locator("xpath=ancestor::*[contains(@class,'field')][1]")).toContainText("按 6 点计，联网搜索另计");
     await expect(proactive.locator("xpath=ancestor::*[contains(@class,'field')][1]")).toContainText("按 6 点计，联网搜索另计");
-    await chooseOptionUi(page, form, "别人 @ 它或来找它时的思考程度", "中");
+    await chooseOptionUi(page, form, "回复别人时的思考程度", "中");
     await chooseOptionUi(page, form, "主动回复时的思考程度", "低");
     await others.scrollIntoViewIfNeeded();
     expect(await noSideways(page)).toBe(true);

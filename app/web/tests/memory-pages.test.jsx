@@ -471,11 +471,11 @@ describe("作息", () => {
     expect(within(section).getByText("小憩")).toBeTruthy();
     // No control, and the row says why: it is always on (a gap beside 入梦's switch would read as a missing one).
     expect(within(section).getByText("一直开着")).toBeTruthy();
-    expect(within(section).getByText("聊完一段后，它会回想刚才的对话，记下值得留的事。")).toBeTruthy();
+    expect(within(section).getByText("聊完一段后，Agent 会回想刚才的对话，记下值得留的事。")).toBeTruthy();
     expect(within(section).getAllByRole("switch")).toHaveLength(1);
     // The switch, and the language's select below it: no control for 小憩.
     expect(section.querySelectorAll("input, select, button")).toHaveLength(2);
-    expect(within(section).getByText("你休息的时候，它把这一天记下的整理一遍：合并重复的，分清一时的情绪和长久的事。")).toBeTruthy();
+    expect(within(section).getByText("你休息的时候，Agent 会把这一天记下的整理一遍：合并重复的，分清一时的情绪和长久的事。")).toBeTruthy();
     expect(dreamBox().checked).toBe(true);
   });
 
@@ -552,7 +552,7 @@ describe("记忆用的语言", () => {
     expect(within(section).getByLabelText("记忆用的语言")).toBe(pick());
     expect(inMain().getByRole("switch", { name: "入梦" }).compareDocumentPosition(pick()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(optionsOf(pick()).map(([, text]) => text)).toEqual(["自动", ...NAMES]);
-    expect(within(section).getByText("它记下的笔记统一用这种语言写；名字和原话保留原文。")).toBeTruthy();
+    expect(within(section).getByText("Agent 记下的笔记统一用这种语言写；名字和原话保留原文。")).toBeTruthy();
     expect(pick().value).toBe("auto");
   });
 

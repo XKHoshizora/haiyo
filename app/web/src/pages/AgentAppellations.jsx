@@ -145,7 +145,7 @@ export function AgentAppellations({ agent }) {
   const entries = agent.appellations ?? [];
   return (
     <div className="field">
-      <span className="field-label">它怎么称呼别人</span>
+      <span className="field-label">{`${agent.name}怎么称呼别人`}</span>
       <ul className="member-rows appellation-rows">
         {entries.map((entry) => (
           <Row key={`${entry.principalId}:${entry.appellation}`} agentId={agent.id} entry={entry} />

@@ -516,7 +516,7 @@ describe("Agents in a group (batch 2C)", () => {
 
   it.each([
     ["forbidden", 403, "没能添加：这个 Agent 可能已删除，或本群已满 500 人。"],
-    ["already_member", 409, "它已经在群里了。"],
+    ["already_member", 409, "这个 Agent 已经在群里了。"],
     ["rate_limited", 429, "操作太频繁了，请稍等一分钟再试。"],
   ])("adding my Agent refused (%s) reads as being about an Agent", async (code, status, text) => {
     const addMember = vi.fn(async () => Promise.reject(apiError(status, code)));
@@ -532,10 +532,10 @@ describe("Agents in a group (batch 2C)", () => {
     await openApp({ sync: withAgents(CREATED), social: social(), api: { removeMember }, handlers });
     await openProfile();
     await click(within(memberRow("安的助手")).getByRole("button", { name: "移除" }));
-    expect(dialog().textContent).toContain("把 安的助手 移出群聊？它将不再在这个群里回复。");
+    expect(dialog().textContent).toContain("把 安的助手 移出群聊？安的助手将不再在这个群里回复。");
     expect(dialog().textContent).not.toContain("对方会立刻失去");
     await click(dialogButton("确认移除"));
-    expect(toastText()).toBe("只有群的创建者和它的主人可以把它移出群聊。");
+    expect(toastText()).toBe("只有群的创建者和 Agent 的主人可以把 Agent 移出群聊。");
     await click(dialogButton("取消"));
     await click(within(memberRow("小安")).getByRole("button", { name: "移除" }));
     expect(dialog().textContent).toContain("对方会立刻失去这个群聊的全部内容");

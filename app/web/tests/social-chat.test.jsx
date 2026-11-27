@@ -89,7 +89,7 @@ describe("the header", () => {
     await flush();
     await click(within(document.querySelector(".list-col")).getByText("小助手", { selector: ".row-name" }));
     await click(inMain().getByRole("tab", { name: "别人" }));
-    await click(within(inMain().getByRole("list", { name: "它和别人的对话" })).getAllByRole("button")[0]);
+    await click(within(inMain().getByRole("list", { name: "小助手和别人的对话" })).getAllByRole("button")[0]);
     expect(screen.getByTestId("social-note").textContent).toBe("你在旁观小助手和小安的对话。你发言时，对方会看到你是主人。");
     expect(screen.queryByText(/能看到你们的对话/)).toBeNull();
     // (Nobody to @ in a two-party conversation: the hint says in whose name the owner writes.)
@@ -109,7 +109,7 @@ describe("the 主人 label", () => {
     await flush();
     await click(within(document.querySelector(".list-col")).getByText("小助手", { selector: ".row-name" }));
     await click(inMain().getByRole("tab", { name: "别人" }));
-    await click(within(inMain().getByRole("list", { name: "它和别人的对话" })).getAllByRole("button")[0]);
+    await click(within(inMain().getByRole("list", { name: "小助手和别人的对话" })).getAllByRole("button")[0]);
     const metas = [...messageList().querySelectorAll(".msg-meta")];
     const tags = (m) => [...m.querySelectorAll(".tag")].map((t) => t.textContent);
     // The visitor, whose name is 「主人」, has no label; my Agent has its Agent tag; I, who watch, am marked 主人.
@@ -137,9 +137,9 @@ describe("the Agent replying", () => {
 
 describe("the composer", () => {
   it.each([
-    ["no_access", "你现在不能和它聊天了。"],
+    ["no_access", "你现在不能和小帮手聊天了。"],
     ["agent_unavailable", "这个 Agent 现在不可用。"],
-    ["blocked", "你现在不能和它聊天了。"],
+    ["blocked", "你现在不能和小帮手聊天了。"],
   ])("%s: the reason is said once and no input is offered", async (reason, text) => {
     await openVisitor(visiting({ canSend: { ok: false, reason } }));
     expect(screen.getAllByText(text)).toHaveLength(1);

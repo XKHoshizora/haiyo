@@ -90,7 +90,7 @@ describe("the add dialog", () => {
     expect(within(card).getByText("陪你聊天")).toBeTruthy();
     const note = within(card).getByTestId("social-disclosure");
     expect(note.textContent).toBe("这是阿波的 Agent。阿波能看到你们的对话，也可能插话。");
-    const add = within(card).getByRole("button", { name: "添加它" });
+    const add = within(card).getByRole("button", { name: "添加小帮手" });
     // (Before the button in the page's order; and no button of the card comes earlier.)
     expect(note.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(card).getAllByRole("button")).toEqual([add]);
@@ -110,7 +110,7 @@ describe("the add dialog", () => {
     await openAdd();
     api.addAgentContact.mockResolvedValueOnce({ state: "live", conversationId: SC });
     await lookup("bobby.helper");
-    await click(button("添加它"));
+    await click(button("添加小帮手"));
     expect(api.addAgentContact).toHaveBeenCalledWith(AGB);
     expect(toastText()).toBe("已添加");
     expect(dialog()).toBeNull();
@@ -122,12 +122,12 @@ describe("the add dialog", () => {
     await openAdd();
     waiting.api.addAgentContact.mockResolvedValueOnce({ state: "requested", until: new Date(NOW + 7 * 86_400_000).toISOString() });
     await lookup("bobby.helper");
-    await click(button("添加它"));
+    await click(button("添加小帮手"));
     expect(toastText()).toBe("申请已发送");
-    expect(inDialog().getAllByText("已发给它的主人，等对方同意。7 天没有回应会自动取消。")).toHaveLength(1);
-    expect(inDialog().queryByText("已经申请过了，在等它的主人同意。")).toBeNull();
+    expect(inDialog().getAllByText("已发给阿波，等对方同意。7 天没有回应会自动取消。")).toHaveLength(1);
+    expect(inDialog().queryByText("已经申请过了，在等阿波同意。")).toBeNull();
     expect(dialog().textContent).not.toContain("天内有效");
-    expect(button("添加它").disabled).toBe(true);
+    expect(button("添加小帮手").disabled).toBe(true);
   });
 
   it("each refusal is said in the Step 0 texts: is_yours, cooldown with its day, not found (never why)", async () => {
@@ -140,7 +140,7 @@ describe("the add dialog", () => {
       [Object.assign(apiError(429, "cooldown"), { availableAt: "2026-12-24T00:00:00" }), "现在还不能再申请，2026年12月24日 以后可以。"],
     ]) {
       api.addAgentContact.mockRejectedValueOnce(error);
-      await click(button("添加它"));
+      await click(button("添加小帮手"));
       expect(toastText()).toBe(text);
     }
     api.lookupPrincipal.mockRejectedValueOnce(apiError(404, "not_found"));
@@ -154,7 +154,7 @@ describe("the add dialog", () => {
     await openAdd();
     api.addAgentContact.mockImplementationOnce(() => new Promise(() => {}));
     await lookup("bobby.helper");
-    await click(button("添加它"));
+    await click(button("添加小帮手"));
     expect(button("完成").disabled).toBe(true);
   });
 

@@ -85,12 +85,12 @@ const GROUPS = {
   // The same routes when the member is one of my Agents (batch 2C): no friendship is involved.
   addAgent: {
     not_found: "你已不在这个群聊中。",
-    already_member: "它已经在群里了。",
+    already_member: "这个 Agent 已经在群里了。",
     forbidden: "没能添加：这个 Agent 可能已删除，或本群已满 500 人。",
   },
   removeAgent: {
-    forbidden: "只有群的创建者和它的主人可以把它移出群聊。",
-    not_found: "它已经不在群里了。",
+    forbidden: "只有群的创建者和 Agent 的主人可以把 Agent 移出群聊。",
+    not_found: "这个 Agent 已经不在群里了。",
   },
 };
 
@@ -107,7 +107,7 @@ const WHISPER = {
     stale_whisper: "这条悄悄话已经处理过了。",
     not_found: "这条悄悄话已经不在了。",
     // 告诉他们 refused for the reply it would start (README "Whispers": as the owner's retry); the whisper stays open.
-    busy_run: "它正在回复，说完再点。",
+    busy_run: "正在回复中，说完再点。",
     agent_paused: "这个 Agent 已暂停，恢复后才能重试。",
     invalid_request: "这个 Agent 还没有选择模型。",
     rate_limited: "回复太频繁了，请稍等一分钟再试。",
@@ -123,7 +123,7 @@ export const whisperErrorText = (error) => pick(WHISPER, "answer", error);
 const SOCIAL_CODES = {
   is_yours: "你自己的 Agent 不用添加。",
   not_requested: "这个申请已经处理过了。",
-  no_access: "你现在不能和它聊天了。",
+  no_access: "你现在不能和这个 Agent 聊天了。",
   agent_unavailable: "这个 Agent 现在不可用。",
   answered: "这件事已经回答过了。",
   expired: "这张卡片已经过期了。",
@@ -263,7 +263,7 @@ const AGENT = {
   // group it is in; a removal's 404 is no refusal, actions.js `removeAppellation` takes it as done).
   appellation: {
     invalid_request: APPELLATION_WRONG,
-    not_found: "现在不能给这个人设称呼：对方需要是你的好友，或者和它在同一个群里。",
+    not_found: "现在不能给这个人设称呼：对方需要是你的好友，或者和这个 Agent 在同一个群里。",
     too_many: "一个 Agent 最多设 100 个称呼。",
     agent_deleted: AGENT_DELETED,
   },
@@ -284,13 +284,13 @@ const AGENT = {
     rate_limited: "起草太频繁，或正在进行的回复太多，请稍后再试。",
   },
   confirm: {
-    stale_proposal: "这份提议已失效，请让它重新生成提议。",
+    stale_proposal: "这份提议已失效，请让 Agent 重新生成一份。",
     agent_deleted: AGENT_DELETED,
     not_found: "这份提议已经不存在了。",
     invalid_request: "人格文档需要 1–20000 个字，简介不超过 40 个字，擅长领域不超过 20 个字。",
   },
   discard: {
-    stale_proposal: "这份提议已失效，请让它重新生成提议。",
+    stale_proposal: "这份提议已失效，请让 Agent 重新生成一份。",
     agent_deleted: AGENT_DELETED,
     not_found: "这份提议已经不存在了。",
   },
@@ -319,7 +319,7 @@ const REPLY = {
     no_run: "现在没有正在进行的回复。",
   },
   retry: {
-    busy_run: "它正在回复，请等这次回复结束。",
+    busy_run: "正在回复中，请等这次回复结束。",
     agent_paused: "这个 Agent 已暂停，恢复后才能重试。",
     agent_deleted: AGENT_DELETED,
     invalid_request: "现在没有可以重试的回复，或这个 Agent 还没有选择模型。",
@@ -387,8 +387,8 @@ export function providerErrorText(action, error) {
   if (error?.code === "provider_in_use" && action in PROVIDER) {
     const names = Array.isArray(error.agents) ? error.agents.map((a) => a?.name).filter(Boolean) : [];
     return names.length > 0
-      ? `还有 Agent 在使用这个供应商：${names.join("、")}。请先给它们换一个模型。`
-      : "还有 Agent 在使用这个供应商，请先给它们换一个模型。";
+      ? `还有 Agent 在使用这个供应商：${names.join("、")}。请先给这些 Agent 换一个模型。`
+      : "还有 Agent 在使用这个供应商，请先给这些 Agent 换一个模型。";
   }
   const text = pick(PROVIDER, action, error);
   if (!WITH_STATUS.has(action)) return text;
@@ -435,22 +435,22 @@ const RUN_FAILED = {
   took_too_long: "这次想得太久，没有等到回复。可以重试，或把思考程度调低一些。",
   busy: "服务出了点问题，这次没有回复，也没有扣费。可以重试。",
   rate_limited: "发得太快了，请稍后重试。",
-  agent_paused: "它已暂停，这次没有回复。",
-  agent_deleted: "它已删除，这次没有回复。",
+  agent_paused: "已暂停，这次没有回复。",
+  agent_deleted: "已删除，这次没有回复。",
   // Its model is not there to call any more (off its provider's list, no longer on the site): only another one helps.
   model_gone: MODEL_GONE.sentence,
 };
 /** How a reply in a group ends that is not a failure of the owner's to fix: neither is retried (batch 2C). */
 const RUN_ENDED_IN_GROUP = {
   halted: "已被群成员叫停。",
-  agent_removed: "它已不在这个群里，这条回复没有发出。",
+  agent_removed: "已不在这个群里，这条回复没有发出。",
 };
 /** A site model's key and address are the site's: the owner can only wait or choose another model. */
 const SITE_MODEL_FAILED = "站点提供的这个模型暂时用不了，请稍后重试，或换一个模型。";
 const SITE_MODEL_CODES = ["provider_rejected", "provider_unavailable", "address_not_allowed"];
 const RUN_CANCELLED = {
-  agent_paused: "它已暂停，这次回复已取消。",
-  agent_deleted: "它已删除，这次回复已取消。",
+  agent_paused: "已暂停，这次回复已取消。",
+  agent_deleted: "已删除，这次回复已取消。",
 };
 
 /**

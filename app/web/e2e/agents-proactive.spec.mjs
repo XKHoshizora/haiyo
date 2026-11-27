@@ -72,7 +72,7 @@ test("an Agent replies unasked when the judgement picks it: its owner sees ` · 
     onFilled: async (form) => {
       const proactive = form.getByRole("switch", { name: "主动参与群聊" });
       await expect(proactive).not.toBeChecked();
-      await expect(form).toContainText("打开后，群里有人说到它擅长的事，没 @ 它它也可能回复。花的是你的点。");
+      await expect(form).toContainText("打开后，群里有人说到擅长领域里的事，没人 @ 也可能回复。花的是你的点。");
       await proactive.check();
       await expect(form.getByLabel("话多话少", { exact: true })).toHaveAttribute("value", "normal");
       // No daily budget of its own: the owner's one number for others' use covers its proactive replies.
@@ -116,7 +116,7 @@ test("an Agent replies unasked when the judgement picks it: its owner sees ` · 
   // Bo tells it to keep out: it goes quiet, and both pages show the notice.
   const hush = `你先${HUSH}了，我们自己商量 ${tag}`;
   await sendText(bo.page, title, hush);
-  const notice = `「${name}」暂时不主动发言，需要时可以 @ 它`;
+  const notice = `「${name}」暂时不主动发言，需要时可以 @ 一下`;
   for (const chat of [annChat, boChat]) await expect(notices(chat, notice)).toHaveCount(1);
   const quieted = await judgeStub.judged(hush);
   expect(quieted.answer.answers.q_a1).toEqual({ noul: 0.95 });

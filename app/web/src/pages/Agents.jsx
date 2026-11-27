@@ -7,7 +7,7 @@ import { OTHERS_NOTICE_BUTTON, OTHERS_NOTICE_LINK, OTHERS_STATES, othersNoticeTe
 import { useOthersUse } from "./useOthersUse.js";
 import { Avatar, ConvAvatar, HeadCounts, LoadingRow, Tag, Btn, IconBtn, Notice, Reason, KV, Modal, TextLink } from "../ui/primitives.jsx";
 import { ListHeader, Pills } from "./ChatList.jsx";
-import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, openAgentChat } from "./AgentForm.jsx";
+import { AgentForm, CHAIN_BUDGET_DEFAULT, GROUP_MENTIONS, groupMentionsQuestion, openAgentChat } from "./AgentForm.jsx";
 import { agentLevel, agentLevels, levelLabel, levelPhrase, modelLab, modelLabel, openModelChoice } from "./ModelPicker.jsx";
 import { LabLogo } from "../ui/LabLogo.jsx";
 import { convTitle, groupCounts, isMyAgent, myAgents } from "../state/selectors.js";
@@ -36,8 +36,8 @@ function proactiveRows(agent, thinking) {
 function appellationRows(agent) {
   const others = agent.appellations?.length ?? 0;
   return [
-    ...(agent.ownerAppellation ? [["它怎么称呼你", agent.ownerAppellation]] : []),
-    ...(others > 0 ? [["它怎么称呼别人", `${others} 个`]] : []),
+    ...(agent.ownerAppellation ? [[`${agent.name}怎么称呼你`, agent.ownerAppellation]] : []),
+    ...(others > 0 ? [[`${agent.name}怎么称呼别人`, `${others} 个`]] : []),
   ];
 }
 
@@ -202,8 +202,8 @@ function Conversations({ agent }) {
   const groups = state.order.map((convId) => state.convs[convId]).filter((c) => c?.type === "group" && c.members.includes(agent.id));
   return (
     <>
-      <p className="muted">这是你和它的专属会话：只有你们两个成员，只包含其中的消息与附件。</p>
-      {groups.length > 0 && <p className="muted">它也在下面这些群里：只看得到它进群之后的消息与附件，{agent.groupMentions === "owner" ? "只有你 @ 它时回复" : "群成员 @ 它时回复"}。</p>}
+      <p className="muted">{`这是你和${agent.name}的专属会话：只有你们两个成员，只包含其中的消息与附件。`}</p>
+      {groups.length > 0 && <p className="muted">{`${agent.name}也在下面这些群里：只看得到进群之后的消息与附件，${agent.groupMentions === "owner" ? "只有你 @ 时回复" : "群成员 @ 时回复"}。`}</p>}
       <ul className="member-rows">
         {id && (
           <li>
@@ -212,7 +212,7 @@ function Conversations({ agent }) {
               <strong>
                 {agent.name} <Tag>Agent 私聊</Tag> {agent.deleted && <Tag tone="muted">只能查看</Tag>}
               </strong>
-              <p className="muted">{agent.deleted ? "它已删除，聊天记录仍可查看" : "你是发言成员"}</p>
+              <p className="muted">{agent.deleted ? "已删除，聊天记录仍可查看" : "你是发言成员"}</p>
             </div>
             <div className="member-actions">
               <Btn small variant="primary" onClick={() => openAgentChat(state, dispatch, actions, id)}>进入查看</Btn>
@@ -233,7 +233,7 @@ function Conversations({ agent }) {
             </div>
           </li>
         ))}
-        {!id && groups.length === 0 && <li className="rows-empty">它还没有参与任何会话</li>}
+        {!id && groups.length === 0 && <li className="rows-empty">{`${agent.name}还没有参与任何会话`}</li>}
       </ul>
     </>
   );
@@ -280,7 +280,7 @@ function DeleteModal({ agent, onClose }) {
       <ul className="plain-list">
         <li>删除后不可恢复。</li>
         <li>聊天记录会保留，只能查看。</li>
-        <li>它不会再回复。账号名 {agent.handle} 可以给你的新 Agent 再用。</li>
+        <li>{agent.name}不会再回复。账号名 {agent.handle} 可以给你的新 Agent 再用。</li>
       </ul>
     </Modal>
   );
@@ -345,7 +345,7 @@ function AgentDetail({ agent }) {
       </header>
       {!agent.loaded ? (
         <div className="page-body">
-          <p className="muted">正在读取它的资料…</p>
+          <p className="muted">正在读取资料…</p>
         </div>
       ) : (
         <>
@@ -366,10 +366,10 @@ function AgentDetail({ agent }) {
                 {note}
               </Notice>
             )}
-            {agent.deleted && <Notice tone="info">这个 Agent 已删除：它不再回复，聊天记录会保留，只能查看。</Notice>}
-            {!agent.deleted && agent.operatorDisabled && <Notice tone="warn">管理员停用了这个 Agent：它现在只回复你，不回复别人。</Notice>}
+            {agent.deleted && <Notice tone="info">{`${agent.name}已删除：不再回复，聊天记录会保留，只能查看。`}</Notice>}
+            {!agent.deleted && agent.operatorDisabled && <Notice tone="warn">{`管理员停用了${agent.name}：现在只回复你，不回复别人。`}</Notice>}
             {!agent.deleted && agent.paused && (
-              <Notice tone="pause">已暂停全部会话：它不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。</Notice>
+              <Notice tone="pause">已暂停全部会话：不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。</Notice>
             )}
             {tab === "profile" && (
               <>
@@ -380,16 +380,16 @@ function AgentDetail({ agent }) {
                     ["擅长领域", agent.field || "未填写"],
                     ["模型", <><LabLogo lab={modelLab(state, agent.model)} size={16} />{modelLabel(state, agent.model) ?? "未选择"}{agent.model && !agent.modelUsable && <Reason>{MODEL_GONE.sentence}</Reason>}</>],
                     ["思考程度", levelLabel(agentLevel(state, agent))],
-                    ["人格文档", agent.persona ? excerpt(agent.persona) : "未填写（它会先在会话里问你几个问题）"],
+                    ["人格文档", agent.persona ? excerpt(agent.persona) : "未填写（会先在会话里问你几个问题）"],
                     ["私聊回复方式", agent.privateReply],
-                    ["群里谁可以叫它", groupMentionsLabel(agent)],
+                    [groupMentionsQuestion(agent.name), groupMentionsLabel(agent)],
                     ["一次接话最多花费", `${formatPoints(agent.chainBudget ?? CHAIN_BUDGET_DEFAULT)} 点`],
                     ...othersRows(thinks ? agentLevel(state, agent, agent.othersReasoning) : null),
                     ...proactiveRows(agent, thinks ? agentLevel(state, agent, agent.proactiveReasoning) : null),
                     ...appellationRows(agent),
                   ]}
                 />
-                <Reason>人格文档只影响它如何回复，不授予任何权限。</Reason>
+                <Reason>人格文档只影响回复的方式，不授予任何权限。</Reason>
                 {live && (
                   <div className="stack-actions row-actions">
                     <Btn variant="danger" onClick={() => setDeleting(true)}>

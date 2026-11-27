@@ -175,7 +175,7 @@ describe("the Agent list", () => {
     expect(rowOf("小助手").querySelector(".row-preview").textContent).toBe("正在读取…");
     expect(rowOf("小助手").querySelector(".tag")).toBeNull();
     await openRow("小助手");
-    expect(mainText()).toContain("正在读取它的资料…");
+    expect(mainText()).toContain("正在读取资料…");
     expect(inMain().queryByRole("button", { name: /编辑/ })).toBeNull();
     expect(inMain().queryByRole("button", { name: /暂停/ })).toBeNull();
     expect(inMain().queryByRole("button", { name: /删除/ })).toBeNull();
@@ -368,7 +368,7 @@ describe("creating an Agent", () => {
     await openCreate();
     type("名称", "MyBot");
     expect(createButton().disabled).toBe(true);
-    expect(document.querySelector(".main-col .form-actions .reason").textContent).toBe("请先选择一个模型，否则它不会回复");
+    expect(document.querySelector(".main-col .form-actions .reason").textContent).toBe("请先选择一个模型，否则不会回复");
     await chooseModel("小模型 · 免费");
     expect(createButton().disabled).toBe(false);
     expect(document.querySelector(".main-col .form-actions .reason")).toBeNull();
@@ -833,7 +833,7 @@ describe("family names: an Agent's account name hangs under mine (Task N)", () =
     await openRow("贾维斯");
     expect(document.querySelector(".main-col .profile-head").textContent).toContain("@me_one.jarvis · 主人：你");
     await click(inMain().getByRole("button", { name: /删除/ }));
-    expect(dialog().textContent).toContain("它不会再回复。账号名 @me_one.jarvis 可以给你的新 Agent 再用。");
+    expect(dialog().textContent).toContain("贾维斯不会再回复。账号名 @me_one.jarvis 可以给你的新 Agent 再用。");
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     await click(inMain().getByRole("button", { name: /编辑/ }));
     expect(inMain().queryByLabelText("账号名")).toBeNull();
@@ -1109,16 +1109,17 @@ describe("editing an Agent", () => {
   });
 });
 
-describe("群里谁可以叫它 (groupMentions)", () => {
-  const box = () => inMain().getByLabelText("群里谁可以叫它");
+describe("群里谁可以叫… (groupMentions), in the Agent's name once it has one (design §8)", () => {
+  const box = () => inMain().getByLabelText(/^群里谁可以叫/);
 
   it("creating: 所有群成员 by default, 仅我 sends owner; the hint says the owner pays", async () => {
     const createAgent = vi.fn(async () => agentOf(AG1));
     await openAgents({ api: { createAgent } });
     await openCreate();
+    expect(inMain().getByLabelText("群里谁可以叫这个 Agent")).toBe(box());
     expect(box().value).toBe("members");
     expect(optionsOf(box()).map(([, text]) => text)).toEqual(["所有群成员", "仅我"]);
-    expect(box().closest(".field").textContent).toContain("被叫到时它会在群里回复，费用算你的。");
+    expect(box().closest(".field").textContent).toContain("被叫到时会在群里回复，费用算你的。");
     type("名称", "MyBot");
     pickOption(box(), "owner");
     await chooseModel("小模型 · 免费");
@@ -1131,8 +1132,9 @@ describe("群里谁可以叫它 (groupMentions)", () => {
     const patchAgent = vi.fn(async (_id, patch) => ({ ...record, ...patch }));
     await openAgents({ agents: [record], api: { patchAgent } });
     await openRow("小助手");
-    expect(document.querySelector(".main-col .kv").textContent).toContain("群里谁可以叫它仅我");
+    expect(document.querySelector(".main-col .kv").textContent).toContain("群里谁可以叫小助手仅我");
     await click(inMain().getByRole("button", { name: /编辑/ }));
+    expect(inMain().getByLabelText("群里谁可以叫小助手")).toBe(box());
     expect(box().value).toBe("owner");
     type("简介", "新简介");
     await click(inMain().getByRole("button", { name: "保存" }));
@@ -1141,24 +1143,24 @@ describe("群里谁可以叫它 (groupMentions)", () => {
     pickOption(box(), "members");
     await click(inMain().getByRole("button", { name: "保存" }));
     expect(patchAgent.mock.calls[1][1]).toEqual({ groupMentions: "members" });
-    expect(document.querySelector(".main-col .kv").textContent).toContain("群里谁可以叫它所有群成员");
+    expect(document.querySelector(".main-col .kv").textContent).toContain("群里谁可以叫小助手所有群成员");
   });
 });
 
 describe("一次接话最多花费 (chainBudget, batch 2C)", () => {
   const LABEL = "一次接话最多花费（点）";
   const box = () => inMain().getByLabelText(LABEL);
-  const HELP = "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。";
+  const HELP = "在没有人发言的这段时间里，被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人直接 @ 时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限不起作用。";
   const WRONG = "请填写 1 到 100000 之间的点数（最多 6 位小数）";
   const kv = () => document.querySelector(".main-col .kv").textContent;
 
-  it("creating: 50 by default, right under 群里谁可以叫它, with what it means; what I type is sent as a decimal string", async () => {
+  it("creating: 50 by default, right under 群里谁可以叫这个 Agent, with what it means; what I type is sent as a decimal string", async () => {
     const createAgent = vi.fn(async () => agentOf(AG1));
     await openAgents({ api: { createAgent } });
     await openCreate();
     expect(box().value).toBe("50");
     expect(box().closest(".field").textContent).toContain(HELP);
-    expect(box().closest(".field").previousElementSibling).toBe(inMain().getByLabelText("群里谁可以叫它").closest(".field"));
+    expect(box().closest(".field").previousElementSibling).toBe(inMain().getByLabelText("群里谁可以叫这个 Agent").closest(".field"));
     type("名称", "MyBot");
     type(LABEL, " 012.50 ");
     await chooseModel("小模型 · 免费");
@@ -1220,7 +1222,7 @@ describe("where an Agent replies (batch 2C)", () => {
   it("the create form says it replies in its own conversation, and in the groups I bring it to", async () => {
     await openAgents();
     await openCreate();
-    expect(mainText()).toContain("它会在专属会话里回复你；你也可以把它拉进你所在的群。");
+    expect(mainText()).toContain("会在专属会话里回复你；你也可以把 Agent 拉进你所在的群。");
     expect(mainText()).not.toContain("只在这个会话里回复你");
   });
 
@@ -1244,21 +1246,21 @@ describe("where an Agent replies (batch 2C)", () => {
     expect(chatTitle()).toBe("周末小组");
   });
 
-  it("the line on when it replies in groups follows 群里谁可以叫它", async () => {
+  it("the line on when it replies in groups follows 群里谁可以叫小助手", async () => {
     const members = [ME_ID, ANN, AG1].map((id, i) => ({ id, role: "speaker", isCreator: i === 0 }));
     await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, groupMentions: "owner" })], extra: [group(G1, { members })] });
     await openRow("小助手");
     await click(inMain().getByRole("tab", { name: "参与的会话" }));
-    expect(mainText()).toContain("只有你 @ 它时回复。");
-    expect(mainText()).not.toContain("群成员 @ 它时回复");
+    expect(mainText()).toContain("小助手也在下面这些群里：只看得到进群之后的消息与附件，只有你 @ 时回复。");
+    expect(mainText()).not.toContain("群成员 @ 时回复");
   });
 
-  it("with 所有群成员 it says 群成员 @ 它时回复", async () => {
+  it("with 所有群成员 it says 群成员 @ 时回复", async () => {
     const members = [ME_ID, ANN, AG1].map((id, i) => ({ id, role: "speaker", isCreator: i === 0 }));
     await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, groupMentions: "members" })], extra: [group(G1, { members })] });
     await openRow("小助手");
     await click(inMain().getByRole("tab", { name: "参与的会话" }));
-    expect(mainText()).toContain("群成员 @ 它时回复。");
+    expect(mainText()).toContain("群成员 @ 时回复。");
   });
 });
 
@@ -1330,7 +1332,7 @@ describe("the Agent's page", () => {
     expect(resumeAgent).not.toHaveBeenCalled();
     expect(document.querySelector(".main-col .profile-head h2").textContent).toContain("已暂停全部会话");
     expect(rowOf("小助手").querySelector(".tag").textContent).toBe("已暂停");
-    expect(mainText()).toContain("已暂停全部会话：它不会有新回复。");
+    expect(mainText()).toContain("已暂停全部会话：不会有新回复。");
     await click(inMain().getByRole("button", { name: "恢复全部会话" }));
     expect(resumeAgent).toHaveBeenCalledWith(AG1);
     expect(pauseAgent).toHaveBeenCalledTimes(1);
@@ -1409,7 +1411,8 @@ describe("contacts: 我的 Agent", () => {
 describe("称呼 (how an Agent addresses its owner and others)", () => {
   const OAG = "00000000-0000-4000-8000-0000000000b9";
   const DORA_P = Object.values(PEOPLE).find((p) => p.displayName === "朵拉");
-  const FIELD = "它怎么称呼你";
+  // Created, the label names the Agent (「小助手怎么称呼你」); before it exists, 「怎么称呼你」 (design §8).
+  const FIELD = /^(小助手)?怎么称呼你$/;
   const ANN_ENTRY = { principalId: ANN, kind: "human", handle: "ann", name: "小安", appellation: "安姐" };
   const BOT_ENTRY = { principalId: OAG, kind: "agent", handle: "annbot", name: "安的助手", appellation: "小助理" };
   const record = (extra = {}) => agentOf(AG1, { model: SITE_MODEL, ownerAppellation: null, appellations: [], ...extra });
@@ -1438,14 +1441,15 @@ describe("称呼 (how an Agent addresses its owner and others)", () => {
   const save = () => click(inMain().getByRole("button", { name: "保存" }));
   const answering = (rec, extra) => vi.fn(async () => ({ ...rec, ...extra }));
 
-  describe("它怎么称呼你", () => {
+  describe("小助手怎么称呼你", () => {
     it("the create form shows only this field, with its placeholder and hint, and nothing of the list", async () => {
       await openAgents({});
       await openCreate();
       expect(inMain().getByText("称呼", { selector: "legend, h3, h4" })).toBeTruthy();
+      expect(inMain().getByLabelText("怎么称呼你")).toBe(ownerBox());
       expect(ownerBox().getAttribute("placeholder")).toBe("留空就用你的名字");
-      expect(ownerBox().closest(".field").textContent).toContain("最多 20 个字。只影响它怎么叫你，不影响它把谁当主人。");
-      expect(mainText()).not.toContain("它怎么称呼别人");
+      expect(ownerBox().closest(".field").textContent).toContain("最多 20 个字。只影响怎么叫你，不影响谁是主人。");
+      expect(mainText()).not.toContain("怎么称呼别人");
       expect(mainText()).not.toContain("添加称呼");
     });
 
@@ -1534,22 +1538,22 @@ describe("称呼 (how an Agent addresses its owner and others)", () => {
     it("the Agent's page shows it when set, and no row when not", async () => {
       await openAgents(world(record({ ownerAppellation: "老板" })));
       await openRow("小助手");
-      expect(document.querySelector(".main-col .kv").textContent).toContain("它怎么称呼你老板");
+      expect(document.querySelector(".main-col .kv").textContent).toContain("小助手怎么称呼你老板");
       cleanup();
       await openAgents(world(record()));
       await openRow("小助手");
-      expect(document.querySelector(".main-col .kv").textContent).not.toContain("它怎么称呼你");
+      expect(document.querySelector(".main-col .kv").textContent).not.toContain("怎么称呼你");
     });
   });
 
-  describe("它怎么称呼别人", () => {
+  describe("小助手怎么称呼别人", () => {
     it("lists each stored entry with name, @handle and an Agent badge for Agents; the Agent's page counts them", async () => {
       const rec = record({ appellations: [ANN_ENTRY, BOT_ENTRY] });
       await openAgents(world(rec));
       await openRow("小助手");
-      expect(document.querySelector(".main-col .kv").textContent).toContain("它怎么称呼别人2 个");
+      expect(document.querySelector(".main-col .kv").textContent).toContain("小助手怎么称呼别人2 个");
       await click(inMain().getByRole("button", { name: /编辑/ }));
-      expect(section().textContent).toContain("它怎么称呼别人");
+      expect(section().textContent).toContain("小助手怎么称呼别人");
       expect(rows()).toHaveLength(2);
       expect(rowOfName("小安").textContent).toContain("@ann");
       expect(rowOfName("小安").querySelector(".tag")).toBeNull();
@@ -1563,7 +1567,7 @@ describe("称呼 (how an Agent addresses its owner and others)", () => {
     it("says so when there is none, and the Agent's page has no such row", async () => {
       await openAgents(world(record()));
       await openRow("小助手");
-      expect(document.querySelector(".main-col .kv").textContent).not.toContain("它怎么称呼别人");
+      expect(document.querySelector(".main-col .kv").textContent).not.toContain("怎么称呼别人");
       await click(inMain().getByRole("button", { name: /编辑/ }));
       expect(section().textContent).toContain("还没有给别人设称呼。");
       expect(rows()).toHaveLength(0);
@@ -1720,7 +1724,7 @@ describe("称呼 (how an Agent addresses its owner and others)", () => {
         await flush();
         expect(rowOfName(name).textContent).toContain(text);
       };
-      await say("小安", "现在不能给这个人设称呼：对方需要是你的好友，或者和它在同一个群里。");
+      await say("小安", "现在不能给这个人设称呼：对方需要是你的好友，或者和这个 Agent 在同一个群里。");
       // Only that row.
       expect(rowOfName("安的助手").textContent).not.toContain("现在不能");
       putAppellation.mockImplementation(refuse(400, "invalid_request"));
@@ -1810,7 +1814,7 @@ describe("主动参与群聊 (proactive replies)", () => {
   const LEVEL = "话多话少";
   /** The daily budget of proactive replies is gone (the limits redesign): the owner's one number for others' use covers them. */
   const AMOUNT = "主动回复每天最多花";
-  const HELPER = "打开后，群里有人说到它擅长的事，没 @ 它它也可能回复。花的是你的点。";
+  const HELPER = "打开后，群里有人说到擅长领域里的事，没人 @ 也可能回复。花的是你的点。";
   const UNAVAILABLE = "现在还不能打开主动参与：站点没有配置判断模型。";
   const LOST = "站点现在没有配置判断模型，主动参与不会生效。可以先关掉。";
   const ON_SITE = { ...MODELS, proactiveAvailable: true };
@@ -2061,7 +2065,7 @@ describe("the 记忆 section of the form", () => {
   const MEMORY = "记忆";
   const ASK = "先问我再记";
   const SHARED = "使用共用的“关于我”";
-  const HELPER = "它会记住关于你的事和自己学到的事。记忆每天有自己的额度，不占用你聊天的额度。";
+  const HELPER = "记住关于你的事和自己学到的事。记忆每天有自己的额度，不占用你聊天的额度。";
   const sw = (label) => inMain().getByLabelText(label);
   const save = () => click(inMain().getByRole("button", { name: "保存" }));
   const openEditOf = async (fields = {}) => {
@@ -2130,7 +2134,7 @@ describe("the 记忆 section of the form", () => {
   });
 
   describe("turning 记忆 back on for an Agent that had it off", () => {
-    const QUESTION = "关掉期间聊过的内容，要不要也让它回顾一下？";
+    const QUESTION = "关掉期间聊过的内容，要不要也让小助手回顾一下？";
     const ONLY_LATER = "只记以后的";
     const LOOK_BACK = "也回顾一下";
     const question = () => inMain().queryByText(QUESTION);
@@ -2304,7 +2308,7 @@ describe("the 记忆 section of the form", () => {
 
 describe("群里没找到时悄悄告诉我", () => {
   const LABEL = "群里没找到时悄悄告诉我";
-  const HELPER = "它在别处查到了，会先悄悄问你要不要告诉大家。";
+  const HELPER = "在别处查到了，会先悄悄问你要不要告诉大家。";
   const sw = () => inMain().getByLabelText(LABEL);
   const save = () => click(inMain().getByRole("button", { name: "保存" }));
   const openEditOf = async (fields = {}) => {
@@ -2416,11 +2420,11 @@ describe("联网搜索 (only while the site offers web search)", () => {
       return hintOf(CHAIN) ?? inMain().getByLabelText(CHAIN).closest(".field").querySelector(".field-hint").textContent;
     };
     expect(await open(ON_SITE)).toBe(
-      "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+      "在没有人发言的这段时间里，被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人直接 @ 时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管联网搜索。",
     );
     cleanup();
     // The site offering none: the words as before, to the character.
-    expect(await open(MODELS)).toBe("在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。");
+    expect(await open(MODELS)).toBe("在没有人发言的这段时间里，被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人直接 @ 时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限不起作用。");
   });
 
   it("a price of 0 says only where the words go (no 每次约 0 点)", async () => {

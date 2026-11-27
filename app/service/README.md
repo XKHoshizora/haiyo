@@ -1931,7 +1931,7 @@ the Agent's `whisperElsewhere` is on; the same words with the same filters (`fro
 more — on their own, after the search has answered the model, never awaited: what is found, how long it takes or how it
 fails changes nothing the model is told, nor when — in the Agent's other conversations (each it is a current member of but
 this group, as the Agent sees it, and there only what you can read now: a conversation you are a current member of, a
-message after your joining; its own conversation with you included, `你和它的专属会话`: you see each hit before you answer),
+message after your joining; its own conversation with you included, `你和<Agent 名>的专属会话`: you see each hit before you answer),
 found something. The caps below are read before that query (none runs without room for a whisper), and at most 2 such
 queries run at once in the whole service (`ELSEWHERE_AT_ONCE`, apart from the search slots, which are the models'): one
 more is skipped, and counted (`elsewhere_skipped`, Metrics in the log).
@@ -1941,7 +1941,7 @@ are in it — never the text, a title or a name — and which message of the gro
 Whenever it is shown to you (the push, sync, catch-up, the list route, an answer) and when its told reply begins, each is
 read again **under your access then**: a hit you can no longer read (you left that group, say) is left out; with none left
 the whisper reads `expired`. You are sent `detail` `{"hits": [{"where", "who", "when", "text", "mentions"}]}`, read so: `where` the
-group's title now (`某个群` without one) or `你和它的专属会话`, `who` the sender's name as a label shows it, `when`
+group's title now (`某个群` without one) or `你和<Agent 名>的专属会话`, `who` the sender's name as a label shows it, `when`
 `YYYY-MM-DD HH:mm` in the site's time zone, `text` on one line around the words (cut at the place kept, in the text as
 stored), at most 200 characters; `mentions` the mentions of that message (the same `{"id", "start", "length"}` as a
 message's `mentions`: ranges of this `text` in UTF-16 code units, ids of accounts, so a client draws each one's current display name)
@@ -3205,7 +3205,7 @@ between.
 
 People other than an Agent's owner reach it in a conversation of its own kind, `agent_social`: two participants (a person
 and the Agent) who speak, and the Agent's owner who watches (role `observer`, shown as 主人) and may write in it. They find
-the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以添加它」:
+the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以添加<Agent 名>」:
 `需要我同意` by default, `我的好友可以直接添加`, `不让别人添加`), and cost the owner at most their one number a day. Every way access
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid), which is what the
 routes below are, and **1b** (what a reply to someone else may be shown of its owner's notes, and the owner's view of it: below,
@@ -3279,8 +3279,7 @@ Answering it does not read it; reading the conversation does. An expired card co
 
 **Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's one number a day, what one reply to
 others may do, the persona aid's pace, how long a card and a request last; Configuration). Ring 1b has no setting of its own: a
-social reply is shown what a group is (a key of its old design — `OTHERS.contextWeight`, `notesWeight`, `judge…`, `withheld…`, or
-`MEMORY.judgeModel` — still set stops the start as any unknown key does).
+social reply is shown what a group is. A key either group does not list stops the start (Configuration).
 
 **Counters.** `{ "metric": "<name>", … }`, ids, counts and reasons only, never a text. Written in ring 1a:
 `others_limit_refused` (`at`: `admission`; a reply for others the owner's number refused as it was admitted),
@@ -3333,7 +3332,7 @@ else and for a row that is not there or ended already.
 "picks": ["<id>"], "rows": [{"subject", "state", "basis", "since", "until", "endReason", "conversationId"}], "conversations":
 [{"conversationId", "subject"}]}`. `rows`: every row of the Agent, newest first, with its real end reason (`endReason`: `declined`,
 `expired`, `left`, `narrowed`, `removed`, `barred`; a request that ran out reads `expired`; `barred` only where your own bar ended it (the row records whose bar did, `barred_by`), a row ended by the other person's bar reads `left` for good, whoever lifts last; once you have lifted your last bar against that person, only the rows your bar ended read `removed`); `subject` is as in `waiting` of
-`GET /api/agent-contacts`. `conversations`: the Agent's social conversations (「它和别人的对话」), newest first, each with the other
+`GET /api/agent-contacts`. `conversations`: the Agent's social conversations (「<Agent 名>和别人的对话」), newest first, each with the other
 end. 404 `not_found` for anyone but the owner and for a deleted Agent; 404 while `SOCIAL.enabled` is off.
 
 #### `PUT /api/agents/:id/contact-policy`
@@ -3634,7 +3633,7 @@ client can render its own:
 | `others_limit_reached` | `actorId` = `agentId` (the Agent a call on was refused for it), `points` (the owner's number then) | in the Agent's own conversation, for its owner: the first call on any of the owner's Agents by someone other than the owner that the owner's number for others' use refuses — at the trigger, as a call that waited is taken, or a reply such a call queued as it was admitted; once per site day per owner, whichever Agent it was (Agents and runs, The owner's number for others' use); the conversation the call was made in is told nothing: “别人今天用你的 Agent 已经花到每天上限 {points} 点，今天不再回复别人；已经在回复的会照常回完。” (a notice of the event it replaced, `agent_daily_budget_reached`, stored in a group before, is still read back as stored; the web draws none) |
 | `social_opened` | `actorId` (the Agent reached), `agentIds`, `ownerIds` (the owners who watch and may write) | the first message of an `agent_social` conversation (Agent social): “这是{主人}的 Agent。{主人}能看到你们的对话，也可能插话。” (two owners: their names joined by 、) |
 | `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有句话可能被说给别人” |
-| `agent_quieted` | `actorId` = `agentId` (the Agent asked to keep quiet) | in a group, a person's message the judgement model is sure asks the Agent to be quiet, or says it is a nuisance: it hardly replies there unasked for a while (a mention still calls it); at most once an hour for each conversation and Agent; nothing says who asked: “「{Agent 名}」暂时不主动发言，需要时可以 @ 它” |
+| `agent_quieted` | `actorId` = `agentId` (the Agent asked to keep quiet) | in a group, a person's message the judgement model is sure asks the Agent to be quiet, or says it is a nuisance: it hardly replies there unasked for a while (a mention still calls it); at most once an hour for each conversation and Agent; nothing says who asked: “「{Agent 名}」暂时不主动发言，需要时可以 @ 一下” |
 
 Clients must ignore fields and events they do not know: later batches add more.
 
@@ -5338,7 +5337,7 @@ its threshold in that group: from `quietSmall.at` (0.3) by `quietSmall.raise` (0
 almost certainly meant for it gets through. A raise replaces the quiet part rather than adding to it, and a smaller one
 never lowers or shortens a bigger one still in force. It decays with time alone, not with others' messages; a mention
 still calls the Agent and does not end it; nobody records who asked, and nothing but time lifts it. A sure answer (from
-`quietBig.at`) also appends the `agent_quieted` notice (System notices: “「{Agent 名}」暂时不主动发言，需要时可以 @ 它”),
+`quietBig.at`) also appends the `agent_quieted` notice (System notices: “「{Agent 名}」暂时不主动发言，需要时可以 @ 一下”),
 at most once an hour for each group and Agent; a small raise tells nobody. It is applied to every Agent asked about while
 it is still an option, winner or not, whatever the pick says — unless phase 3 finds the group changed.
 

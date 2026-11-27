@@ -204,7 +204,7 @@ export function noticeText(system, fallback, nameOf, where = {}) {
       text = "人格里有句话可能被说给别人";
       break;
     case "agent_quieted":
-      text = `「${n(system.agentId)}」暂时不主动发言，需要时可以 @ 它`;
+      text = `「${n(system.agentId)}」暂时不主动发言，需要时可以 @ 一下`;
       break;
     default:
       return null;

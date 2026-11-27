@@ -160,9 +160,9 @@ test("停止生成 keeps what was said, marked 已停止; while paused nothing i
   // Paused from its page: the page and the conversation both say so.
   let detail = await openAgentDetail(ann.page, name);
   await detail.getByRole("button", { name: "暂停全部会话" }).click();
-  await expect(detail.getByRole("status").filter({ hasText: "已暂停全部会话：它不会有新回复" })).toBeVisible();
+  await expect(detail.getByRole("status").filter({ hasText: "已暂停全部会话：不会有新回复" })).toBeVisible();
   await openChat(ann.page, name);
-  await expect(chat.getByText("已暂停全部会话：它不会有新回复")).toBeVisible();
+  await expect(chat.getByText("已暂停全部会话：不会有新回复")).toBeVisible();
   const whilePaused = `暂停时说的话 ${tag}`;
   await sendText(ann.page, name, whilePaused);
   // (No reply is started: give the service a moment in which one would have been.)
@@ -175,7 +175,7 @@ test("停止生成 keeps what was said, marked 已停止; while paused nothing i
   await detail.getByRole("button", { name: "恢复全部会话" }).click();
   await expect(detail.getByRole("button", { name: "暂停全部会话" })).toBeVisible();
   await openChat(ann.page, name);
-  await expect(chat.getByText("已暂停全部会话：它不会有新回复")).toHaveCount(0);
+  await expect(chat.getByText("已暂停全部会话：不会有新回复")).toHaveCount(0);
   const answer = `恢复后的回答 ${tag}`;
   await modelStub.reply(answer);
   const afterResume = `恢复后说的话 ${tag}`;

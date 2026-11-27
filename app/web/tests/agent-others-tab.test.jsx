@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 // Agent social, A11b: the 「别人」 tab of an Agent's page: the one question and its three answers, the dry run before a save that would end
-// accesses, the people in, the requests, and 「它和别人的对话」 (only the conversations I watch for this Agent).
+// accesses, the people in, the requests, and 「小助手和别人的对话」 (only the conversations I watch for this Agent). Every line names the Agent (design §8).
 import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { ANN, A1, AG1, BO, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, syncOf, usageOf, wire } from "./fixtures.js";
 import { button, click, dialog, flush, inMain, installBrowser, openApp, toastText } from "./harness.jsx";
-import { POLICY_OPTIONS, POLICY_QUESTION } from "../src/pages/AgentOthers.jsx";
+import { POLICY_OPTIONS, policyQuestion } from "../src/pages/AgentOthers.jsx";
 
 beforeEach(installBrowser);
 afterEach(() => {
@@ -73,12 +73,13 @@ async function openTab({ contacts = contactsOf(), convs = [], api = {}, friends 
   await click(inMain().getByRole("tab", { name: "别人" }));
   return { ...app, lane };
 }
-const radio = (name) => within(inMain().getByRole("group", { name: POLICY_QUESTION })).getByRole("radio", { name });
+const radio = (name) => within(inMain().getByRole("group", { name: policyQuestion("小助手") })).getByRole("radio", { name });
 
 describe("the question", () => {
-  it("is 「谁可以添加它」 with the three answers worded as the plan has them, the service's setting chosen", async () => {
+  it("is 「谁可以添加小助手」 with the three answers worded as the plan has them, the service's setting chosen", async () => {
     await openTab({ contacts: contactsOf({ policy: "contacts" }) });
-    expect(POLICY_QUESTION).toBe("谁可以添加它");
+    expect(policyQuestion("小助手")).toBe("谁可以添加小助手");
+    expect(inMain().getByRole("group", { name: "谁可以添加小助手" })).toBeTruthy();
     expect(POLICY_OPTIONS.map(([, label]) => label)).toEqual(["需要我同意", "我的好友可以直接添加", "不让别人添加"]);
     for (const label of ["需要我同意", "我的好友可以直接添加", "不让别人添加"]) expect(radio(label)).toBeTruthy();
     expect(radio("我的好友可以直接添加").checked).toBe(true);
@@ -113,14 +114,14 @@ describe("a save", () => {
     await flush();
     await click(button("保存"));
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 1 个人" })).toBeTruthy();
-    expect(within(dialog()).getByText("对方不能再和它聊天，也找不到它了。还在等你同意的申请会取消。这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。")).toBeTruthy();
+    expect(within(dialog()).getByText("对方不能再和小助手聊天，也找不到了。还在等你同意的申请会取消。这不改变谁能在群里 @ 小助手，那由“群里谁可以叫小助手”决定。")).toBeTruthy();
     cleanup();
     await openTab({ api: ends(3), contacts: contactsOf({ policy: "ask" }) });
     fireEvent.click(radio("我的好友可以直接添加"));
     await flush();
     await click(button("保存"));
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 3 个人" })).toBeTruthy();
-    expect(within(dialog()).getByText("他们不能再和它聊天。想再聊要重新申请，由你同意。这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。")).toBeTruthy();
+    expect(within(dialog()).getByText("他们不能再和小助手聊天。想再聊要重新申请，由你同意。这不改变谁能在群里 @ 小助手，那由“群里谁可以叫小助手”决定。")).toBeTruthy();
   });
 
   it("asks dryRun first; with 0 ends it saves at once, with no dialog", async () => {
@@ -145,7 +146,7 @@ describe("a save", () => {
     expect(within(dialog()).getByRole("heading", { name: "这样会影响 12 个人" })).toBeTruthy();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);
     // For 不让别人添加 nobody can find it or ask again: the body does not promise a new request (A-5 review m1).
-    expect(within(dialog()).getByText("他们不能再和它聊天，也找不到它了。还在等你同意的申请会取消。这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。")).toBeTruthy();
+    expect(within(dialog()).getByText("他们不能再和小助手聊天，也找不到了。还在等你同意的申请会取消。这不改变谁能在群里 @ 小助手，那由“群里谁可以叫小助手”决定。")).toBeTruthy();
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     expect(dialog()).toBeNull();
     expect(lane.putContactPolicy).toHaveBeenCalledTimes(1);
@@ -160,7 +161,7 @@ describe("a save", () => {
 describe("the people, the requests and the conversations", () => {
   it("lists who is in (移除) and the requests that wait (同意, 拒绝); an ended row is in neither", async () => {
     const { lane } = await openTab();
-    const people = within(inMain().getByRole("list", { name: "已添加它的人" }));
+    const people = within(inMain().getByRole("list", { name: "已添加小助手的人" }));
     expect(people.getByText("小安")).toBeTruthy();
     expect(people.queryByText("旧人")).toBeNull();
     await click(people.getByRole("button", { name: "移除" }));
@@ -173,12 +174,12 @@ describe("the people, the requests and the conversations", () => {
     expect(lane.declineAgentContact).toHaveBeenCalledWith(AG1, BO);
   });
 
-  it("「它和别人的对话」 lists only the conversations I watch for this Agent: not another Agent's, not one I speak in, not the Agent's own", async () => {
+  it("「小助手和别人的对话」 lists only the conversations I watch for this Agent: not another Agent's, not one I speak in, not the Agent's own", async () => {
     const mine = watched(1, AG1, ANN);
     const another = watched(2, AGX, BO);
     const visiting = { ...watched(3, AGX, ANN), myRole: "speaker", social: { participants: ["00000000-0000-4000-8000-0000000000a1", AGX], agents: [{ id: AGX, ownerId: BO }] } };
     await openTab({ convs: [mine, another, visiting] });
-    const list = inMain().getByRole("list", { name: "它和别人的对话" });
+    const list = inMain().getByRole("list", { name: "小助手和别人的对话" });
     expect(within(list).getAllByRole("button")).toHaveLength(1);
     expect(within(list).getByText("小安")).toBeTruthy();
     expect(within(list).getByText("小安：你好")).toBeTruthy();
@@ -186,8 +187,8 @@ describe("the people, the requests and the conversations", () => {
 
   it("with nothing yet, it says so; nothing of this is asked while the switch is off (the pill is not even there)", async () => {
     await openTab({ contacts: contactsOf({ rows: [] }) });
-    expect(inMain().getByText("还没有人添加它。")).toBeTruthy();
+    expect(inMain().getByText("还没有人添加小助手。")).toBeTruthy();
     expect(inMain().getByText("没有等你同意的申请。")).toBeTruthy();
-    expect(inMain().getByText("它还没有和别人聊过。")).toBeTruthy();
+    expect(inMain().getByText("小助手还没有和别人聊过。")).toBeTruthy();
   });
 });

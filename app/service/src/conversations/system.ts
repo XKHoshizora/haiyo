@@ -68,7 +68,7 @@ export async function renderNotice(q: Queryable, conversationId: string, e: Syst
     case "others_limit_reached":
       return `别人今天用你的 Agent 已经花到每天上限 ${e.points} 点，今天不再回复别人；已经在回复的会照常回完。`;
     case "agent_quieted":
-      return `「${n(e.agentId)}」暂时不主动发言，需要时可以 @ 它`;
+      return `「${n(e.agentId)}」暂时不主动发言，需要时可以 @ 一下`;
     // The disclosure of a social conversation (system UI text, in no Agent's voice): who watches it. Two owners: their names joined by 、.
     case "social_opened": {
       const owners = e.ownerIds.map(n).join("、");

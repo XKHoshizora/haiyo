@@ -106,7 +106,7 @@ describe("the settings row and the page", () => {
     expect(pointsBox().closest("p").textContent).toBe("别人用我的 Agent，每天合计最多花我点");
     const text = mainText();
     // One number for all of them, proactive replies included; an own key's reply counted at the service's number; replies under way finish.
-    expect(text).toContain("你所有的 Agent 合在一起算，它们主动回复的也算。用你自己的模型密钥时不扣点，每条回复按 6 点计，联网搜索另计。每天零点（站点时间）重新算。已经在回复的会照常回完，所以一天用的可能超过这个数。");
+    expect(text).toContain("你所有的 Agent 合在一起算，主动回复的也算。用你自己的模型密钥时不扣点，每条回复按 6 点计，联网搜索另计。每天零点（站点时间）重新算。已经在回复的会照常回完，所以一天用的可能超过这个数。");
     expect(text).toContain("今天别人花了 12.5 点（其中主动回复 2 点）");
     expect(text).toContain("小美");
     expect(text).toContain("@mei · 花了 8 点");
@@ -483,7 +483,7 @@ describe("people on the page: links to their profile only while Agent social is 
     const link = within(mainEl().querySelector(".others-people")).getByRole("link", { name: "小美" });
     expect(link.getAttribute("href")).toBe(`/contacts/${MEI.id}`);
     expect(mainText()).toContain("点名字进入对方的资料页，可以在那里停止往来。");
-    expect(mainText()).toContain("别人和你的 Agent 聊天、在群里 @ 它，花的点都算在你这里。");
+    expect(mainText()).toContain("别人在群里 @ 你的 Agent、和你的 Agent 聊天，花的点都算在你这里。");
     expect(inMain().queryByRole("button", { name: /停止往来|恢复往来/ })).toBeNull();
     expect(calls.putBar).not.toHaveBeenCalled();
     expect(calls.deleteBar).not.toHaveBeenCalled();
@@ -569,7 +569,7 @@ describe("people on the page: links to their profile only while Agent social is 
     expect(within(list).getByRole("link", { name: "小美" }).getAttribute("href")).toBe(`/contacts/${MEI.id}`);
     expect(list.textContent).toMatch(/@mei · (\d+年)?\d+月\d+日停止/);
     expect(inMain().queryAllByRole("button").map((b) => b.textContent)).not.toContain("恢复往来");
-    expect(mainText()).toContain("停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。");
+    expect(mainText()).toContain("停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等对方同意。");
   });
 
   it("with the switch off and nobody stopped there is no stopped section; with it on and nobody stopped it says so", async () => {
@@ -615,7 +615,7 @@ describe("the Agent's card and page", () => {
     expect(within(row).getByText("已被停用", { selector: ".tag" })).toBeTruthy();
     expect(row.textContent).not.toContain("可回复");
     await click(inList().getByText("小助手", { selector: ".row-name" }));
-    expect(mainText()).toContain("管理员停用了这个 Agent：它现在只回复你，不回复别人。");
+    expect(mainText()).toContain("管理员停用了小助手：现在只回复你，不回复别人。");
     cleanup();
     await openWith({});
     await goAgents();

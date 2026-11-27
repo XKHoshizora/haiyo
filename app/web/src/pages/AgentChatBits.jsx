@@ -17,7 +17,7 @@ import { agentLevel, openModelChoice } from "./ModelPicker.jsx";
 import { RotateCw, Sparkles, Square, X } from "../icons.js";
 
 /** The pause notice of a paused Agent (as on its detail page). */
-export const AGENT_PAUSED_TEXT = "已暂停全部会话：它不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。";
+export const AGENT_PAUSED_TEXT = "已暂停全部会话：不会有新回复。与「停止生成」不同，这不是只中断一次回复。恢复后，暂停期间收到的消息不会补上回复。";
 /** Under the composer when an image goes to an Agent whose model cannot see images. */
 export const IMAGE_HINT = "当前模型看不到图片，只会知道文件名";
 
@@ -506,7 +506,7 @@ export function TopicDivider({ msg }) {
 
 /** Asks before starting a new topic in the Agent's conversation. */
 export function NewTopicModal({ conv, onClose }) {
-  const { actions } = useStore();
+  const { state, actions } = useStore();
   const { busy, run } = useAction();
   const confirm = async () => {
     const res = await run("topic", () => settled(actions.resetTopic(conv.id)), refusalText);
@@ -527,7 +527,7 @@ export function NewTopicModal({ conv, onClose }) {
         </>
       }
     >
-      <p>之前的对话不会再发给它，聊天记录仍然保留。</p>
+      <p>{`之前的对话不会再发给${nameOf(state, conv.agentId)}，聊天记录仍然保留。`}</p>
     </Modal>
   );
 }
@@ -555,7 +555,7 @@ function foldedText(text) {
  * (nothing changed: no edits), and only that is checked: a value the Agent proposed is the proposal's, not mine.
  * `busy` is the card's: one decision at a time, from the card or from here.
  */
-function ProposalEditor({ proposal, busy, onClose, onConfirm }) {
+function ProposalEditor({ proposal, name, busy, onClose, onConfirm }) {
   const mounted = useMounted();
   const hasIntro = typeof proposal.intro === "string";
   const hasField = typeof proposal.field === "string";
@@ -614,7 +614,7 @@ function ProposalEditor({ proposal, busy, onClose, onConfirm }) {
           <input value={field} onChange={(e) => setField(e.target.value)} />
         </Field>
       )}
-      <Reason>确认后，它从下一次回复起按新的人格文档回复。人格文档只影响它如何回复，不授予任何权限。</Reason>
+      <Reason>{`确认后，${name}从下一次回复起按新的人格文档回复。人格文档只影响回复的方式，不授予任何权限。`}</Reason>
       {refusal && (
         <p className="field-msg" role="alert">
           {refusal}
@@ -696,7 +696,7 @@ export function ProposalCard({ msg, conv }) {
           {refusal}
         </p>
       )}
-      {editing && decidable && <ProposalEditor proposal={p} busy={busy} onClose={() => setEditing(false)} onConfirm={confirmEdited} />}
+      {editing && decidable && <ProposalEditor proposal={p} name={nameOf(state, conv.agentId)} busy={busy} onClose={() => setEditing(false)} onConfirm={confirmEdited} />}
     </div>
   );
 }

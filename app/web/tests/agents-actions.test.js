@@ -188,7 +188,7 @@ describe("providers: the other actions", () => {
     api.testProvider.mockResolvedValueOnce({ ok: true });
     await expect(actions.testProvider(PID)).resolves.toEqual({ ok: true, value: { ok: true } });
     const inUse = await actions.deleteProvider(PID);
-    expect(inUse.text).toBe("还有 Agent 在使用这个供应商：小助手、写作助手。请先给它们换一个模型。");
+    expect(inUse.text).toBe("还有 Agent 在使用这个供应商：小助手、写作助手。请先给这些 Agent 换一个模型。");
     expect(model().providers[PID]).toBeDefined();
     api.deleteProvider.mockResolvedValueOnce({ ok: true });
     await expect(actions.deleteProvider(PID)).resolves.toMatchObject({ ok: true });
@@ -297,7 +297,7 @@ describe("persona proposals (Review Focus 4)", () => {
     const confirmProposal = vi.fn(async () => Promise.reject(apiError(409, "stale_proposal")));
     const { actions, model } = await loaded({ api: { confirmProposal }, transport: t });
     t.agentLog.length = 0;
-    await expect(actions.confirmProposal(AG1, P1)).resolves.toMatchObject({ ok: false, text: "这份提议已失效，请让它重新生成提议。" });
+    await expect(actions.confirmProposal(AG1, P1)).resolves.toMatchObject({ ok: false, text: "这份提议已失效，请让 Agent 重新生成一份。" });
     expect(confirmProposal).toHaveBeenCalledWith(AG1, P1, undefined);
     await settle();
     expect(t.agentLog).toEqual([["agent", AG1], ["message", A1, 3]]);
@@ -337,7 +337,7 @@ describe("replies", () => {
     expect(retryRun).toHaveBeenCalledWith(A1, R1);
     expect(model().runs[A1]).toMatchObject({ id: R2, status: "queued" });
     retryRun.mockRejectedValueOnce(apiError(409, "busy_run"));
-    await expect(actions.retryRun(A1)).resolves.toMatchObject({ ok: false, text: "它正在回复，请等这次回复结束。" });
+    await expect(actions.retryRun(A1)).resolves.toMatchObject({ ok: false, text: "正在回复中，请等这次回复结束。" });
   });
 
   it("a retry answer that arrives after a newer run was pushed changes nothing", async () => {

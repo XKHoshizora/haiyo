@@ -54,12 +54,12 @@ test(`${size}: an owner's Agent is found by its full handle, added with the disc
   const note = dlg.getByTestId("social-disclosure");
   await expect(note).toHaveText(`这是${ann.displayName}的 Agent。${ann.displayName}能看到你们的对话，也可能插话。`);
   await expect(dlg.getByText(`主人：${ann.displayName}`)).toBeVisible();
-  await expect(dlg.getByRole("button", { name: "添加它" })).toBeVisible();
+  await expect(dlg.getByRole("button", { name: `添加${name}` })).toBeVisible();
   expect(await noSideways(bo.page)).toBe(true);
-  await tall(dlg.getByRole("button", { name: "添加它" }));
+  await tall(dlg.getByRole("button", { name: `添加${name}` }));
   await shot(bo.page, "01-add-agent-dialog");
-  await dlg.getByRole("button", { name: "添加它" }).click();
-  await expect(dlg.getByText("已发给它的主人，等对方同意。7 天没有回应会自动取消。")).toBeVisible();
+  await dlg.getByRole("button", { name: `添加${name}` }).click();
+  await expect(dlg.getByText(`已发给${ann.displayName}，等对方同意。7 天没有回应会自动取消。`)).toBeVisible();
   await shot(bo.page, "02-add-agent-requested");
   await dlg.getByRole("button", { name: "完成" }).click();
   // Bo's own waiting request in his contacts.
@@ -113,7 +113,7 @@ test(`${size}: an owner's Agent is found by its full handle, added with the disc
   await side.getByRole("button", { name: "拉黑" }).click();
   const blockAsk = bo.page.getByRole("dialog");
   await expect(blockAsk.getByRole("heading", { name: `拉黑${name}` })).toBeVisible();
-  await expect(blockAsk).toContainText("你和它的对话会结束，它不再回你的话。聊天记录还在。");
+  await expect(blockAsk).toContainText(`你和${name}的对话会结束，${name}不再回你的话。聊天记录还在。`);
   await tall(blockAsk.locator(".modal-foot").getByRole("button"));
   await shot(bo.page, "09-block-agent-dialog");
   await blockAsk.getByRole("button", { name: "取消" }).click();
@@ -128,12 +128,12 @@ test(`${size}: an owner's Agent is found by its full handle, added with the disc
   await openAgentDetail(ann.page, name);
   await ann.page.getByRole("tab", { name: "别人" }).click();
   const tab = ann.page.getByRole("region", { name: "Agent 管理" });
-  await expect(tab.getByRole("group", { name: "谁可以添加它" })).toBeVisible();
+  await expect(tab.getByRole("group", { name: `谁可以添加${name}` })).toBeVisible();
   for (const label of ["需要我同意", "我的好友可以直接添加", "不让别人添加"]) await expect(tab.getByRole("radio", { name: label })).toBeVisible();
   await tall(tab.getByRole("radio").locator(".."));
   expect(await noSideways(ann.page)).toBe(true);
   await shot(ann.page, "11-agent-others-tab");
-  await tab.getByRole("list", { name: "它和别人的对话" }).getByRole("button").first().click();
+  await tab.getByRole("list", { name: `${name}和别人的对话` }).getByRole("button").first().click();
   const watched = chatPane(ann.page, `${name}和${bo.displayName}`);
   await expect(watched).toBeVisible();
   await expect(watched.getByTestId("social-note")).toHaveText(`你在旁观${name}和${bo.displayName}的对话。你发言时，对方会看到你是主人。`);
@@ -185,7 +185,7 @@ test(`${size}: changing who may add it asks first how many it would end; after i
   await expect(ask).toBeHidden();
 
   // Bo: no input, the reason once, nothing about who or why.
-  await expect(chat.getByText("你现在不能和它聊天了。")).toHaveCount(1);
+  await expect(chat.getByText(`你现在不能和${name}聊天了。`)).toHaveCount(1);
   await expect(composer(chat)).toHaveCount(0);
   await expect(chat.locator(".social-note")).toBeVisible();
   await shot(bo.page, "14-social-chat-refused");
@@ -217,7 +217,7 @@ test(`${size}: changing who may add it asks first how many it would end; after i
   // Her use page lists him as stopped.
   expect((await (await ann.request.get("/api/me/others-use")).json()).stopped.map((x) => x.person.id)).toEqual([bo.id]);
   // Bo's side says nothing of it: the same one sentence.
-  await expect(chat.getByText("你现在不能和它聊天了。")).toHaveCount(1);
+  await expect(chat.getByText(`你现在不能和${name}聊天了。`)).toHaveCount(1);
   await card.getByRole("button", { name: "恢复往来" }).click();
   await expect(card.getByRole("button", { name: "停止往来" })).toBeVisible();
 });

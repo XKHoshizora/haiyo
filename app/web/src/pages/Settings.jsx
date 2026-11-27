@@ -438,17 +438,17 @@ function MemorySettings() {
         <p>
           <strong>小憩</strong> <Tag tone="muted">一直开着</Tag>
         </p>
-        <p className="field-hint">聊完一段后，它会回想刚才的对话，记下值得留的事。</p>
+        <p className="field-hint">聊完一段后，Agent 会回想刚才的对话，记下值得留的事。</p>
         <fieldset className="memory-switches" disabled={off}>
           <Switch
             checked={settings?.dream === true}
             onChange={changeDream}
             label="入梦"
-            hint="你休息的时候，它把这一天记下的整理一遍：合并重复的，分清一时的情绪和长久的事。"
+            hint="你休息的时候，Agent 会把这一天记下的整理一遍：合并重复的，分清一时的情绪和长久的事。"
             hintClass="field-hint"
           />
         </fieldset>
-        <Field label="记忆用的语言" hint="它记下的笔记统一用这种语言写；名字和原话保留原文。">
+        <Field label="记忆用的语言" hint="Agent 记下的笔记统一用这种语言写；名字和原话保留原文。">
           <Select
             value={settings ? (settings.memoryLanguage ?? "auto") : null}
             placeholder={unread}

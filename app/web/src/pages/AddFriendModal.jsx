@@ -27,8 +27,8 @@ function whyNot(state, person) {
 function whyNotAgent(state, agent) {
   if (agent.ownerId === state.account?.id) return "你自己的 Agent 不用添加。";
   const row = agentContactsOf(state).mine.find((r) => r.agentId === agent.id);
-  if (row?.state === "live") return "你已经添加过它了。";
-  if (row?.state === "requested") return "已经申请过了，在等它的主人同意。";
+  if (row?.state === "live") return `你已经添加过${agent.displayName}了。`;
+  if (row?.state === "requested") return `已经申请过了，在等${agent.ownerName || state.people[agent.ownerId]?.name || "主人"}同意。`;
   return "";
 }
 
@@ -86,7 +86,7 @@ export function AddFriendModal({ onClose, returnTo }) {
 
   const isAgent = agentsToo && found?.kind === "agent";
   const reason = found ? (isAgent ? (outcome ? "" : whyNotAgent(state, found)) : whyNot(state, found)) : "";
-  const owner = isAgent ? (found.ownerName || state.people[found.ownerId]?.name || "它的主人") : "";
+  const owner = isAgent ? (found.ownerName || state.people[found.ownerId]?.name || "Agent 的主人") : "";
   return (
     <Modal title={agentsToo ? "添加好友或 Agent" : "添加好友"} onClose={onClose} returnTo={returnTo} locked={busy === "add"} footer={<Btn disabled={busy === "add"} onClick={onClose}>完成</Btn>}>
       <form onSubmit={search}>
@@ -132,10 +132,10 @@ export function AddFriendModal({ onClose, returnTo }) {
           <p className="social-disclosure" data-testid="social-disclosure">
             {disclosureText([owner])}
           </p>
-          {outcome && <Notice tone="ok">{`已发给它的主人，等对方同意。${outcome.days} 天没有回应会自动取消。`}</Notice>}
+          {outcome && <Notice tone="ok">{`已发给${owner}，等对方同意。${outcome.days} 天没有回应会自动取消。`}</Notice>}
           <div className="agent-found-actions">
             <Btn variant="primary" disabled={Boolean(reason) || outcome !== null || busy !== null} reason={reason} onClick={add}>
-              {busy === "add" ? "处理中…" : "添加它"}
+              {busy === "add" ? "处理中…" : `添加${found.displayName}`}
             </Btn>
           </div>
         </section>

@@ -109,7 +109,7 @@ describe("the Agent's card in a social chat", () => {
     await flush();
     await click(within(document.querySelector(".list-col")).getByText("小助手", { selector: ".row-name" }));
     await click(inMain().getByRole("tab", { name: "别人" }));
-    await click(within(inMain().getByRole("list", { name: "它和别人的对话" })).getAllByRole("button")[0]);
+    await click(within(inMain().getByRole("list", { name: "小助手和别人的对话" })).getAllByRole("button")[0]);
     await click(screen.getByRole("button", { name: "会话资料" }));
     const owner = within(document.querySelector(".side"));
     for (const name of ["举报", "拉黑", "移除"]) expect(owner.queryByRole("button", { name })).toBeNull();
@@ -148,13 +148,14 @@ describe("the Agent's card in a social chat", () => {
     await openVisitorDetails();
     await click(within(document.querySelector(".side")).getByRole("button", { name: "拉黑" }));
     expect(inDialog().getByRole("heading", { name: "拉黑小帮手" })).toBeTruthy();
-    expect(inDialog().getByText("你和它的对话会结束，它不再回你的话。聊天记录还在。")).toBeTruthy();
-    expect(inDialog().getByText("拉黑期间，你找不到它，也不能加它。")).toBeTruthy();
+    expect(inDialog().getByText("你和小帮手的对话会结束，小帮手不再回你的话。聊天记录还在。")).toBeTruthy();
+    expect(inDialog().getByText("拉黑期间，你找不到小帮手，也不能添加。")).toBeTruthy();
     await click(inDialog().getByRole("button", { name: "确认拉黑" }));
     expect(api.blockPrincipal).toHaveBeenCalledWith(AGB);
     expect(dialog()).toBeNull();
     await click(within(document.querySelector(".side")).getByRole("button", { name: "移除" }));
     expect(inDialog().getByRole("heading", { name: "移除小帮手" })).toBeTruthy();
+    expect(inDialog().getByText("移除后，你和小帮手的对话会停下，已有的记录还在。想再聊，要重新添加，可能需要主人同意。")).toBeTruthy();
     await click(inDialog().getByRole("button", { name: "确认移除" }));
     expect(api.removeAgentContact).toHaveBeenCalledWith(AGB, ME_ID);
     expect(toastText()).toBe("已移除");
@@ -333,7 +334,7 @@ describe("停止往来 and 恢复往来 on a person's profile", () => {
     await openCard();
     await click(inMain().getByRole("button", { name: "停止往来" }));
     expect(inDialog().getByText("你的 Agent 不再回应阿波，阿波的 Agent 也不再回应你。")).toBeTruthy();
-    expect(inDialog().getByText("恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。")).toBeTruthy();
+    expect(inDialog().getByText("恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等对方同意。")).toBeTruthy();
     expect(inDialog().getByText("以后想恢复：在“设置 › 别人怎么用我的 Agent”里找到对方，进入资料页点“恢复往来”。")).toBeTruthy();
     expect(dialog().textContent).not.toContain("对方的主人");
   });

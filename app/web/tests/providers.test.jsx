@@ -234,7 +234,7 @@ describe("adding a provider", () => {
       ["anthropic", "Anthropic Messages"],
       ["gemini", "Gemini API"],
     ]);
-    expect(mainText()).toContain("你与它的对话内容，包括发给它的图片和文件，会发送给这个供应商");
+    expect(mainText()).toContain("你和选用这个供应商模型的 Agent 的对话内容，包括发给 Agent 的图片和文件，会发送给这个供应商");
     expect(mainText()).toContain("https://");
   });
 
@@ -354,7 +354,7 @@ describe("adding a provider", () => {
     await click(inMain().getByRole("button", { name: /添加供应商/ }));
     for (const label of ["名称", "接口类型", "接口地址", "密钥"]) expect(inMain().getByLabelText(label)).toBeTruthy();
     expect(mainText()).toContain("保存后从供应商的模型列表里挑选模型。");
-    expect(mainText()).toContain("你与它的对话内容");
+    expect(mainText()).toContain("你和选用这个供应商模型的 Agent 的对话内容");
     expect(inMain().getByRole("button", { name: "取消" })).toBeTruthy();
     expect(inMain().getByRole("button", { name: "保存并选择模型" })).toBeTruthy();
     expect(inMain().queryByRole("button", { name: "保存" })).toBeNull();
@@ -1600,7 +1600,7 @@ describe("deleting a provider", () => {
     expect(deleteProvider).toHaveBeenCalledWith(P1);
     const users = within(within(dialog()).getByRole("list", { name: "正在使用它的 Agent" })).getAllByRole("listitem");
     expect(users.map((li) => li.textContent)).toEqual(["小助手", "写作助手"]);
-    expect(dialog().textContent).toContain("请先给它们换一个模型");
+    expect(dialog().textContent).toContain("请先给这些 Agent 换一个模型");
     await click(within(dialog()).getByRole("button", { name: "取消" }));
     expect(providerRow("我的 OpenAI")).toBeTruthy();
   });

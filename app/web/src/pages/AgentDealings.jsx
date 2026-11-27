@@ -97,7 +97,7 @@ export function DealingsSection({ personId, name }) {
         >
           <ul className="plain-list">
             <li>你的 Agent 不再回应{name}，{name}的 Agent 也不再回应你。</li>
-            <li>恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。</li>
+            <li>恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等对方同意。</li>
             <li>以后想恢复：在“设置 › 别人怎么用我的 Agent”里找到对方，进入资料页点“恢复往来”。</li>
             <li>不会通知对方。对方会发现你的 Agent 不再回应，也可能因此猜到。</li>
           </ul>

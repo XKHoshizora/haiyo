@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Owner decision 2026-11-26: the thinking level of a reply for others (「别人 @ 它或来找它时的思考程度」) and of a proactive reply
+// Owner decision 2026-11-26: the thinking level of a reply for others (「回复别人时的思考程度」) and of a proactive reply
 // (「主动回复时的思考程度」) are the owner's settings, in the Agent's form. Each offers exactly the levels the chosen model lists (hidden when
 // it only has 不思考), shows the level that would run (the effective one), and is sent only when it is not the default (create) or when I
 // changed it (edit). The Agent's page says both effective levels. The limits redesign (Part 1): each select keeps ONE short hint, the most
@@ -22,7 +22,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const OTHERS = "别人 @ 它或来找它时的思考程度";
+const OTHERS = "回复别人时的思考程度";
 const PROACTIVE = "主动回复时的思考程度";
 const PAID = { source: "site", id: "paid-1" };
 /** The site's models with what one reply to someone else can cost at each level the paid model runs (the service's `othersCeiling`). */

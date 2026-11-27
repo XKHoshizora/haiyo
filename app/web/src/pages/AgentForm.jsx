@@ -31,27 +31,27 @@ const chars = (text) => [...text].length;
 /** 一次接话最多花费 when nothing else is said, in points (the service's default). */
 export const CHAIN_BUDGET_DEFAULT = "50";
 /** The 记忆 switches: the form key, its label and what it says; the last two only matter while the first is on. */
-const MEMORY_HELPER = "它会记住关于你的事和自己学到的事。记忆每天有自己的额度，不占用你聊天的额度。";
+const MEMORY_HELPER = "记住关于你的事和自己学到的事。记忆每天有自己的额度，不占用你聊天的额度。";
 const MEMORY_SWITCHES = [
   ["memoryAsk", "先问我再记", "记之前先在会话里问你，你同意了才记。"],
   ["sharedNotes", "使用共用的“关于我”", "和你名下其他开着这一项的 Agent 共用同一份。"],
 ];
-/** Asked, under 记忆, when it is turned back on for an Agent that has had it off: the answer is sent at once (`catchUp`). */
-const CATCH_UP_QUESTION = "关掉期间聊过的内容，要不要也让它回顾一下？";
+/** Asked, under 记忆, when it is turned back on for an Agent that has had it off (named `name`): the answer is sent at once (`catchUp`). */
+const catchUpQuestion = (name) => `关掉期间聊过的内容，要不要也让${name}回顾一下？`;
 /** Under the question: how far back it looks, from the site's own numbers (`GET /api/models` `memoryCatchUp`). */
 const catchUpBounds = ({ days, lines }) => `最多回看最近 ${days} 天、每个群最近 ${lines} 条。`;
 /** What the service takes when a switch is not said (the form's defaults, `recordFields`). */
 const MEMORY_DEFAULTS = { memory: true, memoryAsk: false, sharedNotes: true };
 const MEMORY_KEYS = Object.keys(MEMORY_DEFAULTS);
 /** Under 主动参与群聊: what it does, or — the site having no judgement model — why it does nothing now. */
-const PROACTIVE_HELPER = "打开后，群里有人说到它擅长的事，没 @ 它它也可能回复。花的是你的点。";
+const PROACTIVE_HELPER = "打开后，群里有人说到擅长领域里的事，没人 @ 也可能回复。花的是你的点。";
 const PROACTIVE_LOST = "站点现在没有配置判断模型，主动参与不会生效。可以先关掉。";
 /**
  * 群里没找到时悄悄告诉我 (`whisperElsewhere`, on unless the record says off): when a search in a group finds nothing there but
  * it has it elsewhere, it whispers to me first (only I see it) and asks whether to tell the group.
  */
 const ELSEWHERE_LABEL = "群里没找到时悄悄告诉我";
-const ELSEWHERE_HELPER = "它在别处查到了，会先悄悄问你要不要告诉大家。";
+const ELSEWHERE_HELPER = "在别处查到了，会先悄悄问你要不要告诉大家。";
 /** 联网搜索 (`webSearch`, on unless the record says off): shown only while the site offers web search (`webSearchAvailable`). */
 const WEB_LABEL = "联网搜索";
 const WEB_WORDS = "搜索词会发给外部的搜索服务。";
@@ -65,8 +65,8 @@ const webHelper = (points) =>
  * the words as before.
  */
 const CHAIN_HINTS = {
-  off: "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限对它不起作用。",
-  web: "在没有人发言的这段时间里，它被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人 @ 它时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管它的联网搜索。",
+  off: "在没有人发言的这段时间里，被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人直接 @ 时不受限制。用你自己供应商模型的 Agent 不扣点，这个上限不起作用。",
+  web: "在没有人发言的这段时间里，被其他 Agent 叫动所花的点数到了这个数就不再接话；有人发言后重新计算。有人直接 @ 时不受限制。用你自己供应商模型的 Agent，模型本身不扣点，但联网搜索扣点，这个上限也管联网搜索。",
 };
 // The chain budget's amount, as the service takes it.
 const BUDGET_MIN = 1;
@@ -163,8 +163,10 @@ const recordFields = (a) => ({
  * every reply somebody else causes: a call in a group, and a visitor's message in a conversation with it.) Each keeps ONE short hint: the
  * most one reply at the level shown can cost, or what one on my own key counts (`ceilingOf`).
  */
-export const OTHERS_LEVEL_LABEL = "别人 @ 它或来找它时的思考程度";
+export const OTHERS_LEVEL_LABEL = "回复别人时的思考程度";
 export const PROACTIVE_LEVEL_LABEL = "主动回复时的思考程度";
+/** The setting 群里谁可以叫…: in the Agent's name once it has one (design §8), else 「这个 Agent」. */
+export const groupMentionsQuestion = (name) => `群里谁可以叫${name ?? "这个 Agent"}`;
 
 /**
  * The hint under a level select for the model `choice` at `level`, as the service says it: on a site model the most one reply to
@@ -324,7 +326,7 @@ export function AgentForm({ agent = null }) {
         ? ""
         : sources.nothing
           ? "还没有可用的模型，需要先添加模型供应商"
-          : "请先选择一个模型，否则它不会回复";
+          : "请先选择一个模型，否则不会回复";
   const canDraft = !errors.name && !errors.intro && !errors.field && Boolean(choice) && !choice.stale;
 
   /** A setting chosen (a Select's value) or typed (`set`: an input's change). */
@@ -601,7 +603,7 @@ export function AgentForm({ agent = null }) {
           <p className="readonly"><Lock size={14} aria-hidden="true" /> 你（不可修改）</p>
         </div>
         <Field label="简介" error={shown("intro")}>
-          <input value={f.intro} onChange={set("intro")} autoComplete="off" placeholder="一句话介绍它能做什么" />
+          <input value={f.intro} onChange={set("intro")} autoComplete="off" placeholder="一句话介绍这个 Agent 能做什么" />
         </Field>
         <Field label="擅长领域" error={shown("field")}>
           <input value={f.field} onChange={set("field")} autoComplete="off" placeholder="例如：旅行规划" />
@@ -636,7 +638,7 @@ export function AgentForm({ agent = null }) {
             aria-describedby={describedBy}
           />
           <div className="member-actions">
-            <Btn small disabled={!canDraft || busy !== null} reason="填写名称并选择模型后可以让它起草" onClick={askDraft}>
+            <Btn small disabled={!canDraft || busy !== null} reason="填写名称并选择模型后可以起草" onClick={askDraft}>
               {busy === "draft" ? "起草中…" : "帮我起草"}
             </Btn>
             <span id={`${personaId}-count`} className="field-hint">{chars(persona)} / {PERSONA_MAX}</span>
@@ -645,14 +647,14 @@ export function AgentForm({ agent = null }) {
           {draftNote?.error && <p id={`${personaId}-draft`} className="field-msg" role="alert">{draftNote.error}</p>}
           {draftNote?.done && <p className="field-hint" role="status">{agent ? "已填入起草的内容，保存后才会生效。" : "已填入起草的内容，创建后才会生效。"}</p>}
           <p id={`${personaId}-hint`} className="field-hint">
-            决定它是谁、怎么说话、擅长什么。只影响它如何回复，不授予任何权限。{!canDraft && "填写名称并选择模型后，可以让它帮你起草。"}留空时，它会先在会话里问你几个问题。
+            决定 Agent 是谁、怎么说话、擅长什么。只影响回复的方式，不授予任何权限。{!canDraft && "填写名称并选择模型后，可以帮你起草。"}留空时，会先在会话里问你几个问题。
           </p>
         </div>
-        <Field label="私聊回复方式" hint="“点名”就是在消息里 @ 它。">
+        <Field label="私聊回复方式" hint="“点名”就是在消息里 @ 这个 Agent。">
           <Select value={f.replyMode} onChange={setValue("replyMode")} listLabel="私聊回复方式" options={REPLY_MODES.map(([id, label]) => ({ value: id, label }))} />
         </Field>
-        <Field label="群里谁可以叫它" hint="被叫到时它会在群里回复，费用算你的。">
-          <Select value={f.groupMentions} onChange={setValue("groupMentions")} listLabel="群里谁可以叫它" options={GROUP_MENTIONS.map(([id, label]) => ({ value: id, label }))} />
+        <Field label={groupMentionsQuestion(agent?.name ?? null)} hint="被叫到时会在群里回复，费用算你的。">
+          <Select value={f.groupMentions} onChange={setValue("groupMentions")} listLabel={groupMentionsQuestion(agent?.name ?? null)} options={GROUP_MENTIONS.map(([id, label]) => ({ value: id, label }))} />
         </Field>
         <Field
           label="一次接话最多花费（点）"
@@ -695,7 +697,7 @@ export function AgentForm({ agent = null }) {
         )}
         <fieldset className="form-section">
           <legend>称呼</legend>
-          <Field label="它怎么称呼你" hint="最多 20 个字。只影响它怎么叫你，不影响它把谁当主人。" error={shown("ownerAppellation")}>
+          <Field label={agent ? `${agent.name}怎么称呼你` : "怎么称呼你"} hint="最多 20 个字。只影响怎么叫你，不影响谁是主人。" error={shown("ownerAppellation")}>
             <input value={f.ownerAppellation} onChange={set("ownerAppellation")} autoComplete="off" placeholder="留空就用你的名字" />
           </Field>
           {/* An Agent must exist to name others for it. */}
@@ -712,7 +714,7 @@ export function AgentForm({ agent = null }) {
                   there all along, empty and unseen, and the question is put into it (one that arrives with its text inside is often not
                   announced); emptied again when the question closes. */}
               <p role="status" className={askCatchUp ? undefined : "sr-only"}>
-                {askCatchUp ? CATCH_UP_QUESTION : ""}
+                {askCatchUp ? catchUpQuestion(agent?.name ?? "Agent") : ""}
               </p>
               {askCatchUp && (
                 <>
@@ -745,8 +747,8 @@ export function AgentForm({ agent = null }) {
         </fieldset>
         <Notice tone="info">
           {agent
-            ? "修改从它的下一次回复起生效。"
-            : "创建后会生成一个你和它的专属会话。它没有工具、文件或电脑权限。它会在专属会话里回复你；你也可以把它拉进你所在的群。"}
+            ? "修改从下一次回复起生效。"
+            : "创建后会生成一个你和 Agent 的专属会话。Agent 没有工具、文件或电脑权限，会在专属会话里回复你；你也可以把 Agent 拉进你所在的群。"}
         </Notice>
         {refusal && refusal.code !== "handle_taken" && <Notice tone="warn">{limitText}</Notice>}
         <div className="form-actions">

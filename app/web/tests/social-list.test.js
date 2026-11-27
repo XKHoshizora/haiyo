@@ -131,10 +131,10 @@ describe("the composer's reason, by the service's code", () => {
     return publishBlock(state, state.convs[conv.id])?.text;
   };
   it("says the reason once for each code, and nothing when sending is allowed", () => {
-    expect(blockOf("no_access")).toBe("你现在不能和它聊天了。");
+    expect(blockOf("no_access")).toBe("你现在不能和小帮手聊天了。");
     expect(blockOf("agent_unavailable")).toBe("这个 Agent 现在不可用。");
     // (A block of someone else's, or none I can see: the same sentence as a stop. My own block of the Agent says what to do.)
-    expect(blockOf("blocked")).toBe("你现在不能和它聊天了。");
+    expect(blockOf("blocked")).toBe("你现在不能和小帮手聊天了。");
     expect(blockOf("agent_deleted")).toBe("这个 Agent 已删除，聊天记录仍可查看。");
     expect(blockOf("no_access", watched(2))).toBe("这段对话已结束，不能再发送消息。");
     expect(blockOf("blocked", watched(2))).toBe("这段对话已结束，不能再发送消息。");
@@ -143,7 +143,7 @@ describe("the composer's reason, by the service's code", () => {
   });
   it("my own block of the Agent says so and what ends it", () => {
     const state = { ...view([{ ...visiting(1), canSend: { ok: false, reason: "blocked" } }]), blocks: [{ by: ME, target: AGB }] };
-    expect(publishBlock(state, state.convs[sid(1)]).text).toBe("你拉黑了它。解除拉黑后才能再聊。");
+    expect(publishBlock(state, state.convs[sid(1)]).text).toBe("你拉黑了小帮手。解除拉黑后才能再聊。");
   });
   it("never names whose stop or block it was: the same sentence whatever ended it", () => {
     const state = view([visiting(1, { canSend: { ok: false, reason: "no_access" } })]);

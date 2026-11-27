@@ -154,13 +154,13 @@ describe("a whisper in the conversation", () => {
   it("an open found_elsewhere whisper, opened, shows what was found before its buttons — where · who · when, then the text, a long one folded with 展开", async () => {
     const long = "很长的一段话".repeat(40);
     const hits = [
-      { where: "你和它的专属会话", who: "小美", when: "2026-11-20 14:05", text: "蓝鲸计划的口令是七七" },
+      { where: "你和小助手的专属会话", who: "小美", when: "2026-11-20 14:05", text: "蓝鲸计划的口令是七七" },
       { where: "乙群", who: "小安", when: "2026-11-19 09:30", text: long },
     ];
     await openGroup({ whispers: [whisper("w1", G1, 2, { detail: { hits } }), whisper("w2", G1, 3, { status: "told", detail: { hits } })] });
     await click(inWhisper("w1").getByRole("button", { name: SUMMARY(2) }));
     const items = [...whisperLi("w1").querySelectorAll(".whisper-hit")];
-    expect(items.map((li) => li.querySelector(".whisper-hit-meta").textContent)).toEqual(["你和它的专属会话 · 小美 · 2026-11-20 14:05", "乙群 · 小安 · 2026-11-19 09:30"]);
+    expect(items.map((li) => li.querySelector(".whisper-hit-meta").textContent)).toEqual(["你和小助手的专属会话 · 小美 · 2026-11-20 14:05", "乙群 · 小安 · 2026-11-19 09:30"]);
     expect(items.map((li) => li.querySelector(".whisper-hit-text").textContent)).toEqual(["蓝鲸计划的口令是七七", long]);
     // Before the buttons.
     const tell = inWhisper("w1").getByRole("button", { name: "告诉他们" });
@@ -195,7 +195,7 @@ describe("a whisper in the conversation", () => {
 
   it("a refusal that is not stale keeps the buttons and says why: busy_run, paused, no model, too fast", async () => {
     const cases = [
-      [409, "busy_run", "它正在回复，说完再点。"],
+      [409, "busy_run", "正在回复中，说完再点。"],
       [409, "agent_paused", "这个 Agent 已暂停，恢复后才能重试。"],
       [400, "invalid_request", "这个 Agent 还没有选择模型。"],
       [429, "rate_limited", "回复太频繁了，请稍等一分钟再试。"],
@@ -237,7 +237,7 @@ describe("a whisper in the conversation", () => {
 /** The one line a found_elsewhere whisper is folded to (its control that opens it). */
 const SUMMARY = (n) => `在别处查到了 ${n} 条，要告诉他们吗？`;
 const HITS = [
-  { where: "你和它的专属会话", who: "小美", when: "2026-11-20 14:05", text: "蓝鲸计划的口令是七七" },
+  { where: "你和小助手的专属会话", who: "小美", when: "2026-11-20 14:05", text: "蓝鲸计划的口令是七七" },
   { where: "乙群", who: "小安", when: "2026-11-19 09:30", text: "蓝鲸计划在三楼" },
 ];
 const found = (id, afterSeq, fields = {}) => whisper(id, G1, afterSeq, { detail: { hits: HITS }, ...fields });

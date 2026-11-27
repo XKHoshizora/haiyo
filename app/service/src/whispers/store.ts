@@ -237,6 +237,8 @@ export interface HitRow {
   /** The conversation's title (a group's; null when it has none) and type. */
   title: string | null;
   conversationType: string;
+  /** An Agent's own conversation: that Agent's display name now (null elsewhere), which the hit names it by. */
+  agentName: string | null;
 }
 
 /** The hits of each of `ids` its owner can read now (THE rule, `hitFrom`), in each whisper's order: one statement. */
@@ -254,14 +256,17 @@ export async function readableHits(q: Queryable, ids: readonly string[]): Promis
     sender_handle: string;
     title: string | null;
     conversation_type: string;
+    agent_name: string | null;
   }>(
     `select w.id as whisper_id, h.ord, (h.ref ->> 'at')::int as at, m.created_at, m.body ->> 'text' as text, m.mentions,
             case when m.kind = 'file' then m.body -> 'attachment' ->> 'name' end as attachment_name,
-            sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, c.title, c.type as conversation_type
+            sp.display_name as sender_name, ${handleOf("sp")} as sender_handle, c.title, c.type as conversation_type, ap.display_name as agent_name
        from whispers w
       cross join ${hitFrom("w")}
        join principals sp on sp.id = m.sender_id
        join conversations c on c.id = m.conversation_id
+       left join agent_conversations ac on ac.conversation_id = c.id
+       left join principals ap on ap.id = ac.agent_id
       where w.id = any($1::uuid[]) and ${HIT_READABLE}
       order by w.id, h.ord`,
     [ids],
@@ -278,6 +283,7 @@ export async function readableHits(q: Queryable, ids: readonly string[]): Promis
     senderHandle: r.sender_handle,
     title: r.title,
     conversationType: r.conversation_type,
+    agentName: r.agent_name,
   }));
 }
 

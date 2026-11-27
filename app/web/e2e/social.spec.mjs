@@ -103,7 +103,7 @@ for (const [size, contextOptions] of SIZES) {
     await openAgentDetail(ann.page, name);
     await ann.page.getByRole("tab", { name: "别人" }).click();
     const tab = ann.page.getByRole("region", { name: "Agent 管理" });
-    await tab.getByRole("list", { name: "它和别人的对话" }).getByRole("button").first().click();
+    await tab.getByRole("list", { name: `${name}和别人的对话` }).getByRole("button").first().click();
     const watched = chatPane(ann.page, `${name}和${bo.displayName}`);
     await expect(messageList(watched).getByText("周三下午有空，我会转告主人。")).toBeVisible();
     await expect(watched.getByTestId("social-note")).toHaveText(`你在旁观${name}和${bo.displayName}的对话。你发言时，对方会看到你是主人。`);
@@ -169,7 +169,7 @@ for (const [size, contextOptions] of SIZES) {
     const stoppedList = main.getByRole("list", { name: "已停止往来的人" });
     await expect(stoppedList.getByRole("link", { name: dan.displayName })).toBeVisible();
     await expect(stoppedList).toContainText(/\d{4}年\d+月\d+日停止/);
-    await expect(main.getByText("停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。")).toBeVisible();
+    await expect(main.getByText("停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等对方同意。")).toBeVisible();
     expect(await noSideways(ann.page)).toBe(true);
     await targetsAre44(main);
     await shot(ann.page, "22-use-page-stopped-list", { show: stoppedList });

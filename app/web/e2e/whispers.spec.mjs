@@ -127,7 +127,7 @@ test("a group search that finds nothing, while the Agent has it elsewhere, leave
 
 // --- 2. 告诉他们 ------------------------------------------------------------------------------------------------------------
 
-test("告诉他们 while the Agent is still replying says 它正在回复，说完再点。 and keeps the buttons; after it, the Agent answers in the group in its own words, told neither where nor by whom, quoting the question", async ({ people }) => {
+test("告诉他们 while the Agent is still replying says 正在回复中，说完再点。 and keeps the buttons; after it, the Agent answers in the group in its own words, told neither where nor by whom, quoting the question", async ({ people }) => {
   const world = await elsewhereWorld(people);
   const { ann, annChat, boChat, word, hitText, hTitle, dee, traffic, canaries } = world;
   const tag = uniq(4);
@@ -145,7 +145,7 @@ test("告诉他们 while the Agent is still replying says 它正在回复，说�
   await expect(whisper).toHaveCount(1);
   await unfold(whisper);
   await whisper.getByRole("button", { name: "告诉他们" }).click();
-  await expect(whisper.getByRole("alert")).toHaveText("它正在回复，说完再点。");
+  await expect(whisper.getByRole("alert")).toHaveText("正在回复中，说完再点。");
   await expect(whisper.getByRole("button", { name: "告诉他们" })).toBeEnabled();
   await expect(whisper.getByRole("button", { name: "不用" })).toBeEnabled();
   expect((await modelStub.calls()).length, "nothing was started by the refused click").toBe(2);

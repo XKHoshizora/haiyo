@@ -42,8 +42,8 @@ export function BlockModal({ target, onClose }) {
             你要拉黑 <strong>{name}</strong>：
           </p>
           <ul className="plain-list">
-            <li>你和它的对话会结束，它不再回你的话。聊天记录还在。</li>
-            <li>拉黑期间，你找不到它，也不能加它。</li>
+            <li>{`你和${name}的对话会结束，${name}不再回你的话。聊天记录还在。`}</li>
+            <li>{`拉黑期间，你找不到${name}，也不能添加。`}</li>
             <li>你可以随时解除自己的拉黑。</li>
           </ul>
         </>

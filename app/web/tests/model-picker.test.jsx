@@ -81,7 +81,7 @@ const key = async (target, k) => {
 const activeRow = () => document.getElementById(search().getAttribute("aria-activedescendant"));
 const createButton = () => inMain().getByRole("button", { name: /^创建 Agent$|^创建中…$/ });
 const reasonText = () => document.querySelector(".main-col .form-actions .reason")?.textContent ?? null;
-const PRIVACY = "你与它的对话内容，包括发给它的图片和文件，会发送给所选模型的服务商。";
+const PRIVACY = "你和这个 Agent 的对话内容，包括发给 Agent 的图片和文件，会发送给所选模型的服务商。";
 
 describe("the model picker", () => {
   it("lists 站点提供 (each 免费 or 需余额) and 我的供应商 (provider → its models); a model too small to use cannot be chosen", async () => {
@@ -109,7 +109,7 @@ describe("the model picker", () => {
     await chooseModel("大模型");
     expect(modelBox().textContent).toBe("大模型");
     expect(listbox()).toBeNull();
-    expect(mainText()).toContain("需要余额：这个模型按用量从余额扣点，你现在的余额是 0 点，余额用完后它不会回复；最后一次回复可能把余额扣成负数。");
+    expect(mainText()).toContain("需要余额：这个模型按用量从余额扣点，你现在的余额是 0 点，余额用完后不会再回复；最后一次回复可能把余额扣成负数。");
     fireEvent.change(inMain().getByLabelText("名称"), { target: { value: "MyBot" } });
     expect(createButton().disabled).toBe(false);
   });

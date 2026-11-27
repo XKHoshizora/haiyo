@@ -178,11 +178,11 @@ describe("a search in a group that finds nothing there", () => {
       askedSeq: asked,
     });
     const stored = JSON.stringify(made!.body.detail);
-    for (const never of ["CANARY", "蓝鲸计划", "乙群", "你和它的专属会话", "olive", "mia"]) expect([never, stored.includes(never)]).toEqual([never, false]);
+    for (const never of ["CANARY", "蓝鲸计划", "乙群", "你和小助手的专属会话", "olive", "mia"]) expect([never, stored.includes(never)]).toEqual([never, false]);
     // What she reads (the list route, her push): each hit as it is now — where, who, when, what.
     const wire = await wireOf(w.owner, w.g, made!.id);
     expect(wire!.detail!.hits.map((h) => [h.where, h.who, h.text])).toEqual([
-      ["你和它的专属会话", "olive", OWN_NOTE],
+      ["你和小助手的专属会话", "olive", OWN_NOTE],
       ["乙群", "mia", CANARY],
     ]);
     expect(Object.keys(wire!.detail!.hits[0]!).sort()).toEqual(["mentions", "text", "when", "where", "who"]);
@@ -443,7 +443,7 @@ describe("a search in a group that finds nothing there", () => {
     const hook = createElsewhere(elsewhereDeps());
     await askInGroup(w, hook);
     const [made] = await whispersOf(w.owner.id, w.g);
-    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.map((h) => [h.where, h.text])).toEqual([["你和它的专属会话", OWN_NOTE]]);
+    expect((await wireOf(w.owner, w.g, made!.id))!.detail!.hits.map((h) => [h.where, h.text])).toEqual([["你和小助手的专属会话", OWN_NOTE]]);
     expect(made!.body.detail!.hits.map((h) => h.conversationId)).toEqual([w.agent.conversationId]);
   });
 });
@@ -505,7 +505,7 @@ describe("告诉他们", () => {
     expect(call.system).not.toContain("@someone_bot");
     expect(call.system).toContain(hits[0]!.when);
     const whole = JSON.stringify(call);
-    for (const never of ["CANARY-where", "CANARY-who", "你和它的专属会话", "丙群", "乙群"]) expect([never, whole.includes(never)]).toEqual([never, false]);
+    for (const never of ["CANARY-where", "CANARY-who", "你和小助手的专属会话", "丙群", "乙群"]) expect([never, whole.includes(never)]).toEqual([never, false]);
     // Its no-tools sentence is one that does not deny having looked (TOLD_NO_TOOLS), and its last turn is a person's.
     expect(call.system).toContain(TOLD_NO_TOOLS);
     expect(call.system).not.toContain(NO_TOOLS);
@@ -987,7 +987,7 @@ describe("hits are references, read under the owner's access when shown or told"
     expect((await api(app, w.owner, "DELETE", `/api/conversations/${w.b}/members/${w.owner.id}`)).status).toBe(200);
     const wire = (await wireOf(w.owner, w.g, made!.id))!;
     expect(wire.status).toBe("open");
-    expect(wire.detail!.hits.map((h) => [h.where, h.text])).toEqual([["你和它的专属会话", OWN_NOTE]]);
+    expect(wire.detail!.hits.map((h) => [h.where, h.text])).toEqual([["你和小助手的专属会话", OWN_NOTE]]);
     expect(JSON.stringify((await api(app, w.owner, "GET", "/api/sync")).json)).not.toContain("CANARY-ew");
     // Told now: the passage holds what she can read now, and nothing of B.
     const accepted = await api(app, w.owner, "POST", `/api/whispers/${made!.id}/accept`);
@@ -1173,7 +1173,7 @@ describe("fix round 1", () => {
     const after = socket.events.length;
     const first = await socket.next((e) => e.type === "whisper" && e.whisper.id === both!.id, { from: after });
     expect(first.whisper.status).toBe("open");
-    expect(first.whisper.detail.hits.map((h: WireHit) => [h.where, h.text])).toEqual([["你和它的专属会话", OWN_NOTE]]);
+    expect(first.whisper.detail.hits.map((h: WireHit) => [h.where, h.text])).toEqual([["你和小助手的专属会话", OWN_NOTE]]);
     expect(JSON.stringify(first)).not.toContain("CANARY-ew");
     const second = await socket.next((e) => e.type === "whisper" && e.whisper.id === onlyB!.id, { from: after });
     expect(second.whisper.status).toBe("expired");
@@ -1623,6 +1623,7 @@ describe("hitOf: the ranges follow the cut", () => {
     senderHandle: "ned",
     title: "乙群",
     conversationType: "group",
+    agentName: null,
   });
   // (A mention of characters that weigh as much as the words around it, so the windows below are cut by count: `typed` is ASCII, and weighs less.)
   const wide = "＠米娅";

@@ -795,7 +795,7 @@ describe.each([false, true])("being asked to be quiet (memory %s)", (memory) => 
     const first = await decide(w.g, await say(w.member, w.g, "anna 你先别插话了"));
     expect(first.runs).toEqual([]);
     expect(first.notices.map((n) => n.body)).toEqual([
-      { event: "agent_quieted", actorId: anna.id, agentId: anna.id, text: "「anna」暂时不主动发言，需要时可以 @ 它" },
+      { event: "agent_quieted", actorId: anna.id, agentId: anna.id, text: "「anna」暂时不主动发言，需要时可以 @ 一下" },
     ]);
     expect((await noticesOf(w.g)).map((n) => n.seq)).toEqual(first.notices.map((n) => n.seq));
     const raised = await stateOf(anna.id, w.g);

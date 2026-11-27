@@ -796,7 +796,7 @@ describe("the notice that an Agent was asked to be quiet (agent_quieted)", () =>
     );
     const v = toView(M.applySync(M.initial(), sync), { now: NOW });
     expect(v.convs[G1].messages.map((m) => [m.text, Boolean(m.hidden)])).toEqual([
-      ["「安的助手」暂时不主动发言，需要时可以 @ 它", false],
+      ["「安的助手」暂时不主动发言，需要时可以 @ 一下", false],
       ["不认识的 Agent", false],
     ]);
   });

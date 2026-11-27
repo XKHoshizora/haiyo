@@ -42,7 +42,7 @@ export function sendableLevels(protocol, listed) {
   return ALL_LEVELS.filter((l) => l === "none" || sent.includes(l));
 }
 
-export const PRIVACY_TEXT = "你与它的对话内容，包括发给它的图片和文件，会发送给所选模型的服务商。";
+export const PRIVACY_TEXT = "你和这个 Agent 的对话内容，包括发给 Agent 的图片和文件，会发送给所选模型的服务商。";
 
 /** A model choice as a `<select>` value: the same choice always gives the same key ("" for none). */
 export const modelKey = (model) =>
@@ -245,9 +245,9 @@ export function useModelSources({ load = true } = {}) {
 const positive = (balance) => typeof balance === "string" && !balance.trim().startsWith("-") && /[1-9]/.test(balance);
 
 function paidText(usage) {
-  if (!usage || typeof usage.balance !== "string") return "需要余额：这个模型按用量从余额扣点，余额用完后它不会回复；最后一次回复可能把余额扣成负数。";
+  if (!usage || typeof usage.balance !== "string") return "需要余额：这个模型按用量从余额扣点，余额用完后不会再回复；最后一次回复可能把余额扣成负数。";
   if (positive(usage.balance)) return `这个模型按用量从余额扣点，你现在的余额是 ${usage.balanceText} 点。`;
-  return `需要余额：这个模型按用量从余额扣点，你现在的余额是 ${usage.balanceText} 点，余额用完后它不会回复；最后一次回复可能把余额扣成负数。`;
+  return `需要余额：这个模型按用量从余额扣点，你现在的余额是 ${usage.balanceText} 点，余额用完后不会再回复；最后一次回复可能把余额扣成负数。`;
 }
 
 /** Settings › 模型供应商, where models come from (the existing way there). */
@@ -337,7 +337,7 @@ export function openModelChoice(dispatch, agentId) {
 }
 
 /** Under the picker's search where it is opened from a group: the model is the Agent's, wherever it talks. */
-export const EVERYWHERE_NOTE = "换了以后，它在所有会话里都用这个模型";
+export const EVERYWHERE_NOTE = "换了以后，所有会话里都用这个模型";
 
 /**
  * The model of one of my Agents, switched where I am (its own conversation's header and details panel; in a group, its row

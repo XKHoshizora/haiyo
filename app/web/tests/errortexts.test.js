@@ -65,11 +65,11 @@ describe("group refusals", () => {
     expect(groupErrorText("add", err("rate_limited"))).toContain("太频繁");
   });
   it("adding or removing an Agent reads as being about an Agent, never about a friend", () => {
-    expect(groupErrorText("addAgent", err("already_member"))).toBe("它已经在群里了。");
+    expect(groupErrorText("addAgent", err("already_member"))).toBe("这个 Agent 已经在群里了。");
     expect(groupErrorText("addAgent", err("forbidden"))).toBe("没能添加：这个 Agent 可能已删除，或本群已满 500 人。");
     expect(groupErrorText("addAgent", err("not_found"))).toBe("你已不在这个群聊中。");
-    expect(groupErrorText("removeAgent", err("forbidden"))).toBe("只有群的创建者和它的主人可以把它移出群聊。");
-    expect(groupErrorText("removeAgent", err("not_found"))).toBe("它已经不在群里了。");
+    expect(groupErrorText("removeAgent", err("forbidden"))).toBe("只有群的创建者和 Agent 的主人可以把 Agent 移出群聊。");
+    expect(groupErrorText("removeAgent", err("not_found"))).toBe("这个 Agent 已经不在群里了。");
     for (const code of ["already_member", "forbidden", "not_found"]) expect(groupErrorText("addAgent", err(code))).not.toMatch(/好友|对方/);
   });
 });
@@ -146,8 +146,8 @@ describe("the sentences batch 2A names", () => {
     expect(agentErrorText("create", err("handle_taken"))).toBe("你已经有一个用这个账号名的 Agent 了，请换一个。");
     expect(agentErrorText("edit", err("agent_deleted"))).toBe("这个 Agent 已删除。");
     expect(replyErrorText("retry", err("agent_paused"))).toBe("这个 Agent 已暂停，恢复后才能重试。");
-    expect(replyErrorText("retry", err("busy_run"))).toBe("它正在回复，请等这次回复结束。");
-    expect(agentErrorText("confirm", err("stale_proposal"))).toBe("这份提议已失效，请让它重新生成提议。");
+    expect(replyErrorText("retry", err("busy_run"))).toBe("正在回复中，请等这次回复结束。");
+    expect(agentErrorText("confirm", err("stale_proposal"))).toBe("这份提议已失效，请让 Agent 重新生成一份。");
     expect(agentErrorText("draft", err("context_too_small"))).toContain("上下文");
     expect(providerErrorText("create", err("provider_limit"))).toBe("最多只能添加 10 个模型供应商。");
     expect(providerErrorText("create", err("name_taken"))).toBe("你已经有一个同名的供应商了，请换个名称。");
@@ -168,16 +168,16 @@ describe("the sentences batch 2A names", () => {
 
   it("an Agent's reply in a group that was halted, or whose Agent was taken out: why, and nothing to retry", () => {
     expect(runFailureText({ id: "r", status: "cancelled", error: "halted", retryable: false }, NOW)).toBe("已被群成员叫停。");
-    expect(runFailureText({ id: "r", status: "cancelled", error: "agent_removed", retryable: false }, NOW)).toBe("它已不在这个群里，这条回复没有发出。");
+    expect(runFailureText({ id: "r", status: "cancelled", error: "agent_removed", retryable: false }, NOW)).toBe("已不在这个群里，这条回复没有发出。");
     // (Should either come as a failure, it reads the same.)
     expect(runFailureText({ id: "r", status: "failed", error: "halted", retryable: false }, NOW)).toBe("已被群成员叫停。");
-    expect(runFailureText({ id: "r", status: "failed", error: "agent_removed", retryable: false }, NOW)).toBe("它已不在这个群里，这条回复没有发出。");
+    expect(runFailureText({ id: "r", status: "failed", error: "agent_removed", retryable: false }, NOW)).toBe("已不在这个群里，这条回复没有发出。");
   });
 
   it("provider_in_use names the Agents that use it", () => {
     const inUse = { code: "provider_in_use", status: 409, agents: [{ id: "a", name: "小助手" }, { id: "b", name: "写作助手" }] };
-    expect(providerErrorText("delete", inUse)).toBe("还有 Agent 在使用这个供应商：小助手、写作助手。请先给它们换一个模型。");
-    expect(providerErrorText("delete", { code: "provider_in_use", status: 409 })).toBe("还有 Agent 在使用这个供应商，请先给它们换一个模型。");
+    expect(providerErrorText("delete", inUse)).toBe("还有 Agent 在使用这个供应商：小助手、写作助手。请先给这些 Agent 换一个模型。");
+    expect(providerErrorText("delete", { code: "provider_in_use", status: 409 })).toBe("还有 Agent 在使用这个供应商，请先给这些 Agent 换一个模型。");
   });
 
   // One mapping from what the provider's address did to a sentence, for 测试连接 and 同步模型 alike: an answer (any HTTP status) is
@@ -242,8 +242,8 @@ describe("the sentences batch 2A names", () => {
     expect(runFailureText(failed("no_quota"), NOW)).toBe("余额不足：这个模型需要余额才能使用。");
     expect(runFailureText(failed("busy"), NOW)).toContain("没有扣费");
     expect(runFailureText(failed("something_new"), NOW)).toBe("这次没有回复成功。");
-    expect(runFailureText({ id: "r", status: "cancelled", error: "agent_paused" }, NOW)).toBe("它已暂停，这次回复已取消。");
-    expect(runFailureText({ id: "r", status: "cancelled", error: "agent_deleted" }, NOW)).toBe("它已删除，这次回复已取消。");
+    expect(runFailureText({ id: "r", status: "cancelled", error: "agent_paused" }, NOW)).toBe("已暂停，这次回复已取消。");
+    expect(runFailureText({ id: "r", status: "cancelled", error: "agent_deleted" }, NOW)).toBe("已删除，这次回复已取消。");
     // Nothing failed: a new topic left the reply nothing to answer; a finished or stopped reply; no run.
     expect(runFailureText({ id: "r", status: "cancelled" }, NOW)).toBe("");
     expect(runFailureText({ id: "r", status: "done" }, NOW)).toBe("");
@@ -259,8 +259,8 @@ describe("the sentences batch 2A names", () => {
     expect(new Set(texts).size).toBe(codes.length);
     expect(runFailureText(failed("rate_limited"), NOW)).toBe("发得太快了，请稍后重试。");
     expect(runFailureText(failed("model_gone"), NOW)).toBe("这个模型不可用，换一个模型。");
-    expect(runFailureText(failed("agent_paused"), NOW)).toBe("它已暂停，这次没有回复。");
-    expect(runFailureText(failed("agent_deleted"), NOW)).toBe("它已删除，这次没有回复。");
+    expect(runFailureText(failed("agent_paused"), NOW)).toBe("已暂停，这次没有回复。");
+    expect(runFailureText(failed("agent_deleted"), NOW)).toBe("已删除，这次没有回复。");
   });
 
   it("thinking_exhausted: its own sentences for a reply and for a draft", () => {

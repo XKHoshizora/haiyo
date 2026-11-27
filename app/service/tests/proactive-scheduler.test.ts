@@ -870,7 +870,7 @@ describe("what comes of it, with the reply worker running", () => {
     await say(app, w.member, w.g, "anna 你先别插话了");
     for (const s of sockets) {
       const pushed = await s.next((e) => e.type === "message" && e.message.system?.event === "agent_quieted");
-      expect(pushed.message.text).toBe("「anna」暂时不主动发言，需要时可以 @ 它");
+      expect(pushed.message.text).toBe("「anna」暂时不主动发言，需要时可以 @ 一下");
     }
     expect(judge.calls).toHaveLength(1);
     expect(await runsOf(db, anna.id, w.g)).toEqual([]);

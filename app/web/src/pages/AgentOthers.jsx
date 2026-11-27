@@ -10,16 +10,17 @@ import { friendIds, isObserved, socialOn } from "../state/social.js";
 import { Avatar, Btn, Modal, Notice, Tag } from "../ui/primitives.jsx";
 import { useAction, useNow } from "./useAction.js";
 import { MemoryDisclosure } from "./ShownNotes.jsx";
+import { groupMentionsQuestion } from "./AgentForm.jsx";
 
-/** The one question and its three answers, word for word (plan "Exact copy"). */
-export const POLICY_QUESTION = "谁可以添加它";
+/** The one question (in the Agent's name, design §8) and its three answers, word for word (plan "Exact copy"). */
+export const policyQuestion = (name) => `谁可以添加${name}`;
 export const POLICY_OPTIONS = [
   ["ask", "需要我同意"],
   ["contacts", "我的好友可以直接添加"],
   ["none", "不让别人添加"],
 ];
 /** Who may add it governs the conversation with it only: who may @ it in a group is the Agent's own setting 群里谁可以叫它 (and bars). */
-const GROUPS_UNCHANGED = "这不改变谁能在群里 @ 它，那由“群里谁可以叫它”决定。";
+const groupsUnchanged = (name) => `这不改变谁能在群里 @ ${name}，那由“${groupMentionsQuestion(name)}”决定。`;
 const PICKED_LABEL = "只让其中几位好友";
 
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
@@ -110,7 +111,7 @@ export function AgentOthersTab({ agent }) {
       {/* Before anyone is let in (ring 1b): what it may use of my notes when it talks with them, for every account. */}
       <MemoryDisclosure agentId={agent.id} name={agent.name} />
       <fieldset className="social-policy">
-        <legend>{POLICY_QUESTION}</legend>
+        <legend>{policyQuestion(agent.name)}</legend>
         {POLICY_OPTIONS.map(([value, label]) => (
           <label key={value} className="social-option">
             <input type="radio" name={`policy-${agent.id}`} value={value} checked={form.policy === value} onChange={() => setForm({ ...form, policy: value })} />
@@ -146,11 +147,11 @@ export function AgentOthersTab({ agent }) {
         </div>
       </fieldset>
 
-      <h3>已添加它的人</h3>
+      <h3>{`已添加${agent.name}的人`}</h3>
       {people.length === 0 ? (
-        <p className="muted">还没有人添加它。</p>
+        <p className="muted">{`还没有人添加${agent.name}。`}</p>
       ) : (
-        <ul className="member-rows" aria-label="已添加它的人">
+        <ul className="member-rows" aria-label={`已添加${agent.name}的人`}>
           {people.map((r) => (
             <li key={r.subject.id}>
               <Avatar id={r.subject.id} size={40} />
@@ -193,11 +194,11 @@ export function AgentOthersTab({ agent }) {
         </ul>
       )}
 
-      <h3>它和别人的对话</h3>
+      <h3>{`${agent.name}和别人的对话`}</h3>
       {observed.length === 0 ? (
-        <p className="muted">它还没有和别人聊过。</p>
+        <p className="muted">{`${agent.name}还没有和别人聊过。`}</p>
       ) : (
-        <ul className="rows social-convs" aria-label="它和别人的对话">
+        <ul className="rows social-convs" aria-label={`${agent.name}和别人的对话`}>
           {observed.map((c) => {
             const other = (c.social?.participants ?? []).find((id) => id !== agent.id);
             return (
@@ -237,8 +238,8 @@ export function AgentOthersTab({ agent }) {
         >
           <p>
             {form.policy === "none"
-              ? `${ask === 1 ? "对方" : "他们"}不能再和它聊天，也找不到它了。还在等你同意的申请会取消。${GROUPS_UNCHANGED}`
-              : `${ask === 1 ? "对方" : "他们"}不能再和它聊天。想再聊要重新申请，由你同意。${GROUPS_UNCHANGED}`}
+              ? `${ask === 1 ? "对方" : "他们"}不能再和${agent.name}聊天，也找不到了。还在等你同意的申请会取消。${groupsUnchanged(agent.name)}`
+              : `${ask === 1 ? "对方" : "他们"}不能再和${agent.name}聊天。想再聊要重新申请，由你同意。${groupsUnchanged(agent.name)}`}
           </p>
         </Modal>
       )}

@@ -233,9 +233,9 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
   // answers only when named and this message did not name it (its stored mentions, as the service decided at send).
   const ownAgent = mine && conv.type === "agent" ? state.agents[conv.agentId] : null;
   const sentNote = ownAgent?.paused
-    ? " · 它暂停中"
+    ? ` · ${ownAgent.name}暂停中`
     : ownAgent?.replyMode === "mention" && !namesAgent(msg, conv.agentId)
-      ? " · 没点名，它不会回复"
+      ? ` · 没点名，${ownAgent.name}不会回复`
       : "";
   const cancelUpload = () => actions.cancelUpload(msg.clientTxn);
   const retry = () => {

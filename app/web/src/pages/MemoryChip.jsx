@@ -107,8 +107,8 @@ export function MemoryNotice({ msg, conv }) {
     );
   }
 
-  // The Agent's name as the conversation shows it; one that cannot be named is 它.
-  const sentence = memorySentence({ ...system, name: entity(state, system.actorId)?.name || "它" });
+  // The Agent's name as the conversation shows it; one that cannot be named is 「Agent」 (never 「它」: design §8).
+  const sentence = memorySentence({ ...system, name: entity(state, system.actorId)?.name || "Agent" });
   return (
     <li className="msg-memory" data-msg={msg.id}>
       <button type="button" className="memory-chip" aria-expanded={open} onClick={() => setOpen(!open)}>

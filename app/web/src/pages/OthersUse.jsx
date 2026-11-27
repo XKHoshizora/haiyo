@@ -110,7 +110,7 @@ function LimitSentence({ limit, ownKeyPoints, onSave }) {
       </p>
       {error && <p className="field-msg" role="alert">{error}</p>}
       <p id={hintId} className="field-hint">
-        你所有的 Agent 合在一起算，它们主动回复的也算。{own}每天零点（站点时间）重新算。已经在回复的会照常回完，所以一天用的可能超过这个数。
+        你所有的 Agent 合在一起算，主动回复的也算。{own}每天零点（站点时间）重新算。已经在回复的会照常回完，所以一天用的可能超过这个数。
       </p>
     </div>
   );
@@ -220,7 +220,7 @@ export function OthersUsePage({ back }) {
             <p className="muted">
               停止往来后，你们各自的 Agent 都不再回应对方。想恢复，点名字进入对方的资料页。
               {/* (Adding again is only possible, and only needed for a conversation with the Agent, while the switch is on.) */}
-              {social && "恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等它的主人同意。"}
+              {social && "恢复往来后，之前的对话不会自动恢复；想再聊，需要重新添加对方的 Agent，并等对方同意。"}
             </p>
             {stopped.length === 0 ? (
               <p className="muted">现在没有停止往来的人。</p>
@@ -251,7 +251,7 @@ export function OthersUsePage({ back }) {
         <div>
           <h2>{SETTINGS_PAGE_NAMES.others}</h2>
           {/* (With the site's Agent social switch off nobody chats with someone else's Agent: only what does happen is said.) */}
-          <p className="muted">{socialOn(state) ? "别人和你的 Agent 聊天、在群里 @ 它，花的点都算在你这里。" : "别人在群里 @ 你的 Agent，花的点都算在你这里。"}</p>
+          <p className="muted">{socialOn(state) ? "别人在群里 @ 你的 Agent、和你的 Agent 聊天，花的点都算在你这里。" : "别人在群里 @ 你的 Agent，花的点都算在你这里。"}</p>
         </div>
       </header>
       <div className="page-body">{body}</div>

@@ -581,7 +581,7 @@ test("an Agent is taken out by the group's creator (not its owner here); a membe
   const cyProfile = await openMembers(cy.page, title);
   await memberRow(cy.page, cyProfile, agent.name).getByRole("button", { name: "移除" }).click();
   const confirm = cy.page.getByRole("dialog", { name: `移除${agent.name}` });
-  await expect(confirm).toContainText("它将不再在这个群里回复");
+  await expect(confirm).toContainText(`${agent.name}将不再在这个群里回复`);
   await confirm.getByRole("button", { name: "确认移除" }).click();
   await expect(cy.page.getByRole("status").filter({ hasText: `已将${agent.name}移出群聊` })).toBeVisible();
   await expect(memberRow(cy.page, cyProfile, agent.name)).toHaveCount(0);

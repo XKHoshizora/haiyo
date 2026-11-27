@@ -76,7 +76,7 @@ const CONTEXT_MIN = 1000;
 const CONTEXT_MAX = 2000000;
 
 /** Spec §6.8: what is said wherever a model source is chosen or added. */
-const PRIVACY_TEXT = "选用这个供应商模型的 Agent，你与它的对话内容，包括发给它的图片和文件，会发送给这个供应商。";
+const PRIVACY_TEXT = "你和选用这个供应商模型的 Agent 的对话内容，包括发给 Agent 的图片和文件，会发送给这个供应商。";
 /** The service never sends a saved key to another origin than the one it was saved for. */
 const KEY_AGAIN = "接口地址换了域名，需要重新填写密钥。";
 const KEY_CLEARED = "为了安全，刚才填写的密钥已经清空，请重新填写。";
@@ -353,7 +353,7 @@ function DeleteModal({ provider, onClose }) {
       <p>删除后，它保存的密钥和模型列表会一起删除，不可恢复。</p>
       {inUse ? (
         <Notice tone="warn">
-          还有 Agent 在使用这个供应商，请先给它们换一个模型，再删除：
+          还有 Agent 在使用这个供应商，请先给这些 Agent 换一个模型，再删除：
           <ul className="plain-list" aria-label="正在使用它的 Agent">
             {refusal.agents.map((a) => (
               <li key={a.id}>{a.name}</li>
@@ -465,11 +465,11 @@ function ModelRow({ model, open, error, defaults, onToggle, onChange, onRemove }
               <legend className="sr-only">{model.name} 能做什么</legend>
               <label>
                 <input type="checkbox" checked={model.vision} onChange={flag("vision")} />
-                <span>能看图片 <small>发给它的图片会交给模型，否则只告诉它文件名</small></span>
+                <span>能看图片 <small>图片会交给模型，否则只告诉模型文件名</small></span>
               </label>
               <label>
                 <input type="checkbox" checked={model.pdf} onChange={flag("pdf")} />
-                <span>能直接读 PDF <small>PDF 会原样交给模型，否则只告诉它文件名</small></span>
+                <span>能直接读 PDF <small>PDF 会原样交给模型，否则只告诉模型文件名</small></span>
               </label>
               <label>
                 <input type="checkbox" checked={model.reasoning} onChange={flag("reasoning")} />
