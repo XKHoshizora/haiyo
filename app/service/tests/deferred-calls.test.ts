@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createAgentPort, recoverRuns } from "../src/agents/port-impl.ts";
 import { mentionsAtSend } from "../src/agents/mentions.ts";
-import { queueRun, triggerFromAgent } from "../src/agents/runs.ts";
+import { queueRun, takeDeferred, triggerFromAgent } from "../src/agents/runs.ts";
 import { lockAgent } from "../src/agents/store.ts";
 import { failedEnd, isRunEnd, NOTHING, type RunTicket } from "../src/agents/runtime/port.ts";
 import { createAgentWorker } from "../src/agents/runtime/worker.ts";
@@ -977,6 +977,27 @@ describe("one order for every bulk lock of active run rows: ascending run id (T2
       { status: "cancelled", error: "access_ended" },
     ]);
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where id = $1", [low]);
+  });
+
+  it("the taking of what waits locks the assignment's calls in key order before it deletes them (T2 fix 4, U3): while another transaction holds the first, the taker holds none of the others — whatever path the planner takes to them", async () => {
+    const w = await world();
+    const [first, second] = [await say(w.mia, w.g, "第一句"), await say(w.mia, w.g, "第二句")];
+    expect(await runsOf(w.agent.id, w.g)).toEqual([]);
+    // One assignment of mia's two calls, the later made first: a delete in no order of its own meets it first on a scan of the table.
+    await waitingCall(w.agent.id, w.g, second, w.owner.id, w.mia.id);
+    await waitingCall(w.agent.id, w.g, first, w.owner.id, w.mia.id);
+    const taking = () =>
+      db.tx(async (t) => {
+        // A plan that no index orders: the rows in their physical order.
+        await t.query("set local enable_indexscan = off");
+        await t.query("set local enable_bitmapscan = off");
+        await lockConversation(t, w.g);
+        return takeDeferred(t, await lockAgent(t, w.agent.id, w.g), w.g, 0, app.deps.config);
+      });
+    await inOrder(lockWaiting(w.agent.id, w.g, first), lockWaiting(w.agent.id, w.g, second), taking);
+    expect((await runsOf(w.agent.id, w.g)).map((r) => [r.status, r.caller, r.calls])).toEqual([["queued", w.mia.id, [first, second]]]);
+    expect(await waiting(w.agent.id, w.g)).toEqual([]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
   });
 
   it("the switch off and nothing to end, a claim's sweep is one statement and no transaction (T2 fix 3, S2)", async () => {

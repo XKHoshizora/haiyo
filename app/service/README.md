@@ -5082,7 +5082,8 @@ queued social replies alike, so that two of them never hold one each of two run 
 the rows that one statement locked, never a run row that became active after it (an Agent's message in a group reads the Agents
 it calls without locking their rows, so a reply can be queued for one of them meanwhile: it is held to the rule of its run at its
 `begin`, admission and post, which see the ending committed), so it never waits for a run row after its first. The calls waiting
-(`deferred_calls`) come after the run rows, several dropped at once in their key's order (`runs.ts` `dropWaiting`). With the
+(`deferred_calls`) come after the run rows, several dropped or taken at once locked in their key's order before any is deleted
+(`runs.ts` `dropWaiting`, and `takeHead` for the assignment the end of a reply takes). With the
 switch off and nothing to end, the sweep at a claim is one read and no transaction; a run's end (`finish`, recovery) takes its owner's `accounts` row
 to settle and, for the reply of the calls that waited, to hold them to the owner's number — the same row, last; an Agent's
 message in a group holds only its own `agents` row and reads the others' (In a group, above); a halt locks the group's

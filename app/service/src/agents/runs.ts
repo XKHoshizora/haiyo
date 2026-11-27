@@ -1484,7 +1484,8 @@ interface Waited {
 /**
  * The head of the calls waiting for `agentId` in `conversationId` — the oldest (by seq: the order they were accepted in, each under
  * the conversation's row) — and every call right after it of the same identity (lane and caller), up to the first of another:
- * ONE assignment, taken out of `deferred_calls` (deleted) and returned oldest first. Empty when nothing waits.
+ * ONE assignment, taken out of `deferred_calls` (deleted) and returned oldest first. Empty when nothing waits. Its calls are locked in
+ * their key's order before any is deleted (`taken`), as every drop of several waiting calls takes them (`dropWaiting`; T2 fix 4, U3).
  */
 async function takeHead(t: Tx, agentId: string, conversationId: string): Promise<Waited[]> {
   const { rows } = await t.query<Omit<Waited, "seq"> & { seq: string }>(
@@ -1493,11 +1494,15 @@ async function takeHead(t: Tx, agentId: string, conversationId: string): Promise
      ), stop as (
        select min(d.message_seq) as seq from deferred_calls d cross join head h
         where d.agent_id = $1 and d.conversation_id = $2 and (d.lane is distinct from h.lane or d.caller_id is distinct from h.caller_id)
+     ), taken as materialized (
+       select d.agent_id, d.conversation_id, d.message_seq from deferred_calls d cross join head h cross join stop s
+        where d.agent_id = $1 and d.conversation_id = $2 and d.lane = h.lane and d.caller_id is not distinct from h.caller_id
+          and (s.seq is null or d.message_seq < s.seq)
+        order by d.agent_id, d.conversation_id, d.message_seq for update of d
      )
-     delete from deferred_calls d using head h, stop s
-      where d.agent_id = $1 and d.conversation_id = $2 and d.lane = h.lane and d.caller_id is not distinct from h.caller_id
-        and (s.seq is null or d.message_seq < s.seq)
-     returning d.message_seq::text as seq, d.lane, d.caller_id, d.triggered_by, d.asker_ids`,
+     delete from deferred_calls x using taken k
+      where x.agent_id = k.agent_id and x.conversation_id = k.conversation_id and x.message_seq = k.message_seq
+     returning x.message_seq::text as seq, x.lane, x.caller_id, x.triggered_by, x.asker_ids`,
     [agentId, conversationId],
   );
   return rows.map((r) => ({ ...r, seq: Number(r.seq) })).sort((a, b) => a.seq - b.seq);
