@@ -179,6 +179,7 @@ export async function runPersonaAid(deps: PersonaAidDeps, agent: Claimed, closin
     log.info({ metric: "persona_aid", agentId: agent.id, cards: 0, answered: false }, "the persona aid read a persona");
     return 0;
   }
+  // Sorting keeps priority: a read that would crowd it out, or whose numbers cannot be read, waits for a later pass.
   let deferred: boolean;
   try {
     deferred = await crowds(db, config, agent.ownerId, sentences.length);
@@ -197,11 +198,14 @@ export async function runPersonaAid(deps: PersonaAidDeps, agent: Claimed, closin
     const asked = await askAllOutcome(sort, `句子：${s.text.trim()}`, [QUESTION], "persona", closing);
     if (asked.started) started++;
     if (asked.answers === null) {
+      // A moment's refusal, the limits unreadable, the stop: the version is read whole at a later pass.
       if (GIVEN_BACK.has(asked.why)) {
         await releasePersona(db, agent);
         return started;
       }
+      // This request failed: this sentence is no candidate.
       if (asked.why === "failed") continue;
+      // No judge, the owner's or the site's day used up: nothing more can be asked now; what was answered stands.
       break;
     }
     answered = true;
