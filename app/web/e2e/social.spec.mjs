@@ -9,9 +9,10 @@ import { befriend, sendApi, uniq } from "./support/accounts.mjs";
 import { chatPane, composer, goTo, listRow, messageList, openAgentDetail, sendText } from "./support/app.mjs";
 import { canControlService, restartService } from "./support/control.mjs";
 import { accountFromBeforeStepL, backdateStop, chargeOthersToday } from "./support/db.mjs";
+import { judgeStub, PERSONA_FACT_MARK } from "./support/judge-stub.mjs";
 import { modelStub } from "./support/model-stub.mjs";
 import { integShot as shot } from "./support/shots.mjs";
-import { addApi, agentApi, groupApi } from "./support/tools.mjs";
+import { addApi, agentApi, DEFAULT_PERSONA, groupApi } from "./support/tools.mjs";
 
 const SIZES = [
   ["402x874", { viewport: { width: 402, height: 874 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 }],
@@ -39,15 +40,15 @@ const openUsePage = async (page) => {
   return main;
 };
 /**
- * An Agent of `owner`'s whose persona the persona aid has already read. With the switch on the aid reads every new persona once, with a
- * model call of its own that takes the stub's next scripted step: it is given its answer (`facts`, none by default) and waited for, so
- * that a reply scripted afterwards is the reply's.
+ * An Agent of `owner`'s whose persona the persona aid has already read. With the switch on the aid reads every new persona once: one
+ * question of the judgement model per sentence (the judgement stub answers by its rule: a sentence with `PERSONA_FACT_MARK` is a fact,
+ * judge-stub.mjs), no model call. It is waited for until it has asked about exactly `sentences` (the persona's, in order), so that what
+ * the spec does next meets a persona that has been read.
  */
-async function agentRead(owner, fields, facts = []) {
-  const before = (await modelStub.calls()).length;
-  await modelStub.reply(JSON.stringify({ facts }));
+async function agentRead(owner, fields, sentences) {
+  const before = (await judgeStub.personaReads()).length;
   const agent = await agentApi(owner, fields);
-  await expect.poll(async () => (await modelStub.calls()).length, { message: "the persona aid's read", timeout: 40_000 }).toBe(before + 1);
+  await expect.poll(async () => (await judgeStub.personaReads()).slice(before), { message: "the persona aid's read", timeout: 40_000 }).toEqual(sentences);
   return agent;
 }
 /** The Agent's messages of a conversation, as its member reads them through the API. */
@@ -57,11 +58,11 @@ const agentTexts = async (person, conversationId, agentId) =>
 test.beforeAll(async () => {
   if (!canControlService) return;
   await restartService({ SOCIAL: JSON.stringify({ enabled: true }) });
-  // The switch just came on: the persona aid now reads every Agent the suite has made so far, each read a model call. Nothing here
-  // starts before that is over (`modelStub.quiet`), or those calls would be counted, and would take the replies, as this spec's own.
+  // The switch just came on: the persona aid now reads every Agent the suite has made so far, a judgement request per sentence. Nothing
+  // here starts before that is over (`judgeStub.quiet`), or those requests would be taken for this spec's own reads (`agentRead`).
   test.setTimeout(360_000);
-  const backlog = await modelStub.quiet();
-  console.log(`[social.spec.mjs] the persona aid's backlog at the switch-on: ${backlog} model call(s) before the stub was quiet`);
+  const backlog = await judgeStub.quiet();
+  console.log(`[social.spec.mjs] the persona aid's backlog at the switch-on: ${backlog} sentence(s) asked before it was quiet`);
 });
 test.afterAll(async () => {
   if (canControlService) await restartService({});
@@ -77,7 +78,7 @@ for (const [size, contextOptions] of SIZES) {
     const bo = await people.member("Bo", { contextOptions });
     const cy = await people.member("Cy", { open: false });
     const dan = await people.member("Dan", { open: false });
-    const agent = await agentRead(ann, { name: `帮手${uniq(4)}`, intro: "陪你聊天" });
+    const agent = await agentRead(ann, { name: `帮手${uniq(4)}`, intro: "陪你聊天" }, [DEFAULT_PERSONA]);
     const name = agent.name;
 
     // ── Bo is let in (a request, Ann's yes) and writes: the Agent answers him, and Ann reads it as the owner who watches.
@@ -224,8 +225,9 @@ for (const [size, contextOptions] of SIZES) {
     const ann = await people.member("Ann", { contextOptions });
     const bo = await people.member("Bo", { contextOptions });
     const FACT = "主人住在杭州滨江区，家里养了一只猫。";
-    // The persona aid reads each new persona once: its answer names the sentence that is a fact.
-    const agent = await agentRead(ann, { name: `小周${uniq(4)}`, persona: `你是一个说话简洁的助手。${FACT}遇到不懂的事要直说。` }, [FACT]);
+    expect(FACT).toContain(PERSONA_FACT_MARK);
+    // The persona aid reads each new persona once, a question per sentence: the judgement stub finds FACT a fact, and the others not.
+    const agent = await agentRead(ann, { name: `小周${uniq(4)}`, persona: `你是一个说话简洁的助手。${FACT}遇到不懂的事要直说。` }, ["你是一个说话简洁的助手。", FACT, "遇到不懂的事要直说。"]);
     const name = agent.name;
 
     // ── The persona card: an unread message in the Agent's own conversation, first in the list, with its question and two buttons.

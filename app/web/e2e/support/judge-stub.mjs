@@ -23,6 +23,14 @@ export const HUSH = "别插话";
  */
 export const VAULT_MARK = "体检";
 export const LISTEN_MARK = "报告";
+/**
+ * The persona aid's rule (social.spec.mjs; app/service/src/memory/persona-aid.ts): it asks one question of each sentence of a new
+ * persona, the state `句子：<sentence>`; a sentence that contains `PERSONA_FACT_MARK` tells a stranger a fact of the owner's life
+ * (answered 0.95: a card), any other does not (0.05).
+ */
+export const PERSONA_FACT_MARK = "住在";
+/** The key the persona aid asks its question under. */
+const PERSONA_KEY = "persona_fact";
 
 /**
  * The memory feature's questions (app/service/src/memory/sort.ts, hearsay.ts; agents/proactive/candidates.ts), each recognised
@@ -34,12 +42,15 @@ export const LISTEN_MARK = "报告";
  * - listener "the owner said something about themselves": 0.05;
  * - hearsay "something new in this batch": 0.95; hearsay "abuse": 0.05;
  * - "the owner asked, in these words, to forget or delete something" (memory/sort.ts `ownerAsked`, asked when a review's remove would
- *   otherwise wait, whatever the words; a lock is never asked about): 0.95 — the owner asked.
+ *   otherwise wait, whatever the words; a lock is never asked about): 0.95 — the owner asked;
+ * - the persona aid's "a stranger learns a fact of the owner's real life from this sentence": 0.95 when the sentence holds
+ *   `PERSONA_FACT_MARK`, else 0.05.
  */
 function memoryAnswer(state, question) {
   if (question?.type !== "noul") return null;
   const text = String(question.instructions ?? "");
   const has = (phrase) => text.includes(phrase);
+  if (has("这是一个 AI 助手的人格设定里的一句话")) return String(state ?? "").includes(PERSONA_FACT_MARK) ? SURE : 0.05;
   if (has("他是在叫助手删掉、忘掉或不要记下某件关于他的事")) return SURE;
   if (has("这是一个人的 AI 助手记下的一条关于主人的笔记") || has("这是一个 AI 助手给自己记的一条笔记")) return String(state ?? "").includes(VAULT_MARK) ? 0.05 : SURE;
   if (has("这是一个 AI 助手关于主人的笔记。state 是一个 JSON：new 是一条新的笔记")) return 0.05;
@@ -153,6 +164,35 @@ export const judgeStub = {
   /** The requests received so far, oldest first: `{at, authorization, body: {model, state, questions}, answer}`. */
   async requests() {
     return (await call("state")).requests;
+  },
+  /**
+   * The sentences the persona aid has asked about so far, oldest first: one request each (its state `句子：<sentence>`, the
+   * sentence trimmed).
+   */
+  async personaReads() {
+    return (await judgeStub.requests()).filter((r) => Object.hasOwn(r.body?.questions ?? {}, PERSONA_KEY)).map((r) => String(r.body.state).replace(/^句子：/, ""));
+  },
+  /**
+   * Waits until the persona aid has asked nothing for `ms`; resolves with how many sentences it asked about while it waited. For
+   * the suites that turn the Agent social switch on: at the switch-on the aid reads EVERY persona that exists once (the service's
+   * own rule: 10 owners a poll, a poll every 5 s), and by then the suite has made a few hundred Agents; a spec that waits for its
+   * own Agent's read must not count the backlog's.
+   */
+  async quiet(ms = 12_000, timeout = 300_000) {
+    const started = Date.now();
+    const first = (await judgeStub.personaReads()).length;
+    let seen = first;
+    let since = Date.now();
+    while (Date.now() - since < ms) {
+      if (Date.now() - started > timeout) throw new Error(`the persona aid was never quiet for ${ms} ms (${seen - first} sentences in ${timeout} ms)`);
+      await new Promise((r) => setTimeout(r, 500));
+      const now = (await judgeStub.personaReads()).length;
+      if (now !== seen) {
+        seen = now;
+        since = Date.now();
+      }
+    }
+    return seen - first;
   },
   /** Waits until a request judging a message that contains `text` has been answered; resolves with it. */
   async judged(text) {

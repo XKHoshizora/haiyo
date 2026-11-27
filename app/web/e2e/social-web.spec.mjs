@@ -8,7 +8,7 @@ import { befriend } from "./support/accounts.mjs";
 import { agentApi } from "./support/tools.mjs";
 import { chatPane, composer, goTo, listRow, messageList, openAgentDetail, openContact, sendText } from "./support/app.mjs";
 import { canControlService, restartService } from "./support/control.mjs";
-import { modelStub } from "./support/model-stub.mjs";
+import { judgeStub } from "./support/judge-stub.mjs";
 import { integShot as shot } from "./support/shots.mjs";
 
 const SIZES = [
@@ -23,11 +23,11 @@ const tall = async (locator) => {
 test.beforeAll(async () => {
   if (!canControlService) return;
   await restartService({ SOCIAL: JSON.stringify({ enabled: true }) });
-  // The switch just came on: the persona aid now reads every Agent the suite has made so far, each read a model call. Nothing here
-  // starts before that is over (`modelStub.quiet`), or those calls would be counted, and would take the replies, as this spec's own.
+  // The switch just came on: the persona aid now reads every Agent the suite has made so far, a judgement request per sentence. Nothing
+  // here starts before that is over (`judgeStub.quiet`): the service is not busy with it while this spec's screens are measured.
   test.setTimeout(360_000);
-  const backlog = await modelStub.quiet();
-  console.log(`[social-web.spec.mjs] the persona aid's backlog at the switch-on: ${backlog} model call(s) before the stub was quiet`);
+  const backlog = await judgeStub.quiet();
+  console.log(`[social-web.spec.mjs] the persona aid's backlog at the switch-on: ${backlog} sentence(s) asked before it was quiet`);
 });
 test.afterAll(async () => {
   if (canControlService) await restartService({});

@@ -11,7 +11,10 @@ const HAN = "春夏秋冬山水风云花月星河林海雪雨松竹梅兰江湖�
 export const hanTag = (n = 4) => Array.from({ length: n }, () => HAN[Math.floor(Math.random() * HAN.length)]).join("");
 
 /** An Agent of `owner`'s made through the API; resolves with the owner's view of it (`id`, `handle`, `name`…). */
-export async function agentApi(owner, { name, intro, persona = "你是一个乐于助人的助手。", model = FREE }) {
+/** The persona `agentApi` gives an Agent when none is named. */
+export const DEFAULT_PERSONA = "你是一个乐于助人的助手。";
+
+export async function agentApi(owner, { name, intro, persona = DEFAULT_PERSONA, model = FREE }) {
   const data = { namePart: `ag_${uniq(10)}`, name, model, persona };
   if (intro) data.intro = intro;
   const res = await owner.request.post("/api/agents", { data });
