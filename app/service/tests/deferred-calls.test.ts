@@ -434,6 +434,29 @@ describe("invariant 5 (retries): an automatic retry takes the slot before any wa
     ]);
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
   });
+
+  it("the caller blocked after the claim, the worker lost before admission (T2 fix 3, S3): recovery makes no retry — her call no longer stands — and the call that waited is taken, once; the owner's 重试 of it is nothing to retry", async () => {
+    offset = 0;
+    const w = await world(retrying);
+    const asked = await say(w.mia, w.g, `${w.at} MIA-ASK 在吗？`, retrying);
+    await claim(w.agent.id, w.g);
+    const later = await say(w.ned, w.g, `${w.at} NED-ASK 我也问`, retrying);
+    // The owner blocks mia (a person's block of a person: the claimed reply is left to its own recheck), and the worker is gone
+    // before admission: recovery ends the reply as lost, a passing failure.
+    expect((await api(retrying, w.owner, "PUT", `/api/blocks/${w.mia.id}`)).status).toBe(200);
+    await recoverRuns(db, retrying.deps.config, retrying.log, now);
+    await recoverRuns(db, retrying.deps.config, retrying.log, now);
+    const runs = await runsOf(w.agent.id, w.g);
+    expect(runs.map((r) => [r.status, r.caller, r.calls])).toEqual([
+      ["failed", w.mia.id, [asked]],
+      ["queued", w.ned.id, [later]],
+    ]);
+    expect(await waiting(w.agent.id, w.g)).toEqual([]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
+    // Nothing of mia's failure is left to answer while the block stands.
+    expect(await api(retrying, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: runs[0]!.id })).toEqual({ status: 409, json: { error: "nothing_to_retry" } });
+    expect(await runsOf(w.agent.id, w.g)).toHaveLength(2);
+  });
 });
 
 

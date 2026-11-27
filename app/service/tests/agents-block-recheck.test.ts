@@ -163,18 +163,18 @@ describe("a block made after a call, as the reply begins", () => {
     expect(await latest(w.agent.id, w.g)).toMatchObject({ calls: [own], askers: [w.owner.id] });
   });
 
-  it("the owner's retry of a reply whose only call's person is now blocked: it ends quietly — no call, nothing failed, nothing to retry", async () => {
+  it("the owner's retry of a reply whose only call's person is now blocked: nothing of it stands — 409 nothing_to_retry, no run queued, no call (T2 fix 3, S3)", async () => {
     const w = await world();
     await say(w.mia, w.g, "@helper_bot MIA-ASK-r4 在吗？");
     await db.query("update agent_runs set status = 'failed', error = 'busy', finished_at = now() where agent_id = $1 and status = 'queued'", [w.agent.id]);
     await block(w.mia, w.owner);
-    expect((await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).status).toBe(201);
-    expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "queued", lane: "own" });
-
-    expect(await app.agentWorker.runOnce()).toBe(true);
+    expect(await api(app, w.owner, "POST", `/api/conversations/${w.g}/runs/retry`, { runId: await latestRunId(db, w.g, w.agent.id) })).toEqual({
+      status: 409,
+      json: { error: "nothing_to_retry" },
+    });
+    expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "failed" });
+    expect(await app.agentWorker.runOnce()).toBe(false);
     expect(callsHere()).toEqual([]);
-    expect(await latest(w.agent.id, w.g)).toMatchObject({ status: "cancelled", error: null });
-    expect((await api(app, w.mia, "GET", `/api/conversations/${w.g}/runs`)).json.runs).toEqual([]);
   });
 
   it("a call that waited, from someone blocked since: no second answer, no call", async () => {

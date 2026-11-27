@@ -586,8 +586,9 @@ export { refusedInGroup };
 /**
  * SQL: the calls run `$1` carries (`call_seqs`; its `covers_seq` when not known), one row each: `r` the run, `m` the call's message, `p`
  * its sender, `bh.caller_id` the person behind it (`behindMessageSql`: the sender, or for an Agent's message the caller of the run that
- * posted it). `columns` are spliced after `select`, `order` after the rows. THE reading of a run's calls: `dropRefusedCalls` and
- * `standingCalls` both ask it, and through them every ending of access in a group (social/agent-contacts.ts `endGroupCalls`).
+ * posted it). `columns` are spliced after `select`, `order` after the rows. THE reading of a run's calls: `dropRefusedCalls`,
+ * `standingCalls` and `standingSeqs` ask it, and through them every ending of access in a group (social/agent-contacts.ts
+ * `endGroupCalls`) and every retry.
  */
 const callRowsSql = (columns: string, order = ""): string =>
   `select ${columns}
@@ -607,13 +608,6 @@ interface CallRow {
 const CALL_COLUMNS = "m.seq::text as seq, p.kind, r.lane";
 
 /**
- * SQL, true when the call of the message at seq `seq` (SQL) of run `run`'s conversation on its Agent has a refusal of a limit
- * recorded (`call_refusals`): such a call is in no assignment — no run, retry or 重试 answers it (limits redesign C-b).
- */
-const limitRefusedSql = (run: string, seq: string): string =>
-  `exists (select 1 from call_refusals cr where cr.conversation_id = ${run}.conversation_id and cr.seq = ${seq} and cr.agent_id = ${run}.agent_id)`;
-
-/**
  * THE rule of whether a call still stands for an Agent (T2 fix 2, R2), one SQL predicate true when it does NOT: the access decision
  * refuses its sender (`refusedInGroup`: a person, or an Agent as a subject) or the person behind it (`behind`, null when nobody is);
  * a limit refused it since (`call_refusals`, C-b); or its sender is an Agent and it came at or before the group's latest halt (what an
@@ -629,25 +623,26 @@ const callRefusedSql = (m: string, p: string, agent: string, behind: string): st
     or (${p}.kind = 'agent' and ${m}.seq <= coalesce((select hc.agents_halted_seq from conversations hc where hc.id = ${m}.conversation_id), 0)))`;
 
 /**
- * The calls of run `runId`'s assignment that are still to be answered: its `call_seqs` (its `covers_seq` when not known) less any a
- * limit refused (`limitRefusedSql`). What an automatic retry and the owner's 重试 of it answer (C-b).
+ * The calls of run `runId`'s assignment that still stand: its `call_seqs` less any THE rule refuses now (`callRefusedSql`: a block or a
+ * bar since, a limit's refusal since, a relay from before a halt; T2 fix 3, S3), oldest first; null when its calls are not known
+ * (`call_seqs` null: its `covers_seq` stands for them). What an automatic retry and the owner's 重试 of it answer (C-b): with none
+ * standing no retry is queued.
  */
 async function standingSeqs(q: Queryable, runId: string): Promise<number[] | null> {
-  const { rows } = await q.query<{ seqs: string[] | null }>(
-    `select case when r.call_seqs is null then null
-                 else array(select s from unnest(r.call_seqs) as x (s) where not ${limitRefusedSql("r", "x.s")} order by s)::text[] end as seqs
-       from agent_runs r where r.id = $1`,
+  const known = await q.query<{ known: boolean }>("select call_seqs is not null as known from agent_runs where id = $1", [runId]);
+  if (known.rows[0]?.known !== true) return null;
+  const { rows } = await q.query<{ seq: string; refused: boolean }>(
+    callRowsSql(`m.seq::text as seq, ${callRefusedSql("m", "p", "r.agent_id", "bh.caller_id")} as refused`, "\n      order by m.seq"),
     [runId],
   );
-  const seqs = rows[0]?.seqs;
-  return seqs === undefined || seqs === null ? null : seqs.map(Number);
+  return rows.filter((r) => !r.refused).map((r) => Number(r.seq));
 }
 
 /**
  * The rule a call meets when it is made (`triggerInGroup`, `triggerFromAgent`), met again by every call reply run `runId` answers
  * as it begins, before admission (reverse-paths audit A12; B5b): a call (`call_seqs`; its `covers_seq` when not known) whose person
  * `refusedInGroup` refuses now — the sender of a person's message; for an Agent's message that Agent as a subject and the person
- * behind it (`behindMessageSql`) — or whose call a limit refused since (`limitRefusedSql`, C-b) is dropped: it is no longer among
+ * behind it (`behindMessageSql`) — or whose call a limit refused since (`call_refusals`, C-b) is dropped (`callRefusedSql`): it is no longer among
  * the calls the run answers, nobody refused is among its askers, and what the run covers ends at the latest call left (`covers_seq`).
  * A refusal removes a call from the assignment and NOTHING else: the run's lane and caller stay what they were made (limits
  * redesign, Part 2); whose message called (`triggered_by`) follows the calls left (a person's while one is left; a reply nobody
@@ -1891,8 +1886,8 @@ export type AutoRetry = { retry: Announced; attempt: number } | { gaveUp: "attem
  * `now`), and never one scheduled to start more than `AUTO_RETRY_WINDOW_MS` after the original call was made (nor started later:
  * port-impl.ts `begin`); the owner's replies a minute in the retry's lane are met as for any reply queued (`overLaneLimit`). The
  * retry is an ordinary queued reply that is not claimed before its `not_before` (port-impl.ts `claimNext`) and is admitted as any
- * (`begin`: pause, membership, blocks, budgets, money) — and it keeps the failed run's ASSIGNMENT: what it covered, its calls (less
- * any a limit refused since: C-b), askers and whose message called, and its identity — its lane and caller, never decided again
+ * (`begin`: pause, membership, blocks, budgets, money) — and it keeps the failed run's ASSIGNMENT: what it covered, its calls (those
+ * that still stand: `standingSeqs`), askers and whose message called, and its identity — its lane and caller, never decided again
  * (limits redesign, Part 2). Being queued, it holds the Agent's one active run there: whatever calls it meanwhile waits behind it,
  * and the owner's 重试 is `busy_run`.
  */
@@ -1936,8 +1931,9 @@ export async function scheduleAutoRetry(
   const active = await t.query("select 1 from agent_runs where agent_id = $1 and conversation_id = $2 and status in ('queued', 'running') limit 1", [agent.id, conversationId]);
   if (active.rowCount !== 0) return null;
   if (await overLaneLimit(t, agent.ownerId, run.lane, config, { waiting: false })) return { gaveUp: "rate_limited" };
-  // The calls it answered, less any a limit refused since (C-b): with none left there is nothing to answer again, and nothing is queued
-  // — what waited behind it is taken instead (T2 fix 2, R1: a reply with no call is never made of a call reply). It covers the last left.
+  // The calls it answered that still stand (`standingSeqs`, THE rule: T2 fix 3, S3): with none left there is nothing to answer again,
+  // and nothing is queued — what waited behind it is taken instead (T2 fix 2, R1: a reply with no call is never made of a call reply).
+  // It covers the last left.
   const calls = await standingSeqs(t, runId);
   if (calls !== null && calls.length === 0) return null;
   const covers = calls === null ? Number(run.covers ?? 0) : calls.at(-1)!;
@@ -2008,7 +2004,7 @@ interface FailedRun {
 /**
  * `POST …/runs/retry` `{runId}`: the failure the owner was shown, named by its id (design Part 2, Retries: a 重试 targets the failed
  * assignment by id, never "the latest" — a later assignment may have failed meanwhile, and answering that one would leave the failure
- * shown unanswered). A new queued reply answers that assignment again: the calls it answered less any a limit refused since (C-b),
+ * shown unanswered). A new queued reply answers that assignment again: the calls it answered that still stand (`standingSeqs`),
  * covering the last of those (nothing written after it is read), its askers (the retry asks nothing new) and whose message called for
  * it (`triggered_by`: what an Agent's message called for is still an Agent's, so a member's halt still ends it) — and it is its owner's
  * own (`lane` `own`, `owner_retry`) whoever's the failure was: the owner asked again, the one deliberate exception to "a member's
@@ -2060,7 +2056,7 @@ export async function retryRun(
   if (place === "group" && (joinedSeq === null || covers <= joinedSeq)) throw new AppError(400, "invalid_request");
   // A later reply took it on (retried, its calls answered): nothing of it is left to answer — the quiet answer (T2 fix 2, R6).
   if (failed.taken) throw new AppError(409, "nothing_to_retry");
-  // What it answered, less what a limit refused since (C-b); with nothing left there is nothing to answer again. A told reply and a
+  // What it answered that still stands (`standingSeqs`); with nothing left there is nothing to answer again. A told reply and a
   // reply nobody asked for (or a 重试 of one) answer no call: it is made again from its origin, answering none (T2 fix 1, F10).
   const zeroCall = failed.whisper_id !== null || failed.origin_seq !== null;
   const calls = zeroCall ? [] : ((await standingSeqs(t, failed.id)) ?? [covers]);

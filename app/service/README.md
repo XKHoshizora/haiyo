@@ -1324,7 +1324,7 @@ exist. Limit: 60 per minute with retry and dismiss.
 *Session: required.* Body: `{"runId"}`, the failed reply you were shown — named by its id, in a group as in an Agent's own
 conversation (not "the latest": a later reply of the Agent may have failed meanwhile, and answering that one would leave the one
 you saw unanswered). Queues a new reply answering again exactly what that run was to answer — its assignment: the calls it
-answered less any a limit refused since, covering the last of those (what was written after it was answered by a reply of its
+answered that still stand (the one rule of a call: a block or bar since, a limit's refusal since, a relay from before a halt), covering the last of those (what was written after it was answered by a reply of its
 own) — your own (lane `own`: the one case where a member's question is answered on your terms, because you asked again), called
 for by whoever called the failed run: one that another Agent's message called for (`triggered_by` `agent`) stays an Agent's, so a
 member's halt still ends it (Agents in a group). → 201 `{"run": Run}` (queued; also pushed). 404 `not_found` unless the run is a
@@ -1334,7 +1334,7 @@ current member of that of a conversation that does not exist); 409 `busy_run` wh
 409 `agent_paused` / `agent_deleted`; 409 `model_gone` while the Agent's model is not there to call (`modelUsable` false); 400
 `invalid_request` without `runId`, when the run did not fail, or when the Agent has no model — in a group also when the Agent is
 not in the group now or the run is from an earlier stay; 409 `nothing_to_retry` when a later reply took it on since (it was
-retried, or its calls answered) or no call of it is left (each refused by a limit since): the web closes that failure quietly.
+retried, or its calls answered) or no call of it still stands (each blocked, refused by a limit, or a relay from before a halt since): the web closes that failure quietly.
 A reply cancelled by a halt
 (`halted`) or by the Agent's leaving (`agent_removed`) is not retried; 409 `stale_whisper` for a told reply (`告诉他们`) whose
 whisper no longer reads open — declined, expired (a day old included), told, or with no hit left (Whispers: the one rule a told
@@ -4000,7 +4000,7 @@ not even a query.
 - What the group sees of it (`runs.ts` `groupRuns`, `runAudience`; Replies, In a group): nothing is stored per member.
   Every member's view is derived from the Agent's latest run in the group during its current stay (`covers_seq` after
   its `joined_seq`): its owner sees the run, everyone else its state. A retry in a group answers again what the failed
-  run was to answer (its assignment: `covers_seq` and its calls, less any a limit refused since) and keeps its `triggered_by`; stop,
+  run was to answer (its assignment: `covers_seq` and its calls that still stand) and keeps its `triggered_by`; stop,
   retry and dismiss there lock the group's row first, as every writer of runs there does.
 
 **Coalescing.** Per Agent per conversation: an Agent has at most one queued or running run in each conversation (a
@@ -5248,7 +5248,7 @@ nothing more is judged, and what a decision still in flight decides is dropped (
    whoever wrote @ it), its post quotes nothing, and it is shown as a call's message would be. Its surcharge is raised at once,
    stamped with the message's seq. Its owner's 重试 of one that failed is the owner's own reply (lane `own`), answering no call,
    made from the same origin, and told as an unasked reply is. A call reply is never made with no call: an automatic retry whose
-   every call a limit refused since is not made (what waited behind it is taken instead), and the owner's 重试 of one is refused. After commit the outcome is acted on as a send acts on a mention's: its notices
+   every call no longer stands (a block, a limit's refusal or a halt since) is not made (what waited behind it is taken instead), and the owner's 重试 of one is refused. After commit the outcome is acted on as a send acts on a mention's: its notices
    are published, the run is announced (the `run` push to its owner, `"replying"` to everyone else) and wakes the worker.
 
 At most one Agent replies to a message, and there is never a second choice: when the winner cannot speak, nobody does.
