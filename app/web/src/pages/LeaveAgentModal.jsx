@@ -32,7 +32,7 @@ export function LeaveAgentModal({ agentId, onClose }) {
         </>
       }
     >
-      <p>{`移除后，你和${name}的对话会停下，已有的记录还在。想再聊，要重新添加，可能需要主人同意。`}</p>
+      <p>{`移除后，你和${name}的对话会停下，已有的记录还在。想再聊，要重新添加，可能需要${name}的主人同意。`}</p>
     </Modal>
   );
 }

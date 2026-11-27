@@ -16,7 +16,7 @@ import { useBubbleMenu } from "../ui/BubbleMenu.jsx";
 import { messageActions } from "./messageActions.js";
 import { GrowContext, useImageViewer } from "../ui/ImageViewer.jsx";
 import { LabLogo, labOfModel } from "../ui/LabLogo.jsx";
-import { AgentModelSwitch, EVERYWHERE_NOTE, levelLabel } from "./ModelPicker.jsx";
+import { AgentModelSwitch, everywhereNote, levelLabel } from "./ModelPicker.jsx";
 import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits.jsx";
 import { MemoryNotice } from "./MemoryChip.jsx";
 import { PersonaFactCard } from "./SocialCards.jsx";
@@ -145,6 +145,7 @@ const levelWords = (level) => (level === "none" ? "不思考" : `思考：${leve
  * whose model it is everywhere; the line goes on saying what that reply used.
  */
 function ReplyVia({ via, agentId = null }) {
+  const { state } = useStore();
   const withPoints = useShowReplyPoints();
   const { model } = via;
   const name = model.source === "site" ? model.label : model.model;
@@ -160,7 +161,7 @@ function ReplyVia({ via, agentId = null }) {
   if (agentId) {
     return (
       <p className="msg-via">
-        <AgentModelSwitch agentId={agentId} shown={{ name, brand: lab }} note={EVERYWHERE_NOTE} />
+        <AgentModelSwitch agentId={agentId} shown={{ name, brand: lab }} note={everywhereNote(nameOf(state, agentId))} />
         {rest}
       </p>
     );

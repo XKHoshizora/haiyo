@@ -336,8 +336,8 @@ export function openModelChoice(dispatch, agentId) {
   dispatch({ type: "nav", patch: { section: "agents", agentId, agentView: "edit", agentFocus: "model", pane: "main" } });
 }
 
-/** Under the picker's search where it is opened from a group: the model is the Agent's, wherever it talks. */
-export const EVERYWHERE_NOTE = "换了以后，所有会话里都用这个模型";
+/** Under the picker's search where it is opened from a group: the model is the Agent's (named `name`), wherever it talks. */
+export const everywhereNote = (name) => `换好后，${name}在所有会话里都用这个模型`;
 
 /**
  * The model of one of my Agents, switched where I am (its own conversation's header and details panel; in a group, its row
@@ -348,7 +348,7 @@ export const EVERYWHERE_NOTE = "换了以后，所有会话里都用这个模型
  * own words and the button shows the stored model again. Nothing for an Agent not mine or not loaded; a deleted one's
  * model is a plain label.
  * `shown`: {name, brand} the button always says (a reply's line: the model that reply used), not the Agent's model;
- * `note`: the quiet line at the top of its list (`EVERYWHERE_NOTE` in a group).
+ * `note`: the quiet line at the top of its list (`everywhereNote` in a group).
  */
 export function AgentModelSwitch({ agentId, shown = null, note = null }) {
   const { state, dispatch, actions } = useStore();

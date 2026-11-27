@@ -2300,7 +2300,7 @@ describe("Agents in a group (batch 2C)", () => {
     expect(haltButton()).toBeTruthy();
   });
 
-  const EVERYWHERE = "换了以后，所有会话里都用这个模型";
+  const EVERYWHERE = "换好后，小助手在所有会话里都用这个模型";
   const optionNamed = (name) => [...document.querySelectorAll('.model-pop [role="option"]')].find((o) => o.querySelector(".model-name")?.textContent === name);
   const keepAgent = async (_id, patch) => agentOf(AG1, { model: SITE_FREE, paused: true, ...patch });
 

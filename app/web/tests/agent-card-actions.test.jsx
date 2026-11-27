@@ -155,7 +155,7 @@ describe("the Agent's card in a social chat", () => {
     expect(dialog()).toBeNull();
     await click(within(document.querySelector(".side")).getByRole("button", { name: "移除" }));
     expect(inDialog().getByRole("heading", { name: "移除小帮手" })).toBeTruthy();
-    expect(inDialog().getByText("移除后，你和小帮手的对话会停下，已有的记录还在。想再聊，要重新添加，可能需要主人同意。")).toBeTruthy();
+    expect(inDialog().getByText("移除后，你和小帮手的对话会停下，已有的记录还在。想再聊，要重新添加，可能需要小帮手的主人同意。")).toBeTruthy();
     await click(inDialog().getByRole("button", { name: "确认移除" }));
     expect(api.removeAgentContact).toHaveBeenCalledWith(AGB, ME_ID);
     expect(toastText()).toBe("已移除");

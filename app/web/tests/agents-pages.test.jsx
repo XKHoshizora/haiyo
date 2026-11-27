@@ -1251,16 +1251,16 @@ describe("where an Agent replies (batch 2C)", () => {
     await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, groupMentions: "owner" })], extra: [group(G1, { members })] });
     await openRow("小助手");
     await click(inMain().getByRole("tab", { name: "参与的会话" }));
-    expect(mainText()).toContain("小助手也在下面这些群里：只看得到进群之后的消息与附件，只有你 @ 时回复。");
-    expect(mainText()).not.toContain("群成员 @ 时回复");
+    expect(mainText()).toContain("小助手也在下面这些群里：只看得到进群之后的消息与附件，只有你 @ 小助手时才回复。");
+    expect(mainText()).not.toContain("群成员 @ 小助手时回复");
   });
 
-  it("with 所有群成员 it says 群成员 @ 时回复", async () => {
+  it("with 所有群成员 it says 群成员 @ 小助手时回复", async () => {
     const members = [ME_ID, ANN, AG1].map((id, i) => ({ id, role: "speaker", isCreator: i === 0 }));
     await openAgents({ agents: [agentOf(AG1, { model: SITE_MODEL, groupMentions: "members" })], extra: [group(G1, { members })] });
     await openRow("小助手");
     await click(inMain().getByRole("tab", { name: "参与的会话" }));
-    expect(mainText()).toContain("群成员 @ 时回复。");
+    expect(mainText()).toContain("群成员 @ 小助手时回复。");
   });
 });
 

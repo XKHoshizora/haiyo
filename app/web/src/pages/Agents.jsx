@@ -203,7 +203,7 @@ function Conversations({ agent }) {
   return (
     <>
       <p className="muted">{`这是你和${agent.name}的专属会话：只有你们两个成员，只包含其中的消息与附件。`}</p>
-      {groups.length > 0 && <p className="muted">{`${agent.name}也在下面这些群里：只看得到进群之后的消息与附件，${agent.groupMentions === "owner" ? "只有你 @ 时回复" : "群成员 @ 时回复"}。`}</p>}
+      {groups.length > 0 && <p className="muted">{`${agent.name}也在下面这些群里：只看得到进群之后的消息与附件，${agent.groupMentions === "owner" ? `只有你 @ ${agent.name}时才回复` : `群成员 @ ${agent.name}时回复`}。`}</p>}
       <ul className="member-rows">
         {id && (
           <li>

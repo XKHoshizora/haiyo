@@ -8,7 +8,7 @@ import { BlockModal } from "./BlockModal.jsx";
 import { LeaveAgentModal } from "./LeaveAgentModal.jsx";
 import { ReportModal } from "./ReportModal.jsx";
 import { NewTopicModal } from "./AgentChatBits.jsx";
-import { AgentModelSwitch, EVERYWHERE_NOTE } from "./ModelPicker.jsx";
+import { AgentModelSwitch, everywhereNote } from "./ModelPicker.jsx";
 import { X } from "../icons.js";
 
 /** What my Agent does not get from its conversation with me. */
@@ -56,7 +56,7 @@ export function DetailsPanel({ conv }) {
               {/* In a group, an Agent of mine: its model, switched right here (for every conversation it is in). */}
               {group && isMyAgent(state, id) && state.agents[id].loaded && (
                 <span className="side-model">
-                  <AgentModelSwitch agentId={id} note={EVERYWHERE_NOTE} />
+                  <AgentModelSwitch agentId={id} note={everywhereNote(nameOf(state, id))} />
                 </span>
               )}
             </li>
