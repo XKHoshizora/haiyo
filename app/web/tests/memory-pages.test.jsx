@@ -188,7 +188,9 @@ describe("the 关于我 room on the Settings page", () => {
     expect(vault).toBeTruthy();
     // After the open entries.
     expect(room("关于我").querySelector(".memory-open").compareDocumentPosition(vault) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(vault).getByText("保险箱 · 2 条 · 群里的 Agent 拿不到")).toBeTruthy();
+    expect(within(vault).getByText("保险箱 · 2 条")).toBeTruthy();
+    // What the vault is for, as it really is (ring 1b, design §7.2): a group may still use a note in the group it began in.
+    expect(vault.querySelector("p").textContent).toBe("保险箱里的记忆只在你和 Agent 单独聊时用；一条记忆最初产生的那个群里仍会用到。");
     const row = rowWith(vault, "我的病史");
     expect(within(row).getByRole("button", { name: "取出" })).toBeTruthy();
     expect(within(row).getByRole("button", { name: "编辑" })).toBeTruthy();
@@ -200,7 +202,7 @@ describe("the 关于我 room on the Settings page", () => {
 
   it("an empty vault still says 保险箱 · 0 条", async () => {
     await openPalace(service({ notes: [note("a", "我不吃辣")] }));
-    expect(inRoom("关于我").getByText("保险箱 · 0 条 · 群里的 Agent 拿不到")).toBeTruthy();
+    expect(inRoom("关于我").getByText("保险箱 · 0 条")).toBeTruthy();
   });
 
   it("an unsure entry in the vault carries 拿不准，先锁上了; a sure one does not", async () => {
@@ -215,7 +217,7 @@ describe("the 关于我 room on the Settings page", () => {
     await click(within(rowWith(room("关于我"), "我不吃辣")).getByRole("button", { name: "放进保险箱" }));
     expect(svc.api.patchMemoryNote).toHaveBeenCalledWith("a", { vault: true });
     expect(rowWith(room("关于我").querySelector(".memory-vault"), "我不吃辣")).toBeTruthy();
-    expect(inRoom("关于我").getByText("保险箱 · 2 条 · 群里的 Agent 拿不到")).toBeTruthy();
+    expect(inRoom("关于我").getByText("保险箱 · 2 条")).toBeTruthy();
     await click(within(rowWith(room("关于我"), "我的病史")).getByRole("button", { name: "取出" }));
     expect(svc.api.patchMemoryNote).toHaveBeenLastCalledWith("b", { vault: false });
     expect(rowWith(room("关于我").querySelector(".memory-open"), "我的病史")).toBeTruthy();
@@ -290,7 +292,7 @@ describe("the 关于我 room on the Settings page", () => {
     expect(rowWith(room("关于我"), "我不吃辣")).toBeUndefined();
     await del(rowWith(room("关于我"), "我的病史"));
     expect(svc.api.deleteMemoryNote).toHaveBeenLastCalledWith("b");
-    expect(inRoom("关于我").getByText("保险箱 · 0 条 · 群里的 Agent 拿不到")).toBeTruthy();
+    expect(inRoom("关于我").getByText("保险箱 · 0 条")).toBeTruthy();
   });
 
   it("an entry longer than the room left cannot be added: the button is off and the row says it does not fit, with no number", async () => {
@@ -960,6 +962,8 @@ describe("an Agent's page: its own notes and what it heard", () => {
     expect(mainText()).toContain("只当线索 · 只用在来源的群和你们的对话里");
     expect(inRoom("小助手自己的笔记").getByText("已用 5%")).toBeTruthy();
     expect(inRoom("小助手听说的").getByText("已用 13%")).toBeTruthy(); // 8 of 60, rounded
+    // Its vault's line names it (design §8).
+    expect(room("小助手自己的笔记").querySelector(".memory-vault p").textContent).toBe("保险箱里的记忆只在你和小助手单独聊时用；一条记忆最初产生的那个群里仍会用到。");
   });
 
   it("says so on the Agent's tab when its model cannot carry the whole palace, and only then", async () => {

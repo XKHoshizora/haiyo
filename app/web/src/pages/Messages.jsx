@@ -21,6 +21,7 @@ import { AgentText, ProposalCard, Thinking, TopicDivider } from "./AgentChatBits
 import { MemoryNotice } from "./MemoryChip.jsx";
 import { PersonaFactCard } from "./SocialCards.jsx";
 import { ReplyLookups } from "./ReplyLookups.jsx";
+import { ShownNotes } from "./ShownNotes.jsx";
 import { citingOf } from "./WebSources.jsx";
 import { CitesContext } from "../ui/cites.jsx";
 import { Reply, RotateCw, FileText, Check, CircleAlert } from "../icons.js";
@@ -266,6 +267,8 @@ export function MessageItem({ msg, conv, onReply, onJump, flash = false, thinkin
         {/* What the reply looked up with its tools: one quiet line, for whoever reads the reply (its own per conversation);
             the web pages it was handed open from it (folded until the reader opens them). */}
         {agent && <ReplyLookups key={`${conv.id}:${msg.id}`} msg={msg} conv={conv} onJump={onJump} />}
+        {/* What my own Agent's reply to someone else could refer to of my notes (ring 1b): mine alone, folded. */}
+        {thinking && conv.type === "social" && <ShownNotes key={`notes:${conv.id}:${msg.id}`} msg={msg} conv={conv} />}
         {ownChat && msg.proposal && <ProposalCard msg={msg} conv={conv} />}
         {thinking && msg.via && <ReplyVia via={msg.via} agentId={!ownChat && state.agents[msg.from]?.loaded ? msg.from : null} />}
         <div className="msg-foot">

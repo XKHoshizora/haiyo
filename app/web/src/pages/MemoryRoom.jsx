@@ -1,6 +1,6 @@
 // A room of the memory palace: 关于我 (what my Agents know about me, shared; on the Settings page) and an Agent's own notes
 // (on its page) are the same component. Its open entries come first, then the vault block, set apart: what is in the vault
-// is never given to the model in a group. Each row saves itself (as AgentAppellations' rows do): nothing here has a
+// is given to the model only in my own conversation with the Agent, and in the group a note began in. Each row saves itself (as AgentAppellations' rows do): nothing here has a
 // 保存 for the room as a whole.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { roomCountFullText } from "../data/errorTexts.js";
@@ -14,6 +14,12 @@ import { useRowWrite } from "./useAction.js";
 
 /** `已用 N%` of a room: rounded, never above 100. */
 export const usedPercent = (used, limit) => (limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 100);
+
+/**
+ * Under the vault's heading: where its notes are used — only in my own conversation with the Agent (`name`; 关于我, shared by all my
+ * Agents: 「Agent」), and still in the group a note began in (memory/store.ts `notesFor`). Never in a social conversation.
+ */
+export const vaultScope = (name) => `保险箱里的记忆只在你和${name ?? " Agent "}单独聊时用；一条记忆最初产生的那个群里仍会用到。`;
 
 /** From this many mentions a note is 常提起 (the service counts every time it was said again). */
 const OFTEN = 3;
@@ -316,7 +322,9 @@ export function MemoryRoom({ agentId = null, agentName, title, helper, memory })
         {open.length === 0 && <li className="rows-empty">还没有记下的内容</li>}
       </ul>
       <div className="memory-vault">
-        <h4>保险箱 · {vault.length} 条 · 群里的 Agent 拿不到</h4>
+        <h4>保险箱 · {vault.length} 条</h4>
+        {/* What the vault is for, as it really is (ring 1b): a group may still use a note in the group it began in. */}
+        <p className="muted">{vaultScope(agentId !== null && agentName ? agentName : null)}</p>
         <ul className="memory-rows">{vault.map(row)}</ul>
       </div>
     </section>

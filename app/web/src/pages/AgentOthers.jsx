@@ -9,6 +9,7 @@ import { lastPreview, nameOf } from "../state/selectors.js";
 import { friendIds, isObserved, socialOn } from "../state/social.js";
 import { Avatar, Btn, Modal, Notice, Tag } from "../ui/primitives.jsx";
 import { useAction, useNow } from "./useAction.js";
+import { MemoryDisclosure } from "./ShownNotes.jsx";
 
 /** The one question and its three answers, word for word (plan "Exact copy"). */
 export const POLICY_QUESTION = "谁可以添加它";
@@ -106,6 +107,8 @@ export function AgentOthersTab({ agent }) {
 
   return (
     <div className="social-ui agent-others">
+      {/* Before anyone is let in (ring 1b): what it may use of my notes when it talks with them, for every account. */}
+      <MemoryDisclosure agentId={agent.id} name={agent.name} />
       <fieldset className="social-policy">
         <legend>{POLICY_QUESTION}</legend>
         {POLICY_OPTIONS.map(([value, label]) => (

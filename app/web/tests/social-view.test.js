@@ -49,6 +49,21 @@ describe("the view of a social conversation", () => {
     expect(shown.map((m) => m.reasoning)).toEqual(["想了想", null]);
   });
 
+  it("keeps what my own Agent's reply could refer to of my notes (ring 1b), well formed only; never a group's, never someone else's Agent's — not even in the store", () => {
+    const AGX = "00000000-0000-4000-8000-0000000000b7";
+    const shownNotes = [{ kind: "owner", id: "n1", text: "爱吃辣" }, { kind: "self", id: "n2", text: null }, { kind: "hearsay", id: "n3", text: "x" }, { kind: "owner", text: "no id" }];
+    const theirs = [{ kind: "owner", id: "n9", text: "别人的" }];
+    const principals = [...PRINCIPALS, { ...agentPrincipal(AG1), ownerId: ME_ID }, { ...agentPrincipal(AGX, "other", "别人的 Agent"), ownerId: ANN }];
+    const state = M.applySync(
+      M.initial(),
+      syncOf([social(), group(G1)], [wire(S1, 1, AG1, "他爱吃辣", { shownNotes }), wire(S1, 2, AGX, "嗨", { shownNotes: theirs }), wire(G1, 1, AG1, "群里", { shownNotes })], principals),
+    );
+    expect(state.messages[S1].find((m) => m.seq === 2)).not.toHaveProperty("shownNotes");
+    const view = toView(state);
+    expect(view.convs[S1].messages.map((m) => m.shownNotes)).toEqual([[{ kind: "owner", id: "n1", text: "爱吃辣" }, { kind: "self", id: "n2", text: null }], []]);
+    expect(view.convs[G1].messages[0].shownNotes).toEqual([]);
+  });
+
   it("shows the Agent's reply in progress, as a group member sees it", () => {
     const view = viewOf([social()], [], (s) => ({ ...s, groupRuns: { [S1]: { [AG1]: { state: "replying" } } } }));
     expect(view.convs[S1].agentRuns).toEqual([{ agentId: AG1, mine: false, kind: "replying" }]);

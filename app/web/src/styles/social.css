@@ -33,7 +33,35 @@
   font-size: 14px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; min-width: 0;
 }
 
+/* ───────── under my Agent's reply in a social conversation: what it could refer to of my notes (ring 1b), folded as the lookup line is */
+.shown-notes { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; min-width: 0; }
+.shown-notes-toggle {
+  display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; border-radius: 4px; background: none; font: inherit; color: inherit; cursor: pointer;
+  text-decoration: underline; text-decoration-style: dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px;
+}
+@media (hover: hover) { .shown-notes-toggle:hover { color: var(--purple-dark); } }
+.shown-notes-toggle > svg { flex: none; opacity: 0.7; transition: transform 0.15s ease; }
+.shown-notes-toggle[aria-expanded="true"] > svg { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .shown-notes-toggle > svg { transition: none; } }
+.shown-notes-block { margin-top: 4px; padding-left: 10px; border-left: 3px solid var(--line-strong); }
+.shown-notes-block > p { margin: 0 0 4px; line-height: 1.5; }
+.shown-note-rows { margin: 0; padding: 0; list-style: none; }
+.shown-note { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 4px 0; min-width: 0; }
+.shown-note-text { flex: 1 1 12em; min-width: 0; color: var(--ink-2); line-height: 1.5; }
+.shown-note .field-msg { flex: 1 1 100%; margin: 0; }
+/* The disclosure where I let people in (the 「别人」 tab, the requests on the contacts page): one quiet line and its link. */
+.memory-disclosure { margin: 0 0 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.memory-disclosure .text-link { margin-left: 4px; }
+.rows-note { padding: 0 20px 8px; list-style: none; }
+.rows-note .memory-disclosure { margin: 0; }
+
 @media (pointer: coarse), (max-width: 480px) {
+  /* A 44px target that takes no room, as the lookup line's toggle has; what lies under it keeps its own taps. */
+  .shown-notes-toggle { position: relative; z-index: 1; }
+  .shown-notes-toggle::before { content: ""; position: absolute; left: 0; right: -12px; top: 50%; height: 44px; transform: translateY(-50%); }
+  .shown-notes-block { position: relative; z-index: 2; }
+  .shown-note .btn { min-height: 44px; }
+  .rows-note { padding: 0 12px 8px; }
   .social-option { min-height: 44px; }
   .social-ui .btn, .agent-found .btn, .social-row .btn, .agent-others .btn, .social-note-field textarea { min-height: 44px; }
   .social-row { padding: 8px 12px; flex-wrap: wrap; }

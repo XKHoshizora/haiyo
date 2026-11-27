@@ -3,10 +3,11 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { fitNotes, passageBudget } from "../agents/runtime/prompt.ts";
 import { readOwnedAgent, type AgentRow } from "../agents/store.ts";
-import { lockConversationKeys } from "../conversations/store.ts";
+import { lockConversationKeys, VISIBLE_JOIN } from "../conversations/store.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { AppError, notFound, type ErrorDetails } from "../errors.ts";
 import { perPrincipalLimit, type PrincipalLimit } from "../limits.ts";
+import { postingRun } from "../messages/read.ts";
 import { planRatio, ratioKey, readRatio } from "../metering/tokens.ts";
 import { resolveModel } from "../models/resolve.ts";
 import { uuidParam } from "../schemas.ts";
@@ -21,7 +22,7 @@ import { sortNote } from "./sort.ts";
 import { changeKind, count, countDecision } from "./stats.ts";
 import { getMemoryLanguage, getNewNotes, hearsayUsed, listHearsay, roomOf, type Note } from "./store.ts";
 import { weight, weightOf } from "./weight.ts";
-import { deleteNote, fits, insertNote, listRoom, lockHearsay, lockRoom, readNote, roomLimit, takeHearsay, updateNote, type Room } from "./write.ts";
+import { deleteNote, fits, insertNote, listRoom, listRoomExact, lockHearsay, lockRoom, readNote, roomLimit, takeHearsay, updateNote, type Room } from "./write.ts";
 
 /**
  * The owner reads and edits the palace: the notes about them (shared by their Agents), each Agent's own notes, and the
@@ -42,9 +43,17 @@ const changeStatus = z.object({ status: z.enum(["applied", "undone", "discarded"
 // Far beyond any room: so a too-long entry is `room_full` with what is left, not a 400.
 const textField = z.string().max(10_000);
 const newNote = z.strictObject({ text: textField, vault: z.boolean().optional() });
+/**
+ * A patch: a text, the vault, or both (the memory page's); or 以后别说 under a social reply (ring 1b): `vault: true` and the reply it was
+ * pressed under (`from`), nothing else — its own shape, held to that reply (`vaultFromReply`).
+ */
 const notePatch = z
-  .strictObject({ text: textField.optional(), vault: z.boolean().optional() })
-  .refine((b) => b.text !== undefined || b.vault !== undefined);
+  .strictObject({
+    text: textField.optional(),
+    vault: z.boolean().optional(),
+    from: z.strictObject({ conversationId: uuidParam, seq: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).optional(),
+  })
+  .refine((b) => (b.from !== undefined ? b.vault === true && b.text === undefined : b.text !== undefined || b.vault !== undefined));
 
 const noteView = z.object({
   id: z.string(),
@@ -180,7 +189,7 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
     return noteOf(db, room, id);
   }
 
-  async function edit(room: Room, ownerId: string, noteId: string, body: z.infer<typeof notePatch>, log: FastifyBaseLogger) {
+  async function edit(room: Room, ownerId: string, noteId: string, body: { text?: string; vault?: boolean }, log: FastifyBaseLogger) {
     const text = body.text === undefined ? undefined : ownerNote(body.text);
     if (text === null) throw refused();
     const notesBefore = await listRoom(db, room);
@@ -212,6 +221,41 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
     if (body.vault === false && before.vault) count(db, "owner_unlocked");
     if (body.vault === true && !before.vault) count(db, "owner_locked");
     if (text !== undefined && text !== before.text && before.origin === "review") count(db, "owner_edited_auto_note");
+    return noteOf(db, room, noteId);
+  }
+
+  /**
+   * 以后别说 under a social reply (ring 1b, design §7.3): the note goes into the vault as the owner's lock, held to that reply. Under the
+   * room's lock: the reply `from` must be an Agent's message of a social conversation the owner can see, sent by an Agent of theirs (this
+   * one, for its own note), and posted by a run that was shown this very note (else 404, as for anything not theirs); the note must still
+   * be exactly the version that run read (else 409 `note_changed`, nothing written: it was edited, merged, vaulted or deleted since, and
+   * the owner's row turns into the text-free marker). One committed open→vault transition, counted apart from the memory page's own
+   * (`social_note_vaulted_from_reply`, never `owner_locked`).
+   */
+  async function vaultFromReply(room: Room, ownerId: string, noteId: string, from: { conversationId: string; seq: number }, agentId: string | null) {
+    const outcome = await db.tx(async (t): Promise<"ok" | "changed" | "unknown"> => {
+      await lockRoom(t, room);
+      const shown = await t.query<{ version: string | null }>(
+        `select (select s ->> 'version' from jsonb_array_elements(run.shown_notes) s where s ->> 'kind' = $4 and s ->> 'id' = $5 limit 1) as version
+           from messages m ${VISIBLE_JOIN}
+           join conversations c on c.id = m.conversation_id and c.type = 'agent_social'
+           join principals sender on sender.id = m.sender_id and sender.owner_id = $1
+           join agent_runs run on ${postingRun("m", "run")} and m.client_txn = run.id::text
+          where m.conversation_id = $2 and m.seq = $3 and m.kind = 'text' and ($6::uuid is null or m.sender_id = $6::uuid)
+            and jsonb_typeof(run.shown_notes) = 'array'`,
+        [ownerId, from.conversationId, from.seq, room.kind, noteId, agentId],
+      );
+      const version = shown.rows[0]?.version ?? null;
+      if (version === null) return "unknown";
+      // The note now, its state and exact version from one read (`listRoomExact`), under the lock every writer of the room takes.
+      const now = (await listRoomExact(t, room)).find((e) => e.note.id === noteId);
+      if (now === undefined || now.note.vault || now.updatedAt !== version) return "changed";
+      await updateNote(t, room, noteId, { vault: true, vaultBy: "owner", unsure: false });
+      return "ok";
+    });
+    if (outcome === "unknown") throw notFound();
+    if (outcome === "changed") throw new AppError(409, "note_changed");
+    count(db, "social_note_vaulted_from_reply");
     return noteOf(db, room, noteId);
   }
 
@@ -273,7 +317,8 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
   api.patch("/api/memory/notes/:id", { schema: { params: noteParams, querystring: empty, body: notePatch, response: { 200: noteView } } }, async (req) => {
     const me = await requirePrincipal(req);
     await writeLimit(req, me.id);
-    return edit({ kind: "owner", ownerId: me.id }, me.id, req.params.id, req.body, req.log);
+    const room: Room = { kind: "owner", ownerId: me.id };
+    return req.body.from !== undefined ? vaultFromReply(room, me.id, req.params.id, req.body.from, null) : edit(room, me.id, req.params.id, req.body, req.log);
   });
 
   api.delete("/api/memory/notes/:id", { schema: { params: noteParams, querystring: empty, body: empty.nullish(), response: { 200: ok } } }, async (req) => {
@@ -388,7 +433,8 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
       await writeLimit(req, me.id);
       const agent = await ownAgent(me.id, req.params.id);
       mustLive(agent);
-      return edit({ kind: "self", agentId: agent.id }, me.id, req.params.noteId, req.body, req.log);
+      const room: Room = { kind: "self", agentId: agent.id };
+      return req.body.from !== undefined ? vaultFromReply(room, me.id, req.params.noteId, req.body.from, agent.id) : edit(room, me.id, req.params.noteId, req.body, req.log);
     },
   );
 

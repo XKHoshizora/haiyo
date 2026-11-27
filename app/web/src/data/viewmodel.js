@@ -420,6 +420,18 @@ function webSourcesView(sources) {
 }
 
 /**
+ * A social reply's `shownNotes` (ring 1b: what its run could refer to of my notes; the service sends it to the Agent's owner alone) as
+ * `[{kind, id, text}]`: each a note about me (`owner`) or one of the Agent's own (`self`), its text when it is still as that reply was
+ * shown it, else null (changed since: a row with no text). [] for anything else.
+ */
+function shownNotesView(notes) {
+  if (!Array.isArray(notes)) return [];
+  return notes.flatMap((n) =>
+    n && (n.kind === "owner" || n.kind === "self") && typeof n.id === "string" && (n.text === null || typeof n.text === "string") ? [{ kind: n.kind, id: n.id, text: n.text }] : [],
+  );
+}
+
+/**
  * A reply's `webCites` as chips for its text, `[{at, kind: "w", n, url, host, title}]` (`n` the source's place in the list):
  * each of a number among `sources`, at a place in `text` no earlier than the one before (not inside a surrogate pair). []
  * for anything else.
@@ -486,7 +498,7 @@ function refusedLines(refused, nameOf) {
   });
 }
 
-function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, keepsOwners, proposalAt, social }) {
+function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, keepsOwners, proposalAt, social, socialChat = false }) {
   const attachment = m.kind === "file" ? attachmentView(m.attachment) : null;
   const kind = kindOf(m.kind, attachment);
   const system = systemView(m.system, alias);
@@ -544,6 +556,8 @@ function messageView(m, { alias, meId, pair, peerReadSeq, now, nameOf, agentId, 
     // The Agents a limit kept a call of it from, and why: the service sends `refused` to the one person it is for alone — a
     // person's message to its sender, an Agent's relay to the person behind it (Messages.jsx draws it under mine and under an Agent's).
     refused: Array.isArray(m.refused) ? refusedLines(m.refused, nameOf) : [],
+    // What a social reply of my own Agent could refer to of my notes (ring 1b): only there, only mine, whatever a message carries.
+    shownNotes: m.kind === "text" && socialChat && keepsOwners(m.senderId) ? shownNotesView(m.shownNotes) : [],
   };
   view.webCites = m.kind === "text" ? webCitesView(m.webCites, view.webSources, m.text ?? "") : [];
   if (hidden) view.hidden = true;
@@ -909,7 +923,7 @@ export function toView(model, { now = Date.now(), offersAt = now } = {}) {
     // Which held messages are replies that are only a persona proposal (what a quote of one says).
     const proposalOnly = new Set(held.filter((m) => m.proposal && !m.text).map((m) => m.seq));
     const viewOf = (m) =>
-      messageView(m, { alias, meId, pair: direct || agentChat, peerReadSeq: conv.peerReadSeq, now, nameOf, agentId: conv.agentId, keepsOwners, proposalAt: (seq) => proposalOnly.has(seq), social: model.socialOn === true });
+      messageView(m, { alias, meId, pair: direct || agentChat, peerReadSeq: conv.peerReadSeq, now, nameOf, agentId: conv.agentId, keepsOwners, proposalAt: (seq) => proposalOnly.has(seq), social: model.socialOn === true, socialChat });
     const messages = held.map(viewOf);
     const win = model.windows?.[conv.id] ?? null;
     const claimed = new Set();

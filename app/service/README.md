@@ -1477,6 +1477,14 @@ the room heavier than its limit allows (`left`: what is left with the note's own
 note's always fits, also in a room over its limit since `MEMORY.roomOwner` / `roomSelf` was lowered; 404 `not_found` unless it is
 a note of yours.
 
+Or, its own shape, 以后别说 under a reply of your Agent in a social conversation (Agent social, What a reply could refer to): `{"vault":
+true, "from": {"conversationId", "seq"}}` and no other key (`vault: false` or a `text` with `from` is 400). Under the room's lock: the
+message `from` names must be an Agent's reply in a social conversation you can see, sent by an Agent of yours (for an Agent's own
+note: that Agent), and posted by a run that was shown this note — else 404 `not_found`, as for anything not yours; the note must
+still be exactly the version that run read — else 409 `note_changed` (it was edited, merged, vaulted or deleted since; nothing is
+written). Then it goes into the vault as your lock (`vault_by` owner) → 200 Note, counted `social_note_vaulted_from_reply` (never
+`owner_locked`: Memory counters). It is no undo: taking a note out of the vault is the plain `vault: false`.
+
 #### `DELETE /api/memory/notes/:id`
 
 Body: none or `{}`. → 200 `{"ok": true}`; 404 `not_found` unless it is a note of yours (also when it is gone).
@@ -1522,7 +1530,8 @@ As `POST /api/memory/notes`, into the Agent's own room. 409 `agent_deleted` for 
 
 #### `PATCH /api/agents/:id/memory/notes/:noteId`
 
-As `PATCH /api/memory/notes/:id`, for one of the Agent's own notes. 409 `agent_deleted` for a deleted Agent.
+As `PATCH /api/memory/notes/:id`, for one of the Agent's own notes (its `from` shape too: the reply must be this Agent's). 409
+`agent_deleted` for a deleted Agent.
 
 #### `DELETE /api/agents/:id/memory/notes/:noteId`
 
@@ -3201,7 +3210,8 @@ and the Agent) who speak, and the Agent's owner who watches (role `observer`, sh
 the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以添加它」:
 `需要我同意` by default, `我的好友可以直接添加`, `不让别人添加`), and cost the owner at most their one number a day. Every way access
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid), which is what the
-routes below are, and **1b** (notes shown to a non-owner), which is not built: its one route is under 「Planned」.
+routes below are, and **1b** (what a reply to someone else may be shown of its owner's notes, and the owner's view of it: below,
+What a reply could refer to).
 
 **Two parts, one switch.** Ring 1a is two things that deploy together (migrations 074 to 077; Deployment):
 
@@ -3247,6 +3257,23 @@ owner has a block since included), and mentions nobody refused; the calls of who
 reply as the one under way ends). `access_ended` as a run's recorded
 reason is a social run's alone. An ending that refuses nobody in a group (unfriending; a visitor who removes an Agent from their
 contacts) takes nothing out of a group reply: in a group anyone may @ an Agent.
+
+**What a reply could refer to** (ring 1b, option A; `memory/passage.ts` `loadNotes`, `messages/read.ts` `shownNotesOf`;
+`tests/social-ring1b.test.ts`). A reply in a social conversation is shown what a group reply is shown of its Agent's memory, minus
+hearsay and minus a group's origin exception: nothing when its memory is off; the notes about its owner (when it uses the shared ones)
+and its own that are not in the vault, in the same passage budget and the same order of leaving out as a group's (`fitNotes`). The
+vault is never shown there — not even a note that began in that conversation — and nothing is judged per person. The notes are read
+once, at the reply's start, as a group's: nothing checks them again at the post (a note vaulted while a reply is being written may
+still be used by the replies that had read it; the owner sees what each could refer to). Its context is a group's
+(`AGENT_GROUP_CONTEXT_TOKENS` of the latest `GROUP_CONTEXT_MESSAGES`); no summary is made there. The run records what it was shown
+(`agent_runs.shown_notes`, the refs `fitNotes` kept, each at the exact version read), and the reply carries it for the Agent's owner
+alone (`shownNotes`, `WireMessage`): each note's text while it is still that version, else null — read and compared in one
+statement, so an old reply never shows a later text. Nobody else is sent the key or a note's text: not the person the reply is for,
+not the other side's owner who watches an Agent-to-Agent conversation, nor any search, sync, push or catch-up of theirs. The web shows
+it folded under the reply (「小记这次能参考 N 条记忆」, the Agent's name), each note with 以后别说 (`PATCH …/memory/notes/:id` with `from`,
+Memory) or, changed since, a line with no text; and one line where the owner lets people in (the approval of a request, the 「别人」
+tab) that the Agent may use what is outside the vault when it talks with others. Counted in `memory_stats`
+(`social_replies_with_notes`, `social_notes_shown`, `social_note_vaulted_from_reply`: Memory counters), no id and no text.
 
 **The persona card is unread.** The persona aid's card (`persona_fact`) counts as an unread message for the Agent's owner in
 that Agent's own conversation (`unread` in `/api/sync`), as no other notice does, while `SOCIAL.enabled` is on; it makes no push.
@@ -3501,6 +3528,10 @@ else of the Agent ever does. The member list (`GET /api/conversations/:id/member
                                        // (only kinds above 0), to whoever reads the reply (What a reply looked up, below)
   "found": [{ "conversationId": "…", "seq": 12 }],   // of the messages its tools found, those you can see now, in order
   "queries": ["川菜馆"],               // the words its searches were for: the Agent's owner, its own conversation only
+  "shownNotes": [{ "kind": "owner" | "self", "id": "…", "text": "…" | null }],
+                                       // an Agent's reply in a social conversation, for the Agent's owner only (absent for
+                                       // everyone else, and when it was shown no note): the notes its run could refer to
+                                       // (Agent social, What a reply could refer to); text null once the note changed since
   "cites": [{ "at": 12, "kind": "m" | "f", "ref": { "conversationId": "…", "seq": 12 } }],
                                        // an Agent's reply: its citations, beside its text (Agents and runs, Citations) —
                                        // where each stands in "text" (UTF-16 code units, ascending), a message or a file,
@@ -3528,7 +3559,7 @@ the sender's message, the refused Agents' names before it: “「小助手」：
 send's answer after a later push) never takes a line away: the lines are merged by Agent.
 
 An Agent's reply is an ordinary `text` message from the Agent; `reasoning`, `stopped`, `ack`, `truncated`, `proposal`,
-`via`, `lookups`, `found`, `queries` and `cites` appear only on those, only when they apply. Render its text as Markdown (spec 6.6);
+`via`, `lookups`, `found`, `queries`, `shownNotes` and `cites` appear only on those, only when they apply. Render its text as Markdown (spec 6.6);
 people's text stays plain; a link to the message of each of its `cites` may be drawn at its `at`. Shown anywhere else (a
 preview, a quote, a search hit) its text is shown as it is: it holds no citation (a reply that wrote nothing but
 token-shaped strings keeps them as text, citing nothing: Agents and runs, Citations).
@@ -5742,6 +5773,8 @@ container `node dist/cli.js memory:stats --days 7` (`npm run memory:stats`, `mem
 | `summary_who_unknown` | items of a rolling summary's answer dropped for a `said_by` that is absent or no key of the call's roster (one per item) |
 | `summary_written`, `summary_nothing_new`, `summary_failed`, `summary_empty_retried`, `summary_no_model`, `summary_too_big`, `summary_skipped`, `summary_dropped` | what came of it: stored; the four lists empty — nothing worth keeping, what the summary covers moved on; nothing usable — the call failed (an outage, a transient failure included, or the provider refusing the input), or the answer was empty, cut at its limit, no JSON object of the four lists, or had no item that fits the cap (also once items with an absent or unknown `said_by` were dropped); a long window answered with the four lists empty, doubted once; no model to call on (also a key or address refused); the input did not fit the model (each of those four a failure: the pair backs off); a window set aside after failing at the smallest size (its messages are added to the row's `skipped_messages`) (not a call that could not start for the memory allowance, `memory_refused_allowance`, or for the owner's calls running at once: those change nothing; not the service stopping); or the pair moved on before it could be stored (a new topic, the Agent out of the group, added back or deleted) |
 | `owner_unlocked`, `owner_locked` | the owner took a note out of, or put one into, the vault (`PATCH`, or confirming an unlock card) |
+| `social_replies_with_notes`, `social_notes_shown` | a reply of an Agent in a social conversation was posted that had been shown notes (Agent social, What a reply could refer to), and how many it was shown; counted once it is posted |
+| `social_note_vaulted_from_reply` | the owner pressed 以后别说 under such a reply and the note went into the vault (`PATCH` with `from`; one committed move, never `owner_locked`) |
 | `hearsay_confirmed`, `hearsay_deleted` | the owner took an entry as true, or deleted it |
 
 **Forgiveness.** What is not charged of the true cost is forgiven, charged to no one — neither the balance nor any day's

@@ -11,6 +11,7 @@ import { Avatar, Btn, Tag } from "../ui/primitives.jsx";
 import { useAction, useNow } from "./useAction.js";
 import { openAgentChat } from "./AgentForm.jsx";
 import { LeaveAgentModal } from "./LeaveAgentModal.jsx";
+import { MemoryDisclosure } from "./ShownNotes.jsx";
 
 const matches = (text, q) => !q.trim() || text.toLowerCase().includes(q.trim().toLowerCase().replace(/^@/, ""));
 
@@ -69,6 +70,12 @@ export function AgentContactRows({ query }) {
         </li>
       ))}
       {incoming.length > 0 && <li className="rows-label">别人想添加我的 Agent</li>}
+      {/* Before I let anyone in (ring 1b): what each of those Agents may use of my notes when it talks with them, once per Agent. */}
+      {[...new Set(incoming.map((w) => w.agentId))].map((agentId) => (
+        <li key={`disclose:${agentId}`} className="rows-note">
+          <MemoryDisclosure agentId={agentId} name={nameOf(state, agentId) ?? "Agent"} />
+        </li>
+      ))}
       {incoming.map((w) => (
         <li key={`wait:${w.agentId}:${w.subject.id}`} className="social-row">
           <Avatar id={w.subject.id} size={48} />

@@ -224,19 +224,19 @@ function mergeBySeq(held, incoming) {
 
 /**
  * `wires` as this reader may keep them: in a group, a message of someone else's Agent (its owner is known and is not me)
- * loses its `reasoning` and its `via` (which model and level the reply used, what it cost) — the service sends them only
- * to the owner, and the store never holds more. While the sender's principal has not arrived the fields stay (the view
- * hides them), so my own Agent's are not lost when principals come late. `state` supplies `me`, `principals`, `agents`
- * and `conversations`.
+ * loses its `reasoning`, its `via` (which model and level the reply used, what it cost) and its `shownNotes` (what a social
+ * reply could refer to of its owner's notes) — the service sends them only to the owner, and the store never holds more.
+ * While the sender's principal has not arrived the fields stay (the view hides them), so my own Agent's are not lost when
+ * principals come late. `state` supplies `me`, `principals`, `agents` and `conversations`.
  */
 function withoutOthersPrivate(state, type, wires) {
   if (!holdsGroupRuns(type) || !Array.isArray(wires)) return wires;
   let out = wires;
   wires.forEach((m, i) => {
-    if (!m || (m.reasoning === undefined && m.via === undefined) || typeof m.senderId !== "string") return;
+    if (!m || (m.reasoning === undefined && m.via === undefined && m.shownNotes === undefined) || typeof m.senderId !== "string") return;
     if (typeof state.principals[m.senderId]?.ownerId !== "string" || ownsAgent(state, m.senderId)) return;
     if (out === wires) out = [...wires];
-    const { reasoning: _thinking, via: _via, ...rest } = m;
+    const { reasoning: _thinking, via: _via, shownNotes: _notes, ...rest } = m;
     out[i] = rest;
   });
   return out;

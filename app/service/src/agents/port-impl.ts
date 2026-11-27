@@ -16,6 +16,7 @@ import { settle } from "../metering/settle.ts";
 import { classOf } from "../metering/wallet.ts";
 import { correctedEstimate, estimateTokens, holdTokens, planRatio, ratioKey, readRatio, TOOL_PREAMBLE_TOKENS, TOOL_TEXT_FACTOR } from "../metering/tokens.ts";
 import { loadNotes, type ShownNote } from "../memory/passage.ts";
+import { count } from "../memory/stats.ts";
 import { markRead, type ReadEvents } from "../messages/read.ts";
 import type { ToolCall, ToolSpec } from "../models/gateway.ts";
 import { resolveModel, type Resolved } from "../models/resolve.ts";
@@ -399,6 +400,8 @@ interface RunFlags {
    * search also keeps the texts of the notes and hearsay it was shown (`shown`: its query guard's, never stored or logged).
    */
   tools: { refs: RunRefs; heardTo: number; shown?: readonly string[]; ownerAsked?: boolean; shownFrom: number | null } | null;
+  /** A social reply: how many notes it was shown (its run's `shown_notes`), from `begin` once the call is admitted; 0 until then, and elsewhere. A count only. */
+  shownNotes: number;
 }
 
 /**
@@ -1212,6 +1215,7 @@ export class DbAgentPort implements AgentPort {
     flags.mark = first.loaded.mark;
     flags.money = result.money;
     flags.leftOut = first.loaded.leftOut;
+    flags.shownNotes = first.social?.shown.length ?? 0;
     const { resolved } = first;
     flags.model = resolved.source === "site" ? { source: "site", id: resolved.name } : { source: "provider", providerId: resolved.providerId!, name: resolved.name, toolsUnknown: resolved.toolsUnknown === true };
     // In its own conversation, where what its call shows begins (`RunScope.shownFrom`): known once its context is built.
@@ -1460,6 +1464,11 @@ export class DbAgentPort implements AgentPort {
       // calls over its owner's limit on other people's Agents are logged, and the owners whose one number for others' use
       // refused a call of it are told.
       if (!duplicate) this.deps.conversations.publish({ messages: [message, ...triggered.notices], conversations: [] }, this.deps.log);
+      // A social reply that was shown notes (ring 1b): counted once it is posted, with how many (memory/stats.ts: no id, no text).
+      if (!duplicate && flags?.place === "social" && flags.shownNotes > 0) {
+        count(this.deps.db, "social_replies_with_notes");
+        count(this.deps.db, "social_notes_shown", flags.shownNotes);
+      }
       if (!duplicate && typeof message.body.proposalId === "string") this.deps.realtime.pushAgentChanged(run.ownerId, run.agentId);
       actOnTriggered(triggered, { announce: (called) => this.announce(called), log: this.deps.log, interrupt: (ids) => this.interruptRuns(ids), tell: (told) => this.actOnTold(told) });
       // The group moved on: a judgement waiting there for a person's message is dropped (the decision would refuse that
@@ -1780,7 +1789,7 @@ const REFUSED_METRIC: Readonly<Record<RefusedBy, string | null>> = {
 };
 
 /** A run's flags as an attempt starts. */
-const freshFlags = (): RunFlags => ({ stop: false, silenced: false, place: "own", mark: null, money: null, model: null, leftOut: null, tools: null });
+const freshFlags = (): RunFlags => ({ stop: false, silenced: false, place: "own", mark: null, money: null, model: null, leftOut: null, tools: null, shownNotes: 0 });
 
 export function createAgentPort(deps: AgentPortDeps): DbAgentPort {
   return new DbAgentPort(deps);

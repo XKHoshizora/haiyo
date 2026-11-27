@@ -5,6 +5,7 @@ import { VISIBLE_JOIN, visibleJoin, type ConversationType } from "../conversatio
 import type { Queryable } from "../db.ts";
 import type { StoredOp } from "../memory/apply.ts";
 import { dreamLines, linesOf } from "../memory/lines.ts";
+import { exactTs } from "../memory/write.ts";
 import { citesOf, foundOf, handedWebPages, lookupsOf, queriesOf, webCitesOf, webSourcesOf, type Cite, type MessageRef } from "./lookups.ts";
 import { MESSAGE_COLUMNS, toStored, type MessageRow, type StoredMessage, type WireMessage } from "./model.ts";
 import { principalsOf, type SyncPrincipal } from "./principals.ts";
@@ -178,6 +179,57 @@ async function memoryChangesOf(q: Queryable, msgs: StoredMessage[]): Promise<{ c
 /** Whether `op` is a note's own operation (a change holds only one kind: a hearsay change has none of these). */
 const isNoteOp = (op: ChangeRow["ops"][number]): op is StoredOp => op.op !== "hearsay_add" && op.op !== "hearsay_drop";
 
+type WireShownNote = NonNullable<WireMessage["shownNotes"]>[number];
+
+/** A run's recorded `shown_notes` entry as it may be read back (written by agents/port-impl.ts alone; anything else is skipped). */
+const isShownRef = (x: unknown): x is { kind: "owner" | "self"; id: string; version: string } =>
+  typeof x === "object" && x !== null && ((x as { kind?: unknown }).kind === "owner" || (x as { kind?: unknown }).kind === "self") &&
+  typeof (x as { id?: unknown }).id === "string" && UUID.test((x as { id: string }).id) && typeof (x as { version?: unknown }).version === "string";
+
+/**
+ * What the visibility query found of the notes social replies could refer to (`noted`: only for the reader who owns the sending Agent,
+ * in a social conversation), as `shownNotes` by reader|message: each note with its text now when it is still exactly the version the run
+ * read — text and version read and compared in ONE statement (`exactTs`, microseconds) — and null when it changed, was vaulted or is gone,
+ * so an old reply never shows a later text. A note about the owner is looked for in the reader's own room (the reader is the Agent's
+ * owner), an Agent's own in the sending Agent's. One query for every reader and reply.
+ */
+async function shownNotesOf(q: Queryable, rows: ReadonlyArray<{ reader_id: string; id: string; shown_notes: unknown }>, senders: ReadonlyMap<string, string>): Promise<Map<string, WireShownNote[]>> {
+  const out = new Map<string, WireShownNote[]>();
+  const wanted = new Map<string, { kind: string; id: string; version: string; room: string }>();
+  const listed: Array<[string, Array<{ kind: "owner" | "self"; id: string; key: string }>]> = [];
+  for (const r of rows) {
+    if (!Array.isArray(r.shown_notes)) continue;
+    const sender = senders.get(r.id);
+    if (sender === undefined) continue;
+    const refs = r.shown_notes.filter(isShownRef).map((ref) => {
+      const room = ref.kind === "owner" ? r.reader_id : sender;
+      const key = `${ref.kind}|${ref.id}|${ref.version}|${room}`;
+      wanted.set(key, { kind: ref.kind, id: ref.id, version: ref.version, room });
+      return { kind: ref.kind, id: ref.id, key };
+    });
+    if (refs.length > 0) listed.push([`${r.reader_id}|${r.id}`, refs]);
+  }
+  if (wanted.size === 0) return out;
+  const asked = [...wanted.values()];
+  const { rows: found } = await q.query<{ i: string; text: string | null }>(
+    `select x.i::text, n.text
+       from unnest($1::text[], $2::uuid[], $3::text[], $4::uuid[]) with ordinality as x (kind, id, version, room, i)
+       left join lateral (
+         select o.text from owner_notes o where x.kind = 'owner' and o.id = x.id and o.owner_id = x.room and ${exactTs("o.updated_at")} = x.version
+         union all
+         select a.text from agent_notes a where x.kind = 'self' and a.id = x.id and a.agent_id = x.room and ${exactTs("a.updated_at")} = x.version
+       ) n on true`,
+    [asked.map((a) => a.kind), asked.map((a) => a.id), asked.map((a) => a.version), asked.map((a) => a.room)],
+  );
+  const textOf = new Map<string, string | null>();
+  for (const f of found) {
+    const a = asked[Number(f.i) - 1];
+    if (a) textOf.set(`${a.kind}|${a.id}|${a.version}|${a.room}`, f.text);
+  }
+  for (const [key, refs] of listed) out.set(key, refs.map((ref) => ({ kind: ref.kind, id: ref.id, text: textOf.get(ref.key) ?? null })));
+  return out;
+}
+
 /**
  * What this reader is sent of what a reply's tools looked up besides its counts: the messages found they can see, the
  * words when they are for them, and of its text's citations those whose message they can see.
@@ -291,7 +343,9 @@ function toWire(
  * group, whatever the stored body holds. A message carries, for the one person a refusal is for alone, the Agents a LIMIT kept a
  * call of it from and why (`refused`: `call_refusals`, migration 077, its `sender_id`): a person's message for its sender, an
  * Agent's relay for the person behind it (limits redesign C-d) — in the order they were recorded, read in the same query by one
- * more join; nobody else is sent the key.
+ * more join; nobody else is sent the key. An Agent's reply in a social conversation carries, for the owner of the Agent that sent it
+ * alone, what its run could refer to of their notes (`shownNotes`, `shownNotesOf`; ring 1b): read in the same query by one more join
+ * that looks only when the reader owns the sender, the texts in one more query; nobody else is sent the key or a note's text.
  * Every visibility decision goes through VISIBLE_JOIN, so an owner who left the group reads nothing of it; a fixed number
  * of queries however many readers and messages there are. `config`: the site models' labels, read now.
  */
@@ -305,12 +359,12 @@ export async function toWireForReaders(
   const out = new Map<string, WireMessage[]>(readers.map((r) => [r, []]));
   if (readers.length === 0 || msgs.length === 0) return out;
 
-  const shown = await q.query<{ reader_id: string; id: string; with_reasoning: boolean; with_queries: boolean; refused: WireMessage["refused"] | null } & ViaRow>(
+  const shown = await q.query<{ reader_id: string; id: string; with_reasoning: boolean; with_queries: boolean; refused: WireMessage["refused"] | null; shown_notes: unknown } & ViaRow>(
     `select r.reader_id, m.id,
             coalesce(c.type = 'agent' or (c.type in ('group', 'agent_social') and sender.owner_id = r.reader_id), false) as with_reasoning,
             coalesce(c.type = 'agent' and sender.owner_id = r.reader_id, false) as with_queries,
             via.source as via_source, via.model as via_model, via.reasoning as via_reasoning, via.points as via_points,
-            via.proactive as via_proactive, via.web as via_web, refusal.refused
+            via.proactive as via_proactive, via.web as via_web, refusal.refused, noted.shown_notes
        from unnest($1::uuid[]) as r (reader_id)
        cross join messages m ${visibleJoin("r.reader_id")}
        join conversations c on c.id = m.conversation_id
@@ -327,6 +381,12 @@ export async function toWireForReaders(
            from call_refusals cr
           where cr.sender_id = r.reader_id and m.kind <> 'system' and cr.conversation_id = m.conversation_id and cr.seq = m.seq
        ) refusal on true
+       left join lateral (
+         select run.shown_notes
+           from agent_runs run
+          where c.type = 'agent_social' and sender.owner_id = r.reader_id and m.kind = 'text' and ${postingRun("m", "run")} and m.client_txn = run.id::text
+            and run.shown_notes is not null
+       ) noted on true
       where m.id = any($2::bigint[])`,
     [readers, msgs.map((m) => m.id)],
   );
@@ -345,6 +405,8 @@ export async function toWireForReaders(
     if (via) viaFor.set(`${r.reader_id}|${r.id}`, via);
     if (r.refused && r.refused.length > 0) refusedFor.set(`${r.reader_id}|${r.id}`, r.refused);
   }
+  /** reader|message → what the run that posted a social reply could refer to, for the owner of the Agent that sent it. */
+  const notesFor = await shownNotesOf(q, shown.rows, new Map(msgs.map((m) => [m.id, m.senderId])));
 
   const quoting = msgs.filter((m) => typeof m.body.replyToSeq === "number" && shownToAnyone.has(m.id));
   const quotes = new Map<string, StoredMessage>();
@@ -452,6 +514,9 @@ export async function toWireForReaders(
       // Its sender's alone: what a limit refused of its calls.
       const refused = refusedFor.get(key);
       if (refused) wire.refused = refused;
+      // The sending Agent's owner's alone: what a social reply could refer to of their notes.
+      const noted = notesFor.get(key);
+      if (noted) wire.shownNotes = noted;
       list.push(wire);
     }
   }

@@ -837,6 +837,13 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
       attempt(() => (agentId ? api.patchAgentMemoryNote(agentId, noteId, patch) : api.patchMemoryNote(noteId, patch)), memoryWrite(agentId)),
     deleteMemoryNote: (agentId, noteId) =>
       attempt(() => (agentId ? api.deleteAgentMemoryNote(agentId, noteId) : api.deleteMemoryNote(noteId)), memoryWrite(agentId)),
+    /**
+     * 以后别说 under a social reply (ring 1b): the note (`agentId` null: one about me; else that Agent's own) goes into the vault, held to the
+     * reply it was pressed under (`from`: `{conversationId, seq}`) → value: the note. 409 `note_changed`: it is not as that reply was shown
+     * it any more (nothing was written).
+     */
+    vaultFromReply: (agentId, noteId, from) =>
+      attempt(() => (agentId ? api.patchAgentMemoryNote(agentId, noteId, { vault: true, from }) : api.patchMemoryNote(noteId, { vault: true, from })), memoryWrite(agentId)),
     /** What the Agent heard: forgotten, or taken as true (it becomes one of its own notes). */
     deleteHearsay: (agentId, hearsayId) => attempt(() => api.deleteHearsay(agentId, hearsayId), memoryWrite(agentId)),
     confirmHearsay: (agentId, hearsayId) => attempt(() => api.confirmHearsay(agentId, hearsayId), memoryWrite(agentId)),

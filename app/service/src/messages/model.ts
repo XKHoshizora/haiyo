@@ -343,6 +343,13 @@ export const wireMessageSchema = z.object({
   /** The words its searches were for: to the Agent's owner, in the Agent's own conversation only. */
   queries: z.array(z.string()).optional(),
   /**
+   * An Agent's reply in a social conversation, to the Agent's owner only (absent for everyone else, and when it was shown no note): the
+   * notes its run could refer to (`agent_runs.shown_notes`, ring 1b), in that order — each a note about the owner (`owner`) or one of the
+   * Agent's own (`self`), its id, and its text as it is now when it is still exactly the version the run read (null when it was edited,
+   * merged, vaulted or deleted since: an old message never shows a later text).
+   */
+  shownNotes: z.array(z.object({ kind: z.enum(["owner", "self"]), id: z.string(), text: z.string().nullable() })).optional(),
+  /**
    * An Agent's reply: its citations, kept beside its text (messages/lookups.ts `Cite`; the text holds none) — where each
    * stands in `text` (UTF-16 code units, ascending), whether it cites a message or a file, and the message it points to
    * (for a file, the message it was sent in): of those, the ones whose message this reader can see now (VISIBLE_JOIN);
